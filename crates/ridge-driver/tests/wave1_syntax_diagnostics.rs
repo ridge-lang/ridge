@@ -4,8 +4,9 @@
 //! through this crate's `check_standalone_incremental` and turns the resulting
 //! diagnostics into LSP messages verbatim. So the promise that an editor shows
 //! no spurious parse squiggle on a spec-legal multi-line union, a signature
-//! wrapped across lines, an `if`/`then` split over two lines, or a
-//! trailing-operator continuation reduces to a single fact: this pipeline
+//! wrapped across lines, an `if`/`then` split over two lines, a
+//! trailing-operator continuation, or a multi-line interpolated string
+//! (`$"""..."""`) reduces to a single fact: this pipeline
 //! reports zero lex/parse errors for those forms. This test pins that fact so
 //! the LSP counterpart of the parser/lexer fixes cannot silently regress.
 //!
@@ -61,6 +62,10 @@ const WAVE1_FORMS: &[(&str, &str)] = &[
     (
         "trailing-operator continuation",
         "fn total (a: Int) (b: Int) -> Int =\n    a +\n        b\n",
+    ),
+    (
+        "multi-line interpolated string",
+        "fn greet (name: Text) -> Text =\n    $\"\"\"\n    Hello, ${name}!\n    \"\"\"\n",
     ),
 ];
 

@@ -883,6 +883,38 @@ mod tests {
         }
     }
 
+    // ── parse_interp_multiline ────────────────────────────────────────
+
+    #[test]
+    fn parse_interp_multiline() {
+        // The `$"""..."""` opener produces the same InterpStart…InterpEnd token
+        // stream as `$"..."`, so it parses into an `Expr::Interp` with the text
+        // dedented and the hole intact.
+        let e = ok("$\"\"\"\n  hello ${name}\n  \"\"\"");
+        if let Expr::Interp { parts, .. } = e {
+            assert_eq!(
+                parts.len(),
+                2,
+                "expected 2 parts (text + hole), got {parts:?}"
+            );
+            assert!(
+                matches!(&parts[0], InterpPart::Text { raw, .. } if raw == "hello "),
+                "expected dedented text 'hello ', got {:?}",
+                parts[0]
+            );
+            if let InterpPart::Expr { expr, .. } = &parts[1] {
+                assert!(
+                    matches!(expr.as_ref(), Expr::Ident(id) if id.text == "name"),
+                    "expected Ident(name) in hole, got {expr:?}"
+                );
+            } else {
+                panic!("expected Expr hole, got {:?}", parts[1]);
+            }
+        } else {
+            panic!("expected Interp, got {e:?}");
+        }
+    }
+
     // ── parse_ask_no_args ──────────────────────────────────────────────
 
     #[test]

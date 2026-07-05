@@ -456,7 +456,7 @@ Io.println $"User ${user.name} has ${user.age} years"
 Io.println $"Total: ${items |> List.map (.price) |> List.sum}"
 ```
 
-String interpolation dispatches through the `ToText` class (§5.6). Built-in types (`Int`, `Float`, `Bool`, `Text`, `Timestamp`) have prelude instances. User-defined types become interpolatable by adding `deriving (ToText)` to the type declaration or by writing an explicit `instance ToText T`. See §5.6.
+String interpolation dispatches through the `ToText` class (§5.6). Built-in types (`Int`, `Float`, `Bool`, `Text`, `Timestamp`) have prelude instances. User-defined types become interpolatable by adding `deriving (ToText)` to the type declaration or by writing an explicit `instance ToText T`. See §5.6. Interpolation also has a multi-line block form, `$"""..."""` (§4.1.1).
 
 ### 3.11. Modules and imports
 
@@ -580,7 +580,16 @@ Syntax rules:
 - Indentation stripping: the column position of the closing `"""` defines the margin. That many leading spaces are stripped from every interior line. A line with fewer spaces than the margin is a parse error.
 - Blank interior lines are allowed and survive as empty lines in the value.
 - Standard escape sequences are processed normally — triple-quoted strings are cooked, not raw.
-- A triple-quoted string is a plain string literal: it does not interpolate. Interpolation remains the `$"..."` form (§3.10); an interpolated multi-line literal (`$"""..."""`) is not provided.
+- A plain triple-quoted string does not interpolate: a `${...}` sequence is literal text. For interpolation spanning multiple lines use the `$"""..."""` form below.
+
+**Interpolated multi-line strings (`$"""..."""`)** combine the two: the triple-quote block layout with the `${...}` holes of `$"..."` (§3.10). The dedent rules are identical to `"""` — the opener is followed immediately by a newline, the closing `"""` sets the margin, and interior lines are dedented by it — and each `${...}` hole is evaluated through `ToText` exactly as in the single-line form.
+
+```ridge
+let body = $"""
+    Dear ${user.name},
+    Your balance is ${account.balance}.
+    """
+```
 
 **Raw strings (`r"..."`, `r#"..."#`, `r##"..."##`)** disable escape processing entirely. Every byte between the delimiters is literal.
 

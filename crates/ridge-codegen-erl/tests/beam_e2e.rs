@@ -1399,3 +1399,39 @@ fn beam_e2e_record_rest_ignores_other_fields() {
         "expected the bound name 'Ada', got:\n{stdout}"
     );
 }
+
+// ── Multi-line interpolation BEAM e2e ────────────────────────────────────────
+
+/// A `$"""..."""` block dedents to the closing margin and evaluates its `${…}`
+/// holes at runtime, producing a value that carries the interior newline.
+const MULTILINE_INTERP_SOURCE: &str = r##"
+import std.io as Io
+import std.int as Int
+
+fn io main () -> Result Unit Text =
+    let n = 42
+    let msg = $"""
+        Value is ${Int.toText n}.
+        Second line.
+        """
+    Io.println msg
+"##;
+
+#[test]
+fn beam_e2e_multiline_interpolation_dedents_and_evaluates_holes() {
+    let (stdout, _) = run_inline_actor_test("MultilineInterp", MULTILINE_INTERP_SOURCE);
+    // The 8-space margin is stripped and the hole prints the integer.
+    assert!(
+        stdout.contains("Value is 42."),
+        "expected the dedented, interpolated first line, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Second line."),
+        "expected the second interior line, got:\n{stdout}"
+    );
+    // The interior newline survives: the two lines are on separate output lines.
+    assert!(
+        stdout.contains("Value is 42.\nSecond line."),
+        "expected the interior newline to survive between the two lines, got:\n{stdout:?}"
+    );
+}

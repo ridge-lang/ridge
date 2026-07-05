@@ -251,18 +251,22 @@ TEXT_LIT      ::= '"' { TEXT_CHAR } '"' ;
 
 (* Interpolated string: begins with "$"                                     *)
 (* The lexer tokenises $"..." by splitting it into a sequence of segments:
-     INTERP_START   "$\""
-     INTERP_TEXT    run of characters up to "${" or closing '"'
+     INTERP_START   "$\"" (single-line) or "$\"\"\"" (multi-line block)
+     INTERP_TEXT    run of characters up to "${" or the closing delimiter
      INTERP_EXPR_START  "${"
      INTERP_EXPR_END    "}"
-     INTERP_END     '"' (the closing quote)
+     INTERP_END     the closing delimiter ('"' or '"""')
    This allows the parser to embed arbitrary Expr inside ${…} segments.
-   See §1.8 (string interpolation) for the parser-level production.         *)
-INTERP_START      ::= "$\"" ;
+   The multi-line opener "$\"\"\"" mirrors the plain triple-quoted string
+   (TEXT_LIT rules above): the byte after the opener must be a newline, the
+   closing '"""' defines the dedent margin, and interior lines are dedented.
+   Both openers yield the SAME segment stream, so the parser-level production
+   below is unchanged.  See §1.8 (string interpolation).                     *)
+INTERP_START      ::= "$\"" | '$"""' ;
 INTERP_TEXT       ::= { TEXT_CHAR } ;   (* runs of non-interpolation text *)
 INTERP_EXPR_START ::= "${" ;
 INTERP_EXPR_END   ::= "}" ;
-INTERP_END        ::= '"' ;
+INTERP_END        ::= '"' | '"""' ;
 
 (* --- Timestamp ---
    (* Timestamp has no surface syntax; obtained via std.time per D048 *)
@@ -906,7 +910,13 @@ InterpolatedText ::= INTERP_START
 
 (* Example:
      $"User ${user.name} has ${user.age} years"
-     $"Total: ${items |> List.map (.price) |> List.sum}"                   *)
+     $"Total: ${items |> List.map (.price) |> List.sum}"
+
+   Multi-line block form ("$\"\"\"" … '"""'), dedented to the closing margin:
+     $"""
+         Dear ${user.name},
+         Your balance is ${account.balance}.
+         """                                                                *)
 
 
 (* === 6.14  Field accessor as function === *)

@@ -212,6 +212,13 @@ enum LogosToken<'src> {
     #[regex(r#""([^"\\\n]|\\.)*"#, priority = 2)]
     UnterminatedString,
 
+    // Interpolated triple-quoted multi-line string opener `$"""`.  Must beat both
+    // `$"` (InterpStart) and `"""` (TripleQuoteOpen): longest-match already favours
+    // the 4-byte token, and the explicit priority keeps it unambiguous.  The
+    // hand-scanner reads the rest with triple-quote dedent semantics plus holes.
+    #[token("$\"\"\"", priority = 6)]
+    InterpTripleOpen,
+
     // Interpolated string start `$"`.  The mode-switch to interp-text is handled
     // by the caller.
     #[token("$\"", priority = 4)]
@@ -378,6 +385,24 @@ pub(crate) fn scan(src: &str) -> (Vec<(RawToken, Span)>, Vec<LexError>) {
                 let interp_start_offset = range.end;
                 let (interp_tokens, interp_errors, consumed) =
                     scan_interp_body(src, interp_start_offset, span.start);
+                tokens.extend(interp_tokens);
+                errors.extend(interp_errors);
+                let (rest_tokens, rest_errors) = scan_from(src, consumed);
+                tokens.extend(rest_tokens);
+                errors.extend(rest_errors);
+                return (tokens, errors);
+            }
+
+            // ── Interpolated multi-line string `$"""..."""` ───────────────────
+            Ok(LogosToken::InterpTripleOpen) => {
+                // Emit the SAME `InterpStart` marker as the single-line `$"`
+                // form: the interpolation and parse layers then treat the two
+                // openers identically, so no downstream change is needed for
+                // multi-line interpolation.
+                tokens.push((RawToken::InterpStart, span));
+                let body_start = range.end; // right after `$"""`
+                let (interp_tokens, interp_errors, consumed) =
+                    scan_interp_triple_body(src, body_start, span.start);
                 tokens.extend(interp_tokens);
                 errors.extend(interp_errors);
                 let (rest_tokens, rest_errors) = scan_from(src, consumed);
@@ -1080,4 +1105,281 @@ fn scan_interp_body(
             }
         }
     }
+}
+
+/// Scan the body of an interpolated multi-line string `$"""..."""` starting at
+/// `pos` (right after the opening `$"""`).
+///
+/// Returns `(raw_tokens, errors, consumed_end_pos)`.  The emitted token stream
+/// is the SAME shape as [`scan_interp_body`] — `InterpText` runs interleaved
+/// with `InterpExprStart Expr InterpExprEnd` holes, terminated by `InterpEnd` —
+/// so nothing downstream of the lexer needs to distinguish the two openers.
+///
+/// The text obeys the same dedent rules as a plain triple-quoted string
+/// (`scan_triple_quote_body`, §6.1):
+///
+/// 1. The byte after the opening `$"""` must be `\n`; content on the opening
+///    line is `L013 MultilineStringOpenContent`.
+/// 2. The closing delimiter is a newline, zero or more spaces, then `"""`.  The
+///    leading whitespace on the closing line defines the dedent margin.
+/// 3. The opening `\n` and the final `\n` + margin are dropped from the value.
+/// 4. That many leading spaces are stripped from every interior line; a
+///    non-blank line with fewer is `L014 MultilineStringInsufficientIndent`.
+///
+/// `${…}` holes are recognised exactly as in the single-line form and may
+/// appear on any line.  A `"""` inside a hole expression does not close the
+/// string — the close scan steps over holes.
+#[allow(clippy::too_many_lines)]
+fn scan_interp_triple_body(
+    src: &str,
+    pos: usize,
+    open_start: u32,
+) -> (Vec<(RawToken, Span)>, Vec<LexError>, usize) {
+    let mut tokens: Vec<(RawToken, Span)> = Vec::new();
+    let mut errors: Vec<LexError> = Vec::new();
+    let bytes = src.as_bytes();
+
+    // ── Step 1: the byte after `$"""` must be `\n` (block form) ──────────────
+    if pos >= bytes.len() || bytes[pos] != b'\n' {
+        #[allow(clippy::cast_possible_truncation)]
+        let err_span = Span::new(open_start, pos as u32 + 1);
+        errors.push(LexError::MultilineStringOpenContent { span: err_span });
+        let consumed = skip_to_triple_quote_close(src, pos);
+        // Emit a best-effort `InterpEnd` so the parser still sees a closed
+        // interpolation rather than cascading into unrelated errors.
+        let end_at = consumed.saturating_sub(3).max(pos);
+        #[allow(clippy::cast_possible_truncation)]
+        tokens.push((
+            RawToken::Token(Token::InterpEnd),
+            Span::new(end_at as u32, end_at as u32),
+        ));
+        return (tokens, errors, consumed);
+    }
+
+    // Content begins one byte past the opening newline.
+    let body_start = pos + 1;
+
+    // ── Step 2: find the closing `"""`, stepping over `${…}` holes ───────────
+    let Some(close_pos) = find_triple_interp_close(bytes, body_start) else {
+        errors.push(LexError::UnterminatedMultilineString {
+            open_span: Span::point(open_start),
+            kind: "interpolated",
+        });
+        let end = bytes.len();
+        #[allow(clippy::cast_possible_truncation)]
+        tokens.push((
+            RawToken::Token(Token::InterpEnd),
+            Span::new(end as u32, end as u32),
+        ));
+        return (tokens, errors, end);
+    };
+    let consumed = close_pos + 3;
+
+    // ── Step 3: determine the dedent margin from the closing line ────────────
+    let raw_body = &src[body_start..close_pos];
+    let last_newline = raw_body.rfind('\n');
+    let margin: &str = last_newline.map_or("", |nl| &raw_body[nl + 1..]);
+    let effective_margin = if margin.bytes().all(|b| b == b' ') {
+        margin
+    } else {
+        errors.push(LexError::MultilineStringInsufficientIndent {
+            span: Span::point(open_start),
+        });
+        ""
+    };
+    let margin_len = effective_margin.len();
+
+    // Content ends at the last `\n` before the closing `"""` (that `\n` and the
+    // margin are dropped).  With no interior newline the value is empty.
+    let content_end = last_newline.map_or(body_start, |nl| body_start + nl);
+
+    // ── Step 4: emit text runs + holes, stripping the margin per line ────────
+    let mut text_buf = String::new();
+    let mut text_start = body_start;
+    let mut i = body_start;
+    let mut at_line_start = true;
+
+    while i < content_end {
+        if at_line_start {
+            let line_begin = i;
+            let mut stripped = 0usize;
+            while stripped < margin_len && i < content_end && bytes[i] == b' ' {
+                i += 1;
+                stripped += 1;
+            }
+            at_line_start = false;
+            // A line with less indentation than the margin is an error unless it
+            // is blank (the next byte closes the line).
+            if stripped < margin_len && i < content_end && bytes[i] != b'\n' {
+                #[allow(clippy::cast_possible_truncation)]
+                errors.push(LexError::MultilineStringInsufficientIndent {
+                    span: Span::point(line_begin as u32),
+                });
+            }
+            continue;
+        }
+
+        match bytes[i] {
+            b'$' if i + 1 < content_end && bytes[i + 1] == b'{' => {
+                // Flush the pending text run.
+                if !text_buf.is_empty() {
+                    #[allow(clippy::cast_possible_truncation)]
+                    tokens.push((
+                        RawToken::InterpText(text_buf.clone()),
+                        Span::new(text_start as u32, i as u32),
+                    ));
+                    text_buf.clear();
+                }
+                #[allow(clippy::cast_possible_truncation)]
+                let expr_start_span = Span::new(i as u32, (i + 2) as u32);
+                tokens.push((RawToken::InterpExprStart, expr_start_span));
+                i += 2;
+
+                // Find the matching `}` by brace depth, skipping nested plain
+                // strings so a `}` inside `"..."` is not the closer.
+                let content_start = i;
+                let mut depth = 1u32;
+                while i < content_end && depth > 0 {
+                    match bytes[i] {
+                        b'{' => {
+                            depth += 1;
+                            i += 1;
+                        }
+                        b'}' => {
+                            depth -= 1;
+                            i += 1;
+                        }
+                        b'"' => {
+                            i += 1; // opening `"`
+                            while i < content_end && bytes[i] != b'"' && bytes[i] != b'\n' {
+                                if bytes[i] == b'\\' {
+                                    i += 1;
+                                }
+                                if i < content_end {
+                                    i += 1;
+                                }
+                            }
+                            if i < content_end && bytes[i] == b'"' {
+                                i += 1; // closing `"`
+                            }
+                        }
+                        _ => {
+                            i += 1;
+                        }
+                    }
+                }
+
+                if depth > 0 {
+                    errors.push(LexError::UnterminatedInterpolation {
+                        open_span: Span::point(open_start),
+                    });
+                    // `i` is at content_end; treat that as the hole boundary.
+                    let (hole_tokens, hole_errors) = scan_hole_expr(src, content_start, i);
+                    tokens.extend(hole_tokens);
+                    errors.extend(hole_errors);
+                    text_start = i;
+                    continue;
+                }
+
+                // `i` points one byte past the closing `}`.
+                let hole_end = i - 1;
+                #[allow(clippy::cast_possible_truncation)]
+                let expr_end_span = Span::new((i - 1) as u32, i as u32);
+                let (hole_tokens, hole_errors) = scan_hole_expr(src, content_start, hole_end);
+                tokens.extend(hole_tokens);
+                errors.extend(hole_errors);
+                tokens.push((RawToken::Token(Token::InterpExprEnd), expr_end_span));
+                text_start = i;
+            }
+            b'\\' if i + 1 < content_end => {
+                // Preserve the escape verbatim; decoding happens downstream.
+                text_buf.push(bytes[i] as char);
+                text_buf.push(bytes[i + 1] as char);
+                i += 2;
+            }
+            b'\n' => {
+                text_buf.push('\n');
+                i += 1;
+                at_line_start = true;
+            }
+            _ => {
+                // Emit one full UTF-8 scalar so multi-byte content round-trips.
+                if let Some(ch) = src[i..].chars().next() {
+                    text_buf.push(ch);
+                    i += ch.len_utf8();
+                } else {
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    if !text_buf.is_empty() {
+        #[allow(clippy::cast_possible_truncation)]
+        tokens.push((
+            RawToken::InterpText(text_buf.clone()),
+            Span::new(text_start as u32, content_end as u32),
+        ));
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    tokens.push((
+        RawToken::Token(Token::InterpEnd),
+        Span::new(close_pos as u32, (close_pos + 3) as u32),
+    ));
+
+    (tokens, errors, consumed)
+}
+
+/// Find the closing `"""` of an interpolated multi-line string, starting at
+/// `start` (the first content byte).  `${…}` holes are stepped over so a `"""`
+/// inside a hole expression is not treated as the closer.  Returns the byte
+/// offset of the first `"` of the closing `"""`, or `None` at EOF.
+fn find_triple_interp_close(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut i = start;
+    while i < bytes.len() {
+        // Step over a `${…}` hole.
+        if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+            i += 2;
+            let mut depth = 1u32;
+            while i < bytes.len() && depth > 0 {
+                match bytes[i] {
+                    b'{' => {
+                        depth += 1;
+                        i += 1;
+                    }
+                    b'}' => {
+                        depth -= 1;
+                        i += 1;
+                    }
+                    b'"' => {
+                        i += 1;
+                        while i < bytes.len() && bytes[i] != b'"' && bytes[i] != b'\n' {
+                            if bytes[i] == b'\\' {
+                                i += 1;
+                            }
+                            if i < bytes.len() {
+                                i += 1;
+                            }
+                        }
+                        if i < bytes.len() && bytes[i] == b'"' {
+                            i += 1;
+                        }
+                    }
+                    _ => i += 1,
+                }
+            }
+            continue;
+        }
+        // Skip an escape pair so `\"` never starts a false close.
+        if bytes[i] == b'\\' {
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'"' && i + 2 < bytes.len() && bytes[i + 1] == b'"' && bytes[i + 2] == b'"' {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
 }

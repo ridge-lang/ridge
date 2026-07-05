@@ -133,6 +133,209 @@ fn triple_quote_unterminated_is_error() {
     );
 }
 
+// ── Interpolated multi-line strings (`$"""..."""`) ───────────────────────────
+
+/// The interpolation-relevant tokens for `src`, dropping layout/trivia so the
+/// interp stream can be asserted directly.
+fn interp_kinds(src: &str) -> Vec<Token> {
+    let out = tokenize(src);
+    assert!(
+        out.errors.is_empty(),
+        "unexpected lexer errors for {src:?}:\n{:#?}",
+        out.errors
+    );
+    out.tokens
+        .into_iter()
+        .map(|(t, _)| t)
+        .filter(|t| {
+            !matches!(
+                t,
+                Token::Newline | Token::Indent | Token::Dedent | Token::Eof
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn mlinterp_basic_hole_and_dedent() {
+    // Margin is the 2-space indent of the closing `"""`; it is stripped from the
+    // interior line, and the `${x}` hole becomes an expr-start/ident/expr-end run.
+    let src = "$\"\"\"\n  hello ${x} world\n  \"\"\"";
+    let kinds = interp_kinds(src);
+    assert_eq!(
+        kinds,
+        vec![
+            Token::InterpStart,
+            Token::InterpText("hello ".to_string()),
+            Token::InterpExprStart,
+            Token::LowerIdent("x".to_string()),
+            Token::InterpExprEnd,
+            Token::InterpText(" world".to_string()),
+            Token::InterpEnd,
+        ],
+        "unexpected interp stream for {src:?}"
+    );
+}
+
+#[test]
+fn mlinterp_spans_multiple_lines() {
+    // Two interior lines with a hole on the second; the newline between them is
+    // preserved in the text payload, margins stripped from both.
+    let src = "$\"\"\"\n  line1\n  line2 ${n}\n  \"\"\"";
+    let kinds = interp_kinds(src);
+    assert_eq!(
+        kinds,
+        vec![
+            Token::InterpStart,
+            Token::InterpText("line1\nline2 ".to_string()),
+            Token::InterpExprStart,
+            Token::LowerIdent("n".to_string()),
+            Token::InterpExprEnd,
+            Token::InterpEnd,
+        ],
+    );
+}
+
+#[test]
+fn mlinterp_multiple_holes() {
+    let src = "$\"\"\"\n  ${a} and ${b}\n  \"\"\"";
+    let kinds = interp_kinds(src);
+    assert_eq!(
+        kinds,
+        vec![
+            Token::InterpStart,
+            Token::InterpExprStart,
+            Token::LowerIdent("a".to_string()),
+            Token::InterpExprEnd,
+            Token::InterpText(" and ".to_string()),
+            Token::InterpExprStart,
+            Token::LowerIdent("b".to_string()),
+            Token::InterpExprEnd,
+            Token::InterpEnd,
+        ],
+    );
+}
+
+#[test]
+fn mlinterp_no_holes_is_plain_multiline_text() {
+    let src = "$\"\"\"\n  just text\n  \"\"\"";
+    let kinds = interp_kinds(src);
+    assert_eq!(
+        kinds,
+        vec![
+            Token::InterpStart,
+            Token::InterpText("just text".to_string()),
+            Token::InterpEnd,
+        ],
+    );
+}
+
+#[test]
+fn mlinterp_empty_body() {
+    let src = "$\"\"\"\n\"\"\"";
+    let kinds = interp_kinds(src);
+    assert_eq!(kinds, vec![Token::InterpStart, Token::InterpEnd]);
+}
+
+#[test]
+fn mlinterp_blank_interior_line_preserved() {
+    let src = "$\"\"\"\n  a\n\n  b\n  \"\"\"";
+    let kinds = interp_kinds(src);
+    assert_eq!(
+        kinds,
+        vec![
+            Token::InterpStart,
+            Token::InterpText("a\n\nb".to_string()),
+            Token::InterpEnd,
+        ],
+    );
+}
+
+#[test]
+fn mlinterp_hole_with_nested_string_and_braces() {
+    // Close detection must step over a `${…}` hole containing a nested plain
+    // string and a record brace: the inner `}` of the record does not close the
+    // hole, and nothing inside it closes the string.  Exactly one InterpEnd.
+    let src = "$\"\"\"\n  ${fmt \"x\" { a = 1 }} end\n  \"\"\"";
+    let out = tokenize(src);
+    assert!(
+        out.errors.is_empty(),
+        "a hole with nested braces/strings should not error: {:#?}",
+        out.errors
+    );
+    let kinds: Vec<_> = out.tokens.iter().map(|(t, _)| t).collect();
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|t| matches!(t, Token::InterpEnd))
+            .count(),
+        1,
+        "exactly one closing InterpEnd expected; got: {kinds:#?}"
+    );
+}
+
+#[test]
+fn mlinterp_content_on_open_line_is_error() {
+    let src = "$\"\"\"oops\n\"\"\"";
+    let out = tokenize(src);
+    assert!(
+        out.errors
+            .iter()
+            .any(|e| matches!(e, LexError::MultilineStringOpenContent { .. })),
+        "expected MultilineStringOpenContent; errors: {:#?}",
+        out.errors
+    );
+}
+
+#[test]
+fn mlinterp_unterminated_is_error() {
+    let src = "$\"\"\"\nhello ${x}";
+    let out = tokenize(src);
+    assert!(
+        out.errors.iter().any(|e| matches!(
+            e,
+            LexError::UnterminatedMultilineString {
+                kind: "interpolated",
+                ..
+            }
+        )),
+        "expected UnterminatedMultilineString (interpolated); errors: {:#?}",
+        out.errors
+    );
+}
+
+#[test]
+fn mlinterp_insufficient_indent_is_error() {
+    // Interior line `x` has zero indent, below the 2-space margin.
+    let src = "$\"\"\"\nx\n  \"\"\"";
+    let out = tokenize(src);
+    assert!(
+        out.errors
+            .iter()
+            .any(|e| matches!(e, LexError::MultilineStringInsufficientIndent { .. })),
+        "expected MultilineStringInsufficientIndent; errors: {:#?}",
+        out.errors
+    );
+}
+
+#[test]
+fn single_line_interp_still_works() {
+    // The `$"..."` form is unaffected by the new `$"""` opener.
+    let src = "$\"hi ${x}\"";
+    let kinds = interp_kinds(src);
+    assert_eq!(
+        kinds,
+        vec![
+            Token::InterpStart,
+            Token::InterpText("hi ".to_string()),
+            Token::InterpExprStart,
+            Token::LowerIdent("x".to_string()),
+            Token::InterpExprEnd,
+            Token::InterpEnd,
+        ],
+    );
+}
+
 // ── Raw strings ───────────────────────────────────────────────────────────────
 
 #[test]

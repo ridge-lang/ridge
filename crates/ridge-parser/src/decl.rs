@@ -922,45 +922,103 @@ pub(crate) fn parse_type_decl(
     })
 }
 
-/// Consume the `Indent` that opens a layout-continuation block when its first
-/// real token satisfies `is_head`, so a trailing clause the author put on a
-/// more-indented following line is still seen by the parser.
-///
-/// A form like
-///
-/// ```text
-/// type Color = Red | Green | Blue
-///     deriving (Eq, Show)
-/// ```
-///
-/// lexes to `… Blue Indent deriving ( … ) Dedent`; the `deriving` keyword hides
-/// behind the `Indent`, so a bare `peek() == KwDeriving` check misses it and the
-/// clause is silently dropped. Calling this first advances the cursor past the
-/// `Indent` (returning `true`) so the existing inline check fires. The caller is
-/// then responsible for consuming the matching `Dedent` once the continuation is
-/// parsed — for `deriving` that is right after the clause, for a `where` clause
-/// it is after the function body, since the whole `where … = body` shares one
-/// indented block.
-///
-/// Returns `false` and consumes nothing when there is no such continuation
-/// (the inline case), so callers keep their existing behaviour unchanged.
-fn enter_layout_continuation(cur: &mut Cursor<'_>, is_head: impl Fn(&Token) -> bool) -> bool {
-    let head_offset = if cur.peek() == &Token::Indent {
-        1
-    } else if cur.peek() == &Token::Newline && cur.peek_n(1) == Some(&Token::Indent) {
-        2
-    } else {
-        return false;
-    };
-    match cur.peek_n(head_offset) {
-        Some(tok) if is_head(tok) => {
-            for _ in 0..head_offset {
-                cur.bump();
-            }
-            true
-        }
-        _ => false,
+/// Consume layout `Indent` tokens that continue a declaration's signature onto
+/// more-indented following lines, counting them so the matching `Dedent`s can be
+/// drained once the body is parsed. In valid source a bare `Indent` in signature
+/// position (between params, or before `->` / `where` / `=`) can only be such a
+/// continuation, so consuming it is safe.
+fn skip_continuation_indents(cur: &mut Cursor<'_>, open: &mut u32) {
+    while cur.peek() == &Token::Indent {
+        cur.bump();
+        *open += 1;
     }
+}
+
+/// The parsed tail of a function declaration, shared by the plain and
+/// attribute-carrying fn parsers.
+struct FnSignatureTail {
+    params: Vec<Param>,
+    ret: Option<ridge_ast::Type>,
+    constraints: Vec<ClassConstraint>,
+    body: Expr,
+}
+
+/// Parse the shared tail of a function declaration: parameters, an optional
+/// return type, an optional `where` clause, `=`, and the body. Used by both the
+/// plain and the attribute-carrying fn parsers so the two never drift.
+///
+/// The signature may wrap onto more-indented following lines — between
+/// parameters, or before `->` / `where` / `=` — which the lexer marks with a
+/// layout `Indent`. Those continuation indents are stepped over and the matching
+/// `Dedent`s drained after the body, so `fn add (x: Int)` ⏎ `    (y: Int) -> …`
+/// parses like the single-line form.
+fn parse_fn_signature_tail(cur: &mut Cursor<'_>) -> Result<FnSignatureTail, ParseError> {
+    let mut sig_blocks: u32 = 0;
+
+    // Parameters: zero or more Params. `()` is the zero-param marker.
+    let mut params: Vec<Param> = Vec::new();
+    skip_continuation_indents(cur, &mut sig_blocks);
+    if cur.peek() == &Token::LParen && cur.peek_n(1) == Some(&Token::RParen) {
+        cur.bump(); // consume `(`
+        cur.bump(); // consume `)`
+    } else {
+        loop {
+            skip_continuation_indents(cur, &mut sig_blocks);
+            if !can_start_param(cur) {
+                break;
+            }
+            params.push(parse_param_top(cur)?);
+        }
+    }
+
+    // Optional return type `-> Type`.
+    skip_continuation_indents(cur, &mut sig_blocks);
+    let ret = if cur.peek() == &Token::Arrow {
+        cur.bump(); // consume `->`
+        Some(parse_type(cur)?)
+    } else {
+        None
+    };
+
+    // Optional `where ClassConstraint { "," ClassConstraint }` clause.
+    skip_continuation_indents(cur, &mut sig_blocks);
+    let constraints = if cur.peek() == &Token::KwWhere {
+        parse_where_clause(cur)?
+    } else {
+        vec![]
+    };
+
+    // `=` then body (inline or INDENT-delimited block).
+    skip_continuation_indents(cur, &mut sig_blocks);
+    cur.expect(&Token::Assign)?;
+
+    // Where the wrapped signature's closing `Dedent`s fall depends on how the
+    // body is indented relative to the wrapped lines: a body shallower than the
+    // params dedents out before it, and a body on its own line inside the same
+    // block follows a layout `Newline`. Rebalance around `=` so all shapes reach
+    // `parse_branch_body` looking like the single-line form.
+    let wrapped = sig_blocks > 0;
+    while sig_blocks > 0 && cur.peek() == &Token::Dedent {
+        cur.bump();
+        sig_blocks -= 1;
+    }
+    if wrapped && cur.peek() == &Token::Newline {
+        cur.bump();
+    }
+
+    let expr = parse_branch_body(cur)?;
+
+    // Close the layout blocks the wrapped signature opened but did not already.
+    for _ in 0..sig_blocks {
+        cur.expect(&Token::Dedent)?;
+    }
+
+    Ok(FnSignatureTail {
+        params,
+        ret,
+        constraints,
+        body: expr,
+    })
 }
 
 /// Parse a type body: record `{ … }`, union `| A | B`, or alias `Type`.
@@ -1324,46 +1382,13 @@ pub(crate) fn parse_fn_decl(
         }
     };
 
-    // Parameters: zero or more Params.
-    // `()` is the zero-param marker; consume it and leave params empty.
-    let mut params: Vec<Param> = Vec::new();
-    if cur.peek() == &Token::LParen && cur.peek_n(1) == Some(&Token::RParen) {
-        cur.bump(); // consume `(`
-        cur.bump(); // consume `)`
-    } else {
-        while can_start_param(cur) {
-            params.push(parse_param_top(cur)?);
-        }
-    }
-
-    // Optional return type `-> Type`.
-    let ret = if cur.peek() == &Token::Arrow {
-        cur.bump(); // consume `->`
-        Some(parse_type(cur)?)
-    } else {
-        None
-    };
-
-    // Optional `where ClassConstraint { "," ClassConstraint }` clause. A `where`
-    // that wraps onto a more-indented following line opens one layout block for
-    // the whole `where … = body`, so the matching `Dedent` comes after the body,
-    // not after the clause.
-    let where_indented = enter_layout_continuation(cur, |t| t == &Token::KwWhere);
-    let constraints = if cur.peek() == &Token::KwWhere {
-        parse_where_clause(cur)?
-    } else {
-        vec![]
-    };
-
-    // `=` then body (inline or INDENT-delimited block).
-    cur.expect(&Token::Assign)?;
-
-    let expr = parse_branch_body(cur)?;
-    let end_span = expr.span();
-
-    if where_indented {
-        cur.expect(&Token::Dedent)?;
-    }
+    let FnSignatureTail {
+        params,
+        ret,
+        constraints,
+        body,
+    } = parse_fn_signature_tail(cur)?;
+    let end_span = body.span();
 
     Ok(FnDecl {
         attrs: vec![],
@@ -1373,7 +1398,7 @@ pub(crate) fn parse_fn_decl(
         params,
         ret,
         constraints,
-        body: Body::Expr(expr),
+        body: Body::Expr(body),
         span: start.merge(end_span),
         doc,
     })
@@ -1412,34 +1437,13 @@ fn parse_fn_decl_with_attrs(
         }
     };
 
-    let mut params: Vec<Param> = Vec::new();
-    if cur.peek() == &Token::LParen && cur.peek_n(1) == Some(&Token::RParen) {
-        cur.bump();
-        cur.bump();
-    } else {
-        while can_start_param(cur) {
-            params.push(parse_param_top(cur)?);
-        }
-    }
-
-    let ret = if cur.peek() == &Token::Arrow {
-        cur.bump();
-        Some(parse_type(cur)?)
-    } else {
-        None
-    };
-
-    // Optional `where` clause (same as plain parse_fn_decl).
-    let constraints = if cur.peek() == &Token::KwWhere {
-        parse_where_clause(cur)?
-    } else {
-        vec![]
-    };
-
-    cur.expect(&Token::Assign)?;
-
-    let expr = parse_branch_body(cur)?;
-    let end_span = expr.span();
+    let FnSignatureTail {
+        params,
+        ret,
+        constraints,
+        body,
+    } = parse_fn_signature_tail(cur)?;
+    let end_span = body.span();
 
     Ok(FnDecl {
         attrs,
@@ -1449,7 +1453,7 @@ fn parse_fn_decl_with_attrs(
         params,
         ret,
         constraints,
-        body: Body::Expr(expr),
+        body: Body::Expr(body),
         span: start.merge(end_span),
         doc,
     })
@@ -3252,6 +3256,50 @@ mod tests {
         let src = "fn show2 (x: a) -> Text where Show a =\n    Show.show x\n";
         let f = parse_fn(src).expect("should parse");
         assert_eq!(f.constraints.len(), 1);
+    }
+
+    #[test]
+    fn parse_fn_multiline_params() {
+        // Parameters wrapping onto a more-indented following line open a layout
+        // block that wraps the rest of the signature and body; the parser used to
+        // hit "<INDENT>" where it expected `=`.
+        let src = "fn add (x: Int)\n       (y: Int) -> Int = x + y\n";
+        let f = parse_fn(src).expect("should parse");
+        assert_eq!(f.name.text, "add");
+        assert_eq!(f.params.len(), 2);
+        assert!(f.ret.is_some());
+    }
+
+    #[test]
+    fn parse_fn_multiline_params_body_on_own_line() {
+        // Params aligned under the first param with the body on its own line at a
+        // shallower indent — the natural wrapped style. The signature's closing
+        // Dedent falls before the body, which the rebalance around `=` handles.
+        let src = "fn add (x: Int)\n       (y: Int) -> Int =\n    x + y\n";
+        let f = parse_fn(src).expect("should parse");
+        assert_eq!(f.params.len(), 2);
+    }
+
+    #[test]
+    fn parse_fn_hanging_params_and_body_same_indent() {
+        // Fully hanging layout: name on its own line, params and body all at the
+        // same continuation indent, the body separated from `=` by a Newline.
+        let src = "fn add\n    (x: Int)\n    (y: Int) -> Int =\n    x + y\n";
+        let f = parse_fn(src).expect("should parse");
+        assert_eq!(f.params.len(), 2);
+    }
+
+    #[test]
+    fn parse_fn_multiline_params_with_attrs_shares_logic() {
+        // The attribute-carrying fn parser goes through the same signature tail,
+        // so it accepts the wrapped form too.
+        let src = "@test \"adds\"\nfn add (x: Int)\n       (y: Int) -> Int = x + y\n";
+        let result = crate::parse_source(src);
+        assert!(
+            result.errors.is_empty(),
+            "expected clean parse, got {:?}",
+            result.errors
+        );
     }
 
     // ─────────────────────────────────────────────────────────────────────────

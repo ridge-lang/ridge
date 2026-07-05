@@ -55,6 +55,13 @@ pub(crate) fn parse_if(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
 
     let cond = parse_expr_pratt(cur)?;
 
+    // `then` may sit on the next line at the same indent as `if`, separated from
+    // the condition by a layout Newline. Skip it, but only when `then` actually
+    // follows so no other separator is disturbed.
+    if cur.peek() == &Token::Newline && cur.peek_n(1) == Some(&Token::KwThen) {
+        cur.bump();
+    }
+
     cur.expect(&Token::KwThen)?;
 
     let then_branch = parse_branch_body(cur)?;
@@ -1083,6 +1090,25 @@ mod tests {
     #[test]
     fn parse_if_newline_before_else_still_binds() {
         let src = "if x then 1\nelse 2";
+        let e = ok(src);
+        assert!(
+            matches!(
+                e,
+                Expr::If {
+                    else_branch: Some(_),
+                    ..
+                }
+            ),
+            "expected If with else branch, got {e:?}"
+        );
+    }
+
+    #[test]
+    fn parse_if_then_on_next_line() {
+        // `then` wrapped onto the next line at the same indent as `if`, separated
+        // from the condition by a layout Newline — used to fail with
+        // "expected then, found <NEWLINE>".
+        let src = "if x\nthen 1\nelse 2";
         let e = ok(src);
         assert!(
             matches!(

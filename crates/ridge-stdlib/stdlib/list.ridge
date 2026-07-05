@@ -117,8 +117,21 @@ fn _gbGet (k: b) (m: Map b (List a)) -> List a
 @ffi("maps", "put", 3)
 fn _gbPut (k: b) (v: List a) (m: Map b (List a)) -> Map b (List a)
 
+-- Prepend `x` onto the bucket for its key, creating the bucket on first sight.
+fn _gbInsert (key: fn a -> b) (x: a) (m: Map b (List a)) -> Map b (List a) =
+    let k = key x
+    if _gbIsKey k m then _gbPut k (x :: _gbGet k m) m
+    else _gbPut k [x] m
+
+-- Tail-recursive accumulation.  `groupBy` reverses the input first, so
+-- prepending each element restores the original order within every bucket.
+fn _gbAccum (key: fn a -> b) (xs: List a) (acc: Map b (List a)) -> Map b (List a) =
+    match xs
+        []        -> acc
+        x :: rest -> _gbAccum key rest (_gbInsert key x acc)
+
 pub fn groupBy (key: fn a -> b) (xs: List a) -> Map b (List a) =
-    _gbMapNew ()
+    _gbAccum key (reverse xs) (_gbMapNew ())
 
 -- Apply a function that returns a list and flatten the results.
 @ffi("lists", "flatmap", 2)

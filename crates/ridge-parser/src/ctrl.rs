@@ -59,12 +59,15 @@ pub(crate) fn parse_if(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
 
     let then_branch = parse_branch_body(cur)?;
 
-    // Skip a Newline between the then-branch and the optional `else`.
-    // This occurs in multi-line form:
-    //   if x then
-    //       1      ← DEDENT lands here, then NEWLINE before `else`
-    //   else
-    if cur.peek() == &Token::Newline {
+    // Skip a Newline between the then-branch and an `else`, but ONLY when an
+    // `else` actually follows.  This occurs when the then-branch is single-line
+    // and `else` is on the next line:
+    //   if x then 1
+    //   else 2
+    // In the else-less form the Newline is the statement separator the enclosing
+    // block relies on, so it must be left in place — consuming it unconditionally
+    // fused an else-less `if` with the statement that followed it.
+    if cur.peek() == &Token::Newline && cur.peek_n(1) == Some(&Token::KwElse) {
         cur.bump();
     }
 
@@ -1020,6 +1023,77 @@ mod tests {
         } else {
             panic!("expected If, got {e:?}");
         }
+    }
+
+    // ── parse_if_no_else_preserves_statement_separator ──────────────────
+    //
+    // Regression: an else-less `if` must not swallow the NEWLINE that
+    // separates it from the next statement in the enclosing block.  The
+    // then-branch parser previously consumed a trailing NEWLINE
+    // unconditionally while probing for `else`, so this source:
+    //   if outer then
+    //       if inner then a   ← else-less
+    //       b                 ← sibling statement
+    // collapsed the inner `if` and `b` into a single statement.
+
+    #[test]
+    fn parse_if_no_else_preserves_statement_separator() {
+        let src = "if outer then\n    if inner then a\n    b";
+        let e = ok(src);
+        if let Expr::If { then_branch, .. } = e {
+            if let Expr::Block(Block { stmts, .. }) = *then_branch {
+                assert_eq!(
+                    stmts.len(),
+                    2,
+                    "expected inner-if + b as two stmts, got {}: {stmts:?}",
+                    stmts.len()
+                );
+                assert!(
+                    matches!(
+                        &stmts[0],
+                        Expr::If {
+                            else_branch: None,
+                            ..
+                        }
+                    ),
+                    "expected first stmt to be else-less If, got {:?}",
+                    stmts[0]
+                );
+                assert!(
+                    matches!(&stmts[1], Expr::Ident(id) if id.text == "b"),
+                    "expected second stmt to be Ident(b), got {:?}",
+                    stmts[1]
+                );
+            } else {
+                panic!("expected Expr::Block as then_branch, got {then_branch:?}");
+            }
+        } else {
+            panic!("expected If, got {e:?}");
+        }
+    }
+
+    // ── parse_if_newline_before_else_still_binds ────────────────────────
+    //
+    // Companion to the regression above: when the then-branch is single-line
+    // and `else` sits on the next line, the NEWLINE before `else` must still
+    // be consumed so the `else` binds to this `if`.
+    //   if x then 1
+    //   else 2
+
+    #[test]
+    fn parse_if_newline_before_else_still_binds() {
+        let src = "if x then 1\nelse 2";
+        let e = ok(src);
+        assert!(
+            matches!(
+                e,
+                Expr::If {
+                    else_branch: Some(_),
+                    ..
+                }
+            ),
+            "expected If with else branch, got {e:?}"
+        );
     }
 
     // ── parse_match_two_arms ────────────────────────────────────────────

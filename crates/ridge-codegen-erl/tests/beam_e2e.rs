@@ -12,12 +12,17 @@
 //!
 //! `DoD`: all four tests green ↔ spec §11.3 `DoD` satisfied.
 //!
-//! Pre-existing failures (unchanged from baseline):
-//! - `log_analyzer` — CLI args flow via `plain_args` (-extra flag) works
-//!   but stdout mismatch persists (encoding issue).
-//! - `url_shortener` — `std.map` BEAM module not on code path.
-//! - `game_of_life` — `std.list` BEAM module not on code path.
-//! - `rate_limiter` — passes (1/4 baseline unchanged).
+//! Example status:
+//! - `log_analyzer`, `game_of_life`, `rate_limiter` — compile and run end to
+//!   end; stdout matches the curated `tests/expected/<name>.txt`.
+//! - `url_shortener` — `#[ignore]`d: `Http.listen` enters an accept loop that
+//!   never returns under a healthy server, so `main` cannot complete inside the
+//!   batch-mode harness. See the test's own note for the deferred follow-up.
+//!
+//! Alongside the four examples this file carries focused regression tests that
+//! pin individual codegen/parse fixes end to end (destructuring lambda params,
+//! `List.groupBy`, else-less `if` as a statement, actor cross-module calls,
+//! bounded mailboxes, and more).
 
 #![cfg(feature = "beam-runtime")]
 #![allow(
@@ -349,43 +354,18 @@ fn beam_e2e_game_of_life() {
     let _ = run_example_e2e("game_of_life", &[]);
 }
 
-/// `rate_limiter` — erlc rejects emitted Core Erlang in all actor modules.
+/// `rate_limiter` — a three-actor program (a token-bucket limiter, a stats
+/// collector, and worker drivers) that exercises multi-actor codegen end to
+/// end: `spawn`, message sends, `state` field reads and writes, and cross-actor
+/// calls all run on the BEAM.
 ///
-/// erlc subprocess stderr (verbatim):
-///   ridge_module_0: illegal expression in main/0 (×1)
-///   ridge_module_0_limiter: unbound variable 'V_Capacity', 'V_LastRefill',
-///     'V_RefillRate', 'V_State2', 'V_State4', 'V_Tokens' in handle_call/3, handle_cast/2
-///   ridge_module_0_collector: illegal expression in handle_call/3, handle_cast/2 (×8)
-///   ridge_module_0_collector: unbound variable 'V_Received', 'V_State3',
-///     'V_TotalAllowed', 'V_TotalDenied' in handle_call/3, handle_cast/2
-///   ridge_module_0_worker: unbound variable 'V_Collector', 'V_Limiter',
-///     'V_SendRequests', 'V_State3' in handle_call/3, handle_cast/2
-///
-/// Root cause analysis:
-/// - "illegal expression in main/0": `apply ~{}~ ('ok')` — Ok() constructor codegen bug.
-/// - "illegal expression in collector handle_call/3, handle_cast/2": same Ok() bug
-///   inside actor handler bodies.
-/// - "unbound V_Capacity, V_Tokens, V_LastRefill, V_RefillRate in handlers":
-///   state-field reads emitted as bare variable references instead of
-///   `call 'maps':'get'('field', V_State)`.
-/// - "unbound V_State2, V_State4 in handlers": SSA state vars scoped incorrectly
-///   — state-thread index mismatch.
-/// - Unbound V_Cap, V_Rate, V_Col, V_Id, V_L in init/1: RESOLVED — init body
-///   now wrapped in `case V_Args of [P1|[P2|[]]] -> end`.
-/// - Undefined function requestsPerWorker/0 in handle_call/3: RESOLVED — codegen
-///   now emits `call 'ridge_module_0':'requestsPerWorker' ()` for parent-module
-///   const refs in actor handlers.
-///
-/// **Remaining errors** (Ok/Err ctor in actor handlers, state-field reads,
-/// SSA state-thread index mismatch, tuple-param lambda destructure in
-/// collectors/workers) are in IR/lowering (`ridge-lower`) — out of scope here.
-/// These involve frozen-crate semantics and would require a plan-level decision
-/// before any source change to `ridge-codegen-erl` or `ridge-lower`.
-///
-/// **What is deferred:** Full e2e BEAM execution of `rate_limiter.ridge`.
-/// **Why:** Multi-actor codegen requires IR/lowering fixes in `ridge-lower`.
-/// **Where the follow-up lives:** `rate_limiter` codegen is a backlog item
-/// unless a future change explicitly reopens it.
+/// Getting here meant clearing a cluster of multi-actor codegen bugs: Ok/Err
+/// constructor emission inside actor handlers, `state` field reads emitted as
+/// bare variables instead of `maps:get`, and SSA state-thread index mismatches
+/// that left handler-local vars unbound. Those are resolved; the program now
+/// compiles and its stdout matches `tests/expected/rate_limiter.txt` — the
+/// assertion (beam produced, exit 0, stdout equals expected) lives in
+/// `run_example_e2e`.
 #[test]
 fn beam_e2e_rate_limiter() {
     let _ = run_example_e2e("rate_limiter", &[]);
@@ -576,6 +556,302 @@ fn beam_e2e_hof_over_self_recursive_fn() {
     assert!(
         stdout.contains("countdown=4 ok=4 tree=10"),
         "expected 'countdown=4 ok=4 tree=10' in stdout, got:\n{stdout}"
+    );
+}
+
+// ── Destructuring lambda params ──────────────────────────────────────────────
+//
+// A lambda param that is not a plain variable binds its variables during
+// type-checking but used to lose them at lowering: a constructor pattern
+// (`fn (Some n) -> ...`) dropped the binding entirely, and a nested tuple
+// (`fn ((p, q), r) -> ...`) degraded its inner elements to wildcards. Both
+// produced Core Erlang the backend rejected with `unbound variable`, even
+// though `ridge check` reported success. This pins the end-to-end behaviour of
+// the generalised destructuring-param lowering route.
+
+const LAMBDA_DESTRUCTURING_PARAMS_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+import std.list as List
+
+fn io main () -> Result Unit Text =
+    -- Constructor-pattern param: `n` was bound in the checker but dropped at
+    -- lowering, so erlc rejected the body with `unbound variable 'V_N'`.
+    let inc = fn (Some n) -> n + 1
+    let a = inc (Some 41)
+    -- Nested tuple param: the inner `p`/`q` used to degrade to wildcards, so
+    -- only the outer arity survived.
+    let sum3 = fn ((p, q), r) -> p + q + r
+    let b = sum3 ((10, 20), 30)
+    -- Tuple param through a stdlib HOF (the historically working path) — now
+    -- shares the same lowering route, so it must keep working.
+    let sums = List.map (fn (k, v) -> k + v) [(1, 2), (3, 4)]
+    let c = List.fold (fn acc x -> acc + x) 0 sums
+    Io.println $"a=${Int.toText a} b=${Int.toText b} c=${Int.toText c}"
+    Ok ()
+"#;
+
+/// Regression: destructuring lambda params must bind their variables end to
+/// end.  Before the fix a constructor-pattern or nested-tuple param passed
+/// `ridge check` but the backend rejected the lowered body with `unbound
+/// variable`.  Compiles + runs the program and checks the computed output.
+#[test]
+fn beam_e2e_lambda_destructuring_params() {
+    let (workspace_root, _td) =
+        make_example_workspace("Destructure", LAMBDA_DESTRUCTURING_PARAMS_SOURCE);
+    let opts = CompileOptions::new(workspace_root);
+    let artefacts = compile_workspace(opts)
+        .expect("compile_workspace failed for lambda-destructuring regression");
+
+    assert!(
+        !artefacts.beam_files.is_empty(),
+        "no .beam files produced\ndiagnostics: {:#?}",
+        artefacts.diagnostics
+    );
+
+    let beam_file = &artefacts.beam_files[0];
+    let beam_dir = beam_file.parent().expect("beam file has parent").to_owned();
+    let module_name = beam_file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .expect("beam stem is UTF-8")
+        .to_owned();
+
+    let (stdout, stderr, exit_code) = run_erl(&beam_dir, &module_name, &[]);
+    assert_eq!(
+        exit_code, 0,
+        "erl exited {exit_code}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    // inc (Some 41) = 42; sum3 ((10,20),30) = 60; map+fold of (k+v) over
+    // [(1,2),(3,4)] = 3 + 7 = 10.
+    assert!(
+        stdout.contains("a=42 b=60 c=10"),
+        "expected 'a=42 b=60 c=10' in stdout, got:\n{stdout}"
+    );
+}
+
+// ── std.list::groupBy regression ──────────────────────────────────────────────
+//
+// `List.groupBy` used to be a dead stub returning an empty map, so any program
+// that grouped a list silently lost every element. The real implementation
+// folds each element into its key's bucket and must preserve the input order
+// within a bucket. The signature `List.fold (\acc x -> acc*10 + x) 0` encodes
+// both membership and order in a single integer: bucket [1,2,3] -> 123, and a
+// reversed bucket (the classic left-fold-prepend mistake) would show 321.
+
+const GROUP_BY_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+import std.list as List
+import std.map as Map
+
+-- Order-sensitive fold: [1,2,3] -> 123, [4,5,6] -> 456. A reversed bucket
+-- would surface as 321 / 654, so this pins ordering as well as membership.
+fn sigOf (k: Int) (m: Map Int (List Int)) -> Int =
+    match Map.get k m
+        Some g -> List.fold (fn acc x -> acc * 10 + x) 0 g
+        None   -> 0 - 1
+
+fn io main () -> Result Unit Text =
+    let groups = List.groupBy (fn x -> if x > 3 then 1 else 0) [1, 2, 3, 4, 5, 6]
+    Io.println $"n=${Int.toText (Map.size groups)} lo=${Int.toText (sigOf 0 groups)} hi=${Int.toText (sigOf 1 groups)}"
+    Ok ()
+"#;
+
+/// Regression: `List.groupBy` partitions a list by key into a `Map key
+/// (List elem)`, preserving encounter order inside each bucket. Before the fix
+/// it was a stub returning an empty map, so grouping dropped every element.
+#[test]
+fn beam_e2e_list_group_by() {
+    let (workspace_root, _td) = make_example_workspace("GroupBy", GROUP_BY_SOURCE);
+    let opts = CompileOptions::new(workspace_root);
+    let artefacts =
+        compile_workspace(opts).expect("compile_workspace failed for groupBy regression");
+
+    assert!(
+        !artefacts.beam_files.is_empty(),
+        "no .beam files produced\ndiagnostics: {:#?}",
+        artefacts.diagnostics
+    );
+
+    let beam_file = &artefacts.beam_files[0];
+    let beam_dir = beam_file.parent().expect("beam file has parent").to_owned();
+    let module_name = beam_file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .expect("beam stem is UTF-8")
+        .to_owned();
+
+    let (stdout, stderr, exit_code) = run_erl(&beam_dir, &module_name, &[]);
+    assert_eq!(
+        exit_code, 0,
+        "erl exited {exit_code}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    // Two buckets (key 0 for x<=3, key 1 for x>3), each in input order.
+    assert!(
+        stdout.contains("n=2 lo=123 hi=456"),
+        "expected 'n=2 lo=123 hi=456' in stdout, got:\n{stdout}"
+    );
+}
+
+// ── else-less `if` as a non-final statement ──────────────────────────────────
+//
+// `parse_if` used to consume the newline that separates an else-less `if` from
+// the statement that follows it, eaten while probing for an absent `else`. That
+// newline is the statement separator the enclosing block relies on, so the two
+// statements fused: the source below would either miscompile or drop the
+// trailing statements. This pins the end-to-end behaviour for both layout
+// shapes — a single-line then-branch (`if c then e`) and an indented multi-line
+// then-branch — used as non-final statements, over both a taken and a skipped
+// guard.
+
+const IF_NO_ELSE_STATEMENT_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+
+fn io main () -> Result Unit Text =
+    let a = 5
+    -- Single-line then-branch, else-less, followed by another statement.
+    if a > 3 then Io.println "a-big"
+    let b = 1
+    -- Indented multi-line then-branch, else-less, guard false, followed by more.
+    if b > 3 then
+        Io.println "b-big"
+    let total = a + b
+    Io.println $"total=${Int.toText total}"
+    Ok ()
+"#;
+
+/// Regression: an else-less `if` used as a non-final statement must not swallow
+/// the statement that follows it. Before the fix `parse_if` ate the newline
+/// separator while probing for an absent `else`, fusing the two statements.
+/// The taken guard prints `a-big`, the skipped guard prints nothing, and the
+/// trailing `let total`/`println` must still run — proving the statements stay
+/// separate over both branch outcomes and both layout shapes.
+#[test]
+fn beam_e2e_if_no_else_as_statement() {
+    let (workspace_root, _td) = make_example_workspace("IfNoElse", IF_NO_ELSE_STATEMENT_SOURCE);
+    let opts = CompileOptions::new(workspace_root);
+    let artefacts = compile_workspace(opts)
+        .expect("compile_workspace failed for else-less-if statement regression");
+
+    assert!(
+        !artefacts.beam_files.is_empty(),
+        "no .beam files produced\ndiagnostics: {:#?}",
+        artefacts.diagnostics
+    );
+
+    let beam_file = &artefacts.beam_files[0];
+    let beam_dir = beam_file.parent().expect("beam file has parent").to_owned();
+    let module_name = beam_file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .expect("beam stem is UTF-8")
+        .to_owned();
+
+    let (stdout, stderr, exit_code) = run_erl(&beam_dir, &module_name, &[]);
+    assert_eq!(
+        exit_code, 0,
+        "erl exited {exit_code}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    // a=5 > 3 → "a-big"; b=1 > 3 is false → no "b-big"; total = 5 + 1 = 6, which
+    // only holds if `let b`/`let total`/the final println stayed separate stmts.
+    assert!(
+        stdout.contains("a-big"),
+        "expected 'a-big' (taken guard) in stdout, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("b-big"),
+        "did not expect 'b-big' (skipped guard) in stdout, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("total=6"),
+        "expected 'total=6' (trailing statements ran) in stdout, got:\n{stdout}"
+    );
+}
+
+// `std.list.foldRight` is a direct `@ffi("lists", "foldr", 3)` bridge with no
+// argument-adapting wrapper, so its correctness rests on two facts that only a
+// real BEAM run can prove: the uncurried callback the type system requires is
+// handed to `lists:foldr` as a native 2-arity fun, and the elements arrive in
+// the `(elem, acc)` order the Ridge signature `fn a -> b -> b` promises. Erlang
+// calls its foldr callback as `Fun(Elem, Acc)`, which happens to match, so no
+// wrapper is needed — but nothing pinned that, and a stray swap would go
+// unnoticed by every compile-only test. The module-level `foldRight` compile
+// checks never invoke it, and the `std.list` unit suite exercises a local
+// pure-Ridge reimplementation rather than the FFI bridge, so this is the only
+// test that runs the real thing.
+
+const FOLD_RIGHT_FFI_SOURCE: &str = r#"
+import std.io as Io
+import std.list as List
+import std.int as Int
+
+fn cons (x: Int) (acc: List Int) -> List Int = x :: acc
+
+fn io main () -> Result Unit Text =
+    -- Idiomatic uncurried callback.
+    let sum = List.foldRight (fn x acc -> x + acc) 0 [1, 2, 3]
+    -- Partial application of a named 2-arg fn: right-folding cons over a list
+    -- rebuilds it, so `rebuilt` must equal the input [1, 2, 3].
+    let rebuilt = List.foldRight cons [] [1, 2, 3]
+    -- Non-commutative fold pins the callback argument order. A right fold of
+    -- subtraction is 1 - (2 - (3 - 0)) = 2; had the FFI handed the callback its
+    -- arguments swapped as (acc, elem), it would compute -6 instead.
+    let rsub = List.foldRight (fn x acc -> x - acc) 0 [1, 2, 3]
+    let first = match rebuilt
+        x :: _ -> Int.toText x
+        [] -> "empty"
+    let _ = Io.println $"sum=${Int.toText sum}"
+    let _ = Io.println $"rsub=${Int.toText rsub}"
+    let _ = Io.println $"rebuilt_first=${first} rebuilt_len=${Int.toText (List.length rebuilt)}"
+    Ok ()
+"#;
+
+/// Regression: `std.list.foldRight` must be callable through its real
+/// `lists:foldr` FFI bridge with the correct element/accumulator ordering.
+/// `sum=6` proves the uncurried callback reaches `lists:foldr`; `rsub=2`
+/// (not `-6`) proves the callback receives `(elem, acc)` and not the swapped
+/// pair; `rebuilt` equal to the input proves partial application of a named
+/// 2-arg fn folds right the way a hand-written cons would.
+#[test]
+fn beam_e2e_fold_right_ffi_arg_order() {
+    let (workspace_root, _td) = make_example_workspace("FoldRightFfi", FOLD_RIGHT_FFI_SOURCE);
+    let opts = CompileOptions::new(workspace_root);
+    let artefacts =
+        compile_workspace(opts).expect("compile_workspace failed for foldRight FFI regression");
+
+    assert!(
+        !artefacts.beam_files.is_empty(),
+        "no .beam files produced\ndiagnostics: {:#?}",
+        artefacts.diagnostics
+    );
+
+    let beam_file = &artefacts.beam_files[0];
+    let beam_dir = beam_file.parent().expect("beam file has parent").to_owned();
+    let module_name = beam_file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .expect("beam stem is UTF-8")
+        .to_owned();
+
+    let (stdout, stderr, exit_code) = run_erl(&beam_dir, &module_name, &[]);
+    assert_eq!(
+        exit_code, 0,
+        "erl exited {exit_code}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(
+        stdout.contains("sum=6"),
+        "expected 'sum=6' (uncurried callback reached lists:foldr), got:\n{stdout}"
+    );
+    // The distinguishing check: correct (elem, acc) order yields 2, a swap yields -6.
+    assert!(
+        stdout.contains("rsub=2"),
+        "expected 'rsub=2' (correct elem/acc order); a swap would print -6, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("rebuilt_first=1 rebuilt_len=3"),
+        "expected right-folded cons to rebuild [1, 2, 3], got:\n{stdout}"
     );
 }
 

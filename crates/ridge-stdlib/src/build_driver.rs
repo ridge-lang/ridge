@@ -13,7 +13,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use ridge_lower::lower_workspace;
-use ridge_resolve::{discover_workspace, resolve_workspace, ResolveError, Severity};
+use ridge_resolve::{discover_workspace, resolve_workspace, ModuleId, ResolveError, Severity};
 use ridge_typecheck::typecheck_workspace;
 use tempfile::TempDir;
 
@@ -273,7 +273,9 @@ fn compile_tier(
     // Surface any workspace-discovery errors as T204.
     if !disc.resolve_errors.is_empty() {
         let first = &disc.resolve_errors[0];
-        return Err(error_from_resolve(tier, modules, first));
+        // Discovery runs before per-module attribution exists, so this is the
+        // one resolve path that legitimately falls back to the first module.
+        return Err(error_from_resolve(tier, first_module_label(modules), first));
     }
 
     let Some(mut ws_graph) = disc.graph else {
@@ -301,7 +303,7 @@ fn compile_tier(
 
     // Check for R003 (cycle) or R004 (self-import) — surface as T203.
     // All other errors surface as T204.
-    for (_, err) in &resolved.errors {
+    for (err_mod, err) in &resolved.errors {
         if err.severity() == Severity::Error {
             if matches!(
                 err,
@@ -315,7 +317,8 @@ fn compile_tier(
                     cycle: cycle_names,
                 });
             }
-            return Err(error_from_resolve(tier, modules, err));
+            let label = module_label_for_id(*err_mod, &resolved.graph.modules, modules);
+            return Err(error_from_resolve(tier, label, err));
         }
     }
 
@@ -323,8 +326,8 @@ fn compile_tier(
     let typecheck_result = typecheck_workspace(&resolved);
 
     if !typecheck_result.errors.is_empty() {
-        let (_, first_err) = &typecheck_result.errors[0];
-        let (mod_name, mod_path) = first_module_label(modules);
+        let (err_mod, first_err) = &typecheck_result.errors[0];
+        let (mod_name, mod_path) = module_label_for_id(*err_mod, &resolved.graph.modules, modules);
         return Err(BuildError::TierBuildFailed {
             tier,
             module: mod_name,
@@ -449,13 +452,16 @@ fn validate_tier_ffi(
     Ok(())
 }
 
-/// Build a T204 `BuildError` from a `ResolveError`.
-fn error_from_resolve(tier: u32, modules: &[&DiscoveredModule], err: &ResolveError) -> BuildError {
-    let (mod_name, mod_path) = first_module_label(modules);
+/// Build a T204 `BuildError` from a `ResolveError`, attributed to the
+/// `(name, path)` label the caller resolved for it. Discovery-phase errors have
+/// no per-module attribution yet, so they pass [`first_module_label`]; errors
+/// carrying a [`ModuleId`] pass [`module_label_for_id`].
+fn error_from_resolve(tier: u32, label: (String, String), err: &ResolveError) -> BuildError {
+    let (module, path) = label;
     BuildError::TierBuildFailed {
         tier,
-        module: mod_name,
-        path: mod_path,
+        module,
+        path,
         source: err.to_string(),
     }
 }
@@ -466,4 +472,103 @@ fn first_module_label(modules: &[&DiscoveredModule]) -> (String, String) {
         || ("<unknown>".to_owned(), "<unknown>".to_owned()),
         |m| (m.name.clone(), m.path.display().to_string()),
     )
+}
+
+/// Resolve the (name, path) of the module a workspace diagnostic belongs to,
+/// using the [`ModuleId`] the resolver / type-checker paired with it.
+///
+/// The tier is compiled from sources copied into a throwaway temp workspace, so
+/// the graph's own `file_path` points at that temp copy. Matching the graph's
+/// fully-qualified name back to the tier's [`DiscoveredModule`] list recovers
+/// the *original* stdlib source path — the one a developer needs to open.
+///
+/// Falls back to [`first_module_label`] when the id can't be mapped (out of
+/// range, or a name with no discovered match), so labelling never panics and is
+/// never worse than the previous behaviour.
+fn module_label_for_id(
+    id: ModuleId,
+    graph_modules: &[ridge_resolve::ModuleMetadata],
+    modules: &[&DiscoveredModule],
+) -> (String, String) {
+    let meta = usize::try_from(id.0)
+        .ok()
+        .and_then(|i| graph_modules.get(i));
+    let Some(meta) = meta else {
+        return first_module_label(modules);
+    };
+    let fqn = &meta.fully_qualified_name;
+    modules.iter().find(|m| &m.name == fqn).map_or_else(
+        // Name known but no discovered match: still beats blaming the first
+        // module. Use the graph's (temp-copy) path as a last resort.
+        || (fqn.clone(), meta.file_path.display().to_string()),
+        |m| (m.name.clone(), m.path.display().to_string()),
+    )
+}
+
+#[cfg(test)]
+mod attribution_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+    use ridge_ast::Span;
+    use ridge_resolve::{ModuleMetadata, ProjectId};
+
+    fn meta(id: u32, fqn: &str, temp_path: &str) -> ModuleMetadata {
+        ModuleMetadata {
+            id: ModuleId(id),
+            project: ProjectId(0),
+            fully_qualified_name: fqn.to_owned(),
+            file_path: PathBuf::from(temp_path),
+            span_within_file: Span::point(0),
+        }
+    }
+
+    fn discovered(name: &str, path: &str) -> DiscoveredModule {
+        DiscoveredModule {
+            name: name.to_owned(),
+            tier: 2,
+            path: PathBuf::from(path),
+        }
+    }
+
+    // The graph's `modules` are sorted by fully-qualified name, so within tier 2
+    // `std.list` follows `std.text`. A typecheck (or resolve) error in `std.list`
+    // arrives paired with its own `ModuleId`; before the fix every tier error was
+    // labelled with the FIRST module, so a `std.list` failure was reported
+    // against `std.text` — a real trap that cost rebuilds chasing the wrong file.
+    #[test]
+    fn labels_the_owning_module_not_the_first() {
+        let graph = vec![
+            meta(0, "std.text", "/tmp/ws/src/text.ridge"),
+            meta(1, "std.list", "/tmp/ws/src/list.ridge"),
+        ];
+        let text = discovered("std.text", "/stdlib/text.ridge");
+        let list = discovered("std.list", "/stdlib/list.ridge");
+        let modules = [&text, &list];
+
+        let (name, path) = module_label_for_id(ModuleId(1), &graph, &modules);
+        assert_eq!(name, "std.list");
+        // And it recovers the ORIGINAL source path, not the temp-workspace copy.
+        assert_eq!(
+            path,
+            PathBuf::from("/stdlib/list.ridge").display().to_string()
+        );
+    }
+
+    // An id that indexes past the graph (an error raised before per-module
+    // attribution) must fall back to the first module, never panic.
+    #[test]
+    fn out_of_range_id_falls_back_to_first_module() {
+        let graph = vec![meta(0, "std.text", "/tmp/ws/src/text.ridge")];
+        let text = discovered("std.text", "/stdlib/text.ridge");
+        let list = discovered("std.list", "/stdlib/list.ridge");
+        let modules = [&text, &list];
+
+        let (name, path) = module_label_for_id(ModuleId(99), &graph, &modules);
+        assert_eq!(name, "std.text");
+        assert_eq!(
+            path,
+            PathBuf::from("/stdlib/text.ridge").display().to_string()
+        );
+    }
 }

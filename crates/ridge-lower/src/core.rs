@@ -268,11 +268,9 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
         // Bare param types are looked up from node_types via the parent
         // lambda's Type::Fn (see lambda_param_to_ir_param).
         //
-        // B-2 fix (Phase 5 followup): tuple-pattern lambda params (e.g.
-        // `fn (dr, dc) -> body`) get a synthetic `__tuple_param_N` name and
-        // the body is wrapped in an inner `Match` that destructures the tuple.
-        // This is mechanical and target-neutral; it uses `IrExpr::Match` and
-        // `IrPat::Tuple`/`IrPat::Bind`, which Phase 6 already handles.
+        // Params lower via `lower_lambda_params`: plain `Var`/`_` bind directly;
+        // any destructuring pattern feeds a `match` wrapped around the body so
+        // its bindings survive lowering.
         Expr::Lambda { params, body, span } => {
             // Quotation: a lambda captured as a quote during type-checking is
             // reified into a `QExpr` tree rather than lowered to a closure. A
@@ -285,101 +283,10 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
                 return reify_quote(ctx, body, *span, params);
             }
             let id = ctx.fresh_id(None);
-            // Lower all params; detect any non-Var tuple patterns.
-            let mut ir_params: Vec<IrParam> = Vec::with_capacity(params.len());
-            // Collect (param_idx, synthetic_name, tuple_elems, ty_for_param)
-            // for params that need a destructuring Match wrapper.
-            let mut destructure_entries: Vec<(String, Vec<IrPat>, Span)> = Vec::new();
-
-            for (idx, p) in params.iter().enumerate() {
-                match p {
-                    LambdaParam::Pattern(Pattern::Tuple { elems, span: tspan }) => {
-                        // Synthesise a fresh __tuple_param name.
-                        let synth_name = ctx.fresh_local("__tuple_param");
-                        // Look up the type of this param from the enclosing lambda's
-                        // Type::Fn (same logic as lambda_param_to_ir_param).
-                        let ty = ctx
-                            .node_id_map
-                            .as_ref()
-                            .and_then(|m| m.get(*span, NodeKind::Expr))
-                            .and_then(|nid| ctx.node_type(nid).cloned())
-                            .and_then(|fn_ty| {
-                                if let Type::Fn {
-                                    params: fn_params, ..
-                                } = fn_ty
-                                {
-                                    fn_params.into_iter().nth(idx)
-                                } else {
-                                    None
-                                }
-                            })
-                            .unwrap_or(Type::Error);
-                        ir_params.push(IrParam {
-                            name: synth_name.clone(),
-                            ty,
-                            span: *tspan,
-                        });
-                        // Collect IrPat elements for each tuple element:
-                        // - Pattern::Var → IrPat::Bind
-                        // - Pattern::Wildcard → IrPat::Wild (preserves arity)
-                        // Other patterns are not yet supported; wildcard is the
-                        // common case (fn (x, _) -> ...).
-                        let elem_pats: Vec<IrPat> = elems
-                            .iter()
-                            .map(|e| match e {
-                                Pattern::Var {
-                                    name,
-                                    span: eid_span,
-                                } => IrPat::Bind {
-                                    name: name.text.clone(),
-                                    inner: None,
-                                    span: *eid_span,
-                                },
-                                Pattern::Wildcard { span: ws } => IrPat::Wild { span: *ws },
-                                // Defensive: other patterns degrade to Wild to preserve arity.
-                                other => IrPat::Wild { span: other.span() },
-                            })
-                            .collect();
-                        destructure_entries.push((synth_name, elem_pats, *tspan));
-                    }
-                    other => {
-                        ir_params.push(lambda_param_to_ir_param(ctx, *span, idx, other));
-                    }
-                }
-            }
+            let (ir_params, pattern_entries) = lower_lambda_params(ctx, *span, params);
 
             let lowered_body = lower_expr(ctx, body);
-
-            // Wrap the body in nested Match nodes for each tuple-pattern param,
-            // innermost-last (since we're building outside-in, we reverse).
-            let wrapped_body = destructure_entries.into_iter().rev().fold(
-                lowered_body,
-                |inner_body, (synth_name, elem_pats, tspan)| {
-                    // IrPat::Tuple { elems: [Bind(a), Wild, Bind(b), ...] }
-                    let arm_pat = IrPat::Tuple {
-                        elems: elem_pats,
-                        span: tspan,
-                    };
-                    let arm = ridge_ir::IrArm {
-                        pat: arm_pat,
-                        when: None,
-                        body: inner_body,
-                        span: tspan,
-                    };
-                    let match_id = ctx.fresh_id(None);
-                    let scrutinee_id = ctx.fresh_id(None);
-                    IrExpr::Match {
-                        id: match_id,
-                        scrutinee: Box::new(IrExpr::Local {
-                            id: scrutinee_id,
-                            name: synth_name,
-                            span: tspan,
-                        }),
-                        arms: vec![arm],
-                        span: tspan,
-                    }
-                },
-            );
+            let wrapped_body = wrap_pattern_params(ctx, lowered_body, pattern_entries);
 
             // Anonymous lambdas have no inferred_caps entry; fall back to PURE.
             let caps = ctx.lookup_inferred_caps(*span);
@@ -3193,6 +3100,84 @@ fn dict_plan_to_expr(
 /// side-table).
 ///
 /// Bare param type lifted from parent lambda's `Type::Fn` params[i].
+/// The inferred type of a lambda's parameter `idx`, read from the enclosing
+/// lambda's `Type::Fn`.
+///
+/// `node_types` is keyed by `Expr` positions only — param ident spans carry no
+/// type entry — so the correct source is the enclosing lambda's `Fn` type at
+/// `lambda_span`. Falls back to `Type::Error` when no type is available.
+fn lambda_param_ty(ctx: &LowerCtx<'_>, lambda_span: Span, idx: usize) -> Type {
+    ctx.node_id_map
+        .as_ref()
+        .and_then(|m| m.get(lambda_span, NodeKind::Expr))
+        .and_then(|nid| ctx.node_type(nid).cloned())
+        .and_then(|fn_ty| {
+            if let Type::Fn { params, .. } = fn_ty {
+                params.into_iter().nth(idx)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(Type::Error)
+}
+
+/// Lower a lambda's parameters into direct IR binders plus the destructuring
+/// entries the caller wraps around the body.
+///
+/// A plain `Var`/`_` param lowers to a direct [`IrParam`]. Any other pattern
+/// (tuple, constructor, record, list, as-, literal, nested) lowers to a fresh
+/// synthetic binder, and its `(name, pattern, span)` is returned so the caller
+/// wraps the body in a `match` via [`wrap_pattern_params`] — the same mechanism
+/// used for destructuring params on named `fn` declarations. Without that
+/// wrapper a non-trivial param bound its variables during type-checking but
+/// dropped them here, so the backend rejected the body with `unbound variable`.
+///
+/// Tuple params keep the historical `__tuple_param` synthetic-name prefix;
+/// every other shape uses the general `__param` prefix (matching
+/// [`synth_destructure_param`]).
+fn lower_lambda_params<'a>(
+    ctx: &mut LowerCtx<'_>,
+    lambda_span: Span,
+    params: &'a [LambdaParam],
+) -> (Vec<IrParam>, Vec<(String, &'a Pattern, Span)>) {
+    let mut ir_params: Vec<IrParam> = Vec::with_capacity(params.len());
+    let mut pattern_entries: Vec<(String, &'a Pattern, Span)> = Vec::new();
+
+    for (idx, p) in params.iter().enumerate() {
+        // The pattern under this param plus its optional annotation.
+        let (pat, ann_ty): (&Pattern, Option<&ridge_ast::Type>) = match p {
+            LambdaParam::Pattern(pat) => (pat, None),
+            LambdaParam::Annotated { pat, ty, .. } => (pat, Some(ty)),
+        };
+        if matches!(pat, Pattern::Var { .. } | Pattern::Wildcard { .. }) {
+            // Plain binder — no destructuring wrapper needed.
+            ir_params.push(lambda_param_to_ir_param(ctx, lambda_span, idx, p));
+            continue;
+        }
+        // Destructuring param: a fresh binder feeds a wrapping `match`.
+        let prefix = if matches!(pat, Pattern::Tuple { .. }) {
+            "__tuple_param"
+        } else {
+            "__param"
+        };
+        let synth_name = ctx.fresh_local(prefix);
+        // Param type: the annotation when present, else the inferred Fn type.
+        let ty = if let Some(ann) = ann_ty {
+            lower_ast_type(ctx, ann)
+        } else {
+            lambda_param_ty(ctx, lambda_span, idx)
+        };
+        ir_params.push(IrParam {
+            name: synth_name.clone(),
+            ty,
+            span: pat.span(),
+        });
+        pattern_entries.push((synth_name, pat, pat.span()));
+    }
+
+    (ir_params, pattern_entries)
+}
+
 fn lambda_param_to_ir_param(
     ctx: &mut LowerCtx<'_>,
     lambda_span: Span,
@@ -3206,23 +3191,7 @@ fn lambda_param_to_ir_param(
                 Pattern::Var { name, .. } => (name.text.clone(), name.span),
                 other => ("_".to_owned(), other.span()),
             };
-            // Look up the parent lambda's Type::Fn from node_types via
-            // (lambda_span, NodeKind::Expr), then pick params[param_idx].
-            // node_types is keyed by Expr positions only — param ident spans carry
-            // no type entry; the correct source is the enclosing lambda's Fn type.
-            let ty = ctx
-                .node_id_map
-                .as_ref()
-                .and_then(|m| m.get(lambda_span, NodeKind::Expr))
-                .and_then(|nid| ctx.node_type(nid).cloned())
-                .and_then(|fn_ty| {
-                    if let Type::Fn { params, .. } = fn_ty {
-                        params.into_iter().nth(param_idx)
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or(Type::Error);
+            let ty = lambda_param_ty(ctx, lambda_span, param_idx);
             IrParam {
                 name,
                 ty,
@@ -5555,6 +5524,113 @@ mod tests {
                     matches!(*body, IrExpr::Match { .. }),
                     "B-2: mixed lambda body must be wrapped in Match for the tuple param"
                 );
+            }
+            other => panic!("expected Lambda, got {other:?}"),
+        }
+    }
+
+    /// `fn ((a, b), c) -> a` — a *nested* destructuring param. The inner tuple
+    /// elements used to degrade to wildcards, dropping `a`/`b`; they must now
+    /// lower to real binds. Guards the generalised destructuring-param path so
+    /// non-`Var` sub-patterns can never again be silently discarded.
+    #[test]
+    fn lower_lambda_nested_tuple_param_binds_inner() {
+        use ridge_ast::expr::LambdaParam;
+        use ridge_ast::Literal;
+
+        let mut ctx = fresh_ctx();
+        let lambda_span = sp_at(0, 25);
+
+        // Pattern: ((a, b), c)
+        let expr = Expr::Lambda {
+            params: vec![LambdaParam::Pattern(Pattern::Tuple {
+                elems: vec![
+                    Pattern::Tuple {
+                        elems: vec![
+                            Pattern::Var {
+                                name: Ident {
+                                    text: "a".into(),
+                                    span: sp_at(5, 6),
+                                },
+                                span: sp_at(5, 6),
+                            },
+                            Pattern::Var {
+                                name: Ident {
+                                    text: "b".into(),
+                                    span: sp_at(8, 9),
+                                },
+                                span: sp_at(8, 9),
+                            },
+                        ],
+                        span: sp_at(4, 10),
+                    },
+                    Pattern::Var {
+                        name: Ident {
+                            text: "c".into(),
+                            span: sp_at(12, 13),
+                        },
+                        span: sp_at(12, 13),
+                    },
+                ],
+                span: sp_at(3, 15),
+            })],
+            body: Box::new(Expr::Literal(Literal::IntDec {
+                raw: "1".into(),
+                span: sp(),
+            })),
+            span: lambda_span,
+        };
+
+        let ir = lower_expr(&mut ctx, &expr);
+        assert!(ctx.errors.is_empty(), "errors: {:?}", ctx.errors);
+
+        match ir {
+            IrExpr::Lambda { params, body, .. } => {
+                assert_eq!(params.len(), 1, "must have exactly 1 IR param");
+                assert!(
+                    params[0].name.starts_with("__tuple_param"),
+                    "synthetic param must start with __tuple_param, got {:?}",
+                    params[0].name
+                );
+                match *body {
+                    IrExpr::Match { arms, .. } => {
+                        assert_eq!(arms.len(), 1, "match must have 1 arm");
+                        match &arms[0].pat {
+                            IrPat::Tuple { elems, .. } => {
+                                assert_eq!(elems.len(), 2, "outer tuple pat must have 2 elems");
+                                // First elem: the inner tuple (a, b) — must bind a
+                                // and b, NOT degrade to a wildcard as it did before.
+                                match &elems[0] {
+                                    IrPat::Tuple { elems: inner, .. } => {
+                                        assert_eq!(
+                                            inner.len(),
+                                            2,
+                                            "inner tuple pat must have 2 elems"
+                                        );
+                                        assert!(
+                                            matches!(&inner[0], IrPat::Bind { name, .. } if name == "a"),
+                                            "inner first elem must be Bind(a), got {:?}",
+                                            inner[0]
+                                        );
+                                        assert!(
+                                            matches!(&inner[1], IrPat::Bind { name, .. } if name == "b"),
+                                            "inner second elem must be Bind(b), got {:?}",
+                                            inner[1]
+                                        );
+                                    }
+                                    other => panic!("expected inner Tuple pat, got {other:?}"),
+                                }
+                                assert!(
+                                    matches!(&elems[1], IrPat::Bind { name, .. } if name == "c"),
+                                    "outer second elem must be Bind(c), got {:?}",
+                                    elems[1]
+                                );
+                            }
+                            other => panic!("expected Tuple pat, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected Match body, got {other:?}"),
+                }
             }
             other => panic!("expected Lambda, got {other:?}"),
         }

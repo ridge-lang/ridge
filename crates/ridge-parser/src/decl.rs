@@ -919,8 +919,18 @@ fn parse_type_body(cur: &mut Cursor<'_>) -> Result<TypeBody, ParseError> {
 /// looks like the body of a union type declaration.
 ///
 /// Scans forward past type-atom tokens — `UPPER_IDENT`, `LOWER_IDENT`, `[…]`,
-/// and `(…)` — tracking bracket/paren depth.  Returns `true` if a `|` is found
-/// at depth 0 before any line terminator (`Newline`, `Dedent`, `Eof`, `Assign`).
+/// `(…)`, and record-variant bodies `{…}` — tracking bracket/paren/brace depth.
+/// Returns `true` if a `|` is found at depth 0 before any line terminator.
+///
+/// The brace tracking is what lets a record-variant constructor appear before
+/// the `|`, e.g. `type Shape = Circle { radius: Int } | Square`. Without it the
+/// scan stopped at the opening `{` and misclassified the union as a type alias
+/// (`App(Circle, [Record …])` with a dangling `| …`).
+///
+/// A line terminator (`Newline`, `Dedent`, `Assign`) ends the scan only at
+/// depth 0; inside a bracketed group a layout newline is content, not a
+/// terminator (record-variant bodies may span lines). `Eof` and end-of-stream
+/// always stop.
 ///
 /// The depth bound of 64 prevents pathological inputs from scanning an entire
 /// file; returning `false` in that case safely falls through to the alias branch.
@@ -934,22 +944,21 @@ fn looks_like_union(cur: &Cursor<'_>) -> bool {
             return false;
         }
         match cur.peek_n(n) {
-            None | Some(Token::Newline | Token::Dedent | Token::Eof | Token::Assign) => {
-                return false
-            }
+            None | Some(Token::Eof) => return false,
+            Some(Token::Newline | Token::Dedent | Token::Assign) if depth == 0 => return false,
             Some(Token::Pipe) if depth == 0 => return true,
-            Some(Token::LParen | Token::LBrack) => {
+            Some(Token::LParen | Token::LBrack | Token::LBrace) => {
                 depth += 1;
                 n += 1;
             }
-            Some(Token::RParen | Token::RBrack) => {
+            Some(Token::RParen | Token::RBrack | Token::RBrace) => {
                 depth -= 1;
                 if depth < 0 {
                     return false;
                 }
                 n += 1;
             }
-            // Any token inside brackets: keep scanning.
+            // Any token inside brackets/braces (including layout newlines): keep scanning.
             _ if depth > 0 => {
                 n += 1;
             }
@@ -2858,6 +2867,84 @@ mod tests {
             }
             other @ Constructor::Record { .. } => panic!("expected Positional, got {other:?}"),
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // parse_type_union_record_variant_not_last — regression guard
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn parse_type_union_record_variant_not_last() {
+        // `Circle { radius: Int } | Square` — a record-variant constructor
+        // followed by another alternative. The `|` sits past the record body,
+        // so the union dispatcher must scan across the balanced `{ … }` to see
+        // it. A brace-blind lookahead misclassifies this as a type alias.
+        let td = parse_td("type Shape = Circle { radius: Int } | Square").expect("should parse");
+        assert_eq!(td.name.text, "Shape");
+        let alts = match &td.body {
+            TypeBody::Union(u) => &u.alternatives,
+            other => panic!("expected Union, got {other:?}"),
+        };
+        assert_eq!(alts.len(), 2);
+        match &alts[0] {
+            Constructor::Record { name, body, .. } => {
+                assert_eq!(name.text, "Circle");
+                assert_eq!(body.fields.len(), 1);
+                assert_eq!(body.fields[0].name.text, "radius");
+            }
+            other @ Constructor::Positional { .. } => panic!("expected Record, got {other:?}"),
+        }
+        assert!(
+            matches!(&alts[1], Constructor::Positional { name, args, .. }
+                if name.text == "Square" && args.is_empty())
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // parse_type_union_record_variant_both — regression guard
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn parse_type_union_record_variant_both() {
+        // Two record variants in one union; the multi-field record body of the
+        // first must not swallow the `|` separator.
+        let td = parse_td("type Shape = Circle { radius: Int } | Rect { w: Int, h: Int }")
+            .expect("should parse");
+        let alts = match &td.body {
+            TypeBody::Union(u) => &u.alternatives,
+            other => panic!("expected Union, got {other:?}"),
+        };
+        assert_eq!(alts.len(), 2);
+        match &alts[0] {
+            Constructor::Record { name, body, .. } => {
+                assert_eq!(name.text, "Circle");
+                assert_eq!(body.fields.len(), 1);
+            }
+            other @ Constructor::Positional { .. } => panic!("expected Record, got {other:?}"),
+        }
+        match &alts[1] {
+            Constructor::Record { name, body, .. } => {
+                assert_eq!(name.text, "Rect");
+                assert_eq!(body.fields.len(), 2);
+            }
+            other @ Constructor::Positional { .. } => panic!("expected Record, got {other:?}"),
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // parse_type_union_record_variant_last — regression guard
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn parse_type_union_record_variant_last() {
+        // The already-working case: a record variant as the final alternative.
+        // The leading `|` is found before the brace, so this parsed before the
+        // brace-aware fix too; keep it green so the fix doesn't regress it.
+        let td = parse_td("type Shape = Square | Circle { radius: Int }").expect("should parse");
+        let alts = match &td.body {
+            TypeBody::Union(u) => &u.alternatives,
+            other => panic!("expected Union, got {other:?}"),
+        };
+        assert_eq!(alts.len(), 2);
+        assert!(matches!(&alts[0], Constructor::Positional { name, .. } if name.text == "Square"));
+        assert!(matches!(&alts[1], Constructor::Record { name, .. } if name.text == "Circle"));
     }
 
     // ─────────────────────────────────────────────────────────────────────────

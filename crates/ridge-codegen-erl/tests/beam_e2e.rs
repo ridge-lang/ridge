@@ -579,6 +579,77 @@ fn beam_e2e_hof_over_self_recursive_fn() {
     );
 }
 
+// ── Destructuring lambda params ──────────────────────────────────────────────
+//
+// A lambda param that is not a plain variable binds its variables during
+// type-checking but used to lose them at lowering: a constructor pattern
+// (`fn (Some n) -> ...`) dropped the binding entirely, and a nested tuple
+// (`fn ((p, q), r) -> ...`) degraded its inner elements to wildcards. Both
+// produced Core Erlang the backend rejected with `unbound variable`, even
+// though `ridge check` reported success. This pins the end-to-end behaviour of
+// the generalised destructuring-param lowering route.
+
+const LAMBDA_DESTRUCTURING_PARAMS_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+import std.list as List
+
+fn io main () -> Result Unit Text =
+    -- Constructor-pattern param: `n` was bound in the checker but dropped at
+    -- lowering, so erlc rejected the body with `unbound variable 'V_N'`.
+    let inc = fn (Some n) -> n + 1
+    let a = inc (Some 41)
+    -- Nested tuple param: the inner `p`/`q` used to degrade to wildcards, so
+    -- only the outer arity survived.
+    let sum3 = fn ((p, q), r) -> p + q + r
+    let b = sum3 ((10, 20), 30)
+    -- Tuple param through a stdlib HOF (the historically working path) — now
+    -- shares the same lowering route, so it must keep working.
+    let sums = List.map (fn (k, v) -> k + v) [(1, 2), (3, 4)]
+    let c = List.fold (fn acc x -> acc + x) 0 sums
+    Io.println $"a=${Int.toText a} b=${Int.toText b} c=${Int.toText c}"
+    Ok ()
+"#;
+
+/// Regression: destructuring lambda params must bind their variables end to
+/// end.  Before the fix a constructor-pattern or nested-tuple param passed
+/// `ridge check` but the backend rejected the lowered body with `unbound
+/// variable`.  Compiles + runs the program and checks the computed output.
+#[test]
+fn beam_e2e_lambda_destructuring_params() {
+    let (workspace_root, _td) =
+        make_example_workspace("Destructure", LAMBDA_DESTRUCTURING_PARAMS_SOURCE);
+    let opts = CompileOptions::new(workspace_root);
+    let artefacts = compile_workspace(opts)
+        .expect("compile_workspace failed for lambda-destructuring regression");
+
+    assert!(
+        !artefacts.beam_files.is_empty(),
+        "no .beam files produced\ndiagnostics: {:#?}",
+        artefacts.diagnostics
+    );
+
+    let beam_file = &artefacts.beam_files[0];
+    let beam_dir = beam_file.parent().expect("beam file has parent").to_owned();
+    let module_name = beam_file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .expect("beam stem is UTF-8")
+        .to_owned();
+
+    let (stdout, stderr, exit_code) = run_erl(&beam_dir, &module_name, &[]);
+    assert_eq!(
+        exit_code, 0,
+        "erl exited {exit_code}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    // inc (Some 41) = 42; sum3 ((10,20),30) = 60; map+fold of (k+v) over
+    // [(1,2),(3,4)] = 3 + 7 = 10.
+    assert!(
+        stdout.contains("a=42 b=60 c=10"),
+        "expected 'a=42 b=60 c=10' in stdout, got:\n{stdout}"
+    );
+}
+
 // ── Bounded mailbox + observability tests ─────────────────────────────────────
 //
 // Six tests pin the bounded-mailbox runtime end to end:

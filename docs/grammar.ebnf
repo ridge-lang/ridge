@@ -349,7 +349,7 @@ ImportItem    ::= LOWER_IDENT | UPPER_IDENT ;
 (* Examples:
      import std.list as List
      import std.map (get, insert)
-     import std.net.http (Request, Response, listen, respond) as Http
+     import std.net.http as Http (Request, Response, listen, respond)
      import acme.infra.Postgres as Pg
 
    D072 (2026-04-25): ImportItem accepts UPPER_IDENT so types/constructors

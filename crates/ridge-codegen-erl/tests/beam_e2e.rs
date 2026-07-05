@@ -650,6 +650,70 @@ fn beam_e2e_lambda_destructuring_params() {
     );
 }
 
+// ── std.list::groupBy regression ──────────────────────────────────────────────
+//
+// `List.groupBy` used to be a dead stub returning an empty map, so any program
+// that grouped a list silently lost every element. The real implementation
+// folds each element into its key's bucket and must preserve the input order
+// within a bucket. The signature `List.fold (\acc x -> acc*10 + x) 0` encodes
+// both membership and order in a single integer: bucket [1,2,3] -> 123, and a
+// reversed bucket (the classic left-fold-prepend mistake) would show 321.
+
+const GROUP_BY_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+import std.list as List
+import std.map as Map
+
+-- Order-sensitive fold: [1,2,3] -> 123, [4,5,6] -> 456. A reversed bucket
+-- would surface as 321 / 654, so this pins ordering as well as membership.
+fn sigOf (k: Int) (m: Map Int (List Int)) -> Int =
+    match Map.get k m
+        Some g -> List.fold (fn acc x -> acc * 10 + x) 0 g
+        None   -> 0 - 1
+
+fn io main () -> Result Unit Text =
+    let groups = List.groupBy (fn x -> if x > 3 then 1 else 0) [1, 2, 3, 4, 5, 6]
+    Io.println $"n=${Int.toText (Map.size groups)} lo=${Int.toText (sigOf 0 groups)} hi=${Int.toText (sigOf 1 groups)}"
+    Ok ()
+"#;
+
+/// Regression: `List.groupBy` partitions a list by key into a `Map key
+/// (List elem)`, preserving encounter order inside each bucket. Before the fix
+/// it was a stub returning an empty map, so grouping dropped every element.
+#[test]
+fn beam_e2e_list_group_by() {
+    let (workspace_root, _td) = make_example_workspace("GroupBy", GROUP_BY_SOURCE);
+    let opts = CompileOptions::new(workspace_root);
+    let artefacts =
+        compile_workspace(opts).expect("compile_workspace failed for groupBy regression");
+
+    assert!(
+        !artefacts.beam_files.is_empty(),
+        "no .beam files produced\ndiagnostics: {:#?}",
+        artefacts.diagnostics
+    );
+
+    let beam_file = &artefacts.beam_files[0];
+    let beam_dir = beam_file.parent().expect("beam file has parent").to_owned();
+    let module_name = beam_file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .expect("beam stem is UTF-8")
+        .to_owned();
+
+    let (stdout, stderr, exit_code) = run_erl(&beam_dir, &module_name, &[]);
+    assert_eq!(
+        exit_code, 0,
+        "erl exited {exit_code}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    // Two buckets (key 0 for x<=3, key 1 for x>3), each in input order.
+    assert!(
+        stdout.contains("n=2 lo=123 hi=456"),
+        "expected 'n=2 lo=123 hi=456' in stdout, got:\n{stdout}"
+    );
+}
+
 // ── Bounded mailbox + observability tests ─────────────────────────────────────
 //
 // Six tests pin the bounded-mailbox runtime end to end:

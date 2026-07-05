@@ -770,6 +770,91 @@ fn beam_e2e_if_no_else_as_statement() {
     );
 }
 
+// `std.list.foldRight` is a direct `@ffi("lists", "foldr", 3)` bridge with no
+// argument-adapting wrapper, so its correctness rests on two facts that only a
+// real BEAM run can prove: the uncurried callback the type system requires is
+// handed to `lists:foldr` as a native 2-arity fun, and the elements arrive in
+// the `(elem, acc)` order the Ridge signature `fn a -> b -> b` promises. Erlang
+// calls its foldr callback as `Fun(Elem, Acc)`, which happens to match, so no
+// wrapper is needed — but nothing pinned that, and a stray swap would go
+// unnoticed by every compile-only test. The module-level `foldRight` compile
+// checks never invoke it, and the `std.list` unit suite exercises a local
+// pure-Ridge reimplementation rather than the FFI bridge, so this is the only
+// test that runs the real thing.
+
+const FOLD_RIGHT_FFI_SOURCE: &str = r#"
+import std.io as Io
+import std.list as List
+import std.int as Int
+
+fn cons (x: Int) (acc: List Int) -> List Int = x :: acc
+
+fn io main () -> Result Unit Text =
+    -- Idiomatic uncurried callback.
+    let sum = List.foldRight (fn x acc -> x + acc) 0 [1, 2, 3]
+    -- Partial application of a named 2-arg fn: right-folding cons over a list
+    -- rebuilds it, so `rebuilt` must equal the input [1, 2, 3].
+    let rebuilt = List.foldRight cons [] [1, 2, 3]
+    -- Non-commutative fold pins the callback argument order. A right fold of
+    -- subtraction is 1 - (2 - (3 - 0)) = 2; had the FFI handed the callback its
+    -- arguments swapped as (acc, elem), it would compute -6 instead.
+    let rsub = List.foldRight (fn x acc -> x - acc) 0 [1, 2, 3]
+    let first = match rebuilt
+        x :: _ -> Int.toText x
+        [] -> "empty"
+    let _ = Io.println $"sum=${Int.toText sum}"
+    let _ = Io.println $"rsub=${Int.toText rsub}"
+    let _ = Io.println $"rebuilt_first=${first} rebuilt_len=${Int.toText (List.length rebuilt)}"
+    Ok ()
+"#;
+
+/// Regression: `std.list.foldRight` must be callable through its real
+/// `lists:foldr` FFI bridge with the correct element/accumulator ordering.
+/// `sum=6` proves the uncurried callback reaches `lists:foldr`; `rsub=2`
+/// (not `-6`) proves the callback receives `(elem, acc)` and not the swapped
+/// pair; `rebuilt` equal to the input proves partial application of a named
+/// 2-arg fn folds right the way a hand-written cons would.
+#[test]
+fn beam_e2e_fold_right_ffi_arg_order() {
+    let (workspace_root, _td) = make_example_workspace("FoldRightFfi", FOLD_RIGHT_FFI_SOURCE);
+    let opts = CompileOptions::new(workspace_root);
+    let artefacts =
+        compile_workspace(opts).expect("compile_workspace failed for foldRight FFI regression");
+
+    assert!(
+        !artefacts.beam_files.is_empty(),
+        "no .beam files produced\ndiagnostics: {:#?}",
+        artefacts.diagnostics
+    );
+
+    let beam_file = &artefacts.beam_files[0];
+    let beam_dir = beam_file.parent().expect("beam file has parent").to_owned();
+    let module_name = beam_file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .expect("beam stem is UTF-8")
+        .to_owned();
+
+    let (stdout, stderr, exit_code) = run_erl(&beam_dir, &module_name, &[]);
+    assert_eq!(
+        exit_code, 0,
+        "erl exited {exit_code}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(
+        stdout.contains("sum=6"),
+        "expected 'sum=6' (uncurried callback reached lists:foldr), got:\n{stdout}"
+    );
+    // The distinguishing check: correct (elem, acc) order yields 2, a swap yields -6.
+    assert!(
+        stdout.contains("rsub=2"),
+        "expected 'rsub=2' (correct elem/acc order); a swap would print -6, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("rebuilt_first=1 rebuilt_len=3"),
+        "expected right-folded cons to rebuild [1, 2, 3], got:\n{stdout}"
+    );
+}
+
 // ── Bounded mailbox + observability tests ─────────────────────────────────────
 //
 // Six tests pin the bounded-mailbox runtime end to end:

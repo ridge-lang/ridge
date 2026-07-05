@@ -12,12 +12,17 @@
 //!
 //! `DoD`: all four tests green ↔ spec §11.3 `DoD` satisfied.
 //!
-//! Pre-existing failures (unchanged from baseline):
-//! - `log_analyzer` — CLI args flow via `plain_args` (-extra flag) works
-//!   but stdout mismatch persists (encoding issue).
-//! - `url_shortener` — `std.map` BEAM module not on code path.
-//! - `game_of_life` — `std.list` BEAM module not on code path.
-//! - `rate_limiter` — passes (1/4 baseline unchanged).
+//! Example status:
+//! - `log_analyzer`, `game_of_life`, `rate_limiter` — compile and run end to
+//!   end; stdout matches the curated `tests/expected/<name>.txt`.
+//! - `url_shortener` — `#[ignore]`d: `Http.listen` enters an accept loop that
+//!   never returns under a healthy server, so `main` cannot complete inside the
+//!   batch-mode harness. See the test's own note for the deferred follow-up.
+//!
+//! Alongside the four examples this file carries focused regression tests that
+//! pin individual codegen/parse fixes end to end (destructuring lambda params,
+//! `List.groupBy`, else-less `if` as a statement, actor cross-module calls,
+//! bounded mailboxes, and more).
 
 #![cfg(feature = "beam-runtime")]
 #![allow(
@@ -349,43 +354,18 @@ fn beam_e2e_game_of_life() {
     let _ = run_example_e2e("game_of_life", &[]);
 }
 
-/// `rate_limiter` — erlc rejects emitted Core Erlang in all actor modules.
+/// `rate_limiter` — a three-actor program (a token-bucket limiter, a stats
+/// collector, and worker drivers) that exercises multi-actor codegen end to
+/// end: `spawn`, message sends, `state` field reads and writes, and cross-actor
+/// calls all run on the BEAM.
 ///
-/// erlc subprocess stderr (verbatim):
-///   ridge_module_0: illegal expression in main/0 (×1)
-///   ridge_module_0_limiter: unbound variable 'V_Capacity', 'V_LastRefill',
-///     'V_RefillRate', 'V_State2', 'V_State4', 'V_Tokens' in handle_call/3, handle_cast/2
-///   ridge_module_0_collector: illegal expression in handle_call/3, handle_cast/2 (×8)
-///   ridge_module_0_collector: unbound variable 'V_Received', 'V_State3',
-///     'V_TotalAllowed', 'V_TotalDenied' in handle_call/3, handle_cast/2
-///   ridge_module_0_worker: unbound variable 'V_Collector', 'V_Limiter',
-///     'V_SendRequests', 'V_State3' in handle_call/3, handle_cast/2
-///
-/// Root cause analysis:
-/// - "illegal expression in main/0": `apply ~{}~ ('ok')` — Ok() constructor codegen bug.
-/// - "illegal expression in collector handle_call/3, handle_cast/2": same Ok() bug
-///   inside actor handler bodies.
-/// - "unbound V_Capacity, V_Tokens, V_LastRefill, V_RefillRate in handlers":
-///   state-field reads emitted as bare variable references instead of
-///   `call 'maps':'get'('field', V_State)`.
-/// - "unbound V_State2, V_State4 in handlers": SSA state vars scoped incorrectly
-///   — state-thread index mismatch.
-/// - Unbound V_Cap, V_Rate, V_Col, V_Id, V_L in init/1: RESOLVED — init body
-///   now wrapped in `case V_Args of [P1|[P2|[]]] -> end`.
-/// - Undefined function requestsPerWorker/0 in handle_call/3: RESOLVED — codegen
-///   now emits `call 'ridge_module_0':'requestsPerWorker' ()` for parent-module
-///   const refs in actor handlers.
-///
-/// **Remaining errors** (Ok/Err ctor in actor handlers, state-field reads,
-/// SSA state-thread index mismatch, tuple-param lambda destructure in
-/// collectors/workers) are in IR/lowering (`ridge-lower`) — out of scope here.
-/// These involve frozen-crate semantics and would require a plan-level decision
-/// before any source change to `ridge-codegen-erl` or `ridge-lower`.
-///
-/// **What is deferred:** Full e2e BEAM execution of `rate_limiter.ridge`.
-/// **Why:** Multi-actor codegen requires IR/lowering fixes in `ridge-lower`.
-/// **Where the follow-up lives:** `rate_limiter` codegen is a backlog item
-/// unless a future change explicitly reopens it.
+/// Getting here meant clearing a cluster of multi-actor codegen bugs: Ok/Err
+/// constructor emission inside actor handlers, `state` field reads emitted as
+/// bare variables instead of `maps:get`, and SSA state-thread index mismatches
+/// that left handler-local vars unbound. Those are resolved; the program now
+/// compiles and its stdout matches `tests/expected/rate_limiter.txt` — the
+/// assertion (beam produced, exit 0, stdout equals expected) lives in
+/// `run_example_e2e`.
 #[test]
 fn beam_e2e_rate_limiter() {
     let _ = run_example_e2e("rate_limiter", &[]);
@@ -711,6 +691,82 @@ fn beam_e2e_list_group_by() {
     assert!(
         stdout.contains("n=2 lo=123 hi=456"),
         "expected 'n=2 lo=123 hi=456' in stdout, got:\n{stdout}"
+    );
+}
+
+// ── else-less `if` as a non-final statement ──────────────────────────────────
+//
+// `parse_if` used to consume the newline that separates an else-less `if` from
+// the statement that follows it, eaten while probing for an absent `else`. That
+// newline is the statement separator the enclosing block relies on, so the two
+// statements fused: the source below would either miscompile or drop the
+// trailing statements. This pins the end-to-end behaviour for both layout
+// shapes — a single-line then-branch (`if c then e`) and an indented multi-line
+// then-branch — used as non-final statements, over both a taken and a skipped
+// guard.
+
+const IF_NO_ELSE_STATEMENT_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+
+fn io main () -> Result Unit Text =
+    let a = 5
+    -- Single-line then-branch, else-less, followed by another statement.
+    if a > 3 then Io.println "a-big"
+    let b = 1
+    -- Indented multi-line then-branch, else-less, guard false, followed by more.
+    if b > 3 then
+        Io.println "b-big"
+    let total = a + b
+    Io.println $"total=${Int.toText total}"
+    Ok ()
+"#;
+
+/// Regression: an else-less `if` used as a non-final statement must not swallow
+/// the statement that follows it. Before the fix `parse_if` ate the newline
+/// separator while probing for an absent `else`, fusing the two statements.
+/// The taken guard prints `a-big`, the skipped guard prints nothing, and the
+/// trailing `let total`/`println` must still run — proving the statements stay
+/// separate over both branch outcomes and both layout shapes.
+#[test]
+fn beam_e2e_if_no_else_as_statement() {
+    let (workspace_root, _td) = make_example_workspace("IfNoElse", IF_NO_ELSE_STATEMENT_SOURCE);
+    let opts = CompileOptions::new(workspace_root);
+    let artefacts = compile_workspace(opts)
+        .expect("compile_workspace failed for else-less-if statement regression");
+
+    assert!(
+        !artefacts.beam_files.is_empty(),
+        "no .beam files produced\ndiagnostics: {:#?}",
+        artefacts.diagnostics
+    );
+
+    let beam_file = &artefacts.beam_files[0];
+    let beam_dir = beam_file.parent().expect("beam file has parent").to_owned();
+    let module_name = beam_file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .expect("beam stem is UTF-8")
+        .to_owned();
+
+    let (stdout, stderr, exit_code) = run_erl(&beam_dir, &module_name, &[]);
+    assert_eq!(
+        exit_code, 0,
+        "erl exited {exit_code}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    // a=5 > 3 → "a-big"; b=1 > 3 is false → no "b-big"; total = 5 + 1 = 6, which
+    // only holds if `let b`/`let total`/the final println stayed separate stmts.
+    assert!(
+        stdout.contains("a-big"),
+        "expected 'a-big' (taken guard) in stdout, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("b-big"),
+        "did not expect 'b-big' (skipped guard) in stdout, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("total=6"),
+        "expected 'total=6' (trailing statements ran) in stdout, got:\n{stdout}"
     );
 }
 

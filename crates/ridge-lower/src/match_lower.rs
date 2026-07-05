@@ -75,6 +75,13 @@ pub fn lower_match(
     arms: &[ridge_ast::expr::MatchArm],
     span: Span,
 ) -> IrExpr {
+    // Expand each or-pattern arm `p1 | p2 -> body` into one arm per alternative
+    // sharing the guard and body. BEAM has no native or-pattern, so this clause
+    // duplication is how alternatives lower; every downstream step then sees
+    // ordinary single-pattern arms.
+    let expanded = expand_or_arms(arms);
+    let arms: &[ridge_ast::expr::MatchArm] = &expanded;
+
     // Detect whether any arm has a variable-length list pattern.
     let has_varlen = arms.iter().any(|arm| arm.pattern.is_varlen_list());
 
@@ -83,6 +90,27 @@ pub fn lower_match(
     } else {
         lower_match_simple(ctx, scrutinee, arms, span)
     }
+}
+
+/// Expand every or-pattern arm into one arm per alternative, cloning the guard
+/// and body. Non-or arms pass through unchanged.
+fn expand_or_arms(arms: &[ridge_ast::expr::MatchArm]) -> Vec<ridge_ast::expr::MatchArm> {
+    let mut out = Vec::with_capacity(arms.len());
+    for arm in arms {
+        if let Pattern::Or { alts, .. } = &arm.pattern {
+            for alt in alts {
+                out.push(ridge_ast::expr::MatchArm {
+                    pattern: alt.clone(),
+                    guard: arm.guard.clone(),
+                    body: arm.body.clone(),
+                    span: arm.span,
+                });
+            }
+        } else {
+            out.push(arm.clone());
+        }
+    }
+    out
 }
 
 /// Simple match lowering — no variable-length list patterns.
@@ -879,6 +907,13 @@ pub fn lower_pattern_full(ctx: &mut LowerCtx<'_>, pat: &Pattern) -> IrPat {
             span,
             ..
         } => lower_constructor_pattern(ctx, name, fields.as_deref(), args, *span),
+
+        // Or-patterns are expanded into one arm per alternative by
+        // `expand_or_arms` before any pattern is lowered, so this is
+        // unreachable; lower the first alternative defensively to stay total.
+        Pattern::Or { alts, span } => alts
+            .first()
+            .map_or(IrPat::Wild { span: *span }, |p| lower_pattern_full(ctx, p)),
     }
 }
 

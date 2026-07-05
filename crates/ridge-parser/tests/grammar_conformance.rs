@@ -198,6 +198,7 @@ fn asPat (u: User) -> Text =
         &[
             "MatchExpr",
             "MatchArm",
+            "OrPattern",
             "WildcardPattern",
             "LiteralPattern",
             "VarPattern",
@@ -217,6 +218,7 @@ fn classify (x: Shape) (n: Int) (xs: List Int) (t: (Int, Int)) -> Text =
         _ -> \"other\"
     match n
         0 -> \"zero\"
+        1 | 2 | 3 -> \"few\"
         m when m < 10 -> \"small\"
         _ -> \"big\"
     match xs

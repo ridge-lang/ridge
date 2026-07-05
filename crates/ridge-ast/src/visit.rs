@@ -448,6 +448,11 @@ pub fn walk_pattern<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, p: &'ast Pattern) 
                 }
             }
         }
+        Pattern::Or { alts, .. } => {
+            for alt in alts {
+                v.visit_pattern(alt);
+            }
+        }
     }
 }
 

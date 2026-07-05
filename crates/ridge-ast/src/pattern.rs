@@ -201,6 +201,20 @@ pub enum Pattern {
         /// Span covering the full `{ … }` form.
         span: Span,
     },
+
+    /// An or-pattern `p1 | p2 | …` — matches when ANY alternative matches.
+    ///
+    /// Only valid at the root of a match arm (grammar §6.4 `MatchArm`); the
+    /// parser does not accept it nested inside another pattern. Every
+    /// alternative must bind the same variables — enforced during name
+    /// resolution — with the same types, enforced during type inference. Always
+    /// holds at least two alternatives.
+    Or {
+        /// The alternatives, in source order (length ≥ 2).
+        alts: Vec<Self>,
+        /// Span covering the full `p1 | … | pn` sequence.
+        span: Span,
+    },
 }
 
 impl Pattern {
@@ -218,7 +232,8 @@ impl Pattern {
             | Self::Paren { span, .. }
             | Self::ListNil { span }
             | Self::List { span, .. }
-            | Self::Record { span, .. } => *span,
+            | Self::Record { span, .. }
+            | Self::Or { span, .. } => *span,
         }
     }
 
@@ -235,6 +250,88 @@ impl Pattern {
             .iter()
             .position(|e| matches!(e, ListPatElem::Rest { .. }))
             .is_some_and(|rest_idx| rest_idx < elements.len() - 1)
+    }
+
+    /// Collect every variable name this pattern binds, in sorted order.
+    ///
+    /// Mirrors what name resolution registers as locals: `Var`, the alias of
+    /// `As`, shorthand record/constructor fields, and a bound list `Rest`, plus
+    /// the recursive union over sub-patterns. Used to enforce the or-pattern
+    /// same-variables rule (a `Pattern::Or` is only well-formed when every
+    /// alternative binds the same set).
+    #[must_use]
+    pub fn bound_var_names(&self) -> std::collections::BTreeSet<String> {
+        let mut names = std::collections::BTreeSet::new();
+        self.collect_bound_var_names(&mut names);
+        names
+    }
+
+    fn collect_bound_var_names(&self, out: &mut std::collections::BTreeSet<String>) {
+        match self {
+            Self::Wildcard { .. } | Self::Literal { .. } | Self::ListNil { .. } => {}
+            Self::Var { name, .. } => {
+                out.insert(name.text.clone());
+            }
+            Self::As { name, inner, .. } => {
+                out.insert(name.text.clone());
+                inner.collect_bound_var_names(out);
+            }
+            Self::Constructor { fields, args, .. } => {
+                if let Some(fps) = fields {
+                    for fp in fps {
+                        match &fp.pattern {
+                            Some(inner) => inner.collect_bound_var_names(out),
+                            None => {
+                                out.insert(fp.name.text.clone());
+                            }
+                        }
+                    }
+                }
+                for arg in args {
+                    arg.collect_bound_var_names(out);
+                }
+            }
+            Self::Tuple { elems, .. } => {
+                for e in elems {
+                    e.collect_bound_var_names(out);
+                }
+            }
+            Self::Cons { head, tail, .. } => {
+                head.collect_bound_var_names(out);
+                tail.collect_bound_var_names(out);
+            }
+            Self::Paren { inner, .. } => inner.collect_bound_var_names(out),
+            Self::List { elements, .. } => {
+                for elem in elements {
+                    match elem {
+                        ListPatElem::Elem(p) => p.collect_bound_var_names(out),
+                        ListPatElem::Rest {
+                            bind: Some(name), ..
+                        } => {
+                            out.insert(name.text.clone());
+                        }
+                        ListPatElem::Rest { bind: None, .. } => {}
+                    }
+                }
+            }
+            Self::Record { fields, .. } => {
+                for fp in fields {
+                    match &fp.pattern {
+                        Some(inner) => inner.collect_bound_var_names(out),
+                        None => {
+                            out.insert(fp.name.text.clone());
+                        }
+                    }
+                }
+            }
+            // Nested or-patterns do not parse, but stay total: a nested
+            // alternative contributes the names its own first alternative binds.
+            Self::Or { alts, .. } => {
+                if let Some(first) = alts.first() {
+                    first.collect_bound_var_names(out);
+                }
+            }
+        }
     }
 
     /// Desugar a `Pattern::List` to the equivalent `Cons`/`ListNil`/`Wildcard`

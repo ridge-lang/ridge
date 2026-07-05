@@ -4,7 +4,7 @@
 //! `ariadne` renderer) keys on these strings.  Never renumber an assigned code;
 //! only append new ones at the end.
 //!
-//! ## `ResolveError` (R001..R024, R999; R018 reserved)
+//! ## `ResolveError` (R001..R027, R999; R018 reserved)
 //!
 //! Produced during the name-resolution pass over source files.  Every variant
 //! carries a [`Span`] pointing to the offending source location and a stable
@@ -375,6 +375,22 @@ pub enum ResolveError {
         span: Span,
     },
 
+    /// R027 — the alternatives of an or-pattern `p1 | p2 | …` bind different
+    /// variables. Every alternative must introduce the same set of names so the
+    /// arm body has one consistent binding regardless of which alternative
+    /// matched.
+    #[error(
+        "or-pattern alternatives must bind the same variables: this alternative binds `{bound}` but the first binds `{expected}`"
+    )]
+    OrPatternBindingMismatch {
+        /// The variable names bound by this alternative (comma-joined).
+        bound: String,
+        /// The variable names bound by the first alternative (comma-joined).
+        expected: String,
+        /// Span of the divergent alternative.
+        span: Span,
+    },
+
     /// R999 — two AST nodes were assigned the same `NodeId` (signals a
     /// compiler bug, not a user error).
     #[error("internal error: NodeId collision in `{node_kind}`")]
@@ -419,6 +435,7 @@ impl ResolveError {
             Self::AmbiguousMethodName { .. } => "R024",
             Self::OpaqueConstruct { .. } => "R025",
             Self::OpaquePattern { .. } => "R026",
+            Self::OrPatternBindingMismatch { .. } => "R027",
             Self::InternalNodeIdCollision { .. } => "R999",
         }
     }
@@ -469,6 +486,7 @@ impl ResolveError {
             | Self::AmbiguousMethodName { span, .. }
             | Self::OpaqueConstruct { span, .. }
             | Self::OpaquePattern { span, .. }
+            | Self::OrPatternBindingMismatch { span, .. }
             | Self::InternalNodeIdCollision { span, .. }
             | Self::DuplicateDeclaration {
                 second_span: span, ..

@@ -207,6 +207,12 @@ fn lift_pattern(pat: &Pattern) -> NormPat {
         Pattern::List { elements, span } => {
             lift_pattern(&desugar_list_pattern_for_matrix(elements, *span))
         }
+
+        // Or-patterns are expanded to one matrix row per alternative by the
+        // matrix builders before `lift_pattern` is called on them, and a nested
+        // or-pattern does not parse — so this arm is unreachable in practice.
+        // Lift the first alternative as a total, conservative fallback.
+        Pattern::Or { alts, .. } => alts.first().map_or(NormPat::Wildcard, lift_pattern),
     }
 }
 
@@ -952,7 +958,9 @@ pub fn check_exhaustiveness(
     let mut matrix = PatternMatrix::default();
     for arm in arms {
         if arm.guard.is_none() {
-            matrix.push(vec![lift_pattern(&arm.pattern)]);
+            for row in arm_pattern_rows(&arm.pattern) {
+                matrix.push(row);
+            }
         }
     }
 
@@ -997,22 +1005,36 @@ pub fn check_exhaustiveness(
     // so T017 still fires in that genuine case.
     let mut prefix_matrix = PatternMatrix::default();
     for (i, arm) in arms.iter().enumerate() {
-        let arm_row = vec![lift_pattern(&arm.pattern)];
-        match useful(&prefix_matrix, &arm_row, &column_types, b, arena) {
-            Usefulness::NotUseful => {
-                // This arm is covered by earlier arms.
-                ctx.errors.push(TypeError::RedundantPattern {
-                    arm_index: i,
-                    span: arm.span,
-                });
-            }
-            Usefulness::UsefulWithWitness(_) => {
-                // Arm is useful — add it to the prefix if it has no guard.
-            }
+        // An or-pattern arm contributes one row per alternative. The arm is
+        // redundant only when EVERY alternative is already covered by earlier
+        // arms; if any alternative is still useful, the arm is reachable.
+        let rows = arm_pattern_rows(&arm.pattern);
+        let any_useful = rows.iter().any(|row| {
+            matches!(
+                useful(&prefix_matrix, row, &column_types, b, arena),
+                Usefulness::UsefulWithWitness(_)
+            )
+        });
+        if !any_useful {
+            ctx.errors.push(TypeError::RedundantPattern {
+                arm_index: i,
+                span: arm.span,
+            });
         }
         if arm.guard.is_none() {
-            prefix_matrix.push(arm_row);
+            for row in rows {
+                prefix_matrix.push(row);
+            }
         }
+    }
+}
+
+/// The exhaustiveness-matrix rows contributed by one arm pattern: one row per
+/// alternative for a top-level or-pattern, otherwise a single row.
+fn arm_pattern_rows(pat: &Pattern) -> Vec<Vec<NormPat>> {
+    match pat {
+        Pattern::Or { alts, .. } => alts.iter().map(|a| vec![lift_pattern(a)]).collect(),
+        other => vec![vec![lift_pattern(other)]],
     }
 }
 

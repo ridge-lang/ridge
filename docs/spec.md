@@ -263,6 +263,11 @@ let category =
         n when n < 65  -> "Adult"
         _              -> "Senior"
 
+-- Or-patterns: one arm matches any of several alternatives
+match direction
+    North | South -> "vertical"
+    East | West   -> "horizontal"
+
 -- `as` patterns (bind the whole and the parts)
 match user
     admin @ User { role = Admin } -> handleAdmin admin
@@ -279,6 +284,8 @@ fn distance (x1, y1) (x2, y2) = Float.sqrt ((x2-x1)^2 + (y2-y1)^2)
 ```
 
 **Pattern scope rules:** `let` bindings and lambda parameters accept full patterns (tuples, records with shorthand, constructor patterns, wildcards, as-patterns). Top-level `fn` declarations are restricted to `Ident` or `(Ident: Type)` — destructure inside the body via `let` or `match`.
+
+**Or-patterns** (`p1 | p2 | …`) are valid only at the root of a `match` arm, not nested inside another pattern. Every alternative must bind the same variables, and each shared binding must have the same type across alternatives — so `Plus x | Minus x -> x` is allowed while `Some x | None -> …` is rejected. An arm covers the union of its alternatives for exhaustiveness checking.
 
 ### 3.7. Implicit prelude
 

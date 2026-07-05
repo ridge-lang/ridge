@@ -42,6 +42,13 @@ use crate::{
     ModuleId,
 };
 
+// ── Or-pattern binding-name helper ──────────────────────────────────────────
+
+/// Render a sorted set of names as a comma-separated list for diagnostics.
+fn join_names(names: &std::collections::BTreeSet<String>) -> String {
+    names.iter().cloned().collect::<Vec<_>>().join(", ")
+}
+
 // ── Public entry point ────────────────────────────────────────────────────────
 
 /// Resolve all use-site identifiers in one module.
@@ -91,6 +98,7 @@ pub fn resolve_module_uses(
         errors: &mut errors,
         scope: ScopeStack::with_recording(retain),
         in_actor_state_names: Vec::new(),
+        or_stamp_only: false,
     };
 
     walker.visit_module(ast);
@@ -123,6 +131,12 @@ struct ScopeWalker<'a> {
     /// State field names visible in the current actor body (pushed when we
     /// enter an actor, popped when we leave).
     in_actor_state_names: Vec<(String, Span)>,
+    /// True while binding the non-first alternatives of an or-pattern. In this
+    /// mode a repeated name is expected (every alternative binds the same
+    /// variables), so the duplicate-local check is suppressed and the ident is
+    /// stamped as a reference to the binding introduced by the first
+    /// alternative — keeping goto/rename working across alternatives.
+    or_stamp_only: bool,
 }
 
 // ── Helper methods ────────────────────────────────────────────────────────────
@@ -570,12 +584,18 @@ impl ScopeWalker<'_> {
                 self.stamp(ident.span, NodeKind::Ident, Binding::Local(local_id));
             }
             Err((existing_id, existing_span)) => {
-                // R011: duplicate local in the same scope.
-                self.errors.push(ResolveError::DuplicateLocal {
-                    name: ident.text.clone(),
-                    first_span: existing_span,
-                    second_span: ident.span,
-                });
+                // R011: duplicate local in the same scope — unless we are binding
+                // a later or-pattern alternative, where a repeated name is the
+                // whole point (every alternative binds the same variables). In
+                // that mode the site is still stamped as `Local(existing_id)`, so
+                // it links to the first alternative's binding.
+                if !self.or_stamp_only {
+                    self.errors.push(ResolveError::DuplicateLocal {
+                        name: ident.text.clone(),
+                        first_span: existing_span,
+                        second_span: ident.span,
+                    });
+                }
                 // Still stamp the site as Local(existing_id) so downstream sees a binding.
                 self.stamp(ident.span, NodeKind::Ident, Binding::Local(existing_id));
             }
@@ -745,11 +765,51 @@ impl ScopeWalker<'_> {
                     }
                 }
             }
+            Pattern::Or { alts, .. } => {
+                // Every alternative must bind the same variables (R027).
+                self.check_or_pattern_same_vars(alts);
+                // Bind the first alternative normally; stamp the rest without
+                // re-binding (`or_stamp_only`), so a shared name links to the
+                // first alternative's binding and no spurious R011 fires.
+                if let Some((first, rest)) = alts.split_first() {
+                    self.bind_pattern(first, kind);
+                    let prev = self.or_stamp_only;
+                    self.or_stamp_only = true;
+                    for alt in rest {
+                        self.bind_pattern(alt, kind);
+                    }
+                    self.or_stamp_only = prev;
+                }
+            }
+        }
+    }
+
+    /// Emit R027 for any or-pattern alternative that binds a different set of
+    /// variables than the first alternative.
+    fn check_or_pattern_same_vars(&mut self, alts: &[Pattern]) {
+        let Some(first) = alts.first() else {
+            return;
+        };
+        let expected = first.bound_var_names();
+        for alt in &alts[1..] {
+            let bound = alt.bound_var_names();
+            if bound != expected {
+                self.errors.push(ResolveError::OrPatternBindingMismatch {
+                    bound: join_names(&bound),
+                    expected: join_names(&expected),
+                    span: alt.span(),
+                });
+            }
         }
     }
 
     /// Emit R017 if `ident` shadows an actor state field in the current actor body.
     fn check_r017_state_shadow(&mut self, ident: &Ident) {
+        // Later or-pattern alternatives re-mention names the first alternative
+        // already checked; skip so the warning is not emitted once per alternative.
+        if self.or_stamp_only {
+            return;
+        }
         // Only meaningful when inside an actor body.
         if self.in_actor_state_names.is_empty() {
             return;

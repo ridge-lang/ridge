@@ -5,8 +5,9 @@
 //! diagnostics into LSP messages verbatim. So the promise that an editor shows
 //! no spurious parse squiggle on a spec-legal multi-line union, a signature
 //! wrapped across lines, an `if`/`then` split over two lines, a
-//! trailing-operator continuation, or a multi-line interpolated string
-//! (`$"""..."""`) reduces to a single fact: this pipeline
+//! trailing-operator continuation, a multi-line interpolated string
+//! (`$"""..."""`), or an or-pattern arm (`1 | 2 | 3 ->`) reduces to a single
+//! fact: this pipeline
 //! reports zero lex/parse errors for those forms. This test pins that fact so
 //! the LSP counterpart of the parser/lexer fixes cannot silently regress.
 //!
@@ -66,6 +67,10 @@ const WAVE1_FORMS: &[(&str, &str)] = &[
     (
         "multi-line interpolated string",
         "fn greet (name: Text) -> Text =\n    $\"\"\"\n    Hello, ${name}!\n    \"\"\"\n",
+    ),
+    (
+        "or-pattern in a match arm",
+        "fn classify (n: Int) -> Text =\n    match n\n        0 | 1 | 2 -> \"low\"\n        _ -> \"high\"\n",
     ),
 ];
 

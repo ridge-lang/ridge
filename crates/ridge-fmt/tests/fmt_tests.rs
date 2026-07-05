@@ -80,6 +80,24 @@ fn golden_05_pipes() {
 }
 
 #[test]
+fn or_pattern_survives_formatting() {
+    // An or-pattern arm `p1 | p2 | p3 ->` must round-trip: the alternatives stay
+    // on one line and formatting is idempotent.
+    let src = "\
+fn classify (n: Int) -> Text =
+    match n
+        0 | 1 | 2 -> \"low\"
+        _ -> \"high\"
+";
+    let out = format_source(src).unwrap_or_else(|e| panic!("format_source failed: {e}"));
+    assert!(
+        out.contains("0 | 1 | 2 ->"),
+        "or-pattern alternatives must survive formatting, got:\n{out}"
+    );
+    assert_idempotent("or_pattern", src);
+}
+
+#[test]
 fn golden_06_capability_prefixes() {
     let (input, expected) = fixture!("06_caps");
     assert_formats_to("06_caps", input, expected);

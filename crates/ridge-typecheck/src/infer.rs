@@ -1226,6 +1226,43 @@ pub fn infer_pattern(ctx: &mut InferCtx, b: &BuiltinTyCons, pat: &Pattern, expec
         } => {
             infer_inline_record_pattern(ctx, b, fields, *has_rest, expected_ty, *span);
         }
+
+        // ── Or-pattern ──────────────────────────────────────────────────────────
+        // Every alternative is typed against the same scrutinee type. Name
+        // resolution guarantees each alternative binds the same variables (R027);
+        // here we additionally require each shared binding to have the SAME type
+        // across alternatives — `Plus x | Minus x` is well-typed only when both
+        // `x`s agree — otherwise the body would see an inconsistent binding.
+        Pattern::Or { alts, .. } => {
+            let Some((first, rest)) = alts.split_first() else {
+                return;
+            };
+            infer_pattern(ctx, b, first, expected_ty);
+            // Snapshot the type the first alternative bound each name to.
+            let first_tys: Vec<(String, Type)> = first
+                .bound_var_names()
+                .into_iter()
+                .filter_map(|n| ctx.env.lookup(&n).map(|s| (n, s.ty.clone())))
+                .collect();
+            for alt in rest {
+                infer_pattern(ctx, b, alt, expected_ty);
+                // Unify each shared binding's type in this alternative with the
+                // first alternative's, so all alternatives agree.
+                for (name, first_ty) in &first_tys {
+                    if let Some(scheme) = ctx.env.lookup(name) {
+                        let alt_ty = scheme.ty.clone();
+                        if let Err(e) = unify(ctx, first_ty, &alt_ty) {
+                            ctx.errors.push(attach_span(e, alt.span()));
+                        }
+                    }
+                }
+            }
+            // Restore the first alternative's bindings so the arm body sees one
+            // consistent environment (unification already equated the types).
+            for (name, ty) in first_tys {
+                ctx.env.bind(name, monoscheme(ty));
+            }
+        }
     }
 }
 

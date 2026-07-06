@@ -1,0 +1,16 @@
+fn label (n: Int) -> Text =
+    if n < 0 then "negative"
+    else if n == 0 then "zero"
+    else if n < 10 then "small"
+    else "large"
+
+fn classify (r: Result Int Text) -> Text =
+    match r
+        Ok n when n > 0 -> "positive"
+        Ok _ -> "non-positive"
+        Err _ -> "failed"
+
+fn validateGuard (r: List Int) -> Result Unit Text =
+    guard List.length r == 5 else return Err "length is not 5"
+    guard List.head r == Some 1 else return Err "head is not 1"
+    Ok ()

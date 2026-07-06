@@ -1,12 +1,12 @@
 //! Integration tests for `ridge-fmt`.
 //!
 //! Test plan:
-//! - 16 golden fixture tests (input → expected output).
-//! - 16 idempotency tests (format(format(input)) == format(input)).
+//! - 17 golden fixture tests (input → expected output).
+//! - 17 idempotency tests (format(format(input)) == format(input)).
 //! - 1 round-trip integration test (format every `examples/*.ridge` and
 //!   `crates/ridge-stdlib/stdlib/**/*.ridge`, re-parse, assert AST equivalence).
 //!
-//! Total: 33 tests.
+//! Total: 35 tests.
 
 use ridge_fmt::{format_source, migrate_tests};
 
@@ -163,7 +163,16 @@ fn golden_16_type_decls() {
     assert_formats_to("16_types", input, expected);
 }
 
-// ── 16 Idempotency tests ───────────────────────────────────────────────────────
+#[test]
+fn golden_17_conditionals() {
+    // Locks the flat conditional forms: `else if` stays one line per branch,
+    // `match … when` guards are preserved, and a single-line `guard … else
+    // return` is not force-indented into a block.
+    let (input, expected) = fixture!("17_conditionals");
+    assert_formats_to("17_conditionals", input, expected);
+}
+
+// ── Idempotency tests ───────────────────────────────────────────────────────
 
 #[test]
 fn idempotent_01_imports() {
@@ -259,6 +268,12 @@ fn idempotent_15_list_literals() {
 fn idempotent_16_type_decls() {
     let (input, _) = fixture!("16_types");
     assert_idempotent("16_types", input);
+}
+
+#[test]
+fn idempotent_17_conditionals() {
+    let (input, _) = fixture!("17_conditionals");
+    assert_idempotent("17_conditionals", input);
 }
 
 // ── Round-trip integration test ────────────────────────────────────────────────

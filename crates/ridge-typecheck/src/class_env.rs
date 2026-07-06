@@ -598,11 +598,25 @@ pub fn register_prelude_classes(ct: &mut ClassTable) {
 /// `TyConId` values are the fixed builtin indices assigned by
 /// [`ridge_types::BuiltinTyCons::allocate`]:
 /// `Int=0, Float=1, Bool=2, Text=3, Unit=4, Timestamp=5, …, Ordering=15`.
+pub fn register_prelude_instances(env: &mut InstanceEnv) {
+    register_prelude_instances_gated(env, false);
+}
+
+/// Seed the built-in prelude instances, gated on whether this is the standard
+/// library's own self-compile.
+///
+/// When `is_stdlib` is true the codec base instances that `codec.ridge` declares
+/// from source (`instance Encode Int/Float/Bool/Text`) are NOT seeded here — the
+/// source declaration is authoritative, so seeding them again would collide as a
+/// spurious `T032 OverlappingInstance`. This mirrors the reconciled-tycon
+/// reservation skip in `typecheck_workspace` (both defer to source when the
+/// stdlib compiles itself). Every user build passes `false` and gets the full
+/// prelude, since user code never redeclares these.
 #[expect(
     clippy::too_many_lines,
     reason = "flat sequential env.insert() calls, one per prelude instance; splitting per class would hurt readability without reducing complexity"
 )]
-pub fn register_prelude_instances(env: &mut InstanceEnv) {
+pub fn register_prelude_instances_gated(env: &mut InstanceEnv, is_stdlib: bool) {
     let ds = Span::point(0);
 
     // Helper to build a minimal prelude instance entry.
@@ -729,30 +743,35 @@ pub fn register_prelude_instances(env: &mut InstanceEnv) {
     // JText). Unlike Eq, Encode Float is fine — JSON numbers carry floats.
     // The method bodies are filled in by the deriving pass; here we only record
     // that the instance exists so derived Encode can discharge field constraints.
-    let _ = env.insert(
-        (ENCODE_CLASS, TyConId(0)),
-        prelude_inst("encode"),
-        "Encode",
-        "Int",
-    );
-    let _ = env.insert(
-        (ENCODE_CLASS, TyConId(1)),
-        prelude_inst("encode"),
-        "Encode",
-        "Float",
-    );
-    let _ = env.insert(
-        (ENCODE_CLASS, TyConId(2)),
-        prelude_inst("encode"),
-        "Encode",
-        "Bool",
-    );
-    let _ = env.insert(
-        (ENCODE_CLASS, TyConId(3)),
-        prelude_inst("encode"),
-        "Encode",
-        "Text",
-    );
+    //
+    // Skipped for the stdlib self-compile: `codec.ridge` declares these four base
+    // `Encode` instances from source, so seeding them again would collide (T032).
+    if !is_stdlib {
+        let _ = env.insert(
+            (ENCODE_CLASS, TyConId(0)),
+            prelude_inst("encode"),
+            "Encode",
+            "Int",
+        );
+        let _ = env.insert(
+            (ENCODE_CLASS, TyConId(1)),
+            prelude_inst("encode"),
+            "Encode",
+            "Float",
+        );
+        let _ = env.insert(
+            (ENCODE_CLASS, TyConId(2)),
+            prelude_inst("encode"),
+            "Encode",
+            "Bool",
+        );
+        let _ = env.insert(
+            (ENCODE_CLASS, TyConId(3)),
+            prelude_inst("encode"),
+            "Encode",
+            "Text",
+        );
+    }
 
     // ── Decode instances ──────────────────────────────────────────────────────
     let _ = env.insert(

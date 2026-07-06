@@ -5,15 +5,12 @@
 @ffi("ridge_rt", "mailbox_size", 1)
 fn _mailboxSize (h: Handle a) -> Option Int
 
+-- Exercise the `_mailboxSize` FFI binding at the type level: a test takes no
+-- arguments, and a live `Handle` cannot be constructed without the runtime, so
+-- the call is wrapped in a zero-arity function the runner does not execute.
+-- Functional validation (live → Some, dead → None) lives in the BEAM
+-- end-to-end suite under crates/ridge-codegen-erl/tests/.
+fn _probeMailboxSize (h: Handle a) -> Option Int = _mailboxSize h
+
 -- Smoke: the module compiles end to end through the build pipeline.
 pub fn test_mailbox_size_compiles () -> Result Unit Text = Ok ()
-
--- Exercise the FFI at the type level. The test takes a handle and matches
--- both arms of the Option result; both outcomes are valid since the
--- function may be called on either a live or a dead actor. Functional
--- validation (live → Some, dead → None) lives in the BEAM end-to-end suite
--- under crates/ridge-codegen-erl/tests/.
-pub fn test_mailbox_size_returns_option (h: Handle a) -> Result Unit Text =
-    match _mailboxSize h
-        Some _ -> Ok ()
-        None   -> Ok ()

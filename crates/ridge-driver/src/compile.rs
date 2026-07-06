@@ -92,9 +92,10 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
     let disc_resolve_errors = disc.resolve_errors;
 
     // Surface R001 (no workspace manifest) as C001.
-    let ws_graph = disc.graph.ok_or_else(|| CompileError::NoWorkspaceRoot {
+    let mut ws_graph = disc.graph.ok_or_else(|| CompileError::NoWorkspaceRoot {
         path: options.workspace_root.clone(),
     })?;
+    ws_graph.is_stdlib = options.is_stdlib;
 
     // ── 2.5. Resolve external dependencies (T8) ──────────────────────────────
     // Populate the package cache so import resolution sees cached dep paths
@@ -281,6 +282,36 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
         sources,
         source_maps,
     })
+}
+
+/// Materialise a self-contained workspace holding the embedded standard library
+/// under `ws_root`, ready to be compiled AS the stdlib (`CheckOptions::is_stdlib
+/// = true`).
+///
+/// Used by `ridge test --stdlib` to run the stdlib's own `.test.ridge` suite
+/// against exactly the sources the compiler carries. Only the compiler's own
+/// embedded stdlib is written — never any caller-supplied code — so enabling
+/// `is_stdlib` for this workspace cannot expose `@ffi` to a user project.
+///
+/// The caller owns `ws_root` (typically a [`tempfile::TempDir`]) and keeps it
+/// alive for the duration of the compile.
+///
+/// # Errors
+///
+/// Returns the first I/O error encountered while unpacking the sources or
+/// writing the workspace/project manifests.
+pub fn write_stdlib_test_workspace(ws_root: &std::path::Path) -> std::io::Result<()> {
+    let std_dir = ws_root.join("std");
+    ridge_stdlib::write_stdlib_sources_to(&std_dir.join("src"))?;
+    std::fs::write(
+        ws_root.join("ridge.toml"),
+        "[workspace]\nname = \"stdlib-test\"\nversion = \"0.1.0\"\nmembers = [\"std\"]\n",
+    )?;
+    std::fs::write(
+        std_dir.join("ridge.toml"),
+        "[project]\nname = \"std\"\nversion = \"0.1.0\"\nkind = \"library\"\n\n[project.src]\nroot = \"src\"\n\n[project.exports]\npublic = [\"std.**\"]\n",
+    )?;
+    Ok(())
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

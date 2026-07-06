@@ -52,6 +52,7 @@ pub fn run_workspace(options: RunOptions) -> Result<ProcessExitCode, RunError> {
         profile: options.profile,
         emit: EmitArtefacts::Beam,
         cache_root: None,
+        is_stdlib: false,
     };
     let artefacts = compile_workspace(compile_opts)?;
 

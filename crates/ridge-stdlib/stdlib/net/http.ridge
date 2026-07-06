@@ -142,11 +142,11 @@ pub fn secureCookie (name: Text) (value: Text) -> SecureCookie =
 -- Attribute setters. Each returns a new cookie with one field replaced — the
 -- supported way to override a default now that the record is opaque, since a
 -- record-update on the value is rejected outside this module.
-pub fn withSecure (c: SecureCookie) (on: Bool) -> SecureCookie =
-    c with { secure = on }
+pub fn withSecure (c: SecureCookie) (enabled: Bool) -> SecureCookie =
+    c with { secure = enabled }
 
-pub fn withHttpOnly (c: SecureCookie) (on: Bool) -> SecureCookie =
-    c with { httpOnly = on }
+pub fn withHttpOnly (c: SecureCookie) (enabled: Bool) -> SecureCookie =
+    c with { httpOnly = enabled }
 
 pub fn withSameSite (c: SecureCookie) (mode: Text) -> SecureCookie =
     c with { sameSite = mode }

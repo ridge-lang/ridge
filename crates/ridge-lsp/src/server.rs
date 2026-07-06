@@ -62,8 +62,8 @@ use ridge_resolve::ModuleId;
 use crate::cancel::{Cancel, CancelOnDrop};
 use crate::diagnostics::{source_id_to_uri, to_lsp_diagnostic, uri_key};
 use crate::index::{
-    collect_capability_fixes, collect_syntax_fixes, collect_uncurry_fixes, diff_tokens,
-    CodeLensConfig, WorkspaceIndex,
+    collect_capability_fixes, collect_nesting_hints, collect_syntax_fixes, collect_uncurry_fixes,
+    diff_tokens, CodeLensConfig, WorkspaceIndex,
 };
 
 /// A workspace's retained incremental engine, shared between the state snapshot
@@ -925,6 +925,13 @@ fn compile_blocking(
         let src_text = sources.text(source_key);
         let lsp_diag = to_lsp_diagnostic(diag, &uri, src_text);
         by_file.entry(uri).or_default().push(lsp_diag);
+    }
+
+    // Style hints computed from the AST (not compile errors): deeply nested
+    // `if` staircases in Result/Unit functions get a nudge toward `guard`/`?`.
+    for (uri, diag) in collect_nesting_hints(&index.line_indices, &index.module_uris, &state.typed)
+    {
+        by_file.entry(uri).or_default().push(diag);
     }
 
     Ok(CompileOutput {

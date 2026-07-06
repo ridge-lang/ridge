@@ -27,12 +27,13 @@ use ridge_typecheck::{render_type_with, TypeError, TypedWorkspace};
 use ridge_types::{CapabilitySet, TyConDecl, TyConKind, Type};
 use tower_lsp::lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CodeLens, Command,
-    CompletionItemKind, DocumentHighlight, DocumentHighlightKind, DocumentLink, DocumentSymbol,
-    FileRename, FoldingRange, FoldingRangeKind, InlayHint, InlayHintKind, InlayHintLabel, Location,
-    ParameterInformation, ParameterLabel, Position, PrepareRenameResponse, Range, SelectionRange,
-    SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensEdit,
-    SignatureHelp, SignatureInformation, SymbolInformation, SymbolKind as LspSymbolKind, TextEdit,
-    TypeHierarchyItem, Url, WorkspaceEdit,
+    CompletionItemKind, Diagnostic, DiagnosticSeverity, DocumentHighlight, DocumentHighlightKind,
+    DocumentLink, DocumentSymbol, FileRename, FoldingRange, FoldingRangeKind, InlayHint,
+    InlayHintKind, InlayHintLabel, Location, ParameterInformation, ParameterLabel, Position,
+    PrepareRenameResponse, Range, SelectionRange, SemanticToken, SemanticTokenModifier,
+    SemanticTokenType, SemanticTokens, SemanticTokensEdit, SignatureHelp, SignatureInformation,
+    SymbolInformation, SymbolKind as LspSymbolKind, TextEdit, TypeHierarchyItem, Url,
+    WorkspaceEdit,
 };
 
 use crate::cancel::Cancel;
@@ -447,6 +448,144 @@ impl<'ast> ridge_ast::visit::Visit<'ast> for LambdaFinder<'ast> {
         if let ridge_ast::Expr::Lambda { span, .. } = e {
             if self.target.start <= span.start && span.end <= self.target.end {
                 self.out.push(e);
+            }
+        }
+        ridge_ast::visit::walk_expr(self, e);
+    }
+}
+
+/// Nesting depth at which a `then`-nested `if` staircase in a Result/Unit
+/// function earns a hint. A chain of this many `if`s (or more) drilling through
+/// the `then` branch is flagged; `else if` chains (which nest through `else`)
+/// and shallower nests are left alone.
+const NESTING_HINT_THRESHOLD: usize = 3;
+
+/// Emit a hint for each deeply nested `if` staircase in a Result/Unit function.
+///
+/// The suggested remedies — `guard … else return`, the `?` combinator, or
+/// `match … when` — apply in that context, so the walk is gated on the enclosing
+/// function's return type. Only the outermost `if` of a chain is flagged; the
+/// inner links it subsumes are not re-reported. Diagnostics are returned paired
+/// with the URI of the module they belong to.
+#[must_use]
+pub fn collect_nesting_hints(
+    line_indices: &[LineIndex],
+    module_uris: &[Option<Url>],
+    typed: &TypedWorkspace,
+) -> Vec<(Url, Diagnostic)> {
+    let mut out: Vec<(Url, Diagnostic)> = Vec::new();
+    for (mi, module) in typed.modules.iter().enumerate() {
+        let (Some(Some(uri)), Some(li)) = (module_uris.get(mi), line_indices.get(mi)) else {
+            continue;
+        };
+        let mut finder = StaircaseFinder {
+            in_result_fn: false,
+            consumed: std::collections::HashSet::new(),
+            out: Vec::new(),
+        };
+        ridge_ast::visit::Visit::visit_module(&mut finder, &module.ast);
+        for span in finder.out {
+            let (sl, sc) = li.byte_to_utf16(span.start);
+            let (el, ec) = li.byte_to_utf16(span.end);
+            out.push((
+                uri.clone(),
+                Diagnostic {
+                    range: Range {
+                        start: Position::new(sl, sc),
+                        end: Position::new(el, ec),
+                    },
+                    severity: Some(DiagnosticSeverity::HINT),
+                    source: Some("ridge".to_string()),
+                    message: "deeply nested conditionals — consider `guard … else return`, \
+                              the `?` combinator, or `match … when` to flatten the staircase"
+                        .to_string(),
+                    ..Diagnostic::default()
+                },
+            ));
+        }
+    }
+    out
+}
+
+/// Peel single-statement block wrappers off a branch. An indented `if`/`else`
+/// branch is parsed as `Expr::Block([stmt])`; unwrapping reaches the `if` inside
+/// so a `then`-nested chain can be followed link by link.
+fn unwrap_single_block(e: &ridge_ast::Expr) -> &ridge_ast::Expr {
+    match e {
+        ridge_ast::Expr::Block(b) if b.stmts.len() == 1 => unwrap_single_block(&b.stmts[0]),
+        _ => e,
+    }
+}
+
+/// Whether a function's declared return type is `Result …` or `Unit` — the
+/// context where the `guard`/`?` flattening advice applies.
+fn returns_result_or_unit(ret: Option<&ridge_ast::Type>) -> bool {
+    match ret {
+        Some(ridge_ast::Type::App { head, .. }) => head.text == "Result",
+        Some(ridge_ast::Type::Named { name, .. }) => name.text == "Result" || name.text == "Unit",
+        Some(ridge_ast::Type::Primitive { name, .. }) => {
+            matches!(name, ridge_ast::PrimitiveType::Unit)
+        }
+        _ => false,
+    }
+}
+
+/// Visitor flagging the outermost `if` of every deeply `then`-nested staircase
+/// inside a Result/Unit-returning function.
+struct StaircaseFinder {
+    /// Set while walking a function whose return type is `Result …`/`Unit`.
+    in_result_fn: bool,
+    /// Spans of inner `if`s already subsumed by an outer flagged chain, so they
+    /// are not reported a second time when the walk reaches them.
+    consumed: std::collections::HashSet<(u32, u32)>,
+    /// Anchor spans (`if` … condition) of each outermost flagged staircase.
+    out: Vec<Span>,
+}
+
+impl<'ast> ridge_ast::visit::Visit<'ast> for StaircaseFinder {
+    fn visit_fn_decl(&mut self, d: &'ast ridge_ast::FnDecl) {
+        let prev = self.in_result_fn;
+        self.in_result_fn = returns_result_or_unit(d.ret.as_ref());
+        ridge_ast::visit::walk_fn_decl(self, d);
+        self.in_result_fn = prev;
+    }
+
+    fn visit_expr(&mut self, e: &'ast ridge_ast::Expr) {
+        if self.in_result_fn {
+            if let ridge_ast::Expr::If {
+                cond,
+                then_branch,
+                span,
+                ..
+            } = e
+            {
+                let key = (span.start, span.end);
+                if !self.consumed.contains(&key) {
+                    // Count the `if`s chaining through the `then` branch; an
+                    // `else if` chain nests through `else` and stays at depth 1.
+                    // An indented branch is wrapped in a single-statement block,
+                    // so unwrap those to reach the nested `if`.
+                    let mut depth = 1usize;
+                    let mut chain: Vec<(u32, u32)> = Vec::new();
+                    let mut cursor = unwrap_single_block(then_branch.as_ref());
+                    while let ridge_ast::Expr::If {
+                        then_branch: inner,
+                        span: inner_span,
+                        ..
+                    } = cursor
+                    {
+                        chain.push((inner_span.start, inner_span.end));
+                        cursor = unwrap_single_block(inner.as_ref());
+                        depth += 1;
+                    }
+                    if depth >= NESTING_HINT_THRESHOLD {
+                        self.out.push(Span {
+                            start: span.start,
+                            end: cond.span().end,
+                        });
+                        self.consumed.extend(chain);
+                    }
+                }
             }
         }
         ridge_ast::visit::walk_expr(self, e);

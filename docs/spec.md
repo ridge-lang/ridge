@@ -1590,6 +1590,7 @@ Rules:
 | `std.set` | Persistent set | `empty`, `fromList`, `toList`, `insert`, `remove`, `contains`, `union`, `intersect`, `difference`, `size` |
 | `std.option` | Option helpers | `withDefault`, `map`, `flatMap`, `orElse`, `isSome`, `isNone`, `discard` |
 | `std.result` | Result helpers | `map`, `mapErr`, `flatMap`, `withDefault`, `isOk`, `isErr`, `discard` |
+| `std.test` | Test assertions | `ensure`, `assertEq`, `assertNe`, `assertTrue`, `assertFalse`, `isOk`, `isErr`, `isSome`, `isNone` |
 
 *Note:* `length` is **reserved** for future codepoint-aware semantics. `byteSize` returns the byte count under UTF-8 encoding; character/grapheme counting will arrive with `length` in a later release.
 

@@ -44,7 +44,7 @@ use ridge_ast::{
     decl::{ConstDecl, FnDecl},
     module::Item,
     typeclass::InstanceDecl,
-    Body, Expr, Param, Pattern, Span, Visibility,
+    Attribute, Body, Expr, Param, Pattern, Span, Visibility,
 };
 use ridge_ir::{CtorKind, IrConst, IrExpr, IrFfiFn, IrFn, IrItem, IrLit, IrParam, SymbolRef};
 use ridge_resolve::{NodeId, NodeKind};
@@ -407,10 +407,18 @@ pub fn lower_fn(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrFn {
         // canonical placeholder (same as actor_lower uses for ActorDecl.origin).
         origin: NodeId(0),
         span: decl.span,
-        is_pub: matches!(decl.vis, Visibility::Pub),
+        // A `@test` function is an entry point the test runner calls by name, so
+        // it must be exported from the BEAM module even when it is not `pub`
+        // (per `Attribute::Test`: any visibility is allowed).
+        is_pub: matches!(decl.vis, Visibility::Pub) || has_test_attr(&decl.attrs),
         is_main,
         doc: decl.doc.as_ref().map(|d| d.text.clone()),
     }
+}
+
+/// Whether a function carries the `@test` attribute.
+fn has_test_attr(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|a| matches!(a, Attribute::Test { .. }))
 }
 
 // ── Instance lowering ─────────────────────────────────────────────────────────

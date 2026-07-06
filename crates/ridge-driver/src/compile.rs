@@ -457,8 +457,11 @@ fn compile_stdlib_beams(
             Some(n) => n.clone(),
             None => continue,
         };
-        // Skip test modules (std.list.test, std.option.test, etc.).
-        if fqn.contains(".test") {
+        // Skip test files (`std.list.test`, `std.option.test`, …), whose FQN
+        // carries a trailing `.test` from the `.test.ridge` source. The
+        // `std.test` module is a real distributable module that merely happens
+        // to be named "test"; its FQN contains `.test` too, so guard against it.
+        if fqn.contains(".test") && fqn != "std.test" {
             continue;
         }
         // Skip if this module's .beam already exists (idempotent at module level).

@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use ridge_driver::WorkspaceSourceCache;
 use ridge_lexer::{LineIndex, Span};
+use ridge_parser::ParseError;
 use ridge_resolve::imports::{Binding, ImportResolution, ImportTarget};
 use ridge_resolve::{
     LocalId, LocalKind, ModuleId, NodeId, NodeIdMap, NodeKind, ProjectKind, ResolvedVisibility,
@@ -198,6 +199,11 @@ pub struct WorkspaceIndex {
     /// the signature. Populated after the compile (which holds the structured
     /// type errors); empty otherwise.
     pub capability_fixes: Vec<CapabilityFix>,
+    /// Quick-fixes for the "did you mean" syntax diagnostics (`P034` guard-`if`,
+    /// `P035` record-update braces): each carries a ready-to-apply edit that
+    /// rewrites the form into its Ridge spelling. Populated from the structured
+    /// parse errors; empty otherwise.
+    pub syntax_fixes: Vec<SyntaxFix>,
 }
 
 /// A ready-to-apply quick-fix that declares the inferred capabilities on a
@@ -216,6 +222,94 @@ pub struct CapabilityFix {
     pub new_text: String,
     /// The code-action title shown in the editor.
     pub title: String,
+}
+
+/// A ready-to-apply quick-fix for a "did you mean" syntax diagnostic.
+///
+/// The parser detected a form spelled the way another language spells it (a
+/// match guard `if`, or `{ record with … }`) and carries enough structure to
+/// rewrite it into the Ridge form. Spans are already resolved to LSP ranges.
+#[derive(Debug, Clone)]
+pub struct SyntaxFix {
+    /// The document the offending syntax lives in.
+    pub uri: Url,
+    /// The diagnostic's own range — a code-action request whose cursor overlaps
+    /// this offers the fix.
+    pub decl_range: Range,
+    /// The span the edit replaces.
+    pub edit_range: Range,
+    /// The replacement text.
+    pub new_text: String,
+    /// The stable diagnostic code this fix answers (`"P034"`, `"P035"`), used to
+    /// attach the originating diagnostic to the `CodeAction`.
+    pub code: &'static str,
+    /// The code-action title shown in the editor.
+    pub title: String,
+}
+
+/// Build the "did you mean" syntax quick-fixes for one compile.
+///
+/// Walks the structured parse errors and, for the two that carry a mechanical
+/// rewrite — `P034 GuardKeywordInMatch` (`if` → `when`) and `P035
+/// RecordUpdateSyntax` (`{ r with … }` → `r with { … }`) — produces the edit.
+/// `P033 LetInNotSupported` is deliberately excluded: reflowing `let … in` into
+/// a layout `let` depends on the block's indentation, so it stays message-only
+/// rather than risk emitting still-broken code.
+#[must_use]
+pub fn collect_syntax_fixes(
+    line_indices: &[LineIndex],
+    module_uris: &[Option<Url>],
+    parse_errors: &[(ModuleId, ParseError)],
+) -> Vec<SyntaxFix> {
+    let mut out: Vec<SyntaxFix> = Vec::new();
+    for (mid, err) in parse_errors {
+        let mi = mid.0 as usize;
+        let (Some(Some(uri)), Some(li)) = (module_uris.get(mi), line_indices.get(mi)) else {
+            continue;
+        };
+        let to_range = |span: Span| {
+            let (sl, sc) = li.byte_to_utf16(span.start);
+            let (el, ec) = li.byte_to_utf16(span.end);
+            Range {
+                start: Position::new(sl, sc),
+                end: Position::new(el, ec),
+            }
+        };
+        let fix = match err {
+            ParseError::GuardKeywordInMatch { span } => {
+                let range = to_range(*span);
+                SyntaxFix {
+                    uri: uri.clone(),
+                    decl_range: range,
+                    edit_range: range,
+                    new_text: "when".to_owned(),
+                    code: "P034",
+                    title: "Replace `if` with `when`".to_owned(),
+                }
+            }
+            ParseError::RecordUpdateSyntax {
+                span,
+                open_brace,
+                record,
+            } => {
+                // Replace `{ record with` (from the `{` through the `with`) with
+                // `record with {`; the record's own trailing `}` closes the moved
+                // brace. `{ p with x = 0 }` → `p with { x = 0 }`.
+                let prim = to_range(*span);
+                SyntaxFix {
+                    uri: uri.clone(),
+                    decl_range: prim,
+                    edit_range: to_range(open_brace.merge(*span)),
+                    new_text: format!("{record} with {{"),
+                    code: "P035",
+                    title: format!("Rewrite as `{record} with {{ … }}`"),
+                }
+            }
+            _ => continue,
+        };
+        out.push(fix);
+    }
+    out
 }
 
 /// Client command the "Run" code lens invokes. Argument: the project name.
@@ -355,6 +449,7 @@ impl WorkspaceIndex {
             module_project_names,
             module_runnable,
             capability_fixes: Vec::new(),
+            syntax_fixes: Vec::new(),
         }
     }
 

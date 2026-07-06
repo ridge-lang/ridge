@@ -61,7 +61,9 @@ use ridge_resolve::ModuleId;
 
 use crate::cancel::{Cancel, CancelOnDrop};
 use crate::diagnostics::{source_id_to_uri, to_lsp_diagnostic, uri_key};
-use crate::index::{collect_capability_fixes, diff_tokens, CodeLensConfig, WorkspaceIndex};
+use crate::index::{
+    collect_capability_fixes, collect_syntax_fixes, diff_tokens, CodeLensConfig, WorkspaceIndex,
+};
 
 /// A workspace's retained incremental engine, shared between the state snapshot
 /// and the `spawn_blocking` compile task that owns it for the compile's duration.
@@ -894,6 +896,11 @@ fn compile_blocking(
         &index.module_uris,
         &state.typed,
         &state.type_errors,
+    );
+    index.syntax_fixes = collect_syntax_fixes(
+        &index.line_indices,
+        &index.module_uris,
+        &state.resolved.parse_errors,
     );
     let index = Arc::new(index);
 
@@ -2155,55 +2162,87 @@ impl LanguageServer for RidgeLanguageServer {
         // that the `execute_command` handler applies via `workspace/applyEdit`.
         let literals = self.client_caps().await.code_action_literals;
 
-        let actions: Vec<CodeActionOrCommand> = index
+        // Turn one ready-to-apply fix (edit range + text + the diagnostic code it
+        // answers) into a `CodeAction` literal, or a `Command` bridge for clients
+        // without literal support. Shared by capability (`T014`) and syntax
+        // (`P034`/`P035`) quick-fixes.
+        let build_action = |title: &str, edit_range, new_text: &str, code: &str, decl_range| {
+            let mut changes = HashMap::new();
+            changes.insert(
+                uri.clone(),
+                vec![TextEdit {
+                    range: edit_range,
+                    new_text: new_text.to_owned(),
+                }],
+            );
+            let edit = WorkspaceEdit {
+                changes: Some(changes),
+                ..WorkspaceEdit::default()
+            };
+            if !literals {
+                return CodeActionOrCommand::Command(Command {
+                    title: title.to_owned(),
+                    command: APPLY_EDIT_COMMAND.to_owned(),
+                    arguments: Some(vec![
+                        serde_json::to_value(&edit).unwrap_or(serde_json::Value::Null)
+                    ]),
+                });
+            }
+            let diagnostics: Vec<Diagnostic> = params
+                .context
+                .diagnostics
+                .iter()
+                .filter(|d| {
+                    d.code == Some(NumberOrString::String(code.to_owned()))
+                        && ranges_overlap(d.range, decl_range)
+                })
+                .cloned()
+                .collect();
+            CodeActionOrCommand::CodeAction(CodeAction {
+                title: title.to_owned(),
+                kind: Some(CodeActionKind::QUICKFIX),
+                diagnostics: if diagnostics.is_empty() {
+                    None
+                } else {
+                    Some(diagnostics)
+                },
+                edit: Some(edit),
+                ..CodeAction::default()
+            })
+        };
+
+        let mut actions: Vec<CodeActionOrCommand> = index
             .capability_fixes
             .iter()
             .filter(|fix| uri_key(&fix.uri) == target_key && ranges_overlap(fix.decl_range, range))
             .map(|fix| {
-                let mut changes = HashMap::new();
-                changes.insert(
-                    uri.clone(),
-                    vec![TextEdit {
-                        range: fix.edit_range,
-                        new_text: fix.new_text.clone(),
-                    }],
-                );
-                let edit = WorkspaceEdit {
-                    changes: Some(changes),
-                    ..WorkspaceEdit::default()
-                };
-                if !literals {
-                    return CodeActionOrCommand::Command(Command {
-                        title: fix.title.clone(),
-                        command: APPLY_EDIT_COMMAND.to_owned(),
-                        arguments: Some(vec![
-                            serde_json::to_value(&edit).unwrap_or(serde_json::Value::Null)
-                        ]),
-                    });
-                }
-                let diagnostics: Vec<Diagnostic> = params
-                    .context
-                    .diagnostics
-                    .iter()
-                    .filter(|d| {
-                        d.code == Some(NumberOrString::String("T014".to_owned()))
-                            && ranges_overlap(d.range, fix.decl_range)
-                    })
-                    .cloned()
-                    .collect();
-                CodeActionOrCommand::CodeAction(CodeAction {
-                    title: fix.title.clone(),
-                    kind: Some(CodeActionKind::QUICKFIX),
-                    diagnostics: if diagnostics.is_empty() {
-                        None
-                    } else {
-                        Some(diagnostics)
-                    },
-                    edit: Some(edit),
-                    ..CodeAction::default()
-                })
+                build_action(
+                    &fix.title,
+                    fix.edit_range,
+                    &fix.new_text,
+                    "T014",
+                    fix.decl_range,
+                )
             })
             .collect();
+
+        actions.extend(
+            index
+                .syntax_fixes
+                .iter()
+                .filter(|fix| {
+                    uri_key(&fix.uri) == target_key && ranges_overlap(fix.decl_range, range)
+                })
+                .map(|fix| {
+                    build_action(
+                        &fix.title,
+                        fix.edit_range,
+                        &fix.new_text,
+                        fix.code,
+                        fix.decl_range,
+                    )
+                }),
+        );
 
         if actions.is_empty() {
             Ok(None)

@@ -226,6 +226,8 @@ let n = u.name
 
 The constructor name is **always required** in patterns and construction: write `User { name = n }`, never `{ name = n }`. Shorthand `{ name }` binds to a local variable named `name`, equivalent to `{ name = name }`. Mixed form: `User { name, email = e, age }`.
 
+Record update puts the record first and wraps only the changed fields: `record with { field = value }`. The transposed `{ record with … }` spelling that OCaml, Elm, and F# use is rejected with `P035 RecordUpdateSyntax`.
+
 ```ridge
 -- Union types (algebraic data types)
 type Shape =
@@ -284,6 +286,10 @@ fn distance (x1, y1) (x2, y2) = Float.sqrt ((x2-x1)^2 + (y2-y1)^2)
 ```
 
 **Pattern scope rules:** `let` bindings and lambda parameters accept full patterns (tuples, records with shorthand, constructor patterns, wildcards, as-patterns). Top-level `fn` declarations are restricted to `Ident` or `(Ident: Type)` — destructure inside the body via `let` or `match`.
+
+`let` is a layout binding: the body follows on subsequent lines at the same indentation, and the value is in scope for the rest of the block. Ridge has no `let … in` expression — the ML-family form is rejected with `P033 LetInNotSupported`.
+
+Match guards use `when`, not `if` (`if` is only the conditional expression). A guard written with `if` is rejected with `P034 GuardKeywordInMatch`.
 
 **Or-patterns** (`p1 | p2 | …`) are valid only at the root of a `match` arm, not nested inside another pattern. Every alternative must bind the same variables, and each shared binding must have the same type across alternatives — so `Plus x | Minus x -> x` is allowed while `Some x | None -> …` is rejected. An arm covers the union of its alternatives for exhaustiveness checking.
 

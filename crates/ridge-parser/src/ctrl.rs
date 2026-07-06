@@ -307,6 +307,11 @@ fn parse_match_arm_inner(cur: &mut Cursor<'_>, no_layout: bool) -> Result<MatchA
     let guard = if cur.peek() == &Token::KwWhen {
         cur.bump(); // consume `when`
         Some(parse_expr_pratt(cur)?)
+    } else if cur.peek() == &Token::KwIf {
+        // `<pattern> if <cond> ->` — the guard spelling from most ML-family
+        // languages. Ridge uses `when`; point at the `if` so a quick-fix can
+        // swap it in place rather than reporting a bare "expected `->`".
+        return Err(ParseError::GuardKeywordInMatch { span: cur.span() });
     } else {
         None
     };
@@ -516,6 +521,15 @@ pub(crate) fn parse_let(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
     cur.expect(&Token::Assign)?;
 
     let value = parse_branch_body(cur)?;
+
+    // `let <pat> = <value> in <body>` — the Haskell/OCaml/F#/Elm spelling.
+    // Ridge `let` is layout-based (the body follows on the next line), so `in`
+    // is never valid here. Name the confusion directly instead of letting the
+    // stray `in` surface as a bare "expected <DEDENT>" from the block parser.
+    if cur.peek() == &Token::KwIn {
+        return Err(ParseError::LetInNotSupported { span: cur.span() });
+    }
+
     let span = start.merge(value.span());
 
     Ok(Expr::Let {

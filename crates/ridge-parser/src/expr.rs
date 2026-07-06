@@ -673,6 +673,13 @@ pub(crate) fn parse_expr_atom(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> 
             hint: "unexpected layout token in expression position",
         }),
 
+        // ── `in` in expression position → let-in confusion (P033) ────────────
+        // `in` is a reserved keyword with no grammar production. It reaches an
+        // expression position only when a `let … in` body was written on its
+        // own line (the inline case is caught in `parse_let`). Report the
+        // let-layout guidance directly rather than a generic "unexpected `in`".
+        Token::KwIn => Err(ParseError::LetInNotSupported { span }),
+
         // ── Everything else ───────────────────────────────────────────────────
         _ => Err(ParseError::UnexpectedToken {
             span,
@@ -761,6 +768,18 @@ fn parse_inline_record_literal(cur: &mut Cursor<'_>) -> Result<Expr, ParseError>
             // No comma: must be `}` next.
             break;
         }
+    }
+
+    // `{ record with … }` — the OCaml/Elm/F# record-update spelling. The record
+    // name parses as a lone field-shorthand, so we land here with `with` next
+    // and exactly one value-less field. Ridge writes it `record with { … }`;
+    // name the confusion so a quick-fix can move the record out of the braces.
+    if cur.peek() == &Token::KwWith && fields.len() == 1 && fields[0].value.is_none() {
+        return Err(ParseError::RecordUpdateSyntax {
+            span: cur.span(),
+            open_brace: start_span,
+            record: fields[0].name.text.clone(),
+        });
     }
 
     let end_span = cur.expect(&Token::RBrace)?;

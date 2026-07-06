@@ -4367,6 +4367,97 @@ async fn test_code_action_none_when_clean() {
     );
 }
 
+// ── Test 28b: "did you mean" syntax quick-fixes (P034 / P035) ─────────────────
+
+#[tokio::test]
+async fn test_code_action_rewrites_if_guard_to_when() {
+    // `n if n > 0 ->` is the ML-family guard spelling; Ridge uses `when`. The
+    // parser raises P034 on the `if`, and a quick-fix swaps it for `when`.
+    let src = "pub fn f (x: Int) -> Int =\n    match x\n        n if n > 0 -> 1\n        _ -> 0\n";
+    let (service, _socket, uri) = cap_workspace_fixture(src).await;
+    let server = service.inner();
+
+    // The `if` sits at line 2, columns 10..12.
+    let resp = server
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(2, 10),
+                end: Position::new(2, 10),
+            },
+            context: CodeActionContext::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code_action ok")
+        .expect("a quick-fix is offered on the `if` guard");
+
+    assert_eq!(resp.len(), 1);
+    let CodeActionOrCommand::CodeAction(action) = &resp[0] else {
+        panic!("expected a CodeAction, got {:?}", resp[0]);
+    };
+    assert_eq!(action.title, "Replace `if` with `when`");
+    assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+
+    let edits = action
+        .edit
+        .as_ref()
+        .and_then(|e| e.changes.as_ref())
+        .and_then(|c| c.get(&uri))
+        .expect("an edit for this document");
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].new_text, "when");
+    assert_eq!(edits[0].range.start, Position::new(2, 10));
+    assert_eq!(edits[0].range.end, Position::new(2, 12));
+}
+
+#[tokio::test]
+async fn test_code_action_rewrites_record_update_braces() {
+    // `{ p with x = 0 }` is the OCaml/Elm spelling; Ridge writes it
+    // `p with { x = 0 }`. The parser raises P035 on the `with`, and a quick-fix
+    // moves the record out of the braces.
+    let src = "type Point = { x: Int, y: Int }\n\npub fn move0 (p: Point) -> Point =\n    { p with x = 0 }\n";
+    let (service, _socket, uri) = cap_workspace_fixture(src).await;
+    let server = service.inner();
+
+    // The `with` sits at line 3, columns 8..12.
+    let resp = server
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(3, 9),
+                end: Position::new(3, 9),
+            },
+            context: CodeActionContext::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code_action ok")
+        .expect("a quick-fix is offered on the misplaced `with`");
+
+    assert_eq!(resp.len(), 1);
+    let CodeActionOrCommand::CodeAction(action) = &resp[0] else {
+        panic!("expected a CodeAction, got {:?}", resp[0]);
+    };
+    assert_eq!(action.title, "Rewrite as `p with { … }`");
+    assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+
+    // The edit replaces `{ p with` (line 3, columns 4..12) with `p with {`; the
+    // trailing `}` already present closes the moved brace.
+    let edits = action
+        .edit
+        .as_ref()
+        .and_then(|e| e.changes.as_ref())
+        .and_then(|c| c.get(&uri))
+        .expect("an edit for this document");
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].new_text, "p with {");
+    assert_eq!(edits[0].range.start, Position::new(3, 4));
+    assert_eq!(edits[0].range.end, Position::new(3, 12));
+}
+
 // ── Test 29: signature help (textDocument/signatureHelp) ──────────────────────
 
 fn signature_at(uri: &Url, line: u32, character: u32) -> SignatureHelpParams {

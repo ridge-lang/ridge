@@ -312,6 +312,147 @@ pub fn collect_syntax_fixes(
     out
 }
 
+/// Build the "uncurry a curried lambda" quick-fixes for one compile.
+///
+/// A curried lambda `fn x -> fn y -> body` passed where a higher-order function
+/// expects an uncurried multi-argument callback trips `T003 ArityMismatch` with
+/// the curry hint. For each such error this locates the curried lambda inside
+/// the flagged call and offers the flattened rewrite `fn x y -> body`, so the
+/// habitual ML-family spelling is one keystroke from the Ridge one.
+#[must_use]
+pub fn collect_uncurry_fixes(
+    line_indices: &[LineIndex],
+    module_uris: &[Option<Url>],
+    module_text: &[Arc<str>],
+    typed: &TypedWorkspace,
+    type_errors: &[(ModuleId, TypeError)],
+) -> Vec<SyntaxFix> {
+    let mut out: Vec<SyntaxFix> = Vec::new();
+    for (mid, err) in type_errors {
+        // Only the curried-callback arity mismatch carries the curry hint and an
+        // expected arity of two or more; other T003s (tuples, wrong arg counts)
+        // are left alone.
+        let TypeError::ArityMismatch {
+            expected,
+            hint: Some(_),
+            span,
+            ..
+        } = err
+        else {
+            continue;
+        };
+        if *expected < 2 {
+            continue;
+        }
+        let mi = mid.0 as usize;
+        let (Some(module), Some(Some(uri)), Some(li), Some(text)) = (
+            typed.modules.get(mi),
+            module_uris.get(mi),
+            line_indices.get(mi),
+            module_text.get(mi),
+        ) else {
+            continue;
+        };
+
+        // Collect every lambda inside the flagged call, then keep the one whose
+        // curried chain flattens to exactly the expected arity — its inner links
+        // flatten to fewer, so the match is unambiguous.
+        let mut finder = LambdaFinder {
+            target: *span,
+            out: Vec::new(),
+        };
+        ridge_ast::visit::Visit::visit_module(&mut finder, &module.ast);
+
+        let Some((lam_span, param_spans, body_span)) = finder.out.iter().find_map(|lam| {
+            let (params, body, count) = flatten_lambda_chain(lam)?;
+            (count == *expected).then_some((lam.span(), params, body))
+        }) else {
+            continue;
+        };
+
+        let slice = |s: Span| {
+            text.get(s.start as usize..s.end as usize)
+                .unwrap_or("")
+                .trim()
+        };
+        let params_str = param_spans
+            .iter()
+            .map(|s| slice(*s))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let body_str = slice(body_span);
+        if params_str.is_empty() || body_str.is_empty() {
+            continue;
+        }
+
+        let to_range = |s: Span| {
+            let (sl, sc) = li.byte_to_utf16(s.start);
+            let (el, ec) = li.byte_to_utf16(s.end);
+            Range {
+                start: Position::new(sl, sc),
+                end: Position::new(el, ec),
+            }
+        };
+        out.push(SyntaxFix {
+            uri: uri.clone(),
+            decl_range: to_range(*span),
+            edit_range: to_range(lam_span),
+            new_text: format!("fn {params_str} -> {body_str}"),
+            code: "T003",
+            title: format!("Uncurry to `fn {params_str} -> …`"),
+        });
+    }
+    out
+}
+
+/// Flatten a curried lambda chain `fn a -> fn b -> … -> body`.
+///
+/// Returns the parameter spans (outermost first), the innermost body span, and
+/// the total parameter count — only when the outer lambda's body is itself a
+/// lambda (a genuine curried chain of depth >= 2). A single-level lambda yields
+/// `None`, so an already-uncurried argument is never offered a rewrite. A
+/// parenthesised inner lambda (`fn a -> (fn b -> …)`) is not chased; that form
+/// keeps the plain `T003` hint.
+fn flatten_lambda_chain(lam: &ridge_ast::Expr) -> Option<(Vec<Span>, Span, usize)> {
+    let ridge_ast::Expr::Lambda { params, body, .. } = lam else {
+        return None;
+    };
+    let mut param_spans: Vec<Span> = params
+        .iter()
+        .map(ridge_ast::expr::LambdaParam::span)
+        .collect();
+    let mut cursor = body.as_ref();
+    let mut depth = 1usize;
+    while let ridge_ast::Expr::Lambda { params, body, .. } = cursor {
+        param_spans.extend(params.iter().map(ridge_ast::expr::LambdaParam::span));
+        cursor = body.as_ref();
+        depth += 1;
+    }
+    if depth < 2 {
+        return None;
+    }
+    let count = param_spans.len();
+    Some((param_spans, cursor.span(), count))
+}
+
+/// Visitor collecting every lambda expression whose span lies within a target
+/// span (the flagged call), used to find a curried-lambda argument.
+struct LambdaFinder<'ast> {
+    target: Span,
+    out: Vec<&'ast ridge_ast::Expr>,
+}
+
+impl<'ast> ridge_ast::visit::Visit<'ast> for LambdaFinder<'ast> {
+    fn visit_expr(&mut self, e: &'ast ridge_ast::Expr) {
+        if let ridge_ast::Expr::Lambda { span, .. } = e {
+            if self.target.start <= span.start && span.end <= self.target.end {
+                self.out.push(e);
+            }
+        }
+        ridge_ast::visit::walk_expr(self, e);
+    }
+}
+
 /// Client command the "Run" code lens invokes. Argument: the project name.
 ///
 /// Handled client-side (the editor extension opens a terminal and runs the CLI),

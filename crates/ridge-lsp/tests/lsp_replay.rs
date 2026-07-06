@@ -4458,6 +4458,81 @@ async fn test_code_action_rewrites_record_update_braces() {
     assert_eq!(edits[0].range.end, Position::new(3, 12));
 }
 
+// ── Test 28c: uncurry a curried lambda passed to an uncurried HOF (T003) ──────
+
+#[tokio::test]
+async fn test_code_action_uncurries_curried_lambda() {
+    // `List.foldRight` takes an uncurried 2-arg callback; a curried
+    // `fn x -> fn acc -> …` trips T003 with the curry hint. A quick-fix flattens
+    // it to `fn x acc -> …`.
+    let src = "import std.list as List\n\npub fn sumUp (xs: List Int) -> Int =\n    List.foldRight (fn x -> fn acc -> x + acc) 0 xs\n";
+    let (service, _socket, uri) = cap_workspace_fixture(src).await;
+    let server = service.inner();
+
+    // Cursor inside the flagged call, on line 3.
+    let resp = server
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(3, 25),
+                end: Position::new(3, 25),
+            },
+            context: CodeActionContext::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code_action ok")
+        .expect("a quick-fix is offered on the curried lambda");
+
+    assert_eq!(resp.len(), 1);
+    let CodeActionOrCommand::CodeAction(action) = &resp[0] else {
+        panic!("expected a CodeAction, got {:?}", resp[0]);
+    };
+    assert_eq!(action.title, "Uncurry to `fn x acc -> …`");
+    assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+
+    let edits = action
+        .edit
+        .as_ref()
+        .and_then(|e| e.changes.as_ref())
+        .and_then(|c| c.get(&uri))
+        .expect("an edit for this document");
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].new_text, "fn x acc -> x + acc");
+    // The edit replaces the whole curried lambda `fn x -> fn acc -> x + acc`.
+    assert_eq!(edits[0].range.start, Position::new(3, 20));
+    assert_eq!(edits[0].range.end, Position::new(3, 45));
+}
+
+#[tokio::test]
+async fn test_code_action_none_for_uncurried_lambda() {
+    // The already-uncurried form type-checks (no T003), so there is no
+    // uncurry quick-fix.
+    let src = "import std.list as List\n\npub fn sumUp (xs: List Int) -> Int =\n    List.foldRight (fn x acc -> x + acc) 0 xs\n";
+    let (service, _socket, uri) = cap_workspace_fixture(src).await;
+    let server = service.inner();
+
+    let resp = server
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(3, 25),
+                end: Position::new(3, 25),
+            },
+            context: CodeActionContext::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code_action ok");
+
+    assert!(
+        resp.is_none(),
+        "no uncurry fix on a correctly uncurried lambda"
+    );
+}
+
 // ── Test 29: signature help (textDocument/signatureHelp) ──────────────────────
 
 fn signature_at(uri: &Url, line: u32, character: u32) -> SignatureHelpParams {

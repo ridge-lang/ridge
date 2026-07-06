@@ -1,7 +1,7 @@
--- Private helpers for std.int test suite.
--- FFI bridges replicate int.ridge declarations in local scope (T17+ cross-module
--- typecheck deferred — see ridge-typecheck/src/stdlib_env.rs:87-92).
--- Pure-Ridge helpers replicate int.ridge bodies for wrappingAdd/saturatingAdd.
+import std.test (ensure)
+
+-- Private helpers for std.int test suite: FFI bridges to the raw BEAM builtins
+-- std.int wraps, plus pure-Ridge replicas of wrappingAdd/saturatingAdd.
 @ffi("erlang", "integer_to_binary", 1)
 fn _toText (n: Int) -> Text
 
@@ -161,12 +161,10 @@ pub fn test_percent_operator_lowers_to_mod () -> Result Unit Text =
 
 @test "percent_operator_fizzbuzz_15"
 pub fn test_percent_operator_fizzbuzz_15 () -> Result Unit Text =
-    if (15 % 15) == 0 then
-        if (15 % 3) == 0 then
-            if (15 % 5) == 0 then Ok ()
-            else Err "15 % 5 should be 0"
-        else Err "15 % 3 should be 0"
-    else Err "15 % 15 should be 0"
+    ensure ((15 % 15) == 0) "15 % 15 should be 0" ?
+    ensure ((15 % 3) == 0) "15 % 3 should be 0" ?
+    ensure ((15 % 5) == 0) "15 % 5 should be 0" ?
+    Ok ()
 
 @test "pow_zero_exp_is_one"
 pub fn test_pow_zero_exp_is_one () -> Result Unit Text =

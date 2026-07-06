@@ -175,6 +175,8 @@ let sum = fn x y -> x + y
 users |> List.map (.name)
 ```
 
+A higher-order function's callback parameter is **uncurried**: match a `fn a b -> …` callback with a multi-parameter lambda `fn x y -> …` (or a named function of the same shape). The nested `fn x -> fn y -> …` builds a different value — a function that returns a function — and does not fit an uncurried callback slot, so it is rejected with `T003 ArityMismatch`. Partial application still works the other way: a call may supply fewer arguments than a function declares and get back the function of the rest.
+
 #### Inner function declarations
 
 A `fn` declaration inside another function body may declare its own capability prefix. The inner function's capability set must be a subset of the enclosing function's declared set.

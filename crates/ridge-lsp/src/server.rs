@@ -62,8 +62,8 @@ use ridge_resolve::ModuleId;
 use crate::cancel::{Cancel, CancelOnDrop};
 use crate::diagnostics::{source_id_to_uri, to_lsp_diagnostic, uri_key};
 use crate::index::{
-    collect_capability_fixes, collect_nesting_hints, collect_syntax_fixes, collect_uncurry_fixes,
-    diff_tokens, CodeLensConfig, WorkspaceIndex,
+    collect_capability_fixes, collect_nesting_hints, collect_staircase_fixes, collect_syntax_fixes,
+    collect_uncurry_fixes, diff_tokens, CodeLensConfig, WorkspaceIndex,
 };
 
 /// A workspace's retained incremental engine, shared between the state snapshot
@@ -909,6 +909,12 @@ fn compile_blocking(
         &index.module_text,
         &state.typed,
         &state.type_errors,
+    ));
+    index.syntax_fixes.extend(collect_staircase_fixes(
+        &index.line_indices,
+        &index.module_uris,
+        &index.module_text,
+        &state.typed,
     ));
     let index = Arc::new(index);
 

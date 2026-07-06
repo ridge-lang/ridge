@@ -1,0 +1,54 @@
+-- Tests for std.test's assertion helpers.
+--
+-- Like the other stdlib test suites, these exercise the logic through local
+-- copies of the helpers rather than importing the sibling module (the same
+-- convention the bool/result/... suites follow). User code imports `std.test`
+-- directly; that cross-module path is covered by the ridge-typecheck
+-- `std_test_assertions` suite.
+
+fn _ensure (cond: Bool) (msg: Text) -> Result Unit Text =
+    if cond then Ok () else Err msg
+
+fn _assertEq (actual: a) (expected: a) (label: Text) -> Result Unit Text =
+    if actual == expected then Ok () else Err label
+
+fn _assertNe (actual: a) (other: a) (label: Text) -> Result Unit Text =
+    if actual == other then Err label else Ok ()
+
+fn _isOk (r: Result a e) (label: Text) -> Result Unit Text =
+    match r
+        Ok _  -> Ok ()
+        Err _ -> Err label
+
+fn _isErr (r: Result a e) (label: Text) -> Result Unit Text =
+    match r
+        Ok _  -> Err label
+        Err _ -> Ok ()
+
+pub fn test_smoke_test () -> Result Unit Text = Ok ()
+
+pub fn test_ensure_true_is_ok () -> Result Unit Text =
+    _ensure true "ensure true should be Ok"
+
+pub fn test_ensure_false_is_err () -> Result Unit Text =
+    _isErr (_ensure false "boom") "ensure false should be Err"
+
+pub fn test_assertEq_ok () -> Result Unit Text =
+    _assertEq (2 + 2) 4 "2 + 2 should be 4"
+
+pub fn test_assertEq_mismatch_is_err () -> Result Unit Text =
+    _isErr (_assertEq 1 2 "mismatch") "assertEq 1 2 should fail"
+
+pub fn test_assertNe_ok () -> Result Unit Text =
+    _assertNe 1 2 "1 should differ from 2"
+
+pub fn test_isOk_ok () -> Result Unit Text =
+    _isOk (Ok 1) "Ok 1 is ok"
+
+-- The flat `?`-chained form these helpers exist to enable: a sequence of checks
+-- instead of a rightward-drifting nested-`if` staircase.
+pub fn test_chain_flattens_staircase () -> Result Unit Text =
+    _ensure (1 + 1 == 2) "arithmetic holds" ?
+    _assertEq (3 * 2) 6 "multiplication holds" ?
+    _assertNe "a" "b" "distinct text" ?
+    Ok ()

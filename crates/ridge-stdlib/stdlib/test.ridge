@@ -1,0 +1,57 @@
+-- std.test — assertion helpers for the `ridge test` runner (no stdlib imports).
+--
+-- Every assertion returns Result Unit Text, so they chain with the `?`
+-- propagation operator. That turns a rightward-drifting nested-`if` staircase
+-- into a flat sequence of checks:
+--
+--     ensure (List.length xs == 3) "expected three items" ?
+--     assertEq (List.head xs) (Some 1) "head should be 1" ?
+--     Ok ()
+--
+-- Equality is structural, so assertEq/assertNe hold for any type without a
+-- typeclass bound. The failure message is an explicit label because values
+-- cannot be rendered to text automatically yet.
+
+-- Succeed when cond holds, otherwise fail with msg. The primitive the rest build on.
+pub fn ensure (cond: Bool) (msg: Text) -> Result Unit Text =
+    if cond then Ok () else Err msg
+
+-- Assert two values are structurally equal; label describes what was expected.
+pub fn assertEq (actual: a) (expected: a) (label: Text) -> Result Unit Text =
+    if actual == expected then Ok () else Err label
+
+-- Assert two values are not structurally equal.
+pub fn assertNe (actual: a) (other: a) (label: Text) -> Result Unit Text =
+    if actual == other then Err label else Ok ()
+
+-- Assert a condition is true.
+pub fn assertTrue (cond: Bool) (label: Text) -> Result Unit Text =
+    if cond then Ok () else Err label
+
+-- Assert a condition is false.
+pub fn assertFalse (cond: Bool) (label: Text) -> Result Unit Text =
+    if cond then Err label else Ok ()
+
+-- Assert a Result is Ok.
+pub fn isOk (r: Result a e) (label: Text) -> Result Unit Text =
+    match r
+        Ok _  -> Ok ()
+        Err _ -> Err label
+
+-- Assert a Result is Err.
+pub fn isErr (r: Result a e) (label: Text) -> Result Unit Text =
+    match r
+        Ok _  -> Err label
+        Err _ -> Ok ()
+
+-- Assert an Option is Some.
+pub fn isSome (o: Option a) (label: Text) -> Result Unit Text =
+    match o
+        Some _ -> Ok ()
+        None   -> Err label
+
+-- Assert an Option is None.
+pub fn isNone (o: Option a) (label: Text) -> Result Unit Text =
+    match o
+        Some _ -> Err label
+        None   -> Ok ()

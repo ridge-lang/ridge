@@ -63,6 +63,7 @@ const MODULE_ORDER: &[&str] = &[
     "std.repo",
     "std.migrate",
     "std.raw",
+    "std.test",
 ];
 
 // ── Baseline export table (T10: preserves original API) ───────────────────────
@@ -922,6 +923,22 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "query",
             "queryFirst",
             "exec",
+        ],
+    ),
+    (
+        "std.test",
+        &[
+            // Assertion helpers for the `ridge test` runner; each returns
+            // Result Unit Text so checks chain with the `?` operator.
+            "ensure",
+            "assertEq",
+            "assertNe",
+            "assertTrue",
+            "assertFalse",
+            "isOk",
+            "isErr",
+            "isSome",
+            "isNone",
         ],
     ),
 ];

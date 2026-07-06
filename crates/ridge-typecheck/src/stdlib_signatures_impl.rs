@@ -60,6 +60,9 @@ const STD_SQL: StdlibModuleId = StdlibModuleId(20);
 // std.schema (id 21) is fully reconciled — its schemes come from
 // `reconciled_ctor_scheme` / `reconciled_fn_scheme`, so it has no constant here.
 const STD_QUERY: StdlibModuleId = StdlibModuleId(22);
+// std.data (23), std.repo (24), std.migrate (25), std.raw (26) are reconciled —
+// their schemes come from `reconciled_fn_scheme`, so they have no constant here.
+const STD_TEST: StdlibModuleId = StdlibModuleId(27);
 
 // ── Type-building helpers ─────────────────────────────────────────────────────
 //
@@ -1081,6 +1084,39 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                 ),
             ))
         }
+
+        // ── std.test ──────────────────────────────────────────────────────────
+        // Assertion helpers; each returns Result Unit Text so checks chain
+        // with the `?` operator. Equality is structural, so assertEq/assertNe
+        // are fully polymorphic with no typeclass bound.
+        (STD_TEST, "ensure" | "assertTrue" | "assertFalse") => Some(mono(ty_fn_pure(
+            vec![ty_bool(b), ty_text(b)],
+            ty_result(b, ty_unit(b), ty_text(b)),
+        ))),
+        (STD_TEST, "assertEq" | "assertNe") => Some(poly(
+            vec![A],
+            ty_fn_pure(
+                vec![Type::Var(A), Type::Var(A), ty_text(b)],
+                ty_result(b, ty_unit(b), ty_text(b)),
+            ),
+        )),
+        (STD_TEST, "isOk" | "isErr") => Some(poly(
+            vec![A, B_VAR],
+            ty_fn_pure(
+                vec![
+                    ty_result(b, Type::Var(A), Type::Var(B_VAR)),
+                    ty_text(b),
+                ],
+                ty_result(b, ty_unit(b), ty_text(b)),
+            ),
+        )),
+        (STD_TEST, "isSome" | "isNone") => Some(poly(
+            vec![A],
+            ty_fn_pure(
+                vec![ty_option(b, Type::Var(A)), ty_text(b)],
+                ty_result(b, ty_unit(b), ty_text(b)),
+            ),
+        )),
 
         // ── std.io ────────────────────────────────────────────────────────────
         //

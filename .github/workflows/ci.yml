@@ -241,6 +241,17 @@ jobs:
           RIDGE_TEST_PG_URL: "postgres://postgres:postgres@localhost:5432/ridge_test?sslmode=require"
         run: cargo test -p ridge-codegen-erl -p ridge-driver -p ridge-cli --features beam-runtime --no-fail-fast --locked
 
+      # Compile the whole standard library from its own source and run its
+      # `.test.ridge` suite on BEAM (`ridge test --stdlib`). This is the only lane
+      # that exercises the stdlib self-compile — the reconciled data layer
+      # included — so it must run in CI or it silently rots. The `ridge` binary is
+      # built first because the harness invokes it as a subprocess.
+      - name: Run stdlib self-compile test suite
+        if: steps.changes.outputs.code == 'true'
+        run: |
+          cargo build -p ridge-cli --locked
+          cargo test -p ridge-stdlib --features stdlib-e2e --test stdlib_e2e --no-fail-fast --locked
+
   # Drive the built ridge-lsp binary against a real LSP client (Neovim,
   # headless) over stdio. The in-process replay tests cannot exercise the
   # transport, the initialize handshake against a real client, position-encoding

@@ -263,6 +263,85 @@ You should see a passing test summary.
 
 ---
 
+## Flattening conditionals
+
+Result-returning code — tests especially — tends to drift rightward into a
+nested-`if` "staircase", one level per check:
+
+```ridge
+fn validate (r: List Int) -> Result Unit Text =
+    if List.length r == 5 then
+        if List.head r == Some 1 then
+            if List.length r >= 3 then Ok ()
+            else Err "too short"
+        else Err "head is not 1"
+    else Err "length is not 5"
+```
+
+Each new check indents the success path further and pushes its failure to a
+matching `else` far below. Ridge has four flatter forms; reach for whichever
+fits.
+
+**`guard … else return`** exits early when a check fails, so the happy path
+stays at one indent level:
+
+```ridge
+fn validate (r: List Int) -> Result Unit Text =
+    guard List.length r == 5 else return Err "length is not 5"
+    guard List.head r == Some 1 else return Err "head is not 1"
+    guard List.length r >= 3 else return Err "too short"
+    Ok ()
+```
+
+**The `?` operator** propagates an `Err` (or `None`) and unwraps an `Ok`, so a
+`Result`-returning helper chains without any branching. The `std.test` module
+provides those helpers for assertions:
+
+```ridge
+import std.list as List
+import std.test (ensure, assertEq)
+
+@test "list has the expected shape"
+fn validate () -> Result Unit Text =
+    let r = [1, 2, 3, 4, 5]
+    ensure (List.length r == 5) "length is not 5" ?
+    assertEq (List.head r) (Some 1) "head is not 1" ?
+    ensure (List.length r >= 3) "too short" ?
+    Ok ()
+```
+
+`std.test` covers `ensure`, `assertEq`/`assertNe`, `assertTrue`/`assertFalse`,
+and `isOk`/`isErr`/`isSome`/`isNone`. Equality is structural, so `assertEq`
+works on any type; the string is the message shown when the check fails.
+
+**`else if`** is the flat form for choosing a value among several conditions
+(no early exit):
+
+```ridge
+fn label (n: Int) -> Text =
+    if n < 0 then "negative"
+    else if n == 0 then "zero"
+    else if n < 10 then "small"
+    else "large"
+```
+
+**`match … when`** pairs pattern matching with guards when the branches
+inspect a value's shape:
+
+```ridge
+fn classify (r: Result Int Text) -> Text =
+    match r
+        Ok n when n > 0 -> "positive"
+        Ok _            -> "non-positive"
+        Err _           -> "failed"
+```
+
+The language server flags a conditional that nests three or more levels deep in
+a `Result`/`Unit` function with a hint, so a staircase is easy to spot and
+flatten.
+
+---
+
 ## Typeclasses
 
 Typeclasses let you write functions that work across multiple types without

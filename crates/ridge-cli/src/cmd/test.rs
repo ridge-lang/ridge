@@ -60,6 +60,16 @@ pub struct TestArgs {
     #[arg(long, value_name = "NAME")]
     pub member: Option<String>,
 
+    /// Internal: run the embedded standard library's own test suite.
+    ///
+    /// Unpacks the stdlib sources the compiler carries and compiles them as the
+    /// standard library (permitting `@ffi`), then runs their `@test`/`test_*`
+    /// functions. It only ever compiles the compiler's own stdlib — never the
+    /// caller's code — so it cannot be used to enable `@ffi` in a user project.
+    /// Hidden from `--help`; used by the stdlib test lane.
+    #[arg(long, hide = true)]
+    pub stdlib: bool,
+
     /// Filter tests by glob pattern matched against `Module.test_fn_name`.
     ///
     /// Supports `*` (any sequence) and `?` (any single character).
@@ -85,11 +95,36 @@ pub struct TestArgs {
 /// Returns a [`CliError`] for workspace-structure problems.  Test failures and
 /// compile errors are handled internally via [`process::exit`].
 pub fn execute(args: &TestArgs, cwd: &Path) -> Result<(), CliError> {
+    // ── 0. --stdlib: materialise the embedded stdlib as its own workspace ──────
+    // The tempdir must outlive the whole run, so it is bound here. Only the
+    // compiler's own embedded sources are written, so compiling them as the
+    // stdlib (permitting @ffi) never touches the caller's code.
+    let stdlib_ws = if args.stdlib {
+        let td = tempfile::TempDir::new().unwrap_or_else(|e| {
+            eprintln!("error: could not create a tempdir for the stdlib test workspace: {e}");
+            process::exit(1);
+        });
+        if let Err(e) = ridge_driver::write_stdlib_test_workspace(td.path()) {
+            eprintln!("error: could not unpack the embedded stdlib for testing: {e}");
+            process::exit(1);
+        }
+        Some(td)
+    } else {
+        None
+    };
+
     // ── 1. Locate workspace root ──────────────────────────────────────────────
-    let workspace_root = find_workspace_root(cwd).ok_or(CliError::NoWorkspaceRoot)?;
+    let workspace_root = match stdlib_ws {
+        Some(ref td) => td.path().to_path_buf(),
+        None => find_workspace_root(cwd).ok_or(CliError::NoWorkspaceRoot)?,
+    };
 
     // ── 2. Typecheck workspace (no erlc needed yet) ────────────────────────────
     let mut check_opts = CheckOptions::new(workspace_root.clone());
+    // Compile the embedded stdlib AS the stdlib: permits @ffi and takes the
+    // reconciled types / base codec instances from source. Set only on the
+    // internal --stdlib path, never from user-facing input.
+    check_opts.is_stdlib = args.stdlib;
     if let Some(ref name) = args.member {
         check_opts.members = Some(vec![name.clone()]);
     }
@@ -155,6 +190,9 @@ pub fn execute(args: &TestArgs, cwd: &Path) -> Result<(), CliError> {
 
     // ── 6. Compile workspace (needs erlc on PATH) ──────────────────────────────
     let mut compile_opts = CompileOptions::new(workspace_root.clone());
+    // Same internal stdlib flag as the typecheck pass: the compile re-runs the
+    // pipeline, so it must also treat the embedded stdlib as the stdlib.
+    compile_opts.is_stdlib = args.stdlib;
     if let Some(ref name) = args.member {
         compile_opts.members = Some(vec![name.clone()]);
     }

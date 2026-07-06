@@ -54,11 +54,11 @@ pub fn values (m: Map k v) -> List v
 
 -- Apply a function to each value, returning a new map with the same keys.
 @ffi("maps", "map", 2)
-pub fn map (f: fn k -> v -> w) (m: Map k v) -> Map k w
+pub fn map (f: fn k v -> w) (m: Map k v) -> Map k w
 
 -- Keep entries for which the predicate returns true.
 @ffi("maps", "filter", 2)
-pub fn filter (p: fn k -> v -> Bool) (m: Map k v) -> Map k v
+pub fn filter (p: fn k v -> Bool) (m: Map k v) -> Map k v
 
 -- Return the number of entries in the map.
 @ffi("maps", "size", 1)

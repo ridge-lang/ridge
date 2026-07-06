@@ -7,17 +7,20 @@
 @ffi("ridge_rt", "proc_run", 2)
 fn _procRun (cmd: Text) (args: List Text) -> Result ProcOutput Error
 
+@test "smoke_proc"
 pub fn test_smoke_proc () -> Result Unit Text = Ok ()
 
 -- proc.run "erl" ["-version"] succeeds with exitCode 0 or non-zero but Ok.
 -- erl is guaranteed present (it spawned us). Some OTP builds write version to
 -- stderr with exitCode 0; others with exitCode != 0. We only assert Ok _ (no crash).
+@test "run_erl_version_succeeds"
 pub fn proc test_run_erl_version_succeeds () -> Result Unit Text =
     match _procRun "erl" ["-version"]
         Err _ -> Err "proc.run erl -version should return Ok"
         Ok _ -> Ok ()
 
 -- proc.run of a nonexistent command returns Err.
+@test "run_nonexistent_returns_err"
 pub fn proc test_run_nonexistent_returns_err () -> Result Unit Text =
     match _procRun "this_command_does_not_exist_ridge_test" []
         Err _ -> Ok ()
@@ -30,6 +33,7 @@ pub fn proc test_run_nonexistent_returns_err () -> Result Unit Text =
 -- reads stdin and hangs (observed in ADO #212 Linux container). `-noshell` +
 -- `-eval 'halt(1).'` is deterministic across all erl builds and avoids any
 -- inner-quote argument that PowerShell 5.1 (Windows) would strip.
+@test "run_captures_stderr"
 pub fn proc test_run_captures_stderr () -> Result Unit Text =
     match _procRun "erl" ["-noshell", "-eval", "halt(1)."]
         Err _ -> Err "spawn erl -noshell -eval halt(1) shouldn't fail"

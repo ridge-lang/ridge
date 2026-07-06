@@ -175,6 +175,8 @@ let sum = fn x y -> x + y
 users |> List.map (.name)
 ```
 
+A higher-order function's callback parameter is **uncurried**: match a `fn a b -> …` callback with a multi-parameter lambda `fn x y -> …` (or a named function of the same shape). The nested `fn x -> fn y -> …` builds a different value — a function that returns a function — and does not fit an uncurried callback slot, so it is rejected with `T003 ArityMismatch`. Partial application still works the other way: a call may supply fewer arguments than a function declares and get back the function of the rest.
+
 #### Inner function declarations
 
 A `fn` declaration inside another function body may declare its own capability prefix. The inner function's capability set must be a subset of the enclosing function's declared set.
@@ -226,6 +228,8 @@ let n = u.name
 
 The constructor name is **always required** in patterns and construction: write `User { name = n }`, never `{ name = n }`. Shorthand `{ name }` binds to a local variable named `name`, equivalent to `{ name = name }`. Mixed form: `User { name, email = e, age }`.
 
+Record update puts the record first and wraps only the changed fields: `record with { field = value }`. The transposed `{ record with … }` spelling that OCaml, Elm, and F# use is rejected with `P035 RecordUpdateSyntax`.
+
 ```ridge
 -- Union types (algebraic data types)
 type Shape =
@@ -263,6 +267,11 @@ let category =
         n when n < 65  -> "Adult"
         _              -> "Senior"
 
+-- Or-patterns: one arm matches any of several alternatives
+match direction
+    North | South -> "vertical"
+    East | West   -> "horizontal"
+
 -- `as` patterns (bind the whole and the parts)
 match user
     admin @ User { role = Admin } -> handleAdmin admin
@@ -279,6 +288,12 @@ fn distance (x1, y1) (x2, y2) = Float.sqrt ((x2-x1)^2 + (y2-y1)^2)
 ```
 
 **Pattern scope rules:** `let` bindings and lambda parameters accept full patterns (tuples, records with shorthand, constructor patterns, wildcards, as-patterns). Top-level `fn` declarations are restricted to `Ident` or `(Ident: Type)` — destructure inside the body via `let` or `match`.
+
+`let` is a layout binding: the body follows on subsequent lines at the same indentation, and the value is in scope for the rest of the block. Ridge has no `let … in` expression — the ML-family form is rejected with `P033 LetInNotSupported`.
+
+Match guards use `when`, not `if` (`if` is only the conditional expression). A guard written with `if` is rejected with `P034 GuardKeywordInMatch`.
+
+**Or-patterns** (`p1 | p2 | …`) are valid only at the root of a `match` arm, not nested inside another pattern. Every alternative must bind the same variables, and each shared binding must have the same type across alternatives — so `Plus x | Minus x -> x` is allowed while `Some x | None -> …` is rejected. An arm covers the union of its alternatives for exhaustiveness checking.
 
 ### 3.7. Implicit prelude
 
@@ -456,7 +471,7 @@ Io.println $"User ${user.name} has ${user.age} years"
 Io.println $"Total: ${items |> List.map (.price) |> List.sum}"
 ```
 
-String interpolation dispatches through the `ToText` class (§5.6). Built-in types (`Int`, `Float`, `Bool`, `Text`, `Timestamp`) have prelude instances. User-defined types become interpolatable by adding `deriving (ToText)` to the type declaration or by writing an explicit `instance ToText T`. See §5.6.
+String interpolation dispatches through the `ToText` class (§5.6). Built-in types (`Int`, `Float`, `Bool`, `Text`, `Timestamp`) have prelude instances. User-defined types become interpolatable by adding `deriving (ToText)` to the type declaration or by writing an explicit `instance ToText T`. See §5.6. Interpolation also has a multi-line block form, `$"""..."""` (§4.1.1).
 
 ### 3.11. Modules and imports
 
@@ -580,7 +595,16 @@ Syntax rules:
 - Indentation stripping: the column position of the closing `"""` defines the margin. That many leading spaces are stripped from every interior line. A line with fewer spaces than the margin is a parse error.
 - Blank interior lines are allowed and survive as empty lines in the value.
 - Standard escape sequences are processed normally — triple-quoted strings are cooked, not raw.
-- A triple-quoted string is a plain string literal: it does not interpolate. Interpolation remains the `$"..."` form (§3.10); an interpolated multi-line literal (`$"""..."""`) is not provided.
+- A plain triple-quoted string does not interpolate: a `${...}` sequence is literal text. For interpolation spanning multiple lines use the `$"""..."""` form below.
+
+**Interpolated multi-line strings (`$"""..."""`)** combine the two: the triple-quote block layout with the `${...}` holes of `$"..."` (§3.10). The dedent rules are identical to `"""` — the opener is followed immediately by a newline, the closing `"""` sets the margin, and interior lines are dedented by it — and each `${...}` hole is evaluated through `ToText` exactly as in the single-line form.
+
+```ridge
+let body = $"""
+    Dear ${user.name},
+    Your balance is ${account.balance}.
+    """
+```
 
 **Raw strings (`r"..."`, `r#"..."#`, `r##"..."##`)** disable escape processing entirely. Every byte between the delimiters is literal.
 
@@ -1566,6 +1590,7 @@ Rules:
 | `std.set` | Persistent set | `empty`, `fromList`, `toList`, `insert`, `remove`, `contains`, `union`, `intersect`, `difference`, `size` |
 | `std.option` | Option helpers | `withDefault`, `map`, `flatMap`, `orElse`, `isSome`, `isNone`, `discard` |
 | `std.result` | Result helpers | `map`, `mapErr`, `flatMap`, `withDefault`, `isOk`, `isErr`, `discard` |
+| `std.test` | Test assertions | `ensure`, `assertEq`, `assertNe`, `assertTrue`, `assertFalse`, `isOk`, `isErr`, `isSome`, `isNone` |
 
 *Note:* `length` is **reserved** for future codepoint-aware semantics. `byteSize` returns the byte count under UTF-8 encoding; character/grapheme counting will arrive with `length` in a later release.
 

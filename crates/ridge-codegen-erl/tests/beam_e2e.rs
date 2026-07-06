@@ -1399,3 +1399,99 @@ fn beam_e2e_record_rest_ignores_other_fields() {
         "expected the bound name 'Ada', got:\n{stdout}"
     );
 }
+
+// ── Or-pattern BEAM e2e ──────────────────────────────────────────────────────
+
+/// Literal or-pattern `0 | 1 | 2 -> …`: every alternative shares the arm body.
+const OR_PATTERN_LITERAL_SOURCE: &str = r##"
+import std.io as Io
+
+fn classify (n: Int) -> Text =
+    match n
+        0 | 1 | 2 -> "low"
+        _ -> "high"
+
+fn io main () -> Result Unit Text =
+    let _ = Io.println (classify 1)
+    let _ = Io.println (classify 9)
+    Ok ()
+"##;
+
+#[test]
+fn beam_e2e_or_pattern_literal_alternatives() {
+    let (stdout, _) = run_inline_actor_test("OrPatternLiteral", OR_PATTERN_LITERAL_SOURCE);
+    assert!(
+        stdout.contains("low"),
+        "expected 'low' for classify 1 (matches `1` alternative), got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("high"),
+        "expected 'high' for classify 9 (falls through), got:\n{stdout}"
+    );
+}
+
+/// Binding or-pattern `Plus x | Minus x -> x`: both alternatives bind `x` (same
+/// type), so the shared body can use it regardless of which alternative matched.
+const OR_PATTERN_BINDING_SOURCE: &str = r##"
+import std.io as Io
+import std.int as Int
+
+type Token = Plus Int | Minus Int
+
+fn amount (t: Token) -> Int =
+    match t
+        Plus x | Minus x -> x
+
+fn io main () -> Result Unit Text =
+    Io.println $"a=${Int.toText (amount (Plus 5))} b=${Int.toText (amount (Minus 7))}"
+    Ok ()
+"##;
+
+#[test]
+fn beam_e2e_or_pattern_shared_binding() {
+    let (stdout, _) = run_inline_actor_test("OrPatternBinding", OR_PATTERN_BINDING_SOURCE);
+    assert!(
+        stdout.contains("a=5"),
+        "expected 'a=5' from `Plus x -> x` binding x=5, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("b=7"),
+        "expected 'b=7' from `Minus x -> x` binding x=7, got:\n{stdout}"
+    );
+}
+
+// ── Multi-line interpolation BEAM e2e ────────────────────────────────────────
+
+/// A `$"""..."""` block dedents to the closing margin and evaluates its `${…}`
+/// holes at runtime, producing a value that carries the interior newline.
+const MULTILINE_INTERP_SOURCE: &str = r##"
+import std.io as Io
+import std.int as Int
+
+fn io main () -> Result Unit Text =
+    let n = 42
+    let msg = $"""
+        Value is ${Int.toText n}.
+        Second line.
+        """
+    Io.println msg
+"##;
+
+#[test]
+fn beam_e2e_multiline_interpolation_dedents_and_evaluates_holes() {
+    let (stdout, _) = run_inline_actor_test("MultilineInterp", MULTILINE_INTERP_SOURCE);
+    // The 8-space margin is stripped and the hole prints the integer.
+    assert!(
+        stdout.contains("Value is 42."),
+        "expected the dedented, interpolated first line, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Second line."),
+        "expected the second interior line, got:\n{stdout}"
+    );
+    // The interior newline survives: the two lines are on separate output lines.
+    assert!(
+        stdout.contains("Value is 42.\nSecond line."),
+        "expected the interior newline to survive between the two lines, got:\n{stdout:?}"
+    );
+}

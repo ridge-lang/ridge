@@ -19,13 +19,14 @@
 )]
 
 use assert_cmd::Command;
-use std::path::Path;
 
-// ── Thresholds (updated per plan phase) ─────────────────────────��────────────
+// ── Thresholds ────────────────────────────────────────────────────────────────
 
-/// Minimum passing-test count for G-C (Phase C gate — G4 final gate, >= 151 tests).
-/// Phase C added capability-bearing tests for io, fs, env, cli, time, random, proc, json.
-const MIN_PASSING: u64 = 151;
+/// Floor for the number of stdlib tests that must run and pass. A sanity check
+/// that the suite actually compiled and executed (the `failed == 0` assertion is
+/// the real regression catch); kept well below the current count (~235) so
+/// legitimate churn does not trip it, but a wholesale failure to compile does.
+const MIN_PASSING: u64 = 200;
 
 // ── Harness ─────────────────────────────────────────────────────────────��─────
 
@@ -41,42 +42,17 @@ const MIN_PASSING: u64 = 151;
 /// 4. Parse the summary line and assert `passed >= MIN_PASSING` and `failed == 0`.
 #[test]
 fn stdlib_e2e_runs_all_tests() {
-    // ── 1. Locate the stdlib source directory ──────────────────────────────��─
-    let stdlib_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib");
-    assert!(
-        stdlib_dir.is_dir(),
-        "stdlib directory not found at {}",
-        stdlib_dir.display()
-    );
-
-    // Normalise path separators for embedding in TOML (TOML is text; on Windows
-    // backslashes would be treated as escape sequences inside a quoted string).
-    let stdlib_str = stdlib_dir.to_string_lossy().replace('\\', "/");
-
-    // ── 2. Create a per-run tempdir holding only the two TOML manifests ──────
-    // The `.ridge` and `.test.ridge` source files stay in their canonical on-disk
-    // location; the driver reads them directly via the absolute `src_root`.
-    // Absolute-path indirection — source files stay in their on-disk location; no tempdir copy.
-    let td = tempfile::TempDir::new().expect("create tempdir for stdlib-e2e workspace");
-    let ws_root = td.path();
-
-    // Workspace manifest.
-    let ws_toml = "[workspace]\nname = \"stdlib-e2e\"\nversion = \"0.1.0\"\nmembers = [\"std\"]\n";
-    std::fs::write(ws_root.join("ridge.toml"), ws_toml).expect("write workspace ridge.toml");
-
-    // Project manifest: src_root points at the real stdlib directory.
-    std::fs::create_dir_all(ws_root.join("std")).expect("create std/ project dir");
-    let proj_toml = format!(
-        "[project]\nname = \"std\"\nversion = \"0.1.0\"\nkind = \"library\"\n\n[project.src]\nroot = \"{stdlib_str}\"\n\n[project.exports]\npublic = [\"std.**\"]\n"
-    );
-    std::fs::write(ws_root.join("std").join("ridge.toml"), &proj_toml)
-        .expect("write project ridge.toml");
-
-    // ── 3. Invoke `ridge test` against the fixture workspace ─────────────────
+    // ── 1. Compile + run the embedded stdlib's own test suite on BEAM ─────────
+    // `ridge test --stdlib` unpacks the sources the compiler carries and compiles
+    // them AS the standard library (permitting `@ffi`, taking the reconciled
+    // types and base codec instances from source), then runs every `.test.ridge`
+    // function in a fresh BEAM process. It is self-contained, so no on-disk
+    // workspace fixture is needed. This exercises the whole stdlib self-compile
+    // path — the modern reconciled data layer included.
     let output = Command::cargo_bin("ridge")
         .expect("ridge binary not found — run `cargo build -p ridge-cli` first")
         .arg("test")
-        .current_dir(ws_root)
+        .arg("--stdlib")
         .output()
         .expect("failed to spawn ridge process");
 

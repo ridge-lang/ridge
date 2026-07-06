@@ -60,17 +60,21 @@ fn _textContainsChar (needle: Text) (s: Text) -> Bool =
     let sLen = _byteSize s
     _scanContains needle s nLen sLen 0
 
+@test "smoke_float"
 pub fn test_smoke_float () -> Result Unit Text = Ok ()
 
+@test "toText_integer_value"
 pub fn test_toText_integer_value () -> Result Unit Text =
     let out = _toText 3.0
     if _textContainsChar "3" out then Ok ()
     else Err "Float.toText 3.0 should contain 3"
 
+@test "parse_round_trip"
 pub fn test_parse_round_trip () -> Result Unit Text =
     if _parse "3.14" == None then Err "Float.parse 3.14 should be Some"
     else Ok ()
 
+@test "parse_integer_looking_string"
 pub fn test_parse_integer_looking_string () -> Result Unit Text =
     match _parse "100"
         None -> Err "Float.parse \"100\" should be Some 100.0, not None"
@@ -78,47 +82,57 @@ pub fn test_parse_integer_looking_string () -> Result Unit Text =
             if _eqFloat v 100.0 then Ok ()
             else Err "Float.parse \"100\" should equal 100.0"
 
+@test "parse_invalid_returns_none"
 pub fn test_parse_invalid_returns_none () -> Result Unit Text =
     if _parse "abc" == None then Ok ()
     else Err "Float.parse \"abc\" should be None"
 
+@test "parse_empty_returns_none"
 pub fn test_parse_empty_returns_none () -> Result Unit Text =
     if _parse "" == None then Ok ()
     else Err "Float.parse \"\" should be None"
 
+@test "fromInt"
 pub fn test_fromInt () -> Result Unit Text =
     if _eqFloat (_fromInt 5) 5.0 then Ok ()
     else Err "Float.fromInt 5 should equal 5.0"
 
+@test "round_half_away_from_zero"
 pub fn test_round_half_away_from_zero () -> Result Unit Text =
     if _round 1.5 == 2 then Ok ()
     else Err "Float.round 1.5 should be 2"
 
+@test "floor_negative"
 pub fn test_floor_negative () -> Result Unit Text =
     let neg1_5 = 0.0 - 1.5
     if _floor neg1_5 == -2 then Ok ()
     else Err "Float.floor (-1.5) should be -2"
 
+@test "floor_exact_integer"
 pub fn test_floor_exact_integer () -> Result Unit Text =
     let neg2_0 = 0.0 - 2.0
     if _floor neg2_0 == -2 then Ok ()
     else Err "Float.floor (-2.0) should be -2"
 
+@test "ceil_positive"
 pub fn test_ceil_positive () -> Result Unit Text =
     if _ceil 1.5 == 2 then
         if _ceil 2.0 == 2 then Ok ()
         else Err "Float.ceil 2.0 should be 2"
     else Err "Float.ceil 1.5 should be 2"
 
+@test "sqrt_perfect_square"
 pub fn test_sqrt_perfect_square () -> Result Unit Text =
     if _eqFloat (_sqrt 4.0) 2.0 then Ok ()
     else Err "Float.sqrt 4.0 should equal 2.0"
 
+@test "abs_negative"
 pub fn test_abs_negative () -> Result Unit Text =
     let neg3_0 = 0.0 - 3.0
     if _eqFloat (_abs neg3_0) 3.0 then Ok ()
     else Err "Float.abs (-3.0) should equal 3.0"
 
+@test "arithmetic_round_trip"
 pub fn test_arithmetic_round_trip () -> Result Unit Text =
     let result = ((1.0 + 1.0) * 3.0 - 2.0) / 2.0
     if _eqFloat result 2.0 then Ok ()

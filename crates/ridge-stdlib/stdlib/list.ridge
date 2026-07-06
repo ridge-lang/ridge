@@ -55,11 +55,11 @@ pub fn filterMap (f: fn a -> Option b) (xs: List a) -> List b =
 -- lists:foldl/3 calls its callback as (elem, acc), so a direct FFI bridge
 -- silently swapped the arguments at every iteration.
 @ffi("ridge_rt", "list_fold", 3)
-pub fn fold (f: fn b -> a -> b) (acc: b) (xs: List a) -> b
+pub fn fold (f: fn b a -> b) (acc: b) (xs: List a) -> b
 
 -- Fold right over a list with an initial accumulator.
 @ffi("lists", "foldr", 3)
-pub fn foldRight (f: fn a -> b -> b) (acc: b) (xs: List a) -> b
+pub fn foldRight (f: fn a b -> b) (acc: b) (xs: List a) -> b
 
 -- Reverse a list.
 @ffi("lists", "reverse", 1)
@@ -143,7 +143,7 @@ pub fn zip (xs: List a) (ys: List b) -> List (a, b)
 
 -- Zip two lists with a combining function.
 @ffi("lists", "zipwith", 3)
-pub fn zipWith (f: fn a -> b -> r) (xs: List a) (ys: List b) -> List r
+pub fn zipWith (f: fn a b -> r) (xs: List a) (ys: List b) -> List r
 
 -- Return true if the element is in the list (structural equality).
 @ffi("lists", "member", 2)

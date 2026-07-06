@@ -60,6 +60,34 @@ fn test_canonical_smoke() {
         .stdout(contains("passed"));
 }
 
+// ── Regression: std.test module + non-pub @test run on BEAM ──────────────────
+
+/// A `@test` function that imports `std.test` and chains `ensure`/`assertEq`
+/// with `?` runs on BEAM and passes — even when the function is not `pub`.
+///
+/// Locks two runtime regressions: the `std.test` module's `.beam` was skipped by
+/// the stdlib codegen because its name collided with the `.test`-file filter, and
+/// a non-`pub` `@test` function was not exported so the runner could not call it
+/// (both surfaced only at runtime, never at type-check).
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn test_stdlib_test_module_and_non_pub_test_run() {
+    let src = "import std.test (ensure, assertEq)\n\n\
+               @test \"non-pub std.test chain\"\n\
+               fn checks () -> Result Unit Text =\n\
+               \x20   ensure (1 + 1 == 2) \"arith\" ?\n\
+               \x20   assertEq (2 * 3) 6 \"mul\" ?\n\
+               \x20   Ok ()\n";
+    let tw = make_test_workspace("Demo", src);
+
+    ridge_cmd()
+        .arg("test")
+        .current_dir(&tw.path)
+        .assert()
+        .success()
+        .stdout(contains("passed"));
+}
+
 // ── Test 2: test_filter — only runs matching test (beam-runtime) ──────────────
 
 /// `ridge test --filter <pattern>` runs only the matching test.

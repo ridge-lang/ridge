@@ -1,7 +1,7 @@
 //! Track-B `.test.ridge` smoke test.
 //!
 //! Asserts that every `<module>.test.ridge` file under `crates/ridge-stdlib/stdlib/`
-//! exists (exactly 18 of them — one per stdlib module, per §10 file-count audit)
+//! exists (exactly 20 of them — one per stdlib module, per §10 file-count audit)
 //! and that each file **parses without errors**.
 //!
 //! Full execution (compile + run via BEAM child process) is the job of
@@ -30,9 +30,9 @@ use ridge_parser::parse_source;
 
 /// Expected number of `.test.ridge` files — one per stdlib module.
 ///
-/// 18 modules from the §10 file-count audit (plan line 949) plus
+/// 20 .test.ridge files (plan line 949) plus
 /// `std.actor` shipped with the bounded-mailbox cut.
-const EXPECTED_TEST_RG_COUNT: usize = 19;
+const EXPECTED_TEST_RG_COUNT: usize = 20;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -92,7 +92,7 @@ fn collect_recursive(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
 ///
 /// Failure message: `T201 TestRgCountMismatch`.
 #[test]
-fn test_ridge_file_count_is_18() {
+fn test_ridge_file_count_matches_expected() {
     let stdlib = stdlib_dir();
     let files = collect_test_ridge_files(&stdlib);
 
@@ -106,7 +106,7 @@ fn test_ridge_file_count_is_18() {
     );
 }
 
-// ── Test 2: parse — all 18 files parse without errors ────────────────────────
+// ── Test 2: parse — all 20 files parse without errors ────────────────────────
 
 /// For each `.test.ridge` file: read it and call `ridge_parser::parse_source`.
 /// Asserts that both `errors` and `lex_errors` are empty.

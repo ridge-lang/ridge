@@ -30,7 +30,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
 use crate::class_env::{
-    register_prelude_classes, register_prelude_instances, register_stdlib_classes,
+    register_prelude_classes, register_prelude_instances_gated, register_stdlib_classes,
     register_stdlib_instances, ClassInfo, ClassTable, FunDepIdx, InstanceEnv, InstanceHead,
     InstanceInfo, InstanceOrigin, MethodSig,
 };
@@ -88,6 +88,25 @@ pub fn collect_workspace(
     modules: &[(u32, &Module)],
     user_tycon_names: &FxHashMap<String, TyConId>,
 ) -> CollectResult {
+    collect_workspace_gated(modules, user_tycon_names, false)
+}
+
+/// Like [`collect_workspace`] but gated on whether this run is the stdlib's own
+/// self-compile.
+///
+/// When `is_stdlib` is true, prelude instances the stdlib declares from source
+/// are not seeded here (see [`register_prelude_instances_gated`]); every user
+/// build passes `false`.
+#[must_use]
+#[expect(
+    clippy::implicit_hasher,
+    reason = "FxHashMap is the canonical hasher for this crate; matches the pattern in solve.rs and ctx.rs"
+)]
+pub fn collect_workspace_gated(
+    modules: &[(u32, &Module)],
+    user_tycon_names: &FxHashMap<String, TyConId>,
+    is_stdlib: bool,
+) -> CollectResult {
     let mut class_table = ClassTable::new();
     let mut instance_env = InstanceEnv::new();
     let mut errors: Vec<TypeError> = Vec::new();
@@ -101,8 +120,10 @@ pub fn collect_workspace(
 
     // Step 1b: Seed the InstanceEnv with built-in prelude instances (ToText,
     // Eq, and Ord for the primitive types). These live in the prelude module
-    // (`def_module = None`) and are not subject to the orphan check below.
-    register_prelude_instances(&mut instance_env);
+    // (`def_module = None`) and are not subject to the orphan check below. The
+    // stdlib's own build declares the base `Encode` instances from source, so
+    // those are skipped here when `is_stdlib` (avoids a spurious T032).
+    register_prelude_instances_gated(&mut instance_env, is_stdlib);
 
     // Step 2: Walk all ClassDecl items, registering user-defined classes.
     // The two-pass approach in collect_class_decls ensures forward references

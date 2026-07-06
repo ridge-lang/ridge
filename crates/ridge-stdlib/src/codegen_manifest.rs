@@ -83,6 +83,8 @@ pub const STDLIB_MODULE_ORDER: &[&str] = &[
     "std.repo",
     "std.migrate",
     "std.raw",
+    // Tier 6 — testing
+    "std.test",
 ];
 
 // ── Core extraction ───────────────────────────────────────────────────────────

@@ -33,7 +33,7 @@ use crate::{
     cursor::Cursor,
     error::ParseError,
     expr::{parse_expr, parse_expr_pratt},
-    pattern::parse_pattern,
+    pattern::{parse_match_pattern, parse_pattern},
     ty::parse_type,
 };
 
@@ -54,6 +54,13 @@ pub(crate) fn parse_if(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
     cur.bump(); // consume `if`
 
     let cond = parse_expr_pratt(cur)?;
+
+    // `then` may sit on the next line at the same indent as `if`, separated from
+    // the condition by a layout Newline. Skip it, but only when `then` actually
+    // follows so no other separator is disturbed.
+    if cur.peek() == &Token::Newline && cur.peek_n(1) == Some(&Token::KwThen) {
+        cur.bump();
+    }
 
     cur.expect(&Token::KwThen)?;
 
@@ -295,11 +302,16 @@ fn sync_to_next_match_arm(cur: &mut Cursor<'_>) {
 fn parse_match_arm_inner(cur: &mut Cursor<'_>, no_layout: bool) -> Result<MatchArm, ParseError> {
     let start = cur.span();
 
-    let pattern = parse_pattern(cur)?;
+    let pattern = parse_match_pattern(cur)?;
 
     let guard = if cur.peek() == &Token::KwWhen {
         cur.bump(); // consume `when`
         Some(parse_expr_pratt(cur)?)
+    } else if cur.peek() == &Token::KwIf {
+        // `<pattern> if <cond> ->` — the guard spelling from most ML-family
+        // languages. Ridge uses `when`; point at the `if` so a quick-fix can
+        // swap it in place rather than reporting a bare "expected `->`".
+        return Err(ParseError::GuardKeywordInMatch { span: cur.span() });
     } else {
         None
     };
@@ -509,6 +521,15 @@ pub(crate) fn parse_let(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
     cur.expect(&Token::Assign)?;
 
     let value = parse_branch_body(cur)?;
+
+    // `let <pat> = <value> in <body>` — the Haskell/OCaml/F#/Elm spelling.
+    // Ridge `let` is layout-based (the body follows on the next line), so `in`
+    // is never valid here. Name the confusion directly instead of letting the
+    // stray `in` surface as a bare "expected <DEDENT>" from the block parser.
+    if cur.peek() == &Token::KwIn {
+        return Err(ParseError::LetInNotSupported { span: cur.span() });
+    }
+
     let span = start.merge(value.span());
 
     Ok(Expr::Let {
@@ -1096,6 +1117,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parse_if_then_on_next_line() {
+        // `then` wrapped onto the next line at the same indent as `if`, separated
+        // from the condition by a layout Newline — used to fail with
+        // "expected then, found <NEWLINE>".
+        let src = "if x\nthen 1\nelse 2";
+        let e = ok(src);
+        assert!(
+            matches!(
+                e,
+                Expr::If {
+                    else_branch: Some(_),
+                    ..
+                }
+            ),
+            "expected If with else branch, got {e:?}"
+        );
+    }
+
     // ── parse_match_two_arms ────────────────────────────────────────────
 
     #[test]
@@ -1120,6 +1160,64 @@ mod tests {
         } else {
             panic!("expected Match, got {e:?}");
         }
+    }
+
+    // ── parse_match_or_pattern ─────────────────────────────────────────
+
+    #[test]
+    fn parse_match_or_pattern_alternatives() {
+        // match n
+        //     1 | 2 | 3 -> "few"
+        //     _ -> "many"
+        let src = "match n\n    1 | 2 | 3 -> \"few\"\n    _ -> \"many\"";
+        let e = ok(src);
+        if let Expr::Match { arms, .. } = e {
+            assert_eq!(arms.len(), 2, "expected 2 arms, got {}", arms.len());
+            if let Pattern::Or { alts, .. } = &arms[0].pattern {
+                assert_eq!(alts.len(), 3, "expected 3 alternatives, got {}", alts.len());
+                assert!(
+                    alts.iter().all(|a| matches!(a, Pattern::Literal { .. })),
+                    "expected all-literal alternatives, got {alts:?}"
+                );
+            } else {
+                panic!(
+                    "expected first arm to be Pattern::Or, got {:?}",
+                    arms[0].pattern
+                );
+            }
+            // The trailing `_` arm is a plain wildcard, not wrapped in Or.
+            assert!(matches!(arms[1].pattern, Pattern::Wildcard { .. }));
+        } else {
+            panic!("expected Match, got {e:?}");
+        }
+    }
+
+    #[test]
+    fn parse_match_single_alternative_is_not_or() {
+        // A lone pattern with no `|` stays unwrapped.
+        let src = "match x\n    Some y -> y\n    _ -> 0";
+        let e = ok(src);
+        if let Expr::Match { arms, .. } = e {
+            assert!(
+                !matches!(arms[0].pattern, Pattern::Or { .. }),
+                "a single alternative must not be wrapped in Or, got {:?}",
+                arms[0].pattern
+            );
+        } else {
+            panic!("expected Match, got {e:?}");
+        }
+    }
+
+    #[test]
+    fn parse_match_nested_or_is_rejected() {
+        // `|` is an or-separator only at the arm root; inside `( )` the pattern
+        // parser does not consume it, so the arm fails to parse.
+        let src = "match x\n    Some (1 | 2) -> 1\n    _ -> 0";
+        assert!(
+            parse_e(src).is_err(),
+            "nested or-pattern `Some (1 | 2)` should not parse, got {:?}",
+            parse_e(src)
+        );
     }
 
     // ── parse_match_arm_with_guard ─────────────────────────────────────

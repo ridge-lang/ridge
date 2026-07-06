@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use ridge_driver::WorkspaceSourceCache;
 use ridge_lexer::{LineIndex, Span};
+use ridge_parser::ParseError;
 use ridge_resolve::imports::{Binding, ImportResolution, ImportTarget};
 use ridge_resolve::{
     LocalId, LocalKind, ModuleId, NodeId, NodeIdMap, NodeKind, ProjectKind, ResolvedVisibility,
@@ -26,12 +27,13 @@ use ridge_typecheck::{render_type_with, TypeError, TypedWorkspace};
 use ridge_types::{CapabilitySet, TyConDecl, TyConKind, Type};
 use tower_lsp::lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CodeLens, Command,
-    CompletionItemKind, DocumentHighlight, DocumentHighlightKind, DocumentLink, DocumentSymbol,
-    FileRename, FoldingRange, FoldingRangeKind, InlayHint, InlayHintKind, InlayHintLabel, Location,
-    ParameterInformation, ParameterLabel, Position, PrepareRenameResponse, Range, SelectionRange,
-    SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensEdit,
-    SignatureHelp, SignatureInformation, SymbolInformation, SymbolKind as LspSymbolKind, TextEdit,
-    TypeHierarchyItem, Url, WorkspaceEdit,
+    CompletionItemKind, Diagnostic, DiagnosticSeverity, DocumentHighlight, DocumentHighlightKind,
+    DocumentLink, DocumentSymbol, FileRename, FoldingRange, FoldingRangeKind, InlayHint,
+    InlayHintKind, InlayHintLabel, Location, NumberOrString, ParameterInformation, ParameterLabel,
+    Position, PrepareRenameResponse, Range, SelectionRange, SemanticToken, SemanticTokenModifier,
+    SemanticTokenType, SemanticTokens, SemanticTokensEdit, SignatureHelp, SignatureInformation,
+    SymbolInformation, SymbolKind as LspSymbolKind, TextEdit, TypeHierarchyItem, Url,
+    WorkspaceEdit,
 };
 
 use crate::cancel::Cancel;
@@ -198,6 +200,11 @@ pub struct WorkspaceIndex {
     /// the signature. Populated after the compile (which holds the structured
     /// type errors); empty otherwise.
     pub capability_fixes: Vec<CapabilityFix>,
+    /// Quick-fixes for the "did you mean" syntax diagnostics (`P034` guard-`if`,
+    /// `P035` record-update braces): each carries a ready-to-apply edit that
+    /// rewrites the form into its Ridge spelling. Populated from the structured
+    /// parse errors; empty otherwise.
+    pub syntax_fixes: Vec<SyntaxFix>,
 }
 
 /// A ready-to-apply quick-fix that declares the inferred capabilities on a
@@ -216,6 +223,569 @@ pub struct CapabilityFix {
     pub new_text: String,
     /// The code-action title shown in the editor.
     pub title: String,
+}
+
+/// A ready-to-apply quick-fix for a "did you mean" syntax diagnostic.
+///
+/// The parser detected a form spelled the way another language spells it (a
+/// match guard `if`, or `{ record with … }`) and carries enough structure to
+/// rewrite it into the Ridge form. Spans are already resolved to LSP ranges.
+#[derive(Debug, Clone)]
+pub struct SyntaxFix {
+    /// The document the offending syntax lives in.
+    pub uri: Url,
+    /// The diagnostic's own range — a code-action request whose cursor overlaps
+    /// this offers the fix.
+    pub decl_range: Range,
+    /// The span the edit replaces.
+    pub edit_range: Range,
+    /// The replacement text.
+    pub new_text: String,
+    /// The stable diagnostic code this fix answers (`"P034"`, `"P035"`), used to
+    /// attach the originating diagnostic to the `CodeAction`.
+    pub code: &'static str,
+    /// The code-action title shown in the editor.
+    pub title: String,
+}
+
+/// Build the "did you mean" syntax quick-fixes for one compile.
+///
+/// Walks the structured parse errors and, for the two that carry a mechanical
+/// rewrite — `P034 GuardKeywordInMatch` (`if` → `when`) and `P035
+/// RecordUpdateSyntax` (`{ r with … }` → `r with { … }`) — produces the edit.
+/// `P033 LetInNotSupported` is deliberately excluded: reflowing `let … in` into
+/// a layout `let` depends on the block's indentation, so it stays message-only
+/// rather than risk emitting still-broken code.
+#[must_use]
+pub fn collect_syntax_fixes(
+    line_indices: &[LineIndex],
+    module_uris: &[Option<Url>],
+    parse_errors: &[(ModuleId, ParseError)],
+) -> Vec<SyntaxFix> {
+    let mut out: Vec<SyntaxFix> = Vec::new();
+    for (mid, err) in parse_errors {
+        let mi = mid.0 as usize;
+        let (Some(Some(uri)), Some(li)) = (module_uris.get(mi), line_indices.get(mi)) else {
+            continue;
+        };
+        let to_range = |span: Span| {
+            let (sl, sc) = li.byte_to_utf16(span.start);
+            let (el, ec) = li.byte_to_utf16(span.end);
+            Range {
+                start: Position::new(sl, sc),
+                end: Position::new(el, ec),
+            }
+        };
+        let fix = match err {
+            ParseError::GuardKeywordInMatch { span } => {
+                let range = to_range(*span);
+                SyntaxFix {
+                    uri: uri.clone(),
+                    decl_range: range,
+                    edit_range: range,
+                    new_text: "when".to_owned(),
+                    code: "P034",
+                    title: "Replace `if` with `when`".to_owned(),
+                }
+            }
+            ParseError::RecordUpdateSyntax {
+                span,
+                open_brace,
+                record,
+            } => {
+                // Replace `{ record with` (from the `{` through the `with`) with
+                // `record with {`; the record's own trailing `}` closes the moved
+                // brace. `{ p with x = 0 }` → `p with { x = 0 }`.
+                let prim = to_range(*span);
+                SyntaxFix {
+                    uri: uri.clone(),
+                    decl_range: prim,
+                    edit_range: to_range(open_brace.merge(*span)),
+                    new_text: format!("{record} with {{"),
+                    code: "P035",
+                    title: format!("Rewrite as `{record} with {{ … }}`"),
+                }
+            }
+            _ => continue,
+        };
+        out.push(fix);
+    }
+    out
+}
+
+/// Build the "uncurry a curried lambda" quick-fixes for one compile.
+///
+/// A curried lambda `fn x -> fn y -> body` passed where a higher-order function
+/// expects an uncurried multi-argument callback trips `T003 ArityMismatch` with
+/// the curry hint. For each such error this locates the curried lambda inside
+/// the flagged call and offers the flattened rewrite `fn x y -> body`, so the
+/// habitual ML-family spelling is one keystroke from the Ridge one.
+#[must_use]
+pub fn collect_uncurry_fixes(
+    line_indices: &[LineIndex],
+    module_uris: &[Option<Url>],
+    module_text: &[Arc<str>],
+    typed: &TypedWorkspace,
+    type_errors: &[(ModuleId, TypeError)],
+) -> Vec<SyntaxFix> {
+    let mut out: Vec<SyntaxFix> = Vec::new();
+    for (mid, err) in type_errors {
+        // Only the curried-callback arity mismatch carries the curry hint and an
+        // expected arity of two or more; other T003s (tuples, wrong arg counts)
+        // are left alone.
+        let TypeError::ArityMismatch {
+            expected,
+            hint: Some(_),
+            span,
+            ..
+        } = err
+        else {
+            continue;
+        };
+        if *expected < 2 {
+            continue;
+        }
+        let mi = mid.0 as usize;
+        let (Some(module), Some(Some(uri)), Some(li), Some(text)) = (
+            typed.modules.get(mi),
+            module_uris.get(mi),
+            line_indices.get(mi),
+            module_text.get(mi),
+        ) else {
+            continue;
+        };
+
+        // Collect every lambda inside the flagged call, then keep the one whose
+        // curried chain flattens to exactly the expected arity — its inner links
+        // flatten to fewer, so the match is unambiguous.
+        let mut finder = LambdaFinder {
+            target: *span,
+            out: Vec::new(),
+        };
+        ridge_ast::visit::Visit::visit_module(&mut finder, &module.ast);
+
+        let Some((lam_span, param_spans, body_span)) = finder.out.iter().find_map(|lam| {
+            let (params, body, count) = flatten_lambda_chain(lam)?;
+            (count == *expected).then_some((lam.span(), params, body))
+        }) else {
+            continue;
+        };
+
+        let slice = |s: Span| {
+            text.get(s.start as usize..s.end as usize)
+                .unwrap_or("")
+                .trim()
+        };
+        let params_str = param_spans
+            .iter()
+            .map(|s| slice(*s))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let body_str = slice(body_span);
+        if params_str.is_empty() || body_str.is_empty() {
+            continue;
+        }
+
+        let to_range = |s: Span| {
+            let (sl, sc) = li.byte_to_utf16(s.start);
+            let (el, ec) = li.byte_to_utf16(s.end);
+            Range {
+                start: Position::new(sl, sc),
+                end: Position::new(el, ec),
+            }
+        };
+        out.push(SyntaxFix {
+            uri: uri.clone(),
+            decl_range: to_range(*span),
+            edit_range: to_range(lam_span),
+            new_text: format!("fn {params_str} -> {body_str}"),
+            code: "T003",
+            title: format!("Uncurry to `fn {params_str} -> …`"),
+        });
+    }
+    out
+}
+
+/// Flatten a curried lambda chain `fn a -> fn b -> … -> body`.
+///
+/// Returns the parameter spans (outermost first), the innermost body span, and
+/// the total parameter count — only when the outer lambda's body is itself a
+/// lambda (a genuine curried chain of depth >= 2). A single-level lambda yields
+/// `None`, so an already-uncurried argument is never offered a rewrite. A
+/// parenthesised inner lambda (`fn a -> (fn b -> …)`) is not chased; that form
+/// keeps the plain `T003` hint.
+fn flatten_lambda_chain(lam: &ridge_ast::Expr) -> Option<(Vec<Span>, Span, usize)> {
+    let ridge_ast::Expr::Lambda { params, body, .. } = lam else {
+        return None;
+    };
+    let mut param_spans: Vec<Span> = params
+        .iter()
+        .map(ridge_ast::expr::LambdaParam::span)
+        .collect();
+    let mut cursor = unwrap_lambda_paren(body.as_ref());
+    let mut depth = 1usize;
+    while let ridge_ast::Expr::Lambda { params, body, .. } = cursor {
+        param_spans.extend(params.iter().map(ridge_ast::expr::LambdaParam::span));
+        cursor = unwrap_lambda_paren(body.as_ref());
+        depth += 1;
+    }
+    if depth < 2 {
+        return None;
+    }
+    let count = param_spans.len();
+    Some((param_spans, cursor.span(), count))
+}
+
+/// Peel parentheses while following a curried lambda chain, so
+/// `fn a -> (fn b -> …)` flattens the same as `fn a -> fn b -> …`. Any parens
+/// dropped this way wrap a single expression (a chain link or the final body),
+/// so removing them is behaviour-preserving.
+fn unwrap_lambda_paren(e: &ridge_ast::Expr) -> &ridge_ast::Expr {
+    match e {
+        ridge_ast::Expr::Paren { inner, .. } => unwrap_lambda_paren(inner),
+        _ => e,
+    }
+}
+
+/// Visitor collecting every lambda expression whose span lies within a target
+/// span (the flagged call), used to find a curried-lambda argument.
+struct LambdaFinder<'ast> {
+    target: Span,
+    out: Vec<&'ast ridge_ast::Expr>,
+}
+
+impl<'ast> ridge_ast::visit::Visit<'ast> for LambdaFinder<'ast> {
+    fn visit_expr(&mut self, e: &'ast ridge_ast::Expr) {
+        if let ridge_ast::Expr::Lambda { span, .. } = e {
+            if self.target.start <= span.start && span.end <= self.target.end {
+                self.out.push(e);
+            }
+        }
+        ridge_ast::visit::walk_expr(self, e);
+    }
+}
+
+/// Nesting depth at which a `then`-nested `if` staircase in a Result/Unit
+/// function earns a hint. A chain of this many `if`s (or more) drilling through
+/// the `then` branch is flagged; `else if` chains (which nest through `else`)
+/// and shallower nests are left alone.
+const NESTING_HINT_THRESHOLD: usize = 3;
+
+/// Emit a hint for each deeply nested `if` staircase in a Result/Unit function.
+///
+/// The suggested remedies — `guard … else return`, the `?` combinator, or
+/// `match … when` — apply in that context, so the walk is gated on the enclosing
+/// function's return type. Only the outermost `if` of a chain is flagged; the
+/// inner links it subsumes are not re-reported. Diagnostics are returned paired
+/// with the URI of the module they belong to.
+#[must_use]
+pub fn collect_nesting_hints(
+    line_indices: &[LineIndex],
+    module_uris: &[Option<Url>],
+    typed: &TypedWorkspace,
+) -> Vec<(Url, Diagnostic)> {
+    let mut out: Vec<(Url, Diagnostic)> = Vec::new();
+    for (mi, module) in typed.modules.iter().enumerate() {
+        let (Some(Some(uri)), Some(li)) = (module_uris.get(mi), line_indices.get(mi)) else {
+            continue;
+        };
+        let mut finder = StaircaseFinder {
+            in_result_fn: false,
+            consumed: std::collections::HashSet::new(),
+            out: Vec::new(),
+        };
+        ridge_ast::visit::Visit::visit_module(&mut finder, &module.ast);
+        for span in finder.out {
+            let (sl, sc) = li.byte_to_utf16(span.start);
+            let (el, ec) = li.byte_to_utf16(span.end);
+            out.push((
+                uri.clone(),
+                Diagnostic {
+                    range: Range {
+                        start: Position::new(sl, sc),
+                        end: Position::new(el, ec),
+                    },
+                    severity: Some(DiagnosticSeverity::HINT),
+                    code: Some(NumberOrString::String(NESTING_HINT_CODE.to_string())),
+                    source: Some("ridge".to_string()),
+                    message: "deeply nested conditionals — consider `guard … else return`, \
+                              the `?` combinator, or `match … when` to flatten the staircase"
+                        .to_string(),
+                    ..Diagnostic::default()
+                },
+            ));
+        }
+    }
+    out
+}
+
+/// Peel single-statement block wrappers off a branch. An indented `if`/`else`
+/// branch is parsed as `Expr::Block([stmt])`; unwrapping reaches the `if` inside
+/// so a `then`-nested chain can be followed link by link.
+fn unwrap_single_block(e: &ridge_ast::Expr) -> &ridge_ast::Expr {
+    match e {
+        ridge_ast::Expr::Block(b) if b.stmts.len() == 1 => unwrap_single_block(&b.stmts[0]),
+        _ => e,
+    }
+}
+
+/// Whether a function's declared return type is `Result …` or `Unit` — the
+/// context where the `guard`/`?` flattening advice applies.
+fn returns_result_or_unit(ret: Option<&ridge_ast::Type>) -> bool {
+    match ret {
+        Some(ridge_ast::Type::App { head, .. }) => head.text == "Result",
+        Some(ridge_ast::Type::Named { name, .. }) => name.text == "Result" || name.text == "Unit",
+        Some(ridge_ast::Type::Primitive { name, .. }) => {
+            matches!(name, ridge_ast::PrimitiveType::Unit)
+        }
+        _ => false,
+    }
+}
+
+/// Visitor flagging the outermost `if` of every deeply `then`-nested staircase
+/// inside a Result/Unit-returning function.
+struct StaircaseFinder {
+    /// Set while walking a function whose return type is `Result …`/`Unit`.
+    in_result_fn: bool,
+    /// Spans of inner `if`s already subsumed by an outer flagged chain, so they
+    /// are not reported a second time when the walk reaches them.
+    consumed: std::collections::HashSet<(u32, u32)>,
+    /// Anchor spans (`if` … condition) of each outermost flagged staircase.
+    out: Vec<Span>,
+}
+
+impl<'ast> ridge_ast::visit::Visit<'ast> for StaircaseFinder {
+    fn visit_fn_decl(&mut self, d: &'ast ridge_ast::FnDecl) {
+        let prev = self.in_result_fn;
+        self.in_result_fn = returns_result_or_unit(d.ret.as_ref());
+        ridge_ast::visit::walk_fn_decl(self, d);
+        self.in_result_fn = prev;
+    }
+
+    fn visit_expr(&mut self, e: &'ast ridge_ast::Expr) {
+        if self.in_result_fn {
+            if let ridge_ast::Expr::If {
+                cond,
+                then_branch,
+                span,
+                ..
+            } = e
+            {
+                let key = (span.start, span.end);
+                if !self.consumed.contains(&key) {
+                    // Count the `if`s chaining through the `then` branch; an
+                    // `else if` chain nests through `else` and stays at depth 1.
+                    // An indented branch is wrapped in a single-statement block,
+                    // so unwrap those to reach the nested `if`.
+                    let mut depth = 1usize;
+                    let mut chain: Vec<(u32, u32)> = Vec::new();
+                    let mut cursor = unwrap_single_block(then_branch.as_ref());
+                    while let ridge_ast::Expr::If {
+                        then_branch: inner,
+                        span: inner_span,
+                        ..
+                    } = cursor
+                    {
+                        chain.push((inner_span.start, inner_span.end));
+                        cursor = unwrap_single_block(inner.as_ref());
+                        depth += 1;
+                    }
+                    if depth >= NESTING_HINT_THRESHOLD {
+                        self.out.push(Span {
+                            start: span.start,
+                            end: cond.span().end,
+                        });
+                        self.consumed.extend(chain);
+                    }
+                }
+            }
+        }
+        ridge_ast::visit::walk_expr(self, e);
+    }
+}
+
+/// Diagnostic code shared by the nest-depth hint and its `guard`-chain quick-fix
+/// so a client can attach the code action to the hint's lightbulb.
+const NESTING_HINT_CODE: &str = "nested-conditionals";
+
+/// Offer a quick-fix that rewrites a `then`-nested `if` staircase into a flat
+/// `guard … else return` chain.
+///
+/// Only a clean staircase is rewritten: every `if` in the chain has an `else`
+/// branch that is a single expression (typically `Err …`), and the innermost
+/// `then` is a single expression. Anything else keeps the plain hint with no
+/// fix. The rewrite preserves order and semantics — each `guard` tests the same
+/// condition and returns the same else value on failure, and the innermost
+/// `then` becomes the fall-through value.
+#[must_use]
+pub fn collect_staircase_fixes(
+    line_indices: &[LineIndex],
+    module_uris: &[Option<Url>],
+    module_text: &[Arc<str>],
+    typed: &TypedWorkspace,
+) -> Vec<SyntaxFix> {
+    let mut out: Vec<SyntaxFix> = Vec::new();
+    for (mi, module) in typed.modules.iter().enumerate() {
+        let (Some(Some(uri)), Some(li), Some(text)) = (
+            module_uris.get(mi),
+            line_indices.get(mi),
+            module_text.get(mi),
+        ) else {
+            continue;
+        };
+        let mut finder = StaircaseRewriteFinder {
+            in_result_fn: false,
+            consumed: std::collections::HashSet::new(),
+            out: Vec::new(),
+        };
+        ridge_ast::visit::Visit::visit_module(&mut finder, &module.ast);
+        for rw in finder.out {
+            let slice = |s: Span| {
+                text.get(s.start as usize..s.end as usize)
+                    .unwrap_or("")
+                    .trim()
+            };
+            let body = slice(rw.body_span);
+            if body.is_empty()
+                || rw
+                    .steps
+                    .iter()
+                    .any(|(c, e)| slice(*c).is_empty() || slice(*e).is_empty())
+            {
+                continue;
+            }
+            // Continuation lines align to the outer `if`'s column.
+            let (_, col) = li.byte_to_utf16(rw.if_span.start);
+            let indent = " ".repeat(col as usize);
+            let mut lines: Vec<String> = rw
+                .steps
+                .iter()
+                .map(|(c, e)| format!("guard {} else return {}", slice(*c), slice(*e)))
+                .collect();
+            lines.push(body.to_owned());
+            let new_text = lines.join(&format!("\n{indent}"));
+
+            let to_range = |s: Span| {
+                let (sl, sc) = li.byte_to_utf16(s.start);
+                let (el, ec) = li.byte_to_utf16(s.end);
+                Range {
+                    start: Position::new(sl, sc),
+                    end: Position::new(el, ec),
+                }
+            };
+            out.push(SyntaxFix {
+                uri: uri.clone(),
+                decl_range: to_range(Span {
+                    start: rw.if_span.start,
+                    end: rw.cond_end,
+                }),
+                edit_range: to_range(rw.if_span),
+                new_text,
+                code: NESTING_HINT_CODE,
+                title: "Flatten to a `guard` chain".to_owned(),
+            });
+        }
+    }
+    out
+}
+
+/// A clean, rewritable staircase: the outer `if` span (the edit range), the end
+/// of its condition (the anchor), the `(cond, else)` spans of every `if` in the
+/// chain, and the innermost `then` expression.
+struct StaircaseRewrite {
+    if_span: Span,
+    cond_end: u32,
+    steps: Vec<(Span, Span)>,
+    body_span: Span,
+}
+
+/// Visitor collecting each outermost staircase that can be flattened to a
+/// `guard` chain, mirroring [`StaircaseFinder`]'s gating but capturing the spans
+/// the rewrite needs.
+struct StaircaseRewriteFinder {
+    in_result_fn: bool,
+    consumed: std::collections::HashSet<(u32, u32)>,
+    out: Vec<StaircaseRewrite>,
+}
+
+impl<'ast> ridge_ast::visit::Visit<'ast> for StaircaseRewriteFinder {
+    fn visit_fn_decl(&mut self, d: &'ast ridge_ast::FnDecl) {
+        let prev = self.in_result_fn;
+        self.in_result_fn = returns_result_or_unit(d.ret.as_ref());
+        ridge_ast::visit::walk_fn_decl(self, d);
+        self.in_result_fn = prev;
+    }
+
+    fn visit_expr(&mut self, e: &'ast ridge_ast::Expr) {
+        if self.in_result_fn {
+            if let ridge_ast::Expr::If { span, .. } = e {
+                if !self.consumed.contains(&(span.start, span.end)) {
+                    if let Some((rw, inner)) = try_build_staircase(e) {
+                        self.consumed.extend(inner);
+                        self.out.push(rw);
+                    }
+                }
+            }
+        }
+        ridge_ast::visit::walk_expr(self, e);
+    }
+}
+
+/// Follow a `then`-nested chain from `if_expr`, collecting each `(cond, else)`
+/// pair and the innermost body. Returns the rewrite plus the inner `if` spans to
+/// mark consumed, or `None` when the shape is not a clean, rewritable staircase
+/// (a missing `else`, a multi-statement branch, or a chain below the threshold).
+fn try_build_staircase(if_expr: &ridge_ast::Expr) -> Option<(StaircaseRewrite, Vec<(u32, u32)>)> {
+    let ridge_ast::Expr::If {
+        cond,
+        then_branch,
+        else_branch,
+        span,
+    } = if_expr
+    else {
+        return None;
+    };
+    let cond_end = cond.span().end;
+    let mut steps: Vec<(Span, Span)> = Vec::new();
+    let mut inner: Vec<(u32, u32)> = Vec::new();
+    let mut cur_cond: &ridge_ast::Expr = cond;
+    let mut cur_then: &ridge_ast::Expr = then_branch;
+    let mut cur_else: &Option<Box<ridge_ast::Expr>> = else_branch;
+    let mut depth = 1usize;
+    loop {
+        let els = unwrap_single_block(cur_else.as_ref()?);
+        if matches!(els, ridge_ast::Expr::Block(_)) {
+            return None; // multi-statement else — not a clean single expression
+        }
+        steps.push((cur_cond.span(), els.span()));
+        let next = unwrap_single_block(cur_then);
+        // Another `if` continues the chain; anything else is the innermost body.
+        let ridge_ast::Expr::If {
+            cond: c2,
+            then_branch: t2,
+            else_branch: e2,
+            span: s2,
+        } = next
+        else {
+            if depth < NESTING_HINT_THRESHOLD || matches!(next, ridge_ast::Expr::Block(_)) {
+                return None;
+            }
+            return Some((
+                StaircaseRewrite {
+                    if_span: *span,
+                    cond_end,
+                    steps,
+                    body_span: next.span(),
+                },
+                inner,
+            ));
+        };
+        inner.push((s2.start, s2.end));
+        cur_cond = c2;
+        cur_then = t2;
+        cur_else = e2;
+        depth += 1;
+    }
 }
 
 /// Client command the "Run" code lens invokes. Argument: the project name.
@@ -355,6 +925,7 @@ impl WorkspaceIndex {
             module_project_names,
             module_runnable,
             capability_fixes: Vec::new(),
+            syntax_fixes: Vec::new(),
         }
     }
 

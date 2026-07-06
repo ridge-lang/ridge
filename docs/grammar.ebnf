@@ -251,18 +251,22 @@ TEXT_LIT      ::= '"' { TEXT_CHAR } '"' ;
 
 (* Interpolated string: begins with "$"                                     *)
 (* The lexer tokenises $"..." by splitting it into a sequence of segments:
-     INTERP_START   "$\""
-     INTERP_TEXT    run of characters up to "${" or closing '"'
+     INTERP_START   "$\"" (single-line) or "$\"\"\"" (multi-line block)
+     INTERP_TEXT    run of characters up to "${" or the closing delimiter
      INTERP_EXPR_START  "${"
      INTERP_EXPR_END    "}"
-     INTERP_END     '"' (the closing quote)
+     INTERP_END     the closing delimiter ('"' or '"""')
    This allows the parser to embed arbitrary Expr inside ${…} segments.
-   See §1.8 (string interpolation) for the parser-level production.         *)
-INTERP_START      ::= "$\"" ;
+   The multi-line opener "$\"\"\"" mirrors the plain triple-quoted string
+   (TEXT_LIT rules above): the byte after the opener must be a newline, the
+   closing '"""' defines the dedent margin, and interior lines are dedented.
+   Both openers yield the SAME segment stream, so the parser-level production
+   below is unchanged.  See §1.8 (string interpolation).                     *)
+INTERP_START      ::= "$\"" | '$"""' ;
 INTERP_TEXT       ::= { TEXT_CHAR } ;   (* runs of non-interpolation text *)
 INTERP_EXPR_START ::= "${" ;
 INTERP_EXPR_END   ::= "}" ;
-INTERP_END        ::= '"' ;
+INTERP_END        ::= '"' | '"""' ;
 
 (* --- Timestamp ---
    (* Timestamp has no surface syntax; obtained via std.time per D048 *)
@@ -349,7 +353,7 @@ ImportItem    ::= LOWER_IDENT | UPPER_IDENT ;
 (* Examples:
      import std.list as List
      import std.map (get, insert)
-     import std.net.http (Request, Response, listen, respond) as Http
+     import std.net.http as Http (Request, Response, listen, respond)
      import acme.infra.Postgres as Pg
 
    D072 (2026-04-25): ImportItem accepts UPPER_IDENT so types/constructors
@@ -749,7 +753,13 @@ IfExpr        ::= "if" Expr "then" Body
 MatchExpr     ::= "match" Expr
                   INDENT { MatchArm NEWLINE } DEDENT ;
 
-MatchArm      ::= Pattern [ "when" Expr ] "->" Body ;
+MatchArm      ::= OrPattern [ "when" Expr ] "->" Body ;
+
+(* An or-pattern lets one arm match any of several alternatives.  It is valid
+   only here at the arm root, never nested inside another pattern.  Every
+   alternative must bind the same variables, and each shared binding must have
+   the same type across alternatives.                                          *)
+OrPattern     ::= Pattern { "|" Pattern } ;
 
 (* Example:
      match shape
@@ -762,7 +772,11 @@ MatchArm      ::= Pattern [ "when" Expr ] "->" Body ;
      match age
          n when n < 18  -> "Minor"
          n when n < 65  -> "Adult"
-         _              -> "Senior"                                          *)
+         _              -> "Senior"
+
+     match direction
+         North | South  -> "vertical"
+         East | West    -> "horizontal"                                      *)
 
 
 (* === 6.5  try block === *)
@@ -906,7 +920,13 @@ InterpolatedText ::= INTERP_START
 
 (* Example:
      $"User ${user.name} has ${user.age} years"
-     $"Total: ${items |> List.map (.price) |> List.sum}"                   *)
+     $"Total: ${items |> List.map (.price) |> List.sum}"
+
+   Multi-line block form ("$\"\"\"" … '"""'), dedented to the closing margin:
+     $"""
+         Dear ${user.name},
+         Your balance is ${account.balance}.
+         """                                                                *)
 
 
 (* === 6.14  Field accessor as function === *)

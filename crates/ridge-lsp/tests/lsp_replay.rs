@@ -4367,6 +4367,261 @@ async fn test_code_action_none_when_clean() {
     );
 }
 
+// ── Test 28b: "did you mean" syntax quick-fixes (P034 / P035) ─────────────────
+
+#[tokio::test]
+async fn test_code_action_rewrites_if_guard_to_when() {
+    // `n if n > 0 ->` is the ML-family guard spelling; Ridge uses `when`. The
+    // parser raises P034 on the `if`, and a quick-fix swaps it for `when`.
+    let src = "pub fn f (x: Int) -> Int =\n    match x\n        n if n > 0 -> 1\n        _ -> 0\n";
+    let (service, _socket, uri) = cap_workspace_fixture(src).await;
+    let server = service.inner();
+
+    // The `if` sits at line 2, columns 10..12.
+    let resp = server
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(2, 10),
+                end: Position::new(2, 10),
+            },
+            context: CodeActionContext::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code_action ok")
+        .expect("a quick-fix is offered on the `if` guard");
+
+    assert_eq!(resp.len(), 1);
+    let CodeActionOrCommand::CodeAction(action) = &resp[0] else {
+        panic!("expected a CodeAction, got {:?}", resp[0]);
+    };
+    assert_eq!(action.title, "Replace `if` with `when`");
+    assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+
+    let edits = action
+        .edit
+        .as_ref()
+        .and_then(|e| e.changes.as_ref())
+        .and_then(|c| c.get(&uri))
+        .expect("an edit for this document");
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].new_text, "when");
+    assert_eq!(edits[0].range.start, Position::new(2, 10));
+    assert_eq!(edits[0].range.end, Position::new(2, 12));
+}
+
+#[tokio::test]
+async fn test_code_action_rewrites_record_update_braces() {
+    // `{ p with x = 0 }` is the OCaml/Elm spelling; Ridge writes it
+    // `p with { x = 0 }`. The parser raises P035 on the `with`, and a quick-fix
+    // moves the record out of the braces.
+    let src = "type Point = { x: Int, y: Int }\n\npub fn move0 (p: Point) -> Point =\n    { p with x = 0 }\n";
+    let (service, _socket, uri) = cap_workspace_fixture(src).await;
+    let server = service.inner();
+
+    // The `with` sits at line 3, columns 8..12.
+    let resp = server
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(3, 9),
+                end: Position::new(3, 9),
+            },
+            context: CodeActionContext::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code_action ok")
+        .expect("a quick-fix is offered on the misplaced `with`");
+
+    assert_eq!(resp.len(), 1);
+    let CodeActionOrCommand::CodeAction(action) = &resp[0] else {
+        panic!("expected a CodeAction, got {:?}", resp[0]);
+    };
+    assert_eq!(action.title, "Rewrite as `p with { … }`");
+    assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+
+    // The edit replaces `{ p with` (line 3, columns 4..12) with `p with {`; the
+    // trailing `}` already present closes the moved brace.
+    let edits = action
+        .edit
+        .as_ref()
+        .and_then(|e| e.changes.as_ref())
+        .and_then(|c| c.get(&uri))
+        .expect("an edit for this document");
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].new_text, "p with {");
+    assert_eq!(edits[0].range.start, Position::new(3, 4));
+    assert_eq!(edits[0].range.end, Position::new(3, 12));
+}
+
+// ── Test 28c: uncurry a curried lambda passed to an uncurried HOF (T003) ──────
+
+#[tokio::test]
+async fn test_code_action_uncurries_curried_lambda() {
+    // `List.foldRight` takes an uncurried 2-arg callback; a curried
+    // `fn x -> fn acc -> …` trips T003 with the curry hint. A quick-fix flattens
+    // it to `fn x acc -> …`.
+    let src = "import std.list as List\n\npub fn sumUp (xs: List Int) -> Int =\n    List.foldRight (fn x -> fn acc -> x + acc) 0 xs\n";
+    let (service, _socket, uri) = cap_workspace_fixture(src).await;
+    let server = service.inner();
+
+    // Cursor inside the flagged call, on line 3.
+    let resp = server
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(3, 25),
+                end: Position::new(3, 25),
+            },
+            context: CodeActionContext::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code_action ok")
+        .expect("a quick-fix is offered on the curried lambda");
+
+    assert_eq!(resp.len(), 1);
+    let CodeActionOrCommand::CodeAction(action) = &resp[0] else {
+        panic!("expected a CodeAction, got {:?}", resp[0]);
+    };
+    assert_eq!(action.title, "Uncurry to `fn x acc -> …`");
+    assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+
+    let edits = action
+        .edit
+        .as_ref()
+        .and_then(|e| e.changes.as_ref())
+        .and_then(|c| c.get(&uri))
+        .expect("an edit for this document");
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].new_text, "fn x acc -> x + acc");
+    // The edit replaces the whole curried lambda `fn x -> fn acc -> x + acc`.
+    assert_eq!(edits[0].range.start, Position::new(3, 20));
+    assert_eq!(edits[0].range.end, Position::new(3, 45));
+}
+
+#[tokio::test]
+async fn test_code_action_none_for_uncurried_lambda() {
+    // The already-uncurried form type-checks (no T003), so there is no
+    // uncurry quick-fix.
+    let src = "import std.list as List\n\npub fn sumUp (xs: List Int) -> Int =\n    List.foldRight (fn x acc -> x + acc) 0 xs\n";
+    let (service, _socket, uri) = cap_workspace_fixture(src).await;
+    let server = service.inner();
+
+    let resp = server
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(3, 25),
+                end: Position::new(3, 25),
+            },
+            context: CodeActionContext::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code_action ok");
+
+    assert!(
+        resp.is_none(),
+        "no uncurry fix on a correctly uncurried lambda"
+    );
+}
+
+#[tokio::test]
+async fn test_code_action_uncurries_parenthesised_curried_lambda() {
+    // The parenthesised inner form `fn x -> (fn acc -> …)` is still a curried
+    // lambda: the quick-fix follows the chain through the parentheses and
+    // flattens it to `fn x acc -> …`, dropping the now-redundant parens.
+    let src = "import std.list as List\n\npub fn sumUp (xs: List Int) -> Int =\n    List.foldRight (fn x -> (fn acc -> x + acc)) 0 xs\n";
+    let (service, _socket, uri) = cap_workspace_fixture(src).await;
+    let server = service.inner();
+
+    let resp = server
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(3, 25),
+                end: Position::new(3, 25),
+            },
+            context: CodeActionContext::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code_action ok")
+        .expect("a quick-fix is offered on the parenthesised curried lambda");
+
+    let CodeActionOrCommand::CodeAction(action) = &resp[0] else {
+        panic!("expected a CodeAction, got {:?}", resp[0]);
+    };
+    assert_eq!(action.title, "Uncurry to `fn x acc -> …`");
+    let edits = action
+        .edit
+        .as_ref()
+        .and_then(|e| e.changes.as_ref())
+        .and_then(|c| c.get(&uri))
+        .expect("an edit for this document");
+    assert_eq!(edits[0].new_text, "fn x acc -> x + acc");
+    // Replaces the whole `fn x -> (fn acc -> x + acc)` (parens included).
+    assert_eq!(edits[0].range.start, Position::new(3, 20));
+    assert_eq!(edits[0].range.end, Position::new(3, 47));
+}
+
+#[tokio::test]
+async fn test_code_action_flattens_staircase_to_guard_chain() {
+    // A three-deep `then`-nested `if` staircase in a Result function offers a
+    // quick-fix that flattens it to a `guard … else return` chain, preserving
+    // each condition, each else value, and the innermost then.
+    let src = "pub fn check (n: Int) -> Result Unit Text =\n    if n == 1 then\n        if n == 2 then\n            if n == 3 then Ok ()\n            else Err \"c\"\n        else Err \"b\"\n    else Err \"a\"\n";
+    let (service, _socket, uri) = cap_workspace_fixture(src).await;
+    let server = service.inner();
+
+    // Cursor on the outer `if`'s condition (line 1).
+    let resp = server
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(1, 8),
+                end: Position::new(1, 8),
+            },
+            context: CodeActionContext::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code_action ok")
+        .expect("a flatten quick-fix is offered on the staircase");
+
+    let action = resp
+        .iter()
+        .find_map(|a| match a {
+            CodeActionOrCommand::CodeAction(ca) if ca.title == "Flatten to a `guard` chain" => {
+                Some(ca)
+            }
+            _ => None,
+        })
+        .expect("the guard-chain quick-fix is present");
+
+    let edits = action
+        .edit
+        .as_ref()
+        .and_then(|e| e.changes.as_ref())
+        .and_then(|c| c.get(&uri))
+        .expect("an edit for this document");
+    assert_eq!(
+        edits[0].new_text,
+        "guard n == 1 else return Err \"a\"\n    guard n == 2 else return Err \"b\"\n    guard n == 3 else return Err \"c\"\n    Ok ()"
+    );
+    // The edit starts at the outer `if` (line 1, column 4).
+    assert_eq!(edits[0].range.start, Position::new(1, 4));
+}
+
 // ── Test 29: signature help (textDocument/signatureHelp) ──────────────────────
 
 fn signature_at(uri: &Url, line: u32, character: u32) -> SignatureHelpParams {

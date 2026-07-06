@@ -1,8 +1,7 @@
--- Private FFI bridges for std.bool test suite.
--- These replicate the bool.ridge FFI declarations in local scope so that
--- test functions can call them without a cross-module qualified reference
--- (which is unsupported for WorkspaceModule imports in the current typecheck —
--- T17+ deferred per crates/ridge-typecheck/src/stdlib_env.rs:87-92).
+import std.test (ensure)
+
+-- Private FFI bridges to the raw BEAM builtins std.bool wraps, so the suite
+-- exercises them directly.
 @ffi("erlang", "not", 1)
 fn _not (b: Bool) -> Bool
 
@@ -15,34 +14,34 @@ fn _or (a: Bool) (b: Bool) -> Bool
 @ffi("ridge_rt", "bool_to_text", 1)
 fn _boolToText (b: Bool) -> Text
 
+@test "smoke_bool"
 pub fn test_smoke_bool () -> Result Unit Text = Ok ()
 
+@test "not_true_is_false"
 pub fn test_not_true_is_false () -> Result Unit Text =
     if _not true == false then Ok () else Err "Bool.not true should be false"
 
+@test "not_false_is_true"
 pub fn test_not_false_is_true () -> Result Unit Text =
     if _not false == true then Ok () else Err "Bool.not false should be true"
 
+@test "and_truth_table"
 pub fn test_and_truth_table () -> Result Unit Text =
-    if _and true true == true then
-        if _and true false == false then
-            if _and false true == false then
-                if _and false false == false then Ok ()
-                else Err "Bool.and false false should be false"
-            else Err "Bool.and false true should be false"
-        else Err "Bool.and true false should be false"
-    else Err "Bool.and true true should be true"
+    ensure (_and true true == true) "Bool.and true true should be true" ?
+    ensure (_and true false == false) "Bool.and true false should be false" ?
+    ensure (_and false true == false) "Bool.and false true should be false" ?
+    ensure (_and false false == false) "Bool.and false false should be false" ?
+    Ok ()
 
+@test "or_truth_table"
 pub fn test_or_truth_table () -> Result Unit Text =
-    if _or true true == true then
-        if _or true false == true then
-            if _or false true == true then
-                if _or false false == false then Ok ()
-                else Err "Bool.or false false should be false"
-            else Err "Bool.or false true should be true"
-        else Err "Bool.or true false should be true"
-    else Err "Bool.or true true should be true"
+    ensure (_or true true == true) "Bool.or true true should be true" ?
+    ensure (_or true false == true) "Bool.or true false should be true" ?
+    ensure (_or false true == true) "Bool.or false true should be true" ?
+    ensure (_or false false == false) "Bool.or false false should be false" ?
+    Ok ()
 
+@test "toText_round_trip"
 pub fn test_toText_round_trip () -> Result Unit Text =
     if _boolToText true == "true" then
         if _boolToText false == "false" then Ok ()

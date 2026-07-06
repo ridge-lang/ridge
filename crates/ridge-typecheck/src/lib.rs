@@ -48,7 +48,7 @@ pub use class_env::{
     register_prelude_classes, register_prelude_instances, ClassTable, InstanceEnv, InstanceInfo,
     InstanceOrigin,
 };
-pub use collect::{collect_workspace, CollectResult};
+pub use collect::{collect_workspace, collect_workspace_gated, CollectResult};
 pub use derive::{
     derive_instances, DelegArg, DelegResult, DelegatedMethod, DerivedInstance, DerivedMethodBody,
     FieldShape, SchemaColumnSpec,
@@ -343,7 +343,8 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
     for (name, &id) in &stdlib_tycon_names {
         collect_tycon_names.entry(name.clone()).or_insert(id);
     }
-    let collect_result = collect_workspace(&module_ast_pairs, &collect_tycon_names);
+    let collect_result =
+        collect_workspace_gated(&module_ast_pairs, &collect_tycon_names, ws.graph.is_stdlib);
     // Coherence errors are workspace-level; accumulate them tagged with the
     // module they originated in (use ModuleId(0) as a fallback — coherence
     // errors carry their own span, so the module tag is informational only).

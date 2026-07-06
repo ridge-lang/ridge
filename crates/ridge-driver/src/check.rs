@@ -129,9 +129,10 @@ pub fn check_workspace(options: CheckOptions) -> Result<CheckArtefacts, CheckErr
     // before consuming the struct.
     let disc_resolve_errors = disc.resolve_errors;
 
-    let ws_graph = disc.graph.ok_or_else(|| CheckError::NoWorkspaceRoot {
+    let mut ws_graph = disc.graph.ok_or_else(|| CheckError::NoWorkspaceRoot {
         path: options.workspace_root.clone(),
     })?;
+    ws_graph.is_stdlib = options.is_stdlib;
 
     let resolved = resolve_workspace_with(ws_graph, options.retain_indices);
     let typecheck_result = typecheck_workspace(&resolved);
@@ -183,9 +184,10 @@ pub fn check_workspace_typed(options: CheckOptions) -> Result<CheckTypedArtefact
     // before consuming the struct.
     let disc_resolve_errors = disc.resolve_errors;
 
-    let ws_graph = disc.graph.ok_or_else(|| CheckError::NoWorkspaceRoot {
+    let mut ws_graph = disc.graph.ok_or_else(|| CheckError::NoWorkspaceRoot {
         path: options.workspace_root.clone(),
     })?;
+    ws_graph.is_stdlib = options.is_stdlib;
 
     let resolved = resolve_workspace_with(ws_graph, options.retain_indices);
     let typecheck_result = typecheck_workspace(&resolved);
@@ -230,9 +232,10 @@ pub fn check_workspace_incremental(options: CheckOptions) -> Result<IncrementalS
 
     let disc = discover_workspace(&options.workspace_root);
     let disc_resolve_errors = disc.resolve_errors;
-    let ws_graph = disc.graph.ok_or_else(|| CheckError::NoWorkspaceRoot {
+    let mut ws_graph = disc.graph.ok_or_else(|| CheckError::NoWorkspaceRoot {
         path: options.workspace_root.clone(),
     })?;
+    ws_graph.is_stdlib = options.is_stdlib;
 
     let resolved = resolve_workspace_with(ws_graph, options.retain_indices);
     let typecheck_result = typecheck_workspace(&resolved);

@@ -50,6 +50,21 @@
 //! style pipe chains.  `=`, `->`, `then`, `else` are NOT in the set; those
 //! introduce new blocks.
 //!
+//! ## Operator-trailing continuation (§5.6)
+//!
+//! The mirror of §5.4: a physical line that ENDS with one of those binary infix
+//! operators does not end the logical line either, because the operator still
+//! needs a right-hand side.  The following line is merged into it, so
+//!
+//! ```text
+//! let total = subtotal +
+//!     shipping
+//! ```
+//!
+//! reads as one expression.  Since a binary operator at end of line always
+//! demands a continuation, no previously valid program ended a logical line
+//! there, so enabling the merge changes no valid program's shape.
+//!
 //! ## Bracket-leading argument continuation (§5.5)
 //!
 //! A logical line that is more indented than the current block and opens with
@@ -404,7 +419,17 @@ fn collect_logical_lines(tokens: &[(Token, Span)]) -> Vec<LogicalLine> {
             .first()
             .is_some_and(|(t, _)| is_continuation_operator(t));
 
-        if first_is_continuation {
+        // §5.6: merge when the previous non-empty line ENDS with a continuation
+        // operator — a trailing binary infix operator still needs its right-hand
+        // side, so this line completes it.
+        let pred_trails_operator = merged
+            .iter()
+            .rev()
+            .find(|(_, _, toks)| !toks.is_empty())
+            .and_then(|(_, _, toks)| toks.last())
+            .is_some_and(|(t, _)| is_continuation_operator(t));
+
+        if first_is_continuation || pred_trails_operator {
             // Find the last non-empty predecessor in `merged` and append.
             if let Some(pred) = merged
                 .iter_mut()
@@ -620,6 +645,37 @@ mod tests {
                 last_was_layout = false;
             }
         }
+    }
+
+    /// A line ending with a binary operator (§5.6) continues on the next line;
+    /// no NEWLINE/INDENT separates the operator from its right-hand side.
+    #[test]
+    fn trailing_operator_joins_next_line() {
+        let toks = tokens("let x = 1 +\n    2");
+        assert!(
+            !toks.contains(&Token::Indent) && !toks.contains(&Token::Newline),
+            "unexpected layout token in trailing-op continuation: {toks:?}"
+        );
+        let after_plus = toks
+            .iter()
+            .position(|t| *t == Token::Plus)
+            .and_then(|i| toks.get(i + 1));
+        assert!(
+            matches!(after_plus, Some(Token::IntDec(s)) if s == "2"),
+            "expected `2` directly after `+`: {toks:?}"
+        );
+    }
+
+    /// The trailing-operator and leading-operator continuation forms tokenize
+    /// to the same stream.
+    #[test]
+    fn trailing_and_leading_operator_agree() {
+        let trailing = tokens("let x = a +\n    b");
+        let leading = tokens("let x = a\n    + b");
+        assert_eq!(
+            trailing, leading,
+            "trailing- and leading-operator continuations should tokenize alike"
+        );
     }
 
     /// Inside a fn body, a multi-line pipe chain should be one logical

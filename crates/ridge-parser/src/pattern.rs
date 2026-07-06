@@ -113,6 +113,34 @@ pub(crate) fn parse_pattern(cur: &mut Cursor<'_>) -> Result<Pattern, ParseError>
     Ok(left)
 }
 
+/// Parse a match-arm pattern, including a top-level or-pattern `p1 | p2 | …`.
+///
+/// Or-patterns are valid only at the root of a match arm (grammar §6.4
+/// `MatchArm`). The `|` separator is the loosest pattern operator, so each
+/// alternative is a full [`parse_pattern`] (which already binds `@` and `::`
+/// tighter). A single alternative is returned unwrapped; two or more wrap into
+/// [`Pattern::Or`]. Because only this entry point consumes `|`, a `|` inside a
+/// parenthesised, cons, or constructor sub-pattern is left for its caller —
+/// which rejects it — so nested or-patterns do not parse.
+pub(crate) fn parse_match_pattern(cur: &mut Cursor<'_>) -> Result<Pattern, ParseError> {
+    let first = parse_pattern(cur)?;
+    if cur.peek() != &Token::Pipe {
+        return Ok(first);
+    }
+
+    let start = first.span();
+    let mut alts = vec![first];
+    while cur.peek() == &Token::Pipe {
+        cur.bump(); // consume `|`
+        alts.push(parse_pattern(cur)?);
+    }
+    let end = alts.last().map_or(start, Pattern::span);
+    Ok(Pattern::Or {
+        alts,
+        span: start.merge(end),
+    })
+}
+
 // ── parse_pattern_atom ────────────────────────────────────────────────────────
 
 /// Parse a single atomic pattern (grammar §7 `PatternAtom`).

@@ -37,6 +37,11 @@
 //! Opaque types add:
 //! - `P032 OpaqueOnAlias`
 //!
+//! Guidance for forms other languages spell differently adds:
+//! - `P033 LetInNotSupported`
+//! - `P034 GuardKeywordInMatch`
+//! - `P035 RecordUpdateSyntax`
+//!
 //! Later tasks (T3–T12) will extend this enum; adding variants is
 //! non-breaking because the enum is not `#[non_exhaustive]` — the parser
 //! crate owns all construction sites.
@@ -352,6 +357,46 @@ pub enum ParseError {
         span: Span,
     },
 
+    /// P033 — a `let … in …` expression was written. Ridge `let` bindings are
+    /// layout-based: the body follows on the next line at the same indentation,
+    /// so there is no `in` keyword. Coming from Haskell, OCaml, F#, or Elm this
+    /// is a natural mistake; the diagnostic names the Ridge shape directly
+    /// instead of surfacing a bare "unexpected `in`".
+    #[error(
+        "`let … in` is not a Ridge expression — `let` uses layout: put the body on the next line at the same indentation as `let`"
+    )]
+    LetInNotSupported {
+        /// Source location of the stray `in` keyword.
+        span: Span,
+    },
+
+    /// P034 — a match arm used `if` to introduce its guard. Ridge match guards
+    /// use `when` (`<pattern> when <condition> ->`); `if` is only the
+    /// conditional expression. The offending token is the `if`, which a
+    /// quick-fix can replace with `when` in place.
+    #[error("match guards use `when`, not `if` — write `<pattern> when <condition> ->`")]
+    GuardKeywordInMatch {
+        /// Source location of the `if` keyword.
+        span: Span,
+    },
+
+    /// P035 — record update was written `{ record with … }` (the OCaml/Elm/F#
+    /// spelling). Ridge writes it `record with { field = value }`: the record
+    /// comes first and the braces wrap only the updated fields. A quick-fix
+    /// moves the record out of the braces.
+    #[error(
+        "record update is written `record with {{ field = value }}`, not `{{ record with … }}` — move the record out of the braces"
+    )]
+    RecordUpdateSyntax {
+        /// Source location of the misplaced `with` keyword (the primary caret).
+        span: Span,
+        /// Source location of the opening `{`, used to build the quick-fix edit.
+        open_brace: Span,
+        /// The record expression's identifier text (the single field-shorthand
+        /// name parsed before `with`), used to render the corrected form.
+        record: String,
+    },
+
     /// P999 — the lexer's bracket-suppression invariant was violated (should
     /// be unreachable; signals a lexer bug, not a user error).
     #[error("internal error: layout invariant violated inside bracketed region")]
@@ -391,6 +436,9 @@ impl ParseError {
             Self::MalformedClassDecl { .. } => "P030",
             Self::MalformedInstanceDecl { .. } => "P031",
             Self::OpaqueOnAlias { .. } => "P032",
+            Self::LetInNotSupported { .. } => "P033",
+            Self::GuardKeywordInMatch { .. } => "P034",
+            Self::RecordUpdateSyntax { .. } => "P035",
             Self::InternalLayoutInvariantViolated { .. } => "P999",
         }
     }
@@ -422,6 +470,9 @@ impl ParseError {
             | Self::MalformedClassDecl { span, .. }
             | Self::MalformedInstanceDecl { span, .. }
             | Self::OpaqueOnAlias { span }
+            | Self::LetInNotSupported { span }
+            | Self::GuardKeywordInMatch { span }
+            | Self::RecordUpdateSyntax { span, .. }
             | Self::InternalLayoutInvariantViolated { span } => *span,
         }
     }
@@ -538,5 +589,41 @@ mod tests {
         let msg = e.to_string();
         assert!(msg.contains("malformed instance declaration"));
         assert!(msg.contains("at least one method"));
+    }
+
+    #[test]
+    fn p033_code_and_display() {
+        let e = ParseError::LetInNotSupported {
+            span: Span::new(10, 12),
+        };
+        assert_eq!(e.code(), "P033");
+        let msg = e.to_string();
+        assert!(msg.contains("let"));
+        assert!(msg.contains("layout"));
+    }
+
+    #[test]
+    fn p034_code_and_display() {
+        let e = ParseError::GuardKeywordInMatch {
+            span: Span::new(4, 6),
+        };
+        assert_eq!(e.code(), "P034");
+        let msg = e.to_string();
+        assert!(msg.contains("when"));
+        assert!(msg.contains("if"));
+    }
+
+    #[test]
+    fn p035_code_and_display() {
+        let e = ParseError::RecordUpdateSyntax {
+            span: Span::new(8, 12),
+            open_brace: Span::new(4, 5),
+            record: "p".to_string(),
+        };
+        assert_eq!(e.code(), "P035");
+        assert_eq!(e.span(), Span::new(8, 12));
+        let msg = e.to_string();
+        assert!(msg.contains("record update"));
+        assert!(msg.contains("with"));
     }
 }

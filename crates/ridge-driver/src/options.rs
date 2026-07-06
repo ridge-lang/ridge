@@ -86,6 +86,12 @@ pub struct CompileOptions {
     /// Which artefacts to emit.
     pub emit: EmitArtefacts,
 
+    /// Compile the workspace as the Ridge standard library itself (permits
+    /// `@ffi`, takes reconciled types from source). INTERNAL — see the identical
+    /// field on [`CheckOptions`]; set only by the stdlib build paths and
+    /// `ridge test --stdlib`, never from user-facing input.
+    pub is_stdlib: bool,
+
     /// Optional cache-root override for `ridge-pkg`.
     ///
     /// When `None`, the driver calls [`ridge_pkg::cache_root`] to resolve the
@@ -109,6 +115,7 @@ impl CompileOptions {
             profile: Profile::Debug,
             emit: EmitArtefacts::Beam,
             cache_root: None,
+            is_stdlib: false,
         }
     }
 
@@ -159,6 +166,18 @@ pub struct CheckOptions {
     /// it does not pay to materialise data it never reads. The language server
     /// sets it `true` to power hover, go-to-definition, and completion.
     pub retain_indices: bool,
+
+    /// Compile the workspace as the Ridge standard library itself.
+    ///
+    /// When `true`, `@ffi` is permitted (R022 is not raised) and the reconciled
+    /// stdlib types / base codec instances are taken from the `.ridge` source
+    /// rather than reserved as builtins, so the stdlib can compile itself without
+    /// double-declaring them. This is an INTERNAL flag: it is set only by the
+    /// compiler's own stdlib build paths and by `ridge test --stdlib` (which
+    /// compiles the embedded stdlib, never user code), never from a user-facing
+    /// CLI flag — otherwise a user could enable `@ffi` and bypass the capability
+    /// system.
+    pub is_stdlib: bool,
 }
 
 impl CheckOptions {
@@ -169,6 +188,7 @@ impl CheckOptions {
             workspace_root,
             members: None,
             retain_indices: false,
+            is_stdlib: false,
         }
     }
 

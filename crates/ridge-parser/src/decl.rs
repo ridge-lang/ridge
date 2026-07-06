@@ -844,7 +844,17 @@ pub(crate) fn parse_type_decl(
 
     cur.expect(&Token::Assign)?;
 
-    let body = parse_type_body(cur)?;
+    // A body written on more-indented following lines opens one layout block
+    // right after `=` that also encloses any trailing `deriving`. Own that block
+    // here so the block boundary is balanced across body + deriving regardless of
+    // where the author put the clause.
+    let opened = cur.peek() == &Token::Indent;
+    if opened {
+        cur.bump();
+    }
+    let mut open_blocks: i32 = i32::from(opened);
+
+    let body = parse_type_body(cur, opened)?;
     let body_end_span = match &body {
         TypeBody::Record(r) => r.span,
         TypeBody::Union(u) => u.span,
@@ -859,12 +869,44 @@ pub(crate) fn parse_type_decl(
         });
     }
 
-    // Optional trailing `deriving ( ClassName, … )` clause.
-    let deriving = if cur.peek() == &Token::KwDeriving {
-        parse_deriving_clause(cur)?
-    } else {
-        vec![]
+    // Optional trailing `deriving ( ClassName, … )` clause. Layout gives it three
+    // valid placements after a multi-line body — same indent (same block), more
+    // indent (nested block), or less indent (after the block closes) — so scan
+    // across the intervening `Newline`/`Indent`/`Dedent` tokens for the keyword,
+    // tracking block depth, and only commit the skip when `deriving` is there.
+    let deriving = {
+        let mut k = 0;
+        let mut delta = 0i32;
+        while let Some(tok) = cur.peek_n(k) {
+            match tok {
+                Token::Newline => k += 1,
+                Token::Indent => {
+                    k += 1;
+                    delta += 1;
+                }
+                Token::Dedent => {
+                    k += 1;
+                    delta -= 1;
+                }
+                _ => break,
+            }
+        }
+        if cur.peek_n(k) == Some(&Token::KwDeriving) {
+            for _ in 0..k {
+                cur.bump();
+            }
+            open_blocks += delta;
+            parse_deriving_clause(cur)?
+        } else {
+            vec![]
+        }
     };
+
+    // Close the layout block(s) still open for this declaration.
+    while open_blocks > 0 {
+        cur.expect(&Token::Dedent)?;
+        open_blocks -= 1;
+    }
 
     let end_span = deriving.last().map_or(body_end_span, |id: &Ident| id.span);
 
@@ -880,8 +922,114 @@ pub(crate) fn parse_type_decl(
     })
 }
 
+/// Consume layout `Indent` tokens that continue a declaration's signature onto
+/// more-indented following lines, counting them so the matching `Dedent`s can be
+/// drained once the body is parsed. In valid source a bare `Indent` in signature
+/// position (between params, or before `->` / `where` / `=`) can only be such a
+/// continuation, so consuming it is safe.
+fn skip_continuation_indents(cur: &mut Cursor<'_>, open: &mut u32) {
+    while cur.peek() == &Token::Indent {
+        cur.bump();
+        *open += 1;
+    }
+}
+
+/// The parsed tail of a function declaration, shared by the plain and
+/// attribute-carrying fn parsers.
+struct FnSignatureTail {
+    params: Vec<Param>,
+    ret: Option<ridge_ast::Type>,
+    constraints: Vec<ClassConstraint>,
+    body: Expr,
+}
+
+/// Parse the shared tail of a function declaration: parameters, an optional
+/// return type, an optional `where` clause, `=`, and the body. Used by both the
+/// plain and the attribute-carrying fn parsers so the two never drift.
+///
+/// The signature may wrap onto more-indented following lines — between
+/// parameters, or before `->` / `where` / `=` — which the lexer marks with a
+/// layout `Indent`. Those continuation indents are stepped over and the matching
+/// `Dedent`s drained after the body, so `fn add (x: Int)` ⏎ `    (y: Int) -> …`
+/// parses like the single-line form.
+fn parse_fn_signature_tail(cur: &mut Cursor<'_>) -> Result<FnSignatureTail, ParseError> {
+    let mut sig_blocks: u32 = 0;
+
+    // Parameters: zero or more Params. `()` is the zero-param marker.
+    let mut params: Vec<Param> = Vec::new();
+    skip_continuation_indents(cur, &mut sig_blocks);
+    if cur.peek() == &Token::LParen && cur.peek_n(1) == Some(&Token::RParen) {
+        cur.bump(); // consume `(`
+        cur.bump(); // consume `)`
+    } else {
+        loop {
+            skip_continuation_indents(cur, &mut sig_blocks);
+            if !can_start_param(cur) {
+                break;
+            }
+            params.push(parse_param_top(cur)?);
+        }
+    }
+
+    // Optional return type `-> Type`.
+    skip_continuation_indents(cur, &mut sig_blocks);
+    let ret = if cur.peek() == &Token::Arrow {
+        cur.bump(); // consume `->`
+        Some(parse_type(cur)?)
+    } else {
+        None
+    };
+
+    // Optional `where ClassConstraint { "," ClassConstraint }` clause.
+    skip_continuation_indents(cur, &mut sig_blocks);
+    let constraints = if cur.peek() == &Token::KwWhere {
+        parse_where_clause(cur)?
+    } else {
+        vec![]
+    };
+
+    // `=` then body (inline or INDENT-delimited block).
+    skip_continuation_indents(cur, &mut sig_blocks);
+    cur.expect(&Token::Assign)?;
+
+    // Where the wrapped signature's closing `Dedent`s fall depends on how the
+    // body is indented relative to the wrapped lines: a body shallower than the
+    // params dedents out before it, and a body on its own line inside the same
+    // block follows a layout `Newline`. Rebalance around `=` so all shapes reach
+    // `parse_branch_body` looking like the single-line form.
+    let wrapped = sig_blocks > 0;
+    while sig_blocks > 0 && cur.peek() == &Token::Dedent {
+        cur.bump();
+        sig_blocks -= 1;
+    }
+    if wrapped && cur.peek() == &Token::Newline {
+        cur.bump();
+    }
+
+    let expr = parse_branch_body(cur)?;
+
+    // Close the layout blocks the wrapped signature opened but did not already.
+    for _ in 0..sig_blocks {
+        cur.expect(&Token::Dedent)?;
+    }
+
+    Ok(FnSignatureTail {
+        params,
+        ret,
+        constraints,
+        body: expr,
+    })
+}
+
 /// Parse a type body: record `{ … }`, union `| A | B`, or alias `Type`.
-fn parse_type_body(cur: &mut Cursor<'_>) -> Result<TypeBody, ParseError> {
+///
+/// `in_block` is `true` when the caller already consumed a layout `Indent`
+/// opened right after `=` (a body written across more-indented lines, e.g. a
+/// multi-line union). It is threaded into `looks_like_union` so newlines between
+/// alternatives read as soft rather than as terminators. The block's opening
+/// `Indent` and closing `Dedent` are owned by [`parse_type_decl`], which also
+/// balances them against a trailing `deriving` clause.
+fn parse_type_body(cur: &mut Cursor<'_>, in_block: bool) -> Result<TypeBody, ParseError> {
     match cur.peek() {
         // Record type: `{ field: Type, … }`
         Token::LBrace => Ok(TypeBody::Record(parse_record_type_body(cur)?)),
@@ -901,9 +1049,10 @@ fn parse_type_body(cur: &mut Cursor<'_>) -> Result<TypeBody, ParseError> {
         // balanced brackets/parens) and returns `true` if it finds a `|`
         // before any line terminator. The disambiguation rule is preserved:
         // `type Wrapper = Inner Int` (single constructor, no `|`) is still
-        // treated as a type alias.
+        // treated as a type alias. Inside an opened block, layout newlines
+        // between alternatives are transparent to the scan.
         Token::UpperIdent(_) => {
-            if looks_like_union(cur) {
+            if looks_like_union(cur, in_block) {
                 Ok(TypeBody::Union(parse_union_type_body(cur)?))
             } else {
                 Ok(TypeBody::Alias(parse_type(cur)?))
@@ -919,37 +1068,65 @@ fn parse_type_body(cur: &mut Cursor<'_>) -> Result<TypeBody, ParseError> {
 /// looks like the body of a union type declaration.
 ///
 /// Scans forward past type-atom tokens — `UPPER_IDENT`, `LOWER_IDENT`, `[…]`,
-/// and `(…)` — tracking bracket/paren depth.  Returns `true` if a `|` is found
-/// at depth 0 before any line terminator (`Newline`, `Dedent`, `Eof`, `Assign`).
+/// `(…)`, and record-variant bodies `{…}` — tracking bracket/paren/brace depth.
+/// Returns `true` if a `|` is found at depth 0 before any line terminator.
+///
+/// The brace tracking is what lets a record-variant constructor appear before
+/// the `|`, e.g. `type Shape = Circle { radius: Int } | Square`. Without it the
+/// scan stopped at the opening `{` and misclassified the union as a type alias
+/// (`App(Circle, [Record …])` with a dangling `| …`).
+///
+/// A bare `Dedent` or `Assign` at depth 0 ends the scan; `Eof` and
+/// end-of-stream always stop. An `Indent` at depth 0 opens a layout
+/// continuation (`type Shape = Circle Int` ⏎ `    | Square Int`), so the scan
+/// steps over it and treats subsequent newlines as soft. When `in_block` is
+/// already set — the caller consumed a leading `Indent` right after `=` — bare
+/// newlines are soft from the start, letting a no-leading-bar multi-line union
+/// (`Circle Int` ⏎ `| Square`) be recognised. Inside a bracketed group a layout
+/// newline is always content, not a terminator (record-variant bodies may span
+/// lines).
 ///
 /// The depth bound of 64 prevents pathological inputs from scanning an entire
 /// file; returning `false` in that case safely falls through to the alias branch.
 ///
 /// Does NOT consume any tokens — uses `peek_n(n)` for pure lookahead.
-fn looks_like_union(cur: &Cursor<'_>) -> bool {
+fn looks_like_union(cur: &Cursor<'_>, in_block: bool) -> bool {
     let mut n: usize = 0;
     let mut depth: i32 = 0;
+    let mut soft = in_block;
     loop {
         if n > 64 {
             return false;
         }
         match cur.peek_n(n) {
-            None | Some(Token::Newline | Token::Dedent | Token::Eof | Token::Assign) => {
-                return false
-            }
+            None | Some(Token::Eof) => return false,
             Some(Token::Pipe) if depth == 0 => return true,
-            Some(Token::LParen | Token::LBrack) => {
+            // A continuation `Indent` opens a block; newlines become soft.
+            Some(Token::Indent) if depth == 0 => {
+                soft = true;
+                n += 1;
+            }
+            // Newlines terminate at depth 0 unless we are inside a layout block.
+            Some(Token::Newline) if depth == 0 => {
+                if soft {
+                    n += 1;
+                } else {
+                    return false;
+                }
+            }
+            Some(Token::Dedent | Token::Assign) if depth == 0 => return false,
+            Some(Token::LParen | Token::LBrack | Token::LBrace) => {
                 depth += 1;
                 n += 1;
             }
-            Some(Token::RParen | Token::RBrack) => {
+            Some(Token::RParen | Token::RBrack | Token::RBrace) => {
                 depth -= 1;
                 if depth < 0 {
                     return false;
                 }
                 n += 1;
             }
-            // Any token inside brackets: keep scanning.
+            // Any token inside brackets/braces (including layout newlines): keep scanning.
             _ if depth > 0 => {
                 n += 1;
             }
@@ -1045,8 +1222,43 @@ fn parse_union_type_body(cur: &mut Cursor<'_>) -> Result<UnionTypeBody, ParseErr
     // Parse first constructor (required).
     alts.push(parse_constructor(cur)?);
 
-    // Parse subsequent constructors separated by `|`.
-    while cur.peek() == &Token::Pipe {
+    // Parse subsequent constructors separated by `|`. Alternatives may wrap onto
+    // more-indented following lines, so the `|` can sit behind layout tokens:
+    //
+    // ```text
+    // type Shape =
+    //     | Circle Int
+    //     | Square Int
+    // ```
+    //
+    // Only step over that layout when a `|` actually follows — otherwise the
+    // trailing `Newline`/`Dedent` of a single-line union is left in place as the
+    // enclosing block's separator. `Indent`s opened here are balanced by an equal
+    // number of `Dedent`s once the alternatives end.
+    let mut open_indents: u32 = 0;
+    loop {
+        // Look past intervening layout for the next `|`.
+        let mut k = 0;
+        let mut indents = 0;
+        while let Some(tok) = cur.peek_n(k) {
+            match tok {
+                Token::Newline => k += 1,
+                Token::Indent => {
+                    k += 1;
+                    indents += 1;
+                }
+                _ => break,
+            }
+        }
+        if cur.peek_n(k) != Some(&Token::Pipe) {
+            break;
+        }
+
+        // Commit: consume the skipped layout and the `|`.
+        for _ in 0..k {
+            cur.bump();
+        }
+        open_indents += indents;
         let pipe_span = cur.span();
         cur.bump(); // consume `|`
 
@@ -1062,6 +1274,11 @@ fn parse_union_type_body(cur: &mut Cursor<'_>) -> Result<UnionTypeBody, ParseErr
         }
 
         alts.push(parse_constructor(cur)?);
+    }
+
+    // Close the layout blocks opened between wrapped alternatives.
+    for _ in 0..open_indents {
+        cur.expect(&Token::Dedent)?;
     }
 
     let end_span = alts.last().map_or(start, |c| match c {
@@ -1165,38 +1382,13 @@ pub(crate) fn parse_fn_decl(
         }
     };
 
-    // Parameters: zero or more Params.
-    // `()` is the zero-param marker; consume it and leave params empty.
-    let mut params: Vec<Param> = Vec::new();
-    if cur.peek() == &Token::LParen && cur.peek_n(1) == Some(&Token::RParen) {
-        cur.bump(); // consume `(`
-        cur.bump(); // consume `)`
-    } else {
-        while can_start_param(cur) {
-            params.push(parse_param_top(cur)?);
-        }
-    }
-
-    // Optional return type `-> Type`.
-    let ret = if cur.peek() == &Token::Arrow {
-        cur.bump(); // consume `->`
-        Some(parse_type(cur)?)
-    } else {
-        None
-    };
-
-    // Optional `where ClassConstraint { "," ClassConstraint }` clause.
-    let constraints = if cur.peek() == &Token::KwWhere {
-        parse_where_clause(cur)?
-    } else {
-        vec![]
-    };
-
-    // `=` then body (inline or INDENT-delimited block).
-    cur.expect(&Token::Assign)?;
-
-    let expr = parse_branch_body(cur)?;
-    let end_span = expr.span();
+    let FnSignatureTail {
+        params,
+        ret,
+        constraints,
+        body,
+    } = parse_fn_signature_tail(cur)?;
+    let end_span = body.span();
 
     Ok(FnDecl {
         attrs: vec![],
@@ -1206,7 +1398,7 @@ pub(crate) fn parse_fn_decl(
         params,
         ret,
         constraints,
-        body: Body::Expr(expr),
+        body: Body::Expr(body),
         span: start.merge(end_span),
         doc,
     })
@@ -1245,34 +1437,13 @@ fn parse_fn_decl_with_attrs(
         }
     };
 
-    let mut params: Vec<Param> = Vec::new();
-    if cur.peek() == &Token::LParen && cur.peek_n(1) == Some(&Token::RParen) {
-        cur.bump();
-        cur.bump();
-    } else {
-        while can_start_param(cur) {
-            params.push(parse_param_top(cur)?);
-        }
-    }
-
-    let ret = if cur.peek() == &Token::Arrow {
-        cur.bump();
-        Some(parse_type(cur)?)
-    } else {
-        None
-    };
-
-    // Optional `where` clause (same as plain parse_fn_decl).
-    let constraints = if cur.peek() == &Token::KwWhere {
-        parse_where_clause(cur)?
-    } else {
-        vec![]
-    };
-
-    cur.expect(&Token::Assign)?;
-
-    let expr = parse_branch_body(cur)?;
-    let end_span = expr.span();
+    let FnSignatureTail {
+        params,
+        ret,
+        constraints,
+        body,
+    } = parse_fn_signature_tail(cur)?;
+    let end_span = body.span();
 
     Ok(FnDecl {
         attrs,
@@ -1282,7 +1453,7 @@ fn parse_fn_decl_with_attrs(
         params,
         ret,
         constraints,
-        body: Body::Expr(expr),
+        body: Body::Expr(body),
         span: start.merge(end_span),
         doc,
     })
@@ -2858,6 +3029,277 @@ mod tests {
             }
             other @ Constructor::Record { .. } => panic!("expected Positional, got {other:?}"),
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // parse_type_union_record_variant_not_last — regression guard
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn parse_type_union_record_variant_not_last() {
+        // `Circle { radius: Int } | Square` — a record-variant constructor
+        // followed by another alternative. The `|` sits past the record body,
+        // so the union dispatcher must scan across the balanced `{ … }` to see
+        // it. A brace-blind lookahead misclassifies this as a type alias.
+        let td = parse_td("type Shape = Circle { radius: Int } | Square").expect("should parse");
+        assert_eq!(td.name.text, "Shape");
+        let alts = match &td.body {
+            TypeBody::Union(u) => &u.alternatives,
+            other => panic!("expected Union, got {other:?}"),
+        };
+        assert_eq!(alts.len(), 2);
+        match &alts[0] {
+            Constructor::Record { name, body, .. } => {
+                assert_eq!(name.text, "Circle");
+                assert_eq!(body.fields.len(), 1);
+                assert_eq!(body.fields[0].name.text, "radius");
+            }
+            other @ Constructor::Positional { .. } => panic!("expected Record, got {other:?}"),
+        }
+        assert!(
+            matches!(&alts[1], Constructor::Positional { name, args, .. }
+                if name.text == "Square" && args.is_empty())
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // parse_type_union_record_variant_both — regression guard
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn parse_type_union_record_variant_both() {
+        // Two record variants in one union; the multi-field record body of the
+        // first must not swallow the `|` separator.
+        let td = parse_td("type Shape = Circle { radius: Int } | Rect { w: Int, h: Int }")
+            .expect("should parse");
+        let alts = match &td.body {
+            TypeBody::Union(u) => &u.alternatives,
+            other => panic!("expected Union, got {other:?}"),
+        };
+        assert_eq!(alts.len(), 2);
+        match &alts[0] {
+            Constructor::Record { name, body, .. } => {
+                assert_eq!(name.text, "Circle");
+                assert_eq!(body.fields.len(), 1);
+            }
+            other @ Constructor::Positional { .. } => panic!("expected Record, got {other:?}"),
+        }
+        match &alts[1] {
+            Constructor::Record { name, body, .. } => {
+                assert_eq!(name.text, "Rect");
+                assert_eq!(body.fields.len(), 2);
+            }
+            other @ Constructor::Positional { .. } => panic!("expected Record, got {other:?}"),
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // parse_type_union_record_variant_last — regression guard
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn parse_type_union_record_variant_last() {
+        // The already-working case: a record variant as the final alternative.
+        // The leading `|` is found before the brace, so this parsed before the
+        // brace-aware fix too; keep it green so the fix doesn't regress it.
+        let td = parse_td("type Shape = Square | Circle { radius: Int }").expect("should parse");
+        let alts = match &td.body {
+            TypeBody::Union(u) => &u.alternatives,
+            other => panic!("expected Union, got {other:?}"),
+        };
+        assert_eq!(alts.len(), 2);
+        assert!(matches!(&alts[0], Constructor::Positional { name, .. } if name.text == "Square"));
+        assert!(matches!(&alts[1], Constructor::Record { name, .. } if name.text == "Circle"));
+    }
+
+    #[test]
+    fn parse_type_multiline_union_then_deriving_same_indent() {
+        // `deriving` at the same indent as the alternatives sits in the same
+        // layout block: `… Green Newline deriving (…) Dedent`.
+        let src = "type Color =\n    | Red\n    | Green\n    deriving (Eq)\n";
+        let td = parse_td(src).expect("should parse");
+        let alts = match &td.body {
+            TypeBody::Union(u) => &u.alternatives,
+            other => panic!("expected Union, got {other:?}"),
+        };
+        assert_eq!(alts.len(), 2);
+        assert_eq!(td.deriving.len(), 1);
+        assert_eq!(td.deriving[0].text, "Eq");
+    }
+
+    #[test]
+    fn parse_type_multiline_union_then_deriving_dedented() {
+        // `deriving` dedented back to column 0 sits after the block closes:
+        // `… Green Dedent Newline deriving (…)`.
+        let src = "type Color =\n    | Red\n    | Green\nderiving (Eq)\n";
+        let td = parse_td(src).expect("should parse");
+        assert_eq!(td.deriving.len(), 1);
+        assert_eq!(td.deriving[0].text, "Eq");
+    }
+
+    #[test]
+    fn parse_type_multiline_record_body() {
+        // The same layout-block handling lets a record body sit on an indented
+        // following line.
+        let src = "type User =\n    { name: Text, age: Int }\n";
+        let td = parse_td(src).expect("should parse");
+        let rec = match &td.body {
+            TypeBody::Record(r) => r,
+            other => panic!("expected Record, got {other:?}"),
+        };
+        assert_eq!(rec.fields.len(), 2);
+    }
+
+    #[test]
+    fn parse_type_multiline_alias_body() {
+        // A single more-indented type is still an alias, not a one-variant union.
+        let src = "type Id =\n    Int\n";
+        let td = parse_td(src).expect("should parse");
+        assert!(
+            matches!(td.body, TypeBody::Alias(_)),
+            "expected Alias, got {:?}",
+            td.body
+        );
+    }
+
+    #[test]
+    fn parse_type_union_multiline_leading_bars() {
+        // Idiomatic multi-line union: the body opens a layout block after `=`
+        // and each alternative wraps onto its own line behind a leading `|`.
+        let src = "type Shape =\n    | Circle Int\n    | Square Int\n";
+        let td = parse_td(src).expect("should parse");
+        assert_eq!(td.name.text, "Shape");
+        let alts = match &td.body {
+            TypeBody::Union(u) => &u.alternatives,
+            other => panic!("expected Union, got {other:?}"),
+        };
+        assert_eq!(alts.len(), 2);
+        assert!(matches!(&alts[0], Constructor::Positional { name, .. } if name.text == "Circle"));
+        assert!(matches!(&alts[1], Constructor::Positional { name, .. } if name.text == "Square"));
+    }
+
+    #[test]
+    fn parse_type_union_multiline_no_leading_bar() {
+        // First alternative without a leading `|`, still spread across lines.
+        let src = "type Shape =\n    Circle Int\n    | Square Int\n";
+        let td = parse_td(src).expect("should parse");
+        let alts = match &td.body {
+            TypeBody::Union(u) => &u.alternatives,
+            other => panic!("expected Union, got {other:?}"),
+        };
+        assert_eq!(alts.len(), 2);
+    }
+
+    #[test]
+    fn parse_type_union_inline_wrap() {
+        // The first constructor sits inline after `=`; the rest wrap onto an
+        // indented continuation line.
+        let src = "type Shape = Circle Int\n    | Square Int\n";
+        let td = parse_td(src).expect("should parse");
+        let alts = match &td.body {
+            TypeBody::Union(u) => &u.alternatives,
+            other => panic!("expected Union, got {other:?}"),
+        };
+        assert_eq!(alts.len(), 2);
+        assert!(matches!(&alts[0], Constructor::Positional { name, .. } if name.text == "Circle"));
+        assert!(matches!(&alts[1], Constructor::Positional { name, .. } if name.text == "Square"));
+    }
+
+    #[test]
+    fn parse_type_union_multiline_with_record_variants() {
+        // Multi-line union mixing record and positional variants (W1.1 × W1.2).
+        let src =
+            "type Shape =\n    | Circle { radius: Int }\n    | Rect { w: Int, h: Int }\n    | Origin\n";
+        let td = parse_td(src).expect("should parse");
+        let alts = match &td.body {
+            TypeBody::Union(u) => &u.alternatives,
+            other => panic!("expected Union, got {other:?}"),
+        };
+        assert_eq!(alts.len(), 3);
+        assert!(matches!(&alts[0], Constructor::Record { name, .. } if name.text == "Circle"));
+        assert!(matches!(&alts[1], Constructor::Record { name, .. } if name.text == "Rect"));
+        assert!(matches!(&alts[2], Constructor::Positional { name, .. } if name.text == "Origin"));
+    }
+
+    #[test]
+    fn parse_type_deriving_on_next_line() {
+        // `deriving` on a more-indented following line was silently dropped
+        // (the clause hid behind a layout `Indent`), leaving `deriving: []`.
+        let src = "type Color = Red | Green | Blue\n    deriving (Eq, Ord)\n";
+        let td = parse_td(src).expect("should parse");
+        assert_eq!(td.name.text, "Color");
+        assert_eq!(td.deriving.len(), 2);
+        assert_eq!(td.deriving[0].text, "Eq");
+        assert_eq!(td.deriving[1].text, "Ord");
+    }
+
+    #[test]
+    fn parse_type_deriving_inline_still_works() {
+        // Regression guard for the common inline form.
+        let src = "type Color = Red | Green deriving (Eq)\n";
+        let td = parse_td(src).expect("should parse");
+        assert_eq!(td.deriving.len(), 1);
+        assert_eq!(td.deriving[0].text, "Eq");
+    }
+
+    #[test]
+    fn parse_fn_where_on_next_line() {
+        // `where` wrapping onto a more-indented line opens one layout block for
+        // the whole `where … = body`; the parser used to hit `<INDENT>` where it
+        // expected `=`.
+        let src = "fn show2 (x: a) -> Text\n    where Show a = Show.show x\n";
+        let f = parse_fn(src).expect("should parse");
+        assert_eq!(f.name.text, "show2");
+        assert_eq!(f.constraints.len(), 1);
+    }
+
+    #[test]
+    fn parse_fn_where_inline_still_works() {
+        // Regression guard for the inline `where` with an indented body.
+        let src = "fn show2 (x: a) -> Text where Show a =\n    Show.show x\n";
+        let f = parse_fn(src).expect("should parse");
+        assert_eq!(f.constraints.len(), 1);
+    }
+
+    #[test]
+    fn parse_fn_multiline_params() {
+        // Parameters wrapping onto a more-indented following line open a layout
+        // block that wraps the rest of the signature and body; the parser used to
+        // hit "<INDENT>" where it expected `=`.
+        let src = "fn add (x: Int)\n       (y: Int) -> Int = x + y\n";
+        let f = parse_fn(src).expect("should parse");
+        assert_eq!(f.name.text, "add");
+        assert_eq!(f.params.len(), 2);
+        assert!(f.ret.is_some());
+    }
+
+    #[test]
+    fn parse_fn_multiline_params_body_on_own_line() {
+        // Params aligned under the first param with the body on its own line at a
+        // shallower indent — the natural wrapped style. The signature's closing
+        // Dedent falls before the body, which the rebalance around `=` handles.
+        let src = "fn add (x: Int)\n       (y: Int) -> Int =\n    x + y\n";
+        let f = parse_fn(src).expect("should parse");
+        assert_eq!(f.params.len(), 2);
+    }
+
+    #[test]
+    fn parse_fn_hanging_params_and_body_same_indent() {
+        // Fully hanging layout: name on its own line, params and body all at the
+        // same continuation indent, the body separated from `=` by a Newline.
+        let src = "fn add\n    (x: Int)\n    (y: Int) -> Int =\n    x + y\n";
+        let f = parse_fn(src).expect("should parse");
+        assert_eq!(f.params.len(), 2);
+    }
+
+    #[test]
+    fn parse_fn_multiline_params_with_attrs_shares_logic() {
+        // The attribute-carrying fn parser goes through the same signature tail,
+        // so it accepts the wrapped form too.
+        let src = "@test \"adds\"\nfn add (x: Int)\n       (y: Int) -> Int = x + y\n";
+        let result = crate::parse_source(src);
+        assert!(
+            result.errors.is_empty(),
+            "expected clean parse, got {:?}",
+            result.errors
+        );
     }
 
     // ─────────────────────────────────────────────────────────────────────────

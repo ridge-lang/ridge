@@ -10,19 +10,23 @@ fn _println (s: Text) -> Unit
 @ffi("ridge_rt", "eprintln", 1)
 fn _eprintln (s: Text) -> Unit
 
+@test "smoke_io"
 pub fn test_smoke_io () -> Result Unit Text = Ok ()
 
 -- io.println returns Unit and does not crash.
+@test "println_returns_unit"
 pub fn io test_println_returns_unit () -> Result Unit Text =
     let _ = _println "test"
     Ok ()
 
 -- io.print (no newline) returns Unit and does not crash.
+@test "print_no_newline"
 pub fn io test_print_no_newline () -> Result Unit Text =
     let _ = _print "test"
     Ok ()
 
 -- io.eprintln (stderr) returns Unit and does not crash.
+@test "eprintln_to_stderr"
 pub fn io test_eprintln_to_stderr () -> Result Unit Text =
     let _ = _eprintln "test"
     Ok ()

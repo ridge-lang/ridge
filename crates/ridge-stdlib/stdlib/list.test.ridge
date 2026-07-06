@@ -100,105 +100,131 @@ fn _any (p: fn a -> Bool) (xs: List a) -> Bool
 @ffi("lists", "seq", 2)
 fn _range (lo: Int) (hi: Int) -> List Int
 
+@test "smoke_list"
 pub fn test_smoke_list () -> Result Unit Text = Ok ()
 
+@test "empty_has_length_zero"
 pub fn test_empty_has_length_zero () -> Result Unit Text =
     if _length [] == 0 then Ok ()
     else Err "List.empty length should be 0"
 
+@test "length_basic"
 pub fn test_length_basic () -> Result Unit Text =
     if _length [1, 2, 3] == 3 then Ok ()
     else Err "List.length [1,2,3] should be 3"
 
+@test "isEmpty_true_for_empty"
 pub fn test_isEmpty_true_for_empty () -> Result Unit Text =
     if _isEmpty [] then Ok ()
     else Err "List.isEmpty [] should be true"
 
+@test "isEmpty_false_for_singleton"
 pub fn test_isEmpty_false_for_singleton () -> Result Unit Text =
     if _isEmpty [1] then Err "List.isEmpty [1] should be false"
     else Ok ()
 
+@test "head_returns_some"
 pub fn test_head_returns_some () -> Result Unit Text =
     if _head [1, 2] == Some 1 then Ok ()
     else Err "List.head [1,2] should be Some 1"
 
+@test "head_empty_is_none"
 pub fn test_head_empty_is_none () -> Result Unit Text =
     if _head [] == None then Ok ()
     else Err "List.head [] should be None"
 
+@test "tail_returns_some"
 pub fn test_tail_returns_some () -> Result Unit Text =
     if _tail [1, 2, 3] == Some [2, 3] then Ok ()
     else Err "List.tail [1,2,3] should be Some [2,3]"
 
+@test "map_doubles"
 pub fn test_map_doubles () -> Result Unit Text =
     if _map (fn x -> x * 2) [1, 2, 3] == [2, 4, 6] then Ok ()
     else Err "List.map double [1,2,3] should be [2,4,6]"
 
+@test "filter_keeps_evens"
 pub fn test_filter_keeps_evens () -> Result Unit Text =
     if _filter (fn x -> _rem x 2 == 0) [1, 2, 3, 4] == [2, 4] then Ok ()
     else Err "List.filter evens [1,2,3,4] should be [2,4]"
 
+@test "filterMap_extracts_some"
 pub fn test_filterMap_extracts_some () -> Result Unit Text =
     let result = _filterMap (fn x -> if x > 1 then Some x else None) [1, 2, 3]
     if result == [2, 3] then Ok ()
     else Err "List.filterMap > 1 [1,2,3] should be [2,3]"
 
+@test "fold_sums"
 pub fn test_fold_sums () -> Result Unit Text =
     if _fold (fn a -> fn b -> a + b) 0 [1, 2, 3] == 6 then Ok ()
     else Err "List.fold sum [1,2,3] should be 6"
 
+@test "foldRight_constructs"
 pub fn test_foldRight_constructs () -> Result Unit Text =
     if _foldRight (fn x -> fn acc -> x :: acc) [] [1, 2, 3] == [1, 2, 3] then Ok ()
     else Err "List.foldRight cons [] [1,2,3] should be [1,2,3]"
 
+@test "reverse_basic"
 pub fn test_reverse_basic () -> Result Unit Text =
     if _reverse [1, 2, 3] == [3, 2, 1] then Ok ()
     else Err "List.reverse [1,2,3] should be [3,2,1]"
 
+@test "concat_basic"
 pub fn test_concat_basic () -> Result Unit Text =
     if _concat [1, 2] [3, 4] == [1, 2, 3, 4] then Ok ()
     else Err "List.concat [1,2] [3,4] should be [1,2,3,4]"
 
+@test "concat_empty_left"
 pub fn test_concat_empty_left () -> Result Unit Text =
     if _concat [] [1, 2] == [1, 2] then Ok ()
     else Err "List.concat [] [1,2] should be [1,2]"
 
+@test "concat_empty_right"
 pub fn test_concat_empty_right () -> Result Unit Text =
     if _concat [1, 2] [] == [1, 2] then Ok ()
     else Err "List.concat [1,2] [] should be [1,2]"
 
+@test "sort_ascending"
 pub fn test_sort_ascending () -> Result Unit Text =
     if _sort [3, 1, 2] == [1, 2, 3] then Ok ()
     else Err "List.sort [3,1,2] should be [1,2,3]"
 
+@test "take_caps_at_length"
 pub fn test_take_caps_at_length () -> Result Unit Text =
     if _take 5 [1, 2] == [1, 2] then Ok ()
     else Err "List.take 5 [1,2] should be [1,2]"
 
+@test "drop_zero_keeps_all"
 pub fn test_drop_zero_keeps_all () -> Result Unit Text =
     if _drop 0 [1, 2, 3] == [1, 2, 3] then Ok ()
     else Err "List.drop 0 [1,2,3] should keep all"
 
+@test "drop_past_end_is_empty"
 pub fn test_drop_past_end_is_empty () -> Result Unit Text =
     if _drop 10 [1, 2] == [] then Ok ()
     else Err "List.drop 10 [1,2] should be []"
 
+@test "zip_truncates_to_shorter"
 pub fn test_zip_truncates_to_shorter () -> Result Unit Text =
     if _length (_zip [1, 2, 3] [10, 20]) == 2 then Ok ()
     else Err "List.zip truncates to shorter length"
 
+@test "contains_present"
 pub fn test_contains_present () -> Result Unit Text =
     if _contains 2 [1, 2, 3] then Ok ()
     else Err "List.contains 2 [1,2,3] should be true"
 
+@test "find_first_match"
 pub fn test_find_first_match () -> Result Unit Text =
     if _find (fn x -> x > 1) [1, 2, 3] == Some 2 then Ok ()
     else Err "List.find > 1 [1,2,3] should be Some 2"
 
+@test "any_at_least_one"
 pub fn test_any_at_least_one () -> Result Unit Text =
     if _any (fn x -> x > 2) [1, 2, 3] then Ok ()
     else Err "List.any > 2 [1,2,3] should be true"
 
+@test "range_inclusive"
 pub fn test_range_inclusive () -> Result Unit Text =
     let r = _range 1 5
     if _length r == 5 then

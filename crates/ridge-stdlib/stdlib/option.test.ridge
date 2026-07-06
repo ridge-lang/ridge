@@ -36,38 +36,47 @@ fn _discard (o: Option a) -> Unit =
         Some _ -> ()
         None -> ()
 
+@test "smoke_option"
 pub fn test_smoke_option () -> Result Unit Text = Ok ()
 
+@test "withDefault_some"
 pub fn test_withDefault_some () -> Result Unit Text =
     if _withDefault 0 (Some 5) == 5 then Ok ()
     else Err "Option.withDefault 0 (Some 5) should be 5"
 
+@test "withDefault_none"
 pub fn test_withDefault_none () -> Result Unit Text =
     if _withDefault 0 None == 0 then Ok ()
     else Err "Option.withDefault 0 None should be 0"
 
+@test "map_some"
 pub fn test_map_some () -> Result Unit Text =
     if _optMap (fn x -> x + 1) (Some 5) == Some 6 then Ok ()
     else Err "Option.map (+1) (Some 5) should be Some 6"
 
+@test "map_none"
 pub fn test_map_none () -> Result Unit Text =
     if _optMap (fn x -> x + 1) None == None then Ok ()
     else Err "Option.map (+1) None should be None"
 
+@test "flatMap_some_some"
 pub fn test_flatMap_some_some () -> Result Unit Text =
     if _flatMap (fn x -> Some (x * 2)) (Some 5) == Some 10 then Ok ()
     else Err "Option.flatMap (*2) (Some 5) should be Some 10"
 
+@test "orElse_picks_first"
 pub fn test_orElse_picks_first () -> Result Unit Text =
     if _orElse (Some 1) (Some 2) == Some 2 then Ok ()
     else Err "Option.orElse alt (Some 2) should return Some 2 (self takes priority)"
 
+@test "isSome_isNone"
 pub fn test_isSome_isNone () -> Result Unit Text =
     if _isSome (Some 1) then
         if _isNone None then Ok ()
         else Err "Option.isNone None should be true"
     else Err "Option.isSome (Some 1) should be true"
 
+@test "discard_returns_unit"
 pub fn test_discard_returns_unit () -> Result Unit Text =
     let _ = _discard (Some 5)
     Ok ()

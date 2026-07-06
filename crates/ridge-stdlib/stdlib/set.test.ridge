@@ -60,36 +60,45 @@ fn _difference (a: Set x) (b: Set x) -> Set x =
 @ffi("erlang", "length", 1)
 fn _listLength (xs: List a) -> Int
 
+@test "smoke_set"
 pub fn test_smoke_set () -> Result Unit Text = Ok ()
 
+@test "empty_size_zero"
 pub fn test_empty_size_zero () -> Result Unit Text =
     if _size Set.empty == 0 then Ok ()
     else Err "Set.empty size should be 0"
 
+@test "fromList_dedups"
 pub fn test_fromList_dedups () -> Result Unit Text =
     if _size (_fromList [1, 2, 1, 2]) == 2 then Ok ()
     else Err "Set.fromList [1,2,1,2] should deduplicate to size 2"
 
+@test "insert_then_contains"
 pub fn test_insert_then_contains () -> Result Unit Text =
     if _contains 5 (_insert 5 Set.empty) then Ok ()
     else Err "Set.insert 5 then contains should be true"
 
+@test "remove_then_contains_false"
 pub fn test_remove_then_contains_false () -> Result Unit Text =
     if _contains 5 (_remove 5 (_insert 5 Set.empty)) then Err "Set.remove 5 should make contains false"
     else Ok ()
 
+@test "union_combines"
 pub fn test_union_combines () -> Result Unit Text =
     if _size (_union (_fromList [1, 2]) (_fromList [2, 3])) == 3 then Ok ()
     else Err "Set.union [1,2] [2,3] should have size 3"
 
+@test "intersect_overlap"
 pub fn test_intersect_overlap () -> Result Unit Text =
     if _size (_intersect (_fromList [1, 2]) (_fromList [2, 3])) == 1 then Ok ()
     else Err "Set.intersect [1,2] [2,3] should have size 1"
 
+@test "difference_excludes"
 pub fn test_difference_excludes () -> Result Unit Text =
     if _contains 1 (_difference (_fromList [1, 2]) (_fromList [2, 3])) then Ok ()
     else Err "Set.difference [1,2] [2,3] should contain 1"
 
+@test "toList_round_trips_count"
 pub fn test_toList_round_trips_count () -> Result Unit Text =
     if _listLength (_toList (_fromList [1, 2, 3])) == 3 then Ok ()
     else Err "Set.toList fromList [1,2,3] should have length 3"

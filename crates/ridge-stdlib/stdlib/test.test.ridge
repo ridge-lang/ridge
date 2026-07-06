@@ -25,28 +25,36 @@ fn _isErr (r: Result a e) (label: Text) -> Result Unit Text =
         Ok _  -> Err label
         Err _ -> Ok ()
 
+@test "smoke_test"
 pub fn test_smoke_test () -> Result Unit Text = Ok ()
 
+@test "ensure_true_is_ok"
 pub fn test_ensure_true_is_ok () -> Result Unit Text =
     _ensure true "ensure true should be Ok"
 
+@test "ensure_false_is_err"
 pub fn test_ensure_false_is_err () -> Result Unit Text =
     _isErr (_ensure false "boom") "ensure false should be Err"
 
+@test "assertEq_ok"
 pub fn test_assertEq_ok () -> Result Unit Text =
     _assertEq (2 + 2) 4 "2 + 2 should be 4"
 
+@test "assertEq_mismatch_is_err"
 pub fn test_assertEq_mismatch_is_err () -> Result Unit Text =
     _isErr (_assertEq 1 2 "mismatch") "assertEq 1 2 should fail"
 
+@test "assertNe_ok"
 pub fn test_assertNe_ok () -> Result Unit Text =
     _assertNe 1 2 "1 should differ from 2"
 
+@test "isOk_ok"
 pub fn test_isOk_ok () -> Result Unit Text =
     _isOk (Ok 1) "Ok 1 is ok"
 
 -- The flat `?`-chained form these helpers exist to enable: a sequence of checks
 -- instead of a rightward-drifting nested-`if` staircase.
+@test "chain_flattens_staircase"
 pub fn test_chain_flattens_staircase () -> Result Unit Text =
     _ensure (1 + 1 == 2) "arithmetic holds" ?
     _assertEq (3 * 2) 6 "multiplication holds" ?

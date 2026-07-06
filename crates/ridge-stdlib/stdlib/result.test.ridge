@@ -39,36 +39,45 @@ fn _discard (r: Result a e) -> Unit =
 fn _okInt (n: Int) -> Result Int Text = Ok n
 fn _errInt (msg: Text) -> Result Int Text = Err msg
 
+@test "smoke_result"
 pub fn test_smoke_result () -> Result Unit Text = Ok ()
 
+@test "map_ok"
 pub fn test_map_ok () -> Result Unit Text =
     if _resMap (fn x -> x + 1) (_okInt 5) == Ok 6 then Ok ()
     else Err "Result.map (+1) (Ok 5) should be Ok 6"
 
+@test "map_err_propagates"
 pub fn test_map_err_propagates () -> Result Unit Text =
     if _resMap (fn x -> x + 1) (_errInt "fail") == Err "fail" then Ok ()
     else Err "Result.map on Err should propagate Err"
 
+@test "mapErr_err"
 pub fn test_mapErr_err () -> Result Unit Text =
     if _mapErr (fn _ -> "renamed") (_errInt "x") == Err "renamed" then Ok ()
     else Err "Result.mapErr should rename the error"
 
+@test "flatMap_ok_chain"
 pub fn test_flatMap_ok_chain () -> Result Unit Text =
     if _flatMap (fn x -> Ok (x * 2)) (_okInt 5) == Ok 10 then Ok ()
     else Err "Result.flatMap (*2) (Ok 5) should be Ok 10"
 
+@test "flatMap_err_short_circuits"
 pub fn test_flatMap_err_short_circuits () -> Result Unit Text =
     if _flatMap (fn x -> Ok (x * 2)) (_errInt "no") == Err "no" then Ok ()
     else Err "Result.flatMap on Err should short-circuit"
 
+@test "withDefault_ok"
 pub fn test_withDefault_ok () -> Result Unit Text =
     if _withDefault 0 (_okInt 5) == 5 then Ok ()
     else Err "Result.withDefault 0 (Ok 5) should be 5"
 
+@test "withDefault_err"
 pub fn test_withDefault_err () -> Result Unit Text =
     if _withDefault 0 (_errInt "x") == 0 then Ok ()
     else Err "Result.withDefault 0 (Err x) should be 0"
 
+@test "isOk_isErr"
 pub fn test_isOk_isErr () -> Result Unit Text =
     if _isOk (_okInt 1) then
         if _isErr (_errInt "x") then Ok ()

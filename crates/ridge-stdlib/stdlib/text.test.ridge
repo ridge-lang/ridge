@@ -125,87 +125,107 @@ fn _listHead (xs: List a) -> Option a =
         [] -> None
         x :: _ -> Some x
 
+@test "smoke_text"
 pub fn test_smoke_text () -> Result Unit Text = Ok ()
 
+@test "byteSize_empty"
 pub fn test_byteSize_empty () -> Result Unit Text =
     if _byteSize "" == 0 then Ok ()
     else Err "Text.byteSize empty should be 0"
 
+@test "byteSize_ascii"
 pub fn test_byteSize_ascii () -> Result Unit Text =
     if _byteSize "hello" == 5 then Ok ()
     else Err "Text.byteSize hello should be 5"
 
+@test "concat_basic"
 pub fn test_concat_basic () -> Result Unit Text =
     if _concat "foo" "bar" == "foobar" then Ok ()
     else Err "Text.concat foo bar should be foobar"
 
+@test "length_empty"
 pub fn test_length_empty () -> Result Unit Text =
     if _length "" == 0 then Ok ()
     else Err "Text.length empty should be 0"
 
+@test "length_ascii"
 pub fn test_length_ascii () -> Result Unit Text =
     if _length "hello" == 5 then Ok ()
     else Err "Text.length hello should be 5"
 
 -- 'café' is 4 graphemes but 5 bytes in UTF-8 (the é is 2 bytes).
+@test "length_grapheme_vs_byteSize"
 pub fn test_length_grapheme_vs_byteSize () -> Result Unit Text =
     if _length "café" == 4 then
         if _byteSize "café" == 5 then Ok ()
         else Err "Text.byteSize café should be 5"
     else Err "Text.length café should be 4"
 
+@test "join_basic"
 pub fn test_join_basic () -> Result Unit Text =
     if _join ", " ["a", "b", "c"] == "a, b, c" then Ok ()
     else Err "Text.join \", \" [a,b,c] should be a, b, c"
 
+@test "join_empty_list"
 pub fn test_join_empty_list () -> Result Unit Text =
     if _join ", " [] == "" then Ok ()
     else Err "Text.join over empty list should be empty"
 
+@test "join_singleton"
 pub fn test_join_singleton () -> Result Unit Text =
     if _join "," ["solo"] == "solo" then Ok ()
     else Err "Text.join over singleton should be solo"
 
+@test "join_empty_separator"
 pub fn test_join_empty_separator () -> Result Unit Text =
     if _join "" ["a", "b", "c"] == "abc" then Ok ()
     else Err "Text.join with empty sep should be abc"
 
+@test "slice_basic"
 pub fn test_slice_basic () -> Result Unit Text =
     if _slice 0 3 "hello" == "hel" then Ok ()
     else Err "Text.slice 0 3 hello should be hel"
 
+@test "slice_offset"
 pub fn test_slice_offset () -> Result Unit Text =
     if _slice 2 2 "hello" == "ll" then Ok ()
     else Err "Text.slice 2 2 hello should be ll"
 
+@test "slice_clamps_len_to_remaining"
 pub fn test_slice_clamps_len_to_remaining () -> Result Unit Text =
     if _slice 2 100 "hello" == "llo" then Ok ()
     else Err "Text.slice should clamp len to remaining graphemes"
 
+@test "slice_past_end"
 pub fn test_slice_past_end () -> Result Unit Text =
     if _slice 10 5 "hi" == "" then Ok ()
     else Err "Text.slice with start past length should be empty"
 
+@test "slice_zero_len"
 pub fn test_slice_zero_len () -> Result Unit Text =
     if _slice 0 0 "hello" == "" then Ok ()
     else Err "Text.slice with zero len should be empty"
 
+@test "slice_negative_start"
 pub fn test_slice_negative_start () -> Result Unit Text =
     if _slice (0 - 1) 3 "hello" == "" then Ok ()
     else Err "Text.slice with negative start should be empty"
 
+@test "slice_negative_len"
 pub fn test_slice_negative_len () -> Result Unit Text =
     if _slice 0 (0 - 1) "hello" == "" then Ok ()
     else Err "Text.slice with negative len should be empty"
 
 -- 'café' is 4 graphemes (the é counts as one) but 5 bytes in UTF-8.
 -- slice indexes in graphemes, so 0..2 is 'ca' and 3..1 is 'é'.
+@test "slice_indexes_in_graphemes"
 pub fn test_slice_indexes_in_graphemes () -> Result Unit Text =
     if _slice 0 2 "café" == "ca" then
         if _slice 3 1 "café" == "é" then Ok ()
         else Err "Text.slice 3 1 café should be é"
     else Err "Text.slice 0 2 café should be ca"
 
+@test "split_simple"
 pub fn test_split_simple () -> Result Unit Text =
     let parts = _split "," "a,b,c"
     if _listLength parts == 3 then
@@ -213,6 +233,7 @@ pub fn test_split_simple () -> Result Unit Text =
         else Err "Text.split head should be a"
     else Err "Text.split simple should have length 3"
 
+@test "split_no_match"
 pub fn test_split_no_match () -> Result Unit Text =
     let parts = _split "x" "abc"
     if _listLength parts == 1 then
@@ -223,6 +244,7 @@ pub fn test_split_no_match () -> Result Unit Text =
 -- Empty separator splits into grapheme clusters.  Previously this trapped on
 -- `binary:split(_, <<>>, _)` with `badarg`; the runtime now walks the binary
 -- via `string:next_grapheme/1`.
+@test "split_empty_sep_into_chars"
 pub fn test_split_empty_sep_into_chars () -> Result Unit Text =
     let parts = _split "" "abc"
     if _listLength parts == 3 then
@@ -230,21 +252,25 @@ pub fn test_split_empty_sep_into_chars () -> Result Unit Text =
         else Err "Text.split empty-sep first char should be 'a'"
     else Err "Text.split \"\" \"abc\" should produce 3 graphemes"
 
+@test "split_empty_sep_empty_input"
 pub fn test_split_empty_sep_empty_input () -> Result Unit Text =
     let parts = _split "" ""
     if _listLength parts == 0 then Ok ()
     else Err "Text.split \"\" \"\" should produce an empty list"
 
+@test "splitN_caps_at_n"
 pub fn test_splitN_caps_at_n () -> Result Unit Text =
     let parts = _splitN 2 "," "a,b,c,d"
     if _listLength parts == 2 then Ok ()
     else Err "Text.splitN 2 should return 2 parts"
 
+@test "splitAny_multiple_seps"
 pub fn test_splitAny_multiple_seps () -> Result Unit Text =
     let parts = _splitAny [",", ";"] "a,b;c"
     if _listLength parts == 3 then Ok ()
     else Err "Text.splitAny multiple seps should return 3 parts"
 
+@test "lines_single_segment"
 pub fn test_lines_single_segment () -> Result Unit Text =
     let ls = _lines "hello"
     if _listLength ls == 1 then
@@ -252,38 +278,47 @@ pub fn test_lines_single_segment () -> Result Unit Text =
         else Err "Text.lines hello should have head hello"
     else Err "Text.lines hello should have 1 line"
 
+@test "trim_removes_whitespace"
 pub fn test_trim_removes_whitespace () -> Result Unit Text =
     if _trim "  hi  " == "hi" then Ok ()
     else Err "Text.trim should remove surrounding whitespace"
 
+@test "toUpper_ascii"
 pub fn test_toUpper_ascii () -> Result Unit Text =
     if _toUpper "abc" == "ABC" then Ok ()
     else Err "Text.toUpper abc should be ABC"
 
+@test "toLower_ascii"
 pub fn test_toLower_ascii () -> Result Unit Text =
     if _toLower "ABC" == "abc" then Ok ()
     else Err "Text.toLower ABC should be abc"
 
+@test "startsWith_true"
 pub fn test_startsWith_true () -> Result Unit Text =
     if _startsWith "foo" "foobar" then Ok ()
     else Err "Text.startsWith foo foobar should be true"
 
+@test "startsWith_false"
 pub fn test_startsWith_false () -> Result Unit Text =
     if _startsWith "bar" "foo" then Err "Text.startsWith bar foo should be false"
     else Ok ()
 
+@test "endsWith_true"
 pub fn test_endsWith_true () -> Result Unit Text =
     if _endsWith "bar" "foobar" then Ok ()
     else Err "Text.endsWith bar foobar should be true"
 
+@test "contains_present"
 pub fn test_contains_present () -> Result Unit Text =
     if _contains "oba" "foobar" then Ok ()
     else Err "Text.contains oba in foobar should be true"
 
+@test "contains_absent"
 pub fn test_contains_absent () -> Result Unit Text =
     if _contains "xyz" "foo" then Err "Text.contains xyz in foo should be false"
     else Ok ()
 
+@test "replace_all"
 pub fn test_replace_all () -> Result Unit Text =
     if _replace "a" "X" "banana" == "bXnXnX" then Ok ()
     else Err "Text.replace a X banana should be bXnXnX"
@@ -291,22 +326,27 @@ pub fn test_replace_all () -> Result Unit Text =
 -- Regression: previously the public bridge passed empty opts to `binary:replace/4`,
 -- which defaults to first-occurrence only.  This pins the canonical case (whitespace
 -- normalization across a multi-line text) where the bug surfaced in app #11 wc clone.
+@test "replace_all_newlines_to_spaces"
 pub fn test_replace_all_newlines_to_spaces () -> Result Unit Text =
     if _replace "\n" " " "a\nb\nc\n" == "a b c " then Ok ()
     else Err "Text.replace must rewrite every occurrence, not just the first"
 
+@test "replace_no_match_passes_through"
 pub fn test_replace_no_match_passes_through () -> Result Unit Text =
     if _replace "z" "?" "hello" == "hello" then Ok ()
     else Err "Text.replace with no match should return input unchanged"
 
+@test "padLeft_short"
 pub fn test_padLeft_short () -> Result Unit Text =
     if _padLeft 5 "0" "12" == "00012" then Ok ()
     else Err "Text.padLeft 5 0 12 should be 00012"
 
+@test "padRight_already_long"
 pub fn test_padRight_already_long () -> Result Unit Text =
     if _padRight 2 "0" "abc" == "abc" then Ok ()
     else Err "Text.padRight 2 0 abc should be abc (no truncation)"
 
+@test "isEmpty"
 pub fn test_isEmpty () -> Result Unit Text =
     if _isEmpty "" then
         if _isEmpty "x" then Err "Text.isEmpty x should be false"

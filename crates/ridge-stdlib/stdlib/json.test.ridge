@@ -20,9 +20,11 @@ fn _concat (a: Text) (b: Text) -> Text = _iolistToBin [a, b]
 
 fn _encodeText (s: Text) -> Text = _concat (_concat "\"" s) "\""
 
+@test "smoke_json"
 pub fn test_smoke_json () -> Result Unit Text = Ok ()
 
 -- json.decode "null" succeeds and re-encodes to "null".
+@test "encode_null"
 pub fn test_encode_null () -> Result Unit Text =
     match _decode "null"
         Err _ -> Err "json.decode null should succeed"
@@ -31,6 +33,7 @@ pub fn test_encode_null () -> Result Unit Text =
             else Err "json.encode of decoded null should be null"
 
 -- json.decode "true" succeeds and re-encodes to "true".
+@test "encode_bool"
 pub fn test_encode_bool () -> Result Unit Text =
     match _decode "true"
         Err _ -> Err "json.decode true should succeed"
@@ -39,6 +42,7 @@ pub fn test_encode_bool () -> Result Unit Text =
             else Err "json.encode of decoded true should be true"
 
 -- json.decode "42" succeeds and re-encodes to "42".
+@test "encode_int"
 pub fn test_encode_int () -> Result Unit Text =
     match _decode "42"
         Err _ -> Err "json.decode 42 should succeed"
@@ -47,6 +51,7 @@ pub fn test_encode_int () -> Result Unit Text =
             else Err "json.encode of decoded 42 should be 42"
 
 -- json.decode "null" succeeds and re-encoding it returns "null".
+@test "decode_null"
 pub fn test_decode_null () -> Result Unit Text =
     match _decode "null"
         Err _ -> Err "json.decode null should succeed"
@@ -55,6 +60,7 @@ pub fn test_decode_null () -> Result Unit Text =
             else Err "json.decode null should round-trip to null"
 
 -- json.decode "42" succeeds and re-encoding it returns "42".
+@test "decode_int"
 pub fn test_decode_int () -> Result Unit Text =
     match _decode "42"
         Err _ -> Err "json.decode 42 should succeed"
@@ -63,12 +69,14 @@ pub fn test_decode_int () -> Result Unit Text =
             else Err "json.decode 42 should round-trip to 42"
 
 -- json.decode of invalid input returns Err.
+@test "decode_invalid_returns_err"
 pub fn test_decode_invalid_returns_err () -> Result Unit Text =
     match _decode "not-json"
         Err _ -> Ok ()
         Ok _ -> Err "json.decode of invalid input should return Err"
 
 -- Decode then encode is a no-op for bool.
+@test "encode_decode_round_trip"
 pub fn test_encode_decode_round_trip () -> Result Unit Text =
     match _decode "true"
         Err _ -> Err "json.decode true should succeed"
@@ -77,6 +85,7 @@ pub fn test_encode_decode_round_trip () -> Result Unit Text =
             else Err "json.encode of decoded true should be true"
 
 -- json.encodeText wraps a string in double quotes.
+@test "encodeText_quotes"
 pub fn test_encodeText_quotes () -> Result Unit Text =
     let result = _encodeText "x"
     let expected = _concat (_concat "\"" "x") "\""
@@ -113,6 +122,7 @@ fn _asObject (v: JsonValue) -> Option (Map Text JsonValue)
 @ffi("ridge_rt", "json_is_null", 1)
 fn _isNull (v: JsonValue) -> Bool
 
+@test "asInt_on_int_returns_some"
 pub fn test_asInt_on_int_returns_some () -> Result Unit Text =
     match _decode "42"
         Err _ -> Err "decode 42 should succeed"
@@ -122,6 +132,7 @@ pub fn test_asInt_on_int_returns_some () -> Result Unit Text =
                 Some other -> Err "asInt returned wrong number"
                 None -> Err "asInt on a json int should return Some"
 
+@test "asInt_on_text_returns_none"
 pub fn test_asInt_on_text_returns_none () -> Result Unit Text =
     match _decode "\"hello\""
         Err _ -> Err "decode \"hello\" should succeed"
@@ -130,6 +141,7 @@ pub fn test_asInt_on_text_returns_none () -> Result Unit Text =
                 None -> Ok ()
                 Some _ -> Err "asInt on a json string should return None"
 
+@test "asText_on_text_returns_some"
 pub fn test_asText_on_text_returns_some () -> Result Unit Text =
     match _decode "\"hello\""
         Err _ -> Err "decode \"hello\" should succeed"
@@ -138,6 +150,7 @@ pub fn test_asText_on_text_returns_some () -> Result Unit Text =
                 Some s -> if s == "hello" then Ok () else Err "wrong text"
                 None -> Err "asText on a json string should return Some"
 
+@test "asText_on_int_returns_none"
 pub fn test_asText_on_int_returns_none () -> Result Unit Text =
     match _decode "42"
         Err _ -> Err "decode 42 should succeed"
@@ -146,6 +159,7 @@ pub fn test_asText_on_int_returns_none () -> Result Unit Text =
                 None -> Ok ()
                 Some _ -> Err "asText on a json int should return None"
 
+@test "asBool_on_bool_returns_some"
 pub fn test_asBool_on_bool_returns_some () -> Result Unit Text =
     match _decode "true"
         Err _ -> Err "decode true should succeed"
@@ -155,6 +169,7 @@ pub fn test_asBool_on_bool_returns_some () -> Result Unit Text =
                 Some false -> Err "asBool returned false for true"
                 None -> Err "asBool on a json bool should return Some"
 
+@test "asBool_on_null_returns_none"
 pub fn test_asBool_on_null_returns_none () -> Result Unit Text =
     match _decode "null"
         Err _ -> Err "decode null should succeed"
@@ -163,6 +178,7 @@ pub fn test_asBool_on_null_returns_none () -> Result Unit Text =
                 None -> Ok ()
                 Some _ -> Err "asBool on json null should return None"
 
+@test "isNull_on_null"
 pub fn test_isNull_on_null () -> Result Unit Text =
     match _decode "null"
         Err _ -> Err "decode null should succeed"
@@ -170,6 +186,7 @@ pub fn test_isNull_on_null () -> Result Unit Text =
             if _isNull v then Ok ()
             else Err "isNull on a json null should be true"
 
+@test "isNull_on_int"
 pub fn test_isNull_on_int () -> Result Unit Text =
     match _decode "42"
         Err _ -> Err "decode 42 should succeed"
@@ -177,6 +194,7 @@ pub fn test_isNull_on_int () -> Result Unit Text =
             if _isNull v then Err "isNull on a json int should be false"
             else Ok ()
 
+@test "asList_on_list_returns_some"
 pub fn test_asList_on_list_returns_some () -> Result Unit Text =
     match _decode "[1, 2, 3]"
         Err _ -> Err "decode [1,2,3] should succeed"
@@ -185,6 +203,7 @@ pub fn test_asList_on_list_returns_some () -> Result Unit Text =
                 Some _ -> Ok ()
                 None -> Err "asList on a json array should return Some"
 
+@test "asObject_on_object_returns_some"
 pub fn test_asObject_on_object_returns_some () -> Result Unit Text =
     match _decode "{\"id\":7}"
         Err _ -> Err "decode {\"id\":7} should succeed"
@@ -195,6 +214,7 @@ pub fn test_asObject_on_object_returns_some () -> Result Unit Text =
 
 -- Round-trip the documented decode-then-walk pattern from json.ridge's
 -- top-of-section example: extract an integer field from a JSON object.
+@test "decode_then_extract_int_field"
 pub fn test_decode_then_extract_int_field () -> Result Unit Text =
     match _decode "{\"id\":42}"
         Err _ -> Err "decode {\"id\":42} should succeed"

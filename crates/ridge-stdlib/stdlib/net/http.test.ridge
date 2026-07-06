@@ -48,25 +48,30 @@ fn _cookieHeader (name: Text) (value: Text) (secure: Bool) (httpOnly: Bool) (sam
         Some p  -> _ioJoin [withMaxAge, "; Path=", p]
         None    -> withMaxAge
 
+@test "smoke_net_http"
 pub fn test_smoke_net_http () -> Result Unit Text = Ok ()
 
 -- ── Sql escape tests ─────────────────────────────────────────────────────────
 
+@test "sql_basic_no_special"
 pub fn test_sql_basic_no_special () -> Result Unit Text =
     let r = _sqlEscape "abc"
     if r == "abc" then Ok ()
     else Err $"sql \"abc\" should be \"abc\", got ${r}"
 
+@test "sql_doubles_single_quote"
 pub fn test_sql_doubles_single_quote () -> Result Unit Text =
     let r = _sqlEscape "O'Brien"
     if r == "O''Brien" then Ok ()
     else Err $"sql \"O'Brien\" should be \"O''Brien\", got ${r}"
 
+@test "sql_multiple_quotes"
 pub fn test_sql_multiple_quotes () -> Result Unit Text =
     let r = _sqlEscape "'a'b'"
     if r == "''a''b''" then Ok ()
     else Err $"sql \"'a'b'\" should be \"''a''b''\", got ${r}"
 
+@test "sql_empty_input"
 pub fn test_sql_empty_input () -> Result Unit Text =
     let r = _sqlEscape ""
     if r == "" then Ok ()
@@ -74,41 +79,49 @@ pub fn test_sql_empty_input () -> Result Unit Text =
 
 -- ── Html escape tests ────────────────────────────────────────────────────────
 
+@test "html_basic_no_special"
 pub fn test_html_basic_no_special () -> Result Unit Text =
     let r = _htmlEscape "abc"
     if r == "abc" then Ok ()
     else Err $"html \"abc\" should be \"abc\", got ${r}"
 
+@test "html_escapes_angle_brackets"
 pub fn test_html_escapes_angle_brackets () -> Result Unit Text =
     let r = _htmlEscape "<script>"
     if r == "&lt;script&gt;" then Ok ()
     else Err $"html \"<script>\" should be \"&lt;script&gt;\", got ${r}"
 
+@test "html_escapes_quote"
 pub fn test_html_escapes_quote () -> Result Unit Text =
     let r = _htmlEscape "say \"hi\""
     if r == "say &quot;hi&quot;" then Ok ()
     else Err $"html quote escape produced ${r}"
 
+@test "html_escapes_apostrophe"
 pub fn test_html_escapes_apostrophe () -> Result Unit Text =
     let r = _htmlEscape "it's"
     if r == "it&#39;s" then Ok ()
     else Err $"html apostrophe escape produced ${r}"
 
+@test "html_ampersand_escaped_first"
 pub fn test_html_ampersand_escaped_first () -> Result Unit Text =
     let r = _htmlEscape "<&>"
     if r == "&lt;&amp;&gt;" then Ok ()
     else Err $"html \"<&>\" should be \"&lt;&amp;&gt;\", got ${r}"
 
+@test "html_double_encodes_existing_entity"
 pub fn test_html_double_encodes_existing_entity () -> Result Unit Text =
     let r = _htmlEscape "&amp;"
     if r == "&amp;amp;" then Ok ()
     else Err $"html \"&amp;\" should be \"&amp;amp;\", got ${r}"
 
+@test "html_all_five_specials"
 pub fn test_html_all_five_specials () -> Result Unit Text =
     let r = _htmlEscape "& < > \" '"
     if r == "&amp; &lt; &gt; &quot; &#39;" then Ok ()
     else Err $"html all five specials produced ${r}"
 
+@test "html_empty_input"
 pub fn test_html_empty_input () -> Result Unit Text =
     let r = _htmlEscape ""
     if r == "" then Ok ()
@@ -121,41 +134,49 @@ pub fn test_html_empty_input () -> Result Unit Text =
 -- exercise that default plus each override path through
 -- `secureCookieHeader`.
 
+@test "secure_cookie_default_header"
 pub fn test_secure_cookie_default_header () -> Result Unit Text =
     let h = _cookieHeader "sid" "abc123" true true "Lax" None None
     if h == "sid=abc123; Secure; HttpOnly; SameSite=Lax" then Ok ()
     else Err $"default cookie header produced ${h}"
 
+@test "secure_cookie_with_max_age"
 pub fn test_secure_cookie_with_max_age () -> Result Unit Text =
     let h = _cookieHeader "sid" "abc123" true true "Lax" (Some 3600) None
     if h == "sid=abc123; Secure; HttpOnly; SameSite=Lax; Max-Age=3600" then Ok ()
     else Err $"max-age cookie header produced ${h}"
 
+@test "secure_cookie_with_path"
 pub fn test_secure_cookie_with_path () -> Result Unit Text =
     let h = _cookieHeader "sid" "abc123" true true "Lax" None (Some "/api")
     if h == "sid=abc123; Secure; HttpOnly; SameSite=Lax; Path=/api" then Ok ()
     else Err $"path cookie header produced ${h}"
 
+@test "secure_cookie_with_max_age_and_path"
 pub fn test_secure_cookie_with_max_age_and_path () -> Result Unit Text =
     let h = _cookieHeader "sid" "abc123" true true "Lax" (Some 60) (Some "/")
     if h == "sid=abc123; Secure; HttpOnly; SameSite=Lax; Max-Age=60; Path=/" then Ok ()
     else Err $"max-age + path cookie header produced ${h}"
 
+@test "secure_cookie_secure_off"
 pub fn test_secure_cookie_secure_off () -> Result Unit Text =
     let h = _cookieHeader "sid" "abc123" false true "Lax" None None
     if h == "sid=abc123; HttpOnly; SameSite=Lax" then Ok ()
     else Err $"secure-off cookie header produced ${h}"
 
+@test "secure_cookie_http_only_off"
 pub fn test_secure_cookie_http_only_off () -> Result Unit Text =
     let h = _cookieHeader "sid" "abc123" true false "Lax" None None
     if h == "sid=abc123; Secure; SameSite=Lax" then Ok ()
     else Err $"http-only-off cookie header produced ${h}"
 
+@test "secure_cookie_same_site_strict"
 pub fn test_secure_cookie_same_site_strict () -> Result Unit Text =
     let h = _cookieHeader "sid" "abc123" true true "Strict" None None
     if h == "sid=abc123; Secure; HttpOnly; SameSite=Strict" then Ok ()
     else Err $"same-site=Strict cookie header produced ${h}"
 
+@test "secure_cookie_all_off"
 pub fn test_secure_cookie_all_off () -> Result Unit Text =
     let h = _cookieHeader "sid" "abc123" false false "None" None None
     if h == "sid=abc123; SameSite=None" then Ok ()

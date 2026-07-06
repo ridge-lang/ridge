@@ -49,95 +49,117 @@ fn _pow (base: Int) (exp: Int) -> Int =
         half * half
     else base * _pow base (exp - 1)
 
+@test "smoke_int"
 pub fn test_smoke_int () -> Result Unit Text = Ok ()
 
+@test "toText_zero"
 pub fn test_toText_zero () -> Result Unit Text =
     if _toText 0 == "0" then Ok ()
     else Err "Int.toText 0 should be 0"
 
+@test "toText_negative"
 pub fn test_toText_negative () -> Result Unit Text =
     if _toText (_neg 42) == "-42" then Ok ()
     else Err "Int.toText (-42) should be -42"
 
+@test "parse_decimal"
 pub fn test_parse_decimal () -> Result Unit Text =
     if _parse "123" == Some 123 then Ok ()
     else Err "Int.parse 123 should be Some 123"
 
+@test "parse_invalid_is_none"
 pub fn test_parse_invalid_is_none () -> Result Unit Text =
     if _parse "abc" == None then Ok ()
     else Err "Int.parse abc should be None"
 
+@test "abs_positive"
 pub fn test_abs_positive () -> Result Unit Text =
     if _abs 5 == 5 then
         if _abs (_neg 5) == 5 then Ok ()
         else Err "Int.abs (-5) should be 5"
     else Err "Int.abs 5 should be 5"
 
+@test "min_picks_smaller"
 pub fn test_min_picks_smaller () -> Result Unit Text =
     if _min 3 7 == 3 then
         if _min 7 3 == 3 then Ok ()
         else Err "Int.min 7 3 should be 3"
     else Err "Int.min 3 7 should be 3"
 
+@test "max_picks_larger"
 pub fn test_max_picks_larger () -> Result Unit Text =
     if _max 3 7 == 7 then Ok ()
     else Err "Int.max 3 7 should be 7"
 
+@test "add_sub_mul_div"
 pub fn test_add_sub_mul_div () -> Result Unit Text =
     let result = ((10 + 5) - 3) * 2 / 4
     if result == 6 then Ok ()
     else Err "((10 + 5) - 3) * 2 / 4 should be 6"
 
+@test "neg_round_trip"
 pub fn test_neg_round_trip () -> Result Unit Text =
     if _neg (_neg 42) == 42 then Ok ()
     else Err "Int.neg (Int.neg 42) should be 42"
 
+@test "wrappingAdd_no_overflow"
 pub fn test_wrappingAdd_no_overflow () -> Result Unit Text =
     if _wrappingAdd 3 4 == 7 then Ok ()
     else Err "wrappingAdd 3 4 should be 7 (no overflow)"
 
+@test "saturatingAdd_clamps_high"
 pub fn test_saturatingAdd_clamps_high () -> Result Unit Text =
     let maxVal = 9223372036854775807
     if _saturatingAdd maxVal 1 == maxVal then Ok ()
     else Err "saturatingAdd maxVal 1 should clamp to maxVal"
 
+@test "saturatingAdd_clamps_low"
 pub fn test_saturatingAdd_clamps_low () -> Result Unit Text =
     let minVal = -9223372036854775808
     if _saturatingAdd minVal (_neg 1) == minVal then Ok ()
     else Err "saturatingAdd minVal (-1) should clamp to minVal"
 
+@test "rem_positive"
 pub fn test_rem_positive () -> Result Unit Text =
     if (_rem 10 3) == 1 then Ok ()
     else Err "10 rem 3 should be 1"
 
+@test "rem_negative_dividend_takes_dividend_sign"
 pub fn test_rem_negative_dividend_takes_dividend_sign () -> Result Unit Text =
     if (_rem (_neg 10) 3) == (_neg 1) then Ok ()
     else Err "(-10) rem 3 should be -1 (rem takes the dividend's sign)"
 
+@test "rem_zero_dividend"
 pub fn test_rem_zero_dividend () -> Result Unit Text =
     if (_rem 0 7) == 0 then Ok ()
     else Err "0 rem 7 should be 0"
 
+@test "mod_positive"
 pub fn test_mod_positive () -> Result Unit Text =
     if (_mod 10 3) == 1 then Ok ()
     else Err "10 mod 3 should be 1"
 
+@test "mod_negative_dividend_takes_divisor_sign"
 pub fn test_mod_negative_dividend_takes_divisor_sign () -> Result Unit Text =
     if (_mod (_neg 10) 3) == 2 then Ok ()
     else Err "(-10) mod 3 should be 2 (mod takes the divisor's sign)"
 
+@test "mod_negative_divisor"
 pub fn test_mod_negative_divisor () -> Result Unit Text =
     if (_mod 10 (_neg 3)) == (_neg 2) then Ok ()
     else Err "10 mod (-3) should be -2 (mod takes the divisor's sign)"
 
+@test "mod_both_negative"
 pub fn test_mod_both_negative () -> Result Unit Text =
     if (_mod (_neg 10) (_neg 3)) == (_neg 1) then Ok ()
     else Err "(-10) mod (-3) should be -1"
 
+@test "percent_operator_lowers_to_mod"
 pub fn test_percent_operator_lowers_to_mod () -> Result Unit Text =
     if ((_neg 10) % 3) == 2 then Ok ()
     else Err "(-10) % 3 should be 2 (% lowers to std.int.mod)"
 
+@test "percent_operator_fizzbuzz_15"
 pub fn test_percent_operator_fizzbuzz_15 () -> Result Unit Text =
     if (15 % 15) == 0 then
         if (15 % 3) == 0 then
@@ -146,32 +168,38 @@ pub fn test_percent_operator_fizzbuzz_15 () -> Result Unit Text =
         else Err "15 % 3 should be 0"
     else Err "15 % 15 should be 0"
 
+@test "pow_zero_exp_is_one"
 pub fn test_pow_zero_exp_is_one () -> Result Unit Text =
     if (_pow 7 0) == 1 then
         if (_pow 0 0) == 1 then Ok ()
         else Err "pow 0 0 should be 1 by convention"
     else Err "pow 7 0 should be 1"
 
+@test "pow_one_exp_is_base"
 pub fn test_pow_one_exp_is_base () -> Result Unit Text =
     if (_pow 7 1) == 7 then Ok ()
     else Err "pow 7 1 should be 7"
 
+@test "pow_positive"
 pub fn test_pow_positive () -> Result Unit Text =
     if (_pow 2 10) == 1024 then
         if (_pow 3 5) == 243 then Ok ()
         else Err "pow 3 5 should be 243"
     else Err "pow 2 10 should be 1024"
 
+@test "pow_negative_base"
 pub fn test_pow_negative_base () -> Result Unit Text =
     if (_pow (_neg 2) 3) == (_neg 8) then
         if (_pow (_neg 2) 4) == 16 then Ok ()
         else Err "pow (-2) 4 should be 16"
     else Err "pow (-2) 3 should be -8"
 
+@test "pow_negative_exp_truncates_to_zero"
 pub fn test_pow_negative_exp_truncates_to_zero () -> Result Unit Text =
     if (_pow 2 (_neg 1)) == 0 then Ok ()
     else Err "pow 2 (-1) should be 0 (truncating Int semantics)"
 
+@test "caret_operator_lowers_to_pow"
 pub fn test_caret_operator_lowers_to_pow () -> Result Unit Text =
     if (2 ^ 10) == 1024 then
         if (3 ^ 0) == 1 then Ok ()

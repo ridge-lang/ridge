@@ -38,9 +38,11 @@ fn env _tmpPath (name: Text) -> Text =
 @ffi("erlang", "length", 1)
 fn _listLength (xs: List a) -> Int
 
+@test "smoke_fs"
 pub fn test_smoke_fs () -> Result Unit Text = Ok ()
 
 -- fs.writeFile then fs.readFile returns Ok with the same content.
+@test "writeFile_then_readFile_round_trip"
 pub fn fs env test_writeFile_then_readFile_round_trip () -> Result Unit Text =
     let path = _tmpPath "write-read"
     match _writeFile path "hello"
@@ -53,6 +55,7 @@ pub fn fs env test_writeFile_then_readFile_round_trip () -> Result Unit Text =
                     else Err "readFile content should equal written content"
 
 -- fs.readFile of a nonexistent path returns Err.
+@test "readFile_missing_returns_err"
 pub fn fs env test_readFile_missing_returns_err () -> Result Unit Text =
     let path = _tmpPath "definitely-does-not-exist-xyz789"
     match _readFile path
@@ -60,6 +63,7 @@ pub fn fs env test_readFile_missing_returns_err () -> Result Unit Text =
         Ok _ -> Err "readFile of missing path should return Err"
 
 -- fs.exists returns true after a file is written.
+@test "exists_true_after_write"
 pub fn fs env test_exists_true_after_write () -> Result Unit Text =
     let path = _tmpPath "exists-check"
     match _writeFile path "x"
@@ -69,6 +73,7 @@ pub fn fs env test_exists_true_after_write () -> Result Unit Text =
             else Err "fs.exists should be true after writeFile"
 
 -- fs.exists returns false for a nonexistent path.
+@test "exists_false_for_missing"
 pub fn fs test_exists_false_for_missing () -> Result Unit Text =
     if _exists "/this/path/should/not/exist/ridge-stdlib-test-9a8b7c" then
         Err "fs.exists should be false for nonexistent path"
@@ -77,6 +82,7 @@ pub fn fs test_exists_false_for_missing () -> Result Unit Text =
 -- fs.lines of a single-line file returns a list with 1 element.
 -- Note: Ridge "\n" literals are raw 2-byte sequences, so we test a
 -- simpler case: a file with no newlines returns exactly 1 line.
+@test "lines_splits_on_newline"
 pub fn fs env test_lines_splits_on_newline () -> Result Unit Text =
     let path = _tmpPath "lines-test"
     match _writeFile path "hello"

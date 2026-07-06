@@ -13,4 +13,5 @@ fn _mailboxSize (h: Handle a) -> Option Int
 fn _probeMailboxSize (h: Handle a) -> Option Int = _mailboxSize h
 
 -- Smoke: the module compiles end to end through the build pipeline.
+@test "mailbox_size_compiles"
 pub fn test_mailbox_size_compiles () -> Result Unit Text = Ok ()

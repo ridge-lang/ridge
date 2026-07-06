@@ -31,9 +31,11 @@ fn _isNone (o: Option a) -> Bool =
 
 fn _emptyIntList (_u: Unit) -> List Int = []
 
+@test "smoke_random"
 pub fn test_smoke_random () -> Result Unit Text = Ok ()
 
 -- random.int returns a value within [lo, hi].
+@test "int_within_range"
 pub fn random test_int_within_range () -> Result Unit Text =
     let _ = _seed 1
     let v = _randomInt 0 9
@@ -43,6 +45,7 @@ pub fn random test_int_within_range () -> Result Unit Text =
     else Err "random.int should be >= 0"
 
 -- The same seed produces the same first value.
+@test "seed_reproducibility"
 pub fn random test_seed_reproducibility () -> Result Unit Text =
     let _ = _seed 42
     let v1 = _randomInt 0 1000000
@@ -52,12 +55,14 @@ pub fn random test_seed_reproducibility () -> Result Unit Text =
     else Err "random.int with same seed should produce same value"
 
 -- random.alphanumeric returns a Text of exactly n bytes.
+@test "alphanumeric_length"
 pub fn random test_alphanumeric_length () -> Result Unit Text =
     let s = _alphanumeric 10
     if _byteSize s == 10 then Ok ()
     else Err "random.alphanumeric 10 should have byteSize 10"
 
 -- random.choice returns Some for a non-empty list; None for empty.
+@test "choice_some_for_nonempty"
 pub fn random test_choice_some_for_nonempty () -> Result Unit Text =
     if _isSome (_choice [1, 2, 3]) then
         if _isNone (_choice (_emptyIntList ())) then Ok ()

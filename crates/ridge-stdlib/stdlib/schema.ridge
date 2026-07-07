@@ -18,17 +18,15 @@
 -- The dialect-neutral vocabulary below (`DbType`, `Generation`, `FkAction`) is
 -- turned into a backend's `CREATE TABLE` by the DDL renderer.
 
-import std.sql (SqlValue, sqlLiteral, sqlValueSource)
+import std.sql (SqlValue, sqlLiteral, sqlValueSource, DbType, DbBoolean, DbInt, DbBigInt, DbFloat, DbDecimal, DbText, DbVarchar, DbUuid, DbTimestamp, DbTimestampTz, DbRaw)
 import std.int as Int
 import std.float as Float
 
 -- ── Column vocabulary ─────────────────────────────────────────────────────────
 
--- The SQL column type a field maps to. The Ridge field type drives a default
--- (an `Int` field maps to `DbBigInt`, `Text` to `DbText`, and so on); a
--- `columnType` step overrides it per column. `DbRaw` is the escape hatch for a
--- dialect-specific type spelled by hand.
-pub type DbType = DbBoolean | DbInt | DbBigInt | DbFloat | DbDecimal Int Int | DbText | DbVarchar Int | DbUuid | DbTimestamp | DbTimestampTz | DbRaw Text
+-- `DbType` (the SQL column type) moved to `std.sql`, beside `SqlValue`, so the
+-- codec class can name it — it is imported above. What stays here is how a
+-- column's value originates (`Generation`) and the foreign-key action (`FkAction`).
 
 -- How a column's value originates. `Supplied` (the default) means the caller
 -- provides the value on insert. The others mark the column database-generated or

@@ -135,20 +135,23 @@ const CONSTRUCTOR_EXPORTS: &[(&str, &str)] = &[
     ("std.data", "DecodeError"),
     ("std.data", "Unsupported"),
     ("std.data", "QueryError"),
-    // The `std.schema` vocabulary unions: their constructors are exported so a
-    // descriptor can name a column type, generation, or foreign-key action, but
-    // text extraction surfaces them only through the type names.
-    ("std.schema", "DbBoolean"),
-    ("std.schema", "DbInt"),
-    ("std.schema", "DbBigInt"),
-    ("std.schema", "DbFloat"),
-    ("std.schema", "DbDecimal"),
-    ("std.schema", "DbText"),
-    ("std.schema", "DbVarchar"),
-    ("std.schema", "DbUuid"),
-    ("std.schema", "DbTimestamp"),
-    ("std.schema", "DbTimestampTz"),
-    ("std.schema", "DbRaw"),
+    // The `DbType` column-type constructors live in std.sql (beside SqlValue),
+    // exported so a schema descriptor can name a column type but surfaced by text
+    // extraction only through the type name.
+    ("std.sql", "DbBoolean"),
+    ("std.sql", "DbInt"),
+    ("std.sql", "DbBigInt"),
+    ("std.sql", "DbFloat"),
+    ("std.sql", "DbDecimal"),
+    ("std.sql", "DbText"),
+    ("std.sql", "DbVarchar"),
+    ("std.sql", "DbUuid"),
+    ("std.sql", "DbTimestamp"),
+    ("std.sql", "DbTimestampTz"),
+    ("std.sql", "DbRaw"),
+    // The `std.schema` generation + foreign-key-action unions: constructors
+    // exported for descriptors, surfaced by text extraction only through the type
+    // names.
     ("std.schema", "Supplied"),
     ("std.schema", "Identity"),
     ("std.schema", "DefaultNow"),

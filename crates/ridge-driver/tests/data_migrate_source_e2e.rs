@@ -32,7 +32,8 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 // and a drop-table — rendered both directly and, for the model and migration, through
 // the snapshot/migration writers.
 const RENDER_SRC: &str = r#"
-import std.schema (EntitySchema, DbBigInt, DbInt, DbText, DbVarchar, Identity, DefaultLit, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, check, eraseSchema, columnToSource, schemaToSource)
+import std.sql (DbBigInt, DbInt, DbText, DbVarchar)
+import std.schema (EntitySchema, Identity, DefaultLit, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, check, eraseSchema, columnToSource, schemaToSource)
 import std.migrate as Migrate
 import std.sql (sqlInt)
 
@@ -79,7 +80,8 @@ pub fn migrationSrc () -> Text = Migrate.migrationToSource (sampleMigration ())
 fn build_roundtrip_source(model_src: &str, migration_src: &str) -> String {
     format!(
         r#"
-import std.schema (EntitySchema, DbBigInt, DbInt, DbText, DbVarchar, Identity, DefaultLit, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, checkRaw)
+import std.sql (DbBigInt, DbInt, DbText, DbVarchar)
+import std.schema (EntitySchema, Identity, DefaultLit, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, checkRaw)
 import std.migrate (migration, createSchema, addEntityColumn, alterColumn, dropColumn, dropTable, modelToSource, migrationToSource)
 import std.sql (sqlInt)
 
@@ -310,7 +312,8 @@ fn source_renderer_round_trips_on_beam() {
 // posts dropped), rendered into whole snapshot and migration modules through
 // `snapshotModule`/`migrationModule`.
 const RENDER_MODULE_SRC: &str = r#"
-import std.schema (EntitySchema, DbBigInt, DbText, Identity, mkColumn, withColumn, schema, generated, primaryKey)
+import std.sql (DbBigInt, DbText)
+import std.schema (EntitySchema, Identity, mkColumn, withColumn, schema, generated, primaryKey)
 import std.migrate as Migrate
 
 fn userV1 () -> EntitySchema Unit =
@@ -458,7 +461,8 @@ fn generated_modules_compile_on_beam() {
 // so `users` precedes `orders` (a `CREATE TABLE` renders the reference inline, so the target
 // must already exist), while the independent `tags` keeps its declaration position.
 const RENDER_FK_ORDER_SRC: &str = r#"
-import std.schema (EntitySchema, DbBigInt, Identity, Cascade, mkColumn, withColumn, schema, generated, primaryKey, foreignKey, references, onDelete)
+import std.sql (DbBigInt)
+import std.schema (EntitySchema, Identity, Cascade, mkColumn, withColumn, schema, generated, primaryKey, foreignKey, references, onDelete)
 import std.migrate as Migrate
 
 fn usersT () -> EntitySchema Unit =
@@ -527,7 +531,8 @@ fn fk_creates_are_topologically_ordered() {
 // `createIndex` for `sku` and `owner`, a `dropIndex` for `kind`, and the index steps must fall
 // after the add-column and before nothing that drops the column.
 const RENDER_INDEX_DIFF_SRC: &str = r#"
-import std.schema (EntitySchema, DbBigInt, DbText, Identity, mkColumn, withColumn, schema, generated, primaryKey, indexed)
+import std.sql (DbBigInt, DbText)
+import std.schema (EntitySchema, Identity, mkColumn, withColumn, schema, generated, primaryKey, indexed)
 import std.migrate as Migrate
 
 fn itemsV1 () -> EntitySchema Unit =

@@ -1459,10 +1459,12 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: false,
             is_anon: false,
         },
-        // `std.schema` — the dialect-neutral SQL column type. A union declared in
-        // Ridge (stdlib/schema.ridge); a `columnType` step overrides the default a
-        // field type implies, and `DbRaw` spells a dialect-specific type by hand.
-        // Variant order mirrors the source.
+        // `std.sql` — the dialect-neutral SQL column type. A union declared in
+        // Ridge (stdlib/sql.ridge, beside SqlValue so the SqlType codec class can
+        // name it); a `columnType` step overrides the default a field type implies,
+        // and `DbRaw` spells a dialect-specific type by hand. Variant order mirrors
+        // the source. (Reconciled ids are name-matched, so the id is unchanged by
+        // the module move.)
         TyConDecl {
             id: TyConId(base + 25),
             name: "DbType".to_string(),

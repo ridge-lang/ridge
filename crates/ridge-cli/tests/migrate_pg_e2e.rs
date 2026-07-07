@@ -87,7 +87,8 @@ fn parse_pg_url(url: &str) -> Option<PgParts> {
 /// specifically so it does not collide with the tables `data_pg_e2e.rs` and
 /// `data_migrate_e2e.rs` use against the same CI database.
 const MODEL: &str = r#"
-import std.schema (EntitySchema, DbBigInt, DbText, Identity, mkColumn, withColumn, schema, generated, primaryKey)
+import std.sql (DbBigInt, DbText)
+import std.schema (EntitySchema, Identity, mkColumn, withColumn, schema, generated, primaryKey)
 
 fn widgetSchema () -> EntitySchema Unit =
     schema "Widget" "ridge_cli_migrate_e2e_widgets"

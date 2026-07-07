@@ -33,7 +33,8 @@ fn ridge_cmd() -> Command {
 /// A minimal two-entity model built with `std.schema`'s builders directly —
 /// no external entity module or `deriving (Schema)` needed.
 const MODEL_V1: &str = r#"
-import std.schema (EntitySchema, DbBigInt, DbText, DbVarchar, Identity, mkColumn, withColumn, schema, generated, primaryKey, unique)
+import std.sql (DbBigInt, DbText, DbVarchar)
+import std.schema (EntitySchema, Identity, mkColumn, withColumn, schema, generated, primaryKey, unique)
 
 fn userSchema () -> EntitySchema Unit =
     schema "User" "users"

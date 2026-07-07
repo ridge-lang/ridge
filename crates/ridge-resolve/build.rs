@@ -369,6 +369,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "SqlType",
             "toSql",
             "fromSql",
+            // The type-directed default SQL column type (a SqlType method).
+            "dbType",
             // The Row codec class and its methods (`deriving (Row)` generates the
             // instances). `fromRow` maps a `Map Text SqlValue` row back to a
             // record; `toRow` encodes a record into a row to write; `rowColumns`
@@ -394,6 +396,22 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // Render a SqlValue back to its Ridge source expression — the migration
             // snapshot renderer's `DefaultLit` path.
             "sqlValueSource",
+            // The dialect-neutral SQL column type vocabulary. It lives here beside
+            // SqlValue so the SqlType codec class can name it. The constructors are
+            // exported so a schema descriptor can spell a column type; text
+            // extraction surfaces only the type name.
+            "DbType",
+            "DbBoolean",
+            "DbInt",
+            "DbBigInt",
+            "DbFloat",
+            "DbDecimal",
+            "DbText",
+            "DbVarchar",
+            "DbUuid",
+            "DbTimestamp",
+            "DbTimestampTz",
+            "DbRaw",
         ],
     ),
     (
@@ -752,20 +770,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
     (
         "std.schema",
         &[
-            // The dialect-neutral column vocabulary: the SQL type, how a column's
-            // value originates, and the foreign-key referential actions.
-            "DbType",
-            "DbBoolean",
-            "DbInt",
-            "DbBigInt",
-            "DbFloat",
-            "DbDecimal",
-            "DbText",
-            "DbVarchar",
-            "DbUuid",
-            "DbTimestamp",
-            "DbTimestampTz",
-            "DbRaw",
+            // How a column's value originates and the foreign-key referential
+            // actions. (The SQL column type `DbType` and its constructors moved to
+            // std.sql, beside SqlValue.)
             "Generation",
             "Supplied",
             "Identity",

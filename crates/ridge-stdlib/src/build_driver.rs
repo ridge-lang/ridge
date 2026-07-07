@@ -42,6 +42,7 @@ pub const TIERS: &[TierPlan] = &[
             "std.int",
             "std.float",
             "std.decimal",
+            "std.uuid",
             "std.bool",
             "std.option",
             "std.result",

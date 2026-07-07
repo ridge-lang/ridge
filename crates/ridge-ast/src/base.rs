@@ -73,6 +73,8 @@ pub enum PrimitiveType {
     Timestamp,
     /// Arbitrary-precision base-10 decimal (`Decimal`).
     Decimal,
+    /// RFC 4122 universally unique identifier (`Uuid`).
+    Uuid,
 }
 
 // ── DocComment ────────────────────────────────────────────────────────────────

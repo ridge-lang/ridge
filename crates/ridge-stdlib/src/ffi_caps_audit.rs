@@ -712,6 +712,38 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         arity: 4,
         requires_caps: &[],
     },
+    // ── ridge_rt uuid codec (std.uuid) ─────────────────────────────────────────
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "uuid_from_text",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "uuid_to_text",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "uuid_nil",
+        arity: 1,
+        requires_caps: &[],
+    },
+    // `gen` draws fresh random bytes, so it carries the `random` capability.
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "uuid_gen",
+        arity: 1,
+        requires_caps: &[Capability::Random],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "uuid_cmp",
+        arity: 2,
+        requires_caps: &[],
+    },
     FfiAuditEntry {
         beam_module: "ridge_rt",
         fn_name: "random_int",

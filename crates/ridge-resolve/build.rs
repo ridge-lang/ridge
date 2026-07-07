@@ -64,11 +64,12 @@ const MODULE_ORDER: &[&str] = &[
     "std.migrate",
     "std.raw",
     "std.test",
-    // Appended last so it takes the highest id without renumbering any module
-    // ahead of it. `std.decimal` is a Tier-1 primitive companion (it imports
-    // nothing); the ordering here only fixes ids, and the build tier is set
-    // separately in the stdlib build driver.
+    // Appended last so they take the highest ids without renumbering any module
+    // ahead of them. `std.decimal` and `std.uuid` are Tier-1 primitive companions
+    // (they import nothing); the ordering here only fixes ids, and the build tier is
+    // set separately in the stdlib build driver.
     "std.decimal",
+    "std.uuid",
 ];
 
 // ── Baseline export table (T10: preserves original API) ───────────────────────
@@ -455,6 +456,15 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "Down",
             "Ceiling",
             "Floor",
+        ],
+    ),
+    (
+        "std.uuid",
+        &[
+            // RFC 4122 identifiers: parse/render, the nil and random-v4
+            // constructors, and value-based comparisons. The canonical-text
+            // representation and the raw three-way compare live in the runtime.
+            "fromText", "toText", "nil", "gen", "compare", "eq", "lt", "lte", "gt", "gte",
         ],
     ),
     (

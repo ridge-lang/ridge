@@ -66,6 +66,8 @@ const STD_TEST: StdlibModuleId = StdlibModuleId(27);
 // std.decimal is interned last (id 28) so it takes the highest id without
 // renumbering the modules ahead of it.
 const STD_DECIMAL: StdlibModuleId = StdlibModuleId(28);
+// std.uuid follows, taking the next id the same way (29).
+const STD_UUID: StdlibModuleId = StdlibModuleId(29);
 
 // ── Type-building helpers ─────────────────────────────────────────────────────
 //
@@ -98,6 +100,10 @@ const fn ty_timestamp(b: &BuiltinTyCons) -> Type {
 #[inline]
 const fn ty_decimal(b: &BuiltinTyCons) -> Type {
     Type::Con(b.decimal, vec![])
+}
+#[inline]
+const fn ty_uuid(b: &BuiltinTyCons) -> Type {
+    Type::Con(b.uuid, vec![])
 }
 #[inline]
 const fn ty_error(b: &BuiltinTyCons) -> Type {
@@ -315,6 +321,26 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         // The value comparisons: Decimal -> Decimal -> Bool.
         (STD_DECIMAL, "eq" | "lt" | "lte" | "gt" | "gte") => {
             Some(mono(ty_fn_pure(vec![ty_decimal(b), ty_decimal(b)], ty_bool(b))))
+        }
+
+        // ── std.uuid ──────────────────────────────────────────────────────────
+        (STD_UUID, "fromText") => Some(mono(ty_fn_pure(
+            vec![ty_text(b)],
+            ty_result(b, ty_uuid(b), ty_error(b)),
+        ))),
+        (STD_UUID, "toText") => Some(mono(ty_fn_pure(vec![ty_uuid(b)], ty_text(b)))),
+        (STD_UUID, "nil") => Some(mono(ty_fn_pure(vec![ty_unit(b)], ty_uuid(b)))),
+        // `gen` mints a fresh value, so it carries the `random` capability.
+        (STD_UUID, "gen") => {
+            use ridge_ast::Capability;
+            let rnd_caps = CapabilitySet::singleton(Capability::Random);
+            Some(mono(ty_fn_caps(vec![ty_unit(b)], ty_uuid(b), rnd_caps)))
+        }
+        (STD_UUID, "compare") => {
+            Some(mono(ty_fn_pure(vec![ty_uuid(b), ty_uuid(b)], ty_int(b))))
+        }
+        (STD_UUID, "eq" | "lt" | "lte" | "gt" | "gte") => {
+            Some(mono(ty_fn_pure(vec![ty_uuid(b), ty_uuid(b)], ty_bool(b))))
         }
 
         // ── std.bool ──────────────────────────────────────────────────────────

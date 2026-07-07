@@ -17,6 +17,7 @@
     decimal_to_float/1, decimal_cmp/2,
     decimal_add/2, decimal_sub/2, decimal_mul/2, decimal_neg/1, decimal_abs/1,
     decimal_round/3, decimal_div/4,
+    uuid_from_text/1, uuid_to_text/1, uuid_nil/1, uuid_gen/1, uuid_cmp/2,
     int_parse/0, int_parse/1, float_parse/1, float_to_text/1, bool_to_text/1,
     sql_literal/1, sql_value_source/1,
     text_split_all/2, text_replace_all/3, text_join/2, text_slice/3,
@@ -377,6 +378,63 @@ decimal_of_text(S) ->
         {ok, U, Sc} -> {decimal, U, Sc};
         error       -> {decimal, 0, 0}
     end.
+
+%% --- UUID ---
+%% A Uuid is carried as {uuid, CanonicalBin}, where CanonicalBin is the lowercase
+%% 8-4-4-4-12 hyphenated text. That is the shape the SQL codec moves across a
+%% `uuid` column and the form Postgres reads and writes over the text protocol.
+
+%% uuid_from_text/1 — std.uuid.fromText. Text -> Result Uuid Error. Accepts the
+%% canonical hyphenated form in either case and normalises it to lowercase.
+uuid_from_text(Bin) ->
+    case uuid_canonicalize(Bin) of
+        {ok, Canon} -> {ok, {uuid, Canon}};
+        error       -> {error, {error_record, <<"uuid.parse">>,
+                                <<"invalid uuid">>}}
+    end.
+
+%% uuid_to_text/1 — std.uuid.toText. The canonical lowercase text.
+uuid_to_text({uuid, Bin}) -> Bin.
+
+%% uuid_nil/1 — std.uuid.nil. The all-zero uuid.
+uuid_nil(_Unit) -> {uuid, <<"00000000-0000-0000-0000-000000000000">>}.
+
+%% uuid_gen/1 — std.uuid.gen. A random version-4 uuid from a cryptographic source.
+%% The version nibble is pinned to 4 and the variant bits to the RFC 4122 form.
+uuid_gen(_Unit) ->
+    <<A:48, _:4, B:12, _:2, C:62>> = crypto:strong_rand_bytes(16),
+    {uuid, uuid_format(<<A:48, 4:4, B:12, 2:2, C:62>>)}.
+
+%% uuid_cmp/2 — std.uuid.compare. The canonical lowercase text orders the same as
+%% the 128-bit value, so a plain binary compare yields the uuid ordering.
+uuid_cmp({uuid, A}, {uuid, B}) ->
+    if A < B -> -1; A > B -> 1; true -> 0 end.
+
+%% Validate a uuid string and return its lowercase canonical form, or error.
+uuid_canonicalize(Bin) ->
+    Lower = string:lowercase(string:trim(Bin)),
+    case uuid_valid(Lower) of
+        true  -> {ok, Lower};
+        false -> error
+    end.
+
+%% Whether a binary is a canonical 8-4-4-4-12 hyphenated hex uuid.
+uuid_valid(<<G1:8/binary, "-", G2:4/binary, "-", G3:4/binary, "-", G4:4/binary, "-", G5:12/binary>>) ->
+    uuid_hex(G1) andalso uuid_hex(G2) andalso uuid_hex(G3)
+        andalso uuid_hex(G4) andalso uuid_hex(G5);
+uuid_valid(_) -> false.
+
+uuid_hex(Bin) ->
+    lists:all(fun(C) -> (C >= $0 andalso C =< $9) orelse (C >= $a andalso C =< $f) end,
+              binary_to_list(Bin)).
+
+%% Format 16 bytes as canonical 8-4-4-4-12 lowercase hex.
+uuid_format(<<A:4/binary, B:2/binary, C:2/binary, D:2/binary, E:6/binary>>) ->
+    iolist_to_binary([uuid_hexstr(A), "-", uuid_hexstr(B), "-", uuid_hexstr(C), "-",
+                      uuid_hexstr(D), "-", uuid_hexstr(E)]).
+
+uuid_hexstr(Bin) ->
+    iolist_to_binary([io_lib:format("~2.16.0b", [B]) || <<B>> <= Bin]).
 
 %% --- Numbers ---
 

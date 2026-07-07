@@ -147,6 +147,7 @@ const STDLIB_MODULES: &[&str] = &[
     "std.int",
     "std.float",
     "std.decimal",
+    "std.uuid",
     "std.bool",
     "std.option",
     "std.result",

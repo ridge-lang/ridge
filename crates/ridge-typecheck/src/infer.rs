@@ -1305,6 +1305,7 @@ pub(crate) fn ast_type_to_type(
                 PrimitiveType::Text => b.text,
                 PrimitiveType::Unit => b.unit,
                 PrimitiveType::Timestamp => b.timestamp,
+                PrimitiveType::Decimal => b.decimal,
             };
             Type::Con(tycon, vec![])
         }

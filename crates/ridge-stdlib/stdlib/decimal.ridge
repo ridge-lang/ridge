@@ -1,0 +1,57 @@
+-- std.decimal — exact base-10 decimal numbers (Tier 1, no stdlib imports).
+--
+-- Decimal is an arbitrary-precision decimal carried on the BEAM as a scaled
+-- integer (an unscaled value paired with a scale, so the number is
+-- `unscaled x 10^-scale`). Unlike Float it never rounds a base-10 value to the
+-- nearest binary fraction, and unlike Int it holds a fractional part — so it is
+-- the type for money, measurements, and anything read out of a SQL `numeric`
+-- column, where losing the last digit is a bug rather than a rounding.
+--
+-- This module covers construction, rendering, and value comparison. The FFI
+-- primitives (`decimal_*` in ridge_rt) carry the scaled-integer representation;
+-- the codec that moves a Decimal across a SQL column lives in std.sql.
+
+-- Parse a decimal from text. Accepts an optional sign, an integer part, an
+-- optional fractional part, and an optional exponent -- "42", "-12.50",
+-- "0.001", and "1.5e3" all parse. The scale is taken from the fractional
+-- digits, so "1.50" keeps its trailing zero. Returns Err on anything that is
+-- not a well-formed decimal.
+@ffi("ridge_rt", "decimal_from_text", 1)
+pub fn fromText (s: Text) -> Result Decimal Error
+
+-- Render a decimal as canonical text. The scale is preserved, so a value with
+-- scale 2 prints with two fractional digits ("1.50"), the inverse of fromText.
+@ffi("ridge_rt", "decimal_to_text", 1)
+pub fn toText (d: Decimal) -> Text
+
+-- An integer as an exact decimal with scale 0.
+@ffi("ridge_rt", "decimal_from_int", 1)
+pub fn fromInt (n: Int) -> Decimal
+
+-- Convert to the nearest Float. This is lossy -- a Float cannot represent every
+-- decimal exactly -- so it is for display or interop with float APIs, never a
+-- step in exact arithmetic.
+@ffi("ridge_rt", "decimal_to_float", 1)
+pub fn toFloat (d: Decimal) -> Float
+
+-- Three-way comparison: negative when a < b, zero when they are equal, positive
+-- when a > b. It compares by value after aligning scales, so 1.5 and 1.50
+-- compare equal. Follows the same shape as `Float.totalCompare`; the named
+-- comparisons below build on it.
+@ffi("ridge_rt", "decimal_cmp", 2)
+pub fn compare (a: Decimal) (b: Decimal) -> Int
+
+-- Value equality: 1.5 and 1.50 are equal.
+pub fn eq (a: Decimal) (b: Decimal) -> Bool = compare a b == 0
+
+-- Strictly less than.
+pub fn lt (a: Decimal) (b: Decimal) -> Bool = compare a b < 0
+
+-- Less than or equal.
+pub fn lte (a: Decimal) (b: Decimal) -> Bool = compare a b <= 0
+
+-- Strictly greater than.
+pub fn gt (a: Decimal) (b: Decimal) -> Bool = compare a b > 0
+
+-- Greater than or equal.
+pub fn gte (a: Decimal) (b: Decimal) -> Bool = compare a b >= 0

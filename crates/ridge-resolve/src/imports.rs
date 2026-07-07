@@ -850,6 +850,7 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
     let pure_data_modules: &[(&str, &str)] = &[
         ("std.int", "Int"),
         ("std.float", "Float"),
+        ("std.decimal", "Decimal"),
         ("std.bool", "Bool"),
         ("std.text", "Text"),
         ("std.list", "List"),
@@ -2054,8 +2055,8 @@ mod tests {
             .map(|ir| ir.effective_bindings.len())
             .sum();
         assert_eq!(
-            total_bindings, 65,
-            "expected 65 total prelude bindings (6 option/result + 8 json + 43 quotation + 8 module aliases); got {total_bindings}"
+            total_bindings, 66,
+            "expected 66 total prelude bindings (6 option/result + 8 json + 43 quotation + 9 module aliases); got {total_bindings}"
         );
     }
 
@@ -2145,16 +2146,16 @@ mod tests {
 
     // ── Module-alias prelude tests ────────────────────────────────────────────
 
-    // Prelude test 8: IR[4] has exactly 8 ModuleAlias bindings for
-    // Int, Float, Bool, Text, List, Map, Set, Json.
+    // Prelude test 8: IR[4] has exactly 9 ModuleAlias bindings for
+    // Int, Float, Decimal, Bool, Text, List, Map, Set, Json.
     #[test]
-    fn prelude_r015_ir_has_eight_module_aliases() {
+    fn prelude_r015_ir_has_nine_module_aliases() {
         let resolutions = super::prelude_resolutions();
         let aliases_ir = &resolutions[4];
         assert_eq!(
             aliases_ir.effective_bindings.len(),
-            8,
-            "expected 8 module-alias prelude bindings; got {:?}",
+            9,
+            "expected 9 module-alias prelude bindings; got {:?}",
             aliases_ir
                 .effective_bindings
                 .iter()
@@ -2269,8 +2270,8 @@ mod tests {
             .iter()
             .map(|eb| eb.local_name.as_str())
             .collect();
-        // All 8 aliases must survive: 'MyList' is not a prelude name.
-        assert_eq!(names.len(), 8, "all 8 aliases must survive; got: {names:?}");
+        // All 9 aliases must survive: 'MyList' is not a prelude name.
+        assert_eq!(names.len(), 9, "all 9 aliases must survive; got: {names:?}");
         assert!(
             names.contains(&"List"),
             "List alias must survive when user imports 'std.list as MyList'"

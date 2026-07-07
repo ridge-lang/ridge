@@ -140,6 +140,7 @@ pub(crate) fn parse_type_atom(cur: &mut Cursor<'_>) -> Result<Type, ParseError> 
                 "Text" => Some(PrimitiveType::Text),
                 "Unit" => Some(PrimitiveType::Unit),
                 "Timestamp" => Some(PrimitiveType::Timestamp),
+                "Decimal" => Some(PrimitiveType::Decimal),
                 _ => None,
             };
 

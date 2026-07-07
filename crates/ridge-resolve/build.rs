@@ -64,6 +64,11 @@ const MODULE_ORDER: &[&str] = &[
     "std.migrate",
     "std.raw",
     "std.test",
+    // Appended last so it takes the highest id without renumbering any module
+    // ahead of it. `std.decimal` is a Tier-1 primitive companion (it imports
+    // nothing); the ordering here only fixes ids, and the build tier is set
+    // separately in the stdlib build driver.
+    "std.decimal",
 ];
 
 // ── Baseline export table (T10: preserves original API) ───────────────────────
@@ -413,6 +418,15 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "DbTimestamp",
             "DbTimestampTz",
             "DbRaw",
+        ],
+    ),
+    (
+        "std.decimal",
+        &[
+            // Exact base-10 decimal: parse/render, conversions, and value-based
+            // comparisons. The scaled-integer representation and the raw
+            // three-way compare live in the runtime.
+            "fromText", "toText", "fromInt", "toFloat", "compare", "eq", "lt", "lte", "gt", "gte",
         ],
     ),
     (

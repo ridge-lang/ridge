@@ -63,6 +63,9 @@ const STD_QUERY: StdlibModuleId = StdlibModuleId(22);
 // std.data (23), std.repo (24), std.migrate (25), std.raw (26) are reconciled —
 // their schemes come from `reconciled_fn_scheme`, so they have no constant here.
 const STD_TEST: StdlibModuleId = StdlibModuleId(27);
+// std.decimal is interned last (id 28) so it takes the highest id without
+// renumbering the modules ahead of it.
+const STD_DECIMAL: StdlibModuleId = StdlibModuleId(28);
 
 // ── Type-building helpers ─────────────────────────────────────────────────────
 //
@@ -91,6 +94,10 @@ const fn ty_unit(b: &BuiltinTyCons) -> Type {
 #[inline]
 const fn ty_timestamp(b: &BuiltinTyCons) -> Type {
     Type::Con(b.timestamp, vec![])
+}
+#[inline]
+const fn ty_decimal(b: &BuiltinTyCons) -> Type {
+    Type::Con(b.decimal, vec![])
 }
 #[inline]
 const fn ty_error(b: &BuiltinTyCons) -> Type {
@@ -273,6 +280,24 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         // totalCompare: Float -> Float -> Int  (returns -1 / 0 / 1)
         (STD_FLOAT, "totalCompare") => {
             Some(mono(ty_fn_pure(vec![ty_float(b), ty_float(b)], ty_int(b))))
+        }
+
+        // ── std.decimal ───────────────────────────────────────────────────────
+        // fromText: Text -> Result Decimal Error
+        (STD_DECIMAL, "fromText") => Some(mono(ty_fn_pure(
+            vec![ty_text(b)],
+            ty_result(b, ty_decimal(b), ty_error(b)),
+        ))),
+        (STD_DECIMAL, "toText") => Some(mono(ty_fn_pure(vec![ty_decimal(b)], ty_text(b)))),
+        (STD_DECIMAL, "fromInt") => Some(mono(ty_fn_pure(vec![ty_int(b)], ty_decimal(b)))),
+        (STD_DECIMAL, "toFloat") => Some(mono(ty_fn_pure(vec![ty_decimal(b)], ty_float(b)))),
+        // compare: Decimal -> Decimal -> Int (-1 / 0 / 1, value-based so 1.5 == 1.50).
+        (STD_DECIMAL, "compare") => {
+            Some(mono(ty_fn_pure(vec![ty_decimal(b), ty_decimal(b)], ty_int(b))))
+        }
+        // The value comparisons: Decimal -> Decimal -> Bool.
+        (STD_DECIMAL, "eq" | "lt" | "lte" | "gt" | "gte") => {
+            Some(mono(ty_fn_pure(vec![ty_decimal(b), ty_decimal(b)], ty_bool(b))))
         }
 
         // ── std.bool ──────────────────────────────────────────────────────────

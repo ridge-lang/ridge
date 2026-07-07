@@ -665,6 +665,7 @@ fn ast_type_simple_name(ty: &AstType) -> Option<String> {
                 PrimitiveType::Text => "Text",
                 PrimitiveType::Unit => "Unit",
                 PrimitiveType::Timestamp => "Timestamp",
+                PrimitiveType::Decimal => "Decimal",
             }
             .to_string(),
         ),
@@ -1482,10 +1483,11 @@ fn sql_primitive_type_name(ty: &AstType) -> Option<String> {
             PrimitiveType::Bool => Some("Bool".to_string()),
             PrimitiveType::Float => Some("Float".to_string()),
             PrimitiveType::Timestamp => Some("Timestamp".to_string()),
+            PrimitiveType::Decimal => Some("Decimal".to_string()),
             PrimitiveType::Unit => None,
         },
         AstType::Named { name, .. } => match name.text.as_str() {
-            "Int" | "Text" | "Bool" | "Float" => Some(name.text.clone()),
+            "Int" | "Text" | "Bool" | "Float" | "Decimal" => Some(name.text.clone()),
             _ => None,
         },
         AstType::Paren { inner, .. } => sql_primitive_type_name(inner),
@@ -1686,6 +1688,7 @@ fn ast_type_display(ty: &AstType) -> String {
             PrimitiveType::Text => "Text".to_string(),
             PrimitiveType::Unit => "Unit".to_string(),
             PrimitiveType::Timestamp => "Timestamp".to_string(),
+            PrimitiveType::Decimal => "Decimal".to_string(),
         },
         AstType::Named { name, .. } | AstType::Var { name, .. } => name.text.clone(),
         AstType::App { head, args, .. } => {
@@ -1725,6 +1728,8 @@ fn builtin_name_to_tycon_id(name: &str) -> Option<TyConId> {
         "Duration" => Some(TyConId(13)),
         "ProcOutput" => Some(TyConId(14)),
         "Ordering" => Some(TyConId(15)),
+        // Decimal is interned last in the builtin arena (id 51).
+        "Decimal" => Some(TyConId(51)),
         _ => None,
     }
 }
@@ -1775,6 +1780,8 @@ fn resolve_ast_type_to_tycon_id(
             PrimitiveType::Text => Some(TyConId(3)),
             PrimitiveType::Unit => Some(TyConId(4)),
             PrimitiveType::Timestamp => Some(TyConId(5)),
+            // Decimal is interned last in the builtin arena (id 51).
+            PrimitiveType::Decimal => Some(TyConId(51)),
             #[allow(unreachable_patterns)]
             _ => None,
         },

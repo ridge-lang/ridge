@@ -332,6 +332,11 @@ pub struct BuiltinTyCons {
     /// or `e` itself when none). Internal; the reduction reads the per-entity
     /// shape table from the context and is invertible. See [`INSERTSHAPE_TYCON_ID`].
     pub insert_shape: TyConId,
+    /// `Decimal` — an arbitrary-precision base-10 number. A primitive like
+    /// `Int`/`Float`, but interned last (id 51) so the historical 0..50 index
+    /// layout stays stable for the many call sites that hardcode those ids. The
+    /// value/DDL wiring lives in `std.decimal` and `std.sql`.
+    pub decimal: TyConId,
 }
 
 impl BuiltinTyCons {
@@ -382,6 +387,7 @@ impl BuiltinTyCons {
             right_joinresult: SENTINEL,
             full_joinresult: SENTINEL,
             insert_shape: SENTINEL,
+            decimal: SENTINEL,
         }
     }
 
@@ -1426,6 +1432,22 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
+        // Decimal — an arbitrary-precision base-10 primitive (id 51). A scalar
+        // like Int/Float/Timestamp, but interned last so the historical 0..50
+        // index layout stays fixed; several call sites hardcode those ids. Its
+        // runtime value is a scaled integer carried by `ridge_rt`; the codec and
+        // column wiring live in `std.decimal` / `std.sql`.
+        let decimal = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "Decimal".to_string(),
+            arity: 0,
+            kind: TyConKind::Primitive,
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+
         // Verify assignment order matches spec §4.1 indices 0..16.
         debug_assert_eq!(int.0, 0);
         debug_assert_eq!(float.0, 1);
@@ -1482,6 +1504,8 @@ impl BuiltinTyCons {
         // InsertShape/1 sits right after FullJoinResult/2 (INSERTSHAPE_TYCON_ID = 50).
         debug_assert_eq!(insert_shape.0, INSERTSHAPE_TYCON_ID);
         debug_assert_eq!(insert_shape.0, 50);
+        // Decimal is interned last so it does not disturb the 0..50 layout.
+        debug_assert_eq!(decimal.0, 51);
 
         // Suppress the "unused" lint — CapabilitySet is imported for future use
         // in T4 (actor schemas carry CapabilitySet).
@@ -1524,6 +1548,7 @@ impl BuiltinTyCons {
             right_joinresult,
             full_joinresult,
             insert_shape,
+            decimal,
         }
     }
 }
@@ -1603,17 +1628,17 @@ mod tests {
     }
 
     #[test]
-    fn arena_len_is_51() {
+    fn arena_len_is_52() {
         // 15 original builtins + Ordering + JsonValue + the std.net.http taint
         // wrappers Sql / Html / SecureCookie + std.sql's SqlValue + the
         // column-codegen builtins Column / Table + the schema-codegen builtins
         // FieldSchema / Schema + the quotation builtins QExpr / Quote (27 total)
         // + the 16 synthetic function-type constructors Fn/0 … Fn/15 + Ret/1 +
         // Rows/1 + JoinCond/2 + the four join-result extractors (Join/Left/Right/Full)
-        // + InsertShape/1.
+        // + InsertShape/1 + the Decimal primitive (interned last).
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 8);
-        assert_eq!(arena.len(), 51);
+        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 9);
+        assert_eq!(arena.len(), 52);
     }
 
     #[test]

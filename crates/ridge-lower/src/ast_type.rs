@@ -150,6 +150,7 @@ const fn primitive_name(prim: PrimitiveType) -> &'static str {
         PrimitiveType::Text => "Text",
         PrimitiveType::Unit => "Unit",
         PrimitiveType::Timestamp => "Timestamp",
+        PrimitiveType::Decimal => "Decimal",
     }
 }
 

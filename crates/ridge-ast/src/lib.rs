@@ -211,8 +211,9 @@ mod tests {
             PrimitiveType::Text,
             PrimitiveType::Unit,
             PrimitiveType::Timestamp,
+            PrimitiveType::Decimal,
         ];
-        assert_eq!(prims.len(), 6);
+        assert_eq!(prims.len(), 7);
     }
 
     // ── DocComment ────────────────────────────────────────────────────────────

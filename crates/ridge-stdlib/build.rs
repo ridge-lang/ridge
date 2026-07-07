@@ -146,6 +146,7 @@ const STDLIB_MODULES: &[&str] = &[
     // Tier 1
     "std.int",
     "std.float",
+    "std.decimal",
     "std.bool",
     "std.option",
     "std.result",

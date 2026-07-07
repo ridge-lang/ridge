@@ -71,6 +71,8 @@ pub enum PrimitiveType {
     Unit,
     /// Timestamp / instant in time (`Timestamp`).
     Timestamp,
+    /// Arbitrary-precision base-10 decimal (`Decimal`).
+    Decimal,
 }
 
 // ── DocComment ────────────────────────────────────────────────────────────────

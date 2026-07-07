@@ -633,6 +633,37 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         arity: 1,
         requires_caps: &[],
     },
+    // ── ridge_rt decimal codec (std.decimal, pure) ────────────────────────────
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "decimal_from_text",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "decimal_to_text",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "decimal_from_int",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "decimal_to_float",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "decimal_cmp",
+        arity: 2,
+        requires_caps: &[],
+    },
     FfiAuditEntry {
         beam_module: "ridge_rt",
         fn_name: "random_int",

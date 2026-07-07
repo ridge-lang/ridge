@@ -13,6 +13,8 @@
     time_diff_ms/2, time_diff/2,
     time_from_iso/1, time_since_ms/1, time_iso/1,
     time_to_micros/1, time_from_micros/1,
+    decimal_from_text/1, decimal_to_text/1, decimal_from_int/1,
+    decimal_to_float/1, decimal_cmp/2,
     int_parse/0, int_parse/1, float_parse/1, float_to_text/1, bool_to_text/1,
     sql_literal/1, sql_value_source/1,
     text_split_all/2, text_replace_all/3, text_join/2, text_slice/3,
@@ -176,6 +178,107 @@ time_to_micros({timestamp, Micros}) -> Micros.
 %% time_from_micros/1 — SqlType Timestamp codec (std.sql).
 %% Rebuilds a Timestamp from an epoch-microsecond instant read off a SqlInstant.
 time_from_micros(Micros) -> {timestamp, Micros}.
+
+%% --- Decimal ---
+%%
+%% A Decimal is an exact base-10 number held as {decimal, Unscaled, Scale}, both
+%% Erlang integers with Scale >= 0, denoting Unscaled * 10^-Scale. Erlang bignums
+%% give the unscaled value arbitrary precision, so a Decimal neither rounds a
+%% base-10 value the way a Float does nor overflows the way a fixed-width int
+%% would.
+
+%% decimal_from_text/1 — std.decimal.fromText.
+%% Text -> Result Decimal Error.
+decimal_from_text(Bin) ->
+    case decimal_parse(string:trim(binary_to_list(Bin))) of
+        {ok, U, S} -> {ok, {decimal, U, S}};
+        error      -> {error, {error_record, <<"decimal.parse">>,
+                               <<"invalid decimal literal">>}}
+    end.
+
+%% decimal_to_text/1 — std.decimal.toText. Canonical text, scale preserved.
+decimal_to_text({decimal, U, 0}) -> integer_to_binary(U);
+decimal_to_text({decimal, U, S}) when S > 0 ->
+    Sign = case U < 0 of true -> <<"-">>; false -> <<>> end,
+    Digits = decimal_pad_left(integer_to_binary(abs(U)), S + 1),
+    Len = byte_size(Digits),
+    IntPart = binary:part(Digits, 0, Len - S),
+    FracPart = binary:part(Digits, Len - S, S),
+    <<Sign/binary, IntPart/binary, ".", FracPart/binary>>.
+
+%% decimal_from_int/1 — std.decimal.fromInt. An integer at scale 0.
+decimal_from_int(N) -> {decimal, N, 0}.
+
+%% decimal_to_float/1 — std.decimal.toFloat. Lossy narrowing to an IEEE double.
+decimal_to_float({decimal, U, S}) -> U / decimal_pow10(S).
+
+%% decimal_cmp/2 — std.decimal raw compare. Aligns scales, then compares the
+%% unscaled values. Returns -1 | 0 | 1, so 1.5 and 1.50 compare equal.
+decimal_cmp({decimal, U1, S1}, {decimal, U2, S2}) ->
+    S = max(S1, S2),
+    A = U1 * decimal_pow10(S - S1),
+    B = U2 * decimal_pow10(S - S2),
+    if A < B -> -1; A > B -> 1; true -> 0 end.
+
+%% decimal_parse/1 — parse a char list into {ok, Unscaled, Scale} or error.
+%% Grammar: [sign] digits [ . digits ] [ (e|E) [sign] digits ]. Total — any
+%% malformed input yields error instead of raising.
+decimal_parse(Str) ->
+    try
+        {Sign, R1} = decimal_sign(Str),
+        {IntDigits, R2} = decimal_digits(R1),
+        {FracDigits, R3} =
+            case R2 of
+                [$. | AfterDot] -> decimal_digits(AfterDot);
+                _               -> {"", R2}
+            end,
+        {Exp, R4} = decimal_exponent(R3),
+        AllDigits = IntDigits ++ FracDigits,
+        case {R4, AllDigits} of
+            {[], []} -> error;
+            {[], _} ->
+                Unscaled = Sign * list_to_integer(AllDigits),
+                {U, S} = decimal_normalize(Unscaled, length(FracDigits) - Exp),
+                {ok, U, S};
+            _ -> error
+        end
+    catch
+        _:_ -> error
+    end.
+
+decimal_sign([$- | R]) -> {-1, R};
+decimal_sign([$+ | R]) -> {1, R};
+decimal_sign(R)        -> {1, R}.
+
+decimal_digits(Str) -> decimal_digits(Str, []).
+decimal_digits([C | R], Acc) when C >= $0, C =< $9 -> decimal_digits(R, [C | Acc]);
+decimal_digits(R, Acc) -> {lists:reverse(Acc), R}.
+
+%% Optional exponent. On a valid `e[sign]digits` returns {Value, Rest}; with no
+%% exponent, {0, Str}. A bare `e` with no digits is left unconsumed so the
+%% upstream "consumed everything" check rejects the input.
+decimal_exponent([E | R]) when E =:= $e; E =:= $E ->
+    {ESign, R1} = decimal_sign(R),
+    case decimal_digits(R1) of
+        {[], _}  -> {0, [E | R]};
+        {ED, R2} -> {ESign * list_to_integer(ED), R2}
+    end;
+decimal_exponent(Str) -> {0, Str}.
+
+%% Keep the scale non-negative: a positive net exponent scales the unscaled value
+%% up and leaves scale 0.
+decimal_normalize(U, Scale) when Scale < 0 -> {U * decimal_pow10(-Scale), 0};
+decimal_normalize(U, Scale)                -> {U, Scale}.
+
+decimal_pow10(0)             -> 1;
+decimal_pow10(N) when N > 0  -> 10 * decimal_pow10(N - 1).
+
+decimal_pad_left(Bin, MinLen) ->
+    Len = byte_size(Bin),
+    case Len >= MinLen of
+        true  -> Bin;
+        false -> <<(binary:copy(<<"0">>, MinLen - Len))/binary, Bin/binary>>
+    end.
 
 %% --- Numbers ---
 

@@ -313,6 +313,10 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
         "QLitFloat".to_string(),
         q_ctor(vec![ty_con(b.float, vec![])]),
     );
+    values.insert(
+        "QLitDecimal".to_string(),
+        q_ctor(vec![ty_con(b.decimal, vec![])]),
+    );
     values.insert("QNot".to_string(), q_ctor(vec![qexpr_ty.clone()]));
     values.insert("QNotTrue".to_string(), q_ctor(vec![qexpr_ty.clone()]));
     for name in ["QAnd", "QOr", "QEq", "QNe", "QLt", "QGt", "QLe", "QGe"] {

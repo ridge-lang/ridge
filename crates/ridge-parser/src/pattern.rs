@@ -185,6 +185,7 @@ pub(crate) fn parse_pattern_atom(cur: &mut Cursor<'_>) -> Result<Pattern, ParseE
         | Token::IntOct(_)
         | Token::IntHex(_)
         | Token::Float(_)
+        | Token::DecimalLit(_)
         | Token::KwTrue
         | Token::KwFalse
         | Token::TextLit(_) => {
@@ -739,6 +740,7 @@ fn can_start_pattern_atom(cur: &Cursor<'_>) -> bool {
             | Token::IntOct(_)
             | Token::IntHex(_)
             | Token::Float(_)
+            | Token::DecimalLit(_)
             | Token::KwTrue
             | Token::KwFalse
             | Token::TextLit(_)

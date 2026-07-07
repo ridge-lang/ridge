@@ -1277,6 +1277,7 @@ pub const fn type_of_literal(b: &BuiltinTyCons, lit: &Literal) -> Type {
         | Literal::IntOct { .. }
         | Literal::IntHex { .. } => Type::Con(b.int, vec![]),
         Literal::Float { .. } => Type::Con(b.float, vec![]),
+        Literal::Decimal { .. } => Type::Con(b.decimal, vec![]),
         Literal::Bool { .. } => Type::Con(b.bool, vec![]),
         Literal::Text { .. } | Literal::RawText { .. } => Type::Con(b.text, vec![]),
     }

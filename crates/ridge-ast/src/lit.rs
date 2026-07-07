@@ -44,6 +44,14 @@ pub enum Literal {
         /// Source location.
         span: Span,
     },
+    /// Exact decimal literal, e.g. `19.99m` or `5m`. The raw lexeme keeps the
+    /// trailing `m`/`M` suffix; downstream phases strip it before parsing.
+    Decimal {
+        /// Raw lexeme as written in the source, including the `m` suffix.
+        raw: String,
+        /// Source location.
+        span: Span,
+    },
     /// Boolean literal.
     Bool {
         /// The boolean value.
@@ -84,6 +92,7 @@ impl Literal {
             | Self::IntOct { span, .. }
             | Self::IntHex { span, .. }
             | Self::Float { span, .. }
+            | Self::Decimal { span, .. }
             | Self::Bool { span, .. }
             | Self::Text { span, .. }
             | Self::RawText { span, .. } => *span,

@@ -477,6 +477,7 @@ pub(crate) fn can_start_arg_atom(cur: &Cursor<'_>) -> bool {
             | Token::IntOct(_)
             | Token::IntHex(_)
             | Token::Float(_)
+            | Token::DecimalLit(_)
             | Token::TextLit(_)
             | Token::KwTrue
             | Token::KwFalse

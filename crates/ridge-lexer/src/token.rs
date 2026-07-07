@@ -64,6 +64,8 @@ pub enum Token {
     IntHex(String),
     /// Floating-point literal (raw source text, e.g. `"3.14"`).
     Float(String),
+    /// Exact decimal literal (raw source text incl. the `m` suffix, e.g. `"19.99m"`).
+    DecimalLit(String),
 
     // ── String literals ──────────────────────────────────────────────────────
     /// A plain `"..."` string literal.  Raw bytes between the outer quotes,
@@ -270,6 +272,7 @@ impl std::fmt::Display for Token {
             | Self::IntOct(s)
             | Self::IntHex(s)
             | Self::Float(s)
+            | Self::DecimalLit(s)
             | Self::InterpText(s) => write!(f, "{s}"),
 
             Self::Underscore => write!(f, "_"),

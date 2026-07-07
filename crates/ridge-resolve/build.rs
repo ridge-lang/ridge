@@ -430,6 +430,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "fromText",
             "toText",
             "fromInt",
+            "parseRaw",
             "toFloat",
             "add",
             "sub",

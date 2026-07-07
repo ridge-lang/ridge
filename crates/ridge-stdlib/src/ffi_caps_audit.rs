@@ -654,6 +654,12 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
     },
     FfiAuditEntry {
         beam_module: "ridge_rt",
+        fn_name: "decimal_parse_raw",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
         fn_name: "decimal_to_float",
         arity: 1,
         requires_caps: &[],

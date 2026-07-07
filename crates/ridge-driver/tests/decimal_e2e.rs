@@ -102,6 +102,18 @@ pub fn divZero () -> Text =
     match Decimal.div HalfEven 2 (dec "1") (dec "0")
         Ok _  -> "ok"
         Err _ -> "err"
+
+-- literal syntax: `19.99m` is a Decimal, no constructor call needed.
+pub fn litExpr () -> Text = Decimal.toText 19.99m
+
+-- a literal drops straight into arithmetic: 1.5 + 2.5 = 4.0.
+pub fn litArith () -> Text = Decimal.toText (Decimal.add 1.5m 2.5m)
+
+-- a literal past Float precision keeps every digit.
+pub fn litBig () -> Text = Decimal.toText 123456789012345678901234567890.123m
+
+-- digit separators are allowed and the scale is preserved.
+pub fn litSep () -> Text = Decimal.toText 1_000.50m
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -191,6 +203,10 @@ fn decimal_module_runs_on_beam() {
          io:format(\"truncateText=~s~n\",[{module}:truncateText()]), \
          io:format(\"divText=~s~n\",[{module}:divText()]), \
          io:format(\"divZero=~s~n\",[{module}:divZero()]), \
+         io:format(\"litExpr=~s~n\",[{module}:litExpr()]), \
+         io:format(\"litArith=~s~n\",[{module}:litArith()]), \
+         io:format(\"litBig=~s~n\",[{module}:litBig()]), \
+         io:format(\"litSep=~s~n\",[{module}:litSep()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -256,6 +272,16 @@ fn decimal_module_runs_on_beam() {
             "division carries a scale and a rounding mode",
         ),
         ("divZero=err", "dividing by zero is a recoverable Err"),
+        ("litExpr=19.99", "a `19.99m` literal is a Decimal"),
+        ("litArith=4.0", "a literal drops into arithmetic"),
+        (
+            "litBig=123456789012345678901234567890.123",
+            "a literal past Float precision keeps every digit",
+        ),
+        (
+            "litSep=1000.50",
+            "digit separators are allowed and the scale is kept",
+        ),
     ] {
         assert!(
             stdout.contains(probe),

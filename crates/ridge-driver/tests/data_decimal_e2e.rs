@@ -103,6 +103,18 @@ pub fn db bigExact () -> Text =
                 Ok None     -> "none"
                 Ok (Some m) -> Decimal.toText m.amount
 
+-- a decimal literal inside a quoted predicate: `amount > 2.5m` reifies the literal
+-- into the query tree and compiles to a bound parameter, so only the 10.25 row
+-- (label "b") passes -- 2.5 is not strictly greater than itself. Proves the
+-- literal works in the query DSL, not only in plain expressions.
+pub fn db filterLit () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.filter (fn (m: Money) -> m.amount > 2.5m) |> Repo.toList
+                Err _ -> "list-err"
+                Ok ms -> joinLabels ms
+
 -- column-type dispatch: `deriving (Schema)` reads the `amount` column type from
 -- SqlType.dbType, so the DDL names it `numeric` (the unconstrained exact form of
 -- DbRaw "numeric"), proving the column type comes from the codec.
@@ -182,6 +194,7 @@ fn decimal_codec_runs_on_beam() {
          io:format(\"ascOrder=~s~n\",[{module}:ascOrder()]), \
          io:format(\"descOrder=~s~n\",[{module}:descOrder()]), \
          io:format(\"bigExact=~s~n\",[{module}:bigExact()]), \
+         io:format(\"filterLit=~s~n\",[{module}:filterLit()]), \
          io:format(\"amountDdl=~s~n\",[{module}:amountDdl()]), \
          halt()."
     );
@@ -213,6 +226,10 @@ fn decimal_codec_runs_on_beam() {
         (
             "bigExact=123456789012345678901234567890.123456789",
             "a value beyond Int/Float precision round-trips exactly through the row",
+        ),
+        (
+            "filterLit=b",
+            "a decimal literal in a quoted predicate reifies and compiles to a bound param",
         ),
         (
             "numeric",

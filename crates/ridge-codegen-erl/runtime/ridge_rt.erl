@@ -13,7 +13,7 @@
     time_diff_ms/2, time_diff/2,
     time_from_iso/1, time_since_ms/1, time_iso/1,
     time_to_micros/1, time_from_micros/1,
-    decimal_from_text/1, decimal_to_text/1, decimal_from_int/1,
+    decimal_from_text/1, decimal_to_text/1, decimal_from_int/1, decimal_parse_raw/1,
     decimal_to_float/1, decimal_cmp/2,
     decimal_add/2, decimal_sub/2, decimal_mul/2, decimal_neg/1, decimal_abs/1,
     decimal_round/3, decimal_div/4,
@@ -210,6 +210,14 @@ decimal_to_text({decimal, U, S}) when S > 0 ->
 
 %% decimal_from_int/1 — std.decimal.fromInt. An integer at scale 0.
 decimal_from_int(N) -> {decimal, N, 0}.
+
+%% decimal_parse_raw/1 — std.decimal.parseRaw. Total in shape, raises on malformed
+%% input (the `19.99m` literal path, where the lexer has already validated the text).
+decimal_parse_raw(Bin) ->
+    case decimal_parse(string:trim(binary_to_list(Bin))) of
+        {ok, U, S} -> {decimal, U, S};
+        error      -> error(badarg)
+    end.
 
 %% decimal_to_float/1 — std.decimal.toFloat. Lossy narrowing to an IEEE double.
 decimal_to_float({decimal, U, S}) -> U / decimal_pow10(S).
@@ -1782,6 +1790,7 @@ mem_pcell({'QLitInt', N}, _Row)   -> {'SqlInt', N};
 mem_pcell({'QLitText', S}, _Row)  -> {'SqlText', S};
 mem_pcell({'QLitBool', B}, _Row)  -> {'SqlBool', B};
 mem_pcell({'QLitFloat', F}, _Row) -> {'SqlFloat', F};
+mem_pcell({'QLitDecimal', D}, _Row) -> {'SqlDecimal', decimal_to_text(D)};
 %% Computed projection cells over a join's flat source-prefixed rows: arithmetic
 %% folds its operands (each resolved by the same prefix rules), a CASE picks a
 %% branch by its condition read as an N-ary predicate. A cell with no value — a
@@ -2011,6 +2020,7 @@ mem_hscalar_nary({'QLitInt', N}, _Key, _GR)   -> {'SqlInt', N};
 mem_hscalar_nary({'QLitText', S}, _Key, _GR)  -> {'SqlText', S};
 mem_hscalar_nary({'QLitBool', B}, _Key, _GR)  -> {'SqlBool', B};
 mem_hscalar_nary({'QLitFloat', F}, _Key, _GR) -> {'SqlFloat', F};
+mem_hscalar_nary({'QLitDecimal', D}, _Key, _GR) -> {'SqlDecimal', decimal_to_text(D)};
 mem_hscalar_nary(_Other, _Key, _GR)           -> undefined.
 
 %% Merge the Changes columns into every row matching the predicate tree, leaving
@@ -2203,6 +2213,7 @@ mem_jscalar({'QLitInt', N}, _L, _R)   -> {'SqlInt', N};
 mem_jscalar({'QLitText', S}, _L, _R)  -> {'SqlText', S};
 mem_jscalar({'QLitBool', B}, _L, _R)  -> {'SqlBool', B};
 mem_jscalar({'QLitFloat', F}, _L, _R) -> {'SqlFloat', F};
+mem_jscalar({'QLitDecimal', D}, _L, _R) -> {'SqlDecimal', decimal_to_text(D)};
 mem_jscalar({'QAdd', A, B}, L, R) -> mem_arith_apply('+', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
 mem_jscalar({'QSub', A, B}, L, R) -> mem_arith_apply('-', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
 mem_jscalar({'QMul', A, B}, L, R) -> mem_arith_apply('*', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
@@ -2383,6 +2394,7 @@ mem_nscalar({'QLitInt', N}, _Row)   -> {'SqlInt', N};
 mem_nscalar({'QLitText', S}, _Row)  -> {'SqlText', S};
 mem_nscalar({'QLitBool', B}, _Row)  -> {'SqlBool', B};
 mem_nscalar({'QLitFloat', F}, _Row) -> {'SqlFloat', F};
+mem_nscalar({'QLitDecimal', D}, _Row) -> {'SqlDecimal', decimal_to_text(D)};
 mem_nscalar({'QAdd', A, B}, Row) -> mem_arith_apply('+', mem_nscalar(A, Row), mem_nscalar(B, Row));
 mem_nscalar({'QSub', A, B}, Row) -> mem_arith_apply('-', mem_nscalar(A, Row), mem_nscalar(B, Row));
 mem_nscalar({'QMul', A, B}, Row) -> mem_arith_apply('*', mem_nscalar(A, Row), mem_nscalar(B, Row));
@@ -2575,6 +2587,7 @@ mem_scalar({'QLitInt', N}, _Row)   -> {'SqlInt', N};
 mem_scalar({'QLitText', S}, _Row)  -> {'SqlText', S};
 mem_scalar({'QLitBool', B}, _Row)  -> {'SqlBool', B};
 mem_scalar({'QLitFloat', F}, _Row) -> {'SqlFloat', F};
+mem_scalar({'QLitDecimal', D}, _Row) -> {'SqlDecimal', decimal_to_text(D)};
 mem_scalar({'QAdd', A, B}, Row) -> mem_arith_apply('+', mem_scalar(A, Row), mem_scalar(B, Row));
 mem_scalar({'QSub', A, B}, Row) -> mem_arith_apply('-', mem_scalar(A, Row), mem_scalar(B, Row));
 mem_scalar({'QMul', A, B}, Row) -> mem_arith_apply('*', mem_scalar(A, Row), mem_scalar(B, Row));

@@ -373,6 +373,7 @@ const fn token_description(tok: &Token) -> &'static str {
             "<integer-literal>"
         }
         Token::Float(_) => "<float-literal>",
+        Token::DecimalLit(_) => "<decimal-literal>",
         Token::TextLit(_) => "<string-literal>",
         Token::RawTextLit(_) => "<raw-string-literal>",
         Token::InterpText(_) => "<interpolated-text>",

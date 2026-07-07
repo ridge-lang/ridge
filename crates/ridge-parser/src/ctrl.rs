@@ -853,6 +853,7 @@ const fn can_start_expr_token(tok: &Token) -> bool {
             | Token::IntOct(_)
             | Token::IntHex(_)
             | Token::Float(_)
+            | Token::DecimalLit(_)
             | Token::TextLit(_)
             | Token::KwTrue
             | Token::KwFalse
@@ -890,6 +891,7 @@ pub(crate) fn can_start_expr(cur: &Cursor<'_>) -> bool {
             | Token::IntOct(_)
             | Token::IntHex(_)
             | Token::Float(_)
+            | Token::DecimalLit(_)
             | Token::TextLit(_)
             | Token::KwTrue
             | Token::KwFalse

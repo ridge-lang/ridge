@@ -851,10 +851,19 @@ pub fn lower_pattern_full(ctx: &mut LowerCtx<'_>, pat: &Pattern) -> IrPat {
             }
         }
 
-        Pattern::Literal { lit, span } => IrPat::Lit {
-            value: literal_to_ir_lit(lit),
-            span: *span,
-        },
+        Pattern::Literal { lit, span } => {
+            // A decimal literal cannot be a structural pattern: it compares by
+            // value (1.5 == 1.50) but the stored form is scale-sensitive. Reject
+            // it with a clear diagnostic rather than match it incorrectly.
+            if matches!(lit, Literal::Decimal { .. }) {
+                ctx.errors
+                    .push(crate::error::LowerError::DecimalLiteralPattern { span: *span });
+            }
+            IrPat::Lit {
+                value: literal_to_ir_lit(lit),
+                span: *span,
+            }
+        }
 
         Pattern::Var { name, span } => IrPat::Bind {
             name: name.text.clone(),
@@ -1202,6 +1211,9 @@ fn literal_to_ir_lit(lit: &Literal) -> ridge_ir::IrLit {
         }
         // Raw strings carry literal bytes; no escape decoding.
         Literal::RawText { raw, .. } => ridge_ir::IrLit::Text(raw.clone()),
+        // A decimal literal is rejected as a pattern by the caller (L010); this
+        // neutral value is never reached on that error path.
+        Literal::Decimal { .. } => ridge_ir::IrLit::Int(0),
     }
 }
 
@@ -1248,6 +1260,24 @@ mod tests {
             },
             span: sp(),
         }
+    }
+
+    #[test]
+    fn decimal_literal_pattern_is_rejected() {
+        let mut ctx = fresh_ctx();
+        let pat = Pattern::Literal {
+            lit: Literal::Decimal {
+                raw: "1.5m".into(),
+                span: sp(),
+            },
+            span: sp(),
+        };
+        let _ = lower_pattern_full(&mut ctx, &pat);
+        assert!(
+            ctx.errors.iter().any(|e| e.code() == "L010"),
+            "expected an L010 decimal-literal-pattern diagnostic, got {:?}",
+            ctx.errors
+        );
     }
 
     fn int_arm(n: &str, body_n: &str) -> MatchArm {

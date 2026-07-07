@@ -942,6 +942,7 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
                 query_binding("QLitText"),
                 query_binding("QLitBool"),
                 query_binding("QLitFloat"),
+                query_binding("QLitDecimal"),
                 query_binding("QAnd"),
                 query_binding("QOr"),
                 query_binding("QNot"),
@@ -2055,8 +2056,8 @@ mod tests {
             .map(|ir| ir.effective_bindings.len())
             .sum();
         assert_eq!(
-            total_bindings, 66,
-            "expected 66 total prelude bindings (6 option/result + 8 json + 43 quotation + 9 module aliases); got {total_bindings}"
+            total_bindings, 67,
+            "expected 67 total prelude bindings (6 option/result + 8 json + 44 quotation + 9 module aliases); got {total_bindings}"
         );
     }
 

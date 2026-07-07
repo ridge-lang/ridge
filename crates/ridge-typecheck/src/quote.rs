@@ -1008,6 +1008,11 @@ fn is_literal_zero(e: &Expr) -> bool {
             !digits.is_empty() && digits.bytes().all(|c| c == b'0')
         }
         Literal::Float { raw, .. } => raw.replace('_', "").parse::<f64>().is_ok_and(|v| v == 0.0),
+        Literal::Decimal { raw, .. } => raw
+            .trim_end_matches(['m', 'M'])
+            .replace('_', "")
+            .parse::<f64>()
+            .is_ok_and(|v| v == 0.0),
         _ => false,
     }
 }
@@ -2002,6 +2007,7 @@ const fn literal_type(b: &BuiltinTyCons, lit: &Literal) -> Type {
         | Literal::IntOct { .. }
         | Literal::IntHex { .. } => b.int,
         Literal::Float { .. } => b.float,
+        Literal::Decimal { .. } => b.decimal,
         Literal::Bool { .. } => b.bool,
         Literal::Text { .. } | Literal::RawText { .. } => b.text,
     };

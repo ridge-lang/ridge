@@ -1259,6 +1259,14 @@ impl BuiltinTyCons {
                             Type::Con(TyConId(25), vec![]),
                         ]),
                     },
+                    // A decimal literal captured in a quoted predicate. Carries a
+                    // Decimal (tycon id 51, interned after this union). Appended last,
+                    // like `QExists`, so the variant indices the lowering pass
+                    // hardcodes stay put.
+                    UnionVariant {
+                        name: "QLitDecimal".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(51), vec![])]),
+                    },
                 ],
             }),
             def_span: None,

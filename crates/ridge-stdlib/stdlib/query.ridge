@@ -10,7 +10,7 @@
 -- module walks it back, either rendering it to a readable string (`debugShow`)
 -- or compiling it to parameterized SQL plus its bind values (`toSql`).
 
-import std.sql (Sql, sql, SqlValue, sqlInt, sqlText, sqlBool, sqlFloat, sqlNull)
+import std.sql (Sql, sql, SqlValue, sqlInt, sqlText, sqlBool, sqlFloat, sqlDecimal, sqlNull)
 import std.int as Int
 import std.map as Map
 
@@ -270,6 +270,7 @@ fn showExpr (e: QExpr) -> Text =
         QLitText _  -> "?"
         QLitBool _  -> "?"
         QLitFloat _ -> "?"
+        QLitDecimal _ -> "?"
         QNot x      -> Text.concat "(NOT " (Text.concat (showExpr x) ")")
         QNotTrue x  -> Text.concat "(" (Text.concat (showExpr x) " IS NOT TRUE)")
         QAnd l r    -> binNode l " AND " r
@@ -330,6 +331,7 @@ fn compileExpr (e: QExpr) -> { text: Text, binds: List SqlValue } =
         QLitText s  -> { text = "?", binds = [sqlText s] }
         QLitBool b  -> { text = "?", binds = [sqlBool b] }
         QLitFloat x -> { text = "?", binds = [sqlFloat x] }
+        QLitDecimal d -> { text = "?", binds = [sqlDecimal (Decimal.toText d)] }
         QNot x      -> unaryNode "(NOT " x ")"
         QNotTrue x  -> unaryNode "(" x " IS NOT TRUE)"
         QAnd l r -> binNodeSql l " AND " r
@@ -846,6 +848,7 @@ fn renderOperand (qualified: Bool) (e: QExpr) (n: Int) -> { text: Text, binds: L
         QLitText v  -> { text = placeholder n, binds = [sqlText v], next = n + 1 }
         QLitBool v  -> { text = placeholder n, binds = [sqlBool v], next = n + 1 }
         QLitFloat v -> { text = placeholder n, binds = [sqlFloat v], next = n + 1 }
+        QLitDecimal d -> { text = placeholder n, binds = [sqlDecimal (Decimal.toText d)], next = n + 1 }
         QAdd l r    -> arithOperand qualified l " + " r n
         QSub l r    -> arithOperand qualified l " - " r n
         QMul l r    -> arithOperand qualified l " * " r n
@@ -1080,6 +1083,7 @@ fn renderExistsOperand (binaryOuter: Bool) (nBase: Int) (depth: Int) (e: QExpr) 
         QLitText v  -> { text = placeholder n, binds = [sqlText v], next = n + 1 }
         QLitBool v  -> { text = placeholder n, binds = [sqlBool v], next = n + 1 }
         QLitFloat v -> { text = placeholder n, binds = [sqlFloat v], next = n + 1 }
+        QLitDecimal d -> { text = placeholder n, binds = [sqlDecimal (Decimal.toText d)], next = n + 1 }
         QAdd l r    -> existsArith binaryOuter nBase depth l " + " r n
         QSub l r    -> existsArith binaryOuter nBase depth l " - " r n
         QMul l r    -> existsArith binaryOuter nBase depth l " * " r n
@@ -1273,6 +1277,7 @@ fn qualOperand (q0: Int) (e: QExpr) (n: Int) -> { text: Text, binds: List SqlVal
         QLitText v  -> { text = placeholder n, binds = [sqlText v], next = n + 1 }
         QLitBool v  -> { text = placeholder n, binds = [sqlBool v], next = n + 1 }
         QLitFloat v -> { text = placeholder n, binds = [sqlFloat v], next = n + 1 }
+        QLitDecimal d -> { text = placeholder n, binds = [sqlDecimal (Decimal.toText d)], next = n + 1 }
         QAdd l r    -> arithQual q0 l " + " r n
         QSub l r    -> arithQual q0 l " - " r n
         QMul l r    -> arithQual q0 l " * " r n

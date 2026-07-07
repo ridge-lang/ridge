@@ -954,6 +954,7 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, params: &[String]) -> IrExpr {
                 | Literal::IntOct { .. }
                 | Literal::IntHex { .. } => ("QLitInt", 1),
                 Literal::Float { .. } => ("QLitFloat", 4),
+                Literal::Decimal { .. } => ("QLitDecimal", 33),
                 Literal::Bool { .. } => ("QLitBool", 3),
                 Literal::Text { .. } | Literal::RawText { .. } => ("QLitText", 2),
             };
@@ -1533,6 +1534,7 @@ fn reify_group_node(ctx: &mut LowerCtx<'_>, e: &Expr, g_name: &str) -> IrExpr {
                 | Literal::IntOct { .. }
                 | Literal::IntHex { .. } => ("QLitInt", 1),
                 Literal::Float { .. } => ("QLitFloat", 4),
+                Literal::Decimal { .. } => ("QLitDecimal", 33),
                 Literal::Bool { .. } => ("QLitBool", 3),
                 Literal::Text { .. } | Literal::RawText { .. } => ("QLitText", 2),
             };
@@ -3448,6 +3450,32 @@ fn record_ctor_span(ctor: &RecordCtor) -> ridge_ast::Span {
 /// structurally valid.
 fn lower_literal(ctx: &mut LowerCtx<'_>, lit: &Literal) -> IrExpr {
     let span = lit.span();
+    // A decimal literal has no native runtime form, so it lowers to a call that
+    // rebuilds the exact value from its digits. The lexer has already validated
+    // the text, so `parseRaw` never fails here; the `m` suffix and any digit
+    // separators are dropped before the runtime parses the number.
+    if let Literal::Decimal { raw, .. } = lit {
+        let text = raw.trim_end_matches(['m', 'M']).replace('_', "");
+        let callee = IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Stdlib {
+                module: "std.decimal".to_string(),
+                name: "parseRaw".to_string(),
+            },
+            span,
+        };
+        let arg = IrExpr::Lit {
+            id: ctx.fresh_id(None),
+            value: IrLit::Text(text),
+            span,
+        };
+        return IrExpr::Call {
+            id: ctx.fresh_id(None),
+            callee: Box::new(callee),
+            args: vec![arg],
+            span,
+        };
+    }
     let id = ctx.fresh_id(None);
     let value = match lit {
         Literal::IntDec { raw, .. } => parse_int_dec(ctx, raw, span),
@@ -3459,6 +3487,8 @@ fn lower_literal(ctx: &mut LowerCtx<'_>, lit: &Literal) -> IrExpr {
         Literal::Text { raw, .. } => IrLit::Text(strip_text_quotes(raw)),
         // Raw strings carry literal bytes; escape decoding must be skipped.
         Literal::RawText { raw, .. } => IrLit::Text(raw.clone()),
+        // Handled by the early return above.
+        Literal::Decimal { .. } => unreachable!("decimal literal lowered above"),
     };
     IrExpr::Lit { id, value, span }
 }

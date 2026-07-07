@@ -60,6 +60,15 @@ pub(crate) fn validate_float(text: &str, span: Span) -> Result<(), LexError> {
     Ok(())
 }
 
+/// Validate a decimal literal (`<digits>[.<digits>][e<exp>]m`).
+///
+/// Strips the trailing `m`/`M` suffix and applies the same trailing-underscore
+/// checks as a float, so `1_.5m` and `1.5_m` are rejected.
+pub(crate) fn validate_decimal(text: &str, span: Span) -> Result<(), LexError> {
+    let body = text.strip_suffix(['m', 'M']).unwrap_or(text);
+    validate_float(body, span)
+}
+
 fn validate_trailing_underscore(text: &str, span: Span) -> Result<(), LexError> {
     if text.ends_with('_') {
         return Err(LexError::TrailingUnderscoreLiteral { span });
@@ -166,6 +175,33 @@ mod tests {
         // "1_.0" would be caught
         assert!(matches!(
             validate_float("1_.0", sp()),
+            Err(LexError::TrailingUnderscoreLiteral { .. })
+        ));
+    }
+
+    // ── Decimal ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn decimal_valid() {
+        assert!(validate_decimal("19.99m", sp()).is_ok());
+        assert!(validate_decimal("5m", sp()).is_ok());
+        assert!(validate_decimal("1_000.50m", sp()).is_ok());
+        assert!(validate_decimal("1.5e3m", sp()).is_ok());
+        assert!(validate_decimal("0.001M", sp()).is_ok());
+    }
+
+    #[test]
+    fn decimal_trailing_underscore_before_suffix() {
+        assert!(matches!(
+            validate_decimal("1.0_m", sp()),
+            Err(LexError::TrailingUnderscoreLiteral { .. })
+        ));
+    }
+
+    #[test]
+    fn decimal_underscore_before_dot() {
+        assert!(matches!(
+            validate_decimal("1_.0m", sp()),
             Err(LexError::TrailingUnderscoreLiteral { .. })
         ));
     }

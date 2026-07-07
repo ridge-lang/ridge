@@ -1600,10 +1600,13 @@ mod tests {
         for module in BUILTINS {
             for &name in module.exports {
                 // std.sql's `SqlType`/`Row` classes, their methods (`toSql`/
-                // `fromSql`/`fromRow`/`toRow`/`rowColumns`, seeded via
+                // `fromSql`/`dbType`/`fromRow`/`toRow`/`rowColumns`, seeded via
                 // `seed_sql_codec_schemes` rather than this signature table), and the
                 // opaque `SqlValue` type are not value schemes, so they have no
-                // `stdlib_signature` entry.
+                // `stdlib_signature` entry. `DbType` and its constructors are a
+                // reconciled union seeded from the reserved arena block
+                // (`reconciled_ctor_scheme`, like std.schema's descriptor types); it
+                // lives here beside `SqlValue` so the `SqlType` codec class can name it.
                 if module.name == "std.sql"
                     && matches!(
                         name,
@@ -1611,10 +1614,23 @@ mod tests {
                             | "SqlType"
                             | "toSql"
                             | "fromSql"
+                            | "dbType"
                             | "Row"
                             | "fromRow"
                             | "toRow"
                             | "rowColumns"
+                            | "DbType"
+                            | "DbBoolean"
+                            | "DbInt"
+                            | "DbBigInt"
+                            | "DbFloat"
+                            | "DbDecimal"
+                            | "DbText"
+                            | "DbVarchar"
+                            | "DbUuid"
+                            | "DbTimestamp"
+                            | "DbTimestampTz"
+                            | "DbRaw"
                     )
                 {
                     continue;

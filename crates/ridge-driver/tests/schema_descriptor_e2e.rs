@@ -31,7 +31,8 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.schema (DbType, DbBigInt, DbText, DbInt, Generation, Identity, ColumnSchema, mkColumn, column, withColumn, schema, generated, primaryKey, unique, check, schemaName, schemaTable, schemaColumns, colColumn, colCheck, generatedColumns)
+import std.sql (DbType, DbBigInt, DbText, DbInt)
+import std.schema (Generation, Identity, ColumnSchema, mkColumn, column, withColumn, schema, generated, primaryKey, unique, check, schemaName, schemaTable, schemaColumns, colColumn, colCheck, generatedColumns)
 import std.text as Text
 
 -- A small two-column schema built from explicit strings: an identity primary-key

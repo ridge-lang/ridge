@@ -26,7 +26,8 @@ import std.data (memAdapter, MemAdapter)
 import std.migrate as Migrate
 import std.migrate (MigrationOp)
 import std.repo as Repo
-import std.schema (schemaOf, eraseSchema, EntitySchema, schema, withColumn, mkColumn, DbBigInt, DbText)
+import std.sql (DbBigInt, DbText)
+import std.schema (schemaOf, eraseSchema, EntitySchema, schema, withColumn, mkColumn)
 import std.list (length)
 import std.sql (SqlValue)
 

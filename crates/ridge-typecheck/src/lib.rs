@@ -832,7 +832,11 @@ fn typecheck_module_inner(
         } else {
             b.sql_value
         };
-        seed_sql_codec_schemes(&mut ctx, b, ct, sql_value);
+        // DbType is a reconciled/source union (not a builtin); look it up by name
+        // from the arena so `dbType` can be seeded. Absent only in empty-registry
+        // hot paths, where the seed is harmlessly skipped.
+        let db_type = global_tycon_names.get("DbType").copied();
+        seed_sql_codec_schemes(&mut ctx, b, ct, sql_value, db_type);
         seed_refinable_scheme(&mut ctx, b, ct);
         seed_projectable_scheme(&mut ctx, b, ct);
         // `SortOrder` is `orderBy`'s leading parameter; it lives in the reconciled
@@ -2037,6 +2041,7 @@ fn seed_sql_codec_schemes(
     b: &ridge_types::BuiltinTyCons,
     class_table: &crate::class_env::ClassTable,
     sql_value: ridge_types::TyConId,
+    db_type: Option<ridge_types::TyConId>,
 ) {
     use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
     let Some(sqltype) = class_table.id_by_name("SqlType") else {
@@ -2074,6 +2079,28 @@ fn seed_sql_codec_schemes(
         };
         ctx.env.bind(
             "fromSql".to_owned(),
+            Scheme {
+                vars: vec![a],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: fn_ty,
+                constraints: vec![Constraint::single(sqltype, a)],
+            },
+        );
+    }
+    // dbType :: ∀a. Option a -> DbType where SqlType a — the type-directed default
+    // SQL column type. Like `rowColumns`, the `Option a` argument is a phantom
+    // witness carrying `a` (the `DbType` result mentions no `a`), which lets the
+    // instance resolve. Seeded only when the reconciled `DbType` tycon is present.
+    if let Some(db_type) = db_type {
+        let a = ctx.fresh_tyvid();
+        let fn_ty = Type::Fn {
+            params: vec![Type::Con(b.option, vec![Type::Var(a)])],
+            ret: Box::new(Type::Con(db_type, vec![])),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        ctx.env.bind(
+            "dbType".to_owned(),
             Scheme {
                 vars: vec![a],
                 cap_vars: vec![],

@@ -899,6 +899,13 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
                     ast_ret_type: None,
                     class_ty_vars: Vec::new(),
                 },
+                MethodSig {
+                    name: "dbType".to_string(),
+                    arity: 1,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
             ],
             superclasses: vec![],
             def_module: None,

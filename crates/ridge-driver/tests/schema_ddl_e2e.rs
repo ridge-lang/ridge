@@ -23,7 +23,8 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.schema (DbBigInt, DbInt, DbText, DbTimestampTz, Identity, DefaultNow, DefaultRawSql, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, check, schemaToDdl, schemaIndexDdls, createTableDdl, addColumnDdl, addColumnSchemaDdl, alterColumnDdl, dropTableDdl, dropColumnDdl, indexDdl)
+import std.sql (DbBigInt, DbInt, DbText, DbTimestampTz)
+import std.schema (Identity, DefaultNow, DefaultRawSql, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, check, schemaToDdl, schemaIndexDdls, createTableDdl, addColumnDdl, addColumnSchemaDdl, alterColumnDdl, dropTableDdl, dropColumnDdl, indexDdl)
 import std.text as Text
 
 -- The domain records the schemas below describe. Persistence-ignorant — the

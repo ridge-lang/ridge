@@ -20,9 +20,24 @@ pub fn sqlFloat (x: Float) -> SqlValue = SqlFloat x
 -- value still rides `sqlInt`/`sqlText`/… as before.
 pub fn sqlNull () -> SqlValue = SqlNull
 
+-- ── SQL column type ───────────────────────────────────────────────────────────
+--
+-- The dialect-neutral SQL column type a field maps to. The Ridge field type
+-- drives a default (an `Int` field maps to `DbBigInt`, `Text` to `DbText`, and so
+-- on); a schema `columnType` step overrides it per column. `DbRaw` is the escape
+-- hatch for a dialect-specific type spelled by hand. It lives here at the
+-- value/column type layer, beside `SqlValue`, so the codec class can name it.
+pub type DbType = DbBoolean | DbInt | DbBigInt | DbFloat | DbDecimal Int Int | DbText | DbVarchar Int | DbUuid | DbTimestamp | DbTimestampTz | DbRaw Text
+
 pub class SqlType a =
     toSql   (x: a)        -> SqlValue
     fromSql (v: SqlValue) -> Result a Error
+    -- The dialect-neutral SQL column type this Ridge type maps to by default.
+    -- Like `Row.rowColumns`, the `Option a` argument is a phantom witness: its
+    -- value is ignored (the `DbType` result mentions no `a`), and it exists only
+    -- to fix `a` so the instance resolves. `deriving (Schema)` calls it per field
+    -- to pick the column type; a schema `columnType` step can override it.
+    dbType  (witness: Option a) -> DbType
 
 instance SqlType Int =
     toSql (x: Int) -> SqlValue = SqlInt x
@@ -30,6 +45,7 @@ instance SqlType Int =
         match v
             SqlInt n -> Ok n
             _        -> Err ({ code = "sql.decode.int", message = "expected a SQL integer" })
+    dbType (witness: Option Int) -> DbType = DbBigInt
 
 instance SqlType Text =
     toSql (x: Text) -> SqlValue = SqlText x
@@ -37,6 +53,7 @@ instance SqlType Text =
         match v
             SqlText s -> Ok s
             _         -> Err ({ code = "sql.decode.text", message = "expected a SQL text value" })
+    dbType (witness: Option Text) -> DbType = DbText
 
 instance SqlType Bool =
     toSql (x: Bool) -> SqlValue = SqlBool x
@@ -44,6 +61,7 @@ instance SqlType Bool =
         match v
             SqlBool b -> Ok b
             _         -> Err ({ code = "sql.decode.bool", message = "expected a SQL boolean" })
+    dbType (witness: Option Bool) -> DbType = DbBoolean
 
 instance SqlType Float =
     toSql (x: Float) -> SqlValue = SqlFloat x
@@ -51,6 +69,15 @@ instance SqlType Float =
         match v
             SqlFloat f -> Ok f
             _          -> Err ({ code = "sql.decode.float", message = "expected a SQL float" })
+    dbType (witness: Option Float) -> DbType = DbFloat
+
+-- Retype a nested-Option witness to a witness for the inner type, so the
+-- `Option a` instance can delegate its column type. `dbType` reads only the
+-- phantom type, so the value is immaterial.
+fn innerWitness (w: Option (Option a)) -> Option a =
+    match w
+        Some inner -> inner
+        None       -> None
 
 -- A nullable column. `None` encodes SQL NULL; a present value rides the inner
 -- type's codec. This is what lets a `deriving (Row)` record hold an `Option`
@@ -68,6 +95,9 @@ instance SqlType (Option a) where SqlType a =
                 match fromSql v
                     Err e -> Err e
                     Ok x  -> Ok (Some x)
+    -- An optional column has the same SQL column type as its inner type; the
+    -- nullability is tracked separately by the schema, not by `DbType`.
+    dbType (witness: Option (Option a)) -> DbType = dbType (innerWitness witness)
 
 -- ── Row codec ─────────────────────────────────────────────────────────────────
 --

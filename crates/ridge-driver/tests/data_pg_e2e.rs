@@ -68,7 +68,8 @@ import std.int as Int
 import std.float as Float
 import std.list (length, contains)
 import std.text as Text
-import std.schema (HasSchema, schemaOf, schema, eraseSchema, EntitySchema, withColumn, mkColumn, generated, primaryKey, indexed, foreignKey, references, DbBigInt, DbText, Identity)
+import std.sql (DbBigInt, DbText)
+import std.schema (HasSchema, schemaOf, schema, eraseSchema, EntitySchema, withColumn, mkColumn, generated, primaryKey, indexed, foreignKey, references, Identity)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 

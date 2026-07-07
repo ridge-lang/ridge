@@ -24,7 +24,8 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.schema (DbBigInt, DbText, DbInt, Identity, mkColumn, withColumn, schema, generated, primaryKey, unique, schemaName, schemaTable, generatedColumns, EntitySchema, HasSchema, schemaOf)
+import std.sql (DbBigInt, DbText, DbInt)
+import std.schema (Identity, mkColumn, withColumn, schema, generated, primaryKey, unique, schemaName, schemaTable, generatedColumns, EntitySchema, HasSchema, schemaOf)
 import std.text as Text
 import std.map (fromList)
 import std.sql (toSql, SqlValue)

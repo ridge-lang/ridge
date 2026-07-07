@@ -30,7 +30,8 @@ use ridge_driver::{check_workspace, CheckOptions};
 /// A `User` entity that derives its schema. The witness fixes `e = User` so
 /// `schemaOf` selects the derived instance with no entity value in hand.
 const SCHEMA: &str = r"
-import std.schema (schemaOf, schemaName, schemaTable, schemaColumns, generatedColumns, colColumn, colType, colNullable, EntitySchema, DbType)
+import std.sql (DbType)
+import std.schema (schemaOf, schemaName, schemaTable, schemaColumns, generatedColumns, colColumn, colType, colNullable, EntitySchema)
 import std.list as List
 
 pub type User = { id: Int, email: Text, nickname: Option Text } deriving (Schema)

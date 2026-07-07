@@ -22,7 +22,9 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
 -- `Decimal` is a prelude primitive and `std.decimal` is aliased as `Decimal`
--- with no import, the same as `Int`/`Float`.
+-- with no import, the same as `Int`/`Float`. The rounding-mode constructors are
+-- imported by name, like `Asc`/`Desc` from std.query.
+import std.decimal (RoundingMode, HalfEven, HalfUp, Floor)
 
 -- Parse or fall back to zero, so each probe is a total function returning text.
 fn dec (s: Text) -> Decimal =
@@ -75,6 +77,31 @@ pub fn subExact () -> Text = Decimal.toText (Decimal.sub (dec "0.30") (dec "0.10
 -- multiplication is exact and its scale is the sum of the operand scales:
 -- 1.10 (scale 2) * 1.10 (scale 2) = 1.2100 (scale 4).
 pub fn mulExact () -> Text = Decimal.toText (Decimal.mul (dec "1.10") (dec "1.10"))
+
+-- banker's rounding (HalfEven) rounds a half to the nearest even digit, so
+-- 1.005 to two places is 1.00, not 1.01.
+pub fn roundEven () -> Text = Decimal.toText (Decimal.round HalfEven 2 (dec "1.005"))
+
+-- HalfUp breaks the same tie upward: 1.005 -> 1.01.
+pub fn roundUp () -> Text = Decimal.toText (Decimal.round HalfUp 2 (dec "1.005"))
+
+-- Floor rounds toward negative infinity: -1.5 to a whole number is -2.
+pub fn floorNeg () -> Text = Decimal.toText (Decimal.round Floor 0 (dec "-1.5"))
+
+-- truncate drops digits toward zero without rounding.
+pub fn truncateText () -> Text = Decimal.toText (Decimal.truncate 2 (dec "1.999"))
+
+-- division carries a scale and a mode: 10 / 3 to two places, banker's, is 3.33.
+pub fn divText () -> Text =
+    match Decimal.div HalfEven 2 (dec "10") (dec "3")
+        Ok d  -> Decimal.toText d
+        Err _ -> "err"
+
+-- dividing by zero is a recoverable Err, not a crash.
+pub fn divZero () -> Text =
+    match Decimal.div HalfEven 2 (dec "1") (dec "0")
+        Ok _  -> "ok"
+        Err _ -> "err"
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -158,6 +185,12 @@ fn decimal_module_runs_on_beam() {
          io:format(\"addExact=~s~n\",[{module}:addExact()]), \
          io:format(\"subExact=~s~n\",[{module}:subExact()]), \
          io:format(\"mulExact=~s~n\",[{module}:mulExact()]), \
+         io:format(\"roundEven=~s~n\",[{module}:roundEven()]), \
+         io:format(\"roundUp=~s~n\",[{module}:roundUp()]), \
+         io:format(\"floorNeg=~s~n\",[{module}:floorNeg()]), \
+         io:format(\"truncateText=~s~n\",[{module}:truncateText()]), \
+         io:format(\"divText=~s~n\",[{module}:divText()]), \
+         io:format(\"divZero=~s~n\",[{module}:divZero()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -211,6 +244,18 @@ fn decimal_module_runs_on_beam() {
             "mulExact=1.2100",
             "multiplication is exact and its scale is the sum of the operand scales",
         ),
+        (
+            "roundEven=1.00",
+            "HalfEven rounds 1.005 to the nearest even, 1.00",
+        ),
+        ("roundUp=1.01", "HalfUp rounds the same tie upward to 1.01"),
+        ("floorNeg=-2", "Floor rounds -1.5 toward negative infinity"),
+        ("truncateText=1.99", "truncate drops digits toward zero"),
+        (
+            "divText=3.33",
+            "division carries a scale and a rounding mode",
+        ),
+        ("divZero=err", "dividing by zero is a recoverable Err"),
     ] {
         assert!(
             stdout.contains(probe),

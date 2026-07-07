@@ -1727,6 +1727,52 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: true,
             is_anon: false,
         },
+        // `std.decimal` — how a rounding or a division drops the digits it cannot
+        // keep. A nullary union declared in Ridge (stdlib/decimal.ridge); its
+        // constructors resolve through the module import like `Asc`/`Desc`. Appended
+        // last so it disturbs no earlier reconciled id.
+        TyConDecl {
+            id: TyConId(base + 31),
+            name: "RoundingMode".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "HalfEven".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "HalfUp".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "HalfDown".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "Up".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "Down".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "Ceiling".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "Floor".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                ],
+            }),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
     ]
 }
 
@@ -1818,6 +1864,52 @@ pub(crate) fn reconciled_fn_scheme(
                         Type::Con(b.sql, vec![]),
                         Type::Con(b.list, vec![Type::Con(b.sql_value, vec![])]),
                     ])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![],
+            })
+        }
+        // std.decimal `round : RoundingMode -> Int -> Decimal -> Decimal` — rounds to
+        // a fixed scale with the given mode. Names the reconciled `RoundingMode`, so
+        // the hand-curated table cannot express it.
+        ("std.decimal", "round") => {
+            let rounding = *reconciled.get("RoundingMode")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![
+                        Type::Con(rounding, vec![]),
+                        Type::Con(b.int, vec![]),
+                        Type::Con(b.decimal, vec![]),
+                    ],
+                    ret: Box::new(Type::Con(b.decimal, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![],
+            })
+        }
+        // std.decimal `div : RoundingMode -> Int -> Decimal -> Decimal -> Result
+        // Decimal Error` — divides to a fixed scale with the given mode; a zero
+        // divisor is an `Err`. Names the reconciled `RoundingMode`.
+        ("std.decimal", "div") => {
+            let rounding = *reconciled.get("RoundingMode")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![
+                        Type::Con(rounding, vec![]),
+                        Type::Con(b.int, vec![]),
+                        Type::Con(b.decimal, vec![]),
+                        Type::Con(b.decimal, vec![]),
+                    ],
+                    ret: Box::new(Type::Con(
+                        b.result,
+                        vec![Type::Con(b.decimal, vec![]), Type::Con(b.error, vec![])],
+                    )),
                     caps: CapRow::Concrete(CapabilitySet::PURE),
                 },
                 constraints: vec![],

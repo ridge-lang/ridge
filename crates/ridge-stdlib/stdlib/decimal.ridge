@@ -11,6 +11,15 @@
 -- primitives (`decimal_*` in ridge_rt) carry the scaled-integer representation;
 -- the codec that moves a Decimal across a SQL column lives in std.sql.
 
+-- How to drop the digits a rounding or a division cannot keep. `HalfEven`
+-- (banker's rounding) is the neutral default for money — it rounds a half to the
+-- nearest even digit, so a column of rounded values does not drift upward the way
+-- `HalfUp` does. `Up`/`Down` are away from and toward zero; `Ceiling`/`Floor` are
+-- toward positive and negative infinity; `HalfUp`/`HalfDown` break a tie away from
+-- and toward zero.
+pub type RoundingMode =
+    HalfEven | HalfUp | HalfDown | Up | Down | Ceiling | Floor
+
 -- Parse a decimal from text. Accepts an optional sign, an integer part, an
 -- optional fractional part, and an optional exponent -- "42", "-12.50",
 -- "0.001", and "1.5e3" all parse. The scale is taken from the fractional
@@ -55,6 +64,23 @@ pub fn neg (a: Decimal) -> Decimal
 -- Absolute value.
 @ffi("ridge_rt", "decimal_abs", 1)
 pub fn abs (a: Decimal) -> Decimal
+
+-- Round to a fixed number of fractional digits with the given mode. A scale of 2
+-- rounds to the nearest hundredth. Rounding up in scale (asking for more digits
+-- than the value has) just pads with zeros.
+@ffi("ridge_rt", "decimal_round", 3)
+pub fn round (mode: RoundingMode) (scale: Int) (d: Decimal) -> Decimal
+
+-- Truncate toward zero to a fixed number of fractional digits -- rounding with
+-- the `Down` mode, named for the common case.
+pub fn truncate (scale: Int) (d: Decimal) -> Decimal = round Down scale d
+
+-- Divide to a fixed number of fractional digits, rounding the result with the
+-- given mode. Division is not always exact (1/3 never terminates), so a target
+-- scale and a mode are required rather than assumed. Dividing by zero is an
+-- `Err`, so a divisor read at runtime never crashes the caller.
+@ffi("ridge_rt", "decimal_div", 4)
+pub fn div (mode: RoundingMode) (scale: Int) (a: Decimal) (b: Decimal) -> Result Decimal Error
 
 -- Three-way comparison: negative when a < b, zero when they are equal, positive
 -- when a > b. It compares by value after aligning scales, so 1.5 and 1.50

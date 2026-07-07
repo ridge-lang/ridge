@@ -5,7 +5,7 @@ expression: snap
 TypecheckSnapshot {
     errors: [],
     module_count: 1,
-    tycon_count: 86,
+    tycon_count: 87,
     node_types_populated: 189,
     schemes_populated: 1,
     inferred_caps_real_keys: 1,

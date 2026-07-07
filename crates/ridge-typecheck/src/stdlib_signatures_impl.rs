@@ -300,6 +300,13 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         (STD_DECIMAL, "neg" | "abs") => {
             Some(mono(ty_fn_pure(vec![ty_decimal(b)], ty_decimal(b))))
         }
+        // truncate: Int -> Decimal -> Decimal (round toward zero to a scale). It
+        // names no reconciled type, so it lives in this table; `round`/`div`, which
+        // take a RoundingMode, are seeded via reconciled_fn_scheme.
+        (STD_DECIMAL, "truncate") => Some(mono(ty_fn_pure(
+            vec![ty_int(b), ty_decimal(b)],
+            ty_decimal(b),
+        ))),
         // compare: Decimal -> Decimal -> Int (-1 / 0 / 1, value-based so 1.5 == 1.50).
         (STD_DECIMAL, "compare") => {
             Some(mono(ty_fn_pure(vec![ty_decimal(b), ty_decimal(b)], ty_int(b))))
@@ -1675,6 +1682,27 @@ mod tests {
                             | "DbTimestamp"
                             | "DbTimestampTz"
                             | "DbRaw"
+                    )
+                {
+                    continue;
+                }
+                // std.decimal's reconciled `RoundingMode`: the type is seeded from
+                // the reserved arena block, its constructors from
+                // `reconciled_ctor_scheme`, and the `round`/`div` functions that name
+                // it from `reconciled_fn_scheme` — none via this hand-curated table.
+                if module.name == "std.decimal"
+                    && matches!(
+                        name,
+                        "RoundingMode"
+                            | "HalfEven"
+                            | "HalfUp"
+                            | "HalfDown"
+                            | "Up"
+                            | "Down"
+                            | "Ceiling"
+                            | "Floor"
+                            | "round"
+                            | "div"
                     )
                 {
                     continue;

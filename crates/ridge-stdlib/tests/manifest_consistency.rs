@@ -109,6 +109,15 @@ fn is_prelude_reexport(module: &str, sym: &str) -> bool {
 const CONSTRUCTOR_EXPORTS: &[(&str, &str)] = &[
     ("std.query", "Asc"),
     ("std.query", "Desc"),
+    // The `RoundingMode` constructors: exported for `round`/`div`, surfaced by text
+    // extraction only through the type name `RoundingMode`.
+    ("std.decimal", "HalfEven"),
+    ("std.decimal", "HalfUp"),
+    ("std.decimal", "HalfDown"),
+    ("std.decimal", "Up"),
+    ("std.decimal", "Down"),
+    ("std.decimal", "Ceiling"),
+    ("std.decimal", "Floor"),
     // The `QueryPlan` variants: exported so the set-operation terminals can build a
     // plan, but surfaced by text extraction only through the type name `QueryPlan`.
     ("std.query", "PlanScan"),
@@ -370,6 +379,12 @@ fn signature_shape_consistency() {
                     "dbErrorKind" | "dbErrorConstraint" | "dbErrorColumn" | "dbErrorTable"
                 )
             {
+                continue;
+            }
+            // std.decimal's `round`/`div` take the reconciled `RoundingMode`, so
+            // they are seeded via `reconciled_fn_scheme`, not the `stdlib_signature`
+            // table this shape check covers. The rest of the module is hand-seeded.
+            if dotted == "std.decimal" && matches!(*fn_name, "round" | "div") {
                 continue;
             }
             // Every std.repo verb takes or returns the reconciled `Repo e a`, so

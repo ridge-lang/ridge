@@ -16,6 +16,7 @@
     decimal_from_text/1, decimal_to_text/1, decimal_from_int/1,
     decimal_to_float/1, decimal_cmp/2,
     decimal_add/2, decimal_sub/2, decimal_mul/2, decimal_neg/1, decimal_abs/1,
+    decimal_round/3, decimal_div/4,
     int_parse/0, int_parse/1, float_parse/1, float_to_text/1, bool_to_text/1,
     sql_literal/1, sql_value_source/1,
     text_split_all/2, text_replace_all/3, text_join/2, text_slice/3,
@@ -239,6 +240,57 @@ decimal_neg({decimal, U, S}) -> {decimal, -U, S}.
 
 %% decimal_abs/1 — std.decimal.abs.
 decimal_abs({decimal, U, S}) -> {decimal, abs(U), S}.
+
+%% decimal_round/3 — std.decimal.round. Rounds to T fractional digits with Mode.
+%% Asking for more digits than the value has just pads with zeros.
+decimal_round(_Mode, T, {decimal, U, S}) when S =< T ->
+    {decimal, U * decimal_pow10(T - S), T};
+decimal_round(Mode, T, {decimal, U, S}) ->
+    P = decimal_pow10(S - T),
+    Sign = if U < 0 -> -1; true -> 1 end,
+    AbsU = abs(U),
+    Q = AbsU div P,
+    R = AbsU rem P,
+    {decimal, Sign * decimal_round_step(Mode, Sign, Q, R, P), T}.
+
+%% decimal_round_step/5 — apply a rounding mode to a truncated quotient Q whose
+%% dropped remainder is R over a unit P (the discarded fraction is R/P, with
+%% 0 =< R < P). Sign is the sign of the whole value, for the directional modes.
+decimal_round_step(_Mode, _Sign, Q, 0, _P) -> Q;
+decimal_round_step('Down', _Sign, Q, _R, _P) -> Q;
+decimal_round_step('Up', _Sign, Q, _R, _P) -> Q + 1;
+decimal_round_step('Ceiling', Sign, Q, _R, _P) ->
+    case Sign > 0 of true -> Q + 1; false -> Q end;
+decimal_round_step('Floor', Sign, Q, _R, _P) ->
+    case Sign < 0 of true -> Q + 1; false -> Q end;
+decimal_round_step('HalfUp', _Sign, Q, R, P) ->
+    case 2 * R >= P of true -> Q + 1; false -> Q end;
+decimal_round_step('HalfDown', _Sign, Q, R, P) ->
+    case 2 * R > P of true -> Q + 1; false -> Q end;
+decimal_round_step('HalfEven', _Sign, Q, R, P) ->
+    Twice = 2 * R,
+    if Twice > P -> Q + 1;
+       Twice < P -> Q;
+       true -> case Q rem 2 of 0 -> Q; _ -> Q + 1 end
+    end.
+
+%% decimal_div/4 — std.decimal.div. Divides to T fractional digits, rounding the
+%% result with Mode. A zero divisor is an error record (Ridge `Err`).
+decimal_div(_Mode, _T, _A, {decimal, 0, _Sb}) ->
+    {error, {error_record, <<"decimal.divide_by_zero">>, <<"division by zero">>}};
+decimal_div(Mode, T, {decimal, Ua, Sa}, {decimal, Ub, Sb}) ->
+    E = T + Sb - Sa,
+    {Num, Den} =
+        case E >= 0 of
+            true  -> {Ua * decimal_pow10(E), Ub};
+            false -> {Ua, Ub * decimal_pow10(-E)}
+        end,
+    Sign = case (Num < 0) =/= (Den < 0) of true -> -1; false -> 1 end,
+    AN = abs(Num),
+    AD = abs(Den),
+    Q = AN div AD,
+    R = AN rem AD,
+    {ok, {decimal, Sign * decimal_round_step(Mode, Sign, Q, R, AD), T}}.
 
 %% decimal_parse/1 — parse a char list into {ok, Unscaled, Scale} or error.
 %% Grammar: [sign] digits [ . digits ] [ (e|E) [sign] digits ]. Total — any

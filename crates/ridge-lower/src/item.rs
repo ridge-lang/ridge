@@ -4560,6 +4560,40 @@ fn schema_union_value(ctx: &mut LowerCtx<'_>, ctor: &str, sp: Span) -> IrExpr {
     }
 }
 
+/// Emit a column's `DbType`, dispatched through the field's `SqlType.dbType` so the
+/// value codec and the column type share one source of truth. A field with a base
+/// codec emits `(maps:get('dbType', $inst_SqlType_{Type}))(None)` — the witness is
+/// ignored (the instance's `dbType` reads only its type). A nullable column has the
+/// same `DbType` as its inner type (`sql_type_tag` already names that inner type;
+/// the nullability rides `mkColumn`'s own flag), so it dispatches on the inner dict
+/// directly. A field with no `SqlType` is schema/DDL metadata only — no codec to
+/// ask — so it falls back to `DbText`, which a hand-written `HasSchema` overrides.
+fn build_db_type_call(ctx: &mut LowerCtx<'_>, type_tag: Option<&str>, sp: Span) -> IrExpr {
+    let Some(tag) = type_tag else {
+        return schema_union_value(ctx, "DbText", sp);
+    };
+    let dict = IrExpr::Symbol {
+        id: ctx.fresh_id(None),
+        sym: SymbolRef::Stdlib {
+            module: "std.sql".to_string(),
+            name: format!("$inst_SqlType_{tag}"),
+        },
+        span: sp,
+    };
+    let db_type_fn = IrExpr::Field {
+        id: ctx.fresh_id(None),
+        base: Box::new(dict),
+        field: "dbType".to_string(),
+        span: sp,
+    };
+    IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(db_type_fn),
+        args: vec![schema_union_value(ctx, "None", sp)],
+        span: sp,
+    }
+}
+
 /// Lower a derived `Schema` instance: emit the `schemaOf` method fn and the
 /// `$inst_HasSchema_{Type}` dict that carries it. `schemaOf` ignores its witness
 /// argument and returns the entity's `EntitySchema`, assembled by the data-layer
@@ -4594,7 +4628,7 @@ fn build_schema_instance(
         // mkColumn "<field>" "<col>" <DbType> <nullable>
         let name_v = synth_text(ctx, &c.field_name, sp);
         let col_v = synth_text(ctx, &c.column, sp);
-        let ty_v = schema_union_value(ctx, &c.db_type, sp);
+        let ty_v = build_db_type_call(ctx, c.sql_type_tag.as_deref(), sp);
         let nullable_v = synth_bool(ctx, c.nullable, sp);
         let mut col =
             schema_builder_call(ctx, "mkColumn", vec![name_v, col_v, ty_v, nullable_v], sp);

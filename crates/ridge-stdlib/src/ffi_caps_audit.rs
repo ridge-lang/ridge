@@ -623,6 +623,18 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
     },
     FfiAuditEntry {
         beam_module: "ridge_rt",
+        fn_name: "time_to_micros",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "time_from_micros",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
         fn_name: "random_int",
         arity: 2,
         requires_caps: &[Capability::Random],

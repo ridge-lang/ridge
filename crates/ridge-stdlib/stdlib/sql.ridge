@@ -5,7 +5,7 @@
 -- to and from a SqlValue. The base-type instances live here; opaque newtypes
 -- get their instance for free via deriving (see the data layer).
 
-pub type SqlValue = SqlInt Int | SqlText Text | SqlBool Bool | SqlFloat Float | SqlNull
+pub type SqlValue = SqlInt Int | SqlText Text | SqlBool Bool | SqlFloat Float | SqlNull | SqlInstant Int
 
 -- Direct SqlValue constructors. The variants are opaque to consumers (who reach
 -- them through `SqlType` or these factories), so these monomorphic factories are
@@ -19,6 +19,9 @@ pub fn sqlFloat (x: Float) -> SqlValue = SqlFloat x
 -- default (`DefaultLit`) can be built and rendered back to source; a present
 -- value still rides `sqlInt`/`sqlText`/… as before.
 pub fn sqlNull () -> SqlValue = SqlNull
+-- A wall-clock instant as epoch microseconds. Completes the base-type factory set
+-- so a timestamp default (`DefaultLit`) can be built and rendered back to source.
+pub fn sqlInstant (micros: Int) -> SqlValue = SqlInstant micros
 
 -- ── SQL column type ───────────────────────────────────────────────────────────
 --
@@ -70,6 +73,28 @@ instance SqlType Float =
             SqlFloat f -> Ok f
             _          -> Err ({ code = "sql.decode.float", message = "expected a SQL float" })
     dbType (witness: Option Float) -> DbType = DbFloat
+
+-- Epoch-microsecond bridge for the Timestamp codec. `Timestamp` is an opaque
+-- builtin carried as an epoch-microsecond instant; these move it across the
+-- `SqlInstant` value. They stay private to the codec and are declared here, rather
+-- than imported from std.time, so std.sql keeps depending on nothing above it.
+@ffi("ridge_rt", "time_to_micros", 1)
+fn tsToMicros (t: Timestamp) -> Int
+
+@ffi("ridge_rt", "time_from_micros", 1)
+fn tsFromMicros (micros: Int) -> Timestamp
+
+-- A wall-clock time maps to the typed `SqlInstant` value (epoch microseconds), so a
+-- timestamp column keeps its own value shape instead of riding an ambiguous
+-- integer. The default column type is `DbTimestampTz`: instants are stored as UTC,
+-- and a timezone-aware column is the safe default over a naive one.
+instance SqlType Timestamp =
+    toSql (x: Timestamp) -> SqlValue = SqlInstant (tsToMicros x)
+    fromSql (v: SqlValue) -> Result Timestamp Error =
+        match v
+            SqlInstant n -> Ok (tsFromMicros n)
+            _            -> Err ({ code = "sql.decode.timestamp", message = "expected a SQL instant" })
+    dbType (witness: Option Timestamp) -> DbType = DbTimestampTz
 
 -- Retype a nested-Option witness to a witness for the inner type, so the
 -- `Option a` instance can delegate its column type. `dbType` reads only the

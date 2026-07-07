@@ -858,6 +858,10 @@ impl BuiltinTyCons {
                         name: "SqlNull".to_string(),
                         kind: VariantPayload::Nullary,
                     },
+                    UnionVariant {
+                        name: "SqlInstant".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(int, vec![])]),
+                    },
                 ],
             }),
             def_span: None,

@@ -932,6 +932,7 @@ param_text({'SqlText', T})    -> T;
 param_text({'SqlBool', true}) -> <<"t">>;
 param_text({'SqlBool', false})-> <<"f">>;
 param_text({'SqlFloat', F})   -> iolist_to_binary(io_lib:format("~p", [F]));
+param_text({'SqlInstant', N})  -> iolist_to_binary(calendar:system_time_to_rfc3339(N, [{unit, microsecond}, {offset, "Z"}]));
 param_text('SqlNull')         -> <<>>.
 
 collect_rows(Conn, Cols, Acc) ->

@@ -12,6 +12,7 @@
     time_now/0, time_now/1, time_epoch/0, time_epoch/1,
     time_diff_ms/2, time_diff/2,
     time_from_iso/1, time_since_ms/1, time_iso/1,
+    time_to_micros/1, time_from_micros/1,
     int_parse/0, int_parse/1, float_parse/1, float_to_text/1, bool_to_text/1,
     sql_literal/1, sql_value_source/1,
     text_split_all/2, text_replace_all/3, text_join/2, text_slice/3,
@@ -168,6 +169,14 @@ time_iso({timestamp, Micros}) ->
     Str = calendar:system_time_to_rfc3339(Micros, [{unit, microsecond}, {offset, "Z"}]),
     list_to_binary(Str).
 
+%% time_to_micros/1 — SqlType Timestamp codec (std.sql).
+%% Projects the epoch-microsecond instant out of a Timestamp for the SqlInstant value.
+time_to_micros({timestamp, Micros}) -> Micros.
+
+%% time_from_micros/1 — SqlType Timestamp codec (std.sql).
+%% Rebuilds a Timestamp from an epoch-microsecond instant read off a SqlInstant.
+time_from_micros(Micros) -> {timestamp, Micros}.
+
 %% --- Numbers ---
 
 %% int_parse/0: returns a fun ref for use in higher-order contexts (e.g. Option.flatMap Int.parse).
@@ -199,6 +208,7 @@ sql_literal({'SqlText', S})     -> <<"'", (binary:replace(S, <<"'">>, <<"''">>, 
 sql_literal({'SqlBool', true})  -> <<"TRUE">>;
 sql_literal({'SqlBool', false}) -> <<"FALSE">>;
 sql_literal({'SqlFloat', F})    -> float_to_text(F);
+sql_literal({'SqlInstant', N})  -> <<"'", (iolist_to_binary(calendar:system_time_to_rfc3339(N, [{unit, microsecond}, {offset, "Z"}])))/binary, "'">>;
 sql_literal('SqlNull')          -> <<"NULL">>.
 
 %% sql_value_source/1 — render a SqlValue as the Ridge *source* expression that
@@ -212,6 +222,7 @@ sql_value_source({'SqlText', S})     -> <<"(sqlText ", (source_text_literal(S))/
 sql_value_source({'SqlBool', true})  -> <<"(sqlBool true)">>;
 sql_value_source({'SqlBool', false}) -> <<"(sqlBool false)">>;
 sql_value_source({'SqlFloat', F})    -> <<"(sqlFloat ", (float_to_text(F))/binary, ")">>;
+sql_value_source({'SqlInstant', N})  -> <<"(sqlInstant ", (integer_to_binary(N))/binary, ")">>;
 sql_value_source('SqlNull')          -> <<"(sqlNull ())">>.
 
 %% source_text_literal/1 — a Text as a Ridge string literal: backslash doubled
@@ -1715,6 +1726,7 @@ mem_better(min, A, B) -> A < B;
 mem_better(max, A, B) -> A > B.
 
 mem_key({'SqlInt', N})   -> N;
+mem_key({'SqlInstant', N}) -> N;
 mem_key({'SqlFloat', F}) -> F;
 mem_key({'SqlText', S})  -> S;
 mem_key({'SqlBool', B})  -> B.
@@ -2414,6 +2426,7 @@ mem_sql_cmp(eq, A, B) -> A =:= B;
 mem_sql_cmp(lt, {'SqlInt', X}, {'SqlInt', Y})     -> X < Y;
 mem_sql_cmp(lt, {'SqlText', X}, {'SqlText', Y})   -> X < Y;
 mem_sql_cmp(lt, {'SqlFloat', X}, {'SqlFloat', Y}) -> X < Y;
+mem_sql_cmp(lt, {'SqlInstant', X}, {'SqlInstant', Y}) -> X < Y;
 mem_sql_cmp(lt, _A, _B) -> false.
 
 %% A SqlValue used directly as a predicate: a SqlBool yields its boolean.

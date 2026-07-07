@@ -385,6 +385,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "sqlBool",
             "sqlFloat",
             "sqlNull",
+            "sqlInstant",
             // The safe SQL statement-text wrapper, its factory, and accessor —
             // a data-layer concern, declared in sql.ridge.
             "Sql",

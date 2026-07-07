@@ -1486,7 +1486,8 @@ fn sql_primitive_type_name(ty: &AstType) -> Option<String> {
             PrimitiveType::Text => Some("Text".to_string()),
             PrimitiveType::Bool => Some("Bool".to_string()),
             PrimitiveType::Float => Some("Float".to_string()),
-            PrimitiveType::Unit | PrimitiveType::Timestamp => None,
+            PrimitiveType::Timestamp => Some("Timestamp".to_string()),
+            PrimitiveType::Unit => None,
         },
         AstType::Named { name, .. } => match name.text.as_str() {
             "Int" | "Text" | "Bool" | "Float" => Some(name.text.clone()),

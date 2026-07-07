@@ -1462,6 +1462,11 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             vec![],
             Type::Con(b.sql_value, vec![]),
         ))),
+        // A typed SQL instant (epoch microseconds) — the timestamp bind value.
+        (STD_SQL, "sqlInstant") => Some(mono(ty_fn_pure(
+            vec![ty_int(b)],
+            Type::Con(b.sql_value, vec![]),
+        ))),
         // Render a SqlValue as an inline SQL literal (a DDL DEFAULT / CHECK position
         // a bind parameter cannot fill).
         (STD_SQL, "sqlLiteral") => Some(mono(ty_fn_pure(

@@ -5,7 +5,7 @@
 -- to and from a SqlValue. The base-type instances live here; opaque newtypes
 -- get their instance for free via deriving (see the data layer).
 
-pub type SqlValue = SqlInt Int | SqlText Text | SqlBool Bool | SqlFloat Float | SqlNull | SqlInstant Int | SqlDecimal Text
+pub type SqlValue = SqlInt Int | SqlText Text | SqlBool Bool | SqlFloat Float | SqlNull | SqlInstant Int | SqlDecimal Text | SqlUuid Text
 
 -- Direct SqlValue constructors. The variants are opaque to consumers (who reach
 -- them through `SqlType` or these factories), so these monomorphic factories are
@@ -25,6 +25,10 @@ pub fn sqlInstant (micros: Int) -> SqlValue = SqlInstant micros
 -- An exact decimal, carried as its canonical text. Completes the base-type factory
 -- set so a decimal default (`DefaultLit`) can be built and rendered back to source.
 pub fn sqlDecimal (s: Text) -> SqlValue = SqlDecimal s
+
+-- A uuid, carried as its canonical text. Completes the base-type factory set so a
+-- uuid default (`DefaultLit`) can be built and rendered back to source.
+pub fn sqlUuid (s: Text) -> SqlValue = SqlUuid s
 
 -- ── SQL column type ───────────────────────────────────────────────────────────
 --
@@ -122,6 +126,27 @@ instance SqlType Decimal =
             SqlDecimal s -> decFromText s
             _            -> Err ({ code = "sql.decode.decimal", message = "expected a SQL decimal" })
     dbType (witness: Option Decimal) -> DbType = DbRaw "numeric"
+
+-- Canonical-text bridge for the Uuid codec. Like the Timestamp and Decimal bridges
+-- above, these are declared here rather than imported from std.uuid so std.sql keeps
+-- depending on nothing above it. The runtime carries a Uuid as its canonical text and
+-- moves it across `SqlUuid`; `uuidFromText` re-validates a value read back from a column.
+@ffi("ridge_rt", "uuid_to_text", 1)
+fn uuidToText (u: Uuid) -> Text
+
+@ffi("ridge_rt", "uuid_from_text", 1)
+fn uuidFromText (s: Text) -> Result Uuid Error
+
+-- A uuid maps to the typed `SqlUuid` value carrying its canonical text, so a native
+-- `uuid` column round-trips as itself rather than an ambiguous string. The default
+-- column type is `DbUuid`.
+instance SqlType Uuid =
+    toSql (x: Uuid) -> SqlValue = SqlUuid (uuidToText x)
+    fromSql (v: SqlValue) -> Result Uuid Error =
+        match v
+            SqlUuid s -> uuidFromText s
+            _         -> Err ({ code = "sql.decode.uuid", message = "expected a SQL uuid" })
+    dbType (witness: Option Uuid) -> DbType = DbUuid
 
 -- Retype a nested-Option witness to a witness for the inner type, so the
 -- `Option a` instance can delegate its column type. `dbType` reads only the

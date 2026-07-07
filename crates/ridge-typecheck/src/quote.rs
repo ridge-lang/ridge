@@ -723,8 +723,8 @@ fn check_node(ctx: &mut InferCtx, b: &BuiltinTyCons, e: &Expr, scope: &[Param]) 
                 } else {
                     let rendered = crate::render::render_type_with(&ty, &ctx.tycon_decls);
                     format!(
-                        "`{}` has type `{rendered}`; a quote can capture only Int, Text, Bool, or \
-                         Float values from the enclosing scope",
+                        "`{}` has type `{rendered}`; a quote can capture only Int, Text, Bool, \
+                         Float, Decimal, or Uuid values from the enclosing scope",
                         id.text
                     )
                 };
@@ -969,11 +969,14 @@ fn is_int(b: &BuiltinTyCons, ty: &Type) -> bool {
 }
 
 /// Whether `ty` is a base scalar a quote can capture from the enclosing scope as
-/// a runtime bind: Int, Text, Bool, or Float. These are exactly the types with a
-/// `QLit*` node and a `SqlValue` wrapper in both the SQL and in-memory backends.
+/// a runtime bind: Int, Text, Bool, Float, Decimal, or Uuid. These are exactly the
+/// types with a `QLit*` node and a `SqlValue` wrapper in both the SQL and in-memory
+/// backends. (Timestamp has a `SqlInstant` wrapper but no `QLit*` node yet, so it is
+/// not capturable — a documented gap.)
 fn is_quote_scalar(b: &BuiltinTyCons, ty: &Type) -> bool {
     matches!(ty, Type::Con(id, _)
-        if *id == b.int || *id == b.text || *id == b.bool || *id == b.float)
+        if *id == b.int || *id == b.text || *id == b.bool || *id == b.float
+            || *id == b.decimal || *id == b.uuid)
 }
 
 /// The element type of `ty` when it is a `List a`, for typing a captured `IN`
@@ -1055,7 +1058,7 @@ fn check_captured_in_list(
         ctx.errors.push(TypeError::QuoteUnsupportedExpr {
             detail: format!(
                 "`{name}` has type `{rendered}`; an `IN` list captured from the \
-                 enclosing scope must be a List of Int, Text, Bool, or Float"
+                 enclosing scope must be a List of Int, Text, Bool, Float, Decimal, or Uuid"
             ),
             span,
         });

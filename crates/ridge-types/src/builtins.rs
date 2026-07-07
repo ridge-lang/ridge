@@ -878,6 +878,10 @@ impl BuiltinTyCons {
                         name: "SqlDecimal".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
                     },
+                    UnionVariant {
+                        name: "SqlUuid".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
+                    },
                 ],
             }),
             def_span: None,
@@ -1272,6 +1276,14 @@ impl BuiltinTyCons {
                     UnionVariant {
                         name: "QLitDecimal".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(TyConId(51), vec![])]),
+                    },
+                    // A uuid captured in a quoted predicate (a uuid has no literal
+                    // syntax, so this only ever holds a captured runtime value).
+                    // Carries a Uuid (tycon id 52). Appended last so the variant
+                    // indices the lowering pass hardcodes stay put.
+                    UnionVariant {
+                        name: "QLitUuid".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(52), vec![])]),
                     },
                 ],
             }),

@@ -934,6 +934,7 @@ param_text({'SqlBool', false})-> <<"f">>;
 param_text({'SqlFloat', F})   -> iolist_to_binary(io_lib:format("~p", [F]));
 param_text({'SqlInstant', N})  -> iolist_to_binary(calendar:system_time_to_rfc3339(N, [{unit, microsecond}, {offset, "Z"}]));
 param_text({'SqlDecimal', S})  -> S;
+param_text({'SqlUuid', S})     -> S;
 param_text('SqlNull')         -> <<>>.
 
 collect_rows(Conn, Cols, Acc) ->
@@ -1008,6 +1009,10 @@ decode_value(Oid, Val) when Oid =:= 700; Oid =:= 701 ->
 %% float, so a Decimal column round-trips without losing the last digits.
 decode_value(1700, Val) ->
     {'SqlDecimal', Val};
+%% uuid (OID 2950) decodes to the typed SqlUuid rather than falling to SqlText, so a
+%% uuid column round-trips as a Uuid. Postgres emits the canonical lowercase form.
+decode_value(2950, Val) ->
+    {'SqlUuid', Val};
 decode_value(Oid, Val) when Oid =:= 25; Oid =:= 1043; Oid =:= 1042; Oid =:= 19; Oid =:= 18 ->
     {'SqlText', Val};
 decode_value(_Oid, Val) ->

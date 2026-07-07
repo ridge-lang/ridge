@@ -1540,6 +1540,11 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             vec![ty_text(b)],
             Type::Con(b.sql_value, vec![]),
         ))),
+        // A typed SQL uuid (canonical text) — the uuid bind value.
+        (STD_SQL, "sqlUuid") => Some(mono(ty_fn_pure(
+            vec![ty_text(b)],
+            Type::Con(b.sql_value, vec![]),
+        ))),
         // Render a SqlValue as an inline SQL literal (a DDL DEFAULT / CHECK position
         // a bind parameter cannot fill).
         (STD_SQL, "sqlLiteral") => Some(mono(ty_fn_pure(

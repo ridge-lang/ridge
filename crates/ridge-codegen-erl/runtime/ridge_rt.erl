@@ -469,6 +469,7 @@ sql_literal({'SqlBool', false}) -> <<"FALSE">>;
 sql_literal({'SqlFloat', F})    -> float_to_text(F);
 sql_literal({'SqlInstant', N})  -> <<"'", (iolist_to_binary(calendar:system_time_to_rfc3339(N, [{unit, microsecond}, {offset, "Z"}])))/binary, "'">>;
 sql_literal({'SqlDecimal', S})  -> S;
+sql_literal({'SqlUuid', S})     -> <<"'", S/binary, "'">>;
 sql_literal('SqlNull')          -> <<"NULL">>.
 
 %% sql_value_source/1 — render a SqlValue as the Ridge *source* expression that
@@ -484,6 +485,7 @@ sql_value_source({'SqlBool', false}) -> <<"(sqlBool false)">>;
 sql_value_source({'SqlFloat', F})    -> <<"(sqlFloat ", (float_to_text(F))/binary, ")">>;
 sql_value_source({'SqlInstant', N})  -> <<"(sqlInstant ", (integer_to_binary(N))/binary, ")">>;
 sql_value_source({'SqlDecimal', S})  -> <<"(sqlDecimal ", (source_text_literal(S))/binary, ")">>;
+sql_value_source({'SqlUuid', S})     -> <<"(sqlUuid ", (source_text_literal(S))/binary, ")">>;
 sql_value_source('SqlNull')          -> <<"(sqlNull ())">>.
 
 %% source_text_literal/1 — a Text as a Ridge string literal: backslash doubled
@@ -1849,6 +1851,7 @@ mem_pcell({'QLitText', S}, _Row)  -> {'SqlText', S};
 mem_pcell({'QLitBool', B}, _Row)  -> {'SqlBool', B};
 mem_pcell({'QLitFloat', F}, _Row) -> {'SqlFloat', F};
 mem_pcell({'QLitDecimal', D}, _Row) -> {'SqlDecimal', decimal_to_text(D)};
+mem_pcell({'QLitUuid', U}, _Row) -> {'SqlUuid', uuid_to_text(U)};
 %% Computed projection cells over a join's flat source-prefixed rows: arithmetic
 %% folds its operands (each resolved by the same prefix rules), a CASE picks a
 %% branch by its condition read as an N-ary predicate. A cell with no value — a
@@ -1992,6 +1995,7 @@ mem_key({'SqlInstant', N}) -> N;
 mem_key({'SqlFloat', F}) -> F;
 mem_key({'SqlText', S})  -> S;
 mem_key({'SqlDecimal', S}) -> decimal_text_to_float(S);
+mem_key({'SqlUuid', S}) -> S;
 mem_key({'SqlBool', B})  -> B.
 
 %% An aggregate over a group as a comparison operand: the folded value (a column or
@@ -2079,6 +2083,7 @@ mem_hscalar_nary({'QLitText', S}, _Key, _GR)  -> {'SqlText', S};
 mem_hscalar_nary({'QLitBool', B}, _Key, _GR)  -> {'SqlBool', B};
 mem_hscalar_nary({'QLitFloat', F}, _Key, _GR) -> {'SqlFloat', F};
 mem_hscalar_nary({'QLitDecimal', D}, _Key, _GR) -> {'SqlDecimal', decimal_to_text(D)};
+mem_hscalar_nary({'QLitUuid', U}, _Key, _GR) -> {'SqlUuid', uuid_to_text(U)};
 mem_hscalar_nary(_Other, _Key, _GR)           -> undefined.
 
 %% Merge the Changes columns into every row matching the predicate tree, leaving
@@ -2272,6 +2277,7 @@ mem_jscalar({'QLitText', S}, _L, _R)  -> {'SqlText', S};
 mem_jscalar({'QLitBool', B}, _L, _R)  -> {'SqlBool', B};
 mem_jscalar({'QLitFloat', F}, _L, _R) -> {'SqlFloat', F};
 mem_jscalar({'QLitDecimal', D}, _L, _R) -> {'SqlDecimal', decimal_to_text(D)};
+mem_jscalar({'QLitUuid', U}, _L, _R) -> {'SqlUuid', uuid_to_text(U)};
 mem_jscalar({'QAdd', A, B}, L, R) -> mem_arith_apply('+', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
 mem_jscalar({'QSub', A, B}, L, R) -> mem_arith_apply('-', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
 mem_jscalar({'QMul', A, B}, L, R) -> mem_arith_apply('*', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
@@ -2453,6 +2459,7 @@ mem_nscalar({'QLitText', S}, _Row)  -> {'SqlText', S};
 mem_nscalar({'QLitBool', B}, _Row)  -> {'SqlBool', B};
 mem_nscalar({'QLitFloat', F}, _Row) -> {'SqlFloat', F};
 mem_nscalar({'QLitDecimal', D}, _Row) -> {'SqlDecimal', decimal_to_text(D)};
+mem_nscalar({'QLitUuid', U}, _Row) -> {'SqlUuid', uuid_to_text(U)};
 mem_nscalar({'QAdd', A, B}, Row) -> mem_arith_apply('+', mem_nscalar(A, Row), mem_nscalar(B, Row));
 mem_nscalar({'QSub', A, B}, Row) -> mem_arith_apply('-', mem_nscalar(A, Row), mem_nscalar(B, Row));
 mem_nscalar({'QMul', A, B}, Row) -> mem_arith_apply('*', mem_nscalar(A, Row), mem_nscalar(B, Row));
@@ -2646,6 +2653,7 @@ mem_scalar({'QLitText', S}, _Row)  -> {'SqlText', S};
 mem_scalar({'QLitBool', B}, _Row)  -> {'SqlBool', B};
 mem_scalar({'QLitFloat', F}, _Row) -> {'SqlFloat', F};
 mem_scalar({'QLitDecimal', D}, _Row) -> {'SqlDecimal', decimal_to_text(D)};
+mem_scalar({'QLitUuid', U}, _Row) -> {'SqlUuid', uuid_to_text(U)};
 mem_scalar({'QAdd', A, B}, Row) -> mem_arith_apply('+', mem_scalar(A, Row), mem_scalar(B, Row));
 mem_scalar({'QSub', A, B}, Row) -> mem_arith_apply('-', mem_scalar(A, Row), mem_scalar(B, Row));
 mem_scalar({'QMul', A, B}, Row) -> mem_arith_apply('*', mem_scalar(A, Row), mem_scalar(B, Row));
@@ -2698,6 +2706,9 @@ mem_sql_cmp(lt, {'SqlText', X}, {'SqlText', Y})   -> X < Y;
 mem_sql_cmp(lt, {'SqlFloat', X}, {'SqlFloat', Y}) -> X < Y;
 mem_sql_cmp(lt, {'SqlInstant', X}, {'SqlInstant', Y}) -> X < Y;
 mem_sql_cmp(lt, {'SqlDecimal', X}, {'SqlDecimal', Y}) -> decimal_text_cmp(X, Y) < 0;
+%% A uuid column orders by its canonical text, which matches the 128-bit value order;
+%% equality rides the generic structural clause above (the canonical form is unique).
+mem_sql_cmp(lt, {'SqlUuid', X}, {'SqlUuid', Y}) -> X < Y;
 mem_sql_cmp(lt, _A, _B) -> false.
 
 %% A SqlValue used directly as a predicate: a SqlBool yields its boolean.

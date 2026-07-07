@@ -206,7 +206,10 @@ fn decimal_codec_runs_on_beam() {
             "ascOrder=c,a,b",
             "a decimal column sorts ascending by value (1.999 < 2.5 < 10.25), not by text",
         ),
-        ("descOrder=b,a,c", "the same column sorts descending by value"),
+        (
+            "descOrder=b,a,c",
+            "the same column sorts descending by value",
+        ),
         (
             "bigExact=123456789012345678901234567890.123456789",
             "a value beyond Int/Float precision round-trips exactly through the row",

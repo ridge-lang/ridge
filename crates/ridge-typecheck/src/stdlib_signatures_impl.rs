@@ -291,6 +291,15 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         (STD_DECIMAL, "toText") => Some(mono(ty_fn_pure(vec![ty_decimal(b)], ty_text(b)))),
         (STD_DECIMAL, "fromInt") => Some(mono(ty_fn_pure(vec![ty_int(b)], ty_decimal(b)))),
         (STD_DECIMAL, "toFloat") => Some(mono(ty_fn_pure(vec![ty_decimal(b)], ty_float(b)))),
+        // Exact binary arithmetic: Decimal -> Decimal -> Decimal.
+        (STD_DECIMAL, "add" | "sub" | "mul") => Some(mono(ty_fn_pure(
+            vec![ty_decimal(b), ty_decimal(b)],
+            ty_decimal(b),
+        ))),
+        // Unary arithmetic: Decimal -> Decimal.
+        (STD_DECIMAL, "neg" | "abs") => {
+            Some(mono(ty_fn_pure(vec![ty_decimal(b)], ty_decimal(b))))
+        }
         // compare: Decimal -> Decimal -> Int (-1 / 0 / 1, value-based so 1.5 == 1.50).
         (STD_DECIMAL, "compare") => {
             Some(mono(ty_fn_pure(vec![ty_decimal(b), ty_decimal(b)], ty_int(b))))

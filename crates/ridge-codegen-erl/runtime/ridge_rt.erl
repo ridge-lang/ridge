@@ -15,6 +15,7 @@
     time_to_micros/1, time_from_micros/1,
     decimal_from_text/1, decimal_to_text/1, decimal_from_int/1,
     decimal_to_float/1, decimal_cmp/2,
+    decimal_add/2, decimal_sub/2, decimal_mul/2, decimal_neg/1, decimal_abs/1,
     int_parse/0, int_parse/1, float_parse/1, float_to_text/1, bool_to_text/1,
     sql_literal/1, sql_value_source/1,
     text_split_all/2, text_replace_all/3, text_join/2, text_slice/3,
@@ -219,6 +220,25 @@ decimal_cmp({decimal, U1, S1}, {decimal, U2, S2}) ->
     A = U1 * decimal_pow10(S - S1),
     B = U2 * decimal_pow10(S - S2),
     if A < B -> -1; A > B -> 1; true -> 0 end.
+
+%% decimal_add/2 — std.decimal.add. Aligns scales, then adds; the result scale is
+%% the larger of the two, so no digits are lost.
+decimal_add({decimal, U1, S1}, {decimal, U2, S2}) ->
+    S = max(S1, S2),
+    {decimal, U1 * decimal_pow10(S - S1) + U2 * decimal_pow10(S - S2), S}.
+
+%% decimal_sub/2 — std.decimal.sub. Add the negation.
+decimal_sub(A, B) -> decimal_add(A, decimal_neg(B)).
+
+%% decimal_mul/2 — std.decimal.mul. Exact: the scales add and the unscaled values
+%% multiply.
+decimal_mul({decimal, U1, S1}, {decimal, U2, S2}) -> {decimal, U1 * U2, S1 + S2}.
+
+%% decimal_neg/1 — std.decimal.neg.
+decimal_neg({decimal, U, S}) -> {decimal, -U, S}.
+
+%% decimal_abs/1 — std.decimal.abs.
+decimal_abs({decimal, U, S}) -> {decimal, abs(U), S}.
 
 %% decimal_parse/1 — parse a char list into {ok, Unscaled, Scale} or error.
 %% Grammar: [sign] digits [ . digits ] [ (e|E) [sign] digits ]. Total — any

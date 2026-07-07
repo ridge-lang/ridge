@@ -64,6 +64,17 @@ pub fn badParse () -> Text =
 
 -- toFloat narrows for display; 0.5 is representable so the value is exact here.
 pub fn toFloatText () -> Text = Float.toText (Decimal.toFloat (dec "0.5"))
+
+-- exact addition: 0.1 + 0.2 is exactly 0.3, where binary floats give
+-- 0.30000000000000004. This is the headline reason to reach for Decimal.
+pub fn addExact () -> Text = Decimal.toText (Decimal.add (dec "0.1") (dec "0.2"))
+
+-- exact subtraction.
+pub fn subExact () -> Text = Decimal.toText (Decimal.sub (dec "0.30") (dec "0.10"))
+
+-- multiplication is exact and its scale is the sum of the operand scales:
+-- 1.10 (scale 2) * 1.10 (scale 2) = 1.2100 (scale 4).
+pub fn mulExact () -> Text = Decimal.toText (Decimal.mul (dec "1.10") (dec "1.10"))
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -144,6 +155,9 @@ fn decimal_module_runs_on_beam() {
          io:format(\"lessThan=~s~n\",[{module}:lessThan()]), \
          io:format(\"badParse=~s~n\",[{module}:badParse()]), \
          io:format(\"toFloatText=~s~n\",[{module}:toFloatText()]), \
+         io:format(\"addExact=~s~n\",[{module}:addExact()]), \
+         io:format(\"subExact=~s~n\",[{module}:subExact()]), \
+         io:format(\"mulExact=~s~n\",[{module}:mulExact()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -188,6 +202,15 @@ fn decimal_module_runs_on_beam() {
         ("lessThan=lt", "the ordering comparisons work"),
         ("badParse=err", "a malformed literal is a recoverable Err"),
         ("toFloatText=0.5", "toFloat narrows to a Float for display"),
+        (
+            "addExact=0.3",
+            "0.1 + 0.2 is exactly 0.3, not the float 0.30000000000000004",
+        ),
+        ("subExact=0.20", "subtraction is exact and keeps scale"),
+        (
+            "mulExact=1.2100",
+            "multiplication is exact and its scale is the sum of the operand scales",
+        ),
     ] {
         assert!(
             stdout.contains(probe),

@@ -427,7 +427,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // Exact base-10 decimal: parse/render, conversions, and value-based
             // comparisons. The scaled-integer representation and the raw
             // three-way compare live in the runtime.
-            "fromText", "toText", "fromInt", "toFloat", "compare", "eq", "lt", "lte", "gt", "gte",
+            "fromText", "toText", "fromInt", "toFloat", "add", "sub", "mul", "neg", "abs",
+            "compare", "eq", "lt", "lte", "gt", "gte",
         ],
     ),
     (

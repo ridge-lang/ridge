@@ -868,6 +868,10 @@ impl BuiltinTyCons {
                         name: "SqlInstant".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(int, vec![])]),
                     },
+                    UnionVariant {
+                        name: "SqlDecimal".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
+                    },
                 ],
             }),
             def_span: None,

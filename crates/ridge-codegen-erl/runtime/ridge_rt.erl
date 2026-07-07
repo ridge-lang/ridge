@@ -280,6 +280,24 @@ decimal_pad_left(Bin, MinLen) ->
         false -> <<(binary:copy(<<"0">>, MinLen - Len))/binary, Bin/binary>>
     end.
 
+%% Compare two canonical decimal texts by value (the in-memory adapter's ordering
+%% and equality over a decimal column). Reuses decimal_cmp, so 1.5 and 1.50 are
+%% equal.
+decimal_text_cmp(X, Y) -> decimal_cmp(decimal_of_text(X), decimal_of_text(Y)).
+
+%% A comparison key for min/max over a decimal column: the nearest float. The
+%% aggregate returns the original exact value, so this only orders the compare.
+decimal_text_to_float(S) -> decimal_to_float(decimal_of_text(S)).
+
+%% Parse a canonical decimal text (as produced by decimal_to_text) back to the
+%% scaled-integer form. Such text always parses; a malformed value falls back to
+%% zero rather than raising.
+decimal_of_text(S) ->
+    case decimal_parse(binary_to_list(S)) of
+        {ok, U, Sc} -> {decimal, U, Sc};
+        error       -> {decimal, 0, 0}
+    end.
+
 %% --- Numbers ---
 
 %% int_parse/0: returns a fun ref for use in higher-order contexts (e.g. Option.flatMap Int.parse).
@@ -312,6 +330,7 @@ sql_literal({'SqlBool', true})  -> <<"TRUE">>;
 sql_literal({'SqlBool', false}) -> <<"FALSE">>;
 sql_literal({'SqlFloat', F})    -> float_to_text(F);
 sql_literal({'SqlInstant', N})  -> <<"'", (iolist_to_binary(calendar:system_time_to_rfc3339(N, [{unit, microsecond}, {offset, "Z"}])))/binary, "'">>;
+sql_literal({'SqlDecimal', S})  -> S;
 sql_literal('SqlNull')          -> <<"NULL">>.
 
 %% sql_value_source/1 — render a SqlValue as the Ridge *source* expression that
@@ -326,6 +345,7 @@ sql_value_source({'SqlBool', true})  -> <<"(sqlBool true)">>;
 sql_value_source({'SqlBool', false}) -> <<"(sqlBool false)">>;
 sql_value_source({'SqlFloat', F})    -> <<"(sqlFloat ", (float_to_text(F))/binary, ")">>;
 sql_value_source({'SqlInstant', N})  -> <<"(sqlInstant ", (integer_to_binary(N))/binary, ")">>;
+sql_value_source({'SqlDecimal', S})  -> <<"(sqlDecimal ", (source_text_literal(S))/binary, ")">>;
 sql_value_source('SqlNull')          -> <<"(sqlNull ())">>.
 
 %% source_text_literal/1 — a Text as a Ridge string literal: backslash doubled
@@ -1832,6 +1852,7 @@ mem_key({'SqlInt', N})   -> N;
 mem_key({'SqlInstant', N}) -> N;
 mem_key({'SqlFloat', F}) -> F;
 mem_key({'SqlText', S})  -> S;
+mem_key({'SqlDecimal', S}) -> decimal_text_to_float(S);
 mem_key({'SqlBool', B})  -> B.
 
 %% An aggregate over a group as a comparison operand: the folded value (a column or
@@ -2525,11 +2546,15 @@ mem_arith_apply(_Op, _, _) -> undefined.
 
 %% Equality is exact and type-aware (the tags must match); ordering is defined
 %% only for the ordered base types and answers `false` for anything else.
+%% A decimal column compares by value, so 1.5 and 1.50 are equal; this clause
+%% precedes the structural `eq` below, which would see the two texts as distinct.
+mem_sql_cmp(eq, {'SqlDecimal', X}, {'SqlDecimal', Y}) -> decimal_text_cmp(X, Y) =:= 0;
 mem_sql_cmp(eq, A, B) -> A =:= B;
 mem_sql_cmp(lt, {'SqlInt', X}, {'SqlInt', Y})     -> X < Y;
 mem_sql_cmp(lt, {'SqlText', X}, {'SqlText', Y})   -> X < Y;
 mem_sql_cmp(lt, {'SqlFloat', X}, {'SqlFloat', Y}) -> X < Y;
 mem_sql_cmp(lt, {'SqlInstant', X}, {'SqlInstant', Y}) -> X < Y;
+mem_sql_cmp(lt, {'SqlDecimal', X}, {'SqlDecimal', Y}) -> decimal_text_cmp(X, Y) < 0;
 mem_sql_cmp(lt, _A, _B) -> false.
 
 %% A SqlValue used directly as a predicate: a SqlBool yields its boolean.

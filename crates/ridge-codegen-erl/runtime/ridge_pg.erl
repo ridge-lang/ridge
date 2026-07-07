@@ -933,6 +933,7 @@ param_text({'SqlBool', true}) -> <<"t">>;
 param_text({'SqlBool', false})-> <<"f">>;
 param_text({'SqlFloat', F})   -> iolist_to_binary(io_lib:format("~p", [F]));
 param_text({'SqlInstant', N})  -> iolist_to_binary(calendar:system_time_to_rfc3339(N, [{unit, microsecond}, {offset, "Z"}]));
+param_text({'SqlDecimal', S})  -> S;
 param_text('SqlNull')         -> <<>>.
 
 collect_rows(Conn, Cols, Acc) ->
@@ -1001,8 +1002,12 @@ decode_value(16, <<"t">>) -> {'SqlBool', true};
 decode_value(16, <<"f">>) -> {'SqlBool', false};
 decode_value(Oid, Val) when Oid =:= 20; Oid =:= 21; Oid =:= 23 ->
     {'SqlInt', binary_to_integer(Val)};
-decode_value(Oid, Val) when Oid =:= 700; Oid =:= 701; Oid =:= 1700 ->
+decode_value(Oid, Val) when Oid =:= 700; Oid =:= 701 ->
     {'SqlFloat', to_float(Val)};
+%% numeric (OID 1700) keeps its exact decimal text instead of narrowing to a
+%% float, so a Decimal column round-trips without losing the last digits.
+decode_value(1700, Val) ->
+    {'SqlDecimal', Val};
 decode_value(Oid, Val) when Oid =:= 25; Oid =:= 1043; Oid =:= 1042; Oid =:= 19; Oid =:= 18 ->
     {'SqlText', Val};
 decode_value(_Oid, Val) ->

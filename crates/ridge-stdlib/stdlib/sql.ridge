@@ -5,7 +5,7 @@
 -- to and from a SqlValue. The base-type instances live here; opaque newtypes
 -- get their instance for free via deriving (see the data layer).
 
-pub type SqlValue = SqlInt Int | SqlText Text | SqlBool Bool | SqlFloat Float | SqlNull | SqlInstant Int
+pub type SqlValue = SqlInt Int | SqlText Text | SqlBool Bool | SqlFloat Float | SqlNull | SqlInstant Int | SqlDecimal Text
 
 -- Direct SqlValue constructors. The variants are opaque to consumers (who reach
 -- them through `SqlType` or these factories), so these monomorphic factories are
@@ -22,6 +22,9 @@ pub fn sqlNull () -> SqlValue = SqlNull
 -- A wall-clock instant as epoch microseconds. Completes the base-type factory set
 -- so a timestamp default (`DefaultLit`) can be built and rendered back to source.
 pub fn sqlInstant (micros: Int) -> SqlValue = SqlInstant micros
+-- An exact decimal, carried as its canonical text. Completes the base-type factory
+-- set so a decimal default (`DefaultLit`) can be built and rendered back to source.
+pub fn sqlDecimal (s: Text) -> SqlValue = SqlDecimal s
 
 -- ── SQL column type ───────────────────────────────────────────────────────────
 --
@@ -95,6 +98,30 @@ instance SqlType Timestamp =
             SqlInstant n -> Ok (tsFromMicros n)
             _            -> Err ({ code = "sql.decode.timestamp", message = "expected a SQL instant" })
     dbType (witness: Option Timestamp) -> DbType = DbTimestampTz
+
+-- Decimal-string bridge for the Decimal codec. Like the Timestamp bridge above,
+-- these are declared here rather than imported from std.decimal so std.sql keeps
+-- depending on nothing above it. The runtime carries a Decimal as a scaled
+-- integer and moves it across `SqlDecimal` as its exact canonical text.
+@ffi("ridge_rt", "decimal_to_text", 1)
+fn decToText (d: Decimal) -> Text
+
+@ffi("ridge_rt", "decimal_from_text", 1)
+fn decFromText (s: Text) -> Result Decimal Error
+
+-- A decimal maps to the typed `SqlDecimal` value carrying its exact canonical
+-- text, so a `numeric` column round-trips without the precision loss a float
+-- bridge would incur. The default column type is an unconstrained `numeric`
+-- (`DbRaw "numeric"`), which Postgres treats as arbitrary precision; a schema
+-- `columnType (DbDecimal p s)` step pins a precision and scale when a column
+-- needs them.
+instance SqlType Decimal =
+    toSql (x: Decimal) -> SqlValue = SqlDecimal (decToText x)
+    fromSql (v: SqlValue) -> Result Decimal Error =
+        match v
+            SqlDecimal s -> decFromText s
+            _            -> Err ({ code = "sql.decode.decimal", message = "expected a SQL decimal" })
+    dbType (witness: Option Decimal) -> DbType = DbRaw "numeric"
 
 -- Retype a nested-Option witness to a witness for the inner type, so the
 -- `Option a` instance can delegate its column type. `dbType` reads only the

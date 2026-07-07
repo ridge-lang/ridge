@@ -7,10 +7,9 @@
 //! - a wall-clock value round-trips through a stored `SqlInstant` and formats back
 //!   to the exact ISO-8601 string it went in as, and
 //! - the store orders rows by a timestamp column, so a `SqlInstant` sorts by its
-//!   epoch value in both directions.
-//!
-//! Column-type dispatch (a timestamp field mapping to `DbTimestampTz`) is proved
-//! separately by the schema descriptor tests; here the focus is the value codec.
+//!   epoch value in both directions, and
+//! - `deriving (Schema)` reads the column type from the same `SqlType.dbType`, so
+//!   the rendered DDL names the timestamp column `timestamptz` (`DbTimestampTz`).
 //!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 
@@ -27,6 +26,7 @@ import std.repo as Repo
 import std.query (SortOrder, Asc, Desc)
 import std.sql (toSql, SqlValue)
 import std.time as Time
+import std.schema (schemaOf, schemaToDdl)
 
 -- An entity with a `Timestamp` column. `deriving (Schema)` marks `id` an identity
 -- column, so the insert shape `EventInsert` carries only `name` and `at`.
@@ -86,6 +86,13 @@ pub fn db descOrder () -> Text =
             match r |> Repo.query |> Repo.orderBy Desc (fn (e: Event) -> e.at) |> Repo.toList
                 Err _ -> "list-err"
                 Ok es -> joinNames es
+
+-- column-type dispatch: `deriving (Schema)` reads the `at` column type from
+-- SqlType.dbType, so the rendered DDL names it `timestamptz` (the Postgres form of
+-- DbTimestampTz), proving the column type comes from the codec, not a side table.
+fn eventWitness () -> Option Event = None
+
+pub fn atColumnDdl () -> Text = schemaToDdl (schemaOf (eventWitness ()))
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -158,6 +165,7 @@ fn timestamp_codec_runs_on_beam() {
         "io:format(\"roundTripIso=~s~n\",[{module}:roundTripIso()]), \
          io:format(\"ascOrder=~s~n\",[{module}:ascOrder()]), \
          io:format(\"descOrder=~s~n\",[{module}:descOrder()]), \
+         io:format(\"atColumnDdl=~s~n\",[{module}:atColumnDdl()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -184,6 +192,10 @@ fn timestamp_codec_runs_on_beam() {
         (
             "descOrder=new,old",
             "the same column sorts descending",
+        ),
+        (
+            "timestamptz",
+            "deriving (Schema) dispatches the at column type through SqlType.dbType to DbTimestampTz",
         ),
     ] {
         assert!(

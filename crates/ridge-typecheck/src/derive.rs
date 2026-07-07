@@ -208,9 +208,6 @@ pub struct SchemaColumnSpec {
     pub field_name: String,
     /// The SQL column name — the snake-cased field (`mkColumn`'s second argument).
     pub column: String,
-    /// The `std.schema` `DbType` constructor name for the column type
-    /// (`"DbBigInt"`, `"DbText"`, …); emitted as a nullary union value.
-    pub db_type: String,
     /// Whether the column admits NULL (the field is `Option`-wrapped).
     pub nullable: bool,
     /// Whether the column is the table's primary key (the field is named `id`).
@@ -1358,7 +1355,6 @@ fn generate_schema(
         .map(|field| {
             let is_id = field.name.text == "id";
             let nullable = cm::is_optional_type(&field.ty);
-            let db_type = cm::db_type_tag(&field.ty).to_string();
             // A non-null integer `id` is the conventional serial primary key —
             // identity-generated so the insert path can fill it. A non-integer or
             // nullable `id` is still the key, but supplied by the caller. The same
@@ -1377,7 +1373,6 @@ fn generate_schema(
             SchemaColumnSpec {
                 field_name: field.name.text.clone(),
                 column: cm::column_sql_name(&field.name.text),
-                db_type,
                 nullable,
                 primary_key: is_id,
                 generation,

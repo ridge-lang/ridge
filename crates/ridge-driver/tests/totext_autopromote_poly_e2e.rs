@@ -53,7 +53,9 @@ fn write_workspace(root: &std::path::Path) {
 #[test]
 fn polymorphic_totext_on_autopromoted_type_dispatches() {
     if which::which("erlc").is_err() || which::which("erl").is_err() {
-        eprintln!("erl/erlc not on PATH — skipping polymorphic_totext_on_autopromoted_type_dispatches");
+        eprintln!(
+            "erl/erlc not on PATH — skipping polymorphic_totext_on_autopromoted_type_dispatches"
+        );
         return;
     }
 

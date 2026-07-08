@@ -127,7 +127,12 @@ fn lower_match_simple(
         .iter()
         .map(|arm| {
             let pat = lower_pattern_full(ctx, &arm.pattern);
-            let when = arm.guard.as_ref().map(|g| lower_expr(ctx, g));
+            // Drain any by-value guards the pattern produced before lowering the
+            // body/user-guard, so a nested `match` in either cannot mingle its
+            // own pattern guards with this arm's.
+            let pattern_guards = std::mem::take(&mut ctx.pending_pattern_guards);
+            let user_guard = arm.guard.as_ref().map(|g| lower_expr(ctx, g));
+            let when = combine_pattern_guards(ctx, pattern_guards, user_guard, arm.span);
             let body = lower_expr(ctx, &arm.body);
             IrArm {
                 pat,
@@ -174,7 +179,9 @@ fn lower_match_with_varlen(
                 lower_varlen_list_arm(ctx, arm, span)
             } else {
                 let pat = lower_pattern_full(ctx, &arm.pattern);
-                let when = arm.guard.as_ref().map(|g| lower_expr(ctx, g));
+                let pattern_guards = std::mem::take(&mut ctx.pending_pattern_guards);
+                let user_guard = arm.guard.as_ref().map(|g| lower_expr(ctx, g));
+                let when = combine_pattern_guards(ctx, pattern_guards, user_guard, arm.span);
                 let body = lower_expr(ctx, &arm.body);
                 IrArm {
                     pat,
@@ -235,7 +242,9 @@ fn lower_varlen_list_arm(
     else {
         // No rest element — shouldn't happen, but fall back to simple lowering.
         let pat = lower_pattern_full(ctx, &arm.pattern);
-        let when = arm.guard.as_ref().map(|g| lower_expr(ctx, g));
+        let pattern_guards = std::mem::take(&mut ctx.pending_pattern_guards);
+        let user_guard = arm.guard.as_ref().map(|g| lower_expr(ctx, g));
+        let when = combine_pattern_guards(ctx, pattern_guards, user_guard, arm.span);
         let body = lower_expr(ctx, &arm.body);
         return IrArm {
             pat,
@@ -363,6 +372,132 @@ fn build_length_ge_guard(
             span,
         }),
         args: vec![length_call, min_len_lit],
+        span,
+    }
+}
+
+/// Build the by-value guard `Decimal.compare(<bind>, <literal>) == 0` for a
+/// decimal-literal pattern.
+///
+/// `bind_name` is the fresh local the arm pattern binds the scrutinee to; `raw`
+/// is the literal lexeme, still carrying its `m`/`M` suffix and any `_`
+/// separators. The literal is rebuilt from its digits exactly as
+/// [`crate::core::lower_literal`] does for a decimal *expression* — strip the
+/// suffix and separators, then `std.decimal.parseRaw`. Comparison is by value,
+/// so a `1.5m` pattern matches a `1.50` scrutinee.
+///
+/// `Decimal.compare` is not a BEAM guard BIF, so codegen lifts the whole guard
+/// out of clause-guard position into a `case … of 'true' -> body` in the arm
+/// body (see `ridge-codegen-erl::expr::lift_guarded_match`).
+fn build_decimal_eq_guard(
+    ctx: &mut LowerCtx<'_>,
+    bind_name: &str,
+    raw: &str,
+    span: Span,
+) -> IrExpr {
+    // The scrutinee, referenced through the local the arm pattern binds it to.
+    let scrut_ref = IrExpr::Local {
+        id: ctx.fresh_id(None),
+        name: bind_name.to_owned(),
+        span,
+    };
+
+    // The literal value: `std.decimal.parseRaw("<digits>")`.
+    let text = raw.trim_end_matches(['m', 'M']).replace('_', "");
+    let lit_expr = IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Stdlib {
+                module: "std.decimal".into(),
+                name: "parseRaw".into(),
+            },
+            span,
+        }),
+        args: vec![IrExpr::Lit {
+            id: ctx.fresh_id(None),
+            value: IrLit::Text(text),
+            span,
+        }],
+        span,
+    };
+
+    // Decimal.compare(scrut, lit) — a three-way compare returning -1 | 0 | 1.
+    let compare_call = IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Stdlib {
+                module: "std.decimal".into(),
+                name: "compare".into(),
+            },
+            span,
+        }),
+        args: vec![scrut_ref, lit_expr],
+        span,
+    };
+
+    // … == 0  →  std.op.eq(compare_result, 0).
+    let zero = IrExpr::Lit {
+        id: ctx.fresh_id(None),
+        value: IrLit::Int(0),
+        span,
+    };
+    IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Stdlib {
+                module: "std.op".into(),
+                name: "eq".into(),
+            },
+            span,
+        }),
+        args: vec![compare_call, zero],
+        span,
+    }
+}
+
+/// Conjoin the by-value pattern guards drained from
+/// [`LowerCtx::pending_pattern_guards`] with an optional user `when` guard into
+/// a single guard expression.
+///
+/// Returns `None` when there is neither — preserving the exact prior lowering
+/// for every arm without a decimal pattern. A single conjunct is returned as-is
+/// (so a plain user guard stays byte-identical); multiple conjuncts fold left
+/// with the internal boolean `and`, the same helper the list-slice guard uses.
+fn combine_pattern_guards(
+    ctx: &mut LowerCtx<'_>,
+    pattern_guards: Vec<IrExpr>,
+    user_guard: Option<IrExpr>,
+    span: Span,
+) -> Option<IrExpr> {
+    let mut conjuncts = pattern_guards;
+    if let Some(g) = user_guard {
+        conjuncts.push(g);
+    }
+    let mut iter = conjuncts.into_iter();
+    let first = iter.next()?;
+    Some(iter.fold(first, |acc, next| and_guard(ctx, acc, next, span)))
+}
+
+/// `lhs and rhs` via the internal `__slice__.and` boolean helper (`erlang:and/2`).
+///
+/// When a conjunct is a decimal guard the whole expression is not a BEAM guard
+/// BIF, so codegen lifts it into the arm body where `and/2` evaluates as an
+/// ordinary call.
+fn and_guard(ctx: &mut LowerCtx<'_>, lhs: IrExpr, rhs: IrExpr, span: Span) -> IrExpr {
+    IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Stdlib {
+                module: "__slice__".into(),
+                name: "and".into(),
+            },
+            span,
+        }),
+        args: vec![lhs, rhs],
         span,
     }
 }
@@ -852,12 +987,21 @@ pub fn lower_pattern_full(ctx: &mut LowerCtx<'_>, pat: &Pattern) -> IrPat {
         }
 
         Pattern::Literal { lit, span } => {
-            // A decimal literal cannot be a structural pattern: it compares by
-            // value (1.5 == 1.50) but the stored form is scale-sensitive. Reject
-            // it with a clear diagnostic rather than match it incorrectly.
-            if matches!(lit, Literal::Decimal { .. }) {
-                ctx.errors
-                    .push(crate::error::LowerError::DecimalLiteralPattern { span: *span });
+            // A decimal literal cannot match structurally: `1.5` and `1.50` are
+            // equal by value but stored at different scales, so an `IrPat::Lit`
+            // would match one written form and miss the other. Bind the
+            // scrutinee position to a fresh local instead and defer the check to
+            // a `Decimal.compare … == 0` guard, which the arm lowering conjoins
+            // with any user `when`. Every other literal matches structurally.
+            if let Literal::Decimal { raw, .. } = lit {
+                let name = format!("_dec_pat_{}", ctx.fresh_id(None).0);
+                let guard = build_decimal_eq_guard(ctx, &name, raw, *span);
+                ctx.pending_pattern_guards.push(guard);
+                return IrPat::Bind {
+                    name,
+                    inner: None,
+                    span: *span,
+                };
             }
             IrPat::Lit {
                 value: literal_to_ir_lit(lit),
@@ -1211,8 +1355,9 @@ fn literal_to_ir_lit(lit: &Literal) -> ridge_ir::IrLit {
         }
         // Raw strings carry literal bytes; no escape decoding.
         Literal::RawText { raw, .. } => ridge_ir::IrLit::Text(raw.clone()),
-        // A decimal literal is rejected as a pattern by the caller (L010); this
-        // neutral value is never reached on that error path.
+        // A decimal-literal pattern is handled by the caller before it reaches
+        // here — it lowers to a fresh binding plus a value-comparison guard, not
+        // a structural `IrPat::Lit` — so this neutral value is never used.
         Literal::Decimal { .. } => ridge_ir::IrLit::Int(0),
     }
 }
@@ -1263,7 +1408,10 @@ mod tests {
     }
 
     #[test]
-    fn decimal_literal_pattern_is_rejected() {
+    fn decimal_literal_pattern_binds_and_defers_to_a_value_guard() {
+        // A decimal literal cannot match structurally (1.5 == 1.50 by value but
+        // the stored scale differs), so it lowers to a fresh binding and pushes
+        // a value-comparison guard the arm lowering later conjoins with `when`.
         let mut ctx = fresh_ctx();
         let pat = Pattern::Literal {
             lit: Literal::Decimal {
@@ -1272,11 +1420,20 @@ mod tests {
             },
             span: sp(),
         };
-        let _ = lower_pattern_full(&mut ctx, &pat);
+        let ir = lower_pattern_full(&mut ctx, &pat);
         assert!(
-            ctx.errors.iter().any(|e| e.code() == "L010"),
-            "expected an L010 decimal-literal-pattern diagnostic, got {:?}",
+            matches!(ir, IrPat::Bind { inner: None, .. }),
+            "a decimal pattern must bind the scrutinee, got {ir:?}"
+        );
+        assert!(
+            ctx.errors.is_empty(),
+            "a decimal pattern is no longer an error, got {:?}",
             ctx.errors
+        );
+        assert_eq!(
+            ctx.pending_pattern_guards.len(),
+            1,
+            "a decimal pattern must push exactly one value-comparison guard"
         );
     }
 

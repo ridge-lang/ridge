@@ -107,16 +107,6 @@ pub enum LowerError {
         /// The span of the refutable sub-pattern.
         span: Span,
     },
-    /// `L010` — a decimal literal appears in a match pattern.
-    ///
-    /// A decimal compares by value (1.5 equals 1.50), but a pattern matches the
-    /// stored scaled-integer form structurally, so `1.5m` would fail to match a
-    /// `1.50` value. Matching a decimal literal is rejected here rather than
-    /// matched incorrectly; compare with `Decimal.eq` in a `when` guard instead.
-    DecimalLiteralPattern {
-        /// The span of the decimal literal pattern.
-        span: Span,
-    },
     /// `L997` — an unsolved type variable reached the IR, indicating incomplete
     /// typecheck output was passed to the lowerer.
     UnsolvedTypeInIR {
@@ -152,7 +142,6 @@ impl LowerError {
             Self::ToTextLowering { .. } => "L007",
             Self::WithOnNonRecord { .. } => "L008",
             Self::RefutableSliceElement { .. } => "L009",
-            Self::DecimalLiteralPattern { .. } => "L010",
             Self::UnsolvedTypeInIR { .. } => "L997",
             Self::CapVarInIR { .. } => "L998",
             Self::InternalLoweringError { .. } => "L999",
@@ -172,7 +161,6 @@ impl LowerError {
             | Self::ToTextLowering { span }
             | Self::WithOnNonRecord { span }
             | Self::RefutableSliceElement { span }
-            | Self::DecimalLiteralPattern { span }
             | Self::UnsolvedTypeInIR { span }
             | Self::CapVarInIR { span }
             | Self::InternalLoweringError { span, .. } => *span,
@@ -234,14 +222,6 @@ impl fmt::Display for LowerError {
                     f,
                     "[L009] refutable pattern in suffix or middle position of a list slice pattern at {span:?}; \
                      use a variable or `_` here (P026)"
-                )
-            }
-            Self::DecimalLiteralPattern { span } => {
-                write!(
-                    f,
-                    "[L010] a decimal literal cannot be a match pattern at {span:?}; \
-                     a decimal compares by value (1.5 == 1.50) but a pattern matches structurally — \
-                     compare with `Decimal.eq` in a `when` guard instead"
                 )
             }
             Self::UnsolvedTypeInIR { span } => {

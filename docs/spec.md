@@ -474,7 +474,7 @@ Io.println $"User ${user.name} has ${user.age} years"
 Io.println $"Total: ${items |> List.map (.price) |> List.sum}"
 ```
 
-String interpolation dispatches through the `ToText` class (§5.6). Built-in types (`Int`, `Float`, `Bool`, `Text`, `Timestamp`) have prelude instances. User-defined types become interpolatable by adding `deriving (ToText)` to the type declaration or by writing an explicit `instance ToText T`. See §5.6. Interpolation also has a multi-line block form, `$"""..."""` (§4.1.1).
+String interpolation dispatches through the `ToText` class (§5.6). Built-in types (`Int`, `Float`, `Bool`, `Text`, `Timestamp`, `Decimal`, `Uuid`) have prelude instances. `Bytes` has none — it has no single canonical text form, since `toHex` and `toUtf8` disagree — so a `Bytes` hole is a type error until you supply an instance. User-defined types become interpolatable by adding `deriving (ToText)` to the type declaration or by writing an explicit `instance ToText T`. See §5.6. Interpolation also has a multi-line block form, `$"""..."""` (§4.1.1).
 
 ### 3.11. Modules and imports
 

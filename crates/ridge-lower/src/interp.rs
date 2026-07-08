@@ -32,6 +32,8 @@
 //! | 2       | `Bool`        | `std.bool.toText`    |
 //! | 3       | `Text`        | identity (no wrap)   |
 //! | 5       | `Timestamp`   | `std.time.toText`    |
+//! | 51      | `Decimal`     | `std.decimal.toText` |
+//! | 52      | `Uuid`        | `std.uuid.toText`    |
 //!
 //! `Type::Error` is absorbing — no wrapper, no diagnostic.
 //! Any other type → `L007`, inner returned unwrapped.
@@ -80,6 +82,10 @@ const BOOL_TYCON: TyConId = TyConId(2);
 const TEXT_TYCON: TyConId = TyConId(3);
 /// `Timestamp` — `TyConId(5)`.
 const TIMESTAMP_TYCON: TyConId = TyConId(5);
+/// `Decimal` — `TyConId(51)` (interned after the 0–16 builtins).
+const DECIMAL_TYCON: TyConId = TyConId(51);
+/// `Uuid` — `TyConId(52)` (interned after the 0–16 builtins).
+const UUID_TYCON: TyConId = TyConId(52);
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -214,6 +220,16 @@ fn wrap_to_text(ctx: &mut LowerCtx<'_>, inner: IrExpr, ty: Option<Type>, span: S
         // ── Type::Timestamp — std.time.toText ────────────────────────────────
         Some(Type::Con(id, _)) if id == TIMESTAMP_TYCON => {
             make_to_text_call(ctx, inner, "std.time", span)
+        }
+
+        // ── Type::Decimal — std.decimal.toText ───────────────────────────────
+        Some(Type::Con(id, _)) if id == DECIMAL_TYCON => {
+            make_to_text_call(ctx, inner, "std.decimal", span)
+        }
+
+        // ── Type::Uuid — std.uuid.toText ─────────────────────────────────────
+        Some(Type::Con(id, _)) if id == UUID_TYCON => {
+            make_to_text_call(ctx, inner, "std.uuid", span)
         }
 
         // ── Type::Error — absorbing; pass through without wrapping ────────────
@@ -379,6 +395,8 @@ fn try_dict_to_text(ctx: &mut LowerCtx<'_>, inner: &IrExpr, span: Span) -> Optio
 /// | 2 (Bool)  | `std.bool.toText`        |
 /// | 3 (Text)  | identity — returned as-is |
 /// | 5 (Timestamp) | `std.time.toText`    |
+/// | 51 (Decimal)  | `std.decimal.toText` |
+/// | 52 (Uuid)     | `std.uuid.toText`    |
 /// | other     | identity — no known stdlib dispatch; field rendered as-is |
 ///
 /// For user-defined types the derived instance lowering emits an identity
@@ -398,6 +416,10 @@ pub(crate) fn wrap_to_text_by_tycon(
         make_to_text_call(ctx, arg, "std.bool", span)
     } else if tycon_id == TIMESTAMP_TYCON {
         make_to_text_call(ctx, arg, "std.time", span)
+    } else if tycon_id == DECIMAL_TYCON {
+        make_to_text_call(ctx, arg, "std.decimal", span)
+    } else if tycon_id == UUID_TYCON {
+        make_to_text_call(ctx, arg, "std.uuid", span)
     } else {
         // Text (TyConId 3) and all user-defined types: identity.
         arg
@@ -781,6 +803,130 @@ mod tests {
                     assert_eq!(name, "toText");
                 }
                 ref other => panic!("expected std.time.toText, got {other:?}"),
+            },
+            other => panic!("expected Call(toText), got {other:?}"),
+        }
+    }
+
+    // ── T9-i-7b: Decimal hole wraps in std.decimal.toText ────────────────────
+    #[test]
+    fn decimal_hole_wraps_to_text() {
+        let mut ctx = ctx_with_type_at(0, Type::Con(DECIMAL_TYCON, vec![]));
+        let parts = vec![expr_part(timestamp_expr())];
+        let ir = lower_interp_full(&mut ctx, &parts, sp());
+
+        assert!(
+            ctx.errors.is_empty(),
+            "expected no errors; got: {:?}",
+            ctx.errors
+        );
+        match ir {
+            IrExpr::Call { callee, .. } => match *callee {
+                IrExpr::Symbol {
+                    sym:
+                        SymbolRef::Stdlib {
+                            ref module,
+                            ref name,
+                        },
+                    ..
+                } => {
+                    assert_eq!(module, "std.decimal");
+                    assert_eq!(name, "toText");
+                }
+                ref other => panic!("expected std.decimal.toText, got {other:?}"),
+            },
+            other => panic!("expected Call(toText), got {other:?}"),
+        }
+    }
+
+    // ── T9-i-7c: Uuid hole wraps in std.uuid.toText ──────────────────────────
+    #[test]
+    fn uuid_hole_wraps_to_text() {
+        let mut ctx = ctx_with_type_at(0, Type::Con(UUID_TYCON, vec![]));
+        let parts = vec![expr_part(timestamp_expr())];
+        let ir = lower_interp_full(&mut ctx, &parts, sp());
+
+        assert!(
+            ctx.errors.is_empty(),
+            "expected no errors; got: {:?}",
+            ctx.errors
+        );
+        match ir {
+            IrExpr::Call { callee, .. } => match *callee {
+                IrExpr::Symbol {
+                    sym:
+                        SymbolRef::Stdlib {
+                            ref module,
+                            ref name,
+                        },
+                    ..
+                } => {
+                    assert_eq!(module, "std.uuid");
+                    assert_eq!(name, "toText");
+                }
+                ref other => panic!("expected std.uuid.toText, got {other:?}"),
+            },
+            other => panic!("expected Call(toText), got {other:?}"),
+        }
+    }
+
+    // ── T9-i-7d: wrap_to_text_by_tycon dispatches a Decimal field ────────────
+    //
+    // The derived-instance body builder (`build_to_text_record_body`) renders each
+    // field through `wrap_to_text_by_tycon`; a Decimal field must reach
+    // std.decimal.toText, the same target the interpolation arm uses.
+    #[test]
+    fn wrap_by_tycon_decimal_dispatches_std_decimal() {
+        let mut ctx = fresh_ctx();
+        let arg = IrExpr::Lit {
+            id: ctx.fresh_id(None),
+            value: IrLit::Text("x".into()),
+            span: sp(),
+        };
+        let ir = wrap_to_text_by_tycon(&mut ctx, arg, DECIMAL_TYCON, sp());
+        match ir {
+            IrExpr::Call { callee, .. } => match *callee {
+                IrExpr::Symbol {
+                    sym:
+                        SymbolRef::Stdlib {
+                            ref module,
+                            ref name,
+                        },
+                    ..
+                } => {
+                    assert_eq!(module, "std.decimal");
+                    assert_eq!(name, "toText");
+                }
+                ref other => panic!("expected std.decimal.toText, got {other:?}"),
+            },
+            other => panic!("expected Call(toText), got {other:?}"),
+        }
+    }
+
+    // ── T9-i-7e: wrap_to_text_by_tycon dispatches a Uuid field ────────────────
+    #[test]
+    fn wrap_by_tycon_uuid_dispatches_std_uuid() {
+        let mut ctx = fresh_ctx();
+        let arg = IrExpr::Lit {
+            id: ctx.fresh_id(None),
+            value: IrLit::Text("x".into()),
+            span: sp(),
+        };
+        let ir = wrap_to_text_by_tycon(&mut ctx, arg, UUID_TYCON, sp());
+        match ir {
+            IrExpr::Call { callee, .. } => match *callee {
+                IrExpr::Symbol {
+                    sym:
+                        SymbolRef::Stdlib {
+                            ref module,
+                            ref name,
+                        },
+                    ..
+                } => {
+                    assert_eq!(module, "std.uuid");
+                    assert_eq!(name, "toText");
+                }
+                ref other => panic!("expected std.uuid.toText, got {other:?}"),
             },
             other => panic!("expected Call(toText), got {other:?}"),
         }

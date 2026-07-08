@@ -1586,6 +1586,11 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             vec![ty_text(b)],
             Type::Con(b.sql_value, vec![]),
         ))),
+        // A typed SQL byte string (canonical hex text) — the bytea bind value.
+        (STD_SQL, "sqlBytes") => Some(mono(ty_fn_pure(
+            vec![ty_text(b)],
+            Type::Con(b.sql_value, vec![]),
+        ))),
         // Render a SqlValue as an inline SQL literal (a DDL DEFAULT / CHECK position
         // a bind parameter cannot fill).
         (STD_SQL, "sqlLiteral") => Some(mono(ty_fn_pure(
@@ -1754,6 +1759,7 @@ mod tests {
                             | "DbUuid"
                             | "DbTimestamp"
                             | "DbTimestampTz"
+                            | "DbBytes"
                             | "DbRaw"
                     )
                 {

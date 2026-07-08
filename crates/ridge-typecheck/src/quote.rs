@@ -724,7 +724,7 @@ fn check_node(ctx: &mut InferCtx, b: &BuiltinTyCons, e: &Expr, scope: &[Param]) 
                     let rendered = crate::render::render_type_with(&ty, &ctx.tycon_decls);
                     format!(
                         "`{}` has type `{rendered}`; a quote can capture only Int, Text, Bool, \
-                         Float, Decimal, Uuid, or Timestamp values from the enclosing scope",
+                         Float, Decimal, Uuid, Timestamp, or Bytes values from the enclosing scope",
                         id.text
                     )
                 };
@@ -969,13 +969,13 @@ fn is_int(b: &BuiltinTyCons, ty: &Type) -> bool {
 }
 
 /// Whether `ty` is a base scalar a quote can capture from the enclosing scope as
-/// a runtime bind: Int, Text, Bool, Float, Decimal, Uuid, or Timestamp. These are
-/// exactly the types with a `QLit*` node and a `SqlValue` wrapper in both the SQL
-/// and in-memory backends.
+/// a runtime bind: Int, Text, Bool, Float, Decimal, Uuid, Timestamp, or Bytes.
+/// These are exactly the types with a `QLit*` node and a `SqlValue` wrapper in
+/// both the SQL and in-memory backends.
 fn is_quote_scalar(b: &BuiltinTyCons, ty: &Type) -> bool {
     matches!(ty, Type::Con(id, _)
         if *id == b.int || *id == b.text || *id == b.bool || *id == b.float
-            || *id == b.decimal || *id == b.uuid || *id == b.timestamp)
+            || *id == b.decimal || *id == b.uuid || *id == b.timestamp || *id == b.bytes)
 }
 
 /// The element type of `ty` when it is a `List a`, for typing a captured `IN`
@@ -1057,7 +1057,7 @@ fn check_captured_in_list(
         ctx.errors.push(TypeError::QuoteUnsupportedExpr {
             detail: format!(
                 "`{name}` has type `{rendered}`; an `IN` list captured from the \
-                 enclosing scope must be a List of Int, Text, Bool, Float, Decimal, Uuid, or Timestamp"
+                 enclosing scope must be a List of Int, Text, Bool, Float, Decimal, Uuid, Timestamp, or Bytes"
             ),
             span,
         });

@@ -10,7 +10,7 @@
 -- module walks it back, either rendering it to a readable string (`debugShow`)
 -- or compiling it to parameterized SQL plus its bind values (`toSql`).
 
-import std.sql (Sql, sql, SqlValue, sqlInt, sqlText, sqlBool, sqlFloat, sqlDecimal, sqlUuid, sqlInstantOf, sqlNull)
+import std.sql (Sql, sql, SqlValue, sqlInt, sqlText, sqlBool, sqlFloat, sqlDecimal, sqlUuid, sqlBytes, sqlInstantOf, sqlNull)
 import std.int as Int
 import std.map as Map
 
@@ -273,6 +273,7 @@ fn showExpr (e: QExpr) -> Text =
         QLitDecimal _ -> "?"
         QLitUuid _  -> "?"
         QLitInstant _ -> "?"
+        QLitBytes _ -> "?"
         QNot x      -> Text.concat "(NOT " (Text.concat (showExpr x) ")")
         QNotTrue x  -> Text.concat "(" (Text.concat (showExpr x) " IS NOT TRUE)")
         QAnd l r    -> binNode l " AND " r
@@ -336,6 +337,7 @@ fn compileExpr (e: QExpr) -> { text: Text, binds: List SqlValue } =
         QLitDecimal d -> { text = "?", binds = [sqlDecimal (Decimal.toText d)] }
         QLitUuid u -> { text = "?", binds = [sqlUuid (Uuid.toText u)] }
         QLitInstant ts -> { text = "?", binds = [sqlInstantOf ts] }
+        QLitBytes b -> { text = "?", binds = [sqlBytes (Bytes.toHex b)] }
         QNot x      -> unaryNode "(NOT " x ")"
         QNotTrue x  -> unaryNode "(" x " IS NOT TRUE)"
         QAnd l r -> binNodeSql l " AND " r
@@ -855,6 +857,7 @@ fn renderOperand (qualified: Bool) (e: QExpr) (n: Int) -> { text: Text, binds: L
         QLitDecimal d -> { text = placeholder n, binds = [sqlDecimal (Decimal.toText d)], next = n + 1 }
         QLitUuid u -> { text = placeholder n, binds = [sqlUuid (Uuid.toText u)], next = n + 1 }
         QLitInstant ts -> { text = placeholder n, binds = [sqlInstantOf ts], next = n + 1 }
+        QLitBytes b -> { text = placeholder n, binds = [sqlBytes (Bytes.toHex b)], next = n + 1 }
         QAdd l r    -> arithOperand qualified l " + " r n
         QSub l r    -> arithOperand qualified l " - " r n
         QMul l r    -> arithOperand qualified l " * " r n
@@ -1092,6 +1095,7 @@ fn renderExistsOperand (binaryOuter: Bool) (nBase: Int) (depth: Int) (e: QExpr) 
         QLitDecimal d -> { text = placeholder n, binds = [sqlDecimal (Decimal.toText d)], next = n + 1 }
         QLitUuid u -> { text = placeholder n, binds = [sqlUuid (Uuid.toText u)], next = n + 1 }
         QLitInstant ts -> { text = placeholder n, binds = [sqlInstantOf ts], next = n + 1 }
+        QLitBytes b -> { text = placeholder n, binds = [sqlBytes (Bytes.toHex b)], next = n + 1 }
         QAdd l r    -> existsArith binaryOuter nBase depth l " + " r n
         QSub l r    -> existsArith binaryOuter nBase depth l " - " r n
         QMul l r    -> existsArith binaryOuter nBase depth l " * " r n
@@ -1288,6 +1292,7 @@ fn qualOperand (q0: Int) (e: QExpr) (n: Int) -> { text: Text, binds: List SqlVal
         QLitDecimal d -> { text = placeholder n, binds = [sqlDecimal (Decimal.toText d)], next = n + 1 }
         QLitUuid u -> { text = placeholder n, binds = [sqlUuid (Uuid.toText u)], next = n + 1 }
         QLitInstant ts -> { text = placeholder n, binds = [sqlInstantOf ts], next = n + 1 }
+        QLitBytes b -> { text = placeholder n, binds = [sqlBytes (Bytes.toHex b)], next = n + 1 }
         QAdd l r    -> arithQual q0 l " + " r n
         QSub l r    -> arithQual q0 l " - " r n
         QMul l r    -> arithQual q0 l " * " r n
@@ -1985,6 +1990,7 @@ fn singleHavingOperand (e: QExpr) (qualified: Bool) (keyCol: Text) (n: Int) -> {
         QLitDecimal d -> { text = placeholder n, binds = [sqlDecimal (Decimal.toText d)], next = n + 1 }
         QLitUuid u   -> { text = placeholder n, binds = [sqlUuid (Uuid.toText u)], next = n + 1 }
         QLitInstant ts -> { text = placeholder n, binds = [sqlInstantOf ts], next = n + 1 }
+        QLitBytes b -> { text = placeholder n, binds = [sqlBytes (Bytes.toHex b)], next = n + 1 }
         _            -> { text = "NULL", binds = [], next = n }
 
 -- A grouped composite (three-or-more table) join: the flattened spine as the `FROM`,
@@ -2084,6 +2090,7 @@ fn naryHavingOperand (e: QExpr) (keyLeaf: Int) (keyCol: Text) (n: Int) -> { text
         QLitDecimal d -> { text = placeholder n, binds = [sqlDecimal (Decimal.toText d)], next = n + 1 }
         QLitUuid u   -> { text = placeholder n, binds = [sqlUuid (Uuid.toText u)], next = n + 1 }
         QLitInstant ts -> { text = placeholder n, binds = [sqlInstantOf ts], next = n + 1 }
+        QLitBytes b -> { text = placeholder n, binds = [sqlBytes (Bytes.toHex b)], next = n + 1 }
         _            -> { text = "NULL", binds = [], next = n }
 
 -- A join HAVING fragment, with the leading ` HAVING ` folded in — empty for the
@@ -2140,4 +2147,5 @@ fn renderHavingOperand (e: QExpr) (keySide: Bool) (keyCol: Text) (n: Int) -> { t
         QLitDecimal d -> { text = placeholder n, binds = [sqlDecimal (Decimal.toText d)], next = n + 1 }
         QLitUuid u   -> { text = placeholder n, binds = [sqlUuid (Uuid.toText u)], next = n + 1 }
         QLitInstant ts -> { text = placeholder n, binds = [sqlInstantOf ts], next = n + 1 }
+        QLitBytes b -> { text = placeholder n, binds = [sqlBytes (Bytes.toHex b)], next = n + 1 }
         _            -> { text = "NULL", binds = [], next = n }

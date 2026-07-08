@@ -935,6 +935,9 @@ param_text({'SqlFloat', F})   -> iolist_to_binary(io_lib:format("~p", [F]));
 param_text({'SqlInstant', N})  -> iolist_to_binary(calendar:system_time_to_rfc3339(N, [{unit, microsecond}, {offset, "Z"}]));
 param_text({'SqlDecimal', S})  -> S;
 param_text({'SqlUuid', S})     -> S;
+%% bytea input takes the hex wire form `\xHEX`; the SqlBytes carrier is that hex
+%% without the prefix, so prepend it. Postgres infers the parameter type as bytea.
+param_text({'SqlBytes', Hex})  -> <<"\\x", Hex/binary>>;
 param_text('SqlNull')         -> <<>>.
 
 collect_rows(Conn, Cols, Acc) ->
@@ -1013,6 +1016,10 @@ decode_value(1700, Val) ->
 %% uuid column round-trips as a Uuid. Postgres emits the canonical lowercase form.
 decode_value(2950, Val) ->
     {'SqlUuid', Val};
+%% bytea (OID 17) arrives in the default hex output form `\xHEX`; strip the prefix
+%% so the SqlBytes carrier holds the same canonical hex the codec produces.
+decode_value(17, <<"\\x", Hex/binary>>) ->
+    {'SqlBytes', Hex};
 decode_value(Oid, Val) when Oid =:= 25; Oid =:= 1043; Oid =:= 1042; Oid =:= 19; Oid =:= 18 ->
     {'SqlText', Val};
 decode_value(_Oid, Val) ->

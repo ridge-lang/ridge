@@ -888,6 +888,13 @@ impl BuiltinTyCons {
                         name: "SqlUuid".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
                     },
+                    // A byte string, carried as its canonical lowercase hex text —
+                    // like SqlUuid, a Text carrier so it renders back to source and
+                    // orders by value. The raw bytes ride the `bytea` wire form.
+                    UnionVariant {
+                        name: "SqlBytes".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
+                    },
                 ],
             }),
             def_span: None,
@@ -1298,6 +1305,14 @@ impl BuiltinTyCons {
                     UnionVariant {
                         name: "QLitInstant".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(TyConId(5), vec![])]),
+                    },
+                    // A byte string captured in a quoted predicate (Bytes has no
+                    // literal syntax either). Carries a Bytes (tycon id 53); the
+                    // renderers move it across `SqlBytes` as canonical hex. Appended
+                    // last so the hardcoded variant indices stay put.
+                    UnionVariant {
+                        name: "QLitBytes".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(53), vec![])]),
                     },
                 ],
             }),

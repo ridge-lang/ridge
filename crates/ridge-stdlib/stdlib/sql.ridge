@@ -5,7 +5,7 @@
 -- to and from a SqlValue. The base-type instances live here; opaque newtypes
 -- get their instance for free via deriving (see the data layer).
 
-pub type SqlValue = SqlInt Int | SqlText Text | SqlBool Bool | SqlFloat Float | SqlNull | SqlInstant Int | SqlDecimal Text | SqlUuid Text
+pub type SqlValue = SqlInt Int | SqlText Text | SqlBool Bool | SqlFloat Float | SqlNull | SqlInstant Int | SqlDecimal Text | SqlUuid Text | SqlBytes Text
 
 -- Direct SqlValue constructors. The variants are opaque to consumers (who reach
 -- them through `SqlType` or these factories), so these monomorphic factories are
@@ -30,6 +30,12 @@ pub fn sqlDecimal (s: Text) -> SqlValue = SqlDecimal s
 -- uuid default (`DefaultLit`) can be built and rendered back to source.
 pub fn sqlUuid (s: Text) -> SqlValue = SqlUuid s
 
+-- A byte string, carried as its canonical lowercase hex text. Like the uuid
+-- factory it takes the canonical text form (a Bytes has no literal), so a bytea
+-- default (`DefaultLit`) can be built and rendered back to source, and the query
+-- compiler can bind a captured Bytes after running it through `Bytes.toHex`.
+pub fn sqlBytes (s: Text) -> SqlValue = SqlBytes s
+
 -- A wall-clock instant from a typed `Timestamp` rather than raw epoch micros. The
 -- query compiler uses it to bind a captured Timestamp as a `SqlInstant` parameter,
 -- where the class method `SqlType.toSql` is not reachable from a stdlib module.
@@ -42,7 +48,7 @@ pub fn sqlInstantOf (t: Timestamp) -> SqlValue = SqlInstant (tsToMicros t)
 -- on); a schema `columnType` step overrides it per column. `DbRaw` is the escape
 -- hatch for a dialect-specific type spelled by hand. It lives here at the
 -- value/column type layer, beside `SqlValue`, so the codec class can name it.
-pub type DbType = DbBoolean | DbInt | DbBigInt | DbFloat | DbDecimal Int Int | DbText | DbVarchar Int | DbUuid | DbTimestamp | DbTimestampTz | DbRaw Text
+pub type DbType = DbBoolean | DbInt | DbBigInt | DbFloat | DbDecimal Int Int | DbText | DbVarchar Int | DbUuid | DbTimestamp | DbTimestampTz | DbBytes | DbRaw Text
 
 pub class SqlType a =
     toSql   (x: a)        -> SqlValue
@@ -152,6 +158,28 @@ instance SqlType Uuid =
             SqlUuid s -> uuidFromText s
             _         -> Err ({ code = "sql.decode.uuid", message = "expected a SQL uuid" })
     dbType (witness: Option Uuid) -> DbType = DbUuid
+
+-- Hex-text bridge for the Bytes codec. Like the Uuid bridge above, these are
+-- declared here rather than imported from std.bytes so std.sql keeps depending on
+-- nothing above it. The runtime carries a Bytes as a raw binary and moves it across
+-- `SqlBytes` as its canonical lowercase hex; `bytesFromHex` re-decodes a value read
+-- back from a column.
+@ffi("ridge_rt", "bytes_to_hex", 1)
+fn bytesToHex (b: Bytes) -> Text
+
+@ffi("ridge_rt", "bytes_from_hex", 1)
+fn bytesFromHex (s: Text) -> Result Bytes Error
+
+-- A byte string maps to the typed `SqlBytes` value carrying its canonical hex, so a
+-- native `bytea` column round-trips as itself rather than a lossy text detour. The
+-- default column type is `DbBytes`.
+instance SqlType Bytes =
+    toSql (x: Bytes) -> SqlValue = SqlBytes (bytesToHex x)
+    fromSql (v: SqlValue) -> Result Bytes Error =
+        match v
+            SqlBytes s -> bytesFromHex s
+            _          -> Err ({ code = "sql.decode.bytes", message = "expected a SQL byte string" })
+    dbType (witness: Option Bytes) -> DbType = DbBytes
 
 -- Retype a nested-Option witness to a witness for the inner type, so the
 -- `Option a` instance can delegate its column type. `dbType` reads only the

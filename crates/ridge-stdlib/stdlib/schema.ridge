@@ -18,7 +18,7 @@
 -- The dialect-neutral vocabulary below (`DbType`, `Generation`, `FkAction`) is
 -- turned into a backend's `CREATE TABLE` by the DDL renderer.
 
-import std.sql (SqlValue, sqlLiteral, sqlValueSource, DbType, DbBoolean, DbInt, DbBigInt, DbFloat, DbDecimal, DbText, DbVarchar, DbUuid, DbTimestamp, DbTimestampTz, DbRaw)
+import std.sql (SqlValue, sqlLiteral, sqlValueSource, DbType, DbBoolean, DbInt, DbBigInt, DbFloat, DbDecimal, DbText, DbVarchar, DbUuid, DbTimestamp, DbTimestampTz, DbBytes, DbRaw)
 import std.int as Int
 import std.float as Float
 
@@ -463,6 +463,7 @@ fn pgColType (t: DbType) -> Text =
         DbUuid        -> "uuid"
         DbTimestamp   -> "timestamp"
         DbTimestampTz -> "timestamptz"
+        DbBytes       -> "bytea"
         DbRaw r       -> r
 
 -- ` NOT NULL` unless the column admits NULL. A serial column is implicitly non-null,
@@ -634,6 +635,7 @@ fn dbTypeOfBaseName (ty: Text) -> DbType =
     else if ty == "text" then DbText
     else if ty == "bool" then DbBoolean
     else if ty == "float" then DbFloat
+    else if ty == "bytes" then DbBytes
     else DbText
 
 fn quoteIdent (name: Text) -> Text =
@@ -734,6 +736,7 @@ fn dbTypeSource (t: DbType) -> Text =
         DbUuid        -> "DbUuid"
         DbTimestamp   -> "DbTimestamp"
         DbTimestampTz -> "DbTimestampTz"
+        DbBytes       -> "DbBytes"
         DbRaw r       -> Text.join "" ["(DbRaw ", sourceString r, ")"]
 
 -- The `Generation` constructor source. `DefaultLit` carries a `SqlValue` whose variants are

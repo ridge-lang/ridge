@@ -3003,6 +3003,19 @@ pub(crate) fn dict_plan_to_expr(
                     });
             }
 
+            // An auto-promoted instance (a bare `pub fn toText`, lifted by the
+            // collect pass) emits no `$inst_` constant — its method IS the public
+            // module function. A polymorphic `where ToText a` call still needs a
+            // dictionary value, so synthesise it inline, closing over that
+            // function. Without this the `$inst_…` reference below would dangle
+            // (E001: local symbol not found in the fn-arity table).
+            if info.origin == ridge_typecheck::InstanceOrigin::AutoPromoted {
+                if let Some(dict) = crate::prelude_dict::synth_auto_promoted_dict(ctx, &info, span)
+                {
+                    return dict;
+                }
+            }
+
             // A user-defined instance: reference its module-level `$inst_`
             // constant. For a hand-written *parametric* instance the constant is
             // a function of the element dict(s), so apply it to `sub_dicts`

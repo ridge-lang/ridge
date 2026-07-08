@@ -667,6 +667,7 @@ fn ast_type_simple_name(ty: &AstType) -> Option<String> {
                 PrimitiveType::Timestamp => "Timestamp",
                 PrimitiveType::Decimal => "Decimal",
                 PrimitiveType::Uuid => "Uuid",
+                PrimitiveType::Bytes => "Bytes",
             }
             .to_string(),
         ),
@@ -1486,10 +1487,13 @@ fn sql_primitive_type_name(ty: &AstType) -> Option<String> {
             PrimitiveType::Timestamp => Some("Timestamp".to_string()),
             PrimitiveType::Decimal => Some("Decimal".to_string()),
             PrimitiveType::Uuid => Some("Uuid".to_string()),
+            PrimitiveType::Bytes => Some("Bytes".to_string()),
             PrimitiveType::Unit => None,
         },
         AstType::Named { name, .. } => match name.text.as_str() {
-            "Int" | "Text" | "Bool" | "Float" | "Decimal" | "Uuid" => Some(name.text.clone()),
+            "Int" | "Text" | "Bool" | "Float" | "Decimal" | "Uuid" | "Bytes" => {
+                Some(name.text.clone())
+            }
             _ => None,
         },
         AstType::Paren { inner, .. } => sql_primitive_type_name(inner),
@@ -1692,6 +1696,7 @@ fn ast_type_display(ty: &AstType) -> String {
             PrimitiveType::Timestamp => "Timestamp".to_string(),
             PrimitiveType::Decimal => "Decimal".to_string(),
             PrimitiveType::Uuid => "Uuid".to_string(),
+            PrimitiveType::Bytes => "Bytes".to_string(),
         },
         AstType::Named { name, .. } | AstType::Var { name, .. } => name.text.clone(),
         AstType::App { head, args, .. } => {
@@ -1784,9 +1789,11 @@ fn resolve_ast_type_to_tycon_id(
             PrimitiveType::Text => Some(TyConId(3)),
             PrimitiveType::Unit => Some(TyConId(4)),
             PrimitiveType::Timestamp => Some(TyConId(5)),
-            // Decimal and Uuid are interned last in the builtin arena (ids 51, 52).
+            // Decimal, Uuid and Bytes are interned last in the builtin arena
+            // (ids 51, 52, 53).
             PrimitiveType::Decimal => Some(TyConId(51)),
             PrimitiveType::Uuid => Some(TyConId(52)),
+            PrimitiveType::Bytes => Some(TyConId(53)),
             #[allow(unreachable_patterns)]
             _ => None,
         },

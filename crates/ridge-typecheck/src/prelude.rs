@@ -169,6 +169,7 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     tycons.insert("Float".to_string(), b.float);
     tycons.insert("Decimal".to_string(), b.decimal);
     tycons.insert("Uuid".to_string(), b.uuid);
+    tycons.insert("Bytes".to_string(), b.bytes);
     tycons.insert("Bool".to_string(), b.bool);
     tycons.insert("Text".to_string(), b.text);
     tycons.insert("List".to_string(), b.list);

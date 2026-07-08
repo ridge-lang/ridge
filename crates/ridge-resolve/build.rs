@@ -65,11 +65,12 @@ const MODULE_ORDER: &[&str] = &[
     "std.raw",
     "std.test",
     // Appended last so they take the highest ids without renumbering any module
-    // ahead of them. `std.decimal` and `std.uuid` are Tier-1 primitive companions
-    // (they import nothing); the ordering here only fixes ids, and the build tier is
-    // set separately in the stdlib build driver.
+    // ahead of them. `std.decimal`, `std.uuid` and `std.bytes` are Tier-1 primitive
+    // companions (they import nothing); the ordering here only fixes ids, and the
+    // build tier is set separately in the stdlib build driver.
     "std.decimal",
     "std.uuid",
+    "std.bytes",
 ];
 
 // ── Baseline export table (T10: preserves original API) ───────────────────────
@@ -467,6 +468,16 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // constructors, and value-based comparisons. The canonical-text
             // representation and the raw three-way compare live in the runtime.
             "fromText", "toText", "nil", "gen", "compare", "eq", "lt", "lte", "gt", "gte",
+        ],
+    ),
+    (
+        "std.bytes",
+        &[
+            // Raw byte strings: hex and UTF-8 codecs, the empty and random
+            // constructors, size, concatenation, and value-based comparisons. The
+            // raw-binary representation and the three-way compare live in the runtime.
+            "fromHex", "toHex", "fromUtf8", "toUtf8", "empty", "gen", "length", "concat", "compare",
+            "eq", "lt", "lte", "gt", "gte",
         ],
     ),
     (

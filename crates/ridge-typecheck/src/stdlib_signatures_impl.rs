@@ -68,6 +68,8 @@ const STD_TEST: StdlibModuleId = StdlibModuleId(27);
 const STD_DECIMAL: StdlibModuleId = StdlibModuleId(28);
 // std.uuid follows, taking the next id the same way (29).
 const STD_UUID: StdlibModuleId = StdlibModuleId(29);
+// std.bytes follows, taking the next id the same way (30).
+const STD_BYTES: StdlibModuleId = StdlibModuleId(30);
 
 // ── Type-building helpers ─────────────────────────────────────────────────────
 //
@@ -104,6 +106,10 @@ const fn ty_decimal(b: &BuiltinTyCons) -> Type {
 #[inline]
 const fn ty_uuid(b: &BuiltinTyCons) -> Type {
     Type::Con(b.uuid, vec![])
+}
+
+const fn ty_bytes(b: &BuiltinTyCons) -> Type {
+    Type::Con(b.bytes, vec![])
 }
 #[inline]
 const fn ty_error(b: &BuiltinTyCons) -> Type {
@@ -341,6 +347,36 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         }
         (STD_UUID, "eq" | "lt" | "lte" | "gt" | "gte") => {
             Some(mono(ty_fn_pure(vec![ty_uuid(b), ty_uuid(b)], ty_bool(b))))
+        }
+
+        // ── std.bytes ─────────────────────────────────────────────────────────
+        (STD_BYTES, "fromHex") => Some(mono(ty_fn_pure(
+            vec![ty_text(b)],
+            ty_result(b, ty_bytes(b), ty_error(b)),
+        ))),
+        (STD_BYTES, "toHex") => Some(mono(ty_fn_pure(vec![ty_bytes(b)], ty_text(b)))),
+        (STD_BYTES, "fromUtf8") => Some(mono(ty_fn_pure(vec![ty_text(b)], ty_bytes(b)))),
+        (STD_BYTES, "toUtf8") => Some(mono(ty_fn_pure(
+            vec![ty_bytes(b)],
+            ty_result(b, ty_text(b), ty_error(b)),
+        ))),
+        (STD_BYTES, "empty") => Some(mono(ty_fn_pure(vec![ty_unit(b)], ty_bytes(b)))),
+        // `gen` draws fresh random bytes, so it carries the `random` capability.
+        (STD_BYTES, "gen") => {
+            use ridge_ast::Capability;
+            let rnd_caps = CapabilitySet::singleton(Capability::Random);
+            Some(mono(ty_fn_caps(vec![ty_int(b)], ty_bytes(b), rnd_caps)))
+        }
+        (STD_BYTES, "length") => Some(mono(ty_fn_pure(vec![ty_bytes(b)], ty_int(b)))),
+        (STD_BYTES, "concat") => Some(mono(ty_fn_pure(
+            vec![ty_bytes(b), ty_bytes(b)],
+            ty_bytes(b),
+        ))),
+        (STD_BYTES, "compare") => {
+            Some(mono(ty_fn_pure(vec![ty_bytes(b), ty_bytes(b)], ty_int(b))))
+        }
+        (STD_BYTES, "eq" | "lt" | "lte" | "gt" | "gte") => {
+            Some(mono(ty_fn_pure(vec![ty_bytes(b), ty_bytes(b)], ty_bool(b))))
         }
 
         // ── std.bool ──────────────────────────────────────────────────────────

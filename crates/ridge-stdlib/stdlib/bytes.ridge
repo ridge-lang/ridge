@@ -1,0 +1,73 @@
+-- std.bytes — raw byte strings (Tier 1, no stdlib imports).
+--
+-- Bytes is an immutable sequence of octets, kept distinct from Text: a Text is
+-- UTF-8 character data, a Bytes is arbitrary binary. It maps to a native SQL
+-- `bytea` column that round-trips without a text detour. On the BEAM a Bytes is a
+-- raw binary; its canonical text form is lowercase hex.
+--
+-- This module covers construction (from hex, from a UTF-8 string, random, empty),
+-- rendering, size, concatenation, and comparison. The FFI primitives (`bytes_*`
+-- in ridge_rt) carry the raw binary; the codec that moves a Bytes across a SQL
+-- `bytea` column lives in std.sql.
+
+-- Parse a Bytes from hex text. Accepts an even-length run of hex digits in either
+-- case; returns Err on an odd length or a non-hex digit, so `fromHex` is the gate
+-- for an untrusted hex string. The inverse of toHex.
+@ffi("ridge_rt", "bytes_from_hex", 1)
+pub fn fromHex (s: Text) -> Result Bytes Error
+
+-- Render a Bytes as lowercase hex — two digits per byte, no separator. The
+-- canonical text form, and the inverse of fromHex.
+@ffi("ridge_rt", "bytes_to_hex", 1)
+pub fn toHex (b: Bytes) -> Text
+
+-- The bytes of a text string's UTF-8 encoding. Always succeeds: a Ridge Text is
+-- already UTF-8, so this reinterprets the same octets as raw binary.
+@ffi("ridge_rt", "bytes_from_utf8", 1)
+pub fn fromUtf8 (s: Text) -> Bytes
+
+-- Decode a Bytes as UTF-8 text. Returns Err when the bytes are not well-formed
+-- UTF-8, so it is the gate for reading arbitrary binary back as a string.
+@ffi("ridge_rt", "bytes_to_utf8", 1)
+pub fn toUtf8 (b: Bytes) -> Result Text Error
+
+-- The empty byte string. Pure — no capability required — the zero value for a
+-- bytes field or the seed of a concatenation.
+@ffi("ridge_rt", "bytes_empty", 1)
+pub fn empty (_unit: Unit) -> Bytes
+
+-- Generate n cryptographically-random bytes. Requires the `random` capability,
+-- since two calls return different values; the bytes come from a cryptographic
+-- source, so the result is unpredictable, not just non-repeating. A non-positive
+-- n yields the empty byte string.
+@ffi("ridge_rt", "bytes_gen", 1)
+pub fn random gen (n: Int) -> Bytes
+
+-- The number of bytes.
+@ffi("ridge_rt", "bytes_length", 1)
+pub fn length (b: Bytes) -> Int
+
+-- Concatenate two byte strings end to end.
+@ffi("ridge_rt", "bytes_concat", 2)
+pub fn concat (a: Bytes) (b: Bytes) -> Bytes
+
+-- Three-way comparison: negative when a < b, zero when equal, positive when
+-- a > b. Compares byte by byte, each treated as an unsigned value, matching how
+-- a SQL `bytea` column sorts. The named comparisons below build on it.
+@ffi("ridge_rt", "bytes_cmp", 2)
+pub fn compare (a: Bytes) (b: Bytes) -> Int
+
+-- Value equality.
+pub fn eq (a: Bytes) (b: Bytes) -> Bool = compare a b == 0
+
+-- Strictly less than.
+pub fn lt (a: Bytes) (b: Bytes) -> Bool = compare a b < 0
+
+-- Less than or equal.
+pub fn lte (a: Bytes) (b: Bytes) -> Bool = compare a b <= 0
+
+-- Strictly greater than.
+pub fn gt (a: Bytes) (b: Bytes) -> Bool = compare a b > 0
+
+-- Greater than or equal.
+pub fn gte (a: Bytes) (b: Bytes) -> Bool = compare a b >= 0

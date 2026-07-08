@@ -342,6 +342,11 @@ pub struct BuiltinTyCons {
     /// It has no literal syntax; a value comes from `std.uuid` (`gen`, `fromText`),
     /// and the codec that moves it across a SQL `uuid` column lives in `std.sql`.
     pub uuid: TyConId,
+    /// `Bytes` — a raw byte string. A primitive like `Text`, interned after `Uuid`
+    /// (id 53) so the historical 0..50 index layout stays stable. It has no literal
+    /// syntax; a value comes from `std.bytes` (`fromHex`, `fromUtf8`, `gen`), and
+    /// the codec that moves it across a SQL `bytea` column lives in `std.sql`.
+    pub bytes: TyConId,
 }
 
 impl BuiltinTyCons {
@@ -394,6 +399,7 @@ impl BuiltinTyCons {
             insert_shape: SENTINEL,
             decimal: SENTINEL,
             uuid: SENTINEL,
+            bytes: SENTINEL,
         }
     }
 
@@ -1501,6 +1507,21 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
+        // Bytes — a raw byte string primitive (id 53). A scalar like Text, interned
+        // after Uuid so the historical 0..50 layout stays fixed. Its runtime value
+        // is a raw BEAM binary; the constructors live in `std.bytes` and the SQL
+        // codec (a `bytea` column) in `std.sql`.
+        let bytes = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "Bytes".to_string(),
+            arity: 0,
+            kind: TyConKind::Primitive,
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+
         // Verify assignment order matches spec §4.1 indices 0..16.
         debug_assert_eq!(int.0, 0);
         debug_assert_eq!(float.0, 1);
@@ -1557,9 +1578,11 @@ impl BuiltinTyCons {
         // InsertShape/1 sits right after FullJoinResult/2 (INSERTSHAPE_TYCON_ID = 50).
         debug_assert_eq!(insert_shape.0, INSERTSHAPE_TYCON_ID);
         debug_assert_eq!(insert_shape.0, 50);
-        // Decimal and Uuid are interned last so they do not disturb the 0..50 layout.
+        // Decimal, Uuid and Bytes are interned last so they do not disturb the
+        // 0..50 layout.
         debug_assert_eq!(decimal.0, 51);
         debug_assert_eq!(uuid.0, 52);
+        debug_assert_eq!(bytes.0, 53);
 
         // Suppress the "unused" lint — CapabilitySet is imported for future use
         // in T4 (actor schemas carry CapabilitySet).
@@ -1604,6 +1627,7 @@ impl BuiltinTyCons {
             insert_shape,
             decimal,
             uuid,
+            bytes,
         }
     }
 }
@@ -1683,17 +1707,17 @@ mod tests {
     }
 
     #[test]
-    fn arena_len_is_53() {
+    fn arena_len_is_54() {
         // 15 original builtins + Ordering + JsonValue + the std.net.http taint
         // wrappers Sql / Html / SecureCookie + std.sql's SqlValue + the
         // column-codegen builtins Column / Table + the schema-codegen builtins
         // FieldSchema / Schema + the quotation builtins QExpr / Quote (27 total)
         // + the 16 synthetic function-type constructors Fn/0 … Fn/15 + Ret/1 +
         // Rows/1 + JoinCond/2 + the four join-result extractors (Join/Left/Right/Full)
-        // + InsertShape/1 + the Decimal and Uuid primitives (interned last).
+        // + InsertShape/1 + the Decimal, Uuid and Bytes primitives (interned last).
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 10);
-        assert_eq!(arena.len(), 53);
+        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 11);
+        assert_eq!(arena.len(), 54);
     }
 
     #[test]

@@ -18,6 +18,8 @@
     decimal_add/2, decimal_sub/2, decimal_mul/2, decimal_neg/1, decimal_abs/1,
     decimal_round/3, decimal_div/4,
     uuid_from_text/1, uuid_to_text/1, uuid_nil/1, uuid_gen/1, uuid_cmp/2,
+    bytes_from_hex/1, bytes_to_hex/1, bytes_from_utf8/1, bytes_to_utf8/1,
+    bytes_empty/1, bytes_gen/1, bytes_length/1, bytes_concat/2, bytes_cmp/2,
     int_parse/0, int_parse/1, float_parse/1, float_to_text/1, bool_to_text/1,
     sql_literal/1, sql_value_source/1,
     text_split_all/2, text_replace_all/3, text_join/2, text_slice/3,
@@ -435,6 +437,80 @@ uuid_format(<<A:4/binary, B:2/binary, C:2/binary, D:2/binary, E:6/binary>>) ->
 
 uuid_hexstr(Bin) ->
     iolist_to_binary([io_lib:format("~2.16.0b", [B]) || <<B>> <= Bin]).
+
+%% --- Bytes ---
+%% A Bytes is a raw binary; its canonical text form is lowercase hex. That hex is
+%% what the SQL codec moves across a `bytea` column (with a `\x` prefix on the
+%% Postgres wire); the value itself stays raw here, so length and comparison are
+%% over the bytes, not their hex spelling.
+
+%% bytes_from_hex/1 — std.bytes.fromHex. Text -> Result Bytes Error. An even-length
+%% run of hex digits in either case decodes to the raw bytes; anything else errors.
+bytes_from_hex(Bin) ->
+    case bytes_decode_hex(Bin) of
+        {ok, Raw} -> {ok, Raw};
+        error     -> {error, {error_record, <<"bytes.parse">>,
+                              <<"invalid hex">>}}
+    end.
+
+%% bytes_to_hex/1 — std.bytes.toHex (and the SQL codec's canonical form). Lowercase
+%% hex, two digits per byte, no separator.
+bytes_to_hex(Raw) ->
+    iolist_to_binary([io_lib:format("~2.16.0b", [B]) || <<B>> <= Raw]).
+
+%% bytes_from_utf8/1 — std.bytes.fromUtf8. A Ridge Text is already a UTF-8 binary,
+%% so its bytes are the same binary reinterpreted as raw.
+bytes_from_utf8(Bin) -> Bin.
+
+%% bytes_to_utf8/1 — std.bytes.toUtf8. Validates the bytes are well-formed UTF-8
+%% and returns them as a Text, or an Err when they are not.
+bytes_to_utf8(Raw) ->
+    case unicode:characters_to_binary(Raw, utf8, utf8) of
+        Bin when is_binary(Bin) -> {ok, Bin};
+        _ -> {error, {error_record, <<"bytes.utf8">>,
+                      <<"not valid UTF-8">>}}
+    end.
+
+%% bytes_empty/1 — std.bytes.empty. The empty byte string.
+bytes_empty(_Unit) -> <<>>.
+
+%% bytes_gen/1 — std.bytes.gen. n cryptographically-random bytes; a non-positive n
+%% yields the empty byte string.
+bytes_gen(N) when is_integer(N), N > 0 -> crypto:strong_rand_bytes(N);
+bytes_gen(_) -> <<>>.
+
+%% bytes_length/1 — std.bytes.length. The number of bytes.
+bytes_length(Raw) -> byte_size(Raw).
+
+%% bytes_concat/2 — std.bytes.concat. Two byte strings end to end.
+bytes_concat(A, B) -> <<A/binary, B/binary>>.
+
+%% bytes_cmp/2 — std.bytes.compare. Byte-by-byte unsigned order, which matches how
+%% Postgres orders a `bytea` column; a plain binary compare yields exactly that.
+bytes_cmp(A, B) ->
+    if A < B -> -1; A > B -> 1; true -> 0 end.
+
+%% Decode an even-length hex string (either case) to raw bytes, or error.
+bytes_decode_hex(Bin) ->
+    S = string:trim(Bin),
+    case byte_size(S) rem 2 of
+        0 -> bytes_decode_hex_pairs(S, []);
+        _ -> error
+    end.
+
+bytes_decode_hex_pairs(<<>>, Acc) ->
+    {ok, iolist_to_binary(lists:reverse(Acc))};
+bytes_decode_hex_pairs(<<H1, H2, Rest/binary>>, Acc) ->
+    case {bytes_hex_nibble(H1), bytes_hex_nibble(H2)} of
+        {N1, N2} when N1 =/= error, N2 =/= error ->
+            bytes_decode_hex_pairs(Rest, [<<((N1 bsl 4) bor N2)>> | Acc]);
+        _ -> error
+    end.
+
+bytes_hex_nibble(C) when C >= $0, C =< $9 -> C - $0;
+bytes_hex_nibble(C) when C >= $a, C =< $f -> C - $a + 10;
+bytes_hex_nibble(C) when C >= $A, C =< $F -> C - $A + 10;
+bytes_hex_nibble(_) -> error.
 
 %% --- Numbers ---
 

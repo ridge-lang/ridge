@@ -744,6 +744,62 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         arity: 2,
         requires_caps: &[],
     },
+    // ── ridge_rt bytes codec (std.bytes) ───────────────────────────────────────
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "bytes_from_hex",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "bytes_to_hex",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "bytes_from_utf8",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "bytes_to_utf8",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "bytes_empty",
+        arity: 1,
+        requires_caps: &[],
+    },
+    // `gen` draws fresh random bytes, so it carries the `random` capability.
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "bytes_gen",
+        arity: 1,
+        requires_caps: &[Capability::Random],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "bytes_length",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "bytes_concat",
+        arity: 2,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "bytes_cmp",
+        arity: 2,
+        requires_caps: &[],
+    },
     FfiAuditEntry {
         beam_module: "ridge_rt",
         fn_name: "random_int",

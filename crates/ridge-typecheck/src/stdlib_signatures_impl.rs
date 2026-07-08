@@ -1535,6 +1535,11 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             vec![ty_int(b)],
             Type::Con(b.sql_value, vec![]),
         ))),
+        // A SQL instant from a typed Timestamp — the captured-timestamp bind value.
+        (STD_SQL, "sqlInstantOf") => Some(mono(ty_fn_pure(
+            vec![ty_timestamp(b)],
+            Type::Con(b.sql_value, vec![]),
+        ))),
         // A typed SQL decimal (exact canonical text) — the decimal bind value.
         (STD_SQL, "sqlDecimal") => Some(mono(ty_fn_pure(
             vec![ty_text(b)],

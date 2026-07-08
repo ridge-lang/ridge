@@ -392,6 +392,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "sqlFloat",
             "sqlNull",
             "sqlInstant",
+            "sqlInstantOf",
             "sqlDecimal",
             "sqlUuid",
             // The safe SQL statement-text wrapper, its factory, and accessor —

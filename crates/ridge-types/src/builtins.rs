@@ -1285,6 +1285,14 @@ impl BuiltinTyCons {
                         name: "QLitUuid".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(TyConId(52), vec![])]),
                     },
+                    // A timestamp captured in a quoted predicate (Timestamp has no
+                    // literal syntax either). Carries a Timestamp (tycon id 5); the
+                    // renderers move it across `SqlInstant` as epoch microseconds.
+                    // Appended last so the hardcoded variant indices stay put.
+                    UnionVariant {
+                        name: "QLitInstant".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(5), vec![])]),
+                    },
                 ],
             }),
             def_span: None,

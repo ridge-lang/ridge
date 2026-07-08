@@ -857,8 +857,8 @@ fn captured_ident_type(ctx: &LowerCtx<'_>, span: Span) -> Option<Type> {
 
 /// The `QExpr` literal constructor (`name`, `variant`) for a captured scalar's
 /// resolved type. The quotation checker accepts the same scalar set
-/// (`is_quote_scalar`: Int/Text/Bool/Float/Decimal/Uuid), so a `None` here is an
-/// internal invariant violation, not a user error.
+/// (`is_quote_scalar`: Int/Text/Bool/Float/Decimal/Uuid/Timestamp), so a `None`
+/// here is an internal invariant violation, not a user error.
 fn captured_scalar_qlit(ctx: &LowerCtx<'_>, ty: &Type) -> Option<(&'static str, u32)> {
     let b = &ctx.workspace?.builtins;
     match ty {
@@ -868,6 +868,7 @@ fn captured_scalar_qlit(ctx: &LowerCtx<'_>, ty: &Type) -> Option<(&'static str, 
         Type::Con(id, _) if *id == b.text => Some(("QLitText", 2)),
         Type::Con(id, _) if *id == b.decimal => Some(("QLitDecimal", 33)),
         Type::Con(id, _) if *id == b.uuid => Some(("QLitUuid", 34)),
+        Type::Con(id, _) if *id == b.timestamp => Some(("QLitInstant", 35)),
         _ => None,
     }
 }

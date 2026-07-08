@@ -30,6 +30,11 @@ pub fn sqlDecimal (s: Text) -> SqlValue = SqlDecimal s
 -- uuid default (`DefaultLit`) can be built and rendered back to source.
 pub fn sqlUuid (s: Text) -> SqlValue = SqlUuid s
 
+-- A wall-clock instant from a typed `Timestamp` rather than raw epoch micros. The
+-- query compiler uses it to bind a captured Timestamp as a `SqlInstant` parameter,
+-- where the class method `SqlType.toSql` is not reachable from a stdlib module.
+pub fn sqlInstantOf (t: Timestamp) -> SqlValue = SqlInstant (tsToMicros t)
+
 -- ── SQL column type ───────────────────────────────────────────────────────────
 --
 -- The dialect-neutral SQL column type a field maps to. The Ridge field type

@@ -1852,6 +1852,7 @@ mem_pcell({'QLitBool', B}, _Row)  -> {'SqlBool', B};
 mem_pcell({'QLitFloat', F}, _Row) -> {'SqlFloat', F};
 mem_pcell({'QLitDecimal', D}, _Row) -> {'SqlDecimal', decimal_to_text(D)};
 mem_pcell({'QLitUuid', U}, _Row) -> {'SqlUuid', uuid_to_text(U)};
+mem_pcell({'QLitInstant', TS}, _Row) -> {'SqlInstant', time_to_micros(TS)};
 %% Computed projection cells over a join's flat source-prefixed rows: arithmetic
 %% folds its operands (each resolved by the same prefix rules), a CASE picks a
 %% branch by its condition read as an N-ary predicate. A cell with no value — a
@@ -2084,6 +2085,7 @@ mem_hscalar_nary({'QLitBool', B}, _Key, _GR)  -> {'SqlBool', B};
 mem_hscalar_nary({'QLitFloat', F}, _Key, _GR) -> {'SqlFloat', F};
 mem_hscalar_nary({'QLitDecimal', D}, _Key, _GR) -> {'SqlDecimal', decimal_to_text(D)};
 mem_hscalar_nary({'QLitUuid', U}, _Key, _GR) -> {'SqlUuid', uuid_to_text(U)};
+mem_hscalar_nary({'QLitInstant', TS}, _Key, _GR) -> {'SqlInstant', time_to_micros(TS)};
 mem_hscalar_nary(_Other, _Key, _GR)           -> undefined.
 
 %% Merge the Changes columns into every row matching the predicate tree, leaving
@@ -2278,6 +2280,7 @@ mem_jscalar({'QLitBool', B}, _L, _R)  -> {'SqlBool', B};
 mem_jscalar({'QLitFloat', F}, _L, _R) -> {'SqlFloat', F};
 mem_jscalar({'QLitDecimal', D}, _L, _R) -> {'SqlDecimal', decimal_to_text(D)};
 mem_jscalar({'QLitUuid', U}, _L, _R) -> {'SqlUuid', uuid_to_text(U)};
+mem_jscalar({'QLitInstant', TS}, _L, _R) -> {'SqlInstant', time_to_micros(TS)};
 mem_jscalar({'QAdd', A, B}, L, R) -> mem_arith_apply('+', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
 mem_jscalar({'QSub', A, B}, L, R) -> mem_arith_apply('-', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
 mem_jscalar({'QMul', A, B}, L, R) -> mem_arith_apply('*', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
@@ -2460,6 +2463,7 @@ mem_nscalar({'QLitBool', B}, _Row)  -> {'SqlBool', B};
 mem_nscalar({'QLitFloat', F}, _Row) -> {'SqlFloat', F};
 mem_nscalar({'QLitDecimal', D}, _Row) -> {'SqlDecimal', decimal_to_text(D)};
 mem_nscalar({'QLitUuid', U}, _Row) -> {'SqlUuid', uuid_to_text(U)};
+mem_nscalar({'QLitInstant', TS}, _Row) -> {'SqlInstant', time_to_micros(TS)};
 mem_nscalar({'QAdd', A, B}, Row) -> mem_arith_apply('+', mem_nscalar(A, Row), mem_nscalar(B, Row));
 mem_nscalar({'QSub', A, B}, Row) -> mem_arith_apply('-', mem_nscalar(A, Row), mem_nscalar(B, Row));
 mem_nscalar({'QMul', A, B}, Row) -> mem_arith_apply('*', mem_nscalar(A, Row), mem_nscalar(B, Row));
@@ -2654,6 +2658,7 @@ mem_scalar({'QLitBool', B}, _Row)  -> {'SqlBool', B};
 mem_scalar({'QLitFloat', F}, _Row) -> {'SqlFloat', F};
 mem_scalar({'QLitDecimal', D}, _Row) -> {'SqlDecimal', decimal_to_text(D)};
 mem_scalar({'QLitUuid', U}, _Row) -> {'SqlUuid', uuid_to_text(U)};
+mem_scalar({'QLitInstant', TS}, _Row) -> {'SqlInstant', time_to_micros(TS)};
 mem_scalar({'QAdd', A, B}, Row) -> mem_arith_apply('+', mem_scalar(A, Row), mem_scalar(B, Row));
 mem_scalar({'QSub', A, B}, Row) -> mem_arith_apply('-', mem_scalar(A, Row), mem_scalar(B, Row));
 mem_scalar({'QMul', A, B}, Row) -> mem_arith_apply('*', mem_scalar(A, Row), mem_scalar(B, Row));

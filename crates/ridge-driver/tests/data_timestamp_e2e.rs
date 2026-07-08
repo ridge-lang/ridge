@@ -87,6 +87,19 @@ pub fn db descOrder () -> Text =
                 Err _ -> "list-err"
                 Ok es -> joinNames es
 
+-- a captured Timestamp drives a quoted predicate: `at > since`, with `since` bound
+-- from the enclosing scope, compiles to a bound instant parameter, so only the 2026
+-- row (after the 2023 cutoff) matches. Proves a Timestamp flows through the query DSL
+-- as a captured `SqlInstant` — the last rich scalar to become capturable.
+pub fn db filterBySince () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            let since = instant "2023-01-01T00:00:00Z"
+            match r |> Repo.query |> Repo.filter (fn (e: Event) -> e.at > since) |> Repo.toList
+                Err _ -> "list-err"
+                Ok es -> joinNames es
+
 -- column-type dispatch: `deriving (Schema)` reads the `at` column type from
 -- SqlType.dbType, so the rendered DDL names it `timestamptz` (the Postgres form of
 -- DbTimestampTz), proving the column type comes from the codec, not a side table.
@@ -165,6 +178,7 @@ fn timestamp_codec_runs_on_beam() {
         "io:format(\"roundTripIso=~s~n\",[{module}:roundTripIso()]), \
          io:format(\"ascOrder=~s~n\",[{module}:ascOrder()]), \
          io:format(\"descOrder=~s~n\",[{module}:descOrder()]), \
+         io:format(\"filterBySince=~s~n\",[{module}:filterBySince()]), \
          io:format(\"atColumnDdl=~s~n\",[{module}:atColumnDdl()]), \
          halt()."
     );
@@ -192,6 +206,10 @@ fn timestamp_codec_runs_on_beam() {
         (
             "descOrder=new,old",
             "the same column sorts descending",
+        ),
+        (
+            "filterBySince=new",
+            "a captured Timestamp in a quoted predicate binds an instant parameter",
         ),
         (
             "timestamptz",

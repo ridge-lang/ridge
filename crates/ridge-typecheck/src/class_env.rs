@@ -1652,23 +1652,32 @@ pub fn register_stdlib_instances(
             origin: InstanceOrigin::Explicit,
             span: ds,
         };
-        // Builtin TyConIds: Int=0, Float=1, Bool=2, Text=3.
+        // Builtin TyConIds: Int=0, Float=1, Bool=2, Text=3, Timestamp=5, and the
+        // rich scalars interned last, Decimal=51, Uuid=52, Bytes=53 (all pinned by
+        // debug_asserts in `BuiltinTyCons::allocate`). Every type carrying a source
+        // `instance SqlType T` in sql.ridge is seeded here so a user workspace can
+        // discharge `SqlType T` — most visibly the `SqlType n` context a scalar
+        // aggregate (`sumOf`/`minOf`/`maxOf`) threads through its `Aggregable`
+        // instance, which decodes the folded column and so needs the dictionary
+        // for a decimal/uuid/bytes/timestamp column just as for an int one.
         // Use entry/or_insert rather than the coherence-checking insert so that
         // source-level declarations (from sql.ridge in the stdlib build) always
         // win — they got here first, and we never want to overwrite them or
         // surface a spurious T032.
-        env.instances
-            .entry((sqltype, smallvec![TyConId(0)]))
-            .or_insert_with(inst);
-        env.instances
-            .entry((sqltype, smallvec![TyConId(3)]))
-            .or_insert_with(inst);
-        env.instances
-            .entry((sqltype, smallvec![TyConId(2)]))
-            .or_insert_with(inst);
-        env.instances
-            .entry((sqltype, smallvec![TyConId(1)]))
-            .or_insert_with(inst);
+        for prim in [
+            TyConId(0),  // Int
+            TyConId(3),  // Text
+            TyConId(2),  // Bool
+            TyConId(1),  // Float
+            TyConId(5),  // Timestamp
+            TyConId(51), // Decimal
+            TyConId(52), // Uuid
+            TyConId(53), // Bytes
+        ] {
+            env.instances
+                .entry((sqltype, smallvec![prim]))
+                .or_insert_with(inst);
+        }
         // Parametric `SqlType (Option a) where SqlType a` — a nullable column.
         // Keyed by Option's builtin id (TyConId(9), pinned by a debug_assert in
         // `BuiltinTyCons::allocate`). The context constraint `SqlType a` rides a

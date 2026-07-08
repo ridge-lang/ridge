@@ -41,6 +41,11 @@ fn uu (s: Text) -> Uuid =
         Ok u  -> u
         Err _ -> Uuid.nil ()
 
+fn optUuidText (o: Option Uuid) -> Text =
+    match o
+        None   -> "none"
+        Some u -> Uuid.toText u
+
 -- Comma-join the labels of a row list, so an order is observable as one string.
 fn joinLabels (ds: List Doc) -> Text =
     match ds
@@ -101,6 +106,25 @@ pub fn db filterByToken () -> Text =
             match r |> Repo.query |> Repo.filter (fn (d: Doc) -> d.token == target) |> Repo.toList
                 Err _ -> "list-err"
                 Ok ds -> joinLabels ds
+
+-- a scalar MIN/MAX over the uuid column keeps the Uuid type and folds by value, so
+-- the least is 1111 and the greatest 3333. Reaching the aggregate at all exercises
+-- the `SqlType Uuid` dictionary its `Aggregable` instance threads to decode the fold.
+pub fn db minToken () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.minOf (fn (d: Doc) -> d.token)
+                Err _ -> "min-err"
+                Ok o  -> optUuidText o
+
+pub fn db maxToken () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.maxOf (fn (d: Doc) -> d.token)
+                Err _ -> "max-err"
+                Ok o  -> optUuidText o
 
 -- column-type dispatch: `deriving (Schema)` reads the `token` column type from
 -- SqlType.dbType, so the DDL names it `uuid`.
@@ -180,6 +204,8 @@ fn uuid_codec_runs_on_beam() {
          io:format(\"ascOrder=~s~n\",[{module}:ascOrder()]), \
          io:format(\"descOrder=~s~n\",[{module}:descOrder()]), \
          io:format(\"filterByToken=~s~n\",[{module}:filterByToken()]), \
+         io:format(\"minToken=~s~n\",[{module}:minToken()]), \
+         io:format(\"maxToken=~s~n\",[{module}:maxToken()]), \
          io:format(\"tokenDdl=~s~n\",[{module}:tokenDdl()]), \
          halt()."
     );
@@ -211,6 +237,14 @@ fn uuid_codec_runs_on_beam() {
         (
             "filterByToken=c",
             "a captured uuid in a quoted predicate compiles to a bound parameter",
+        ),
+        (
+            "minToken=11111111-1111-1111-1111-111111111111",
+            "a scalar MIN over a uuid column folds by value and keeps the Uuid type",
+        ),
+        (
+            "maxToken=33333333-3333-3333-3333-333333333333",
+            "a scalar MAX over a uuid column folds by value and keeps the Uuid type",
         ),
         (
             "uuid",

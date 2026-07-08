@@ -1,14 +1,19 @@
-//! End-to-end check for grouped SUM/AVG over a `Decimal` column on the in-memory
-//! adapter.
+//! End-to-end check for SUM/AVG over a `Decimal` column on the in-memory adapter,
+//! both as scalar aggregates and grouped in a `summarize`.
 //!
-//! Before this, `mem_num` (the SUM/AVG fold) knew only `SqlInt`/`SqlFloat`, so a
-//! decimal aggregate crashed with `function_clause`. This proves the fold now:
-//! - a grouped `sum` keeps the column's type and folds exactly, so a decimal column
-//!   sums to a `Decimal` with every digit preserved (a naive float fold of
-//!   0.10 + 0.20 + 0.03 drifts to 0.33000000000000007; the exact fold stays 0.33),
-//! - a grouped `avg` is a `Float` even over a decimal column, matching how the SQL
-//!   backend casts `AVG(numeric)` to `float8`, and
-//! - a decimal `HAVING` threshold reads the same folds.
+//! Two things had to line up. The runtime fold (`mem_num`) knew only
+//! `SqlInt`/`SqlFloat`, so a decimal aggregate crashed with `function_clause`. And
+//! the scalar `sumOf`/`minOf`/`maxOf` thread a `SqlType n` dictionary through their
+//! `Aggregable` instance to decode the folded column; that dictionary was seeded for
+//! the base primitives but not for `Decimal`, so it never resolved. With both fixed
+//! this proves:
+//! - `sum` keeps the column's type and folds exactly, so a decimal column sums to a
+//!   `Decimal` with every digit preserved (a naive float fold of 0.10 + 0.20 + 0.03
+//!   drifts to 0.33000000000000007; the exact fold stays 0.33),
+//! - `avg` is a `Float` even over a decimal column, matching how the SQL backend
+//!   casts `AVG(numeric)` to `float8`,
+//! - `min`/`max` keep the decimal type and exact value, and
+//! - the grouped `summarize` and a decimal `HAVING` threshold read the same folds.
 //!
 //! This is the in-memory adapter, which folds the aggregate itself; Postgres folds
 //! `SUM`/`AVG(numeric)` in the database, and `data_pg_decimal_e2e` covers the exact
@@ -17,7 +22,12 @@
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 
 #![cfg(feature = "beam-runtime")]
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::too_many_lines
+)]
 
 use std::process::Command;
 
@@ -43,6 +53,16 @@ fn dec (s: Text) -> Decimal =
     match Decimal.fromText s
         Ok d  -> d
         Err _ -> Decimal.fromInt 0
+
+fn optDecimalText (o: Option Decimal) -> Text =
+    match o
+        None   -> "none"
+        Some d -> Decimal.toText d
+
+fn optFloatText (o: Option Float) -> Text =
+    match o
+        None   -> "none"
+        Some f -> Float.toText f
 
 -- Render the grouped result rows as `key:value` cells joined by commas. The backend
 -- returns the groups ordered by the key, so the rendered string is deterministic.
@@ -74,6 +94,44 @@ pub fn db setup () -> Result (Repo Sale MemAdapter) Error =
                             match Repo.insert (SaleInsert { dept = "ops", amount = dec "10.50" }) r
                                 Err e -> Err e
                                 Ok _  -> Ok r
+
+-- scalar SUM folds every decimal exactly: 1.25 + 2.75 + 0.50 + 10.50 = 15.00, and
+-- keeps the column's Decimal type (`Ret p` = the column type). Reaching this at all
+-- exercises the `SqlType Decimal` context dictionary the `Aggregable` instance threads.
+pub fn db sumAll () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.sumOf (fn (s: Sale) -> s.amount)
+                Err _ -> "sum-err"
+                Ok o  -> optDecimalText o
+
+-- scalar AVG is a Float even over a decimal column: 15.00 / 4 = 3.75.
+pub fn db avgAll () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.avgOf (fn (s: Sale) -> s.amount)
+                Err _ -> "avg-err"
+                Ok o  -> optFloatText o
+
+-- scalar MIN keeps the decimal type and exact value: 0.50.
+pub fn db minAll () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.minOf (fn (s: Sale) -> s.amount)
+                Err _ -> "min-err"
+                Ok o  -> optDecimalText o
+
+-- scalar MAX keeps the decimal type and exact value: 10.50.
+pub fn db maxAll () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.maxOf (fn (s: Sale) -> s.amount)
+                Err _ -> "max-err"
+                Ok o  -> optDecimalText o
 
 -- grouped SUM per dept, decimal and exact: eng 4.00, ops 11.00.
 pub fn db deptSums () -> Text =
@@ -189,7 +247,11 @@ fn decimal_aggregates_run_on_beam() {
         .to_owned();
 
     let expr = format!(
-        "io:format(\"deptSums=~s~n\",[{module}:deptSums()]), \
+        "io:format(\"sumAll=~s~n\",[{module}:sumAll()]), \
+         io:format(\"avgAll=~s~n\",[{module}:avgAll()]), \
+         io:format(\"minAll=~s~n\",[{module}:minAll()]), \
+         io:format(\"maxAll=~s~n\",[{module}:maxAll()]), \
+         io:format(\"deptSums=~s~n\",[{module}:deptSums()]), \
          io:format(\"deptAvgs=~s~n\",[{module}:deptAvgs()]), \
          io:format(\"havingSum=~s~n\",[{module}:havingSum()]), \
          io:format(\"sumExact=~s~n\",[{module}:sumExact()]), \
@@ -208,6 +270,22 @@ fn decimal_aggregates_run_on_beam() {
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     for (probe, why) in [
+        (
+            "sumAll=15.00",
+            "a scalar SUM folds a decimal column exactly and keeps its Decimal type",
+        ),
+        (
+            "avgAll=3.75",
+            "a scalar AVG over a decimal column is a Float (15.00 / 4)",
+        ),
+        (
+            "minAll=0.50",
+            "a scalar MIN keeps the decimal type and exact value",
+        ),
+        (
+            "maxAll=10.50",
+            "a scalar MAX keeps the decimal type and exact value",
+        ),
         (
             "deptSums=eng:4.00,ops:11.00",
             "a grouped SUM folds each decimal group exactly and keeps its Decimal type",

@@ -458,7 +458,7 @@ TypeAtom      ::= PrimitiveType
                |  "(" Type ")" ;
 
 PrimitiveType ::= "Int" | "Float" | "Bool" | "Text" | "Unit"
-               |  "Timestamp" | "Decimal" | "Uuid"
+               |  "Timestamp" | "Decimal" | "Uuid" | "Bytes"
                |  UPPER_IDENT   (* named type / constructor *) ;
 
 (* Type application: a type constructor applied to arguments                *)

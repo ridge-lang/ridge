@@ -2946,7 +2946,7 @@ fn class_name_of(ctx: &LowerCtx<'_>, class: ridge_types::ClassId) -> Option<Stri
 /// the prelude `Encode`/`Decode` instances, whose dictionaries are synthesised
 /// inline (see [`crate::prelude_dict`]) because they have no module-level
 /// `$inst_` constant.
-fn dict_plan_to_expr(
+pub(crate) fn dict_plan_to_expr(
     ctx: &mut LowerCtx<'_>,
     _class: ridge_types::ClassId,
     plan: ridge_typecheck::DictPlan,

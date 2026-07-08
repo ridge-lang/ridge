@@ -64,6 +64,7 @@
 use ridge_ast::{expr::InterpPart, Expr, Span};
 use ridge_ir::{IrExpr, IrLit, SymbolRef};
 use ridge_resolve::NodeKind;
+use ridge_typecheck::{DictPlan, InstanceOrigin};
 use ridge_types::{TyConId, Type, TOTEXT_CLASS};
 
 use crate::core::lower_expr;
@@ -284,47 +285,75 @@ fn wrap_to_text(ctx: &mut LowerCtx<'_>, inner: IrExpr, ty: Option<Type>, span: S
 /// Try to dispatch `toText` for `tycon_id` through the workspace instance
 /// registry.
 ///
-/// Returns `Some(Call)` when the instance registry contains a `ToText` entry
-/// for `tycon_id` and the owning module's `toText` function can be referenced.
-/// Returns `None` when the registry is unavailable (unit tests without the
-/// full pipeline) or when no `ToText` instance is registered for the type.
-/// The caller is responsible for emitting `L007` on the `None` branch.
+/// Returns `Some(Call)` when the registry has a `ToText` entry for `tycon_id`,
+/// dispatched by how that instance was produced; `None` when the registry is
+/// unavailable (unit tests without the full pipeline) or no instance is
+/// registered. The caller emits `L007` on the `None` branch.
 ///
-/// This is an O(1) lookup — it replaces the previous approach of scanning
-/// the owning module's AST for a `pub fn toText` declaration on every
-/// interpolation site.
+/// The dispatch differs by instance origin because the two kinds emit their
+/// method differently:
+///
+/// - **Auto-promoted** (`pub fn toText (x: T) -> Text`) is a real *public*
+///   module function literally named `toText`, so call it directly.
+/// - **Explicit or derived** (`instance ToText T`, `deriving (ToText)`) emit
+///   their method as a *private* `ToText__T__toText`, reachable only through the
+///   public `$inst_ToText_T` dictionary. Dispatch through that dictionary the way
+///   a monomorphic class-method call does — project `toText` and apply it — so it
+///   resolves cross-module too, where the private method fn would not.
 fn try_instance_to_text(
     ctx: &mut LowerCtx<'_>,
     inner: &IrExpr,
     tycon_id: TyConId,
     span: Span,
 ) -> Option<IrExpr> {
-    // The instance registry is available when the full pipeline is wired.
-    let env = ctx.instance_env?;
+    // Clone the instance metadata so the immutable borrow on `ctx.instance_env`
+    // is released before `dict_plan_to_expr` takes the mutable borrow it needs.
+    let inst = ctx.instance_env?.get((TOTEXT_CLASS, tycon_id))?.clone();
 
-    // O(1) instance lookup by (ToText, TyConId).
-    let inst = env.get((TOTEXT_CLASS, tycon_id))?;
+    if matches!(inst.origin, InstanceOrigin::AutoPromoted) {
+        // A bare public `toText` in the instance's own module.
+        let owning_module = ridge_resolve::ModuleId(inst.def_module?);
+        let callee_id = ctx.fresh_id(None);
+        let call_id = ctx.fresh_id(None);
+        return Some(IrExpr::Call {
+            id: call_id,
+            callee: Box::new(IrExpr::Symbol {
+                id: callee_id,
+                sym: SymbolRef::External {
+                    module: owning_module,
+                    name: "toText".into(),
+                },
+                span,
+            }),
+            args: vec![inner.clone()],
+            span,
+        });
+    }
 
-    // Determine the owning module: the instance's def_module carries the
-    // module that originally declared the `pub fn toText` (or the explicit
-    // `instance ToText T` declaration). For prelude instances `def_module`
-    // is `None`; those are handled by the closed-set arms above.
-    let module_raw = inst.def_module?;
-    let owning_module = ridge_resolve::ModuleId(module_raw);
+    // Explicit or derived: reference the public `$inst_ToText_T` dictionary the
+    // same way a monomorphic class-method call resolves it, then project and
+    // apply its `toText`. A hole is always a concrete, non-parametric type, so
+    // the plan carries no extra head constructors and no sub-dictionaries.
+    let plan = DictPlan::Static {
+        class: TOTEXT_CLASS,
+        info: Box::new(inst),
+        tycon: tycon_id,
+        extra_head: smallvec::SmallVec::new(),
+        args: Vec::new(),
+    };
+    let dict = crate::core::dict_plan_to_expr(ctx, TOTEXT_CLASS, plan, "ToText", span);
 
-    let callee_id = ctx.fresh_id(None);
-    let call_id = ctx.fresh_id(None);
-    let callee = Box::new(IrExpr::Symbol {
-        id: callee_id,
-        sym: SymbolRef::External {
-            module: owning_module,
-            name: "toText".into(),
-        },
+    let field_id = ctx.fresh_id(None);
+    let method_ref = IrExpr::Field {
+        id: field_id,
+        base: Box::new(dict),
+        field: "toText".into(),
         span,
-    });
+    };
+    let call_id = ctx.fresh_id(None);
     Some(IrExpr::Call {
         id: call_id,
-        callee,
+        callee: Box::new(method_ref),
         args: vec![inner.clone()],
         span,
     })

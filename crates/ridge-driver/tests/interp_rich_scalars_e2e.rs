@@ -9,9 +9,11 @@
 //!   (`0.10` stays `0.10`, not `0.1`), through `std.decimal.toText`,
 //! - a `Uuid` hole prints the canonical hyphenated form through `std.uuid.toText`,
 //! - the two mix freely with plain `Int` holes in one string, and
-//! - a record `deriving (ToText)` with a `Decimal` field renders that field the
-//!   same way when reached through a `where ToText a` hole, which dispatches on
-//!   the derived dictionary (the same per-field map backs the derived body).
+//! - a monomorphic hole of a `deriving (ToText)` type (and of a type with an
+//!   explicit `instance ToText`) renders through the type's dictionary — the
+//!   path that used to crash, since those instances emit a private method rather
+//!   than a bare module `toText`. A derived record's `Decimal` field rides the
+//!   same per-field map into `std.decimal.toText`.
 //!
 //! `Bytes` is deliberately absent: it has no single canonical text form (`toHex`
 //! and `toUtf8` disagree), so it has no `ToText` instance and a `${bytes}` hole is
@@ -26,7 +28,7 @@ use std::process::Command;
 
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
-const SOURCE: &str = r#"
+const SOURCE: &str = r##"
 -- Parse or fall back, so the helpers are total. `Decimal` and `Uuid` resolve as
 -- qualified module names without an explicit import (their companion modules are
 -- always in scope, like `Int` or `Text`).
@@ -62,17 +64,28 @@ pub fn mixed () -> Text =
     $"n=${42} p=${p} u=${u}"
 
 -- A record whose derived ToText must dispatch its Decimal field through the same
--- std.decimal.toText, so the rendered string carries the exact amount. Reached
--- through a polymorphic `where ToText a` hole, which dispatches on the derived
--- dictionary rather than a fixed module function.
+-- std.decimal.toText, so the rendered string carries the exact amount. This hole
+-- is monomorphic, so it dispatches on the type's `$inst_ToText_Money` dictionary
+-- — the path that used to crash because a derived instance's method function is
+-- private, not a bare module `toText`.
 pub type Money = { amount: Decimal, tag: Text } deriving (ToText)
-
-fn render (x: a) -> Text where ToText a = $"m=${x}"
 
 pub fn moneyLine () -> Text =
     let m = Money { amount = dec "5.00", tag = "usd" }
-    render m
-"#;
+    $"m=${m}"
+
+-- A hand-written explicit instance, also interpolated as a monomorphic hole. Its
+-- method function is private the same way a derived one is, so it rides the same
+-- dictionary dispatch.
+pub type Tag = { label: Text }
+
+instance ToText Tag =
+    toText (t: Tag) -> Text = Text.concat "#" t.label
+
+pub fn tagLine () -> Text =
+    let t = Tag { label = "vip" }
+    $"tag=${t}"
+"##;
 
 fn write_workspace(root: &std::path::Path) {
     let app_src = root.join("app").join("src");
@@ -146,6 +159,7 @@ fn interpolation_renders_decimal_and_uuid_on_beam() {
          io:format(\"tokenLine=~s~n\",[{module}:tokenLine()]), \
          io:format(\"mixed=~s~n\",[{module}:mixed()]), \
          io:format(\"moneyLine=~s~n\",[{module}:moneyLine()]), \
+         io:format(\"tagLine=~s~n\",[{module}:tagLine()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -178,8 +192,12 @@ fn interpolation_renders_decimal_and_uuid_on_beam() {
             "Int, Decimal and Uuid holes mix in one interpolated string",
         ),
         (
-            "moneyLine=",
-            "a record deriving ToText renders with its Decimal field present",
+            "moneyLine=m=Money { amount = 5.00, tag = usd }",
+            "a monomorphic hole of a derived-ToText record renders through its dictionary, Decimal field and all",
+        ),
+        (
+            "tagLine=tag=#vip",
+            "a monomorphic hole of a type with an explicit ToText instance renders through its dictionary",
         ),
     ] {
         assert!(
@@ -187,12 +205,4 @@ fn interpolation_renders_decimal_and_uuid_on_beam() {
             "missing `{probe}` ({why})\nstdout:\n{stdout}\nstderr:\n{stderr}"
         );
     }
-
-    // The derived ToText for `Money` must carry the exact decimal amount, proving
-    // the field dispatched through std.decimal.toText rather than rendering the raw
-    // scaled-integer representation.
-    assert!(
-        stdout.contains("5.00"),
-        "the derived ToText must render the Decimal field as 5.00\nstdout:\n{stdout}\nstderr:\n{stderr}"
-    );
 }

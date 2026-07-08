@@ -693,26 +693,24 @@ pub fn register_prelude_instances_gated(env: &mut InstanceEnv, is_stdlib: bool) 
     );
     // Decimal (TyConId 51) and Uuid (TyConId 52) each render through their
     // stdlib `toText`, so string interpolation carries them the way it already
-    // carries Timestamp. Both are builtins interned past the 0–16 range, so the
-    // collect pass auto-promotes their stdlib `pub fn toText` to a `ToText`
-    // instance whenever the standard library compiles itself; seeding them here
-    // as well would then collide (T034). Guard on the user build, exactly as the
-    // Encode base instances below do. (Bytes has no single canonical text form —
+    // carries Timestamp. Both are builtins — like every entry above — and the
+    // auto-promotion pass never synthesizes a second `ToText` for a type the
+    // prelude already covers (see `collect_auto_promoted_to_text`), so this seed
+    // runs unconditionally without colliding with the stdlib's own `pub fn
+    // toText` during the self-compile. (Bytes has no single canonical text form —
     // `toHex` and `toUtf8` differ — so it deliberately has no `ToText` instance.)
-    if !is_stdlib {
-        let _ = env.insert(
-            (TOTEXT_CLASS, TyConId(51)),
-            prelude_inst("toText"),
-            "ToText",
-            "Decimal",
-        );
-        let _ = env.insert(
-            (TOTEXT_CLASS, TyConId(52)),
-            prelude_inst("toText"),
-            "ToText",
-            "Uuid",
-        );
-    }
+    let _ = env.insert(
+        (TOTEXT_CLASS, TyConId(51)),
+        prelude_inst("toText"),
+        "ToText",
+        "Decimal",
+    );
+    let _ = env.insert(
+        (TOTEXT_CLASS, TyConId(52)),
+        prelude_inst("toText"),
+        "ToText",
+        "Uuid",
+    );
 
     // ── Eq instances ─────────────────────────────────────────────────────────
     // Eq Float is intentionally absent — floating-point equality is a footgun.

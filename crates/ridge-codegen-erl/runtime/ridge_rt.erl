@@ -2038,22 +2038,47 @@ mem_agg(_Other, _Values)   -> 'SqlNull'.
 
 %% SUM stays an integer while every addend is one and becomes a float as soon as
 %% any value is a float, mirroring Postgres where SUM(int) is integral and
-%% SUM(float8) is floating.
+%% SUM(float8) is floating. A decimal column sums exactly and stays a decimal, as
+%% SUM(numeric) does in Postgres — the scaled-integer add keeps every digit.
 mem_sum(Values) ->
-    Sum = mem_numsum(Values),
-    case lists:any(fun is_float_val/1, Values) of
-        true  -> {'SqlFloat', float(Sum)};
-        false -> {'SqlInt', Sum}
+    case lists:any(fun is_decimal_val/1, Values) of
+        true  -> mem_sum_decimal(Values);
+        false ->
+            Sum = mem_numsum(Values),
+            case lists:any(fun is_float_val/1, Values) of
+                true  -> {'SqlFloat', float(Sum)};
+                false -> {'SqlInt', Sum}
+            end
     end.
+
+%% Fold a decimal column's values with the exact scaled-integer add so no
+%% fractional digit is lost; the result carries the widest scale of its addends,
+%% matching how Postgres widens the scale of SUM(numeric).
+mem_sum_decimal(Values) ->
+    Sum = lists:foldl(
+            fun(V, Acc) -> decimal_add(Acc, decimal_of_value(V)) end,
+            {decimal, 0, 0},
+            Values),
+    {'SqlDecimal', decimal_to_text(Sum)}.
+
+decimal_of_value({'SqlDecimal', S}) -> decimal_of_text(S);
+decimal_of_value({'SqlInt', N})     -> decimal_from_int(N).
 
 mem_numsum(Values) ->
     lists:foldl(fun(V, Acc) -> Acc + mem_num(V) end, 0, Values).
 
-mem_num({'SqlInt', N})   -> N;
-mem_num({'SqlFloat', F}) -> F.
+%% The numeric value of a scalar for SUM/AVG folding. A decimal narrows to its
+%% nearest float here; SUM keeps decimals exact through mem_sum_decimal, so this
+%% float path only ever backs AVG, whose result is a float either way.
+mem_num({'SqlInt', N})     -> N;
+mem_num({'SqlFloat', F})   -> F;
+mem_num({'SqlDecimal', S}) -> decimal_text_to_float(S).
 
 is_float_val({'SqlFloat', _}) -> true;
 is_float_val(_)               -> false.
+
+is_decimal_val({'SqlDecimal', _}) -> true;
+is_decimal_val(_)                 -> false.
 
 %% MIN/MAX by direction over the values' comparison keys, keeping the original
 %% SqlValue so the result carries the column's type. Numbers compare numerically,

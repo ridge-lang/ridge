@@ -316,6 +316,13 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                                             expected_ret.as_ref(),
                                         ) =>
                                     {
+                                        reject_non_numeric_scalar_aggregate(
+                                            ctx,
+                                            b,
+                                            callee,
+                                            expected_ret.as_ref(),
+                                            inner.span(),
+                                        );
                                         pty
                                     }
                                     Some(_) => Type::Error,
@@ -1826,6 +1833,44 @@ fn peel_parens(e: &Expr) -> &Expr {
         cur = inner;
     }
     cur
+}
+
+/// The final name segment of a callee — `sumOf` in `Repo.sumOf` or a bare
+/// `sumOf` — for recognising a specific stdlib method at a call site. Returns
+/// `None` for any other callee shape.
+fn callee_final_name(callee: &Expr) -> Option<&str> {
+    match peel_parens(callee) {
+        Expr::Qualified(q) => q.segments.last().map(|s| s.text.as_str()),
+        Expr::Ident(id) => Some(id.text.as_str()),
+        _ => None,
+    }
+}
+
+/// Reject a scalar `sumOf`/`avgOf` whose accessor folds a non-numeric column.
+/// The two numeric aggregates need an `Int`/`Float`/`Decimal` column; `minOf`
+/// and `maxOf` fold any comparable one and are left alone. Called once the
+/// accessor quote has been checked, so `col` (its result — the folded column's
+/// type) is resolved; a scalar aggregate's accessor always ranges over a concrete
+/// annotated entity, so the column type is known here rather than deferred.
+fn reject_non_numeric_scalar_aggregate(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    callee: &Expr,
+    col: Option<&Type>,
+    span: Span,
+) {
+    if !matches!(callee_final_name(callee), Some("sumOf" | "avgOf")) {
+        return;
+    }
+    let Some(col) = col else { return };
+    let resolved = ctx.deep_resolve(col);
+    if crate::quote::is_non_summable_scalar(b, &resolved) {
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: "`sumOf` and `avgOf` fold a numeric column (Int, Float, or Decimal)"
+                .to_string(),
+            span,
+        });
+    }
 }
 
 fn attach_span(err: TypeError, span: Span) -> TypeError {

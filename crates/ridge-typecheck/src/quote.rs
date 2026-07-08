@@ -963,6 +963,19 @@ fn is_numeric(b: &BuiltinTyCons, ty: &Type) -> bool {
     matches!(ty, Type::Con(id, _) if *id == b.int || *id == b.float)
 }
 
+/// Whether `ty` is a base scalar that `sum`/`avg` cannot fold — `Text`, `Bool`,
+/// `Uuid`, `Bytes`, or `Timestamp`. Each has a working `SqlType` instance (so
+/// `min`/`max`, ordering, and equality fold it), but summing or averaging it is
+/// meaningless: Postgres rejects it and the in-memory adapter has no numeric
+/// fold. The numeric columns (`Int`/`Float`/`Decimal`), a nullable wrapper, and
+/// an unresolved type variable are all left unmatched, so a caller rejects only a
+/// column it is certain about.
+pub(crate) fn is_non_summable_scalar(b: &BuiltinTyCons, ty: &Type) -> bool {
+    matches!(ty, Type::Con(id, _)
+        if *id == b.text || *id == b.bool || *id == b.uuid
+            || *id == b.bytes || *id == b.timestamp)
+}
+
 /// Whether `ty` is the `Int` base type.
 fn is_int(b: &BuiltinTyCons, ty: &Type) -> bool {
     matches!(ty, Type::Con(id, _) if *id == b.int)
@@ -1813,6 +1826,22 @@ fn check_group_call(
         return None;
     }
     let col_ty = group_agg_col_type(ctx, b, &args[0], e_ty)?;
+    // `sum`/`avg` fold a numeric column; `min`/`max` fold any comparable one.
+    // Reject a non-numeric column here rather than letting it reach the backend,
+    // where Postgres would raise a type error and the in-memory adapter would have
+    // no numeric fold for it.
+    if matches!(func, "sum" | "avg") {
+        let resolved = ctx.deep_resolve(&col_ty);
+        if is_non_summable_scalar(b, &resolved) {
+            ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+                detail: format!(
+                    "`{g_name}.{func}` folds a numeric column (Int, Float, or Decimal)"
+                ),
+                span,
+            });
+            return None;
+        }
+    }
     let ty = if func == "avg" {
         Type::Con(b.float, vec![])
     } else {

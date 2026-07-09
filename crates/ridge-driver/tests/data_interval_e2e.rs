@@ -119,6 +119,17 @@ pub fn db maxTook () -> Text =
                 Err _ -> "max-err"
                 Ok o  -> optMs o
 
+-- a scalar SUM over the interval column keeps the Duration type and folds to a total
+-- span: 500 + 90000 + 1500 = 92000 ms. Reaching it exercises the `SqlType Duration`
+-- dictionary its `Aggregable` instance threads to decode the folded interval.
+pub fn db sumTook () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.sumOf (fn (t: Task) -> t.took)
+                Err _ -> "sum-err"
+                Ok o  -> optMs o
+
 -- column-type dispatch: `deriving (Schema)` reads the `took` column type from
 -- SqlType.dbType, so the DDL names it `interval`.
 fn taskWitness () -> Option Task = None
@@ -198,6 +209,7 @@ fn interval_codec_runs_on_beam() {
          io:format(\"descOrder=~s~n\",[{module}:descOrder()]), \
          io:format(\"minTook=~s~n\",[{module}:minTook()]), \
          io:format(\"maxTook=~s~n\",[{module}:maxTook()]), \
+         io:format(\"sumTook=~s~n\",[{module}:sumTook()]), \
          io:format(\"tookDdl=~s~n\",[{module}:tookDdl()]), \
          halt()."
     );
@@ -233,6 +245,10 @@ fn interval_codec_runs_on_beam() {
         (
             "maxTook=90000",
             "a scalar MAX over an interval column folds by length and keeps the Duration type",
+        ),
+        (
+            "sumTook=92000",
+            "a scalar SUM over an interval column folds to a total and keeps the Duration type",
         ),
         (
             "interval",

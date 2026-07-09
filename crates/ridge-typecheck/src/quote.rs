@@ -964,20 +964,26 @@ fn is_numeric(b: &BuiltinTyCons, ty: &Type) -> bool {
 }
 
 /// Whether `ty` is a base scalar that `sum`/`avg` cannot fold — `Text`, `Bool`,
-/// `Uuid`, `Bytes`, `Timestamp`, `Date`, `Time`, or `Duration`. Each has a working
-/// `SqlType` instance (so `min`/`max`, ordering, and equality fold it), but summing
-/// or averaging it does not land here: for the non-numeric scalars it is meaningless,
-/// and a `Duration`, though a millisecond span that could in principle be summed, has
-/// no interval fold in the in-memory adapter and would lose its type through `avg`,
-/// which is forced to `Float` — so it is deferred until a `Duration`-typed aggregate
-/// lands. The numeric columns (`Int`/`Float`/`Decimal`), a nullable wrapper, and an
-/// unresolved type variable are all left unmatched, so a caller rejects only a column
-/// it is certain about.
+/// `Uuid`, `Bytes`, `Timestamp`, `Date`, or `Time`. Each has a working `SqlType`
+/// instance (so `min`/`max`, ordering, and equality fold it), but summing or
+/// averaging it is meaningless: Postgres rejects it and the in-memory adapter has no
+/// numeric fold. `Duration` is deliberately absent — a millisecond span sums to a
+/// total `Duration` and averages to a mean, so those are folded (see
+/// [`is_avg_only_rejected`] for the one `avg` case still pending). The numeric columns
+/// (`Int`/`Float`/`Decimal`), a nullable wrapper, and an unresolved type variable are
+/// all left unmatched, so a caller rejects only a column it is certain about.
 pub(crate) fn is_non_summable_scalar(b: &BuiltinTyCons, ty: &Type) -> bool {
     matches!(ty, Type::Con(id, _)
         if *id == b.text || *id == b.bool || *id == b.uuid
-            || *id == b.bytes || *id == b.timestamp || *id == b.date || *id == b.time
-            || *id == b.duration)
+            || *id == b.bytes || *id == b.timestamp || *id == b.date || *id == b.time)
+}
+
+/// Whether `ty` is a column `sum` folds but `avg` does not yet. A `Duration` column
+/// sums to a total `Duration`, but averaging it renders through a type-aware SQL path
+/// (Postgres cannot cast an `interval` to `float8`) that is not built yet, so `avg`
+/// over a `Duration` is rejected on its own while `sum` goes through.
+pub(crate) fn is_avg_only_rejected(b: &BuiltinTyCons, ty: &Type) -> bool {
+    matches!(ty, Type::Con(id, _) if *id == b.duration)
 }
 
 /// Whether `ty` is the `Int` base type.
@@ -1841,6 +1847,16 @@ fn check_group_call(
             ctx.errors.push(TypeError::QuoteUnsupportedExpr {
                 detail: format!(
                     "`{g_name}.{func}` folds a numeric column (Int, Float, or Decimal)"
+                ),
+                span,
+            });
+            return None;
+        }
+        if func == "avg" && is_avg_only_rejected(b, &resolved) {
+            ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+                detail: format!(
+                    "`{g_name}.avg` over an interval column is not supported yet; `{g_name}.sum` \
+                     folds it to a total instead"
                 ),
                 span,
             });

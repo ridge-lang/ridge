@@ -2273,12 +2273,25 @@ mem_sum(Values) ->
     case lists:any(fun is_decimal_val/1, Values) of
         true  -> mem_sum_decimal(Values);
         false ->
-            Sum = mem_numsum(Values),
-            case lists:any(fun is_float_val/1, Values) of
-                true  -> {'SqlFloat', float(Sum)};
-                false -> {'SqlInt', Sum}
+            case lists:any(fun is_interval_val/1, Values) of
+                true  -> mem_sum_interval(Values);
+                false ->
+                    Sum = mem_numsum(Values),
+                    case lists:any(fun is_float_val/1, Values) of
+                        true  -> {'SqlFloat', float(Sum)};
+                        false -> {'SqlInt', Sum}
+                    end
             end
     end.
+
+%% An interval column sums to a total Duration: fold the whole-millisecond spans and
+%% keep the result an interval, the way SUM(interval) stays an interval in Postgres.
+mem_sum_interval(Values) ->
+    Sum = lists:foldl(fun({'SqlInterval', Ms}, Acc) -> Acc + Ms end, 0, Values),
+    {'SqlInterval', Sum}.
+
+is_interval_val({'SqlInterval', _}) -> true;
+is_interval_val(_)                  -> false.
 
 %% Fold a decimal column's values with the exact scaled-integer add so no
 %% fractional digit is lost; the result carries the widest scale of its addends,

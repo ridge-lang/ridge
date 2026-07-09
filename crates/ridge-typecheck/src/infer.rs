@@ -1861,7 +1861,8 @@ fn reject_non_numeric_scalar_aggregate(
     col: Option<&Type>,
     span: Span,
 ) {
-    if !matches!(callee_final_name(callee), Some("sumOf" | "avgOf")) {
+    let name = callee_final_name(callee);
+    if !matches!(name, Some("sumOf" | "avgOf")) {
         return;
     }
     let Some(col) = col else { return };
@@ -1869,6 +1870,13 @@ fn reject_non_numeric_scalar_aggregate(
     if crate::quote::is_non_summable_scalar(b, &resolved) {
         ctx.errors.push(TypeError::QuoteUnsupportedExpr {
             detail: "`sumOf` and `avgOf` fold a numeric column (Int, Float, or Decimal)"
+                .to_string(),
+            span,
+        });
+    } else if name == Some("avgOf") && crate::quote::is_avg_only_rejected(b, &resolved) {
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: "`avgOf` over an interval column is not supported yet; `sumOf` folds it to a \
+                     total instead"
                 .to_string(),
             span,
         });

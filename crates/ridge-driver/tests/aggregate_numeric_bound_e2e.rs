@@ -64,6 +64,51 @@ pub fn total (r: Repo Sale MemAdapter) -> Result (Option Text) Error =
     );
 }
 
+/// A scalar `sumOf` over a `Duration` column is clean — an interval column sums to a
+/// total `Duration`, so the numeric bound does not reject it.
+#[test]
+fn scalar_sum_over_duration_is_clean() {
+    let source = "
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+
+pub type Job = { id: Int, took: Duration } deriving (Row, Schema)
+
+pub fn total (r: Repo Job MemAdapter) -> Result (Option Duration) Error =
+    r |> Repo.query |> Repo.sumOf (fn (j: Job) -> j.took)
+";
+    let tw = make_workspace("Models", source);
+    let result = check_workspace(CheckOptions::new(tw.path.clone())).expect("check ran");
+    assert!(
+        result.diagnostics.is_empty(),
+        "summing an interval column is valid; got {:?}",
+        result.diagnostics
+    );
+}
+
+/// A scalar `avgOf` over a `Duration` column is a targeted `T040` for now: averaging
+/// an interval renders through a type-aware SQL path that is not built yet, so `avg`
+/// is rejected on its own while `sum` folds the column to a total.
+#[test]
+fn scalar_avg_over_duration_is_t040() {
+    let source = "
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+
+pub type Job = { id: Int, took: Duration } deriving (Row, Schema)
+
+pub fn mean (r: Repo Job MemAdapter) -> Result (Option Float) Error =
+    r |> Repo.query |> Repo.avgOf (fn (j: Job) -> j.took)
+";
+    let tw = make_workspace("Models", source);
+    let result = check_workspace(CheckOptions::new(tw.path.clone())).expect("check ran");
+    assert!(
+        result.diagnostics.iter().any(|d| d.code == "T040"),
+        "expected T040 (avg over an interval column, not yet supported); got {:?}",
+        result.diagnostics
+    );
+}
+
 /// `maxOf` over a `Uuid` column is fine — `min`/`max` fold any comparable column,
 /// so the numeric bound applies only to `sum`/`avg`.
 #[test]

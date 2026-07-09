@@ -398,8 +398,14 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         (STD_DATE, "year" | "month" | "day") => {
             Some(mono(ty_fn_pure(vec![ty_date(b)], ty_int(b))))
         }
-        // `today` reads the system clock, so it carries the `time` capability.
+        // `today`/`todayUtc` read the system clock, so they carry the `time`
+        // capability. `today` takes a UTC offset in minutes; `todayUtc` takes unit.
         (STD_DATE, "today") => {
+            use ridge_ast::Capability;
+            let time_caps = CapabilitySet::singleton(Capability::Time);
+            Some(mono(ty_fn_caps(vec![ty_int(b)], ty_date(b), time_caps)))
+        }
+        (STD_DATE, "todayUtc") => {
             use ridge_ast::Capability;
             let time_caps = CapabilitySet::singleton(Capability::Time);
             Some(mono(ty_fn_caps(vec![ty_unit(b)], ty_date(b), time_caps)))

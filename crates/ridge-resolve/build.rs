@@ -497,8 +497,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // the year/month/day accessors, day arithmetic, and value-based
             // comparisons. The epoch-day representation and the three-way compare live
             // in the runtime.
-            "fromYmd", "toIso", "fromIso", "year", "month", "day", "today", "addDays", "diffDays",
-            "compare", "eq", "lt", "lte", "gt", "gte",
+            "fromYmd", "toIso", "fromIso", "year", "month", "day", "today", "todayUtc", "addDays",
+            "diffDays", "compare", "eq", "lt", "lte", "gt", "gte",
         ],
     ),
     (

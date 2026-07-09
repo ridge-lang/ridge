@@ -21,7 +21,7 @@
     bytes_from_hex/1, bytes_to_hex/1, bytes_from_utf8/1, bytes_to_utf8/1,
     bytes_empty/1, bytes_gen/1, bytes_length/1, bytes_concat/2, bytes_cmp/2,
     date_from_ymd/3, date_to_iso/1, date_from_iso/1,
-    date_year/1, date_month/1, date_day/1, date_today/1,
+    date_year/1, date_month/1, date_day/1, date_today/1, date_today_utc/1,
     date_add_days/2, date_diff_days/2, date_cmp/2,
     int_parse/0, int_parse/1, float_parse/1, float_to_text/1, bool_to_text/1,
     sql_literal/1, sql_value_source/1,
@@ -539,11 +539,17 @@ date_year({date, Days})  -> {Y, _, _} = calendar:gregorian_days_to_date(Days + d
 date_month({date, Days}) -> {_, M, _} = calendar:gregorian_days_to_date(Days + date_epoch_gd()), M.
 date_day({date, Days})   -> {_, _, D} = calendar:gregorian_days_to_date(Days + date_epoch_gd()), D.
 
-%% date_today/1 — std.date.today. Today's date in UTC. Reads the system clock, so it
-%% carries the `time` capability.
-date_today(_Unit) ->
-    {{Y, M, D}, _Time} = calendar:universal_time(),
+%% date_today/1 — std.date.today. Today's calendar date at a fixed offset from UTC,
+%% in minutes east. The offset shifts the current instant, then the date is read off
+%% in UTC, so a clock at that offset reads this date now; no timezone database or DST
+%% rule is involved. Reads the system clock, so it carries the `time` capability.
+date_today(OffsetMinutes) when is_integer(OffsetMinutes) ->
+    Secs = erlang:system_time(second) + OffsetMinutes * 60,
+    {{Y, M, D}, _Time} = calendar:system_time_to_universal_time(Secs, second),
     {date, calendar:date_to_gregorian_days(Y, M, D) - date_epoch_gd()}.
+
+%% date_today_utc/1 — std.date.todayUtc. Today's date in UTC (offset 0).
+date_today_utc(_Unit) -> date_today(0).
 
 %% date_add_days/2 — std.date.addDays. The date N days after D (N may be negative).
 date_add_days(N, {date, Days}) -> {date, Days + N}.

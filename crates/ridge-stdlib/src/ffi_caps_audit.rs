@@ -837,10 +837,16 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         arity: 1,
         requires_caps: &[],
     },
-    // `today` reads the system clock, so it carries the `time` capability.
+    // `today` / `todayUtc` read the system clock, so they carry the `time` capability.
     FfiAuditEntry {
         beam_module: "ridge_rt",
         fn_name: "date_today",
+        arity: 1,
+        requires_caps: &[Capability::Time],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "date_today_utc",
         arity: 1,
         requires_caps: &[Capability::Time],
     },

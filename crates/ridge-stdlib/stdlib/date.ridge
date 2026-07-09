@@ -42,9 +42,22 @@ pub fn month (d: Date) -> Int
 pub fn day (d: Date) -> Int
 
 -- Today's date in UTC. Requires the `time` capability, since it reads the system
--- clock and two calls on different days return different values.
+-- clock and two calls on different days return different values. Pairs with
+-- `today` for a non-UTC calendar: near midnight the UTC date and a local date can
+-- differ, so the zone is never assumed silently — pick this or pass an offset.
+@ffi("ridge_rt", "date_today_utc", 1)
+pub fn time todayUtc (_unit: Unit) -> Date
+
+-- Today's date at a fixed offset from UTC, in minutes east (so UTC-3 is `-180`,
+-- UTC+5:30 is `330`, UTC is `0`). Returns the calendar date a clock at that offset
+-- reads right now. The offset is applied to the current instant, so it needs no
+-- timezone database and no daylight-saving rules: a caller passing their current
+-- offset gets their current local date exactly. For a date at some other instant,
+-- or true zone arithmetic across a DST change, a timezone-aware type is needed —
+-- Ridge does not have one yet, by design. There is deliberately no zero-argument
+-- `today`: the zone is always stated, here or through `todayUtc`.
 @ffi("ridge_rt", "date_today", 1)
-pub fn time today (_unit: Unit) -> Date
+pub fn time today (offsetMinutes: Int) -> Date
 
 -- The date n days after d; n may be negative to move backward. Pure calendar
 -- arithmetic — `addDays 1` on the last day of a month rolls into the next.

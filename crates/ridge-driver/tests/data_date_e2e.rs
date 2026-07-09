@@ -133,6 +133,17 @@ pub fn db maxDate () -> Text =
                 Err _ -> "max-err"
                 Ok o  -> optDateText o
 
+-- today's-date zone handling is always explicit: `todayUtc` equals `today 0` (both
+-- UTC), and a +/-24h (1440-minute) offset shifts the calendar date by exactly one
+-- day whatever the current time of day, so these identities hold on any run. This
+-- pins that the offset plumbing is right without depending on the wall clock.
+pub fn time todayCheck () -> Text =
+    let z = Date.today 0
+    let a = Date.eq (Date.todayUtc ()) z
+    let b = Date.eq (Date.today 1440) (Date.addDays 1 z)
+    let c = Date.eq (Date.today (-1440)) (Date.addDays (-1) z)
+    if a && b && c then "ok" else "mismatch"
+
 -- column-type dispatch: `deriving (Schema)` reads the `due_on` column type from
 -- SqlType.dbType, so the DDL names it `date`.
 fn eventWitness () -> Option Event = None
@@ -150,7 +161,7 @@ fn write_workspace(root: &std::path::Path) {
     .expect("write workspace manifest");
     std::fs::write(
         root.join("app").join("ridge.toml"),
-        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n\n[capabilities]\nallow = [\"db\"]\n",
+        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n\n[capabilities]\nallow = [\"db\", \"time\"]\n",
     )
     .expect("write project manifest");
     std::fs::write(app_src.join("Main.ridge"), SOURCE).expect("write source");
@@ -213,6 +224,7 @@ fn date_codec_runs_on_beam() {
          io:format(\"filterByDate=~s~n\",[{module}:filterByDate()]), \
          io:format(\"minDate=~s~n\",[{module}:minDate()]), \
          io:format(\"maxDate=~s~n\",[{module}:maxDate()]), \
+         io:format(\"todayCheck=~s~n\",[{module}:todayCheck()]), \
          io:format(\"dueOnDdl=~s~n\",[{module}:dueOnDdl()]), \
          halt()."
     );
@@ -252,6 +264,10 @@ fn date_codec_runs_on_beam() {
         (
             "maxDate=2026-12-31",
             "a scalar MAX over a date column folds chronologically and keeps the Date type",
+        ),
+        (
+            "todayCheck=ok",
+            "today's date states its zone: todayUtc == today 0, and a +/-24h offset shifts the date by one day",
         ),
         (
             "date",

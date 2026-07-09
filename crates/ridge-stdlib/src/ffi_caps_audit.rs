@@ -605,6 +605,24 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
     },
     FfiAuditEntry {
         beam_module: "ridge_rt",
+        fn_name: "mono_now",
+        arity: 1,
+        requires_caps: &[Capability::Time],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "mono_elapsed",
+        arity: 1,
+        requires_caps: &[Capability::Time],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "mono_since",
+        arity: 2,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
         fn_name: "time_diff_ms",
         arity: 2,
         requires_caps: &[],

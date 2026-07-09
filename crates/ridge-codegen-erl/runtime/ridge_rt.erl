@@ -11,6 +11,7 @@
     cli_args/0, cli_args/1,
     time_now/0, time_now/1, time_epoch/0, time_epoch/1,
     time_diff_ms/2, time_diff/2, duration_from_millis/1,
+    mono_now/1, mono_elapsed/1, mono_since/2,
     time_from_iso/1, time_since_ms/1, time_iso/1,
     time_to_micros/1, time_from_micros/1,
     decimal_from_text/1, decimal_to_text/1, decimal_from_int/1, decimal_parse_raw/1,
@@ -164,6 +165,21 @@ time_diff({timestamp, A}, {timestamp, B}) -> #{ms => (A - B) div 1000}.
 %% Builds a Duration from a whole-millisecond span, the same `#{ms => Ms}` record
 %% shape `time_diff` returns, so the two are interchangeable and `.ms` reads either.
 duration_from_millis(Ms) -> #{ms => Ms}.
+
+%% mono_now/1 — std.time.monotonic. An opaque monotonic reading, tagged `{instant, _}`
+%% so it cannot be confused with a wall-clock `{timestamp, _}`. erlang:monotonic_time
+%% only moves forward within a runtime, so spans measured from it are never negative.
+mono_now(_) -> {instant, erlang:monotonic_time(nanosecond)}.
+
+%% mono_elapsed/1 — std.time.elapsed. The Duration from a monotonic reading to now,
+%% as the `#{ms => Ms}` record shape (nanoseconds folded to whole milliseconds).
+mono_elapsed({instant, Start}) ->
+    #{ms => (erlang:monotonic_time(nanosecond) - Start) div 1000000}.
+
+%% mono_since/2 — std.time.since. The Duration between two monotonic readings,
+%% end minus start, reading no clock of its own.
+mono_since({instant, Start}, {instant, End}) ->
+    #{ms => (End - Start) div 1000000}.
 
 %% time_from_iso/1 — std.time.fromIso / std.time.parse
 %% Parses an ISO-8601 text into a Timestamp.

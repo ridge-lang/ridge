@@ -285,8 +285,20 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
         "std.time",
         &[
             // `pub type Duration` declared in time.ridge.
-            "Duration", "ofMillis", "now", "epoch", "fromIso", "diff", "diffMs", "sinceMs", "sleep",
-            "parse", "iso",
+            "Duration",
+            "ofMillis",
+            "monotonic",
+            "elapsed",
+            "since",
+            "now",
+            "epoch",
+            "fromIso",
+            "diff",
+            "diffMs",
+            "sinceMs",
+            "sleep",
+            "parse",
+            "iso",
         ],
     ),
     (

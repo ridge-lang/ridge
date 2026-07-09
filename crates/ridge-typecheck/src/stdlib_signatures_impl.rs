@@ -132,6 +132,10 @@ const fn ty_duration(b: &BuiltinTyCons) -> Type {
     Type::Con(b.duration, vec![])
 }
 #[inline]
+const fn ty_instant(b: &BuiltinTyCons) -> Type {
+    Type::Con(b.instant, vec![])
+}
+#[inline]
 const fn ty_proc_output(b: &BuiltinTyCons) -> Type {
     Type::Con(b.proc_output, vec![])
 }
@@ -1407,6 +1411,25 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         (STD_TIME, "ofMillis") => {
             // Int -> Duration — build a Duration from a whole-millisecond span.
             Some(mono(ty_fn_pure(vec![ty_int(b)], ty_duration(b))))
+        }
+        (STD_TIME, "monotonic") => {
+            use ridge_ast::Capability;
+            // (_: Unit) -> Instant — read the monotonic clock (requires `time`).
+            let time_caps = CapabilitySet::singleton(Capability::Time);
+            Some(mono(ty_fn_caps(vec![ty_unit(b)], ty_instant(b), time_caps)))
+        }
+        (STD_TIME, "elapsed") => {
+            use ridge_ast::Capability;
+            // Instant -> Duration — span since a reading, against the clock now.
+            let time_caps = CapabilitySet::singleton(Capability::Time);
+            Some(mono(ty_fn_caps(vec![ty_instant(b)], ty_duration(b), time_caps)))
+        }
+        (STD_TIME, "since") => {
+            // Instant -> Instant -> Duration — span between two readings (pure).
+            Some(mono(ty_fn_pure(
+                vec![ty_instant(b), ty_instant(b)],
+                ty_duration(b),
+            )))
         }
         (STD_TIME, "diffMs") => {
             // Timestamp -> Timestamp -> Int

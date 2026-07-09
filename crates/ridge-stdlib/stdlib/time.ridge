@@ -17,6 +17,27 @@ pub type Duration = { ms: Int }
 @ffi("ridge_rt", "duration_from_millis", 1)
 pub fn ofMillis (ms: Int) -> Duration
 
+-- Instant is an opaque monotonic reading, pre-allocated in BuiltinTyCons. It measures
+-- elapsed time correctly where a Timestamp cannot: the wall clock can jump backward
+-- when it is adjusted, but a monotonic reading only moves forward, so a Duration
+-- measured between two of them is never negative. An Instant is meaningless as an
+-- absolute time or across process restarts — read one, keep it, and measure a span
+-- against it.
+
+-- Read the current monotonic clock. Requires `time`.
+@ffi("ridge_rt", "mono_now", 1)
+pub fn time monotonic (_unit: Unit) -> Instant
+
+-- The Duration elapsed since a monotonic reading, measured against the monotonic
+-- clock now. Never negative. Requires `time`.
+@ffi("ridge_rt", "mono_elapsed", 1)
+pub fn time elapsed (start: Instant) -> Duration
+
+-- The Duration between two monotonic readings, end minus start. Pure: both readings
+-- are already taken, so it reads no clock.
+@ffi("ridge_rt", "mono_since", 2)
+pub fn since (start: Instant) (end: Instant) -> Duration
+
 -- Return the current system time as a Timestamp.
 @ffi("ridge_rt", "time_now", 1)
 pub fn time now (_unit: Unit) -> Timestamp

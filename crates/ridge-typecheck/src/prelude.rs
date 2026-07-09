@@ -185,6 +185,7 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     // `Error`, `Duration`, and `ProcOutput` in stdlib `.ridge` type annotations.
     tycons.insert("Error".to_string(), b.error);
     tycons.insert("Duration".to_string(), b.duration);
+    tycons.insert("Instant".to_string(), b.instant);
     tycons.insert("ProcOutput".to_string(), b.proc_output);
     // Ordering = Less | Equal | Greater — prelude union type required by Ord (0.2.13).
     tycons.insert("Ordering".to_string(), b.ordering);

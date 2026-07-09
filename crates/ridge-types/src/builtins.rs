@@ -359,6 +359,10 @@ pub struct BuiltinTyCons {
     /// from `std.timeofday` (`fromHms`, `fromIso`, `nowUtc`), and the codec that
     /// moves it across a SQL `time` column lives in `std.sql`.
     pub time: TyConId,
+    /// `Instant` — an opaque monotonic reading for measuring elapsed time
+    /// (`std.time`). Distinct from `Timestamp` (a wall-clock instant): a monotonic
+    /// reading only moves forward, so an elapsed `Duration` is never negative.
+    pub instant: TyConId,
 }
 
 impl BuiltinTyCons {
@@ -414,6 +418,7 @@ impl BuiltinTyCons {
             bytes: SENTINEL,
             date: SENTINEL,
             time: SENTINEL,
+            instant: SENTINEL,
         }
     }
 
@@ -1634,6 +1639,20 @@ impl BuiltinTyCons {
             opaque: false,
             is_anon: false,
         });
+        // Instant — an opaque monotonic reading (std.time). Interned last so the
+        // earlier ids stay put; a `Primitive` kind with no user-visible structure,
+        // resolved by name through the prelude like `Duration`, not a `PrimitiveType`
+        // keyword, since it is not a column type and needs no codec.
+        let instant = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "Instant".to_string(),
+            arity: 0,
+            kind: TyConKind::Primitive,
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
 
         // Verify assignment order matches spec §4.1 indices 0..16.
         debug_assert_eq!(int.0, 0);
@@ -1698,6 +1717,7 @@ impl BuiltinTyCons {
         debug_assert_eq!(bytes.0, 53);
         debug_assert_eq!(date.0, 54);
         debug_assert_eq!(time.0, 55);
+        debug_assert_eq!(instant.0, 56);
 
         // Suppress the "unused" lint — CapabilitySet is imported for future use
         // in T4 (actor schemas carry CapabilitySet).
@@ -1745,6 +1765,7 @@ impl BuiltinTyCons {
             bytes,
             date,
             time,
+            instant,
         }
     }
 }
@@ -1824,18 +1845,18 @@ mod tests {
     }
 
     #[test]
-    fn arena_len_is_56() {
+    fn arena_len_is_57() {
         // 15 original builtins + Ordering + JsonValue + the std.net.http taint
         // wrappers Sql / Html / SecureCookie + std.sql's SqlValue + the
         // column-codegen builtins Column / Table + the schema-codegen builtins
         // FieldSchema / Schema + the quotation builtins QExpr / Quote (27 total)
         // + the 16 synthetic function-type constructors Fn/0 … Fn/15 + Ret/1 +
         // Rows/1 + JoinCond/2 + the four join-result extractors (Join/Left/Right/Full)
-        // + InsertShape/1 + the Decimal, Uuid, Bytes, Date and Time primitives
-        // (interned last).
+        // + InsertShape/1 + the Decimal, Uuid, Bytes, Date and Time primitives and
+        // the Instant monotonic reading (interned last).
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 13);
-        assert_eq!(arena.len(), 56);
+        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 14);
+        assert_eq!(arena.len(), 57);
     }
 
     #[test]

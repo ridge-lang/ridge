@@ -41,7 +41,11 @@
     pg_unrecord_migration/2,
     pg_raw_query/3,
     pg_raw_exec/3,
-    pg_close/1
+    pg_close/1,
+    %% Exposed for the decode unit test: the timestamp text parser is pure and
+    %% carries the only non-trivial wire-decode logic, so it is testable without a
+    %% live database.
+    pg_timestamp_to_micros/1
 ]).
 
 -define(CONNECT_TIMEOUT, 10000).
@@ -1020,6 +1024,13 @@ decode_value(2950, Val) ->
 %% so the SqlBytes carrier holds the same canonical hex the codec produces.
 decode_value(17, <<"\\x", Hex/binary>>) ->
     {'SqlBytes', Hex};
+%% timestamp (OID 1114) and timestamptz (OID 1184) decode to the typed SqlInstant
+%% (epoch microseconds), so a Timestamp column round-trips instead of arriving as
+%% opaque text. Postgres's default ISO DateStyle renders both without narrowing,
+%% and pg_timestamp_to_micros normalises the offset (timestamptz) or reads a naive
+%% timestamp as UTC.
+decode_value(Oid, Val) when Oid =:= 1114; Oid =:= 1184 ->
+    {'SqlInstant', pg_timestamp_to_micros(Val)};
 decode_value(Oid, Val) when Oid =:= 25; Oid =:= 1043; Oid =:= 1042; Oid =:= 19; Oid =:= 18 ->
     {'SqlText', Val};
 decode_value(_Oid, Val) ->
@@ -1030,6 +1041,54 @@ to_float(Val) ->
     catch _:_ ->
         try float(binary_to_integer(Val)) catch _:_ -> 0.0 end
     end.
+
+%% Parse a Postgres ISO timestamp/timestamptz text value into epoch microseconds.
+%% The shape is `YYYY-MM-DD HH:MM:SS[.ffffff][(+|-)HH[:MM[:SS]]]`: a `timestamptz`
+%% carries a zone offset (rendered in the session zone), a plain `timestamp` has
+%% none and is read as UTC. The fractional part, which Postgres trims of trailing
+%% zeros, is left-padded back out to microsecond resolution.
+pg_timestamp_to_micros(Bin) ->
+    <<Y:4/binary, "-", Mo:2/binary, "-", D:2/binary, " ",
+      H:2/binary, ":", Mi:2/binary, ":", S:2/binary, Rest/binary>> = Bin,
+    Date = {binary_to_integer(Y), binary_to_integer(Mo), binary_to_integer(D)},
+    Time = {binary_to_integer(H), binary_to_integer(Mi), binary_to_integer(S)},
+    {FracMicros, TzRest} = pg_ts_frac(Rest),
+    OffsetSecs = pg_ts_offset(TzRest),
+    EpochSecs = calendar:datetime_to_gregorian_seconds({Date, Time}) - 62167219200 - OffsetSecs,
+    EpochSecs * 1000000 + FracMicros.
+
+%% Split an optional `.ffffff` fraction off the front, returning {Micros, Rest}.
+pg_ts_frac(<<".", R/binary>>) ->
+    {Digits, Rest} = pg_ts_digits(R, <<>>),
+    {binary_to_integer(pg_ts_pad(Digits)), Rest};
+pg_ts_frac(Rest) ->
+    {0, Rest}.
+
+pg_ts_digits(<<C, R/binary>>, Acc) when C >= $0, C =< $9 ->
+    pg_ts_digits(R, <<Acc/binary, C>>);
+pg_ts_digits(Rest, Acc) ->
+    {Acc, Rest}.
+
+%% Normalise the fractional digits to exactly six (microseconds): pad right with
+%% zeros, or truncate beyond microsecond resolution.
+pg_ts_pad(D) when byte_size(D) >= 6 -> binary:part(D, 0, 6);
+pg_ts_pad(D) -> pg_ts_pad(<<D/binary, "0">>).
+
+%% Parse an optional timezone offset into a signed second count (east of UTC is
+%% positive). A missing offset — a plain `timestamp` — is UTC.
+pg_ts_offset(<<>>) -> 0;
+pg_ts_offset(<<"Z">>) -> 0;
+pg_ts_offset(<<Sign, H:2/binary, R/binary>>) when Sign =:= $+; Sign =:= $- ->
+    Secs = binary_to_integer(H) * 3600 + pg_ts_offset_min(R),
+    case Sign of $+ -> Secs; _ -> -Secs end.
+
+pg_ts_offset_min(<<":", M:2/binary, R/binary>>) -> binary_to_integer(M) * 60 + pg_ts_offset_sec(R);
+pg_ts_offset_min(<<M:2/binary, R/binary>>) -> binary_to_integer(M) * 60 + pg_ts_offset_sec(R);
+pg_ts_offset_min(_) -> 0.
+
+pg_ts_offset_sec(<<":", S:2/binary, _/binary>>) -> binary_to_integer(S);
+pg_ts_offset_sec(<<S:2/binary, _/binary>>) -> binary_to_integer(S);
+pg_ts_offset_sec(_) -> 0.
 
 %% --- Connect, TLS upgrade, authentication ---
 

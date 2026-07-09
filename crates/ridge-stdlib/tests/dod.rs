@@ -236,7 +236,7 @@ fn g5_path_b_dominance() {
 /// ahead.
 #[test]
 fn artefacts_count_matches_plan() {
-    const EXPECTED_RG: usize = 32;
+    const EXPECTED_RG: usize = 33;
     const EXPECTED_TEST_RG: usize = 20;
 
     let stdlib = stdlib_dir();

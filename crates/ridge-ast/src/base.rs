@@ -79,6 +79,8 @@ pub enum PrimitiveType {
     Bytes,
     /// Calendar date, year-month-day (`Date`).
     Date,
+    /// Wall-clock time of day, hour-minute-second (`Time`).
+    Time,
 }
 
 // ── DocComment ────────────────────────────────────────────────────────────────

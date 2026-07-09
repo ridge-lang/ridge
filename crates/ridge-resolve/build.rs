@@ -65,13 +65,15 @@ const MODULE_ORDER: &[&str] = &[
     "std.raw",
     "std.test",
     // Appended last so they take the highest ids without renumbering any module
-    // ahead of them. `std.decimal`, `std.uuid`, `std.bytes` and `std.date` are Tier-1
-    // primitive companions (they import nothing); the ordering here only fixes ids, and
-    // the build tier is set separately in the stdlib build driver.
+    // ahead of them. `std.decimal`, `std.uuid`, `std.bytes`, `std.date` and
+    // `std.timeofday` are Tier-1 primitive companions (they import nothing); the
+    // ordering here only fixes ids, and the build tier is set separately in the
+    // stdlib build driver.
     "std.decimal",
     "std.uuid",
     "std.bytes",
     "std.date",
+    "std.timeofday",
 ];
 
 // ── Baseline export table (T10: preserves original API) ───────────────────────
@@ -400,6 +402,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "sqlBytes",
             "sqlJson",
             "sqlDate",
+            "sqlTime",
             // The safe SQL statement-text wrapper, its factory, and accessor —
             // a data-layer concern, declared in sql.ridge.
             "Sql",
@@ -432,6 +435,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "DbJson",
             "DbJsonb",
             "DbDate",
+            "DbTime",
             "DbRaw",
         ],
     ),
@@ -499,6 +503,32 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // in the runtime.
             "fromYmd", "toIso", "fromIso", "year", "month", "day", "today", "todayUtc", "addDays",
             "diffDays", "compare", "eq", "lt", "lte", "gt", "gte",
+        ],
+    ),
+    (
+        "std.timeofday",
+        &[
+            // Wall-clock times of day: construction from components or ISO text, the
+            // current time of day, the hour/minute/second accessors, second
+            // arithmetic, and value-based comparisons. The microsecond-of-day
+            // representation and the three-way compare live in the runtime. The type
+            // is prelude-aliased `Time`.
+            "fromHms",
+            "toIso",
+            "fromIso",
+            "hour",
+            "minute",
+            "second",
+            "now",
+            "nowUtc",
+            "addSeconds",
+            "diffSeconds",
+            "compare",
+            "eq",
+            "lt",
+            "lte",
+            "gt",
+            "gte",
         ],
     ),
     (

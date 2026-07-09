@@ -1694,6 +1694,7 @@ pub fn register_stdlib_instances(
             TyConId(52), // Uuid
             TyConId(53), // Bytes
             TyConId(54), // Date
+            TyConId(55), // Time
         ] {
             env.instances
                 .entry((sqltype, smallvec![prim]))

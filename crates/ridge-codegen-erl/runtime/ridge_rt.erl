@@ -23,6 +23,9 @@
     date_from_ymd/3, date_to_iso/1, date_from_iso/1,
     date_year/1, date_month/1, date_day/1, date_today/1, date_today_utc/1,
     date_add_days/2, date_diff_days/2, date_cmp/2,
+    tod_from_hms/3, tod_to_iso/1, tod_from_iso/1,
+    tod_hour/1, tod_minute/1, tod_second/1, tod_now/1, tod_now_utc/1,
+    tod_add_seconds/2, tod_diff_seconds/2, tod_cmp/2,
     int_parse/0, int_parse/1, float_parse/1, float_to_text/1, bool_to_text/1,
     sql_literal/1, sql_value_source/1,
     text_split_all/2, text_replace_all/3, text_join/2, text_slice/3,
@@ -563,6 +566,129 @@ date_diff_days({date, A}, {date, B}) -> A - B.
 date_cmp({date, A}, {date, B}) ->
     if A < B -> -1; A > B -> 1; true -> 0 end.
 
+%% --- Time of day ---
+%% A Time is a wall-clock time of day held as {time, Micros}, where Micros is the
+%% number of microseconds since midnight, in [0, 86_400_000_000). It carries no date
+%% and no timezone; the integer form keeps ordering and time arithmetic exact.
+tod_micros_per_day() -> 86400000000.
+
+%% tod_from_hms/3 — std.timeofday.fromHms. Int -> Int -> Int -> Result Time Error.
+%% Validates the components (hour 0-23, minute 0-59, second 0-59); a leap second (60)
+%% is rejected, matching POSIX time.
+tod_from_hms(H, M, S) when is_integer(H), is_integer(M), is_integer(S) ->
+    case (H >= 0) andalso (H =< 23) andalso (M >= 0) andalso (M =< 59)
+         andalso (S >= 0) andalso (S =< 59) of
+        true  -> {ok, {time, (H * 3600 + M * 60 + S) * 1000000}};
+        false -> {error, {error_record, <<"time.invalid">>, <<"invalid time of day">>}}
+    end.
+
+%% tod_to_iso/1 — std.timeofday.toIso (and the SQL codec's canonical form). ISO 8601
+%% `HH:MM:SS`, zero-padded, with a `.ffffff` fraction only when the time carries
+%% sub-second precision. The fixed-width fields keep the text lexicographically ordered
+%% the same as the underlying instant.
+tod_to_iso({time, Micros}) ->
+    Secs = Micros div 1000000,
+    Frac = Micros rem 1000000,
+    H = Secs div 3600,
+    M = (Secs rem 3600) div 60,
+    S = Secs rem 60,
+    Base = io_lib:format("~2..0b:~2..0b:~2..0b", [H, M, S]),
+    case Frac of
+        0 -> iolist_to_binary(Base);
+        _ -> iolist_to_binary([Base, io_lib:format(".~6..0b", [Frac])])
+    end.
+
+%% tod_from_iso/1 — std.timeofday.fromIso. Text -> Result Time Error. Parses ISO 8601
+%% `HH:MM:SS` with an optional `.f`-`.ffffff` fraction and range-checks the components.
+tod_from_iso(Bin) ->
+    case tod_parse_iso(binary_to_list(Bin)) of
+        {ok, H, M, S, Frac} ->
+            case (H >= 0) andalso (H =< 23) andalso (M >= 0) andalso (M =< 59)
+                 andalso (S >= 0) andalso (S =< 59) of
+                true  -> {ok, {time, (H * 3600 + M * 60 + S) * 1000000 + Frac}};
+                false -> {error, {error_record, <<"time.invalid">>, <<"time out of range">>}}
+            end;
+        error ->
+            {error, {error_record, <<"time.invalid">>, <<"invalid ISO-8601 time">>}}
+    end.
+
+%% Parse "HH:MM:SS" (with an optional ".ffffff") into {ok, H, M, S, FracMicros} or error.
+tod_parse_iso(Str) ->
+    case string:split(Str, ":", all) of
+        [HStr, MStr, Rest] ->
+            case {tod_int(HStr), tod_int(MStr), tod_parse_secs(Rest)} of
+                {{ok, H}, {ok, M}, {ok, S, Frac}} -> {ok, H, M, S, Frac};
+                _ -> error
+            end;
+        _ -> error
+    end.
+
+%% The seconds field with an optional fractional part -> {ok, Secs, FracMicros} or error.
+tod_parse_secs(Str) ->
+    case string:split(Str, ".", all) of
+        [SStr] ->
+            case tod_int(SStr) of
+                {ok, S} -> {ok, S, 0};
+                error   -> error
+            end;
+        [SStr, FStr] ->
+            case {tod_int(SStr), tod_frac(FStr)} of
+                {{ok, S}, {ok, Frac}} -> {ok, S, Frac};
+                _ -> error
+            end;
+        _ -> error
+    end.
+
+%% A non-negative integer field with nothing left over, or error.
+tod_int(Str) ->
+    case string:to_integer(Str) of
+        {N, []} when is_integer(N), N >= 0 -> {ok, N};
+        _ -> error
+    end.
+
+%% Fractional-second digits -> microseconds, right-padded and truncated to 6 places.
+tod_frac(Str) ->
+    case (Str =/= []) andalso lists:all(fun(C) -> (C >= $0) andalso (C =< $9) end, Str) of
+        true ->
+            {Micros, _} = string:to_integer(lists:sublist(Str ++ "000000", 6)),
+            {ok, Micros};
+        false -> error
+    end.
+
+%% tod_hour/1, tod_minute/1, tod_second/1 — the hour (0-23), minute (0-59), and whole
+%% second (0-59) of the time of day; a sub-second fraction is dropped.
+tod_hour({time, Micros})   -> (Micros div 1000000) div 3600.
+tod_minute({time, Micros}) -> ((Micros div 1000000) rem 3600) div 60.
+tod_second({time, Micros}) -> (Micros div 1000000) rem 60.
+
+%% tod_now/1 — std.timeofday.now. The current time of day at a fixed offset from UTC, in
+%% minutes east. The offset shifts the current instant, then the time of day is read off
+%% the shifted clock, wrapping within the day. Reads the system clock, so it carries the
+%% `time` capability.
+tod_now(OffsetMinutes) when is_integer(OffsetMinutes) ->
+    Micros = erlang:system_time(microsecond) + OffsetMinutes * 60000000,
+    Day = tod_micros_per_day(),
+    {time, ((Micros rem Day) + Day) rem Day}.
+
+%% tod_now_utc/1 — std.timeofday.nowUtc. The current time of day in UTC (offset 0).
+tod_now_utc(_Unit) -> tod_now(0).
+
+%% tod_add_seconds/2 — std.timeofday.addSeconds. The time N seconds after T, wrapping at
+%% midnight (so 23:59:30 + 60s is 00:00:30); N may be negative.
+tod_add_seconds(N, {time, Micros}) ->
+    Day = tod_micros_per_day(),
+    Shifted = Micros + N * 1000000,
+    {time, ((Shifted rem Day) + Day) rem Day}.
+
+%% tod_diff_seconds/2 — std.timeofday.diffSeconds. The whole-second count A - B within a
+%% day; negative when A is earlier than B. A sub-second remainder is floored.
+tod_diff_seconds({time, A}, {time, B}) -> (A - B) div 1000000.
+
+%% tod_cmp/2 — std.timeofday.compare. The microsecond count orders chronologically, so a
+%% plain integer compare yields the time ordering (matching how Postgres sorts `time`).
+tod_cmp({time, A}, {time, B}) ->
+    if A < B -> -1; A > B -> 1; true -> 0 end.
+
 %% bytes_length/1 — std.bytes.length. The number of bytes.
 bytes_length(Raw) -> byte_size(Raw).
 
@@ -633,6 +759,7 @@ sql_literal({'SqlUuid', S})     -> <<"'", S/binary, "'">>;
 sql_literal({'SqlBytes', Hex})  -> <<"'\\x", Hex/binary, "'">>;
 sql_literal({'SqlJson', S})     -> <<"'", (binary:replace(S, <<"'">>, <<"''">>, [global]))/binary, "'">>;
 sql_literal({'SqlDate', S})     -> <<"'", S/binary, "'">>;
+sql_literal({'SqlTime', S})     -> <<"'", S/binary, "'">>;
 sql_literal('SqlNull')          -> <<"NULL">>.
 
 %% sql_value_source/1 — render a SqlValue as the Ridge *source* expression that
@@ -652,6 +779,7 @@ sql_value_source({'SqlUuid', S})     -> <<"(sqlUuid ", (source_text_literal(S))/
 sql_value_source({'SqlBytes', S})    -> <<"(sqlBytes ", (source_text_literal(S))/binary, ")">>;
 sql_value_source({'SqlJson', S})     -> <<"(sqlJson ", (source_text_literal(S))/binary, ")">>;
 sql_value_source({'SqlDate', S})     -> <<"(sqlDate ", (source_text_literal(S))/binary, ")">>;
+sql_value_source({'SqlTime', S})     -> <<"(sqlTime ", (source_text_literal(S))/binary, ")">>;
 sql_value_source('SqlNull')          -> <<"(sqlNull ())">>.
 
 %% source_text_literal/1 — a Text as a Ridge string literal: backslash doubled
@@ -2021,6 +2149,7 @@ mem_pcell({'QLitUuid', U}, _Row) -> {'SqlUuid', uuid_to_text(U)};
 mem_pcell({'QLitInstant', TS}, _Row) -> {'SqlInstant', time_to_micros(TS)};
 mem_pcell({'QLitBytes', B}, _Row) -> {'SqlBytes', bytes_to_hex(B)};
 mem_pcell({'QLitDate', D}, _Row) -> {'SqlDate', date_to_iso(D)};
+mem_pcell({'QLitTime', T}, _Row) -> {'SqlTime', tod_to_iso(T)};
 %% Computed projection cells over a join's flat source-prefixed rows: arithmetic
 %% folds its operands (each resolved by the same prefix rules), a CASE picks a
 %% branch by its condition read as an N-ary predicate. A cell with no value — a
@@ -2199,6 +2328,7 @@ mem_key({'SqlJson', S}) -> S;
 %% A date column keys on its ISO `YYYY-MM-DD` text, which sorts chronologically, so
 %% ORDER BY / min / max match how Postgres sorts the column.
 mem_key({'SqlDate', S}) -> S;
+mem_key({'SqlTime', S}) -> S;
 mem_key({'SqlBool', B})  -> B.
 
 %% An aggregate over a group as a comparison operand: the folded value (a column or
@@ -2290,6 +2420,7 @@ mem_hscalar_nary({'QLitUuid', U}, _Key, _GR) -> {'SqlUuid', uuid_to_text(U)};
 mem_hscalar_nary({'QLitInstant', TS}, _Key, _GR) -> {'SqlInstant', time_to_micros(TS)};
 mem_hscalar_nary({'QLitBytes', B}, _Key, _GR) -> {'SqlBytes', bytes_to_hex(B)};
 mem_hscalar_nary({'QLitDate', D}, _Key, _GR) -> {'SqlDate', date_to_iso(D)};
+mem_hscalar_nary({'QLitTime', T}, _Key, _GR) -> {'SqlTime', tod_to_iso(T)};
 mem_hscalar_nary(_Other, _Key, _GR)           -> undefined.
 
 %% Merge the Changes columns into every row matching the predicate tree, leaving
@@ -2487,6 +2618,7 @@ mem_jscalar({'QLitUuid', U}, _L, _R) -> {'SqlUuid', uuid_to_text(U)};
 mem_jscalar({'QLitInstant', TS}, _L, _R) -> {'SqlInstant', time_to_micros(TS)};
 mem_jscalar({'QLitBytes', B}, _L, _R) -> {'SqlBytes', bytes_to_hex(B)};
 mem_jscalar({'QLitDate', D}, _L, _R) -> {'SqlDate', date_to_iso(D)};
+mem_jscalar({'QLitTime', T}, _L, _R) -> {'SqlTime', tod_to_iso(T)};
 mem_jscalar({'QAdd', A, B}, L, R) -> mem_arith_apply('+', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
 mem_jscalar({'QSub', A, B}, L, R) -> mem_arith_apply('-', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
 mem_jscalar({'QMul', A, B}, L, R) -> mem_arith_apply('*', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
@@ -2672,6 +2804,7 @@ mem_nscalar({'QLitUuid', U}, _Row) -> {'SqlUuid', uuid_to_text(U)};
 mem_nscalar({'QLitInstant', TS}, _Row) -> {'SqlInstant', time_to_micros(TS)};
 mem_nscalar({'QLitBytes', B}, _Row) -> {'SqlBytes', bytes_to_hex(B)};
 mem_nscalar({'QLitDate', D}, _Row) -> {'SqlDate', date_to_iso(D)};
+mem_nscalar({'QLitTime', T}, _Row) -> {'SqlTime', tod_to_iso(T)};
 mem_nscalar({'QAdd', A, B}, Row) -> mem_arith_apply('+', mem_nscalar(A, Row), mem_nscalar(B, Row));
 mem_nscalar({'QSub', A, B}, Row) -> mem_arith_apply('-', mem_nscalar(A, Row), mem_nscalar(B, Row));
 mem_nscalar({'QMul', A, B}, Row) -> mem_arith_apply('*', mem_nscalar(A, Row), mem_nscalar(B, Row));
@@ -2869,6 +3002,7 @@ mem_scalar({'QLitUuid', U}, _Row) -> {'SqlUuid', uuid_to_text(U)};
 mem_scalar({'QLitInstant', TS}, _Row) -> {'SqlInstant', time_to_micros(TS)};
 mem_scalar({'QLitBytes', B}, _Row) -> {'SqlBytes', bytes_to_hex(B)};
 mem_scalar({'QLitDate', D}, _Row) -> {'SqlDate', date_to_iso(D)};
+mem_scalar({'QLitTime', T}, _Row) -> {'SqlTime', tod_to_iso(T)};
 mem_scalar({'QAdd', A, B}, Row) -> mem_arith_apply('+', mem_scalar(A, Row), mem_scalar(B, Row));
 mem_scalar({'QSub', A, B}, Row) -> mem_arith_apply('-', mem_scalar(A, Row), mem_scalar(B, Row));
 mem_scalar({'QMul', A, B}, Row) -> mem_arith_apply('*', mem_scalar(A, Row), mem_scalar(B, Row));
@@ -2933,6 +3067,7 @@ mem_sql_cmp(lt, {'SqlJson', X}, {'SqlJson', Y}) -> X < Y;
 %% A date column orders by its ISO `YYYY-MM-DD` text, which sorts chronologically;
 %% equality rides the generic structural clause above (the ISO form is canonical).
 mem_sql_cmp(lt, {'SqlDate', X}, {'SqlDate', Y}) -> X < Y;
+mem_sql_cmp(lt, {'SqlTime', X}, {'SqlTime', Y}) -> X < Y;
 mem_sql_cmp(lt, _A, _B) -> false.
 
 %% A SqlValue used directly as a predicate: a SqlBool yields its boolean.

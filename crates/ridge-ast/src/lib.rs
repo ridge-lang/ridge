@@ -215,8 +215,9 @@ mod tests {
             PrimitiveType::Uuid,
             PrimitiveType::Bytes,
             PrimitiveType::Date,
+            PrimitiveType::Time,
         ];
-        assert_eq!(prims.len(), 10);
+        assert_eq!(prims.len(), 11);
     }
 
     // ── DocComment ────────────────────────────────────────────────────────────

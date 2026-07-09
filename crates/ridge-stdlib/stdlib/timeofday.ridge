@@ -1,0 +1,104 @@
+-- std.timeofday — wall-clock times of day (Tier 1, no stdlib imports).
+--
+-- Time is a time of day — an hour, minute, and second (with optional sub-second
+-- precision), with no date and no timezone. It is a plain time-of-day, kept
+-- distinct from Timestamp (an absolute instant) and from Date (a calendar day):
+-- it maps to a native SQL `time` column that round-trips without a date detour.
+-- On the BEAM a Time is a microsecond count from midnight, which keeps ordering
+-- and time arithmetic exact.
+--
+-- The type is prelude-aliased `Time`, so `Time.fromHms` works without an import,
+-- even though the module file is named `timeofday` to leave `std.time` (durations
+-- and the wall clock) untouched.
+--
+-- A Time carries no date, so it is deliberately not combinable with a Date into a
+-- datetime here: pairing a plain date and a plain time into an instant needs a
+-- timezone, and reading such a pair as UTC would be the naive-local-datetime bug
+-- other languages spent years unwinding. An absolute point in time is a Timestamp.
+--
+-- This module covers construction (from components, from ISO text, the current
+-- time of day), the hour/minute/second accessors, second arithmetic, and
+-- comparison. The FFI primitives (`tod_*` in ridge_rt) carry the microsecond
+-- count; the codec that moves a Time across a SQL `time` column lives in std.sql.
+
+-- Build a Time from an hour (0-23), a minute (0-59), and a second (0-59).
+-- Validates the components, so `fromHms 24 0 0` is an Err, not a wrapped time;
+-- this is the gate for untrusted components. A leap second (`60`) is rejected,
+-- matching POSIX time. The inverse of the hour/minute/second accessors.
+@ffi("ridge_rt", "tod_from_hms", 3)
+pub fn fromHms (hour: Int) (minute: Int) (second: Int) -> Result Time Error
+
+-- Render a Time as ISO 8601 `HH:MM:SS`, zero-padded, with a `.ffffff` fraction
+-- only when the time carries sub-second precision. The canonical text form, and
+-- the inverse of fromIso.
+@ffi("ridge_rt", "tod_to_iso", 1)
+pub fn toIso (t: Time) -> Text
+
+-- Parse a Time from ISO 8601 `HH:MM:SS`, with an optional `.f`-`.ffffff` fraction.
+-- Returns Err on a malformed string or an out-of-range component, so it is the
+-- gate for an untrusted time string. The inverse of toIso.
+@ffi("ridge_rt", "tod_from_iso", 1)
+pub fn fromIso (s: Text) -> Result Time Error
+
+-- The hour of a Time, 0 through 23.
+@ffi("ridge_rt", "tod_hour", 1)
+pub fn hour (t: Time) -> Int
+
+-- The minute of a Time, 0 through 59.
+@ffi("ridge_rt", "tod_minute", 1)
+pub fn minute (t: Time) -> Int
+
+-- The whole second of a Time, 0 through 59. Any sub-second fraction is dropped.
+@ffi("ridge_rt", "tod_second", 1)
+pub fn second (t: Time) -> Int
+
+-- The current time of day in UTC. Requires the `time` capability, since it reads
+-- the system clock. Pairs with `now` for a non-UTC clock: near midnight the UTC
+-- time of day and a local one fall on different days, so the zone is never assumed
+-- silently — pick this or pass an offset.
+@ffi("ridge_rt", "tod_now_utc", 1)
+pub fn time nowUtc (_unit: Unit) -> Time
+
+-- The current time of day at a fixed offset from UTC, in minutes east (so UTC-3 is
+-- `-180`, UTC+5:30 is `330`, UTC is `0`). Returns the time a clock at that offset
+-- reads right now, wrapping within the day. The offset is applied to the current
+-- instant, so it needs no timezone database and no daylight-saving rules: a caller
+-- passing their current offset gets their current local time exactly. There is
+-- deliberately no zero-argument `now`: the zone is always stated, here or through
+-- `nowUtc`.
+@ffi("ridge_rt", "tod_now", 1)
+pub fn time now (offsetMinutes: Int) -> Time
+
+-- The time n seconds after t, wrapping at midnight (so `addSeconds 60` on 23:59:30
+-- gives 00:00:30); n may be negative to move backward. A time of day is a 24-hour
+-- clock, so it wraps rather than overflowing — the same choice java.time's
+-- LocalTime and Temporal's PlainTime make.
+@ffi("ridge_rt", "tod_add_seconds", 2)
+pub fn addSeconds (n: Int) (t: Time) -> Time
+
+-- The whole-second count from b to a (a - b) within the day: positive when a is
+-- later than b, negative when earlier, zero when equal. A sub-second remainder is
+-- floored. Matches the argument order of std.time.diff.
+@ffi("ridge_rt", "tod_diff_seconds", 2)
+pub fn diffSeconds (a: Time) (b: Time) -> Int
+
+-- Three-way comparison: negative when a < b, zero when equal, positive when
+-- a > b. Compares chronologically within the day, matching how a SQL `time` column
+-- sorts. The named comparisons below build on it.
+@ffi("ridge_rt", "tod_cmp", 2)
+pub fn compare (a: Time) (b: Time) -> Int
+
+-- Value equality.
+pub fn eq (a: Time) (b: Time) -> Bool = compare a b == 0
+
+-- Strictly earlier than.
+pub fn lt (a: Time) (b: Time) -> Bool = compare a b < 0
+
+-- Earlier than or equal.
+pub fn lte (a: Time) (b: Time) -> Bool = compare a b <= 0
+
+-- Strictly later than.
+pub fn gt (a: Time) (b: Time) -> Bool = compare a b > 0
+
+-- Later than or equal.
+pub fn gte (a: Time) (b: Time) -> Bool = compare a b >= 0

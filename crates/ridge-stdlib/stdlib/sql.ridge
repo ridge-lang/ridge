@@ -5,7 +5,7 @@
 -- to and from a SqlValue. The base-type instances live here; opaque newtypes
 -- get their instance for free via deriving (see the data layer).
 
-pub type SqlValue = SqlInt Int | SqlText Text | SqlBool Bool | SqlFloat Float | SqlNull | SqlInstant Int | SqlDecimal Text | SqlUuid Text | SqlBytes Text | SqlJson Text | SqlDate Text
+pub type SqlValue = SqlInt Int | SqlText Text | SqlBool Bool | SqlFloat Float | SqlNull | SqlInstant Int | SqlDecimal Text | SqlUuid Text | SqlBytes Text | SqlJson Text | SqlDate Text | SqlTime Text
 
 -- Direct SqlValue constructors. The variants are opaque to consumers (who reach
 -- them through `SqlType` or these factories), so these monomorphic factories are
@@ -47,6 +47,12 @@ pub fn sqlJson (s: Text) -> SqlValue = SqlJson s
 -- can bind a captured Date after running it through `Date.toIso`.
 pub fn sqlDate (s: Text) -> SqlValue = SqlDate s
 
+-- A wall-clock time of day, carried as its ISO `HH:MM:SS[.ffffff]` text. Like the
+-- date factory it takes the canonical text form (a Time has no literal), so a `time`
+-- default (`DefaultLit`) can be built and rendered back to source, and the query
+-- compiler can bind a captured Time after running it through `Time.toIso`.
+pub fn sqlTime (s: Text) -> SqlValue = SqlTime s
+
 -- A wall-clock instant from a typed `Timestamp` rather than raw epoch micros. The
 -- query compiler uses it to bind a captured Timestamp as a `SqlInstant` parameter,
 -- where the class method `SqlType.toSql` is not reachable from a stdlib module.
@@ -62,7 +68,7 @@ pub fn sqlInstantOf (t: Timestamp) -> SqlValue = SqlInstant (tsToMicros t)
 -- field to a `json`/`jsonb` column. `DbRaw` is the escape hatch for a
 -- dialect-specific type spelled by hand. It lives here at the value/column type
 -- layer, beside `SqlValue`, so the codec class can name it.
-pub type DbType = DbBoolean | DbInt | DbBigInt | DbFloat | DbDecimal Int Int | DbText | DbVarchar Int | DbUuid | DbTimestamp | DbTimestampTz | DbBytes | DbSmallInt | DbChar Int | DbJson | DbJsonb | DbDate | DbRaw Text
+pub type DbType = DbBoolean | DbInt | DbBigInt | DbFloat | DbDecimal Int Int | DbText | DbVarchar Int | DbUuid | DbTimestamp | DbTimestampTz | DbBytes | DbSmallInt | DbChar Int | DbJson | DbJsonb | DbDate | DbTime | DbRaw Text
 
 pub class SqlType a =
     toSql   (x: a)        -> SqlValue
@@ -240,6 +246,28 @@ instance SqlType Date =
             SqlDate s -> dateFromIso s
             _         -> Err ({ code = "sql.decode.date", message = "expected a SQL date" })
     dbType (witness: Option Date) -> DbType = DbDate
+
+-- ISO-text bridge for the Time codec. Like the Date bridge above, these are declared
+-- here rather than imported from std.timeofday so std.sql keeps depending on nothing
+-- above it. The runtime carries a Time as a microsecond-of-day count and moves it
+-- across `SqlTime` as ISO `HH:MM:SS[.ffffff]` text; `timeFromIso` re-validates a value
+-- read back from a column.
+@ffi("ridge_rt", "tod_to_iso", 1)
+fn timeToIso (t: Time) -> Text
+
+@ffi("ridge_rt", "tod_from_iso", 1)
+fn timeFromIso (s: Text) -> Result Time Error
+
+-- A time of day maps to the typed `SqlTime` value carrying its ISO text, so a native
+-- `time` column round-trips as itself rather than an ambiguous string that also picks
+-- up a date. The default column type is `DbTime`.
+instance SqlType Time =
+    toSql (x: Time) -> SqlValue = SqlTime (timeToIso x)
+    fromSql (v: SqlValue) -> Result Time Error =
+        match v
+            SqlTime s -> timeFromIso s
+            _         -> Err ({ code = "sql.decode.time", message = "expected a SQL time" })
+    dbType (witness: Option Time) -> DbType = DbTime
 
 -- Retype a nested-Option witness to a witness for the inner type, so the
 -- `Option a` instance can delegate its column type. `dbType` reads only the

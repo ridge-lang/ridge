@@ -948,6 +948,9 @@ param_text({'SqlJson', S})     -> S;
 %% a date param goes as its ISO `YYYY-MM-DD` text, which is exactly the SqlDate
 %% carrier, so Postgres parses it as a `date` without a cast.
 param_text({'SqlDate', S})     -> S;
+%% a time param goes as its ISO `HH:MM:SS[.ffffff]` text, exactly the SqlTime
+%% carrier, so Postgres parses it as a `time` without a cast.
+param_text({'SqlTime', S})     -> S;
 param_text('SqlNull')         -> <<>>.
 
 collect_rows(Conn, Cols, Acc) ->
@@ -1047,6 +1050,11 @@ decode_value(Oid, Val) when Oid =:= 114; Oid =:= 3802 ->
 %% round-trips through the codec rather than arriving as opaque text.
 decode_value(1082, Val) ->
     {'SqlDate', Val};
+%% time (OID 1083) decodes to the typed SqlTime. Postgres delivers a time of day as
+%% ISO `HH:MM:SS[.ffffff]` text, which is exactly the SqlTime carrier, so a Time
+%% column round-trips through the codec rather than arriving as opaque text.
+decode_value(1083, Val) ->
+    {'SqlTime', Val};
 decode_value(Oid, Val) when Oid =:= 25; Oid =:= 1043; Oid =:= 1042; Oid =:= 19; Oid =:= 18 ->
     {'SqlText', Val};
 decode_value(_Oid, Val) ->

@@ -72,6 +72,8 @@ const STD_UUID: StdlibModuleId = StdlibModuleId(29);
 const STD_BYTES: StdlibModuleId = StdlibModuleId(30);
 // std.date follows, taking the next id the same way (31).
 const STD_DATE: StdlibModuleId = StdlibModuleId(31);
+// std.timeofday follows, taking the next id the same way (32).
+const STD_TIMEOFDAY: StdlibModuleId = StdlibModuleId(32);
 
 // ── Type-building helpers ─────────────────────────────────────────────────────
 //
@@ -116,6 +118,10 @@ const fn ty_bytes(b: &BuiltinTyCons) -> Type {
 #[inline]
 const fn ty_date(b: &BuiltinTyCons) -> Type {
     Type::Con(b.date, vec![])
+}
+#[inline]
+const fn ty_time(b: &BuiltinTyCons) -> Type {
+    Type::Con(b.time, vec![])
 }
 #[inline]
 const fn ty_error(b: &BuiltinTyCons) -> Type {
@@ -422,6 +428,43 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         }
         (STD_DATE, "eq" | "lt" | "lte" | "gt" | "gte") => {
             Some(mono(ty_fn_pure(vec![ty_date(b), ty_date(b)], ty_bool(b))))
+        }
+
+        (STD_TIMEOFDAY, "fromHms") => Some(mono(ty_fn_pure(
+            vec![ty_int(b), ty_int(b), ty_int(b)],
+            ty_result(b, ty_time(b), ty_error(b)),
+        ))),
+        (STD_TIMEOFDAY, "toIso") => Some(mono(ty_fn_pure(vec![ty_time(b)], ty_text(b)))),
+        (STD_TIMEOFDAY, "fromIso") => Some(mono(ty_fn_pure(
+            vec![ty_text(b)],
+            ty_result(b, ty_time(b), ty_error(b)),
+        ))),
+        (STD_TIMEOFDAY, "hour" | "minute" | "second") => {
+            Some(mono(ty_fn_pure(vec![ty_time(b)], ty_int(b))))
+        }
+        // `now`/`nowUtc` read the system clock, so they carry the `time` capability.
+        (STD_TIMEOFDAY, "now") => {
+            use ridge_ast::Capability;
+            let time_caps = CapabilitySet::singleton(Capability::Time);
+            Some(mono(ty_fn_caps(vec![ty_int(b)], ty_time(b), time_caps)))
+        }
+        (STD_TIMEOFDAY, "nowUtc") => {
+            use ridge_ast::Capability;
+            let time_caps = CapabilitySet::singleton(Capability::Time);
+            Some(mono(ty_fn_caps(vec![ty_unit(b)], ty_time(b), time_caps)))
+        }
+        (STD_TIMEOFDAY, "addSeconds") => Some(mono(ty_fn_pure(
+            vec![ty_int(b), ty_time(b)],
+            ty_time(b),
+        ))),
+        (STD_TIMEOFDAY, "diffSeconds") => {
+            Some(mono(ty_fn_pure(vec![ty_time(b), ty_time(b)], ty_int(b))))
+        }
+        (STD_TIMEOFDAY, "compare") => {
+            Some(mono(ty_fn_pure(vec![ty_time(b), ty_time(b)], ty_int(b))))
+        }
+        (STD_TIMEOFDAY, "eq" | "lt" | "lte" | "gt" | "gte") => {
+            Some(mono(ty_fn_pure(vec![ty_time(b), ty_time(b)], ty_bool(b))))
         }
 
         // ── std.bool ──────────────────────────────────────────────────────────
@@ -1646,6 +1689,11 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             vec![ty_text(b)],
             Type::Con(b.sql_value, vec![]),
         ))),
+        // A typed SQL time of day (ISO `HH:MM:SS[.ffffff]` text) — the time bind value.
+        (STD_SQL, "sqlTime") => Some(mono(ty_fn_pure(
+            vec![ty_text(b)],
+            Type::Con(b.sql_value, vec![]),
+        ))),
         // Render a SqlValue as an inline SQL literal (a DDL DEFAULT / CHECK position
         // a bind parameter cannot fill).
         (STD_SQL, "sqlLiteral") => Some(mono(ty_fn_pure(
@@ -1820,6 +1868,7 @@ mod tests {
                             | "DbJson"
                             | "DbJsonb"
                             | "DbDate"
+                            | "DbTime"
                             | "DbRaw"
                     )
                 {

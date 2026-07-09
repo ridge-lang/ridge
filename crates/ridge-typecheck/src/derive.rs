@@ -669,6 +669,7 @@ fn ast_type_simple_name(ty: &AstType) -> Option<String> {
                 PrimitiveType::Uuid => "Uuid",
                 PrimitiveType::Bytes => "Bytes",
                 PrimitiveType::Date => "Date",
+                PrimitiveType::Time => "Time",
             }
             .to_string(),
         ),
@@ -1490,10 +1491,11 @@ fn sql_primitive_type_name(ty: &AstType) -> Option<String> {
             PrimitiveType::Uuid => Some("Uuid".to_string()),
             PrimitiveType::Bytes => Some("Bytes".to_string()),
             PrimitiveType::Date => Some("Date".to_string()),
+            PrimitiveType::Time => Some("Time".to_string()),
             PrimitiveType::Unit => None,
         },
         AstType::Named { name, .. } => match name.text.as_str() {
-            "Int" | "Text" | "Bool" | "Float" | "Decimal" | "Uuid" | "Bytes" | "Date"
+            "Int" | "Text" | "Bool" | "Float" | "Decimal" | "Uuid" | "Bytes" | "Date" | "Time"
             | "JsonValue" => Some(name.text.clone()),
             _ => None,
         },
@@ -1699,6 +1701,7 @@ fn ast_type_display(ty: &AstType) -> String {
             PrimitiveType::Uuid => "Uuid".to_string(),
             PrimitiveType::Bytes => "Bytes".to_string(),
             PrimitiveType::Date => "Date".to_string(),
+            PrimitiveType::Time => "Time".to_string(),
         },
         AstType::Named { name, .. } | AstType::Var { name, .. } => name.text.clone(),
         AstType::App { head, args, .. } => {
@@ -1791,12 +1794,13 @@ fn resolve_ast_type_to_tycon_id(
             PrimitiveType::Text => Some(TyConId(3)),
             PrimitiveType::Unit => Some(TyConId(4)),
             PrimitiveType::Timestamp => Some(TyConId(5)),
-            // Decimal, Uuid, Bytes and Date are interned last in the builtin arena
-            // (ids 51, 52, 53, 54).
+            // Decimal, Uuid, Bytes, Date and Time are interned last in the builtin
+            // arena (ids 51, 52, 53, 54, 55).
             PrimitiveType::Decimal => Some(TyConId(51)),
             PrimitiveType::Uuid => Some(TyConId(52)),
             PrimitiveType::Bytes => Some(TyConId(53)),
             PrimitiveType::Date => Some(TyConId(54)),
+            PrimitiveType::Time => Some(TyConId(55)),
             #[allow(unreachable_patterns)]
             _ => None,
         },

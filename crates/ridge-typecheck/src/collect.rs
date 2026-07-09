@@ -934,6 +934,7 @@ fn extract_tycon_id(
                 PrimitiveType::Uuid => Some(TyConId(52)),
                 PrimitiveType::Bytes => Some(TyConId(53)),
                 PrimitiveType::Date => Some(TyConId(54)),
+                PrimitiveType::Time => Some(TyConId(55)),
                 #[allow(unreachable_patterns)]
                 _ => None,
             }

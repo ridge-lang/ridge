@@ -353,6 +353,12 @@ pub struct BuiltinTyCons {
     /// `std.date` (`fromYmd`, `fromIso`, `today`), and the codec that moves it
     /// across a SQL `date` column lives in `std.sql`.
     pub date: TyConId,
+    /// `Time` — a wall-clock time of day (hour-minute-second, no date, no
+    /// timezone). A primitive interned after `Date` (id 55) so the historical
+    /// 0..50 index layout stays stable. It has no literal syntax; a value comes
+    /// from `std.timeofday` (`fromHms`, `fromIso`, `nowUtc`), and the codec that
+    /// moves it across a SQL `time` column lives in `std.sql`.
+    pub time: TyConId,
 }
 
 impl BuiltinTyCons {
@@ -407,6 +413,7 @@ impl BuiltinTyCons {
             uuid: SENTINEL,
             bytes: SENTINEL,
             date: SENTINEL,
+            time: SENTINEL,
         }
     }
 
@@ -917,6 +924,14 @@ impl BuiltinTyCons {
                         name: "SqlDate".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
                     },
+                    // A wall-clock time of day, carried as its ISO `HH:MM:SS[.ffffff]`
+                    // text — a Text carrier like SqlDate, so it renders back to source
+                    // and orders by value (the fixed-width fields sort chronologically).
+                    // Rides the `time` wire form as text.
+                    UnionVariant {
+                        name: "SqlTime".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
+                    },
                 ],
             }),
             def_span: None,
@@ -1344,6 +1359,14 @@ impl BuiltinTyCons {
                         name: "QLitDate".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(TyConId(54), vec![])]),
                     },
+                    // A wall-clock time of day captured in a quoted predicate (Time has
+                    // no literal syntax either). Carries a Time (tycon id 55); the
+                    // renderers move it across `SqlTime` as ISO text. Appended last so
+                    // the hardcoded variant indices stay put.
+                    UnionVariant {
+                        name: "QLitTime".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(55), vec![])]),
+                    },
                 ],
             }),
             def_span: None,
@@ -1582,6 +1605,21 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
+        // Time — a wall-clock time-of-day primitive (id 55). A scalar interned after
+        // Date so the historical 0..50 layout stays fixed. Its runtime value is a
+        // `{time, Micros}` count of microseconds since midnight; the constructors live
+        // in `std.timeofday` and the SQL codec (a `time` column) in `std.sql`.
+        let time = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "Time".to_string(),
+            arity: 0,
+            kind: TyConKind::Primitive,
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+
         // Verify assignment order matches spec §4.1 indices 0..16.
         debug_assert_eq!(int.0, 0);
         debug_assert_eq!(float.0, 1);
@@ -1638,12 +1676,13 @@ impl BuiltinTyCons {
         // InsertShape/1 sits right after FullJoinResult/2 (INSERTSHAPE_TYCON_ID = 50).
         debug_assert_eq!(insert_shape.0, INSERTSHAPE_TYCON_ID);
         debug_assert_eq!(insert_shape.0, 50);
-        // Decimal, Uuid, Bytes and Date are interned last so they do not disturb
-        // the 0..50 layout.
+        // Decimal, Uuid, Bytes, Date and Time are interned last so they do not
+        // disturb the 0..50 layout.
         debug_assert_eq!(decimal.0, 51);
         debug_assert_eq!(uuid.0, 52);
         debug_assert_eq!(bytes.0, 53);
         debug_assert_eq!(date.0, 54);
+        debug_assert_eq!(time.0, 55);
 
         // Suppress the "unused" lint — CapabilitySet is imported for future use
         // in T4 (actor schemas carry CapabilitySet).
@@ -1690,6 +1729,7 @@ impl BuiltinTyCons {
             uuid,
             bytes,
             date,
+            time,
         }
     }
 }
@@ -1769,17 +1809,18 @@ mod tests {
     }
 
     #[test]
-    fn arena_len_is_55() {
+    fn arena_len_is_56() {
         // 15 original builtins + Ordering + JsonValue + the std.net.http taint
         // wrappers Sql / Html / SecureCookie + std.sql's SqlValue + the
         // column-codegen builtins Column / Table + the schema-codegen builtins
         // FieldSchema / Schema + the quotation builtins QExpr / Quote (27 total)
         // + the 16 synthetic function-type constructors Fn/0 … Fn/15 + Ret/1 +
         // Rows/1 + JoinCond/2 + the four join-result extractors (Join/Left/Right/Full)
-        // + InsertShape/1 + the Decimal, Uuid, Bytes and Date primitives (interned last).
+        // + InsertShape/1 + the Decimal, Uuid, Bytes, Date and Time primitives
+        // (interned last).
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 12);
-        assert_eq!(arena.len(), 55);
+        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 13);
+        assert_eq!(arena.len(), 56);
     }
 
     #[test]

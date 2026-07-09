@@ -895,6 +895,13 @@ impl BuiltinTyCons {
                         name: "SqlBytes".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
                     },
+                    // A JSON document, carried as its encoded JSON text — a Text
+                    // carrier like SqlUuid/SqlBytes. Rides the `json`/`jsonb` wire form
+                    // as text; the structured JsonValue is rebuilt on decode.
+                    UnionVariant {
+                        name: "SqlJson".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
+                    },
                 ],
             }),
             def_span: None,

@@ -5,7 +5,7 @@
 -- to and from a SqlValue. The base-type instances live here; opaque newtypes
 -- get their instance for free via deriving (see the data layer).
 
-pub type SqlValue = SqlInt Int | SqlText Text | SqlBool Bool | SqlFloat Float | SqlNull | SqlInstant Int | SqlDecimal Text | SqlUuid Text | SqlBytes Text
+pub type SqlValue = SqlInt Int | SqlText Text | SqlBool Bool | SqlFloat Float | SqlNull | SqlInstant Int | SqlDecimal Text | SqlUuid Text | SqlBytes Text | SqlJson Text
 
 -- Direct SqlValue constructors. The variants are opaque to consumers (who reach
 -- them through `SqlType` or these factories), so these monomorphic factories are
@@ -36,6 +36,11 @@ pub fn sqlUuid (s: Text) -> SqlValue = SqlUuid s
 -- compiler can bind a captured Bytes after running it through `Bytes.toHex`.
 pub fn sqlBytes (s: Text) -> SqlValue = SqlBytes s
 
+-- A JSON document, carried as its encoded JSON text. Like the other rich-scalar
+-- factories it takes the text form, so a `json`/`jsonb` default (`DefaultLit`) can be
+-- built and rendered back to source, and a value read from a column round-trips.
+pub fn sqlJson (s: Text) -> SqlValue = SqlJson s
+
 -- A wall-clock instant from a typed `Timestamp` rather than raw epoch micros. The
 -- query compiler uses it to bind a captured Timestamp as a `SqlInstant` parameter,
 -- where the class method `SqlType.toSql` is not reachable from a stdlib module.
@@ -47,10 +52,11 @@ pub fn sqlInstantOf (t: Timestamp) -> SqlValue = SqlInstant (tsToMicros t)
 -- drives a default (an `Int` field maps to `DbBigInt`, `Text` to `DbText`, and so
 -- on); a schema `columnType` step overrides it per column — `DbSmallInt` for a
 -- 16-bit integer, `DbChar n` for a blank-padded fixed-width string, both still
--- backed by the same `Int`/`Text` value. `DbRaw` is the escape hatch for a
+-- backed by the same `Int`/`Text` value. `DbJson`/`DbJsonb` map a `JsonValue`
+-- field to a `json`/`jsonb` column. `DbRaw` is the escape hatch for a
 -- dialect-specific type spelled by hand. It lives here at the value/column type
 -- layer, beside `SqlValue`, so the codec class can name it.
-pub type DbType = DbBoolean | DbInt | DbBigInt | DbFloat | DbDecimal Int Int | DbText | DbVarchar Int | DbUuid | DbTimestamp | DbTimestampTz | DbBytes | DbSmallInt | DbChar Int | DbRaw Text
+pub type DbType = DbBoolean | DbInt | DbBigInt | DbFloat | DbDecimal Int Int | DbText | DbVarchar Int | DbUuid | DbTimestamp | DbTimestampTz | DbBytes | DbSmallInt | DbChar Int | DbJson | DbJsonb | DbRaw Text
 
 pub class SqlType a =
     toSql   (x: a)        -> SqlValue
@@ -182,6 +188,30 @@ instance SqlType Bytes =
             SqlBytes s -> bytesFromHex s
             _          -> Err ({ code = "sql.decode.bytes", message = "expected a SQL byte string" })
     dbType (witness: Option Bytes) -> DbType = DbBytes
+
+-- JSON-text bridge for the JsonValue codec. Like the Uuid and Bytes bridges above,
+-- these are declared here rather than imported from std.json so std.sql keeps
+-- depending on nothing above it. The runtime carries a JsonValue as a tagged-tuple
+-- tree; `jsonEncode` renders it to JSON text and `jsonDecode` parses and validates a
+-- value read back from a column, the same OTP-27 `json` bridge std.json uses.
+@ffi("ridge_rt", "json_encode", 1)
+fn jsonEncode (v: JsonValue) -> Text
+
+@ffi("ridge_rt", "json_decode", 1)
+fn jsonDecode (s: Text) -> Result JsonValue Error
+
+-- A JSON document maps to the typed `SqlJson` value carrying its encoded text, so a
+-- native `json`/`jsonb` column round-trips as a structured `JsonValue` rather than an
+-- opaque string. The default column type is `DbJsonb` — the binary form Postgres
+-- indexes and normalises; a schema `columnType DbJson` step keeps the plain-text
+-- form when a column must preserve key order and whitespace.
+instance SqlType JsonValue =
+    toSql (x: JsonValue) -> SqlValue = SqlJson (jsonEncode x)
+    fromSql (v: SqlValue) -> Result JsonValue Error =
+        match v
+            SqlJson s -> jsonDecode s
+            _         -> Err ({ code = "sql.decode.json", message = "expected a SQL json value" })
+    dbType (witness: Option JsonValue) -> DbType = DbJsonb
 
 -- Retype a nested-Option witness to a witness for the inner type, so the
 -- `Option a` instance can delegate its column type. `dbType` reads only the

@@ -547,6 +547,7 @@ sql_literal({'SqlInstant', N})  -> <<"'", (iolist_to_binary(calendar:system_time
 sql_literal({'SqlDecimal', S})  -> S;
 sql_literal({'SqlUuid', S})     -> <<"'", S/binary, "'">>;
 sql_literal({'SqlBytes', Hex})  -> <<"'\\x", Hex/binary, "'">>;
+sql_literal({'SqlJson', S})     -> <<"'", (binary:replace(S, <<"'">>, <<"''">>, [global]))/binary, "'">>;
 sql_literal('SqlNull')          -> <<"NULL">>.
 
 %% sql_value_source/1 — render a SqlValue as the Ridge *source* expression that
@@ -564,6 +565,7 @@ sql_value_source({'SqlInstant', N})  -> <<"(sqlInstant ", (integer_to_binary(N))
 sql_value_source({'SqlDecimal', S})  -> <<"(sqlDecimal ", (source_text_literal(S))/binary, ")">>;
 sql_value_source({'SqlUuid', S})     -> <<"(sqlUuid ", (source_text_literal(S))/binary, ")">>;
 sql_value_source({'SqlBytes', S})    -> <<"(sqlBytes ", (source_text_literal(S))/binary, ")">>;
+sql_value_source({'SqlJson', S})     -> <<"(sqlJson ", (source_text_literal(S))/binary, ")">>;
 sql_value_source('SqlNull')          -> <<"(sqlNull ())">>.
 
 %% source_text_literal/1 — a Text as a Ridge string literal: backslash doubled
@@ -2104,6 +2106,9 @@ mem_key({'SqlUuid', S}) -> S;
 %% A bytea column keys on its fixed-width lowercase hex, which orders the same as
 %% the raw bytes, so ORDER BY / min / max match how Postgres sorts the column.
 mem_key({'SqlBytes', S}) -> S;
+%% A json/jsonb column keys on its encoded JSON text; equal JsonValues encode to the
+%% same text, so ORDER BY / min / max are deterministic (a stable text ordering).
+mem_key({'SqlJson', S}) -> S;
 mem_key({'SqlBool', B})  -> B.
 
 %% An aggregate over a group as a comparison operand: the folded value (a column or
@@ -2828,6 +2833,9 @@ mem_sql_cmp(lt, {'SqlUuid', X}, {'SqlUuid', Y}) -> X < Y;
 %% A bytea column compares by its fixed-width lowercase hex, which orders the same
 %% as the raw bytes Postgres compares (byte by byte, unsigned).
 mem_sql_cmp(lt, {'SqlBytes', X}, {'SqlBytes', Y}) -> X < Y;
+%% A json/jsonb column orders by its encoded text; equality rides the generic
+%% structural clause above (equal JsonValues encode to the identical text).
+mem_sql_cmp(lt, {'SqlJson', X}, {'SqlJson', Y}) -> X < Y;
 mem_sql_cmp(lt, _A, _B) -> false.
 
 %% A SqlValue used directly as a predicate: a SqlBool yields its boolean.

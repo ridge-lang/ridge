@@ -397,6 +397,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "sqlDecimal",
             "sqlUuid",
             "sqlBytes",
+            "sqlJson",
             // The safe SQL statement-text wrapper, its factory, and accessor —
             // a data-layer concern, declared in sql.ridge.
             "Sql",
@@ -426,6 +427,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "DbBytes",
             "DbSmallInt",
             "DbChar",
+            "DbJson",
+            "DbJsonb",
             "DbRaw",
         ],
     ),

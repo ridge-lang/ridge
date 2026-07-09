@@ -942,6 +942,9 @@ param_text({'SqlUuid', S})     -> S;
 %% bytea input takes the hex wire form `\xHEX`; the SqlBytes carrier is that hex
 %% without the prefix, so prepend it. Postgres infers the parameter type as bytea.
 param_text({'SqlBytes', Hex})  -> <<"\\x", Hex/binary>>;
+%% json/jsonb input is the encoded JSON text sent verbatim; Postgres parses and
+%% (for jsonb) normalises it, inferring the parameter type from the column.
+param_text({'SqlJson', S})     -> S;
 param_text('SqlNull')         -> <<>>.
 
 collect_rows(Conn, Cols, Acc) ->
@@ -1031,6 +1034,11 @@ decode_value(17, <<"\\x", Hex/binary>>) ->
 %% timestamp as UTC.
 decode_value(Oid, Val) when Oid =:= 1114; Oid =:= 1184 ->
     {'SqlInstant', pg_timestamp_to_micros(Val)};
+%% json (OID 114) and jsonb (OID 3802) decode to the typed SqlJson carrying the
+%% column's JSON text, so a JsonValue column round-trips through the codec's decode
+%% rather than arriving as opaque text. jsonb is emitted in its normalised form.
+decode_value(Oid, Val) when Oid =:= 114; Oid =:= 3802 ->
+    {'SqlJson', Val};
 decode_value(Oid, Val) when Oid =:= 25; Oid =:= 1043; Oid =:= 1042; Oid =:= 19; Oid =:= 18 ->
     {'SqlText', Val};
 decode_value(_Oid, Val) ->

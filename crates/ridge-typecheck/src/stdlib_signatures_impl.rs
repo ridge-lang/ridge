@@ -1591,6 +1591,11 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             vec![ty_text(b)],
             Type::Con(b.sql_value, vec![]),
         ))),
+        // A typed SQL json document (encoded JSON text) — the json/jsonb bind value.
+        (STD_SQL, "sqlJson") => Some(mono(ty_fn_pure(
+            vec![ty_text(b)],
+            Type::Con(b.sql_value, vec![]),
+        ))),
         // Render a SqlValue as an inline SQL literal (a DDL DEFAULT / CHECK position
         // a bind parameter cannot fill).
         (STD_SQL, "sqlLiteral") => Some(mono(ty_fn_pure(
@@ -1762,6 +1767,8 @@ mod tests {
                             | "DbBytes"
                             | "DbSmallInt"
                             | "DbChar"
+                            | "DbJson"
+                            | "DbJsonb"
                             | "DbRaw"
                     )
                 {

@@ -285,8 +285,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
         "std.time",
         &[
             // `pub type Duration` declared in time.ridge.
-            "Duration", "now", "epoch", "fromIso", "diff", "diffMs", "sinceMs", "sleep", "parse",
-            "iso",
+            "Duration", "ofMillis", "now", "epoch", "fromIso", "diff", "diffMs", "sinceMs", "sleep",
+            "parse", "iso",
         ],
     ),
     (
@@ -403,6 +403,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "sqlJson",
             "sqlDate",
             "sqlTime",
+            "sqlInterval",
             // The safe SQL statement-text wrapper, its factory, and accessor —
             // a data-layer concern, declared in sql.ridge.
             "Sql",
@@ -436,6 +437,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "DbJsonb",
             "DbDate",
             "DbTime",
+            "DbInterval",
             "DbRaw",
         ],
     ),

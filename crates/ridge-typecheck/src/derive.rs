@@ -1475,8 +1475,9 @@ fn sql_row_field(ty: &AstType) -> Option<(bool, String)> {
 }
 
 /// The `SqlType` instance type name for a field type, when it is one the prelude
-/// `SqlType` instances cover: a base primitive, or `JsonValue` (the prelude JSON
-/// ADT, which maps to a `json`/`jsonb` column). Returns `None` for any other type
+/// `SqlType` instances cover: a base primitive, `JsonValue` (the prelude JSON ADT,
+/// which maps to a `json`/`jsonb` column), or `Duration` (the prelude length-of-time
+/// record, which maps to an `interval` column). Returns `None` for any other type
 /// (a user type, container, or `Option`), which has no `fromSql` to dispatch yet.
 fn sql_primitive_type_name(ty: &AstType) -> Option<String> {
     use ridge_ast::base::PrimitiveType;
@@ -1496,7 +1497,7 @@ fn sql_primitive_type_name(ty: &AstType) -> Option<String> {
         },
         AstType::Named { name, .. } => match name.text.as_str() {
             "Int" | "Text" | "Bool" | "Float" | "Decimal" | "Uuid" | "Bytes" | "Date" | "Time"
-            | "JsonValue" => Some(name.text.clone()),
+            | "Duration" | "JsonValue" => Some(name.text.clone()),
             _ => None,
         },
         AstType::Paren { inner, .. } => sql_primitive_type_name(inner),

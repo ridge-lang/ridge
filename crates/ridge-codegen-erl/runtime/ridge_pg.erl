@@ -42,10 +42,11 @@
     pg_raw_query/3,
     pg_raw_exec/3,
     pg_close/1,
-    %% Exposed for the decode unit test: the timestamp text parser is pure and
-    %% carries the only non-trivial wire-decode logic, so it is testable without a
-    %% live database.
-    pg_timestamp_to_micros/1
+    %% Exposed for the decode unit tests: the timestamp and interval text parsers are
+    %% pure and carry the only non-trivial wire-decode logic, so they are testable
+    %% without a live database.
+    pg_timestamp_to_micros/1,
+    pg_interval_to_ms/1
 ]).
 
 -define(CONNECT_TIMEOUT, 10000).
@@ -951,6 +952,9 @@ param_text({'SqlDate', S})     -> S;
 %% a time param goes as its ISO `HH:MM:SS[.ffffff]` text, exactly the SqlTime
 %% carrier, so Postgres parses it as a `time` without a cast.
 param_text({'SqlTime', S})     -> S;
+%% an interval param goes as its whole-millisecond span spelled `<n> milliseconds`,
+%% which Postgres parses as an `interval` and normalises to a pure time span.
+param_text({'SqlInterval', Ms}) -> <<(integer_to_binary(Ms))/binary, " milliseconds">>;
 param_text('SqlNull')         -> <<>>.
 
 collect_rows(Conn, Cols, Acc) ->
@@ -1055,6 +1059,12 @@ decode_value(1082, Val) ->
 %% column round-trips through the codec rather than arriving as opaque text.
 decode_value(1083, Val) ->
     {'SqlTime', Val};
+%% interval (OID 1186) decodes to the typed SqlInterval carrying a whole-millisecond
+%% span. Postgres delivers an interval as its `postgres`-style text (a mix of calendar
+%% words and an `HH:MM:SS[.ffffff]` time part); pg_interval_to_ms folds that to a
+%% millisecond count, exact for the pure time spans Ridge writes.
+decode_value(1186, Val) ->
+    {'SqlInterval', pg_interval_to_ms(Val)};
 decode_value(Oid, Val) when Oid =:= 25; Oid =:= 1043; Oid =:= 1042; Oid =:= 19; Oid =:= 18 ->
     {'SqlText', Val};
 decode_value(_Oid, Val) ->
@@ -1113,6 +1123,70 @@ pg_ts_offset_min(_) -> 0.
 pg_ts_offset_sec(<<":", S:2/binary, _/binary>>) -> binary_to_integer(S);
 pg_ts_offset_sec(<<S:2/binary, _/binary>>) -> binary_to_integer(S);
 pg_ts_offset_sec(_) -> 0.
+
+%% Parse a Postgres `interval` text value (the default `postgres` intervalstyle) into
+%% a whole-millisecond span. A Duration is a fixed length of time with no calendar
+%% part, so an interval Ridge wrote is always a pure `HH:MM:SS[.ffffff]` time (hours
+%% may exceed 24) and folds back exactly. An interval written by some other client can
+%% carry `<n> year|mon|day` words; those are read with a 30-day month, a 24-hour day,
+%% and a 12-month year — the same convention Postgres uses to extract an interval's
+%% epoch seconds — since a calendar span has no exact millisecond length.
+pg_interval_to_ms(Bin) ->
+    Tokens = binary:split(Bin, <<" ">>, [global, trim_all]),
+    pg_iv_tokens(Tokens, 0).
+
+%% Fold the token stream. A token with a colon is the `[-]HH:MM:SS[.ffffff]` time
+%% part; any other token is a signed count naming its unit in the following token.
+pg_iv_tokens([], Acc) ->
+    Acc;
+pg_iv_tokens([Tok | Rest], Acc) ->
+    case binary:match(Tok, <<":">>) of
+        nomatch ->
+            case Rest of
+                [Unit | More] ->
+                    pg_iv_tokens(More, Acc + pg_iv_int(Tok) * pg_iv_unit_ms(Unit));
+                [] ->
+                    Acc
+            end;
+        _ ->
+            pg_iv_tokens(Rest, Acc + pg_iv_time_ms(Tok))
+    end.
+
+%% Milliseconds in one of each calendar unit Postgres spells in interval text.
+pg_iv_unit_ms(<<"day">>)    -> 86400000;
+pg_iv_unit_ms(<<"days">>)   -> 86400000;
+pg_iv_unit_ms(<<"mon">>)    -> 30 * 86400000;
+pg_iv_unit_ms(<<"mons">>)   -> 30 * 86400000;
+pg_iv_unit_ms(<<"month">>)  -> 30 * 86400000;
+pg_iv_unit_ms(<<"months">>) -> 30 * 86400000;
+pg_iv_unit_ms(<<"year">>)   -> 360 * 86400000;
+pg_iv_unit_ms(<<"years">>)  -> 360 * 86400000;
+pg_iv_unit_ms(_)            -> 0.
+
+%% A signed integer that may carry a leading `+` (which binary_to_integer rejects).
+pg_iv_int(<<"+", R/binary>>) -> binary_to_integer(R);
+pg_iv_int(Bin)              -> binary_to_integer(Bin).
+
+%% Parse a `[+|-]HH:MM:SS[.ffffff]` time part into signed milliseconds. Hours are not
+%% capped at 24 — a Ridge duration of a day or more renders as `25:00:00` and up.
+pg_iv_time_ms(<<"+", R/binary>>) -> pg_iv_time_ms(R);
+pg_iv_time_ms(<<"-", R/binary>>) -> - pg_iv_time_ms(R);
+pg_iv_time_ms(Bin) ->
+    [H, Mi, SFull] = binary:split(Bin, <<":">>, [global]),
+    {Secs, FracMs} = pg_iv_secs(SFull),
+    (binary_to_integer(H) * 3600 + binary_to_integer(Mi) * 60 + Secs) * 1000 + FracMs.
+
+%% Split the seconds field into whole seconds and a millisecond remainder.
+pg_iv_secs(SFull) ->
+    case binary:split(SFull, <<".">>) of
+        [S]       -> {binary_to_integer(S), 0};
+        [S, Frac] -> {binary_to_integer(S), binary_to_integer(pg_iv_pad3(Frac))}
+    end.
+
+%% Normalise fractional-second digits to exactly three (milliseconds): pad right with
+%% zeros, or truncate beyond millisecond resolution.
+pg_iv_pad3(D) when byte_size(D) >= 3 -> binary:part(D, 0, 3);
+pg_iv_pad3(D) -> pg_iv_pad3(<<D/binary, "0">>).
 
 %% --- Connect, TLS upgrade, authentication ---
 

@@ -1404,6 +1404,10 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                 ty_duration(b),
             )))
         }
+        (STD_TIME, "ofMillis") => {
+            // Int -> Duration — build a Duration from a whole-millisecond span.
+            Some(mono(ty_fn_pure(vec![ty_int(b)], ty_duration(b))))
+        }
         (STD_TIME, "diffMs") => {
             // Timestamp -> Timestamp -> Int
             Some(mono(ty_fn_pure(
@@ -1694,6 +1698,11 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             vec![ty_text(b)],
             Type::Con(b.sql_value, vec![]),
         ))),
+        // A typed SQL interval (whole-millisecond span) — the duration bind value.
+        (STD_SQL, "sqlInterval") => Some(mono(ty_fn_pure(
+            vec![ty_int(b)],
+            Type::Con(b.sql_value, vec![]),
+        ))),
         // Render a SqlValue as an inline SQL literal (a DDL DEFAULT / CHECK position
         // a bind parameter cannot fill).
         (STD_SQL, "sqlLiteral") => Some(mono(ty_fn_pure(
@@ -1869,6 +1878,7 @@ mod tests {
                             | "DbJsonb"
                             | "DbDate"
                             | "DbTime"
+                            | "DbInterval"
                             | "DbRaw"
                     )
                 {

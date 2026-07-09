@@ -1690,6 +1690,7 @@ pub fn register_stdlib_instances(
             TyConId(2),  // Bool
             TyConId(1),  // Float
             TyConId(5),  // Timestamp
+            TyConId(13), // Duration
             TyConId(51), // Decimal
             TyConId(52), // Uuid
             TyConId(53), // Bytes

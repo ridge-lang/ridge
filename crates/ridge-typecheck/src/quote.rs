@@ -964,16 +964,20 @@ fn is_numeric(b: &BuiltinTyCons, ty: &Type) -> bool {
 }
 
 /// Whether `ty` is a base scalar that `sum`/`avg` cannot fold — `Text`, `Bool`,
-/// `Uuid`, `Bytes`, `Timestamp`, `Date`, or `Time`. Each has a working `SqlType`
-/// instance (so `min`/`max`, ordering, and equality fold it), but summing or
-/// averaging it is meaningless: Postgres rejects it and the in-memory adapter has
-/// no numeric fold. The numeric columns (`Int`/`Float`/`Decimal`), a nullable
-/// wrapper, and an unresolved type variable are all left unmatched, so a caller
-/// rejects only a column it is certain about.
+/// `Uuid`, `Bytes`, `Timestamp`, `Date`, `Time`, or `Duration`. Each has a working
+/// `SqlType` instance (so `min`/`max`, ordering, and equality fold it), but summing
+/// or averaging it does not land here: for the non-numeric scalars it is meaningless,
+/// and a `Duration`, though a millisecond span that could in principle be summed, has
+/// no interval fold in the in-memory adapter and would lose its type through `avg`,
+/// which is forced to `Float` — so it is deferred until a `Duration`-typed aggregate
+/// lands. The numeric columns (`Int`/`Float`/`Decimal`), a nullable wrapper, and an
+/// unresolved type variable are all left unmatched, so a caller rejects only a column
+/// it is certain about.
 pub(crate) fn is_non_summable_scalar(b: &BuiltinTyCons, ty: &Type) -> bool {
     matches!(ty, Type::Con(id, _)
         if *id == b.text || *id == b.bool || *id == b.uuid
-            || *id == b.bytes || *id == b.timestamp || *id == b.date || *id == b.time)
+            || *id == b.bytes || *id == b.timestamp || *id == b.date || *id == b.time
+            || *id == b.duration)
 }
 
 /// Whether `ty` is the `Int` base type.

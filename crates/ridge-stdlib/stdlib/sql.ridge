@@ -5,7 +5,7 @@
 -- to and from a SqlValue. The base-type instances live here; opaque newtypes
 -- get their instance for free via deriving (see the data layer).
 
-pub type SqlValue = SqlInt Int | SqlText Text | SqlBool Bool | SqlFloat Float | SqlNull | SqlInstant Int | SqlDecimal Text | SqlUuid Text | SqlBytes Text | SqlJson Text | SqlDate Text | SqlTime Text
+pub type SqlValue = SqlInt Int | SqlText Text | SqlBool Bool | SqlFloat Float | SqlNull | SqlInstant Int | SqlDecimal Text | SqlUuid Text | SqlBytes Text | SqlJson Text | SqlDate Text | SqlTime Text | SqlInterval Int
 
 -- Direct SqlValue constructors. The variants are opaque to consumers (who reach
 -- them through `SqlType` or these factories), so these monomorphic factories are
@@ -53,6 +53,11 @@ pub fn sqlDate (s: Text) -> SqlValue = SqlDate s
 -- compiler can bind a captured Time after running it through `Time.toIso`.
 pub fn sqlTime (s: Text) -> SqlValue = SqlTime s
 
+-- A length of time, carried as its whole-millisecond span. A `Duration` is already
+-- an integer count of milliseconds, so unlike the text-backed date and time factories
+-- this takes the raw span directly; the runtime renders it to an `interval` literal.
+pub fn sqlInterval (ms: Int) -> SqlValue = SqlInterval ms
+
 -- A wall-clock instant from a typed `Timestamp` rather than raw epoch micros. The
 -- query compiler uses it to bind a captured Timestamp as a `SqlInstant` parameter,
 -- where the class method `SqlType.toSql` is not reachable from a stdlib module.
@@ -65,10 +70,11 @@ pub fn sqlInstantOf (t: Timestamp) -> SqlValue = SqlInstant (tsToMicros t)
 -- on); a schema `columnType` step overrides it per column — `DbSmallInt` for a
 -- 16-bit integer, `DbChar n` for a blank-padded fixed-width string, both still
 -- backed by the same `Int`/`Text` value. `DbJson`/`DbJsonb` map a `JsonValue`
--- field to a `json`/`jsonb` column. `DbRaw` is the escape hatch for a
--- dialect-specific type spelled by hand. It lives here at the value/column type
--- layer, beside `SqlValue`, so the codec class can name it.
-pub type DbType = DbBoolean | DbInt | DbBigInt | DbFloat | DbDecimal Int Int | DbText | DbVarchar Int | DbUuid | DbTimestamp | DbTimestampTz | DbBytes | DbSmallInt | DbChar Int | DbJson | DbJsonb | DbDate | DbTime | DbRaw Text
+-- field to a `json`/`jsonb` column. `DbInterval` maps a `Duration` to an `interval`
+-- column. `DbRaw` is the escape hatch for a dialect-specific type spelled by hand. It
+-- lives here at the value/column type layer, beside `SqlValue`, so the codec class can
+-- name it.
+pub type DbType = DbBoolean | DbInt | DbBigInt | DbFloat | DbDecimal Int Int | DbText | DbVarchar Int | DbUuid | DbTimestamp | DbTimestampTz | DbBytes | DbSmallInt | DbChar Int | DbJson | DbJsonb | DbDate | DbTime | DbInterval | DbRaw Text
 
 pub class SqlType a =
     toSql   (x: a)        -> SqlValue
@@ -268,6 +274,33 @@ instance SqlType Time =
             SqlTime s -> timeFromIso s
             _         -> Err ({ code = "sql.decode.time", message = "expected a SQL time" })
     dbType (witness: Option Time) -> DbType = DbTime
+
+-- A duration maps to the typed `SqlInterval` value carrying its whole-millisecond
+-- span, so a native `interval` column round-trips as a fixed length of time. A
+-- `Duration` is already an integer count of milliseconds, so it needs no text bridge:
+-- `toSql` reads the span straight off the record and `fromSql` rebuilds it. Unlike a
+-- Postgres interval, a `Duration` has no calendar part — a month is not a fixed number
+-- of milliseconds. A value Ridge wrote is always a pure time span and round-trips
+-- exactly; an interval that carries months, days, or years (written by some other
+-- client) is read with a 30-day month and a 24-hour day, the same convention Postgres
+-- uses to extract an interval's epoch seconds. The default column type is `DbInterval`.
+-- Millisecond bridge for the Duration codec. A Duration is a builtin record, but a
+-- bare `{ ms = n }` literal that the type checker pins to the nominal `Duration` does
+-- not round-trip through a `.ms` read (it lowers to a value a field read cannot
+-- reach); `durationOfMs` builds the record on the runtime side, the same shape
+-- `time.diff`/`time.ofMillis` return, so `x.ms` reads it back. It stays private to the
+-- codec and shares the `ridge_rt:duration_from_millis` bridge with `std.time.ofMillis`,
+-- rather than importing std.time, so std.sql keeps depending on nothing above it.
+@ffi("ridge_rt", "duration_from_millis", 1)
+fn durationOfMs (ms: Int) -> Duration
+
+instance SqlType Duration =
+    toSql (x: Duration) -> SqlValue = SqlInterval x.ms
+    fromSql (v: SqlValue) -> Result Duration Error =
+        match v
+            SqlInterval n -> Ok (durationOfMs n)
+            _             -> Err ({ code = "sql.decode.interval", message = "expected a SQL interval" })
+    dbType (witness: Option Duration) -> DbType = DbInterval
 
 -- Retype a nested-Option witness to a witness for the inner type, so the
 -- `Option a` instance can delegate its column type. `dbType` reads only the

@@ -10,6 +10,13 @@
 -- Pre-allocated in BuiltinTyCons (§3.12 / plan line 349).
 pub type Duration = { ms: Int }
 
+-- Build a Duration from a whole-millisecond span. A Duration is a builtin record,
+-- so it has no bare-literal constructor a caller can spell; this is the way to make
+-- one directly, next to `diff`, which derives one from two timestamps. The span may
+-- be negative, the same as a `diff` where the second timestamp is later.
+@ffi("ridge_rt", "duration_from_millis", 1)
+pub fn ofMillis (ms: Int) -> Duration
+
 -- Return the current system time as a Timestamp.
 @ffi("ridge_rt", "time_now", 1)
 pub fn time now (_unit: Unit) -> Timestamp

@@ -10,7 +10,7 @@
     fs_read_dir/1,
     cli_args/0, cli_args/1,
     time_now/0, time_now/1, time_epoch/0, time_epoch/1,
-    time_diff_ms/2, time_diff/2,
+    time_diff_ms/2, time_diff/2, duration_from_millis/1,
     time_from_iso/1, time_since_ms/1, time_iso/1,
     time_to_micros/1, time_from_micros/1,
     decimal_from_text/1, decimal_to_text/1, decimal_from_int/1, decimal_parse_raw/1,
@@ -152,9 +152,18 @@ time_epoch(_Unit) -> time_epoch().
 time_diff_ms({timestamp, A}, {timestamp, B}) -> (A - B) div 1000.
 
 %% time_diff/2 — std.time.diff  (§3.12 line 349)
-%% Returns the difference A - B as a Duration record {duration, Ms}.
+%% Returns the difference A - B as a Duration. A Duration is a record type
+%% (`{ ms: Int }`), so it is carried as the map `#{ms => Ms}` — the same shape a
+%% `{ ms = … }` construction lowers to, so a `.ms` field read (`maps:get('ms', _)`)
+%% works on it. Earlier this returned the tagged tuple `{duration, Ms}`, which no
+%% `.ms` read could reach; nothing consumed that shape.
 %% Ridge type: Timestamp -> Timestamp -> Duration.
-time_diff({timestamp, A}, {timestamp, B}) -> {duration, (A - B) div 1000}.
+time_diff({timestamp, A}, {timestamp, B}) -> #{ms => (A - B) div 1000}.
+
+%% duration_from_millis/1 — std.time.ofMillis
+%% Builds a Duration from a whole-millisecond span, the same `#{ms => Ms}` record
+%% shape `time_diff` returns, so the two are interchangeable and `.ms` reads either.
+duration_from_millis(Ms) -> #{ms => Ms}.
 
 %% time_from_iso/1 — std.time.fromIso / std.time.parse
 %% Parses an ISO-8601 text into a Timestamp.
@@ -760,6 +769,7 @@ sql_literal({'SqlBytes', Hex})  -> <<"'\\x", Hex/binary, "'">>;
 sql_literal({'SqlJson', S})     -> <<"'", (binary:replace(S, <<"'">>, <<"''">>, [global]))/binary, "'">>;
 sql_literal({'SqlDate', S})     -> <<"'", S/binary, "'">>;
 sql_literal({'SqlTime', S})     -> <<"'", S/binary, "'">>;
+sql_literal({'SqlInterval', Ms}) -> <<"'", (integer_to_binary(Ms))/binary, " milliseconds'">>;
 sql_literal('SqlNull')          -> <<"NULL">>.
 
 %% sql_value_source/1 — render a SqlValue as the Ridge *source* expression that
@@ -780,6 +790,7 @@ sql_value_source({'SqlBytes', S})    -> <<"(sqlBytes ", (source_text_literal(S))
 sql_value_source({'SqlJson', S})     -> <<"(sqlJson ", (source_text_literal(S))/binary, ")">>;
 sql_value_source({'SqlDate', S})     -> <<"(sqlDate ", (source_text_literal(S))/binary, ")">>;
 sql_value_source({'SqlTime', S})     -> <<"(sqlTime ", (source_text_literal(S))/binary, ")">>;
+sql_value_source({'SqlInterval', Ms}) -> <<"(sqlInterval ", (integer_to_binary(Ms))/binary, ")">>;
 sql_value_source('SqlNull')          -> <<"(sqlNull ())">>.
 
 %% source_text_literal/1 — a Text as a Ridge string literal: backslash doubled
@@ -2329,6 +2340,9 @@ mem_key({'SqlJson', S}) -> S;
 %% ORDER BY / min / max match how Postgres sorts the column.
 mem_key({'SqlDate', S}) -> S;
 mem_key({'SqlTime', S}) -> S;
+%% An interval column keys on its whole-millisecond span, an integer, so ORDER BY /
+%% min / max fold by duration length exactly.
+mem_key({'SqlInterval', Ms}) -> Ms;
 mem_key({'SqlBool', B})  -> B.
 
 %% An aggregate over a group as a comparison operand: the folded value (a column or
@@ -3068,6 +3082,9 @@ mem_sql_cmp(lt, {'SqlJson', X}, {'SqlJson', Y}) -> X < Y;
 %% equality rides the generic structural clause above (the ISO form is canonical).
 mem_sql_cmp(lt, {'SqlDate', X}, {'SqlDate', Y}) -> X < Y;
 mem_sql_cmp(lt, {'SqlTime', X}, {'SqlTime', Y}) -> X < Y;
+%% An interval column compares by its whole-millisecond span; equality rides the
+%% generic structural clause above (equal spans carry the identical integer).
+mem_sql_cmp(lt, {'SqlInterval', X}, {'SqlInterval', Y}) -> X < Y;
 mem_sql_cmp(lt, _A, _B) -> false.
 
 %% A SqlValue used directly as a predicate: a SqlBool yields its boolean.

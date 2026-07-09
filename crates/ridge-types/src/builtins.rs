@@ -932,6 +932,13 @@ impl BuiltinTyCons {
                         name: "SqlTime".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
                     },
+                    // A length of time, carried as its whole-millisecond span — an Int
+                    // carrier like SqlInstant, so it orders by value directly. Rides the
+                    // `interval` wire form.
+                    UnionVariant {
+                        name: "SqlInterval".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(int, vec![])]),
+                    },
                 ],
             }),
             def_span: None,

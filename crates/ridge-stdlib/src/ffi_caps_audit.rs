@@ -599,6 +599,12 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
     },
     FfiAuditEntry {
         beam_module: "ridge_rt",
+        fn_name: "duration_from_millis",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
         fn_name: "time_diff_ms",
         arity: 2,
         requires_caps: &[],

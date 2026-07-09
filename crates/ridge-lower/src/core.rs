@@ -872,6 +872,7 @@ fn captured_scalar_qlit(ctx: &LowerCtx<'_>, ty: &Type) -> Option<(&'static str, 
         Type::Con(id, _) if *id == b.bytes => Some(("QLitBytes", 36)),
         Type::Con(id, _) if *id == b.date => Some(("QLitDate", 37)),
         Type::Con(id, _) if *id == b.time => Some(("QLitTime", 38)),
+        Type::Con(id, _) if *id == b.duration => Some(("QLitInterval", 39)),
         _ => None,
     }
 }

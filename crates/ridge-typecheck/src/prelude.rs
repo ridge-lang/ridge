@@ -332,6 +332,10 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     );
     values.insert("QLitDate".to_string(), q_ctor(vec![ty_con(b.date, vec![])]));
     values.insert("QLitTime".to_string(), q_ctor(vec![ty_con(b.time, vec![])]));
+    values.insert(
+        "QLitInterval".to_string(),
+        q_ctor(vec![ty_con(b.duration, vec![])]),
+    );
     values.insert("QNot".to_string(), q_ctor(vec![qexpr_ty.clone()]));
     values.insert("QNotTrue".to_string(), q_ctor(vec![qexpr_ty.clone()]));
     for name in ["QAnd", "QOr", "QEq", "QNe", "QLt", "QGt", "QLe", "QGe"] {

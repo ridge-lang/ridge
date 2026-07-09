@@ -2161,6 +2161,7 @@ mem_pcell({'QLitInstant', TS}, _Row) -> {'SqlInstant', time_to_micros(TS)};
 mem_pcell({'QLitBytes', B}, _Row) -> {'SqlBytes', bytes_to_hex(B)};
 mem_pcell({'QLitDate', D}, _Row) -> {'SqlDate', date_to_iso(D)};
 mem_pcell({'QLitTime', T}, _Row) -> {'SqlTime', tod_to_iso(T)};
+mem_pcell({'QLitInterval', D}, _Row) -> {'SqlInterval', maps:get(ms, D)};
 %% Computed projection cells over a join's flat source-prefixed rows: arithmetic
 %% folds its operands (each resolved by the same prefix rules), a CASE picks a
 %% branch by its condition read as an N-ary predicate. A cell with no value — a
@@ -2448,6 +2449,7 @@ mem_hscalar_nary({'QLitInstant', TS}, _Key, _GR) -> {'SqlInstant', time_to_micro
 mem_hscalar_nary({'QLitBytes', B}, _Key, _GR) -> {'SqlBytes', bytes_to_hex(B)};
 mem_hscalar_nary({'QLitDate', D}, _Key, _GR) -> {'SqlDate', date_to_iso(D)};
 mem_hscalar_nary({'QLitTime', T}, _Key, _GR) -> {'SqlTime', tod_to_iso(T)};
+mem_hscalar_nary({'QLitInterval', D}, _Key, _GR) -> {'SqlInterval', maps:get(ms, D)};
 mem_hscalar_nary(_Other, _Key, _GR)           -> undefined.
 
 %% Merge the Changes columns into every row matching the predicate tree, leaving
@@ -2646,6 +2648,7 @@ mem_jscalar({'QLitInstant', TS}, _L, _R) -> {'SqlInstant', time_to_micros(TS)};
 mem_jscalar({'QLitBytes', B}, _L, _R) -> {'SqlBytes', bytes_to_hex(B)};
 mem_jscalar({'QLitDate', D}, _L, _R) -> {'SqlDate', date_to_iso(D)};
 mem_jscalar({'QLitTime', T}, _L, _R) -> {'SqlTime', tod_to_iso(T)};
+mem_jscalar({'QLitInterval', D}, _L, _R) -> {'SqlInterval', maps:get(ms, D)};
 mem_jscalar({'QAdd', A, B}, L, R) -> mem_arith_apply('+', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
 mem_jscalar({'QSub', A, B}, L, R) -> mem_arith_apply('-', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
 mem_jscalar({'QMul', A, B}, L, R) -> mem_arith_apply('*', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
@@ -2832,6 +2835,7 @@ mem_nscalar({'QLitInstant', TS}, _Row) -> {'SqlInstant', time_to_micros(TS)};
 mem_nscalar({'QLitBytes', B}, _Row) -> {'SqlBytes', bytes_to_hex(B)};
 mem_nscalar({'QLitDate', D}, _Row) -> {'SqlDate', date_to_iso(D)};
 mem_nscalar({'QLitTime', T}, _Row) -> {'SqlTime', tod_to_iso(T)};
+mem_nscalar({'QLitInterval', D}, _Row) -> {'SqlInterval', maps:get(ms, D)};
 mem_nscalar({'QAdd', A, B}, Row) -> mem_arith_apply('+', mem_nscalar(A, Row), mem_nscalar(B, Row));
 mem_nscalar({'QSub', A, B}, Row) -> mem_arith_apply('-', mem_nscalar(A, Row), mem_nscalar(B, Row));
 mem_nscalar({'QMul', A, B}, Row) -> mem_arith_apply('*', mem_nscalar(A, Row), mem_nscalar(B, Row));
@@ -3030,6 +3034,7 @@ mem_scalar({'QLitInstant', TS}, _Row) -> {'SqlInstant', time_to_micros(TS)};
 mem_scalar({'QLitBytes', B}, _Row) -> {'SqlBytes', bytes_to_hex(B)};
 mem_scalar({'QLitDate', D}, _Row) -> {'SqlDate', date_to_iso(D)};
 mem_scalar({'QLitTime', T}, _Row) -> {'SqlTime', tod_to_iso(T)};
+mem_scalar({'QLitInterval', D}, _Row) -> {'SqlInterval', maps:get(ms, D)};
 mem_scalar({'QAdd', A, B}, Row) -> mem_arith_apply('+', mem_scalar(A, Row), mem_scalar(B, Row));
 mem_scalar({'QSub', A, B}, Row) -> mem_arith_apply('-', mem_scalar(A, Row), mem_scalar(B, Row));
 mem_scalar({'QMul', A, B}, Row) -> mem_arith_apply('*', mem_scalar(A, Row), mem_scalar(B, Row));

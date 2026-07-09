@@ -397,6 +397,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "sqlNull",
             "sqlInstant",
             "sqlInstantOf",
+            "sqlIntervalOf",
             "sqlDecimal",
             "sqlUuid",
             "sqlBytes",

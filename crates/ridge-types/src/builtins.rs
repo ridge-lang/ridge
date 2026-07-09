@@ -1374,6 +1374,14 @@ impl BuiltinTyCons {
                         name: "QLitTime".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(TyConId(55), vec![])]),
                     },
+                    // A duration captured in a quoted predicate (Duration has no
+                    // literal syntax either). Carries a Duration (tycon id 13); the
+                    // renderers move it across `SqlInterval` as its millisecond span.
+                    // Appended last so the hardcoded variant indices stay put.
+                    UnionVariant {
+                        name: "QLitInterval".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(13), vec![])]),
+                    },
                 ],
             }),
             def_span: None,

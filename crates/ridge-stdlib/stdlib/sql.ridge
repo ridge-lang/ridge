@@ -63,6 +63,12 @@ pub fn sqlInterval (ms: Int) -> SqlValue = SqlInterval ms
 -- where the class method `SqlType.toSql` is not reachable from a stdlib module.
 pub fn sqlInstantOf (t: Timestamp) -> SqlValue = SqlInstant (tsToMicros t)
 
+-- A SQL interval from a typed `Duration` — its millisecond span. The query compiler
+-- uses it to bind a captured Duration as a `SqlInterval` parameter, the same way
+-- `sqlInstantOf` binds a captured Timestamp, since `SqlType.toSql` is not reachable
+-- from a stdlib module.
+pub fn sqlIntervalOf (d: Duration) -> SqlValue = SqlInterval d.ms
+
 -- ── SQL column type ───────────────────────────────────────────────────────────
 --
 -- The dialect-neutral SQL column type a field maps to. The Ridge field type

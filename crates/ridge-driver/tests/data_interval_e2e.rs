@@ -130,6 +130,18 @@ pub fn db sumTook () -> Text =
                 Err _ -> "sum-err"
                 Ok o  -> optMs o
 
+-- a captured Duration in a quoted predicate compiles to a bound parameter, so only
+-- the 1500 ms row (label "c") matches. Proves a Duration flows through the query DSL
+-- as a SqlInterval bind, not only through plain expressions.
+pub fn db filterByTook () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            let target = ofMillis 1500
+            match r |> Repo.query |> Repo.filter (fn (t: Task) -> t.took == target) |> Repo.toList
+                Err _ -> "list-err"
+                Ok ts -> joinLabels ts
+
 -- column-type dispatch: `deriving (Schema)` reads the `took` column type from
 -- SqlType.dbType, so the DDL names it `interval`.
 fn taskWitness () -> Option Task = None
@@ -210,6 +222,7 @@ fn interval_codec_runs_on_beam() {
          io:format(\"minTook=~s~n\",[{module}:minTook()]), \
          io:format(\"maxTook=~s~n\",[{module}:maxTook()]), \
          io:format(\"sumTook=~s~n\",[{module}:sumTook()]), \
+         io:format(\"filterByTook=~s~n\",[{module}:filterByTook()]), \
          io:format(\"tookDdl=~s~n\",[{module}:tookDdl()]), \
          halt()."
     );
@@ -249,6 +262,10 @@ fn interval_codec_runs_on_beam() {
         (
             "sumTook=92000",
             "a scalar SUM over an interval column folds to a total and keeps the Duration type",
+        ),
+        (
+            "filterByTook=c",
+            "a captured Duration in a quoted predicate compiles to a bound SqlInterval parameter",
         ),
         (
             "interval",

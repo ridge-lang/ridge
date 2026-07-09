@@ -993,13 +993,13 @@ fn is_int(b: &BuiltinTyCons, ty: &Type) -> bool {
 
 /// Whether `ty` is a base scalar a quote can capture from the enclosing scope as
 /// a runtime bind: Int, Text, Bool, Float, Decimal, Uuid, Timestamp, Bytes, Date,
-/// or Time. These are exactly the types with a `QLit*` node and a `SqlValue`
-/// wrapper in both the SQL and in-memory backends.
+/// Time, or Duration. These are exactly the types with a `QLit*` node and a
+/// `SqlValue` wrapper in both the SQL and in-memory backends.
 fn is_quote_scalar(b: &BuiltinTyCons, ty: &Type) -> bool {
     matches!(ty, Type::Con(id, _)
         if *id == b.int || *id == b.text || *id == b.bool || *id == b.float
             || *id == b.decimal || *id == b.uuid || *id == b.timestamp || *id == b.bytes
-            || *id == b.date || *id == b.time)
+            || *id == b.date || *id == b.time || *id == b.duration)
 }
 
 /// The element type of `ty` when it is a `List a`, for typing a captured `IN`

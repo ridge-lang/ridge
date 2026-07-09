@@ -1760,6 +1760,8 @@ mod tests {
                             | "DbTimestamp"
                             | "DbTimestampTz"
                             | "DbBytes"
+                            | "DbSmallInt"
+                            | "DbChar"
                             | "DbRaw"
                     )
                 {

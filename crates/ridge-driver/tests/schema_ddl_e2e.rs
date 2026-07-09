@@ -1,8 +1,10 @@
 //! End-to-end check for the `std.schema` DDL renderer — running on the BEAM.
 //!
 //! `schemaToDdl` turns the dialect-neutral schema descriptor into a Postgres
-//! `CREATE TABLE`: a database-generated `Identity` column becomes a `serial`/
-//! `bigserial` pseudo-type, and the per-column modifiers render inline — `NOT NULL`,
+//! `CREATE TABLE`: a database-generated `Identity` column becomes a `smallserial`/
+//! `serial`/`bigserial` pseudo-type by width, the first-class narrow column types
+//! (`DbSmallInt`, `DbChar n`) render as `smallint`/`char(n)`, and the per-column
+//! modifiers render inline — `NOT NULL`,
 //! `PRIMARY KEY`, `UNIQUE`, a `REFERENCES … ON DELETE` foreign key, a `DEFAULT`
 //! clause, and a `CHECK` whose predicate is the captured `QExpr` rendered with its
 //! literals inline. A composite primary key and multi-column unique constraints render
@@ -25,7 +27,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.sql (DbBigInt, DbInt, DbText, DbTimestampTz)
+import std.sql (DbBigInt, DbInt, DbText, DbTimestampTz, DbSmallInt, DbChar)
 import std.schema (Identity, DefaultNow, DefaultRawSql, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, check, compositePrimaryKey, uniqueConstraint, schemaToDdl, schemaIndexDdls, createTableDdl, addColumnDdl, addColumnSchemaDdl, alterColumnDdl, dropTableDdl, dropColumnDdl, indexDdl)
 import std.text as Text
 
@@ -78,6 +80,17 @@ fn overrideSchema () =
       |> compositePrimaryKey ["id", "bucket"]
 
 pub fn overrideDdl () -> Text = schemaToDdl (overrideSchema ())
+
+-- Narrower first-class column types: a 16-bit smallint and a blank-padded fixed-width
+-- char(n), rather than the DbRaw escape hatch. A smallint identity renders as
+-- smallserial.
+fn narrowSchema () =
+    schema "Ticket" "tickets"
+      |> withColumn (mkColumn "id" "id" DbSmallInt false |> generated Identity |> primaryKey)
+      |> withColumn (mkColumn "code" "code" (DbChar 8) false)
+      |> withColumn (mkColumn "priority" "priority" DbSmallInt false)
+
+pub fn narrowDdl () -> Text = schemaToDdl (narrowSchema ())
 
 -- A schema with a non-unique indexed column: the index is a separate statement.
 fn indexedSchema () =
@@ -184,7 +197,7 @@ fn schema_ddl_renders_on_beam() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['userDdl','postDdl','membershipDdl','overrideDdl','userIndexes',\
+         lists:foreach(F,['userDdl','postDdl','membershipDdl','overrideDdl','narrowDdl','userIndexes',\
          'migrateCreateDdl',\
          'migrateAddColDdl','addEntityColDdl','alterTypeDdl','alterNullDefaultDdl',\
          'migrateDropTableDdl','migrateDropColDdl',\
@@ -234,6 +247,12 @@ fn schema_ddl_renders_on_beam() {
     // primaryKey, but only the composite PRIMARY KEY ("id", "bucket") renders.
     want(
         r#"overrideDdl=CREATE TABLE "tallies" ("id" bigint NOT NULL, "bucket" bigint NOT NULL, PRIMARY KEY ("id", "bucket"))"#,
+    );
+
+    // First-class narrow column types: a smallint identity renders as smallserial, a
+    // DbChar carries its width as char(n), and a plain smallint column renders smallint.
+    want(
+        r#"narrowDdl=CREATE TABLE "tickets" ("id" smallserial PRIMARY KEY, "code" char(8) NOT NULL, "priority" smallint NOT NULL)"#,
     );
 
     // A non-unique indexed column emits a separate CREATE INDEX, named

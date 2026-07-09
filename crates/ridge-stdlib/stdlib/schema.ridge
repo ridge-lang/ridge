@@ -18,7 +18,7 @@
 -- The dialect-neutral vocabulary below (`DbType`, `Generation`, `FkAction`) is
 -- turned into a backend's `CREATE TABLE` by the DDL renderer.
 
-import std.sql (SqlValue, sqlLiteral, sqlValueSource, DbType, DbBoolean, DbInt, DbBigInt, DbFloat, DbDecimal, DbText, DbVarchar, DbUuid, DbTimestamp, DbTimestampTz, DbBytes, DbRaw)
+import std.sql (SqlValue, sqlLiteral, sqlValueSource, DbType, DbBoolean, DbInt, DbBigInt, DbFloat, DbDecimal, DbText, DbVarchar, DbUuid, DbTimestamp, DbTimestampTz, DbBytes, DbSmallInt, DbChar, DbRaw)
 import std.int as Int
 import std.float as Float
 
@@ -477,12 +477,13 @@ fn colTypeSql (c: ColumnSchema e) -> Text =
         Identity -> serialType c.ty
         _        -> pgColType c.ty
 
--- An identity column's serial pseudo-type: `serial` for a 32-bit integer, otherwise
--- `bigserial` (the default identity width).
+-- An identity column's serial pseudo-type: `smallserial` for a 16-bit integer,
+-- `serial` for a 32-bit one, otherwise `bigserial` (the default identity width).
 fn serialType (t: DbType) -> Text =
     match t
-        DbInt -> "serial"
-        _     -> "bigserial"
+        DbSmallInt -> "smallserial"
+        DbInt      -> "serial"
+        _          -> "bigserial"
 
 -- The concrete Postgres column type for a dialect-neutral `DbType`.
 fn pgColType (t: DbType) -> Text =
@@ -498,6 +499,8 @@ fn pgColType (t: DbType) -> Text =
         DbTimestamp   -> "timestamp"
         DbTimestampTz -> "timestamptz"
         DbBytes       -> "bytea"
+        DbSmallInt    -> "smallint"
+        DbChar n      -> Text.join "" ["char(", Int.toText n, ")"]
         DbRaw r       -> r
 
 -- ` NOT NULL` unless the column admits NULL. A serial column is implicitly non-null,
@@ -824,6 +827,8 @@ fn dbTypeSource (t: DbType) -> Text =
         DbTimestamp   -> "DbTimestamp"
         DbTimestampTz -> "DbTimestampTz"
         DbBytes       -> "DbBytes"
+        DbSmallInt    -> "DbSmallInt"
+        DbChar n      -> Text.join "" ["(DbChar ", Int.toText n, ")"]
         DbRaw r       -> Text.join "" ["(DbRaw ", sourceString r, ")"]
 
 -- The `Generation` constructor source. `DefaultLit` carries a `SqlValue` whose variants are

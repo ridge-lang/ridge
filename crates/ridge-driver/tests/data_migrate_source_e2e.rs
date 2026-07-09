@@ -34,7 +34,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 // and a drop-table — rendered both directly and, for the model and migration, through
 // the snapshot/migration writers.
 const RENDER_SRC: &str = r#"
-import std.sql (DbBigInt, DbInt, DbText, DbVarchar)
+import std.sql (DbBigInt, DbInt, DbText, DbVarchar, DbSmallInt, DbChar)
 import std.schema (EntitySchema, Identity, DefaultLit, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, check, compositePrimaryKey, uniqueConstraint, eraseSchema, columnToSource, schemaToSource)
 import std.migrate as Migrate
 import std.sql (sqlInt)
@@ -82,6 +82,10 @@ pub fn columnSrc () -> Text = columnToSource (mkColumn "email" "email" (DbVarcha
 pub fn checkColSrc () -> Text = columnToSource (mkColumn "qty" "qty" DbInt false |> check (fn (w: Widget) -> w.qty >= 0))
 pub fn defaultColSrc () -> Text = columnToSource (mkColumn "logins" "logins" DbInt false |> generated (DefaultLit (sqlInt 0)))
 pub fn schemaSrc () -> Text = schemaToSource (userSchema ())
+pub fn narrowSchemaSrc () -> Text =
+    schemaToSource (schema "Ticket" "tickets"
+      |> withColumn (mkColumn "id" "id" DbSmallInt false)
+      |> withColumn (mkColumn "code" "code" (DbChar 8) false))
 pub fn modelSrc () -> Text = Migrate.modelToSource (model ())
 pub fn migrationSrc () -> Text = Migrate.migrationToSource (sampleMigration ())
 "#;
@@ -198,6 +202,7 @@ fn source_renderer_round_trips_on_beam() {
     let check_col_src = run_fun(&beam_dir, &module, "checkColSrc");
     let default_col_src = run_fun(&beam_dir, &module, "defaultColSrc");
     let schema_src = run_fun(&beam_dir, &module, "schemaSrc");
+    let narrow_schema_src = run_fun(&beam_dir, &module, "narrowSchemaSrc");
     let model_src = run_fun(&beam_dir, &module, "modelSrc");
     let migration_src = run_fun(&beam_dir, &module, "migrationSrc");
 
@@ -240,6 +245,16 @@ fn source_renderer_round_trips_on_beam() {
     assert!(
         schema_src.contains(r#"|> withColumn (mkColumn "bio" "bio" DbText true)"#),
         "schema_src bio: {schema_src}"
+    );
+
+    // The first-class narrow column types render their DbType source: a nullary
+    // DbSmallInt bare, a DbChar carrying its width parenthesised — both valid Ridge
+    // that rebuilds the same column type.
+    assert!(
+        narrow_schema_src.contains(r#"|> withColumn (mkColumn "id" "id" DbSmallInt false)"#)
+            && narrow_schema_src
+                .contains(r#"|> withColumn (mkColumn "code" "code" (DbChar 8) false)"#),
+        "narrow_schema_src: {narrow_schema_src}"
     );
 
     // A model renders one entity per line, leading comma, with a foreign key's

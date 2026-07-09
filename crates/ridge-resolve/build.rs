@@ -424,6 +424,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "DbTimestamp",
             "DbTimestampTz",
             "DbBytes",
+            "DbSmallInt",
+            "DbChar",
             "DbRaw",
         ],
     ),

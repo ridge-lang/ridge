@@ -45,10 +45,12 @@ pub fn sqlInstantOf (t: Timestamp) -> SqlValue = SqlInstant (tsToMicros t)
 --
 -- The dialect-neutral SQL column type a field maps to. The Ridge field type
 -- drives a default (an `Int` field maps to `DbBigInt`, `Text` to `DbText`, and so
--- on); a schema `columnType` step overrides it per column. `DbRaw` is the escape
--- hatch for a dialect-specific type spelled by hand. It lives here at the
--- value/column type layer, beside `SqlValue`, so the codec class can name it.
-pub type DbType = DbBoolean | DbInt | DbBigInt | DbFloat | DbDecimal Int Int | DbText | DbVarchar Int | DbUuid | DbTimestamp | DbTimestampTz | DbBytes | DbRaw Text
+-- on); a schema `columnType` step overrides it per column — `DbSmallInt` for a
+-- 16-bit integer, `DbChar n` for a blank-padded fixed-width string, both still
+-- backed by the same `Int`/`Text` value. `DbRaw` is the escape hatch for a
+-- dialect-specific type spelled by hand. It lives here at the value/column type
+-- layer, beside `SqlValue`, so the codec class can name it.
+pub type DbType = DbBoolean | DbInt | DbBigInt | DbFloat | DbDecimal Int Int | DbText | DbVarchar Int | DbUuid | DbTimestamp | DbTimestampTz | DbBytes | DbSmallInt | DbChar Int | DbRaw Text
 
 pub class SqlType a =
     toSql   (x: a)        -> SqlValue

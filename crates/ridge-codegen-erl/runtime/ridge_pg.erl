@@ -945,6 +945,9 @@ param_text({'SqlBytes', Hex})  -> <<"\\x", Hex/binary>>;
 %% json/jsonb input is the encoded JSON text sent verbatim; Postgres parses and
 %% (for jsonb) normalises it, inferring the parameter type from the column.
 param_text({'SqlJson', S})     -> S;
+%% a date param goes as its ISO `YYYY-MM-DD` text, which is exactly the SqlDate
+%% carrier, so Postgres parses it as a `date` without a cast.
+param_text({'SqlDate', S})     -> S;
 param_text('SqlNull')         -> <<>>.
 
 collect_rows(Conn, Cols, Acc) ->
@@ -1039,6 +1042,11 @@ decode_value(Oid, Val) when Oid =:= 1114; Oid =:= 1184 ->
 %% rather than arriving as opaque text. jsonb is emitted in its normalised form.
 decode_value(Oid, Val) when Oid =:= 114; Oid =:= 3802 ->
     {'SqlJson', Val};
+%% date (OID 1082) decodes to the typed SqlDate. Postgres delivers a date as ISO
+%% `YYYY-MM-DD` text, which is exactly the SqlDate carrier, so a Date column
+%% round-trips through the codec rather than arriving as opaque text.
+decode_value(1082, Val) ->
+    {'SqlDate', Val};
 decode_value(Oid, Val) when Oid =:= 25; Oid =:= 1043; Oid =:= 1042; Oid =:= 19; Oid =:= 18 ->
     {'SqlText', Val};
 decode_value(_Oid, Val) ->

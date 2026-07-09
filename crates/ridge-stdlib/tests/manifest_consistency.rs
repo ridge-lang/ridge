@@ -162,6 +162,7 @@ const CONSTRUCTOR_EXPORTS: &[(&str, &str)] = &[
     ("std.sql", "DbChar"),
     ("std.sql", "DbJson"),
     ("std.sql", "DbJsonb"),
+    ("std.sql", "DbDate"),
     ("std.sql", "DbRaw"),
     // The `std.schema` generation + foreign-key-action unions: constructors
     // exported for descriptors, surfaced by text extraction only through the type

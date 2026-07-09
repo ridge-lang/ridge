@@ -800,6 +800,68 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         arity: 2,
         requires_caps: &[],
     },
+    // ── ridge_rt date codec (std.date) ─────────────────────────────────────────
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "date_from_ymd",
+        arity: 3,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "date_to_iso",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "date_from_iso",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "date_year",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "date_month",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "date_day",
+        arity: 1,
+        requires_caps: &[],
+    },
+    // `today` reads the system clock, so it carries the `time` capability.
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "date_today",
+        arity: 1,
+        requires_caps: &[Capability::Time],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "date_add_days",
+        arity: 2,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "date_diff_days",
+        arity: 2,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "date_cmp",
+        arity: 2,
+        requires_caps: &[],
+    },
     FfiAuditEntry {
         beam_module: "ridge_rt",
         fn_name: "random_int",

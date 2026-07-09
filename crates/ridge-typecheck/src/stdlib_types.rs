@@ -1536,6 +1536,10 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                         kind: VariantPayload::Nullary,
                     },
                     UnionVariant {
+                        name: "DbDate".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
                         name: "DbRaw".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(b.text, vec![])]),
                     },

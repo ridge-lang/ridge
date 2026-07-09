@@ -1673,13 +1673,13 @@ pub fn register_stdlib_instances(
             span: ds,
         };
         // Builtin TyConIds: Int=0, Float=1, Bool=2, Text=3, Timestamp=5, and the
-        // rich scalars interned last, Decimal=51, Uuid=52, Bytes=53 (all pinned by
-        // debug_asserts in `BuiltinTyCons::allocate`). Every type carrying a source
-        // `instance SqlType T` in sql.ridge is seeded here so a user workspace can
-        // discharge `SqlType T` — most visibly the `SqlType n` context a scalar
+        // rich scalars interned last, Decimal=51, Uuid=52, Bytes=53, Date=54 (all
+        // pinned by debug_asserts in `BuiltinTyCons::allocate`). Every type carrying a
+        // source `instance SqlType T` in sql.ridge is seeded here so a user workspace
+        // can discharge `SqlType T` — most visibly the `SqlType n` context a scalar
         // aggregate (`sumOf`/`minOf`/`maxOf`) threads through its `Aggregable`
         // instance, which decodes the folded column and so needs the dictionary
-        // for a decimal/uuid/bytes/timestamp column just as for an int one.
+        // for a decimal/uuid/bytes/timestamp/date column just as for an int one.
         // Use entry/or_insert rather than the coherence-checking insert so that
         // source-level declarations (from sql.ridge in the stdlib build) always
         // win — they got here first, and we never want to overwrite them or
@@ -1693,6 +1693,7 @@ pub fn register_stdlib_instances(
             TyConId(51), // Decimal
             TyConId(52), // Uuid
             TyConId(53), // Bytes
+            TyConId(54), // Date
         ] {
             env.instances
                 .entry((sqltype, smallvec![prim]))

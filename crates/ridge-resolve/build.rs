@@ -65,12 +65,13 @@ const MODULE_ORDER: &[&str] = &[
     "std.raw",
     "std.test",
     // Appended last so they take the highest ids without renumbering any module
-    // ahead of them. `std.decimal`, `std.uuid` and `std.bytes` are Tier-1 primitive
-    // companions (they import nothing); the ordering here only fixes ids, and the
-    // build tier is set separately in the stdlib build driver.
+    // ahead of them. `std.decimal`, `std.uuid`, `std.bytes` and `std.date` are Tier-1
+    // primitive companions (they import nothing); the ordering here only fixes ids, and
+    // the build tier is set separately in the stdlib build driver.
     "std.decimal",
     "std.uuid",
     "std.bytes",
+    "std.date",
 ];
 
 // ── Baseline export table (T10: preserves original API) ───────────────────────
@@ -398,6 +399,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "sqlUuid",
             "sqlBytes",
             "sqlJson",
+            "sqlDate",
             // The safe SQL statement-text wrapper, its factory, and accessor —
             // a data-layer concern, declared in sql.ridge.
             "Sql",
@@ -429,6 +431,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "DbChar",
             "DbJson",
             "DbJsonb",
+            "DbDate",
             "DbRaw",
         ],
     ),
@@ -485,6 +488,17 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // raw-binary representation and the three-way compare live in the runtime.
             "fromHex", "toHex", "fromUtf8", "toUtf8", "empty", "gen", "length", "concat", "compare",
             "eq", "lt", "lte", "gt", "gte",
+        ],
+    ),
+    (
+        "std.date",
+        &[
+            // Calendar dates: construction from components or ISO text, today's date,
+            // the year/month/day accessors, day arithmetic, and value-based
+            // comparisons. The epoch-day representation and the three-way compare live
+            // in the runtime.
+            "fromYmd", "toIso", "fromIso", "year", "month", "day", "today", "addDays", "diffDays",
+            "compare", "eq", "lt", "lte", "gt", "gte",
         ],
     ),
     (

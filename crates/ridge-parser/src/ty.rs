@@ -143,6 +143,7 @@ pub(crate) fn parse_type_atom(cur: &mut Cursor<'_>) -> Result<Type, ParseError> 
                 "Decimal" => Some(PrimitiveType::Decimal),
                 "Uuid" => Some(PrimitiveType::Uuid),
                 "Bytes" => Some(PrimitiveType::Bytes),
+                "Date" => Some(PrimitiveType::Date),
                 _ => None,
             };
 

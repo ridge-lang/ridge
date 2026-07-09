@@ -170,6 +170,7 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     tycons.insert("Decimal".to_string(), b.decimal);
     tycons.insert("Uuid".to_string(), b.uuid);
     tycons.insert("Bytes".to_string(), b.bytes);
+    tycons.insert("Date".to_string(), b.date);
     tycons.insert("Bool".to_string(), b.bool);
     tycons.insert("Text".to_string(), b.text);
     tycons.insert("List".to_string(), b.list);
@@ -328,6 +329,7 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
         "QLitBytes".to_string(),
         q_ctor(vec![ty_con(b.bytes, vec![])]),
     );
+    values.insert("QLitDate".to_string(), q_ctor(vec![ty_con(b.date, vec![])]));
     values.insert("QNot".to_string(), q_ctor(vec![qexpr_ty.clone()]));
     values.insert("QNotTrue".to_string(), q_ctor(vec![qexpr_ty.clone()]));
     for name in ["QAnd", "QOr", "QEq", "QNe", "QLt", "QGt", "QLe", "QGe"] {

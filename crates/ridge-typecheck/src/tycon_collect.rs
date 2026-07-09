@@ -550,6 +550,7 @@ fn resolve_field_type_for_prescan(
                 PrimitiveType::Decimal => b.decimal,
                 PrimitiveType::Uuid => b.uuid,
                 PrimitiveType::Bytes => b.bytes,
+                PrimitiveType::Date => b.date,
             };
             Type::Con(tycon, vec![])
         }
@@ -1092,6 +1093,7 @@ pub fn ast_type_to_ridge_type(
                 PrimitiveType::Decimal => b.decimal,
                 PrimitiveType::Uuid => b.uuid,
                 PrimitiveType::Bytes => b.bytes,
+                PrimitiveType::Date => b.date,
             };
             Type::Con(tycon, vec![])
         }

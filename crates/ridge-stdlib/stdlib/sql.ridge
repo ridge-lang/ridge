@@ -5,7 +5,7 @@
 -- to and from a SqlValue. The base-type instances live here; opaque newtypes
 -- get their instance for free via deriving (see the data layer).
 
-pub type SqlValue = SqlInt Int | SqlText Text | SqlBool Bool | SqlFloat Float | SqlNull | SqlInstant Int | SqlDecimal Text | SqlUuid Text | SqlBytes Text | SqlJson Text
+pub type SqlValue = SqlInt Int | SqlText Text | SqlBool Bool | SqlFloat Float | SqlNull | SqlInstant Int | SqlDecimal Text | SqlUuid Text | SqlBytes Text | SqlJson Text | SqlDate Text
 
 -- Direct SqlValue constructors. The variants are opaque to consumers (who reach
 -- them through `SqlType` or these factories), so these monomorphic factories are
@@ -41,6 +41,12 @@ pub fn sqlBytes (s: Text) -> SqlValue = SqlBytes s
 -- built and rendered back to source, and a value read from a column round-trips.
 pub fn sqlJson (s: Text) -> SqlValue = SqlJson s
 
+-- A calendar date, carried as its ISO `YYYY-MM-DD` text. Like the uuid factory it
+-- takes the canonical text form (a Date has no literal), so a `date` default
+-- (`DefaultLit`) can be built and rendered back to source, and the query compiler
+-- can bind a captured Date after running it through `Date.toIso`.
+pub fn sqlDate (s: Text) -> SqlValue = SqlDate s
+
 -- A wall-clock instant from a typed `Timestamp` rather than raw epoch micros. The
 -- query compiler uses it to bind a captured Timestamp as a `SqlInstant` parameter,
 -- where the class method `SqlType.toSql` is not reachable from a stdlib module.
@@ -56,7 +62,7 @@ pub fn sqlInstantOf (t: Timestamp) -> SqlValue = SqlInstant (tsToMicros t)
 -- field to a `json`/`jsonb` column. `DbRaw` is the escape hatch for a
 -- dialect-specific type spelled by hand. It lives here at the value/column type
 -- layer, beside `SqlValue`, so the codec class can name it.
-pub type DbType = DbBoolean | DbInt | DbBigInt | DbFloat | DbDecimal Int Int | DbText | DbVarchar Int | DbUuid | DbTimestamp | DbTimestampTz | DbBytes | DbSmallInt | DbChar Int | DbJson | DbJsonb | DbRaw Text
+pub type DbType = DbBoolean | DbInt | DbBigInt | DbFloat | DbDecimal Int Int | DbText | DbVarchar Int | DbUuid | DbTimestamp | DbTimestampTz | DbBytes | DbSmallInt | DbChar Int | DbJson | DbJsonb | DbDate | DbRaw Text
 
 pub class SqlType a =
     toSql   (x: a)        -> SqlValue
@@ -212,6 +218,28 @@ instance SqlType JsonValue =
             SqlJson s -> jsonDecode s
             _         -> Err ({ code = "sql.decode.json", message = "expected a SQL json value" })
     dbType (witness: Option JsonValue) -> DbType = DbJsonb
+
+-- ISO-text bridge for the Date codec. Like the Timestamp and Uuid bridges above,
+-- these are declared here rather than imported from std.date so std.sql keeps
+-- depending on nothing above it. The runtime carries a Date as an epoch-day count and
+-- moves it across `SqlDate` as ISO `YYYY-MM-DD` text; `dateFromIso` re-validates a
+-- value read back from a column.
+@ffi("ridge_rt", "date_to_iso", 1)
+fn dateToIso (d: Date) -> Text
+
+@ffi("ridge_rt", "date_from_iso", 1)
+fn dateFromIso (s: Text) -> Result Date Error
+
+-- A calendar date maps to the typed `SqlDate` value carrying its ISO text, so a
+-- native `date` column round-trips as itself rather than an ambiguous string that
+-- also picks up a time of day. The default column type is `DbDate`.
+instance SqlType Date =
+    toSql (x: Date) -> SqlValue = SqlDate (dateToIso x)
+    fromSql (v: SqlValue) -> Result Date Error =
+        match v
+            SqlDate s -> dateFromIso s
+            _         -> Err ({ code = "sql.decode.date", message = "expected a SQL date" })
+    dbType (witness: Option Date) -> DbType = DbDate
 
 -- Retype a nested-Option witness to a witness for the inner type, so the
 -- `Option a` instance can delegate its column type. `dbType` reads only the

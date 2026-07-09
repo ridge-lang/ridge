@@ -928,11 +928,12 @@ fn extract_tycon_id(
                 PrimitiveType::Text => Some(TyConId(3)),
                 PrimitiveType::Unit => Some(TyConId(4)),
                 PrimitiveType::Timestamp => Some(TyConId(5)),
-                // Decimal, Uuid and Bytes are interned last in the builtin arena
-                // (ids 51, 52, 53).
+                // Decimal, Uuid, Bytes and Date are interned last in the builtin
+                // arena (ids 51, 52, 53, 54).
                 PrimitiveType::Decimal => Some(TyConId(51)),
                 PrimitiveType::Uuid => Some(TyConId(52)),
                 PrimitiveType::Bytes => Some(TyConId(53)),
+                PrimitiveType::Date => Some(TyConId(54)),
                 #[allow(unreachable_patterns)]
                 _ => None,
             }

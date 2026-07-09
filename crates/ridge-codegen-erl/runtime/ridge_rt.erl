@@ -20,6 +20,9 @@
     uuid_from_text/1, uuid_to_text/1, uuid_nil/1, uuid_gen/1, uuid_cmp/2,
     bytes_from_hex/1, bytes_to_hex/1, bytes_from_utf8/1, bytes_to_utf8/1,
     bytes_empty/1, bytes_gen/1, bytes_length/1, bytes_concat/2, bytes_cmp/2,
+    date_from_ymd/3, date_to_iso/1, date_from_iso/1,
+    date_year/1, date_month/1, date_day/1, date_today/1,
+    date_add_days/2, date_diff_days/2, date_cmp/2,
     int_parse/0, int_parse/1, float_parse/1, float_to_text/1, bool_to_text/1,
     sql_literal/1, sql_value_source/1,
     text_split_all/2, text_replace_all/3, text_join/2, text_slice/3,
@@ -479,6 +482,81 @@ bytes_empty(_Unit) -> <<>>.
 bytes_gen(N) when is_integer(N), N > 0 -> crypto:strong_rand_bytes(N);
 bytes_gen(_) -> <<>>.
 
+%% --- Date ---
+%% A Date is a calendar day held as {date, EpochDays}, where EpochDays is the whole
+%% number of days since the Unix epoch (1970-01-01); it may be negative for an
+%% earlier date. The integer keeps ordering and day arithmetic exact. The SQL codec
+%% moves it across a `date` column as ISO `YYYY-MM-DD` text, which sorts the same
+%% way as the day count.
+
+%% Gregorian day number of the Unix epoch (1970-01-01). A Date's EpochDays is the
+%% offset from it, so a gregorian day number is EpochDays plus this.
+date_epoch_gd() -> calendar:date_to_gregorian_days(1970, 1, 1).
+
+%% date_from_ymd/3 — std.date.fromYmd. Int -> Int -> Int -> Result Date Error.
+%% Validates the calendar date, rejecting an out-of-range component (month 13,
+%% day 32, Feb 30, ...).
+date_from_ymd(Y, M, D) when is_integer(Y), is_integer(M), is_integer(D) ->
+    case calendar:valid_date(Y, M, D) of
+        true  -> {ok, {date, calendar:date_to_gregorian_days(Y, M, D) - date_epoch_gd()}};
+        false -> {error, {error_record, <<"date.invalid">>, <<"invalid calendar date">>}}
+    end.
+
+%% date_to_iso/1 — std.date.toIso (and the SQL codec's canonical form). ISO 8601
+%% `YYYY-MM-DD`, zero-padded.
+date_to_iso({date, Days}) ->
+    {Y, M, D} = calendar:gregorian_days_to_date(Days + date_epoch_gd()),
+    iolist_to_binary(io_lib:format("~4..0b-~2..0b-~2..0b", [Y, M, D])).
+
+%% date_from_iso/1 — std.date.fromIso. Text -> Result Date Error. Parses ISO 8601
+%% `YYYY-MM-DD` and range-checks the calendar date.
+date_from_iso(Bin) ->
+    case date_parse_iso(binary_to_list(Bin)) of
+        {ok, Y, M, D} ->
+            case calendar:valid_date(Y, M, D) of
+                true  -> {ok, {date, calendar:date_to_gregorian_days(Y, M, D) - date_epoch_gd()}};
+                false -> {error, {error_record, <<"date.invalid">>, <<"date out of range">>}}
+            end;
+        error -> {error, {error_record, <<"date.parse">>, <<"invalid ISO-8601 date">>}}
+    end.
+
+%% Parse "YYYY-MM-DD" into {ok, Y, M, D} or error. Each component is a run of digits
+%% with nothing left over.
+date_parse_iso(Str) ->
+    case string:split(Str, "-", all) of
+        [Ys, Ms, Ds] ->
+            case {string:to_integer(Ys), string:to_integer(Ms), string:to_integer(Ds)} of
+                {{Y, []}, {M, []}, {D, []}} when is_integer(Y), is_integer(M), is_integer(D) ->
+                    {ok, Y, M, D};
+                _ -> error
+            end;
+        _ -> error
+    end.
+
+%% date_year/1, date_month/1, date_day/1 — std.date.year / month / day. The
+%% year, month (1-12), and day-of-month (1-31) of the calendar date.
+date_year({date, Days})  -> {Y, _, _} = calendar:gregorian_days_to_date(Days + date_epoch_gd()), Y.
+date_month({date, Days}) -> {_, M, _} = calendar:gregorian_days_to_date(Days + date_epoch_gd()), M.
+date_day({date, Days})   -> {_, _, D} = calendar:gregorian_days_to_date(Days + date_epoch_gd()), D.
+
+%% date_today/1 — std.date.today. Today's date in UTC. Reads the system clock, so it
+%% carries the `time` capability.
+date_today(_Unit) ->
+    {{Y, M, D}, _Time} = calendar:universal_time(),
+    {date, calendar:date_to_gregorian_days(Y, M, D) - date_epoch_gd()}.
+
+%% date_add_days/2 — std.date.addDays. The date N days after D (N may be negative).
+date_add_days(N, {date, Days}) -> {date, Days + N}.
+
+%% date_diff_days/2 — std.date.diffDays. The whole-day count A - B; negative when A
+%% is earlier than B.
+date_diff_days({date, A}, {date, B}) -> A - B.
+
+%% date_cmp/2 — std.date.compare. The day count orders chronologically, so a plain
+%% integer compare yields the date ordering (matching how Postgres sorts `date`).
+date_cmp({date, A}, {date, B}) ->
+    if A < B -> -1; A > B -> 1; true -> 0 end.
+
 %% bytes_length/1 — std.bytes.length. The number of bytes.
 bytes_length(Raw) -> byte_size(Raw).
 
@@ -548,6 +626,7 @@ sql_literal({'SqlDecimal', S})  -> S;
 sql_literal({'SqlUuid', S})     -> <<"'", S/binary, "'">>;
 sql_literal({'SqlBytes', Hex})  -> <<"'\\x", Hex/binary, "'">>;
 sql_literal({'SqlJson', S})     -> <<"'", (binary:replace(S, <<"'">>, <<"''">>, [global]))/binary, "'">>;
+sql_literal({'SqlDate', S})     -> <<"'", S/binary, "'">>;
 sql_literal('SqlNull')          -> <<"NULL">>.
 
 %% sql_value_source/1 — render a SqlValue as the Ridge *source* expression that
@@ -566,6 +645,7 @@ sql_value_source({'SqlDecimal', S})  -> <<"(sqlDecimal ", (source_text_literal(S
 sql_value_source({'SqlUuid', S})     -> <<"(sqlUuid ", (source_text_literal(S))/binary, ")">>;
 sql_value_source({'SqlBytes', S})    -> <<"(sqlBytes ", (source_text_literal(S))/binary, ")">>;
 sql_value_source({'SqlJson', S})     -> <<"(sqlJson ", (source_text_literal(S))/binary, ")">>;
+sql_value_source({'SqlDate', S})     -> <<"(sqlDate ", (source_text_literal(S))/binary, ")">>;
 sql_value_source('SqlNull')          -> <<"(sqlNull ())">>.
 
 %% source_text_literal/1 — a Text as a Ridge string literal: backslash doubled
@@ -1934,6 +2014,7 @@ mem_pcell({'QLitDecimal', D}, _Row) -> {'SqlDecimal', decimal_to_text(D)};
 mem_pcell({'QLitUuid', U}, _Row) -> {'SqlUuid', uuid_to_text(U)};
 mem_pcell({'QLitInstant', TS}, _Row) -> {'SqlInstant', time_to_micros(TS)};
 mem_pcell({'QLitBytes', B}, _Row) -> {'SqlBytes', bytes_to_hex(B)};
+mem_pcell({'QLitDate', D}, _Row) -> {'SqlDate', date_to_iso(D)};
 %% Computed projection cells over a join's flat source-prefixed rows: arithmetic
 %% folds its operands (each resolved by the same prefix rules), a CASE picks a
 %% branch by its condition read as an N-ary predicate. A cell with no value — a
@@ -2109,6 +2190,9 @@ mem_key({'SqlBytes', S}) -> S;
 %% A json/jsonb column keys on its encoded JSON text; equal JsonValues encode to the
 %% same text, so ORDER BY / min / max are deterministic (a stable text ordering).
 mem_key({'SqlJson', S}) -> S;
+%% A date column keys on its ISO `YYYY-MM-DD` text, which sorts chronologically, so
+%% ORDER BY / min / max match how Postgres sorts the column.
+mem_key({'SqlDate', S}) -> S;
 mem_key({'SqlBool', B})  -> B.
 
 %% An aggregate over a group as a comparison operand: the folded value (a column or
@@ -2199,6 +2283,7 @@ mem_hscalar_nary({'QLitDecimal', D}, _Key, _GR) -> {'SqlDecimal', decimal_to_tex
 mem_hscalar_nary({'QLitUuid', U}, _Key, _GR) -> {'SqlUuid', uuid_to_text(U)};
 mem_hscalar_nary({'QLitInstant', TS}, _Key, _GR) -> {'SqlInstant', time_to_micros(TS)};
 mem_hscalar_nary({'QLitBytes', B}, _Key, _GR) -> {'SqlBytes', bytes_to_hex(B)};
+mem_hscalar_nary({'QLitDate', D}, _Key, _GR) -> {'SqlDate', date_to_iso(D)};
 mem_hscalar_nary(_Other, _Key, _GR)           -> undefined.
 
 %% Merge the Changes columns into every row matching the predicate tree, leaving
@@ -2395,6 +2480,7 @@ mem_jscalar({'QLitDecimal', D}, _L, _R) -> {'SqlDecimal', decimal_to_text(D)};
 mem_jscalar({'QLitUuid', U}, _L, _R) -> {'SqlUuid', uuid_to_text(U)};
 mem_jscalar({'QLitInstant', TS}, _L, _R) -> {'SqlInstant', time_to_micros(TS)};
 mem_jscalar({'QLitBytes', B}, _L, _R) -> {'SqlBytes', bytes_to_hex(B)};
+mem_jscalar({'QLitDate', D}, _L, _R) -> {'SqlDate', date_to_iso(D)};
 mem_jscalar({'QAdd', A, B}, L, R) -> mem_arith_apply('+', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
 mem_jscalar({'QSub', A, B}, L, R) -> mem_arith_apply('-', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
 mem_jscalar({'QMul', A, B}, L, R) -> mem_arith_apply('*', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
@@ -2579,6 +2665,7 @@ mem_nscalar({'QLitDecimal', D}, _Row) -> {'SqlDecimal', decimal_to_text(D)};
 mem_nscalar({'QLitUuid', U}, _Row) -> {'SqlUuid', uuid_to_text(U)};
 mem_nscalar({'QLitInstant', TS}, _Row) -> {'SqlInstant', time_to_micros(TS)};
 mem_nscalar({'QLitBytes', B}, _Row) -> {'SqlBytes', bytes_to_hex(B)};
+mem_nscalar({'QLitDate', D}, _Row) -> {'SqlDate', date_to_iso(D)};
 mem_nscalar({'QAdd', A, B}, Row) -> mem_arith_apply('+', mem_nscalar(A, Row), mem_nscalar(B, Row));
 mem_nscalar({'QSub', A, B}, Row) -> mem_arith_apply('-', mem_nscalar(A, Row), mem_nscalar(B, Row));
 mem_nscalar({'QMul', A, B}, Row) -> mem_arith_apply('*', mem_nscalar(A, Row), mem_nscalar(B, Row));
@@ -2775,6 +2862,7 @@ mem_scalar({'QLitDecimal', D}, _Row) -> {'SqlDecimal', decimal_to_text(D)};
 mem_scalar({'QLitUuid', U}, _Row) -> {'SqlUuid', uuid_to_text(U)};
 mem_scalar({'QLitInstant', TS}, _Row) -> {'SqlInstant', time_to_micros(TS)};
 mem_scalar({'QLitBytes', B}, _Row) -> {'SqlBytes', bytes_to_hex(B)};
+mem_scalar({'QLitDate', D}, _Row) -> {'SqlDate', date_to_iso(D)};
 mem_scalar({'QAdd', A, B}, Row) -> mem_arith_apply('+', mem_scalar(A, Row), mem_scalar(B, Row));
 mem_scalar({'QSub', A, B}, Row) -> mem_arith_apply('-', mem_scalar(A, Row), mem_scalar(B, Row));
 mem_scalar({'QMul', A, B}, Row) -> mem_arith_apply('*', mem_scalar(A, Row), mem_scalar(B, Row));
@@ -2836,6 +2924,9 @@ mem_sql_cmp(lt, {'SqlBytes', X}, {'SqlBytes', Y}) -> X < Y;
 %% A json/jsonb column orders by its encoded text; equality rides the generic
 %% structural clause above (equal JsonValues encode to the identical text).
 mem_sql_cmp(lt, {'SqlJson', X}, {'SqlJson', Y}) -> X < Y;
+%% A date column orders by its ISO `YYYY-MM-DD` text, which sorts chronologically;
+%% equality rides the generic structural clause above (the ISO form is canonical).
+mem_sql_cmp(lt, {'SqlDate', X}, {'SqlDate', Y}) -> X < Y;
 mem_sql_cmp(lt, _A, _B) -> false.
 
 %% A SqlValue used directly as a predicate: a SqlBool yields its boolean.

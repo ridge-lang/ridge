@@ -481,6 +481,7 @@ pub fn lower_instance(ctx: &mut LowerCtx<'_>, decl: &InstanceDecl) -> Vec<IrItem
                     PrimitiveType::Decimal => "Decimal",
                     PrimitiveType::Uuid => "Uuid",
                     PrimitiveType::Bytes => "Bytes",
+                    PrimitiveType::Date => "Date",
                 }
                 .to_owned()
             }

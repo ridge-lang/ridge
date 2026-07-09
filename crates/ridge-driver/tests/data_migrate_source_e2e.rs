@@ -16,6 +16,8 @@
 //! reconstructed `QExpr` tree, and a `DefaultLit` default through `sqlValueSource` (the
 //! `SqlValue` rebuilt as its own factory call); both round-trip through the fixpoint even
 //! though the phantom-erased schema has lost the entity type the original quote closed over.
+//! A junction table's composite primary key and multi-column unique constraint rebuild
+//! through their `compositePrimaryKey`/`uniqueConstraint` steps the same way.
 //!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 
@@ -33,7 +35,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 // the snapshot/migration writers.
 const RENDER_SRC: &str = r#"
 import std.sql (DbBigInt, DbInt, DbText, DbVarchar)
-import std.schema (EntitySchema, Identity, DefaultLit, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, check, eraseSchema, columnToSource, schemaToSource)
+import std.schema (EntitySchema, Identity, DefaultLit, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, check, compositePrimaryKey, uniqueConstraint, eraseSchema, columnToSource, schemaToSource)
 import std.migrate as Migrate
 import std.sql (sqlInt)
 
@@ -55,7 +57,17 @@ fn widgetSchema () -> EntitySchema Widget =
     schema "Widget" "widgets"
       |> withColumn (mkColumn "qty" "qty" DbInt false |> check (fn (w: Widget) -> w.qty >= 0))
 
-fn model () -> List (EntitySchema Unit) = [ userSchema (), postSchema (), eraseSchema (widgetSchema ()) ]
+-- A junction table keyed by two columns: its composite primary key and a
+-- multi-column unique constraint render as trailing builder steps, and rebuild the
+-- same schema through the fixpoint below.
+fn membershipSchema () -> EntitySchema Unit =
+    schema "Membership" "memberships"
+      |> withColumn (mkColumn "user_id" "user_id" DbBigInt false)
+      |> withColumn (mkColumn "group_id" "group_id" DbBigInt false)
+      |> compositePrimaryKey ["user_id", "group_id"]
+      |> uniqueConstraint ["group_id", "user_id"]
+
+fn model () -> List (EntitySchema Unit) = [ userSchema (), postSchema (), eraseSchema (widgetSchema ()), membershipSchema () ]
 
 fn sampleMigration () =
     Migrate.migration "0002_evolve"
@@ -81,7 +93,7 @@ fn build_roundtrip_source(model_src: &str, migration_src: &str) -> String {
     format!(
         r#"
 import std.sql (DbBigInt, DbInt, DbText, DbVarchar)
-import std.schema (EntitySchema, Identity, DefaultLit, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, checkRaw)
+import std.schema (EntitySchema, Identity, DefaultLit, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, checkRaw, compositePrimaryKey, uniqueConstraint)
 import std.migrate (migration, createSchema, addEntityColumn, alterColumn, dropColumn, dropTable, modelToSource, migrationToSource)
 import std.sql (sqlInt)
 
@@ -244,6 +256,16 @@ fn source_renderer_round_trips_on_beam() {
         model_src
             .contains(r#"|> indexed |> foreignKey (references "users" "id" |> onDelete Cascade))"#),
         "model_src fk: {model_src}"
+    );
+    // A composite primary key and a multi-column unique constraint render as trailing
+    // `|> compositePrimaryKey [...]` / `|> uniqueConstraint [...]` steps, each column
+    // list a Ridge list of quoted-string literals — and rebuild an equal schema through
+    // the fixpoint below.
+    assert!(
+        model_src.contains(
+            r#"schema "Membership" "memberships" |> withColumn (mkColumn "user_id" "user_id" DbBigInt false) |> withColumn (mkColumn "group_id" "group_id" DbBigInt false) |> compositePrimaryKey ["user_id", "group_id"] |> uniqueConstraint ["group_id", "user_id"]"#
+        ),
+        "model_src membership: {model_src}"
     );
     assert!(model_src.ends_with("\n]"), "model_src close: {model_src}");
 

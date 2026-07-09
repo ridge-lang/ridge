@@ -1724,6 +1724,17 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                             vec![Type::Con(TyConId(base + 29), vec![Type::Var(TyVid(0))])],
                         ),
                     },
+                    RecordField {
+                        name: "primaryKeyColumns".to_string(),
+                        ty: Type::Con(b.list, vec![Type::Con(b.text, vec![])]),
+                    },
+                    RecordField {
+                        name: "uniqueConstraints".to_string(),
+                        ty: Type::Con(
+                            b.list,
+                            vec![Type::Con(b.list, vec![Type::Con(b.text, vec![])])],
+                        ),
+                    },
                 ],
             )),
             def_span: None,
@@ -2459,6 +2470,10 @@ fn reconciled_schema_fn_scheme(
         // Entity schema builders and read accessors (∀e. … over EntitySchema e).
         "schema" => poly1(vec![text(), text()], ent_e()),
         "withColumn" => poly1(vec![col_e(), ent_e()], ent_e()),
+        // `compositePrimaryKey`/`uniqueConstraint` : ∀e. List Text -> EntitySchema e ->
+        // EntitySchema e — the multi-column table-constraint steps, each naming its
+        // columns by SQL column name (the composite key, or one unique constraint).
+        "compositePrimaryKey" | "uniqueConstraint" => poly1(vec![list(text()), ent_e()], ent_e()),
         // `schemaToDdl` renders an entity's `CREATE TABLE`; it shares the
         // `EntitySchema e -> Text` shape with the name accessors. `schemaIndexDdls`
         // renders its non-unique indexes, sharing the `-> List Text` shape with the
@@ -2470,6 +2485,11 @@ fn reconciled_schema_fn_scheme(
             poly1(vec![ent_e()], text())
         }
         "schemaColumns" => poly1(vec![ent_e()], list(col_e())),
+        // The table-constraint read accessors: the composite primary key's columns
+        // (empty when the key is a single per-column one, or absent), and the
+        // multi-column unique constraints (a column list each).
+        "schemaPrimaryKey" => poly1(vec![ent_e()], list(text())),
+        "schemaUniqueConstraints" => poly1(vec![ent_e()], list(list(text()))),
         // eraseSchema : ∀e. EntitySchema e -> EntitySchema Unit — drop the phantom
         // entity so a non-parametric migration step can carry the descriptor.
         "eraseSchema" => poly1(vec![ent_e()], ent_unit()),

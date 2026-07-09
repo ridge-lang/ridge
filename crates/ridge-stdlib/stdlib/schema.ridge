@@ -172,26 +172,53 @@ pub fn colGenerated (c: ColumnSchema e) -> Bool =
 
 -- ── Entity schema ─────────────────────────────────────────────────────────────
 
--- An entity's full schema: its name, its SQL table, and its columns in
--- declaration order. The phantom `e` ties it to the entity. Opaque — produced by
--- the convention instance `deriving (Schema)` synthesises, or built by hand
--- through `schema` and `withColumn`, and read back through the accessors.
-pub opaque type EntitySchema e = { name: Text, table: Text, columns: List (ColumnSchema e) }
+-- An entity's full schema: its name, its SQL table, its columns in declaration
+-- order, and its table-level constraints — a composite primary key and any
+-- multi-column unique constraints, each naming its columns by SQL column name. The
+-- phantom `e` ties it to the entity. Opaque — produced by the convention instance
+-- `deriving (Schema)` synthesises, or built by hand through `schema`, `withColumn`,
+-- `compositePrimaryKey`, and `uniqueConstraint`, and read back through the accessors.
+pub opaque type EntitySchema e = { name: Text, table: Text, columns: List (ColumnSchema e), primaryKeyColumns: List Text, uniqueConstraints: List (List Text) }
 
 -- Start an empty schema for entity `e`: its name and SQL table, no columns yet.
 -- Pipe `withColumn` steps onto it.
 pub fn schema (name: Text) (table: Text) -> EntitySchema e =
-    EntitySchema { name = name, table = table, columns = [] }
+    EntitySchema { name = name, table = table, columns = [], primaryKeyColumns = [], uniqueConstraints = [] }
 
 -- Append a fully-built column to a schema.
 pub fn withColumn (c: ColumnSchema e) (s: EntitySchema e) -> EntitySchema e =
-    EntitySchema { name = s.name, table = s.table, columns = appendColumn s.columns c }
+    EntitySchema { name = s.name, table = s.table, columns = appendColumn s.columns c, primaryKeyColumns = s.primaryKeyColumns, uniqueConstraints = s.uniqueConstraints }
+
+-- Declare a composite primary key over the named columns, in order — the
+-- multi-column form of the per-column `primaryKey` step, for a table whose key is
+-- more than one column (a junction table keyed by its two foreign keys, say). A
+-- table has one primary key, so this replaces any previous composite key, and when
+-- present it stands in for a per-column `primaryKey`: the DDL renderer emits one
+-- table-level `PRIMARY KEY (…)` and drops the inline column key. Columns are named
+-- by SQL column name, the way `mkColumn` and the index steps name them.
+pub fn compositePrimaryKey (cols: List Text) (s: EntitySchema e) -> EntitySchema e =
+    EntitySchema { name = s.name, table = s.table, columns = s.columns, primaryKeyColumns = cols, uniqueConstraints = s.uniqueConstraints }
+
+-- Add a multi-column unique constraint over the named columns — the multi-column
+-- form of the per-column `unique` step: the combination is unique even when no
+-- single column is. Each step adds a distinct constraint; the DDL renderer emits one
+-- table-level `UNIQUE (…)` per constraint, in the order they were added.
+pub fn uniqueConstraint (cols: List Text) (s: EntitySchema e) -> EntitySchema e =
+    EntitySchema { name = s.name, table = s.table, columns = s.columns, primaryKeyColumns = s.primaryKeyColumns, uniqueConstraints = appendUnique s.uniqueConstraints cols }
 
 -- ── Entity read accessors ─────────────────────────────────────────────────────
 
 pub fn schemaName (s: EntitySchema e) -> Text = s.name
 pub fn schemaTable (s: EntitySchema e) -> Text = s.table
 pub fn schemaColumns (s: EntitySchema e) -> List (ColumnSchema e) = s.columns
+
+-- The composite primary key's columns, in order — empty when the key is a single
+-- per-column `primaryKey` or the table has none.
+pub fn schemaPrimaryKey (s: EntitySchema e) -> List Text = s.primaryKeyColumns
+
+-- The table's multi-column unique constraints, each a column list, in the order
+-- they were added.
+pub fn schemaUniqueConstraints (s: EntitySchema e) -> List (List Text) = s.uniqueConstraints
 
 -- Erase a schema's phantom entity, fixing it at `Unit`. The phantom is a
 -- build-time guard — it keeps columns of different entities from mixing while a
@@ -200,7 +227,7 @@ pub fn schemaColumns (s: EntitySchema e) -> List (ColumnSchema e) = s.columns
 -- `EntitySchema e` for an arbitrary `e`; `eraseSchema` gives it the one schema type
 -- a step can hold, and the storage adapter renders that to its dialect's DDL.
 pub fn eraseSchema (s: EntitySchema e) -> EntitySchema Unit =
-    EntitySchema { name = s.name, table = s.table, columns = eraseColumns s.columns }
+    EntitySchema { name = s.name, table = s.table, columns = eraseColumns s.columns, primaryKeyColumns = s.primaryKeyColumns, uniqueConstraints = s.uniqueConstraints }
 
 fn eraseColumns (cols: List (ColumnSchema e)) -> List (ColumnSchema Unit) =
     match cols
@@ -278,6 +305,11 @@ fn appendColumn (cols: List (ColumnSchema e)) (c: ColumnSchema e) -> List (Colum
         []        -> [c]
         x :: rest -> x :: appendColumn rest c
 
+fn appendUnique (uniques: List (List Text)) (cols: List Text) -> List (List Text) =
+    match uniques
+        []        -> [cols]
+        x :: rest -> x :: appendUnique rest cols
+
 fn generatedNames (cols: List (ColumnSchema e)) -> List Text =
     match cols
         []        -> []
@@ -313,7 +345,9 @@ fn identityNames (cols: List (ColumnSchema e)) -> List Text =
 -- key, check), in declaration order. Non-unique indexes are separate statements —
 -- see `schemaIndexDdls`.
 pub fn schemaToDdl (s: EntitySchema e) -> Text =
-    Text.join "" ["CREATE TABLE ", quoteIdent s.table, " (", Text.join ", " (columnFrags s.columns), ")"]
+    let cols = columnFrags s.columns (hasCompositeKey s.primaryKeyColumns)
+    let frags = concatFrags cols (tableConstraintFrags s.primaryKeyColumns s.uniqueConstraints)
+    Text.join "" ["CREATE TABLE ", quoteIdent s.table, " (", Text.join ", " frags, ")"]
 
 -- The `CREATE INDEX` statements for the schema's `indexed` columns — the non-unique
 -- indexes that cannot ride inline in `CREATE TABLE` (a `unique` column already
@@ -577,10 +611,35 @@ fn ckInList (items: List QExpr) -> Text =
 
 -- ── Shared rendering helpers ──────────────────────────────────────────────────
 
-fn columnFrags (cols: List (ColumnSchema e)) -> List Text =
+-- Each column's `CREATE TABLE` fragment. With a composite primary key present the
+-- key is a single table-level clause, so `suppressPk` renders every column without
+-- its inline `PRIMARY KEY` to keep the table from carrying two keys.
+fn columnFrags (cols: List (ColumnSchema e)) (suppressPk: Bool) -> List Text =
     match cols
         []        -> []
-        c :: rest -> columnDdl c :: columnFrags rest
+        c :: rest -> (if suppressPk then columnDdlNoPk c else columnDdl c) :: columnFrags rest suppressPk
+
+-- Whether the table carries a composite (multi-column) primary key.
+fn hasCompositeKey (cols: List Text) -> Bool =
+    match cols
+        []     -> false
+        _ :: _ -> true
+
+-- The table-level constraint fragments a `CREATE TABLE` carries after its columns:
+-- the composite `PRIMARY KEY (…)` when one is declared, then a `UNIQUE (…)` per
+-- multi-column unique constraint, in declaration order.
+fn tableConstraintFrags (pk: List Text) (uniques: List (List Text)) -> List Text =
+    concatFrags (pkConstraintFrag pk) (uniqueConstraintFrags uniques)
+
+fn pkConstraintFrag (cols: List Text) -> List Text =
+    match cols
+        []     -> []
+        _ :: _ -> [Text.join "" ["PRIMARY KEY (", quotedCols cols, ")"]]
+
+fn uniqueConstraintFrags (uniques: List (List Text)) -> List Text =
+    match uniques
+        []           -> []
+        cols :: rest -> Text.join "" ["UNIQUE (", quotedCols cols, ")"] :: uniqueConstraintFrags rest
 
 fn tupleFrags (cols: List (Text, Text, Bool, Bool, Bool)) -> List Text =
     match cols
@@ -712,12 +771,40 @@ fn checkFrag (ck: Option QExpr) -> List Text =
 -- Render an `EntitySchema` to the `schema "Name" "table" |> withColumn (…) |> …`
 -- source that rebuilds it. Columns render in declaration order.
 pub fn schemaToSource (s: EntitySchema e) -> Text =
-    Text.join "" (Text.join "" ["schema ", sourceString s.name, " ", sourceString s.table] :: withColumnFrags s.columns)
+    let head = Text.join "" ["schema ", sourceString s.name, " ", sourceString s.table]
+    let frags = concatFrags (withColumnFrags s.columns) (constraintSourceFrags s.primaryKeyColumns s.uniqueConstraints)
+    Text.join "" (head :: frags)
 
 fn withColumnFrags (cols: List (ColumnSchema e)) -> List Text =
     match cols
         []        -> []
         c :: rest -> Text.join "" [" |> withColumn (", columnToSource c, ")"] :: withColumnFrags rest
+
+-- The ` |> compositePrimaryKey […]` / ` |> uniqueConstraint […]` steps that rebuild
+-- a schema's table-level constraints — the composite key first, then each unique
+-- constraint in declaration order, so a rendered schema round-trips to an equal one.
+fn constraintSourceFrags (pk: List Text) (uniques: List (List Text)) -> List Text =
+    concatFrags (pkSourceFrag pk) (uniqueSourceFrags uniques)
+
+fn pkSourceFrag (cols: List Text) -> List Text =
+    match cols
+        []     -> []
+        _ :: _ -> [Text.join "" [" |> compositePrimaryKey ", textListSource cols]]
+
+fn uniqueSourceFrags (uniques: List (List Text)) -> List Text =
+    match uniques
+        []           -> []
+        cols :: rest -> Text.join "" [" |> uniqueConstraint ", textListSource cols] :: uniqueSourceFrags rest
+
+-- A `List Text` rendered as a Ridge list literal of quoted, escaped strings —
+-- `["a", "b"]` — so a constraint's column list drops into the builder-call source.
+fn textListSource (xs: List Text) -> Text =
+    Text.join "" ["[", Text.join ", " (mapSourceString xs), "]"]
+
+fn mapSourceString (xs: List Text) -> List Text =
+    match xs
+        []        -> []
+        x :: rest -> sourceString x :: mapSourceString rest
 
 -- ── Source rendering of the column vocabulary ─────────────────────────────────
 

@@ -5,7 +5,9 @@
 //! `bigserial` pseudo-type, and the per-column modifiers render inline — `NOT NULL`,
 //! `PRIMARY KEY`, `UNIQUE`, a `REFERENCES … ON DELETE` foreign key, a `DEFAULT`
 //! clause, and a `CHECK` whose predicate is the captured `QExpr` rendered with its
-//! literals inline. The `createTableDdl`/`addColumnDdl`/`dropTableDdl`/
+//! literals inline. A composite primary key and multi-column unique constraints render
+//! as table-level clauses after the columns, and a composite key supersedes any inline
+//! per-column one. The `createTableDdl`/`addColumnDdl`/`dropTableDdl`/
 //! `dropColumnDdl`/`indexDdl` family renders the migration runner's schema steps from
 //! the seam tuples, the same statements the retired Erlang builder used to assemble.
 //!
@@ -24,7 +26,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
 import std.sql (DbBigInt, DbInt, DbText, DbTimestampTz)
-import std.schema (Identity, DefaultNow, DefaultRawSql, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, check, schemaToDdl, schemaIndexDdls, createTableDdl, addColumnDdl, addColumnSchemaDdl, alterColumnDdl, dropTableDdl, dropColumnDdl, indexDdl)
+import std.schema (Identity, DefaultNow, DefaultRawSql, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, check, compositePrimaryKey, uniqueConstraint, schemaToDdl, schemaIndexDdls, createTableDdl, addColumnDdl, addColumnSchemaDdl, alterColumnDdl, dropTableDdl, dropColumnDdl, indexDdl)
 import std.text as Text
 
 -- The domain records the schemas below describe. Persistence-ignorant — the
@@ -52,6 +54,30 @@ fn postSchema () =
       |> withColumn (mkColumn "bio" "bio" DbText true)
 
 pub fn postDdl () -> Text = schemaToDdl (postSchema ())
+
+-- A junction table whose key is two columns: a composite primary key and a
+-- multi-column unique constraint render as table-level clauses after the columns, and
+-- no column carries an inline PRIMARY KEY.
+fn membershipSchema () =
+    schema "Membership" "memberships"
+      |> withColumn (mkColumn "user_id" "user_id" DbBigInt false)
+      |> withColumn (mkColumn "group_id" "group_id" DbBigInt false)
+      |> withColumn (mkColumn "role" "role" DbText false)
+      |> compositePrimaryKey ["user_id", "group_id"]
+      |> uniqueConstraint ["user_id", "role"]
+
+pub fn membershipDdl () -> Text = schemaToDdl (membershipSchema ())
+
+-- A composite primary key supersedes an inline per-column one: `id` is marked
+-- primaryKey, but the table-level PRIMARY KEY wins and the inline key is dropped, so
+-- the table carries exactly one key.
+fn overrideSchema () =
+    schema "Tally" "tallies"
+      |> withColumn (mkColumn "id" "id" DbBigInt false |> primaryKey)
+      |> withColumn (mkColumn "bucket" "bucket" DbBigInt false)
+      |> compositePrimaryKey ["id", "bucket"]
+
+pub fn overrideDdl () -> Text = schemaToDdl (overrideSchema ())
 
 -- A schema with a non-unique indexed column: the index is a separate statement.
 fn indexedSchema () =
@@ -158,7 +184,8 @@ fn schema_ddl_renders_on_beam() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['userDdl','postDdl','userIndexes','migrateCreateDdl',\
+         lists:foreach(F,['userDdl','postDdl','membershipDdl','overrideDdl','userIndexes',\
+         'migrateCreateDdl',\
          'migrateAddColDdl','addEntityColDdl','alterTypeDdl','alterNullDefaultDdl',\
          'migrateDropTableDdl','migrateDropColDdl',\
          'migrateIndexDdl','migrateUniqueIndexDdl']), halt()."
@@ -195,6 +222,18 @@ fn schema_ddl_renders_on_beam() {
     // renders `DEFAULT now()`; a nullable column carries no NOT NULL.
     want(
         r#"postDdl=CREATE TABLE "posts" ("id" bigserial PRIMARY KEY, "author" bigint NOT NULL REFERENCES "users" ("id") ON DELETE CASCADE, "created_at" timestamptz NOT NULL DEFAULT now(), "bio" text)"#,
+    );
+
+    // A composite primary key and a multi-column unique constraint render as
+    // table-level clauses after the columns; no column carries an inline PRIMARY KEY.
+    want(
+        r#"membershipDdl=CREATE TABLE "memberships" ("user_id" bigint NOT NULL, "group_id" bigint NOT NULL, "role" text NOT NULL, PRIMARY KEY ("user_id", "group_id"), UNIQUE ("user_id", "role"))"#,
+    );
+
+    // The table-level key supersedes an inline per-column one: `id` was marked
+    // primaryKey, but only the composite PRIMARY KEY ("id", "bucket") renders.
+    want(
+        r#"overrideDdl=CREATE TABLE "tallies" ("id" bigint NOT NULL, "bucket" bigint NOT NULL, PRIMARY KEY ("id", "bucket"))"#,
     );
 
     // A non-unique indexed column emits a separate CREATE INDEX, named

@@ -341,6 +341,7 @@ fn signature_shape_consistency() {
                         | "planAggregate"
                         | "planGroup"
                         | "planToSql"
+                        | "planToSqlFor"
                         | "optimize"
                         | "planExists"
                         | "planList"

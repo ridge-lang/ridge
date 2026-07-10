@@ -590,6 +590,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // The plan-to-SQL renderer: lowers a whole `QueryPlan` to one
             // parameterized statement plus its ordered bind values.
             "planToSql",
+            // The dialect-explicit renderer: `planToSql` fixed to Postgres or SQLite,
+            // differing only in how the aggregates spell their casts.
+            "planToSqlFor",
             // The plan-to-plan optimizer: rewrites a `QueryPlan` into an
             // equivalent one that compiles to tighter SQL (the renderer's pre-pass).
             "optimize",

@@ -2161,7 +2161,8 @@ pub(crate) fn reconciled_fn_scheme(
         (
             "std.query",
             "planScan" | "planCombine" | "planRefine" | "planJoin" | "planProject"
-            | "planAggregate" | "planGroup" | "planToSql" | "optimize" | "planExists",
+            | "planAggregate" | "planGroup" | "planToSql" | "planToSqlFor" | "optimize"
+            | "planExists",
         ) => reconciled_query_plan_fn_scheme(name, reconciled, b),
         // std.query mutation builders + the write-side renderer — the `MutationPlan`
         // factories `planInsert`/`planUpsert`/`planUpdate`/`planDelete` and `mutationToSql`.
@@ -2194,6 +2195,8 @@ fn reconciled_query_plan_fn_scheme(
 ) -> Option<Scheme> {
     let query_plan = *reconciled.get("QueryPlan")?;
     let plan = || Type::Con(query_plan, vec![]);
+    let dialect = *reconciled.get("Dialect")?;
+    let dialect_ty = || Type::Con(dialect, vec![]);
     let text = || Type::Con(b.text, vec![]);
     let int = || Type::Con(b.int, vec![]);
     let bool_ = || Type::Con(b.bool, vec![]);
@@ -2280,6 +2283,23 @@ fn reconciled_query_plan_fn_scheme(
             row_vars: vec![],
             ty: Type::Fn {
                 params: vec![plan()],
+                ret: Box::new(Type::Tuple(vec![
+                    Type::Con(b.sql, vec![]),
+                    Type::Con(b.list, vec![Type::Con(b.sql_value, vec![])]),
+                ])),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            },
+            constraints: vec![],
+        }),
+        // planToSqlFor : Dialect -> QueryPlan -> (Sql, List SqlValue) — the same renderer
+        // as `planToSql` with the target dialect made explicit, so a plan can lower to
+        // either the Postgres or the SQLite spelling of its aggregates.
+        "planToSqlFor" => Some(Scheme {
+            vars: vec![],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: Type::Fn {
+                params: vec![dialect_ty(), plan()],
                 ret: Box::new(Type::Tuple(vec![
                     Type::Con(b.sql, vec![]),
                     Type::Con(b.list, vec![Type::Con(b.sql_value, vec![])]),

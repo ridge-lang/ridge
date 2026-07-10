@@ -1978,9 +1978,11 @@ mod tests {
                             | "planGroup"
                             // `planToSql` takes the reconciled `QueryPlan`, so its
                             // scheme is seeded via `reconciled_query_plan_fn_scheme`,
-                            // not this hand-curated table. `optimize` takes and returns
-                            // one, so it is seeded the same way.
+                            // not this hand-curated table. `planToSqlFor` (the dialect-
+                            // explicit renderer) and `optimize` take one, so they are
+                            // seeded the same way.
                             | "planToSql"
+                            | "planToSqlFor"
                             | "optimize"
                             | "planExists"
                             | "planList"

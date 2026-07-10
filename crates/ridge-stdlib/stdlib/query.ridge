@@ -10,7 +10,7 @@
 -- module walks it back, either rendering it to a readable string (`debugShow`)
 -- or compiling it to parameterized SQL plus its bind values (`toSql`).
 
-import std.sql (Sql, sql, SqlValue, sqlInt, sqlText, sqlBool, sqlFloat, sqlDecimal, sqlUuid, sqlBytes, sqlDate, sqlTime, sqlIntervalOf, sqlInstantOf, sqlNull)
+import std.sql (Sql, sql, SqlValue, sqlInt, sqlText, sqlBool, sqlFloat, sqlDecimal, sqlUuid, sqlBytes, sqlDate, sqlTime, sqlIntervalOf, sqlInstantOf, sqlNull, Dialect, PgDialect, SqliteDialect)
 import std.int as Int
 import std.map as Map
 
@@ -469,8 +469,15 @@ fn aliasedCol (alias: Text) (colSql: Text) -> Text =
 -- `t1$__present__`): the unmatched side's real columns all read NULL, so the marker
 -- is what tells a matched-but-all-NULL row from an absent one. A projection,
 -- aggregate, or group over a join reads those NULLs directly and needs no marker.
-pub fn planToSql (plan: QueryPlan) -> (Sql, List SqlValue) =
-    let r = renderPlan (optimize plan) 1
+pub fn planToSql (plan: QueryPlan) -> (Sql, List SqlValue) = planToSqlFor PgDialect plan
+
+-- Compile a query plan to SQL for a specific dialect. `planToSql` targets Postgres; the
+-- two backends produce identical SQL everywhere except the aggregates: SQLite's `AVG`
+-- already returns a float so it needs no `::float8`, and an interval average is a plain
+-- `AVG` over the integer-millisecond column rather than an `EXTRACT(EPOCH …)`. The dialect
+-- threads down to the aggregate renderers; the rest of the plan renders the same either way.
+pub fn planToSqlFor (d: Dialect) (plan: QueryPlan) -> (Sql, List SqlValue) =
+    let r = renderPlan d (optimize plan) 1
     (sql r.text, r.binds)
 
 -- Compile a mutation plan to one parameterized statement and its bind values — the
@@ -710,7 +717,7 @@ fn containsExists (e: QExpr) -> Bool =
         QCase c t e -> containsExists c || containsExists t || containsExists e
         _           -> false
 
-fn renderPlan (plan: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn renderPlan (d: Dialect) (plan: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match plan
         PlanScan table pred orders lim off dist ->
             if containsExists pred then
@@ -725,11 +732,11 @@ fn renderPlan (plan: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, 
                 let ob = orderByClause orders w.next
                 { text = Text.join "" ["SELECT ", distinctKw dist, "* FROM ", quoteIdent table, w.text, ob.text, limitClause lim, offsetClause off], binds = w.binds ++ ob.binds, next = ob.next }
         PlanCombine op left right ->
-            let l = renderPlan left n
-            let r = renderPlan right l.next
+            let l = renderPlan d left n
+            let r = renderPlan d right l.next
             { text = Text.join "" ["(", l.text, ") ", op, " (", r.text, ")"], binds = l.binds ++ r.binds, next = r.next }
         PlanRefine inner pred orders lim off dist ->
-            let i = renderPlan inner n
+            let i = renderPlan d inner n
             if containsExists pred then
                 -- Alias the sub-select `l` (rather than `ridge_sub`) when the refinement's
                 -- WHERE carries an `EXISTS`, so each subquery correlates to the outer row.
@@ -745,11 +752,11 @@ fn renderPlan (plan: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, 
         PlanProject proj child lim off dist ->
             renderProject proj child lim off dist n
         PlanAggregate func column leaf child ->
-            renderAggregate func column leaf child n
+            renderAggregate d func column leaf child n
         PlanGroup keyCol keyLeaf cols having child ->
-            renderGroup keyCol keyLeaf cols having child n
+            renderGroup d keyCol keyLeaf cols having child n
         PlanExists child ->
-            renderExists child n
+            renderExists d child n
         PlanList _ ->
             -- Mem-only: the in-memory `Seq` source never reaches the SQL renderer,
             -- which only sees plans rooted at a table scan. Present for exhaustiveness.
@@ -760,7 +767,7 @@ fn renderPlan (plan: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, 
 -- row the caller never reads. The child is the reduction join an `exists` terminal builds,
 -- so the probe reuses its FROM/JOIN/WHERE with no presence markers (existence needs none).
 -- A non-join child (a set-operation query) falls back to probing it as a subquery.
-fn renderExists (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn renderExists (d: Dialect) (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match child
         PlanJoin kind left right cond where2 _ _ _ _ _ _ ->
             match left
@@ -772,7 +779,7 @@ fn renderExists (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValu
                         _ -> existsNary child n
                 _ -> existsNary child n
         _ ->
-            let r = renderPlan child n
+            let r = renderPlan d child n
             { text = Text.join "" ["SELECT 1 FROM (", r.text, ") AS ridge_exists LIMIT 1"], binds = r.binds, next = r.next }
 
 -- The existence probe over a composite (three-or-more table) reduction join: the flattened
@@ -1788,18 +1795,18 @@ fn joinSelectTerm (alias: Text) (col: QExpr) (n: Int) -> { text: Text, binds: Li
 -- `COUNT` counts rows; the others fold a side-qualified column (`AVG` casts to
 -- `float8`, as the single-table aggregate does). No ordering or paging — an aggregate
 -- folds every joined row.
-fn renderAggregate (func: Text) (column: QExpr) (leaf: Int) (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn renderAggregate (d: Dialect) (func: Text) (column: QExpr) (leaf: Int) (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match child
         PlanJoin kind left right cond where2 _ _ _ _ _ _ ->
             match left
                 PlanScan lt lp _ _ _ _ ->
                     match right
                         PlanScan rt _ _ _ _ _ ->
-                            let ax = aggExprJoinE func column n
+                            let ax = aggExprJoinE d func column n
                             let sk = joinSkeleton kind lt lp rt cond where2 false ax.next
                             { text = Text.join "" ["SELECT ", ax.text, " FROM ", sk.text], binds = ax.binds ++ sk.binds, next = sk.next }
-                        _ -> naryAggregate func leaf column child n
-                _ -> naryAggregate func leaf column child n
+                        _ -> naryAggregate d func leaf column child n
+                _ -> naryAggregate d func leaf column child n
         PlanScan table pred _ _ _ _ ->
             -- A scalar aggregate over a single table: fold over the table's filtered rows.
             -- The WHERE compiles bare, or base-qualified (`FROM "t" AS l`) when it carries a
@@ -1807,11 +1814,11 @@ fn renderAggregate (func: Text) (column: QExpr) (leaf: Int) (child: QueryPlan) (
             -- aliasing a plain `PlanScan` uses. No ordering or paging: an aggregate folds
             -- every matched row.
             if containsExists pred then
-                let ax = aggExprSingle true func column n
+                let ax = aggExprSingle d true func column n
                 let w = whereExistsClause true 1 pred ax.next
                 { text = Text.join "" ["SELECT ", ax.text, " FROM ", quoteIdent table, " AS l", w.text], binds = ax.binds ++ w.binds, next = w.next }
             else
-                let ax = aggExprSingle false func column n
+                let ax = aggExprSingle d false func column n
                 let w = whereClause false pred ax.next
                 { text = Text.join "" ["SELECT ", ax.text, " FROM ", quoteIdent table, w.text], binds = ax.binds ++ w.binds, next = w.next }
         _ -> emptyRender n
@@ -1823,13 +1830,13 @@ fn renderAggregate (func: Text) (column: QExpr) (leaf: Int) (child: QueryPlan) (
 -- spine renders each step by its own kind, the presence markers a bare terminal needs
 -- left off (an aggregate reads the null-extended NULLs directly). `COUNT(*)` counts the
 -- joined rows; a column-folding aggregate folds `column` on its leaf alias `t<leaf>`.
-fn naryAggregate (func: Text) (leaf: Int) (column: QExpr) (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn naryAggregate (d: Dialect) (func: Text) (leaf: Int) (column: QExpr) (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     let f = flattenJoin child
     match f.leaves
         [] -> emptyRender n
         _  ->
             if allInnerSteps f.steps then
-                let ax = naryAggExprE func leaf column n
+                let ax = naryAggExprE d func leaf column n
                 let from = naryFrom f.leaves f.steps ax.next
                 let wh = naryWhere f.leaves f.steps from.next
                 { text = Text.join "" ["SELECT ", ax.text, " FROM ", from.text, wh.text], binds = ax.binds ++ from.binds ++ wh.binds, next = wh.next }
@@ -1839,7 +1846,7 @@ fn naryAggregate (func: Text) (leaf: Int) (column: QExpr) (child: QueryPlan) (n:
                 -- filtered scan in a subquery so the filter applies before the outer step,
                 -- while every other leaf's filter lifts to the flat top-level WHERE.
                 let nulls = nullableLeaves f.steps
-                let ax = naryAggExprE func leaf column n
+                let ax = naryAggExprE d func leaf column n
                 let from = mixedFrom f.leaves f.steps nulls false ax.next
                 let wh = mixedWhere f.leaves f.steps nulls from.next
                 { text = Text.join "" ["SELECT ", ax.text, " FROM ", from.text, wh.text], binds = ax.binds ++ from.binds ++ wh.binds, next = wh.next }
@@ -1850,51 +1857,59 @@ fn naryAggregate (func: Text) (leaf: Int) (column: QExpr) (child: QueryPlan) (n:
 -- threaded as `$N` placeholders. `AVG` casts to `float8`, as the single-table and
 -- binary-join aggregates do. `leaf` is the default leaf a bare `QCol` qualifies to;
 -- a `QColR`/`QColAt` inside the value names its own.
-fn naryAggExprE (func: Text) (leaf: Int) (column: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn naryAggExprE (d: Dialect) (func: Text) (leaf: Int) (column: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     if func == "COUNT" then { text = "COUNT(*)", binds = [], next = n }
     else
         let c = qualOperand leaf column n
-        { text = aggApply func c.text, binds = c.binds, next = c.next }
+        { text = aggApply d func c.text, binds = c.binds, next = c.next }
 
--- The `::float8` cast an `AVG` carries so an integer column averages to a float, matching
--- the single-table and binary-join aggregate renderers; the other folds add nothing.
-fn avgCast (func: Text) -> Text = if func == "AVG" then "::float8" else ""
+-- The cast an `AVG` carries so an integer column averages to a float. Postgres needs an
+-- explicit `::float8`; SQLite's `AVG` already returns a real, so it adds nothing. Every
+-- other fold (`SUM`, `MIN`, `MAX`, `COUNT`) needs no cast in either dialect.
+fn avgCast (d: Dialect) (func: Text) -> Text =
+    match d
+        PgDialect     -> if func == "AVG" then "::float8" else ""
+        SqliteDialect -> ""
 
 -- The SQL an aggregate keyword folds its operand into. A numeric fold is `FUNC(col)`,
--- an `AVG` carrying the `::float8` cast. `AVG_INTERVAL` is the interval-aware average:
--- Postgres cannot cast an `interval` average to `float8`, so it reads the average's
--- epoch seconds and scales them to milliseconds, matching the `Duration` a column stores
--- and the `Option Float` an `avgOf` answers.
-fn aggApply (func: Text) (colText: Text) -> Text =
+-- an `AVG` carrying whatever cast `avgCast` asks for. `AVG_INTERVAL` is the interval-aware
+-- average, and it answers a mean in milliseconds to match the `Duration` a column stores
+-- and the `Option Float` an `avgOf` returns. Postgres stores an interval as `interval` and
+-- cannot cast its average to `float8`, so it reads the average's epoch seconds and scales
+-- them; SQLite stores the interval as integer milliseconds, so a plain `AVG` already yields
+-- the mean in milliseconds.
+fn aggApply (d: Dialect) (func: Text) (colText: Text) -> Text =
     if func == "AVG_INTERVAL" then
-        Text.join "" ["EXTRACT(EPOCH FROM AVG(", colText, "))::float8 * 1000"]
+        match d
+            PgDialect     -> Text.join "" ["EXTRACT(EPOCH FROM AVG(", colText, "))::float8 * 1000"]
+            SqliteDialect -> Text.join "" ["AVG(", colText, ")"]
     else
-        Text.join "" [func, "(", colText, ")", avgCast func]
+        Text.join "" [func, "(", colText, ")", avgCast d func]
 
 -- The scalar-aggregate expression over a binary join: `COUNT(*)`, or `FUNC(<expr>)`
 -- folding its captured value (a column or a computed expression over the two sides)
 -- rendered side-qualified (`l.`/`r.`), its literals threaded as `$N` placeholders.
 -- `AVG` casts to float8.
-fn aggExprJoinE (func: Text) (column: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn aggExprJoinE (d: Dialect) (func: Text) (column: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     if func == "COUNT" then { text = "COUNT(*)", binds = [], next = n }
     else
         let c = renderOperand true column n
-        { text = aggApply func c.text, binds = c.binds, next = c.next }
+        { text = aggApply d func c.text, binds = c.binds, next = c.next }
 
 -- The scalar-aggregate expression over a single table: `COUNT(*)`, or `FUNC(<expr>)`
 -- folding its captured value (a column or a computed expression), rendered bare or
 -- base-qualified (`l.`) when the scan's WHERE carries an EXISTS, its literals threaded
 -- as `$N` placeholders. `AVG` casts to float8, as the join aggregate renderers do.
-fn aggExprSingle (qualified: Bool) (func: Text) (column: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn aggExprSingle (d: Dialect) (qualified: Bool) (func: Text) (column: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     if func == "COUNT" then { text = "COUNT(*)", binds = [], next = n }
     else
         let c = renderOperand qualified column n
-        { text = aggApply func c.text, binds = c.binds, next = c.next }
+        { text = aggApply d func c.text, binds = c.binds, next = c.next }
 
 -- A grouped join (`groupBy` + `summarize`): one row per group, keyed by the
 -- side-qualified group key and summarised into the aggregate columns, keeping the
 -- groups the HAVING admits, ordered by the key.
-fn renderGroup (keyCol: Text) (keyLeaf: Int) (cols: List (Text, Text, QExpr, Int)) (having: QExpr) (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn renderGroup (d: Dialect) (keyCol: Text) (keyLeaf: Int) (cols: List (Text, Text, QExpr, Int)) (having: QExpr) (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match child
         PlanJoin kind left right cond where2 _ _ _ _ _ _ ->
             match left
@@ -1902,12 +1917,12 @@ fn renderGroup (keyCol: Text) (keyLeaf: Int) (cols: List (Text, Text, QExpr, Int
                     match right
                         PlanScan rt _ _ _ _ _ ->
                             let keyExpr = renderColRef true (keyLeaf == 1) keyCol
-                            let cs = groupSelectTerms cols keyExpr n
+                            let cs = groupSelectTerms d cols keyExpr n
                             let sk = joinSkeleton kind lt lp rt cond where2 false cs.next
-                            let h = renderHaving having (keyLeaf == 1) keyCol sk.next
+                            let h = renderHaving d having (keyLeaf == 1) keyCol sk.next
                             { text = Text.join "" ["SELECT ", cs.text, " FROM ", sk.text, " GROUP BY ", keyExpr, h.text, " ORDER BY ", keyExpr], binds = cs.binds ++ sk.binds ++ h.binds, next = h.next }
-                        _ -> naryGroup keyCol keyLeaf cols having child n
-                _ -> naryGroup keyCol keyLeaf cols having child n
+                        _ -> naryGroup d keyCol keyLeaf cols having child n
+                _ -> naryGroup d keyCol keyLeaf cols having child n
         PlanScan table pred _ _ _ _ ->
             -- A single-table grouped fold: one row per group keyed by the group key,
             -- summarised into the aggregate columns, the groups the HAVING admits kept,
@@ -1916,14 +1931,14 @@ fn renderGroup (keyCol: Text) (keyLeaf: Int) (cols: List (Text, Text, QExpr, Int
             -- and aliases the table `l`, the same as a plain scan.
             let qualified = containsExists pred
             let keyExpr = renderColRef qualified false keyCol
-            let cs = singleGroupSelectTerms cols keyExpr qualified n
+            let cs = singleGroupSelectTerms d cols keyExpr qualified n
             if qualified then
                 let w = whereExistsClause true 1 pred cs.next
-                let h = singleHaving having qualified keyCol w.next
+                let h = singleHaving d having qualified keyCol w.next
                 { text = Text.join "" ["SELECT ", cs.text, " FROM ", quoteIdent table, " AS l", w.text, " GROUP BY ", keyExpr, h.text, " ORDER BY ", keyExpr], binds = cs.binds ++ w.binds ++ h.binds, next = h.next }
             else
                 let w = whereClause false pred cs.next
-                let h = singleHaving having qualified keyCol w.next
+                let h = singleHaving d having qualified keyCol w.next
                 { text = Text.join "" ["SELECT ", cs.text, " FROM ", quoteIdent table, w.text, " GROUP BY ", keyExpr, h.text, " ORDER BY ", keyExpr], binds = cs.binds ++ w.binds ++ h.binds, next = h.next }
         _ -> emptyRender n
 
@@ -1931,87 +1946,87 @@ fn renderGroup (keyCol: Text) (keyLeaf: Int) (cols: List (Text, Text, QExpr, Int
 -- right so a computed fold's literals bind in source order. Each term is the group
 -- key, or a scalar aggregate folding its captured value — a side-qualified column or
 -- a computed expression over the two sides (`COUNT(*)` carries no value).
-fn groupSelectTerms (cols: List (Text, Text, QExpr, Int)) (keyExpr: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn groupSelectTerms (d: Dialect) (cols: List (Text, Text, QExpr, Int)) (keyExpr: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match cols
         []                               -> { text = "", binds = [], next = n }
-        (alias, func, col, leaf) :: []   -> groupSelectTerm alias func col leaf keyExpr n
+        (alias, func, col, leaf) :: []   -> groupSelectTerm d alias func col leaf keyExpr n
         (alias, func, col, leaf) :: rest ->
-            let h = groupSelectTerm alias func col leaf keyExpr n
-            let t = groupSelectTerms rest keyExpr h.next
+            let h = groupSelectTerm d alias func col leaf keyExpr n
+            let t = groupSelectTerms d rest keyExpr h.next
             { text = Text.join "" [h.text, ", ", t.text], binds = h.binds ++ t.binds, next = t.next }
 
-fn groupSelectTerm (alias: Text) (func: Text) (col: QExpr) (leaf: Int) (keyExpr: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn groupSelectTerm (d: Dialect) (alias: Text) (func: Text) (col: QExpr) (leaf: Int) (keyExpr: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     if func == "KEY" then { text = Text.join "" [keyExpr, " AS ", quoteIdent alias], binds = [], next = n }
     else
-        let a = aggExprJoinE func col n
+        let a = aggExprJoinE d func col n
         { text = Text.join "" [a.text, " AS ", quoteIdent alias], binds = a.binds, next = a.next }
 
 -- The grouped SELECT list of a single table: the group key, or a scalar aggregate
 -- folding a bare (or `l.`-qualified) column or computed value, threaded left to right
 -- so a computed fold's literals bind in source order. `COUNT(*)` carries no value.
 -- The leaf each column records is unused — a single table has the one source.
-fn singleGroupSelectTerms (cols: List (Text, Text, QExpr, Int)) (keyExpr: Text) (qualified: Bool) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn singleGroupSelectTerms (d: Dialect) (cols: List (Text, Text, QExpr, Int)) (keyExpr: Text) (qualified: Bool) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match cols
         []                                -> { text = "", binds = [], next = n }
-        (alias, func, col, _leaf) :: []   -> singleGroupSelectTerm alias func col keyExpr qualified n
+        (alias, func, col, _leaf) :: []   -> singleGroupSelectTerm d alias func col keyExpr qualified n
         (alias, func, col, _leaf) :: rest ->
-            let h = singleGroupSelectTerm alias func col keyExpr qualified n
-            let t = singleGroupSelectTerms rest keyExpr qualified h.next
+            let h = singleGroupSelectTerm d alias func col keyExpr qualified n
+            let t = singleGroupSelectTerms d rest keyExpr qualified h.next
             { text = Text.join "" [h.text, ", ", t.text], binds = h.binds ++ t.binds, next = t.next }
 
-fn singleGroupSelectTerm (alias: Text) (func: Text) (col: QExpr) (keyExpr: Text) (qualified: Bool) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn singleGroupSelectTerm (d: Dialect) (alias: Text) (func: Text) (col: QExpr) (keyExpr: Text) (qualified: Bool) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     if func == "KEY" then { text = Text.join "" [keyExpr, " AS ", quoteIdent alias], binds = [], next = n }
     else
-        let a = aggExprSingle qualified func col n
+        let a = aggExprSingle d qualified func col n
         { text = Text.join "" [a.text, " AS ", quoteIdent alias], binds = a.binds, next = a.next }
 
 -- A single-table HAVING fragment, the bare (or `l.`-qualified) dual of `renderHaving`:
 -- its aggregate operands fold a bare column and its group-key operand reads the bare
 -- key, where the binary form side-qualifies each. The leading ` HAVING ` is folded in,
 -- and the clause is empty for the always-true default so it is omitted.
-fn singleHaving (having: QExpr) (qualified: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn singleHaving (d: Dialect) (having: QExpr) (qualified: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match having
-        QLitBool b -> if b then { text = "", binds = [], next = n } else singleHavingClause having qualified keyCol n
-        _          -> singleHavingClause having qualified keyCol n
+        QLitBool b -> if b then { text = "", binds = [], next = n } else singleHavingClause d having qualified keyCol n
+        _          -> singleHavingClause d having qualified keyCol n
 
-fn singleHavingClause (having: QExpr) (qualified: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
-    let h = singleHavingExpr having qualified keyCol n
+fn singleHavingClause (d: Dialect) (having: QExpr) (qualified: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let h = singleHavingExpr d having qualified keyCol n
     { text = Text.concat " HAVING " h.text, binds = h.binds, next = h.next }
 
-fn singleHavingExpr (e: QExpr) (qualified: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn singleHavingExpr (d: Dialect) (e: QExpr) (qualified: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match e
-        QAnd l r -> singleHavingBin l " AND " r qualified keyCol n
-        QOr l r  -> singleHavingBin l " OR " r qualified keyCol n
+        QAnd l r -> singleHavingBin d l " AND " r qualified keyCol n
+        QOr l r  -> singleHavingBin d l " OR " r qualified keyCol n
         QNot x   ->
-            let r = singleHavingExpr x qualified keyCol n
+            let r = singleHavingExpr d x qualified keyCol n
             { text = Text.join "" ["(NOT ", r.text, ")"], binds = r.binds, next = r.next }
-        QEq l r -> singleHavingCmp l " = " r qualified keyCol n
-        QNe l r -> singleHavingCmp l " <> " r qualified keyCol n
-        QLt l r -> singleHavingCmp l " < " r qualified keyCol n
-        QGt l r -> singleHavingCmp l " > " r qualified keyCol n
-        QLe l r -> singleHavingCmp l " <= " r qualified keyCol n
-        QGe l r -> singleHavingCmp l " >= " r qualified keyCol n
-        _       -> singleHavingOperand e qualified keyCol n
+        QEq l r -> singleHavingCmp d l " = " r qualified keyCol n
+        QNe l r -> singleHavingCmp d l " <> " r qualified keyCol n
+        QLt l r -> singleHavingCmp d l " < " r qualified keyCol n
+        QGt l r -> singleHavingCmp d l " > " r qualified keyCol n
+        QLe l r -> singleHavingCmp d l " <= " r qualified keyCol n
+        QGe l r -> singleHavingCmp d l " >= " r qualified keyCol n
+        _       -> singleHavingOperand d e qualified keyCol n
 
-fn singleHavingCmp (l: QExpr) (op: Text) (r: QExpr) (qualified: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
-    let lr = singleHavingOperand l qualified keyCol n
-    let rr = singleHavingOperand r qualified keyCol lr.next
+fn singleHavingCmp (d: Dialect) (l: QExpr) (op: Text) (r: QExpr) (qualified: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let lr = singleHavingOperand d l qualified keyCol n
+    let rr = singleHavingOperand d r qualified keyCol lr.next
     { text = Text.join "" [lr.text, op, rr.text], binds = lr.binds ++ rr.binds, next = rr.next }
 
-fn singleHavingBin (l: QExpr) (op: Text) (r: QExpr) (qualified: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
-    let lr = singleHavingExpr l qualified keyCol n
-    let rr = singleHavingExpr r qualified keyCol lr.next
+fn singleHavingBin (d: Dialect) (l: QExpr) (op: Text) (r: QExpr) (qualified: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let lr = singleHavingExpr d l qualified keyCol n
+    let rr = singleHavingExpr d r qualified keyCol lr.next
     { text = Text.join "" ["(", lr.text, op, rr.text, ")"], binds = lr.binds ++ rr.binds, next = rr.next }
 
-fn singleHavingOperand (e: QExpr) (qualified: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn singleHavingOperand (d: Dialect) (e: QExpr) (qualified: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match e
         QAggCount    -> { text = "COUNT(*)", binds = [], next = n }
         QGroupKey    -> { text = renderColRef qualified false keyCol, binds = [], next = n }
-        QAggSum node -> aggExprSingle qualified "SUM" node n
-        QAggAvg node -> aggExprSingle qualified "AVG" node n
-        QAggAvgInterval node -> aggExprSingle qualified "AVG_INTERVAL" node n
-        QAggMin node -> aggExprSingle qualified "MIN" node n
-        QAggMax node -> aggExprSingle qualified "MAX" node n
+        QAggSum node -> aggExprSingle d qualified "SUM" node n
+        QAggAvg node -> aggExprSingle d qualified "AVG" node n
+        QAggAvgInterval node -> aggExprSingle d qualified "AVG_INTERVAL" node n
+        QAggMin node -> aggExprSingle d qualified "MIN" node n
+        QAggMax node -> aggExprSingle d qualified "MAX" node n
         QLitInt v    -> { text = placeholder n, binds = [sqlInt v], next = n + 1 }
         QLitText v   -> { text = placeholder n, binds = [sqlText v], next = n + 1 }
         QLitBool v   -> { text = placeholder n, binds = [sqlBool v], next = n + 1 }
@@ -2032,90 +2047,90 @@ fn singleHavingOperand (e: QExpr) (qualified: Bool) (keyCol: Text) (n: Int) -> {
 -- multi-way join, a mixed-shape spine each step by its own kind with the presence
 -- markers a bare terminal needs left off (a grouped fold reads the null-extended NULLs
 -- directly). Each aggregate column folds `column` on its leaf alias `t<leaf>`.
-fn naryGroup (keyCol: Text) (keyLeaf: Int) (cols: List (Text, Text, QExpr, Int)) (having: QExpr) (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn naryGroup (d: Dialect) (keyCol: Text) (keyLeaf: Int) (cols: List (Text, Text, QExpr, Int)) (having: QExpr) (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     let f = flattenJoin child
     match f.leaves
         [] -> emptyRender n
         _  ->
             let keyExpr = naryColRef keyLeaf keyCol
-            let cs = naryGroupSelectTerms cols keyExpr n
+            let cs = naryGroupSelectTerms d cols keyExpr n
             if allInnerSteps f.steps then
                 let from = naryFrom f.leaves f.steps cs.next
                 let wh = naryWhere f.leaves f.steps from.next
-                let h = naryHaving having keyLeaf keyCol wh.next
+                let h = naryHaving d having keyLeaf keyCol wh.next
                 { text = Text.join "" ["SELECT ", cs.text, " FROM ", from.text, wh.text, " GROUP BY ", keyExpr, h.text, " ORDER BY ", keyExpr], binds = cs.binds ++ from.binds ++ wh.binds ++ h.binds, next = h.next }
             else
                 let nulls = nullableLeaves f.steps
                 let from = mixedFrom f.leaves f.steps nulls false cs.next
                 let wh = mixedWhere f.leaves f.steps nulls from.next
-                let h = naryHaving having keyLeaf keyCol wh.next
+                let h = naryHaving d having keyLeaf keyCol wh.next
                 { text = Text.join "" ["SELECT ", cs.text, " FROM ", from.text, wh.text, " GROUP BY ", keyExpr, h.text, " ORDER BY ", keyExpr], binds = cs.binds ++ from.binds ++ wh.binds ++ h.binds, next = h.next }
 
 -- The grouped SELECT list of a composite (three-or-more table) join, threaded left
 -- to right. Each term folds its captured value leaf-qualified (`t<leaf>`), a column
 -- or a computed expression over the leaves, its literals bound as `$N`.
-fn naryGroupSelectTerms (cols: List (Text, Text, QExpr, Int)) (keyExpr: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn naryGroupSelectTerms (d: Dialect) (cols: List (Text, Text, QExpr, Int)) (keyExpr: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match cols
         []                               -> { text = "", binds = [], next = n }
-        (alias, func, col, leaf) :: []   -> naryGroupSelectTerm alias func col leaf keyExpr n
+        (alias, func, col, leaf) :: []   -> naryGroupSelectTerm d alias func col leaf keyExpr n
         (alias, func, col, leaf) :: rest ->
-            let h = naryGroupSelectTerm alias func col leaf keyExpr n
-            let t = naryGroupSelectTerms rest keyExpr h.next
+            let h = naryGroupSelectTerm d alias func col leaf keyExpr n
+            let t = naryGroupSelectTerms d rest keyExpr h.next
             { text = Text.join "" [h.text, ", ", t.text], binds = h.binds ++ t.binds, next = t.next }
 
-fn naryGroupSelectTerm (alias: Text) (func: Text) (col: QExpr) (leaf: Int) (keyExpr: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn naryGroupSelectTerm (d: Dialect) (alias: Text) (func: Text) (col: QExpr) (leaf: Int) (keyExpr: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     if func == "KEY" then { text = Text.join "" [keyExpr, " AS ", quoteIdent alias], binds = [], next = n }
     else
-        let a = naryAggExprE func leaf col n
+        let a = naryAggExprE d func leaf col n
         { text = Text.join "" [a.text, " AS ", quoteIdent alias], binds = a.binds, next = a.next }
 
 -- A composite-join HAVING fragment, the leaf-qualified dual of `renderHaving`: its
 -- aggregate operands fold a leaf-qualified column (`t<leaf>`) and its group-key
 -- operand reads the key off its leaf, where the binary form reads the left/right
 -- side. Empty for the always-true default, so the clause is omitted.
-fn naryHaving (having: QExpr) (keyLeaf: Int) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn naryHaving (d: Dialect) (having: QExpr) (keyLeaf: Int) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match having
-        QLitBool b -> if b then { text = "", binds = [], next = n } else naryHavingClause having keyLeaf keyCol n
-        _          -> naryHavingClause having keyLeaf keyCol n
+        QLitBool b -> if b then { text = "", binds = [], next = n } else naryHavingClause d having keyLeaf keyCol n
+        _          -> naryHavingClause d having keyLeaf keyCol n
 
-fn naryHavingClause (having: QExpr) (keyLeaf: Int) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
-    let h = naryHavingExpr having keyLeaf keyCol n
+fn naryHavingClause (d: Dialect) (having: QExpr) (keyLeaf: Int) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let h = naryHavingExpr d having keyLeaf keyCol n
     { text = Text.concat " HAVING " h.text, binds = h.binds, next = h.next }
 
-fn naryHavingExpr (e: QExpr) (keyLeaf: Int) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn naryHavingExpr (d: Dialect) (e: QExpr) (keyLeaf: Int) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match e
-        QAnd l r -> naryHavingBin l " AND " r keyLeaf keyCol n
-        QOr l r  -> naryHavingBin l " OR " r keyLeaf keyCol n
+        QAnd l r -> naryHavingBin d l " AND " r keyLeaf keyCol n
+        QOr l r  -> naryHavingBin d l " OR " r keyLeaf keyCol n
         QNot x   ->
-            let r = naryHavingExpr x keyLeaf keyCol n
+            let r = naryHavingExpr d x keyLeaf keyCol n
             { text = Text.join "" ["(NOT ", r.text, ")"], binds = r.binds, next = r.next }
-        QEq l r -> naryHavingCmp l " = " r keyLeaf keyCol n
-        QNe l r -> naryHavingCmp l " <> " r keyLeaf keyCol n
-        QLt l r -> naryHavingCmp l " < " r keyLeaf keyCol n
-        QGt l r -> naryHavingCmp l " > " r keyLeaf keyCol n
-        QLe l r -> naryHavingCmp l " <= " r keyLeaf keyCol n
-        QGe l r -> naryHavingCmp l " >= " r keyLeaf keyCol n
-        _       -> naryHavingOperand e keyLeaf keyCol n
+        QEq l r -> naryHavingCmp d l " = " r keyLeaf keyCol n
+        QNe l r -> naryHavingCmp d l " <> " r keyLeaf keyCol n
+        QLt l r -> naryHavingCmp d l " < " r keyLeaf keyCol n
+        QGt l r -> naryHavingCmp d l " > " r keyLeaf keyCol n
+        QLe l r -> naryHavingCmp d l " <= " r keyLeaf keyCol n
+        QGe l r -> naryHavingCmp d l " >= " r keyLeaf keyCol n
+        _       -> naryHavingOperand d e keyLeaf keyCol n
 
-fn naryHavingCmp (l: QExpr) (op: Text) (r: QExpr) (keyLeaf: Int) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
-    let lr = naryHavingOperand l keyLeaf keyCol n
-    let rr = naryHavingOperand r keyLeaf keyCol lr.next
+fn naryHavingCmp (d: Dialect) (l: QExpr) (op: Text) (r: QExpr) (keyLeaf: Int) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let lr = naryHavingOperand d l keyLeaf keyCol n
+    let rr = naryHavingOperand d r keyLeaf keyCol lr.next
     { text = Text.join "" [lr.text, op, rr.text], binds = lr.binds ++ rr.binds, next = rr.next }
 
-fn naryHavingBin (l: QExpr) (op: Text) (r: QExpr) (keyLeaf: Int) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
-    let lr = naryHavingExpr l keyLeaf keyCol n
-    let rr = naryHavingExpr r keyLeaf keyCol lr.next
+fn naryHavingBin (d: Dialect) (l: QExpr) (op: Text) (r: QExpr) (keyLeaf: Int) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let lr = naryHavingExpr d l keyLeaf keyCol n
+    let rr = naryHavingExpr d r keyLeaf keyCol lr.next
     { text = Text.join "" ["(", lr.text, op, rr.text, ")"], binds = lr.binds ++ rr.binds, next = rr.next }
 
-fn naryHavingOperand (e: QExpr) (keyLeaf: Int) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn naryHavingOperand (d: Dialect) (e: QExpr) (keyLeaf: Int) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match e
         QAggCount    -> { text = "COUNT(*)", binds = [], next = n }
         QGroupKey    -> { text = naryColRef keyLeaf keyCol, binds = [], next = n }
-        QAggSum node -> naryAggExprE "SUM" 0 node n
-        QAggAvg node -> naryAggExprE "AVG" 0 node n
-        QAggAvgInterval node -> naryAggExprE "AVG_INTERVAL" 0 node n
-        QAggMin node -> naryAggExprE "MIN" 0 node n
-        QAggMax node -> naryAggExprE "MAX" 0 node n
+        QAggSum node -> naryAggExprE d "SUM" 0 node n
+        QAggAvg node -> naryAggExprE d "AVG" 0 node n
+        QAggAvgInterval node -> naryAggExprE d "AVG_INTERVAL" 0 node n
+        QAggMin node -> naryAggExprE d "MIN" 0 node n
+        QAggMax node -> naryAggExprE d "MAX" 0 node n
         QLitInt v    -> { text = placeholder n, binds = [sqlInt v], next = n + 1 }
         QLitText v   -> { text = placeholder n, binds = [sqlText v], next = n + 1 }
         QLitBool v   -> { text = placeholder n, binds = [sqlBool v], next = n + 1 }
@@ -2134,49 +2149,49 @@ fn naryHavingOperand (e: QExpr) (keyLeaf: Int) (keyCol: Text) (n: Int) -> { text
 -- operands are group aggregates (`COUNT(*)`, `SUM(col)`, …) and the side-qualified
 -- group key rather than plain columns; Postgres rejects an output alias in HAVING, so
 -- each aggregate is re-rendered from its node.
-fn renderHaving (having: QExpr) (keySide: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn renderHaving (d: Dialect) (having: QExpr) (keySide: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match having
-        QLitBool b -> if b then { text = "", binds = [], next = n } else havingClause having keySide keyCol n
-        _          -> havingClause having keySide keyCol n
+        QLitBool b -> if b then { text = "", binds = [], next = n } else havingClause d having keySide keyCol n
+        _          -> havingClause d having keySide keyCol n
 
-fn havingClause (having: QExpr) (keySide: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
-    let h = renderHavingExpr having keySide keyCol n
+fn havingClause (d: Dialect) (having: QExpr) (keySide: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let h = renderHavingExpr d having keySide keyCol n
     { text = Text.concat " HAVING " h.text, binds = h.binds, next = h.next }
 
-fn renderHavingExpr (e: QExpr) (keySide: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn renderHavingExpr (d: Dialect) (e: QExpr) (keySide: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match e
-        QAnd l r -> havingBin l " AND " r keySide keyCol n
-        QOr l r  -> havingBin l " OR " r keySide keyCol n
+        QAnd l r -> havingBin d l " AND " r keySide keyCol n
+        QOr l r  -> havingBin d l " OR " r keySide keyCol n
         QNot x   ->
-            let r = renderHavingExpr x keySide keyCol n
+            let r = renderHavingExpr d x keySide keyCol n
             { text = Text.join "" ["(NOT ", r.text, ")"], binds = r.binds, next = r.next }
-        QEq l r -> havingCmp l " = " r keySide keyCol n
-        QNe l r -> havingCmp l " <> " r keySide keyCol n
-        QLt l r -> havingCmp l " < " r keySide keyCol n
-        QGt l r -> havingCmp l " > " r keySide keyCol n
-        QLe l r -> havingCmp l " <= " r keySide keyCol n
-        QGe l r -> havingCmp l " >= " r keySide keyCol n
-        _       -> renderHavingOperand e keySide keyCol n
+        QEq l r -> havingCmp d l " = " r keySide keyCol n
+        QNe l r -> havingCmp d l " <> " r keySide keyCol n
+        QLt l r -> havingCmp d l " < " r keySide keyCol n
+        QGt l r -> havingCmp d l " > " r keySide keyCol n
+        QLe l r -> havingCmp d l " <= " r keySide keyCol n
+        QGe l r -> havingCmp d l " >= " r keySide keyCol n
+        _       -> renderHavingOperand d e keySide keyCol n
 
-fn havingCmp (l: QExpr) (op: Text) (r: QExpr) (keySide: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
-    let lr = renderHavingOperand l keySide keyCol n
-    let rr = renderHavingOperand r keySide keyCol lr.next
+fn havingCmp (d: Dialect) (l: QExpr) (op: Text) (r: QExpr) (keySide: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let lr = renderHavingOperand d l keySide keyCol n
+    let rr = renderHavingOperand d r keySide keyCol lr.next
     { text = Text.join "" [lr.text, op, rr.text], binds = lr.binds ++ rr.binds, next = rr.next }
 
-fn havingBin (l: QExpr) (op: Text) (r: QExpr) (keySide: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
-    let lr = renderHavingExpr l keySide keyCol n
-    let rr = renderHavingExpr r keySide keyCol lr.next
+fn havingBin (d: Dialect) (l: QExpr) (op: Text) (r: QExpr) (keySide: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let lr = renderHavingExpr d l keySide keyCol n
+    let rr = renderHavingExpr d r keySide keyCol lr.next
     { text = Text.join "" ["(", lr.text, op, rr.text, ")"], binds = lr.binds ++ rr.binds, next = rr.next }
 
-fn renderHavingOperand (e: QExpr) (keySide: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn renderHavingOperand (d: Dialect) (e: QExpr) (keySide: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match e
         QAggCount    -> { text = "COUNT(*)", binds = [], next = n }
         QGroupKey    -> { text = renderColRef true keySide keyCol, binds = [], next = n }
-        QAggSum node -> aggExprJoinE "SUM" node n
-        QAggAvg node -> aggExprJoinE "AVG" node n
-        QAggAvgInterval node -> aggExprJoinE "AVG_INTERVAL" node n
-        QAggMin node -> aggExprJoinE "MIN" node n
-        QAggMax node -> aggExprJoinE "MAX" node n
+        QAggSum node -> aggExprJoinE d "SUM" node n
+        QAggAvg node -> aggExprJoinE d "AVG" node n
+        QAggAvgInterval node -> aggExprJoinE d "AVG_INTERVAL" node n
+        QAggMin node -> aggExprJoinE d "MIN" node n
+        QAggMax node -> aggExprJoinE d "MAX" node n
         QLitInt v    -> { text = placeholder n, binds = [sqlInt v], next = n + 1 }
         QLitText v   -> { text = placeholder n, binds = [sqlText v], next = n + 1 }
         QLitBool v   -> { text = placeholder n, binds = [sqlBool v], next = n + 1 }

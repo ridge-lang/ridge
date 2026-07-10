@@ -1731,6 +1731,11 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             vec![ty_int(b)],
             Type::Con(b.sql_value, vec![]),
         ))),
+        // A typed SQL array (a list of element bind values) — the array bind value.
+        (STD_SQL, "sqlArray") => Some(mono(ty_fn_pure(
+            vec![Type::Con(b.list, vec![Type::Con(b.sql_value, vec![])])],
+            Type::Con(b.sql_value, vec![]),
+        ))),
         // Render a SqlValue as an inline SQL literal (a DDL DEFAULT / CHECK position
         // a bind parameter cannot fill).
         (STD_SQL, "sqlLiteral") => Some(mono(ty_fn_pure(
@@ -1907,6 +1912,7 @@ mod tests {
                             | "DbDate"
                             | "DbTime"
                             | "DbInterval"
+                            | "DbArray"
                             | "DbRaw"
                     )
                 {

@@ -955,7 +955,25 @@ param_text({'SqlTime', S})     -> S;
 %% an interval param goes as its whole-millisecond span spelled `<n> milliseconds`,
 %% which Postgres parses as an `interval` and normalises to a pure time span.
 param_text({'SqlInterval', Ms}) -> <<(integer_to_binary(Ms))/binary, " milliseconds">>;
+%% an array param goes as a Postgres array literal `{elem,elem,…}`, each element
+%% rendered through its own scalar param text; Postgres infers the element type from
+%% the column. A NULL element is the unquoted word NULL.
+param_text({'SqlArray', Elems}) ->
+    Inner = iolist_to_binary(lists:join(<<",">>, [array_param_elem(E) || E <- Elems])),
+    <<"{", Inner/binary, "}">>;
 param_text('SqlNull')         -> <<>>.
+
+%% One array element for the `{…}` literal: an unquoted NULL, or the element's own
+%% param text double-quoted with `\`/`"` escaped. Quoting every non-null element is
+%% always valid array input (Postgres accepts a quoted number/bool and casts it), so
+%% one rule covers text, numbers, uuids, bytea hex, and the rest.
+array_param_elem('SqlNull') -> <<"NULL">>;
+array_param_elem(E) ->
+    Text = param_text(E),
+    Escaped = binary:replace(
+        binary:replace(Text, <<"\\">>, <<"\\\\">>, [global]),
+        <<"\"">>, <<"\\\"">>, [global]),
+    <<"\"", Escaped/binary, "\"">>.
 
 collect_rows(Conn, Cols, Acc) ->
     case recv_msg(Conn) of
@@ -1065,10 +1083,75 @@ decode_value(1083, Val) ->
 %% millisecond count, exact for the pure time spans Ridge writes.
 decode_value(1186, Val) ->
     {'SqlInterval', pg_interval_to_ms(Val)};
+%% array columns (int4[]=1007, text[]=1009, and the rest) decode to a typed SqlArray:
+%% split the Postgres 1-D array text `{a,b,c}` into elements and decode each through
+%% the element type's own OID, so a `List a` column round-trips as the list it was
+%% written as. A NULL element decodes to SqlNull. Only 1-D arrays are supported (Ridge
+%% writes only 1-D); a multi-dimensional array would mis-split.
+decode_value(Oid, Val) when Oid =:= 1000; Oid =:= 1005; Oid =:= 1007; Oid =:= 1016;
+                            Oid =:= 1021; Oid =:= 1022; Oid =:= 1009; Oid =:= 1015;
+                            Oid =:= 1014; Oid =:= 1001; Oid =:= 2951; Oid =:= 1231;
+                            Oid =:= 199;  Oid =:= 3807; Oid =:= 1182; Oid =:= 1183;
+                            Oid =:= 1115; Oid =:= 1185; Oid =:= 1187 ->
+    ElemOid = pg_array_elem_oid(Oid),
+    {'SqlArray', [pg_array_cell(ElemOid, E) || E <- pg_array_elements(Val)]};
 decode_value(Oid, Val) when Oid =:= 25; Oid =:= 1043; Oid =:= 1042; Oid =:= 19; Oid =:= 18 ->
     {'SqlText', Val};
 decode_value(_Oid, Val) ->
     {'SqlText', Val}.
+
+%% The element type OID for a Postgres array type OID.
+pg_array_elem_oid(1000) -> 16;    %% _bool  -> bool
+pg_array_elem_oid(1005) -> 21;    %% _int2  -> int2
+pg_array_elem_oid(1007) -> 23;    %% _int4  -> int4
+pg_array_elem_oid(1016) -> 20;    %% _int8  -> int8
+pg_array_elem_oid(1021) -> 700;   %% _float4 -> float4
+pg_array_elem_oid(1022) -> 701;   %% _float8 -> float8
+pg_array_elem_oid(1009) -> 25;    %% _text  -> text
+pg_array_elem_oid(1015) -> 1043;  %% _varchar -> varchar
+pg_array_elem_oid(1014) -> 1042;  %% _bpchar -> bpchar
+pg_array_elem_oid(1001) -> 17;    %% _bytea -> bytea
+pg_array_elem_oid(2951) -> 2950;  %% _uuid  -> uuid
+pg_array_elem_oid(1231) -> 1700;  %% _numeric -> numeric
+pg_array_elem_oid(199)  -> 114;   %% _json  -> json
+pg_array_elem_oid(3807) -> 3802;  %% _jsonb -> jsonb
+pg_array_elem_oid(1182) -> 1082;  %% _date  -> date
+pg_array_elem_oid(1183) -> 1083;  %% _time  -> time
+pg_array_elem_oid(1115) -> 1114;  %% _timestamp -> timestamp
+pg_array_elem_oid(1185) -> 1184;  %% _timestamptz -> timestamptz
+pg_array_elem_oid(1187) -> 1186.  %% _interval -> interval
+
+pg_array_cell(_ElemOid, null) -> 'SqlNull';
+pg_array_cell(ElemOid, Bin)   -> decode_value(ElemOid, Bin).
+
+%% Split a Postgres 1-D array output `{a,b,c}` into a list of element binaries — or the
+%% atom `null` for an unquoted NULL element — honoring double-quoted elements (which may
+%% carry commas, braces, and `\"`/`\\` escapes) and stripping one level of quoting.
+pg_array_elements(<<"{", Rest/binary>>) ->
+    Body = binary_part(Rest, 0, byte_size(Rest) - 1),
+    case Body of
+        <<>> -> [];
+        _    -> pg_array_scan(Body, <<>>, false, false, [])
+    end;
+pg_array_elements(_) -> [].
+
+pg_array_scan(<<>>, Cur, _InQ, WasQ, Out) ->
+    lists:reverse([pg_array_finish(Cur, WasQ) | Out]);
+pg_array_scan(<<$", R/binary>>, Cur, false, _WasQ, Out) ->
+    pg_array_scan(R, Cur, true, true, Out);
+pg_array_scan(<<$\\, C, R/binary>>, Cur, true, WasQ, Out) ->
+    pg_array_scan(R, <<Cur/binary, C>>, true, WasQ, Out);
+pg_array_scan(<<$", R/binary>>, Cur, true, WasQ, Out) ->
+    pg_array_scan(R, Cur, false, WasQ, Out);
+pg_array_scan(<<$,, R/binary>>, Cur, false, WasQ, Out) ->
+    pg_array_scan(R, <<>>, false, false, [pg_array_finish(Cur, WasQ) | Out]);
+pg_array_scan(<<C, R/binary>>, Cur, InQ, WasQ, Out) ->
+    pg_array_scan(R, <<Cur/binary, C>>, InQ, WasQ, Out).
+
+%% An unquoted NULL is the SQL NULL element; anything else (including a quoted "NULL")
+%% is the literal element text.
+pg_array_finish(<<"NULL">>, false) -> null;
+pg_array_finish(Bin, _WasQ)        -> Bin.
 
 to_float(Val) ->
     try binary_to_float(Val)

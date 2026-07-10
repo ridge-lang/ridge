@@ -18,7 +18,7 @@
 -- The dialect-neutral vocabulary below (`DbType`, `Generation`, `FkAction`) is
 -- turned into a backend's `CREATE TABLE` by the DDL renderer.
 
-import std.sql (SqlValue, sqlLiteral, sqlValueSource, DbType, DbBoolean, DbInt, DbBigInt, DbFloat, DbDecimal, DbText, DbVarchar, DbUuid, DbTimestamp, DbTimestampTz, DbBytes, DbSmallInt, DbChar, DbJson, DbJsonb, DbDate, DbTime, DbInterval, DbRaw)
+import std.sql (SqlValue, sqlLiteral, sqlValueSource, DbType, DbBoolean, DbInt, DbBigInt, DbFloat, DbDecimal, DbText, DbVarchar, DbUuid, DbTimestamp, DbTimestampTz, DbBytes, DbSmallInt, DbChar, DbJson, DbJsonb, DbDate, DbTime, DbInterval, DbArray, DbRaw)
 import std.int as Int
 import std.float as Float
 
@@ -506,6 +506,7 @@ fn pgColType (t: DbType) -> Text =
         DbDate        -> "date"
         DbTime        -> "time"
         DbInterval    -> "interval"
+        DbArray e     -> Text.concat (pgColType e) "[]"
         DbRaw r       -> r
 
 -- ` NOT NULL` unless the column admits NULL. A serial column is implicitly non-null,
@@ -839,6 +840,7 @@ fn dbTypeSource (t: DbType) -> Text =
         DbDate        -> "DbDate"
         DbTime        -> "DbTime"
         DbInterval    -> "DbInterval"
+        DbArray e     -> Text.join "" ["(DbArray ", dbTypeSource e, ")"]
         DbRaw r       -> Text.join "" ["(DbRaw ", sourceString r, ")"]
 
 -- The `Generation` constructor source. `DefaultLit` carries a `SqlValue` whose variants are

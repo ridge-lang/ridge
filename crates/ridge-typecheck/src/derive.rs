@@ -1307,7 +1307,9 @@ fn generate_row(
                 fix_hint: format!(
                     "field `{}` of type `{}` has no `SqlType` instance; \
                      `deriving (Row)` currently supports fields of type \
-                     Int, Text, Bool, Float, or an Option of one of them",
+                     Int, Text, Bool, Float, a rich scalar (Decimal, Uuid, Bytes, \
+                     Timestamp, Date, Time, Duration, JsonValue), a List of one of \
+                     them, or an Option of any of those",
                     field.name.text,
                     ast_type_display(&field.ty),
                 ),
@@ -1458,19 +1460,40 @@ pub(crate) fn synthesize_implicit_row(
     })
 }
 
-/// Classify a `deriving (Row)` field type into `(is_optional, primitive_tag)`.
+/// Classify a `deriving (Row)` field type into `(is_optional, sql_type_tag)`.
 ///
 /// A bare primitive (`Int`/`Text`/`Bool`/`Float`) is `(false, tag)`; an
-/// `Option P` of a primitive is `(true, inner_tag)`, decoded as a nullable
-/// column. Anything else — a non-primitive, a container, or an `Option` of a
-/// non-primitive — returns `None`, which `generate_row` reports as `NoInstance`.
+/// `Option P` is `(true, inner_tag)`, decoded as a nullable column. A `List P` of
+/// a primitive is `(false, "List P")`, decoded as an array column through the
+/// parametric `SqlType (List a)` instance, and an `Option (List P)` is a nullable
+/// array. Anything else — a non-primitive, an unsupported container, an `Option`
+/// or `List` of a non-primitive — returns `None`, which `generate_row` reports as
+/// `NoInstance`.
 fn sql_row_field(ty: &AstType) -> Option<(bool, String)> {
     match ty {
         AstType::Paren { inner, .. } => sql_row_field(inner),
         AstType::App { head, args, .. } if head.text == "Option" && args.len() == 1 => {
-            Some((true, sql_primitive_type_name(&args[0])?))
+            Some((true, sql_list_or_base(&args[0])?))
         }
-        _ => sql_primitive_type_name(ty).map(|tag| (false, tag)),
+        _ => sql_list_or_base(ty).map(|tag| (false, tag)),
+    }
+}
+
+/// The `SqlType` dispatch tag for a Row field's non-nullable core: a base
+/// primitive name (`"Int"`, `"Uuid"`, …) or a `"List <elem>"` tag for a `List` of
+/// one of those. The `List` tag drives the lowering to dispatch through the
+/// parametric `SqlType (List a)` instance (`$inst_SqlType_List` applied to the
+/// element dict), the same dict-of-dicts the `Option` path uses. A `List` of a
+/// non-base element (a user type or a nested list) has no such instance yet and
+/// returns `None`.
+fn sql_list_or_base(ty: &AstType) -> Option<String> {
+    match ty {
+        AstType::Paren { inner, .. } => sql_list_or_base(inner),
+        AstType::List { elem, .. } => Some(format!("List {}", sql_primitive_type_name(elem)?)),
+        AstType::App { head, args, .. } if head.text == "List" && args.len() == 1 => {
+            Some(format!("List {}", sql_primitive_type_name(&args[0])?))
+        }
+        _ => sql_primitive_type_name(ty),
     }
 }
 

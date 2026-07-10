@@ -1547,6 +1547,15 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                         name: "DbInterval".to_string(),
                         kind: VariantPayload::Nullary,
                     },
+                    // A recursive variant: an array carries its element `DbType`,
+                    // mirroring `DbArray DbType` in the source.
+                    UnionVariant {
+                        name: "DbArray".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(
+                            TyConId(base + 25),
+                            vec![],
+                        )]),
+                    },
                     UnionVariant {
                         name: "DbRaw".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(b.text, vec![])]),

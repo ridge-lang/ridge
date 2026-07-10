@@ -5,7 +5,7 @@
 -- to and from a SqlValue. The base-type instances live here; opaque newtypes
 -- get their instance for free via deriving (see the data layer).
 
-pub type SqlValue = SqlInt Int | SqlText Text | SqlBool Bool | SqlFloat Float | SqlNull | SqlInstant Int | SqlDecimal Text | SqlUuid Text | SqlBytes Text | SqlJson Text | SqlDate Text | SqlTime Text | SqlInterval Int
+pub type SqlValue = SqlInt Int | SqlText Text | SqlBool Bool | SqlFloat Float | SqlNull | SqlInstant Int | SqlDecimal Text | SqlUuid Text | SqlBytes Text | SqlJson Text | SqlDate Text | SqlTime Text | SqlInterval Int | SqlArray (List SqlValue)
 
 -- Direct SqlValue constructors. The variants are opaque to consumers (who reach
 -- them through `SqlType` or these factories), so these monomorphic factories are
@@ -58,6 +58,13 @@ pub fn sqlTime (s: Text) -> SqlValue = SqlTime s
 -- this takes the raw span directly; the runtime renders it to an `interval` literal.
 pub fn sqlInterval (ms: Int) -> SqlValue = SqlInterval ms
 
+-- A homogeneous array, carried as the list of its elements' own `SqlValue`s. Each
+-- element rides its own codec, so the element type decides how it moves across the
+-- wire; the adapter renders the whole list as a native SQL array. Completes the
+-- factory set so an array default (`DefaultLit`) can be built and rendered back to
+-- source.
+pub fn sqlArray (elems: List SqlValue) -> SqlValue = SqlArray elems
+
 -- A wall-clock instant from a typed `Timestamp` rather than raw epoch micros. The
 -- query compiler uses it to bind a captured Timestamp as a `SqlInstant` parameter,
 -- where the class method `SqlType.toSql` is not reachable from a stdlib module.
@@ -77,10 +84,11 @@ pub fn sqlIntervalOf (d: Duration) -> SqlValue = SqlInterval d.ms
 -- 16-bit integer, `DbChar n` for a blank-padded fixed-width string, both still
 -- backed by the same `Int`/`Text` value. `DbJson`/`DbJsonb` map a `JsonValue`
 -- field to a `json`/`jsonb` column. `DbInterval` maps a `Duration` to an `interval`
--- column. `DbRaw` is the escape hatch for a dialect-specific type spelled by hand. It
--- lives here at the value/column type layer, beside `SqlValue`, so the codec class can
--- name it.
-pub type DbType = DbBoolean | DbInt | DbBigInt | DbFloat | DbDecimal Int Int | DbText | DbVarchar Int | DbUuid | DbTimestamp | DbTimestampTz | DbBytes | DbSmallInt | DbChar Int | DbJson | DbJsonb | DbDate | DbTime | DbInterval | DbRaw Text
+-- column. `DbArray` maps a `List a` field to an array of the element's column type
+-- (`bigint[]`, `text[]`, …), carrying that element `DbType`. `DbRaw` is the escape
+-- hatch for a dialect-specific type spelled by hand. It lives here at the value/column
+-- type layer, beside `SqlValue`, so the codec class can name it.
+pub type DbType = DbBoolean | DbInt | DbBigInt | DbFloat | DbDecimal Int Int | DbText | DbVarchar Int | DbUuid | DbTimestamp | DbTimestampTz | DbBytes | DbSmallInt | DbChar Int | DbJson | DbJsonb | DbDate | DbTime | DbInterval | DbArray DbType | DbRaw Text
 
 pub class SqlType a =
     toSql   (x: a)        -> SqlValue
@@ -335,6 +343,48 @@ instance SqlType (Option a) where SqlType a =
     -- An optional column has the same SQL column type as its inner type; the
     -- nullability is tracked separately by the schema, not by `DbType`.
     dbType (witness: Option (Option a)) -> DbType = dbType (innerWitness witness)
+
+-- Encode a list through the element type's own codec, one element at a time. A
+-- recursive walk keeps std.sql from importing std.list — it depends on nothing
+-- above it — while still threading the `SqlType a` dictionary into each `toSql`.
+fn listToSqlValues (xs: List a) -> List SqlValue where SqlType a =
+    match xs
+        []        -> []
+        x :: rest -> toSql x :: listToSqlValues rest
+
+-- Decode a list of element `SqlValue`s back through the element codec, threading
+-- the first decode failure outward the same way the `Row` decoder does. The dual
+-- of `listToSqlValues`.
+fn sqlValuesToList (vs: List SqlValue) -> Result (List a) Error where SqlType a =
+    match vs
+        []        -> Ok []
+        v :: rest ->
+            match fromSql v
+                Err e -> Err e
+                Ok x  ->
+                    match sqlValuesToList rest
+                        Err e  -> Err e
+                        Ok xs  -> Ok (x :: xs)
+
+-- Retype a list witness to a witness for the element type, so the `List a`
+-- instance can delegate its column type. `dbType` reads only the phantom type,
+-- so the value is immaterial — the mirror of `innerWitness` for `Option`.
+fn elemWitness (w: Option (List a)) -> Option a = None
+
+-- An array column. A `List a` maps to a SQL array whose element type is `a`'s own
+-- column type (`bigint[]` for `List Int`, `text[]` for `List Text`, and so on), so
+-- a repeated field stays first-class instead of being flattened to text or JSON.
+-- Each element rides `a`'s codec, so the array is exactly as faithful as its
+-- element type — a `List Decimal` keeps its exact digits, a `List Uuid` its native
+-- form. Nesting the element codec is what lets a `deriving (Row)` record hold a
+-- `List` field over an array column.
+instance SqlType (List a) where SqlType a =
+    toSql (x: List a) -> SqlValue = SqlArray (listToSqlValues x)
+    fromSql (v: SqlValue) -> Result (List a) Error =
+        match v
+            SqlArray vs -> sqlValuesToList vs
+            _           -> Err ({ code = "sql.decode.array", message = "expected a SQL array" })
+    dbType (witness: Option (List a)) -> DbType = DbArray (dbType (elemWitness witness))
 
 -- ── Row codec ─────────────────────────────────────────────────────────────────
 --

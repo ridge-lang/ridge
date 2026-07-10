@@ -417,6 +417,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "sqlDate",
             "sqlTime",
             "sqlInterval",
+            "sqlArray",
             // The safe SQL statement-text wrapper, its factory, and accessor —
             // a data-layer concern, declared in sql.ridge.
             "Sql",
@@ -451,6 +452,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "DbDate",
             "DbTime",
             "DbInterval",
+            "DbArray",
             "DbRaw",
         ],
     ),

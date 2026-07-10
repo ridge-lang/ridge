@@ -944,6 +944,17 @@ impl BuiltinTyCons {
                         name: "SqlInterval".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(int, vec![])]),
                     },
+                    // A homogeneous array, carried as the list of its elements' own
+                    // SqlValues (a self-reference to this union, `List SqlValue`, like
+                    // JsonValue's JList). Rides the native array wire form; the element
+                    // codec decides each element's shape.
+                    UnionVariant {
+                        name: "SqlArray".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(
+                            list,
+                            vec![Type::Con(TyConId(20), vec![])],
+                        )]),
+                    },
                 ],
             }),
             def_span: None,

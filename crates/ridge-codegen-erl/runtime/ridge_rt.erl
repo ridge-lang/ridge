@@ -786,6 +786,11 @@ sql_literal({'SqlJson', S})     -> <<"'", (binary:replace(S, <<"'">>, <<"''">>, 
 sql_literal({'SqlDate', S})     -> <<"'", S/binary, "'">>;
 sql_literal({'SqlTime', S})     -> <<"'", S/binary, "'">>;
 sql_literal({'SqlInterval', Ms}) -> <<"'", (integer_to_binary(Ms))/binary, " milliseconds'">>;
+%% An array renders as an `ARRAY[...]` constructor over its elements' own literals, so
+%% each element keeps its own quoting/escaping. Used only for a hand-written array
+%% DEFAULT — `deriving (Schema)` never produces one.
+sql_literal({'SqlArray', Elems}) ->
+    <<"ARRAY[", (iolist_to_binary(lists:join(<<", ">>, [sql_literal(E) || E <- Elems])))/binary, "]">>;
 sql_literal('SqlNull')          -> <<"NULL">>.
 
 %% sql_value_source/1 — render a SqlValue as the Ridge *source* expression that
@@ -807,6 +812,8 @@ sql_value_source({'SqlJson', S})     -> <<"(sqlJson ", (source_text_literal(S))/
 sql_value_source({'SqlDate', S})     -> <<"(sqlDate ", (source_text_literal(S))/binary, ")">>;
 sql_value_source({'SqlTime', S})     -> <<"(sqlTime ", (source_text_literal(S))/binary, ")">>;
 sql_value_source({'SqlInterval', Ms}) -> <<"(sqlInterval ", (integer_to_binary(Ms))/binary, ")">>;
+sql_value_source({'SqlArray', Elems}) ->
+    <<"(sqlArray [", (iolist_to_binary(lists:join(<<", ">>, [sql_value_source(E) || E <- Elems])))/binary, "])">>;
 sql_value_source('SqlNull')          -> <<"(sqlNull ())">>.
 
 %% source_text_literal/1 — a Text as a Ridge string literal: backslash doubled
@@ -2381,6 +2388,9 @@ mem_key({'SqlTime', S}) -> S;
 %% An interval column keys on its whole-millisecond span, an integer, so ORDER BY /
 %% min / max fold by duration length exactly.
 mem_key({'SqlInterval', Ms}) -> Ms;
+%% An array column keys on the list of its elements' keys, so a comparison folds
+%% element-wise the way Postgres orders arrays.
+mem_key({'SqlArray', Elems}) -> [mem_key(E) || E <- Elems];
 mem_key({'SqlBool', B})  -> B.
 
 %% An aggregate over a group as a comparison operand: the folded value (a column or

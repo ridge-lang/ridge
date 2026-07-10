@@ -90,6 +90,13 @@ pub fn sqlIntervalOf (d: Duration) -> SqlValue = SqlInterval d.ms
 -- type layer, beside `SqlValue`, so the codec class can name it.
 pub type DbType = DbBoolean | DbInt | DbBigInt | DbFloat | DbDecimal Int Int | DbText | DbVarchar Int | DbUuid | DbTimestamp | DbTimestampTz | DbBytes | DbSmallInt | DbChar Int | DbJson | DbJsonb | DbDate | DbTime | DbInterval | DbArray DbType | DbRaw Text
 
+-- Which backend's SQL a renderer emits. The query and DDL renderers are
+-- dialect-neutral up to the few places SQL syntax diverges — a column type, a
+-- placeholder, an identity column — and take a `Dialect` to spell those. The
+-- connection picks it, so one query and one schema render against either backend
+-- with only the connection changed.
+pub type Dialect = PgDialect | SqliteDialect
+
 pub class SqlType a =
     toSql   (x: a)        -> SqlValue
     fromSql (v: SqlValue) -> Result a Error

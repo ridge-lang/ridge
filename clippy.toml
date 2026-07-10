@@ -1,0 +1,4 @@
+# Proper nouns that read as code identifiers to the `doc_markdown` lint but are
+# plain prose in a doc comment. `".."` keeps clippy's built-in list (GitHub,
+# JavaScript, and the rest) and only adds these on top.
+doc-valid-idents = ["SQLite", ".."]

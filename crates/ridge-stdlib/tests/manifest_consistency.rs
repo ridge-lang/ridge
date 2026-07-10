@@ -167,6 +167,10 @@ const CONSTRUCTOR_EXPORTS: &[(&str, &str)] = &[
     ("std.sql", "DbInterval"),
     ("std.sql", "DbArray"),
     ("std.sql", "DbRaw"),
+    // The `Dialect` constructors: exported so a renderer can be pinned to a backend,
+    // surfaced by text extraction only through the type name.
+    ("std.sql", "PgDialect"),
+    ("std.sql", "SqliteDialect"),
     // The `std.schema` generation + foreign-key-action unions: constructors
     // exported for descriptors, surfaced by text extraction only through the type
     // names.

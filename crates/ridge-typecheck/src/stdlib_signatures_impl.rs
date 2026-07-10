@@ -1914,6 +1914,9 @@ mod tests {
                             | "DbInterval"
                             | "DbArray"
                             | "DbRaw"
+                            | "Dialect"
+                            | "PgDialect"
+                            | "SqliteDialect"
                     )
                 {
                     continue;

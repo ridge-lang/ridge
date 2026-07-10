@@ -1825,6 +1825,32 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: false,
             is_anon: false,
         },
+        // `std.sql` — which backend's SQL a renderer emits. A union declared in Ridge
+        // (stdlib/sql.ridge, beside DbType so the query and schema renderers can name
+        // it); the query and DDL renderers take one to spell the few places SQL syntax
+        // diverges. Interned last so it disturbs no earlier reconciled id.
+        TyConDecl {
+            id: TyConId(base + 32),
+            name: "Dialect".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "PgDialect".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "SqliteDialect".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                ],
+            }),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
     ]
 }
 
@@ -2388,6 +2414,7 @@ fn reconciled_schema_fn_scheme(
     let foreign_key = *reconciled.get("ForeignKey")?;
     let column_schema = *reconciled.get("ColumnSchema")?;
     let entity_schema = *reconciled.get("EntitySchema")?;
+    let dialect = *reconciled.get("Dialect")?;
     let e = TyVid(0);
     let text = || Type::Con(b.text, vec![]);
     let boolean = || Type::Con(b.bool, vec![]);
@@ -2395,6 +2422,7 @@ fn reconciled_schema_fn_scheme(
     let list = |x: Type| Type::Con(b.list, vec![x]);
     let qexpr = || Type::Con(b.q_expr, vec![]);
     let dbtype_ty = || Type::Con(db_type, vec![]);
+    let dialect_ty = || Type::Con(dialect, vec![]);
     let gen_ty = || Type::Con(generation, vec![]);
     let fk_act_ty = || Type::Con(fk_action, vec![]);
     let fk_ty = || Type::Con(foreign_key, vec![]);
@@ -2521,6 +2549,10 @@ fn reconciled_schema_fn_scheme(
         "schemaName" | "schemaTable" | "schemaToDdl" | "schemaToSource" => {
             poly1(vec![ent_e()], text())
         }
+        // `schemaToDdlFor` : ∀e. Dialect -> EntitySchema e -> Text — the
+        // dialect-parameterized `CREATE TABLE` renderer `schemaToDdl` defaults to
+        // Postgres.
+        "schemaToDdlFor" => poly1(vec![dialect_ty(), ent_e()], text()),
         "schemaColumns" => poly1(vec![ent_e()], list(col_e())),
         // The table-constraint read accessors: the composite primary key's columns
         // (empty when the key is a single per-column one, or absent), and the
@@ -2536,6 +2568,10 @@ fn reconciled_schema_fn_scheme(
         // The migration step renderers over the seam tuple `(name, base-type, nullable,
         // primaryKey, unique)` — the DDL the retired Erlang builder produced.
         "createTableDdl" => mono(vec![text(), list(col_tuple())], text()),
+        // `createTableDdlFor` : Dialect -> Text -> List (col tuple) -> Text — the
+        // dialect-parameterized migration-tuple `CREATE TABLE`, the dual of
+        // `schemaToDdlFor` for the seam tuples.
+        "createTableDdlFor" => mono(vec![dialect_ty(), text(), list(col_tuple())], text()),
         "addColumnDdl" => mono(vec![text(), col_tuple()], text()),
         // addColumnSchemaDdl : ∀e. Text -> ColumnSchema e -> Text — the entity-driven
         // ADD COLUMN renderer, keeping the descriptor's type/default/constraints.

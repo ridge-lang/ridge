@@ -454,6 +454,11 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "DbInterval",
             "DbArray",
             "DbRaw",
+            // Which backend's SQL a renderer emits. The query and DDL renderers take
+            // one to spell the few places SQL syntax diverges; the connection picks it.
+            "Dialect",
+            "PgDialect",
+            "SqliteDialect",
         ],
     ),
     (
@@ -967,12 +972,15 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "eraseSchema",
             "generatedColumns",
             "identityColumns",
-            // The Postgres DDL renderer: `schemaToDdl` renders an entity's
-            // `CREATE TABLE`, `schemaIndexDdls` its non-unique indexes, and the
-            // `*Ddl` family renders a `std.migrate` schema step from its seam tuple.
+            // The DDL renderer: `schemaToDdl` renders an entity's `CREATE TABLE`,
+            // `schemaIndexDdls` its non-unique indexes, and the `*Ddl` family renders
+            // a `std.migrate` schema step from its seam tuple. `schemaToDdlFor`/
+            // `createTableDdlFor` take a `Dialect`; the plain names default to Postgres.
             "schemaToDdl",
+            "schemaToDdlFor",
             "schemaIndexDdls",
             "createTableDdl",
+            "createTableDdlFor",
             "addColumnDdl",
             "addColumnSchemaDdl",
             "alterColumnDdl",

@@ -1852,11 +1852,22 @@ fn naryAggExprE (func: Text) (leaf: Int) (column: QExpr) (n: Int) -> { text: Tex
     if func == "COUNT" then { text = "COUNT(*)", binds = [], next = n }
     else
         let c = qualOperand leaf column n
-        { text = Text.join "" [func, "(", c.text, ")", avgCast func], binds = c.binds, next = c.next }
+        { text = aggApply func c.text, binds = c.binds, next = c.next }
 
 -- The `::float8` cast an `AVG` carries so an integer column averages to a float, matching
 -- the single-table and binary-join aggregate renderers; the other folds add nothing.
 fn avgCast (func: Text) -> Text = if func == "AVG" then "::float8" else ""
+
+-- The SQL an aggregate keyword folds its operand into. A numeric fold is `FUNC(col)`,
+-- an `AVG` carrying the `::float8` cast. `AVG_INTERVAL` is the interval-aware average:
+-- Postgres cannot cast an `interval` average to `float8`, so it reads the average's
+-- epoch seconds and scales them to milliseconds, matching the `Duration` a column stores
+-- and the `Option Float` an `avgOf` answers.
+fn aggApply (func: Text) (colText: Text) -> Text =
+    if func == "AVG_INTERVAL" then
+        Text.join "" ["EXTRACT(EPOCH FROM AVG(", colText, "))::float8 * 1000"]
+    else
+        Text.join "" [func, "(", colText, ")", avgCast func]
 
 -- The scalar-aggregate expression over a binary join: `COUNT(*)`, or `FUNC(<expr>)`
 -- folding its captured value (a column or a computed expression over the two sides)
@@ -1866,7 +1877,7 @@ fn aggExprJoinE (func: Text) (column: QExpr) (n: Int) -> { text: Text, binds: Li
     if func == "COUNT" then { text = "COUNT(*)", binds = [], next = n }
     else
         let c = renderOperand true column n
-        { text = Text.join "" [func, "(", c.text, ")", avgCast func], binds = c.binds, next = c.next }
+        { text = aggApply func c.text, binds = c.binds, next = c.next }
 
 -- The scalar-aggregate expression over a single table: `COUNT(*)`, or `FUNC(<expr>)`
 -- folding its captured value (a column or a computed expression), rendered bare or
@@ -1876,7 +1887,7 @@ fn aggExprSingle (qualified: Bool) (func: Text) (column: QExpr) (n: Int) -> { te
     if func == "COUNT" then { text = "COUNT(*)", binds = [], next = n }
     else
         let c = renderOperand qualified column n
-        { text = Text.join "" [func, "(", c.text, ")", avgCast func], binds = c.binds, next = c.next }
+        { text = aggApply func c.text, binds = c.binds, next = c.next }
 
 -- A grouped join (`groupBy` + `summarize`): one row per group, keyed by the
 -- side-qualified group key and summarised into the aggregate columns, keeping the

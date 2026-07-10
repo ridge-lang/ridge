@@ -1,11 +1,13 @@
 //! `sum`/`avg` fold a numeric column; a non-numeric one is a compile error.
 //!
 //! The scalar aggregates `sumOf`/`avgOf` and the grouped `g.sum`/`g.avg` answer a
-//! number, so their folded column must be numeric (`Int`, `Float`, or `Decimal`).
-//! A `Text`/`Bool`/`Uuid`/`Bytes`/`Timestamp` column has a `SqlType` instance — it
-//! orders, compares, and folds through `min`/`max` — but summing or averaging it is
-//! meaningless, so it is rejected at the call site (`T040`) instead of reaching a
-//! backend that would raise a runtime type error. `min`/`max` stay unrestricted.
+//! number, so their folded column must be numeric (`Int`, `Float`, `Decimal`, or
+//! `Duration`). A `Text`/`Bool`/`Uuid`/`Bytes`/`Timestamp` column has a `SqlType`
+//! instance — it orders, compares, and folds through `min`/`max` — but summing or
+//! averaging it is meaningless, so it is rejected at the call site (`T040`) instead of
+//! reaching a backend that would raise a runtime type error. `min`/`max` stay
+//! unrestricted. A `Duration` sums to a total and a scalar `avgOf` averages it to a
+//! mean in milliseconds; the grouped `g.avg` over a `Duration` is still held back.
 //!
 //! Pure type-check tests (`check_workspace`), no runtime needed.
 
@@ -86,11 +88,11 @@ pub fn total (r: Repo Job MemAdapter) -> Result (Option Duration) Error =
     );
 }
 
-/// A scalar `avgOf` over a `Duration` column is a targeted `T040` for now: averaging
-/// an interval renders through a type-aware SQL path that is not built yet, so `avg`
-/// is rejected on its own while `sum` folds the column to a total.
+/// A scalar `avgOf` over a `Duration` column is clean — the `avgOf` instance reads the
+/// column's `SqlType` and renders the interval-aware average (epoch milliseconds), so
+/// the numeric bound admits it alongside `sum`.
 #[test]
-fn scalar_avg_over_duration_is_t040() {
+fn scalar_avg_over_duration_is_clean() {
     let source = "
 import std.data (memAdapter, MemAdapter)
 import std.repo as Repo
@@ -103,8 +105,35 @@ pub fn mean (r: Repo Job MemAdapter) -> Result (Option Float) Error =
     let tw = make_workspace("Models", source);
     let result = check_workspace(CheckOptions::new(tw.path.clone())).expect("check ran");
     assert!(
+        result.diagnostics.is_empty(),
+        "averaging an interval column is valid; got {:?}",
+        result.diagnostics
+    );
+}
+
+/// A grouped `g.avg` over a `Duration` column is still a targeted `T040`: the grouped
+/// `summarize` path reifies its aggregate columns without the per-column type the
+/// interval-aware average needs, so it is held back while `g.sum` folds it to a total.
+#[test]
+fn grouped_avg_over_duration_is_t040() {
+    let source = "
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+
+pub type Job = { id: Int, dept: Text, took: Duration } deriving (Row, Schema)
+pub type DeptMean = { dept: Text, mean: Float } deriving (Row)
+
+pub fn perDept (r: Repo Job MemAdapter) -> Result (List DeptMean) Error =
+    r
+    |> Repo.query
+    |> Repo.groupBy (fn (j: Job) -> j.dept)
+    |> Repo.summarize (fn g -> DeptMean { dept = g.key, mean = g.avg (fn (j: Job) -> j.took) })
+";
+    let tw = make_workspace("Models", source);
+    let result = check_workspace(CheckOptions::new(tw.path.clone())).expect("check ran");
+    assert!(
         result.diagnostics.iter().any(|d| d.code == "T040"),
-        "expected T040 (avg over an interval column, not yet supported); got {:?}",
+        "expected T040 (grouped avg over an interval column, not yet supported); got {:?}",
         result.diagnostics
     );
 }

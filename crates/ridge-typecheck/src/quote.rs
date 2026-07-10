@@ -978,10 +978,12 @@ pub(crate) fn is_non_summable_scalar(b: &BuiltinTyCons, ty: &Type) -> bool {
             || *id == b.bytes || *id == b.timestamp || *id == b.date || *id == b.time)
 }
 
-/// Whether `ty` is a column `sum` folds but `avg` does not yet. A `Duration` column
-/// sums to a total `Duration`, but averaging it renders through a type-aware SQL path
-/// (Postgres cannot cast an `interval` to `float8`) that is not built yet, so `avg`
-/// over a `Duration` is rejected on its own while `sum` goes through.
+/// Whether `ty` is a column a grouped `g.avg` cannot fold yet. A scalar `avgOf` over a
+/// `Duration` column averages it to a mean in milliseconds (the `avgOf` instance reads
+/// the column's `SqlType` and renders the interval-aware SQL). The grouped `summarize`
+/// path reifies its aggregate columns without that per-column type in reach, so a
+/// grouped average over a `Duration` is still held back while `g.sum` folds it to a
+/// total.
 pub(crate) fn is_avg_only_rejected(b: &BuiltinTyCons, ty: &Type) -> bool {
     matches!(ty, Type::Con(id, _) if *id == b.duration)
 }
@@ -1846,7 +1848,7 @@ fn check_group_call(
         if is_non_summable_scalar(b, &resolved) {
             ctx.errors.push(TypeError::QuoteUnsupportedExpr {
                 detail: format!(
-                    "`{g_name}.{func}` folds a numeric column (Int, Float, or Decimal)"
+                    "`{g_name}.{func}` folds a numeric column (Int, Float, Decimal, or Duration)"
                 ),
                 span,
             });

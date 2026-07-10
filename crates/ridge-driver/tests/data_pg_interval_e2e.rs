@@ -7,10 +7,13 @@
 //! rebuilds the `Duration`; a bound `SqlInterval` is sent as `<n> milliseconds`, which
 //! Postgres parses back to the same span. So a duration survives the insert/select loop
 //! as the value it went in as, including its sub-second part (1500 ms renders as
-//! `00:00:01.5` and reads back exactly). This is the decode path the in-memory adapter
-//! cannot exercise (it has no OID wire form); `data_interval_e2e` covers the codec logic
-//! on the in-memory store, and `pg_interval_decode_e2e` the text parser without a
-//! database.
+//! `00:00:01.5` and reads back exactly). A scalar `avg` over the column is checked here
+//! too: Postgres cannot cast an interval average to `float8`, so it renders as
+//! `EXTRACT(EPOCH FROM AVG(took))::float8 * 1000`, which this exercises against the real
+//! database (the two seeded rows average to 1000.0 ms). This is the decode path the
+//! in-memory adapter cannot exercise (it has no OID wire form); `data_interval_e2e`
+//! covers the codec logic on the in-memory store, and `pg_interval_decode_e2e` the text
+//! parser without a database.
 //!
 //! The program creates its own `ridge_pg_interval` table with `Raw.exec`, so no
 //! CI-provisioned table is needed. Gated three ways like `data_pg_e2e`: the
@@ -40,11 +43,20 @@ pub type Item = { id: Int, took: Duration } deriving (Row, Schema)
 
 fn durText (d: Duration) -> Text = Int.toText d.ms
 
+-- The mean span an `avg` answers is an `Option Float` of milliseconds. The two seeded
+-- rows (1500 and 500 ms) average to 1000.0 exactly, so an equality check reads back
+-- clean regardless of float text rendering.
+fn optAvg (o: Option Float) -> Text =
+    match o
+        None   -> "none"
+        Some f -> if f == 1000.0 then "ok" else "wrong"
+
 fn pgConfig () -> Config =
     Config { host = "__PG_HOST__", port = __PG_PORT__, database = "__PG_DATABASE__", user = "__PG_USER__", password = "__PG_PASSWORD__", sslMode = "__PG_SSLMODE__" }
 
--- Create a fresh interval table and seed one row: 1500 ms, which Postgres stores as
--- the interval `00:00:01.5`.
+-- Create a fresh interval table and seed two rows: 1500 ms (id 1) and 500 ms (id 2),
+-- which Postgres stores as `00:00:01.5` and `00:00:00.5`. Two rows let `avg` fold to a
+-- mean, and id 1 stays the 1500 ms row the round-trip reads back.
 pub fn db setup () -> Result (Repo Item Postgres) Error =
     match connect (pgConfig ())
         Err e   -> Err e
@@ -59,7 +71,10 @@ pub fn db setup () -> Result (Repo Item Postgres) Error =
                         Ok _  ->
                             match Repo.insert (ItemInsert { took = d }) r
                                 Err e -> Err e
-                                Ok _  -> Ok r
+                                Ok _  ->
+                                    match Repo.insert (ItemInsert { took = ofMillis 500 }) r
+                                        Err e -> Err e
+                                        Ok _  -> Ok r
 
 -- read the interval back: a `SqlText` decode would leave it as the raw `00:00:01.5`
 -- string, but the typed `SqlInterval` decode folds the `interval` (OID 1186) into the
@@ -72,6 +87,18 @@ pub fn db roundTrip () -> Text =
                 Err _       -> "get-err"
                 Ok None     -> "none"
                 Ok (Some i) -> durText i.took
+
+-- a scalar AVG over the interval column renders through the interval-aware path
+-- (`EXTRACT(EPOCH FROM AVG(took))::float8 * 1000`), which Postgres computes over the two
+-- rows to the mean milliseconds 1000.0. Postgres cannot cast an interval average to
+-- float8 directly, so this proves the epoch-extraction path against a real database.
+pub fn db avgTook () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.avgOf (fn (i: Item) -> i.took)
+                Err _ -> "avg-err"
+                Ok o  -> optAvg o
 "#;
 
 struct PgParts<'a> {
@@ -195,7 +222,11 @@ fn postgres_interval_round_trips_a_duration() {
         .expect("a user module")
         .to_owned();
 
-    let expr = format!("io:format(\"roundTrip=~s~n\",[{module}:roundTrip()]), halt().");
+    let expr = format!(
+        "io:format(\"roundTrip=~s~n\",[{module}:roundTrip()]), \
+         io:format(\"avgTook=~s~n\",[{module}:avgTook()]), \
+         halt()."
+    );
     let output = Command::new("erl")
         .arg("-noshell")
         .arg("-pa")
@@ -211,5 +242,9 @@ fn postgres_interval_round_trips_a_duration() {
     assert!(
         stdout.contains("roundTrip=1500"),
         "missing `roundTrip=1500` (an interval column (OID 1186) decodes to the typed SqlInterval and the millisecond span survives the round-trip through the database)\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("avgTook=ok"),
+        "missing `avgTook=ok` (a scalar AVG over an interval column renders as EXTRACT(EPOCH FROM AVG(took))::float8 * 1000 and Postgres folds the two rows to 1000.0 ms)\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

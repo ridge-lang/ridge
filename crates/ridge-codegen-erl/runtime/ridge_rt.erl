@@ -2278,6 +2278,11 @@ mem_leaf_key_tail(_)                                        -> false.
 mem_agg(_Func, [])         -> 'SqlNull';
 mem_agg(<<"SUM">>, Values) -> mem_sum(Values);
 mem_agg(<<"AVG">>, Values) -> {'SqlFloat', mem_numsum(Values) / length(Values)};
+%% An interval column averages to a mean span in milliseconds, the same float an
+%% integer or decimal column averages to. Postgres needs a distinct SQL path for it
+%% (`EXTRACT(EPOCH ...)`), but the in-memory fold reads the millisecond spans through
+%% `mem_num` and averages them exactly as the numeric case does.
+mem_agg(<<"AVG_INTERVAL">>, Values) -> {'SqlFloat', mem_numsum(Values) / length(Values)};
 mem_agg(<<"MIN">>, Values) -> mem_extreme(min, Values);
 mem_agg(<<"MAX">>, Values) -> mem_extreme(max, Values);
 mem_agg(_Other, _Values)   -> 'SqlNull'.
@@ -2328,10 +2333,13 @@ mem_numsum(Values) ->
 
 %% The numeric value of a scalar for SUM/AVG folding. A decimal narrows to its
 %% nearest float here; SUM keeps decimals exact through mem_sum_decimal, so this
-%% float path only ever backs AVG, whose result is a float either way.
-mem_num({'SqlInt', N})     -> N;
-mem_num({'SqlFloat', F})   -> F;
-mem_num({'SqlDecimal', S}) -> decimal_text_to_float(S).
+%% float path only ever backs AVG, whose result is a float either way. An interval
+%% reads as its whole-millisecond span, so averaging a Duration column yields a mean
+%% in milliseconds.
+mem_num({'SqlInt', N})      -> N;
+mem_num({'SqlFloat', F})    -> F;
+mem_num({'SqlDecimal', S})  -> decimal_text_to_float(S);
+mem_num({'SqlInterval', Ms}) -> Ms.
 
 is_float_val({'SqlFloat', _}) -> true;
 is_float_val(_)               -> false.

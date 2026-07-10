@@ -7,15 +7,18 @@
 //! - a duration round-trips through the stored `SqlInterval` and reads back as the
 //!   same span it went in as,
 //! - the store orders an interval column by length,
-//! - a scalar `min`/`max` folds by length and keeps the `Duration` type, and
+//! - a scalar `min`/`max` folds by length and keeps the `Duration` type,
+//! - a scalar `sum` folds the column to a total `Duration`,
+//! - a scalar `avg` folds it to a mean span in milliseconds (an `Option Float`),
+//! - a captured `Duration` binds as a parameter in a quoted predicate, and
 //! - `deriving (Schema)` reads the column type from `SqlType.dbType`, so the DDL
 //!   names the column `interval`.
 //!
-//! Ordering and `min`/`max` fold by the integer millisecond span the carrier holds,
-//! so no text-sort approximation is involved. `sum`/`avg` over a `Duration` column and
-//! a captured `Duration` in a quoted predicate are intentionally out of scope here —
-//! both are rejected at type-check — since a `Duration` is not a quote scalar and its
-//! aggregate fold is deferred.
+//! Ordering, `min`/`max`, and `sum` fold by the integer millisecond span the carrier
+//! holds, so no text-sort approximation is involved. `avg` averages those spans to a
+//! millisecond mean; Postgres cannot cast an interval average to `float8`, so it renders
+//! through the interval-aware `EXTRACT(EPOCH ...)` path while the in-memory adapter folds
+//! the spans directly — both answer the same `Float`.
 //!
 //! The exact Postgres `interval` (OID 1186) decode is covered separately in
 //! `data_pg_interval_e2e` against a real database, and the text parser in
@@ -48,6 +51,14 @@ fn optMs (o: Option Duration) -> Text =
     match o
         None   -> "none"
         Some d -> durText d
+
+-- The mean span an `avg` answers is an `Option Float` of milliseconds. Averaging the
+-- two rows under 90000 ms (500 and 1500) is exactly 1000.0, so an equality check reads
+-- back clean without depending on how a float renders as text.
+fn optAvg (o: Option Float) -> Text =
+    match o
+        None   -> "none"
+        Some f -> if f == 1000.0 then "ok" else "wrong"
 
 -- Comma-join the labels of a row list, so an order is observable as one string.
 fn joinLabels (ts: List Task) -> Text =
@@ -129,6 +140,19 @@ pub fn db sumTook () -> Text =
             match r |> Repo.query |> Repo.sumOf (fn (t: Task) -> t.took)
                 Err _ -> "sum-err"
                 Ok o  -> optMs o
+
+-- a scalar AVG over the interval column reads the mean span in milliseconds as a Float.
+-- Averaging the two rows under 90000 ms (500 and 1500) is 1000.0. The captured-Duration
+-- `<` filter selects them, then `avgOf` folds through the interval-aware path (Postgres
+-- cannot cast an interval average to float8; the in-memory adapter averages the spans).
+pub fn db avgTook () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            let cutoff = ofMillis 90000
+            match r |> Repo.query |> Repo.filter (fn (t: Task) -> t.took < cutoff) |> Repo.avgOf (fn (t: Task) -> t.took)
+                Err _ -> "avg-err"
+                Ok o  -> optAvg o
 
 -- a captured Duration in a quoted predicate compiles to a bound parameter, so only
 -- the 1500 ms row (label "c") matches. Proves a Duration flows through the query DSL
@@ -222,6 +246,7 @@ fn interval_codec_runs_on_beam() {
          io:format(\"minTook=~s~n\",[{module}:minTook()]), \
          io:format(\"maxTook=~s~n\",[{module}:maxTook()]), \
          io:format(\"sumTook=~s~n\",[{module}:sumTook()]), \
+         io:format(\"avgTook=~s~n\",[{module}:avgTook()]), \
          io:format(\"filterByTook=~s~n\",[{module}:filterByTook()]), \
          io:format(\"tookDdl=~s~n\",[{module}:tookDdl()]), \
          halt()."
@@ -262,6 +287,10 @@ fn interval_codec_runs_on_beam() {
         (
             "sumTook=92000",
             "a scalar SUM over an interval column folds to a total and keeps the Duration type",
+        ),
+        (
+            "avgTook=ok",
+            "a scalar AVG over an interval column folds to a mean in milliseconds (1000.0 for 500 and 1500)",
         ),
         (
             "filterByTook=c",

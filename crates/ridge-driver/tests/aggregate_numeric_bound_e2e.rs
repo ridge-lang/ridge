@@ -6,8 +6,8 @@
 //! instance — it orders, compares, and folds through `min`/`max` — but summing or
 //! averaging it is meaningless, so it is rejected at the call site (`T040`) instead of
 //! reaching a backend that would raise a runtime type error. `min`/`max` stay
-//! unrestricted. A `Duration` sums to a total and a scalar `avgOf` averages it to a
-//! mean in milliseconds; the grouped `g.avg` over a `Duration` is still held back.
+//! unrestricted. A `Duration` sums to a total and both a scalar `avgOf` and a grouped
+//! `g.avg` average it to a mean in milliseconds.
 //!
 //! Pure type-check tests (`check_workspace`), no runtime needed.
 
@@ -111,11 +111,12 @@ pub fn mean (r: Repo Job MemAdapter) -> Result (Option Float) Error =
     );
 }
 
-/// A grouped `g.avg` over a `Duration` column is still a targeted `T040`: the grouped
-/// `summarize` path reifies its aggregate columns without the per-column type the
-/// interval-aware average needs, so it is held back while `g.sum` folds it to a total.
+/// A grouped `g.avg` over a `Duration` column is clean: the quotation checker records
+/// the folded column's type at the aggregate, so the grouped average reifies to the
+/// interval-aware node and renders the epoch-millisecond average, matching the scalar
+/// `avgOf`.
 #[test]
-fn grouped_avg_over_duration_is_t040() {
+fn grouped_avg_over_duration_is_clean() {
     let source = "
 import std.data (memAdapter, MemAdapter)
 import std.repo as Repo
@@ -132,8 +133,8 @@ pub fn perDept (r: Repo Job MemAdapter) -> Result (List DeptMean) Error =
     let tw = make_workspace("Models", source);
     let result = check_workspace(CheckOptions::new(tw.path.clone())).expect("check ran");
     assert!(
-        result.diagnostics.iter().any(|d| d.code == "T040"),
-        "expected T040 (grouped avg over an interval column, not yet supported); got {:?}",
+        result.diagnostics.is_empty(),
+        "averaging an interval column in a grouped summary is valid; got {:?}",
         result.diagnostics
     );
 }

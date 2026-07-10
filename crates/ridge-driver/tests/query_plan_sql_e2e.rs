@@ -11,7 +11,8 @@
 //! The plans are built directly through the public `plan*` builders, with each
 //! captured predicate's reified tree read off a `Quote`'s `tree` field. The SQL is
 //! asserted against what the proven backend verbs emit (`l."col"`/`r."col"`
-//! qualifiers, `$N` placeholders, `TRUE AS "__present"` markers, `AVG(...)::float8`).
+//! qualifiers, `$N` placeholders, `TRUE AS "__present"` markers, `AVG(...)::float8`,
+//! and the interval-aware `EXTRACT(EPOCH FROM AVG(...))::float8 * 1000`).
 //!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 
@@ -303,6 +304,18 @@ pub fn singleGroupHavingBinds () -> Text =
 
 pub fn singleGroupExistsSql () -> Text =
     renderSql (planGroup "name" 0 [("name", "KEY", keepAll (), 0), ("n", "COUNT", keepAll (), 0)] (keepAll ()) (planScan "users" (QExists "posts" (QEq (QColR "author") (QCol "id"))) [] (0 - 1) 0 false))
+
+-- A grouped average over an interval column. The `AVG_INTERVAL` keyword renders as
+-- `EXTRACT(EPOCH FROM AVG(col))::float8 * 1000` — Postgres cannot cast an interval
+-- average to `float8`, so it reads the average's epoch milliseconds instead.
+pub fn singleGroupAvgIntervalSql () -> Text =
+    renderSql (planGroup "name" 0 [("name", "KEY", keepAll (), 0), ("mean", "AVG_INTERVAL", QCol "took", 0)] (keepAll ()) (adultsScan ()))
+
+-- The same interval average inside a HAVING, reached through the `QAggAvgInterval`
+-- node rather than the select-list keyword, so both paths render the epoch-millisecond
+-- form. The float threshold binds after the base filter as `$2`.
+pub fn singleGroupAvgIntervalHavingSql () -> Text =
+    renderSql (planGroup "name" 0 [("name", "KEY", keepAll (), 0), ("n", "COUNT", keepAll (), 0)] (QGt (QAggAvgInterval (QCol "took")) (QLitFloat 100.0)) (adultsScan ()))
 
 -- A correlated EXISTS inside a binary join's post-join WHERE: the inner table joins at
 -- the leaf after both join sides (`x2`), and its predicate names the right leaf as `r`
@@ -804,7 +817,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','singleCountSql','singleSumSql','singleAvgSql','singleCountExistsSql','singleProjectSql','singleProjectExistsSql','singleProjectPagedSql','singleGroupSql','singleGroupHavingSql','singleGroupHavingBinds','singleGroupExistsSql','joinExistsWhereSql','naryExistsWhereSql','nestedExistsSql','pgNestedSql','pgNestedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql','insertSql','insertBinds','insertManySql','insertManyBinds','updateSql','updateBinds','deleteSql','existsDeleteSql','existsDeleteBinds','deleteKeysSql','deleteKeysBinds','deleteKeysCompositeSql','existsUpdateSql','existsUpdateBinds','upsertSql','upsertBinds','insertOrIgnoreSql','upsertBareSql','insertReturningStarSql','insertReturningStarBinds','insertReturningColsSql','deleteReturningSql','updateReturningSql','upsertReturningSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','singleCountSql','singleSumSql','singleAvgSql','singleCountExistsSql','singleProjectSql','singleProjectExistsSql','singleProjectPagedSql','singleGroupSql','singleGroupHavingSql','singleGroupHavingBinds','singleGroupExistsSql','singleGroupAvgIntervalSql','singleGroupAvgIntervalHavingSql','joinExistsWhereSql','naryExistsWhereSql','nestedExistsSql','pgNestedSql','pgNestedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql','insertSql','insertBinds','insertManySql','insertManyBinds','updateSql','updateBinds','deleteSql','existsDeleteSql','existsDeleteBinds','deleteKeysSql','deleteKeysBinds','deleteKeysCompositeSql','existsUpdateSql','existsUpdateBinds','upsertSql','upsertBinds','insertOrIgnoreSql','upsertBareSql','insertReturningStarSql','insertReturningStarBinds','insertReturningColsSql','deleteReturningSql','updateReturningSql','upsertReturningSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -880,6 +893,14 @@ fn query_plan_compiles_to_parameterized_sql() {
     want("singleGroupHavingBinds=2");
     want(
         r#"singleGroupExistsSql=SELECT l."name" AS "name", COUNT(*) AS "n" FROM "users" AS l WHERE EXISTS (SELECT 1 FROM "posts" AS x1 WHERE x1."author" = l."id") GROUP BY l."name" ORDER BY l."name""#,
+    );
+    // A grouped interval average renders through the epoch-millisecond path in the select
+    // list and, reached as a `QAggAvgInterval` node, in the HAVING as well.
+    want(
+        r#"singleGroupAvgIntervalSql=SELECT "name" AS "name", EXTRACT(EPOCH FROM AVG("took"))::float8 * 1000 AS "mean" FROM "users" WHERE "age" >= $1 GROUP BY "name" ORDER BY "name""#,
+    );
+    want(
+        r#"singleGroupAvgIntervalHavingSql=SELECT "name" AS "name", COUNT(*) AS "n" FROM "users" WHERE "age" >= $1 GROUP BY "name" HAVING EXTRACT(EPOCH FROM AVG("took"))::float8 * 1000 > $2 ORDER BY "name""#,
     );
 
     // The typed write renderer (`mutationToSql`): an INSERT lists its columns and binds

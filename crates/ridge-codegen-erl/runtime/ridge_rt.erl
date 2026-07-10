@@ -2461,6 +2461,7 @@ mem_hscalar_nary('QGroupKey', Key, _GR) -> Key;
 mem_hscalar_nary('QAggCount', _Key, GR) -> {'SqlInt', length(GR)};
 mem_hscalar_nary({'QAggSum', Node}, _Key, GR) -> mem_agg_q_or_undef(<<"SUM">>, Node, GR);
 mem_hscalar_nary({'QAggAvg', Node}, _Key, GR) -> mem_agg_q_or_undef(<<"AVG">>, Node, GR);
+mem_hscalar_nary({'QAggAvgInterval', Node}, _Key, GR) -> mem_agg_q_or_undef(<<"AVG_INTERVAL">>, Node, GR);
 mem_hscalar_nary({'QAggMin', Node}, _Key, GR) -> mem_agg_q_or_undef(<<"MIN">>, Node, GR);
 mem_hscalar_nary({'QAggMax', Node}, _Key, GR) -> mem_agg_q_or_undef(<<"MAX">>, Node, GR);
 mem_hscalar_nary({'QLitInt', N}, _Key, _GR)   -> {'SqlInt', N};

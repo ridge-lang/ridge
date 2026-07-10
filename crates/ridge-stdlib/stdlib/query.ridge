@@ -292,6 +292,7 @@ fn showExpr (e: QExpr) -> Text =
         QAggCount   -> "count(*)"
         QAggSum c   -> aggShow "sum" c
         QAggAvg c   -> aggShow "avg" c
+        QAggAvgInterval c -> aggShow "avg" c
         QAggMin c   -> aggShow "min" c
         QAggMax c   -> aggShow "max" c
         QLike v p   -> binNode v " LIKE " p
@@ -361,6 +362,7 @@ fn compileExpr (e: QExpr) -> { text: Text, binds: List SqlValue } =
         QAggCount  -> { text = "COUNT(*)", binds = [] }
         QAggSum c  -> aggSql "SUM" c
         QAggAvg c  -> aggSql "AVG" c
+        QAggAvgInterval c -> aggSql "AVG_INTERVAL" c
         QAggMin c  -> aggSql "MIN" c
         QAggMax c  -> aggSql "MAX" c
         QLike v p  ->
@@ -2007,6 +2009,7 @@ fn singleHavingOperand (e: QExpr) (qualified: Bool) (keyCol: Text) (n: Int) -> {
         QGroupKey    -> { text = renderColRef qualified false keyCol, binds = [], next = n }
         QAggSum node -> aggExprSingle qualified "SUM" node n
         QAggAvg node -> aggExprSingle qualified "AVG" node n
+        QAggAvgInterval node -> aggExprSingle qualified "AVG_INTERVAL" node n
         QAggMin node -> aggExprSingle qualified "MIN" node n
         QAggMax node -> aggExprSingle qualified "MAX" node n
         QLitInt v    -> { text = placeholder n, binds = [sqlInt v], next = n + 1 }
@@ -2110,6 +2113,7 @@ fn naryHavingOperand (e: QExpr) (keyLeaf: Int) (keyCol: Text) (n: Int) -> { text
         QGroupKey    -> { text = naryColRef keyLeaf keyCol, binds = [], next = n }
         QAggSum node -> naryAggExprE "SUM" 0 node n
         QAggAvg node -> naryAggExprE "AVG" 0 node n
+        QAggAvgInterval node -> naryAggExprE "AVG_INTERVAL" 0 node n
         QAggMin node -> naryAggExprE "MIN" 0 node n
         QAggMax node -> naryAggExprE "MAX" 0 node n
         QLitInt v    -> { text = placeholder n, binds = [sqlInt v], next = n + 1 }
@@ -2170,6 +2174,7 @@ fn renderHavingOperand (e: QExpr) (keySide: Bool) (keyCol: Text) (n: Int) -> { t
         QGroupKey    -> { text = renderColRef true keySide keyCol, binds = [], next = n }
         QAggSum node -> aggExprJoinE "SUM" node n
         QAggAvg node -> aggExprJoinE "AVG" node n
+        QAggAvgInterval node -> aggExprJoinE "AVG_INTERVAL" node n
         QAggMin node -> aggExprJoinE "MIN" node n
         QAggMax node -> aggExprJoinE "MAX" node n
         QLitInt v    -> { text = placeholder n, binds = [sqlInt v], next = n + 1 }

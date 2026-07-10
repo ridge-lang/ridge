@@ -2978,6 +2978,7 @@ fn aggColLeaf (ex: QExpr) -> Int =
     match ex
         QAggSum c -> aggNodeLeaf c
         QAggAvg c -> aggNodeLeaf c
+        QAggAvgInterval c -> aggNodeLeaf c
         QAggMin c -> aggNodeLeaf c
         QAggMax c -> aggNodeLeaf c
         _         -> 0
@@ -2995,6 +2996,7 @@ fn aggFunc (ex: QExpr) -> Text =
         QAggCount -> "COUNT"
         QAggSum _ -> "SUM"
         QAggAvg _ -> "AVG"
+        QAggAvgInterval _ -> "AVG_INTERVAL"
         QAggMin _ -> "MIN"
         QAggMax _ -> "MAX"
         _         -> ""
@@ -3009,6 +3011,7 @@ fn aggColExpr (ex: QExpr) -> QExpr =
     match ex
         QAggSum c -> c
         QAggAvg c -> c
+        QAggAvgInterval c -> c
         QAggMin c -> c
         QAggMax c -> c
         _         -> keepAllTree ()

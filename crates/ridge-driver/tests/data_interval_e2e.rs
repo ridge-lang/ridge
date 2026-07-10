@@ -42,8 +42,12 @@ import std.schema (schemaOf, schemaToDdl)
 import std.time (ofMillis)
 
 -- An entity with a `Duration` column. `deriving (Schema)` marks `id` an identity
--- column, so the insert shape `TaskInsert` carries only `label` and `took`.
-pub type Task = { id: Int, label: Text, took: Duration } deriving (Row, Schema)
+-- column, so the insert shape `TaskInsert` carries `label`, `bucket`, and `took`. The
+-- `bucket` groups rows for the grouped average.
+pub type Task = { id: Int, label: Text, bucket: Text, took: Duration } deriving (Row, Schema)
+
+-- One group's mean span, the shape a grouped `summarize` decodes into.
+pub type BucketMean = { bucket: Text, mean: Float } deriving (Row)
 
 fn durText (d: Duration) -> Text = Int.toText d.ms
 
@@ -68,16 +72,17 @@ fn joinLabels (ts: List Task) -> Text =
         t :: rest -> Text.concat t.label (Text.concat "," (joinLabels rest))
 
 -- Seed three rows whose durations sort a,c,b by length:
--- a = 500ms < c = 1500ms < b = 90000ms.
+-- a = 500ms < c = 1500ms < b = 90000ms. Buckets group a and c together (bucket "x")
+-- and b alone (bucket "y"), so bucket "x" averages 500 and 1500 to 1000 ms.
 pub fn db setup () -> Result (Repo Task MemAdapter) Error =
     let r: Repo Task MemAdapter = Repo.repo (memAdapter ()) "tasks"
-    match Repo.insert (TaskInsert { label = "a", took = ofMillis 500 }) r
+    match Repo.insert (TaskInsert { label = "a", bucket = "x", took = ofMillis 500 }) r
         Err e -> Err e
         Ok _  ->
-            match Repo.insert (TaskInsert { label = "b", took = ofMillis 90000 }) r
+            match Repo.insert (TaskInsert { label = "b", bucket = "y", took = ofMillis 90000 }) r
                 Err e -> Err e
                 Ok _  ->
-                    match Repo.insert (TaskInsert { label = "c", took = ofMillis 1500 }) r
+                    match Repo.insert (TaskInsert { label = "c", bucket = "x", took = ofMillis 1500 }) r
                         Err e -> Err e
                         Ok _  -> Ok r
 
@@ -153,6 +158,25 @@ pub fn db avgTook () -> Text =
             match r |> Repo.query |> Repo.filter (fn (t: Task) -> t.took < cutoff) |> Repo.avgOf (fn (t: Task) -> t.took)
                 Err _ -> "avg-err"
                 Ok o  -> optAvg o
+
+-- The mean span of bucket "x" among the grouped summaries. Bucket "x" holds the 500
+-- and 1500 ms rows, averaging to 1000.0.
+fn bucketXMean (rows: List BucketMean) -> Text =
+    match rows
+        []        -> "no-x"
+        r :: rest -> if r.bucket == "x" then (if r.mean == 1000.0 then "ok" else "wrong") else bucketXMean rest
+
+-- a grouped AVG folds each bucket's spans to a mean. Postgres renders the interval-aware
+-- EXTRACT(EPOCH ...) path; the in-memory adapter reads the millisecond spans off the
+-- SqlInterval values and averages them the same way. Bucket "x" (500 and 1500 ms)
+-- averages to 1000.0.
+pub fn db groupAvgTook () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.groupBy (fn (t: Task) -> t.bucket) |> Repo.summarize (fn g -> BucketMean { bucket = g.key, mean = g.avg (fn (t: Task) -> t.took) })
+                Err _ -> "group-err"
+                Ok rows -> bucketXMean rows
 
 -- a captured Duration in a quoted predicate compiles to a bound parameter, so only
 -- the 1500 ms row (label "c") matches. Proves a Duration flows through the query DSL
@@ -247,6 +271,7 @@ fn interval_codec_runs_on_beam() {
          io:format(\"maxTook=~s~n\",[{module}:maxTook()]), \
          io:format(\"sumTook=~s~n\",[{module}:sumTook()]), \
          io:format(\"avgTook=~s~n\",[{module}:avgTook()]), \
+         io:format(\"groupAvgTook=~s~n\",[{module}:groupAvgTook()]), \
          io:format(\"filterByTook=~s~n\",[{module}:filterByTook()]), \
          io:format(\"tookDdl=~s~n\",[{module}:tookDdl()]), \
          halt()."
@@ -291,6 +316,10 @@ fn interval_codec_runs_on_beam() {
         (
             "avgTook=ok",
             "a scalar AVG over an interval column folds to a mean in milliseconds (1000.0 for 500 and 1500)",
+        ),
+        (
+            "groupAvgTook=ok",
+            "a grouped AVG folds each bucket's interval spans to a mean (bucket x averages 500 and 1500 to 1000.0)",
         ),
         (
             "filterByTook=c",

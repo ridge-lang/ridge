@@ -1387,6 +1387,17 @@ impl BuiltinTyCons {
                         name: "QLitInterval".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(TyConId(13), vec![])]),
                     },
+                    // A grouped average over an interval column — `g.avg (fn u ->
+                    // u.took)` where `took` is a `Duration`. It folds the same `QCol`
+                    // (tycon id 25) as `QAggAvg`, but Postgres cannot cast an interval
+                    // average to `float8`, so the renderer reads the average's epoch
+                    // milliseconds instead. Distinct from `QAggAvg` because the reifier
+                    // knows the column type while the renderer does not. Appended last
+                    // so the hardcoded variant indices stay put.
+                    UnionVariant {
+                        name: "QAggAvgInterval".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(25), vec![])]),
+                    },
                 ],
             }),
             def_span: None,

@@ -968,24 +968,13 @@ fn is_numeric(b: &BuiltinTyCons, ty: &Type) -> bool {
 /// instance (so `min`/`max`, ordering, and equality fold it), but summing or
 /// averaging it is meaningless: Postgres rejects it and the in-memory adapter has no
 /// numeric fold. `Duration` is deliberately absent — a millisecond span sums to a
-/// total `Duration` and averages to a mean, so those are folded (see
-/// [`is_avg_only_rejected`] for the one `avg` case still pending). The numeric columns
+/// total `Duration` and averages to a mean, so both are folded. The numeric columns
 /// (`Int`/`Float`/`Decimal`), a nullable wrapper, and an unresolved type variable are
 /// all left unmatched, so a caller rejects only a column it is certain about.
 pub(crate) fn is_non_summable_scalar(b: &BuiltinTyCons, ty: &Type) -> bool {
     matches!(ty, Type::Con(id, _)
         if *id == b.text || *id == b.bool || *id == b.uuid
             || *id == b.bytes || *id == b.timestamp || *id == b.date || *id == b.time)
-}
-
-/// Whether `ty` is a column a grouped `g.avg` cannot fold yet. A scalar `avgOf` over a
-/// `Duration` column averages it to a mean in milliseconds (the `avgOf` instance reads
-/// the column's `SqlType` and renders the interval-aware SQL). The grouped `summarize`
-/// path reifies its aggregate columns without that per-column type in reach, so a
-/// grouped average over a `Duration` is still held back while `g.sum` folds it to a
-/// total.
-pub(crate) fn is_avg_only_rejected(b: &BuiltinTyCons, ty: &Type) -> bool {
-    matches!(ty, Type::Con(id, _) if *id == b.duration)
 }
 
 /// Whether `ty` is the `Int` base type.
@@ -1854,15 +1843,13 @@ fn check_group_call(
             });
             return None;
         }
-        if func == "avg" && is_avg_only_rejected(b, &resolved) {
-            ctx.errors.push(TypeError::QuoteUnsupportedExpr {
-                detail: format!(
-                    "`{g_name}.avg` over an interval column is not supported yet; `{g_name}.sum` \
-                     folds it to a total instead"
-                ),
-                span,
-            });
-            return None;
+        // Record the folded column's type at the aggregate call so the lowering pass
+        // can pick the interval-aware average node for a `Duration` column. The grouped
+        // aggregate is reified without the column type otherwise in reach, and Postgres
+        // needs a distinct SQL path for an interval average (it cannot cast one to
+        // `float8`); a numeric average stays the plain `QAggAvg`.
+        if func == "avg" {
+            ctx.write_node_type(span, ridge_resolve::NodeKind::Expr, &resolved);
         }
     }
     let ty = if func == "avg" {

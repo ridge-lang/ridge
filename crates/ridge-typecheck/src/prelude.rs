@@ -354,10 +354,18 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
         )]),
     );
     // The grouped-aggregate nodes: `QGroupKey`/`QAggCount` are nullary (like
-    // `None`); the scalar aggregates wrap the column they fold.
+    // `None`); the scalar aggregates wrap the column they fold. `QAggAvgInterval` is
+    // the interval-aware average, distinct from `QAggAvg` so the renderer can read an
+    // interval's epoch milliseconds instead of casting it to `float8`.
     values.insert("QGroupKey".to_string(), q_ctor(vec![]));
     values.insert("QAggCount".to_string(), q_ctor(vec![]));
-    for name in ["QAggSum", "QAggAvg", "QAggMin", "QAggMax"] {
+    for name in [
+        "QAggSum",
+        "QAggAvg",
+        "QAggMin",
+        "QAggMax",
+        "QAggAvgInterval",
+    ] {
         values.insert(name.to_string(), q_ctor(vec![qexpr_ty.clone()]));
     }
     // QLike carries the column and a `QLitText` pattern; QIn the column and a list

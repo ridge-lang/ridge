@@ -7,13 +7,13 @@
 //! rebuilds the `Duration`; a bound `SqlInterval` is sent as `<n> milliseconds`, which
 //! Postgres parses back to the same span. So a duration survives the insert/select loop
 //! as the value it went in as, including its sub-second part (1500 ms renders as
-//! `00:00:01.5` and reads back exactly). A scalar `avg` over the column is checked here
-//! too: Postgres cannot cast an interval average to `float8`, so it renders as
-//! `EXTRACT(EPOCH FROM AVG(took))::float8 * 1000`, which this exercises against the real
-//! database (the two seeded rows average to 1000.0 ms). This is the decode path the
-//! in-memory adapter cannot exercise (it has no OID wire form); `data_interval_e2e`
-//! covers the codec logic on the in-memory store, and `pg_interval_decode_e2e` the text
-//! parser without a database.
+//! `00:00:01.5` and reads back exactly). Both a scalar `avg` and a grouped `g.avg` over
+//! the column are checked here too: Postgres cannot cast an interval average to
+//! `float8`, so they render as `EXTRACT(EPOCH FROM AVG(took))::float8 * 1000`, which this
+//! exercises against the real database (the two seeded rows average to 1000.0 ms, whole
+//! and per group). This is the decode path the in-memory adapter cannot exercise (it has
+//! no OID wire form); `data_interval_e2e` covers the codec logic on the in-memory store,
+//! and `pg_interval_decode_e2e` the text parser without a database.
 //!
 //! The program creates its own `ridge_pg_interval` table with `Raw.exec`, so no
 //! CI-provisioned table is needed. Gated three ways like `data_pg_e2e`: the
@@ -37,9 +37,13 @@ import std.raw as Raw
 import std.sql (toSql, SqlValue)
 import std.time (ofMillis)
 
--- A `serial` id lets `deriving (Schema)` omit it from the insert shape, so the
--- insert carries only the interval and Postgres assigns the id 1.
-pub type Item = { id: Int, took: Duration } deriving (Row, Schema)
+-- A `serial` id lets `deriving (Schema)` omit it from the insert shape, so the insert
+-- carries the bucket and the interval and Postgres assigns the id. The `bucket` groups
+-- rows for the grouped average.
+pub type Item = { id: Int, bucket: Text, took: Duration } deriving (Row, Schema)
+
+-- One group's mean span, the shape the grouped `summarize` decodes into.
+pub type BucketMean = { bucket: Text, mean: Float } deriving (Row)
 
 fn durText (d: Duration) -> Text = Int.toText d.ms
 
@@ -66,13 +70,13 @@ pub fn db setup () -> Result (Repo Item Postgres) Error =
             match Raw.exec conn "DROP TABLE IF EXISTS ridge_pg_interval" []
                 Err e -> Err e
                 Ok _  ->
-                    match Raw.exec conn "CREATE TABLE ridge_pg_interval (id serial, took interval)" []
+                    match Raw.exec conn "CREATE TABLE ridge_pg_interval (id serial, bucket text, took interval)" []
                         Err e -> Err e
                         Ok _  ->
-                            match Repo.insert (ItemInsert { took = d }) r
+                            match Repo.insert (ItemInsert { bucket = "x", took = d }) r
                                 Err e -> Err e
                                 Ok _  ->
-                                    match Repo.insert (ItemInsert { took = ofMillis 500 }) r
+                                    match Repo.insert (ItemInsert { bucket = "x", took = ofMillis 500 }) r
                                         Err e -> Err e
                                         Ok _  -> Ok r
 
@@ -99,6 +103,23 @@ pub fn db avgTook () -> Text =
             match r |> Repo.query |> Repo.avgOf (fn (i: Item) -> i.took)
                 Err _ -> "avg-err"
                 Ok o  -> optAvg o
+
+fn bucketXMean (rows: List BucketMean) -> Text =
+    match rows
+        []        -> "no-x"
+        r :: rest -> if r.bucket == "x" then (if r.mean == 1000.0 then "ok" else "wrong") else bucketXMean rest
+
+-- a grouped AVG over the interval column renders per group as
+-- `EXTRACT(EPOCH FROM AVG(took))::float8 * 1000`. Both rows share bucket "x", so
+-- Postgres folds them to the mean 1000.0 ms. This proves the grouped epoch-extraction
+-- path against a real database, distinct from the scalar `avgTook`.
+pub fn db groupAvgTook () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.groupBy (fn (i: Item) -> i.bucket) |> Repo.summarize (fn g -> BucketMean { bucket = g.key, mean = g.avg (fn (i: Item) -> i.took) })
+                Err _ -> "group-err"
+                Ok rows -> bucketXMean rows
 "#;
 
 struct PgParts<'a> {
@@ -225,6 +246,7 @@ fn postgres_interval_round_trips_a_duration() {
     let expr = format!(
         "io:format(\"roundTrip=~s~n\",[{module}:roundTrip()]), \
          io:format(\"avgTook=~s~n\",[{module}:avgTook()]), \
+         io:format(\"groupAvgTook=~s~n\",[{module}:groupAvgTook()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -246,5 +268,9 @@ fn postgres_interval_round_trips_a_duration() {
     assert!(
         stdout.contains("avgTook=ok"),
         "missing `avgTook=ok` (a scalar AVG over an interval column renders as EXTRACT(EPOCH FROM AVG(took))::float8 * 1000 and Postgres folds the two rows to 1000.0 ms)\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("groupAvgTook=ok"),
+        "missing `groupAvgTook=ok` (a grouped AVG over an interval column renders per group as EXTRACT(EPOCH FROM AVG(took))::float8 * 1000 and Postgres folds bucket x to 1000.0 ms)\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

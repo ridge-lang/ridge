@@ -855,6 +855,18 @@ fn captured_ident_type(ctx: &LowerCtx<'_>, span: Span) -> Option<Type> {
     ctx.node_type(nid).cloned().map(|t| deep_peel_alias(&t))
 }
 
+/// Whether the grouped `g.avg` at `span` folds a `Duration` column. The quotation
+/// checker stamps the folded column's type at the aggregate call, so an interval
+/// average reifies to the interval-aware node — Postgres cannot cast an interval
+/// average to `float8`, so it reads the average's epoch milliseconds instead. Any
+/// other column type, or a missing stamp, keeps the plain `QAggAvg`.
+fn agg_col_is_interval(ctx: &LowerCtx<'_>, span: Span) -> bool {
+    let Some(ws) = ctx.workspace else {
+        return false;
+    };
+    matches!(captured_ident_type(ctx, span), Some(Type::Con(id, _)) if id == ws.builtins.duration)
+}
+
 /// The `QExpr` literal constructor (`name`, `variant`) for a captured scalar's
 /// resolved type. The quotation checker accepts the same scalar set
 /// (`is_quote_scalar`: Int/Text/Bool/Float/Decimal/Uuid/Timestamp/Bytes/Date/Time),
@@ -1513,7 +1525,11 @@ fn reify_group_node(ctx: &mut LowerCtx<'_>, e: &Expr, g_name: &str) -> IrExpr {
                 if is_group_base(base, g_name) {
                     let agg = match field.text.as_str() {
                         "sum" => Some(("QAggSum", 18)),
-                        "avg" => Some(("QAggAvg", 19)),
+                        "avg" => Some(if agg_col_is_interval(ctx, *span) {
+                            ("QAggAvgInterval", 40)
+                        } else {
+                            ("QAggAvg", 19)
+                        }),
                         "min" => Some(("QAggMin", 20)),
                         "max" => Some(("QAggMax", 21)),
                         _ => None,

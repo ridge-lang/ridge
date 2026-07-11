@@ -10,7 +10,7 @@
 -- module walks it back, either rendering it to a readable string (`debugShow`)
 -- or compiling it to parameterized SQL plus its bind values (`toSql`).
 
-import std.sql (Sql, sql, SqlValue, sqlInt, sqlText, sqlBool, sqlFloat, sqlDecimal, sqlUuid, sqlBytes, sqlDate, sqlTime, sqlIntervalOf, sqlInstantOf, sqlNull, Dialect, PgDialect, SqliteDialect)
+import std.sql (Sql, sql, SqlValue, sqlInt, sqlText, sqlBool, sqlFloat, sqlDecimal, sqlUuid, sqlBytes, sqlDate, sqlTime, sqlIntervalOf, sqlInstantOf, sqlNull, sqlLiteral, Dialect, PgDialect, SqliteDialect)
 import std.int as Int
 import std.map as Map
 
@@ -479,6 +479,82 @@ pub fn planToSql (plan: QueryPlan) -> (Sql, List SqlValue) = planToSqlFor PgDial
 pub fn planToSqlFor (d: Dialect) (plan: QueryPlan) -> (Sql, List SqlValue) =
     let r = renderPlan d (optimize plan) 1
     (sql r.text, r.binds)
+
+-- ── Plan → inline SQL (a view body) ───────────────────────────────────────────
+--
+-- Render a plan to a standalone SQL statement with every captured value spelled in
+-- place rather than collected as a `$N` bind. A `CREATE VIEW` body is a complete
+-- statement the database stores and re-plans on its own, so it takes no bind
+-- parameters — the plan's literals must sit in the text. This reuses the bound
+-- renderer for the whole statement structure, so every plan shape a query can take
+-- renders here identically, then splices each bind back in through `sqlLiteral`, the
+-- same single-quote-doubling escape a column `DEFAULT` or a `CHECK` literal uses, so a
+-- text value stays safe in the text. Returns raw `Text`, not `Sql`: the inlined
+-- literals are already escaped, so re-running the `sql` escaper would double them.
+pub fn planToSqlInline (plan: QueryPlan) -> Text = planToSqlInlineFor PgDialect plan
+
+-- Render a plan to an inline-literal statement in dialect `d`. The dialect threads into
+-- the bound render exactly as `planToSqlFor` uses it (only the aggregates diverge); the
+-- inlining that follows is dialect-neutral, since `sqlLiteral` spells a value the same
+-- either way.
+pub fn planToSqlInlineFor (d: Dialect) (plan: QueryPlan) -> Text =
+    let r = renderPlan d (optimize plan) 1
+    inlineLiterals r.text r.binds
+
+-- Splice each captured value into the bound SQL text, replacing the positional `$N`
+-- placeholders left to right. The bound renderer emits `$1..$N` in strictly increasing
+-- order, one placeholder per bind, so the placeholders are consumed in lockstep with the
+-- bind list rather than looked up by number. A `$` inside a double-quoted identifier (a
+-- join emits column aliases like `"t0$col"`) is not a placeholder and copies through
+-- untouched, which is why the scan tracks whether it is inside an identifier.
+fn inlineLiterals (text: Text) (binds: List SqlValue) -> Text =
+    inlineScan text binds 0 (Text.length text) false ""
+
+fn inlineScan (text: Text) (binds: List SqlValue) (i: Int) (n: Int) (inIdent: Bool) (acc: Text) -> Text =
+    if i >= n then acc
+    else
+        let ch = Text.slice i 1 text
+        if ch == "\"" then
+            -- Enter or leave a quoted identifier. A doubled "" inside one toggles twice,
+            -- so the state is right at the identifier's end, and both quotes copy verbatim.
+            inlineScan text binds (i + 1) n (if inIdent then false else true) (Text.concat acc ch)
+        else if inIdent then
+            inlineScan text binds (i + 1) n inIdent (Text.concat acc ch)
+        else if ch == "$" then
+            let j = digitsEnd text (i + 1) n
+            match binds
+                b :: rest -> inlineScan text rest j n inIdent (Text.concat acc (sqlLiteral b))
+                []        -> inlineScan text [] j n inIdent (Text.concat acc (Text.slice i (j - i) text))
+        else
+            inlineScan text binds (i + 1) n inIdent (Text.concat acc ch)
+
+-- The index just past a run of decimal digits starting at `i` — the end of a `$N`
+-- placeholder's number.
+fn digitsEnd (text: Text) (i: Int) (n: Int) -> Int =
+    if i >= n then i
+    else if isDigit (Text.slice i 1 text) then digitsEnd text (i + 1) n
+    else i
+
+fn isDigit (ch: Text) -> Bool =
+    ch == "0" || ch == "1" || ch == "2" || ch == "3" || ch == "4" || ch == "5" || ch == "6" || ch == "7" || ch == "8" || ch == "9"
+
+-- ── View DDL ──────────────────────────────────────────────────────────────────
+--
+-- A view is a named query. `createViewDdl` renders the `CREATE VIEW <name> AS <select>`
+-- that saves a plan under a name the database re-runs on read; `dropViewDdl` removes it.
+-- The body is the plan rendered inline, so the view's `SELECT` is a compiled Ridge query
+-- — rename a column on the entity and the view's SQL follows, still type-checked. Both
+-- dialects spell `CREATE VIEW`/`DROP VIEW` alike; only the `SELECT` body can diverge, so
+-- only the create takes a dialect. `CREATE OR REPLACE` is Postgres-only, so a replace is a
+-- drop then a create, which the migration runner sequences.
+pub fn createViewDdl (name: Text) (plan: QueryPlan) -> Text =
+    createViewDdlFor PgDialect name plan
+
+pub fn createViewDdlFor (d: Dialect) (name: Text) (plan: QueryPlan) -> Text =
+    Text.join "" ["CREATE VIEW ", quoteIdent name, " AS ", planToSqlInlineFor d plan]
+
+pub fn dropViewDdl (name: Text) -> Text =
+    Text.concat "DROP VIEW " (quoteIdent name)
 
 -- Compile a mutation plan to one parameterized statement and its bind values — the
 -- write-side dual of `planToSql`. Renders through `renderMutation`, the shared

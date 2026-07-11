@@ -2269,8 +2269,9 @@ pub(crate) fn reconciled_fn_scheme(
         (
             "std.query",
             "planScan" | "planCombine" | "planRefine" | "planJoin" | "planProject"
-            | "planAggregate" | "planGroup" | "planToSql" | "planToSqlFor" | "optimize"
-            | "planExists",
+            | "planAggregate" | "planGroup" | "planToSql" | "planToSqlFor" | "planToSqlInline"
+            | "planToSqlInlineFor" | "createViewDdl" | "createViewDdlFor" | "dropViewDdl"
+            | "optimize" | "planExists",
         ) => reconciled_query_plan_fn_scheme(name, reconciled, b),
         // std.query mutation builders + the write-side renderer — the `MutationPlan`
         // factories `planInsert`/`planUpsert`/`planUpdate`/`planDelete` and `mutationToSql`.
@@ -2296,6 +2297,10 @@ pub(crate) fn reconciled_fn_scheme(
 /// `planCombine`/`planRefine`/`planJoin`/`planProject`/`planAggregate`/`planGroup`, the
 /// factories that build a `QueryPlan` node. Each is pure and returns the reconciled
 /// `QueryPlan`, so none is expressible in the hand-curated signature table.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scheme per std.query plan/view verb plus the shared type-builder closures; they read best kept together"
+)]
 fn reconciled_query_plan_fn_scheme(
     name: &str,
     reconciled: &FxHashMap<String, TyConId>,
@@ -2335,6 +2340,19 @@ fn reconciled_query_plan_fn_scheme(
         ty: Type::Fn {
             params,
             ret: Box::new(plan()),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        },
+        constraints: vec![],
+    };
+    // A pure function over the reconciled plan that returns `Text` rather than a plan —
+    // the inline-literal renderer and the view DDL, which spell a plan out as SQL text.
+    let pure_text = |params: Vec<Type>| Scheme {
+        vars: vec![],
+        cap_vars: vec![],
+        row_vars: vec![],
+        ty: Type::Fn {
+            params,
+            ret: Box::new(text()),
             caps: CapRow::Concrete(CapabilitySet::PURE),
         },
         constraints: vec![],
@@ -2416,6 +2434,17 @@ fn reconciled_query_plan_fn_scheme(
             },
             constraints: vec![],
         }),
+        // planToSqlInline : QueryPlan -> Text, and planToSqlInlineFor : Dialect ->
+        // QueryPlan -> Text — the inline-literal renderers, spelling a plan out as one
+        // standalone statement (a view body) rather than a parameterized one.
+        "planToSqlInline" => Some(pure_text(vec![plan()])),
+        "planToSqlInlineFor" => Some(pure_text(vec![dialect_ty(), plan()])),
+        // createViewDdl : Text -> QueryPlan -> Text, createViewDdlFor : Dialect -> Text ->
+        // QueryPlan -> Text — save a plan as a `CREATE VIEW`; dropViewDdl : Text -> Text
+        // removes it by name.
+        "createViewDdl" => Some(pure_text(vec![text(), plan()])),
+        "createViewDdlFor" => Some(pure_text(vec![dialect_ty(), text(), plan()])),
+        "dropViewDdl" => Some(pure_text(vec![text()])),
         _ => None,
     }
 }

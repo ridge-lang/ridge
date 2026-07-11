@@ -593,6 +593,16 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // The dialect-explicit renderer: `planToSql` fixed to Postgres or SQLite,
             // differing only in how the aggregates spell their casts.
             "planToSqlFor",
+            // The inline-literal renderer: lowers a whole `QueryPlan` to one standalone
+            // statement with every captured value spelled in place rather than bound, for
+            // the positions a `$N` placeholder cannot fill — a `CREATE VIEW` body.
+            "planToSqlInline",
+            "planToSqlInlineFor",
+            // The view DDL: `createViewDdl` saves a plan as a `CREATE VIEW`, `dropViewDdl`
+            // removes it. The view's `SELECT` is the plan rendered inline.
+            "createViewDdl",
+            "createViewDdlFor",
+            "dropViewDdl",
             // The plan-to-plan optimizer: rewrites a `QueryPlan` into an
             // equivalent one that compiles to tighter SQL (the renderer's pre-pass).
             "optimize",

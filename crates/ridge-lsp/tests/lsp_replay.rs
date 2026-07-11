@@ -1258,6 +1258,60 @@ async fn test_hover_qualified_stdlib_class_method() {
 }
 
 #[tokio::test]
+async fn test_hover_stdlib_sqlite_surface() {
+    // The SQLite connection presets are reconciled-scheme stdlib functions: their
+    // signatures are seeded from `reconciled_fn_scheme` rather than the hand-curated
+    // signature table, so this pins that the editor still lifts a header and `--`
+    // doc card for them — the same card any stdlib symbol gets. Both presets are
+    // pure, so the workspace needs no `db` grant to resolve them.
+    let src = "import std.data (sqliteMemory, sqliteFile, SqliteConfig)\n\
+               pub fn memCfg -> SqliteConfig = sqliteMemory ()\n\
+               pub fn fileCfg -> SqliteConfig = sqliteFile \"app.db\"\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    // `sqliteMemory` use on line 1.
+    let line1 = "pub fn memCfg -> SqliteConfig = sqliteMemory ()";
+    let col = u32::try_from(line1.find("sqliteMemory").expect("sqliteMemory use") + 1)
+        .expect("offset fits u32");
+    let h = server
+        .hover(hover_at(&uri, 1, col))
+        .await
+        .expect("hover ok");
+    let md = hover_markdown(h).expect("hover over sqliteMemory returns markup");
+    assert!(
+        md.contains("sqliteMemory"),
+        "sqliteMemory hover should show the written header, got {md:?}"
+    );
+    assert!(
+        md.contains("*(stdlib function)*"),
+        "sqliteMemory hover should carry a stdlib kind line, got {md:?}"
+    );
+    assert!(
+        md.contains("in-memory database"),
+        "sqliteMemory hover should include the `--` doc, got {md:?}"
+    );
+
+    // `sqliteFile` use on line 2.
+    let line2 = "pub fn fileCfg -> SqliteConfig = sqliteFile \"app.db\"";
+    let col = u32::try_from(line2.find("sqliteFile").expect("sqliteFile use") + 1)
+        .expect("offset fits u32");
+    let h = server
+        .hover(hover_at(&uri, 2, col))
+        .await
+        .expect("hover ok");
+    let md = hover_markdown(h).expect("hover over sqliteFile returns markup");
+    assert!(
+        md.contains("sqliteFile"),
+        "sqliteFile hover should show the written header, got {md:?}"
+    );
+    assert!(
+        md.contains("database file"),
+        "sqliteFile hover should include the `--` doc, got {md:?}"
+    );
+}
+
+#[tokio::test]
 async fn test_hover_enriches_function_signature_and_doc() {
     // Hovering a function use-site shows its written header — visibility, named
     // parameters, return type — inside a `ridge` code fence, plus its doc.

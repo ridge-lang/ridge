@@ -35,6 +35,14 @@ pub struct QuoteInfo {
     /// reified over the group vocabulary (`g.key`, `g.count`, `g.sum(col)`, …)
     /// rather than the row columns.
     pub group: bool,
+    /// True for a scalar `avgOf` accessor whose folded column is a `Duration`.
+    /// Postgres cannot cast an interval average to `float8`, so the lowering
+    /// pass reifies the column wrapped in the interval-aware `QAggAvgInterval`
+    /// node instead of a bare column — the scalar-path mirror of how a grouped
+    /// `g.avg` picks its node (`agg_col_is_interval` in `ridge-lower`). Set by
+    /// `mark_avg_interval_accessor` once the accessor's column type is resolved,
+    /// after `check_quote` has already recorded the plain `QuoteInfo`.
+    pub avg_interval: bool,
 }
 
 /// One parameter of a quote: the bound name and the record it ranges over.
@@ -416,6 +424,7 @@ fn quote_info(scope: &[Param]) -> QuoteInfo {
         param_name: scope[0].name.clone(),
         entity: scope[0].entity,
         group: false,
+        avg_interval: false,
     }
 }
 
@@ -1603,6 +1612,7 @@ fn record_group_quote(ctx: &mut InferCtx, span: Span, g_name: &str, e_ty: &Type)
             param_name: g_name.to_string(),
             entity,
             group: true,
+            avg_interval: false,
         },
     );
 }

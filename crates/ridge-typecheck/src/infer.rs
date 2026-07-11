@@ -323,6 +323,13 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                                             expected_ret.as_ref(),
                                             inner.span(),
                                         );
+                                        mark_avg_interval_accessor(
+                                            ctx,
+                                            b,
+                                            callee,
+                                            expected_ret.as_ref(),
+                                            inner.span(),
+                                        );
                                         pty
                                     }
                                     Some(_) => Type::Error,
@@ -1873,6 +1880,38 @@ fn reject_non_numeric_scalar_aggregate(
                 .to_string(),
             span,
         });
+    }
+}
+
+/// Marks the `QuoteInfo` already recorded for a scalar `avgOf` accessor whose
+/// folded column is a `Duration`, so the lowering pass reifies that column
+/// wrapped in the interval-aware `QAggAvgInterval` node rather than a bare
+/// column — the scalar-path counterpart of `agg_col_is_interval` in
+/// `ridge-lower`, which does the same for a grouped `g.avg`. Postgres cannot
+/// cast an interval average to `float8`, so both paths need the wrapper to pick
+/// the epoch-extraction render instead of a plain `AVG`.
+///
+/// `sumOf`/`minOf`/`maxOf` fold a `Duration` column too but always render a
+/// fixed keyword, so only `avgOf` needs this; `col` is the accessor's already-
+/// resolved column type (as `reject_non_numeric_scalar_aggregate` reads it),
+/// and `span` is the lambda's span, matching the key `check_quote` inserted
+/// into `ctx.quoted_lambdas_accum` for it.
+fn mark_avg_interval_accessor(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    callee: &Expr,
+    col: Option<&Type>,
+    span: Span,
+) {
+    if callee_final_name(callee) != Some("avgOf") {
+        return;
+    }
+    let Some(col) = col else { return };
+    let resolved = ctx.deep_resolve(col);
+    if matches!(resolved, Type::Con(id, _) if id == b.duration) {
+        if let Some(qi) = ctx.quoted_lambdas_accum.get_mut(&span) {
+            qi.avg_interval = true;
+        }
     }
 }
 

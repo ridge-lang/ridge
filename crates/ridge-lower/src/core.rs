@@ -280,7 +280,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
                 if qi.group {
                     return reify_group_quote(ctx, body, *span, &qi.param_name);
                 }
-                return reify_quote(ctx, body, *span, params);
+                return reify_quote(ctx, body, *span, params, qi.avg_interval);
             }
             let id = ctx.fresh_id(None);
             let (ir_params, pattern_entries) = lower_lambda_params(ctx, *span, params);
@@ -799,12 +799,28 @@ const QEXPR_TYCON: TyConId = TyConId(25);
 /// `QColAt <i>` for the third onward. The leaf order is the parameter order, so
 /// it lines up with the left-to-right walk of the join tree. `params` carries
 /// the lambda's parameters so each one's name can be matched to its index.
-fn reify_quote(ctx: &mut LowerCtx<'_>, body: &Expr, span: Span, params: &[LambdaParam]) -> IrExpr {
+///
+/// `avg_interval` is set by the type-checker (`mark_avg_interval_accessor`) for
+/// a scalar `avgOf` accessor whose column is a `Duration`: the reified tree is
+/// wrapped in `QAggAvgInterval`, the same node a grouped `g.avg` reifies to for
+/// an interval column, so `std.repo`'s scalar `avgOf` reads it to pick the
+/// interval-aware `AVG_INTERVAL` keyword instead of a runtime `SqlType`
+/// dictionary, which the accessor's fundep'd instance cannot resolve reliably.
+fn reify_quote(
+    ctx: &mut LowerCtx<'_>,
+    body: &Expr,
+    span: Span,
+    params: &[LambdaParam],
+    avg_interval: bool,
+) -> IrExpr {
     let names: Vec<String> = params
         .iter()
         .map(|p| lambda_param_name(Some(p)).unwrap_or_default())
         .collect();
-    let tree = reify_node(ctx, body, &names);
+    let mut tree = reify_node(ctx, body, &names);
+    if avg_interval {
+        tree = qexpr_node(ctx, "QAggAvgInterval", 40, vec![tree], span);
+    }
     IrExpr::Construct {
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {

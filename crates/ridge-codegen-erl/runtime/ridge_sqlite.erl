@@ -80,10 +80,20 @@ init() ->
     end.
 
 %% Where the native object lives, as a path with no shared-object extension.
+%% An explicit override wins; otherwise prefer a loose object beside the beam (a
+%% `ridge run` build), then fall back to the object embedded in the running
+%% escript, extracted to a per-user cache file.
 nif_path() ->
     case os:getenv("RIDGE_SQLITE_NIF") of
-        false -> beside_beam();
+        false -> resolve_nif();
         Path -> Path
+    end.
+
+resolve_nif() ->
+    Loose = beside_beam(),
+    case filelib:is_regular(Loose ++ nif_ext()) of
+        true -> Loose;
+        false -> from_escript(Loose)
     end.
 
 beside_beam() ->
@@ -92,6 +102,52 @@ beside_beam() ->
             filename:join(filename:dirname(Beam), "ridge_sqlite");
         _ ->
             "ridge_sqlite"
+    end.
+
+nif_ext() ->
+    case os:type() of
+        {win32, _} -> ".dll";
+        _ -> ".so"
+    end.
+
+%% Extract the object embedded in the running escript archive to a per-user
+%% cache file and return its base path. If any step is impossible (not running
+%% as an escript, no embedded object), fall back to Loose so load_nif fails with
+%% a clear reason rather than here.
+from_escript(Loose) ->
+    try
+        {ok, Sections} = escript:extract(escript:script_name(), []),
+        Archive = proplists:get_value(archive, Sections),
+        Entry = "ridge_sqlite" ++ nif_ext(),
+        {ok, [{Entry, Bytes}]} = zip:extract(Archive, [memory, {file_list, [Entry]}]),
+        Base = cache_base(Bytes),
+        ok = ensure_written(Base ++ nif_ext(), Bytes),
+        Base
+    catch
+        _:_ -> Loose
+    end.
+
+%% A stable per-user cache path for this exact object, keyed by its content so it
+%% is written once and shared across runs.
+cache_base(Bytes) ->
+    Dir = filename:basedir(user_cache, "ridge"),
+    ok = filelib:ensure_dir(filename:join(Dir, "keep")),
+    Tag = integer_to_list(erlang:phash2(Bytes)),
+    filename:join(Dir, "ridge_sqlite_" ++ Tag).
+
+%% Write Bytes to Path if absent, through a temp file and a rename, so a
+%% concurrent first load never observes a half-written object.
+ensure_written(Path, Bytes) ->
+    case filelib:is_regular(Path) of
+        true ->
+            ok;
+        false ->
+            Tmp = Path ++ "." ++ integer_to_list(erlang:unique_integer([positive])) ++ ".tmp",
+            ok = file:write_file(Tmp, Bytes),
+            case file:rename(Tmp, Path) of
+                ok -> ok;
+                {error, _} -> _ = file:delete(Tmp), ok
+            end
     end.
 
 assert_version() ->

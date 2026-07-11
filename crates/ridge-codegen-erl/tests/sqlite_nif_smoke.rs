@@ -18,6 +18,7 @@
     clippy::doc_markdown
 )]
 
+use ridge_codegen_erl::escript::package_escript_from_beam_dir;
 use ridge_codegen_erl::runtime::{compile_runtime, install_runtime};
 use std::path::Path;
 use std::process::Command;
@@ -112,6 +113,20 @@ glue_level() ->
 
 err_code({error, #{code := C}}) -> C;
 err_code(Other) -> Other.
+"#;
+
+/// A tiny program that opens SQLite and reads a value back, used to prove a
+/// packaged escript carries and loads the native object with nothing beside it.
+const ESCRIPT_MAIN_ERL: &str = r#"-module(escript_main).
+-export([main/1]).
+
+main(_) ->
+    {ok, #{id := Id}} = ridge_sqlite:sqlite_connect(<<":memory:">>, 0, <<>>, 1),
+    {ok, _} = ridge_sqlite:sqlite_raw_exec(Id, <<"CREATE TABLE t (n INTEGER)">>, []),
+    {ok, 1} = ridge_sqlite:sqlite_raw_exec(Id, <<"INSERT INTO t VALUES (?)">>, [{'SqlInt', 42}]),
+    {ok, [Row]} = ridge_sqlite:sqlite_raw_query(Id, <<"SELECT n FROM t">>, []),
+    io:format("escript_val=~p~n", [maps:get(<<"n">>, Row)]),
+    ok = ridge_sqlite:sqlite_close(Id).
 "#;
 
 /// `erlc <src>` into `out_dir`.
@@ -236,5 +251,53 @@ fn sqlite_bridge_end_to_end() {
     assert!(
         stdout.contains("glue_closed=<<\"db.conn.closed\">>"),
         "closed glue handle not rejected: {combined}"
+    );
+}
+
+#[test]
+fn sqlite_escript_self_contained() {
+    let erlc_path = which::which("erlc").expect("erlc not found on PATH");
+    let Ok(escript_exe) = which::which("escript") else {
+        eprintln!("SKIP sqlite_escript_self_contained: escript not on PATH");
+        return;
+    };
+
+    let out_root = Path::new(TMPDIR).join("sqlite_escript");
+    let _ = std::fs::remove_dir_all(&out_root);
+    let beam_dir = out_root.join("beam");
+    std::fs::create_dir_all(&beam_dir).expect("create beam dir");
+    install_runtime(&out_root).expect("install the runtime sources");
+    compile_runtime(&erlc_path, &out_root).expect("compile the runtime and write the NIF");
+
+    // The program that uses SQLite, compiled into the beam dir.
+    let entry_src = out_root.join("escript_main.erl");
+    std::fs::write(&entry_src, ESCRIPT_MAIN_ERL).expect("write entry module");
+    erlc(&erlc_path, &entry_src, &beam_dir);
+
+    // Package the escript. Entry name equals the module so no shim is generated
+    // and escript dispatches straight to `escript_main:main/1`. Under
+    // `beam-runtime` this embeds the native object as an archive entry, so the
+    // escript is a single self-contained file.
+    let bytes = package_escript_from_beam_dir(&beam_dir, "escript_main", "escript_main")
+        .expect("package the escript");
+    let script = out_root.join("escript_main.escript");
+    std::fs::write(&script, &bytes).expect("write the escript");
+
+    // Run it from a clean directory with no loose object beside it and no
+    // override set, so the module has to extract the embedded object to load it.
+    let run_dir = out_root.join("run");
+    std::fs::create_dir_all(&run_dir).expect("create run dir");
+    let out = Command::new(&escript_exe)
+        .arg(&script)
+        .current_dir(&run_dir)
+        .env_remove("RIDGE_SQLITE_NIF")
+        .output()
+        .expect("run the escript");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stdout.contains("escript_val={'SqlInt',42}"),
+        "the self-contained escript did not run SQLite:\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

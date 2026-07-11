@@ -12,6 +12,12 @@
 //! multi-column unique constraints, foreign keys, checks, and the migration-tuple
 //! `createTableDdlFor` render as they do on Postgres, the shared skeleton.
 //!
+//! The schema-change renderers follow: `addColumnDdlFor`/`addColumnSchemaDdlFor` add a
+//! column in place, the same statement shape as Postgres with the SQLite type; and where
+//! SQLite cannot change a table in place — an `ALTER COLUMN`, or an `ADD COLUMN` of a
+//! unique, key, or non-constant-default column — `sqliteAddNeedsRebuild` flags it and
+//! `sqliteRebuildTableDdl` renders the recreate-and-copy sequence that stands in.
+//!
 //! The live-Postgres oracle (`data_pg_e2e`) covers that the Postgres statements run
 //! on a database; this proves the SQLite dialect lowers and renders on the BEAM. The
 //! SQLite runtime that executes these statements lands with the NIF adapter.
@@ -27,7 +33,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
 import std.sql (DbBigInt, DbInt, DbText, DbTimestampTz, DbSmallInt, DbChar, DbDecimal, DbUuid, DbBytes, DbFloat, DbArray, SqliteDialect)
-import std.schema (Identity, DefaultNow, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, foreignKey, references, onDelete, check, compositePrimaryKey, uniqueConstraint, schemaToDdlFor, createTableDdlFor)
+import std.schema (Identity, DefaultNow, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, foreignKey, references, onDelete, check, compositePrimaryKey, uniqueConstraint, schemaToDdlFor, createTableDdlFor, addColumnDdlFor, addColumnSchemaDdlFor, sqliteRebuildTableDdl, sqliteAddNeedsRebuild)
 
 type User = { id: Int, email: Text, age: Int }
 
@@ -94,6 +100,42 @@ pub fn richDdl () -> Text = schemaToDdlFor SqliteDialect (richSchema ())
 -- non-identity integer primary key carries an inline PRIMARY KEY.
 pub fn migrateCreateDdl () -> Text =
     createTableDdlFor SqliteDialect "widgets" [("id", "int", false, true, false), ("name", "text", false, false, false)]
+
+-- ADD COLUMN adds in place on SQLite the same way as Postgres; only the column type
+-- differs. A nullable text column from a seam tuple, then from a full descriptor.
+pub fn addTupleDdl () -> Text =
+    addColumnDdlFor SqliteDialect "users" ("nickname", "text", true, false, false)
+
+pub fn addSchemaDdl () -> Text =
+    addColumnSchemaDdlFor SqliteDialect "users" (mkColumn "bio" "bio" DbText true)
+
+-- A column SQLite can add in place (nullable, no constraint) needs no rebuild; a unique
+-- one and a DEFAULT now() one do — SQLite's ADD COLUMN rejects both.
+pub fn nativeAddNeedsRebuild () -> Text =
+    if sqliteAddNeedsRebuild (mkColumn "bio" "bio" DbText true) then "rebuild" else "native"
+
+pub fn uniqueAddNeedsRebuild () -> Text =
+    if sqliteAddNeedsRebuild (mkColumn "email" "email" DbText false |> unique) then "rebuild" else "native"
+
+pub fn defaultNowAddNeedsRebuild () -> Text =
+    if sqliteAddNeedsRebuild (mkColumn "created_at" "created_at" DbTimestampTz false |> generated DefaultNow) then "rebuild" else "native"
+
+-- Adding a unique column is a rebuild: the new table under a temporary name, an
+-- INSERT … SELECT of the two columns both schemas share (the new unique one is left to
+-- its own definition), the old table dropped, and the temporary renamed into place.
+fn oldUsers () =
+    schema "User" "users"
+      |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
+      |> withColumn (mkColumn "name" "name" DbText false)
+
+fn newUsers () =
+    schema "User" "users"
+      |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
+      |> withColumn (mkColumn "name" "name" DbText false)
+      |> withColumn (mkColumn "email" "email" DbText false |> unique)
+
+pub fn rebuildUsersDdl () -> Text =
+    Text.join " ; " (sqliteRebuildTableDdl (oldUsers ()) (newUsers ()))
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -159,7 +201,8 @@ fn sqlite_ddl_renders_on_beam() {
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
          lists:foreach(F,['userDdl','postDdl','membershipDdl','narrowDdl','richDdl',\
-         'migrateCreateDdl']), halt()."
+         'migrateCreateDdl','addTupleDdl','addSchemaDdl','nativeAddNeedsRebuild',\
+         'uniqueAddNeedsRebuild','defaultNowAddNeedsRebuild','rebuildUsersDdl']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -216,5 +259,22 @@ fn sqlite_ddl_renders_on_beam() {
     // non-identity integer primary key carries an inline PRIMARY KEY.
     want(
         r#"migrateCreateDdl=CREATE TABLE "widgets" ("id" INTEGER NOT NULL PRIMARY KEY, "name" TEXT NOT NULL)"#,
+    );
+
+    // ADD COLUMN adds in place, from a seam tuple and from a full descriptor; the type is
+    // the SQLite spelling.
+    want(r#"addTupleDdl=ALTER TABLE "users" ADD COLUMN "nickname" TEXT"#);
+    want(r#"addSchemaDdl=ALTER TABLE "users" ADD COLUMN "bio" TEXT"#);
+
+    // The classifier: a plain nullable column adds in place; a unique column and a
+    // DEFAULT now() column force a rebuild, since SQLite's ADD COLUMN rejects both.
+    want("nativeAddNeedsRebuild=native");
+    want("uniqueAddNeedsRebuild=rebuild");
+    want("defaultNowAddNeedsRebuild=rebuild");
+
+    // Adding the unique `email` is a rebuild: the new table under a temporary name, the
+    // shared `id`/`name` copied across, the old table dropped, the temporary renamed in.
+    want(
+        r#"rebuildUsersDdl=CREATE TABLE "users__ridge_rebuild" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "name" TEXT NOT NULL, "email" TEXT NOT NULL UNIQUE) ; INSERT INTO "users__ridge_rebuild" ("id", "name") SELECT "id", "name" FROM "users" ; DROP TABLE "users" ; ALTER TABLE "users__ridge_rebuild" RENAME TO "users""#,
     );
 }

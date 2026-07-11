@@ -380,18 +380,32 @@ pub fn createTableDdl (table: Text) (cols: List (Text, Text, Bool, Bool, Bool)) 
 pub fn createTableDdlFor (d: Dialect) (table: Text) (cols: List (Text, Text, Bool, Bool, Bool)) -> Text =
     Text.join "" ["CREATE TABLE ", quoteIdent table, " (", Text.join ", " (tupleFrags d cols), ")"]
 
--- `ALTER TABLE … ADD COLUMN` from a column tuple. A primary key cannot be added
--- against existing rows this way, so the key flag is dropped here.
+-- `ALTER TABLE … ADD COLUMN` from a column tuple — `addColumnDdlFor` with the Postgres
+-- dialect.
 pub fn addColumnDdl (table: Text) (col: (Text, Text, Bool, Bool, Bool)) -> Text =
-    Text.join "" ["ALTER TABLE ", quoteIdent table, " ADD COLUMN ", columnDdl PgDialect (tupleColumnNoPk col)]
+    addColumnDdlFor PgDialect table col
 
--- `ALTER TABLE … ADD COLUMN` from a full column descriptor — the entity-driven
--- counterpart to `addColumnDdl`, keeping the column's type, nullability, default,
--- uniqueness, foreign key, and check, which the seam tuple cannot carry. A primary key
--- cannot be added against a table's existing rows this way, so the key flag is dropped,
--- the same as the tuple path.
+-- `ALTER TABLE … ADD COLUMN` from a column tuple, in dialect `d`. Both dialects add a
+-- column in place; only the column's type text differs. A primary key cannot be added
+-- against existing rows this way, so the key flag is dropped here.
+pub fn addColumnDdlFor (d: Dialect) (table: Text) (col: (Text, Text, Bool, Bool, Bool)) -> Text =
+    Text.join "" ["ALTER TABLE ", quoteIdent table, " ADD COLUMN ", columnDdl d (tupleColumnNoPk col)]
+
+-- `ALTER TABLE … ADD COLUMN` from a full column descriptor — `addColumnSchemaDdlFor`
+-- with the Postgres dialect.
 pub fn addColumnSchemaDdl (table: Text) (c: ColumnSchema e) -> Text =
-    Text.join "" ["ALTER TABLE ", quoteIdent table, " ADD COLUMN ", columnDdlNoPk PgDialect c]
+    addColumnSchemaDdlFor PgDialect table c
+
+-- `ALTER TABLE … ADD COLUMN` from a full column descriptor, in dialect `d` — the
+-- entity-driven counterpart to `addColumnDdlFor`, keeping the column's type, nullability,
+-- default, uniqueness, foreign key, and check, which the seam tuple cannot carry. A
+-- primary key cannot be added against a table's existing rows this way, so the key flag
+-- is dropped, the same as the tuple path. SQLite adds a column in place only for the
+-- shapes its `ADD COLUMN` accepts; a unique, key, non-null-without-constant-default, or
+-- non-constant-default column goes through `sqliteRebuildTableDdl` instead — see
+-- `sqliteAddNeedsRebuild`.
+pub fn addColumnSchemaDdlFor (d: Dialect) (table: Text) (c: ColumnSchema e) -> Text =
+    Text.join "" ["ALTER TABLE ", quoteIdent table, " ADD COLUMN ", columnDdlNoPk d c]
 
 -- `ALTER TABLE … ALTER COLUMN` from the old and new descriptors of a column present in
 -- both snapshots — the entity-driven counterpart to `addColumnSchemaDdl` for a change
@@ -419,9 +433,42 @@ pub fn columnAltered (old: ColumnSchema e) (new: ColumnSchema e) -> Bool =
 pub fn dropTableDdl (table: Text) -> Text =
     Text.concat "DROP TABLE " (quoteIdent table)
 
--- `ALTER TABLE … DROP COLUMN`.
+-- `ALTER TABLE … DROP COLUMN`. Both dialects drop a column in place (SQLite since
+-- 3.35), so the statement is the same on either.
 pub fn dropColumnDdl (table: Text) (column: Text) -> Text =
     Text.join "" ["ALTER TABLE ", quoteIdent table, " DROP COLUMN ", quoteIdent column]
+
+-- The statements that rebuild a table so a change SQLite cannot make in place takes
+-- effect. SQLite has no `ALTER COLUMN`, and its `ADD COLUMN` refuses a unique, key,
+-- non-null-without-constant-default, or non-constant-default column; the way through is
+-- to recreate the table under the new schema and copy the data across. The steps are the
+-- new table under a temporary name, an `INSERT … SELECT` of the columns both schemas
+-- share (a dropped column is left behind, a new one takes its default), the old table
+-- dropped, the temporary renamed into its place, and the non-inline indexes recreated.
+-- The caller runs them inside a transaction with foreign keys disabled — the SQLite
+-- adapter's job, since `PRAGMA foreign_keys` cannot change inside a transaction, and the
+-- adapter is where the live schema comes from.
+pub fn sqliteRebuildTableDdl (old: EntitySchema e) (new: EntitySchema e) -> List Text =
+    let temp = Text.concat new.table "__ridge_rebuild"
+    let tempSchema = EntitySchema { name = new.name, table = temp, columns = new.columns, primaryKeyColumns = new.primaryKeyColumns, uniqueConstraints = new.uniqueConstraints }
+    let shared = sharedColumnNames new.columns (columnNamesOf old.columns)
+    let rename = Text.join "" ["ALTER TABLE ", quoteIdent temp, " RENAME TO ", quoteIdent new.table]
+    let tail = concatFrags [dropTableDdl new.table, rename] (schemaIndexDdls new)
+    match shared
+        [] -> schemaToDdlFor SqliteDialect tempSchema :: tail
+        _  -> schemaToDdlFor SqliteDialect tempSchema :: rebuildCopyStmt temp new.table shared :: tail
+
+-- Whether SQLite must rebuild the table to add this column rather than add it in place.
+-- Its `ADD COLUMN` rejects a UNIQUE or PRIMARY KEY column, an identity (a key), a NOT
+-- NULL column without a constant default, and a non-constant default such as
+-- `CURRENT_TIMESTAMP`; those shapes go through `sqliteRebuildTableDdl` instead. The other
+-- shapes add in place with `addColumnSchemaDdlFor`.
+pub fn sqliteAddNeedsRebuild (c: ColumnSchema e) -> Bool =
+    if c.unique then true
+    else if c.primaryKey then true
+    else if isIdentity c.generation then true
+    else if nonConstantDefault c.generation then true
+    else notNullWithoutConstantDefault c
 
 -- `CREATE [UNIQUE] INDEX name ON table (cols)`.
 pub fn indexDdl (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> Text =
@@ -483,6 +530,47 @@ fn concatFrags (a: List Text) (b: List Text) -> List Text =
     match a
         []        -> b
         x :: rest -> x :: concatFrags rest b
+
+-- The `INSERT … SELECT` that copies a rebuild's shared columns from the old table into
+-- the temporary one, naming the columns on both sides so the copy is order-independent.
+fn rebuildCopyStmt (temp: Text) (table: Text) (cols: List Text) -> Text =
+    Text.join "" ["INSERT INTO ", quoteIdent temp, " (", quotedCols cols, ") SELECT ", quotedCols cols, " FROM ", quoteIdent table]
+
+fn columnNamesOf (cols: List (ColumnSchema e)) -> List Text =
+    match cols
+        []        -> []
+        c :: rest -> c.column :: columnNamesOf rest
+
+-- The new columns (in their declared order) whose name is also in the old table — the
+-- columns a rebuild copies. A column only in the new schema is a fresh one that takes its
+-- default; a column only in the old is dropped and left behind.
+fn sharedColumnNames (newCols: List (ColumnSchema e)) (oldNames: List Text) -> List Text =
+    match newCols
+        []        -> []
+        c :: rest ->
+            if elemText c.column oldNames then c.column :: sharedColumnNames rest oldNames
+            else sharedColumnNames rest oldNames
+
+fn elemText (x: Text) (xs: List Text) -> Bool =
+    match xs
+        []        -> false
+        y :: rest -> if x == y then true else elemText x rest
+
+-- A NOT NULL column with no constant default cannot be added to a populated SQLite table
+-- in place — the new cells would be NULL — so it forces a rebuild. A nullable column, or
+-- a NOT NULL one with a constant literal default, adds in place. A non-constant default or
+-- an identity is already ruled a rebuild before this is reached.
+fn notNullWithoutConstantDefault (c: ColumnSchema e) -> Bool =
+    if c.nullable then false
+    else match c.generation
+        DefaultLit _ -> false
+        _            -> true
+
+fn nonConstantDefault (g: Generation) -> Bool =
+    match g
+        DefaultNow      -> true
+        DefaultRawSql _ -> true
+        _               -> false
 
 -- A column's type text in dialect `d`. A database-generated identity carries its
 -- key inline: Postgres a `serial`/`bigserial` pseudo-type paired with a separate

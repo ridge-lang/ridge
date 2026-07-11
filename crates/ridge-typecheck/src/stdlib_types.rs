@@ -2593,9 +2593,15 @@ fn reconciled_schema_fn_scheme(
         // `schemaToDdlFor` for the seam tuples.
         "createTableDdlFor" => mono(vec![dialect_ty(), text(), list(col_tuple())], text()),
         "addColumnDdl" => mono(vec![text(), col_tuple()], text()),
+        // `addColumnDdlFor` : Dialect -> Text -> (col tuple) -> Text — the
+        // dialect-parameterized tuple ADD COLUMN; the plain name defaults to Postgres.
+        "addColumnDdlFor" => mono(vec![dialect_ty(), text(), col_tuple()], text()),
         // addColumnSchemaDdl : ∀e. Text -> ColumnSchema e -> Text — the entity-driven
         // ADD COLUMN renderer, keeping the descriptor's type/default/constraints.
         "addColumnSchemaDdl" => poly1(vec![text(), col_e()], text()),
+        // `addColumnSchemaDdlFor` : ∀e. Dialect -> Text -> ColumnSchema e -> Text — the
+        // dialect-parameterized entity-driven ADD COLUMN; the plain name defaults to Postgres.
+        "addColumnSchemaDdlFor" => poly1(vec![dialect_ty(), text(), col_e()], text()),
         // alterColumnDdl : ∀e. Text -> ColumnSchema e -> ColumnSchema e -> Text — the
         // entity-driven ALTER COLUMN renderer, taking a column's old and new descriptors and
         // emitting the minimal statement for the facets (type, nullability, default) that differ.
@@ -2604,6 +2610,13 @@ fn reconciled_schema_fn_scheme(
         // predicate: whether a column's type, nullability, or default changed (a serial/identity
         // column is excluded), i.e. whether the diff emits an `AlterColumn` for it.
         "columnAltered" => poly1(vec![col_e(), col_e()], boolean()),
+        // `sqliteRebuildTableDdl` : ∀e. EntitySchema e -> EntitySchema e -> List Text —
+        // the statement sequence that recreates a table under a new schema and copies its
+        // shared columns across, for the changes SQLite cannot make in place.
+        "sqliteRebuildTableDdl" => poly1(vec![ent_e(), ent_e()], list(text())),
+        // `sqliteAddNeedsRebuild` : ∀e. ColumnSchema e -> Bool — whether SQLite must
+        // rebuild rather than `ADD COLUMN` the column in place.
+        "sqliteAddNeedsRebuild" => poly1(vec![col_e()], boolean()),
         // dropTableDdl / dropIndexDdl : Text -> Text — a name-only `DROP TABLE` /
         // `DROP INDEX IF EXISTS`; `dropIndexDdl` is the inverse of `indexDdl`.
         "dropTableDdl" | "dropIndexDdl" => mono(vec![text()], text()),

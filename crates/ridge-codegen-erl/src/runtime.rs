@@ -28,6 +28,18 @@ const RIDGE_PG_SOURCE: &str = include_str!("../runtime/ridge_pg.erl");
 /// in via [`install_bench_runner`] / [`compile_bench_runner`].
 const RIDGE_BENCH_RUNNER_SOURCE: &str = include_str!("../runtime/ridge_bench_runner.erl");
 
+/// The bundled `ridge_sqlite.erl` source — the SQLite adapter runtime that loads
+/// and drives the native bridge. Installed and compiled only under the
+/// `beam-runtime` feature, alongside the baked NIF object it loads.
+#[cfg(feature = "beam-runtime")]
+const RIDGE_SQLITE_SOURCE: &str = include_str!("../runtime/ridge_sqlite.erl");
+
+/// The SQLite NIF object, compiled by `build.rs` from the vendored amalgamation
+/// and baked in so that running a Ridge program never needs a C toolchain. Only
+/// present under `beam-runtime`, the same gate `build.rs` compiles it behind.
+#[cfg(feature = "beam-runtime")]
+const SQLITE_NIF_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/ridge_sqlite_nif.bin"));
+
 /// Information about the installed runtime.
 #[derive(Debug, Clone)]
 pub struct RuntimeInfo {
@@ -90,6 +102,11 @@ pub fn install_runtime(out_root: &Path) -> Result<RuntimeInfo, CodegenError> {
     // And ridge_pg.erl, the first-party PostgreSQL client backing the
     // std.data Postgres adapter.
     install_runner_source(&runtime_dir, "ridge_pg.erl", RIDGE_PG_SOURCE)?;
+
+    // And ridge_sqlite.erl, the SQLite adapter runtime — only when SQLite
+    // support is built in (the baked NIF exists only under `beam-runtime`).
+    #[cfg(feature = "beam-runtime")]
+    install_runner_source(&runtime_dir, "ridge_sqlite.erl", RIDGE_SQLITE_SOURCE)?;
 
     Ok(RuntimeInfo {
         erl_path,
@@ -226,7 +243,59 @@ pub fn compile_runtime(erlc_path: &Path, out_root: &Path) -> Result<PathBuf, Cod
         "ridge_pg.beam",
     )?;
 
+    // ── Compile ridge_sqlite.erl + write the baked NIF (SQLite runtime) ───────
+    #[cfg(feature = "beam-runtime")]
+    install_sqlite_runtime(erlc_path, out_root, &beam_out_dir)?;
+
     Ok(rt_beam_path)
+}
+
+/// Compile `ridge_sqlite.erl` and write the baked NIF object beside it, so
+/// `erl -pa <beam_dir>` loads the glue and its `-on_load` finds the native
+/// object as a real file next to the `.beam`.
+#[cfg(feature = "beam-runtime")]
+fn install_sqlite_runtime(
+    erlc_path: &Path,
+    out_root: &Path,
+    beam_out_dir: &Path,
+) -> Result<(), CodegenError> {
+    compile_runner_if_missing(
+        erlc_path,
+        out_root,
+        beam_out_dir,
+        "ridge_sqlite.erl",
+        "ridge_sqlite.beam",
+    )?;
+    let nif_path = beam_out_dir.join(sqlite_nif_filename());
+    write_bytes_if_changed(&nif_path, SQLITE_NIF_BYTES)
+}
+
+/// The on-disk name `erlang:load_nif` resolves for the SQLite bridge: BEAM
+/// appends `.dll` on Windows and `.so` everywhere else (including macOS).
+#[cfg(feature = "beam-runtime")]
+const fn sqlite_nif_filename() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "ridge_sqlite.dll"
+    } else {
+        "ridge_sqlite.so"
+    }
+}
+
+/// Write `bytes` to `dest` unless it already holds them — idempotent and
+/// mtime-stable, the binary counterpart of [`install_runner_source`].
+#[cfg(feature = "beam-runtime")]
+fn write_bytes_if_changed(dest: &Path, bytes: &[u8]) -> Result<(), CodegenError> {
+    if dest.exists() {
+        if let Ok(existing) = std::fs::read(dest) {
+            if existing == bytes {
+                return Ok(());
+            }
+        }
+    }
+    std::fs::write(dest, bytes).map_err(|e| CodegenError::OutputDirNotWritable {
+        path: dest.to_path_buf(),
+        io_err: e.to_string(),
+    })
 }
 
 /// Compile a single bundled runner under `runtime/` to `beam/`.

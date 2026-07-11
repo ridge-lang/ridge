@@ -179,6 +179,7 @@ const CONSTRUCTOR_EXPORTS: &[(&str, &str)] = &[
     ("std.schema", "DefaultNow"),
     ("std.schema", "DefaultLit"),
     ("std.schema", "DefaultRawSql"),
+    ("std.schema", "Computed"),
     ("std.schema", "NoAction"),
     ("std.schema", "Restrict"),
     ("std.schema", "Cascade"),

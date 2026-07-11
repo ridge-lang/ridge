@@ -1615,6 +1615,12 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                         name: "DefaultRawSql".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(b.text, vec![])]),
                     },
+                    // `Computed` carries the stored-generated column's expression as a
+                    // `QExpr`, rendered inline into `GENERATED ALWAYS AS (…) STORED`.
+                    UnionVariant {
+                        name: "Computed".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(b.q_expr, vec![])]),
+                    },
                 ],
             }),
             def_span: None,
@@ -2689,6 +2695,31 @@ fn reconciled_schema_fn_scheme(
         // already-built predicate tree (the escape hatch the source renderer rebuilds a check
         // through, since a phantom-erased schema cannot restore the original quote).
         "checkRaw" => poly1(vec![qexpr(), col_e()], col_e()),
+        // computed : ∀e v. Quote (e -> v) -> ColumnSchema e -> ColumnSchema e. Makes the
+        //   column a stored generated column whose value is a captured expression over the
+        //   entity — the same quote shape `column` takes, its result type left free.
+        "computed" => {
+            let v = TyVid(1);
+            let accessor = Type::Con(
+                b.quote,
+                vec![Type::Fn {
+                    params: vec![Type::Var(e)],
+                    ret: Box::new(Type::Var(v)),
+                    caps: pure(),
+                }],
+            );
+            Some(Scheme {
+                vars: vec![e, v],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![accessor, col_e()],
+                    ret: Box::new(col_e()),
+                    caps: pure(),
+                },
+                constraints: vec![],
+            })
+        }
         "nullable" | "required" | "primaryKey" | "unique" | "indexed" => {
             poly1(vec![col_e()], col_e())
         }

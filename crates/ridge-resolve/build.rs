@@ -940,6 +940,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "DefaultNow",
             "DefaultLit",
             "DefaultRawSql",
+            "Computed",
             "FkAction",
             "NoAction",
             "Restrict",
@@ -968,6 +969,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "foreignKey",
             "check",
             "checkRaw",
+            "computed",
             // The per-column read accessors.
             "colName",
             "colColumn",

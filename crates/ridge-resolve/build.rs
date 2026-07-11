@@ -716,6 +716,13 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "withConnectRetries",
             "withRetryBackoffMs",
             "withMaxQueueDepth",
+            // The SQLite adapter: the opaque handle, its config record and presets,
+            // and the unified `connect`/`Connect` seam it shares with Postgres.
+            "Sqlite",
+            "SqliteConfig",
+            "sqliteFile",
+            "sqliteMemory",
+            "connectSqlite",
         ],
     ),
     (
@@ -1110,7 +1117,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
 const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
     ("std.net.http", &["Html", "SecureCookie"]),
     ("std.sql", &["Sql", "SqlValue"]),
-    ("std.data", &["MemAdapter", "Postgres"]),
+    ("std.data", &["MemAdapter", "Postgres", "Sqlite"]),
     (
         "std.repo",
         &[

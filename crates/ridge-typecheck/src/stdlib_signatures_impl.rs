@@ -2066,6 +2066,15 @@ mod tests {
                             | "withConnectRetries"
                             | "withRetryBackoffMs"
                             | "withMaxQueueDepth"
+                            // SQLite: the reconciled `Sqlite` handle and `SqliteConfig`
+                            // settings, plus `connectSqlite` and the `sqliteFile`/
+                            // `sqliteMemory` presets, all name reconciled types and are
+                            // seeded via `reconciled_decls` / `reconciled_fn_scheme`.
+                            | "Sqlite"
+                            | "SqliteConfig"
+                            | "connectSqlite"
+                            | "sqliteFile"
+                            | "sqliteMemory"
                             // Typed database errors: the reconciled `DbErrorKind`
                             // union, its variants, the classifier, and the accessors
                             // are seeded via `reconciled_decls` / `reconciled_ctor_scheme`

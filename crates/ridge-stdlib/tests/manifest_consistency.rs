@@ -380,6 +380,12 @@ fn signature_shape_consistency() {
                         | "withConnectRetries"
                         | "withRetryBackoffMs"
                         | "withMaxQueueDepth"
+                        // `connectSqlite` returns the reconciled `Sqlite`, and the
+                        // `sqliteFile`/`sqliteMemory` presets return the reconciled
+                        // `SqliteConfig`, so all are seeded via `reconciled_fn_scheme`.
+                        | "connectSqlite"
+                        | "sqliteFile"
+                        | "sqliteMemory"
                 )
             {
                 continue;

@@ -1851,6 +1851,60 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: false,
             is_anon: false,
         },
+        // `std.data` — the SQLite connection handle. Opaque `{ id: Int }`,
+        // declared in Ridge (stdlib/data.ridge); the `id` selects the connection
+        // in the runtime handle registry, the same id-as-handle shape Postgres and
+        // MemAdapter use. Appended last so it disturbs no earlier reconciled id.
+        TyConDecl {
+            id: TyConId(base + 33),
+            name: "Sqlite".to_string(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![RecordField {
+                    name: "id".to_string(),
+                    ty: Type::Con(b.int, vec![]),
+                }],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
+            is_anon: false,
+        },
+        // `std.data` — connection settings for `connectSqlite`. A plain
+        // (non-opaque) record users construct directly; declared in Ridge
+        // (stdlib/data.ridge). Field order mirrors the source declaration so the
+        // consistency check holds. Appended last so it disturbs no earlier id.
+        TyConDecl {
+            id: TyConId(base + 34),
+            name: "SqliteConfig".to_string(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![
+                    RecordField {
+                        name: "path".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "busyTimeoutMs".to_string(),
+                        ty: Type::Con(b.int, vec![]),
+                    },
+                    RecordField {
+                        name: "journalMode".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "foreignKeys".to_string(),
+                        ty: Type::Con(b.bool, vec![]),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
     ]
 }
 
@@ -2063,6 +2117,60 @@ pub(crate) fn reconciled_fn_scheme(
                         vec![Type::Con(postgres, vec![]), Type::Con(b.error, vec![])],
                     )),
                     caps: CapRow::Concrete(CapabilitySet::singleton(Capability::Db)),
+                },
+                constraints: vec![],
+            })
+        }
+        // std.data `connectSqlite : SqliteConfig -> Result Sqlite Error` — opens a
+        // SQLite connection through the native bridge. Like `connect` it requires
+        // the `db` capability, and its signature names the reconciled `SqliteConfig`
+        // and `Sqlite`, so the hand-curated table cannot express it.
+        ("std.data", "connectSqlite") => {
+            let sqlite = *reconciled.get("Sqlite")?;
+            let config = *reconciled.get("SqliteConfig")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(config, vec![])],
+                    ret: Box::new(Type::Con(
+                        b.result,
+                        vec![Type::Con(sqlite, vec![]), Type::Con(b.error, vec![])],
+                    )),
+                    caps: CapRow::Concrete(CapabilitySet::singleton(Capability::Db)),
+                },
+                constraints: vec![],
+            })
+        }
+        // std.data `sqliteFile : Text -> SqliteConfig` — the pure preset for a file-
+        // backed database, naming the path. Returns the reconciled `SqliteConfig`.
+        ("std.data", "sqliteFile") => {
+            let config = *reconciled.get("SqliteConfig")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(b.text, vec![])],
+                    ret: Box::new(Type::Con(config, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![],
+            })
+        }
+        // std.data `sqliteMemory : Unit -> SqliteConfig` — the pure preset for the
+        // in-memory database. Returns the reconciled `SqliteConfig`.
+        ("std.data", "sqliteMemory") => {
+            let config = *reconciled.get("SqliteConfig")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(b.unit, vec![])],
+                    ret: Box::new(Type::Con(config, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
                 },
                 constraints: vec![],
             })

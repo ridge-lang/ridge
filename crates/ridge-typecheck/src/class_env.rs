@@ -1774,6 +1774,26 @@ pub fn register_stdlib_instances(
             });
     }
 
+    // `Adapter Sqlite` — the SQLite adapter instance from std.data, keyed by the
+    // reconciled `Sqlite` id, on the same terms as the two above: inserted for user
+    // workspaces, a no-op during the stdlib's own build where data.ridge's source
+    // instance is collected directly.
+    if let (Some(adapter), Some(&sqlite)) = (
+        ct.id_by_name("Adapter"),
+        reconciled_tycon_names.get("Sqlite"),
+    ) {
+        env.instances
+            .entry((adapter, smallvec![sqlite]))
+            .or_insert_with(|| InstanceInfo {
+                def_module: None,
+                methods: adapter_methods(),
+                ctx_constraints: vec![],
+                head_var_positions: vec![],
+                origin: InstanceOrigin::Explicit,
+                span: ds,
+            });
+    }
+
     // `Refinable (Query e a) (e -> Bool)`, `Refinable (Join e f a) (e -> f ->
     // Bool)`, and the same over `LeftJoin` — the unified `filter` instances from
     // std.repo. Each is keyed by the full head tuple: the receiver's reconciled

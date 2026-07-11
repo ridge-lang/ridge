@@ -76,7 +76,22 @@ fn main() {
             .arg(&out_bin)
             .arg("-lpthread")
             .arg("-lm");
-        if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
+        if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+            // A NIF leaves the enif_* entry points undefined at link time; the
+            // BEAM supplies them when it dlopens the library, so tell the macOS
+            // linker to resolve them at load time instead of failing the link.
+            cmd.arg("-undefined").arg("dynamic_lookup");
+            // `cc`'s bare compiler command carries no target architecture, and a
+            // release builds the x86_64 artifact on an arm64 runner, so pin the
+            // arch from the Cargo target (aarch64 is spelled "arm64" here) rather
+            // than defaulting to the host.
+            let arch = match env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
+                Ok("aarch64") => "arm64".to_string(),
+                Ok(other) => other.to_string(),
+                Err(_) => "x86_64".to_string(),
+            };
+            cmd.arg("-arch").arg(arch);
+        } else {
             cmd.arg("-ldl");
         }
     }

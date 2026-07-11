@@ -29,8 +29,10 @@ which             = "8"
 
 [features]
 ## Gate for integration tests that require a real OTP installation (`erl` on PATH).
-## Run with `cargo test -p ridge-driver --features beam-runtime`.
-beam-runtime = []
+## Run with `cargo test -p ridge-driver --features beam-runtime`. Propagates to
+## ridge-codegen-erl so the SQLite runtime (its native bridge) is baked and
+## installed for the tests that open a real SQLite connection.
+beam-runtime = ["ridge-codegen-erl/beam-runtime"]
 
 [dev-dependencies]
 tempfile = "3"

@@ -38,9 +38,13 @@ assert_cmd  = "2"
 predicates  = "3"
 
 [features]
-## Gate for tests/features that require a real OTP installation.
-## Run with `cargo test -p ridge-cli --features beam-runtime`.
-beam-runtime = []
+## Bakes the SQLite native bridge into the `ridge` binary and gates the tests
+## that need a real OTP. Propagates to ridge-codegen-erl, whose build script
+## compiles the NIF and embeds it, so a released `ridge` carries the bridge with
+## no C toolchain on the user's machine. The release workflow builds with this
+## feature; a plain build leaves it off and needs neither OTP nor a C compiler.
+## Run tests with `cargo test -p ridge-cli --features beam-runtime`.
+beam-runtime = ["ridge-codegen-erl/beam-runtime"]
 
 ## Gate for the --watch subcommand (depends on `notify` file-watcher).
 ## Run with `cargo build -p ridge-cli --features cli-watch`.

@@ -63,6 +63,17 @@ const STD_QUERY: StdlibModuleId = StdlibModuleId(22);
 // std.data (23), std.repo (24), std.migrate (25), std.raw (26) are reconciled —
 // their schemes come from `reconciled_fn_scheme`, so they have no constant here.
 const STD_TEST: StdlibModuleId = StdlibModuleId(27);
+// std.decimal is interned last (id 28) so it takes the highest id without
+// renumbering the modules ahead of it.
+const STD_DECIMAL: StdlibModuleId = StdlibModuleId(28);
+// std.uuid follows, taking the next id the same way (29).
+const STD_UUID: StdlibModuleId = StdlibModuleId(29);
+// std.bytes follows, taking the next id the same way (30).
+const STD_BYTES: StdlibModuleId = StdlibModuleId(30);
+// std.date follows, taking the next id the same way (31).
+const STD_DATE: StdlibModuleId = StdlibModuleId(31);
+// std.timeofday follows, taking the next id the same way (32).
+const STD_TIMEOFDAY: StdlibModuleId = StdlibModuleId(32);
 
 // ── Type-building helpers ─────────────────────────────────────────────────────
 //
@@ -93,12 +104,36 @@ const fn ty_timestamp(b: &BuiltinTyCons) -> Type {
     Type::Con(b.timestamp, vec![])
 }
 #[inline]
+const fn ty_decimal(b: &BuiltinTyCons) -> Type {
+    Type::Con(b.decimal, vec![])
+}
+#[inline]
+const fn ty_uuid(b: &BuiltinTyCons) -> Type {
+    Type::Con(b.uuid, vec![])
+}
+
+const fn ty_bytes(b: &BuiltinTyCons) -> Type {
+    Type::Con(b.bytes, vec![])
+}
+#[inline]
+const fn ty_date(b: &BuiltinTyCons) -> Type {
+    Type::Con(b.date, vec![])
+}
+#[inline]
+const fn ty_time(b: &BuiltinTyCons) -> Type {
+    Type::Con(b.time, vec![])
+}
+#[inline]
 const fn ty_error(b: &BuiltinTyCons) -> Type {
     Type::Con(b.error, vec![])
 }
 #[inline]
 const fn ty_duration(b: &BuiltinTyCons) -> Type {
     Type::Con(b.duration, vec![])
+}
+#[inline]
+const fn ty_instant(b: &BuiltinTyCons) -> Type {
+    Type::Con(b.instant, vec![])
 }
 #[inline]
 const fn ty_proc_output(b: &BuiltinTyCons) -> Type {
@@ -273,6 +308,167 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         // totalCompare: Float -> Float -> Int  (returns -1 / 0 / 1)
         (STD_FLOAT, "totalCompare") => {
             Some(mono(ty_fn_pure(vec![ty_float(b), ty_float(b)], ty_int(b))))
+        }
+
+        // ── std.decimal ───────────────────────────────────────────────────────
+        // fromText: Text -> Result Decimal Error
+        (STD_DECIMAL, "fromText") => Some(mono(ty_fn_pure(
+            vec![ty_text(b)],
+            ty_result(b, ty_decimal(b), ty_error(b)),
+        ))),
+        (STD_DECIMAL, "toText") => Some(mono(ty_fn_pure(vec![ty_decimal(b)], ty_text(b)))),
+        (STD_DECIMAL, "fromInt") => Some(mono(ty_fn_pure(vec![ty_int(b)], ty_decimal(b)))),
+        (STD_DECIMAL, "parseRaw") => Some(mono(ty_fn_pure(vec![ty_text(b)], ty_decimal(b)))),
+        (STD_DECIMAL, "toFloat") => Some(mono(ty_fn_pure(vec![ty_decimal(b)], ty_float(b)))),
+        // Exact binary arithmetic: Decimal -> Decimal -> Decimal.
+        (STD_DECIMAL, "add" | "sub" | "mul") => Some(mono(ty_fn_pure(
+            vec![ty_decimal(b), ty_decimal(b)],
+            ty_decimal(b),
+        ))),
+        // Unary arithmetic: Decimal -> Decimal.
+        (STD_DECIMAL, "neg" | "abs") => {
+            Some(mono(ty_fn_pure(vec![ty_decimal(b)], ty_decimal(b))))
+        }
+        // truncate: Int -> Decimal -> Decimal (round toward zero to a scale). It
+        // names no reconciled type, so it lives in this table; `round`/`div`, which
+        // take a RoundingMode, are seeded via reconciled_fn_scheme.
+        (STD_DECIMAL, "truncate") => Some(mono(ty_fn_pure(
+            vec![ty_int(b), ty_decimal(b)],
+            ty_decimal(b),
+        ))),
+        // compare: Decimal -> Decimal -> Int (-1 / 0 / 1, value-based so 1.5 == 1.50).
+        (STD_DECIMAL, "compare") => {
+            Some(mono(ty_fn_pure(vec![ty_decimal(b), ty_decimal(b)], ty_int(b))))
+        }
+        // The value comparisons: Decimal -> Decimal -> Bool.
+        (STD_DECIMAL, "eq" | "lt" | "lte" | "gt" | "gte") => {
+            Some(mono(ty_fn_pure(vec![ty_decimal(b), ty_decimal(b)], ty_bool(b))))
+        }
+
+        // ── std.uuid ──────────────────────────────────────────────────────────
+        (STD_UUID, "fromText") => Some(mono(ty_fn_pure(
+            vec![ty_text(b)],
+            ty_result(b, ty_uuid(b), ty_error(b)),
+        ))),
+        (STD_UUID, "toText") => Some(mono(ty_fn_pure(vec![ty_uuid(b)], ty_text(b)))),
+        (STD_UUID, "nil") => Some(mono(ty_fn_pure(vec![ty_unit(b)], ty_uuid(b)))),
+        // `gen` mints a fresh value, so it carries the `random` capability.
+        (STD_UUID, "gen") => {
+            use ridge_ast::Capability;
+            let rnd_caps = CapabilitySet::singleton(Capability::Random);
+            Some(mono(ty_fn_caps(vec![ty_unit(b)], ty_uuid(b), rnd_caps)))
+        }
+        (STD_UUID, "compare") => {
+            Some(mono(ty_fn_pure(vec![ty_uuid(b), ty_uuid(b)], ty_int(b))))
+        }
+        (STD_UUID, "eq" | "lt" | "lte" | "gt" | "gte") => {
+            Some(mono(ty_fn_pure(vec![ty_uuid(b), ty_uuid(b)], ty_bool(b))))
+        }
+
+        // ── std.bytes ─────────────────────────────────────────────────────────
+        (STD_BYTES, "fromHex") => Some(mono(ty_fn_pure(
+            vec![ty_text(b)],
+            ty_result(b, ty_bytes(b), ty_error(b)),
+        ))),
+        (STD_BYTES, "toHex") => Some(mono(ty_fn_pure(vec![ty_bytes(b)], ty_text(b)))),
+        (STD_BYTES, "fromUtf8") => Some(mono(ty_fn_pure(vec![ty_text(b)], ty_bytes(b)))),
+        (STD_BYTES, "toUtf8") => Some(mono(ty_fn_pure(
+            vec![ty_bytes(b)],
+            ty_result(b, ty_text(b), ty_error(b)),
+        ))),
+        (STD_BYTES, "empty") => Some(mono(ty_fn_pure(vec![ty_unit(b)], ty_bytes(b)))),
+        // `gen` draws fresh random bytes, so it carries the `random` capability.
+        (STD_BYTES, "gen") => {
+            use ridge_ast::Capability;
+            let rnd_caps = CapabilitySet::singleton(Capability::Random);
+            Some(mono(ty_fn_caps(vec![ty_int(b)], ty_bytes(b), rnd_caps)))
+        }
+        (STD_BYTES, "length") => Some(mono(ty_fn_pure(vec![ty_bytes(b)], ty_int(b)))),
+        (STD_BYTES, "concat") => Some(mono(ty_fn_pure(
+            vec![ty_bytes(b), ty_bytes(b)],
+            ty_bytes(b),
+        ))),
+        (STD_BYTES, "compare") => {
+            Some(mono(ty_fn_pure(vec![ty_bytes(b), ty_bytes(b)], ty_int(b))))
+        }
+        (STD_BYTES, "eq" | "lt" | "lte" | "gt" | "gte") => {
+            Some(mono(ty_fn_pure(vec![ty_bytes(b), ty_bytes(b)], ty_bool(b))))
+        }
+
+        // ── std.date ──────────────────────────────────────────────────────────
+        (STD_DATE, "fromYmd") => Some(mono(ty_fn_pure(
+            vec![ty_int(b), ty_int(b), ty_int(b)],
+            ty_result(b, ty_date(b), ty_error(b)),
+        ))),
+        (STD_DATE, "toIso") => Some(mono(ty_fn_pure(vec![ty_date(b)], ty_text(b)))),
+        (STD_DATE, "fromIso") => Some(mono(ty_fn_pure(
+            vec![ty_text(b)],
+            ty_result(b, ty_date(b), ty_error(b)),
+        ))),
+        (STD_DATE, "year" | "month" | "day") => {
+            Some(mono(ty_fn_pure(vec![ty_date(b)], ty_int(b))))
+        }
+        // `today`/`todayUtc` read the system clock, so they carry the `time`
+        // capability. `today` takes a UTC offset in minutes; `todayUtc` takes unit.
+        (STD_DATE, "today") => {
+            use ridge_ast::Capability;
+            let time_caps = CapabilitySet::singleton(Capability::Time);
+            Some(mono(ty_fn_caps(vec![ty_int(b)], ty_date(b), time_caps)))
+        }
+        (STD_DATE, "todayUtc") => {
+            use ridge_ast::Capability;
+            let time_caps = CapabilitySet::singleton(Capability::Time);
+            Some(mono(ty_fn_caps(vec![ty_unit(b)], ty_date(b), time_caps)))
+        }
+        (STD_DATE, "addDays") => Some(mono(ty_fn_pure(
+            vec![ty_int(b), ty_date(b)],
+            ty_date(b),
+        ))),
+        (STD_DATE, "diffDays") => {
+            Some(mono(ty_fn_pure(vec![ty_date(b), ty_date(b)], ty_int(b))))
+        }
+        (STD_DATE, "compare") => {
+            Some(mono(ty_fn_pure(vec![ty_date(b), ty_date(b)], ty_int(b))))
+        }
+        (STD_DATE, "eq" | "lt" | "lte" | "gt" | "gte") => {
+            Some(mono(ty_fn_pure(vec![ty_date(b), ty_date(b)], ty_bool(b))))
+        }
+
+        (STD_TIMEOFDAY, "fromHms") => Some(mono(ty_fn_pure(
+            vec![ty_int(b), ty_int(b), ty_int(b)],
+            ty_result(b, ty_time(b), ty_error(b)),
+        ))),
+        (STD_TIMEOFDAY, "toIso") => Some(mono(ty_fn_pure(vec![ty_time(b)], ty_text(b)))),
+        (STD_TIMEOFDAY, "fromIso") => Some(mono(ty_fn_pure(
+            vec![ty_text(b)],
+            ty_result(b, ty_time(b), ty_error(b)),
+        ))),
+        (STD_TIMEOFDAY, "hour" | "minute" | "second") => {
+            Some(mono(ty_fn_pure(vec![ty_time(b)], ty_int(b))))
+        }
+        // `now`/`nowUtc` read the system clock, so they carry the `time` capability.
+        (STD_TIMEOFDAY, "now") => {
+            use ridge_ast::Capability;
+            let time_caps = CapabilitySet::singleton(Capability::Time);
+            Some(mono(ty_fn_caps(vec![ty_int(b)], ty_time(b), time_caps)))
+        }
+        (STD_TIMEOFDAY, "nowUtc") => {
+            use ridge_ast::Capability;
+            let time_caps = CapabilitySet::singleton(Capability::Time);
+            Some(mono(ty_fn_caps(vec![ty_unit(b)], ty_time(b), time_caps)))
+        }
+        (STD_TIMEOFDAY, "addSeconds") => Some(mono(ty_fn_pure(
+            vec![ty_int(b), ty_time(b)],
+            ty_time(b),
+        ))),
+        (STD_TIMEOFDAY, "diffSeconds") => {
+            Some(mono(ty_fn_pure(vec![ty_time(b), ty_time(b)], ty_int(b))))
+        }
+        (STD_TIMEOFDAY, "compare") => {
+            Some(mono(ty_fn_pure(vec![ty_time(b), ty_time(b)], ty_int(b))))
+        }
+        (STD_TIMEOFDAY, "eq" | "lt" | "lte" | "gt" | "gte") => {
+            Some(mono(ty_fn_pure(vec![ty_time(b), ty_time(b)], ty_bool(b))))
         }
 
         // ── std.bool ──────────────────────────────────────────────────────────
@@ -1212,6 +1408,29 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                 ty_duration(b),
             )))
         }
+        (STD_TIME, "ofMillis") => {
+            // Int -> Duration — build a Duration from a whole-millisecond span.
+            Some(mono(ty_fn_pure(vec![ty_int(b)], ty_duration(b))))
+        }
+        (STD_TIME, "monotonic") => {
+            use ridge_ast::Capability;
+            // (_: Unit) -> Instant — read the monotonic clock (requires `time`).
+            let time_caps = CapabilitySet::singleton(Capability::Time);
+            Some(mono(ty_fn_caps(vec![ty_unit(b)], ty_instant(b), time_caps)))
+        }
+        (STD_TIME, "elapsed") => {
+            use ridge_ast::Capability;
+            // Instant -> Duration — span since a reading, against the clock now.
+            let time_caps = CapabilitySet::singleton(Capability::Time);
+            Some(mono(ty_fn_caps(vec![ty_instant(b)], ty_duration(b), time_caps)))
+        }
+        (STD_TIME, "since") => {
+            // Instant -> Instant -> Duration — span between two readings (pure).
+            Some(mono(ty_fn_pure(
+                vec![ty_instant(b), ty_instant(b)],
+                ty_duration(b),
+            )))
+        }
         (STD_TIME, "diffMs") => {
             // Timestamp -> Timestamp -> Int
             Some(mono(ty_fn_pure(
@@ -1467,6 +1686,56 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             vec![ty_int(b)],
             Type::Con(b.sql_value, vec![]),
         ))),
+        // A SQL instant from a typed Timestamp — the captured-timestamp bind value.
+        (STD_SQL, "sqlInstantOf") => Some(mono(ty_fn_pure(
+            vec![ty_timestamp(b)],
+            Type::Con(b.sql_value, vec![]),
+        ))),
+        // A SQL interval from a typed Duration — the captured-duration bind value.
+        (STD_SQL, "sqlIntervalOf") => Some(mono(ty_fn_pure(
+            vec![ty_duration(b)],
+            Type::Con(b.sql_value, vec![]),
+        ))),
+        // A typed SQL decimal (exact canonical text) — the decimal bind value.
+        (STD_SQL, "sqlDecimal") => Some(mono(ty_fn_pure(
+            vec![ty_text(b)],
+            Type::Con(b.sql_value, vec![]),
+        ))),
+        // A typed SQL uuid (canonical text) — the uuid bind value.
+        (STD_SQL, "sqlUuid") => Some(mono(ty_fn_pure(
+            vec![ty_text(b)],
+            Type::Con(b.sql_value, vec![]),
+        ))),
+        // A typed SQL byte string (canonical hex text) — the bytea bind value.
+        (STD_SQL, "sqlBytes") => Some(mono(ty_fn_pure(
+            vec![ty_text(b)],
+            Type::Con(b.sql_value, vec![]),
+        ))),
+        // A typed SQL json document (encoded JSON text) — the json/jsonb bind value.
+        (STD_SQL, "sqlJson") => Some(mono(ty_fn_pure(
+            vec![ty_text(b)],
+            Type::Con(b.sql_value, vec![]),
+        ))),
+        // A typed SQL date (ISO `YYYY-MM-DD` text) — the date bind value.
+        (STD_SQL, "sqlDate") => Some(mono(ty_fn_pure(
+            vec![ty_text(b)],
+            Type::Con(b.sql_value, vec![]),
+        ))),
+        // A typed SQL time of day (ISO `HH:MM:SS[.ffffff]` text) — the time bind value.
+        (STD_SQL, "sqlTime") => Some(mono(ty_fn_pure(
+            vec![ty_text(b)],
+            Type::Con(b.sql_value, vec![]),
+        ))),
+        // A typed SQL interval (whole-millisecond span) — the duration bind value.
+        (STD_SQL, "sqlInterval") => Some(mono(ty_fn_pure(
+            vec![ty_int(b)],
+            Type::Con(b.sql_value, vec![]),
+        ))),
+        // A typed SQL array (a list of element bind values) — the array bind value.
+        (STD_SQL, "sqlArray") => Some(mono(ty_fn_pure(
+            vec![Type::Con(b.list, vec![Type::Con(b.sql_value, vec![])])],
+            Type::Con(b.sql_value, vec![]),
+        ))),
         // Render a SqlValue as an inline SQL literal (a DDL DEFAULT / CHECK position
         // a bind parameter cannot fill).
         (STD_SQL, "sqlLiteral") => Some(mono(ty_fn_pure(
@@ -1635,7 +1904,40 @@ mod tests {
                             | "DbUuid"
                             | "DbTimestamp"
                             | "DbTimestampTz"
+                            | "DbBytes"
+                            | "DbSmallInt"
+                            | "DbChar"
+                            | "DbJson"
+                            | "DbJsonb"
+                            | "DbDate"
+                            | "DbTime"
+                            | "DbInterval"
+                            | "DbArray"
                             | "DbRaw"
+                            | "Dialect"
+                            | "PgDialect"
+                            | "SqliteDialect"
+                    )
+                {
+                    continue;
+                }
+                // std.decimal's reconciled `RoundingMode`: the type is seeded from
+                // the reserved arena block, its constructors from
+                // `reconciled_ctor_scheme`, and the `round`/`div` functions that name
+                // it from `reconciled_fn_scheme` — none via this hand-curated table.
+                if module.name == "std.decimal"
+                    && matches!(
+                        name,
+                        "RoundingMode"
+                            | "HalfEven"
+                            | "HalfUp"
+                            | "HalfDown"
+                            | "Up"
+                            | "Down"
+                            | "Ceiling"
+                            | "Floor"
+                            | "round"
+                            | "div"
                     )
                 {
                     continue;
@@ -1676,9 +1978,11 @@ mod tests {
                             | "planGroup"
                             // `planToSql` takes the reconciled `QueryPlan`, so its
                             // scheme is seeded via `reconciled_query_plan_fn_scheme`,
-                            // not this hand-curated table. `optimize` takes and returns
-                            // one, so it is seeded the same way.
+                            // not this hand-curated table. `planToSqlFor` (the dialect-
+                            // explicit renderer) and `optimize` take one, so they are
+                            // seeded the same way.
                             | "planToSql"
+                            | "planToSqlFor"
                             | "optimize"
                             | "planExists"
                             | "planList"
@@ -1762,6 +2066,15 @@ mod tests {
                             | "withConnectRetries"
                             | "withRetryBackoffMs"
                             | "withMaxQueueDepth"
+                            // SQLite: the reconciled `Sqlite` handle and `SqliteConfig`
+                            // settings, plus `connectSqlite` and the `sqliteFile`/
+                            // `sqliteMemory` presets, all name reconciled types and are
+                            // seeded via `reconciled_decls` / `reconciled_fn_scheme`.
+                            | "Sqlite"
+                            | "SqliteConfig"
+                            | "connectSqlite"
+                            | "sqliteFile"
+                            | "sqliteMemory"
                             // Typed database errors: the reconciled `DbErrorKind`
                             // union, its variants, the classifier, and the accessors
                             // are seeded via `reconciled_decls` / `reconciled_ctor_scheme`

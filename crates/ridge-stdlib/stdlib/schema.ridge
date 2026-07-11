@@ -18,7 +18,7 @@
 -- The dialect-neutral vocabulary below (`DbType`, `Generation`, `FkAction`) is
 -- turned into a backend's `CREATE TABLE` by the DDL renderer.
 
-import std.sql (SqlValue, sqlLiteral, sqlValueSource, DbType, DbBoolean, DbInt, DbBigInt, DbFloat, DbDecimal, DbText, DbVarchar, DbUuid, DbTimestamp, DbTimestampTz, DbRaw)
+import std.sql (SqlValue, sqlLiteral, sqlValueSource, DbType, DbBoolean, DbInt, DbBigInt, DbFloat, DbDecimal, DbText, DbVarchar, DbUuid, DbTimestamp, DbTimestampTz, DbBytes, DbSmallInt, DbChar, DbJson, DbJsonb, DbDate, DbTime, DbInterval, DbArray, DbRaw, Dialect, PgDialect, SqliteDialect)
 import std.int as Int
 import std.float as Float
 
@@ -172,26 +172,53 @@ pub fn colGenerated (c: ColumnSchema e) -> Bool =
 
 -- ── Entity schema ─────────────────────────────────────────────────────────────
 
--- An entity's full schema: its name, its SQL table, and its columns in
--- declaration order. The phantom `e` ties it to the entity. Opaque — produced by
--- the convention instance `deriving (Schema)` synthesises, or built by hand
--- through `schema` and `withColumn`, and read back through the accessors.
-pub opaque type EntitySchema e = { name: Text, table: Text, columns: List (ColumnSchema e) }
+-- An entity's full schema: its name, its SQL table, its columns in declaration
+-- order, and its table-level constraints — a composite primary key and any
+-- multi-column unique constraints, each naming its columns by SQL column name. The
+-- phantom `e` ties it to the entity. Opaque — produced by the convention instance
+-- `deriving (Schema)` synthesises, or built by hand through `schema`, `withColumn`,
+-- `compositePrimaryKey`, and `uniqueConstraint`, and read back through the accessors.
+pub opaque type EntitySchema e = { name: Text, table: Text, columns: List (ColumnSchema e), primaryKeyColumns: List Text, uniqueConstraints: List (List Text) }
 
 -- Start an empty schema for entity `e`: its name and SQL table, no columns yet.
 -- Pipe `withColumn` steps onto it.
 pub fn schema (name: Text) (table: Text) -> EntitySchema e =
-    EntitySchema { name = name, table = table, columns = [] }
+    EntitySchema { name = name, table = table, columns = [], primaryKeyColumns = [], uniqueConstraints = [] }
 
 -- Append a fully-built column to a schema.
 pub fn withColumn (c: ColumnSchema e) (s: EntitySchema e) -> EntitySchema e =
-    EntitySchema { name = s.name, table = s.table, columns = appendColumn s.columns c }
+    EntitySchema { name = s.name, table = s.table, columns = appendColumn s.columns c, primaryKeyColumns = s.primaryKeyColumns, uniqueConstraints = s.uniqueConstraints }
+
+-- Declare a composite primary key over the named columns, in order — the
+-- multi-column form of the per-column `primaryKey` step, for a table whose key is
+-- more than one column (a junction table keyed by its two foreign keys, say). A
+-- table has one primary key, so this replaces any previous composite key, and when
+-- present it stands in for a per-column `primaryKey`: the DDL renderer emits one
+-- table-level `PRIMARY KEY (…)` and drops the inline column key. Columns are named
+-- by SQL column name, the way `mkColumn` and the index steps name them.
+pub fn compositePrimaryKey (cols: List Text) (s: EntitySchema e) -> EntitySchema e =
+    EntitySchema { name = s.name, table = s.table, columns = s.columns, primaryKeyColumns = cols, uniqueConstraints = s.uniqueConstraints }
+
+-- Add a multi-column unique constraint over the named columns — the multi-column
+-- form of the per-column `unique` step: the combination is unique even when no
+-- single column is. Each step adds a distinct constraint; the DDL renderer emits one
+-- table-level `UNIQUE (…)` per constraint, in the order they were added.
+pub fn uniqueConstraint (cols: List Text) (s: EntitySchema e) -> EntitySchema e =
+    EntitySchema { name = s.name, table = s.table, columns = s.columns, primaryKeyColumns = s.primaryKeyColumns, uniqueConstraints = appendUnique s.uniqueConstraints cols }
 
 -- ── Entity read accessors ─────────────────────────────────────────────────────
 
 pub fn schemaName (s: EntitySchema e) -> Text = s.name
 pub fn schemaTable (s: EntitySchema e) -> Text = s.table
 pub fn schemaColumns (s: EntitySchema e) -> List (ColumnSchema e) = s.columns
+
+-- The composite primary key's columns, in order — empty when the key is a single
+-- per-column `primaryKey` or the table has none.
+pub fn schemaPrimaryKey (s: EntitySchema e) -> List Text = s.primaryKeyColumns
+
+-- The table's multi-column unique constraints, each a column list, in the order
+-- they were added.
+pub fn schemaUniqueConstraints (s: EntitySchema e) -> List (List Text) = s.uniqueConstraints
 
 -- Erase a schema's phantom entity, fixing it at `Unit`. The phantom is a
 -- build-time guard — it keeps columns of different entities from mixing while a
@@ -200,7 +227,7 @@ pub fn schemaColumns (s: EntitySchema e) -> List (ColumnSchema e) = s.columns
 -- `EntitySchema e` for an arbitrary `e`; `eraseSchema` gives it the one schema type
 -- a step can hold, and the storage adapter renders that to its dialect's DDL.
 pub fn eraseSchema (s: EntitySchema e) -> EntitySchema Unit =
-    EntitySchema { name = s.name, table = s.table, columns = eraseColumns s.columns }
+    EntitySchema { name = s.name, table = s.table, columns = eraseColumns s.columns, primaryKeyColumns = s.primaryKeyColumns, uniqueConstraints = s.uniqueConstraints }
 
 fn eraseColumns (cols: List (ColumnSchema e)) -> List (ColumnSchema Unit) =
     match cols
@@ -278,6 +305,11 @@ fn appendColumn (cols: List (ColumnSchema e)) (c: ColumnSchema e) -> List (Colum
         []        -> [c]
         x :: rest -> x :: appendColumn rest c
 
+fn appendUnique (uniques: List (List Text)) (cols: List Text) -> List (List Text) =
+    match uniques
+        []        -> [cols]
+        x :: rest -> x :: appendUnique rest cols
+
 fn generatedNames (cols: List (ColumnSchema e)) -> List Text =
     match cols
         []        -> []
@@ -293,27 +325,36 @@ fn identityNames (cols: List (ColumnSchema e)) -> List Text =
                 Identity -> c.column :: identityNames rest
                 _        -> identityNames rest
 
--- ── DDL renderer (Postgres) ───────────────────────────────────────────────────
+-- ── DDL renderer ──────────────────────────────────────────────────────────────
 --
 -- Turn the dialect-neutral schema vocabulary into a backend's data-definition
--- language. `schemaToDdl` renders an entity's `EntitySchema` to a Postgres
--- `CREATE TABLE`, and the `createTableDdl`/`addColumnDdl`/`dropTableDdl`/
+-- language. `schemaToDdlFor` renders an entity's `EntitySchema` to a `CREATE TABLE`
+-- in the given `Dialect`, and the `createTableDdl`/`addColumnDdl`/`dropTableDdl`/
 -- `dropColumnDdl`/`indexDdl` family renders the migration runner's schema steps —
 -- all in Ridge, so the storage adapter only runs the statement rather than building
 -- it. Identifiers are double-quoted (any embedded quote doubled) and the few inline
 -- positions a bind parameter cannot fill — a column `DEFAULT`, a `CHECK` literal —
 -- are escaped, so the rendered text is injection-safe by construction.
 --
--- A database-generated `Identity` column renders as Postgres' `serial`/`bigserial`
--- pseudo-type, which carries its own sequence and is implicitly `NOT NULL`, so the
--- insert path can omit it and let the database assign the key.
+-- The dialects agree on most syntax; they part where a column type, an identity
+-- column, or a default is spelled. On Postgres a database-generated `Identity`
+-- column is a `serial`/`bigserial` pseudo-type carrying its own sequence; on SQLite
+-- it is an `INTEGER PRIMARY KEY AUTOINCREMENT` rowid. Either way it is implicitly
+-- `NOT NULL`, so the insert path omits it and lets the database assign the key.
 
--- Render an `EntitySchema` to a Postgres `CREATE TABLE` statement: each column with
--- its type, nullability, default, and constraints (primary key, uniqueness, foreign
--- key, check), in declaration order. Non-unique indexes are separate statements —
--- see `schemaIndexDdls`.
+-- Render an `EntitySchema` to a Postgres `CREATE TABLE` — `schemaToDdlFor` with the
+-- Postgres dialect.
 pub fn schemaToDdl (s: EntitySchema e) -> Text =
-    Text.join "" ["CREATE TABLE ", quoteIdent s.table, " (", Text.join ", " (columnFrags s.columns), ")"]
+    schemaToDdlFor PgDialect s
+
+-- Render an `EntitySchema` to a `CREATE TABLE` in `d`: each column with its type,
+-- nullability, default, and constraints (primary key, uniqueness, foreign key,
+-- check), in declaration order. Non-unique indexes are separate statements — see
+-- `schemaIndexDdls`.
+pub fn schemaToDdlFor (d: Dialect) (s: EntitySchema e) -> Text =
+    let cols = columnFrags d s.columns (hasCompositeKey s.primaryKeyColumns)
+    let frags = concatFrags cols (tableConstraintFrags s.primaryKeyColumns s.uniqueConstraints)
+    Text.join "" ["CREATE TABLE ", quoteIdent s.table, " (", Text.join ", " frags, ")"]
 
 -- The `CREATE INDEX` statements for the schema's `indexed` columns — the non-unique
 -- indexes that cannot ride inline in `CREATE TABLE` (a `unique` column already
@@ -330,22 +371,41 @@ pub fn schemaIndexDdls (s: EntitySchema e) -> List Text =
 -- column renderer `schemaToDdl` uses, so a migration's `CREATE TABLE` and an entity's
 -- agree on how a column is spelled.
 
--- `CREATE TABLE` from the migration runner's column tuples.
+-- `CREATE TABLE` from the migration runner's column tuples — `createTableDdlFor`
+-- with the Postgres dialect.
 pub fn createTableDdl (table: Text) (cols: List (Text, Text, Bool, Bool, Bool)) -> Text =
-    Text.join "" ["CREATE TABLE ", quoteIdent table, " (", Text.join ", " (tupleFrags cols), ")"]
+    createTableDdlFor PgDialect table cols
 
--- `ALTER TABLE … ADD COLUMN` from a column tuple. A primary key cannot be added
--- against existing rows this way, so the key flag is dropped here.
+-- `CREATE TABLE` from the migration runner's column tuples, in dialect `d`.
+pub fn createTableDdlFor (d: Dialect) (table: Text) (cols: List (Text, Text, Bool, Bool, Bool)) -> Text =
+    Text.join "" ["CREATE TABLE ", quoteIdent table, " (", Text.join ", " (tupleFrags d cols), ")"]
+
+-- `ALTER TABLE … ADD COLUMN` from a column tuple — `addColumnDdlFor` with the Postgres
+-- dialect.
 pub fn addColumnDdl (table: Text) (col: (Text, Text, Bool, Bool, Bool)) -> Text =
-    Text.join "" ["ALTER TABLE ", quoteIdent table, " ADD COLUMN ", columnDdl (tupleColumnNoPk col)]
+    addColumnDdlFor PgDialect table col
 
--- `ALTER TABLE … ADD COLUMN` from a full column descriptor — the entity-driven
--- counterpart to `addColumnDdl`, keeping the column's type, nullability, default,
--- uniqueness, foreign key, and check, which the seam tuple cannot carry. A primary key
--- cannot be added against a table's existing rows this way, so the key flag is dropped,
--- the same as the tuple path.
+-- `ALTER TABLE … ADD COLUMN` from a column tuple, in dialect `d`. Both dialects add a
+-- column in place; only the column's type text differs. A primary key cannot be added
+-- against existing rows this way, so the key flag is dropped here.
+pub fn addColumnDdlFor (d: Dialect) (table: Text) (col: (Text, Text, Bool, Bool, Bool)) -> Text =
+    Text.join "" ["ALTER TABLE ", quoteIdent table, " ADD COLUMN ", columnDdl d (tupleColumnNoPk col)]
+
+-- `ALTER TABLE … ADD COLUMN` from a full column descriptor — `addColumnSchemaDdlFor`
+-- with the Postgres dialect.
 pub fn addColumnSchemaDdl (table: Text) (c: ColumnSchema e) -> Text =
-    Text.join "" ["ALTER TABLE ", quoteIdent table, " ADD COLUMN ", columnDdlNoPk c]
+    addColumnSchemaDdlFor PgDialect table c
+
+-- `ALTER TABLE … ADD COLUMN` from a full column descriptor, in dialect `d` — the
+-- entity-driven counterpart to `addColumnDdlFor`, keeping the column's type, nullability,
+-- default, uniqueness, foreign key, and check, which the seam tuple cannot carry. A
+-- primary key cannot be added against a table's existing rows this way, so the key flag
+-- is dropped, the same as the tuple path. SQLite adds a column in place only for the
+-- shapes its `ADD COLUMN` accepts; a unique, key, non-null-without-constant-default, or
+-- non-constant-default column goes through `sqliteRebuildTableDdl` instead — see
+-- `sqliteAddNeedsRebuild`.
+pub fn addColumnSchemaDdlFor (d: Dialect) (table: Text) (c: ColumnSchema e) -> Text =
+    Text.join "" ["ALTER TABLE ", quoteIdent table, " ADD COLUMN ", columnDdlNoPk d c]
 
 -- `ALTER TABLE … ALTER COLUMN` from the old and new descriptors of a column present in
 -- both snapshots — the entity-driven counterpart to `addColumnSchemaDdl` for a change
@@ -373,9 +433,42 @@ pub fn columnAltered (old: ColumnSchema e) (new: ColumnSchema e) -> Bool =
 pub fn dropTableDdl (table: Text) -> Text =
     Text.concat "DROP TABLE " (quoteIdent table)
 
--- `ALTER TABLE … DROP COLUMN`.
+-- `ALTER TABLE … DROP COLUMN`. Both dialects drop a column in place (SQLite since
+-- 3.35), so the statement is the same on either.
 pub fn dropColumnDdl (table: Text) (column: Text) -> Text =
     Text.join "" ["ALTER TABLE ", quoteIdent table, " DROP COLUMN ", quoteIdent column]
+
+-- The statements that rebuild a table so a change SQLite cannot make in place takes
+-- effect. SQLite has no `ALTER COLUMN`, and its `ADD COLUMN` refuses a unique, key,
+-- non-null-without-constant-default, or non-constant-default column; the way through is
+-- to recreate the table under the new schema and copy the data across. The steps are the
+-- new table under a temporary name, an `INSERT … SELECT` of the columns both schemas
+-- share (a dropped column is left behind, a new one takes its default), the old table
+-- dropped, the temporary renamed into its place, and the non-inline indexes recreated.
+-- The caller runs them inside a transaction with foreign keys disabled — the SQLite
+-- adapter's job, since `PRAGMA foreign_keys` cannot change inside a transaction, and the
+-- adapter is where the live schema comes from.
+pub fn sqliteRebuildTableDdl (old: EntitySchema e) (new: EntitySchema e) -> List Text =
+    let temp = Text.concat new.table "__ridge_rebuild"
+    let tempSchema = EntitySchema { name = new.name, table = temp, columns = new.columns, primaryKeyColumns = new.primaryKeyColumns, uniqueConstraints = new.uniqueConstraints }
+    let shared = sharedColumnNames new.columns (columnNamesOf old.columns)
+    let rename = Text.join "" ["ALTER TABLE ", quoteIdent temp, " RENAME TO ", quoteIdent new.table]
+    let tail = concatFrags [dropTableDdl new.table, rename] (schemaIndexDdls new)
+    match shared
+        [] -> schemaToDdlFor SqliteDialect tempSchema :: tail
+        _  -> schemaToDdlFor SqliteDialect tempSchema :: rebuildCopyStmt temp new.table shared :: tail
+
+-- Whether SQLite must rebuild the table to add this column rather than add it in place.
+-- Its `ADD COLUMN` rejects a UNIQUE or PRIMARY KEY column, an identity (a key), a NOT
+-- NULL column without a constant default, and a non-constant default such as
+-- `CURRENT_TIMESTAMP`; those shapes go through `sqliteRebuildTableDdl` instead. The other
+-- shapes add in place with `addColumnSchemaDdlFor`.
+pub fn sqliteAddNeedsRebuild (c: ColumnSchema e) -> Bool =
+    if c.unique then true
+    else if c.primaryKey then true
+    else if isIdentity c.generation then true
+    else if nonConstantDefault c.generation then true
+    else notNullWithoutConstantDefault c
 
 -- `CREATE [UNIQUE] INDEX name ON table (cols)`.
 pub fn indexDdl (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> Text =
@@ -391,13 +484,13 @@ pub fn dropIndexDdl (name: Text) -> Text =
 -- One column's `CREATE TABLE` fragment: its quoted name, its SQL type (a `serial`
 -- pseudo-type for an identity column), then the modifiers it carries — nullability,
 -- default, primary key, uniqueness, foreign key, check — in that order.
-fn columnDdl (c: ColumnSchema e) -> Text =
-    Text.join "" [quoteIdent c.column, " ", colTypeSql c, nullSql c, defaultSql c.generation, pkSql c, uniqSql c, fkSql c.foreignKey, checkSql c.check]
+fn columnDdl (d: Dialect) (c: ColumnSchema e) -> Text =
+    Text.join "" [quoteIdent c.column, " ", colTypeSql d c, nullSql c, defaultSql d c.generation, pkSql d c, uniqSql c, fkSql c.foreignKey, checkSql c.check]
 
 -- The same fragment without the inline `PRIMARY KEY`, for `ALTER TABLE … ADD COLUMN`:
 -- a primary key cannot be added against a table's existing rows.
-fn columnDdlNoPk (c: ColumnSchema e) -> Text =
-    Text.join "" [quoteIdent c.column, " ", colTypeSql c, nullSql c, defaultSql c.generation, uniqSql c, fkSql c.foreignKey, checkSql c.check]
+fn columnDdlNoPk (d: Dialect) (c: ColumnSchema e) -> Text =
+    Text.join "" [quoteIdent c.column, " ", colTypeSql d c, nullSql c, defaultSql d c.generation, uniqSql c, fkSql c.foreignKey, checkSql c.check]
 
 fn isIdentity (g: Generation) -> Bool =
     match g
@@ -438,17 +531,70 @@ fn concatFrags (a: List Text) (b: List Text) -> List Text =
         []        -> b
         x :: rest -> x :: concatFrags rest b
 
-fn colTypeSql (c: ColumnSchema e) -> Text =
-    match c.generation
-        Identity -> serialType c.ty
-        _        -> pgColType c.ty
+-- The `INSERT … SELECT` that copies a rebuild's shared columns from the old table into
+-- the temporary one, naming the columns on both sides so the copy is order-independent.
+fn rebuildCopyStmt (temp: Text) (table: Text) (cols: List Text) -> Text =
+    Text.join "" ["INSERT INTO ", quoteIdent temp, " (", quotedCols cols, ") SELECT ", quotedCols cols, " FROM ", quoteIdent table]
 
--- An identity column's serial pseudo-type: `serial` for a 32-bit integer, otherwise
--- `bigserial` (the default identity width).
+fn columnNamesOf (cols: List (ColumnSchema e)) -> List Text =
+    match cols
+        []        -> []
+        c :: rest -> c.column :: columnNamesOf rest
+
+-- The new columns (in their declared order) whose name is also in the old table — the
+-- columns a rebuild copies. A column only in the new schema is a fresh one that takes its
+-- default; a column only in the old is dropped and left behind.
+fn sharedColumnNames (newCols: List (ColumnSchema e)) (oldNames: List Text) -> List Text =
+    match newCols
+        []        -> []
+        c :: rest ->
+            if elemText c.column oldNames then c.column :: sharedColumnNames rest oldNames
+            else sharedColumnNames rest oldNames
+
+fn elemText (x: Text) (xs: List Text) -> Bool =
+    match xs
+        []        -> false
+        y :: rest -> if x == y then true else elemText x rest
+
+-- A NOT NULL column with no constant default cannot be added to a populated SQLite table
+-- in place — the new cells would be NULL — so it forces a rebuild. A nullable column, or
+-- a NOT NULL one with a constant literal default, adds in place. A non-constant default or
+-- an identity is already ruled a rebuild before this is reached.
+fn notNullWithoutConstantDefault (c: ColumnSchema e) -> Bool =
+    if c.nullable then false
+    else match c.generation
+        DefaultLit _ -> false
+        _            -> true
+
+fn nonConstantDefault (g: Generation) -> Bool =
+    match g
+        DefaultNow      -> true
+        DefaultRawSql _ -> true
+        _               -> false
+
+-- A column's type text in dialect `d`. A database-generated identity carries its
+-- key inline: Postgres a `serial`/`bigserial` pseudo-type paired with a separate
+-- `PRIMARY KEY`, SQLite the whole `INTEGER PRIMARY KEY AUTOINCREMENT` rowid form
+-- (its `pkSql` is then suppressed). A plain column maps its `DbType` through the
+-- dialect's type table.
+fn colTypeSql (d: Dialect) (c: ColumnSchema e) -> Text =
+    match d
+        PgDialect ->
+            match c.generation
+                Identity -> serialType c.ty
+                _        -> pgColType c.ty
+        SqliteDialect ->
+            match c.generation
+                Identity -> "INTEGER PRIMARY KEY AUTOINCREMENT"
+                _        -> sqliteColType c.ty
+
+-- An identity column's serial pseudo-type: `smallserial` for a 16-bit integer,
+-- `serial` for a 32-bit one, otherwise `bigserial` (the default identity width).
 fn serialType (t: DbType) -> Text =
     match t
-        DbInt -> "serial"
-        _     -> "bigserial"
+        DbSmallInt -> "smallserial"
+        DbInt      -> "serial"
+        _          -> "bigserial"
 
 -- The concrete Postgres column type for a dialect-neutral `DbType`.
 fn pgColType (t: DbType) -> Text =
@@ -463,7 +609,46 @@ fn pgColType (t: DbType) -> Text =
         DbUuid        -> "uuid"
         DbTimestamp   -> "timestamp"
         DbTimestampTz -> "timestamptz"
+        DbBytes       -> "bytea"
+        DbSmallInt    -> "smallint"
+        DbChar n      -> Text.join "" ["char(", Int.toText n, ")"]
+        DbJson        -> "json"
+        DbJsonb       -> "jsonb"
+        DbDate        -> "date"
+        DbTime        -> "time"
+        DbInterval    -> "interval"
+        DbArray e     -> Text.concat (pgColType e) "[]"
         DbRaw r       -> r
+
+-- The concrete SQLite column type for a dialect-neutral `DbType`. SQLite is
+-- dynamically typed with type affinities, so a rich type rides the storage class
+-- that round-trips it losslessly: an exact `decimal` and the temporal types ride
+-- `TEXT` (never `REAL`, whose float rounding would corrupt money), a `uuid` its
+-- canonical text, an interval its whole-millisecond count as `INTEGER`, bytes a
+-- `BLOB`, and an array its element JSON text (SQLite has no array type). `DbRaw`
+-- still spells a type by hand.
+fn sqliteColType (t: DbType) -> Text =
+    match t
+        DbBoolean      -> "INTEGER"
+        DbInt          -> "INTEGER"
+        DbBigInt       -> "INTEGER"
+        DbFloat        -> "REAL"
+        DbDecimal _p _s -> "TEXT"
+        DbText         -> "TEXT"
+        DbVarchar _n   -> "TEXT"
+        DbUuid         -> "TEXT"
+        DbTimestamp    -> "TEXT"
+        DbTimestampTz  -> "TEXT"
+        DbBytes        -> "BLOB"
+        DbSmallInt     -> "INTEGER"
+        DbChar _n      -> "TEXT"
+        DbJson         -> "TEXT"
+        DbJsonb        -> "TEXT"
+        DbDate         -> "TEXT"
+        DbTime         -> "TEXT"
+        DbInterval     -> "INTEGER"
+        DbArray _e     -> "TEXT"
+        DbRaw r        -> r
 
 -- ` NOT NULL` unless the column admits NULL. A serial column is implicitly non-null,
 -- so it carries no explicit clause.
@@ -472,8 +657,16 @@ fn nullSql (c: ColumnSchema e) -> Text =
         Identity -> ""
         _        -> if c.nullable then "" else " NOT NULL"
 
-fn pkSql (c: ColumnSchema e) -> Text =
-    if c.primaryKey then " PRIMARY KEY" else ""
+-- The inline ` PRIMARY KEY` a single-column key carries. On SQLite an identity
+-- column already spells its key inside the type (`INTEGER PRIMARY KEY AUTOINCREMENT`),
+-- so it takes no second inline key.
+fn pkSql (d: Dialect) (c: ColumnSchema e) -> Text =
+    match d
+        SqliteDialect ->
+            match c.generation
+                Identity -> ""
+                _        -> if c.primaryKey then " PRIMARY KEY" else ""
+        PgDialect -> if c.primaryKey then " PRIMARY KEY" else ""
 
 fn uniqSql (c: ColumnSchema e) -> Text =
     if c.unique then " UNIQUE" else ""
@@ -482,13 +675,19 @@ fn uniqSql (c: ColumnSchema e) -> Text =
 -- without a serial sequence: `now()` for a timestamp default, an inline literal, or a
 -- raw default expression. `Supplied` and `Identity` carry no `DEFAULT` (an identity is
 -- a serial pseudo-type, not a default).
-fn defaultSql (g: Generation) -> Text =
+fn defaultSql (d: Dialect) (g: Generation) -> Text =
     match g
         Supplied        -> ""
         Identity        -> ""
-        DefaultNow      -> " DEFAULT now()"
+        DefaultNow      -> Text.concat " DEFAULT " (nowExpr d)
         DefaultLit v    -> Text.concat " DEFAULT " (sqlLiteral v)
         DefaultRawSql r -> Text.concat " DEFAULT " r
+
+-- The current-timestamp function each dialect spells for a `DefaultNow` column.
+fn nowExpr (d: Dialect) -> Text =
+    match d
+        PgDialect     -> "now()"
+        SqliteDialect -> "CURRENT_TIMESTAMP"
 
 -- A column's `REFERENCES` clause: the target table and column, plus the `ON DELETE`
 -- and `ON UPDATE` actions when either is not the default `NO ACTION`.
@@ -576,15 +775,40 @@ fn ckInList (items: List QExpr) -> Text =
 
 -- ── Shared rendering helpers ──────────────────────────────────────────────────
 
-fn columnFrags (cols: List (ColumnSchema e)) -> List Text =
+-- Each column's `CREATE TABLE` fragment. With a composite primary key present the
+-- key is a single table-level clause, so `suppressPk` renders every column without
+-- its inline `PRIMARY KEY` to keep the table from carrying two keys.
+fn columnFrags (d: Dialect) (cols: List (ColumnSchema e)) (suppressPk: Bool) -> List Text =
     match cols
         []        -> []
-        c :: rest -> columnDdl c :: columnFrags rest
+        c :: rest -> (if suppressPk then columnDdlNoPk d c else columnDdl d c) :: columnFrags d rest suppressPk
 
-fn tupleFrags (cols: List (Text, Text, Bool, Bool, Bool)) -> List Text =
+-- Whether the table carries a composite (multi-column) primary key.
+fn hasCompositeKey (cols: List Text) -> Bool =
+    match cols
+        []     -> false
+        _ :: _ -> true
+
+-- The table-level constraint fragments a `CREATE TABLE` carries after its columns:
+-- the composite `PRIMARY KEY (…)` when one is declared, then a `UNIQUE (…)` per
+-- multi-column unique constraint, in declaration order.
+fn tableConstraintFrags (pk: List Text) (uniques: List (List Text)) -> List Text =
+    concatFrags (pkConstraintFrag pk) (uniqueConstraintFrags uniques)
+
+fn pkConstraintFrag (cols: List Text) -> List Text =
+    match cols
+        []     -> []
+        _ :: _ -> [Text.join "" ["PRIMARY KEY (", quotedCols cols, ")"]]
+
+fn uniqueConstraintFrags (uniques: List (List Text)) -> List Text =
+    match uniques
+        []           -> []
+        cols :: rest -> Text.join "" ["UNIQUE (", quotedCols cols, ")"] :: uniqueConstraintFrags rest
+
+fn tupleFrags (d: Dialect) (cols: List (Text, Text, Bool, Bool, Bool)) -> List Text =
     match cols
         []        -> []
-        t :: rest -> columnDdl (tupleColumn t) :: tupleFrags rest
+        t :: rest -> columnDdl d (tupleColumn t) :: tupleFrags d rest
 
 fn indexDdlsOf (table: Text) (cols: List (ColumnSchema e)) -> List Text =
     match cols
@@ -634,6 +858,7 @@ fn dbTypeOfBaseName (ty: Text) -> DbType =
     else if ty == "text" then DbText
     else if ty == "bool" then DbBoolean
     else if ty == "float" then DbFloat
+    else if ty == "bytes" then DbBytes
     else DbText
 
 fn quoteIdent (name: Text) -> Text =
@@ -710,12 +935,40 @@ fn checkFrag (ck: Option QExpr) -> List Text =
 -- Render an `EntitySchema` to the `schema "Name" "table" |> withColumn (…) |> …`
 -- source that rebuilds it. Columns render in declaration order.
 pub fn schemaToSource (s: EntitySchema e) -> Text =
-    Text.join "" (Text.join "" ["schema ", sourceString s.name, " ", sourceString s.table] :: withColumnFrags s.columns)
+    let head = Text.join "" ["schema ", sourceString s.name, " ", sourceString s.table]
+    let frags = concatFrags (withColumnFrags s.columns) (constraintSourceFrags s.primaryKeyColumns s.uniqueConstraints)
+    Text.join "" (head :: frags)
 
 fn withColumnFrags (cols: List (ColumnSchema e)) -> List Text =
     match cols
         []        -> []
         c :: rest -> Text.join "" [" |> withColumn (", columnToSource c, ")"] :: withColumnFrags rest
+
+-- The ` |> compositePrimaryKey […]` / ` |> uniqueConstraint […]` steps that rebuild
+-- a schema's table-level constraints — the composite key first, then each unique
+-- constraint in declaration order, so a rendered schema round-trips to an equal one.
+fn constraintSourceFrags (pk: List Text) (uniques: List (List Text)) -> List Text =
+    concatFrags (pkSourceFrag pk) (uniqueSourceFrags uniques)
+
+fn pkSourceFrag (cols: List Text) -> List Text =
+    match cols
+        []     -> []
+        _ :: _ -> [Text.join "" [" |> compositePrimaryKey ", textListSource cols]]
+
+fn uniqueSourceFrags (uniques: List (List Text)) -> List Text =
+    match uniques
+        []           -> []
+        cols :: rest -> Text.join "" [" |> uniqueConstraint ", textListSource cols] :: uniqueSourceFrags rest
+
+-- A `List Text` rendered as a Ridge list literal of quoted, escaped strings —
+-- `["a", "b"]` — so a constraint's column list drops into the builder-call source.
+fn textListSource (xs: List Text) -> Text =
+    Text.join "" ["[", Text.join ", " (mapSourceString xs), "]"]
+
+fn mapSourceString (xs: List Text) -> List Text =
+    match xs
+        []        -> []
+        x :: rest -> sourceString x :: mapSourceString rest
 
 -- ── Source rendering of the column vocabulary ─────────────────────────────────
 
@@ -734,6 +987,15 @@ fn dbTypeSource (t: DbType) -> Text =
         DbUuid        -> "DbUuid"
         DbTimestamp   -> "DbTimestamp"
         DbTimestampTz -> "DbTimestampTz"
+        DbBytes       -> "DbBytes"
+        DbSmallInt    -> "DbSmallInt"
+        DbChar n      -> Text.join "" ["(DbChar ", Int.toText n, ")"]
+        DbJson        -> "DbJson"
+        DbJsonb       -> "DbJsonb"
+        DbDate        -> "DbDate"
+        DbTime        -> "DbTime"
+        DbInterval    -> "DbInterval"
+        DbArray e     -> Text.join "" ["(DbArray ", dbTypeSource e, ")"]
         DbRaw r       -> Text.join "" ["(DbRaw ", sourceString r, ")"]
 
 -- The `Generation` constructor source. `DefaultLit` carries a `SqlValue` whose variants are

@@ -5,7 +5,7 @@
 //! Each `${expr}` hole in an interpolated string must resolve to a type that
 //! has a `ToText` instance in the workspace instance registry. The prelude
 //! registers built-in instances for `Int`, `Float`, `Bool`, `Text`,
-//! `Timestamp`, and `Ordering`; user-defined types acquire an instance either
+//! `Timestamp`, `Decimal`, `Uuid`, and `Ordering`; user-defined types acquire an instance either
 //! by writing `instance ToText T` or by declaring `pub fn toText (x: T) ->
 //! Text` (auto-promoted during the collect pass).
 //!
@@ -144,6 +144,8 @@ fn builtin_has_to_text(b: &BuiltinTyCons, tycon_id: TyConId) -> bool {
         || tycon_id == b.bool
         || tycon_id == b.text
         || tycon_id == b.timestamp
+        || tycon_id == b.decimal
+        || tycon_id == b.uuid
         || tycon_id == TyConId(15) // Ordering
 }
 
@@ -310,6 +312,52 @@ mod tests {
         assert!(
             ctx.errors.is_empty(),
             "expected no errors for Timestamp hole; got {:?}",
+            ctx.errors
+        );
+        assert!(matches!(ty, Type::Con(id, _) if id == b.text));
+    }
+
+    // ─── T5b: Decimal hole ───────────────────────────────────────────────────
+
+    /// Test 5b — `"price = ${p}"` where p : Decimal → Text, no errors.
+    #[test]
+    fn interp_decimal_ok() {
+        let b = make_builtins();
+        let mut ctx = InferCtx::new();
+        bind(&mut ctx, "p", Type::Con(b.decimal, vec![]));
+
+        let parts = vec![InterpPart::Expr {
+            expr: Box::new(ident("p")),
+            span: ds(),
+        }];
+        let ty = infer_interp(&mut ctx, &b, &parts, ds(), None);
+
+        assert!(
+            ctx.errors.is_empty(),
+            "expected no errors for Decimal hole; got {:?}",
+            ctx.errors
+        );
+        assert!(matches!(ty, Type::Con(id, _) if id == b.text));
+    }
+
+    // ─── T5c: Uuid hole ──────────────────────────────────────────────────────
+
+    /// Test 5c — `"id = ${u}"` where u : Uuid → Text, no errors.
+    #[test]
+    fn interp_uuid_ok() {
+        let b = make_builtins();
+        let mut ctx = InferCtx::new();
+        bind(&mut ctx, "u", Type::Con(b.uuid, vec![]));
+
+        let parts = vec![InterpPart::Expr {
+            expr: Box::new(ident("u")),
+            span: ds(),
+        }];
+        let ty = infer_interp(&mut ctx, &b, &parts, ds(), None);
+
+        assert!(
+            ctx.errors.is_empty(),
+            "expected no errors for Uuid hole; got {:?}",
             ctx.errors
         );
         assert!(matches!(ty, Type::Con(id, _) if id == b.text));

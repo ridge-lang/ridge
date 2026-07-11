@@ -10,9 +10,23 @@
     fs_read_dir/1,
     cli_args/0, cli_args/1,
     time_now/0, time_now/1, time_epoch/0, time_epoch/1,
-    time_diff_ms/2, time_diff/2,
+    time_diff_ms/2, time_diff/2, duration_from_millis/1,
+    mono_now/1, mono_elapsed/1, mono_since/2,
     time_from_iso/1, time_since_ms/1, time_iso/1,
     time_to_micros/1, time_from_micros/1,
+    decimal_from_text/1, decimal_to_text/1, decimal_from_int/1, decimal_parse_raw/1,
+    decimal_to_float/1, decimal_cmp/2,
+    decimal_add/2, decimal_sub/2, decimal_mul/2, decimal_neg/1, decimal_abs/1,
+    decimal_round/3, decimal_div/4,
+    uuid_from_text/1, uuid_to_text/1, uuid_nil/1, uuid_gen/1, uuid_cmp/2,
+    bytes_from_hex/1, bytes_to_hex/1, bytes_from_utf8/1, bytes_to_utf8/1,
+    bytes_empty/1, bytes_gen/1, bytes_length/1, bytes_concat/2, bytes_cmp/2,
+    date_from_ymd/3, date_to_iso/1, date_from_iso/1,
+    date_year/1, date_month/1, date_day/1, date_today/1, date_today_utc/1,
+    date_add_days/2, date_diff_days/2, date_cmp/2,
+    tod_from_hms/3, tod_to_iso/1, tod_from_iso/1,
+    tod_hour/1, tod_minute/1, tod_second/1, tod_now/1, tod_now_utc/1,
+    tod_add_seconds/2, tod_diff_seconds/2, tod_cmp/2,
     int_parse/0, int_parse/1, float_parse/1, float_to_text/1, bool_to_text/1,
     sql_literal/1, sql_value_source/1,
     text_split_all/2, text_replace_all/3, text_join/2, text_slice/3,
@@ -139,9 +153,33 @@ time_epoch(_Unit) -> time_epoch().
 time_diff_ms({timestamp, A}, {timestamp, B}) -> (A - B) div 1000.
 
 %% time_diff/2 — std.time.diff  (§3.12 line 349)
-%% Returns the difference A - B as a Duration record {duration, Ms}.
+%% Returns the difference A - B as a Duration. A Duration is a record type
+%% (`{ ms: Int }`), so it is carried as the map `#{ms => Ms}` — the same shape a
+%% `{ ms = … }` construction lowers to, so a `.ms` field read (`maps:get('ms', _)`)
+%% works on it. Earlier this returned the tagged tuple `{duration, Ms}`, which no
+%% `.ms` read could reach; nothing consumed that shape.
 %% Ridge type: Timestamp -> Timestamp -> Duration.
-time_diff({timestamp, A}, {timestamp, B}) -> {duration, (A - B) div 1000}.
+time_diff({timestamp, A}, {timestamp, B}) -> #{ms => (A - B) div 1000}.
+
+%% duration_from_millis/1 — std.time.ofMillis
+%% Builds a Duration from a whole-millisecond span, the same `#{ms => Ms}` record
+%% shape `time_diff` returns, so the two are interchangeable and `.ms` reads either.
+duration_from_millis(Ms) -> #{ms => Ms}.
+
+%% mono_now/1 — std.time.monotonic. An opaque monotonic reading, tagged `{instant, _}`
+%% so it cannot be confused with a wall-clock `{timestamp, _}`. erlang:monotonic_time
+%% only moves forward within a runtime, so spans measured from it are never negative.
+mono_now(_) -> {instant, erlang:monotonic_time(nanosecond)}.
+
+%% mono_elapsed/1 — std.time.elapsed. The Duration from a monotonic reading to now,
+%% as the `#{ms => Ms}` record shape (nanoseconds folded to whole milliseconds).
+mono_elapsed({instant, Start}) ->
+    #{ms => (erlang:monotonic_time(nanosecond) - Start) div 1000000}.
+
+%% mono_since/2 — std.time.since. The Duration between two monotonic readings,
+%% end minus start, reading no clock of its own.
+mono_since({instant, Start}, {instant, End}) ->
+    #{ms => (End - Start) div 1000000}.
 
 %% time_from_iso/1 — std.time.fromIso / std.time.parse
 %% Parses an ISO-8601 text into a Timestamp.
@@ -177,6 +215,538 @@ time_to_micros({timestamp, Micros}) -> Micros.
 %% Rebuilds a Timestamp from an epoch-microsecond instant read off a SqlInstant.
 time_from_micros(Micros) -> {timestamp, Micros}.
 
+%% --- Decimal ---
+%%
+%% A Decimal is an exact base-10 number held as {decimal, Unscaled, Scale}, both
+%% Erlang integers with Scale >= 0, denoting Unscaled * 10^-Scale. Erlang bignums
+%% give the unscaled value arbitrary precision, so a Decimal neither rounds a
+%% base-10 value the way a Float does nor overflows the way a fixed-width int
+%% would.
+
+%% decimal_from_text/1 — std.decimal.fromText.
+%% Text -> Result Decimal Error.
+decimal_from_text(Bin) ->
+    case decimal_parse(string:trim(binary_to_list(Bin))) of
+        {ok, U, S} -> {ok, {decimal, U, S}};
+        error      -> {error, {error_record, <<"decimal.parse">>,
+                               <<"invalid decimal literal">>}}
+    end.
+
+%% decimal_to_text/1 — std.decimal.toText. Canonical text, scale preserved.
+decimal_to_text({decimal, U, 0}) -> integer_to_binary(U);
+decimal_to_text({decimal, U, S}) when S > 0 ->
+    Sign = case U < 0 of true -> <<"-">>; false -> <<>> end,
+    Digits = decimal_pad_left(integer_to_binary(abs(U)), S + 1),
+    Len = byte_size(Digits),
+    IntPart = binary:part(Digits, 0, Len - S),
+    FracPart = binary:part(Digits, Len - S, S),
+    <<Sign/binary, IntPart/binary, ".", FracPart/binary>>.
+
+%% decimal_from_int/1 — std.decimal.fromInt. An integer at scale 0.
+decimal_from_int(N) -> {decimal, N, 0}.
+
+%% decimal_parse_raw/1 — std.decimal.parseRaw. Total in shape, raises on malformed
+%% input (the `19.99m` literal path, where the lexer has already validated the text).
+decimal_parse_raw(Bin) ->
+    case decimal_parse(string:trim(binary_to_list(Bin))) of
+        {ok, U, S} -> {decimal, U, S};
+        error      -> error(badarg)
+    end.
+
+%% decimal_to_float/1 — std.decimal.toFloat. Lossy narrowing to an IEEE double.
+decimal_to_float({decimal, U, S}) -> U / decimal_pow10(S).
+
+%% decimal_cmp/2 — std.decimal raw compare. Aligns scales, then compares the
+%% unscaled values. Returns -1 | 0 | 1, so 1.5 and 1.50 compare equal.
+decimal_cmp({decimal, U1, S1}, {decimal, U2, S2}) ->
+    S = max(S1, S2),
+    A = U1 * decimal_pow10(S - S1),
+    B = U2 * decimal_pow10(S - S2),
+    if A < B -> -1; A > B -> 1; true -> 0 end.
+
+%% decimal_add/2 — std.decimal.add. Aligns scales, then adds; the result scale is
+%% the larger of the two, so no digits are lost.
+decimal_add({decimal, U1, S1}, {decimal, U2, S2}) ->
+    S = max(S1, S2),
+    {decimal, U1 * decimal_pow10(S - S1) + U2 * decimal_pow10(S - S2), S}.
+
+%% decimal_sub/2 — std.decimal.sub. Add the negation.
+decimal_sub(A, B) -> decimal_add(A, decimal_neg(B)).
+
+%% decimal_mul/2 — std.decimal.mul. Exact: the scales add and the unscaled values
+%% multiply.
+decimal_mul({decimal, U1, S1}, {decimal, U2, S2}) -> {decimal, U1 * U2, S1 + S2}.
+
+%% decimal_neg/1 — std.decimal.neg.
+decimal_neg({decimal, U, S}) -> {decimal, -U, S}.
+
+%% decimal_abs/1 — std.decimal.abs.
+decimal_abs({decimal, U, S}) -> {decimal, abs(U), S}.
+
+%% decimal_round/3 — std.decimal.round. Rounds to T fractional digits with Mode.
+%% Asking for more digits than the value has just pads with zeros.
+decimal_round(_Mode, T, {decimal, U, S}) when S =< T ->
+    {decimal, U * decimal_pow10(T - S), T};
+decimal_round(Mode, T, {decimal, U, S}) ->
+    P = decimal_pow10(S - T),
+    Sign = if U < 0 -> -1; true -> 1 end,
+    AbsU = abs(U),
+    Q = AbsU div P,
+    R = AbsU rem P,
+    {decimal, Sign * decimal_round_step(Mode, Sign, Q, R, P), T}.
+
+%% decimal_round_step/5 — apply a rounding mode to a truncated quotient Q whose
+%% dropped remainder is R over a unit P (the discarded fraction is R/P, with
+%% 0 =< R < P). Sign is the sign of the whole value, for the directional modes.
+decimal_round_step(_Mode, _Sign, Q, 0, _P) -> Q;
+decimal_round_step('Down', _Sign, Q, _R, _P) -> Q;
+decimal_round_step('Up', _Sign, Q, _R, _P) -> Q + 1;
+decimal_round_step('Ceiling', Sign, Q, _R, _P) ->
+    case Sign > 0 of true -> Q + 1; false -> Q end;
+decimal_round_step('Floor', Sign, Q, _R, _P) ->
+    case Sign < 0 of true -> Q + 1; false -> Q end;
+decimal_round_step('HalfUp', _Sign, Q, R, P) ->
+    case 2 * R >= P of true -> Q + 1; false -> Q end;
+decimal_round_step('HalfDown', _Sign, Q, R, P) ->
+    case 2 * R > P of true -> Q + 1; false -> Q end;
+decimal_round_step('HalfEven', _Sign, Q, R, P) ->
+    Twice = 2 * R,
+    if Twice > P -> Q + 1;
+       Twice < P -> Q;
+       true -> case Q rem 2 of 0 -> Q; _ -> Q + 1 end
+    end.
+
+%% decimal_div/4 — std.decimal.div. Divides to T fractional digits, rounding the
+%% result with Mode. A zero divisor is an error record (Ridge `Err`).
+decimal_div(_Mode, _T, _A, {decimal, 0, _Sb}) ->
+    {error, {error_record, <<"decimal.divide_by_zero">>, <<"division by zero">>}};
+decimal_div(Mode, T, {decimal, Ua, Sa}, {decimal, Ub, Sb}) ->
+    E = T + Sb - Sa,
+    {Num, Den} =
+        case E >= 0 of
+            true  -> {Ua * decimal_pow10(E), Ub};
+            false -> {Ua, Ub * decimal_pow10(-E)}
+        end,
+    Sign = case (Num < 0) =/= (Den < 0) of true -> -1; false -> 1 end,
+    AN = abs(Num),
+    AD = abs(Den),
+    Q = AN div AD,
+    R = AN rem AD,
+    {ok, {decimal, Sign * decimal_round_step(Mode, Sign, Q, R, AD), T}}.
+
+%% decimal_parse/1 — parse a char list into {ok, Unscaled, Scale} or error.
+%% Grammar: [sign] digits [ . digits ] [ (e|E) [sign] digits ]. Total — any
+%% malformed input yields error instead of raising.
+decimal_parse(Str) ->
+    try
+        {Sign, R1} = decimal_sign(Str),
+        {IntDigits, R2} = decimal_digits(R1),
+        {FracDigits, R3} =
+            case R2 of
+                [$. | AfterDot] -> decimal_digits(AfterDot);
+                _               -> {"", R2}
+            end,
+        {Exp, R4} = decimal_exponent(R3),
+        AllDigits = IntDigits ++ FracDigits,
+        case {R4, AllDigits} of
+            {[], []} -> error;
+            {[], _} ->
+                Unscaled = Sign * list_to_integer(AllDigits),
+                {U, S} = decimal_normalize(Unscaled, length(FracDigits) - Exp),
+                {ok, U, S};
+            _ -> error
+        end
+    catch
+        _:_ -> error
+    end.
+
+decimal_sign([$- | R]) -> {-1, R};
+decimal_sign([$+ | R]) -> {1, R};
+decimal_sign(R)        -> {1, R}.
+
+decimal_digits(Str) -> decimal_digits(Str, []).
+decimal_digits([C | R], Acc) when C >= $0, C =< $9 -> decimal_digits(R, [C | Acc]);
+decimal_digits(R, Acc) -> {lists:reverse(Acc), R}.
+
+%% Optional exponent. On a valid `e[sign]digits` returns {Value, Rest}; with no
+%% exponent, {0, Str}. A bare `e` with no digits is left unconsumed so the
+%% upstream "consumed everything" check rejects the input.
+decimal_exponent([E | R]) when E =:= $e; E =:= $E ->
+    {ESign, R1} = decimal_sign(R),
+    case decimal_digits(R1) of
+        {[], _}  -> {0, [E | R]};
+        {ED, R2} -> {ESign * list_to_integer(ED), R2}
+    end;
+decimal_exponent(Str) -> {0, Str}.
+
+%% Keep the scale non-negative: a positive net exponent scales the unscaled value
+%% up and leaves scale 0.
+decimal_normalize(U, Scale) when Scale < 0 -> {U * decimal_pow10(-Scale), 0};
+decimal_normalize(U, Scale)                -> {U, Scale}.
+
+decimal_pow10(0)             -> 1;
+decimal_pow10(N) when N > 0  -> 10 * decimal_pow10(N - 1).
+
+decimal_pad_left(Bin, MinLen) ->
+    Len = byte_size(Bin),
+    case Len >= MinLen of
+        true  -> Bin;
+        false -> <<(binary:copy(<<"0">>, MinLen - Len))/binary, Bin/binary>>
+    end.
+
+%% Compare two canonical decimal texts by value (the in-memory adapter's ordering
+%% and equality over a decimal column). Reuses decimal_cmp, so 1.5 and 1.50 are
+%% equal.
+decimal_text_cmp(X, Y) -> decimal_cmp(decimal_of_text(X), decimal_of_text(Y)).
+
+%% A comparison key for min/max over a decimal column: the nearest float. The
+%% aggregate returns the original exact value, so this only orders the compare.
+decimal_text_to_float(S) -> decimal_to_float(decimal_of_text(S)).
+
+%% Parse a canonical decimal text (as produced by decimal_to_text) back to the
+%% scaled-integer form. Such text always parses; a malformed value falls back to
+%% zero rather than raising.
+decimal_of_text(S) ->
+    case decimal_parse(binary_to_list(S)) of
+        {ok, U, Sc} -> {decimal, U, Sc};
+        error       -> {decimal, 0, 0}
+    end.
+
+%% --- UUID ---
+%% A Uuid is carried as {uuid, CanonicalBin}, where CanonicalBin is the lowercase
+%% 8-4-4-4-12 hyphenated text. That is the shape the SQL codec moves across a
+%% `uuid` column and the form Postgres reads and writes over the text protocol.
+
+%% uuid_from_text/1 — std.uuid.fromText. Text -> Result Uuid Error. Accepts the
+%% canonical hyphenated form in either case and normalises it to lowercase.
+uuid_from_text(Bin) ->
+    case uuid_canonicalize(Bin) of
+        {ok, Canon} -> {ok, {uuid, Canon}};
+        error       -> {error, {error_record, <<"uuid.parse">>,
+                                <<"invalid uuid">>}}
+    end.
+
+%% uuid_to_text/1 — std.uuid.toText. The canonical lowercase text.
+uuid_to_text({uuid, Bin}) -> Bin.
+
+%% uuid_nil/1 — std.uuid.nil. The all-zero uuid.
+uuid_nil(_Unit) -> {uuid, <<"00000000-0000-0000-0000-000000000000">>}.
+
+%% uuid_gen/1 — std.uuid.gen. A random version-4 uuid from a cryptographic source.
+%% The version nibble is pinned to 4 and the variant bits to the RFC 4122 form.
+uuid_gen(_Unit) ->
+    <<A:48, _:4, B:12, _:2, C:62>> = crypto:strong_rand_bytes(16),
+    {uuid, uuid_format(<<A:48, 4:4, B:12, 2:2, C:62>>)}.
+
+%% uuid_cmp/2 — std.uuid.compare. The canonical lowercase text orders the same as
+%% the 128-bit value, so a plain binary compare yields the uuid ordering.
+uuid_cmp({uuid, A}, {uuid, B}) ->
+    if A < B -> -1; A > B -> 1; true -> 0 end.
+
+%% Validate a uuid string and return its lowercase canonical form, or error.
+uuid_canonicalize(Bin) ->
+    Lower = string:lowercase(string:trim(Bin)),
+    case uuid_valid(Lower) of
+        true  -> {ok, Lower};
+        false -> error
+    end.
+
+%% Whether a binary is a canonical 8-4-4-4-12 hyphenated hex uuid.
+uuid_valid(<<G1:8/binary, "-", G2:4/binary, "-", G3:4/binary, "-", G4:4/binary, "-", G5:12/binary>>) ->
+    uuid_hex(G1) andalso uuid_hex(G2) andalso uuid_hex(G3)
+        andalso uuid_hex(G4) andalso uuid_hex(G5);
+uuid_valid(_) -> false.
+
+uuid_hex(Bin) ->
+    lists:all(fun(C) -> (C >= $0 andalso C =< $9) orelse (C >= $a andalso C =< $f) end,
+              binary_to_list(Bin)).
+
+%% Format 16 bytes as canonical 8-4-4-4-12 lowercase hex.
+uuid_format(<<A:4/binary, B:2/binary, C:2/binary, D:2/binary, E:6/binary>>) ->
+    iolist_to_binary([uuid_hexstr(A), "-", uuid_hexstr(B), "-", uuid_hexstr(C), "-",
+                      uuid_hexstr(D), "-", uuid_hexstr(E)]).
+
+uuid_hexstr(Bin) ->
+    iolist_to_binary([io_lib:format("~2.16.0b", [B]) || <<B>> <= Bin]).
+
+%% --- Bytes ---
+%% A Bytes is a raw binary; its canonical text form is lowercase hex. That hex is
+%% what the SQL codec moves across a `bytea` column (with a `\x` prefix on the
+%% Postgres wire); the value itself stays raw here, so length and comparison are
+%% over the bytes, not their hex spelling.
+
+%% bytes_from_hex/1 — std.bytes.fromHex. Text -> Result Bytes Error. An even-length
+%% run of hex digits in either case decodes to the raw bytes; anything else errors.
+bytes_from_hex(Bin) ->
+    case bytes_decode_hex(Bin) of
+        {ok, Raw} -> {ok, Raw};
+        error     -> {error, {error_record, <<"bytes.parse">>,
+                              <<"invalid hex">>}}
+    end.
+
+%% bytes_to_hex/1 — std.bytes.toHex (and the SQL codec's canonical form). Lowercase
+%% hex, two digits per byte, no separator.
+bytes_to_hex(Raw) ->
+    iolist_to_binary([io_lib:format("~2.16.0b", [B]) || <<B>> <= Raw]).
+
+%% bytes_from_utf8/1 — std.bytes.fromUtf8. A Ridge Text is already a UTF-8 binary,
+%% so its bytes are the same binary reinterpreted as raw.
+bytes_from_utf8(Bin) -> Bin.
+
+%% bytes_to_utf8/1 — std.bytes.toUtf8. Validates the bytes are well-formed UTF-8
+%% and returns them as a Text, or an Err when they are not.
+bytes_to_utf8(Raw) ->
+    case unicode:characters_to_binary(Raw, utf8, utf8) of
+        Bin when is_binary(Bin) -> {ok, Bin};
+        _ -> {error, {error_record, <<"bytes.utf8">>,
+                      <<"not valid UTF-8">>}}
+    end.
+
+%% bytes_empty/1 — std.bytes.empty. The empty byte string.
+bytes_empty(_Unit) -> <<>>.
+
+%% bytes_gen/1 — std.bytes.gen. n cryptographically-random bytes; a non-positive n
+%% yields the empty byte string.
+bytes_gen(N) when is_integer(N), N > 0 -> crypto:strong_rand_bytes(N);
+bytes_gen(_) -> <<>>.
+
+%% --- Date ---
+%% A Date is a calendar day held as {date, EpochDays}, where EpochDays is the whole
+%% number of days since the Unix epoch (1970-01-01); it may be negative for an
+%% earlier date. The integer keeps ordering and day arithmetic exact. The SQL codec
+%% moves it across a `date` column as ISO `YYYY-MM-DD` text, which sorts the same
+%% way as the day count.
+
+%% Gregorian day number of the Unix epoch (1970-01-01). A Date's EpochDays is the
+%% offset from it, so a gregorian day number is EpochDays plus this.
+date_epoch_gd() -> calendar:date_to_gregorian_days(1970, 1, 1).
+
+%% date_from_ymd/3 — std.date.fromYmd. Int -> Int -> Int -> Result Date Error.
+%% Validates the calendar date, rejecting an out-of-range component (month 13,
+%% day 32, Feb 30, ...).
+date_from_ymd(Y, M, D) when is_integer(Y), is_integer(M), is_integer(D) ->
+    case calendar:valid_date(Y, M, D) of
+        true  -> {ok, {date, calendar:date_to_gregorian_days(Y, M, D) - date_epoch_gd()}};
+        false -> {error, {error_record, <<"date.invalid">>, <<"invalid calendar date">>}}
+    end.
+
+%% date_to_iso/1 — std.date.toIso (and the SQL codec's canonical form). ISO 8601
+%% `YYYY-MM-DD`, zero-padded.
+date_to_iso({date, Days}) ->
+    {Y, M, D} = calendar:gregorian_days_to_date(Days + date_epoch_gd()),
+    iolist_to_binary(io_lib:format("~4..0b-~2..0b-~2..0b", [Y, M, D])).
+
+%% date_from_iso/1 — std.date.fromIso. Text -> Result Date Error. Parses ISO 8601
+%% `YYYY-MM-DD` and range-checks the calendar date.
+date_from_iso(Bin) ->
+    case date_parse_iso(binary_to_list(Bin)) of
+        {ok, Y, M, D} ->
+            case calendar:valid_date(Y, M, D) of
+                true  -> {ok, {date, calendar:date_to_gregorian_days(Y, M, D) - date_epoch_gd()}};
+                false -> {error, {error_record, <<"date.invalid">>, <<"date out of range">>}}
+            end;
+        error -> {error, {error_record, <<"date.parse">>, <<"invalid ISO-8601 date">>}}
+    end.
+
+%% Parse "YYYY-MM-DD" into {ok, Y, M, D} or error. Each component is a run of digits
+%% with nothing left over.
+date_parse_iso(Str) ->
+    case string:split(Str, "-", all) of
+        [Ys, Ms, Ds] ->
+            case {string:to_integer(Ys), string:to_integer(Ms), string:to_integer(Ds)} of
+                {{Y, []}, {M, []}, {D, []}} when is_integer(Y), is_integer(M), is_integer(D) ->
+                    {ok, Y, M, D};
+                _ -> error
+            end;
+        _ -> error
+    end.
+
+%% date_year/1, date_month/1, date_day/1 — std.date.year / month / day. The
+%% year, month (1-12), and day-of-month (1-31) of the calendar date.
+date_year({date, Days})  -> {Y, _, _} = calendar:gregorian_days_to_date(Days + date_epoch_gd()), Y.
+date_month({date, Days}) -> {_, M, _} = calendar:gregorian_days_to_date(Days + date_epoch_gd()), M.
+date_day({date, Days})   -> {_, _, D} = calendar:gregorian_days_to_date(Days + date_epoch_gd()), D.
+
+%% date_today/1 — std.date.today. Today's calendar date at a fixed offset from UTC,
+%% in minutes east. The offset shifts the current instant, then the date is read off
+%% in UTC, so a clock at that offset reads this date now; no timezone database or DST
+%% rule is involved. Reads the system clock, so it carries the `time` capability.
+date_today(OffsetMinutes) when is_integer(OffsetMinutes) ->
+    Secs = erlang:system_time(second) + OffsetMinutes * 60,
+    {{Y, M, D}, _Time} = calendar:system_time_to_universal_time(Secs, second),
+    {date, calendar:date_to_gregorian_days(Y, M, D) - date_epoch_gd()}.
+
+%% date_today_utc/1 — std.date.todayUtc. Today's date in UTC (offset 0).
+date_today_utc(_Unit) -> date_today(0).
+
+%% date_add_days/2 — std.date.addDays. The date N days after D (N may be negative).
+date_add_days(N, {date, Days}) -> {date, Days + N}.
+
+%% date_diff_days/2 — std.date.diffDays. The whole-day count A - B; negative when A
+%% is earlier than B.
+date_diff_days({date, A}, {date, B}) -> A - B.
+
+%% date_cmp/2 — std.date.compare. The day count orders chronologically, so a plain
+%% integer compare yields the date ordering (matching how Postgres sorts `date`).
+date_cmp({date, A}, {date, B}) ->
+    if A < B -> -1; A > B -> 1; true -> 0 end.
+
+%% --- Time of day ---
+%% A Time is a wall-clock time of day held as {time, Micros}, where Micros is the
+%% number of microseconds since midnight, in [0, 86_400_000_000). It carries no date
+%% and no timezone; the integer form keeps ordering and time arithmetic exact.
+tod_micros_per_day() -> 86400000000.
+
+%% tod_from_hms/3 — std.timeofday.fromHms. Int -> Int -> Int -> Result Time Error.
+%% Validates the components (hour 0-23, minute 0-59, second 0-59); a leap second (60)
+%% is rejected, matching POSIX time.
+tod_from_hms(H, M, S) when is_integer(H), is_integer(M), is_integer(S) ->
+    case (H >= 0) andalso (H =< 23) andalso (M >= 0) andalso (M =< 59)
+         andalso (S >= 0) andalso (S =< 59) of
+        true  -> {ok, {time, (H * 3600 + M * 60 + S) * 1000000}};
+        false -> {error, {error_record, <<"time.invalid">>, <<"invalid time of day">>}}
+    end.
+
+%% tod_to_iso/1 — std.timeofday.toIso (and the SQL codec's canonical form). ISO 8601
+%% `HH:MM:SS`, zero-padded, with a `.ffffff` fraction only when the time carries
+%% sub-second precision. The fixed-width fields keep the text lexicographically ordered
+%% the same as the underlying instant.
+tod_to_iso({time, Micros}) ->
+    Secs = Micros div 1000000,
+    Frac = Micros rem 1000000,
+    H = Secs div 3600,
+    M = (Secs rem 3600) div 60,
+    S = Secs rem 60,
+    Base = io_lib:format("~2..0b:~2..0b:~2..0b", [H, M, S]),
+    case Frac of
+        0 -> iolist_to_binary(Base);
+        _ -> iolist_to_binary([Base, io_lib:format(".~6..0b", [Frac])])
+    end.
+
+%% tod_from_iso/1 — std.timeofday.fromIso. Text -> Result Time Error. Parses ISO 8601
+%% `HH:MM:SS` with an optional `.f`-`.ffffff` fraction and range-checks the components.
+tod_from_iso(Bin) ->
+    case tod_parse_iso(binary_to_list(Bin)) of
+        {ok, H, M, S, Frac} ->
+            case (H >= 0) andalso (H =< 23) andalso (M >= 0) andalso (M =< 59)
+                 andalso (S >= 0) andalso (S =< 59) of
+                true  -> {ok, {time, (H * 3600 + M * 60 + S) * 1000000 + Frac}};
+                false -> {error, {error_record, <<"time.invalid">>, <<"time out of range">>}}
+            end;
+        error ->
+            {error, {error_record, <<"time.invalid">>, <<"invalid ISO-8601 time">>}}
+    end.
+
+%% Parse "HH:MM:SS" (with an optional ".ffffff") into {ok, H, M, S, FracMicros} or error.
+tod_parse_iso(Str) ->
+    case string:split(Str, ":", all) of
+        [HStr, MStr, Rest] ->
+            case {tod_int(HStr), tod_int(MStr), tod_parse_secs(Rest)} of
+                {{ok, H}, {ok, M}, {ok, S, Frac}} -> {ok, H, M, S, Frac};
+                _ -> error
+            end;
+        _ -> error
+    end.
+
+%% The seconds field with an optional fractional part -> {ok, Secs, FracMicros} or error.
+tod_parse_secs(Str) ->
+    case string:split(Str, ".", all) of
+        [SStr] ->
+            case tod_int(SStr) of
+                {ok, S} -> {ok, S, 0};
+                error   -> error
+            end;
+        [SStr, FStr] ->
+            case {tod_int(SStr), tod_frac(FStr)} of
+                {{ok, S}, {ok, Frac}} -> {ok, S, Frac};
+                _ -> error
+            end;
+        _ -> error
+    end.
+
+%% A non-negative integer field with nothing left over, or error.
+tod_int(Str) ->
+    case string:to_integer(Str) of
+        {N, []} when is_integer(N), N >= 0 -> {ok, N};
+        _ -> error
+    end.
+
+%% Fractional-second digits -> microseconds, right-padded and truncated to 6 places.
+tod_frac(Str) ->
+    case (Str =/= []) andalso lists:all(fun(C) -> (C >= $0) andalso (C =< $9) end, Str) of
+        true ->
+            {Micros, _} = string:to_integer(lists:sublist(Str ++ "000000", 6)),
+            {ok, Micros};
+        false -> error
+    end.
+
+%% tod_hour/1, tod_minute/1, tod_second/1 — the hour (0-23), minute (0-59), and whole
+%% second (0-59) of the time of day; a sub-second fraction is dropped.
+tod_hour({time, Micros})   -> (Micros div 1000000) div 3600.
+tod_minute({time, Micros}) -> ((Micros div 1000000) rem 3600) div 60.
+tod_second({time, Micros}) -> (Micros div 1000000) rem 60.
+
+%% tod_now/1 — std.timeofday.now. The current time of day at a fixed offset from UTC, in
+%% minutes east. The offset shifts the current instant, then the time of day is read off
+%% the shifted clock, wrapping within the day. Reads the system clock, so it carries the
+%% `time` capability.
+tod_now(OffsetMinutes) when is_integer(OffsetMinutes) ->
+    Micros = erlang:system_time(microsecond) + OffsetMinutes * 60000000,
+    Day = tod_micros_per_day(),
+    {time, ((Micros rem Day) + Day) rem Day}.
+
+%% tod_now_utc/1 — std.timeofday.nowUtc. The current time of day in UTC (offset 0).
+tod_now_utc(_Unit) -> tod_now(0).
+
+%% tod_add_seconds/2 — std.timeofday.addSeconds. The time N seconds after T, wrapping at
+%% midnight (so 23:59:30 + 60s is 00:00:30); N may be negative.
+tod_add_seconds(N, {time, Micros}) ->
+    Day = tod_micros_per_day(),
+    Shifted = Micros + N * 1000000,
+    {time, ((Shifted rem Day) + Day) rem Day}.
+
+%% tod_diff_seconds/2 — std.timeofday.diffSeconds. The whole-second count A - B within a
+%% day; negative when A is earlier than B. A sub-second remainder is floored.
+tod_diff_seconds({time, A}, {time, B}) -> (A - B) div 1000000.
+
+%% tod_cmp/2 — std.timeofday.compare. The microsecond count orders chronologically, so a
+%% plain integer compare yields the time ordering (matching how Postgres sorts `time`).
+tod_cmp({time, A}, {time, B}) ->
+    if A < B -> -1; A > B -> 1; true -> 0 end.
+
+%% bytes_length/1 — std.bytes.length. The number of bytes.
+bytes_length(Raw) -> byte_size(Raw).
+
+%% bytes_concat/2 — std.bytes.concat. Two byte strings end to end.
+bytes_concat(A, B) -> <<A/binary, B/binary>>.
+
+%% bytes_cmp/2 — std.bytes.compare. Byte-by-byte unsigned order, which matches how
+%% Postgres orders a `bytea` column; a plain binary compare yields exactly that.
+bytes_cmp(A, B) ->
+    if A < B -> -1; A > B -> 1; true -> 0 end.
+
+%% Decode an even-length hex string (either case) to raw bytes, or error.
+bytes_decode_hex(Bin) ->
+    S = string:trim(Bin),
+    case byte_size(S) rem 2 of
+        0 -> bytes_decode_hex_pairs(S, []);
+        _ -> error
+    end.
+
+bytes_decode_hex_pairs(<<>>, Acc) ->
+    {ok, iolist_to_binary(lists:reverse(Acc))};
+bytes_decode_hex_pairs(<<H1, H2, Rest/binary>>, Acc) ->
+    case {bytes_hex_nibble(H1), bytes_hex_nibble(H2)} of
+        {N1, N2} when N1 =/= error, N2 =/= error ->
+            bytes_decode_hex_pairs(Rest, [<<((N1 bsl 4) bor N2)>> | Acc]);
+        _ -> error
+    end.
+
+bytes_hex_nibble(C) when C >= $0, C =< $9 -> C - $0;
+bytes_hex_nibble(C) when C >= $a, C =< $f -> C - $a + 10;
+bytes_hex_nibble(C) when C >= $A, C =< $F -> C - $A + 10;
+bytes_hex_nibble(_) -> error.
+
 %% --- Numbers ---
 
 %% int_parse/0: returns a fun ref for use in higher-order contexts (e.g. Option.flatMap Int.parse).
@@ -209,6 +779,18 @@ sql_literal({'SqlBool', true})  -> <<"TRUE">>;
 sql_literal({'SqlBool', false}) -> <<"FALSE">>;
 sql_literal({'SqlFloat', F})    -> float_to_text(F);
 sql_literal({'SqlInstant', N})  -> <<"'", (iolist_to_binary(calendar:system_time_to_rfc3339(N, [{unit, microsecond}, {offset, "Z"}])))/binary, "'">>;
+sql_literal({'SqlDecimal', S})  -> S;
+sql_literal({'SqlUuid', S})     -> <<"'", S/binary, "'">>;
+sql_literal({'SqlBytes', Hex})  -> <<"'\\x", Hex/binary, "'">>;
+sql_literal({'SqlJson', S})     -> <<"'", (binary:replace(S, <<"'">>, <<"''">>, [global]))/binary, "'">>;
+sql_literal({'SqlDate', S})     -> <<"'", S/binary, "'">>;
+sql_literal({'SqlTime', S})     -> <<"'", S/binary, "'">>;
+sql_literal({'SqlInterval', Ms}) -> <<"'", (integer_to_binary(Ms))/binary, " milliseconds'">>;
+%% An array renders as an `ARRAY[...]` constructor over its elements' own literals, so
+%% each element keeps its own quoting/escaping. Used only for a hand-written array
+%% DEFAULT — `deriving (Schema)` never produces one.
+sql_literal({'SqlArray', Elems}) ->
+    <<"ARRAY[", (iolist_to_binary(lists:join(<<", ">>, [sql_literal(E) || E <- Elems])))/binary, "]">>;
 sql_literal('SqlNull')          -> <<"NULL">>.
 
 %% sql_value_source/1 — render a SqlValue as the Ridge *source* expression that
@@ -223,6 +805,15 @@ sql_value_source({'SqlBool', true})  -> <<"(sqlBool true)">>;
 sql_value_source({'SqlBool', false}) -> <<"(sqlBool false)">>;
 sql_value_source({'SqlFloat', F})    -> <<"(sqlFloat ", (float_to_text(F))/binary, ")">>;
 sql_value_source({'SqlInstant', N})  -> <<"(sqlInstant ", (integer_to_binary(N))/binary, ")">>;
+sql_value_source({'SqlDecimal', S})  -> <<"(sqlDecimal ", (source_text_literal(S))/binary, ")">>;
+sql_value_source({'SqlUuid', S})     -> <<"(sqlUuid ", (source_text_literal(S))/binary, ")">>;
+sql_value_source({'SqlBytes', S})    -> <<"(sqlBytes ", (source_text_literal(S))/binary, ")">>;
+sql_value_source({'SqlJson', S})     -> <<"(sqlJson ", (source_text_literal(S))/binary, ")">>;
+sql_value_source({'SqlDate', S})     -> <<"(sqlDate ", (source_text_literal(S))/binary, ")">>;
+sql_value_source({'SqlTime', S})     -> <<"(sqlTime ", (source_text_literal(S))/binary, ")">>;
+sql_value_source({'SqlInterval', Ms}) -> <<"(sqlInterval ", (integer_to_binary(Ms))/binary, ")">>;
+sql_value_source({'SqlArray', Elems}) ->
+    <<"(sqlArray [", (iolist_to_binary(lists:join(<<", ">>, [sql_value_source(E) || E <- Elems])))/binary, "])">>;
 sql_value_source('SqlNull')          -> <<"(sqlNull ())">>.
 
 %% source_text_literal/1 — a Text as a Ridge string literal: backslash doubled
@@ -1587,6 +2178,13 @@ mem_pcell({'QLitInt', N}, _Row)   -> {'SqlInt', N};
 mem_pcell({'QLitText', S}, _Row)  -> {'SqlText', S};
 mem_pcell({'QLitBool', B}, _Row)  -> {'SqlBool', B};
 mem_pcell({'QLitFloat', F}, _Row) -> {'SqlFloat', F};
+mem_pcell({'QLitDecimal', D}, _Row) -> {'SqlDecimal', decimal_to_text(D)};
+mem_pcell({'QLitUuid', U}, _Row) -> {'SqlUuid', uuid_to_text(U)};
+mem_pcell({'QLitInstant', TS}, _Row) -> {'SqlInstant', time_to_micros(TS)};
+mem_pcell({'QLitBytes', B}, _Row) -> {'SqlBytes', bytes_to_hex(B)};
+mem_pcell({'QLitDate', D}, _Row) -> {'SqlDate', date_to_iso(D)};
+mem_pcell({'QLitTime', T}, _Row) -> {'SqlTime', tod_to_iso(T)};
+mem_pcell({'QLitInterval', D}, _Row) -> {'SqlInterval', maps:get(ms, D)};
 %% Computed projection cells over a join's flat source-prefixed rows: arithmetic
 %% folds its operands (each resolved by the same prefix rules), a CASE picks a
 %% branch by its condition read as an N-ary predicate. A cell with no value — a
@@ -1687,28 +2285,74 @@ mem_leaf_key_tail(_)                                        -> false.
 mem_agg(_Func, [])         -> 'SqlNull';
 mem_agg(<<"SUM">>, Values) -> mem_sum(Values);
 mem_agg(<<"AVG">>, Values) -> {'SqlFloat', mem_numsum(Values) / length(Values)};
+%% An interval column averages to a mean span in milliseconds, the same float an
+%% integer or decimal column averages to. Postgres needs a distinct SQL path for it
+%% (`EXTRACT(EPOCH ...)`), but the in-memory fold reads the millisecond spans through
+%% `mem_num` and averages them exactly as the numeric case does.
+mem_agg(<<"AVG_INTERVAL">>, Values) -> {'SqlFloat', mem_numsum(Values) / length(Values)};
 mem_agg(<<"MIN">>, Values) -> mem_extreme(min, Values);
 mem_agg(<<"MAX">>, Values) -> mem_extreme(max, Values);
 mem_agg(_Other, _Values)   -> 'SqlNull'.
 
 %% SUM stays an integer while every addend is one and becomes a float as soon as
 %% any value is a float, mirroring Postgres where SUM(int) is integral and
-%% SUM(float8) is floating.
+%% SUM(float8) is floating. A decimal column sums exactly and stays a decimal, as
+%% SUM(numeric) does in Postgres — the scaled-integer add keeps every digit.
 mem_sum(Values) ->
-    Sum = mem_numsum(Values),
-    case lists:any(fun is_float_val/1, Values) of
-        true  -> {'SqlFloat', float(Sum)};
-        false -> {'SqlInt', Sum}
+    case lists:any(fun is_decimal_val/1, Values) of
+        true  -> mem_sum_decimal(Values);
+        false ->
+            case lists:any(fun is_interval_val/1, Values) of
+                true  -> mem_sum_interval(Values);
+                false ->
+                    Sum = mem_numsum(Values),
+                    case lists:any(fun is_float_val/1, Values) of
+                        true  -> {'SqlFloat', float(Sum)};
+                        false -> {'SqlInt', Sum}
+                    end
+            end
     end.
+
+%% An interval column sums to a total Duration: fold the whole-millisecond spans and
+%% keep the result an interval, the way SUM(interval) stays an interval in Postgres.
+mem_sum_interval(Values) ->
+    Sum = lists:foldl(fun({'SqlInterval', Ms}, Acc) -> Acc + Ms end, 0, Values),
+    {'SqlInterval', Sum}.
+
+is_interval_val({'SqlInterval', _}) -> true;
+is_interval_val(_)                  -> false.
+
+%% Fold a decimal column's values with the exact scaled-integer add so no
+%% fractional digit is lost; the result carries the widest scale of its addends,
+%% matching how Postgres widens the scale of SUM(numeric).
+mem_sum_decimal(Values) ->
+    Sum = lists:foldl(
+            fun(V, Acc) -> decimal_add(Acc, decimal_of_value(V)) end,
+            {decimal, 0, 0},
+            Values),
+    {'SqlDecimal', decimal_to_text(Sum)}.
+
+decimal_of_value({'SqlDecimal', S}) -> decimal_of_text(S);
+decimal_of_value({'SqlInt', N})     -> decimal_from_int(N).
 
 mem_numsum(Values) ->
     lists:foldl(fun(V, Acc) -> Acc + mem_num(V) end, 0, Values).
 
-mem_num({'SqlInt', N})   -> N;
-mem_num({'SqlFloat', F}) -> F.
+%% The numeric value of a scalar for SUM/AVG folding. A decimal narrows to its
+%% nearest float here; SUM keeps decimals exact through mem_sum_decimal, so this
+%% float path only ever backs AVG, whose result is a float either way. An interval
+%% reads as its whole-millisecond span, so averaging a Duration column yields a mean
+%% in milliseconds.
+mem_num({'SqlInt', N})      -> N;
+mem_num({'SqlFloat', F})    -> F;
+mem_num({'SqlDecimal', S})  -> decimal_text_to_float(S);
+mem_num({'SqlInterval', Ms}) -> Ms.
 
 is_float_val({'SqlFloat', _}) -> true;
 is_float_val(_)               -> false.
+
+is_decimal_val({'SqlDecimal', _}) -> true;
+is_decimal_val(_)                 -> false.
 
 %% MIN/MAX by direction over the values' comparison keys, keeping the original
 %% SqlValue so the result carries the column's type. Numbers compare numerically,
@@ -1729,6 +2373,24 @@ mem_key({'SqlInt', N})   -> N;
 mem_key({'SqlInstant', N}) -> N;
 mem_key({'SqlFloat', F}) -> F;
 mem_key({'SqlText', S})  -> S;
+mem_key({'SqlDecimal', S}) -> decimal_text_to_float(S);
+mem_key({'SqlUuid', S}) -> S;
+%% A bytea column keys on its fixed-width lowercase hex, which orders the same as
+%% the raw bytes, so ORDER BY / min / max match how Postgres sorts the column.
+mem_key({'SqlBytes', S}) -> S;
+%% A json/jsonb column keys on its encoded JSON text; equal JsonValues encode to the
+%% same text, so ORDER BY / min / max are deterministic (a stable text ordering).
+mem_key({'SqlJson', S}) -> S;
+%% A date column keys on its ISO `YYYY-MM-DD` text, which sorts chronologically, so
+%% ORDER BY / min / max match how Postgres sorts the column.
+mem_key({'SqlDate', S}) -> S;
+mem_key({'SqlTime', S}) -> S;
+%% An interval column keys on its whole-millisecond span, an integer, so ORDER BY /
+%% min / max fold by duration length exactly.
+mem_key({'SqlInterval', Ms}) -> Ms;
+%% An array column keys on the list of its elements' keys, so a comparison folds
+%% element-wise the way Postgres orders arrays.
+mem_key({'SqlArray', Elems}) -> [mem_key(E) || E <- Elems];
 mem_key({'SqlBool', B})  -> B.
 
 %% An aggregate over a group as a comparison operand: the folded value (a column or
@@ -1809,12 +2471,20 @@ mem_hscalar_nary('QGroupKey', Key, _GR) -> Key;
 mem_hscalar_nary('QAggCount', _Key, GR) -> {'SqlInt', length(GR)};
 mem_hscalar_nary({'QAggSum', Node}, _Key, GR) -> mem_agg_q_or_undef(<<"SUM">>, Node, GR);
 mem_hscalar_nary({'QAggAvg', Node}, _Key, GR) -> mem_agg_q_or_undef(<<"AVG">>, Node, GR);
+mem_hscalar_nary({'QAggAvgInterval', Node}, _Key, GR) -> mem_agg_q_or_undef(<<"AVG_INTERVAL">>, Node, GR);
 mem_hscalar_nary({'QAggMin', Node}, _Key, GR) -> mem_agg_q_or_undef(<<"MIN">>, Node, GR);
 mem_hscalar_nary({'QAggMax', Node}, _Key, GR) -> mem_agg_q_or_undef(<<"MAX">>, Node, GR);
 mem_hscalar_nary({'QLitInt', N}, _Key, _GR)   -> {'SqlInt', N};
 mem_hscalar_nary({'QLitText', S}, _Key, _GR)  -> {'SqlText', S};
 mem_hscalar_nary({'QLitBool', B}, _Key, _GR)  -> {'SqlBool', B};
 mem_hscalar_nary({'QLitFloat', F}, _Key, _GR) -> {'SqlFloat', F};
+mem_hscalar_nary({'QLitDecimal', D}, _Key, _GR) -> {'SqlDecimal', decimal_to_text(D)};
+mem_hscalar_nary({'QLitUuid', U}, _Key, _GR) -> {'SqlUuid', uuid_to_text(U)};
+mem_hscalar_nary({'QLitInstant', TS}, _Key, _GR) -> {'SqlInstant', time_to_micros(TS)};
+mem_hscalar_nary({'QLitBytes', B}, _Key, _GR) -> {'SqlBytes', bytes_to_hex(B)};
+mem_hscalar_nary({'QLitDate', D}, _Key, _GR) -> {'SqlDate', date_to_iso(D)};
+mem_hscalar_nary({'QLitTime', T}, _Key, _GR) -> {'SqlTime', tod_to_iso(T)};
+mem_hscalar_nary({'QLitInterval', D}, _Key, _GR) -> {'SqlInterval', maps:get(ms, D)};
 mem_hscalar_nary(_Other, _Key, _GR)           -> undefined.
 
 %% Merge the Changes columns into every row matching the predicate tree, leaving
@@ -2007,6 +2677,13 @@ mem_jscalar({'QLitInt', N}, _L, _R)   -> {'SqlInt', N};
 mem_jscalar({'QLitText', S}, _L, _R)  -> {'SqlText', S};
 mem_jscalar({'QLitBool', B}, _L, _R)  -> {'SqlBool', B};
 mem_jscalar({'QLitFloat', F}, _L, _R) -> {'SqlFloat', F};
+mem_jscalar({'QLitDecimal', D}, _L, _R) -> {'SqlDecimal', decimal_to_text(D)};
+mem_jscalar({'QLitUuid', U}, _L, _R) -> {'SqlUuid', uuid_to_text(U)};
+mem_jscalar({'QLitInstant', TS}, _L, _R) -> {'SqlInstant', time_to_micros(TS)};
+mem_jscalar({'QLitBytes', B}, _L, _R) -> {'SqlBytes', bytes_to_hex(B)};
+mem_jscalar({'QLitDate', D}, _L, _R) -> {'SqlDate', date_to_iso(D)};
+mem_jscalar({'QLitTime', T}, _L, _R) -> {'SqlTime', tod_to_iso(T)};
+mem_jscalar({'QLitInterval', D}, _L, _R) -> {'SqlInterval', maps:get(ms, D)};
 mem_jscalar({'QAdd', A, B}, L, R) -> mem_arith_apply('+', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
 mem_jscalar({'QSub', A, B}, L, R) -> mem_arith_apply('-', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
 mem_jscalar({'QMul', A, B}, L, R) -> mem_arith_apply('*', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
@@ -2187,6 +2864,13 @@ mem_nscalar({'QLitInt', N}, _Row)   -> {'SqlInt', N};
 mem_nscalar({'QLitText', S}, _Row)  -> {'SqlText', S};
 mem_nscalar({'QLitBool', B}, _Row)  -> {'SqlBool', B};
 mem_nscalar({'QLitFloat', F}, _Row) -> {'SqlFloat', F};
+mem_nscalar({'QLitDecimal', D}, _Row) -> {'SqlDecimal', decimal_to_text(D)};
+mem_nscalar({'QLitUuid', U}, _Row) -> {'SqlUuid', uuid_to_text(U)};
+mem_nscalar({'QLitInstant', TS}, _Row) -> {'SqlInstant', time_to_micros(TS)};
+mem_nscalar({'QLitBytes', B}, _Row) -> {'SqlBytes', bytes_to_hex(B)};
+mem_nscalar({'QLitDate', D}, _Row) -> {'SqlDate', date_to_iso(D)};
+mem_nscalar({'QLitTime', T}, _Row) -> {'SqlTime', tod_to_iso(T)};
+mem_nscalar({'QLitInterval', D}, _Row) -> {'SqlInterval', maps:get(ms, D)};
 mem_nscalar({'QAdd', A, B}, Row) -> mem_arith_apply('+', mem_nscalar(A, Row), mem_nscalar(B, Row));
 mem_nscalar({'QSub', A, B}, Row) -> mem_arith_apply('-', mem_nscalar(A, Row), mem_nscalar(B, Row));
 mem_nscalar({'QMul', A, B}, Row) -> mem_arith_apply('*', mem_nscalar(A, Row), mem_nscalar(B, Row));
@@ -2379,6 +3063,13 @@ mem_scalar({'QLitInt', N}, _Row)   -> {'SqlInt', N};
 mem_scalar({'QLitText', S}, _Row)  -> {'SqlText', S};
 mem_scalar({'QLitBool', B}, _Row)  -> {'SqlBool', B};
 mem_scalar({'QLitFloat', F}, _Row) -> {'SqlFloat', F};
+mem_scalar({'QLitDecimal', D}, _Row) -> {'SqlDecimal', decimal_to_text(D)};
+mem_scalar({'QLitUuid', U}, _Row) -> {'SqlUuid', uuid_to_text(U)};
+mem_scalar({'QLitInstant', TS}, _Row) -> {'SqlInstant', time_to_micros(TS)};
+mem_scalar({'QLitBytes', B}, _Row) -> {'SqlBytes', bytes_to_hex(B)};
+mem_scalar({'QLitDate', D}, _Row) -> {'SqlDate', date_to_iso(D)};
+mem_scalar({'QLitTime', T}, _Row) -> {'SqlTime', tod_to_iso(T)};
+mem_scalar({'QLitInterval', D}, _Row) -> {'SqlInterval', maps:get(ms, D)};
 mem_scalar({'QAdd', A, B}, Row) -> mem_arith_apply('+', mem_scalar(A, Row), mem_scalar(B, Row));
 mem_scalar({'QSub', A, B}, Row) -> mem_arith_apply('-', mem_scalar(A, Row), mem_scalar(B, Row));
 mem_scalar({'QMul', A, B}, Row) -> mem_arith_apply('*', mem_scalar(A, Row), mem_scalar(B, Row));
@@ -2422,11 +3113,31 @@ mem_arith_apply(_Op, _, _) -> undefined.
 
 %% Equality is exact and type-aware (the tags must match); ordering is defined
 %% only for the ordered base types and answers `false` for anything else.
+%% A decimal column compares by value, so 1.5 and 1.50 are equal; this clause
+%% precedes the structural `eq` below, which would see the two texts as distinct.
+mem_sql_cmp(eq, {'SqlDecimal', X}, {'SqlDecimal', Y}) -> decimal_text_cmp(X, Y) =:= 0;
 mem_sql_cmp(eq, A, B) -> A =:= B;
 mem_sql_cmp(lt, {'SqlInt', X}, {'SqlInt', Y})     -> X < Y;
 mem_sql_cmp(lt, {'SqlText', X}, {'SqlText', Y})   -> X < Y;
 mem_sql_cmp(lt, {'SqlFloat', X}, {'SqlFloat', Y}) -> X < Y;
 mem_sql_cmp(lt, {'SqlInstant', X}, {'SqlInstant', Y}) -> X < Y;
+mem_sql_cmp(lt, {'SqlDecimal', X}, {'SqlDecimal', Y}) -> decimal_text_cmp(X, Y) < 0;
+%% A uuid column orders by its canonical text, which matches the 128-bit value order;
+%% equality rides the generic structural clause above (the canonical form is unique).
+mem_sql_cmp(lt, {'SqlUuid', X}, {'SqlUuid', Y}) -> X < Y;
+%% A bytea column compares by its fixed-width lowercase hex, which orders the same
+%% as the raw bytes Postgres compares (byte by byte, unsigned).
+mem_sql_cmp(lt, {'SqlBytes', X}, {'SqlBytes', Y}) -> X < Y;
+%% A json/jsonb column orders by its encoded text; equality rides the generic
+%% structural clause above (equal JsonValues encode to the identical text).
+mem_sql_cmp(lt, {'SqlJson', X}, {'SqlJson', Y}) -> X < Y;
+%% A date column orders by its ISO `YYYY-MM-DD` text, which sorts chronologically;
+%% equality rides the generic structural clause above (the ISO form is canonical).
+mem_sql_cmp(lt, {'SqlDate', X}, {'SqlDate', Y}) -> X < Y;
+mem_sql_cmp(lt, {'SqlTime', X}, {'SqlTime', Y}) -> X < Y;
+%% An interval column compares by its whole-millisecond span; equality rides the
+%% generic structural clause above (equal spans carry the identical integer).
+mem_sql_cmp(lt, {'SqlInterval', X}, {'SqlInterval', Y}) -> X < Y;
 mem_sql_cmp(lt, _A, _B) -> false.
 
 %% A SqlValue used directly as a predicate: a SqlBool yields its boolean.

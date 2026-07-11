@@ -5,7 +5,7 @@
 -- to and from a SqlValue. The base-type instances live here; opaque newtypes
 -- get their instance for free via deriving (see the data layer).
 
-pub type SqlValue = SqlInt Int | SqlText Text | SqlBool Bool | SqlFloat Float | SqlNull | SqlInstant Int
+pub type SqlValue = SqlInt Int | SqlText Text | SqlBool Bool | SqlFloat Float | SqlNull | SqlInstant Int | SqlDecimal Text | SqlUuid Text | SqlBytes Text | SqlJson Text | SqlDate Text | SqlTime Text | SqlInterval Int | SqlArray (List SqlValue)
 
 -- Direct SqlValue constructors. The variants are opaque to consumers (who reach
 -- them through `SqlType` or these factories), so these monomorphic factories are
@@ -22,15 +22,80 @@ pub fn sqlNull () -> SqlValue = SqlNull
 -- A wall-clock instant as epoch microseconds. Completes the base-type factory set
 -- so a timestamp default (`DefaultLit`) can be built and rendered back to source.
 pub fn sqlInstant (micros: Int) -> SqlValue = SqlInstant micros
+-- An exact decimal, carried as its canonical text. Completes the base-type factory
+-- set so a decimal default (`DefaultLit`) can be built and rendered back to source.
+pub fn sqlDecimal (s: Text) -> SqlValue = SqlDecimal s
+
+-- A uuid, carried as its canonical text. Completes the base-type factory set so a
+-- uuid default (`DefaultLit`) can be built and rendered back to source.
+pub fn sqlUuid (s: Text) -> SqlValue = SqlUuid s
+
+-- A byte string, carried as its canonical lowercase hex text. Like the uuid
+-- factory it takes the canonical text form (a Bytes has no literal), so a bytea
+-- default (`DefaultLit`) can be built and rendered back to source, and the query
+-- compiler can bind a captured Bytes after running it through `Bytes.toHex`.
+pub fn sqlBytes (s: Text) -> SqlValue = SqlBytes s
+
+-- A JSON document, carried as its encoded JSON text. Like the other rich-scalar
+-- factories it takes the text form, so a `json`/`jsonb` default (`DefaultLit`) can be
+-- built and rendered back to source, and a value read from a column round-trips.
+pub fn sqlJson (s: Text) -> SqlValue = SqlJson s
+
+-- A calendar date, carried as its ISO `YYYY-MM-DD` text. Like the uuid factory it
+-- takes the canonical text form (a Date has no literal), so a `date` default
+-- (`DefaultLit`) can be built and rendered back to source, and the query compiler
+-- can bind a captured Date after running it through `Date.toIso`.
+pub fn sqlDate (s: Text) -> SqlValue = SqlDate s
+
+-- A wall-clock time of day, carried as its ISO `HH:MM:SS[.ffffff]` text. Like the
+-- date factory it takes the canonical text form (a Time has no literal), so a `time`
+-- default (`DefaultLit`) can be built and rendered back to source, and the query
+-- compiler can bind a captured Time after running it through `Time.toIso`.
+pub fn sqlTime (s: Text) -> SqlValue = SqlTime s
+
+-- A length of time, carried as its whole-millisecond span. A `Duration` is already
+-- an integer count of milliseconds, so unlike the text-backed date and time factories
+-- this takes the raw span directly; the runtime renders it to an `interval` literal.
+pub fn sqlInterval (ms: Int) -> SqlValue = SqlInterval ms
+
+-- A homogeneous array, carried as the list of its elements' own `SqlValue`s. Each
+-- element rides its own codec, so the element type decides how it moves across the
+-- wire; the adapter renders the whole list as a native SQL array. Completes the
+-- factory set so an array default (`DefaultLit`) can be built and rendered back to
+-- source.
+pub fn sqlArray (elems: List SqlValue) -> SqlValue = SqlArray elems
+
+-- A wall-clock instant from a typed `Timestamp` rather than raw epoch micros. The
+-- query compiler uses it to bind a captured Timestamp as a `SqlInstant` parameter,
+-- where the class method `SqlType.toSql` is not reachable from a stdlib module.
+pub fn sqlInstantOf (t: Timestamp) -> SqlValue = SqlInstant (tsToMicros t)
+
+-- A SQL interval from a typed `Duration` — its millisecond span. The query compiler
+-- uses it to bind a captured Duration as a `SqlInterval` parameter, the same way
+-- `sqlInstantOf` binds a captured Timestamp, since `SqlType.toSql` is not reachable
+-- from a stdlib module.
+pub fn sqlIntervalOf (d: Duration) -> SqlValue = SqlInterval d.ms
 
 -- ── SQL column type ───────────────────────────────────────────────────────────
 --
 -- The dialect-neutral SQL column type a field maps to. The Ridge field type
 -- drives a default (an `Int` field maps to `DbBigInt`, `Text` to `DbText`, and so
--- on); a schema `columnType` step overrides it per column. `DbRaw` is the escape
--- hatch for a dialect-specific type spelled by hand. It lives here at the
--- value/column type layer, beside `SqlValue`, so the codec class can name it.
-pub type DbType = DbBoolean | DbInt | DbBigInt | DbFloat | DbDecimal Int Int | DbText | DbVarchar Int | DbUuid | DbTimestamp | DbTimestampTz | DbRaw Text
+-- on); a schema `columnType` step overrides it per column — `DbSmallInt` for a
+-- 16-bit integer, `DbChar n` for a blank-padded fixed-width string, both still
+-- backed by the same `Int`/`Text` value. `DbJson`/`DbJsonb` map a `JsonValue`
+-- field to a `json`/`jsonb` column. `DbInterval` maps a `Duration` to an `interval`
+-- column. `DbArray` maps a `List a` field to an array of the element's column type
+-- (`bigint[]`, `text[]`, …), carrying that element `DbType`. `DbRaw` is the escape
+-- hatch for a dialect-specific type spelled by hand. It lives here at the value/column
+-- type layer, beside `SqlValue`, so the codec class can name it.
+pub type DbType = DbBoolean | DbInt | DbBigInt | DbFloat | DbDecimal Int Int | DbText | DbVarchar Int | DbUuid | DbTimestamp | DbTimestampTz | DbBytes | DbSmallInt | DbChar Int | DbJson | DbJsonb | DbDate | DbTime | DbInterval | DbArray DbType | DbRaw Text
+
+-- Which backend's SQL a renderer emits. The query and DDL renderers are
+-- dialect-neutral up to the few places SQL syntax diverges — a column type, a
+-- placeholder, an identity column — and take a `Dialect` to spell those. The
+-- connection picks it, so one query and one schema render against either backend
+-- with only the connection changed.
+pub type Dialect = PgDialect | SqliteDialect
 
 pub class SqlType a =
     toSql   (x: a)        -> SqlValue
@@ -63,6 +128,10 @@ instance SqlType Bool =
     fromSql (v: SqlValue) -> Result Bool Error =
         match v
             SqlBool b -> Ok b
+            -- SQLite has no boolean storage class: a bool is stored as 0/1 and
+            -- reads back as a raw integer, so accept those too.
+            SqlInt 1  -> Ok true
+            SqlInt 0  -> Ok false
             _         -> Err ({ code = "sql.decode.bool", message = "expected a SQL boolean" })
     dbType (witness: Option Bool) -> DbType = DbBoolean
 
@@ -84,6 +153,12 @@ fn tsToMicros (t: Timestamp) -> Int
 @ffi("ridge_rt", "time_from_micros", 1)
 fn tsFromMicros (micros: Int) -> Timestamp
 
+-- Parse an ISO-8601 instant back to a Timestamp. SQLite stores an instant as ISO
+-- UTC text (it has no instant storage class), so a timestamp column reads back as
+-- `SqlText`; this is the same `ridge_rt:time_from_iso` bridge std.time exposes.
+@ffi("ridge_rt", "time_from_iso", 1)
+fn tsFromIso (s: Text) -> Result Timestamp Error
+
 -- A wall-clock time maps to the typed `SqlInstant` value (epoch microseconds), so a
 -- timestamp column keeps its own value shape instead of riding an ambiguous
 -- integer. The default column type is `DbTimestampTz`: instants are stored as UTC,
@@ -93,8 +168,184 @@ instance SqlType Timestamp =
     fromSql (v: SqlValue) -> Result Timestamp Error =
         match v
             SqlInstant n -> Ok (tsFromMicros n)
+            -- SQLite stores an instant as ISO UTC text, so accept that form too.
+            SqlText s    -> tsFromIso s
             _            -> Err ({ code = "sql.decode.timestamp", message = "expected a SQL instant" })
     dbType (witness: Option Timestamp) -> DbType = DbTimestampTz
+
+-- Decimal-string bridge for the Decimal codec. Like the Timestamp bridge above,
+-- these are declared here rather than imported from std.decimal so std.sql keeps
+-- depending on nothing above it. The runtime carries a Decimal as a scaled
+-- integer and moves it across `SqlDecimal` as its exact canonical text.
+@ffi("ridge_rt", "decimal_to_text", 1)
+fn decToText (d: Decimal) -> Text
+
+@ffi("ridge_rt", "decimal_from_text", 1)
+fn decFromText (s: Text) -> Result Decimal Error
+
+-- A decimal maps to the typed `SqlDecimal` value carrying its exact canonical
+-- text, so a `numeric` column round-trips without the precision loss a float
+-- bridge would incur. The default column type is an unconstrained `numeric`
+-- (`DbRaw "numeric"`), which Postgres treats as arbitrary precision; a schema
+-- `columnType (DbDecimal p s)` step pins a precision and scale when a column
+-- needs them.
+instance SqlType Decimal =
+    toSql (x: Decimal) -> SqlValue = SqlDecimal (decToText x)
+    fromSql (v: SqlValue) -> Result Decimal Error =
+        match v
+            SqlDecimal s -> decFromText s
+            -- SQLite stores a decimal as its exact text, read back as raw text.
+            SqlText s    -> decFromText s
+            _            -> Err ({ code = "sql.decode.decimal", message = "expected a SQL decimal" })
+    dbType (witness: Option Decimal) -> DbType = DbRaw "numeric"
+
+-- Canonical-text bridge for the Uuid codec. Like the Timestamp and Decimal bridges
+-- above, these are declared here rather than imported from std.uuid so std.sql keeps
+-- depending on nothing above it. The runtime carries a Uuid as its canonical text and
+-- moves it across `SqlUuid`; `uuidFromText` re-validates a value read back from a column.
+@ffi("ridge_rt", "uuid_to_text", 1)
+fn uuidToText (u: Uuid) -> Text
+
+@ffi("ridge_rt", "uuid_from_text", 1)
+fn uuidFromText (s: Text) -> Result Uuid Error
+
+-- A uuid maps to the typed `SqlUuid` value carrying its canonical text, so a native
+-- `uuid` column round-trips as itself rather than an ambiguous string. The default
+-- column type is `DbUuid`.
+instance SqlType Uuid =
+    toSql (x: Uuid) -> SqlValue = SqlUuid (uuidToText x)
+    fromSql (v: SqlValue) -> Result Uuid Error =
+        match v
+            SqlUuid s -> uuidFromText s
+            -- SQLite stores a uuid as canonical text, read back as raw text.
+            SqlText s -> uuidFromText s
+            _         -> Err ({ code = "sql.decode.uuid", message = "expected a SQL uuid" })
+    dbType (witness: Option Uuid) -> DbType = DbUuid
+
+-- Hex-text bridge for the Bytes codec. Like the Uuid bridge above, these are
+-- declared here rather than imported from std.bytes so std.sql keeps depending on
+-- nothing above it. The runtime carries a Bytes as a raw binary and moves it across
+-- `SqlBytes` as its canonical lowercase hex; `bytesFromHex` re-decodes a value read
+-- back from a column.
+@ffi("ridge_rt", "bytes_to_hex", 1)
+fn bytesToHex (b: Bytes) -> Text
+
+@ffi("ridge_rt", "bytes_from_hex", 1)
+fn bytesFromHex (s: Text) -> Result Bytes Error
+
+-- A byte string maps to the typed `SqlBytes` value carrying its canonical hex, so a
+-- native `bytea` column round-trips as itself rather than a lossy text detour. The
+-- default column type is `DbBytes`.
+instance SqlType Bytes =
+    toSql (x: Bytes) -> SqlValue = SqlBytes (bytesToHex x)
+    fromSql (v: SqlValue) -> Result Bytes Error =
+        match v
+            SqlBytes s -> bytesFromHex s
+            _          -> Err ({ code = "sql.decode.bytes", message = "expected a SQL byte string" })
+    dbType (witness: Option Bytes) -> DbType = DbBytes
+
+-- JSON-text bridge for the JsonValue codec. Like the Uuid and Bytes bridges above,
+-- these are declared here rather than imported from std.json so std.sql keeps
+-- depending on nothing above it. The runtime carries a JsonValue as a tagged-tuple
+-- tree; `jsonEncode` renders it to JSON text and `jsonDecode` parses and validates a
+-- value read back from a column, the same OTP-27 `json` bridge std.json uses.
+@ffi("ridge_rt", "json_encode", 1)
+fn jsonEncode (v: JsonValue) -> Text
+
+@ffi("ridge_rt", "json_decode", 1)
+fn jsonDecode (s: Text) -> Result JsonValue Error
+
+-- A JSON document maps to the typed `SqlJson` value carrying its encoded text, so a
+-- native `json`/`jsonb` column round-trips as a structured `JsonValue` rather than an
+-- opaque string. The default column type is `DbJsonb` — the binary form Postgres
+-- indexes and normalises; a schema `columnType DbJson` step keeps the plain-text
+-- form when a column must preserve key order and whitespace.
+instance SqlType JsonValue =
+    toSql (x: JsonValue) -> SqlValue = SqlJson (jsonEncode x)
+    fromSql (v: SqlValue) -> Result JsonValue Error =
+        match v
+            SqlJson s -> jsonDecode s
+            -- SQLite stores json as text, read back as raw text.
+            SqlText s -> jsonDecode s
+            _         -> Err ({ code = "sql.decode.json", message = "expected a SQL json value" })
+    dbType (witness: Option JsonValue) -> DbType = DbJsonb
+
+-- ISO-text bridge for the Date codec. Like the Timestamp and Uuid bridges above,
+-- these are declared here rather than imported from std.date so std.sql keeps
+-- depending on nothing above it. The runtime carries a Date as an epoch-day count and
+-- moves it across `SqlDate` as ISO `YYYY-MM-DD` text; `dateFromIso` re-validates a
+-- value read back from a column.
+@ffi("ridge_rt", "date_to_iso", 1)
+fn dateToIso (d: Date) -> Text
+
+@ffi("ridge_rt", "date_from_iso", 1)
+fn dateFromIso (s: Text) -> Result Date Error
+
+-- A calendar date maps to the typed `SqlDate` value carrying its ISO text, so a
+-- native `date` column round-trips as itself rather than an ambiguous string that
+-- also picks up a time of day. The default column type is `DbDate`.
+instance SqlType Date =
+    toSql (x: Date) -> SqlValue = SqlDate (dateToIso x)
+    fromSql (v: SqlValue) -> Result Date Error =
+        match v
+            SqlDate s -> dateFromIso s
+            -- SQLite stores a date as ISO text, read back as raw text.
+            SqlText s -> dateFromIso s
+            _         -> Err ({ code = "sql.decode.date", message = "expected a SQL date" })
+    dbType (witness: Option Date) -> DbType = DbDate
+
+-- ISO-text bridge for the Time codec. Like the Date bridge above, these are declared
+-- here rather than imported from std.timeofday so std.sql keeps depending on nothing
+-- above it. The runtime carries a Time as a microsecond-of-day count and moves it
+-- across `SqlTime` as ISO `HH:MM:SS[.ffffff]` text; `timeFromIso` re-validates a value
+-- read back from a column.
+@ffi("ridge_rt", "tod_to_iso", 1)
+fn timeToIso (t: Time) -> Text
+
+@ffi("ridge_rt", "tod_from_iso", 1)
+fn timeFromIso (s: Text) -> Result Time Error
+
+-- A time of day maps to the typed `SqlTime` value carrying its ISO text, so a native
+-- `time` column round-trips as itself rather than an ambiguous string that also picks
+-- up a date. The default column type is `DbTime`.
+instance SqlType Time =
+    toSql (x: Time) -> SqlValue = SqlTime (timeToIso x)
+    fromSql (v: SqlValue) -> Result Time Error =
+        match v
+            SqlTime s -> timeFromIso s
+            -- SQLite stores a time of day as ISO text, read back as raw text.
+            SqlText s -> timeFromIso s
+            _         -> Err ({ code = "sql.decode.time", message = "expected a SQL time" })
+    dbType (witness: Option Time) -> DbType = DbTime
+
+-- A duration maps to the typed `SqlInterval` value carrying its whole-millisecond
+-- span, so a native `interval` column round-trips as a fixed length of time. A
+-- `Duration` is already an integer count of milliseconds, so it needs no text bridge:
+-- `toSql` reads the span straight off the record and `fromSql` rebuilds it. Unlike a
+-- Postgres interval, a `Duration` has no calendar part — a month is not a fixed number
+-- of milliseconds. A value Ridge wrote is always a pure time span and round-trips
+-- exactly; an interval that carries months, days, or years (written by some other
+-- client) is read with a 30-day month and a 24-hour day, the same convention Postgres
+-- uses to extract an interval's epoch seconds. The default column type is `DbInterval`.
+-- Millisecond bridge for the Duration codec. A Duration is a builtin record, but a
+-- bare `{ ms = n }` literal that the type checker pins to the nominal `Duration` does
+-- not round-trip through a `.ms` read (it lowers to a value a field read cannot
+-- reach); `durationOfMs` builds the record on the runtime side, the same shape
+-- `time.diff`/`time.ofMillis` return, so `x.ms` reads it back. It stays private to the
+-- codec and shares the `ridge_rt:duration_from_millis` bridge with `std.time.ofMillis`,
+-- rather than importing std.time, so std.sql keeps depending on nothing above it.
+@ffi("ridge_rt", "duration_from_millis", 1)
+fn durationOfMs (ms: Int) -> Duration
+
+instance SqlType Duration =
+    toSql (x: Duration) -> SqlValue = SqlInterval x.ms
+    fromSql (v: SqlValue) -> Result Duration Error =
+        match v
+            SqlInterval n -> Ok (durationOfMs n)
+            -- SQLite stores an interval as whole milliseconds, read back as a raw integer.
+            SqlInt n      -> Ok (durationOfMs n)
+            _             -> Err ({ code = "sql.decode.interval", message = "expected a SQL interval" })
+    dbType (witness: Option Duration) -> DbType = DbInterval
 
 -- Retype a nested-Option witness to a witness for the inner type, so the
 -- `Option a` instance can delegate its column type. `dbType` reads only the
@@ -123,6 +374,48 @@ instance SqlType (Option a) where SqlType a =
     -- An optional column has the same SQL column type as its inner type; the
     -- nullability is tracked separately by the schema, not by `DbType`.
     dbType (witness: Option (Option a)) -> DbType = dbType (innerWitness witness)
+
+-- Encode a list through the element type's own codec, one element at a time. A
+-- recursive walk keeps std.sql from importing std.list — it depends on nothing
+-- above it — while still threading the `SqlType a` dictionary into each `toSql`.
+fn listToSqlValues (xs: List a) -> List SqlValue where SqlType a =
+    match xs
+        []        -> []
+        x :: rest -> toSql x :: listToSqlValues rest
+
+-- Decode a list of element `SqlValue`s back through the element codec, threading
+-- the first decode failure outward the same way the `Row` decoder does. The dual
+-- of `listToSqlValues`.
+fn sqlValuesToList (vs: List SqlValue) -> Result (List a) Error where SqlType a =
+    match vs
+        []        -> Ok []
+        v :: rest ->
+            match fromSql v
+                Err e -> Err e
+                Ok x  ->
+                    match sqlValuesToList rest
+                        Err e  -> Err e
+                        Ok xs  -> Ok (x :: xs)
+
+-- Retype a list witness to a witness for the element type, so the `List a`
+-- instance can delegate its column type. `dbType` reads only the phantom type,
+-- so the value is immaterial — the mirror of `innerWitness` for `Option`.
+fn elemWitness (w: Option (List a)) -> Option a = None
+
+-- An array column. A `List a` maps to a SQL array whose element type is `a`'s own
+-- column type (`bigint[]` for `List Int`, `text[]` for `List Text`, and so on), so
+-- a repeated field stays first-class instead of being flattened to text or JSON.
+-- Each element rides `a`'s codec, so the array is exactly as faithful as its
+-- element type — a `List Decimal` keeps its exact digits, a `List Uuid` its native
+-- form. Nesting the element codec is what lets a `deriving (Row)` record hold a
+-- `List` field over an array column.
+instance SqlType (List a) where SqlType a =
+    toSql (x: List a) -> SqlValue = SqlArray (listToSqlValues x)
+    fromSql (v: SqlValue) -> Result (List a) Error =
+        match v
+            SqlArray vs -> sqlValuesToList vs
+            _           -> Err ({ code = "sql.decode.array", message = "expected a SQL array" })
+    dbType (witness: Option (List a)) -> DbType = DbArray (dbType (elemWitness witness))
 
 -- ── Row codec ─────────────────────────────────────────────────────────────────
 --

@@ -428,6 +428,12 @@ fn build_escript_payload(beam_dir: &Path, extra_beam: Option<&Path>) -> Result<V
             write_beam_to_zip(&mut writer, extra, options)?;
         }
 
+        // Embed the SQLite NIF object so a packaged escript stays self-contained
+        // — a `.beam` archive cannot `load_nif` an object from inside itself, so
+        // the module extracts this entry to a real file at load time.
+        #[cfg(feature = "beam-runtime")]
+        write_sqlite_nif_to_zip(&mut writer, beam_dir, options)?;
+
         writer.finish().map_err(|e| EmitError::ZipFailed {
             detail: e.to_string(),
         })?;
@@ -467,5 +473,39 @@ fn write_beam_to_zip(
         .map_err(|e| EmitError::ZipFailed {
             detail: e.to_string(),
         })?;
+    Ok(())
+}
+
+/// Embed the SQLite NIF object — written into `beam_dir` by `compile_runtime` —
+/// as a plain (stored) archive entry. A packaged escript is a zip of beams, and
+/// a NIF cannot be loaded from inside a zip, so `ridge_sqlite.erl` extracts this
+/// entry to a real file on first load. Absent object (SQLite runtime not
+/// installed into this build) is a no-op.
+#[cfg(feature = "beam-runtime")]
+fn write_sqlite_nif_to_zip(
+    writer: &mut zip::ZipWriter<std::io::Cursor<&mut Vec<u8>>>,
+    beam_dir: &Path,
+    options: zip::write::SimpleFileOptions,
+) -> Result<(), EmitError> {
+    let nif_name = if cfg!(target_os = "windows") {
+        "ridge_sqlite.dll"
+    } else {
+        "ridge_sqlite.so"
+    };
+    let nif_path = beam_dir.join(nif_name);
+    if !nif_path.exists() {
+        return Ok(());
+    }
+    let bytes = std::fs::read(&nif_path).map_err(|e| EmitError::Io {
+        detail: format!("read {}: {e}", nif_path.display()),
+    })?;
+    writer
+        .start_file(nif_name, options)
+        .map_err(|e| EmitError::ZipFailed {
+            detail: e.to_string(),
+        })?;
+    writer.write_all(&bytes).map_err(|e| EmitError::ZipFailed {
+        detail: e.to_string(),
+    })?;
     Ok(())
 }

@@ -24,11 +24,11 @@
 -- `db` requirement is declared once, where the connection is created, not on
 -- every call site that threads the handle.
 
-import std.sql (SqlValue, sqlValue)
-import std.query (QueryPlan, planToSql, planScan, MutationPlan, mutationToSql, mutationReturningToSql, planInsert, planUpdate, planDelete)
+import std.sql (SqlValue, sqlValue, Dialect, SqliteDialect)
+import std.query (QueryPlan, planToSql, planToSqlFor, planScan, MutationPlan, mutationToSql, mutationReturningToSql, planInsert, planUpdate, planDelete)
 import std.map (toList)
 import std.text (startsWith)
-import std.schema (EntitySchema, ColumnSchema, schemaToDdl, schemaIndexDdls, schemaTable, createTableDdl, addColumnDdl, addColumnSchemaDdl, alterColumnDdl, dropTableDdl, dropColumnDdl, indexDdl, dropIndexDdl)
+import std.schema (EntitySchema, ColumnSchema, schemaToDdl, schemaToDdlFor, schemaIndexDdls, schemaTable, createTableDdl, createTableDdlFor, addColumnDdl, addColumnDdlFor, addColumnSchemaDdl, addColumnSchemaDdlFor, alterColumnDdl, dropTableDdl, dropColumnDdl, indexDdl, dropIndexDdl, sqliteRebuildTableDdl, sqliteAddNeedsRebuild)
 
 -- ── Typed database errors ─────────────────────────────────────────────────────
 --
@@ -554,15 +554,9 @@ fn pgExecSeq (id: Int) (stmts: List Text) -> Result Unit Error =
                 Err e -> Err e
                 Ok _  -> pgExecSeq id rest
 
--- Open a Postgres connection with the default pool. Requires the `db`
--- capability; the handle returned is the proof of access for every later call,
--- exactly like `memAdapter`. A failed connect or authentication is an `Err`. To
--- size the pool or set timeouts, use `connectWith`.
-pub fn db connect (cfg: Config) -> Result Postgres Error =
-    connectWith cfg (defaultPool ())
-
--- Open a Postgres connection with a tuned pool — the same as `connect` but taking
--- an explicit `PoolConfig` (size and timeouts) in place of `defaultPool`.
+-- Open a Postgres connection with a tuned pool — the same as `connect cfg` for a
+-- `Config`, but taking an explicit `PoolConfig` (size and timeouts) in place of
+-- `defaultPool`. The unified `connect` (below) uses `defaultPool`.
 pub fn db connectWith (cfg: Config) (pool: PoolConfig) -> Result Postgres Error =
     _pgConnect cfg.host cfg.port cfg.database cfg.user cfg.password cfg.sslMode pool.size pool.connectTimeoutMs pool.queryTimeoutMs pool.checkoutTimeoutMs pool.idleTimeoutMs pool.maxLifetimeMs pool.healthCheckMs pool.connectRetries pool.retryBackoffMs pool.maxQueueDepth
 
@@ -633,3 +627,180 @@ instance Adapter Postgres =
         _pgRawQuery conn.id sql params
     rawExec (conn: Postgres) (sql: Text) (params: List SqlValue) -> Result Int Error =
         _pgRawExec conn.id sql params
+
+-- ── SQLite adapter ────────────────────────────────────────────────────────────
+--
+-- SQLite runs in process through a native bridge, so unlike the Postgres client
+-- there is no pool: a handle owns one connection. The same `Adapter` surface
+-- applies, so repository code runs unchanged — only the query plan renders for
+-- the SQLite dialect and the schema DDL uses SQLite's storage classes. SQLite
+-- cannot alter or add a constrained column in place; those need a table rebuild,
+-- which the whole-schema migration path drives, so the single-column `ddlAlterColumn`
+-- and the rebuild case of `ddlAddEntityColumn` report an `Unsupported` error here.
+
+-- A handle to an open SQLite connection. Opaque: `connect` (with a `SqliteConfig`)
+-- is the only way to make one, and the `id` it carries selects this connection in
+-- the runtime's handle registry, the same id-as-handle shape the others use.
+pub opaque type Sqlite = { id: Int }
+
+-- Connection settings for a SQLite database. `path` is the database file, or
+-- ":memory:" for a private in-memory database. `busyTimeoutMs` bounds how long a
+-- locked connection waits before failing (0 keeps the built-in). `journalMode`
+-- selects the journal mode ("WAL" is the usual choice; empty leaves the default).
+-- `foreignKeys` turns foreign-key enforcement on.
+pub type SqliteConfig = { path: Text, busyTimeoutMs: Int, journalMode: Text, foreignKeys: Bool }
+
+-- Settings for a database file with sensible defaults: a five-second busy
+-- timeout, write-ahead logging, and foreign keys enforced.
+pub fn sqliteFile (path: Text) -> SqliteConfig =
+    SqliteConfig { path = path, busyTimeoutMs = 5000, journalMode = "WAL", foreignKeys = true }
+
+-- Settings for a private in-memory database (foreign keys on, no journal file).
+pub fn sqliteMemory -> SqliteConfig =
+    SqliteConfig { path = ":memory:", busyTimeoutMs = 5000, journalMode = "", foreignKeys = true }
+
+-- Open a connection through the native bridge and apply the pragmas. Result Sqlite Error.
+@ffi("ridge_sqlite", "sqlite_connect", 4)
+fn _sqliteConnect (path: Text) (busyTimeoutMs: Int) (journalMode: Text) (foreignKeys: Int) -> Result Sqlite Error
+
+@ffi("ridge_sqlite", "sqlite_all", 2)
+fn _sqliteAll (id: Int) (table: Text) -> Result (List (Map Text SqlValue)) Error
+
+@ffi("ridge_sqlite", "sqlite_get_rows", 4)
+fn _sqliteGetRows (id: Int) (table: Text) (column: Text) (key: SqlValue) -> Result (List (Map Text SqlValue)) Error
+
+@ffi("ridge_sqlite", "sqlite_begin", 1)
+fn _sqliteBegin (id: Int) -> Result Unit Error
+
+@ffi("ridge_sqlite", "sqlite_commit", 1)
+fn _sqliteCommit (id: Int) -> Result Unit Error
+
+@ffi("ridge_sqlite", "sqlite_rollback", 1)
+fn _sqliteRollback (id: Int) -> Result Unit Error
+
+@ffi("ridge_sqlite", "sqlite_close", 1)
+fn _sqliteClose (id: Int) -> Result Unit Error
+
+@ffi("ridge_sqlite", "sqlite_migrations_applied", 1)
+fn _sqliteMigrationsApplied (id: Int) -> Result (List Text) Error
+
+@ffi("ridge_sqlite", "sqlite_record_migration", 2)
+fn _sqliteRecordMigration (id: Int) (name: Text) -> Result Unit Error
+
+@ffi("ridge_sqlite", "sqlite_unrecord_migration", 2)
+fn _sqliteUnrecordMigration (id: Int) (name: Text) -> Result Unit Error
+
+@ffi("ridge_sqlite", "sqlite_raw_query", 3)
+fn _sqliteRawQuery (id: Int) (sql: Text) (params: List SqlValue) -> Result (List (Map Text SqlValue)) Error
+
+@ffi("ridge_sqlite", "sqlite_raw_exec", 3)
+fn _sqliteRawExec (id: Int) (sql: Text) (params: List SqlValue) -> Result Int Error
+
+-- Run a DDL statement built in Ridge on the connection, discarding the row count.
+fn sqliteExecUnit (id: Int) (sql: Text) -> Result Unit Error =
+    match _sqliteRawExec id sql []
+        Ok _  -> Ok ()
+        Err e -> Err e
+
+-- Run a sequence of DDL statements, stopping at the first error.
+fn sqliteExecSeq (id: Int) (stmts: List Text) -> Result Unit Error =
+    match stmts
+        []            -> Ok ()
+        first :: rest ->
+            match sqliteExecUnit id first
+                Err e -> Err e
+                Ok _  -> sqliteExecSeq id rest
+
+instance Adapter Sqlite =
+    appendRow (conn: Sqlite) (table: Text) (row: Map Text SqlValue) -> Result Unit Error =
+        match mutationToSql (planInsert table [row] [])
+            (s, binds) ->
+                match _sqliteRawExec conn.id (sqlValue s) binds
+                    Ok _  -> Ok ()
+                    Err e -> Err e
+    all (conn: Sqlite) (table: Text) -> Result (List (Map Text SqlValue)) Error =
+        _sqliteAll conn.id table
+    get (conn: Sqlite) (table: Text) (column: Text) (key: SqlValue) -> Result (Option (Map Text SqlValue)) Error =
+        match _sqliteGetRows conn.id table column key
+            Ok rows -> Ok (firstRow rows)
+            Err e   -> Err e
+    delete (conn: Sqlite) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
+        match mutationToSql (planDelete table pred.tree)
+            (s, binds) -> _sqliteRawExec conn.id (sqlValue s) binds
+    updateRows (conn: Sqlite) (table: Text) (changes: Map Text SqlValue) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
+        match toList changes
+            []  -> Ok 0
+            _   ->
+                match mutationToSql (planUpdate table changes pred.tree)
+                    (s, binds) -> _sqliteRawExec conn.id (sqlValue s) binds
+    runPlan (conn: Sqlite) (plan: QueryPlan) -> Result (List (Map Text SqlValue)) Error =
+        match planToSqlFor SqliteDialect plan
+            (s, binds) -> _sqliteRawQuery conn.id (sqlValue s) binds
+    runMutation (conn: Sqlite) (plan: MutationPlan) -> Result Int Error =
+        match mutationToSql plan
+            (s, binds) -> _sqliteRawExec conn.id (sqlValue s) binds
+    runMutationReturning (conn: Sqlite) (plan: MutationPlan) (cols: List Text) -> Result (List (Map Text SqlValue)) Error =
+        match mutationReturningToSql plan cols
+            (s, binds) -> _sqliteRawQuery conn.id (sqlValue s) binds
+    begin (conn: Sqlite) -> Result Unit Error =
+        _sqliteBegin conn.id
+    commit (conn: Sqlite) -> Result Unit Error =
+        _sqliteCommit conn.id
+    rollback (conn: Sqlite) -> Result Unit Error =
+        _sqliteRollback conn.id
+    close (conn: Sqlite) -> Result Unit Error =
+        _sqliteClose conn.id
+    ddlCreate (conn: Sqlite) (table: Text) (cols: List (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
+        sqliteExecUnit conn.id (createTableDdlFor SqliteDialect table cols)
+    ddlDrop (conn: Sqlite) (table: Text) -> Result Unit Error =
+        sqliteExecUnit conn.id (dropTableDdl table)
+    ddlAddColumn (conn: Sqlite) (table: Text) (col: (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
+        sqliteExecUnit conn.id (addColumnDdlFor SqliteDialect table col)
+    ddlDropColumn (conn: Sqlite) (table: Text) (column: Text) -> Result Unit Error =
+        sqliteExecUnit conn.id (dropColumnDdl table column)
+    ddlIndex (conn: Sqlite) (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> Result Unit Error =
+        sqliteExecUnit conn.id (indexDdl name table cols unique)
+    ddlDropIndex (conn: Sqlite) (name: Text) -> Result Unit Error =
+        sqliteExecUnit conn.id (dropIndexDdl name)
+    ddlCreateEntity (conn: Sqlite) (schema: EntitySchema Unit) -> Result Unit Error =
+        sqliteExecSeq conn.id (schemaToDdlFor SqliteDialect schema :: schemaIndexDdls schema)
+    ddlAddEntityColumn (conn: Sqlite) (table: Text) (col: ColumnSchema Unit) -> Result Unit Error =
+        if sqliteAddNeedsRebuild col
+        then Err ({ code = "raw.unsupported", message = "SQLite cannot add this column in place; it needs a table rebuild" })
+        else sqliteExecUnit conn.id (addColumnSchemaDdlFor SqliteDialect table col)
+    ddlAlterColumn (conn: Sqlite) (table: Text) (old: ColumnSchema Unit) (new: ColumnSchema Unit) -> Result Unit Error =
+        Err ({ code = "raw.unsupported", message = "SQLite cannot alter a column in place; it needs a table rebuild" })
+    migrationsApplied (conn: Sqlite) -> Result (List Text) Error =
+        _sqliteMigrationsApplied conn.id
+    recordMigration (conn: Sqlite) (name: Text) -> Result Unit Error =
+        _sqliteRecordMigration conn.id name
+    unrecordMigration (conn: Sqlite) (name: Text) -> Result Unit Error =
+        _sqliteUnrecordMigration conn.id name
+    rawQuery (conn: Sqlite) (sql: Text) (params: List SqlValue) -> Result (List (Map Text SqlValue)) Error =
+        _sqliteRawQuery conn.id sql params
+    rawExec (conn: Sqlite) (sql: Text) (params: List SqlValue) -> Result Int Error =
+        _sqliteRawExec conn.id sql params
+
+-- ── Unified connect ───────────────────────────────────────────────────────────
+--
+-- `connect` opens a connection for whichever backend its config selects — a
+-- `Config` opens Postgres, a `SqliteConfig` opens SQLite. The config type alone
+-- picks the backend (`c -> r`), so repository code moves between backends by
+-- changing only its connection settings, never its query, write, or migration code.
+-- Open a Postgres connection with the default pool. Requires the `db`
+-- capability; the handle returned is the proof of access for every later call.
+-- Size the pool or set timeouts with `connectWith`.
+pub fn db connect (cfg: Config) -> Result Postgres Error =
+    connectWith cfg (defaultPool ())
+
+-- Open a SQLite connection from its settings. Requires the `db` capability; the
+-- handle returned is the proof of access for every later call.
+--
+-- A single `connect` overloaded on the config type — so only the settings change
+-- to move between backends — wants a two-parameter `Connect c r | c -> r` class.
+-- That runs into two compiler limits today: as a constrained top-level function it
+-- trips the constraint solver on a multi-parameter constraint, and as a class
+-- method it type-checks but a direct external call has no codegen bridge. Until one
+-- of those is lifted, the backend is chosen by the connect verb.
+pub fn db connectSqlite (cfg: SqliteConfig) -> Result Sqlite Error =
+    _sqliteConnect cfg.path cfg.busyTimeoutMs cfg.journalMode (if cfg.foreignKeys then 1 else 0)

@@ -316,6 +316,20 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                                             expected_ret.as_ref(),
                                         ) =>
                                     {
+                                        reject_non_numeric_scalar_aggregate(
+                                            ctx,
+                                            b,
+                                            callee,
+                                            expected_ret.as_ref(),
+                                            inner.span(),
+                                        );
+                                        mark_avg_interval_accessor(
+                                            ctx,
+                                            b,
+                                            callee,
+                                            expected_ret.as_ref(),
+                                            inner.span(),
+                                        );
                                         pty
                                     }
                                     Some(_) => Type::Error,
@@ -1277,6 +1291,7 @@ pub const fn type_of_literal(b: &BuiltinTyCons, lit: &Literal) -> Type {
         | Literal::IntOct { .. }
         | Literal::IntHex { .. } => Type::Con(b.int, vec![]),
         Literal::Float { .. } => Type::Con(b.float, vec![]),
+        Literal::Decimal { .. } => Type::Con(b.decimal, vec![]),
         Literal::Bool { .. } => Type::Con(b.bool, vec![]),
         Literal::Text { .. } | Literal::RawText { .. } => Type::Con(b.text, vec![]),
     }
@@ -1305,6 +1320,11 @@ pub(crate) fn ast_type_to_type(
                 PrimitiveType::Text => b.text,
                 PrimitiveType::Unit => b.unit,
                 PrimitiveType::Timestamp => b.timestamp,
+                PrimitiveType::Decimal => b.decimal,
+                PrimitiveType::Uuid => b.uuid,
+                PrimitiveType::Bytes => b.bytes,
+                PrimitiveType::Date => b.date,
+                PrimitiveType::Time => b.time,
             };
             Type::Con(tycon, vec![])
         }
@@ -1822,6 +1842,77 @@ fn peel_parens(e: &Expr) -> &Expr {
         cur = inner;
     }
     cur
+}
+
+/// The final name segment of a callee — `sumOf` in `Repo.sumOf` or a bare
+/// `sumOf` — for recognising a specific stdlib method at a call site. Returns
+/// `None` for any other callee shape.
+fn callee_final_name(callee: &Expr) -> Option<&str> {
+    match peel_parens(callee) {
+        Expr::Qualified(q) => q.segments.last().map(|s| s.text.as_str()),
+        Expr::Ident(id) => Some(id.text.as_str()),
+        _ => None,
+    }
+}
+
+/// Reject a scalar `sumOf`/`avgOf` whose accessor folds a non-numeric column.
+/// The two numeric aggregates need an `Int`/`Float`/`Decimal` column; `minOf`
+/// and `maxOf` fold any comparable one and are left alone. Called once the
+/// accessor quote has been checked, so `col` (its result — the folded column's
+/// type) is resolved; a scalar aggregate's accessor always ranges over a concrete
+/// annotated entity, so the column type is known here rather than deferred.
+fn reject_non_numeric_scalar_aggregate(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    callee: &Expr,
+    col: Option<&Type>,
+    span: Span,
+) {
+    let name = callee_final_name(callee);
+    if !matches!(name, Some("sumOf" | "avgOf")) {
+        return;
+    }
+    let Some(col) = col else { return };
+    let resolved = ctx.deep_resolve(col);
+    if crate::quote::is_non_summable_scalar(b, &resolved) {
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: "`sumOf` and `avgOf` fold a numeric column (Int, Float, Decimal, or Duration)"
+                .to_string(),
+            span,
+        });
+    }
+}
+
+/// Marks the `QuoteInfo` already recorded for a scalar `avgOf` accessor whose
+/// folded column is a `Duration`, so the lowering pass reifies that column
+/// wrapped in the interval-aware `QAggAvgInterval` node rather than a bare
+/// column — the scalar-path counterpart of `agg_col_is_interval` in
+/// `ridge-lower`, which does the same for a grouped `g.avg`. Postgres cannot
+/// cast an interval average to `float8`, so both paths need the wrapper to pick
+/// the epoch-extraction render instead of a plain `AVG`.
+///
+/// `sumOf`/`minOf`/`maxOf` fold a `Duration` column too but always render a
+/// fixed keyword, so only `avgOf` needs this; `col` is the accessor's already-
+/// resolved column type (as `reject_non_numeric_scalar_aggregate` reads it),
+/// and `span` is the lambda's span, matching the key `check_quote` inserted
+/// into `ctx.quoted_lambdas_accum` for it.
+fn mark_avg_interval_accessor(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    callee: &Expr,
+    col: Option<&Type>,
+    span: Span,
+) {
+    if callee_final_name(callee) != Some("avgOf") {
+        return;
+    }
+    let Some(col) = col else { return };
+    let resolved = ctx.deep_resolve(col);
+    if matches!(resolved, Type::Con(id, _) if id == b.duration) {
+        if let Some(qi) = ctx.quoted_lambdas_accum.get_mut(&span) {
+            qi.avg_interval = true;
+        }
+    }
 }
 
 fn attach_span(err: TypeError, span: Span) -> TypeError {

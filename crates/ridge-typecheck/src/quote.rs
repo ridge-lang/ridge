@@ -35,6 +35,14 @@ pub struct QuoteInfo {
     /// reified over the group vocabulary (`g.key`, `g.count`, `g.sum(col)`, …)
     /// rather than the row columns.
     pub group: bool,
+    /// True for a scalar `avgOf` accessor whose folded column is a `Duration`.
+    /// Postgres cannot cast an interval average to `float8`, so the lowering
+    /// pass reifies the column wrapped in the interval-aware `QAggAvgInterval`
+    /// node instead of a bare column — the scalar-path mirror of how a grouped
+    /// `g.avg` picks its node (`agg_col_is_interval` in `ridge-lower`). Set by
+    /// `mark_avg_interval_accessor` once the accessor's column type is resolved,
+    /// after `check_quote` has already recorded the plain `QuoteInfo`.
+    pub avg_interval: bool,
 }
 
 /// One parameter of a quote: the bound name and the record it ranges over.
@@ -416,6 +424,7 @@ fn quote_info(scope: &[Param]) -> QuoteInfo {
         param_name: scope[0].name.clone(),
         entity: scope[0].entity,
         group: false,
+        avg_interval: false,
     }
 }
 
@@ -723,8 +732,8 @@ fn check_node(ctx: &mut InferCtx, b: &BuiltinTyCons, e: &Expr, scope: &[Param]) 
                 } else {
                     let rendered = crate::render::render_type_with(&ty, &ctx.tycon_decls);
                     format!(
-                        "`{}` has type `{rendered}`; a quote can capture only Int, Text, Bool, or \
-                         Float values from the enclosing scope",
+                        "`{}` has type `{rendered}`; a quote can capture only Int, Text, Bool, \
+                         Float, Decimal, Uuid, Timestamp, or Bytes values from the enclosing scope",
                         id.text
                     )
                 };
@@ -963,17 +972,34 @@ fn is_numeric(b: &BuiltinTyCons, ty: &Type) -> bool {
     matches!(ty, Type::Con(id, _) if *id == b.int || *id == b.float)
 }
 
+/// Whether `ty` is a base scalar that `sum`/`avg` cannot fold — `Text`, `Bool`,
+/// `Uuid`, `Bytes`, `Timestamp`, `Date`, or `Time`. Each has a working `SqlType`
+/// instance (so `min`/`max`, ordering, and equality fold it), but summing or
+/// averaging it is meaningless: Postgres rejects it and the in-memory adapter has no
+/// numeric fold. `Duration` is deliberately absent — a millisecond span sums to a
+/// total `Duration` and averages to a mean, so both are folded. The numeric columns
+/// (`Int`/`Float`/`Decimal`), a nullable wrapper, and an unresolved type variable are
+/// all left unmatched, so a caller rejects only a column it is certain about.
+pub(crate) fn is_non_summable_scalar(b: &BuiltinTyCons, ty: &Type) -> bool {
+    matches!(ty, Type::Con(id, _)
+        if *id == b.text || *id == b.bool || *id == b.uuid
+            || *id == b.bytes || *id == b.timestamp || *id == b.date || *id == b.time)
+}
+
 /// Whether `ty` is the `Int` base type.
 fn is_int(b: &BuiltinTyCons, ty: &Type) -> bool {
     matches!(ty, Type::Con(id, _) if *id == b.int)
 }
 
 /// Whether `ty` is a base scalar a quote can capture from the enclosing scope as
-/// a runtime bind: Int, Text, Bool, or Float. These are exactly the types with a
-/// `QLit*` node and a `SqlValue` wrapper in both the SQL and in-memory backends.
+/// a runtime bind: Int, Text, Bool, Float, Decimal, Uuid, Timestamp, Bytes, Date,
+/// Time, or Duration. These are exactly the types with a `QLit*` node and a
+/// `SqlValue` wrapper in both the SQL and in-memory backends.
 fn is_quote_scalar(b: &BuiltinTyCons, ty: &Type) -> bool {
     matches!(ty, Type::Con(id, _)
-        if *id == b.int || *id == b.text || *id == b.bool || *id == b.float)
+        if *id == b.int || *id == b.text || *id == b.bool || *id == b.float
+            || *id == b.decimal || *id == b.uuid || *id == b.timestamp || *id == b.bytes
+            || *id == b.date || *id == b.time || *id == b.duration)
 }
 
 /// The element type of `ty` when it is a `List a`, for typing a captured `IN`
@@ -1008,6 +1034,11 @@ fn is_literal_zero(e: &Expr) -> bool {
             !digits.is_empty() && digits.bytes().all(|c| c == b'0')
         }
         Literal::Float { raw, .. } => raw.replace('_', "").parse::<f64>().is_ok_and(|v| v == 0.0),
+        Literal::Decimal { raw, .. } => raw
+            .trim_end_matches(['m', 'M'])
+            .replace('_', "")
+            .parse::<f64>()
+            .is_ok_and(|v| v == 0.0),
         _ => false,
     }
 }
@@ -1050,7 +1081,7 @@ fn check_captured_in_list(
         ctx.errors.push(TypeError::QuoteUnsupportedExpr {
             detail: format!(
                 "`{name}` has type `{rendered}`; an `IN` list captured from the \
-                 enclosing scope must be a List of Int, Text, Bool, or Float"
+                 enclosing scope must be a List of Int, Text, Bool, Float, Decimal, Uuid, Timestamp, or Bytes"
             ),
             span,
         });
@@ -1581,6 +1612,7 @@ fn record_group_quote(ctx: &mut InferCtx, span: Span, g_name: &str, e_ty: &Type)
             param_name: g_name.to_string(),
             entity,
             group: true,
+            avg_interval: false,
         },
     );
 }
@@ -1806,6 +1838,30 @@ fn check_group_call(
         return None;
     }
     let col_ty = group_agg_col_type(ctx, b, &args[0], e_ty)?;
+    // `sum`/`avg` fold a numeric column; `min`/`max` fold any comparable one.
+    // Reject a non-numeric column here rather than letting it reach the backend,
+    // where Postgres would raise a type error and the in-memory adapter would have
+    // no numeric fold for it.
+    if matches!(func, "sum" | "avg") {
+        let resolved = ctx.deep_resolve(&col_ty);
+        if is_non_summable_scalar(b, &resolved) {
+            ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+                detail: format!(
+                    "`{g_name}.{func}` folds a numeric column (Int, Float, Decimal, or Duration)"
+                ),
+                span,
+            });
+            return None;
+        }
+        // Record the folded column's type at the aggregate call so the lowering pass
+        // can pick the interval-aware average node for a `Duration` column. The grouped
+        // aggregate is reified without the column type otherwise in reach, and Postgres
+        // needs a distinct SQL path for an interval average (it cannot cast one to
+        // `float8`); a numeric average stays the plain `QAggAvg`.
+        if func == "avg" {
+            ctx.write_node_type(span, ridge_resolve::NodeKind::Expr, &resolved);
+        }
+    }
     let ty = if func == "avg" {
         Type::Con(b.float, vec![])
     } else {
@@ -2002,6 +2058,7 @@ const fn literal_type(b: &BuiltinTyCons, lit: &Literal) -> Type {
         | Literal::IntOct { .. }
         | Literal::IntHex { .. } => b.int,
         Literal::Float { .. } => b.float,
+        Literal::Decimal { .. } => b.decimal,
         Literal::Bool { .. } => b.bool,
         Literal::Text { .. } | Literal::RawText { .. } => b.text,
     };

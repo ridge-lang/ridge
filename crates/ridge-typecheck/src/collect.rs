@@ -520,10 +520,15 @@ fn collect_auto_promoted_to_text(
             continue;
         };
 
-        // Do not auto-promote for builtin/prelude types (TyConId 0–16): they
-        // are already covered by instances registered in `register_prelude_instances`.
-        // Auto-promotion targets user-defined types only (TyConId >= 17).
-        if tycon_id.0 < 17 {
+        // Never synthesize a second instance for a type the prelude already
+        // covers. Every builtin scalar with a `ToText` instance (Int, Float,
+        // Bool, Text, Timestamp, Ordering, Decimal, Uuid) is seeded in
+        // `register_prelude_instances`; auto-promotion targets user-defined
+        // types only. Keying on the env — rather than a fixed id range — stays
+        // correct as builtins are interned past the historical 0..16 block
+        // (Decimal and Uuid sit at 51/52). Explicit and derived instances are
+        // registered in later passes, so a hit here can only be a prelude seed.
+        if env.get((totext_id, tycon_id)).is_some() {
             continue;
         }
 
@@ -923,6 +928,13 @@ fn extract_tycon_id(
                 PrimitiveType::Text => Some(TyConId(3)),
                 PrimitiveType::Unit => Some(TyConId(4)),
                 PrimitiveType::Timestamp => Some(TyConId(5)),
+                // Decimal, Uuid, Bytes and Date are interned last in the builtin
+                // arena (ids 51, 52, 53, 54).
+                PrimitiveType::Decimal => Some(TyConId(51)),
+                PrimitiveType::Uuid => Some(TyConId(52)),
+                PrimitiveType::Bytes => Some(TyConId(53)),
+                PrimitiveType::Date => Some(TyConId(54)),
+                PrimitiveType::Time => Some(TyConId(55)),
                 #[allow(unreachable_patterns)]
                 _ => None,
             }
@@ -1665,20 +1677,82 @@ mod tests {
         assert!(positions.is_empty());
     }
 
-    /// Builtin types (`TyConId` < 17) must NOT be auto-promoted — they are
-    /// already covered by prelude instances.
+    /// A builtin type the prelude already covers must NOT be auto-promoted.
     #[test]
     fn auto_promote_skips_builtin_types() {
-        // `Int` maps to TyConId(0), which is < 17.
+        // `Int` (TyConId 0) carries a prelude `ToText` instance.
         let m = module_with_items(vec![pub_fn_to_text_item("Int")]);
         let result = collect_workspace(&[(0, &m)], &rustc_hash::FxHashMap::default());
 
-        // No T034 because the builtin filter skips TyConId 0.
+        // No T034: the prelude already covers `ToText Int`, so auto-promotion
+        // skips it rather than inserting a duplicate.
         let has_t034 = result.errors.iter().any(|e| e.code() == "T034");
         assert!(
             !has_t034,
             "pub fn toText for a builtin type must NOT fire T034; got {:?}",
             result.errors
+        );
+    }
+
+    /// `Decimal` is a builtin scalar the prelude covers, so its stdlib
+    /// `pub fn toText (d: Decimal)` — the exact shape `decimal.ridge` declares —
+    /// must not be auto-promoted into a second instance. The rich scalars are
+    /// interned at 51/52, outside the historical 0..16 builtin block, so the old
+    /// id-range skip let auto-promotion fire and collide with the seed (T034).
+    /// Keying the skip on the env keeps `Decimal` and `Uuid` in line with `Int`.
+    #[test]
+    fn auto_promote_skips_prelude_seeded_decimal() {
+        use crate::class_env::InstanceOrigin;
+        use ridge_ast::{
+            decl::{Body, FnDecl, Param},
+            Expr, Literal, PrimitiveType, Visibility,
+        };
+
+        let decimal_to_text = Item::Fn(FnDecl {
+            attrs: vec![],
+            vis: Visibility::Pub,
+            caps: vec![],
+            name: ident("toText"),
+            params: vec![Param::Annotated {
+                name: ident("d"),
+                ty: AstType::Primitive {
+                    name: PrimitiveType::Decimal,
+                    span: ds(),
+                },
+                span: ds(),
+            }],
+            ret: Some(AstType::Primitive {
+                name: PrimitiveType::Text,
+                span: ds(),
+            }),
+            constraints: vec![],
+            body: Body::Expr(Expr::Literal(Literal::Text {
+                raw: r#""placeholder""#.to_string(),
+                span: ds(),
+            })),
+            span: ds(),
+            doc: None,
+        });
+
+        let m = module_with_items(vec![decimal_to_text]);
+        let result = collect_workspace(&[(0, &m)], &rustc_hash::FxHashMap::default());
+
+        let has_t034 = result.errors.iter().any(|e| e.code() == "T034");
+        assert!(
+            !has_t034,
+            "pub fn toText for the prelude-covered Decimal must NOT fire T034; got {:?}",
+            result.errors
+        );
+        // The surviving instance is the prelude seed (Explicit), not an
+        // auto-promotion — proof the seed ran and the promotion was skipped.
+        let inst = result
+            .instance_env
+            .get((TOTEXT_CLASS, TyConId(51)))
+            .expect("prelude seeds ToText Decimal");
+        assert_eq!(
+            inst.origin,
+            InstanceOrigin::Explicit,
+            "the ToText Decimal instance must be the prelude seed, not auto-promoted"
         );
     }
 }

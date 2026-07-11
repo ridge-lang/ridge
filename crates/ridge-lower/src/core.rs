@@ -280,7 +280,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
                 if qi.group {
                     return reify_group_quote(ctx, body, *span, &qi.param_name);
                 }
-                return reify_quote(ctx, body, *span, params);
+                return reify_quote(ctx, body, *span, params, qi.avg_interval);
             }
             let id = ctx.fresh_id(None);
             let (ir_params, pattern_entries) = lower_lambda_params(ctx, *span, params);
@@ -799,12 +799,28 @@ const QEXPR_TYCON: TyConId = TyConId(25);
 /// `QColAt <i>` for the third onward. The leaf order is the parameter order, so
 /// it lines up with the left-to-right walk of the join tree. `params` carries
 /// the lambda's parameters so each one's name can be matched to its index.
-fn reify_quote(ctx: &mut LowerCtx<'_>, body: &Expr, span: Span, params: &[LambdaParam]) -> IrExpr {
+///
+/// `avg_interval` is set by the type-checker (`mark_avg_interval_accessor`) for
+/// a scalar `avgOf` accessor whose column is a `Duration`: the reified tree is
+/// wrapped in `QAggAvgInterval`, the same node a grouped `g.avg` reifies to for
+/// an interval column, so `std.repo`'s scalar `avgOf` reads it to pick the
+/// interval-aware `AVG_INTERVAL` keyword instead of a runtime `SqlType`
+/// dictionary, which the accessor's fundep'd instance cannot resolve reliably.
+fn reify_quote(
+    ctx: &mut LowerCtx<'_>,
+    body: &Expr,
+    span: Span,
+    params: &[LambdaParam],
+    avg_interval: bool,
+) -> IrExpr {
     let names: Vec<String> = params
         .iter()
         .map(|p| lambda_param_name(Some(p)).unwrap_or_default())
         .collect();
-    let tree = reify_node(ctx, body, &names);
+    let mut tree = reify_node(ctx, body, &names);
+    if avg_interval {
+        tree = qexpr_node(ctx, "QAggAvgInterval", 40, vec![tree], span);
+    }
     IrExpr::Construct {
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
@@ -855,10 +871,22 @@ fn captured_ident_type(ctx: &LowerCtx<'_>, span: Span) -> Option<Type> {
     ctx.node_type(nid).cloned().map(|t| deep_peel_alias(&t))
 }
 
+/// Whether the grouped `g.avg` at `span` folds a `Duration` column. The quotation
+/// checker stamps the folded column's type at the aggregate call, so an interval
+/// average reifies to the interval-aware node — Postgres cannot cast an interval
+/// average to `float8`, so it reads the average's epoch milliseconds instead. Any
+/// other column type, or a missing stamp, keeps the plain `QAggAvg`.
+fn agg_col_is_interval(ctx: &LowerCtx<'_>, span: Span) -> bool {
+    let Some(ws) = ctx.workspace else {
+        return false;
+    };
+    matches!(captured_ident_type(ctx, span), Some(Type::Con(id, _)) if id == ws.builtins.duration)
+}
+
 /// The `QExpr` literal constructor (`name`, `variant`) for a captured scalar's
-/// resolved type. The quotation checker accepts only Int/Text/Bool/Float
-/// captures, so a `None` here is an internal invariant violation, not a user
-/// error.
+/// resolved type. The quotation checker accepts the same scalar set
+/// (`is_quote_scalar`: Int/Text/Bool/Float/Decimal/Uuid/Timestamp/Bytes/Date/Time),
+/// so a `None` here is an internal invariant violation, not a user error.
 fn captured_scalar_qlit(ctx: &LowerCtx<'_>, ty: &Type) -> Option<(&'static str, u32)> {
     let b = &ctx.workspace?.builtins;
     match ty {
@@ -866,6 +894,13 @@ fn captured_scalar_qlit(ctx: &LowerCtx<'_>, ty: &Type) -> Option<(&'static str, 
         Type::Con(id, _) if *id == b.float => Some(("QLitFloat", 4)),
         Type::Con(id, _) if *id == b.bool => Some(("QLitBool", 3)),
         Type::Con(id, _) if *id == b.text => Some(("QLitText", 2)),
+        Type::Con(id, _) if *id == b.decimal => Some(("QLitDecimal", 33)),
+        Type::Con(id, _) if *id == b.uuid => Some(("QLitUuid", 34)),
+        Type::Con(id, _) if *id == b.timestamp => Some(("QLitInstant", 35)),
+        Type::Con(id, _) if *id == b.bytes => Some(("QLitBytes", 36)),
+        Type::Con(id, _) if *id == b.date => Some(("QLitDate", 37)),
+        Type::Con(id, _) if *id == b.time => Some(("QLitTime", 38)),
+        Type::Con(id, _) if *id == b.duration => Some(("QLitInterval", 39)),
         _ => None,
     }
 }
@@ -954,6 +989,7 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, params: &[String]) -> IrExpr {
                 | Literal::IntOct { .. }
                 | Literal::IntHex { .. } => ("QLitInt", 1),
                 Literal::Float { .. } => ("QLitFloat", 4),
+                Literal::Decimal { .. } => ("QLitDecimal", 33),
                 Literal::Bool { .. } => ("QLitBool", 3),
                 Literal::Text { .. } | Literal::RawText { .. } => ("QLitText", 2),
             };
@@ -1505,7 +1541,11 @@ fn reify_group_node(ctx: &mut LowerCtx<'_>, e: &Expr, g_name: &str) -> IrExpr {
                 if is_group_base(base, g_name) {
                     let agg = match field.text.as_str() {
                         "sum" => Some(("QAggSum", 18)),
-                        "avg" => Some(("QAggAvg", 19)),
+                        "avg" => Some(if agg_col_is_interval(ctx, *span) {
+                            ("QAggAvgInterval", 40)
+                        } else {
+                            ("QAggAvg", 19)
+                        }),
                         "min" => Some(("QAggMin", 20)),
                         "max" => Some(("QAggMax", 21)),
                         _ => None,
@@ -1533,6 +1573,7 @@ fn reify_group_node(ctx: &mut LowerCtx<'_>, e: &Expr, g_name: &str) -> IrExpr {
                 | Literal::IntOct { .. }
                 | Literal::IntHex { .. } => ("QLitInt", 1),
                 Literal::Float { .. } => ("QLitFloat", 4),
+                Literal::Decimal { .. } => ("QLitDecimal", 33),
                 Literal::Bool { .. } => ("QLitBool", 3),
                 Literal::Text { .. } | Literal::RawText { .. } => ("QLitText", 2),
             };
@@ -2940,7 +2981,7 @@ fn class_name_of(ctx: &LowerCtx<'_>, class: ridge_types::ClassId) -> Option<Stri
 /// the prelude `Encode`/`Decode` instances, whose dictionaries are synthesised
 /// inline (see [`crate::prelude_dict`]) because they have no module-level
 /// `$inst_` constant.
-fn dict_plan_to_expr(
+pub(crate) fn dict_plan_to_expr(
     ctx: &mut LowerCtx<'_>,
     _class: ridge_types::ClassId,
     plan: ridge_typecheck::DictPlan,
@@ -2995,6 +3036,19 @@ fn dict_plan_to_expr(
                             span,
                         }
                     });
+            }
+
+            // An auto-promoted instance (a bare `pub fn toText`, lifted by the
+            // collect pass) emits no `$inst_` constant — its method IS the public
+            // module function. A polymorphic `where ToText a` call still needs a
+            // dictionary value, so synthesise it inline, closing over that
+            // function. Without this the `$inst_…` reference below would dangle
+            // (E001: local symbol not found in the fn-arity table).
+            if info.origin == ridge_typecheck::InstanceOrigin::AutoPromoted {
+                if let Some(dict) = crate::prelude_dict::synth_auto_promoted_dict(ctx, &info, span)
+                {
+                    return dict;
+                }
             }
 
             // A user-defined instance: reference its module-level `$inst_`
@@ -3448,6 +3502,32 @@ fn record_ctor_span(ctor: &RecordCtor) -> ridge_ast::Span {
 /// structurally valid.
 fn lower_literal(ctx: &mut LowerCtx<'_>, lit: &Literal) -> IrExpr {
     let span = lit.span();
+    // A decimal literal has no native runtime form, so it lowers to a call that
+    // rebuilds the exact value from its digits. The lexer has already validated
+    // the text, so `parseRaw` never fails here; the `m` suffix and any digit
+    // separators are dropped before the runtime parses the number.
+    if let Literal::Decimal { raw, .. } = lit {
+        let text = raw.trim_end_matches(['m', 'M']).replace('_', "");
+        let callee = IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Stdlib {
+                module: "std.decimal".to_string(),
+                name: "parseRaw".to_string(),
+            },
+            span,
+        };
+        let arg = IrExpr::Lit {
+            id: ctx.fresh_id(None),
+            value: IrLit::Text(text),
+            span,
+        };
+        return IrExpr::Call {
+            id: ctx.fresh_id(None),
+            callee: Box::new(callee),
+            args: vec![arg],
+            span,
+        };
+    }
     let id = ctx.fresh_id(None);
     let value = match lit {
         Literal::IntDec { raw, .. } => parse_int_dec(ctx, raw, span),
@@ -3459,6 +3539,8 @@ fn lower_literal(ctx: &mut LowerCtx<'_>, lit: &Literal) -> IrExpr {
         Literal::Text { raw, .. } => IrLit::Text(strip_text_quotes(raw)),
         // Raw strings carry literal bytes; escape decoding must be skipped.
         Literal::RawText { raw, .. } => IrLit::Text(raw.clone()),
+        // Handled by the early return above.
+        Literal::Decimal { .. } => unreachable!("decimal literal lowered above"),
     };
     IrExpr::Lit { id, value, span }
 }

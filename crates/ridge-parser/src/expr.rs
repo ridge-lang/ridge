@@ -70,6 +70,10 @@ pub(crate) fn parse_literal(cur: &mut Cursor<'_>) -> Result<Literal, ParseError>
             cur.bump();
             Ok(Literal::Float { raw, span })
         }
+        Token::DecimalLit(raw) => {
+            cur.bump();
+            Ok(Literal::Decimal { raw, span })
+        }
         Token::KwTrue => {
             cur.bump();
             Ok(Literal::Bool { value: true, span })
@@ -335,6 +339,7 @@ fn parse_expr_bp(cur: &mut Cursor<'_>, min_bp: u8) -> Result<Expr, ParseError> {
                                         | Token::IntOct(_)
                                         | Token::IntHex(_)
                                         | Token::Float(_)
+                                        | Token::DecimalLit(_)
                                 )
                             );
                             if is_timeout_postfix {
@@ -551,6 +556,7 @@ pub(crate) fn parse_expr_atom(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> 
         | Token::IntOct(_)
         | Token::IntHex(_)
         | Token::Float(_)
+        | Token::DecimalLit(_)
         | Token::KwTrue
         | Token::KwFalse
         | Token::TextLit(_)
@@ -1005,6 +1011,7 @@ fn can_start_arg_atom(cur: &Cursor<'_>) -> bool {
             | Token::IntOct(_)
             | Token::IntHex(_)
             | Token::Float(_)
+            | Token::DecimalLit(_)
             | Token::TextLit(_)
             | Token::RawTextLit(_)
             | Token::KwTrue

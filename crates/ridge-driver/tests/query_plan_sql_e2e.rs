@@ -1,17 +1,24 @@
 //! End-to-end check that a whole query plan compiles to one parameterized SQL
 //! statement on the BEAM.
 //!
-//! `Query.planToSql` is the Postgres renderer: it lowers a `QueryPlan` tree to a
-//! `(Sql, List SqlValue)` pair — the statement with positional `$N` placeholders
-//! and the bind values in order. This exercises every node shape: a single-table
-//! scan, a set-operation combine and refine, the four join kinds (with the
-//! source-prefixed select list and the outer-join presence markers), a projected
-//! join, a scalar aggregate, and a grouped join.
+//! `Query.planToSql` lowers a `QueryPlan` tree to a `(Sql, List SqlValue)` pair — the
+//! statement with positional `$N` placeholders and the bind values in order. It targets
+//! Postgres; `planToSqlFor SqliteDialect` renders the same plan for SQLite. This exercises
+//! every node shape: a single-table scan, a set-operation combine and refine, the four
+//! join kinds (with the source-prefixed select list and the outer-join presence markers),
+//! a projected join, a scalar aggregate, and a grouped join.
 //!
 //! The plans are built directly through the public `plan*` builders, with each
 //! captured predicate's reified tree read off a `Quote`'s `tree` field. The SQL is
 //! asserted against what the proven backend verbs emit (`l."col"`/`r."col"`
-//! qualifiers, `$N` placeholders, `TRUE AS "__present"` markers, `AVG(...)::float8`).
+//! qualifiers, `$N` placeholders, `TRUE AS "__present"` markers, `AVG(...)::float8`,
+//! and the interval-aware `EXTRACT(EPOCH FROM AVG(...))::float8 * 1000`).
+//!
+//! The two dialects render identically everywhere except the aggregates: SQLite's `AVG`
+//! needs no `::float8` cast, and an interval average is a plain `AVG` over the
+//! millisecond-valued column rather than an `EXTRACT(EPOCH …)`. The `sqlite*` cases pin
+//! those differences and confirm the `$N` placeholders and the rest of the plan are
+//! byte-for-byte the same as Postgres.
 //!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 
@@ -23,8 +30,8 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.query as Query (QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planToSql, planExists, MutationPlan, planInsert, planUpsert, planUpdate, planDelete, planDeleteKeys, mutationToSql, mutationReturningToSql)
-import std.sql (Sql, SqlValue, sqlValue, sqlInt, sqlText)
+import std.query as Query (QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planToSql, planToSqlFor, planExists, MutationPlan, planInsert, planUpsert, planUpdate, planDelete, planDeleteKeys, mutationToSql, mutationReturningToSql)
+import std.sql (Sql, SqlValue, sqlValue, sqlInt, sqlText, SqliteDialect)
 import std.int as Int
 import std.list as List
 import std.text as Text
@@ -111,6 +118,11 @@ fn wrapJoin () -> QueryPlan =
 
 fn renderSql (plan: QueryPlan) -> Text =
     match planToSql plan
+        (s, _) -> sqlValue s
+
+-- The SQLite spelling of the same plan, through `planToSqlFor SqliteDialect`.
+fn renderSqlite (plan: QueryPlan) -> Text =
+    match planToSqlFor SqliteDialect plan
         (s, _) -> sqlValue s
 
 fn renderBinds (plan: QueryPlan) -> Text =
@@ -303,6 +315,18 @@ pub fn singleGroupHavingBinds () -> Text =
 
 pub fn singleGroupExistsSql () -> Text =
     renderSql (planGroup "name" 0 [("name", "KEY", keepAll (), 0), ("n", "COUNT", keepAll (), 0)] (keepAll ()) (planScan "users" (QExists "posts" (QEq (QColR "author") (QCol "id"))) [] (0 - 1) 0 false))
+
+-- A grouped average over an interval column. The `AVG_INTERVAL` keyword renders as
+-- `EXTRACT(EPOCH FROM AVG(col))::float8 * 1000` — Postgres cannot cast an interval
+-- average to `float8`, so it reads the average's epoch milliseconds instead.
+pub fn singleGroupAvgIntervalSql () -> Text =
+    renderSql (planGroup "name" 0 [("name", "KEY", keepAll (), 0), ("mean", "AVG_INTERVAL", QCol "took", 0)] (keepAll ()) (adultsScan ()))
+
+-- The same interval average inside a HAVING, reached through the `QAggAvgInterval`
+-- node rather than the select-list keyword, so both paths render the epoch-millisecond
+-- form. The float threshold binds after the base filter as `$2`.
+pub fn singleGroupAvgIntervalHavingSql () -> Text =
+    renderSql (planGroup "name" 0 [("name", "KEY", keepAll (), 0), ("n", "COUNT", keepAll (), 0)] (QGt (QAggAvgInterval (QCol "took")) (QLitFloat 100.0)) (adultsScan ()))
 
 -- A correlated EXISTS inside a binary join's post-join WHERE: the inner table joins at
 -- the leaf after both join sides (`x2`), and its predicate names the right leaf as `r`
@@ -740,6 +764,25 @@ fn orderFour () -> QueryPlan =
         (reactionCols ())
 
 pub fn orderFourSql () -> Text = renderSql (orderFour ())
+
+-- SQLite dialect: the same plans as the aggregate cases above, rendered through
+-- `planToSqlFor SqliteDialect`. `AVG` drops the `::float8` cast (SQLite's average is
+-- already a real), and an interval average is a plain `AVG` over the millisecond column
+-- instead of `EXTRACT(EPOCH FROM AVG(...)) * 1000`. `SUM`, `COUNT`, the `$N` placeholders,
+-- and the rest of each statement stay exactly as Postgres renders them.
+pub fn sqliteSingleSumSql () -> Text =
+    renderSqlite (planAggregate "SUM" (QCol "age") 0 (adultsScan ()))
+pub fn sqliteSingleAvgSql () -> Text =
+    renderSqlite (planAggregate "AVG" (QCol "age") 0 (adultsScan ()))
+pub fn sqliteSingleGroupSql () -> Text =
+    renderSqlite (planGroup "name" 0 [("name", "KEY", keepAll (), 0), ("n", "COUNT", keepAll (), 0), ("total", "SUM", QCol "age", 0)] (keepAll ()) (adultsScan ()))
+pub fn sqliteGroupAvgIntervalSql () -> Text =
+    renderSqlite (planGroup "name" 0 [("name", "KEY", keepAll (), 0), ("mean", "AVG_INTERVAL", QCol "took", 0)] (keepAll ()) (adultsScan ()))
+pub fn sqliteGroupAvgIntervalHavingSql () -> Text =
+    renderSqlite (planGroup "name" 0 [("name", "KEY", keepAll (), 0), ("n", "COUNT", keepAll (), 0)] (QGt (QAggAvgInterval (QCol "took")) (QLitFloat 100.0)) (adultsScan ()))
+pub fn sqliteAggSql () -> Text =
+    renderSqlite (planAggregate "AVG" (col2 (fn (u: User) (p: Post) -> p.author)) 1 (wrapJoin ()))
+pub fn sqliteAvgThreeSql () -> Text = renderSqlite (avgThree ())
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -804,7 +847,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','singleCountSql','singleSumSql','singleAvgSql','singleCountExistsSql','singleProjectSql','singleProjectExistsSql','singleProjectPagedSql','singleGroupSql','singleGroupHavingSql','singleGroupHavingBinds','singleGroupExistsSql','joinExistsWhereSql','naryExistsWhereSql','nestedExistsSql','pgNestedSql','pgNestedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql','insertSql','insertBinds','insertManySql','insertManyBinds','updateSql','updateBinds','deleteSql','existsDeleteSql','existsDeleteBinds','deleteKeysSql','deleteKeysBinds','deleteKeysCompositeSql','existsUpdateSql','existsUpdateBinds','upsertSql','upsertBinds','insertOrIgnoreSql','upsertBareSql','insertReturningStarSql','insertReturningStarBinds','insertReturningColsSql','deleteReturningSql','updateReturningSql','upsertReturningSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','singleCountSql','singleSumSql','singleAvgSql','singleCountExistsSql','singleProjectSql','singleProjectExistsSql','singleProjectPagedSql','singleGroupSql','singleGroupHavingSql','singleGroupHavingBinds','singleGroupExistsSql','singleGroupAvgIntervalSql','singleGroupAvgIntervalHavingSql','joinExistsWhereSql','naryExistsWhereSql','nestedExistsSql','pgNestedSql','pgNestedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql','insertSql','insertBinds','insertManySql','insertManyBinds','updateSql','updateBinds','deleteSql','existsDeleteSql','existsDeleteBinds','deleteKeysSql','deleteKeysBinds','deleteKeysCompositeSql','existsUpdateSql','existsUpdateBinds','upsertSql','upsertBinds','insertOrIgnoreSql','upsertBareSql','insertReturningStarSql','insertReturningStarBinds','insertReturningColsSql','deleteReturningSql','updateReturningSql','upsertReturningSql','sqliteSingleSumSql','sqliteSingleAvgSql','sqliteSingleGroupSql','sqliteGroupAvgIntervalSql','sqliteGroupAvgIntervalHavingSql','sqliteAggSql','sqliteAvgThreeSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -880,6 +923,14 @@ fn query_plan_compiles_to_parameterized_sql() {
     want("singleGroupHavingBinds=2");
     want(
         r#"singleGroupExistsSql=SELECT l."name" AS "name", COUNT(*) AS "n" FROM "users" AS l WHERE EXISTS (SELECT 1 FROM "posts" AS x1 WHERE x1."author" = l."id") GROUP BY l."name" ORDER BY l."name""#,
+    );
+    // A grouped interval average renders through the epoch-millisecond path in the select
+    // list and, reached as a `QAggAvgInterval` node, in the HAVING as well.
+    want(
+        r#"singleGroupAvgIntervalSql=SELECT "name" AS "name", EXTRACT(EPOCH FROM AVG("took"))::float8 * 1000 AS "mean" FROM "users" WHERE "age" >= $1 GROUP BY "name" ORDER BY "name""#,
+    );
+    want(
+        r#"singleGroupAvgIntervalHavingSql=SELECT "name" AS "name", COUNT(*) AS "n" FROM "users" WHERE "age" >= $1 GROUP BY "name" HAVING EXTRACT(EPOCH FROM AVG("took"))::float8 * 1000 > $2 ORDER BY "name""#,
     );
 
     // The typed write renderer (`mutationToSql`): an INSERT lists its columns and binds
@@ -1238,5 +1289,32 @@ fn query_plan_compiles_to_parameterized_sql() {
     );
     want(
         r#"orderFourSql=SELECT t0."id" AS "t0$id", t0."age" AS "t0$age", t0."name" AS "t0$name", t1."id" AS "t1$id", t1."author" AS "t1$author", t1."title" AS "t1$title", t2."id" AS "t2$id", t2."post" AS "t2$post", t2."body" AS "t2$body", t3."id" AS "t3$id", t3."comment" AS "t3$comment", t3."kind" AS "t3$kind" FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" JOIN "comments" AS t2 ON t1."id" = t2."post" JOIN "reactions" AS t3 ON t2."id" = t3."comment" WHERE (t0."age" >= $1) ORDER BY t3."kind" ASC"#,
+    );
+
+    // SQLite dialect. `SUM`/`COUNT` and the grouped, non-`AVG` summary render byte-for-byte
+    // the same as Postgres (the `$N` placeholders included), so they double as a check that
+    // the dialect touches nothing else.
+    want(r#"sqliteSingleSumSql=SELECT SUM("age") FROM "users" WHERE "age" >= $1"#);
+    want(
+        r#"sqliteSingleGroupSql=SELECT "name" AS "name", COUNT(*) AS "n", SUM("age") AS "total" FROM "users" WHERE "age" >= $1 GROUP BY "name" ORDER BY "name""#,
+    );
+    // `AVG` drops the `::float8` cast the Postgres renderer carries — SQLite's average is
+    // already a real. The scalar, the binary-join, and the three-table composite all funnel
+    // through the same fold, so each loses the cast.
+    want(r#"sqliteSingleAvgSql=SELECT AVG("age") FROM "users" WHERE "age" >= $1"#);
+    want(
+        r#"sqliteAggSql=SELECT AVG(r."author") FROM "users" AS l JOIN "posts" AS r ON l."id" = r."author""#,
+    );
+    want(
+        r#"sqliteAvgThreeSql=SELECT AVG(t2."post") FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" JOIN "comments" AS t2 ON t1."id" = t2."post" WHERE (t0."age" >= $1)"#,
+    );
+    // The interval average is a plain `AVG` over the millisecond-valued column, in the
+    // select list and — reached as a `QAggAvgInterval` node — in the HAVING as well, where
+    // Postgres would read `EXTRACT(EPOCH FROM AVG("took")) * 1000`.
+    want(
+        r#"sqliteGroupAvgIntervalSql=SELECT "name" AS "name", AVG("took") AS "mean" FROM "users" WHERE "age" >= $1 GROUP BY "name" ORDER BY "name""#,
+    );
+    want(
+        r#"sqliteGroupAvgIntervalHavingSql=SELECT "name" AS "name", COUNT(*) AS "n" FROM "users" WHERE "age" >= $1 GROUP BY "name" HAVING AVG("took") > $2 ORDER BY "name""#,
     );
 }

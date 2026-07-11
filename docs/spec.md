@@ -311,6 +311,9 @@ Every Ridge module has a set of names in scope without any `import` declaration.
 | `Err` | `std.result` | `StdlibSymbol` | Constructor |
 | `Int` | `std.int` | `ModuleAlias` | Enables `Int.parse`, `Int.toText`, … |
 | `Float` | `std.float` | `ModuleAlias` | Enables `Float.fromInt`, `Float.round`, … |
+| `Decimal` | `std.decimal` | `ModuleAlias` | Enables `Decimal.fromText`, `Decimal.round`, … |
+| `Uuid` | `std.uuid` | `ModuleAlias` | Enables `Uuid.gen`, `Uuid.fromText`, … |
+| `Bytes` | `std.bytes` | `ModuleAlias` | Enables `Bytes.fromHex`, `Bytes.gen`, … |
 | `Bool` | `std.bool` | `ModuleAlias` | Enables `Bool.not`, … |
 | `Text` | `std.text` | `ModuleAlias` | Enables `Text.padLeft`, `Text.split`, … |
 | `List` | `std.list` | `ModuleAlias` | Enables `List.map`, `List.fold`, … |
@@ -471,7 +474,7 @@ Io.println $"User ${user.name} has ${user.age} years"
 Io.println $"Total: ${items |> List.map (.price) |> List.sum}"
 ```
 
-String interpolation dispatches through the `ToText` class (§5.6). Built-in types (`Int`, `Float`, `Bool`, `Text`, `Timestamp`) have prelude instances. User-defined types become interpolatable by adding `deriving (ToText)` to the type declaration or by writing an explicit `instance ToText T`. See §5.6. Interpolation also has a multi-line block form, `$"""..."""` (§4.1.1).
+String interpolation dispatches through the `ToText` class (§5.6). Built-in types (`Int`, `Float`, `Bool`, `Text`, `Timestamp`, `Decimal`, `Uuid`) have prelude instances. `Bytes` has none — it has no single canonical text form, since `toHex` and `toUtf8` disagree — so a `Bytes` hole is a type error until you supply an instance. User-defined types become interpolatable by adding `deriving (ToText)` to the type declaration or by writing an explicit `instance ToText T`. See §5.6. Interpolation also has a multi-line block form, `$"""..."""` (§4.1.1).
 
 ### 3.11. Modules and imports
 
@@ -562,6 +565,8 @@ Note: `spawn` appears both as a top-level keyword (the spawn expression) and as 
 Int:     42, -17, 1_000_000, 0xFF_FF, 0b1010_0101, 0o755
          (0x hex, 0b binary, 0o octal; _ digit separator; prefix letters and hex digits case-insensitive)
 Float:   3.14, -0.5, 1.5e10
+Decimal: 19.99m, 5m, 1_000.50m, 1.5e3m
+         (an `m`/`M` suffix; exact base-10, arbitrary precision; see §9 std.decimal)
 Text:    "hello", "escape \n \t \" \\ \r \0 \u{1F600}"
 Text:    $"interpolated ${expr}"
 Bool:    true, false
@@ -788,6 +793,9 @@ Ridge's type system is based on **Hindley-Milner with extensions**:
 ```
 Int        -- 64-bit signed integer
 Float      -- 64-bit IEEE 754 double
+Decimal    -- exact base-10, arbitrary precision (a `19.99m` literal); see §9 std.decimal
+Uuid       -- RFC 4122 identifier (no literal; from Uuid.gen / Uuid.fromText); see §9 std.uuid
+Bytes      -- raw byte string (no literal; from Bytes.fromHex / Bytes.fromUtf8 / Bytes.gen); see §9 std.bytes
 Bool       -- true | false
 Text       -- UTF-8 string (BEAM binary internally)
 Unit       -- () — the single-value type
@@ -1583,6 +1591,9 @@ Rules:
 |--------|---------|---------------|
 | `std.int` | Integer ops | `toText`, `parse`, `abs`, `min`, `max` |
 | `std.float` | Float ops | `toText`, `parse`, `round`, `floor`, `ceil`, `sqrt` |
+| `std.decimal` | Exact decimal ops | `fromText`, `toText`, `add`, `sub`, `mul`, `div`, `round`, `compare`; `RoundingMode` |
+| `std.uuid` | RFC 4122 identifiers | `gen`, `fromText`, `toText`, `nil`, `compare`, `eq` |
+| `std.bytes` | Raw byte strings | `fromHex`, `toHex`, `fromUtf8`, `toUtf8`, `empty`, `gen`, `length`, `concat`, `compare` |
 | `std.bool` | Boolean helpers | `not`, `and`, `or` |
 | `std.text` | Text ops | `byteSize`, `concat`, `split`, `splitN`, `splitAny`, `lines`, `trim`, `toUpper`, `toLower`, `startsWith`, `endsWith`, `contains`, `replace`, `padLeft`, `padRight`, `isEmpty` |
 | `std.list` | List ops | `empty`, `length`, `isEmpty`, `head`, `tail`, `map`, `filter`, `filterMap`, `fold`, `foldRight`, `reverse`, `sort`, `sortBy`, `take`, `drop`, `groupBy`, `flatMap`, `zip`, `zipWith`, `contains`, `find`, `any`, `all`, `range`, `rangeExclusive`, `forEach` |

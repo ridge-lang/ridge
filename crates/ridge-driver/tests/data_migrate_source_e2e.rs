@@ -16,6 +16,8 @@
 //! reconstructed `QExpr` tree, and a `DefaultLit` default through `sqlValueSource` (the
 //! `SqlValue` rebuilt as its own factory call); both round-trip through the fixpoint even
 //! though the phantom-erased schema has lost the entity type the original quote closed over.
+//! A junction table's composite primary key and multi-column unique constraint rebuild
+//! through their `compositePrimaryKey`/`uniqueConstraint` steps the same way.
 //!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 
@@ -32,8 +34,8 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 // and a drop-table — rendered both directly and, for the model and migration, through
 // the snapshot/migration writers.
 const RENDER_SRC: &str = r#"
-import std.sql (DbBigInt, DbInt, DbText, DbVarchar)
-import std.schema (EntitySchema, Identity, DefaultLit, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, check, eraseSchema, columnToSource, schemaToSource)
+import std.sql (DbBigInt, DbInt, DbText, DbVarchar, DbSmallInt, DbChar)
+import std.schema (EntitySchema, Identity, DefaultLit, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, check, compositePrimaryKey, uniqueConstraint, eraseSchema, columnToSource, schemaToSource)
 import std.migrate as Migrate
 import std.sql (sqlInt)
 
@@ -55,7 +57,17 @@ fn widgetSchema () -> EntitySchema Widget =
     schema "Widget" "widgets"
       |> withColumn (mkColumn "qty" "qty" DbInt false |> check (fn (w: Widget) -> w.qty >= 0))
 
-fn model () -> List (EntitySchema Unit) = [ userSchema (), postSchema (), eraseSchema (widgetSchema ()) ]
+-- A junction table keyed by two columns: its composite primary key and a
+-- multi-column unique constraint render as trailing builder steps, and rebuild the
+-- same schema through the fixpoint below.
+fn membershipSchema () -> EntitySchema Unit =
+    schema "Membership" "memberships"
+      |> withColumn (mkColumn "user_id" "user_id" DbBigInt false)
+      |> withColumn (mkColumn "group_id" "group_id" DbBigInt false)
+      |> compositePrimaryKey ["user_id", "group_id"]
+      |> uniqueConstraint ["group_id", "user_id"]
+
+fn model () -> List (EntitySchema Unit) = [ userSchema (), postSchema (), eraseSchema (widgetSchema ()), membershipSchema () ]
 
 fn sampleMigration () =
     Migrate.migration "0002_evolve"
@@ -70,6 +82,10 @@ pub fn columnSrc () -> Text = columnToSource (mkColumn "email" "email" (DbVarcha
 pub fn checkColSrc () -> Text = columnToSource (mkColumn "qty" "qty" DbInt false |> check (fn (w: Widget) -> w.qty >= 0))
 pub fn defaultColSrc () -> Text = columnToSource (mkColumn "logins" "logins" DbInt false |> generated (DefaultLit (sqlInt 0)))
 pub fn schemaSrc () -> Text = schemaToSource (userSchema ())
+pub fn narrowSchemaSrc () -> Text =
+    schemaToSource (schema "Ticket" "tickets"
+      |> withColumn (mkColumn "id" "id" DbSmallInt false)
+      |> withColumn (mkColumn "code" "code" (DbChar 8) false))
 pub fn modelSrc () -> Text = Migrate.modelToSource (model ())
 pub fn migrationSrc () -> Text = Migrate.migrationToSource (sampleMigration ())
 "#;
@@ -81,7 +97,7 @@ fn build_roundtrip_source(model_src: &str, migration_src: &str) -> String {
     format!(
         r#"
 import std.sql (DbBigInt, DbInt, DbText, DbVarchar)
-import std.schema (EntitySchema, Identity, DefaultLit, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, checkRaw)
+import std.schema (EntitySchema, Identity, DefaultLit, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, checkRaw, compositePrimaryKey, uniqueConstraint)
 import std.migrate (migration, createSchema, addEntityColumn, alterColumn, dropColumn, dropTable, modelToSource, migrationToSource)
 import std.sql (sqlInt)
 
@@ -186,6 +202,7 @@ fn source_renderer_round_trips_on_beam() {
     let check_col_src = run_fun(&beam_dir, &module, "checkColSrc");
     let default_col_src = run_fun(&beam_dir, &module, "defaultColSrc");
     let schema_src = run_fun(&beam_dir, &module, "schemaSrc");
+    let narrow_schema_src = run_fun(&beam_dir, &module, "narrowSchemaSrc");
     let model_src = run_fun(&beam_dir, &module, "modelSrc");
     let migration_src = run_fun(&beam_dir, &module, "migrationSrc");
 
@@ -230,6 +247,16 @@ fn source_renderer_round_trips_on_beam() {
         "schema_src bio: {schema_src}"
     );
 
+    // The first-class narrow column types render their DbType source: a nullary
+    // DbSmallInt bare, a DbChar carrying its width parenthesised — both valid Ridge
+    // that rebuilds the same column type.
+    assert!(
+        narrow_schema_src.contains(r#"|> withColumn (mkColumn "id" "id" DbSmallInt false)"#)
+            && narrow_schema_src
+                .contains(r#"|> withColumn (mkColumn "code" "code" (DbChar 8) false)"#),
+        "narrow_schema_src: {narrow_schema_src}"
+    );
+
     // A model renders one entity per line, leading comma, with a foreign key's
     // `references … |> onDelete` and an index step preserved.
     assert!(
@@ -244,6 +271,16 @@ fn source_renderer_round_trips_on_beam() {
         model_src
             .contains(r#"|> indexed |> foreignKey (references "users" "id" |> onDelete Cascade))"#),
         "model_src fk: {model_src}"
+    );
+    // A composite primary key and a multi-column unique constraint render as trailing
+    // `|> compositePrimaryKey [...]` / `|> uniqueConstraint [...]` steps, each column
+    // list a Ridge list of quoted-string literals — and rebuild an equal schema through
+    // the fixpoint below.
+    assert!(
+        model_src.contains(
+            r#"schema "Membership" "memberships" |> withColumn (mkColumn "user_id" "user_id" DbBigInt false) |> withColumn (mkColumn "group_id" "group_id" DbBigInt false) |> compositePrimaryKey ["user_id", "group_id"] |> uniqueConstraint ["group_id", "user_id"]"#
+        ),
+        "model_src membership: {model_src}"
     );
     assert!(model_src.ends_with("\n]"), "model_src close: {model_src}");
 

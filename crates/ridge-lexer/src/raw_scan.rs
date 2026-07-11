@@ -20,7 +20,8 @@ use crate::{
     doc_comment::scan_doc_body,
     error::LexError,
     numbers::{
-        validate_float, validate_int_bin, validate_int_dec, validate_int_hex, validate_int_oct,
+        validate_decimal, validate_float, validate_int_bin, validate_int_dec, validate_int_hex,
+        validate_int_oct,
     },
     span::Span,
     strings::validate_escapes,
@@ -160,6 +161,12 @@ enum LogosToken<'src> {
     Underscore,
 
     // ── Numeric literals ──────────────────────────────────────────────────────
+    // Decimal literal `19.99m` / `5m` / `1.5e3m` — a numeric run with an `m`/`M`
+    // suffix. Priority 5 so it wins over both Float and IntDec on the shared
+    // digit prefix (a trailing `m` was never a valid adjacent token before).
+    #[regex(r"[0-9][0-9_]*(\.[0-9][0-9_]*)?([eE][+\-]?[0-9]+)?[mM]", priority = 5)]
+    DecimalLit,
+
     // Float must come before IntDec to win on e.g. `3.14`.
     #[regex(r"[0-9][0-9_]*\.[0-9][0-9_]*([eE][+\-]?[0-9]+)?", priority = 4)]
     Float,
@@ -501,6 +508,12 @@ pub(crate) fn scan(src: &str) -> (Vec<(RawToken, Span)>, Vec<LexError>) {
                     errors.push(e);
                 }
                 tokens.push((RawToken::Token(Token::IntHex(slice.to_owned())), span));
+            }
+            Ok(LogosToken::DecimalLit) => {
+                if let Err(e) = validate_decimal(slice, span) {
+                    errors.push(e);
+                }
+                tokens.push((RawToken::Token(Token::DecimalLit(slice.to_owned())), span));
             }
             Ok(LogosToken::Float) => {
                 if let Err(e) = validate_float(slice, span) {

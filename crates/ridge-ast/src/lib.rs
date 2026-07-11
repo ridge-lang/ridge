@@ -211,8 +211,13 @@ mod tests {
             PrimitiveType::Text,
             PrimitiveType::Unit,
             PrimitiveType::Timestamp,
+            PrimitiveType::Decimal,
+            PrimitiveType::Uuid,
+            PrimitiveType::Bytes,
+            PrimitiveType::Date,
+            PrimitiveType::Time,
         ];
-        assert_eq!(prims.len(), 6);
+        assert_eq!(prims.len(), 11);
     }
 
     // ── DocComment ────────────────────────────────────────────────────────────

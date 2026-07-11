@@ -154,6 +154,60 @@ pub fn synth_prelude_dict(
     Some(dict_map(ctx, method, method_fn, span))
 }
 
+/// Synthesise the runtime dictionary for an AUTO-PROMOTED instance — a bare
+/// `pub fn method (x: T) -> …` that the collect pass lifted to an instance.
+///
+/// Such an instance emits no `$inst_` constant: its method *is* the public
+/// module function, so there is nothing for `dict_plan_to_expr` to reference.
+/// A genuinely polymorphic call (`fn f (x: a) where ToText a`) still needs a
+/// dictionary value, so build it inline — `#{ method => fun(X) -> M:method(X) end }`
+/// — closing over that public function, exactly as the codec prelude dicts do.
+///
+/// Returns `None` if the instance carries no defining module (it cannot then be
+/// referenced); the caller falls back to the `$inst_` symbol path.
+///
+/// Only `ToText` auto-promotes today (one arity-1 method), but iterating
+/// `methods` keeps this correct if that widens.
+#[must_use]
+pub fn synth_auto_promoted_dict(
+    ctx: &mut LowerCtx<'_>,
+    info: &ridge_typecheck::InstanceInfo,
+    span: Span,
+) -> Option<IrExpr> {
+    let module = ridge_resolve::ModuleId(info.def_module?);
+    let fields = info
+        .methods
+        .iter()
+        .map(|(method, impl_name)| {
+            // The implementation symbol is the public fn to call; it coincides
+            // with the method name for auto-promotion (which fires only on a fn
+            // named after the method). Fall back to the method name if unset.
+            let target = if impl_name.is_empty() {
+                method
+            } else {
+                impl_name
+            };
+            let x = local(ctx, "__ap_x", span);
+            let call = IrExpr::Call {
+                id: ctx.fresh_id(None),
+                callee: Box::new(IrExpr::Symbol {
+                    id: ctx.fresh_id(None),
+                    sym: SymbolRef::External {
+                        module,
+                        name: target.clone(),
+                    },
+                    span,
+                }),
+                args: vec![x],
+                span,
+            };
+            let method_fn = lambda(ctx, vec![param("__ap_x".to_string(), span)], call, span);
+            (method.clone(), method_fn)
+        })
+        .collect::<Vec<_>>();
+    Some(dict_construct(ctx, fields, span))
+}
+
 // ── Shared IR helpers ─────────────────────────────────────────────────────────
 
 /// `#{ 'method' => method_fn }` — a one-entry dictionary map.
@@ -167,6 +221,21 @@ fn dict_map(ctx: &mut LowerCtx<'_>, method: &str, method_fn: IrExpr, span: Span)
             variant: 0,
         },
         fields: vec![(method.to_string(), method_fn)],
+        span,
+    }
+}
+
+/// `#{ f1 => v1, f2 => v2, … }` — a multi-entry dictionary map.
+fn dict_construct(ctx: &mut LowerCtx<'_>, fields: Vec<(String, IrExpr)>, span: Span) -> IrExpr {
+    IrExpr::Construct {
+        id: ctx.fresh_id(None),
+        ctor: SymbolRef::Constructor {
+            ctor_kind: ridge_ir::CtorKind::Record,
+            owner_type: TyConId(0), // untyped — dicts are plain maps in the IR
+            name: "$synth_dict_auto".to_string(),
+            variant: 0,
+        },
+        fields,
         span,
     }
 }

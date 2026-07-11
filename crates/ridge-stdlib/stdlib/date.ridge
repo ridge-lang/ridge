@@ -1,0 +1,92 @@
+-- std.date — calendar dates (Tier 1, no stdlib imports).
+--
+-- Date is a calendar day — year, month, and day of month, with no time of day and
+-- no timezone. It is kept distinct from Timestamp, which is an instant on the
+-- clock: a Date has no notion of hours or an offset, so it maps to a native SQL
+-- `date` column that round-trips without a time detour. On the BEAM a Date is a
+-- day count from the Unix epoch, which keeps ordering and day arithmetic exact.
+--
+-- This module covers construction (from components, from ISO text, today), the
+-- year/month/day accessors, day arithmetic, and comparison. The FFI primitives
+-- (`date_*` in ridge_rt) carry the day count; the codec that moves a Date across a
+-- SQL `date` column lives in std.sql.
+
+-- Build a Date from a year, a month (1-12), and a day of month. Validates the
+-- calendar date, so `fromYmd 2026 2 30` is an Err, not a silently-wrapped date;
+-- this is the gate for untrusted components. The inverse of the year/month/day
+-- accessors.
+@ffi("ridge_rt", "date_from_ymd", 3)
+pub fn fromYmd (year: Int) (month: Int) (day: Int) -> Result Date Error
+
+-- Render a Date as ISO 8601 `YYYY-MM-DD`, zero-padded. The canonical text form,
+-- and the inverse of fromIso.
+@ffi("ridge_rt", "date_to_iso", 1)
+pub fn toIso (d: Date) -> Text
+
+-- Parse a Date from ISO 8601 `YYYY-MM-DD`. Returns Err on a malformed string or an
+-- out-of-range calendar date, so it is the gate for an untrusted date string. The
+-- inverse of toIso.
+@ffi("ridge_rt", "date_from_iso", 1)
+pub fn fromIso (s: Text) -> Result Date Error
+
+-- The year of a Date.
+@ffi("ridge_rt", "date_year", 1)
+pub fn year (d: Date) -> Int
+
+-- The month of a Date, 1 (January) through 12 (December).
+@ffi("ridge_rt", "date_month", 1)
+pub fn month (d: Date) -> Int
+
+-- The day of month, 1 through 31.
+@ffi("ridge_rt", "date_day", 1)
+pub fn day (d: Date) -> Int
+
+-- Today's date in UTC. Requires the `time` capability, since it reads the system
+-- clock and two calls on different days return different values. Pairs with
+-- `today` for a non-UTC calendar: near midnight the UTC date and a local date can
+-- differ, so the zone is never assumed silently — pick this or pass an offset.
+@ffi("ridge_rt", "date_today_utc", 1)
+pub fn time todayUtc (_unit: Unit) -> Date
+
+-- Today's date at a fixed offset from UTC, in minutes east (so UTC-3 is `-180`,
+-- UTC+5:30 is `330`, UTC is `0`). Returns the calendar date a clock at that offset
+-- reads right now. The offset is applied to the current instant, so it needs no
+-- timezone database and no daylight-saving rules: a caller passing their current
+-- offset gets their current local date exactly. For a date at some other instant,
+-- or true zone arithmetic across a DST change, a timezone-aware type is needed —
+-- Ridge does not have one yet, by design. There is deliberately no zero-argument
+-- `today`: the zone is always stated, here or through `todayUtc`.
+@ffi("ridge_rt", "date_today", 1)
+pub fn time today (offsetMinutes: Int) -> Date
+
+-- The date n days after d; n may be negative to move backward. Pure calendar
+-- arithmetic — `addDays 1` on the last day of a month rolls into the next.
+@ffi("ridge_rt", "date_add_days", 2)
+pub fn addDays (n: Int) (d: Date) -> Date
+
+-- The whole number of days from b to a (a - b): positive when a is later than b,
+-- negative when earlier, zero when equal. Matches the argument order of
+-- std.time.diff.
+@ffi("ridge_rt", "date_diff_days", 2)
+pub fn diffDays (a: Date) (b: Date) -> Int
+
+-- Three-way comparison: negative when a < b, zero when equal, positive when
+-- a > b. Compares chronologically, matching how a SQL `date` column sorts. The
+-- named comparisons below build on it.
+@ffi("ridge_rt", "date_cmp", 2)
+pub fn compare (a: Date) (b: Date) -> Int
+
+-- Value equality.
+pub fn eq (a: Date) (b: Date) -> Bool = compare a b == 0
+
+-- Strictly earlier than.
+pub fn lt (a: Date) (b: Date) -> Bool = compare a b < 0
+
+-- Earlier than or equal.
+pub fn lte (a: Date) (b: Date) -> Bool = compare a b <= 0
+
+-- Strictly later than.
+pub fn gt (a: Date) (b: Date) -> Bool = compare a b > 0
+
+-- Later than or equal.
+pub fn gte (a: Date) (b: Date) -> Bool = compare a b >= 0

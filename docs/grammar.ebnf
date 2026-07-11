@@ -235,6 +235,13 @@ HEX_LIT       ::= "0" ( "x" | "X" ) HEX_DIGIT { HEX_DIGIT | "_" } ;
 FLOAT_LIT     ::= DIGIT { DIGIT | "_" } "." DIGIT { DIGIT | "_" }
                   [ ( "e" | "E" ) [ "+" | "-" ] DIGIT { DIGIT } ] ;
 
+(* --- Decimal literals --- *)
+(* A number with an "m" / "M" suffix is an exact base-10 Decimal, e.g.
+   19.99m, 5m, 1_000.50m, 1.5e3m. The fractional part is optional. Lexed at a
+   higher priority than FLOAT_LIT / DEC_LIT so the suffixed form wins.          *)
+DECIMAL_LIT   ::= DIGIT { DIGIT | "_" } [ "." DIGIT { DIGIT | "_" } ]
+                  [ ( "e" | "E" ) [ "+" | "-" ] DIGIT { DIGIT } ] ( "m" | "M" ) ;
+
 (* --- Bool literals --- *)
 BOOL_LIT      ::= "true" | "false" ;
 
@@ -451,7 +458,7 @@ TypeAtom      ::= PrimitiveType
                |  "(" Type ")" ;
 
 PrimitiveType ::= "Int" | "Float" | "Bool" | "Text" | "Unit"
-               |  "Timestamp"
+               |  "Timestamp" | "Decimal" | "Uuid" | "Bytes"
                |  UPPER_IDENT   (* named type / constructor *) ;
 
 (* Type application: a type constructor applied to arguments                *)
@@ -893,7 +900,7 @@ ExprAtom      ::= Literal
 
 (* === 6.10  Literals as expressions === *)
 
-Literal       ::= INT_LIT | FLOAT_LIT | BOOL_LIT | TEXT_LIT ;
+Literal       ::= INT_LIT | FLOAT_LIT | DECIMAL_LIT | BOOL_LIT | TEXT_LIT ;
 UnitLiteral   ::= UNIT_LIT ;
 
 
@@ -1073,7 +1080,11 @@ WildcardPattern ::= "_" ;
 
 (* === 7.2  Literal pattern === *)
 
-LiteralPattern ::= INT_LIT | FLOAT_LIT | BOOL_LIT | TEXT_LIT | UNIT_LIT ;
+LiteralPattern ::= INT_LIT | FLOAT_LIT | BOOL_LIT | TEXT_LIT | UNIT_LIT | DECIMAL_LIT ;
+               (* A DECIMAL_LIT pattern matches by value, not structurally, so
+                  `1.5` also matches a `1.50` scrutinee.  It lowers to a fresh
+                  binding plus a `Decimal.compare … == 0` guard rather than a
+                  structural literal test.                                     *)
 
 
 (* === 7.3  Variable pattern === *)
@@ -1181,7 +1192,7 @@ ListConsPattern ::= PatternAtom "::" Pattern ;
                      LOWER_IDENT UPPER_IDENT IDENT PRIV_IDENT
                      KEYWORD CAPABILITY_KW
                      INT_LIT DEC_LIT BIN_LIT OCT_LIT HEX_LIT
-                     FLOAT_LIT BOOL_LIT UNIT_LIT
+                     FLOAT_LIT DECIMAL_LIT BOOL_LIT UNIT_LIT
                      TEXT_LIT TEXT_CHAR
                      INTERP_START INTERP_TEXT INTERP_EXPR_START
                      INTERP_EXPR_END INTERP_END

@@ -334,6 +334,7 @@ const EXEMPT: &[&str] = &[
     "OCT_LIT",
     "HEX_LIT",
     "FLOAT_LIT",
+    "DECIMAL_LIT",
     "BOOL_LIT",
     "UNIT_LIT",
     "TEXT_CHAR",

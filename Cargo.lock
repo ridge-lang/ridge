@@ -1661,6 +1661,7 @@ dependencies = [
 name = "ridge-codegen-erl"
 version = "0.3.0-rc4"
 dependencies = [
+ "cc",
  "insta",
  "ridge-ast",
  "ridge-diagnostics",

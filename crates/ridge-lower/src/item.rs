@@ -478,6 +478,11 @@ pub fn lower_instance(ctx: &mut LowerCtx<'_>, decl: &InstanceDecl) -> Vec<IrItem
                     PrimitiveType::Text => "Text",
                     PrimitiveType::Unit => "Unit",
                     PrimitiveType::Timestamp => "Timestamp",
+                    PrimitiveType::Decimal => "Decimal",
+                    PrimitiveType::Uuid => "Uuid",
+                    PrimitiveType::Bytes => "Bytes",
+                    PrimitiveType::Date => "Date",
+                    PrimitiveType::Time => "Time",
                 }
                 .to_owned()
             }
@@ -4426,14 +4431,7 @@ fn build_optional_from_sql_call(
     sv: IrExpr,
     sp: Span,
 ) -> IrExpr {
-    let inner_dict = IrExpr::Symbol {
-        id: ctx.fresh_id(None),
-        sym: SymbolRef::Stdlib {
-            module: "std.sql".to_string(),
-            name: format!("$inst_SqlType_{type_tag}"),
-        },
-        span: sp,
-    };
+    let inner_dict = build_sql_type_dict(ctx, type_tag, sp);
     let option_ctor = IrExpr::Symbol {
         id: ctx.fresh_id(None),
         sym: SymbolRef::Stdlib {
@@ -4470,15 +4468,45 @@ fn build_optional_from_sql_call(
 /// the same dispatch the constraint solver emits for a concrete `fromSql` call
 /// (see `dict_plan_to_expr` in `core.rs`), specialised here to the builtin
 /// primitive that `generate_row` already validated.
+/// Build the `SqlType` instance dictionary for a Row field's type tag.
+///
+/// A plain tag names a base instance directly (`$inst_SqlType_Int`). A `"List E"`
+/// tag wraps the element dict in the parametric `SqlType (List a)` instance —
+/// `($inst_SqlType_List <E's dict>)` — recursively, the same dict-of-dicts
+/// application `build_optional_*` uses for `Option`. A plain base tag emits a
+/// single `Symbol` identical to the pre-array code, so existing derived instances
+/// lower unchanged; only a `List` field takes the wrapping branch.
+fn build_sql_type_dict(ctx: &mut LowerCtx<'_>, type_tag: &str, sp: Span) -> IrExpr {
+    if let Some(elem_tag) = type_tag.strip_prefix("List ") {
+        let list_ctor = IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Stdlib {
+                module: "std.sql".to_string(),
+                name: "$inst_SqlType_List".to_string(),
+            },
+            span: sp,
+        };
+        let elem_dict = build_sql_type_dict(ctx, elem_tag, sp);
+        IrExpr::Call {
+            id: ctx.fresh_id(None),
+            callee: Box::new(list_ctor),
+            args: vec![elem_dict],
+            span: sp,
+        }
+    } else {
+        IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Stdlib {
+                module: "std.sql".to_string(),
+                name: format!("$inst_SqlType_{type_tag}"),
+            },
+            span: sp,
+        }
+    }
+}
+
 fn build_from_sql_call(ctx: &mut LowerCtx<'_>, type_tag: &str, sv: IrExpr, sp: Span) -> IrExpr {
-    let dict = IrExpr::Symbol {
-        id: ctx.fresh_id(None),
-        sym: SymbolRef::Stdlib {
-            module: "std.sql".to_string(),
-            name: format!("$inst_SqlType_{type_tag}"),
-        },
-        span: sp,
-    };
+    let dict = build_sql_type_dict(ctx, type_tag, sp);
     let from_sql = IrExpr::Field {
         id: ctx.fresh_id(None),
         base: Box::new(dict),
@@ -4572,14 +4600,7 @@ fn build_db_type_call(ctx: &mut LowerCtx<'_>, type_tag: Option<&str>, sp: Span) 
     let Some(tag) = type_tag else {
         return schema_union_value(ctx, "DbText", sp);
     };
-    let dict = IrExpr::Symbol {
-        id: ctx.fresh_id(None),
-        sym: SymbolRef::Stdlib {
-            module: "std.sql".to_string(),
-            name: format!("$inst_SqlType_{tag}"),
-        },
-        span: sp,
-    };
+    let dict = build_sql_type_dict(ctx, tag, sp);
     let db_type_fn = IrExpr::Field {
         id: ctx.fresh_id(None),
         base: Box::new(dict),
@@ -4980,14 +5001,7 @@ fn build_to_row_record_body(
 /// dual of [`build_from_sql_call`]: the same exported base-type dict, with the
 /// `toSql` method projected instead of `fromSql`.
 fn build_to_sql_call(ctx: &mut LowerCtx<'_>, type_tag: &str, val: IrExpr, sp: Span) -> IrExpr {
-    let dict = IrExpr::Symbol {
-        id: ctx.fresh_id(None),
-        sym: SymbolRef::Stdlib {
-            module: "std.sql".to_string(),
-            name: format!("$inst_SqlType_{type_tag}"),
-        },
-        span: sp,
-    };
+    let dict = build_sql_type_dict(ctx, type_tag, sp);
     let to_sql = IrExpr::Field {
         id: ctx.fresh_id(None),
         base: Box::new(dict),
@@ -5012,14 +5026,7 @@ fn build_optional_to_sql_call(
     val: IrExpr,
     sp: Span,
 ) -> IrExpr {
-    let inner_dict = IrExpr::Symbol {
-        id: ctx.fresh_id(None),
-        sym: SymbolRef::Stdlib {
-            module: "std.sql".to_string(),
-            name: format!("$inst_SqlType_{type_tag}"),
-        },
-        span: sp,
-    };
+    let inner_dict = build_sql_type_dict(ctx, type_tag, sp);
     let option_ctor = IrExpr::Symbol {
         id: ctx.fresh_id(None),
         sym: SymbolRef::Stdlib {

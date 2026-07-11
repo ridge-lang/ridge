@@ -64,6 +64,16 @@ const MODULE_ORDER: &[&str] = &[
     "std.migrate",
     "std.raw",
     "std.test",
+    // Appended last so they take the highest ids without renumbering any module
+    // ahead of them. `std.decimal`, `std.uuid`, `std.bytes`, `std.date` and
+    // `std.timeofday` are Tier-1 primitive companions (they import nothing); the
+    // ordering here only fixes ids, and the build tier is set separately in the
+    // stdlib build driver.
+    "std.decimal",
+    "std.uuid",
+    "std.bytes",
+    "std.date",
+    "std.timeofday",
 ];
 
 // ── Baseline export table (T10: preserves original API) ───────────────────────
@@ -275,7 +285,19 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
         "std.time",
         &[
             // `pub type Duration` declared in time.ridge.
-            "Duration", "now", "epoch", "fromIso", "diff", "diffMs", "sinceMs", "sleep", "parse",
+            "Duration",
+            "ofMillis",
+            "monotonic",
+            "elapsed",
+            "since",
+            "now",
+            "epoch",
+            "fromIso",
+            "diff",
+            "diffMs",
+            "sinceMs",
+            "sleep",
+            "parse",
             "iso",
         ],
     ),
@@ -386,6 +408,16 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "sqlFloat",
             "sqlNull",
             "sqlInstant",
+            "sqlInstantOf",
+            "sqlIntervalOf",
+            "sqlDecimal",
+            "sqlUuid",
+            "sqlBytes",
+            "sqlJson",
+            "sqlDate",
+            "sqlTime",
+            "sqlInterval",
+            "sqlArray",
             // The safe SQL statement-text wrapper, its factory, and accessor —
             // a data-layer concern, declared in sql.ridge.
             "Sql",
@@ -412,7 +444,113 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "DbUuid",
             "DbTimestamp",
             "DbTimestampTz",
+            "DbBytes",
+            "DbSmallInt",
+            "DbChar",
+            "DbJson",
+            "DbJsonb",
+            "DbDate",
+            "DbTime",
+            "DbInterval",
+            "DbArray",
             "DbRaw",
+            // Which backend's SQL a renderer emits. The query and DDL renderers take
+            // one to spell the few places SQL syntax diverges; the connection picks it.
+            "Dialect",
+            "PgDialect",
+            "SqliteDialect",
+        ],
+    ),
+    (
+        "std.decimal",
+        &[
+            // Exact base-10 decimal: parse/render, conversions, and value-based
+            // comparisons. The scaled-integer representation and the raw
+            // three-way compare live in the runtime.
+            "fromText",
+            "toText",
+            "fromInt",
+            "parseRaw",
+            "toFloat",
+            "add",
+            "sub",
+            "mul",
+            "neg",
+            "abs",
+            "round",
+            "truncate",
+            "div",
+            "compare",
+            "eq",
+            "lt",
+            "lte",
+            "gt",
+            "gte",
+            // The rounding mode a `round`/`div` takes, with its constructors.
+            "RoundingMode",
+            "HalfEven",
+            "HalfUp",
+            "HalfDown",
+            "Up",
+            "Down",
+            "Ceiling",
+            "Floor",
+        ],
+    ),
+    (
+        "std.uuid",
+        &[
+            // RFC 4122 identifiers: parse/render, the nil and random-v4
+            // constructors, and value-based comparisons. The canonical-text
+            // representation and the raw three-way compare live in the runtime.
+            "fromText", "toText", "nil", "gen", "compare", "eq", "lt", "lte", "gt", "gte",
+        ],
+    ),
+    (
+        "std.bytes",
+        &[
+            // Raw byte strings: hex and UTF-8 codecs, the empty and random
+            // constructors, size, concatenation, and value-based comparisons. The
+            // raw-binary representation and the three-way compare live in the runtime.
+            "fromHex", "toHex", "fromUtf8", "toUtf8", "empty", "gen", "length", "concat", "compare",
+            "eq", "lt", "lte", "gt", "gte",
+        ],
+    ),
+    (
+        "std.date",
+        &[
+            // Calendar dates: construction from components or ISO text, today's date,
+            // the year/month/day accessors, day arithmetic, and value-based
+            // comparisons. The epoch-day representation and the three-way compare live
+            // in the runtime.
+            "fromYmd", "toIso", "fromIso", "year", "month", "day", "today", "todayUtc", "addDays",
+            "diffDays", "compare", "eq", "lt", "lte", "gt", "gte",
+        ],
+    ),
+    (
+        "std.timeofday",
+        &[
+            // Wall-clock times of day: construction from components or ISO text, the
+            // current time of day, the hour/minute/second accessors, second
+            // arithmetic, and value-based comparisons. The microsecond-of-day
+            // representation and the three-way compare live in the runtime. The type
+            // is prelude-aliased `Time`.
+            "fromHms",
+            "toIso",
+            "fromIso",
+            "hour",
+            "minute",
+            "second",
+            "now",
+            "nowUtc",
+            "addSeconds",
+            "diffSeconds",
+            "compare",
+            "eq",
+            "lt",
+            "lte",
+            "gt",
+            "gte",
         ],
     ),
     (
@@ -452,6 +590,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // The plan-to-SQL renderer: lowers a whole `QueryPlan` to one
             // parameterized statement plus its ordered bind values.
             "planToSql",
+            // The dialect-explicit renderer: `planToSql` fixed to Postgres or SQLite,
+            // differing only in how the aggregates spell their casts.
+            "planToSqlFor",
             // The plan-to-plan optimizer: rewrites a `QueryPlan` into an
             // equivalent one that compiles to tighter SQL (the renderer's pre-pass).
             "optimize",
@@ -575,6 +716,13 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "withConnectRetries",
             "withRetryBackoffMs",
             "withMaxQueueDepth",
+            // The SQLite adapter: the opaque handle, its config record and presets,
+            // and the unified `connect`/`Connect` seam it shares with Postgres.
+            "Sqlite",
+            "SqliteConfig",
+            "sqliteFile",
+            "sqliteMemory",
+            "connectSqlite",
         ],
     ),
     (
@@ -824,22 +972,33 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "EntitySchema",
             "schema",
             "withColumn",
+            "compositePrimaryKey",
+            "uniqueConstraint",
             "schemaName",
             "schemaTable",
             "schemaColumns",
+            "schemaPrimaryKey",
+            "schemaUniqueConstraints",
             "eraseSchema",
             "generatedColumns",
             "identityColumns",
-            // The Postgres DDL renderer: `schemaToDdl` renders an entity's
-            // `CREATE TABLE`, `schemaIndexDdls` its non-unique indexes, and the
-            // `*Ddl` family renders a `std.migrate` schema step from its seam tuple.
+            // The DDL renderer: `schemaToDdl` renders an entity's `CREATE TABLE`,
+            // `schemaIndexDdls` its non-unique indexes, and the `*Ddl` family renders
+            // a `std.migrate` schema step from its seam tuple. `schemaToDdlFor`/
+            // `createTableDdlFor` take a `Dialect`; the plain names default to Postgres.
             "schemaToDdl",
+            "schemaToDdlFor",
             "schemaIndexDdls",
             "createTableDdl",
+            "createTableDdlFor",
             "addColumnDdl",
+            "addColumnDdlFor",
             "addColumnSchemaDdl",
+            "addColumnSchemaDdlFor",
             "alterColumnDdl",
             "columnAltered",
+            "sqliteRebuildTableDdl",
+            "sqliteAddNeedsRebuild",
             "dropTableDdl",
             "dropColumnDdl",
             "indexDdl",
@@ -958,7 +1117,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
 const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
     ("std.net.http", &["Html", "SecureCookie"]),
     ("std.sql", &["Sql", "SqlValue"]),
-    ("std.data", &["MemAdapter", "Postgres"]),
+    ("std.data", &["MemAdapter", "Postgres", "Sqlite"]),
     (
         "std.repo",
         &[

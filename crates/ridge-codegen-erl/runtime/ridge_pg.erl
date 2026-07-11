@@ -41,7 +41,12 @@
     pg_unrecord_migration/2,
     pg_raw_query/3,
     pg_raw_exec/3,
-    pg_close/1
+    pg_close/1,
+    %% Exposed for the decode unit tests: the timestamp and interval text parsers are
+    %% pure and carry the only non-trivial wire-decode logic, so they are testable
+    %% without a live database.
+    pg_timestamp_to_micros/1,
+    pg_interval_to_ms/1
 ]).
 
 -define(CONNECT_TIMEOUT, 10000).
@@ -933,7 +938,42 @@ param_text({'SqlBool', true}) -> <<"t">>;
 param_text({'SqlBool', false})-> <<"f">>;
 param_text({'SqlFloat', F})   -> iolist_to_binary(io_lib:format("~p", [F]));
 param_text({'SqlInstant', N})  -> iolist_to_binary(calendar:system_time_to_rfc3339(N, [{unit, microsecond}, {offset, "Z"}]));
+param_text({'SqlDecimal', S})  -> S;
+param_text({'SqlUuid', S})     -> S;
+%% bytea input takes the hex wire form `\xHEX`; the SqlBytes carrier is that hex
+%% without the prefix, so prepend it. Postgres infers the parameter type as bytea.
+param_text({'SqlBytes', Hex})  -> <<"\\x", Hex/binary>>;
+%% json/jsonb input is the encoded JSON text sent verbatim; Postgres parses and
+%% (for jsonb) normalises it, inferring the parameter type from the column.
+param_text({'SqlJson', S})     -> S;
+%% a date param goes as its ISO `YYYY-MM-DD` text, which is exactly the SqlDate
+%% carrier, so Postgres parses it as a `date` without a cast.
+param_text({'SqlDate', S})     -> S;
+%% a time param goes as its ISO `HH:MM:SS[.ffffff]` text, exactly the SqlTime
+%% carrier, so Postgres parses it as a `time` without a cast.
+param_text({'SqlTime', S})     -> S;
+%% an interval param goes as its whole-millisecond span spelled `<n> milliseconds`,
+%% which Postgres parses as an `interval` and normalises to a pure time span.
+param_text({'SqlInterval', Ms}) -> <<(integer_to_binary(Ms))/binary, " milliseconds">>;
+%% an array param goes as a Postgres array literal `{elem,elem,…}`, each element
+%% rendered through its own scalar param text; Postgres infers the element type from
+%% the column. A NULL element is the unquoted word NULL.
+param_text({'SqlArray', Elems}) ->
+    Inner = iolist_to_binary(lists:join(<<",">>, [array_param_elem(E) || E <- Elems])),
+    <<"{", Inner/binary, "}">>;
 param_text('SqlNull')         -> <<>>.
+
+%% One array element for the `{…}` literal: an unquoted NULL, or the element's own
+%% param text double-quoted with `\`/`"` escaped. Quoting every non-null element is
+%% always valid array input (Postgres accepts a quoted number/bool and casts it), so
+%% one rule covers text, numbers, uuids, bytea hex, and the rest.
+array_param_elem('SqlNull') -> <<"NULL">>;
+array_param_elem(E) ->
+    Text = param_text(E),
+    Escaped = binary:replace(
+        binary:replace(Text, <<"\\">>, <<"\\\\">>, [global]),
+        <<"\"">>, <<"\\\"">>, [global]),
+    <<"\"", Escaped/binary, "\"">>.
 
 collect_rows(Conn, Cols, Acc) ->
     case recv_msg(Conn) of
@@ -1001,18 +1041,235 @@ decode_value(16, <<"t">>) -> {'SqlBool', true};
 decode_value(16, <<"f">>) -> {'SqlBool', false};
 decode_value(Oid, Val) when Oid =:= 20; Oid =:= 21; Oid =:= 23 ->
     {'SqlInt', binary_to_integer(Val)};
-decode_value(Oid, Val) when Oid =:= 700; Oid =:= 701; Oid =:= 1700 ->
+decode_value(Oid, Val) when Oid =:= 700; Oid =:= 701 ->
     {'SqlFloat', to_float(Val)};
+%% numeric (OID 1700) keeps its exact decimal text instead of narrowing to a
+%% float, so a Decimal column round-trips without losing the last digits.
+decode_value(1700, Val) ->
+    {'SqlDecimal', Val};
+%% uuid (OID 2950) decodes to the typed SqlUuid rather than falling to SqlText, so a
+%% uuid column round-trips as a Uuid. Postgres emits the canonical lowercase form.
+decode_value(2950, Val) ->
+    {'SqlUuid', Val};
+%% bytea (OID 17) arrives in the default hex output form `\xHEX`; strip the prefix
+%% so the SqlBytes carrier holds the same canonical hex the codec produces.
+decode_value(17, <<"\\x", Hex/binary>>) ->
+    {'SqlBytes', Hex};
+%% timestamp (OID 1114) and timestamptz (OID 1184) decode to the typed SqlInstant
+%% (epoch microseconds), so a Timestamp column round-trips instead of arriving as
+%% opaque text. Postgres's default ISO DateStyle renders both without narrowing,
+%% and pg_timestamp_to_micros normalises the offset (timestamptz) or reads a naive
+%% timestamp as UTC.
+decode_value(Oid, Val) when Oid =:= 1114; Oid =:= 1184 ->
+    {'SqlInstant', pg_timestamp_to_micros(Val)};
+%% json (OID 114) and jsonb (OID 3802) decode to the typed SqlJson carrying the
+%% column's JSON text, so a JsonValue column round-trips through the codec's decode
+%% rather than arriving as opaque text. jsonb is emitted in its normalised form.
+decode_value(Oid, Val) when Oid =:= 114; Oid =:= 3802 ->
+    {'SqlJson', Val};
+%% date (OID 1082) decodes to the typed SqlDate. Postgres delivers a date as ISO
+%% `YYYY-MM-DD` text, which is exactly the SqlDate carrier, so a Date column
+%% round-trips through the codec rather than arriving as opaque text.
+decode_value(1082, Val) ->
+    {'SqlDate', Val};
+%% time (OID 1083) decodes to the typed SqlTime. Postgres delivers a time of day as
+%% ISO `HH:MM:SS[.ffffff]` text, which is exactly the SqlTime carrier, so a Time
+%% column round-trips through the codec rather than arriving as opaque text.
+decode_value(1083, Val) ->
+    {'SqlTime', Val};
+%% interval (OID 1186) decodes to the typed SqlInterval carrying a whole-millisecond
+%% span. Postgres delivers an interval as its `postgres`-style text (a mix of calendar
+%% words and an `HH:MM:SS[.ffffff]` time part); pg_interval_to_ms folds that to a
+%% millisecond count, exact for the pure time spans Ridge writes.
+decode_value(1186, Val) ->
+    {'SqlInterval', pg_interval_to_ms(Val)};
+%% array columns (int4[]=1007, text[]=1009, and the rest) decode to a typed SqlArray:
+%% split the Postgres 1-D array text `{a,b,c}` into elements and decode each through
+%% the element type's own OID, so a `List a` column round-trips as the list it was
+%% written as. A NULL element decodes to SqlNull. Only 1-D arrays are supported (Ridge
+%% writes only 1-D); a multi-dimensional array would mis-split.
+decode_value(Oid, Val) when Oid =:= 1000; Oid =:= 1005; Oid =:= 1007; Oid =:= 1016;
+                            Oid =:= 1021; Oid =:= 1022; Oid =:= 1009; Oid =:= 1015;
+                            Oid =:= 1014; Oid =:= 1001; Oid =:= 2951; Oid =:= 1231;
+                            Oid =:= 199;  Oid =:= 3807; Oid =:= 1182; Oid =:= 1183;
+                            Oid =:= 1115; Oid =:= 1185; Oid =:= 1187 ->
+    ElemOid = pg_array_elem_oid(Oid),
+    {'SqlArray', [pg_array_cell(ElemOid, E) || E <- pg_array_elements(Val)]};
 decode_value(Oid, Val) when Oid =:= 25; Oid =:= 1043; Oid =:= 1042; Oid =:= 19; Oid =:= 18 ->
     {'SqlText', Val};
 decode_value(_Oid, Val) ->
     {'SqlText', Val}.
+
+%% The element type OID for a Postgres array type OID.
+pg_array_elem_oid(1000) -> 16;    %% _bool  -> bool
+pg_array_elem_oid(1005) -> 21;    %% _int2  -> int2
+pg_array_elem_oid(1007) -> 23;    %% _int4  -> int4
+pg_array_elem_oid(1016) -> 20;    %% _int8  -> int8
+pg_array_elem_oid(1021) -> 700;   %% _float4 -> float4
+pg_array_elem_oid(1022) -> 701;   %% _float8 -> float8
+pg_array_elem_oid(1009) -> 25;    %% _text  -> text
+pg_array_elem_oid(1015) -> 1043;  %% _varchar -> varchar
+pg_array_elem_oid(1014) -> 1042;  %% _bpchar -> bpchar
+pg_array_elem_oid(1001) -> 17;    %% _bytea -> bytea
+pg_array_elem_oid(2951) -> 2950;  %% _uuid  -> uuid
+pg_array_elem_oid(1231) -> 1700;  %% _numeric -> numeric
+pg_array_elem_oid(199)  -> 114;   %% _json  -> json
+pg_array_elem_oid(3807) -> 3802;  %% _jsonb -> jsonb
+pg_array_elem_oid(1182) -> 1082;  %% _date  -> date
+pg_array_elem_oid(1183) -> 1083;  %% _time  -> time
+pg_array_elem_oid(1115) -> 1114;  %% _timestamp -> timestamp
+pg_array_elem_oid(1185) -> 1184;  %% _timestamptz -> timestamptz
+pg_array_elem_oid(1187) -> 1186.  %% _interval -> interval
+
+pg_array_cell(_ElemOid, null) -> 'SqlNull';
+pg_array_cell(ElemOid, Bin)   -> decode_value(ElemOid, Bin).
+
+%% Split a Postgres 1-D array output `{a,b,c}` into a list of element binaries — or the
+%% atom `null` for an unquoted NULL element — honoring double-quoted elements (which may
+%% carry commas, braces, and `\"`/`\\` escapes) and stripping one level of quoting.
+pg_array_elements(<<"{", Rest/binary>>) ->
+    Body = binary_part(Rest, 0, byte_size(Rest) - 1),
+    case Body of
+        <<>> -> [];
+        _    -> pg_array_scan(Body, <<>>, false, false, [])
+    end;
+pg_array_elements(_) -> [].
+
+pg_array_scan(<<>>, Cur, _InQ, WasQ, Out) ->
+    lists:reverse([pg_array_finish(Cur, WasQ) | Out]);
+pg_array_scan(<<$", R/binary>>, Cur, false, _WasQ, Out) ->
+    pg_array_scan(R, Cur, true, true, Out);
+pg_array_scan(<<$\\, C, R/binary>>, Cur, true, WasQ, Out) ->
+    pg_array_scan(R, <<Cur/binary, C>>, true, WasQ, Out);
+pg_array_scan(<<$", R/binary>>, Cur, true, WasQ, Out) ->
+    pg_array_scan(R, Cur, false, WasQ, Out);
+pg_array_scan(<<$,, R/binary>>, Cur, false, WasQ, Out) ->
+    pg_array_scan(R, <<>>, false, false, [pg_array_finish(Cur, WasQ) | Out]);
+pg_array_scan(<<C, R/binary>>, Cur, InQ, WasQ, Out) ->
+    pg_array_scan(R, <<Cur/binary, C>>, InQ, WasQ, Out).
+
+%% An unquoted NULL is the SQL NULL element; anything else (including a quoted "NULL")
+%% is the literal element text.
+pg_array_finish(<<"NULL">>, false) -> null;
+pg_array_finish(Bin, _WasQ)        -> Bin.
 
 to_float(Val) ->
     try binary_to_float(Val)
     catch _:_ ->
         try float(binary_to_integer(Val)) catch _:_ -> 0.0 end
     end.
+
+%% Parse a Postgres ISO timestamp/timestamptz text value into epoch microseconds.
+%% The shape is `YYYY-MM-DD HH:MM:SS[.ffffff][(+|-)HH[:MM[:SS]]]`: a `timestamptz`
+%% carries a zone offset (rendered in the session zone), a plain `timestamp` has
+%% none and is read as UTC. The fractional part, which Postgres trims of trailing
+%% zeros, is left-padded back out to microsecond resolution.
+pg_timestamp_to_micros(Bin) ->
+    <<Y:4/binary, "-", Mo:2/binary, "-", D:2/binary, " ",
+      H:2/binary, ":", Mi:2/binary, ":", S:2/binary, Rest/binary>> = Bin,
+    Date = {binary_to_integer(Y), binary_to_integer(Mo), binary_to_integer(D)},
+    Time = {binary_to_integer(H), binary_to_integer(Mi), binary_to_integer(S)},
+    {FracMicros, TzRest} = pg_ts_frac(Rest),
+    OffsetSecs = pg_ts_offset(TzRest),
+    EpochSecs = calendar:datetime_to_gregorian_seconds({Date, Time}) - 62167219200 - OffsetSecs,
+    EpochSecs * 1000000 + FracMicros.
+
+%% Split an optional `.ffffff` fraction off the front, returning {Micros, Rest}.
+pg_ts_frac(<<".", R/binary>>) ->
+    {Digits, Rest} = pg_ts_digits(R, <<>>),
+    {binary_to_integer(pg_ts_pad(Digits)), Rest};
+pg_ts_frac(Rest) ->
+    {0, Rest}.
+
+pg_ts_digits(<<C, R/binary>>, Acc) when C >= $0, C =< $9 ->
+    pg_ts_digits(R, <<Acc/binary, C>>);
+pg_ts_digits(Rest, Acc) ->
+    {Acc, Rest}.
+
+%% Normalise the fractional digits to exactly six (microseconds): pad right with
+%% zeros, or truncate beyond microsecond resolution.
+pg_ts_pad(D) when byte_size(D) >= 6 -> binary:part(D, 0, 6);
+pg_ts_pad(D) -> pg_ts_pad(<<D/binary, "0">>).
+
+%% Parse an optional timezone offset into a signed second count (east of UTC is
+%% positive). A missing offset — a plain `timestamp` — is UTC.
+pg_ts_offset(<<>>) -> 0;
+pg_ts_offset(<<"Z">>) -> 0;
+pg_ts_offset(<<Sign, H:2/binary, R/binary>>) when Sign =:= $+; Sign =:= $- ->
+    Secs = binary_to_integer(H) * 3600 + pg_ts_offset_min(R),
+    case Sign of $+ -> Secs; _ -> -Secs end.
+
+pg_ts_offset_min(<<":", M:2/binary, R/binary>>) -> binary_to_integer(M) * 60 + pg_ts_offset_sec(R);
+pg_ts_offset_min(<<M:2/binary, R/binary>>) -> binary_to_integer(M) * 60 + pg_ts_offset_sec(R);
+pg_ts_offset_min(_) -> 0.
+
+pg_ts_offset_sec(<<":", S:2/binary, _/binary>>) -> binary_to_integer(S);
+pg_ts_offset_sec(<<S:2/binary, _/binary>>) -> binary_to_integer(S);
+pg_ts_offset_sec(_) -> 0.
+
+%% Parse a Postgres `interval` text value (the default `postgres` intervalstyle) into
+%% a whole-millisecond span. A Duration is a fixed length of time with no calendar
+%% part, so an interval Ridge wrote is always a pure `HH:MM:SS[.ffffff]` time (hours
+%% may exceed 24) and folds back exactly. An interval written by some other client can
+%% carry `<n> year|mon|day` words; those are read with a 30-day month, a 24-hour day,
+%% and a 12-month year — the same convention Postgres uses to extract an interval's
+%% epoch seconds — since a calendar span has no exact millisecond length.
+pg_interval_to_ms(Bin) ->
+    Tokens = binary:split(Bin, <<" ">>, [global, trim_all]),
+    pg_iv_tokens(Tokens, 0).
+
+%% Fold the token stream. A token with a colon is the `[-]HH:MM:SS[.ffffff]` time
+%% part; any other token is a signed count naming its unit in the following token.
+pg_iv_tokens([], Acc) ->
+    Acc;
+pg_iv_tokens([Tok | Rest], Acc) ->
+    case binary:match(Tok, <<":">>) of
+        nomatch ->
+            case Rest of
+                [Unit | More] ->
+                    pg_iv_tokens(More, Acc + pg_iv_int(Tok) * pg_iv_unit_ms(Unit));
+                [] ->
+                    Acc
+            end;
+        _ ->
+            pg_iv_tokens(Rest, Acc + pg_iv_time_ms(Tok))
+    end.
+
+%% Milliseconds in one of each calendar unit Postgres spells in interval text.
+pg_iv_unit_ms(<<"day">>)    -> 86400000;
+pg_iv_unit_ms(<<"days">>)   -> 86400000;
+pg_iv_unit_ms(<<"mon">>)    -> 30 * 86400000;
+pg_iv_unit_ms(<<"mons">>)   -> 30 * 86400000;
+pg_iv_unit_ms(<<"month">>)  -> 30 * 86400000;
+pg_iv_unit_ms(<<"months">>) -> 30 * 86400000;
+pg_iv_unit_ms(<<"year">>)   -> 360 * 86400000;
+pg_iv_unit_ms(<<"years">>)  -> 360 * 86400000;
+pg_iv_unit_ms(_)            -> 0.
+
+%% A signed integer that may carry a leading `+` (which binary_to_integer rejects).
+pg_iv_int(<<"+", R/binary>>) -> binary_to_integer(R);
+pg_iv_int(Bin)              -> binary_to_integer(Bin).
+
+%% Parse a `[+|-]HH:MM:SS[.ffffff]` time part into signed milliseconds. Hours are not
+%% capped at 24 — a Ridge duration of a day or more renders as `25:00:00` and up.
+pg_iv_time_ms(<<"+", R/binary>>) -> pg_iv_time_ms(R);
+pg_iv_time_ms(<<"-", R/binary>>) -> - pg_iv_time_ms(R);
+pg_iv_time_ms(Bin) ->
+    [H, Mi, SFull] = binary:split(Bin, <<":">>, [global]),
+    {Secs, FracMs} = pg_iv_secs(SFull),
+    (binary_to_integer(H) * 3600 + binary_to_integer(Mi) * 60 + Secs) * 1000 + FracMs.
+
+%% Split the seconds field into whole seconds and a millisecond remainder.
+pg_iv_secs(SFull) ->
+    case binary:split(SFull, <<".">>) of
+        [S]       -> {binary_to_integer(S), 0};
+        [S, Frac] -> {binary_to_integer(S), binary_to_integer(pg_iv_pad3(Frac))}
+    end.
+
+%% Normalise fractional-second digits to exactly three (milliseconds): pad right with
+%% zeros, or truncate beyond millisecond resolution.
+pg_iv_pad3(D) when byte_size(D) >= 3 -> binary:part(D, 0, 3);
+pg_iv_pad3(D) -> pg_iv_pad3(<<D/binary, "0">>).
 
 %% --- Connect, TLS upgrade, authentication ---
 

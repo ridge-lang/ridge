@@ -1,0 +1,52 @@
+-- std.uuid — RFC 4122 universally unique identifiers (Tier 1, no stdlib imports).
+--
+-- Uuid is a 128-bit identifier carried on the BEAM as its canonical text form
+-- (`550e8400-e29b-41d4-a716-446655440000`), lowercased. It is a distinct type
+-- from Text, so a uuid and an arbitrary string cannot be confused, and it maps
+-- to a native SQL `uuid` column that round-trips without narrowing to text.
+--
+-- This module covers construction, rendering, generation, and comparison. The
+-- FFI primitives (`uuid_*` in ridge_rt) carry the canonical-text representation;
+-- the codec that moves a Uuid across a SQL `uuid` column lives in std.sql.
+
+-- Parse a Uuid from text. Accepts the canonical 8-4-4-4-12 hyphenated form in
+-- either case and normalises it to lowercase, so `fromText` is the gate for any
+-- untrusted string. Returns Err on anything that is not a well-formed uuid.
+@ffi("ridge_rt", "uuid_from_text", 1)
+pub fn fromText (s: Text) -> Result Uuid Error
+
+-- Render a Uuid as its canonical lowercase text — the inverse of fromText.
+@ffi("ridge_rt", "uuid_to_text", 1)
+pub fn toText (u: Uuid) -> Text
+
+-- The nil uuid, `00000000-0000-0000-0000-000000000000`. Pure — no capability
+-- required — the conventional zero value for a uuid field or a sentinel key.
+@ffi("ridge_rt", "uuid_nil", 1)
+pub fn nil (_unit: Unit) -> Uuid
+
+-- Generate a fresh random (version 4) uuid. Requires the `random` capability,
+-- since two calls return different values; the bytes come from a cryptographic
+-- source, so the result is unpredictable, not just non-repeating.
+@ffi("ridge_rt", "uuid_gen", 1)
+pub fn random gen (_unit: Unit) -> Uuid
+
+-- Three-way comparison: negative when a < b, zero when equal, positive when
+-- a > b. Compares by the 128-bit value (its canonical text orders the same way),
+-- matching how a SQL `uuid` column sorts. The named comparisons below build on it.
+@ffi("ridge_rt", "uuid_cmp", 2)
+pub fn compare (a: Uuid) (b: Uuid) -> Int
+
+-- Value equality.
+pub fn eq (a: Uuid) (b: Uuid) -> Bool = compare a b == 0
+
+-- Strictly less than.
+pub fn lt (a: Uuid) (b: Uuid) -> Bool = compare a b < 0
+
+-- Less than or equal.
+pub fn lte (a: Uuid) (b: Uuid) -> Bool = compare a b <= 0
+
+-- Strictly greater than.
+pub fn gt (a: Uuid) (b: Uuid) -> Bool = compare a b > 0
+
+-- Greater than or equal.
+pub fn gte (a: Uuid) (b: Uuid) -> Bool = compare a b >= 0

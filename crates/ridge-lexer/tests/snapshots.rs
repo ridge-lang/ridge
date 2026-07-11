@@ -77,6 +77,7 @@ fn token_kind_name(t: &Token) -> &'static str {
         Token::IntOct(_) => "INT_OCT",
         Token::IntHex(_) => "INT_HEX",
         Token::Float(_) => "FLOAT",
+        Token::DecimalLit(_) => "DECIMAL_LIT",
         Token::TextLit(_) => "TEXT_LIT",
         Token::RawTextLit(_) => "RAW_TEXT_LIT",
         Token::InterpStart => "INTERP_START",
@@ -137,6 +138,7 @@ fn token_payload(t: &Token) -> String {
         | Token::IntOct(s)
         | Token::IntHex(s)
         | Token::Float(s)
+        | Token::DecimalLit(s)
         | Token::TextLit(s)
         | Token::RawTextLit(s)
         | Token::InterpText(s)

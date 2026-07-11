@@ -665,6 +665,11 @@ fn ast_type_simple_name(ty: &AstType) -> Option<String> {
                 PrimitiveType::Text => "Text",
                 PrimitiveType::Unit => "Unit",
                 PrimitiveType::Timestamp => "Timestamp",
+                PrimitiveType::Decimal => "Decimal",
+                PrimitiveType::Uuid => "Uuid",
+                PrimitiveType::Bytes => "Bytes",
+                PrimitiveType::Date => "Date",
+                PrimitiveType::Time => "Time",
             }
             .to_string(),
         ),
@@ -1302,7 +1307,9 @@ fn generate_row(
                 fix_hint: format!(
                     "field `{}` of type `{}` has no `SqlType` instance; \
                      `deriving (Row)` currently supports fields of type \
-                     Int, Text, Bool, Float, or an Option of one of them",
+                     Int, Text, Bool, Float, a rich scalar (Decimal, Uuid, Bytes, \
+                     Timestamp, Date, Time, Duration, JsonValue), a List of one of \
+                     them, or an Option of any of those",
                     field.name.text,
                     ast_type_display(&field.ty),
                 ),
@@ -1453,26 +1460,48 @@ pub(crate) fn synthesize_implicit_row(
     })
 }
 
-/// Classify a `deriving (Row)` field type into `(is_optional, primitive_tag)`.
+/// Classify a `deriving (Row)` field type into `(is_optional, sql_type_tag)`.
 ///
 /// A bare primitive (`Int`/`Text`/`Bool`/`Float`) is `(false, tag)`; an
-/// `Option P` of a primitive is `(true, inner_tag)`, decoded as a nullable
-/// column. Anything else — a non-primitive, a container, or an `Option` of a
-/// non-primitive — returns `None`, which `generate_row` reports as `NoInstance`.
+/// `Option P` is `(true, inner_tag)`, decoded as a nullable column. A `List P` of
+/// a primitive is `(false, "List P")`, decoded as an array column through the
+/// parametric `SqlType (List a)` instance, and an `Option (List P)` is a nullable
+/// array. Anything else — a non-primitive, an unsupported container, an `Option`
+/// or `List` of a non-primitive — returns `None`, which `generate_row` reports as
+/// `NoInstance`.
 fn sql_row_field(ty: &AstType) -> Option<(bool, String)> {
     match ty {
         AstType::Paren { inner, .. } => sql_row_field(inner),
         AstType::App { head, args, .. } if head.text == "Option" && args.len() == 1 => {
-            Some((true, sql_primitive_type_name(&args[0])?))
+            Some((true, sql_list_or_base(&args[0])?))
         }
-        _ => sql_primitive_type_name(ty).map(|tag| (false, tag)),
+        _ => sql_list_or_base(ty).map(|tag| (false, tag)),
     }
 }
 
-/// The `SqlType` instance type name for a field type, when it is one of the base
-/// primitives the prelude `SqlType` instances cover. Returns `None` for any
-/// other type (a user type, container, or `Option`), which has no `fromSql` to
-/// dispatch yet.
+/// The `SqlType` dispatch tag for a Row field's non-nullable core: a base
+/// primitive name (`"Int"`, `"Uuid"`, …) or a `"List <elem>"` tag for a `List` of
+/// one of those. The `List` tag drives the lowering to dispatch through the
+/// parametric `SqlType (List a)` instance (`$inst_SqlType_List` applied to the
+/// element dict), the same dict-of-dicts the `Option` path uses. A `List` of a
+/// non-base element (a user type or a nested list) has no such instance yet and
+/// returns `None`.
+fn sql_list_or_base(ty: &AstType) -> Option<String> {
+    match ty {
+        AstType::Paren { inner, .. } => sql_list_or_base(inner),
+        AstType::List { elem, .. } => Some(format!("List {}", sql_primitive_type_name(elem)?)),
+        AstType::App { head, args, .. } if head.text == "List" && args.len() == 1 => {
+            Some(format!("List {}", sql_primitive_type_name(&args[0])?))
+        }
+        _ => sql_primitive_type_name(ty),
+    }
+}
+
+/// The `SqlType` instance type name for a field type, when it is one the prelude
+/// `SqlType` instances cover: a base primitive, `JsonValue` (the prelude JSON ADT,
+/// which maps to a `json`/`jsonb` column), or `Duration` (the prelude length-of-time
+/// record, which maps to an `interval` column). Returns `None` for any other type
+/// (a user type, container, or `Option`), which has no `fromSql` to dispatch yet.
 fn sql_primitive_type_name(ty: &AstType) -> Option<String> {
     use ridge_ast::base::PrimitiveType;
     match ty {
@@ -1482,10 +1511,16 @@ fn sql_primitive_type_name(ty: &AstType) -> Option<String> {
             PrimitiveType::Bool => Some("Bool".to_string()),
             PrimitiveType::Float => Some("Float".to_string()),
             PrimitiveType::Timestamp => Some("Timestamp".to_string()),
+            PrimitiveType::Decimal => Some("Decimal".to_string()),
+            PrimitiveType::Uuid => Some("Uuid".to_string()),
+            PrimitiveType::Bytes => Some("Bytes".to_string()),
+            PrimitiveType::Date => Some("Date".to_string()),
+            PrimitiveType::Time => Some("Time".to_string()),
             PrimitiveType::Unit => None,
         },
         AstType::Named { name, .. } => match name.text.as_str() {
-            "Int" | "Text" | "Bool" | "Float" => Some(name.text.clone()),
+            "Int" | "Text" | "Bool" | "Float" | "Decimal" | "Uuid" | "Bytes" | "Date" | "Time"
+            | "Duration" | "JsonValue" => Some(name.text.clone()),
             _ => None,
         },
         AstType::Paren { inner, .. } => sql_primitive_type_name(inner),
@@ -1686,6 +1721,11 @@ fn ast_type_display(ty: &AstType) -> String {
             PrimitiveType::Text => "Text".to_string(),
             PrimitiveType::Unit => "Unit".to_string(),
             PrimitiveType::Timestamp => "Timestamp".to_string(),
+            PrimitiveType::Decimal => "Decimal".to_string(),
+            PrimitiveType::Uuid => "Uuid".to_string(),
+            PrimitiveType::Bytes => "Bytes".to_string(),
+            PrimitiveType::Date => "Date".to_string(),
+            PrimitiveType::Time => "Time".to_string(),
         },
         AstType::Named { name, .. } | AstType::Var { name, .. } => name.text.clone(),
         AstType::App { head, args, .. } => {
@@ -1725,6 +1765,9 @@ fn builtin_name_to_tycon_id(name: &str) -> Option<TyConId> {
         "Duration" => Some(TyConId(13)),
         "ProcOutput" => Some(TyConId(14)),
         "Ordering" => Some(TyConId(15)),
+        // Decimal and Uuid are interned last in the builtin arena (ids 51, 52).
+        "Decimal" => Some(TyConId(51)),
+        "Uuid" => Some(TyConId(52)),
         _ => None,
     }
 }
@@ -1775,6 +1818,13 @@ fn resolve_ast_type_to_tycon_id(
             PrimitiveType::Text => Some(TyConId(3)),
             PrimitiveType::Unit => Some(TyConId(4)),
             PrimitiveType::Timestamp => Some(TyConId(5)),
+            // Decimal, Uuid, Bytes, Date and Time are interned last in the builtin
+            // arena (ids 51, 52, 53, 54, 55).
+            PrimitiveType::Decimal => Some(TyConId(51)),
+            PrimitiveType::Uuid => Some(TyConId(52)),
+            PrimitiveType::Bytes => Some(TyConId(53)),
+            PrimitiveType::Date => Some(TyConId(54)),
+            PrimitiveType::Time => Some(TyConId(55)),
             #[allow(unreachable_patterns)]
             _ => None,
         },

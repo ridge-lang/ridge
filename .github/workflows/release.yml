@@ -73,7 +73,11 @@ jobs:
             release-${{ runner.os }}-${{ matrix.target }}-
 
       - name: Build release binaries
-        run: cargo build --release --locked -p ridge-cli -p ridge-lsp --target ${{ matrix.target }}
+        # `ridge-cli/beam-runtime` bakes the SQLite native bridge into the shipped
+        # `ridge` for this runner's target, so a released binary carries the bridge
+        # with no C toolchain on the user's machine. The OTP install above provides
+        # the `erl_nif.h` the build script compiles the NIF against.
+        run: cargo build --release --locked -p ridge-cli -p ridge-lsp --features ridge-cli/beam-runtime --target ${{ matrix.target }}
 
       - name: Ad-hoc sign (macOS)
         if: runner.os == 'macOS'

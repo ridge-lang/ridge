@@ -1516,6 +1516,47 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                         kind: VariantPayload::Nullary,
                     },
                     UnionVariant {
+                        name: "DbBytes".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DbSmallInt".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DbChar".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(b.int, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "DbJson".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DbJsonb".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DbDate".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DbTime".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DbInterval".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    // A recursive variant: an array carries its element `DbType`,
+                    // mirroring `DbArray DbType` in the source.
+                    UnionVariant {
+                        name: "DbArray".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(
+                            TyConId(base + 25),
+                            vec![],
+                        )]),
+                    },
+                    UnionVariant {
                         name: "DbRaw".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(b.text, vec![])]),
                     },
@@ -1720,11 +1761,148 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                             vec![Type::Con(TyConId(base + 29), vec![Type::Var(TyVid(0))])],
                         ),
                     },
+                    RecordField {
+                        name: "primaryKeyColumns".to_string(),
+                        ty: Type::Con(b.list, vec![Type::Con(b.text, vec![])]),
+                    },
+                    RecordField {
+                        name: "uniqueConstraints".to_string(),
+                        ty: Type::Con(
+                            b.list,
+                            vec![Type::Con(b.list, vec![Type::Con(b.text, vec![])])],
+                        ),
+                    },
                 ],
             )),
             def_span: None,
             def_module_raw: None,
             opaque: true,
+            is_anon: false,
+        },
+        // `std.decimal` — how a rounding or a division drops the digits it cannot
+        // keep. A nullary union declared in Ridge (stdlib/decimal.ridge); its
+        // constructors resolve through the module import like `Asc`/`Desc`. Appended
+        // last so it disturbs no earlier reconciled id.
+        TyConDecl {
+            id: TyConId(base + 31),
+            name: "RoundingMode".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "HalfEven".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "HalfUp".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "HalfDown".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "Up".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "Down".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "Ceiling".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "Floor".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                ],
+            }),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
+        // `std.sql` — which backend's SQL a renderer emits. A union declared in Ridge
+        // (stdlib/sql.ridge, beside DbType so the query and schema renderers can name
+        // it); the query and DDL renderers take one to spell the few places SQL syntax
+        // diverges. Interned last so it disturbs no earlier reconciled id.
+        TyConDecl {
+            id: TyConId(base + 32),
+            name: "Dialect".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "PgDialect".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "SqliteDialect".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                ],
+            }),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
+        // `std.data` — the SQLite connection handle. Opaque `{ id: Int }`,
+        // declared in Ridge (stdlib/data.ridge); the `id` selects the connection
+        // in the runtime handle registry, the same id-as-handle shape Postgres and
+        // MemAdapter use. Appended last so it disturbs no earlier reconciled id.
+        TyConDecl {
+            id: TyConId(base + 33),
+            name: "Sqlite".to_string(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![RecordField {
+                    name: "id".to_string(),
+                    ty: Type::Con(b.int, vec![]),
+                }],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
+            is_anon: false,
+        },
+        // `std.data` — connection settings for `connectSqlite`. A plain
+        // (non-opaque) record users construct directly; declared in Ridge
+        // (stdlib/data.ridge). Field order mirrors the source declaration so the
+        // consistency check holds. Appended last so it disturbs no earlier id.
+        TyConDecl {
+            id: TyConId(base + 34),
+            name: "SqliteConfig".to_string(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![
+                    RecordField {
+                        name: "path".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "busyTimeoutMs".to_string(),
+                        ty: Type::Con(b.int, vec![]),
+                    },
+                    RecordField {
+                        name: "journalMode".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "foreignKeys".to_string(),
+                        ty: Type::Con(b.bool, vec![]),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
             is_anon: false,
         },
     ]
@@ -1823,6 +2001,52 @@ pub(crate) fn reconciled_fn_scheme(
                 constraints: vec![],
             })
         }
+        // std.decimal `round : RoundingMode -> Int -> Decimal -> Decimal` — rounds to
+        // a fixed scale with the given mode. Names the reconciled `RoundingMode`, so
+        // the hand-curated table cannot express it.
+        ("std.decimal", "round") => {
+            let rounding = *reconciled.get("RoundingMode")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![
+                        Type::Con(rounding, vec![]),
+                        Type::Con(b.int, vec![]),
+                        Type::Con(b.decimal, vec![]),
+                    ],
+                    ret: Box::new(Type::Con(b.decimal, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![],
+            })
+        }
+        // std.decimal `div : RoundingMode -> Int -> Decimal -> Decimal -> Result
+        // Decimal Error` — divides to a fixed scale with the given mode; a zero
+        // divisor is an `Err`. Names the reconciled `RoundingMode`.
+        ("std.decimal", "div") => {
+            let rounding = *reconciled.get("RoundingMode")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![
+                        Type::Con(rounding, vec![]),
+                        Type::Con(b.int, vec![]),
+                        Type::Con(b.decimal, vec![]),
+                        Type::Con(b.decimal, vec![]),
+                    ],
+                    ret: Box::new(Type::Con(
+                        b.result,
+                        vec![Type::Con(b.decimal, vec![]), Type::Con(b.error, vec![])],
+                    )),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![],
+            })
+        }
         // std.data `dbErrorKind : Error -> DbErrorKind` — classifies a raw storage
         // error by its code into a typed kind. Its return type names the reconciled
         // `DbErrorKind`, so the hand-curated signature table cannot express it.
@@ -1893,6 +2117,60 @@ pub(crate) fn reconciled_fn_scheme(
                         vec![Type::Con(postgres, vec![]), Type::Con(b.error, vec![])],
                     )),
                     caps: CapRow::Concrete(CapabilitySet::singleton(Capability::Db)),
+                },
+                constraints: vec![],
+            })
+        }
+        // std.data `connectSqlite : SqliteConfig -> Result Sqlite Error` — opens a
+        // SQLite connection through the native bridge. Like `connect` it requires
+        // the `db` capability, and its signature names the reconciled `SqliteConfig`
+        // and `Sqlite`, so the hand-curated table cannot express it.
+        ("std.data", "connectSqlite") => {
+            let sqlite = *reconciled.get("Sqlite")?;
+            let config = *reconciled.get("SqliteConfig")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(config, vec![])],
+                    ret: Box::new(Type::Con(
+                        b.result,
+                        vec![Type::Con(sqlite, vec![]), Type::Con(b.error, vec![])],
+                    )),
+                    caps: CapRow::Concrete(CapabilitySet::singleton(Capability::Db)),
+                },
+                constraints: vec![],
+            })
+        }
+        // std.data `sqliteFile : Text -> SqliteConfig` — the pure preset for a file-
+        // backed database, naming the path. Returns the reconciled `SqliteConfig`.
+        ("std.data", "sqliteFile") => {
+            let config = *reconciled.get("SqliteConfig")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(b.text, vec![])],
+                    ret: Box::new(Type::Con(config, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![],
+            })
+        }
+        // std.data `sqliteMemory : Unit -> SqliteConfig` — the pure preset for the
+        // in-memory database. Returns the reconciled `SqliteConfig`.
+        ("std.data", "sqliteMemory") => {
+            let config = *reconciled.get("SqliteConfig")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(b.unit, vec![])],
+                    ret: Box::new(Type::Con(config, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
                 },
                 constraints: vec![],
             })
@@ -1991,7 +2269,8 @@ pub(crate) fn reconciled_fn_scheme(
         (
             "std.query",
             "planScan" | "planCombine" | "planRefine" | "planJoin" | "planProject"
-            | "planAggregate" | "planGroup" | "planToSql" | "optimize" | "planExists",
+            | "planAggregate" | "planGroup" | "planToSql" | "planToSqlFor" | "optimize"
+            | "planExists",
         ) => reconciled_query_plan_fn_scheme(name, reconciled, b),
         // std.query mutation builders + the write-side renderer — the `MutationPlan`
         // factories `planInsert`/`planUpsert`/`planUpdate`/`planDelete` and `mutationToSql`.
@@ -2024,6 +2303,8 @@ fn reconciled_query_plan_fn_scheme(
 ) -> Option<Scheme> {
     let query_plan = *reconciled.get("QueryPlan")?;
     let plan = || Type::Con(query_plan, vec![]);
+    let dialect = *reconciled.get("Dialect")?;
+    let dialect_ty = || Type::Con(dialect, vec![]);
     let text = || Type::Con(b.text, vec![]);
     let int = || Type::Con(b.int, vec![]);
     let bool_ = || Type::Con(b.bool, vec![]);
@@ -2110,6 +2391,23 @@ fn reconciled_query_plan_fn_scheme(
             row_vars: vec![],
             ty: Type::Fn {
                 params: vec![plan()],
+                ret: Box::new(Type::Tuple(vec![
+                    Type::Con(b.sql, vec![]),
+                    Type::Con(b.list, vec![Type::Con(b.sql_value, vec![])]),
+                ])),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            },
+            constraints: vec![],
+        }),
+        // planToSqlFor : Dialect -> QueryPlan -> (Sql, List SqlValue) — the same renderer
+        // as `planToSql` with the target dialect made explicit, so a plan can lower to
+        // either the Postgres or the SQLite spelling of its aggregates.
+        "planToSqlFor" => Some(Scheme {
+            vars: vec![],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: Type::Fn {
+                params: vec![dialect_ty(), plan()],
                 ret: Box::new(Type::Tuple(vec![
                     Type::Con(b.sql, vec![]),
                     Type::Con(b.list, vec![Type::Con(b.sql_value, vec![])]),
@@ -2244,6 +2542,7 @@ fn reconciled_schema_fn_scheme(
     let foreign_key = *reconciled.get("ForeignKey")?;
     let column_schema = *reconciled.get("ColumnSchema")?;
     let entity_schema = *reconciled.get("EntitySchema")?;
+    let dialect = *reconciled.get("Dialect")?;
     let e = TyVid(0);
     let text = || Type::Con(b.text, vec![]);
     let boolean = || Type::Con(b.bool, vec![]);
@@ -2251,6 +2550,7 @@ fn reconciled_schema_fn_scheme(
     let list = |x: Type| Type::Con(b.list, vec![x]);
     let qexpr = || Type::Con(b.q_expr, vec![]);
     let dbtype_ty = || Type::Con(db_type, vec![]);
+    let dialect_ty = || Type::Con(dialect, vec![]);
     let gen_ty = || Type::Con(generation, vec![]);
     let fk_act_ty = || Type::Con(fk_action, vec![]);
     let fk_ty = || Type::Con(foreign_key, vec![]);
@@ -2363,6 +2663,10 @@ fn reconciled_schema_fn_scheme(
         // Entity schema builders and read accessors (∀e. … over EntitySchema e).
         "schema" => poly1(vec![text(), text()], ent_e()),
         "withColumn" => poly1(vec![col_e(), ent_e()], ent_e()),
+        // `compositePrimaryKey`/`uniqueConstraint` : ∀e. List Text -> EntitySchema e ->
+        // EntitySchema e — the multi-column table-constraint steps, each naming its
+        // columns by SQL column name (the composite key, or one unique constraint).
+        "compositePrimaryKey" | "uniqueConstraint" => poly1(vec![list(text()), ent_e()], ent_e()),
         // `schemaToDdl` renders an entity's `CREATE TABLE`; it shares the
         // `EntitySchema e -> Text` shape with the name accessors. `schemaIndexDdls`
         // renders its non-unique indexes, sharing the `-> List Text` shape with the
@@ -2373,7 +2677,16 @@ fn reconciled_schema_fn_scheme(
         "schemaName" | "schemaTable" | "schemaToDdl" | "schemaToSource" => {
             poly1(vec![ent_e()], text())
         }
+        // `schemaToDdlFor` : ∀e. Dialect -> EntitySchema e -> Text — the
+        // dialect-parameterized `CREATE TABLE` renderer `schemaToDdl` defaults to
+        // Postgres.
+        "schemaToDdlFor" => poly1(vec![dialect_ty(), ent_e()], text()),
         "schemaColumns" => poly1(vec![ent_e()], list(col_e())),
+        // The table-constraint read accessors: the composite primary key's columns
+        // (empty when the key is a single per-column one, or absent), and the
+        // multi-column unique constraints (a column list each).
+        "schemaPrimaryKey" => poly1(vec![ent_e()], list(text())),
+        "schemaUniqueConstraints" => poly1(vec![ent_e()], list(list(text()))),
         // eraseSchema : ∀e. EntitySchema e -> EntitySchema Unit — drop the phantom
         // entity so a non-parametric migration step can carry the descriptor.
         "eraseSchema" => poly1(vec![ent_e()], ent_unit()),
@@ -2383,10 +2696,20 @@ fn reconciled_schema_fn_scheme(
         // The migration step renderers over the seam tuple `(name, base-type, nullable,
         // primaryKey, unique)` — the DDL the retired Erlang builder produced.
         "createTableDdl" => mono(vec![text(), list(col_tuple())], text()),
+        // `createTableDdlFor` : Dialect -> Text -> List (col tuple) -> Text — the
+        // dialect-parameterized migration-tuple `CREATE TABLE`, the dual of
+        // `schemaToDdlFor` for the seam tuples.
+        "createTableDdlFor" => mono(vec![dialect_ty(), text(), list(col_tuple())], text()),
         "addColumnDdl" => mono(vec![text(), col_tuple()], text()),
+        // `addColumnDdlFor` : Dialect -> Text -> (col tuple) -> Text — the
+        // dialect-parameterized tuple ADD COLUMN; the plain name defaults to Postgres.
+        "addColumnDdlFor" => mono(vec![dialect_ty(), text(), col_tuple()], text()),
         // addColumnSchemaDdl : ∀e. Text -> ColumnSchema e -> Text — the entity-driven
         // ADD COLUMN renderer, keeping the descriptor's type/default/constraints.
         "addColumnSchemaDdl" => poly1(vec![text(), col_e()], text()),
+        // `addColumnSchemaDdlFor` : ∀e. Dialect -> Text -> ColumnSchema e -> Text — the
+        // dialect-parameterized entity-driven ADD COLUMN; the plain name defaults to Postgres.
+        "addColumnSchemaDdlFor" => poly1(vec![dialect_ty(), text(), col_e()], text()),
         // alterColumnDdl : ∀e. Text -> ColumnSchema e -> ColumnSchema e -> Text — the
         // entity-driven ALTER COLUMN renderer, taking a column's old and new descriptors and
         // emitting the minimal statement for the facets (type, nullability, default) that differ.
@@ -2395,6 +2718,13 @@ fn reconciled_schema_fn_scheme(
         // predicate: whether a column's type, nullability, or default changed (a serial/identity
         // column is excluded), i.e. whether the diff emits an `AlterColumn` for it.
         "columnAltered" => poly1(vec![col_e(), col_e()], boolean()),
+        // `sqliteRebuildTableDdl` : ∀e. EntitySchema e -> EntitySchema e -> List Text —
+        // the statement sequence that recreates a table under a new schema and copies its
+        // shared columns across, for the changes SQLite cannot make in place.
+        "sqliteRebuildTableDdl" => poly1(vec![ent_e(), ent_e()], list(text())),
+        // `sqliteAddNeedsRebuild` : ∀e. ColumnSchema e -> Bool — whether SQLite must
+        // rebuild rather than `ADD COLUMN` the column in place.
+        "sqliteAddNeedsRebuild" => poly1(vec![col_e()], boolean()),
         // dropTableDdl / dropIndexDdl : Text -> Text — a name-only `DROP TABLE` /
         // `DROP INDEX IF EXISTS`; `dropIndexDdl` is the inverse of `indexDdl`.
         "dropTableDdl" | "dropIndexDdl" => mono(vec![text()], text()),

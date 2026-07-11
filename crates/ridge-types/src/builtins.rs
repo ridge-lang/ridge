@@ -332,6 +332,37 @@ pub struct BuiltinTyCons {
     /// or `e` itself when none). Internal; the reduction reads the per-entity
     /// shape table from the context and is invertible. See [`INSERTSHAPE_TYCON_ID`].
     pub insert_shape: TyConId,
+    /// `Decimal` — an arbitrary-precision base-10 number. A primitive like
+    /// `Int`/`Float`, but interned last (id 51) so the historical 0..50 index
+    /// layout stays stable for the many call sites that hardcode those ids. The
+    /// value/DDL wiring lives in `std.decimal` and `std.sql`.
+    pub decimal: TyConId,
+    /// `Uuid` — an RFC 4122 identifier. A primitive like `Int`/`Text`, interned
+    /// after `Decimal` (id 52) so the historical 0..50 index layout stays stable.
+    /// It has no literal syntax; a value comes from `std.uuid` (`gen`, `fromText`),
+    /// and the codec that moves it across a SQL `uuid` column lives in `std.sql`.
+    pub uuid: TyConId,
+    /// `Bytes` — a raw byte string. A primitive like `Text`, interned after `Uuid`
+    /// (id 53) so the historical 0..50 index layout stays stable. It has no literal
+    /// syntax; a value comes from `std.bytes` (`fromHex`, `fromUtf8`, `gen`), and
+    /// the codec that moves it across a SQL `bytea` column lives in `std.sql`.
+    pub bytes: TyConId,
+    /// `Date` — a calendar date (year-month-day, no time-of-day, no timezone). A
+    /// primitive interned after `Bytes` (id 54) so the historical 0..50 index
+    /// layout stays stable. It has no literal syntax; a value comes from
+    /// `std.date` (`fromYmd`, `fromIso`, `today`), and the codec that moves it
+    /// across a SQL `date` column lives in `std.sql`.
+    pub date: TyConId,
+    /// `Time` — a wall-clock time of day (hour-minute-second, no date, no
+    /// timezone). A primitive interned after `Date` (id 55) so the historical
+    /// 0..50 index layout stays stable. It has no literal syntax; a value comes
+    /// from `std.timeofday` (`fromHms`, `fromIso`, `nowUtc`), and the codec that
+    /// moves it across a SQL `time` column lives in `std.sql`.
+    pub time: TyConId,
+    /// `Instant` — an opaque monotonic reading for measuring elapsed time
+    /// (`std.time`). Distinct from `Timestamp` (a wall-clock instant): a monotonic
+    /// reading only moves forward, so an elapsed `Duration` is never negative.
+    pub instant: TyConId,
 }
 
 impl BuiltinTyCons {
@@ -382,6 +413,12 @@ impl BuiltinTyCons {
             right_joinresult: SENTINEL,
             full_joinresult: SENTINEL,
             insert_shape: SENTINEL,
+            decimal: SENTINEL,
+            uuid: SENTINEL,
+            bytes: SENTINEL,
+            date: SENTINEL,
+            time: SENTINEL,
+            instant: SENTINEL,
         }
     }
 
@@ -862,6 +899,62 @@ impl BuiltinTyCons {
                         name: "SqlInstant".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(int, vec![])]),
                     },
+                    UnionVariant {
+                        name: "SqlDecimal".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "SqlUuid".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
+                    },
+                    // A byte string, carried as its canonical lowercase hex text —
+                    // like SqlUuid, a Text carrier so it renders back to source and
+                    // orders by value. The raw bytes ride the `bytea` wire form.
+                    UnionVariant {
+                        name: "SqlBytes".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
+                    },
+                    // A JSON document, carried as its encoded JSON text — a Text
+                    // carrier like SqlUuid/SqlBytes. Rides the `json`/`jsonb` wire form
+                    // as text; the structured JsonValue is rebuilt on decode.
+                    UnionVariant {
+                        name: "SqlJson".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
+                    },
+                    // A calendar date, carried as its ISO `YYYY-MM-DD` text — a Text
+                    // carrier like SqlUuid, so it renders back to source and orders by
+                    // value (ISO date text sorts chronologically). Rides the `date`
+                    // wire form as text.
+                    UnionVariant {
+                        name: "SqlDate".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
+                    },
+                    // A wall-clock time of day, carried as its ISO `HH:MM:SS[.ffffff]`
+                    // text — a Text carrier like SqlDate, so it renders back to source
+                    // and orders by value (the fixed-width fields sort chronologically).
+                    // Rides the `time` wire form as text.
+                    UnionVariant {
+                        name: "SqlTime".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
+                    },
+                    // A length of time, carried as its whole-millisecond span — an Int
+                    // carrier like SqlInstant, so it orders by value directly. Rides the
+                    // `interval` wire form.
+                    UnionVariant {
+                        name: "SqlInterval".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(int, vec![])]),
+                    },
+                    // A homogeneous array, carried as the list of its elements' own
+                    // SqlValues (a self-reference to this union, `List SqlValue`, like
+                    // JsonValue's JList). Rides the native array wire form; the element
+                    // codec decides each element's shape.
+                    UnionVariant {
+                        name: "SqlArray".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(
+                            list,
+                            vec![Type::Con(TyConId(20), vec![])],
+                        )]),
+                    },
                 ],
             }),
             def_span: None,
@@ -1249,6 +1342,73 @@ impl BuiltinTyCons {
                             Type::Con(TyConId(25), vec![]),
                         ]),
                     },
+                    // A decimal literal captured in a quoted predicate. Carries a
+                    // Decimal (tycon id 51, interned after this union). Appended last,
+                    // like `QExists`, so the variant indices the lowering pass
+                    // hardcodes stay put.
+                    UnionVariant {
+                        name: "QLitDecimal".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(51), vec![])]),
+                    },
+                    // A uuid captured in a quoted predicate (a uuid has no literal
+                    // syntax, so this only ever holds a captured runtime value).
+                    // Carries a Uuid (tycon id 52). Appended last so the variant
+                    // indices the lowering pass hardcodes stay put.
+                    UnionVariant {
+                        name: "QLitUuid".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(52), vec![])]),
+                    },
+                    // A timestamp captured in a quoted predicate (Timestamp has no
+                    // literal syntax either). Carries a Timestamp (tycon id 5); the
+                    // renderers move it across `SqlInstant` as epoch microseconds.
+                    // Appended last so the hardcoded variant indices stay put.
+                    UnionVariant {
+                        name: "QLitInstant".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(5), vec![])]),
+                    },
+                    // A byte string captured in a quoted predicate (Bytes has no
+                    // literal syntax either). Carries a Bytes (tycon id 53); the
+                    // renderers move it across `SqlBytes` as canonical hex. Appended
+                    // last so the hardcoded variant indices stay put.
+                    UnionVariant {
+                        name: "QLitBytes".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(53), vec![])]),
+                    },
+                    // A calendar date captured in a quoted predicate (Date has no
+                    // literal syntax either). Carries a Date (tycon id 54); the
+                    // renderers move it across `SqlDate` as ISO text. Appended last
+                    // so the hardcoded variant indices stay put.
+                    UnionVariant {
+                        name: "QLitDate".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(54), vec![])]),
+                    },
+                    // A wall-clock time of day captured in a quoted predicate (Time has
+                    // no literal syntax either). Carries a Time (tycon id 55); the
+                    // renderers move it across `SqlTime` as ISO text. Appended last so
+                    // the hardcoded variant indices stay put.
+                    UnionVariant {
+                        name: "QLitTime".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(55), vec![])]),
+                    },
+                    // A duration captured in a quoted predicate (Duration has no
+                    // literal syntax either). Carries a Duration (tycon id 13); the
+                    // renderers move it across `SqlInterval` as its millisecond span.
+                    // Appended last so the hardcoded variant indices stay put.
+                    UnionVariant {
+                        name: "QLitInterval".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(13), vec![])]),
+                    },
+                    // A grouped average over an interval column — `g.avg (fn u ->
+                    // u.took)` where `took` is a `Duration`. It folds the same `QCol`
+                    // (tycon id 25) as `QAggAvg`, but Postgres cannot cast an interval
+                    // average to `float8`, so the renderer reads the average's epoch
+                    // milliseconds instead. Distinct from `QAggAvg` because the reifier
+                    // knows the column type while the renderer does not. Appended last
+                    // so the hardcoded variant indices stay put.
+                    UnionVariant {
+                        name: "QAggAvgInterval".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(25), vec![])]),
+                    },
                 ],
             }),
             def_span: None,
@@ -1426,6 +1586,96 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
+        // Decimal — an arbitrary-precision base-10 primitive (id 51). A scalar
+        // like Int/Float/Timestamp, but interned last so the historical 0..50
+        // index layout stays fixed; several call sites hardcode those ids. Its
+        // runtime value is a scaled integer carried by `ridge_rt`; the codec and
+        // column wiring live in `std.decimal` / `std.sql`.
+        let decimal = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "Decimal".to_string(),
+            arity: 0,
+            kind: TyConKind::Primitive,
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+
+        // Uuid — an RFC 4122 identifier primitive (id 52). A scalar like
+        // Int/Text, interned after Decimal so the historical 0..50 layout stays
+        // fixed. Its runtime value is the canonical text carried by `ridge_rt`;
+        // the constructors live in `std.uuid` and the SQL codec in `std.sql`.
+        let uuid = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "Uuid".to_string(),
+            arity: 0,
+            kind: TyConKind::Primitive,
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+
+        // Bytes — a raw byte string primitive (id 53). A scalar like Text, interned
+        // after Uuid so the historical 0..50 layout stays fixed. Its runtime value
+        // is a raw BEAM binary; the constructors live in `std.bytes` and the SQL
+        // codec (a `bytea` column) in `std.sql`.
+        let bytes = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "Bytes".to_string(),
+            arity: 0,
+            kind: TyConKind::Primitive,
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+
+        // Date — a calendar date primitive (id 54). A scalar interned after Bytes
+        // so the historical 0..50 layout stays fixed. Its runtime value is a
+        // `{date, EpochDays}` day count; the constructors live in `std.date` and
+        // the SQL codec (a `date` column) in `std.sql`.
+        let date = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "Date".to_string(),
+            arity: 0,
+            kind: TyConKind::Primitive,
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+
+        // Time — a wall-clock time-of-day primitive (id 55). A scalar interned after
+        // Date so the historical 0..50 layout stays fixed. Its runtime value is a
+        // `{time, Micros}` count of microseconds since midnight; the constructors live
+        // in `std.timeofday` and the SQL codec (a `time` column) in `std.sql`.
+        let time = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "Time".to_string(),
+            arity: 0,
+            kind: TyConKind::Primitive,
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+        // Instant — an opaque monotonic reading (std.time). Interned last so the
+        // earlier ids stay put; a `Primitive` kind with no user-visible structure,
+        // resolved by name through the prelude like `Duration`, not a `PrimitiveType`
+        // keyword, since it is not a column type and needs no codec.
+        let instant = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "Instant".to_string(),
+            arity: 0,
+            kind: TyConKind::Primitive,
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+
         // Verify assignment order matches spec §4.1 indices 0..16.
         debug_assert_eq!(int.0, 0);
         debug_assert_eq!(float.0, 1);
@@ -1482,6 +1732,14 @@ impl BuiltinTyCons {
         // InsertShape/1 sits right after FullJoinResult/2 (INSERTSHAPE_TYCON_ID = 50).
         debug_assert_eq!(insert_shape.0, INSERTSHAPE_TYCON_ID);
         debug_assert_eq!(insert_shape.0, 50);
+        // Decimal, Uuid, Bytes, Date and Time are interned last so they do not
+        // disturb the 0..50 layout.
+        debug_assert_eq!(decimal.0, 51);
+        debug_assert_eq!(uuid.0, 52);
+        debug_assert_eq!(bytes.0, 53);
+        debug_assert_eq!(date.0, 54);
+        debug_assert_eq!(time.0, 55);
+        debug_assert_eq!(instant.0, 56);
 
         // Suppress the "unused" lint — CapabilitySet is imported for future use
         // in T4 (actor schemas carry CapabilitySet).
@@ -1524,6 +1782,12 @@ impl BuiltinTyCons {
             right_joinresult,
             full_joinresult,
             insert_shape,
+            decimal,
+            uuid,
+            bytes,
+            date,
+            time,
+            instant,
         }
     }
 }
@@ -1603,17 +1867,18 @@ mod tests {
     }
 
     #[test]
-    fn arena_len_is_51() {
+    fn arena_len_is_57() {
         // 15 original builtins + Ordering + JsonValue + the std.net.http taint
         // wrappers Sql / Html / SecureCookie + std.sql's SqlValue + the
         // column-codegen builtins Column / Table + the schema-codegen builtins
         // FieldSchema / Schema + the quotation builtins QExpr / Quote (27 total)
         // + the 16 synthetic function-type constructors Fn/0 … Fn/15 + Ret/1 +
         // Rows/1 + JoinCond/2 + the four join-result extractors (Join/Left/Right/Full)
-        // + InsertShape/1.
+        // + InsertShape/1 + the Decimal, Uuid, Bytes, Date and Time primitives and
+        // the Instant monotonic reading (interned last).
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 8);
-        assert_eq!(arena.len(), 51);
+        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 14);
+        assert_eq!(arena.len(), 57);
     }
 
     #[test]

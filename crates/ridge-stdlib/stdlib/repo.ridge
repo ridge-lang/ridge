@@ -1671,6 +1671,24 @@ instance Orderable (FullJoined q f a) (Map Text SqlValue -> k) =
     orderBy (dir: SortOrder) (key: Quote (Map Text SqlValue -> k)) (x: FullJoined q f a) -> FullJoined q f a =
         FullJoined { source = x.source, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntryLeaf dir key), lim = x.lim, off = x.off, dist = x.dist }
 
+-- The aggregate keyword an `avgOf` folds through: `AVG` for a numeric column, or the
+-- interval-aware `AVG_INTERVAL` for a `Duration` one. Postgres cannot cast an interval
+-- average to `float8` the way it casts a numeric one, so an interval average renders as
+-- `EXTRACT(EPOCH FROM AVG(col))` scaled to milliseconds instead; the backend keys that
+-- path off this keyword. Read off the accessor's own reified tree rather than a runtime
+-- `SqlType` dictionary: the `Aggregable q p | q -> p` functional dependency fixes the
+-- accessor's arity from the receiver but leaves the folded column's own type free, so a
+-- dictionary resolved from it is unreliable (the same gap `decodeFloatScalar` above
+-- works around on the decode side). The type-checker instead marks a `Duration`
+-- accessor passed to `avgOf` (`mark_avg_interval_accessor` in ridge-typecheck), and the
+-- lowerer reifies its column wrapped in the interval-aware `QAggAvgInterval` node — the
+-- same node a grouped `g.avg` reifies to for an interval column — so this reads the
+-- wrapper the way `aggFunc` reads it for the grouped path below.
+fn avgFuncFor (tree: QExpr) -> Text =
+    match tree
+        QAggAvgInterval _ -> "AVG_INTERVAL"
+        _                 -> "AVG"
+
 -- The scalar-aggregate plan a single-table `sumOf`/`avgOf`/`minOf`/`maxOf` runs: a
 -- `PlanAggregate` over the table's filtered scan, folding the named column. Leaf 0 —
 -- a single table has one source, and the renderer reads the column bare.
@@ -1688,7 +1706,7 @@ instance Aggregable (Query e a) (fn e -> n) where Adapter a, SqlType n =
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
     avgOf (col: Quote (fn e -> n)) (x: Query e a) -> Result (Option Float) Error =
-        match runPlan x.repo.adapter (queryScalarPlan x "AVG" (aggColumn col))
+        match runPlan x.repo.adapter (queryScalarPlan x (avgFuncFor col.tree) (aggColumn col))
             Err err -> Err err
             Ok rows -> decodeFloatScalar (firstAggCell rows)
     minOf (col: Quote (fn e -> n)) (x: Query e a) -> Result (Option n) Error =
@@ -1715,7 +1733,7 @@ instance Aggregable (LeftJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
     avgOf (col: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option Float) Error =
-        match runPlan x.left.repo.adapter (leftScalarPlan x "AVG" col)
+        match runPlan x.left.repo.adapter (leftScalarPlan x (avgFuncFor col.tree) col)
             Err err -> Err err
             Ok rows -> decodeFloatScalar (firstAggCell rows)
     minOf (col: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option n) Error =
@@ -1739,7 +1757,7 @@ instance Aggregable (RightJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
     avgOf (col: Quote (fn e f -> n)) (x: RightJoin e f a) -> Result (Option Float) Error =
-        match runPlan x.left.repo.adapter (rightScalarPlan x "AVG" col)
+        match runPlan x.left.repo.adapter (rightScalarPlan x (avgFuncFor col.tree) col)
             Err err -> Err err
             Ok rows -> decodeFloatScalar (firstAggCell rows)
     minOf (col: Quote (fn e f -> n)) (x: RightJoin e f a) -> Result (Option n) Error =
@@ -1763,7 +1781,7 @@ instance Aggregable (FullJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
     avgOf (col: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option Float) Error =
-        match runPlan x.left.repo.adapter (fullScalarPlan x "AVG" col)
+        match runPlan x.left.repo.adapter (fullScalarPlan x (avgFuncFor col.tree) col)
             Err err -> Err err
             Ok rows -> decodeFloatScalar (firstAggCell rows)
     minOf (col: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option n) Error =
@@ -1789,7 +1807,7 @@ instance Aggregable (Joined q f a) (Map Text SqlValue -> n) where Adapter a, Joi
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
     avgOf (col: Quote (Map Text SqlValue -> n)) (x: Joined q f a) -> Result (Option Float) Error =
-        match runPlan x.right.adapter (joinedScalarPlan x "AVG" col)
+        match runPlan x.right.adapter (joinedScalarPlan x (avgFuncFor col.tree) col)
             Err err -> Err err
             Ok rows -> decodeFloatScalar (firstAggCell rows)
     minOf (col: Quote (Map Text SqlValue -> n)) (x: Joined q f a) -> Result (Option n) Error =
@@ -1807,7 +1825,7 @@ instance Aggregable (LeftJoined q f a) (Map Text SqlValue -> n) where Adapter a,
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
     avgOf (col: Quote (Map Text SqlValue -> n)) (x: LeftJoined q f a) -> Result (Option Float) Error =
-        match runPlan x.right.adapter (leftScalarComposite x "AVG" col)
+        match runPlan x.right.adapter (leftScalarComposite x (avgFuncFor col.tree) col)
             Err err -> Err err
             Ok rows -> decodeFloatScalar (firstAggCell rows)
     minOf (col: Quote (Map Text SqlValue -> n)) (x: LeftJoined q f a) -> Result (Option n) Error =
@@ -1825,7 +1843,7 @@ instance Aggregable (RightJoined q f a) (Map Text SqlValue -> n) where Adapter a
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
     avgOf (col: Quote (Map Text SqlValue -> n)) (x: RightJoined q f a) -> Result (Option Float) Error =
-        match runPlan x.right.adapter (rightScalarComposite x "AVG" col)
+        match runPlan x.right.adapter (rightScalarComposite x (avgFuncFor col.tree) col)
             Err err -> Err err
             Ok rows -> decodeFloatScalar (firstAggCell rows)
     minOf (col: Quote (Map Text SqlValue -> n)) (x: RightJoined q f a) -> Result (Option n) Error =
@@ -1843,7 +1861,7 @@ instance Aggregable (FullJoined q f a) (Map Text SqlValue -> n) where Adapter a,
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
     avgOf (col: Quote (Map Text SqlValue -> n)) (x: FullJoined q f a) -> Result (Option Float) Error =
-        match runPlan x.right.adapter (fullScalarComposite x "AVG" col)
+        match runPlan x.right.adapter (fullScalarComposite x (avgFuncFor col.tree) col)
             Err err -> Err err
             Ok rows -> decodeFloatScalar (firstAggCell rows)
     minOf (col: Quote (Map Text SqlValue -> n)) (x: FullJoined q f a) -> Result (Option n) Error =
@@ -2042,7 +2060,7 @@ instance Aggregable (Seq a) (fn a -> n) where SqlType n =
     sumOf (col: Quote (fn a -> n)) (x: Seq a) -> Result (Option n) Error =
         decodeScalar (firstAggCell (_evalPlanPure (seqScalarPlan x "SUM" col)))
     avgOf (col: Quote (fn a -> n)) (x: Seq a) -> Result (Option Float) Error =
-        decodeFloatScalar (firstAggCell (_evalPlanPure (seqScalarPlan x "AVG" col)))
+        decodeFloatScalar (firstAggCell (_evalPlanPure (seqScalarPlan x (avgFuncFor col.tree) col)))
     minOf (col: Quote (fn a -> n)) (x: Seq a) -> Result (Option n) Error =
         decodeScalar (firstAggCell (_evalPlanPure (seqScalarPlan x "MIN" col)))
     maxOf (col: Quote (fn a -> n)) (x: Seq a) -> Result (Option n) Error =
@@ -2898,16 +2916,32 @@ fn orderEntryLeaf (dir: SortOrder) (key: Quote p) -> (Bool, Int, QExpr) =
 -- over the columns (`SUM(price * qty)`), folded by the backend. Generic over the
 -- quote's function type (like `orderColumn`) so it reads a query's `fn e -> n`
 -- accessor and a join's `fn e f -> n` accessor alike — only the captured `tree`
--- matters; `aggLeaf` reads which side a bare column names.
-fn aggColumn (col: Quote p) -> QExpr = col.tree
+-- matters; `aggLeaf` reads which side a bare column names. A scalar `avgOf`
+-- accessor over a `Duration` column reifies wrapped in the interval-aware
+-- `QAggAvgInterval` node (see `avgFuncFor` above), which carries no SQL shape of
+-- its own — the wrapped column beneath it is what a `PlanAggregate` folds, so
+-- this unwraps it the same way `aggColExpr` does for the grouped path below.
+-- Every other caller (`sumOf`/`minOf`/`maxOf`, `orderBy`, `groupBy`) never sees
+-- the wrapper, so the unwrap is a no-op for them.
+fn aggColumn (col: Quote p) -> QExpr =
+    match col.tree
+        QAggAvgInterval c -> c
+        other             -> other
 
 -- Which join leaf an aggregate accessor names: a `QCol` is the first leaf (0, the
 -- left/single table), a `QColR` the second (1, a binary join's right), and a
 -- `QColAt i` the `i`-th leaf of a deeper composite. The seam qualifies the column to
 -- that leaf's alias — the same leaf indexing `orderEntryLeaf` tags an ordering key
--- with, over an unbounded number of leaves.
+-- with, over an unbounded number of leaves. An `avgOf` accessor's interval-aware
+-- `QAggAvgInterval` wrapper (see `aggColumn` above) carries no leaf of its own, so
+-- this reads the leaf off the column it wraps.
 fn aggLeaf (col: Quote p) -> Int =
     match col.tree
+        QAggAvgInterval c -> aggLeafOf c
+        other             -> aggLeafOf other
+
+fn aggLeafOf (t: QExpr) -> Int =
+    match t
         QColR _    -> 1
         QColAt i _ -> i
         _          -> 0
@@ -2957,6 +2991,7 @@ fn aggColLeaf (ex: QExpr) -> Int =
     match ex
         QAggSum c -> aggNodeLeaf c
         QAggAvg c -> aggNodeLeaf c
+        QAggAvgInterval c -> aggNodeLeaf c
         QAggMin c -> aggNodeLeaf c
         QAggMax c -> aggNodeLeaf c
         _         -> 0
@@ -2974,6 +3009,7 @@ fn aggFunc (ex: QExpr) -> Text =
         QAggCount -> "COUNT"
         QAggSum _ -> "SUM"
         QAggAvg _ -> "AVG"
+        QAggAvgInterval _ -> "AVG_INTERVAL"
         QAggMin _ -> "MIN"
         QAggMax _ -> "MAX"
         _         -> ""
@@ -2988,6 +3024,7 @@ fn aggColExpr (ex: QExpr) -> QExpr =
     match ex
         QAggSum c -> c
         QAggAvg c -> c
+        QAggAvgInterval c -> c
         QAggMin c -> c
         QAggMax c -> c
         _         -> keepAllTree ()

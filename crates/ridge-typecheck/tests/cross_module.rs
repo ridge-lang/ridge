@@ -326,14 +326,29 @@ fn deriving_row_record_typechecks_and_resolves_from_row() {
 
 #[test]
 fn deriving_row_unsupported_field_type_is_rejected() {
-    // A field whose type has no SqlType instance (here `List Int`) cannot be
-    // read from a column, so `deriving (Row)` must fail rather than emit a
-    // decoder that references a missing `fromSql`.
-    let main = "pub type Bad = { tags: List Int } deriving (Row)\n";
+    // A field whose type has no SqlType instance cannot be read from a column, so
+    // `deriving (Row)` must fail rather than emit a decoder that references a missing
+    // `fromSql`. A `List` of a base primitive is a column (an array), but a nested
+    // `List (List Int)` is not — its element has no `SqlType` instance.
+    let main = "pub type Bad = { grid: List (List Int) } deriving (Row)\n";
     let errors = typecheck_one(main);
     assert!(
         !errors.is_empty(),
         "deriving (Row) with a non-SqlType field must be rejected; got no errors"
+    );
+}
+
+#[test]
+fn deriving_row_list_of_primitive_field_typechecks() {
+    // A `List` of a base type is an array column: `deriving (Row)` accepts it and
+    // `fromRow` decodes it through the parametric `SqlType (List a)` instance.
+    let main = "import std.sql (fromRow, SqlValue)\n\
+                pub type Post = { id: Int, tags: List Text } deriving (Row)\n\
+                pub fn decode (r: Map Text SqlValue) -> Result Post Error = fromRow r\n";
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "deriving (Row) with a List-of-primitive field must be clean; got {errors:?}"
     );
 }
 
@@ -364,13 +379,28 @@ fn deriving_row_optional_primitive_field_typechecks() {
 
 #[test]
 fn deriving_row_optional_non_primitive_field_is_rejected() {
-    // Only an `Option` of a base type is a column; `Option (List Int)` has no
-    // `SqlType` instance for its inner type, so `deriving (Row)` must reject it.
-    let main = "pub type Bad = { tags: Option (List Int) } deriving (Row)\n";
+    // An `Option` of a base type or an array is a column; `Option (Map Text Int)` has
+    // no `SqlType` instance for its inner type, so `deriving (Row)` must reject it.
+    let main = "pub type Bad = { meta: Option (Map Text Int) } deriving (Row)\n";
     let errors = typecheck_one(main);
     assert!(
         !errors.is_empty(),
         "deriving (Row) with an Option of a non-SqlType field must be rejected; got no errors"
+    );
+}
+
+#[test]
+fn deriving_row_optional_list_field_typechecks() {
+    // An `Option` of an array is a nullable array column: `deriving (Row)` accepts it
+    // and `fromRow` reads a NULL column as `None`, an array as `Some` of the decoded
+    // list, composing the nullable and array codecs.
+    let main = "import std.sql (fromRow, SqlValue)\n\
+                pub type Post = { id: Int, scores: Option (List Int) } deriving (Row)\n\
+                pub fn decode (r: Map Text SqlValue) -> Result Post Error = fromRow r\n";
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "deriving (Row) with an Option-of-List field must be clean; got {errors:?}"
     );
 }
 

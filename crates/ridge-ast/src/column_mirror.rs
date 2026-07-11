@@ -148,6 +148,11 @@ const fn primitive_tag(p: PrimitiveType) -> &'static str {
         PrimitiveType::Text => "Text",
         PrimitiveType::Unit => "Unit",
         PrimitiveType::Timestamp => "Timestamp",
+        PrimitiveType::Decimal => "Decimal",
+        PrimitiveType::Uuid => "Uuid",
+        PrimitiveType::Bytes => "Bytes",
+        PrimitiveType::Date => "Date",
+        PrimitiveType::Time => "Time",
     }
 }
 

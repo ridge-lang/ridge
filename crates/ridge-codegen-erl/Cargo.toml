@@ -12,6 +12,9 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[build-dependencies]
+cc = "1"
+
 [dependencies]
 ridge-ir          = { path = "../ridge-ir" }
 ridge-resolve     = { path = "../ridge-resolve" }

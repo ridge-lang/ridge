@@ -109,6 +109,15 @@ fn is_prelude_reexport(module: &str, sym: &str) -> bool {
 const CONSTRUCTOR_EXPORTS: &[(&str, &str)] = &[
     ("std.query", "Asc"),
     ("std.query", "Desc"),
+    // The `RoundingMode` constructors: exported for `round`/`div`, surfaced by text
+    // extraction only through the type name `RoundingMode`.
+    ("std.decimal", "HalfEven"),
+    ("std.decimal", "HalfUp"),
+    ("std.decimal", "HalfDown"),
+    ("std.decimal", "Up"),
+    ("std.decimal", "Down"),
+    ("std.decimal", "Ceiling"),
+    ("std.decimal", "Floor"),
     // The `QueryPlan` variants: exported so the set-operation terminals can build a
     // plan, but surfaced by text extraction only through the type name `QueryPlan`.
     ("std.query", "PlanScan"),
@@ -148,7 +157,20 @@ const CONSTRUCTOR_EXPORTS: &[(&str, &str)] = &[
     ("std.sql", "DbUuid"),
     ("std.sql", "DbTimestamp"),
     ("std.sql", "DbTimestampTz"),
+    ("std.sql", "DbBytes"),
+    ("std.sql", "DbSmallInt"),
+    ("std.sql", "DbChar"),
+    ("std.sql", "DbJson"),
+    ("std.sql", "DbJsonb"),
+    ("std.sql", "DbDate"),
+    ("std.sql", "DbTime"),
+    ("std.sql", "DbInterval"),
+    ("std.sql", "DbArray"),
     ("std.sql", "DbRaw"),
+    // The `Dialect` constructors: exported so a renderer can be pinned to a backend,
+    // surfaced by text extraction only through the type name.
+    ("std.sql", "PgDialect"),
+    ("std.sql", "SqliteDialect"),
     // The `std.schema` generation + foreign-key-action unions: constructors
     // exported for descriptors, surfaced by text extraction only through the type
     // names.
@@ -319,6 +341,7 @@ fn signature_shape_consistency() {
                         | "planAggregate"
                         | "planGroup"
                         | "planToSql"
+                        | "planToSqlFor"
                         | "optimize"
                         | "planExists"
                         | "planList"
@@ -357,6 +380,12 @@ fn signature_shape_consistency() {
                         | "withConnectRetries"
                         | "withRetryBackoffMs"
                         | "withMaxQueueDepth"
+                        // `connectSqlite` returns the reconciled `Sqlite`, and the
+                        // `sqliteFile`/`sqliteMemory` presets return the reconciled
+                        // `SqliteConfig`, so all are seeded via `reconciled_fn_scheme`.
+                        | "connectSqlite"
+                        | "sqliteFile"
+                        | "sqliteMemory"
                 )
             {
                 continue;
@@ -370,6 +399,12 @@ fn signature_shape_consistency() {
                     "dbErrorKind" | "dbErrorConstraint" | "dbErrorColumn" | "dbErrorTable"
                 )
             {
+                continue;
+            }
+            // std.decimal's `round`/`div` take the reconciled `RoundingMode`, so
+            // they are seeded via `reconciled_fn_scheme`, not the `stdlib_signature`
+            // table this shape check covers. The rest of the module is hand-seeded.
+            if dotted == "std.decimal" && matches!(*fn_name, "round" | "div") {
                 continue;
             }
             // Every std.repo verb takes or returns the reconciled `Repo e a`, so

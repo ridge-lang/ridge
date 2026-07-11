@@ -1,0 +1,113 @@
+-- std.decimal — exact base-10 decimal numbers (Tier 1, no stdlib imports).
+--
+-- Decimal is an arbitrary-precision decimal carried on the BEAM as a scaled
+-- integer (an unscaled value paired with a scale, so the number is
+-- `unscaled x 10^-scale`). Unlike Float it never rounds a base-10 value to the
+-- nearest binary fraction, and unlike Int it holds a fractional part — so it is
+-- the type for money, measurements, and anything read out of a SQL `numeric`
+-- column, where losing the last digit is a bug rather than a rounding.
+--
+-- This module covers construction, rendering, and value comparison. The FFI
+-- primitives (`decimal_*` in ridge_rt) carry the scaled-integer representation;
+-- the codec that moves a Decimal across a SQL column lives in std.sql.
+
+-- How to drop the digits a rounding or a division cannot keep. `HalfEven`
+-- (banker's rounding) is the neutral default for money — it rounds a half to the
+-- nearest even digit, so a column of rounded values does not drift upward the way
+-- `HalfUp` does. `Up`/`Down` are away from and toward zero; `Ceiling`/`Floor` are
+-- toward positive and negative infinity; `HalfUp`/`HalfDown` break a tie away from
+-- and toward zero.
+pub type RoundingMode =
+    HalfEven | HalfUp | HalfDown | Up | Down | Ceiling | Floor
+
+-- Parse a decimal from text. Accepts an optional sign, an integer part, an
+-- optional fractional part, and an optional exponent -- "42", "-12.50",
+-- "0.001", and "1.5e3" all parse. The scale is taken from the fractional
+-- digits, so "1.50" keeps its trailing zero. Returns Err on anything that is
+-- not a well-formed decimal.
+@ffi("ridge_rt", "decimal_from_text", 1)
+pub fn fromText (s: Text) -> Result Decimal Error
+
+-- Render a decimal as canonical text. The scale is preserved, so a value with
+-- scale 2 prints with two fractional digits ("1.50"), the inverse of fromText.
+@ffi("ridge_rt", "decimal_to_text", 1)
+pub fn toText (d: Decimal) -> Text
+
+-- An integer as an exact decimal with scale 0.
+@ffi("ridge_rt", "decimal_from_int", 1)
+pub fn fromInt (n: Int) -> Decimal
+
+-- Parse a decimal from text known to be well-formed -- a literal the compiler has
+-- already validated, or a trusted constant. Unlike `fromText` it returns the value
+-- directly, but it panics on malformed input, matching `Float.parseRaw`; reach for
+-- `fromText` for anything untrusted. This is the constructor a `19.99m` literal
+-- lowers to.
+@ffi("ridge_rt", "decimal_parse_raw", 1)
+pub fn parseRaw (s: Text) -> Decimal
+
+-- Convert to the nearest Float. This is lossy -- a Float cannot represent every
+-- decimal exactly -- so it is for display or interop with float APIs, never a
+-- step in exact arithmetic.
+@ffi("ridge_rt", "decimal_to_float", 1)
+pub fn toFloat (d: Decimal) -> Float
+
+-- Exact addition. The result keeps enough scale to lose no digits, so summing a
+-- column of money is exact.
+@ffi("ridge_rt", "decimal_add", 2)
+pub fn add (a: Decimal) (b: Decimal) -> Decimal
+
+-- Exact subtraction.
+@ffi("ridge_rt", "decimal_sub", 2)
+pub fn sub (a: Decimal) (b: Decimal) -> Decimal
+
+-- Exact multiplication. The product scale is the sum of the operand scales, so
+-- the value is exact; use `round` to bring it back to a fixed number of places.
+@ffi("ridge_rt", "decimal_mul", 2)
+pub fn mul (a: Decimal) (b: Decimal) -> Decimal
+
+-- Negation.
+@ffi("ridge_rt", "decimal_neg", 1)
+pub fn neg (a: Decimal) -> Decimal
+
+-- Absolute value.
+@ffi("ridge_rt", "decimal_abs", 1)
+pub fn abs (a: Decimal) -> Decimal
+
+-- Round to a fixed number of fractional digits with the given mode. A scale of 2
+-- rounds to the nearest hundredth. Rounding up in scale (asking for more digits
+-- than the value has) just pads with zeros.
+@ffi("ridge_rt", "decimal_round", 3)
+pub fn round (mode: RoundingMode) (scale: Int) (d: Decimal) -> Decimal
+
+-- Truncate toward zero to a fixed number of fractional digits -- rounding with
+-- the `Down` mode, named for the common case.
+pub fn truncate (scale: Int) (d: Decimal) -> Decimal = round Down scale d
+
+-- Divide to a fixed number of fractional digits, rounding the result with the
+-- given mode. Division is not always exact (1/3 never terminates), so a target
+-- scale and a mode are required rather than assumed. Dividing by zero is an
+-- `Err`, so a divisor read at runtime never crashes the caller.
+@ffi("ridge_rt", "decimal_div", 4)
+pub fn div (mode: RoundingMode) (scale: Int) (a: Decimal) (b: Decimal) -> Result Decimal Error
+
+-- Three-way comparison: negative when a < b, zero when they are equal, positive
+-- when a > b. It compares by value after aligning scales, so 1.5 and 1.50
+-- compare equal. Follows the same shape as `Float.totalCompare`; the named
+-- comparisons below build on it.
+@ffi("ridge_rt", "decimal_cmp", 2)
+pub fn compare (a: Decimal) (b: Decimal) -> Int
+
+-- Value equality: 1.5 and 1.50 are equal.
+pub fn eq (a: Decimal) (b: Decimal) -> Bool = compare a b == 0
+
+-- Strictly less than.
+pub fn lt (a: Decimal) (b: Decimal) -> Bool = compare a b < 0
+
+-- Less than or equal.
+pub fn lte (a: Decimal) (b: Decimal) -> Bool = compare a b <= 0
+
+-- Strictly greater than.
+pub fn gt (a: Decimal) (b: Decimal) -> Bool = compare a b > 0
+
+-- Greater than or equal.
+pub fn gte (a: Decimal) (b: Decimal) -> Bool = compare a b >= 0

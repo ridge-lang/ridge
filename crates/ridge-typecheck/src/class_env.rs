@@ -691,6 +691,26 @@ pub fn register_prelude_instances_gated(env: &mut InstanceEnv, is_stdlib: bool) 
         "ToText",
         "Ordering",
     );
+    // Decimal (TyConId 51) and Uuid (TyConId 52) each render through their
+    // stdlib `toText`, so string interpolation carries them the way it already
+    // carries Timestamp. Both are builtins — like every entry above — and the
+    // auto-promotion pass never synthesizes a second `ToText` for a type the
+    // prelude already covers (see `collect_auto_promoted_to_text`), so this seed
+    // runs unconditionally without colliding with the stdlib's own `pub fn
+    // toText` during the self-compile. (Bytes has no single canonical text form —
+    // `toHex` and `toUtf8` differ — so it deliberately has no `ToText` instance.)
+    let _ = env.insert(
+        (TOTEXT_CLASS, TyConId(51)),
+        prelude_inst("toText"),
+        "ToText",
+        "Decimal",
+    );
+    let _ = env.insert(
+        (TOTEXT_CLASS, TyConId(52)),
+        prelude_inst("toText"),
+        "ToText",
+        "Uuid",
+    );
 
     // ── Eq instances ─────────────────────────────────────────────────────────
     // Eq Float is intentionally absent — floating-point equality is a footgun.
@@ -1652,23 +1672,35 @@ pub fn register_stdlib_instances(
             origin: InstanceOrigin::Explicit,
             span: ds,
         };
-        // Builtin TyConIds: Int=0, Float=1, Bool=2, Text=3.
+        // Builtin TyConIds: Int=0, Float=1, Bool=2, Text=3, Timestamp=5, and the
+        // rich scalars interned last, Decimal=51, Uuid=52, Bytes=53, Date=54 (all
+        // pinned by debug_asserts in `BuiltinTyCons::allocate`). Every type carrying a
+        // source `instance SqlType T` in sql.ridge is seeded here so a user workspace
+        // can discharge `SqlType T` — most visibly the `SqlType n` context a scalar
+        // aggregate (`sumOf`/`minOf`/`maxOf`) threads through its `Aggregable`
+        // instance, which decodes the folded column and so needs the dictionary
+        // for a decimal/uuid/bytes/timestamp/date column just as for an int one.
         // Use entry/or_insert rather than the coherence-checking insert so that
         // source-level declarations (from sql.ridge in the stdlib build) always
         // win — they got here first, and we never want to overwrite them or
         // surface a spurious T032.
-        env.instances
-            .entry((sqltype, smallvec![TyConId(0)]))
-            .or_insert_with(inst);
-        env.instances
-            .entry((sqltype, smallvec![TyConId(3)]))
-            .or_insert_with(inst);
-        env.instances
-            .entry((sqltype, smallvec![TyConId(2)]))
-            .or_insert_with(inst);
-        env.instances
-            .entry((sqltype, smallvec![TyConId(1)]))
-            .or_insert_with(inst);
+        for prim in [
+            TyConId(0),  // Int
+            TyConId(3),  // Text
+            TyConId(2),  // Bool
+            TyConId(1),  // Float
+            TyConId(5),  // Timestamp
+            TyConId(13), // Duration
+            TyConId(51), // Decimal
+            TyConId(52), // Uuid
+            TyConId(53), // Bytes
+            TyConId(54), // Date
+            TyConId(55), // Time
+        ] {
+            env.instances
+                .entry((sqltype, smallvec![prim]))
+                .or_insert_with(inst);
+        }
         // Parametric `SqlType (Option a) where SqlType a` — a nullable column.
         // Keyed by Option's builtin id (TyConId(9), pinned by a debug_assert in
         // `BuiltinTyCons::allocate`). The context constraint `SqlType a` rides a
@@ -1732,6 +1764,26 @@ pub fn register_stdlib_instances(
     ) {
         env.instances
             .entry((adapter, smallvec![postgres]))
+            .or_insert_with(|| InstanceInfo {
+                def_module: None,
+                methods: adapter_methods(),
+                ctx_constraints: vec![],
+                head_var_positions: vec![],
+                origin: InstanceOrigin::Explicit,
+                span: ds,
+            });
+    }
+
+    // `Adapter Sqlite` — the SQLite adapter instance from std.data, keyed by the
+    // reconciled `Sqlite` id, on the same terms as the two above: inserted for user
+    // workspaces, a no-op during the stdlib's own build where data.ridge's source
+    // instance is collected directly.
+    if let (Some(adapter), Some(&sqlite)) = (
+        ct.id_by_name("Adapter"),
+        reconciled_tycon_names.get("Sqlite"),
+    ) {
+        env.instances
+            .entry((adapter, smallvec![sqlite]))
             .or_insert_with(|| InstanceInfo {
                 def_module: None,
                 methods: adapter_methods(),

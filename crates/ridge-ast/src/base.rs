@@ -71,6 +71,16 @@ pub enum PrimitiveType {
     Unit,
     /// Timestamp / instant in time (`Timestamp`).
     Timestamp,
+    /// Arbitrary-precision base-10 decimal (`Decimal`).
+    Decimal,
+    /// RFC 4122 universally unique identifier (`Uuid`).
+    Uuid,
+    /// Raw byte string (`Bytes`).
+    Bytes,
+    /// Calendar date, year-month-day (`Date`).
+    Date,
+    /// Wall-clock time of day, hour-minute-second (`Time`).
+    Time,
 }
 
 // ── DocComment ────────────────────────────────────────────────────────────────

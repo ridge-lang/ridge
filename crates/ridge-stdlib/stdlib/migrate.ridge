@@ -51,7 +51,7 @@ import std.data as Db
 import std.schema (EntitySchema, ColumnSchema, eraseSchema, schemaTable, schemaColumns, colColumn, colIndexed, colPrimaryKey, colForeignKey, fkTable, indexName, columnAltered, schemaToSource, columnToSource)
 -- The write-side plan builders a data step runs through the `Adapter`'s `runMutation`:
 -- `planUpsert` for the idempotent seed, `planDeleteKeys` for its keyed reverse.
-import std.query (planUpsert, planDeleteKeys)
+import std.query (QueryPlan, planUpsert, planDeleteKeys)
 -- `SqlValue` names the cells a seed row carries; the `Row` class's `toRow` (used bare)
 -- encodes a typed entity to one.
 import std.sql (SqlValue)
@@ -110,7 +110,7 @@ pub fn unique (c: Column) -> Column =
 -- verbatim through the `rawExec` seam — the escape hatch for what the typed DSL cannot
 -- express — and, like a lossy drop, has no derivable inverse, so a migration that uses it
 -- spells its reverse out with `reversibleMigration`.
-pub type MigrationOp = CreateTable Text (List Column) | DropTable Text | AddColumn Text Column | DropColumn Text Text | CreateIndex Text Text (List Text) Bool | CreateEntity (EntitySchema Unit) | AddEntityColumn Text (ColumnSchema Unit) | AlterColumn Text (ColumnSchema Unit) (ColumnSchema Unit) | DropIndex Text | SeedRows Text (List Text) (List (Map Text SqlValue)) | UnseedRows Text (List Text) (List (Map Text SqlValue)) | RunSql Text
+pub type MigrationOp = CreateTable Text (List Column) | DropTable Text | AddColumn Text Column | DropColumn Text Text | CreateIndex Text Text (List Text) Bool | CreateEntity (EntitySchema Unit) | AddEntityColumn Text (ColumnSchema Unit) | AlterColumn Text (ColumnSchema Unit) (ColumnSchema Unit) | DropIndex Text | SeedRows Text (List Text) (List (Map Text SqlValue)) | UnseedRows Text (List Text) (List (Map Text SqlValue)) | RunSql Text | CreateView Text QueryPlan | DropView Text
 
 -- Create a table with the given columns.
 pub fn createTable (table: Text) (cols: List Column) -> MigrationOp =
@@ -119,6 +119,20 @@ pub fn createTable (table: Text) (cols: List Column) -> MigrationOp =
 -- Drop a table.
 pub fn dropTable (table: Text) -> MigrationOp =
     DropTable table
+
+-- Save a query as a database view: `CREATE VIEW <name> AS <the plan's SELECT>`. The
+-- select is the plan rendered inline, so a view is a compiled Ridge query — rename a
+-- column on the entity the plan reads and the view's SQL follows, still type-checked. A
+-- `Repo` can bind to the view name and read it back typed. Auto-reverses to `dropView`:
+--   createView "active_users" (adults |> Repo.plan)
+pub fn createView (name: Text) (plan: QueryPlan) -> MigrationOp =
+    CreateView name plan
+
+-- Drop a view by name — the inverse of `createView`. The saved query is gone, so a
+-- hand-written `dropView` is not auto-reversible (a rollback would need the plan back); a
+-- migration that drops a view gives its reverse explicitly with `reversibleMigration`.
+pub fn dropView (name: Text) -> MigrationOp =
+    DropView name
 
 -- Add a column to an existing table. A non-null column added to a table that
 -- already holds rows needs a value for them, so add it `nullable` (or seed the
@@ -569,6 +583,8 @@ fn runStep (conn: a) (op: MigrationOp) -> Result Unit Error where Adapter a =
                 [] -> Ok ()
                 _  -> resultUnit (runMutation conn (planDeleteKeys table keyCols rows))
         RunSql sql -> resultUnit (rawExec conn sql [])
+        CreateView name plan -> ddlCreateView conn name plan
+        DropView name -> ddlDropView conn name
 
 -- Run a migration's steps in order, stopping at the first failure.
 fn runSteps (conn: a) (steps: List MigrationOp) -> Result Unit Error where Adapter a =
@@ -705,6 +721,8 @@ fn invert (op: MigrationOp) -> Result MigrationOp Error =
         DropColumn table col        -> Err (mkError "migrate.irreversible" (irreversibleMessage "dropColumn" (Text.join "" [table, ".", col])))
         DropIndex name              -> Err (mkError "migrate.irreversible" (irreversibleMessage "dropIndex" name))
         RunSql _                    -> Err (mkError "migrate.irreversible" (irreversibleMessage "runSql" "a raw statement"))
+        CreateView name _           -> Ok (DropView name)
+        DropView name               -> Err (mkError "migrate.irreversible" (irreversibleMessage "dropView" name))
 
 -- The message an irreversible-step `Error` reports: the verb that has no derivable
 -- inverse and the table (or table.column, or index name) it acted on.
@@ -870,6 +888,8 @@ fn opToSource (op: MigrationOp) -> Text =
         SeedRows table _ _               -> seedStepSourceUnsupported table
         UnseedRows table _ _             -> seedStepSourceUnsupported table
         RunSql sql                       -> Text.join "" ["runSql ", sourceStr sql]
+        CreateView name _                -> viewStepSourceUnsupported name
+        DropView name                    -> viewStepSourceUnsupported name
 
 -- A seed step has no generated-source form: the snapshot diff never emits one (seeds are
 -- authored by hand, not derived from a model), so rendering a migration back to source
@@ -878,6 +898,14 @@ fn opToSource (op: MigrationOp) -> Text =
 -- seed round-trip belongs with the model-carried seed data a later change introduces.
 fn seedStepSourceUnsupported (table: Text) -> Text =
     Text.join "" ["seedStepSourceUnsupported ", sourceStr table]
+
+-- A view step likewise has no generated-source form: the snapshot diff never emits a view
+-- (views are authored by hand, not derived from a model), so rendering a migration back to
+-- source never meets one. Like the seed marker this keeps `opToSource` total and fails
+-- loudly at compile were a view step ever routed here, rather than emitting a silently
+-- wrong step — rebuilding a plan as source is a separate change.
+fn viewStepSourceUnsupported (name: Text) -> Text =
+    Text.join "" ["viewStepSourceUnsupported ", sourceStr name]
 
 -- ── Source rendering of the tuple-DSL vocabulary ──────────────────────────────
 

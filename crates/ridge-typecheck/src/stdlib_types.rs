@@ -615,6 +615,23 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                         name: "RunSql".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(b.text, vec![])]),
                     },
+                    // `CreateView` carries the view name and the `QueryPlan` (this block's
+                    // `base + 15`) it saves as a `CREATE VIEW`. A view is a named query, so a
+                    // create auto-reverses to a `DropView`.
+                    UnionVariant {
+                        name: "CreateView".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(TyConId(base + 15), vec![]),
+                        ]),
+                    },
+                    // `DropView` carries the view name alone. Like a lossy table drop it has
+                    // no derivable inverse — the saved query is gone — so a migration that
+                    // drops a view supplies an explicit `down`.
+                    UnionVariant {
+                        name: "DropView".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(b.text, vec![])]),
+                    },
                 ],
             }),
             def_span: None,
@@ -2832,12 +2849,15 @@ fn reconciled_migrate_fn_scheme(
     let migration = *reconciled.get("Migration")?;
     let entity_schema = *reconciled.get("EntitySchema")?;
     let column_schema = *reconciled.get("ColumnSchema")?;
+    let query_plan = *reconciled.get("QueryPlan")?;
     let text = || Type::Con(b.text, vec![]);
     let list = |x: Type| Type::Con(b.list, vec![x]);
     let pure = || CapRow::Concrete(CapabilitySet::PURE);
     let result = |ok: Type| Type::Con(b.result, vec![ok, Type::Con(b.error, vec![])]);
     let column_ty = || Type::Con(column, vec![]);
     let migration_op_ty = || Type::Con(migration_op, vec![]);
+    // `QueryPlan` — the saved query a `CreateView` step carries.
+    let query_plan_ty = || Type::Con(query_plan, vec![]);
     let e = TyVid(0);
     let ent_e = || Type::Con(entity_schema, vec![Type::Var(e)]);
     let ent_unit = || Type::Con(entity_schema, vec![Type::Con(b.unit, vec![])]);
@@ -2907,10 +2927,13 @@ fn reconciled_migrate_fn_scheme(
         "nullable" | "primaryKey" | "unique" => mono(vec![column_ty()], column_ty()),
         // createTable : Text -> List Column -> MigrationOp
         "createTable" => mono(vec![text(), list(column_ty())], migration_op_ty()),
-        // dropTable / dropIndex / runSql : Text -> MigrationOp — the name-only drop steps
-        // and the raw-SQL escape hatch (a statement run verbatim through the `rawExec` seam
-        // for a schema change the typed DSL cannot express); all three take a single `Text`.
-        "dropTable" | "dropIndex" | "runSql" => mono(vec![text()], migration_op_ty()),
+        // createView : Text -> QueryPlan -> MigrationOp — save a query under a view name;
+        // the backend renders the plan inline into a `CREATE VIEW`.
+        "createView" => mono(vec![text(), query_plan_ty()], migration_op_ty()),
+        // dropTable / dropIndex / runSql / dropView : Text -> MigrationOp — the name-only
+        // steps: the drops and the raw-SQL escape hatch (a statement run verbatim through the
+        // `rawExec` seam for a schema change the typed DSL cannot express).
+        "dropTable" | "dropIndex" | "runSql" | "dropView" => mono(vec![text()], migration_op_ty()),
         // addColumn : Text -> Column -> MigrationOp
         "addColumn" => mono(vec![text(), column_ty()], migration_op_ty()),
         // dropColumn : Text -> Text -> MigrationOp

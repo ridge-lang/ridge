@@ -28,39 +28,95 @@ const NATIVE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/runtime/native");
 const RIDGE_SQLITE_ERL: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/runtime/ridge_sqlite.erl");
 const TMPDIR: &str = env!("CARGO_TARGET_TMPDIR");
 
-/// The smoke module. Kept in Erlang so the round-trip equality is judged by the
-/// BEAM, and only compact tokens cross back to the Rust assertions.
-const SMOKE_ERL: &str = r#"-module(nif_smoke).
+/// The smoke module. Kept in Erlang so equality is judged by the BEAM and only
+/// compact tokens cross back to the Rust assertions. It covers both levels of
+/// the bridge: the raw NIF surface, and the ridge_sqlite glue (SqlValue
+/// mapping, transactions, migrations, and error classification).
+const SMOKE_ERL: &str = r#"-module(sqlite_smoke).
 -export([run/0]).
 
 run() ->
+    nif_level(),
+    glue_level(),
+    halt(0).
+
+%% The raw native surface: mixed-type round-trip, typed error, closed guard.
+nif_level() ->
     {ok, Conn} = ridge_sqlite:nif_open(<<":memory:">>),
     {ok, _} = ridge_sqlite:nif_exec(Conn,
         <<"CREATE TABLE t (id INTEGER, name TEXT, score REAL, data BLOB, note TEXT)">>, []),
-    {ok, N1} = ridge_sqlite:nif_exec(Conn,
+    {ok, 1} = ridge_sqlite:nif_exec(Conn,
         <<"INSERT INTO t VALUES (?,?,?,?,?)">>,
         [{int, 1}, {text, <<"ada">>}, {float, 9.5}, {blob, <<1, 2, 3>>}, null]),
-    {ok, N2} = ridge_sqlite:nif_exec(Conn,
-        <<"INSERT INTO t VALUES (?,?,?,?,?)">>,
-        [{int, 2}, {text, <<"lin">>}, {float, 8.25}, {blob, <<255>>}, {text, <<"hi">>}]),
     {ok, Cols, Rows} = ridge_sqlite:nif_query(Conn,
-        <<"SELECT id,name,score,data,note FROM t ORDER BY id">>, []),
+        <<"SELECT id,name,score,data,note FROM t">>, []),
     Ver = ridge_sqlite:nif_libversion(),
     {error, {sqlite_error, ErrCode, _}} =
         ridge_sqlite:nif_exec(Conn, <<"SELECT * FROM nope">>, []),
     ok = ridge_sqlite:nif_close(Conn),
     AfterClose = ridge_sqlite:nif_exec(Conn, <<"SELECT 1">>, []),
-    ExpectedCols = [<<"id">>, <<"name">>, <<"score">>, <<"data">>, <<"note">>],
-    ExpectedRows =
-        [[{int, 1}, {text, <<"ada">>}, {float, 9.5}, {blob, <<1, 2, 3>>}, null],
-         [{int, 2}, {text, <<"lin">>}, {float, 8.25}, {blob, <<255>>}, {text, <<"hi">>}]],
-    io:format("ver=~ts~n", [Ver]),
-    io:format("affected=~p,~p~n", [N1, N2]),
-    io:format("cols_match=~p~n", [Cols =:= ExpectedCols]),
-    io:format("rows_match=~p~n", [Rows =:= ExpectedRows]),
-    io:format("err_code=~p~n", [ErrCode]),
-    io:format("after_close=~p~n", [AfterClose]),
-    halt(0).
+    ExpCols = [<<"id">>, <<"name">>, <<"score">>, <<"data">>, <<"note">>],
+    ExpRows = [[{int, 1}, {text, <<"ada">>}, {float, 9.5}, {blob, <<1, 2, 3>>}, null]],
+    io:format("nif_ver=~ts~n", [Ver]),
+    io:format("nif_cols=~p~n", [Cols =:= ExpCols]),
+    io:format("nif_rows=~p~n", [Rows =:= ExpRows]),
+    io:format("nif_errcode=~p~n", [ErrCode]),
+    io:format("nif_after_close=~p~n", [AfterClose]).
+
+%% The adapter glue: rich SqlValue mapping, raw decode contract, unique-error
+%% classification, nested transactions, all/get_rows, migrations, close.
+glue_level() ->
+    {ok, #{id := Id}} = ridge_sqlite:sqlite_connect(<<":memory:">>, 5000, <<>>, 1),
+    {ok, _} = ridge_sqlite:sqlite_raw_exec(Id,
+        <<"CREATE TABLE u (id INTEGER PRIMARY KEY, email TEXT UNIQUE, active INTEGER, ts TEXT, amt TEXT)">>, []),
+    %% rich params: bool -> int 0/1, instant -> ISO text, decimal -> exact text
+    {ok, 1} = ridge_sqlite:sqlite_raw_exec(Id,
+        <<"INSERT INTO u (id,email,active,ts,amt) VALUES (?,?,?,?,?)">>,
+        [{'SqlInt', 1}, {'SqlText', <<"a@x">>}, {'SqlBool', true},
+         {'SqlInstant', 0}, {'SqlDecimal', <<"9.99">>}]),
+    {ok, [Row]} = ridge_sqlite:sqlite_raw_query(Id,
+        <<"SELECT id,email,active,ts,amt FROM u WHERE id = ?">>, [{'SqlInt', 1}]),
+    io:format("glue_active=~p~n", [maps:get(<<"active">>, Row)]),
+    io:format("glue_ts=~p~n", [maps:get(<<"ts">>, Row)]),
+    io:format("glue_amt=~p~n", [maps:get(<<"amt">>, Row)]),
+    %% a duplicate email is a unique violation, mapped to the shared SQLSTATE
+    UErr = ridge_sqlite:sqlite_raw_exec(Id,
+        <<"INSERT INTO u (id,email) VALUES (2,'a@x')">>, []),
+    io:format("glue_unique=~p~n", [err_code(UErr)]),
+    %% nested transaction: roll back the savepoint, commit the outer
+    {ok, ok} = ridge_sqlite:sqlite_begin(Id),
+    {ok, 1} = ridge_sqlite:sqlite_raw_exec(Id, <<"INSERT INTO u (id,email) VALUES (3,'c@x')">>, []),
+    {ok, ok} = ridge_sqlite:sqlite_begin(Id),
+    {ok, 1} = ridge_sqlite:sqlite_raw_exec(Id, <<"INSERT INTO u (id,email) VALUES (4,'d@x')">>, []),
+    {ok, ok} = ridge_sqlite:sqlite_rollback(Id),
+    {ok, ok} = ridge_sqlite:sqlite_commit(Id),
+    {ok, AllRows} = ridge_sqlite:sqlite_all(Id, <<"u">>),
+    Ids = lists:sort([N || R <- AllRows, begin {'SqlInt', N} = maps:get(<<"id">>, R), true end]),
+    io:format("glue_ids=~p~n", [Ids]),
+    {ok, GRows} = ridge_sqlite:sqlite_get_rows(Id, <<"u">>, <<"id">>, {'SqlInt', 3}),
+    io:format("glue_get=~p~n", [length(GRows)]),
+    %% bytes round-trip through the hex codec, and an array encoded to JSON text
+    {ok, _} = ridge_sqlite:sqlite_raw_exec(Id, <<"CREATE TABLE b (raw BLOB, arr TEXT)">>, []),
+    {ok, 1} = ridge_sqlite:sqlite_raw_exec(Id, <<"INSERT INTO b VALUES (?,?)">>,
+        [{'SqlBytes', <<"deadbeef">>},
+         {'SqlArray', [{'SqlInt', 1}, {'SqlInt', 2}, {'SqlText', <<"x">>}]}]),
+    {ok, [BRow]} = ridge_sqlite:sqlite_raw_query(Id, <<"SELECT raw,arr FROM b">>, []),
+    io:format("glue_bytes=~p~n", [maps:get(<<"raw">>, BRow)]),
+    io:format("glue_array=~p~n", [maps:get(<<"arr">>, BRow)]),
+    %% migrations bookkeeping
+    {ok, []} = ridge_sqlite:sqlite_migrations_applied(Id),
+    {ok, ok} = ridge_sqlite:sqlite_record_migration(Id, <<"0001_init">>),
+    {ok, ok} = ridge_sqlite:sqlite_record_migration(Id, <<"0002_more">>),
+    {ok, Applied} = ridge_sqlite:sqlite_migrations_applied(Id),
+    io:format("glue_migs=~p~n", [Applied]),
+    {ok, ok} = ridge_sqlite:sqlite_unrecord_migration(Id, <<"0002_more">>),
+    {ok, Applied2} = ridge_sqlite:sqlite_migrations_applied(Id),
+    io:format("glue_migs2=~p~n", [Applied2]),
+    {ok, ok} = ridge_sqlite:sqlite_close(Id),
+    io:format("glue_closed=~p~n", [err_code(ridge_sqlite:sqlite_raw_exec(Id, <<"SELECT 1">>, []))]).
+
+err_code({error, #{code := C}}) -> C;
+err_code(Other) -> Other.
 "#;
 
 /// The shared-object base path (no extension) that `erlang:load_nif` expects.
@@ -226,7 +282,7 @@ fn erlc(erlc_path: &Path, src: &Path) {
 }
 
 #[test]
-fn sqlite_nif_round_trips_mixed_types() {
+fn sqlite_bridge_end_to_end() {
     let erl = which::which("erl")
         .expect("erl not found on PATH — install OTP or drop --features beam-runtime");
     let erlc_path = which::which("erlc").expect("erlc not found on PATH");
@@ -247,9 +303,9 @@ fn sqlite_nif_round_trips_mixed_types() {
     }
     assert!(shared_object().exists(), "NIF object was not produced");
 
-    // Compile the loader and the smoke driver next to the NIF object.
+    // Compile the glue module and the smoke driver next to the NIF object.
     erlc(&erlc_path, Path::new(RIDGE_SQLITE_ERL));
-    let smoke_src = Path::new(TMPDIR).join("nif_smoke.erl");
+    let smoke_src = Path::new(TMPDIR).join("sqlite_smoke.erl");
     std::fs::write(&smoke_src, SMOKE_ERL).expect("write smoke module");
     erlc(&erlc_path, &smoke_src);
 
@@ -262,7 +318,7 @@ fn sqlite_nif_round_trips_mixed_types() {
             "-pa",
             TMPDIR,
             "-s",
-            "nif_smoke",
+            "sqlite_smoke",
             "run",
             "-s",
             "init",
@@ -275,25 +331,67 @@ fn sqlite_nif_round_trips_mixed_types() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     let combined = format!("stdout:\n{stdout}\nstderr:\n{stderr}");
 
+    // Raw native surface.
     assert!(
-        stdout.contains("ver=3.45.3"),
+        stdout.contains("nif_ver=3.45.3"),
         "version mismatch: {combined}"
     );
     assert!(
-        stdout.contains("affected=1,1"),
-        "insert count wrong: {combined}"
-    );
-    assert!(
-        stdout.contains("cols_match=true"),
+        stdout.contains("nif_cols=true"),
         "columns wrong: {combined}"
     );
-    assert!(stdout.contains("rows_match=true"), "rows wrong: {combined}");
+    assert!(stdout.contains("nif_rows=true"), "rows wrong: {combined}");
     assert!(
-        stdout.contains("err_code=1"),
+        stdout.contains("nif_errcode=1"),
         "error code wrong: {combined}"
     );
     assert!(
-        stdout.contains("after_close={error,closed}"),
+        stdout.contains("nif_after_close={error,closed}"),
         "closed handle not rejected: {combined}"
+    );
+
+    // Adapter glue: rich params store correctly and read back raw by storage.
+    assert!(
+        stdout.contains("glue_active={'SqlInt',1}"),
+        "bool did not store as integer 1: {combined}"
+    );
+    assert!(
+        stdout.contains("glue_ts={'SqlText',<<\"1970-01-01T00:00:00"),
+        "instant did not store as ISO text: {combined}"
+    );
+    assert!(
+        stdout.contains("glue_amt={'SqlText',<<\"9.99\">>}"),
+        "decimal did not store as exact text: {combined}"
+    );
+    // A unique violation maps to the shared SQLSTATE, so it reads like Postgres.
+    assert!(
+        stdout.contains("glue_unique=<<\"db.error.23505\">>"),
+        "unique violation not classified: {combined}"
+    );
+    // Savepoint rolled back id 4, outer commit kept id 3; id 2 failed the unique.
+    assert!(
+        stdout.contains("glue_ids=[1,3]"),
+        "transaction wrong: {combined}"
+    );
+    assert!(stdout.contains("glue_get=1"), "get_rows wrong: {combined}");
+    assert!(
+        stdout.contains("glue_bytes={'SqlBytes',<<\"deadbeef\">>}"),
+        "bytes did not round-trip through hex: {combined}"
+    );
+    assert!(
+        stdout.contains("glue_array={'SqlText',<<\"[1,2,"),
+        "array did not encode to JSON text: {combined}"
+    );
+    assert!(
+        stdout.contains("glue_migs=[<<\"0001_init\">>,<<\"0002_more\">>]"),
+        "migrations not recorded in order: {combined}"
+    );
+    assert!(
+        stdout.contains("glue_migs2=[<<\"0001_init\">>]"),
+        "migration not unrecorded: {combined}"
+    );
+    assert!(
+        stdout.contains("glue_closed=<<\"db.conn.closed\">>"),
+        "closed glue handle not rejected: {combined}"
     );
 }

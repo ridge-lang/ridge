@@ -77,12 +77,16 @@ static ERL_NIF_TERM make_binary(ErlNifEnv *env, const void *data, size_t len) {
 }
 
 /* {error, {sqlite_error, Code, Msg}} from the last error on `db` (or the
- * generic string for `rc` when no connection is available yet). */
+ * generic string for `rc` when no connection is available yet). Code is the
+ * EXTENDED result code (e.g. SQLITE_CONSTRAINT_UNIQUE, not the bare
+ * SQLITE_CONSTRAINT), so the Erlang side can tell a unique from a foreign-key
+ * violation and map it to a matching error kind. */
 static ERL_NIF_TERM make_sqlite_error(ErlNifEnv *env, sqlite3 *db, int rc) {
+    int code = (db != NULL) ? sqlite3_extended_errcode(db) : rc;
     const char *msg = (db != NULL) ? sqlite3_errmsg(db) : sqlite3_errstr(rc);
     ERL_NIF_TERM msg_term = make_binary(env, msg, strlen(msg));
     ERL_NIF_TERM inner =
-        enif_make_tuple3(env, atom_sqlite_error, enif_make_int(env, rc), msg_term);
+        enif_make_tuple3(env, atom_sqlite_error, enif_make_int(env, code), msg_term);
     return enif_make_tuple2(env, atom_error, inner);
 }
 

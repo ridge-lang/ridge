@@ -1000,7 +1000,7 @@ env_set(Name, Value) ->
 %% Runs an external command with the given argument list.
 %% Returns {ok, {proc_output, Stdout, Stderr, ExitCode}} or
 %%         {error, {error_record, Code, Message}}.
-%% Ridge type: Text -> List Text -> Result ProcOutput Error  (§3.16 / D123).
+%% Ridge type: Text -> List Text -> Result Output Error  (§3.16 / D123).
 %%
 %% stdout and stderr are captured separately using two ports:
 %%   - port 1 (stdout): {spawn_executable, ...} with use_stdio
@@ -1030,7 +1030,7 @@ proc_run(Cmd, Args) ->
             {error, {error_record, <<"spawn_error">>, Msg}}
     end.
 
-%% Collect port data until exit_status; build ProcOutput.
+%% Collect port data until exit_status; build Output.
 %% stderr is empty for 0.1.0 (separate capture deferred — see proc_run comment).
 %%
 %% Wall-clock 30 s budget: a naive `receive ... after 30000` resets the timer
@@ -1051,8 +1051,8 @@ proc_run_collect(Port, Acc, Deadline) ->
             proc_run_collect(Port, [D | Acc], Deadline);
         {Port, {exit_status, Code}} ->
             Stdout = iolist_to_binary(lists:reverse(Acc)),
-            %% ProcOutput is declared in stdlib/proc.ridge as
-            %%   pub type ProcOutput = { stdout: Text, stderr: Text, exitCode: Int }
+            %% Output is declared in stdlib/proc.ridge as
+            %%   pub type Output = { stdout: Text, stderr: Text, exitCode: Int }
             %% which codegen lowers to an Erlang map keyed by field atoms
             %% (field access `.exitCode` compiles to `erlang:map_get(exitCode,
             %% _)`).  Returning a tagged tuple `{proc_output, ...}` from this

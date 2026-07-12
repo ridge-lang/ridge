@@ -104,7 +104,7 @@ const MODULE_ORDER: &[&str] = &[
 // These are retained even though they do not appear as top-level `pub fn` or
 // separate `pub type` declarations in the .ridge files.
 //
-// std.proc: `ProcOutput` is declared as `pub type` in proc.ridge.
+// std.proc: `Output` is declared as `pub type` in proc.ridge.
 // std.time:  `Duration`  is declared as `pub type` in time.ridge.
 // std.json:  `JsonValue` is a language prelude union (compiler builtin), so it
 //            is NOT a std.json export — unlike the records above.
@@ -310,8 +310,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
     (
         "std.proc",
         &[
-            // `pub type ProcOutput` declared in proc.ridge.
-            "ProcOutput",
+            // `pub type Output` declared in proc.ridge.
+            "Output",
             "run",
         ],
     ),

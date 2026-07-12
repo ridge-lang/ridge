@@ -1573,7 +1573,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         (STD_PROC, "run") => {
             use ridge_ast::Capability;
             let proc_caps = CapabilitySet::singleton(Capability::Proc);
-            // Text -> List Text -> Result ProcOutput Error  (§3.16 / OQ-S007 / D123)
+            // Text -> List Text -> Result Output Error  (§3.16 / OQ-S007 / D123)
             Some(mono(ty_fn_caps(
                 vec![ty_text(b), ty_list(b, ty_text(b))],
                 ty_result(b, ty_proc_output(b), ty_error(b)),
@@ -1621,11 +1621,11 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         //
         // TODO: replace stubs with generated signatures.
         //
-        // T12: `pub type Duration` (time.ridge) and `pub type ProcOutput` (proc.ridge) are
+        // T12: `pub type Duration` (time.ridge) and `pub type Output` (proc.ridge) are
         // record TyCons declared in the stdlib source; they don't have stable TyConIds
         // in BuiltinTyCons so we use stub_phase7() for now.
         (STD_TIME, "Duration")
-        | (STD_PROC, "ProcOutput")
+        | (STD_PROC, "Output")
         | (STD_JSON,
            "encodeInt" | "encodeBool" | "encodeText"
            // JsonValue construction shims (FFI bridges to ridge_rt:json_*).

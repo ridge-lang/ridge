@@ -1763,7 +1763,7 @@ fn builtin_name_to_tycon_id(name: &str) -> Option<TyConId> {
         "Handle" => Some(TyConId(11)),
         "Error" => Some(TyConId(12)),
         "Duration" => Some(TyConId(13)),
-        "ProcOutput" => Some(TyConId(14)),
+        "Output" => Some(TyConId(14)),
         "Ordering" => Some(TyConId(15)),
         // Decimal and Uuid are interned last in the builtin arena (ids 51, 52).
         "Decimal" => Some(TyConId(51)),

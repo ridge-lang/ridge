@@ -182,11 +182,11 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     tycons.insert("Handle".to_string(), b.handle);
     // Stdlib record types — pre-allocated in BuiltinTyCons (§3.11, §3.12, §3.16).
     // These are registered here so that `ast_type_to_ridge_type` can resolve
-    // `Error`, `Duration`, and `ProcOutput` in stdlib `.ridge` type annotations.
+    // `Error`, `Duration`, and `Output` in stdlib `.ridge` type annotations.
     tycons.insert("Error".to_string(), b.error);
     tycons.insert("Duration".to_string(), b.duration);
     tycons.insert("Instant".to_string(), b.instant);
-    tycons.insert("ProcOutput".to_string(), b.proc_output);
+    tycons.insert("Output".to_string(), b.proc_output);
     // Ordering = Less | Equal | Greater — prelude union type required by Ord (0.2.13).
     tycons.insert("Ordering".to_string(), b.ordering);
 

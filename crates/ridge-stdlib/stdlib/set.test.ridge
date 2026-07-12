@@ -33,18 +33,18 @@ fn _insert (x: a) (s: Set a) -> Set a = _setMapPut x true s
 fn _remove (x: a) (s: Set a) -> Set a = _setMapRemove x s
 fn _contains (x: a) (s: Set a) -> Bool = _setMapIsKey x s
 fn _union (a: Set x) (b: Set x) -> Set x = _setMapMerge a b
-fn _size (s: Set a) -> Int = _setMapSize s
+fn _length (s: Set a) -> Int = _setMapSize s
 
-fn _intersectFilter (xs: List x) (b: Set x) (acc: Set x) -> Set x =
+fn _intersectionFilter (xs: List x) (b: Set x) (acc: Set x) -> Set x =
     match xs
         [] -> acc
         k :: rest ->
-            if _setMapIsKey k b then _intersectFilter rest b (_setMapPut k true acc)
-            else _intersectFilter rest b acc
+            if _setMapIsKey k b then _intersectionFilter rest b (_setMapPut k true acc)
+            else _intersectionFilter rest b acc
 
-fn _intersect (a: Set x) (b: Set x) -> Set x =
+fn _intersection (a: Set x) (b: Set x) -> Set x =
     let aKeys = _setMapKeys a
-    _intersectFilter aKeys b (_setMapNew ())
+    _intersectionFilter aKeys b (_setMapNew ())
 
 fn _differenceFilter (xs: List x) (b: Set x) (acc: Set x) -> Set x =
     match xs
@@ -65,13 +65,13 @@ pub fn test_smoke_set () -> Result Unit Text = Ok ()
 
 @test "empty_size_zero"
 pub fn test_empty_size_zero () -> Result Unit Text =
-    if _size Set.empty == 0 then Ok ()
-    else Err "Set.empty size should be 0"
+    if _length Set.empty == 0 then Ok ()
+    else Err "Set.empty length should be 0"
 
 @test "fromList_dedups"
 pub fn test_fromList_dedups () -> Result Unit Text =
-    if _size (_fromList [1, 2, 1, 2]) == 2 then Ok ()
-    else Err "Set.fromList [1,2,1,2] should deduplicate to size 2"
+    if _length (_fromList [1, 2, 1, 2]) == 2 then Ok ()
+    else Err "Set.fromList [1,2,1,2] should deduplicate to length 2"
 
 @test "insert_then_contains"
 pub fn test_insert_then_contains () -> Result Unit Text =
@@ -85,13 +85,13 @@ pub fn test_remove_then_contains_false () -> Result Unit Text =
 
 @test "union_combines"
 pub fn test_union_combines () -> Result Unit Text =
-    if _size (_union (_fromList [1, 2]) (_fromList [2, 3])) == 3 then Ok ()
-    else Err "Set.union [1,2] [2,3] should have size 3"
+    if _length (_union (_fromList [1, 2]) (_fromList [2, 3])) == 3 then Ok ()
+    else Err "Set.union [1,2] [2,3] should have length 3"
 
-@test "intersect_overlap"
-pub fn test_intersect_overlap () -> Result Unit Text =
-    if _size (_intersect (_fromList [1, 2]) (_fromList [2, 3])) == 1 then Ok ()
-    else Err "Set.intersect [1,2] [2,3] should have size 1"
+@test "intersection_overlap"
+pub fn test_intersection_overlap () -> Result Unit Text =
+    if _length (_intersection (_fromList [1, 2]) (_fromList [2, 3])) == 1 then Ok ()
+    else Err "Set.intersection [1,2] [2,3] should have length 1"
 
 @test "difference_excludes"
 pub fn test_difference_excludes () -> Result Unit Text =

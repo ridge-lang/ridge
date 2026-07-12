@@ -1520,8 +1520,8 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
     // through its own `Row s`. Keeping the seam call here (single `Adapter a` context)
     // and the decode in `summarize` separates the two dicts cleanly. The method
     // scheme is seeded directly (see `seed_summarizable_scheme` in lib.rs).
-    // `runGroups` takes the source, the key column and side, the projection tree, and
-    // the HAVING tree (sig arity 5).
+    // `runGroups` takes the key column and side, the projection tree, and the HAVING
+    // tree, and the source last, data-last like every other class method (sig arity 5).
     let summarizable_id = ct.intern("Summarizable");
     ct.insert_with_id(
         summarizable_id,

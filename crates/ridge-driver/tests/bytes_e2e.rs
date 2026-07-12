@@ -9,7 +9,7 @@
 //!   as the expected hex,
 //! - `length`/`concat`/`empty` operate over the bytes (not their hex spelling),
 //! - ordering compares byte by byte, prefix-shorter sorting first,
-//! - `gen` mints n bytes from the `random` capability, and
+//! - `generate` mints n bytes from the `random` capability, and
 //! - a malformed hex string is a recoverable `Err`, not a crash.
 //!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
@@ -77,11 +77,11 @@ pub fn oddHex () -> Text =
         Err _ -> "err"
 
 -- a generated value has the requested length.
-pub fn random genLen () -> Text = Int.toText (Bytes.length (Bytes.gen 16))
+pub fn random genLen () -> Text = Int.toText (Bytes.length (Bytes.generate 16))
 
 -- two generated values differ (a collision on 8 random bytes is unlikely).
 pub fn random genDistinct () -> Text =
-    if Bytes.eq (Bytes.gen 8) (Bytes.gen 8) then "same" else "distinct"
+    if Bytes.eq (Bytes.generate 8) (Bytes.generate 8) then "same" else "distinct"
 "#;
 
 fn write_workspace(root: &std::path::Path) {

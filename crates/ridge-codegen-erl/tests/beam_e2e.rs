@@ -654,7 +654,7 @@ fn sigOf (k: Int) (m: Map Int (List Int)) -> Int =
 
 fn io main () -> Result Unit Text =
     let groups = List.groupBy (fn x -> if x > 3 then 1 else 0) [1, 2, 3, 4, 5, 6]
-    Io.println $"n=${Int.toText (Map.size groups)} lo=${Int.toText (sigOf 0 groups)} hi=${Int.toText (sigOf 1 groups)}"
+    Io.println $"n=${Int.toText (Map.length groups)} lo=${Int.toText (sigOf 0 groups)} hi=${Int.toText (sigOf 1 groups)}"
     Ok ()
 "#;
 

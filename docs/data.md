@@ -389,7 +389,7 @@ build error, not a runtime one.
 ### Delete
 
 ```ridge
-users |> Repo.deleteWhere (fn (u: User) -> u.age < 18)
+users |> Repo.delete (fn (u: User) -> u.age < 18)
 users |> Repo.deleteReturning (fn (u: User) -> u.id == 2)  -- returns the removed rows
 ```
 

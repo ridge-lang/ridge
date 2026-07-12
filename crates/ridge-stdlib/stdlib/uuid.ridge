@@ -28,7 +28,7 @@ pub fn nil (_unit: Unit) -> Uuid
 -- since two calls return different values; the bytes come from a cryptographic
 -- source, so the result is unpredictable, not just non-repeating.
 @ffi("ridge_rt", "uuid_gen", 1)
-pub fn random gen (_unit: Unit) -> Uuid
+pub fn random generate (_unit: Unit) -> Uuid
 
 -- Three-way comparison: negative when a < b, zero when equal, positive when
 -- a > b. Compares by the 128-bit value (its canonical text orders the same way),

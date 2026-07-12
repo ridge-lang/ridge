@@ -4,14 +4,14 @@
 //! A `Repo User MemAdapter` pairs the in-memory adapter with the `users` table
 //! and the `User` entity. Its read verbs run the `Adapter` primitives and decode
 //! each row back into a `User`, so `find`/`getBy` answer a typed `User` whose
-//! fields are read directly (`u.name`), and `findBy`/`count`/`exists`/`deleteWhere`
+//! fields are read directly (`u.name`), and `findBy`/`count`/`exists`/`delete`
 //! compose as a pipeline. The program seeds three users and exercises:
 //! - `count` over the whole table,
 //! - `findBy` filtering (a `>=` predicate keeps two of three rows),
 //! - `find` + decode (a `>` predicate's first row decodes to "lin"),
 //! - `getBy` key (id 2 decodes to "lin"),
 //! - `exists` (a `<` predicate matches the one young row),
-//! - `deleteWhere` predicate (one row goes; the table then holds two),
+//! - `delete` predicate (one row goes; the table then holds two),
 //! - the query builder: `orderBy` (whole-table ordering), `offset`/`limit`
 //!   paging, and `filter` + `orderBy` + the `first` terminal.
 //! - the inner join: `joinOn` + `toList` (decoding both entities of each matched
@@ -476,7 +476,7 @@ pub fn db deleteCount () -> Int =
     match setup ()
         Err _ -> 0 - 1
         Ok r  ->
-            match r |> Repo.deleteWhere (fn (u: User) -> u.age < 25)
+            match r |> Repo.delete (fn (u: User) -> u.age < 25)
                 Ok n  -> n
                 Err _ -> 0 - 2
 
@@ -485,7 +485,7 @@ pub fn db afterCount () -> Int =
     match setup ()
         Err _ -> 0 - 1
         Ok r  ->
-            match r |> Repo.deleteWhere (fn (u: User) -> u.age < 25)
+            match r |> Repo.delete (fn (u: User) -> u.age < 25)
                 Err _ -> 0 - 2
                 Ok _  ->
                     match r |> Repo.query |> Repo.count
@@ -750,7 +750,7 @@ pub fn db existsDelete () -> Text =
     match setupJoin ()
         Err _ -> "setup-err"
         Ok (users, posts) ->
-            match users |> Repo.deleteWhere (fn (u: User) -> Repo.exists posts (fn (p: Post) -> p.author == u.id))
+            match users |> Repo.delete (fn (u: User) -> Repo.exists posts (fn (p: Post) -> p.author == u.id))
                 Err _ -> "del-err"
                 Ok _  ->
                     match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.toList

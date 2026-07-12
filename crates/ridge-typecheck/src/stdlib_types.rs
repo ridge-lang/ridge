@@ -2271,9 +2271,9 @@ pub(crate) fn reconciled_fn_scheme(
         // constrained over `Adapter a` (to reach the storage primitives) and
         // `Row e` (to decode rows into the entity), so none is expressible in
         // the hand-curated table.
-        // std.query `ascending : SortOrder -> Bool` — projects a sort direction
+        // std.query `isAscending : SortOrder -> Bool` — projects a sort direction
         // to the `ascending?` boolean the query builder and seam read.
-        ("std.query", "ascending") => {
+        ("std.query", "isAscending") => {
             let sort_order = *reconciled.get("SortOrder")?;
             Some(Scheme {
                 vars: vec![],
@@ -3394,9 +3394,9 @@ fn reconciled_repo_fn_scheme(
         // dependency fixing the predicate arity for the sibling `every`. Omitting the
         // arm routes them through the class-method path; the old `countBy` (count over
         // a predicate) is gone with them — it is `query |> filter pred |> count`.
-        // `deleteWhere` keeps its own scheme (it removes the matching rows, not a
+        // `delete` keeps its own scheme (it removes the matching rows, not a
         // count, and is unrelated to the receiver-polymorphic query builder).
-        "deleteWhere" => method(
+        "delete" => method(
             vec![quote_pred(), repo_app()],
             result(Type::Con(b.int, vec![])),
             with_adapter(),

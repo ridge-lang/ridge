@@ -10,7 +10,7 @@ fn _readFile (path: Text) -> Result Text Text
 fn _writeFile (path: Text) (content: Text) -> Result Unit Text
 
 @ffi("filelib", "is_file", 1)
-fn _exists (path: Text) -> Bool
+fn _isFile (path: Text) -> Bool
 
 @ffi("ridge_rt", "fs_lines", 1)
 fn _fsLines (path: Text) -> Result (List Text) Text
@@ -62,21 +62,21 @@ pub fn fs env test_readFile_missing_returns_err () -> Result Unit Text =
         Err _ -> Ok ()
         Ok _ -> Err "readFile of missing path should return Err"
 
--- fs.exists returns true after a file is written.
-@test "exists_true_after_write"
-pub fn fs env test_exists_true_after_write () -> Result Unit Text =
+-- fs.isFile returns true after a file is written.
+@test "isFile_true_after_write"
+pub fn fs env test_isFile_true_after_write () -> Result Unit Text =
     let path = _tmpPath "exists-check"
     match _writeFile path "x"
         Err e -> Err (_concat "writeFile failed: " e)
         Ok _ ->
-            if _exists path then Ok ()
-            else Err "fs.exists should be true after writeFile"
+            if _isFile path then Ok ()
+            else Err "fs.isFile should be true after writeFile"
 
--- fs.exists returns false for a nonexistent path.
-@test "exists_false_for_missing"
-pub fn fs test_exists_false_for_missing () -> Result Unit Text =
-    if _exists "/this/path/should/not/exist/ridge-stdlib-test-9a8b7c" then
-        Err "fs.exists should be false for nonexistent path"
+-- fs.isFile returns false for a nonexistent path.
+@test "isFile_false_for_missing"
+pub fn fs test_isFile_false_for_missing () -> Result Unit Text =
+    if _isFile "/this/path/should/not/exist/ridge-stdlib-test-9a8b7c" then
+        Err "fs.isFile should be false for nonexistent path"
     else Ok ()
 
 -- fs.lines of a single-line file returns a list with 1 element.

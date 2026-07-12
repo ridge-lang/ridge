@@ -1910,9 +1910,9 @@ fn seed_groupable_scheme(
 }
 
 /// Seeds the `runGroups` class-method scheme behind `summarize`'s per-source
-/// dispatch: `∀q. q -> Text -> Int -> QExpr -> QExpr -> Result (List (Map Text
-/// SqlValue)) Error where Summarizable q`. It hands the source, the group-key column
-/// and leaf, the projection tree, and the HAVING tree to the seam the instance
+/// dispatch: `∀q. Text -> Int -> QExpr -> QExpr -> q -> Result (List (Map Text
+/// SqlValue)) Error where Summarizable q`. It hands the group-key column and leaf,
+/// the projection tree, the HAVING tree, and the source to the seam the instance
 /// selects (a query's `groupSummarize`, or `runPlan` over a group plan for a join),
 /// returning the raw summarised rows that `summarize` then decodes through `Row s`.
 fn seed_summarizable_scheme(
@@ -1938,11 +1938,11 @@ fn seed_summarizable_scheme(
     );
     let fn_ty = Type::Fn {
         params: vec![
-            Type::Var(q),
             text(),
             Type::Con(b.int, vec![]),
             Type::Con(b.q_expr, vec![]),
             Type::Con(b.q_expr, vec![]),
+            Type::Var(q),
         ],
         ret: Box::new(result_rows),
         caps: CapRow::Concrete(CapabilitySet::PURE),

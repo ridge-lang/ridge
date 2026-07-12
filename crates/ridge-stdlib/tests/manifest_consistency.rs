@@ -326,14 +326,14 @@ fn signature_shape_consistency() {
             .collect();
 
         for (fn_name, ast_param_count) in &pub_fns {
-            // std.query `orderSql`/`ascending` reference the reconciled `SortOrder`
+            // std.query `orderSql`/`isAscending` reference the reconciled `SortOrder`
             // type, so they are seeded via `reconciled_fn_scheme` rather than the
             // `stdlib_signature` table this shape check covers.
             if dotted == "std.query"
                 && matches!(
                     *fn_name,
                     "orderSql"
-                        | "ascending"
+                        | "isAscending"
                         | "planScan"
                         | "planCombine"
                         | "planRefine"

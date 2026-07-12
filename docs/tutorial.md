@@ -311,7 +311,7 @@ fn validate () -> Result Unit Text =
 ```
 
 `std.test` covers `ensure`, `assertEq`/`assertNe`, `assertTrue`/`assertFalse`,
-and `isOk`/`isErr`/`isSome`/`isNone`. Equality is structural, so `assertEq`
+and `assertOk`/`assertErr`/`assertSome`/`assertNone`. Equality is structural, so `assertEq`
 works on any type; the string is the message shown when the check fails.
 
 **`else if`** is the flat form for choosing a value among several conditions

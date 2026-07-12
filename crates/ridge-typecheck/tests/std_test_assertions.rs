@@ -44,7 +44,7 @@ fn typecheck_one(main_src: &str) -> Vec<TypeError> {
     result.errors.into_iter().map(|(_, e)| e).collect()
 }
 
-const IMPORT_ALL: &str = "import std.test (ensure, assertEq, assertNe, assertTrue, assertFalse, isOk, isErr, isSome, isNone)\n";
+const IMPORT_ALL: &str = "import std.test (ensure, assertEq, assertNe, assertTrue, assertFalse, assertOk, assertErr, assertSome, assertNone)\n";
 
 #[test]
 fn every_helper_resolves_and_typechecks_clean() {
@@ -55,10 +55,10 @@ fn every_helper_resolves_and_typechecks_clean() {
          pub fn c () -> Result Unit Text = assertNe 1 2 \"c\"\n\
          pub fn d () -> Result Unit Text = assertTrue true \"d\"\n\
          pub fn e () -> Result Unit Text = assertFalse false \"e\"\n\
-         pub fn f () -> Result Unit Text = isOk (Ok 1) \"f\"\n\
-         pub fn g () -> Result Unit Text = isErr (Err \"x\") \"g\"\n\
-         pub fn h () -> Result Unit Text = isSome (Some 1) \"h\"\n\
-         pub fn i () -> Result Unit Text = isNone None \"i\"\n"
+         pub fn f () -> Result Unit Text = assertOk (Ok 1) \"f\"\n\
+         pub fn g () -> Result Unit Text = assertErr (Err \"x\") \"g\"\n\
+         pub fn h () -> Result Unit Text = assertSome (Some 1) \"h\"\n\
+         pub fn i () -> Result Unit Text = assertNone None \"i\"\n"
     );
     let errors = typecheck_one(&main);
     assert!(
@@ -77,7 +77,7 @@ fn question_mark_chain_flattens_clean() {
          \x20   ensure true \"a\" ?\n\
          \x20   assertEq (2 + 2) 4 \"b\" ?\n\
          \x20   assertNe 1 2 \"c\" ?\n\
-         \x20   isOk (Ok 1) \"d\" ?\n\
+         \x20   assertOk (Ok 1) \"d\" ?\n\
          \x20   Ok ()\n"
     );
     let errors = typecheck_one(&main);
@@ -126,12 +126,12 @@ pub fn assertEq (actual: a) (expected: a) (label: Text) -> Result Unit Text =
 pub fn assertNe (actual: a) (other: a) (label: Text) -> Result Unit Text =
     if actual == other then Err label else Ok ()
 
-pub fn isOk (r: Result a e) (label: Text) -> Result Unit Text =
+pub fn assertOk (r: Result a e) (label: Text) -> Result Unit Text =
     match r
         Ok _  -> Ok ()
         Err _ -> Err label
 
-pub fn isSome (o: Option a) (label: Text) -> Result Unit Text =
+pub fn assertSome (o: Option a) (label: Text) -> Result Unit Text =
     match o
         Some _ -> Ok ()
         None   -> Err label

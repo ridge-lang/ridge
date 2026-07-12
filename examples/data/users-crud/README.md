@@ -26,7 +26,7 @@ printed after each change.
   a single row by key.
 - **Update** — `Repo.setWhere` with a typed `set`, checked against the column
   at compile time.
-- **Delete** — `Repo.deleteWhere` with a predicate.
+- **Delete** — `Repo.delete` with a predicate.
 - **`?`** — every step returns a `Result`, and `?` threads the happy path so
   the program reads top to bottom without nested `match`.
 

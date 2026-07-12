@@ -76,7 +76,7 @@ pub fn db tzRoundTrip () -> Text =
             match r |> Repo.getBy "id" (toSql 1)
                 Err _       -> "get-err"
                 Ok None     -> "none"
-                Ok (Some e) -> Time.iso e.tz
+                Ok (Some e) -> Time.toIso e.tz
 
 -- read back the plain timestamp column: it arrives without an offset and is read
 -- as UTC, so it formats back to the same ISO string.
@@ -87,7 +87,7 @@ pub fn db naiveRoundTrip () -> Text =
             match r |> Repo.getBy "id" (toSql 1)
                 Err _       -> "get-err"
                 Ok None     -> "none"
-                Ok (Some e) -> Time.iso e.naive
+                Ok (Some e) -> Time.toIso e.naive
 "#;
 
 struct PgParts<'a> {

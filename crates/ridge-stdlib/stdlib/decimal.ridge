@@ -39,11 +39,11 @@ pub fn fromInt (n: Int) -> Decimal
 
 -- Parse a decimal from text known to be well-formed -- a literal the compiler has
 -- already validated, or a trusted constant. Unlike `fromText` it returns the value
--- directly, but it panics on malformed input, matching `Float.parseRaw`; reach for
+-- directly, but it panics on malformed input, matching `Float.parseStrict`; reach for
 -- `fromText` for anything untrusted. This is the constructor a `19.99m` literal
 -- lowers to.
 @ffi("ridge_rt", "decimal_parse_raw", 1)
-pub fn parseRaw (s: Text) -> Decimal
+pub fn parseStrict (s: Text) -> Decimal
 
 -- Convert to the nearest Float. This is lossy -- a Float cannot represent every
 -- decimal exactly -- so it is for display or interop with float APIs, never a

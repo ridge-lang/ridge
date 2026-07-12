@@ -11,7 +11,7 @@ fn _diffMs (a: Timestamp) (b: Timestamp) -> Int
 fn _fromIso (s: Text) -> Result Timestamp Error
 
 @ffi("ridge_rt", "time_iso", 1)
-fn _iso (t: Timestamp) -> Text
+fn _toIso (t: Timestamp) -> Text
 
 @ffi("timer", "sleep", 1)
 fn _sleep (ms: Int) -> Unit
@@ -49,9 +49,9 @@ pub fn test_fromIso_round_trip () -> Result Unit Text =
     match _fromIso "2020-01-01T00:00:00Z"
         Err _ -> Err "time.fromIso should succeed for valid ISO string"
         Ok ts ->
-            let s = _iso ts
+            let s = _toIso ts
             if _startsWith "2020-01-01T00:00:00" s then Ok ()
-            else Err "time.iso should start with 2020-01-01T00:00:00"
+            else Err "time.toIso should start with 2020-01-01T00:00:00"
 
 -- time.sleep does not crash and monotonicity holds.
 -- _diffMs a b = (a - b) / 1000; pass the later timestamp first for >= 0.

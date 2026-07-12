@@ -332,7 +332,7 @@ pub fn db setup () -> Result (Repo User Postgres) Error =
         Err e   -> Err e
         Ok conn ->
             let r = Repo.repo conn "ridge_pg_users"
-            match Repo.deleteWhere (fn (u: User) -> u.id >= 0) r
+            match Repo.delete (fn (u: User) -> u.id >= 0) r
                 Err e -> Err e
                 Ok _  ->
                     match Repo.insertRow (userRow 1 18 "ada") r
@@ -500,7 +500,7 @@ pub fn db afterDelete () -> Int =
     match setup ()
         Err _ -> 0 - 1
         Ok r  ->
-            match r |> Repo.deleteWhere (fn (u: User) -> u.age < 25)
+            match r |> Repo.delete (fn (u: User) -> u.age < 25)
                 Err _ -> 0 - 2
                 Ok _  ->
                     match r |> Repo.query |> Repo.count
@@ -609,10 +609,10 @@ pub fn db setupJoin () -> Result (Repo User Postgres, Repo Post Postgres) Error 
         Ok conn ->
             let users: Repo User Postgres = Repo.repo conn "ridge_pg_users"
             let posts: Repo Post Postgres = Repo.repo conn "ridge_pg_posts"
-            match Repo.deleteWhere (fn (u: User) -> u.id >= 0) users
+            match Repo.delete (fn (u: User) -> u.id >= 0) users
                 Err e -> Err e
                 Ok _  ->
-                    match Repo.deleteWhere (fn (p: Post) -> p.id >= 0) posts
+                    match Repo.delete (fn (p: Post) -> p.id >= 0) posts
                         Err e -> Err e
                         Ok _  ->
                             match Repo.insertRow (userRow 1 18 "ada") users
@@ -637,10 +637,10 @@ pub fn db setupJoin () -> Result (Repo User Postgres, Repo Post Postgres) Error 
 fn db seedJoinData (c: Postgres) -> Result Unit Error =
     let users: Repo User Postgres = Repo.repo c "ridge_pg_users"
     let posts: Repo Post Postgres = Repo.repo c "ridge_pg_posts"
-    match Repo.deleteWhere (fn (u: User) -> u.id >= 0) users
+    match Repo.delete (fn (u: User) -> u.id >= 0) users
         Err e -> Err e
         Ok _  ->
-            match Repo.deleteWhere (fn (p: Post) -> p.id >= 0) posts
+            match Repo.delete (fn (p: Post) -> p.id >= 0) posts
                 Err e -> Err e
                 Ok _  ->
                     match Repo.insertRow (userRow 1 18 "ada") users
@@ -1029,7 +1029,7 @@ pub fn db setupInsert () -> Result (Repo User Postgres) Error =
         Err e   -> Err e
         Ok conn ->
             let r = Repo.repo conn "ridge_pg_users"
-            match Repo.deleteWhere (fn (u: User) -> u.id >= 0) r
+            match Repo.delete (fn (u: User) -> u.id >= 0) r
                 Err e -> Err e
                 Ok _  ->
                     match Repo.insert (User { id = 1, age = 18, name = "ada" }) r
@@ -1453,7 +1453,7 @@ pub fn db setupEmps () -> Result (Repo Emp Postgres) Error =
         Err e   -> Err e
         Ok conn ->
             let r = Repo.repo conn "ridge_pg_emps"
-            match Repo.deleteWhere (fn (em: Emp) -> em.id >= 0) r
+            match Repo.delete (fn (em: Emp) -> em.id >= 0) r
                 Err e -> Err e
                 Ok _  ->
                     match Repo.insertRow (empRow 1 "eng" 100) r
@@ -1788,7 +1788,7 @@ fn pgCountUsers (conn: Postgres) -> Int =
 
 fn pgClearUsers (conn: Postgres) -> Result Int Error =
     let r = Repo.repo conn "ridge_pg_users"
-    Repo.deleteWhere (fn (u: User) -> u.id >= 0) r
+    Repo.delete (fn (u: User) -> u.id >= 0) r
 
 -- A transaction body that inserts two rows and succeeds.
 fn pgInsertTwo (tx: Postgres) -> Result Unit Error =
@@ -1871,7 +1871,7 @@ fn runWidgets (conn: Postgres) -> Result (List Text) Error =
 
 fn pgClearWidgets (conn: Postgres) -> Result Int Error =
     let r = Repo.repo conn "ridge_mig_widgets"
-    Repo.deleteWhere (fn (w: Widget) -> w.id >= 0) r
+    Repo.delete (fn (w: Widget) -> w.id >= 0) r
 
 fn pgAddWidget (conn: Postgres) (wid: Int) (wname: Text) -> Result Unit Error =
     let r = Repo.repo conn "ridge_mig_widgets"
@@ -1935,7 +1935,7 @@ fn runGadgets (conn: Postgres) -> Result (List Text) Error =
 
 fn pgClearGadgets (conn: Postgres) -> Result Int Error =
     let r = Repo.repo conn "ridge_mig_gadgets"
-    Repo.deleteWhere (fn (g: RidgeMigGadget) -> g.id >= 0) r
+    Repo.delete (fn (g: RidgeMigGadget) -> g.id >= 0) r
 
 fn pgAddGadget (conn: Postgres) (gname: Text) -> Result Unit Error =
     let r = Repo.repo conn "ridge_mig_gadgets"
@@ -1984,7 +1984,7 @@ fn runCogsDiff (conn: Postgres) -> Result (List Text) Error =
 
 fn pgClearCogs (conn: Postgres) -> Result Int Error =
     let r = Repo.repo conn "ridge_mig_cogs"
-    Repo.deleteWhere (fn (c: RidgeMigCog) -> c.id >= 0) r
+    Repo.delete (fn (c: RidgeMigCog) -> c.id >= 0) r
 
 fn pgAddCog (conn: Postgres) (clabel: Text) -> Result Unit Error =
     let r = Repo.repo conn "ridge_mig_cogs"
@@ -2042,7 +2042,7 @@ fn runBoltsColumnDiff (conn: Postgres) -> Result (List Text) Error =
 
 fn pgClearBolts (conn: Postgres) -> Result Int Error =
     let r = Repo.repo conn "ridge_mig_bolts"
-    Repo.deleteWhere (fn (b: RidgeMigBolt) -> b.id >= 0) r
+    Repo.delete (fn (b: RidgeMigBolt) -> b.id >= 0) r
 
 fn pgAddBolt (conn: Postgres) (bcode: Text) (bnote: Text) -> Result Unit Error =
     let r = Repo.repo conn "ridge_mig_bolts"
@@ -2104,7 +2104,7 @@ fn runGearsAlterDiff (conn: Postgres) -> Result (List Text) Error =
 
 fn pgClearGears (conn: Postgres) -> Result Int Error =
     let r = Repo.repo conn "ridge_mig_gears"
-    Repo.deleteWhere (fn (g: RidgeMigGear) -> g.id >= 0) r
+    Repo.delete (fn (g: RidgeMigGear) -> g.id >= 0) r
 
 fn pgAddGear (conn: Postgres) (gcode: Text) -> Result Unit Error =
     let r = Repo.repo conn "ridge_mig_gears"

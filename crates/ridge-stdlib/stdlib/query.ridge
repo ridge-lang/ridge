@@ -21,7 +21,7 @@ pub type SortOrder = Asc | Desc
 -- A sort direction as the `ascending?` boolean a backend (or the query builder)
 -- reads. Defined here, where `Asc`/`Desc` are declared, so the match is over the
 -- module's own constructors.
-pub fn ascending (dir: SortOrder) -> Bool =
+pub fn isAscending (dir: SortOrder) -> Bool =
     match dir
         Asc  -> true
         Desc -> false

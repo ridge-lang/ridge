@@ -22,7 +22,7 @@
 import std.data as Db (selectRows, fetch)
 import std.result (traverse)
 import std.sql (SqlValue)
-import std.query (SortOrder, ascending, QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planExists, planList, planInsert, planUpsert, planUpdate, planDelete)
+import std.query (SortOrder, isAscending, QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planExists, planList, planInsert, planUpsert, planUpdate, planDelete)
 import std.map (fromList, toList)
 import std.schema (identityColumnsOfShape)
 
@@ -318,7 +318,7 @@ pub fn upsertReturning (entity: e) (keys: List (Conflict e)) (r: Repo e a) -> Re
                         Ok x    -> Ok x
 
 -- Remove the rows matching a quoted predicate; answer how many were removed.
-pub fn deleteWhere (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int Error where Adapter a =
+pub fn delete (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int Error where Adapter a =
     runMutation r.adapter (planDelete r.table pred.tree)
 
 -- Set the given columns on every row matching a quoted predicate; answer how many
@@ -601,7 +601,7 @@ pub class Groupable q p | q -> p =
 -- its own class so the seam call (one `Adapter a` context) stays separate from that
 -- decode.
 pub class Summarizable q =
-    runGroups (src: q) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error
+    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: q) -> Result (List (Map Text SqlValue)) Error
 
 -- The set-operation builders (`union`/`unionAll`/`intersect`/`except`) that combine
 -- two queries, or two in-memory sequences, of the same row shape. A single parameter,
@@ -830,7 +830,7 @@ pub fn having (pred: Quote (Grouped q p -> Bool)) (g: Grouped q p) -> Grouped q 
 -- and returns one row per group, ordered by the key; `summarize` then decodes each.
 -- This is the grouped dual of `select`: a projection, but over groups instead of rows.
 pub fn summarize (proj: Quote (Grouped q p -> s)) (g: Grouped q p) -> Result (List s) Error where Summarizable q, Row s =
-    match runGroups g.source g.keyCol g.keyLeaf proj.tree g.havingTree
+    match runGroups g.keyCol g.keyLeaf proj.tree g.havingTree g.source
         Err err -> Err err
         Ok rows -> decodeRows rows
 
@@ -1622,7 +1622,7 @@ instance Projectable (FullJoined q f a) (Map Text SqlValue -> s) where Adapter a
 -- had before it unified with the join form.
 instance Orderable (Query e a) (fn e -> k) =
     orderBy (dir: SortOrder) (key: Quote (fn e -> k)) (x: Query e a) -> Query e a =
-        Query { repo = x.repo, pred = x.pred, orders = snoc x.orders (ascending dir, orderColumn key), lim = x.lim, off = x.off, dist = x.dist, plan = x.plan }
+        Query { repo = x.repo, pred = x.pred, orders = snoc x.orders (isAscending dir, orderColumn key), lim = x.lim, off = x.off, dist = x.dist, plan = x.plan }
 
 -- A left join's `orderBy`: the two-row dual over a `LeftJoin`. The right side is
 -- read as `Option` in the key (`fn (u: User) (p: Option Post) -> p.title`); an
@@ -1971,7 +1971,7 @@ instance Refinable (Seq a) (fn a -> Bool) =
 -- ordering means exactly what it does on the database path.
 instance Orderable (Seq a) (fn a -> k) =
     orderBy (dir: SortOrder) (key: Quote (fn a -> k)) (x: Seq a) -> Seq a =
-        Seq { source = x.source, pred = x.pred, orders = snoc x.orders (ascending dir, orderColumn key), lim = x.lim, off = x.off, dist = x.dist }
+        Seq { source = x.source, pred = x.pred, orders = snoc x.orders (isAscending dir, orderColumn key), lim = x.lim, off = x.off, dist = x.dist }
 
 -- `limit`/`offset`/`distinct` over an in-memory sequence set the page and distinct flag
 -- on its builder, exactly as the same verbs do over a query — each returns the sequence,
@@ -2081,7 +2081,7 @@ instance Groupable (Seq a) (fn a -> k) =
 -- unprefixed single-leaf rows by their bare names. No connection is touched, so the instance
 -- carries no context, and the in-memory evaluation cannot fail, so the rows come back `Ok`.
 instance Summarizable (Seq a) =
-    runGroups (src: Seq a) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
+    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: Seq a) -> Result (List (Map Text SqlValue)) Error =
         Ok (_evalPlanPure (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (seqCountPlan src (0 - 1))))
 
 -- Combine two in-memory sequences into one fresh sequence carrying the captured set-
@@ -2645,7 +2645,7 @@ instance Groupable (Query e a) (fn e -> k) =
 -- one plan IR, returning one raw row per group for `summarize` to decode. The key sits
 -- on the sole leaf, so the aggregate columns carry leaf 0 (`groupColsLeaf`).
 instance Summarizable (Query e a) where Adapter a =
-    runGroups (src: Query e a) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
+    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: Query e a) -> Result (List (Map Text SqlValue)) Error =
         runPlan src.repo.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (planScan src.repo.table src.pred.tree [] (0 - 1) 0 false))
 
 -- A left join's `groupBy`: the two-row dual over a `LeftJoin`, the right side read as
@@ -2673,14 +2673,14 @@ instance Groupable (FullJoin e f a) (fn e f -> k) =
 -- `groupSummarizeLeftJoin` push-down. Every left row the post-join `WHERE` admits
 -- joins a group; an unmatched one contributes its left columns and a NULL right side.
 instance Summarizable (LeftJoin e f a) where Adapter a =
-    runGroups (src: LeftJoin e f a) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
+    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: LeftJoin e f a) -> Result (List (Map Text SqlValue)) Error =
         runPlan src.left.repo.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (leftReduceJoin src src.where2.tree (0 - 1)))
 
 -- A right join's `summarize` seam: the dual over a `RightJoin`, run through the
 -- `groupSummarizeRightJoin` push-down. Every right row the post-join `WHERE` admits
 -- joins a group; an unmatched one contributes its right columns and a NULL left side.
 instance Summarizable (RightJoin e f a) where Adapter a =
-    runGroups (src: RightJoin e f a) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
+    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: RightJoin e f a) -> Result (List (Map Text SqlValue)) Error =
         runPlan src.left.repo.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (rightReduceJoin src src.where2.tree (0 - 1)))
 
 -- A full join's `summarize` seam: the dual over a `FullJoin`, run through the
@@ -2688,7 +2688,7 @@ instance Summarizable (RightJoin e f a) where Adapter a =
 -- admits joins a group; an unmatched one contributes its present side's columns and a
 -- NULL on the missing side, grouping under the NULL key for a key over that side.
 instance Summarizable (FullJoin e f a) where Adapter a =
-    runGroups (src: FullJoin e f a) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
+    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: FullJoin e f a) -> Result (List (Map Text SqlValue)) Error =
         runPlan src.left.repo.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (fullReduceJoin src src.where2.tree (0 - 1)))
 
 -- An inner-join composite's `groupBy`: name the group-key column with a leaf accessor
@@ -2718,19 +2718,19 @@ instance Groupable (FullJoined q f a) (Map Text SqlValue -> k) =
 -- only `Adapter a` to reach the store and `JoinShape q` to plan the source spine.
 -- Returns one raw row per group for `summarize` to decode through its own `Row s`.
 instance Summarizable (Joined q f a) where Adapter a, JoinShape q =
-    runGroups (src: Joined q f a) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
+    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: Joined q f a) -> Result (List (Map Text SqlValue)) Error =
         runPlan src.right.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (compositeReducePlan "INNER" (joinedSourcePlan src.source) src.right.table src.cond.tree src.where2.tree (0 - 1) []))
 
 instance Summarizable (LeftJoined q f a) where Adapter a, JoinShape q =
-    runGroups (src: LeftJoined q f a) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
+    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: LeftJoined q f a) -> Result (List (Map Text SqlValue)) Error =
         runPlan src.right.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (compositeReducePlan "LEFT" (joinedSourcePlan src.source) src.right.table src.cond.tree src.where2.tree (0 - 1) []))
 
 instance Summarizable (RightJoined q f a) where Adapter a, JoinShape q =
-    runGroups (src: RightJoined q f a) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
+    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: RightJoined q f a) -> Result (List (Map Text SqlValue)) Error =
         runPlan src.right.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (compositeReducePlan "RIGHT" (joinedSourcePlan src.source) src.right.table src.cond.tree src.where2.tree (0 - 1) []))
 
 instance Summarizable (FullJoined q f a) where Adapter a, JoinShape q =
-    runGroups (src: FullJoined q f a) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
+    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: FullJoined q f a) -> Result (List (Map Text SqlValue)) Error =
         runPlan src.right.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (compositeReducePlan "FULL" (joinedSourcePlan src.source) src.right.table src.cond.tree src.where2.tree (0 - 1) []))
 
 -- Strip a source prefix (`t0$`/`t1$`) from the keys of a flat joined row, keeping
@@ -2910,7 +2910,7 @@ fn liftOrders (os: List (Bool, QExpr)) -> List (Bool, Int, QExpr) =
 -- captured tree (a column or a computed expression over the joined sides, each of
 -- whose columns qualifies to its own leaf when rendered).
 fn orderEntryLeaf (dir: SortOrder) (key: Quote p) -> (Bool, Int, QExpr) =
-    (ascending dir, aggLeaf key, key.tree)
+    (isAscending dir, aggLeaf key, key.tree)
 
 -- The captured tree of an aggregate accessor — a column or a computed expression
 -- over the columns (`SUM(price * qty)`), folded by the backend. Generic over the

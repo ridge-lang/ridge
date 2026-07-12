@@ -234,7 +234,7 @@ fn stdlib_secure_cookie_field_access_is_t036() {
 #[test]
 fn stdlib_secure_cookie_setters_are_clean() {
     // Build with defaults, override an attribute through a setter, then serialize.
-    let main = "import std.net.http (secureCookie, withSecure, secureCookieHeader)\nfn ok () -> Text = secureCookieHeader (withSecure (secureCookie \"n\" \"v\") false)\n";
+    let main = "import std.net.http (secureCookie, withSecure, secureCookieHeader)\nfn ok () -> Text = secureCookieHeader (withSecure false (secureCookie \"n\" \"v\"))\n";
     let errors = typecheck_one(main);
     assert!(
         errors.is_empty(),
@@ -976,7 +976,7 @@ pub fn db add () -> Result Unit Error =
     users () |> Repo.insertRow (Map.fromList [("id", toSql 1)])
 
 pub fn db purge () -> Result Int Error =
-    users () |> Repo.deleteWhere (fn (u: User) -> u.age < 18)
+    users () |> Repo.delete (fn (u: User) -> u.age < 18)
 "#;
     let errors = typecheck_one(main);
     assert!(

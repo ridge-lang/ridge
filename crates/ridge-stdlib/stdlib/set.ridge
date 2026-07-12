@@ -61,16 +61,16 @@ pub fn union (a: Set x) (b: Set x) -> Set x =
     _setMapMerge a b
 
 -- Return the intersection of two sets (elements in both).
-pub fn intersect (a: Set x) (b: Set x) -> Set x =
+pub fn intersection (a: Set x) (b: Set x) -> Set x =
     let aKeys = _setMapKeys a
-    _intersectFilter aKeys b (_setMapNew ())
+    _intersectionFilter aKeys b (_setMapNew ())
 
-fn _intersectFilter (xs: List x) (b: Set x) (acc: Set x) -> Set x =
+fn _intersectionFilter (xs: List x) (b: Set x) (acc: Set x) -> Set x =
     match xs
         []      -> acc
         k :: rest ->
-            if _setMapIsKey k b then _intersectFilter rest b (_setMapPut k true acc)
-            else _intersectFilter rest b acc
+            if _setMapIsKey k b then _intersectionFilter rest b (_setMapPut k true acc)
+            else _intersectionFilter rest b acc
 
 -- Return the difference of two sets (elements in `a` but not in `b`).
 pub fn difference (a: Set x) (b: Set x) -> Set x =
@@ -85,5 +85,5 @@ fn _differenceFilter (xs: List x) (b: Set x) (acc: Set x) -> Set x =
             else _differenceFilter rest b (_setMapPut k true acc)
 
 -- Return the number of elements in the set.
-pub fn size (s: Set a) -> Int =
+pub fn length (s: Set a) -> Int =
     _setMapSize s

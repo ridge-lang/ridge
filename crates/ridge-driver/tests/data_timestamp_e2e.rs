@@ -66,7 +66,7 @@ pub fn db roundTripIso () -> Text =
             match r |> Repo.getBy "id" (toSql 2)
                 Err _       -> "get-err"
                 Ok None     -> "none"
-                Ok (Some e) -> Time.iso e.at
+                Ok (Some e) -> Time.toIso e.at
 
 -- ascending by the timestamp column: the 2020 row precedes the 2026 one ->
 -- "old,new". Proves a SqlInstant sorts by its epoch value.

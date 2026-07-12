@@ -181,7 +181,7 @@ mono_elapsed({instant, Start}) ->
 mono_since({instant, Start}, {instant, End}) ->
     #{ms => (End - Start) div 1000000}.
 
-%% time_from_iso/1 — std.time.fromIso / std.time.parse
+%% time_from_iso/1 — std.time.fromIso
 %% Parses an ISO-8601 text into a Timestamp.
 %% Returns {ok, {timestamp, Micros}} or {error, {error_record, Code, Message}}.
 %% Ridge type: Text -> Result Timestamp Error  (§3.12 lines 348, 353).
@@ -201,7 +201,7 @@ time_since_ms({timestamp, T}) ->
     Now = erlang:system_time(microsecond),
     (Now - T) div 1000.
 
-%% time_iso/1 — std.time.iso
+%% time_iso/1 — std.time.toIso
 %% Formats a Timestamp as an ISO-8601 text string.
 time_iso({timestamp, Micros}) ->
     Str = calendar:system_time_to_rfc3339(Micros, [{unit, microsecond}, {offset, "Z"}]),
@@ -245,7 +245,7 @@ decimal_to_text({decimal, U, S}) when S > 0 ->
 %% decimal_from_int/1 — std.decimal.fromInt. An integer at scale 0.
 decimal_from_int(N) -> {decimal, N, 0}.
 
-%% decimal_parse_raw/1 — std.decimal.parseRaw. Total in shape, raises on malformed
+%% decimal_parse_raw/1 — std.decimal.parseStrict. Total in shape, raises on malformed
 %% input (the `19.99m` literal path, where the lexer has already validated the text).
 decimal_parse_raw(Bin) ->
     case decimal_parse(string:trim(binary_to_list(Bin))) of
@@ -432,7 +432,7 @@ uuid_to_text({uuid, Bin}) -> Bin.
 %% uuid_nil/1 — std.uuid.nil. The all-zero uuid.
 uuid_nil(_Unit) -> {uuid, <<"00000000-0000-0000-0000-000000000000">>}.
 
-%% uuid_gen/1 — std.uuid.gen. A random version-4 uuid from a cryptographic source.
+%% uuid_gen/1 — std.uuid.generate. A random version-4 uuid from a cryptographic source.
 %% The version nibble is pinned to 4 and the variant bits to the RFC 4122 form.
 uuid_gen(_Unit) ->
     <<A:48, _:4, B:12, _:2, C:62>> = crypto:strong_rand_bytes(16),
@@ -505,7 +505,7 @@ bytes_to_utf8(Raw) ->
 %% bytes_empty/1 — std.bytes.empty. The empty byte string.
 bytes_empty(_Unit) -> <<>>.
 
-%% bytes_gen/1 — std.bytes.gen. n cryptographically-random bytes; a non-positive n
+%% bytes_gen/1 — std.bytes.generate. n cryptographically-random bytes; a non-positive n
 %% yields the empty byte string.
 bytes_gen(N) when is_integer(N), N > 0 -> crypto:strong_rand_bytes(N);
 bytes_gen(_) -> <<>>.

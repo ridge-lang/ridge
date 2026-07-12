@@ -339,12 +339,12 @@ pub struct BuiltinTyCons {
     pub decimal: TyConId,
     /// `Uuid` — an RFC 4122 identifier. A primitive like `Int`/`Text`, interned
     /// after `Decimal` (id 52) so the historical 0..50 index layout stays stable.
-    /// It has no literal syntax; a value comes from `std.uuid` (`gen`, `fromText`),
+    /// It has no literal syntax; a value comes from `std.uuid` (`generate`, `fromText`),
     /// and the codec that moves it across a SQL `uuid` column lives in `std.sql`.
     pub uuid: TyConId,
     /// `Bytes` — a raw byte string. A primitive like `Text`, interned after `Uuid`
     /// (id 53) so the historical 0..50 index layout stays stable. It has no literal
-    /// syntax; a value comes from `std.bytes` (`fromHex`, `fromUtf8`, `gen`), and
+    /// syntax; a value comes from `std.bytes` (`fromHex`, `fromUtf8`, `generate`), and
     /// the codec that moves it across a SQL `bytea` column lives in `std.sql`.
     pub bytes: TyConId,
     /// `Date` — a calendar date (year-month-day, no time-of-day, no timezone). A

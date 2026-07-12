@@ -134,7 +134,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
         "std.float",
         &[
             "toText",
-            "parseRaw",
+            "parseStrict",
             "parse",
             "fromInt",
             "round",
@@ -213,7 +213,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
         "std.map",
         &[
             "empty", "fromList", "toList", "insert", "remove", "get", "contains", "keys", "values",
-            "map", "filter", "size", "merge", "update",
+            "map", "filter", "length", "merge", "update",
         ],
     ),
     (
@@ -226,9 +226,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "remove",
             "contains",
             "union",
-            "intersect",
+            "intersection",
             "difference",
-            "size",
+            "length",
         ],
     ),
     (
@@ -275,7 +275,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "readFile",
             "writeFile",
             "append",
-            "exists",
+            "isFile",
             "lines",
             "readDir",
             "isDir",
@@ -297,8 +297,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "diffMs",
             "sinceMs",
             "sleep",
-            "parse",
-            "iso",
+            "toIso",
         ],
     ),
     (
@@ -470,7 +469,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "fromText",
             "toText",
             "fromInt",
-            "parseRaw",
+            "parseStrict",
             "toFloat",
             "add",
             "sub",
@@ -503,7 +502,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // RFC 4122 identifiers: parse/render, the nil and random-v4
             // constructors, and value-based comparisons. The canonical-text
             // representation and the raw three-way compare live in the runtime.
-            "fromText", "toText", "nil", "gen", "compare", "eq", "lt", "lte", "gt", "gte",
+            "fromText", "toText", "nil", "generate", "compare", "eq", "lt", "lte", "gt", "gte",
         ],
     ),
     (
@@ -512,7 +511,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // Raw byte strings: hex and UTF-8 codecs, the empty and random
             // constructors, size, concatenation, and value-based comparisons. The
             // raw-binary representation and the three-way compare live in the runtime.
-            "fromHex", "toHex", "fromUtf8", "toUtf8", "empty", "gen", "length", "concat", "compare",
+            "fromHex", "toHex", "fromUtf8", "toUtf8", "empty", "generate", "length", "concat", "compare",
             "eq", "lt", "lte", "gt", "gte",
         ],
     ),
@@ -563,12 +562,12 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "orderSql",
             "selectSql",
             // Sort direction, declared in query.ridge. The type plus its two
-            // constructors are importable for ordering, and `ascending` projects
+            // constructors are importable for ordering, and `isAscending` projects
             // it to the `ascending?` boolean the seam reads.
             "SortOrder",
             "Asc",
             "Desc",
-            "ascending",
+            "isAscending",
             // The query-plan tree, its three constructors, and the builders that
             // wrap them, declared in query.ridge. The set-operation terminals build a
             // `QueryPlan` through the builders and hand it to a backend's `runPlan`.
@@ -768,7 +767,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "insertManyReturning",
             "deleteReturning",
             "upsertReturning",
-            "deleteWhere",
+            "delete",
             "updateWhere",
             "update",
             // Typed partial updates: the opaque `Setter e` built by `set`, and the
@@ -1118,10 +1117,10 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "assertNe",
             "assertTrue",
             "assertFalse",
-            "isOk",
-            "isErr",
-            "isSome",
-            "isNone",
+            "assertOk",
+            "assertErr",
+            "assertSome",
+            "assertNone",
         ],
     ),
 ];

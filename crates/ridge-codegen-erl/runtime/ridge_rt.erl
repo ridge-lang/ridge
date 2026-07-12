@@ -31,7 +31,7 @@
     sql_literal/1, sql_value_source/1,
     text_split_all/2, text_replace_all/3, text_join/2, text_slice/3,
     text_like/2,
-    list_fold/3, list_sort_by/2,
+    list_fold/3, list_sort_by/2, list_sort_cmp/2, ord_compare_native/2,
     random_int/2, random_choice/1, random_float/1, random_alphanumeric/1, random_seed/1,
     env_get/1, env_all/1, env_set/2,
     proc_run/2,
@@ -874,6 +874,22 @@ list_fold(F, Acc, List) ->
 %% result as the ordering predicate.
 list_sort_by(Key, List) ->
     lists:sort(fun(A, B) -> Key(A) =< Key(B) end, List).
+
+%% ord_compare_native/2 — the `compare` method for the built-in Ord instances
+%% (Int, Float, Bool, Text, Ordering). Uses the BEAM's native term order and
+%% answers a Ridge `Ordering` atom, matching the shape a derived `Ord.compare`
+%% produces so both flow through the same comparator.
+ord_compare_native(A, B) when A < B -> 'Less';
+ord_compare_native(A, B) when A > B -> 'Greater';
+ord_compare_native(_, _) -> 'Equal'.
+
+%% list_sort_cmp/2 — std.list.sort / sortBy dispatched through Ord. `Cmp` is the
+%% element type's `compare` (closed over any key extractor); it answers a Ridge
+%% `Ordering` atom, so one element sorts before another when the comparison is
+%% not 'Greater'. Unlike list_sort_by/2 (native term order) this honours a
+%% user-defined or derived `Ord` instance.
+list_sort_cmp(Cmp, List) ->
+    lists:sort(fun(A, B) -> Cmp(A, B) =/= 'Greater' end, List).
 
 %% text_replace_all/3 — binary:replace with [global] option (From, To, Subject order matches Ridge FFI).
 text_replace_all(From, To, S) -> binary:replace(S, From, To, [global]).

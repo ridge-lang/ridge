@@ -32,7 +32,7 @@ use ridge_ast::Capability;
 use ridge_types::{
     BuiltinTyCons, CapRow, CapVid, CapabilitySet, Constraint, RecordField, RecordSchema, Scheme,
     TyConArena, TyConDecl, TyConId, TyConKind, TyVid, Type, UnionSchema, UnionVariant,
-    VariantPayload,
+    VariantPayload, ORD_CLASS,
 };
 use rustc_hash::FxHashMap;
 
@@ -1999,6 +1999,48 @@ pub(crate) fn reconciled_fn_scheme(
     classes: Option<&ClassTable>,
 ) -> Option<Scheme> {
     match (module, name) {
+        // std.list `sort : ∀a where Ord a. List a -> List a` and
+        // `sortBy : ∀a b (c) where Ord b. (fn c (a -> b)) -> List a -> List a`.
+        // Sorting dispatches through the element/key type's Ord, so the lowering
+        // must prepend its dictionary — the reason these carry a constraint that
+        // the plain signature table cannot express.
+        ("std.list", "sort") => {
+            let a = TyVid(0);
+            Some(Scheme {
+                vars: vec![a],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(b.list, vec![Type::Var(a)])],
+                    ret: Box::new(Type::Con(b.list, vec![Type::Var(a)])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![Constraint::single(ORD_CLASS, a)],
+            })
+        }
+        ("std.list", "sortBy") => {
+            let a = TyVid(0);
+            let key_ret = TyVid(1);
+            let key_cap = CapVid(0);
+            Some(Scheme {
+                vars: vec![a, key_ret],
+                cap_vars: vec![key_cap],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![
+                        Type::Fn {
+                            params: vec![Type::Var(a)],
+                            ret: Box::new(Type::Var(key_ret)),
+                            caps: CapRow::Var(key_cap),
+                        },
+                        Type::Con(b.list, vec![Type::Var(a)]),
+                    ],
+                    ret: Box::new(Type::Con(b.list, vec![Type::Var(a)])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![Constraint::single(ORD_CLASS, key_ret)],
+            })
+        }
         // std.query `orderSql : ∀f. SortOrder -> Quote f -> (Sql, List SqlValue)`
         // — compiles a quoted ordering key plus a direction into an `ORDER BY`
         // fragment and its ordered bind values (a computed key may carry literals,

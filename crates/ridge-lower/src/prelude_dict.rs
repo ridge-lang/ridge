@@ -31,7 +31,7 @@
 
 use ridge_ast::Span;
 use ridge_ir::{IrExpr, IrLit, IrParam, SymbolRef};
-use ridge_types::{ClassId, TyConId, Type, DECODE_CLASS, ENCODE_CLASS};
+use ridge_types::{ClassId, TyConId, Type, DECODE_CLASS, ENCODE_CLASS, ORD_CLASS};
 
 use crate::ctx::LowerCtx;
 
@@ -45,6 +45,7 @@ const TYCON_MAP: u32 = 7;
 const TYCON_OPTION: u32 = 9;
 const TYCON_RESULT: u32 = 10;
 const TYCON_ERROR: u32 = 12;
+const TYCON_ORDERING: u32 = 15;
 
 /// True if `(class, tycon)` is a prelude-reserved `Encode`/`Decode` instance
 /// whose dictionary has no module-level constant and must be synthesised.
@@ -206,6 +207,49 @@ pub fn synth_auto_promoted_dict(
         })
         .collect::<Vec<_>>();
     Some(dict_construct(ctx, fields, span))
+}
+
+// ── Built-in Ord dictionaries ─────────────────────────────────────────────────
+
+/// True if `(class, tycon)` is a built-in `Ord` instance whose dictionary must
+/// be synthesised.
+///
+/// Covers the natively-ordered primitives (`Int`/`Float`/`Bool`/`Text`) and
+/// `Ordering` itself. Each has a registered instance but no `$inst_` constant,
+/// exactly like the codec primitives. Every other `Ord` — a derived or
+/// hand-written user instance — keeps the `$inst_` symbol path.
+#[must_use]
+pub fn is_prelude_ord_instance(class: ClassId, tycon: TyConId) -> bool {
+    class == ORD_CLASS
+        && matches!(
+            tycon.0,
+            TYCON_INT | TYCON_FLOAT | TYCON_BOOL | TYCON_TEXT | TYCON_ORDERING
+        )
+}
+
+/// Synthesise the runtime dictionary for a built-in `Ord` instance.
+///
+/// Emits `#{ compare => fun(A, B) -> _ordCompareNative(A, B) end }`. The method
+/// closes over the native comparator (`ridge_rt:ord_compare_native`), which
+/// answers a Ridge `Ordering` from the BEAM term order — correct for the
+/// primitives, whose native order is their semantic order. This is what makes
+/// `compare` on a primitive (and `sort`/`sortBy` over primitive keys) run, and
+/// it doubles as the fallback comparator when a key's `Ord` cannot be pinned.
+#[must_use]
+pub fn synth_ord_dict(ctx: &mut LowerCtx<'_>, span: Span) -> IrExpr {
+    let a = local(ctx, "__ord_a", span);
+    let b = local(ctx, "__ord_b", span);
+    let call = stdlib_call(ctx, "std.list", "_ordCompareNative", vec![a, b], span);
+    let compare_fn = lambda(
+        ctx,
+        vec![
+            param("__ord_a".to_string(), span),
+            param("__ord_b".to_string(), span),
+        ],
+        call,
+        span,
+    );
+    dict_map(ctx, "compare", compare_fn, span)
 }
 
 // ── Shared IR helpers ─────────────────────────────────────────────────────────

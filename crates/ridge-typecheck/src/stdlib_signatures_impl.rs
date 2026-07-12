@@ -23,7 +23,7 @@
 // The property test checks that every BUILTINS export resolves to `Some(Scheme)`.
 
 use ridge_resolve::StdlibModuleId;
-use ridge_types::{CapRow, CapVid, CapabilitySet, Scheme, TyVid, Type};
+use ridge_types::{CapRow, CapVid, CapabilitySet, Constraint, Scheme, TyVid, Type, ORD_CLASS};
 
 #[cfg(test)]
 use ridge_resolve::BUILTINS;
@@ -665,25 +665,30 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             ))
         }
         (STD_LIST, "sort") => {
-            // forall a. List a -> List a  (requires ord — simplified for Phase 4)
-            Some(poly(
-                vec![A],
-                ty_fn_pure(vec![ty_list(b, Type::Var(A))], ty_list(b, Type::Var(A))),
-            ))
+            // forall a where Ord a. List a -> List a
+            Some(Scheme {
+                vars: vec![A],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: ty_fn_pure(vec![ty_list(b, Type::Var(A))], ty_list(b, Type::Var(A))),
+                constraints: vec![Constraint::single(ORD_CLASS, A)],
+            })
         }
         (STD_LIST, "sortBy") => {
-            // forall a b c. (fn c (a -> b)) -> List a -> List a  (key fn)
-            Some(poly_cap(
-                vec![A, B_VAR],
-                vec![CAP_C],
-                ty_fn_pure(
+            // forall a b c where Ord b. (fn c (a -> b)) -> List a -> List a  (key fn)
+            Some(Scheme {
+                vars: vec![A, B_VAR],
+                cap_vars: vec![CAP_C],
+                row_vars: vec![],
+                ty: ty_fn_pure(
                     vec![
                         ty_fn_cap_var(vec![Type::Var(A)], Type::Var(B_VAR), CAP_C),
                         ty_list(b, Type::Var(A)),
                     ],
                     ty_list(b, Type::Var(A)),
                 ),
-            ))
+                constraints: vec![Constraint::single(ORD_CLASS, B_VAR)],
+            })
         }
         (STD_LIST, "take" | "drop") => {
             // forall a. Int -> List a -> List a

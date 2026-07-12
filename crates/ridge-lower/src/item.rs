@@ -907,32 +907,28 @@ pub fn lower_derived_instance(
             // "CtorName(toText(v0), toText(v1), ...)".
             let arms: Vec<IrArm> = variants
                 .iter()
-                .map(|(ctor_name, payload_count, payload_tycons)| {
+                .map(|(ctor_name, payload_count, payload_tycons, field_names)| {
                     // Bind payload variables p0, p1, … so they can be rendered.
-                    let sym = SymbolRef::Constructor {
-                        ctor_kind: CtorKind::UnionVariant,
-                        owner_type: derived.key.1,
-                        name: ctor_name.clone(),
-                        variant: 0,
-                    };
-                    let args: Vec<IrPat> = (0..*payload_count)
+                    let binds: Vec<IrPat> = (0..*payload_count)
                         .map(|i| IrPat::Bind {
                             name: format!("_p{i}"),
                             inner: None,
                             span: sp,
                         })
                         .collect();
-                    let pat = IrPat::Ctor {
-                        sym,
-                        fields: vec![],
-                        args,
-                        span: sp,
-                    };
+                    let pat = build_union_variant_bind_pat(
+                        derived.key.1,
+                        ctor_name,
+                        binds,
+                        field_names.as_deref(),
+                        sp,
+                    );
                     let arm_body = build_to_text_union_arm_body(
                         ctx,
                         ctor_name,
                         *payload_count,
                         payload_tycons,
+                        field_names.as_deref(),
                         sp,
                     );
                     IrArm {
@@ -1021,14 +1017,8 @@ pub fn lower_derived_instance(
             //   = match x { Nullary -> JText "Ctor"; Payload _p0... -> {"tag":...,"values":[...]} }
             let arms: Vec<ridge_ir::IrArm> = variants
                 .iter()
-                .map(|(ctor_name, payload_shapes)| {
+                .map(|(ctor_name, payload_shapes, field_names)| {
                     let payload_count = payload_shapes.len();
-                    let sym = SymbolRef::Constructor {
-                        ctor_kind: CtorKind::UnionVariant,
-                        owner_type: derived.key.1,
-                        name: ctor_name.clone(),
-                        variant: 0,
-                    };
                     let args: Vec<ridge_ir::IrPat> = (0..payload_count)
                         .map(|i| ridge_ir::IrPat::Bind {
                             name: format!("_p{i}"),
@@ -1036,12 +1026,13 @@ pub fn lower_derived_instance(
                             span: sp,
                         })
                         .collect();
-                    let pat = ridge_ir::IrPat::Ctor {
-                        sym,
-                        fields: vec![],
+                    let pat = build_union_variant_bind_pat(
+                        derived.key.1,
+                        ctor_name,
                         args,
-                        span: sp,
-                    };
+                        field_names.as_deref(),
+                        sp,
+                    );
                     let arm_body = build_encode_union_arm_body(ctx, ctor_name, payload_shapes, sp);
                     ridge_ir::IrArm {
                         pat,
@@ -1698,7 +1689,7 @@ fn build_ord_record_body(ctx: &mut LowerCtx<'_>, field_names: &[String], sp: Spa
 fn build_ord_union_body(
     ctx: &mut LowerCtx<'_>,
     owner_tycon: ridge_types::TyConId,
-    variants: &[(String, usize)],
+    variants: &[(String, usize, Option<Vec<String>>)],
     sp: Span,
 ) -> IrExpr {
     use ridge_ir::{IrArm, IrPat};
@@ -1732,7 +1723,7 @@ fn build_ord_union_body(
     let outer_arms: Vec<IrArm> = variants
         .iter()
         .enumerate()
-        .map(|(i, (ctor_i, payload_i))| {
+        .map(|(i, (ctor_i, payload_i, field_i))| {
             let a_args: Vec<IrPat> = (0..*payload_i)
                 .map(|k| IrPat::Bind {
                     name: format!("_af{k}"),
@@ -1740,22 +1731,13 @@ fn build_ord_union_body(
                     span: sp,
                 })
                 .collect();
-            let a_pat = IrPat::Ctor {
-                sym: SymbolRef::Constructor {
-                    ctor_kind: CtorKind::UnionVariant,
-                    owner_type: owner_tycon,
-                    name: ctor_i.clone(),
-                    variant: 0,
-                },
-                fields: vec![],
-                args: a_args,
-                span: sp,
-            };
+            let a_pat =
+                build_union_variant_bind_pat(owner_tycon, ctor_i, a_args, field_i.as_deref(), sp);
 
             let inner_arms: Vec<IrArm> = variants
                 .iter()
                 .enumerate()
-                .map(|(j, (ctor_j, payload_j))| {
+                .map(|(j, (ctor_j, payload_j, field_j))| {
                     let b_args: Vec<IrPat> = (0..*payload_j)
                         .map(|k| IrPat::Bind {
                             name: format!("_bf{k}"),
@@ -1763,17 +1745,13 @@ fn build_ord_union_body(
                             span: sp,
                         })
                         .collect();
-                    let b_pat = IrPat::Ctor {
-                        sym: SymbolRef::Constructor {
-                            ctor_kind: CtorKind::UnionVariant,
-                            owner_type: owner_tycon,
-                            name: ctor_j.clone(),
-                            variant: 0,
-                        },
-                        fields: vec![],
-                        args: b_args,
-                        span: sp,
-                    };
+                    let b_pat = build_union_variant_bind_pat(
+                        owner_tycon,
+                        ctor_j,
+                        b_args,
+                        field_j.as_deref(),
+                        sp,
+                    );
                     // When i == j (same variant), compare payload fields in order
                     // using the already-bound variables _af0/_bf0, _af1/_bf1, etc.
                     // This is the payload tiebreak: first non-Equal field wins.
@@ -1923,11 +1901,120 @@ fn build_to_text_record_body(
 /// - Payload variant → `"CtorName(" ++ toText(_p0) ++ ", " ++ toText(_p1) ++ ")"`.
 ///
 /// Payload variables are the bound names from the match pattern: `_p0`, `_p1`, etc.
+/// Build the match pattern for a derived union arm that binds each payload slot.
+///
+/// A positional variant (`field_names` is `None`) binds `Ctor p0 p1 …` directly.
+/// A record-style variant (`field_names` is `Some`) nests the binds inside a
+/// `Record` pattern in the tagged tuple's single slot, matching the
+/// `{'Ctor', #{f0 => …}}` runtime shape that construction and matching use.
+/// Shared by every union derive (`ToText`, `Ord`, `Encode`, `Decode`).
+fn build_union_variant_bind_pat(
+    owner_type: ridge_types::TyConId,
+    ctor_name: &str,
+    binds: Vec<ridge_ir::IrPat>,
+    field_names: Option<&[String]>,
+    sp: Span,
+) -> ridge_ir::IrPat {
+    use ridge_ir::IrPat;
+
+    let sym = SymbolRef::Constructor {
+        ctor_kind: CtorKind::UnionVariant,
+        owner_type,
+        name: ctor_name.to_string(),
+        variant: 0,
+    };
+    match field_names {
+        Some(names) => {
+            let rec_fields: Vec<(String, IrPat)> = names.iter().cloned().zip(binds).collect();
+            let inner = IrPat::Ctor {
+                sym: SymbolRef::Constructor {
+                    ctor_kind: CtorKind::Record,
+                    owner_type,
+                    name: ctor_name.to_string(),
+                    variant: 0,
+                },
+                fields: rec_fields,
+                args: vec![],
+                span: sp,
+            };
+            IrPat::Ctor {
+                sym,
+                fields: vec![],
+                args: vec![inner],
+                span: sp,
+            }
+        }
+        None => IrPat::Ctor {
+            sym,
+            fields: vec![],
+            args: binds,
+            span: sp,
+        },
+    }
+}
+
+/// Build a construction expression for a derived union variant from its payload
+/// `values` (in declared order).
+///
+/// The construction dual of [`build_union_variant_bind_pat`]: a positional
+/// variant builds `IrExpr::Construct { UnionVariant, fields: [($0, v0), …] }`; a
+/// record-style variant nests a `Record` construct inside the tagged tuple's
+/// slot so the value is the `{'Ctor', #{f0 => v0, …}}` shape. Used by derived
+/// `Decode` when reassembling a variant from decoded fields.
+fn build_union_variant_construct(
+    ctx: &mut LowerCtx<'_>,
+    owner_type: ridge_types::TyConId,
+    ctor_name: &str,
+    values: Vec<IrExpr>,
+    field_names: Option<&[String]>,
+    sp: Span,
+) -> IrExpr {
+    let sym = SymbolRef::Constructor {
+        ctor_kind: CtorKind::UnionVariant,
+        owner_type,
+        name: ctor_name.to_string(),
+        variant: 0,
+    };
+    if let Some(names) = field_names {
+        let rec_fields: Vec<(String, IrExpr)> = names.iter().cloned().zip(values).collect();
+        let inner = IrExpr::Construct {
+            id: ctx.fresh_id(None),
+            ctor: SymbolRef::Constructor {
+                ctor_kind: CtorKind::Record,
+                owner_type,
+                name: ctor_name.to_string(),
+                variant: 0,
+            },
+            fields: rec_fields,
+            span: sp,
+        };
+        IrExpr::Construct {
+            id: ctx.fresh_id(None),
+            ctor: sym,
+            fields: vec![("0".to_string(), inner)],
+            span: sp,
+        }
+    } else {
+        let fields: Vec<(String, IrExpr)> = values
+            .into_iter()
+            .enumerate()
+            .map(|(i, v)| (format!("${i}"), v))
+            .collect();
+        IrExpr::Construct {
+            id: ctx.fresh_id(None),
+            ctor: sym,
+            fields,
+            span: sp,
+        }
+    }
+}
+
 fn build_to_text_union_arm_body(
     ctx: &mut LowerCtx<'_>,
     ctor_name: &str,
     payload_count: usize,
     payload_tycons: &[Option<ridge_types::TyConId>],
+    field_names: Option<&[String]>,
     sp: Span,
 ) -> IrExpr {
     use crate::interp::{make_concat_call, wrap_to_text_by_tycon};
@@ -1940,10 +2027,18 @@ fn build_to_text_union_arm_body(
         };
     }
 
-    // Opening: "CtorName("
+    // Record variant renders `Ctor { f0 = v0, f1 = v1 }`; positional renders
+    // `Ctor(v0, v1)`. The `_p{i}` binds come from `build_union_variant_bind_pat`,
+    // which binds record fields by declared name in the same `i` order.
+    let is_record = field_names.is_some();
+    let opening = if is_record {
+        format!("{ctor_name} {{ ")
+    } else {
+        format!("{ctor_name}(")
+    };
     let mut acc = IrExpr::Lit {
         id: ctx.fresh_id(None),
-        value: IrLit::Text(format!("{ctor_name}(")),
+        value: IrLit::Text(opening),
         span: sp,
     };
 
@@ -1955,6 +2050,18 @@ fn build_to_text_union_arm_body(
                 span: sp,
             };
             acc = make_concat_call(ctx, acc, sep, sp);
+        }
+
+        // Record variant prefixes each value with `fieldName = `.
+        if let Some(names) = field_names {
+            if let Some(fname) = names.get(i) {
+                let label = IrExpr::Lit {
+                    id: ctx.fresh_id(None),
+                    value: IrLit::Text(format!("{fname} = ")),
+                    span: sp,
+                };
+                acc = make_concat_call(ctx, acc, label, sp);
+            }
         }
 
         let payload_var = IrExpr::Local {
@@ -1970,10 +2077,10 @@ fn build_to_text_union_arm_body(
         acc = make_concat_call(ctx, acc, rendered, sp);
     }
 
-    // Closing: ")"
+    // Closing: ` }` for a record variant, `)` for a positional one.
     let close = IrExpr::Lit {
         id: ctx.fresh_id(None),
-        value: IrLit::Text(")".to_string()),
+        value: IrLit::Text(if is_record { " }" } else { ")" }.to_string()),
         span: sp,
     };
     make_concat_call(ctx, acc, close, sp)
@@ -5055,6 +5162,22 @@ fn build_optional_to_sql_call(
     }
 }
 
+/// One variant's `Encode`/`Decode` derive metadata (owned):
+/// `(ctor_name, payload_field_shapes, record_field_names)`.
+type UnionShapeMeta = (
+    String,
+    Vec<ridge_typecheck::FieldShape>,
+    Option<Vec<String>>,
+);
+
+/// Borrowed view of one payload variant's decode metadata:
+/// `(ctor_name, payload_field_shapes, record_field_names)`.
+type DecodePayloadRef<'a> = (
+    &'a str,
+    &'a [ridge_typecheck::FieldShape],
+    Option<&'a [String]>,
+);
+
 /// Build the `decode` body for a derived `Decode` on a union type.
 ///
 /// Dispatches on the JSON shape:
@@ -5069,18 +5192,18 @@ fn build_decode_union_body(
     ctx: &mut LowerCtx<'_>,
     tycon: ridge_types::TyConId,
     type_name: &str,
-    variants: &[(String, Vec<ridge_typecheck::FieldShape>)],
+    variants: &[UnionShapeMeta],
     sp: Span,
 ) -> IrExpr {
     let nullary: Vec<&str> = variants
         .iter()
-        .filter(|(_, shapes)| shapes.is_empty())
-        .map(|(n, _)| n.as_str())
+        .filter(|(_, shapes, _)| shapes.is_empty())
+        .map(|(n, _, _)| n.as_str())
         .collect();
-    let payload: Vec<(&str, &[ridge_typecheck::FieldShape])> = variants
+    let payload: Vec<DecodePayloadRef> = variants
         .iter()
-        .filter(|(_, shapes)| !shapes.is_empty())
-        .map(|(n, shapes)| (n.as_str(), shapes.as_slice()))
+        .filter(|(_, shapes, _)| !shapes.is_empty())
+        .map(|(n, shapes, fnames)| (n.as_str(), shapes.as_slice(), fnames.as_deref()))
         .collect();
 
     // ── JText branch (nullary ctors) ─────────────────────────────────────────
@@ -5329,7 +5452,7 @@ fn build_union_payload_tag_dispatch(
     ctx: &mut LowerCtx<'_>,
     tycon: ridge_types::TyConId,
     type_name: &str,
-    payload: &[(&str, &[ridge_typecheck::FieldShape])],
+    payload: &[DecodePayloadRef],
     m_bound: &str,
     t_bound: &str,
     sp: Span,
@@ -5341,11 +5464,18 @@ fn build_union_payload_tag_dispatch(
         sp,
     );
     let mut chain = unk;
-    for (ctor_name, shapes) in payload.iter().rev() {
+    for (ctor_name, shapes, field_names) in payload.iter().rev() {
         let arity = shapes.len();
         // Build the payload decode body for this ctor.
-        let ctor_body =
-            build_union_payload_ctor_body(ctx, tycon, ctor_name, shapes, m_bound.to_string(), sp);
+        let ctor_body = build_union_payload_ctor_body(
+            ctx,
+            tycon,
+            ctor_name,
+            shapes,
+            *field_names,
+            m_bound.to_string(),
+            sp,
+        );
         let eq_check = IrExpr::Call {
             id: ctx.fresh_id(None),
             callee: Box::new(IrExpr::Symbol {
@@ -5409,6 +5539,7 @@ fn build_union_payload_ctor_body(
     tycon: ridge_types::TyConId,
     ctor_name: &str,
     shapes: &[ridge_typecheck::FieldShape],
+    field_names: Option<&[String]>,
     m_bound: String,
     sp: Span,
 ) -> IrExpr {
@@ -5437,31 +5568,16 @@ fn build_union_payload_ctor_body(
     let dec_bounds: Vec<String> = (0..arity)
         .map(|i| ctx.fresh_local(&format!("__dec_p{i}")))
         .collect();
-    let ctor_fields: Vec<(String, IrExpr)> = dec_bounds
+    let dec_values: Vec<IrExpr> = dec_bounds
         .iter()
-        .enumerate()
-        .map(|(i, bound)| {
-            (
-                format!("${i}"),
-                IrExpr::Local {
-                    id: ctx.fresh_id(None),
-                    name: bound.clone(),
-                    span: sp,
-                },
-            )
+        .map(|bound| IrExpr::Local {
+            id: ctx.fresh_id(None),
+            name: bound.clone(),
+            span: sp,
         })
         .collect();
-    let ctor_val = IrExpr::Construct {
-        id: ctx.fresh_id(None),
-        ctor: SymbolRef::Constructor {
-            ctor_kind: CtorKind::UnionVariant,
-            owner_type: tycon,
-            name: ctor_name.to_string(),
-            variant: 0,
-        },
-        fields: ctor_fields,
-        span: sp,
-    };
+    let ctor_val =
+        build_union_variant_construct(ctx, tycon, ctor_name, dec_values, field_names, sp);
     let ok_ctor = build_ok(ctor_val, sp);
 
     // Sequence payload decodes innermost-first.
@@ -6835,15 +6951,16 @@ mod tests {
             method_body: DerivedMethodBody::DerivedToTextUnion {
                 variants: vec![
                     // Circle(Int) — 1 Int payload
-                    ("Circle".to_string(), 1, vec![Some(TyConId(0))]),
+                    ("Circle".to_string(), 1, vec![Some(TyConId(0))], None),
                     // Rect(Int, Int) — 2 Int payloads
                     (
                         "Rect".to_string(),
                         2,
                         vec![Some(TyConId(0)), Some(TyConId(0))],
+                        None,
                     ),
                     // Point — nullary, no payloads
-                    ("Point".to_string(), 0, vec![]),
+                    ("Point".to_string(), 0, vec![], None),
                 ],
             },
         };
@@ -6913,7 +7030,7 @@ mod tests {
                 span: sp(),
             },
             method_body: DerivedMethodBody::DerivedOrdUnion {
-                variants: vec![("Box".to_string(), 1)],
+                variants: vec![("Box".to_string(), 1, None)],
             },
         };
 
@@ -7154,8 +7271,12 @@ mod tests {
             },
             method_body: DerivedMethodBody::DerivedDecodeUnion {
                 variants: vec![
-                    ("Admin".to_string(), vec![]),
-                    ("Circle".to_string(), vec![FieldShape::Prim(TyConId(1))]),
+                    ("Admin".to_string(), vec![], None),
+                    (
+                        "Circle".to_string(),
+                        vec![FieldShape::Prim(TyConId(1))],
+                        None,
+                    ),
                 ],
             },
         };

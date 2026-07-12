@@ -1,0 +1,16 @@
+[workspace]
+name = "users-crud"
+version = "0.1.0"
+members = ["."]
+
+[project]
+name = "users-crud"
+version = "0.1.0"
+kind = "app"
+entry = "src/Main.ridge"
+
+[project.src]
+root = "src"
+
+[capabilities]
+allow = ["db", "io"]

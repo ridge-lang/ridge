@@ -336,6 +336,32 @@ fn single_line_interp_still_works() {
     );
 }
 
+#[test]
+fn single_line_interp_preserves_non_ascii() {
+    // A non-ASCII character in an interpolated literal segment must round-trip
+    // as one UTF-8 scalar. The single-line `$"..."` scanner used to push each
+    // raw byte as a `char`, Latin-1-decoding a multi-byte scalar into several
+    // code points that then double-encoded on the way back out to UTF-8. The
+    // em-dashes here — one before the hole, one after — pin both segments.
+    let src = "$\"a—${x}b—c\"";
+    let kinds = interp_kinds(src);
+    assert_eq!(
+        kinds,
+        vec![
+            Token::InterpStart,
+            Token::InterpText("a—".to_string()),
+            Token::InterpExprStart,
+            Token::LowerIdent("x".to_string()),
+            Token::InterpExprEnd,
+            Token::InterpText("b—c".to_string()),
+            Token::InterpEnd,
+        ],
+    );
+    // Control: a plain literal already preserves the same character, so the two
+    // string forms agree.
+    assert_eq!(first_text_lit("\"a—c\""), "a—c");
+}
+
 // ── Raw strings ───────────────────────────────────────────────────────────────
 
 #[test]

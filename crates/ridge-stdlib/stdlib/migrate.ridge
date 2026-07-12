@@ -124,7 +124,7 @@ pub fn dropTable (table: Text) -> MigrationOp =
 -- select is the plan rendered inline, so a view is a compiled Ridge query — rename a
 -- column on the entity the plan reads and the view's SQL follows, still type-checked. A
 -- `Repo` can bind to the view name and read it back typed. Auto-reverses to `dropView`:
---   createView "active_users" (adults |> Repo.plan)
+--   createView "active_users" (planScan "users" (QEq (QCol "active") (QLitBool true)) [] (0 - 1) 0 false)
 pub fn createView (name: Text) (plan: QueryPlan) -> MigrationOp =
     CreateView name plan
 

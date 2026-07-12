@@ -173,6 +173,16 @@ jobs:
         with:
           toolchain: "1.88"
 
+      # nextest runs test binaries in parallel — cargo test runs them one at a
+      # time — which is the win for this suite, where each BEAM e2e test spawns its
+      # own erl process. Concurrency limits for the connection-heavy Postgres tests
+      # live in .config/nextest.toml.
+      - name: Install cargo-nextest
+        if: steps.changes.outputs.code == 'true'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
       - name: Install Erlang/OTP
         if: steps.changes.outputs.code == 'true'
         uses: erlef/setup-beam@v1
@@ -189,6 +199,13 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-beam-${{ matrix.otp }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-beam-${{ matrix.otp }}-
+
+      # Compile the test binaries in their own step, so the run step's time is the
+      # test-run cost alone rather than build-plus-run in one number. nextest reuses
+      # what this builds, so the run below only executes.
+      - name: Build BEAM e2e test binaries
+        if: steps.changes.outputs.code == 'true'
+        run: cargo build -p ridge-codegen-erl -p ridge-driver -p ridge-cli --tests --features beam-runtime --locked
 
       # Bring up a TLS-enabled Postgres so the std.data Postgres adapter e2e can
       # exercise the real wire protocol — SSL upgrade and SCRAM-SHA-256 auth
@@ -239,7 +256,7 @@ jobs:
         if: steps.changes.outputs.code == 'true'
         env:
           RIDGE_TEST_PG_URL: "postgres://postgres:postgres@localhost:5432/ridge_test?sslmode=require"
-        run: cargo test -p ridge-codegen-erl -p ridge-driver -p ridge-cli --features beam-runtime --no-fail-fast --locked
+        run: cargo nextest run -p ridge-codegen-erl -p ridge-driver -p ridge-cli --features beam-runtime --no-fail-fast --locked
 
       # Compile the whole standard library from its own source and run its
       # `.test.ridge` suite on BEAM (`ridge test --stdlib`). This is the only lane

@@ -18,8 +18,8 @@
 ---
 
 Hindley-Milner inference, row polymorphism, actor-first concurrency, and
-nine first-class capabilities (`io`, `fs`, `net`, `time`, `random`, `env`,
-`proc`, `spawn`, `ffi`) tracked in the type system. Compiles to BEAM
+ten first-class capabilities (`io`, `fs`, `net`, `time`, `random`, `env`,
+`proc`, `spawn`, `ffi`, `db`) tracked in the type system. Compiles to BEAM
 bytecode via Core Erlang.
 
 **Status:** 0.3.0-rc4, a release candidate that completes the typeclass system:
@@ -54,7 +54,7 @@ schedule. See [`ROADMAP.md`](ROADMAP.md).
 
 - Statically typed with Hindley-Milner inference and row polymorphism
 - Compiled to BEAM bytecode via Core Erlang
-- Nine first-class capabilities visible in every function signature
+- Ten first-class capabilities visible in every function signature
 - Immutable by default; mutable state confined to actors
 - Actor-first concurrency
 - Workspace model with architectural rules enforced by the compiler

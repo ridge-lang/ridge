@@ -6,7 +6,7 @@
 
 **History:** Supersedes `RILL_SPEC_AND_ROADMAP.md` (v0.1.0-draft, Rill). The language was renamed from *Rill* to *Ridge* after a design refinement pass. The underlying philosophy is preserved; the following are the substantive changes from the prior draft:
 - Language name: **Ridge** (was *Rill*). File extension: **`.ridge`** (was `.rill`). Manifest: **`ridge.toml`** (was `rill.toml`).
-- Effect system: **9 granular capabilities** with prefix list syntax (was binary `fn`/`fn!`).
+- Effect system: **10 granular capabilities** with prefix list syntax (was binary `fn`/`fn!`).
 - Multi-target strategy: **BEAM-primary with WebAssembly and native (LLVM) as exploratory backends** behind a target-neutral IR (changed from the fixed multi-target schedule of earlier drafts; see §11).
 - **Workspace model** with architectural enforcement by the compiler — new first-class feature.
 - **LSP and a package manager** are part of the toolchain rather than deferred extras.
@@ -1760,8 +1760,7 @@ The Ridge `.ridge` stdlib sources live at `crates/ridge-stdlib/stdlib/<module>.r
 | Crate | Purpose | Justification |
 |-------|---------|---------------|
 | `logos` | Lexer generator | Fast, well-documented, handles layout with custom logic |
-| `chumsky` | Parser combinators | Excellent error recovery, great diagnostics, idiomatic Rust |
-| `ariadne` | Diagnostics rendering | Beautiful error output, works well with chumsky |
+| `ariadne` | Diagnostics rendering | Beautiful error output for the compiler's diagnostics |
 | `la-arena` | Arena allocation for AST | Cheap IDs, cache-friendly |
 | `rustc-hash` | Fast hashmaps | Used throughout the compiler |
 | `insta` | Snapshot testing | Core to parser/typechecker test strategy |

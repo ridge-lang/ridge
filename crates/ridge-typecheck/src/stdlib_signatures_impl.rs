@@ -2050,6 +2050,8 @@ mod tests {
                             | "ddlCreateEntity"
                             | "ddlAddEntityColumn"
                             | "ddlAlterColumn"
+                            | "ddlCreateView"
+                            | "ddlDropView"
                             | "migrationsApplied"
                             | "recordMigration"
                             | "unrecordMigration"

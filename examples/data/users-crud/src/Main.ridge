@@ -1,0 +1,111 @@
+-- users-crud — a guided tour of the std.data repository API.
+--
+-- Run it from this directory with `ridge run`. The program opens a SQLite
+-- database, creates a `users` table from a typed entity, and then walks the
+-- four data operations — create, read, update, delete — printing each step,
+-- so you can watch one table's rows move through the whole repository API.
+--
+-- The database lives in memory, so every run starts clean and nothing is
+-- left on disk. Two one-line changes take the same code to a real database:
+--   * `connectSqlite (sqliteFile "users.db")` keeps the data between runs;
+--   * `connect (Config { ... })` runs it against Postgres, unchanged.
+-- The data guide in docs/data.md walks through both.
+
+import std.data (connectSqlite, sqliteMemory, Sqlite)
+import std.migrate as Migrate
+import std.repo as Repo
+import std.schema (schemaOf)
+import std.query (SortOrder, Asc, Desc)
+import std.sql (toSql)
+import std.io as Io
+import std.list as List
+import std.int as Int
+
+-- The entity a row maps to. `deriving (Row)` gives the repository the encode
+-- and decode between a `User` and a database row; `deriving (Schema)`
+-- describes the table — the column types, and by convention that `id` is the
+-- database-assigned primary key. That convention is why the generated insert
+-- shape, `UserInsert`, has no `id` field: the database fills it in.
+pub type User = { id: Int, name: Text, email: Text } deriving (Row, Schema)
+
+-- `schemaOf` reads the derived schema from the *type*, so it takes a value to
+-- fix that type — never a real user. `None` at type `Option User` is enough.
+fn userWitness () -> Option User = None
+
+-- Bring the `users` table into being. `Migrate.run` records the migrations it
+-- applies in a tracking table and skips the ones already recorded, so calling
+-- it on every startup is safe — the table is created exactly once.
+fn setup (conn: Sqlite) -> Result (List Text) Error =
+    Migrate.run conn
+        [ Migrate.migration "0001_create_users"
+            [ Migrate.createSchema (schemaOf (userWitness ())) ] ]
+
+-- ── Presentation ──────────────────────────────────────────────────────────
+
+fn userLine (u: User) -> Text =
+    $"    #${Int.toText u.id}  ${u.name} <${u.email}>"
+
+fn io section (title: Text) -> Unit =
+    Io.println ""
+    Io.println title
+
+-- Print the whole table, ordered by id, under a heading.
+fn db io showAll (title: Text) (users: Repo User Sqlite) -> Result Unit Error =
+    let _ = section title
+    match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.toList
+        Err e -> Err e
+        Ok us ->
+            if List.isEmpty us then Ok (Io.println "    (none)")
+            else Ok (List.forEach (fn (u: User) -> Io.println (userLine u)) us)
+
+-- ── The four operations ───────────────────────────────────────────────────
+
+-- CREATE: insert three users in one batch. `UserInsert` carries only the
+-- columns we own — no `id`, which the database assigns.
+fn db seedUsers (users: Repo User Sqlite) -> Result Unit Error =
+    users |> Repo.insertMany
+        [ UserInsert { name = "Ada Lovelace", email = "ada@example.com" }
+        , UserInsert { name = "Alan Turing", email = "alan@example.com" }
+        , UserInsert { name = "Grace Hopper", email = "grace@example.com" } ]
+
+-- READ: look one user up by primary key.
+fn db io showOne (uid: Int) (users: Repo User Sqlite) -> Result Unit Error =
+    match users |> Repo.getBy "id" (toSql uid)
+        Err e -> Err e
+        Ok None -> Ok (Io.println $"    no user with id ${Int.toText uid}")
+        Ok (Some u) -> Ok (Io.println (userLine u))
+
+-- UPDATE: change one column on the matching rows. `set` takes a typed setter,
+-- so the new value is checked against the column at compile time; the result
+-- is how many rows changed.
+fn db renameUser (uid: Int) (newName: Text) (users: Repo User Sqlite) -> Result Int Error =
+    users |> Repo.setWhere [ Repo.set (fn (u: User) -> u.name) newName ] (fn (u: User) -> u.id == uid)
+
+-- DELETE: remove the rows matching a predicate; the result is how many went.
+fn db removeUser (uid: Int) (users: Repo User Sqlite) -> Result Int Error =
+    users |> Repo.deleteWhere (fn (u: User) -> u.id == uid)
+
+-- ── The walk-through ──────────────────────────────────────────────────────
+
+-- Each step returns `Result _ Error`; `?` unwraps an `Ok` and returns early on
+-- the first `Err`, so the happy path reads top to bottom with no nesting.
+fn db io run (conn: Sqlite) -> Result Unit Error =
+    let _ = setup conn ?
+    let users: Repo User Sqlite = Repo.repo conn "users"
+    seedUsers users ?
+    showAll "After create - three users:" users ?
+    let renamed = renameUser 2 "Alan M. Turing" users ?
+    let _ = Io.println $"\n(update) renamed ${Int.toText renamed} row - looking it up by id:"
+    showOne 2 users ?
+    let removed = removeUser 3 users ?
+    let _ = Io.println $"\n(delete) removed ${Int.toText removed} row"
+    showAll "After update and delete:" users
+
+fn db io main () -> Unit =
+    let _ = Io.println "users-crud - a tour of std.data over SQLite"
+    match connectSqlite (sqliteMemory ())
+        Err e -> Io.eprintln $"could not open the database (${e.code})"
+        Ok conn ->
+            match run conn
+                Err e -> Io.eprintln $"database error (${e.code})"
+                Ok _ -> section "done."

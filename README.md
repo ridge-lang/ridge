@@ -196,6 +196,7 @@ is in [`docs/tutorial.md`](docs/tutorial.md).
 ## Documentation
 
 - [Tutorial](docs/tutorial.md) &mdash; install plus a guided first project
+- [Data guide](docs/data.md) &mdash; the typed SQLite/Postgres data layer
 - [Language specification](docs/spec.md) &mdash; formal definition
 - [Grammar (EBNF)](docs/grammar.ebnf) &mdash; parser reference
 - [Examples](examples/) &mdash; runnable sample programs

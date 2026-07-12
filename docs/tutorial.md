@@ -500,6 +500,16 @@ For the full grammar, coherence rules, and diagnostic reference, see
 
 ---
 
+## Talking to a database
+
+Ridge has a typed data layer — describe a table as a record, and a repository
+reads and writes rows as that type, on SQLite or Postgres. The
+[data guide](data.md) walks through connecting, migrations, and the query and
+write API; a runnable CRUD tour lives in
+[`examples/data/users-crud`](../examples/data/users-crud).
+
+---
+
 ## Troubleshooting
 
 **`ridge` not found after install.**

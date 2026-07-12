@@ -25,7 +25,7 @@
 -- every call site that threads the handle.
 
 import std.sql (SqlValue, sqlValue, Dialect, SqliteDialect)
-import std.query (QueryPlan, planToSql, planToSqlFor, planScan, MutationPlan, mutationToSql, mutationReturningToSql, planInsert, planUpdate, planDelete)
+import std.query (QueryPlan, planToSql, planToSqlFor, planScan, createViewDdl, createViewDdlFor, dropViewDdl, MutationPlan, mutationToSql, mutationReturningToSql, planInsert, planUpdate, planDelete)
 import std.map (toList)
 import std.text (startsWith)
 import std.schema (EntitySchema, ColumnSchema, schemaToDdl, schemaToDdlFor, schemaIndexDdls, schemaTable, createTableDdl, createTableDdlFor, addColumnDdl, addColumnDdlFor, addColumnSchemaDdl, addColumnSchemaDdlFor, alterColumnDdl, dropTableDdl, dropColumnDdl, indexDdl, dropIndexDdl, sqliteRebuildTableDdl, sqliteAddNeedsRebuild)
@@ -170,6 +170,8 @@ pub class Adapter a =
     ddlCreateEntity (conn: a) (schema: EntitySchema Unit) -> Result Unit Error
     ddlAddEntityColumn (conn: a) (table: Text) (col: ColumnSchema Unit) -> Result Unit Error
     ddlAlterColumn (conn: a) (table: Text) (old: ColumnSchema Unit) (new: ColumnSchema Unit) -> Result Unit Error
+    ddlCreateView (conn: a) (name: Text) (plan: QueryPlan) -> Result Unit Error
+    ddlDropView (conn: a) (name: Text) -> Result Unit Error
     migrationsApplied (conn: a) -> Result (List Text) Error
     recordMigration (conn: a) (name: Text) -> Result Unit Error
     unrecordMigration (conn: a) (name: Text) -> Result Unit Error
@@ -356,6 +358,10 @@ instance Adapter MemAdapter =
     ddlAddEntityColumn (conn: MemAdapter) (table: Text) (col: ColumnSchema Unit) -> Result Unit Error =
         Ok ()
     ddlAlterColumn (conn: MemAdapter) (table: Text) (old: ColumnSchema Unit) (new: ColumnSchema Unit) -> Result Unit Error =
+        Ok ()
+    ddlCreateView (conn: MemAdapter) (name: Text) (plan: QueryPlan) -> Result Unit Error =
+        Ok ()
+    ddlDropView (conn: MemAdapter) (name: Text) -> Result Unit Error =
         Ok ()
     migrationsApplied (conn: MemAdapter) -> Result (List Text) Error =
         _memMigrationsApplied conn.id
@@ -617,6 +623,10 @@ instance Adapter Postgres =
         pgExecUnit conn.id (addColumnSchemaDdl table col)
     ddlAlterColumn (conn: Postgres) (table: Text) (old: ColumnSchema Unit) (new: ColumnSchema Unit) -> Result Unit Error =
         pgExecUnit conn.id (alterColumnDdl table old new)
+    ddlCreateView (conn: Postgres) (name: Text) (plan: QueryPlan) -> Result Unit Error =
+        pgExecUnit conn.id (createViewDdl name plan)
+    ddlDropView (conn: Postgres) (name: Text) -> Result Unit Error =
+        pgExecUnit conn.id (dropViewDdl name)
     migrationsApplied (conn: Postgres) -> Result (List Text) Error =
         _pgMigrationsApplied conn.id
     recordMigration (conn: Postgres) (name: Text) -> Result Unit Error =
@@ -770,6 +780,10 @@ instance Adapter Sqlite =
         else sqliteExecUnit conn.id (addColumnSchemaDdlFor SqliteDialect table col)
     ddlAlterColumn (conn: Sqlite) (table: Text) (old: ColumnSchema Unit) (new: ColumnSchema Unit) -> Result Unit Error =
         Err ({ code = "raw.unsupported", message = "SQLite cannot alter a column in place; it needs a table rebuild" })
+    ddlCreateView (conn: Sqlite) (name: Text) (plan: QueryPlan) -> Result Unit Error =
+        sqliteExecUnit conn.id (createViewDdlFor SqliteDialect name plan)
+    ddlDropView (conn: Sqlite) (name: Text) -> Result Unit Error =
+        sqliteExecUnit conn.id (dropViewDdl name)
     migrationsApplied (conn: Sqlite) -> Result (List Text) Error =
         _sqliteMigrationsApplied conn.id
     recordMigration (conn: Sqlite) (name: Text) -> Result Unit Error =

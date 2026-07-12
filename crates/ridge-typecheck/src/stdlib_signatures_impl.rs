@@ -1983,6 +1983,13 @@ mod tests {
                             // seeded the same way.
                             | "planToSql"
                             | "planToSqlFor"
+                            // The inline-literal renderer and the view DDL take the
+                            // reconciled `QueryPlan`, so they are seeded the same way.
+                            | "planToSqlInline"
+                            | "planToSqlInlineFor"
+                            | "createViewDdl"
+                            | "createViewDdlFor"
+                            | "dropViewDdl"
                             | "optimize"
                             | "planExists"
                             | "planList"
@@ -2043,6 +2050,8 @@ mod tests {
                             | "ddlCreateEntity"
                             | "ddlAddEntityColumn"
                             | "ddlAlterColumn"
+                            | "ddlCreateView"
+                            | "ddlDropView"
                             | "migrationsApplied"
                             | "recordMigration"
                             | "unrecordMigration"

@@ -31,10 +31,12 @@ import std.float as Float
 -- How a column's value originates. `Supplied` (the default) means the caller
 -- provides the value on insert. The others mark the column database-generated or
 -- default-filled: a serial/identity column, a `DEFAULT now()` timestamp, a
--- literal default, or a raw default expression. A non-`Supplied` column is the
--- one the insert path later learns to omit (so the database fills it) and the
--- one the compile-time insert shape later drops (so it cannot be set by hand).
-pub type Generation = Supplied | Identity | DefaultNow | DefaultLit SqlValue | DefaultRawSql Text
+-- literal default, a raw default expression, or a stored generated column whose
+-- value is a computed expression over the row (`GENERATED ALWAYS AS (…) STORED`).
+-- A non-`Supplied` column is the one the insert path later learns to omit (so the
+-- database fills it) and the one the compile-time insert shape later drops (so it
+-- cannot be set by hand).
+pub type Generation = Supplied | Identity | DefaultNow | DefaultLit SqlValue | DefaultRawSql Text | Computed QExpr
 
 -- The referential action a foreign key takes when its target row is deleted or
 -- updated, mirroring SQL's `ON DELETE` / `ON UPDATE`.
@@ -148,6 +150,17 @@ pub fn check (pred: Quote (e -> Bool)) (c: ColumnSchema e) -> ColumnSchema e =
 -- `checkRaw` is the escape hatch generated migrations and snapshots use.
 pub fn checkRaw (tree: QExpr) (c: ColumnSchema e) -> ColumnSchema e =
     ColumnSchema { name = c.name, column = c.column, ty = c.ty, nullable = c.nullable, generation = c.generation, primaryKey = c.primaryKey, unique = c.unique, indexed = c.indexed, foreignKey = c.foreignKey, check = Some tree }
+
+-- Make the column a stored generated column: its value is the given expression over the
+-- entity, computed and stored by the database on every write (`GENERATED ALWAYS AS (<expr>)
+-- STORED`) rather than supplied by the caller. The expression is captured as a `QExpr` the
+-- same way a `check` predicate is and rendered by the same compiler; being database-generated,
+-- the column is omitted from the insert shape like an identity or default column. A stored
+-- column is the provider-neutral form — Postgres (12+) and SQLite (3.31+) both store one,
+-- and Postgres has no virtual generated column:
+--   mkColumn "total" "total" DbBigInt false |> computed (fn (o: Order) -> o.qty * o.price)
+pub fn computed (expr: Quote (e -> v)) (c: ColumnSchema e) -> ColumnSchema e =
+    generated (Computed expr.tree) c
 
 -- ── Column read accessors ─────────────────────────────────────────────────────
 
@@ -421,12 +434,14 @@ pub fn alterColumnDdl (table: Text) (old: ColumnSchema e) (new: ColumnSchema e) 
 
 -- Whether the snapshot diff should emit an `AlterColumn` for a column present in both
 -- snapshots: true when its SQL type, nullability, or `DEFAULT`-style generation changed.
--- A serial/identity column on either side is excluded — turning a column into or out of an
--- identity is a table rewrite the plain `ALTER COLUMN` actions cannot express, so it stays
--- a hand-written step. Constraint changes (primary key, uniqueness, foreign key, index,
--- check) are likewise out of scope and left as they are.
+-- A serial/identity or stored-generated column on either side is excluded — turning a
+-- column into or out of an identity or a computed column is a table rewrite the plain
+-- `ALTER COLUMN` actions cannot express, so it stays a hand-written step. Constraint changes
+-- (primary key, uniqueness, foreign key, index, check) are likewise out of scope and left as
+-- they are.
 pub fn columnAltered (old: ColumnSchema e) (new: ColumnSchema e) -> Bool =
     if isIdentity old.generation || isIdentity new.generation then false
+    else if isComputed old.generation || isComputed new.generation then false
     else (old.ty != new.ty) || (old.nullable != new.nullable) || (old.generation != new.generation)
 
 -- `DROP TABLE`.
@@ -459,14 +474,15 @@ pub fn sqliteRebuildTableDdl (old: EntitySchema e) (new: EntitySchema e) -> List
         _  -> schemaToDdlFor SqliteDialect tempSchema :: rebuildCopyStmt temp new.table shared :: tail
 
 -- Whether SQLite must rebuild the table to add this column rather than add it in place.
--- Its `ADD COLUMN` rejects a UNIQUE or PRIMARY KEY column, an identity (a key), a NOT
--- NULL column without a constant default, and a non-constant default such as
--- `CURRENT_TIMESTAMP`; those shapes go through `sqliteRebuildTableDdl` instead. The other
--- shapes add in place with `addColumnSchemaDdlFor`.
+-- Its `ADD COLUMN` rejects a UNIQUE or PRIMARY KEY column, an identity (a key), a stored
+-- generated column, a NOT NULL column without a constant default, and a non-constant default
+-- such as `CURRENT_TIMESTAMP`; those shapes go through `sqliteRebuildTableDdl` instead. The
+-- other shapes add in place with `addColumnSchemaDdlFor`.
 pub fn sqliteAddNeedsRebuild (c: ColumnSchema e) -> Bool =
     if c.unique then true
     else if c.primaryKey then true
     else if isIdentity c.generation then true
+    else if isComputed c.generation then true
     else if nonConstantDefault c.generation then true
     else notNullWithoutConstantDefault c
 
@@ -497,6 +513,11 @@ fn isIdentity (g: Generation) -> Bool =
         Identity -> true
         _        -> false
 
+fn isComputed (g: Generation) -> Bool =
+    match g
+        Computed _ -> true
+        _          -> false
+
 -- The `ALTER COLUMN` actions a change needs — one per facet that differs between the old
 -- and new descriptor, in the fixed order type, nullability, default — so a rendered alter
 -- reads predictably. Each action targets the new (target) shape; a facet left unchanged
@@ -516,8 +537,8 @@ fn alterNullAction (c: ColumnSchema e) -> Text =
 
 -- The `ALTER COLUMN … DEFAULT` action for the target generation: drop the default when the
 -- column reverts to caller-supplied, or set it to `now()`, a literal, or a raw expression.
--- `Identity` cannot occur — `columnAltered` excludes an identity column from alteration —
--- and renders nothing.
+-- `Identity` and `Computed` cannot occur — `columnAltered` excludes an identity or a stored
+-- generated column from alteration — and render nothing.
 fn alterDefaultAction (c: ColumnSchema e) -> Text =
     match c.generation
         Supplied        -> Text.join "" ["ALTER COLUMN ", quoteIdent c.column, " DROP DEFAULT"]
@@ -525,6 +546,7 @@ fn alterDefaultAction (c: ColumnSchema e) -> Text =
         DefaultNow      -> Text.join "" ["ALTER COLUMN ", quoteIdent c.column, " SET DEFAULT now()"]
         DefaultLit v    -> Text.join "" ["ALTER COLUMN ", quoteIdent c.column, " SET DEFAULT ", sqlLiteral v]
         DefaultRawSql r -> Text.join "" ["ALTER COLUMN ", quoteIdent c.column, " SET DEFAULT ", r]
+        Computed _      -> ""
 
 fn concatFrags (a: List Text) (b: List Text) -> List Text =
     match a
@@ -671,9 +693,11 @@ fn pkSql (d: Dialect) (c: ColumnSchema e) -> Text =
 fn uniqSql (c: ColumnSchema e) -> Text =
     if c.unique then " UNIQUE" else ""
 
--- The column's `DEFAULT` clause for the non-`Supplied` generations that fill a value
--- without a serial sequence: `now()` for a timestamp default, an inline literal, or a
--- raw default expression. `Supplied` and `Identity` carry no `DEFAULT` (an identity is
+-- The column's value clause for the non-`Supplied` generations. Most fill a value without a
+-- serial sequence: `now()` for a timestamp default, an inline literal, or a raw default
+-- expression. `Computed` is not a default but a stored generated column — `GENERATED ALWAYS
+-- AS (<expr>) STORED`, the expression rendered inline by the same compiler a `CHECK` uses,
+-- spelled the same on both backends. `Supplied` and `Identity` carry nothing (an identity is
 -- a serial pseudo-type, not a default).
 fn defaultSql (d: Dialect) (g: Generation) -> Text =
     match g
@@ -682,6 +706,7 @@ fn defaultSql (d: Dialect) (g: Generation) -> Text =
         DefaultNow      -> Text.concat " DEFAULT " (nowExpr d)
         DefaultLit v    -> Text.concat " DEFAULT " (sqlLiteral v)
         DefaultRawSql r -> Text.concat " DEFAULT " r
+        Computed e      -> Text.join "" [" GENERATED ALWAYS AS (", ckExpr e, ") STORED"]
 
 -- The current-timestamp function each dialect spells for a `DefaultNow` column.
 fn nowExpr (d: Dialect) -> Text =
@@ -1010,6 +1035,7 @@ fn generationSource (g: Generation) -> Text =
         DefaultNow      -> "DefaultNow"
         DefaultLit v    -> Text.join "" ["(DefaultLit ", sqlValueSource v, ")"]
         DefaultRawSql r -> Text.join "" ["(DefaultRawSql ", sourceString r, ")"]
+        Computed e      -> Text.join "" ["(Computed ", qexprSource e, ")"]
 
 -- A foreign key's source: `references "table" "column"` plus the `onDelete`/`onUpdate`
 -- steps for whichever action is not the default `NoAction`.

@@ -615,6 +615,23 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                         name: "RunSql".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(b.text, vec![])]),
                     },
+                    // `CreateView` carries the view name and the `QueryPlan` (this block's
+                    // `base + 15`) it saves as a `CREATE VIEW`. A view is a named query, so a
+                    // create auto-reverses to a `DropView`.
+                    UnionVariant {
+                        name: "CreateView".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(TyConId(base + 15), vec![]),
+                        ]),
+                    },
+                    // `DropView` carries the view name alone. Like a lossy table drop it has
+                    // no derivable inverse — the saved query is gone — so a migration that
+                    // drops a view supplies an explicit `down`.
+                    UnionVariant {
+                        name: "DropView".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(b.text, vec![])]),
+                    },
                 ],
             }),
             def_span: None,
@@ -1598,6 +1615,12 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                         name: "DefaultRawSql".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(b.text, vec![])]),
                     },
+                    // `Computed` carries the stored-generated column's expression as a
+                    // `QExpr`, rendered inline into `GENERATED ALWAYS AS (…) STORED`.
+                    UnionVariant {
+                        name: "Computed".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(b.q_expr, vec![])]),
+                    },
                 ],
             }),
             def_span: None,
@@ -2269,8 +2292,9 @@ pub(crate) fn reconciled_fn_scheme(
         (
             "std.query",
             "planScan" | "planCombine" | "planRefine" | "planJoin" | "planProject"
-            | "planAggregate" | "planGroup" | "planToSql" | "planToSqlFor" | "optimize"
-            | "planExists",
+            | "planAggregate" | "planGroup" | "planToSql" | "planToSqlFor" | "planToSqlInline"
+            | "planToSqlInlineFor" | "createViewDdl" | "createViewDdlFor" | "dropViewDdl"
+            | "optimize" | "planExists",
         ) => reconciled_query_plan_fn_scheme(name, reconciled, b),
         // std.query mutation builders + the write-side renderer — the `MutationPlan`
         // factories `planInsert`/`planUpsert`/`planUpdate`/`planDelete` and `mutationToSql`.
@@ -2296,6 +2320,10 @@ pub(crate) fn reconciled_fn_scheme(
 /// `planCombine`/`planRefine`/`planJoin`/`planProject`/`planAggregate`/`planGroup`, the
 /// factories that build a `QueryPlan` node. Each is pure and returns the reconciled
 /// `QueryPlan`, so none is expressible in the hand-curated signature table.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scheme per std.query plan/view verb plus the shared type-builder closures; they read best kept together"
+)]
 fn reconciled_query_plan_fn_scheme(
     name: &str,
     reconciled: &FxHashMap<String, TyConId>,
@@ -2335,6 +2363,19 @@ fn reconciled_query_plan_fn_scheme(
         ty: Type::Fn {
             params,
             ret: Box::new(plan()),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        },
+        constraints: vec![],
+    };
+    // A pure function over the reconciled plan that returns `Text` rather than a plan —
+    // the inline-literal renderer and the view DDL, which spell a plan out as SQL text.
+    let pure_text = |params: Vec<Type>| Scheme {
+        vars: vec![],
+        cap_vars: vec![],
+        row_vars: vec![],
+        ty: Type::Fn {
+            params,
+            ret: Box::new(text()),
             caps: CapRow::Concrete(CapabilitySet::PURE),
         },
         constraints: vec![],
@@ -2416,6 +2457,17 @@ fn reconciled_query_plan_fn_scheme(
             },
             constraints: vec![],
         }),
+        // planToSqlInline : QueryPlan -> Text, and planToSqlInlineFor : Dialect ->
+        // QueryPlan -> Text — the inline-literal renderers, spelling a plan out as one
+        // standalone statement (a view body) rather than a parameterized one.
+        "planToSqlInline" => Some(pure_text(vec![plan()])),
+        "planToSqlInlineFor" => Some(pure_text(vec![dialect_ty(), plan()])),
+        // createViewDdl : Text -> QueryPlan -> Text, createViewDdlFor : Dialect -> Text ->
+        // QueryPlan -> Text — save a plan as a `CREATE VIEW`; dropViewDdl : Text -> Text
+        // removes it by name.
+        "createViewDdl" => Some(pure_text(vec![text(), plan()])),
+        "createViewDdlFor" => Some(pure_text(vec![dialect_ty(), text(), plan()])),
+        "dropViewDdl" => Some(pure_text(vec![text()])),
         _ => None,
     }
 }
@@ -2643,6 +2695,31 @@ fn reconciled_schema_fn_scheme(
         // already-built predicate tree (the escape hatch the source renderer rebuilds a check
         // through, since a phantom-erased schema cannot restore the original quote).
         "checkRaw" => poly1(vec![qexpr(), col_e()], col_e()),
+        // computed : ∀e v. Quote (e -> v) -> ColumnSchema e -> ColumnSchema e. Makes the
+        //   column a stored generated column whose value is a captured expression over the
+        //   entity — the same quote shape `column` takes, its result type left free.
+        "computed" => {
+            let v = TyVid(1);
+            let accessor = Type::Con(
+                b.quote,
+                vec![Type::Fn {
+                    params: vec![Type::Var(e)],
+                    ret: Box::new(Type::Var(v)),
+                    caps: pure(),
+                }],
+            );
+            Some(Scheme {
+                vars: vec![e, v],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![accessor, col_e()],
+                    ret: Box::new(col_e()),
+                    caps: pure(),
+                },
+                constraints: vec![],
+            })
+        }
         "nullable" | "required" | "primaryKey" | "unique" | "indexed" => {
             poly1(vec![col_e()], col_e())
         }
@@ -2803,12 +2880,15 @@ fn reconciled_migrate_fn_scheme(
     let migration = *reconciled.get("Migration")?;
     let entity_schema = *reconciled.get("EntitySchema")?;
     let column_schema = *reconciled.get("ColumnSchema")?;
+    let query_plan = *reconciled.get("QueryPlan")?;
     let text = || Type::Con(b.text, vec![]);
     let list = |x: Type| Type::Con(b.list, vec![x]);
     let pure = || CapRow::Concrete(CapabilitySet::PURE);
     let result = |ok: Type| Type::Con(b.result, vec![ok, Type::Con(b.error, vec![])]);
     let column_ty = || Type::Con(column, vec![]);
     let migration_op_ty = || Type::Con(migration_op, vec![]);
+    // `QueryPlan` — the saved query a `CreateView` step carries.
+    let query_plan_ty = || Type::Con(query_plan, vec![]);
     let e = TyVid(0);
     let ent_e = || Type::Con(entity_schema, vec![Type::Var(e)]);
     let ent_unit = || Type::Con(entity_schema, vec![Type::Con(b.unit, vec![])]);
@@ -2878,10 +2958,13 @@ fn reconciled_migrate_fn_scheme(
         "nullable" | "primaryKey" | "unique" => mono(vec![column_ty()], column_ty()),
         // createTable : Text -> List Column -> MigrationOp
         "createTable" => mono(vec![text(), list(column_ty())], migration_op_ty()),
-        // dropTable / dropIndex / runSql : Text -> MigrationOp — the name-only drop steps
-        // and the raw-SQL escape hatch (a statement run verbatim through the `rawExec` seam
-        // for a schema change the typed DSL cannot express); all three take a single `Text`.
-        "dropTable" | "dropIndex" | "runSql" => mono(vec![text()], migration_op_ty()),
+        // createView : Text -> QueryPlan -> MigrationOp — save a query under a view name;
+        // the backend renders the plan inline into a `CREATE VIEW`.
+        "createView" => mono(vec![text(), query_plan_ty()], migration_op_ty()),
+        // dropTable / dropIndex / runSql / dropView : Text -> MigrationOp — the name-only
+        // steps: the drops and the raw-SQL escape hatch (a statement run verbatim through the
+        // `rawExec` seam for a schema change the typed DSL cannot express).
+        "dropTable" | "dropIndex" | "runSql" | "dropView" => mono(vec![text()], migration_op_ty()),
         // addColumn : Text -> Column -> MigrationOp
         "addColumn" => mono(vec![text(), column_ty()], migration_op_ty()),
         // dropColumn : Text -> Text -> MigrationOp

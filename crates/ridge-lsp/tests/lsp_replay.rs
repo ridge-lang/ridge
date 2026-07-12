@@ -1312,6 +1312,78 @@ async fn test_hover_stdlib_sqlite_surface() {
 }
 
 #[tokio::test]
+async fn test_hover_stdlib_view_and_computed_surface() {
+    // The typed-view and computed-column surface is reconciled-scheme stdlib: `dropView`
+    // (a MigrationOp factory), `dropViewDdl` (a query-plan renderer), and `computed` (a
+    // column refiner) are seeded from `reconciled_fn_scheme`, not the hand-curated table.
+    // This pins that the editor still lifts a header and `--` doc card for them — the same
+    // card any stdlib symbol gets. All three are pure, so the workspace needs no `db` grant.
+    let src = "import std.migrate (dropView, MigrationOp)\n\
+               import std.query (dropViewDdl)\n\
+               import std.schema (mkColumn, computed, ColumnSchema)\n\
+               import std.sql (DbBigInt)\n\
+               pub type Widget = { a: Int } deriving (Row)\n\
+               pub fn op -> MigrationOp = dropView \"old_view\"\n\
+               pub fn ddl -> Text = dropViewDdl \"old_view\"\n\
+               pub fn col -> ColumnSchema Widget = mkColumn \"a\" \"a\" DbBigInt false |> computed (fn (w: Widget) -> w.a)\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    // `dropView` (std.migrate) use on line 5.
+    let line5 = "pub fn op -> MigrationOp = dropView \"old_view\"";
+    let col =
+        u32::try_from(line5.find("dropView").expect("dropView use") + 1).expect("offset fits u32");
+    let md = hover_markdown(
+        server
+            .hover(hover_at(&uri, 5, col))
+            .await
+            .expect("hover ok"),
+    )
+    .expect("hover over dropView returns markup");
+    assert!(
+        md.contains("dropView") && md.contains("*(stdlib function)*"),
+        "dropView hover should carry the header and stdlib kind, got {md:?}"
+    );
+
+    // `dropViewDdl` (std.query) use on line 6.
+    let line6 = "pub fn ddl -> Text = dropViewDdl \"old_view\"";
+    let col = u32::try_from(line6.find("dropViewDdl").expect("dropViewDdl use") + 1)
+        .expect("offset fits u32");
+    let md = hover_markdown(
+        server
+            .hover(hover_at(&uri, 6, col))
+            .await
+            .expect("hover ok"),
+    )
+    .expect("hover over dropViewDdl returns markup");
+    assert!(
+        md.contains("dropViewDdl") && md.contains("*(stdlib function)*"),
+        "dropViewDdl hover should carry the header and stdlib kind, got {md:?}"
+    );
+
+    // `computed` (std.schema) use on line 7.
+    let line7 =
+        "pub fn col -> ColumnSchema Widget = mkColumn \"a\" \"a\" DbBigInt false |> computed (fn (w: Widget) -> w.a)";
+    let col =
+        u32::try_from(line7.find("computed").expect("computed use") + 1).expect("offset fits u32");
+    let md = hover_markdown(
+        server
+            .hover(hover_at(&uri, 7, col))
+            .await
+            .expect("hover ok"),
+    )
+    .expect("hover over computed returns markup");
+    assert!(
+        md.contains("computed") && md.contains("*(stdlib function)*"),
+        "computed hover should carry the header and stdlib kind, got {md:?}"
+    );
+    assert!(
+        md.contains("generated column"),
+        "computed hover should include the `--` doc, got {md:?}"
+    );
+}
+
+#[tokio::test]
 async fn test_hover_enriches_function_signature_and_doc() {
     // Hovering a function use-site shows its written header — visibility, named
     // parameters, return type — inside a `ridge` code fence, plus its doc.

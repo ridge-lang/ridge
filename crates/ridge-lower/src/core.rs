@@ -2959,7 +2959,7 @@ pub(crate) fn stdlib_class_home_module(class_name: &str) -> Option<&'static str>
         "SqlType" | "Row" => Some("std.sql"),
         "Adapter" => Some("std.data"),
         "HasSchema" => Some("std.schema"),
-        "Refinable" | "Projectable" | "Orderable" | "Aggregable" | "Decodable" | "Pageable"
+        "Refinable" | "Projectable" | "Orderable" | "Aggregable" | "Fetchable" | "Pageable"
         | "Countable" | "Every" | "Groupable" | "Summarizable" | "Combinable" | "Joinable"
         | "JoinShape" | "LeftJoinable" | "RightJoinable" | "FullJoinable" => Some("std.repo"),
         _ => None,

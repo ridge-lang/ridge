@@ -3725,11 +3725,11 @@ fn reconciled_repo_fn_scheme(
         // join. Returning `None` here routes it through the class-method path
         // rather than the old single-receiver pub fn.
         // `toList` / `first` are no longer reconciled here: they became the methods
-        // of the `Decodable q p | q -> p` class (std.repo), one pair of terminals
+        // of the `Fetchable q p | q -> p` class (std.repo), one pair of terminals
         // that decode a query, an inner join, or a left join. A qualified
         // `Repo.toList`/`Repo.first` resolves to that class method, typed by the
-        // seeded `∀q p. q -> Result (List (Ret p)) Error where Decodable q p` scheme
-        // (see `seed_decodable_scheme`), the fundep fixing the row shape per receiver
+        // seeded `∀q p. q -> Result (List (Ret p)) Error where Fetchable q p` scheme
+        // (see `seed_fetchable_scheme`), the fundep fixing the row shape per receiver
         // and `Ret p` naming the decoded element. Omitting the arm routes them
         // through the class-method path rather than the old single-receiver pub fns.
         // single : ∀e a. Query e a -> Result (Option e) Error where Adapter a, Row e.
@@ -3837,7 +3837,7 @@ fn reconciled_repo_fn_scheme(
         // method, seeded by `seed_joinable_scheme` so its condition (`JoinCond q f`)
         // and result (`JoinResult q f`) follow the receiver. Omitting the arm routes
         // it through that class path, the same way `toList`/`first` route through
-        // `seed_decodable_scheme`.
+        // `seed_fetchable_scheme`.
         // crossJoin : ∀e f a. Repo f a -> Query e a -> Join e f a. The cartesian
         // builder: it pairs the left query with the right repository and no
         // condition, so it carries no quoted predicate. A cross join is an inner
@@ -3861,9 +3861,9 @@ fn reconciled_repo_fn_scheme(
             })
         }
         // `toPairs` is gone: an inner join's `toList`/`first` are now the
-        // `Decodable (Join e f a) …` methods (std.repo), so the join shares the
+        // `Fetchable (Join e f a) …` methods (std.repo), so the join shares the
         // query's decode terminals. `Repo.toList` over a `Join` resolves to that
-        // class method (see `seed_decodable_scheme`), `Ret p` naming the decoded
+        // class method (see `seed_fetchable_scheme`), `Ret p` naming the decoded
         // pair `(e, f)`; omitting the arm routes it through the class-method path.
         // (`selectJoin` is gone: an inner join's projection is now the
         // `Projectable (Join e f a) (fn e f -> s)` instance — see
@@ -3885,8 +3885,8 @@ fn reconciled_repo_fn_scheme(
         // binary `FullJoin` from a query, the nested `FullJoined` from a composite.
         // Omitting the arm routes it through that class path.
         // `toLeftPairs` is gone: a left join's `toList`/`first` are now the
-        // `Decodable (LeftJoin e f a) …` methods (std.repo). `Repo.toList` over a
-        // `LeftJoin` resolves to that class method (see `seed_decodable_scheme`),
+        // `Fetchable (LeftJoin e f a) …` methods (std.repo). `Repo.toList` over a
+        // `LeftJoin` resolves to that class method (see `seed_fetchable_scheme`),
         // `Ret p` naming the decoded pair `(e, Option f)` — the right side `None`
         // where a left row matched none; omitting the arm routes it through the
         // class-method path.

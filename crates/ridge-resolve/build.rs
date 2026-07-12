@@ -814,10 +814,10 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "offset",
             "distinct",
             // The unified decode terminals `toList`/`first` are the methods of the
-            // `Decodable q p | q -> p` class, so one pair decodes a query (to its
+            // `Fetchable q p | q -> p` class, so one pair decodes a query (to its
             // entity), an inner join (to a pair), or a left join (to a pair whose
             // right side is optional), the row shape following the receiver.
-            "Decodable",
+            "Fetchable",
             "toList",
             "first",
             // Unique-row terminals: `single` answers the lone matching row or
@@ -858,7 +858,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "maxOf",
             // The two-table join builder: the opaque `Join e f a` and its `joinOn`
             // entry. Its decode terminals (`toList`/`first`) and projection
-            // (`select`/`selectFirst`) are the `Decodable`/`Projectable` methods
+            // (`select`/`selectFirst`) are the `Fetchable`/`Projectable` methods
             // above.
             "Join",
             "joinOn",
@@ -866,7 +866,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // no condition (the cartesian product), reusing the same `Join e f a`.
             "crossJoin",
             // The left-outer join: the opaque `LeftJoin e f a` and its `leftJoinOn`
-            // entry. Decode and projection unify through `Decodable`/`Projectable`,
+            // entry. Decode and projection unify through `Fetchable`/`Projectable`,
             // the right side read as `Option`.
             "LeftJoin",
             "leftJoinOn",
@@ -881,13 +881,13 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // The N-ary inner join: chaining `joinOn` past the first table produces
             // the opaque nested `Joined q f a`, the `Joinable` class unifying the
             // builder across a query (binary `Join`) and a join (nested `Joined`).
-            // Its decode terminals (`toList`/`first`) are the `Decodable` methods.
+            // Its decode terminals (`toList`/`first`) are the `Fetchable` methods.
             "Joined",
             "Joinable",
             // The N-ary LEFT outer join: chaining `leftJoinOn` onto a composite
             // produces the opaque nested `LeftJoined q f a`, the `LeftJoinable` class
             // unifying the verb across a query (binary `LeftJoin`) and a composite
-            // (nested `LeftJoined`). Its decode terminals are the `Decodable` methods.
+            // (nested `LeftJoined`). Its decode terminals are the `Fetchable` methods.
             "LeftJoined",
             "LeftJoinable",
             // The N-ary RIGHT outer join: chaining `rightJoinOn` onto a composite

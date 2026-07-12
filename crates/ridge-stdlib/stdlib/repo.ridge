@@ -522,7 +522,7 @@ pub class Aggregable q p | q -> p =
 -- site never pins still resolves it from the declared result type, exactly as the
 -- old direct-`e` terminals did. It replaces the old per-receiver `toPairs`/
 -- `toLeftPairs`, and gives a join a `first` it never had.
-pub class Decodable q =
+pub class Fetchable q =
     toList (x: q) -> Result (List (Rows q))   Error
     first  (x: q) -> Result (Option (Rows q)) Error
 
@@ -549,7 +549,7 @@ pub class Pageable q =
 -- by the backend (a `COUNT(*)` push-down, or a one-row `LIMIT` for `exists`) rather
 -- than by fetching the rows and measuring them. Neither takes a quoted argument, so
 -- the receiver alone fixes the instance and the class has the single parameter `q`,
--- like `Pageable`/`Decodable`. Both reflect the receiver's filter (and, on a join,
+-- like `Pageable`/`Fetchable`. Both reflect the receiver's filter (and, on a join,
 -- its condition and post-join `WHERE`); like the scalar aggregates, ordering and
 -- paging do not bound them, and a query's set-operation plan is honoured the way the
 -- decode terminals honour it. An empty selection counts 0, so `exists` is false over
@@ -622,7 +622,7 @@ pub class Combinable q =
 
 -- `limit`/`offset`/`distinct` over a query, an inner join, or a left join are the
 -- methods of the `Pageable q` class (declared above); the instances are defined
--- below, next to the `Refinable`/`Orderable`/`Decodable` ones. The query instance
+-- below, next to the `Refinable`/`Orderable`/`Fetchable` ones. The query instance
 -- sets the field on its `Query`, carrying every other field through.
 
 -- The raw rows a query selects: a single-table `fetch` for a plain query, or the
@@ -642,7 +642,7 @@ fn queryRows (q: Query e a) -> Result (List (Map Text SqlValue)) Error where Ada
         None   -> fetchRows q q.lim
         Some _ -> runPlan q.repo.adapter (planOf q)
 
--- `toList` and `first` over a query are the methods of the `Decodable q p |
+-- `toList` and `first` over a query are the methods of the `Fetchable q p |
 -- q -> p` class (declared above), so one pair of terminals decodes a query, an
 -- inner join, or a left join. The instances are defined below, next to the
 -- `Refinable`/`Projectable`/`Orderable`/`Aggregable` ones; the query instance
@@ -1029,7 +1029,7 @@ fn firstDecodedJoined (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) ->
 -- `toList`/`first` over a nested join: run the flattened plan and decode each row
 -- into the nested tuple `(Rows q, f)`. The plan, decode, and row shape all come
 -- from `JoinShape q`, so the same two terminals serve every depth.
-instance Decodable (Joined q f a) where Adapter a, JoinShape q, Row f =
+instance Fetchable (Joined q f a) where Adapter a, JoinShape q, Row f =
     toList (x: Joined q f a) -> Result (List (Rows q, f)) Error =
         match runPlan x.right.adapter (joinedPlan x x.lim)
             Err err -> Err err
@@ -1039,7 +1039,7 @@ instance Decodable (Joined q f a) where Adapter a, JoinShape q, Row f =
             Err err -> Err err
             Ok rows -> firstDecodedJoined (sourceWitness x) (joinedLeaves (sourceWitness x)) rows
 
--- `toList` and `first` over an inner join are the `Decodable (Join e f a) …`
+-- `toList` and `first` over an inner join are the `Fetchable (Join e f a) …`
 -- methods (instance below), so the join shares the query's decode terminals:
 -- `toList` decodes every matched row pair into `(e, f)`, `first` the first pair.
 
@@ -1153,7 +1153,7 @@ fn firstDecodedLeftJoined (w: Option q) (n: Int) (rows: List (Map Text SqlValue)
 -- `toList`/`first` over a nested left join: run the flattened LEFT plan and decode
 -- each row into `(Rows q, Option f)`. The leaf count and decoder both come from
 -- `JoinShape q`, so the same two terminals serve every depth.
-instance Decodable (LeftJoined q f a) where Adapter a, JoinShape q, Row f =
+instance Fetchable (LeftJoined q f a) where Adapter a, JoinShape q, Row f =
     toList (x: LeftJoined q f a) -> Result (List (Rows q, Option f)) Error =
         match runPlan x.right.adapter (leftJoinedPlan x x.lim)
             Err err -> Err err
@@ -1163,7 +1163,7 @@ instance Decodable (LeftJoined q f a) where Adapter a, JoinShape q, Row f =
             Err err -> Err err
             Ok rows -> firstDecodedLeftJoined (leftSourceWitness x) (joinedLeaves (leftSourceWitness x)) rows
 
--- `toList` and `first` over a left join are the `Decodable (LeftJoin e f a) …`
+-- `toList` and `first` over a left join are the `Fetchable (LeftJoin e f a) …`
 -- methods (instance below): `toList` decodes each row into the left entity
 -- paired with the right entity, or with `None` where the left row matched no
 -- right row; `first` keeps the first such pair.
@@ -1310,7 +1310,7 @@ fn firstDecodedRightJoined (w: Option q) (n: Int) (rows: List (Map Text SqlValue
 
 -- `toList`/`first` over a nested right join: run the flattened RIGHT plan and decode
 -- each row into `(Option (Rows q), f)`.
-instance Decodable (RightJoined q f a) where Adapter a, JoinShape q, Row f =
+instance Fetchable (RightJoined q f a) where Adapter a, JoinShape q, Row f =
     toList (x: RightJoined q f a) -> Result (List (Option (Rows q), f)) Error =
         match runPlan x.right.adapter (rightJoinedPlan x x.lim)
             Err err -> Err err
@@ -1320,7 +1320,7 @@ instance Decodable (RightJoined q f a) where Adapter a, JoinShape q, Row f =
             Err err -> Err err
             Ok rows -> firstDecodedRightJoined (rightSourceWitness x) (joinedLeaves (rightSourceWitness x)) rows
 
--- `toList` and `first` over a right join are the `Decodable (RightJoin e f a) …`
+-- `toList` and `first` over a right join are the `Fetchable (RightJoin e f a) …`
 -- methods (instance below): `toList` decodes each row into the right entity paired
 -- with the left entity, or with `None` where the right row matched no left row;
 -- `first` keeps the first such pair.
@@ -1432,7 +1432,7 @@ fn firstDecodedFullJoined (w: Option q) (n: Int) (rows: List (Map Text SqlValue)
 
 -- `toList`/`first` over a nested full join: run the flattened FULL plan and decode
 -- each row into `(Option (Rows q), Option f)`.
-instance Decodable (FullJoined q f a) where Adapter a, JoinShape q, Row f =
+instance Fetchable (FullJoined q f a) where Adapter a, JoinShape q, Row f =
     toList (x: FullJoined q f a) -> Result (List (Option (Rows q), Option f)) Error =
         match runPlan x.right.adapter (fullJoinedPlan x x.lim)
             Err err -> Err err
@@ -1442,7 +1442,7 @@ instance Decodable (FullJoined q f a) where Adapter a, JoinShape q, Row f =
             Err err -> Err err
             Ok rows -> firstDecodedFullJoined (fullSourceWitness x) (joinedLeaves (fullSourceWitness x)) rows
 
--- `toList` and `first` over a full join are the `Decodable (FullJoin e f a) …`
+-- `toList` and `first` over a full join are the `Fetchable (FullJoin e f a) …`
 -- methods (instance below): `toList` decodes each row into a pair of optionals
 -- `(Option e, Option f)` — `None` on whichever side the row matched none; `first`
 -- keeps the first such pair.
@@ -1878,7 +1878,7 @@ instance Aggregable (FullJoined q f a) (Map Text SqlValue -> n) where Adapter a,
 -- the entity; `first` runs it for one row. The behaviour the single-receiver
 -- `toList`/`first` had before they unified with the join form. `Rows (Query e a)`
 -- reduces to the entity `e`, so the result is `List e`/`Option e`.
-instance Decodable (Query e a) where Adapter a, Row e =
+instance Fetchable (Query e a) where Adapter a, Row e =
     toList (x: Query e a) -> Result (List e) Error =
         match queryRows x
             Err err -> Err err
@@ -1949,7 +1949,7 @@ pub fn from (xs: List a) -> Seq a where Row a =
 -- materialise its builder state into one plan, evaluate it through the in-memory
 -- interpreter, then decode the rows back into records. No connection is touched, so the
 -- instance carries only `Row a` — no `Adapter`.
-instance Decodable (Seq a) where Row a =
+instance Fetchable (Seq a) where Row a =
     toList (x: Seq a) -> Result (List a) Error =
         decodeRows (_evalPlanPure (seqPlan x))
     first (x: Seq a) -> Result (Option a) Error =
@@ -2326,7 +2326,7 @@ fn fullSelectComposite (x: FullJoined q f a) (proj: QExpr) (lim: Int) -> QueryPl
 -- `Row f, Row e` order, as on the inner-join instance above: it matches the
 -- order `decodeLeftPrefixed`/`firstDecodedLeftPrefixed` list their entity constraints, so
 -- the forwarded dictionaries land in the right slots.
-instance Decodable (LeftJoin e f a) where Adapter a, Row f, Row e =
+instance Fetchable (LeftJoin e f a) where Adapter a, Row f, Row e =
     toList (x: LeftJoin e f a) -> Result (List (e, Option f)) Error =
         match runPlan x.left.repo.adapter (leftJoinPlan x x.lim (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right)))
             Err err  -> Err err
@@ -2344,7 +2344,7 @@ instance Decodable (LeftJoin e f a) where Adapter a, Row f, Row e =
 -- `Row f, Row e` order, as on the left-join instance above: it matches the order
 -- `decodeRightPrefixed`/`firstDecodedRightPrefixed` list their entity constraints, so the
 -- forwarded dictionaries land in the right slots.
-instance Decodable (RightJoin e f a) where Adapter a, Row f, Row e =
+instance Fetchable (RightJoin e f a) where Adapter a, Row f, Row e =
     toList (x: RightJoin e f a) -> Result (List (Option e, f)) Error =
         match runPlan x.left.repo.adapter (rightJoinPlan x x.lim (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right)))
             Err err  -> Err err
@@ -2363,7 +2363,7 @@ instance Decodable (RightJoin e f a) where Adapter a, Row f, Row e =
 -- above: `decodeFullPrefixed`/`firstDecodedFullPrefixed` decode the left side first, so
 -- their generalised schemes list the entity dictionaries the same way and the
 -- forwarded dictionaries land in the right slots.
-instance Decodable (FullJoin e f a) where Adapter a, Row f, Row e =
+instance Fetchable (FullJoin e f a) where Adapter a, Row f, Row e =
     toList (x: FullJoin e f a) -> Result (List (Option e, Option f)) Error =
         match runPlan x.left.repo.adapter (fullJoinPlan x x.lim (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right)))
             Err err  -> Err err

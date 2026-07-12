@@ -2346,7 +2346,7 @@ pub fn db bad () -> Result (List (User, Option Post)) Error =
 
 #[test]
 fn query_builder_query_first_typechecks() {
-    // `first` is now a `Decodable` method, so a query still answers its first
+    // `first` is now a `Fetchable` method, so a query still answers its first
     // decoded entity (`Option User`) — the behaviour it had as a pub fn, now shared
     // with the join receivers through the functional dependency.
     let main = r#"

@@ -156,19 +156,19 @@ pub class Adapter a =
     updateRows (conn: a) (table: Text) (changes: Map Text SqlValue) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error
     runPlan (conn: a) (plan: QueryPlan) -> Result (List (Map Text SqlValue)) Error
     runMutation (conn: a) (plan: MutationPlan) -> Result Int Error
-    runMutationReturning (conn: a) (plan: MutationPlan) (cols: List Text) -> Result (List (Map Text SqlValue)) Error
+    runMutationReturning (conn: a) (plan: MutationPlan) (columns: List Text) -> Result (List (Map Text SqlValue)) Error
     begin    (conn: a) -> Result Unit Error
     commit   (conn: a) -> Result Unit Error
     rollback (conn: a) -> Result Unit Error
     close    (conn: a) -> Result Unit Error
-    ddlCreate (conn: a) (table: Text) (cols: List (Text, Text, Bool, Bool, Bool)) -> Result Unit Error
+    ddlCreate (conn: a) (table: Text) (columns: List (Text, Text, Bool, Bool, Bool)) -> Result Unit Error
     ddlDrop (conn: a) (table: Text) -> Result Unit Error
-    ddlAddColumn (conn: a) (table: Text) (col: (Text, Text, Bool, Bool, Bool)) -> Result Unit Error
+    ddlAddColumn (conn: a) (table: Text) (column: (Text, Text, Bool, Bool, Bool)) -> Result Unit Error
     ddlDropColumn (conn: a) (table: Text) (column: Text) -> Result Unit Error
-    ddlIndex (conn: a) (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> Result Unit Error
+    ddlIndex (conn: a) (name: Text) (table: Text) (columns: List Text) (unique: Bool) -> Result Unit Error
     ddlDropIndex (conn: a) (name: Text) -> Result Unit Error
     ddlCreateEntity (conn: a) (schema: EntitySchema Unit) -> Result Unit Error
-    ddlAddEntityColumn (conn: a) (table: Text) (col: ColumnSchema Unit) -> Result Unit Error
+    ddlAddEntityColumn (conn: a) (table: Text) (column: ColumnSchema Unit) -> Result Unit Error
     ddlAlterColumn (conn: a) (table: Text) (old: ColumnSchema Unit) (new: ColumnSchema Unit) -> Result Unit Error
     ddlCreateView (conn: a) (name: Text) (plan: QueryPlan) -> Result Unit Error
     ddlDropView (conn: a) (name: Text) -> Result Unit Error
@@ -183,14 +183,14 @@ pub class Adapter a =
 -- page, and distinct flag — and runs it through `runPlan`, so one code path renders
 -- the read (`planToSql` on a database, the store interpreter in memory) rather than a
 -- second per-backend primitive. `selectRows` is the unordered, unpaged form; `fetch`
--- folds ordering and paging in, with a negative `lim` meaning no limit and a
--- non-positive `off` no offset. The predicate is written against the queried record at
+-- folds ordering and paging in, with a negative `limit` meaning no limit and a
+-- non-positive `offset` no offset. The predicate is written against the queried record at
 -- the call site (`fn (u: User) -> ...`); its captured tree is what the scan filters on.
 pub fn selectRows (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result (List (Map Text SqlValue)) Error where Adapter a =
     runPlan conn (planScan table pred.tree [] (0 - 1) 0 false)
 
-pub fn fetch (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (dist: Bool) -> Result (List (Map Text SqlValue)) Error where Adapter a =
-    runPlan conn (planScan table pred.tree orders lim off dist)
+pub fn fetch (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, QExpr)) (limit: Int) (offset: Int) (distinct: Bool) -> Result (List (Map Text SqlValue)) Error where Adapter a =
+    runPlan conn (planScan table pred.tree orders limit offset distinct)
 
 -- A handle to an in-memory store. Opaque: `memAdapter` is the only way to make
 -- one, and the `id` it carries selects this handle's private, isolated store,
@@ -331,8 +331,8 @@ instance Adapter MemAdapter =
         _memRunPlan conn.id plan
     runMutation (conn: MemAdapter) (plan: MutationPlan) -> Result Int Error =
         _memRunMutation conn.id plan
-    runMutationReturning (conn: MemAdapter) (plan: MutationPlan) (cols: List Text) -> Result (List (Map Text SqlValue)) Error =
-        _memRunMutationReturning conn.id plan cols
+    runMutationReturning (conn: MemAdapter) (plan: MutationPlan) (columns: List Text) -> Result (List (Map Text SqlValue)) Error =
+        _memRunMutationReturning conn.id plan columns
     begin (conn: MemAdapter) -> Result Unit Error =
         _memBegin conn.id
     commit (conn: MemAdapter) -> Result Unit Error =
@@ -341,21 +341,21 @@ instance Adapter MemAdapter =
         _memRollback conn.id
     close (conn: MemAdapter) -> Result Unit Error =
         _memClose conn.id
-    ddlCreate (conn: MemAdapter) (table: Text) (cols: List (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
-        _memDdlCreate conn.id table cols
+    ddlCreate (conn: MemAdapter) (table: Text) (columns: List (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
+        _memDdlCreate conn.id table columns
     ddlDrop (conn: MemAdapter) (table: Text) -> Result Unit Error =
         _memDdlDrop conn.id table
-    ddlAddColumn (conn: MemAdapter) (table: Text) (col: (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
-        _memDdlAddColumn conn.id table col
+    ddlAddColumn (conn: MemAdapter) (table: Text) (column: (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
+        _memDdlAddColumn conn.id table column
     ddlDropColumn (conn: MemAdapter) (table: Text) (column: Text) -> Result Unit Error =
         _memDdlDropColumn conn.id table column
-    ddlIndex (conn: MemAdapter) (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> Result Unit Error =
-        _memDdlIndex conn.id name table cols unique
+    ddlIndex (conn: MemAdapter) (name: Text) (table: Text) (columns: List Text) (unique: Bool) -> Result Unit Error =
+        _memDdlIndex conn.id name table columns unique
     ddlDropIndex (conn: MemAdapter) (name: Text) -> Result Unit Error =
         _memDdlDropIndex conn.id name
     ddlCreateEntity (conn: MemAdapter) (schema: EntitySchema Unit) -> Result Unit Error =
         _memDdlCreate conn.id (schemaTable schema) []
-    ddlAddEntityColumn (conn: MemAdapter) (table: Text) (col: ColumnSchema Unit) -> Result Unit Error =
+    ddlAddEntityColumn (conn: MemAdapter) (table: Text) (column: ColumnSchema Unit) -> Result Unit Error =
         Ok ()
     ddlAlterColumn (conn: MemAdapter) (table: Text) (old: ColumnSchema Unit) (new: ColumnSchema Unit) -> Result Unit Error =
         Ok ()
@@ -418,7 +418,7 @@ pub type PostgresConfig = { host: Text, port: Int, database: Text, user: Text, p
 --
 -- `connect` uses `defaultPool`; `connectWith` takes a tuned one, built by piping
 -- `defaultPool ()` through the `with*` setters:
---   connectWith cfg (defaultPool () |> withPoolSize 20 |> withQueryTimeoutMs 60000)
+--   connectWith config (defaultPool () |> withPoolSize 20 |> withQueryTimeoutMs 60000)
 pub type PoolConfig = { size: Int, connectTimeoutMs: Int, queryTimeoutMs: Int, checkoutTimeoutMs: Int, idleTimeoutMs: Int, maxLifetimeMs: Int, healthCheckMs: Int, connectRetries: Int, retryBackoffMs: Int, maxQueueDepth: Int }
 
 -- The default pool: ten connections, a ten-second connect handshake, a
@@ -560,11 +560,11 @@ fn pgExecSeq (id: Int) (stmts: List Text) -> Result Unit Error =
                 Err e -> Err e
                 Ok _  -> pgExecSeq id rest
 
--- Open a Postgres connection with a tuned pool — the same as `connect cfg` for a
+-- Open a Postgres connection with a tuned pool — the same as `connect config` for a
 -- `PostgresConfig`, but taking an explicit `PoolConfig` (size and timeouts) in place of
 -- `defaultPool`. The unified `connect` (below) uses `defaultPool`.
-pub fn db connectWith (cfg: PostgresConfig) (pool: PoolConfig) -> Result Postgres Error =
-    _pgConnect cfg.host cfg.port cfg.database cfg.user cfg.password cfg.sslMode pool.size pool.connectTimeoutMs pool.queryTimeoutMs pool.checkoutTimeoutMs pool.idleTimeoutMs pool.maxLifetimeMs pool.healthCheckMs pool.connectRetries pool.retryBackoffMs pool.maxQueueDepth
+pub fn db connectWith (config: PostgresConfig) (pool: PoolConfig) -> Result Postgres Error =
+    _pgConnect config.host config.port config.database config.user config.password config.sslMode pool.size pool.connectTimeoutMs pool.queryTimeoutMs pool.checkoutTimeoutMs pool.idleTimeoutMs pool.maxLifetimeMs pool.healthCheckMs pool.connectRetries pool.retryBackoffMs pool.maxQueueDepth
 
 instance Adapter Postgres =
     appendRow (conn: Postgres) (table: Text) (row: Map Text SqlValue) -> Result Unit Error =
@@ -594,8 +594,8 @@ instance Adapter Postgres =
     runMutation (conn: Postgres) (plan: MutationPlan) -> Result Int Error =
         match mutationToSql plan
             (s, binds) -> _pgRawExec conn.id (sqlValue s) binds
-    runMutationReturning (conn: Postgres) (plan: MutationPlan) (cols: List Text) -> Result (List (Map Text SqlValue)) Error =
-        match mutationReturningToSql plan cols
+    runMutationReturning (conn: Postgres) (plan: MutationPlan) (columns: List Text) -> Result (List (Map Text SqlValue)) Error =
+        match mutationReturningToSql plan columns
             (s, binds) -> _pgRawQuery conn.id (sqlValue s) binds
     begin (conn: Postgres) -> Result Unit Error =
         _pgBegin conn.id
@@ -605,22 +605,22 @@ instance Adapter Postgres =
         _pgRollback conn.id
     close (conn: Postgres) -> Result Unit Error =
         _pgClose conn.id
-    ddlCreate (conn: Postgres) (table: Text) (cols: List (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
-        pgExecUnit conn.id (createTableDdl table cols)
+    ddlCreate (conn: Postgres) (table: Text) (columns: List (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
+        pgExecUnit conn.id (createTableDdl table columns)
     ddlDrop (conn: Postgres) (table: Text) -> Result Unit Error =
         pgExecUnit conn.id (dropTableDdl table)
-    ddlAddColumn (conn: Postgres) (table: Text) (col: (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
-        pgExecUnit conn.id (addColumnDdl table col)
+    ddlAddColumn (conn: Postgres) (table: Text) (column: (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
+        pgExecUnit conn.id (addColumnDdl table column)
     ddlDropColumn (conn: Postgres) (table: Text) (column: Text) -> Result Unit Error =
         pgExecUnit conn.id (dropColumnDdl table column)
-    ddlIndex (conn: Postgres) (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> Result Unit Error =
-        pgExecUnit conn.id (indexDdl name table cols unique)
+    ddlIndex (conn: Postgres) (name: Text) (table: Text) (columns: List Text) (unique: Bool) -> Result Unit Error =
+        pgExecUnit conn.id (indexDdl name table columns unique)
     ddlDropIndex (conn: Postgres) (name: Text) -> Result Unit Error =
         pgExecUnit conn.id (dropIndexDdl name)
     ddlCreateEntity (conn: Postgres) (schema: EntitySchema Unit) -> Result Unit Error =
         pgExecSeq conn.id (schemaToDdl schema :: schemaIndexDdls schema)
-    ddlAddEntityColumn (conn: Postgres) (table: Text) (col: ColumnSchema Unit) -> Result Unit Error =
-        pgExecUnit conn.id (addColumnSchemaDdl table col)
+    ddlAddEntityColumn (conn: Postgres) (table: Text) (column: ColumnSchema Unit) -> Result Unit Error =
+        pgExecUnit conn.id (addColumnSchemaDdl table column)
     ddlAlterColumn (conn: Postgres) (table: Text) (old: ColumnSchema Unit) (new: ColumnSchema Unit) -> Result Unit Error =
         pgExecUnit conn.id (alterColumnDdl table old new)
     ddlCreateView (conn: Postgres) (name: Text) (plan: QueryPlan) -> Result Unit Error =
@@ -749,8 +749,8 @@ instance Adapter Sqlite =
     runMutation (conn: Sqlite) (plan: MutationPlan) -> Result Int Error =
         match mutationToSql plan
             (s, binds) -> _sqliteRawExec conn.id (sqlValue s) binds
-    runMutationReturning (conn: Sqlite) (plan: MutationPlan) (cols: List Text) -> Result (List (Map Text SqlValue)) Error =
-        match mutationReturningToSql plan cols
+    runMutationReturning (conn: Sqlite) (plan: MutationPlan) (columns: List Text) -> Result (List (Map Text SqlValue)) Error =
+        match mutationReturningToSql plan columns
             (s, binds) -> _sqliteRawQuery conn.id (sqlValue s) binds
     begin (conn: Sqlite) -> Result Unit Error =
         _sqliteBegin conn.id
@@ -760,24 +760,24 @@ instance Adapter Sqlite =
         _sqliteRollback conn.id
     close (conn: Sqlite) -> Result Unit Error =
         _sqliteClose conn.id
-    ddlCreate (conn: Sqlite) (table: Text) (cols: List (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
-        sqliteExecUnit conn.id (createTableDdlFor SqliteDialect table cols)
+    ddlCreate (conn: Sqlite) (table: Text) (columns: List (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
+        sqliteExecUnit conn.id (createTableDdlFor SqliteDialect table columns)
     ddlDrop (conn: Sqlite) (table: Text) -> Result Unit Error =
         sqliteExecUnit conn.id (dropTableDdl table)
-    ddlAddColumn (conn: Sqlite) (table: Text) (col: (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
-        sqliteExecUnit conn.id (addColumnDdlFor SqliteDialect table col)
+    ddlAddColumn (conn: Sqlite) (table: Text) (column: (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
+        sqliteExecUnit conn.id (addColumnDdlFor SqliteDialect table column)
     ddlDropColumn (conn: Sqlite) (table: Text) (column: Text) -> Result Unit Error =
         sqliteExecUnit conn.id (dropColumnDdl table column)
-    ddlIndex (conn: Sqlite) (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> Result Unit Error =
-        sqliteExecUnit conn.id (indexDdl name table cols unique)
+    ddlIndex (conn: Sqlite) (name: Text) (table: Text) (columns: List Text) (unique: Bool) -> Result Unit Error =
+        sqliteExecUnit conn.id (indexDdl name table columns unique)
     ddlDropIndex (conn: Sqlite) (name: Text) -> Result Unit Error =
         sqliteExecUnit conn.id (dropIndexDdl name)
     ddlCreateEntity (conn: Sqlite) (schema: EntitySchema Unit) -> Result Unit Error =
         sqliteExecSeq conn.id (schemaToDdlFor SqliteDialect schema :: schemaIndexDdls schema)
-    ddlAddEntityColumn (conn: Sqlite) (table: Text) (col: ColumnSchema Unit) -> Result Unit Error =
-        if sqliteAddNeedsRebuild col
+    ddlAddEntityColumn (conn: Sqlite) (table: Text) (column: ColumnSchema Unit) -> Result Unit Error =
+        if sqliteAddNeedsRebuild column
         then Err ({ code = "raw.unsupported", message = "SQLite cannot add this column in place; it needs a table rebuild" })
-        else sqliteExecUnit conn.id (addColumnSchemaDdlFor SqliteDialect table col)
+        else sqliteExecUnit conn.id (addColumnSchemaDdlFor SqliteDialect table column)
     ddlAlterColumn (conn: Sqlite) (table: Text) (old: ColumnSchema Unit) (new: ColumnSchema Unit) -> Result Unit Error =
         Err ({ code = "raw.unsupported", message = "SQLite cannot alter a column in place; it needs a table rebuild" })
     ddlCreateView (conn: Sqlite) (name: Text) (plan: QueryPlan) -> Result Unit Error =
@@ -804,8 +804,8 @@ instance Adapter Sqlite =
 -- Open a Postgres connection with the default pool. Requires the `db`
 -- capability; the handle returned is the proof of access for every later call.
 -- Size the pool or set timeouts with `connectWith`.
-pub fn db connect (cfg: PostgresConfig) -> Result Postgres Error =
-    connectWith cfg (defaultPool ())
+pub fn db connect (config: PostgresConfig) -> Result Postgres Error =
+    connectWith config (defaultPool ())
 
 -- Open a SQLite connection from its settings. Requires the `db` capability; the
 -- handle returned is the proof of access for every later call.
@@ -816,5 +816,5 @@ pub fn db connect (cfg: PostgresConfig) -> Result Postgres Error =
 -- trips the constraint solver on a multi-parameter constraint, and as a class
 -- method it type-checks but a direct external call has no codegen bridge. Until one
 -- of those is lifted, the backend is chosen by the connect verb.
-pub fn db connectSqlite (cfg: SqliteConfig) -> Result Sqlite Error =
-    _sqliteConnect cfg.path cfg.busyTimeoutMs cfg.journalMode (if cfg.foreignKeys then 1 else 0)
+pub fn db connectSqlite (config: SqliteConfig) -> Result Sqlite Error =
+    _sqliteConnect config.path config.busyTimeoutMs config.journalMode (if config.foreignKeys then 1 else 0)

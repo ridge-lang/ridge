@@ -17,7 +17,7 @@ pub type Output = { stdout: Text, stderr: Text, exitCode: Int }
 -- Run an external command with the given argument list.
 -- Returns Ok(Output) on success, Err(Error) on spawn/timeout failure.
 -- §3.16: the unsafety of proc.exec (passing a raw Text command) is avoided
--- by keeping cmd and args separated (signed off 2026-04-29).
+-- by keeping command and args separated (signed off 2026-04-29).
 -- Bridge: ridge_rt:proc_run/2 returns
 --   {ok, #{stdout => Stdout, stderr => Stderr, exitCode => Code}}
 --   or {error, {error_record, Code, Message}}.
@@ -25,4 +25,4 @@ pub type Output = { stdout: Text, stderr: Text, exitCode: Int }
 -- record→map codegen lowering — field access `.exitCode` compiles to
 -- erlang:map_get.
 @ffi("ridge_rt", "proc_run", 2)
-pub fn proc run (cmd: Text) (args: List Text) -> Result Output Error
+pub fn proc run (command: Text) (args: List Text) -> Result Output Error

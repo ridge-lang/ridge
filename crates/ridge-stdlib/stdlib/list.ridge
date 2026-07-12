@@ -165,15 +165,15 @@ pub fn any (p: fn a -> Bool) (xs: List a) -> Bool
 @ffi("lists", "all", 2)
 pub fn all (p: fn a -> Bool) (xs: List a) -> Bool
 
--- Return a list of integers from lo to hi inclusive.
+-- Return a list of integers from low to high inclusive.
 -- Range is inclusive at both ends.
 @ffi("lists", "seq", 2)
-pub fn range (lo: Int) (hi: Int) -> List Int
+pub fn range (low: Int) (high: Int) -> List Int
 
--- Return a list of integers from lo to hi exclusive.
--- rangeExclusive excludes hi.
-pub fn rangeExclusive (lo: Int) (hi: Int) -> List Int =
-    range lo (hi - 1)
+-- Return a list of integers from low to high exclusive.
+-- rangeExclusive excludes high.
+pub fn rangeExclusive (low: Int) (high: Int) -> List Int =
+    range low (high - 1)
 
 -- Apply a function for its side effects to each element.
 @ffi("lists", "foreach", 2)

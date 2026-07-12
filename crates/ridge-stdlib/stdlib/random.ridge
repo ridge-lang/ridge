@@ -4,9 +4,9 @@
 -- §3.13: BEAM `rand` module keeps state in the process dictionary.
 -- OQ-S008: process-local RNG model documented.
 
--- Return a uniformly-distributed random integer in [lo, hi] (inclusive).
+-- Return a uniformly-distributed random integer in [low, high] (inclusive).
 @ffi("ridge_rt", "random_int", 2)
-pub fn random int (lo: Int) (hi: Int) -> Int
+pub fn random int (low: Int) (high: Int) -> Int
 
 -- Return a uniformly-distributed random float in [0.0, 1.0).
 @ffi("ridge_rt", "random_float", 1)
@@ -23,4 +23,4 @@ pub fn random choice (xs: List a) -> Option a
 
 -- Seed the RNG with an integer (for deterministic sequences).
 @ffi("ridge_rt", "random_seed", 1)
-pub fn random seed (s: Int) -> Unit
+pub fn random seed (seed: Int) -> Unit

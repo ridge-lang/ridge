@@ -194,8 +194,8 @@ pub opaque type Conflict e = { column: Text }
 -- write-side analogue of `set`'s target: the accessor pins the column, so a misspelled
 -- field is a compile error, not a silently wrong `ON CONFLICT` target. Several keys
 -- compose into the composite unique constraint an upsert matches on.
-pub fn onConflict (col: Quote (e -> v)) -> Conflict e =
-    Conflict { column = conflictColumn col }
+pub fn onConflict (column: Quote (e -> v)) -> Conflict e =
+    Conflict { column = conflictColumn column }
 
 -- The column a conflict key's quoted accessor names — a `QCol`, like `setterColumn`.
 fn conflictColumn (col: Quote (e -> v)) -> Text =
@@ -237,8 +237,8 @@ pub fn insertOrIgnore (entity: e) (keys: List (Conflict e)) (r: Repo e a) -> Res
 -- explicit-control counterpart of `upsert`: the row is a hand-built column map and the
 -- caller names exactly which columns the conflict updates, where `upsert` derives both
 -- from a typed entity. An empty `updateCols` is a `DO NOTHING`.
-pub fn upsertRow (conflictCols: List Text) (updateCols: List Text) (row: Map Text SqlValue) (r: Repo e a) -> Result Int Error where Adapter a =
-    runMutation r.adapter (planUpsert r.table [row] conflictCols updateCols)
+pub fn upsertRow (conflictColumns: List Text) (updateColumns: List Text) (row: Map Text SqlValue) (r: Repo e a) -> Result Int Error where Adapter a =
+    runMutation r.adapter (planUpsert r.table [row] conflictColumns updateColumns)
 
 -- The columns of a row to overwrite on an upsert conflict: every column the row carries
 -- except the conflict-key columns (those are matched on, not rewritten).
@@ -350,8 +350,8 @@ pub opaque type Setter e = { column: Text, value: SqlValue }
 -- `SqlValue` through `SqlType.toSql`, so a nullable `Option` column writes `None`
 -- as SQL NULL. This is the write-side analogue of an `orderBy` key: both quote a
 -- single column, one to assign it, the other to sort by it.
-pub fn set (col: Quote (e -> v)) (value: v) -> Setter e where SqlType v =
-    Setter { column = setterColumn col, value = toSql value }
+pub fn set (column: Quote (e -> v)) (value: v) -> Setter e where SqlType v =
+    Setter { column = setterColumn column, value = toSql value }
 
 -- The column a setter's quoted accessor names. The accessor quote captures a
 -- single column, so its tree is a `QCol`; anything else contributes no column,
@@ -475,8 +475,8 @@ pub class Refinable q p | q -> p =
 -- is the projection's own return type. `select` returns the whole list;
 -- `selectFirst` returns the first row — a pushed-down `LIMIT 1` — or `None`.
 pub class Projectable q p | q -> p =
-    select      (proj: Quote p) (x: q) -> Result (List (Ret p))   Error
-    selectFirst (proj: Quote p) (x: q) -> Result (Option (Ret p)) Error
+    select      (projection: Quote p) (x: q) -> Result (List (Ret p))   Error
+    selectFirst (projection: Quote p) (x: q) -> Result (Option (Ret p)) Error
 
 -- One `orderBy` for a query and a join. A query orders by a one-row key over its
 -- entity; a join by a two-row key over both, naming a column from either side
@@ -487,7 +487,7 @@ pub class Projectable q p | q -> p =
 -- phantom — only the column it names is read — so a column of any type orders.
 -- Keys order major-to-minor in the order added, each ascending or descending.
 pub class Orderable q p | q -> p =
-    orderBy (dir: SortOrder) (key: Quote p) (x: q) -> q
+    orderBy (direction: SortOrder) (key: Quote p) (x: q) -> q
 
 -- One set of scalar aggregates for a query and a join. `sumOf`/`minOf`/`maxOf`
 -- fold the column an accessor names — a one-row accessor over a query
@@ -503,10 +503,10 @@ pub class Orderable q p | q -> p =
 -- error. Ordering and paging do not bound an aggregate — only the filter (and,
 -- on a join, the join condition) narrows the folded rows.
 pub class Aggregable q p | q -> p =
-    sumOf (col: Quote p) (x: q) -> Result (Option (Ret p)) Error
-    avgOf (col: Quote p) (x: q) -> Result (Option Float)   Error
-    minOf (col: Quote p) (x: q) -> Result (Option (Ret p)) Error
-    maxOf (col: Quote p) (x: q) -> Result (Option (Ret p)) Error
+    sumOf (column: Quote p) (x: q) -> Result (Option (Ret p)) Error
+    avgOf (column: Quote p) (x: q) -> Result (Option Float)   Error
+    minOf (column: Quote p) (x: q) -> Result (Option (Ret p)) Error
+    maxOf (column: Quote p) (x: q) -> Result (Option (Ret p)) Error
 
 -- One pair of decode terminals for a query and a join. `toList` runs the
 -- accumulated query (or join) and decodes every matching row; `first` runs it
@@ -829,8 +829,8 @@ pub fn having (pred: Quote (Grouped q p -> Bool)) (g: Grouped q p) -> Grouped q 
 -- `HAVING`) against the source's own seam — a query, an inner join, or a left join —
 -- and returns one row per group, ordered by the key; `summarize` then decodes each.
 -- This is the grouped dual of `select`: a projection, but over groups instead of rows.
-pub fn summarize (proj: Quote (Grouped q p -> s)) (g: Grouped q p) -> Result (List s) Error where Summarizable q, Row s =
-    match runGroups g.keyCol g.keyLeaf proj.tree g.havingTree g.source
+pub fn summarize (projection: Quote (Grouped q p -> s)) (g: Grouped q p) -> Result (List s) Error where Summarizable q, Row s =
+    match runGroups g.keyCol g.keyLeaf projection.tree g.havingTree g.source
         Err err -> Err err
         Ok rows -> decodeRows rows
 
@@ -916,22 +916,22 @@ pub opaque type FullJoined q f a = { source: q, right: Repo f a, cond: Quote (Ma
 -- compile-time error. The accumulated filter, ordering, and page carry forward
 -- (a query's ordering lifts in as left-side keys); the join brings the new table.
 pub class Joinable q =
-    joinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: q) -> JoinResult q f
+    joinOn (right: Repo f a) (condition: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: q) -> JoinResult q f
 
 -- A query's `joinOn`: pair it with the right repository into a two-table inner
 -- join. Lifts the query's accumulated ordering in as left-side keys and
 -- produces a `Join e f a` (the alias for `Joined (Query e a) f a`), so the
 -- composite `Joined` instances immediately cover the two-table case.
 instance Joinable (Query e a) =
-    joinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Query e a) -> Join e f a =
-        Joined { source = x, right = right, cond = cond, where2 = keepAll2 (), orders = liftOrders x.orders, lim = x.lim, off = x.off, dist = x.dist }
+    joinOn (right: Repo f a) (condition: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Query e a) -> Join e f a =
+        Joined { source = x, right = right, cond = condition, where2 = keepAll2 (), orders = liftOrders x.orders, lim = x.lim, off = x.off, dist = x.dist }
 
 -- A nested join's `joinOn`: absorb one more table onto a composite already three
 -- or more wide. The chain nests left another level, the new repository joining
 -- onto everything accumulated so far.
 instance Joinable (Joined q g a) =
-    joinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Joined q g a) -> Joined (Joined q g a) f a =
-        Joined { source = x, right = right, cond = cond, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+    joinOn (right: Repo f a) (condition: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Joined q g a) -> Joined (Joined q g a) f a =
+        Joined { source = x, right = right, cond = condition, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
 
 -- The recursion a nested join's terminal stands on. `JoinShape` walks the
 -- left-nested source of a `Joined` to count its leaves, rebuild its plan, and
@@ -1064,33 +1064,33 @@ pub opaque type LeftJoin e f a = { left: Query e a, right: Repo f a, cond: Quote
 -- composite row with no matching new row is kept, the new entity reported as
 -- `None`.
 pub class LeftJoinable q =
-    leftJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: q) -> LeftJoinResult q f
+    leftJoinOn (right: Repo f a) (condition: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: q) -> LeftJoinResult q f
 
 -- A query's `leftJoinOn`: the binary left outer join, identical to the original
 -- builder. The left query's accumulated ordering lifts in as left-side keys, and
 -- it produces a `LeftJoin e f a` that carries the whole left-join vocabulary.
 instance LeftJoinable (Query e a) =
-    leftJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Query e a) -> LeftJoin e f a =
-        LeftJoin { left = x, right = right, cond = cond, where2 = keepAll2 (), orders = liftOrders x.orders, lim = x.lim, off = x.off, dist = x.dist }
+    leftJoinOn (right: Repo f a) (condition: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Query e a) -> LeftJoin e f a =
+        LeftJoin { left = x, right = right, cond = condition, where2 = keepAll2 (), orders = liftOrders x.orders, lim = x.lim, off = x.off, dist = x.dist }
 
 -- A binary join's `leftJoinOn`: left-join a third table onto the inner pair. The
 -- existing two-table join becomes the `source` of a `LeftJoined`, the new
 -- repository its right, read optional in the result.
 instance LeftJoinable (Join e g a) =
-    leftJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Join e g a) -> LeftJoined (Join e g a) f a =
-        LeftJoined { source = x, right = right, cond = cond, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+    leftJoinOn (right: Repo f a) (condition: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Join e g a) -> LeftJoined (Join e g a) f a =
+        LeftJoined { source = x, right = right, cond = condition, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
 
 -- A nested inner join's `leftJoinOn`: left-join one more table onto a composite
 -- already three or more wide.
 instance LeftJoinable (Joined q g a) =
-    leftJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Joined q g a) -> LeftJoined (Joined q g a) f a =
-        LeftJoined { source = x, right = right, cond = cond, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+    leftJoinOn (right: Repo f a) (condition: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Joined q g a) -> LeftJoined (Joined q g a) f a =
+        LeftJoined { source = x, right = right, cond = condition, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
 
 -- A nested left join's `leftJoinOn`: chain another left join onto a composite that
 -- already ends in one, nesting the source one level deeper.
 instance LeftJoinable (LeftJoined q g a) =
-    leftJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: LeftJoined q g a) -> LeftJoined (LeftJoined q g a) f a =
-        LeftJoined { source = x, right = right, cond = cond, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+    leftJoinOn (right: Repo f a) (condition: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: LeftJoined q g a) -> LeftJoined (LeftJoined q g a) f a =
+        LeftJoined { source = x, right = right, cond = condition, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
 
 -- The recursion a nested left join's terminal stands on. A `LeftJoined` is its
 -- source plus one more leaf, read optional: its leaf count, plan, and row each
@@ -1202,35 +1202,35 @@ pub opaque type RightJoin e f a = { left: Query e a, right: Repo f a, cond: Quot
 -- through `JoinCond q f`. A new row that matched no composite row is kept, the whole
 -- composite reported as `None`.
 pub class RightJoinable q =
-    rightJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: q) -> RightJoinResult q f
+    rightJoinOn (right: Repo f a) (condition: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: q) -> RightJoinResult q f
 
 -- A query's `rightJoinOn`: the binary right outer join, identical to the original
 -- builder.
 instance RightJoinable (Query e a) =
-    rightJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Query e a) -> RightJoin e f a =
-        RightJoin { left = x, right = right, cond = cond, where2 = keepAll2 (), orders = liftOrders x.orders, lim = x.lim, off = x.off, dist = x.dist }
+    rightJoinOn (right: Repo f a) (condition: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Query e a) -> RightJoin e f a =
+        RightJoin { left = x, right = right, cond = condition, where2 = keepAll2 (), orders = liftOrders x.orders, lim = x.lim, off = x.off, dist = x.dist }
 
 -- A binary join's `rightJoinOn`: right-join a third table onto the inner pair, the
 -- composite read optional in the result.
 instance RightJoinable (Join e g a) =
-    rightJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Join e g a) -> RightJoined (Join e g a) f a =
-        RightJoined { source = x, right = right, cond = cond, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+    rightJoinOn (right: Repo f a) (condition: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Join e g a) -> RightJoined (Join e g a) f a =
+        RightJoined { source = x, right = right, cond = condition, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
 
 -- A nested inner join's `rightJoinOn`.
 instance RightJoinable (Joined q g a) =
-    rightJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Joined q g a) -> RightJoined (Joined q g a) f a =
-        RightJoined { source = x, right = right, cond = cond, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+    rightJoinOn (right: Repo f a) (condition: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Joined q g a) -> RightJoined (Joined q g a) f a =
+        RightJoined { source = x, right = right, cond = condition, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
 
 -- A nested left join's `rightJoinOn`.
 instance RightJoinable (LeftJoined q g a) =
-    rightJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: LeftJoined q g a) -> RightJoined (LeftJoined q g a) f a =
-        RightJoined { source = x, right = right, cond = cond, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+    rightJoinOn (right: Repo f a) (condition: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: LeftJoined q g a) -> RightJoined (LeftJoined q g a) f a =
+        RightJoined { source = x, right = right, cond = condition, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
 
 -- A nested right join's `rightJoinOn`: chain another right join onto a composite
 -- that already ends in one.
 instance RightJoinable (RightJoined q g a) =
-    rightJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: RightJoined q g a) -> RightJoined (RightJoined q g a) f a =
-        RightJoined { source = x, right = right, cond = cond, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+    rightJoinOn (right: Repo f a) (condition: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: RightJoined q g a) -> RightJoined (RightJoined q g a) f a =
+        RightJoined { source = x, right = right, cond = condition, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
 
 -- Whether a composite spanning leaves `0`..`n-1` is present in a result row: a
 -- right or full step null-extends the whole composite as a unit, so it is present
@@ -1343,39 +1343,39 @@ pub opaque type FullJoin e f a = { left: Query e a, right: Repo f a, cond: Quote
 -- row it rejects never appears, not even unmatched); its ordering and page still
 -- apply.
 pub class FullJoinable q =
-    fullJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: q) -> FullJoinResult q f
+    fullJoinOn (right: Repo f a) (condition: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: q) -> FullJoinResult q f
 
 -- A query's `fullJoinOn`: the binary full outer join, identical to the original
 -- builder.
 instance FullJoinable (Query e a) =
-    fullJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Query e a) -> FullJoin e f a =
-        FullJoin { left = x, right = right, cond = cond, where2 = keepAll2 (), orders = liftOrders x.orders, lim = x.lim, off = x.off, dist = x.dist }
+    fullJoinOn (right: Repo f a) (condition: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Query e a) -> FullJoin e f a =
+        FullJoin { left = x, right = right, cond = condition, where2 = keepAll2 (), orders = liftOrders x.orders, lim = x.lim, off = x.off, dist = x.dist }
 
 -- A binary join's `fullJoinOn`: full-join a third table onto the inner pair.
 instance FullJoinable (Join e g a) =
-    fullJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Join e g a) -> FullJoined (Join e g a) f a =
-        FullJoined { source = x, right = right, cond = cond, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+    fullJoinOn (right: Repo f a) (condition: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Join e g a) -> FullJoined (Join e g a) f a =
+        FullJoined { source = x, right = right, cond = condition, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
 
 -- A nested inner join's `fullJoinOn`.
 instance FullJoinable (Joined q g a) =
-    fullJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Joined q g a) -> FullJoined (Joined q g a) f a =
-        FullJoined { source = x, right = right, cond = cond, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+    fullJoinOn (right: Repo f a) (condition: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Joined q g a) -> FullJoined (Joined q g a) f a =
+        FullJoined { source = x, right = right, cond = condition, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
 
 -- A nested left join's `fullJoinOn`.
 instance FullJoinable (LeftJoined q g a) =
-    fullJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: LeftJoined q g a) -> FullJoined (LeftJoined q g a) f a =
-        FullJoined { source = x, right = right, cond = cond, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+    fullJoinOn (right: Repo f a) (condition: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: LeftJoined q g a) -> FullJoined (LeftJoined q g a) f a =
+        FullJoined { source = x, right = right, cond = condition, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
 
 -- A nested right join's `fullJoinOn`.
 instance FullJoinable (RightJoined q g a) =
-    fullJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: RightJoined q g a) -> FullJoined (RightJoined q g a) f a =
-        FullJoined { source = x, right = right, cond = cond, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+    fullJoinOn (right: Repo f a) (condition: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: RightJoined q g a) -> FullJoined (RightJoined q g a) f a =
+        FullJoined { source = x, right = right, cond = condition, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
 
 -- A nested full join's `fullJoinOn`: chain another full join onto a composite that
 -- already ends in one.
 instance FullJoinable (FullJoined q g a) =
-    fullJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: FullJoined q g a) -> FullJoined (FullJoined q g a) f a =
-        FullJoined { source = x, right = right, cond = cond, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+    fullJoinOn (right: Repo f a) (condition: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: FullJoined q g a) -> FullJoined (FullJoined q g a) f a =
+        FullJoined { source = x, right = right, cond = condition, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
 
 -- The recursion a nested full join's terminal stands on. A `FullJoined` decodes
 -- BOTH sides optionally: the new leaf via `decodeOptSide`, and the whole composite
@@ -1511,12 +1511,12 @@ instance Refinable (FullJoined q f a) (Map Text SqlValue -> Map Text SqlValue ->
 -- each row into it. The backend pushes the select-list down so only the named
 -- columns cross, in the query's order and page; `selectFirst` adds `LIMIT 1`.
 instance Projectable (Query e a) (fn e -> s) where Adapter a, Row s =
-    select (proj: Quote (fn e -> s)) (x: Query e a) -> Result (List s) Error =
-        match runPlan x.repo.adapter (planProject proj.tree (planScan x.repo.table x.pred.tree x.orders (0 - 1) 0 false) x.lim x.off x.dist)
+    select (projection: Quote (fn e -> s)) (x: Query e a) -> Result (List s) Error =
+        match runPlan x.repo.adapter (planProject projection.tree (planScan x.repo.table x.pred.tree x.orders (0 - 1) 0 false) x.lim x.off x.dist)
             Err err -> Err err
             Ok rows -> decodeRows rows
-    selectFirst (proj: Quote (fn e -> s)) (x: Query e a) -> Result (Option s) Error =
-        match runPlan x.repo.adapter (planProject proj.tree (planScan x.repo.table x.pred.tree x.orders (0 - 1) 0 false) 1 x.off x.dist)
+    selectFirst (projection: Quote (fn e -> s)) (x: Query e a) -> Result (Option s) Error =
+        match runPlan x.repo.adapter (planProject projection.tree (planScan x.repo.table x.pred.tree x.orders (0 - 1) 0 false) 1 x.off x.dist)
             Err err -> Err err
             Ok rows -> firstDecoded rows
 
@@ -1525,12 +1525,12 @@ instance Projectable (Query e a) (fn e -> s) where Adapter a, Row s =
 -- row projects its right-derived fields as `None`. Every left row is kept (a
 -- `LEFT JOIN`) and only the named columns cross.
 instance Projectable (LeftJoin e f a) (fn e (Option f) -> s) where Adapter a, Row s =
-    select (proj: Quote (fn e (Option f) -> s)) (x: LeftJoin e f a) -> Result (List s) Error =
-        match runPlan x.left.repo.adapter (leftJoinSelectPlan x proj.tree x.lim)
+    select (projection: Quote (fn e (Option f) -> s)) (x: LeftJoin e f a) -> Result (List s) Error =
+        match runPlan x.left.repo.adapter (leftJoinSelectPlan x projection.tree x.lim)
             Err err  -> Err err
             Ok rows  -> decodeRows rows
-    selectFirst (proj: Quote (fn e (Option f) -> s)) (x: LeftJoin e f a) -> Result (Option s) Error =
-        match runPlan x.left.repo.adapter (leftJoinSelectPlan x proj.tree 1)
+    selectFirst (projection: Quote (fn e (Option f) -> s)) (x: LeftJoin e f a) -> Result (Option s) Error =
+        match runPlan x.left.repo.adapter (leftJoinSelectPlan x projection.tree 1)
             Err err  -> Err err
             Ok rows  -> firstDecoded rows
 
@@ -1539,12 +1539,12 @@ instance Projectable (LeftJoin e f a) (fn e (Option f) -> s) where Adapter a, Ro
 -- projects its left-derived fields as `None`. Every right row is kept (a `RIGHT
 -- JOIN`) and only the named columns cross — the mirror of a left join's `select`.
 instance Projectable (RightJoin e f a) (fn (Option e) f -> s) where Adapter a, Row s =
-    select (proj: Quote (fn (Option e) f -> s)) (x: RightJoin e f a) -> Result (List s) Error =
-        match runPlan x.left.repo.adapter (rightJoinSelectPlan x proj.tree x.lim)
+    select (projection: Quote (fn (Option e) f -> s)) (x: RightJoin e f a) -> Result (List s) Error =
+        match runPlan x.left.repo.adapter (rightJoinSelectPlan x projection.tree x.lim)
             Err err  -> Err err
             Ok rows  -> decodeRows rows
-    selectFirst (proj: Quote (fn (Option e) f -> s)) (x: RightJoin e f a) -> Result (Option s) Error =
-        match runPlan x.left.repo.adapter (rightJoinSelectPlan x proj.tree 1)
+    selectFirst (projection: Quote (fn (Option e) f -> s)) (x: RightJoin e f a) -> Result (Option s) Error =
+        match runPlan x.left.repo.adapter (rightJoinSelectPlan x projection.tree 1)
             Err err  -> Err err
             Ok rows  -> firstDecoded rows
 
@@ -1553,12 +1553,12 @@ instance Projectable (RightJoin e f a) (fn (Option e) f -> s) where Adapter a, R
 -- projects the missing side's fields as `None`. Every row of both tables is kept (a
 -- `FULL JOIN`) and only the named columns cross.
 instance Projectable (FullJoin e f a) (fn (Option e) (Option f) -> s) where Adapter a, Row s =
-    select (proj: Quote (fn (Option e) (Option f) -> s)) (x: FullJoin e f a) -> Result (List s) Error =
-        match runPlan x.left.repo.adapter (fullJoinSelectPlan x proj.tree x.lim)
+    select (projection: Quote (fn (Option e) (Option f) -> s)) (x: FullJoin e f a) -> Result (List s) Error =
+        match runPlan x.left.repo.adapter (fullJoinSelectPlan x projection.tree x.lim)
             Err err  -> Err err
             Ok rows  -> decodeRows rows
-    selectFirst (proj: Quote (fn (Option e) (Option f) -> s)) (x: FullJoin e f a) -> Result (Option s) Error =
-        match runPlan x.left.repo.adapter (fullJoinSelectPlan x proj.tree 1)
+    selectFirst (projection: Quote (fn (Option e) (Option f) -> s)) (x: FullJoin e f a) -> Result (Option s) Error =
+        match runPlan x.left.repo.adapter (fullJoinSelectPlan x projection.tree 1)
             Err err  -> Err err
             Ok rows  -> firstDecoded rows
 
@@ -1569,12 +1569,12 @@ instance Projectable (FullJoin e f a) (fn (Option e) (Option f) -> s) where Adap
 -- it names cross, decoded into `s`. The plan pushes the select-list down through
 -- `joinedSelectPlan`; `selectFirst` runs it with a one-row limit.
 instance Projectable (Joined q f a) (Map Text SqlValue -> s) where Adapter a, JoinShape q, Row s =
-    select (proj: Quote (Map Text SqlValue -> s)) (x: Joined q f a) -> Result (List s) Error =
-        match runPlan x.right.adapter (joinedSelectPlan x proj.tree x.lim)
+    select (projection: Quote (Map Text SqlValue -> s)) (x: Joined q f a) -> Result (List s) Error =
+        match runPlan x.right.adapter (joinedSelectPlan x projection.tree x.lim)
             Err err -> Err err
             Ok rows -> decodeRows rows
-    selectFirst (proj: Quote (Map Text SqlValue -> s)) (x: Joined q f a) -> Result (Option s) Error =
-        match runPlan x.right.adapter (joinedSelectPlan x proj.tree 1)
+    selectFirst (projection: Quote (Map Text SqlValue -> s)) (x: Joined q f a) -> Result (Option s) Error =
+        match runPlan x.right.adapter (joinedSelectPlan x projection.tree 1)
             Err err -> Err err
             Ok rows -> firstDecoded rows
 
@@ -1587,32 +1587,32 @@ instance Projectable (Joined q f a) (Map Text SqlValue -> s) where Adapter a, Jo
 -- decode to `None`. The three shapes mirror the inner `Joined` instance, the join kind
 -- carried by each plan wrapper.
 instance Projectable (LeftJoined q f a) (Map Text SqlValue -> s) where Adapter a, JoinShape q, Row s =
-    select (proj: Quote (Map Text SqlValue -> s)) (x: LeftJoined q f a) -> Result (List s) Error =
-        match runPlan x.right.adapter (leftSelectComposite x proj.tree x.lim)
+    select (projection: Quote (Map Text SqlValue -> s)) (x: LeftJoined q f a) -> Result (List s) Error =
+        match runPlan x.right.adapter (leftSelectComposite x projection.tree x.lim)
             Err err -> Err err
             Ok rows -> decodeRows rows
-    selectFirst (proj: Quote (Map Text SqlValue -> s)) (x: LeftJoined q f a) -> Result (Option s) Error =
-        match runPlan x.right.adapter (leftSelectComposite x proj.tree 1)
+    selectFirst (projection: Quote (Map Text SqlValue -> s)) (x: LeftJoined q f a) -> Result (Option s) Error =
+        match runPlan x.right.adapter (leftSelectComposite x projection.tree 1)
             Err err -> Err err
             Ok rows -> firstDecoded rows
 
 instance Projectable (RightJoined q f a) (Map Text SqlValue -> s) where Adapter a, JoinShape q, Row s =
-    select (proj: Quote (Map Text SqlValue -> s)) (x: RightJoined q f a) -> Result (List s) Error =
-        match runPlan x.right.adapter (rightSelectComposite x proj.tree x.lim)
+    select (projection: Quote (Map Text SqlValue -> s)) (x: RightJoined q f a) -> Result (List s) Error =
+        match runPlan x.right.adapter (rightSelectComposite x projection.tree x.lim)
             Err err -> Err err
             Ok rows -> decodeRows rows
-    selectFirst (proj: Quote (Map Text SqlValue -> s)) (x: RightJoined q f a) -> Result (Option s) Error =
-        match runPlan x.right.adapter (rightSelectComposite x proj.tree 1)
+    selectFirst (projection: Quote (Map Text SqlValue -> s)) (x: RightJoined q f a) -> Result (Option s) Error =
+        match runPlan x.right.adapter (rightSelectComposite x projection.tree 1)
             Err err -> Err err
             Ok rows -> firstDecoded rows
 
 instance Projectable (FullJoined q f a) (Map Text SqlValue -> s) where Adapter a, JoinShape q, Row s =
-    select (proj: Quote (Map Text SqlValue -> s)) (x: FullJoined q f a) -> Result (List s) Error =
-        match runPlan x.right.adapter (fullSelectComposite x proj.tree x.lim)
+    select (projection: Quote (Map Text SqlValue -> s)) (x: FullJoined q f a) -> Result (List s) Error =
+        match runPlan x.right.adapter (fullSelectComposite x projection.tree x.lim)
             Err err -> Err err
             Ok rows -> decodeRows rows
-    selectFirst (proj: Quote (Map Text SqlValue -> s)) (x: FullJoined q f a) -> Result (Option s) Error =
-        match runPlan x.right.adapter (fullSelectComposite x proj.tree 1)
+    selectFirst (projection: Quote (Map Text SqlValue -> s)) (x: FullJoined q f a) -> Result (Option s) Error =
+        match runPlan x.right.adapter (fullSelectComposite x projection.tree 1)
             Err err -> Err err
             Ok rows -> firstDecoded rows
 
@@ -1621,32 +1621,32 @@ instance Projectable (FullJoined q f a) (Map Text SqlValue -> s) where Adapter a
 -- the direction rides alongside it. The behaviour the single-receiver `orderBy`
 -- had before it unified with the join form.
 instance Orderable (Query e a) (fn e -> k) =
-    orderBy (dir: SortOrder) (key: Quote (fn e -> k)) (x: Query e a) -> Query e a =
-        Query { repo = x.repo, pred = x.pred, orders = snoc x.orders (isAscending dir, orderColumn key), lim = x.lim, off = x.off, dist = x.dist, plan = x.plan }
+    orderBy (direction: SortOrder) (key: Quote (fn e -> k)) (x: Query e a) -> Query e a =
+        Query { repo = x.repo, pred = x.pred, orders = snoc x.orders (isAscending direction, orderColumn key), lim = x.lim, off = x.off, dist = x.dist, plan = x.plan }
 
 -- A left join's `orderBy`: the two-row dual over a `LeftJoin`. The right side is
 -- read as `Option` in the key (`fn (u: User) (p: Option Post) -> p.title`); an
 -- unmatched left row has no right value, so a right-side key sorts it as a missing
 -- key (it keeps its place).
 instance Orderable (LeftJoin e f a) (fn e (Option f) -> k) =
-    orderBy (dir: SortOrder) (key: Quote (fn e (Option f) -> k)) (x: LeftJoin e f a) -> LeftJoin e f a =
-        LeftJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntryLeaf dir key), lim = x.lim, off = x.off, dist = x.dist }
+    orderBy (direction: SortOrder) (key: Quote (fn e (Option f) -> k)) (x: LeftJoin e f a) -> LeftJoin e f a =
+        LeftJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntryLeaf direction key), lim = x.lim, off = x.off, dist = x.dist }
 
 -- A right join's `orderBy`: the two-row dual over a `RightJoin`. The left side is
 -- read as `Option` in the key (`fn (u: Option User) (p: Post) -> u.name`); an
 -- unmatched right row has no left value, so a left-side key sorts it as a missing key
 -- (it keeps its place).
 instance Orderable (RightJoin e f a) (fn (Option e) f -> k) =
-    orderBy (dir: SortOrder) (key: Quote (fn (Option e) f -> k)) (x: RightJoin e f a) -> RightJoin e f a =
-        RightJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntryLeaf dir key), lim = x.lim, off = x.off, dist = x.dist }
+    orderBy (direction: SortOrder) (key: Quote (fn (Option e) f -> k)) (x: RightJoin e f a) -> RightJoin e f a =
+        RightJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntryLeaf direction key), lim = x.lim, off = x.off, dist = x.dist }
 
 -- A full join's `orderBy`: the two-row dual over a `FullJoin`, BOTH sides read as
 -- `Option` in the key (`fn (u: Option User) (p: Option Post) -> ...`). A key over a
 -- side an unmatched row lacks reads that row as a missing key, so it sorts in place
 -- (the backend's NULL ordering decides where).
 instance Orderable (FullJoin e f a) (fn (Option e) (Option f) -> k) =
-    orderBy (dir: SortOrder) (key: Quote (fn (Option e) (Option f) -> k)) (x: FullJoin e f a) -> FullJoin e f a =
-        FullJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntryLeaf dir key), lim = x.lim, off = x.off, dist = x.dist }
+    orderBy (direction: SortOrder) (key: Quote (fn (Option e) (Option f) -> k)) (x: FullJoin e f a) -> FullJoin e f a =
+        FullJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntryLeaf direction key), lim = x.lim, off = x.off, dist = x.dist }
 
 -- A nested-join composite's `orderBy`: name the sort column with a leaf accessor
 -- (`fn (u: User) (p: Post) (c: Comment) -> c.body`), exactly as the composite
@@ -1656,20 +1656,20 @@ instance Orderable (FullJoin e f a) (fn (Option e) (Option f) -> k) =
 -- variable-arity `Map Text SqlValue -> k` placeholder the functional dependency
 -- refines to the receiver's leaves, so a deeper join just adds more leaves.
 instance Orderable (Joined q f a) (Map Text SqlValue -> k) =
-    orderBy (dir: SortOrder) (key: Quote (Map Text SqlValue -> k)) (x: Joined q f a) -> Joined q f a =
-        Joined { source = x.source, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntryLeaf dir key), lim = x.lim, off = x.off, dist = x.dist }
+    orderBy (direction: SortOrder) (key: Quote (Map Text SqlValue -> k)) (x: Joined q f a) -> Joined q f a =
+        Joined { source = x.source, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntryLeaf direction key), lim = x.lim, off = x.off, dist = x.dist }
 
 instance Orderable (LeftJoined q f a) (Map Text SqlValue -> k) =
-    orderBy (dir: SortOrder) (key: Quote (Map Text SqlValue -> k)) (x: LeftJoined q f a) -> LeftJoined q f a =
-        LeftJoined { source = x.source, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntryLeaf dir key), lim = x.lim, off = x.off, dist = x.dist }
+    orderBy (direction: SortOrder) (key: Quote (Map Text SqlValue -> k)) (x: LeftJoined q f a) -> LeftJoined q f a =
+        LeftJoined { source = x.source, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntryLeaf direction key), lim = x.lim, off = x.off, dist = x.dist }
 
 instance Orderable (RightJoined q f a) (Map Text SqlValue -> k) =
-    orderBy (dir: SortOrder) (key: Quote (Map Text SqlValue -> k)) (x: RightJoined q f a) -> RightJoined q f a =
-        RightJoined { source = x.source, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntryLeaf dir key), lim = x.lim, off = x.off, dist = x.dist }
+    orderBy (direction: SortOrder) (key: Quote (Map Text SqlValue -> k)) (x: RightJoined q f a) -> RightJoined q f a =
+        RightJoined { source = x.source, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntryLeaf direction key), lim = x.lim, off = x.off, dist = x.dist }
 
 instance Orderable (FullJoined q f a) (Map Text SqlValue -> k) =
-    orderBy (dir: SortOrder) (key: Quote (Map Text SqlValue -> k)) (x: FullJoined q f a) -> FullJoined q f a =
-        FullJoined { source = x.source, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntryLeaf dir key), lim = x.lim, off = x.off, dist = x.dist }
+    orderBy (direction: SortOrder) (key: Quote (Map Text SqlValue -> k)) (x: FullJoined q f a) -> FullJoined q f a =
+        FullJoined { source = x.source, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntryLeaf direction key), lim = x.lim, off = x.off, dist = x.dist }
 
 -- The aggregate keyword an `avgOf` folds through: `AVG` for a numeric column, or the
 -- interval-aware `AVG_INTERVAL` for a `Duration` one. Postgres cannot cast an interval
@@ -1701,20 +1701,20 @@ fn queryScalarPlan (x: Query e a) (func: Text) (column: QExpr) -> QueryPlan =
 -- had before they unified with the join form. `sumOf`/`minOf`/`maxOf` keep the
 -- column's own type (`Ret p` = `n`); `avgOf` is always a `Float`.
 instance Aggregable (Query e a) (fn e -> n) where Adapter a, SqlType n =
-    sumOf (col: Quote (fn e -> n)) (x: Query e a) -> Result (Option n) Error =
-        match runPlan x.repo.adapter (queryScalarPlan x "SUM" (aggColumn col))
+    sumOf (column: Quote (fn e -> n)) (x: Query e a) -> Result (Option n) Error =
+        match runPlan x.repo.adapter (queryScalarPlan x "SUM" (aggColumn column))
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    avgOf (col: Quote (fn e -> n)) (x: Query e a) -> Result (Option Float) Error =
-        match runPlan x.repo.adapter (queryScalarPlan x (avgFuncFor col.tree) (aggColumn col))
+    avgOf (column: Quote (fn e -> n)) (x: Query e a) -> Result (Option Float) Error =
+        match runPlan x.repo.adapter (queryScalarPlan x (avgFuncFor column.tree) (aggColumn column))
             Err err -> Err err
             Ok rows -> decodeFloatScalar (firstAggCell rows)
-    minOf (col: Quote (fn e -> n)) (x: Query e a) -> Result (Option n) Error =
-        match runPlan x.repo.adapter (queryScalarPlan x "MIN" (aggColumn col))
+    minOf (column: Quote (fn e -> n)) (x: Query e a) -> Result (Option n) Error =
+        match runPlan x.repo.adapter (queryScalarPlan x "MIN" (aggColumn column))
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    maxOf (col: Quote (fn e -> n)) (x: Query e a) -> Result (Option n) Error =
-        match runPlan x.repo.adapter (queryScalarPlan x "MAX" (aggColumn col))
+    maxOf (column: Quote (fn e -> n)) (x: Query e a) -> Result (Option n) Error =
+        match runPlan x.repo.adapter (queryScalarPlan x "MAX" (aggColumn column))
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
 
@@ -1728,20 +1728,20 @@ instance Aggregable (Query e a) (fn e -> n) where Adapter a, SqlType n =
 -- nullability lives in the result (`Option n` is `None` over an empty fold), not
 -- in the accessor.
 instance Aggregable (LeftJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
-    sumOf (col: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option n) Error =
-        match runPlan x.left.repo.adapter (leftScalarPlan x "SUM" col)
+    sumOf (column: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option n) Error =
+        match runPlan x.left.repo.adapter (leftScalarPlan x "SUM" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    avgOf (col: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option Float) Error =
-        match runPlan x.left.repo.adapter (leftScalarPlan x (avgFuncFor col.tree) col)
+    avgOf (column: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option Float) Error =
+        match runPlan x.left.repo.adapter (leftScalarPlan x (avgFuncFor column.tree) column)
             Err err -> Err err
             Ok rows -> decodeFloatScalar (firstAggCell rows)
-    minOf (col: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option n) Error =
-        match runPlan x.left.repo.adapter (leftScalarPlan x "MIN" col)
+    minOf (column: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option n) Error =
+        match runPlan x.left.repo.adapter (leftScalarPlan x "MIN" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    maxOf (col: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option n) Error =
-        match runPlan x.left.repo.adapter (leftScalarPlan x "MAX" col)
+    maxOf (column: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option n) Error =
+        match runPlan x.left.repo.adapter (leftScalarPlan x "MAX" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
 
@@ -1752,20 +1752,20 @@ instance Aggregable (LeftJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
 -- right rows (their left column is NULL, which a SQL aggregate ignores); a
 -- right-column fold still counts them. The nullability lives in the result.
 instance Aggregable (RightJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
-    sumOf (col: Quote (fn e f -> n)) (x: RightJoin e f a) -> Result (Option n) Error =
-        match runPlan x.left.repo.adapter (rightScalarPlan x "SUM" col)
+    sumOf (column: Quote (fn e f -> n)) (x: RightJoin e f a) -> Result (Option n) Error =
+        match runPlan x.left.repo.adapter (rightScalarPlan x "SUM" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    avgOf (col: Quote (fn e f -> n)) (x: RightJoin e f a) -> Result (Option Float) Error =
-        match runPlan x.left.repo.adapter (rightScalarPlan x (avgFuncFor col.tree) col)
+    avgOf (column: Quote (fn e f -> n)) (x: RightJoin e f a) -> Result (Option Float) Error =
+        match runPlan x.left.repo.adapter (rightScalarPlan x (avgFuncFor column.tree) column)
             Err err -> Err err
             Ok rows -> decodeFloatScalar (firstAggCell rows)
-    minOf (col: Quote (fn e f -> n)) (x: RightJoin e f a) -> Result (Option n) Error =
-        match runPlan x.left.repo.adapter (rightScalarPlan x "MIN" col)
+    minOf (column: Quote (fn e f -> n)) (x: RightJoin e f a) -> Result (Option n) Error =
+        match runPlan x.left.repo.adapter (rightScalarPlan x "MIN" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    maxOf (col: Quote (fn e f -> n)) (x: RightJoin e f a) -> Result (Option n) Error =
-        match runPlan x.left.repo.adapter (rightScalarPlan x "MAX" col)
+    maxOf (column: Quote (fn e f -> n)) (x: RightJoin e f a) -> Result (Option n) Error =
+        match runPlan x.left.repo.adapter (rightScalarPlan x "MAX" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
 
@@ -1776,20 +1776,20 @@ instance Aggregable (RightJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
 -- (their column there is NULL, which a SQL aggregate ignores). The nullability lives
 -- in the result.
 instance Aggregable (FullJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
-    sumOf (col: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option n) Error =
-        match runPlan x.left.repo.adapter (fullScalarPlan x "SUM" col)
+    sumOf (column: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option n) Error =
+        match runPlan x.left.repo.adapter (fullScalarPlan x "SUM" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    avgOf (col: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option Float) Error =
-        match runPlan x.left.repo.adapter (fullScalarPlan x (avgFuncFor col.tree) col)
+    avgOf (column: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option Float) Error =
+        match runPlan x.left.repo.adapter (fullScalarPlan x (avgFuncFor column.tree) column)
             Err err -> Err err
             Ok rows -> decodeFloatScalar (firstAggCell rows)
-    minOf (col: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option n) Error =
-        match runPlan x.left.repo.adapter (fullScalarPlan x "MIN" col)
+    minOf (column: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option n) Error =
+        match runPlan x.left.repo.adapter (fullScalarPlan x "MIN" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    maxOf (col: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option n) Error =
-        match runPlan x.left.repo.adapter (fullScalarPlan x "MAX" col)
+    maxOf (column: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option n) Error =
+        match runPlan x.left.repo.adapter (fullScalarPlan x "MAX" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
 
@@ -1802,74 +1802,74 @@ instance Aggregable (FullJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
 -- result (`Option n` over an empty fold), not the accessor — an outer shape folds a leaf
 -- the same way, skipping the rows where that leaf is null-extended.
 instance Aggregable (Joined q f a) (Map Text SqlValue -> n) where Adapter a, JoinShape q, Row f, SqlType n =
-    sumOf (col: Quote (Map Text SqlValue -> n)) (x: Joined q f a) -> Result (Option n) Error =
-        match runPlan x.right.adapter (joinedScalarPlan x "SUM" col)
+    sumOf (column: Quote (Map Text SqlValue -> n)) (x: Joined q f a) -> Result (Option n) Error =
+        match runPlan x.right.adapter (joinedScalarPlan x "SUM" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    avgOf (col: Quote (Map Text SqlValue -> n)) (x: Joined q f a) -> Result (Option Float) Error =
-        match runPlan x.right.adapter (joinedScalarPlan x (avgFuncFor col.tree) col)
+    avgOf (column: Quote (Map Text SqlValue -> n)) (x: Joined q f a) -> Result (Option Float) Error =
+        match runPlan x.right.adapter (joinedScalarPlan x (avgFuncFor column.tree) column)
             Err err -> Err err
             Ok rows -> decodeFloatScalar (firstAggCell rows)
-    minOf (col: Quote (Map Text SqlValue -> n)) (x: Joined q f a) -> Result (Option n) Error =
-        match runPlan x.right.adapter (joinedScalarPlan x "MIN" col)
+    minOf (column: Quote (Map Text SqlValue -> n)) (x: Joined q f a) -> Result (Option n) Error =
+        match runPlan x.right.adapter (joinedScalarPlan x "MIN" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    maxOf (col: Quote (Map Text SqlValue -> n)) (x: Joined q f a) -> Result (Option n) Error =
-        match runPlan x.right.adapter (joinedScalarPlan x "MAX" col)
+    maxOf (column: Quote (Map Text SqlValue -> n)) (x: Joined q f a) -> Result (Option n) Error =
+        match runPlan x.right.adapter (joinedScalarPlan x "MAX" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
 
 instance Aggregable (LeftJoined q f a) (Map Text SqlValue -> n) where Adapter a, JoinShape q, Row f, SqlType n =
-    sumOf (col: Quote (Map Text SqlValue -> n)) (x: LeftJoined q f a) -> Result (Option n) Error =
-        match runPlan x.right.adapter (leftScalarComposite x "SUM" col)
+    sumOf (column: Quote (Map Text SqlValue -> n)) (x: LeftJoined q f a) -> Result (Option n) Error =
+        match runPlan x.right.adapter (leftScalarComposite x "SUM" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    avgOf (col: Quote (Map Text SqlValue -> n)) (x: LeftJoined q f a) -> Result (Option Float) Error =
-        match runPlan x.right.adapter (leftScalarComposite x (avgFuncFor col.tree) col)
+    avgOf (column: Quote (Map Text SqlValue -> n)) (x: LeftJoined q f a) -> Result (Option Float) Error =
+        match runPlan x.right.adapter (leftScalarComposite x (avgFuncFor column.tree) column)
             Err err -> Err err
             Ok rows -> decodeFloatScalar (firstAggCell rows)
-    minOf (col: Quote (Map Text SqlValue -> n)) (x: LeftJoined q f a) -> Result (Option n) Error =
-        match runPlan x.right.adapter (leftScalarComposite x "MIN" col)
+    minOf (column: Quote (Map Text SqlValue -> n)) (x: LeftJoined q f a) -> Result (Option n) Error =
+        match runPlan x.right.adapter (leftScalarComposite x "MIN" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    maxOf (col: Quote (Map Text SqlValue -> n)) (x: LeftJoined q f a) -> Result (Option n) Error =
-        match runPlan x.right.adapter (leftScalarComposite x "MAX" col)
+    maxOf (column: Quote (Map Text SqlValue -> n)) (x: LeftJoined q f a) -> Result (Option n) Error =
+        match runPlan x.right.adapter (leftScalarComposite x "MAX" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
 
 instance Aggregable (RightJoined q f a) (Map Text SqlValue -> n) where Adapter a, JoinShape q, Row f, SqlType n =
-    sumOf (col: Quote (Map Text SqlValue -> n)) (x: RightJoined q f a) -> Result (Option n) Error =
-        match runPlan x.right.adapter (rightScalarComposite x "SUM" col)
+    sumOf (column: Quote (Map Text SqlValue -> n)) (x: RightJoined q f a) -> Result (Option n) Error =
+        match runPlan x.right.adapter (rightScalarComposite x "SUM" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    avgOf (col: Quote (Map Text SqlValue -> n)) (x: RightJoined q f a) -> Result (Option Float) Error =
-        match runPlan x.right.adapter (rightScalarComposite x (avgFuncFor col.tree) col)
+    avgOf (column: Quote (Map Text SqlValue -> n)) (x: RightJoined q f a) -> Result (Option Float) Error =
+        match runPlan x.right.adapter (rightScalarComposite x (avgFuncFor column.tree) column)
             Err err -> Err err
             Ok rows -> decodeFloatScalar (firstAggCell rows)
-    minOf (col: Quote (Map Text SqlValue -> n)) (x: RightJoined q f a) -> Result (Option n) Error =
-        match runPlan x.right.adapter (rightScalarComposite x "MIN" col)
+    minOf (column: Quote (Map Text SqlValue -> n)) (x: RightJoined q f a) -> Result (Option n) Error =
+        match runPlan x.right.adapter (rightScalarComposite x "MIN" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    maxOf (col: Quote (Map Text SqlValue -> n)) (x: RightJoined q f a) -> Result (Option n) Error =
-        match runPlan x.right.adapter (rightScalarComposite x "MAX" col)
+    maxOf (column: Quote (Map Text SqlValue -> n)) (x: RightJoined q f a) -> Result (Option n) Error =
+        match runPlan x.right.adapter (rightScalarComposite x "MAX" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
 
 instance Aggregable (FullJoined q f a) (Map Text SqlValue -> n) where Adapter a, JoinShape q, Row f, SqlType n =
-    sumOf (col: Quote (Map Text SqlValue -> n)) (x: FullJoined q f a) -> Result (Option n) Error =
-        match runPlan x.right.adapter (fullScalarComposite x "SUM" col)
+    sumOf (column: Quote (Map Text SqlValue -> n)) (x: FullJoined q f a) -> Result (Option n) Error =
+        match runPlan x.right.adapter (fullScalarComposite x "SUM" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    avgOf (col: Quote (Map Text SqlValue -> n)) (x: FullJoined q f a) -> Result (Option Float) Error =
-        match runPlan x.right.adapter (fullScalarComposite x (avgFuncFor col.tree) col)
+    avgOf (column: Quote (Map Text SqlValue -> n)) (x: FullJoined q f a) -> Result (Option Float) Error =
+        match runPlan x.right.adapter (fullScalarComposite x (avgFuncFor column.tree) column)
             Err err -> Err err
             Ok rows -> decodeFloatScalar (firstAggCell rows)
-    minOf (col: Quote (Map Text SqlValue -> n)) (x: FullJoined q f a) -> Result (Option n) Error =
-        match runPlan x.right.adapter (fullScalarComposite x "MIN" col)
+    minOf (column: Quote (Map Text SqlValue -> n)) (x: FullJoined q f a) -> Result (Option n) Error =
+        match runPlan x.right.adapter (fullScalarComposite x "MIN" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    maxOf (col: Quote (Map Text SqlValue -> n)) (x: FullJoined q f a) -> Result (Option n) Error =
-        match runPlan x.right.adapter (fullScalarComposite x "MAX" col)
+    maxOf (column: Quote (Map Text SqlValue -> n)) (x: FullJoined q f a) -> Result (Option n) Error =
+        match runPlan x.right.adapter (fullScalarComposite x "MAX" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
 
@@ -1970,8 +1970,8 @@ instance Refinable (Seq a) (fn a -> Bool) =
 -- in the order added. The interpreter sorts the rows by these keys before paging, so the
 -- ordering means exactly what it does on the database path.
 instance Orderable (Seq a) (fn a -> k) =
-    orderBy (dir: SortOrder) (key: Quote (fn a -> k)) (x: Seq a) -> Seq a =
-        Seq { source = x.source, pred = x.pred, orders = snoc x.orders (isAscending dir, orderColumn key), lim = x.lim, off = x.off, dist = x.dist }
+    orderBy (direction: SortOrder) (key: Quote (fn a -> k)) (x: Seq a) -> Seq a =
+        Seq { source = x.source, pred = x.pred, orders = snoc x.orders (isAscending direction, orderColumn key), lim = x.lim, off = x.off, dist = x.dist }
 
 -- `limit`/`offset`/`distinct` over an in-memory sequence set the page and distinct flag
 -- on its builder, exactly as the same verbs do over a query — each returns the sequence,
@@ -2002,10 +2002,10 @@ fn seqSelectPlan (x: Seq a) (proj: QExpr) (lim: Int) -> QueryPlan =
 -- row codec with no connection. `select` returns the whole list; `selectFirst` pushes a
 -- one-row limit.
 instance Projectable (Seq a) (fn a -> s) where Row s =
-    select (proj: Quote (fn a -> s)) (x: Seq a) -> Result (List s) Error =
-        decodeRows (_evalPlanPure (seqSelectPlan x proj.tree x.lim))
-    selectFirst (proj: Quote (fn a -> s)) (x: Seq a) -> Result (Option s) Error =
-        firstDecoded (_evalPlanPure (seqSelectPlan x proj.tree 1))
+    select (projection: Quote (fn a -> s)) (x: Seq a) -> Result (List s) Error =
+        decodeRows (_evalPlanPure (seqSelectPlan x projection.tree x.lim))
+    selectFirst (projection: Quote (fn a -> s)) (x: Seq a) -> Result (Option s) Error =
+        firstDecoded (_evalPlanPure (seqSelectPlan x projection.tree 1))
 
 -- The plan a sequence's `count`/`exists` reduces over: its inline source carrying only the
 -- accumulated filter, with ordering, page, and distinct stripped (`[] (0 - 1) 0 false`) —
@@ -2057,14 +2057,14 @@ fn seqScalarPlan (x: Seq a) (func: Text) (col: Quote (fn a -> n)) -> QueryPlan =
 -- cannot fail, so each reads its answer off the lone aggregate cell — `None` over an empty
 -- fold, the in-memory dual of a SQL aggregate of zero rows being NULL.
 instance Aggregable (Seq a) (fn a -> n) where SqlType n =
-    sumOf (col: Quote (fn a -> n)) (x: Seq a) -> Result (Option n) Error =
-        decodeScalar (firstAggCell (_evalPlanPure (seqScalarPlan x "SUM" col)))
-    avgOf (col: Quote (fn a -> n)) (x: Seq a) -> Result (Option Float) Error =
-        decodeFloatScalar (firstAggCell (_evalPlanPure (seqScalarPlan x (avgFuncFor col.tree) col)))
-    minOf (col: Quote (fn a -> n)) (x: Seq a) -> Result (Option n) Error =
-        decodeScalar (firstAggCell (_evalPlanPure (seqScalarPlan x "MIN" col)))
-    maxOf (col: Quote (fn a -> n)) (x: Seq a) -> Result (Option n) Error =
-        decodeScalar (firstAggCell (_evalPlanPure (seqScalarPlan x "MAX" col)))
+    sumOf (column: Quote (fn a -> n)) (x: Seq a) -> Result (Option n) Error =
+        decodeScalar (firstAggCell (_evalPlanPure (seqScalarPlan x "SUM" column)))
+    avgOf (column: Quote (fn a -> n)) (x: Seq a) -> Result (Option Float) Error =
+        decodeFloatScalar (firstAggCell (_evalPlanPure (seqScalarPlan x (avgFuncFor column.tree) column)))
+    minOf (column: Quote (fn a -> n)) (x: Seq a) -> Result (Option n) Error =
+        decodeScalar (firstAggCell (_evalPlanPure (seqScalarPlan x "MIN" column)))
+    maxOf (column: Quote (fn a -> n)) (x: Seq a) -> Result (Option n) Error =
+        decodeScalar (firstAggCell (_evalPlanPure (seqScalarPlan x "MAX" column)))
 
 -- `groupBy` over an in-memory sequence: name the group-key column with the one-row accessor
 -- (`aggColumn`/`aggLeaf`), the same way a query's `groupBy` does, and wrap the sequence into

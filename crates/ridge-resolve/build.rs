@@ -310,8 +310,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
         "std.proc",
         &[
             // `pub type Output` declared in proc.ridge.
-            "Output",
-            "run",
+            "Output", "run",
         ],
     ),
     ("std.actor", &["mailboxSize"]),
@@ -511,8 +510,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // Raw byte strings: hex and UTF-8 codecs, the empty and random
             // constructors, size, concatenation, and value-based comparisons. The
             // raw-binary representation and the three-way compare live in the runtime.
-            "fromHex", "toHex", "fromUtf8", "toUtf8", "empty", "generate", "length", "concat", "compare",
-            "eq", "lt", "lte", "gt", "gte",
+            "fromHex", "toHex", "fromUtf8", "toUtf8", "empty", "generate", "length", "concat",
+            "compare", "eq", "lt", "lte", "gt", "gte",
         ],
     ),
     (

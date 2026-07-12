@@ -55,7 +55,7 @@ extension is published to the Marketplace and Open VSX. See
 | Status | Item | Description | Evidence |
 |--------|------|-------------|----------|
 | ✅ | Lexer | Logos-based tokeniser; layout algorithm with `INDENT`/`DEDENT`/`NEWLINE`, in-bracket suppression; doc, raw-string, and interpolation segments | `crates/ridge-lexer/tests/` |
-| ✅ | Parser | chumsky-based; error recovery, ariadne-rendered diagnostics, trivia-preserving mode used by the formatter | `crates/ridge-parser/tests/snapshots.rs`, `errors.rs` |
+| ✅ | Parser | Hand-written recursive descent; error recovery, ariadne-rendered diagnostics, trivia-preserving mode used by the formatter | `crates/ridge-parser/tests/snapshots.rs`, `errors.rs` |
 | ✅ | Name resolution | Workspace manifest parsing, module graph, imports, visibility, forbid rules, "did you mean?", partial-AST resolve for LSP | `crates/ridge-resolve/tests/snapshots.rs`, `errors.rs` |
 | ✅ | Type + capability checker | Inference, generalisation, capability tracking. See Language section above | (same evidence as Language rows) |
 | ✅ | Lowering to Ridge Core IR | Target-neutral contract between frontend and backends | `crates/ridge-lower/tests/snapshots.rs`, `lowering.rs`, `neutrality.rs` |
@@ -219,21 +219,22 @@ that consume it. The framework builds on top once those are in.
 | ⏳ | Examples corpus | `examples/web/blog/` + `examples/web/realtime-chat/` | -- |
 | ⏳ | Getting-started doc | `docs/frameworks/ridge-web.md` | -- |
 
-### Upcoming -- `ridge.data`
+### `ridge.data`
 
-Typed query and migration framework for the BEAM. Postgres is the
-first driver; MySQL and SQLite stay on the table for later minors.
+Typed query and migration framework for the BEAM. Postgres and SQLite
+are the shipping drivers; MySQL stays on the table for a later minor.
 
 | Status | Item | Description | Evidence |
 |--------|------|-------------|----------|
-| ⏳ | Connection pool | `gen_server`-backed connection lifecycle | -- |
-| ⏳ | Typed query builder | `Select<Row, Conditions>`, `Insert<Row>`, ... | -- |
-| ⏳ | Migrations | Apply / rollback / version tracking | -- |
-| ⏳ | Postgres driver | Either `epgsql` or `pgo`; the choice will be documented when the driver ships | -- |
-| ⏳ | Row deriving | `deriving (Decode, Encode)` on user records | -- |
-| ⏳ | Transactions | With savepoints | -- |
-| ⏳ | Examples corpus | `examples/data/users-crud/` with docker-compose Postgres in CI | -- |
-| ⏳ | Getting-started doc | `docs/frameworks/ridge-data.md` | -- |
+| ✅ | Connection pool | Per-handle pool manager: opens and authenticates one connection up front, grows lazily to `poolSize`, checks a connection out per query, and monitors each so a dropped one is replaced on the next checkout | `crates/ridge-codegen-erl/runtime/ridge_pg.erl`; `crates/ridge-driver/tests/data_pg_e2e.rs` |
+| ✅ | Typed query builder | `Repo` over an `Adapter`: filter, order, page, project, the join family (inner / left / right / full / cross), scalar and grouped aggregates, and set operations — quoted predicates checked against the entity at compile time and pushed down as SQL | `crates/ridge-stdlib/stdlib/repo.ridge`, `query.ridge`; `crates/ridge-driver/tests/data_repo_e2e.rs` |
+| ✅ | Migrations | Typed DSL (`std.migrate`) with apply, rollback, and version tracking behind a `ridge migrate` CLI | `crates/ridge-stdlib/stdlib/migrate.ridge`; `crates/ridge-cli/tests/migrate.rs`, `migrate_pg_e2e.rs` |
+| ✅ | Postgres driver | Native adapter over a TLS-capable connection, exercised against a real Postgres in CI | `crates/ridge-codegen-erl/runtime/ridge_pg.erl`; `crates/ridge-driver/tests/data_pg_e2e.rs`; `.github/workflows/ci.yml` (Postgres service) |
+| ✅ | SQLite driver | Native adapter via a bundled NIF, dialect-aware DDL and queries, no external database process | `crates/ridge-codegen-erl/runtime/ridge_sqlite.erl`, `native/sqlite_nif.c`; `crates/ridge-driver/tests/data_sqlite_e2e.rs` |
+| ✅ | Row deriving | `deriving (Row)` maps a record to and from a table row; nullable columns, rich scalar types, and typed writes round-trip | `crates/ridge-typecheck/src/derive.rs`; `crates/ridge-driver/tests/data_repo_e2e.rs` |
+| ✅ | Transactions | `Repo.transaction` with nested savepoints — commit on `Ok`, roll back on `Err` | `crates/ridge-stdlib/stdlib/repo.ridge`; `crates/ridge-driver/tests/data_pg_e2e.rs` |
+| ✅ | Examples corpus | `examples/data/users-crud/` with a docker-compose Postgres | `examples/data/users-crud/`, `examples/data/docker-compose.yml` |
+| ✅ | Getting-started doc | `docs/data.md` | `docs/data.md` |
 
 ### 0.3.0 GA -- `ridge.obs`, `ridge.test+`, and housekeeping
 
@@ -244,7 +245,7 @@ first driver; MySQL and SQLite stay on the table for later minors.
 | ⏳ | `ridge.obs.Trace` | Distributed tracing spans with W3C Trace Context propagation | -- |
 | ⏳ | `ridge.test+` wire-up | Adoption guide and migration of stdlib tests where applicable | -- |
 | ⏳ | Remove `pub fn test_*` discovery | The 0.2.x deprecation cycle completes here; only `@test "<name>"` remains | -- |
-| ⏳ | Capability set audit | Go / no-go on each of the nine capabilities, with a documented rationale for every decision | -- |
+| ⏳ | Capability set audit | Go / no-go on each of the ten capabilities, with a documented rationale for every decision | -- |
 
 ---
 
@@ -296,7 +297,7 @@ explicit semver guarantees from the 1.0 tag forward.
 
 | Surface | Commitment |
 |---------|------------|
-| **Language** | Syntax, semantics, and the nine-capability set are frozen across the 1.x line. Pattern-matching exhaustiveness, type inference rules, actor message semantics, and the implicit prelude are locked. |
+| **Language** | Syntax, semantics, and the ten-capability set are frozen across the 1.x line. Pattern-matching exhaustiveness, type inference rules, actor message semantics, and the implicit prelude are locked. |
 | **Standard library** | Every `pub` function in the pre-1.0 stdlib that survives the 1.0 review is part of the 1.x compatibility surface. Items dropped during the stabilisation pass are listed in the 1.0.0 release notes. |
 | **IR (minimum bar)** | The Ridge Core IR is the contract between frontend and backends. Backwards-incompatible IR changes require a major bump. Backward-compatible additions (new node kinds with default lowering) are allowed within 1.x. |
 | **Compiled-artefact wire format** | A `.beam` produced by 1.0.0 loads against the 1.x stdlib. If a second backend has been activated by 1.0.0, its artefact contract is documented at that time and held under the same compatibility policy. |

@@ -1112,9 +1112,17 @@ fn scan_interp_body(
                 });
                 return (tokens, errors, i);
             }
-            b => {
-                text_buf.push(b as char);
-                i += 1;
+            _ => {
+                // Emit one full UTF-8 scalar so multi-byte content round-trips
+                // (mirrors scan_interp_triple_body). Pushing a raw byte as a
+                // `char` here would Latin-1-decode each byte of a multi-byte
+                // scalar and double-encode it on the way back out to UTF-8.
+                if let Some(ch) = src[i..].chars().next() {
+                    text_buf.push(ch);
+                    i += ch.len_utf8();
+                } else {
+                    i += 1;
+                }
             }
         }
     }

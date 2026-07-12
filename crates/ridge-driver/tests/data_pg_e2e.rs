@@ -56,7 +56,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// The program source, with connection settings spliced in as sentinels so the
 /// Ridge record braces never collide with Rust string formatting.
 const SOURCE_TEMPLATE: &str = r#"
-import std.data (connect, connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withCheckoutTimeoutMs, Config, Postgres, dbErrorKind, dbErrorConstraint, dbErrorColumn, dbErrorTable, DbErrorKind, UniqueViolation, ForeignKeyViolation, NotNullViolation, CheckViolation, ConnectionError, DecodeError, Unsupported, QueryError)
+import std.data (connect, connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withCheckoutTimeoutMs, PostgresConfig, Postgres, dbErrorKind, dbErrorConstraint, dbErrorColumn, dbErrorTable, DbErrorKind, UniqueViolation, ForeignKeyViolation, NotNullViolation, CheckViolation, ConnectionError, DecodeError, Unsupported, QueryError)
 import std.repo as Repo
 import std.migrate as Migrate
 import std.migrate (MigrationOp)
@@ -258,8 +258,8 @@ fn fullSelGo (cs: List FullCombo) (n: Int) (nw: Int) (nt: Int) -> Text =
 fn fullSel (cs: List FullCombo) -> Text =
     fullSelGo cs 0 0 0
 
-fn pgConfig () -> Config =
-    Config { host = "__PG_HOST__", port = __PG_PORT__, database = "__PG_DATABASE__", user = "__PG_USER__", password = "__PG_PASSWORD__", sslMode = "__PG_SSLMODE__" }
+fn pgConfig () -> PostgresConfig =
+    PostgresConfig { host = "__PG_HOST__", port = __PG_PORT__, database = "__PG_DATABASE__", user = "__PG_USER__", password = "__PG_PASSWORD__", sslMode = "__PG_SSLMODE__" }
 
 -- Tag a classified error by its kind, so a probe can render the typed kind as text.
 fn tag (k: DbErrorKind) -> Text =

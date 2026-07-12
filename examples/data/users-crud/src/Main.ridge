@@ -8,7 +8,7 @@
 -- The database lives in memory, so every run starts clean and nothing is
 -- left on disk. Two one-line changes take the same code to a real database:
 --   * `connectSqlite (sqliteFile "users.db")` keeps the data between runs;
---   * `connect (Config { ... })` runs it against Postgres, unchanged.
+--   * `connect (PostgresConfig { ... })` runs it against Postgres, unchanged.
 -- The data guide in docs/data.md walks through both.
 
 import std.data (connectSqlite, sqliteMemory, Sqlite)

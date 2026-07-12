@@ -390,7 +390,7 @@ pub opaque type Postgres = { id: Int }
 -- without verifying the server certificate), or "verify-full" (encrypt and
 -- verify the certificate chain and the host name). Pool tuning lives separately
 -- in `PoolConfig`, so these settings stay the connection essentials.
-pub type Config = { host: Text, port: Int, database: Text, user: Text, password: Text, sslMode: Text }
+pub type PostgresConfig = { host: Text, port: Int, database: Text, user: Text, password: Text, sslMode: Text }
 
 -- Pool tuning for a Postgres connection. `size` caps the connections the pool
 -- opens; the millisecond timeouts bound how long an operation waits before it
@@ -561,9 +561,9 @@ fn pgExecSeq (id: Int) (stmts: List Text) -> Result Unit Error =
                 Ok _  -> pgExecSeq id rest
 
 -- Open a Postgres connection with a tuned pool — the same as `connect cfg` for a
--- `Config`, but taking an explicit `PoolConfig` (size and timeouts) in place of
+-- `PostgresConfig`, but taking an explicit `PoolConfig` (size and timeouts) in place of
 -- `defaultPool`. The unified `connect` (below) uses `defaultPool`.
-pub fn db connectWith (cfg: Config) (pool: PoolConfig) -> Result Postgres Error =
+pub fn db connectWith (cfg: PostgresConfig) (pool: PoolConfig) -> Result Postgres Error =
     _pgConnect cfg.host cfg.port cfg.database cfg.user cfg.password cfg.sslMode pool.size pool.connectTimeoutMs pool.queryTimeoutMs pool.checkoutTimeoutMs pool.idleTimeoutMs pool.maxLifetimeMs pool.healthCheckMs pool.connectRetries pool.retryBackoffMs pool.maxQueueDepth
 
 instance Adapter Postgres =
@@ -798,13 +798,13 @@ instance Adapter Sqlite =
 -- ── Unified connect ───────────────────────────────────────────────────────────
 --
 -- `connect` opens a connection for whichever backend its config selects — a
--- `Config` opens Postgres, a `SqliteConfig` opens SQLite. The config type alone
+-- `PostgresConfig` opens Postgres, a `SqliteConfig` opens SQLite. The config type alone
 -- picks the backend (`c -> r`), so repository code moves between backends by
 -- changing only its connection settings, never its query, write, or migration code.
 -- Open a Postgres connection with the default pool. Requires the `db`
 -- capability; the handle returned is the proof of access for every later call.
 -- Size the pool or set timeouts with `connectWith`.
-pub fn db connect (cfg: Config) -> Result Postgres Error =
+pub fn db connect (cfg: PostgresConfig) -> Result Postgres Error =
     connectWith cfg (defaultPool ())
 
 -- Open a SQLite connection from its settings. Requires the `db` capability; the

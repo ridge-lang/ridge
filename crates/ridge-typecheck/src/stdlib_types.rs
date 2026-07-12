@@ -154,7 +154,7 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
         // holds.
         TyConDecl {
             id: TyConId(base + 3),
-            name: "Config".to_string(),
+            name: "PostgresConfig".to_string(),
             arity: 0,
             kind: TyConKind::Record(RecordSchema::new(
                 vec![],
@@ -2121,14 +2121,14 @@ pub(crate) fn reconciled_fn_scheme(
                 constraints: vec![],
             })
         }
-        // std.data `connect : Config -> Result Postgres Error` — opens a Postgres
+        // std.data `connect : PostgresConfig -> Result Postgres Error` — opens a Postgres
         // connection. Like `memAdapter` it requires the `db` capability, and its
-        // signature names the reconciled `Config` and `Postgres`, so the
+        // signature names the reconciled `PostgresConfig` and `Postgres`, so the
         // hand-curated signature table (which only sees `BuiltinTyCons`) cannot
         // express it.
         ("std.data", "connect") => {
             let postgres = *reconciled.get("Postgres")?;
-            let config = *reconciled.get("Config")?;
+            let config = *reconciled.get("PostgresConfig")?;
             Some(Scheme {
                 vars: vec![],
                 cap_vars: vec![],
@@ -2198,12 +2198,12 @@ pub(crate) fn reconciled_fn_scheme(
                 constraints: vec![],
             })
         }
-        // std.data `connectWith : Config -> PoolConfig -> Result Postgres Error` —
-        // `connect` with an explicit pool. Names the reconciled `Config`,
+        // std.data `connectWith : PostgresConfig -> PoolConfig -> Result Postgres Error` —
+        // `connect` with an explicit pool. Names the reconciled `PostgresConfig`,
         // `PoolConfig`, and `Postgres`, so the hand-curated table cannot express it.
         ("std.data", "connectWith") => {
             let postgres = *reconciled.get("Postgres")?;
-            let config = *reconciled.get("Config")?;
+            let config = *reconciled.get("PostgresConfig")?;
             let pool = *reconciled.get("PoolConfig")?;
             Some(Scheme {
                 vars: vec![],

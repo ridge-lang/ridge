@@ -31,7 +31,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// The program source, with connection settings spliced in as sentinels so the
 /// Ridge record braces never collide with Rust string formatting.
 const SOURCE_TEMPLATE: &str = r#"
-import std.data (connect, Config, Postgres)
+import std.data (connect, PostgresConfig, Postgres)
 import std.repo as Repo
 import std.raw as Raw
 import std.sql (toSql, SqlValue)
@@ -55,8 +55,8 @@ fn optAvg (o: Option Float) -> Text =
         None   -> "none"
         Some f -> if f == 1000.0 then "ok" else "wrong"
 
-fn pgConfig () -> Config =
-    Config { host = "__PG_HOST__", port = __PG_PORT__, database = "__PG_DATABASE__", user = "__PG_USER__", password = "__PG_PASSWORD__", sslMode = "__PG_SSLMODE__" }
+fn pgConfig () -> PostgresConfig =
+    PostgresConfig { host = "__PG_HOST__", port = __PG_PORT__, database = "__PG_DATABASE__", user = "__PG_USER__", password = "__PG_PASSWORD__", sslMode = "__PG_SSLMODE__" }
 
 -- Create a fresh interval table and seed two rows: 1500 ms (id 1) and 500 ms (id 2),
 -- which Postgres stores as `00:00:01.5` and `00:00:00.5`. Two rows let `avg` fold to a

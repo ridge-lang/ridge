@@ -708,7 +708,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // record, and the `db`-gated `connect`. Implements the same
             // `Adapter` class as the in-memory backend.
             "Postgres",
-            "Config",
+            "PostgresConfig",
             "connect",
             // Pool tuning: the `PoolConfig` record and the `connectWith` that takes
             // one, the `defaultPool` baseline, and the `with*` setters that size the

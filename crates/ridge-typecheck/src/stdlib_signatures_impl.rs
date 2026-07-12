@@ -2012,7 +2012,7 @@ mod tests {
                 // via `seed_sql_codec_schemes`;
                 // the `selectRows`/`fetch` read helpers are standalone functions seeded
                 // via `reconciled_fn_scheme` (their quoted predicate pins the entity);
-                // `MemAdapter`/`Postgres`/`Config` are reconciled types, and
+                // `MemAdapter`/`Postgres`/`PostgresConfig` are reconciled types, and
                 // `memAdapter`/`connect` are seeded via `reconciled_fn_scheme`
                 // (their signatures name reconciled types), so none resolves
                 // through this hand-curated table.
@@ -2053,7 +2053,7 @@ mod tests {
                             | "MemAdapter"
                             | "memAdapter"
                             | "Postgres"
-                            | "Config"
+                            | "PostgresConfig"
                             | "connect"
                             | "PoolConfig"
                             | "connectWith"

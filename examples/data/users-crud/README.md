@@ -36,7 +36,7 @@ The database lives in memory, so each run starts clean. Two one-line changes
 in `src/Main.ridge` take the same code to a database that persists:
 
 - `connectSqlite (sqliteFile "users.db")` keeps the data between runs;
-- `connect (Config { ... })` runs it against Postgres, unchanged.
+- `connect (PostgresConfig { ... })` runs it against Postgres, unchanged.
 
 The [data guide](../../../docs/data.md) walks through both, including running
 against Postgres with Docker, and the one prerequisite worth knowing up front:

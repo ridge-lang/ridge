@@ -1,0 +1,9 @@
+fn run x =
+    let a = x
+
+    let b = a
+
+
+    a
+
+fn main y = y

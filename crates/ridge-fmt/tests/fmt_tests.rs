@@ -1,12 +1,12 @@
 //! Integration tests for `ridge-fmt`.
 //!
 //! Test plan:
-//! - 17 golden fixture tests (input → expected output).
-//! - 17 idempotency tests (format(format(input)) == format(input)).
+//! - 18 golden fixture tests (input → expected output).
+//! - 18 idempotency tests (format(format(input)) == format(input)).
 //! - 1 round-trip integration test (format every `examples/*.ridge` and
 //!   `crates/ridge-stdlib/stdlib/**/*.ridge`, re-parse, assert AST equivalence).
 //!
-//! Total: 35 tests.
+//! Total: 37 tests.
 
 use ridge_fmt::{format_source, migrate_tests};
 
@@ -238,6 +238,22 @@ fn idempotent_10_crlf_input() {
 fn idempotent_11_blank_line_collapsing() {
     let (input, _) = fixture!("11_blanks");
     assert_idempotent("11_blanks", input);
+}
+
+#[test]
+fn golden_18_body_blanks_preserved() {
+    // Blank lines inside a function body are left alone; only the blank run
+    // separating two top-level declarations is normalised. Collapsing every
+    // blank between two item starts used to eat the separator, jamming the
+    // next declaration against the previous body.
+    let (input, expected) = fixture!("18_bodyblanks");
+    assert_formats_to("18_bodyblanks", input, expected);
+}
+
+#[test]
+fn idempotent_18_body_blanks() {
+    let (input, _) = fixture!("18_bodyblanks");
+    assert_idempotent("18_bodyblanks", input);
 }
 
 #[test]

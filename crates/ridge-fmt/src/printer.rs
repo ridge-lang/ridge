@@ -235,28 +235,34 @@ pub fn print(parsed: &ParseResultWithTrivia) -> String {
                 }
             }
         } else {
-            // Count blank lines in the gap (ignoring content lines of item i).
-            let blank_lines_in_gap: Vec<usize> = (gap_start..gap_end)
+            // The separator is the run of blank lines immediately before item
+            // i+1 — the lines after item i's last content line. Blank lines
+            // interior to item i's body come before that content line and are
+            // left untouched: the printer is hands-off about intra-body layout,
+            // the same way it is for a gap that contains a comment. (An earlier
+            // rule collected every blank line between the two item *starts* and
+            // kept only the first; a body's own blank lines then counted as gap,
+            // so it ate the real separator and jammed the next declaration
+            // against the body.)
+            let last_content = (item_start_lines[i]..next_start)
+                .rev()
+                .find(|&l| l < line_count && !lines[l].trim().is_empty())
+                .unwrap_or(item_start_lines[i]);
+            let separator_blanks: Vec<usize> = ((last_content + 1)..next_start)
                 .filter(|&l| l < line_count && lines[l].trim().is_empty())
                 .collect();
 
-            if blank_lines_in_gap.is_empty() {
-                // No blank line in the gap — inject one after the last
-                // non-blank line before next_start.
-                let last_content = (gap_start..next_start)
-                    .rev()
-                    .find(|&l| l < line_count && !lines[l].trim().is_empty())
-                    .unwrap_or(gap_start.saturating_sub(1));
+            if separator_blanks.is_empty() {
+                // No blank line separating the two — inject exactly one.
                 if last_content < line_count {
                     inject_blank_after[last_content] = true;
                 }
-            } else if blank_lines_in_gap.len() > 1 {
-                // More than one blank in gap — keep only the first.
-                for &line_no in &blank_lines_in_gap[1..] {
+            } else {
+                // Keep the first separator blank, remove any extras.
+                for &line_no in &separator_blanks[1..] {
                     line_removed[line_no] = true;
                 }
             }
-            // Exactly one blank → leave it as-is.
         }
     }
 

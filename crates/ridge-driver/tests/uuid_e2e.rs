@@ -6,7 +6,7 @@
 //! - a canonical string parses and renders back unchanged,
 //! - an upper-case string is normalised to lowercase, so equality is by value,
 //! - the nil uuid renders as the all-zero form,
-//! - `gen` mints a well-formed, distinct value from the `random` capability,
+//! - `generate` mints a well-formed, distinct value from the `random` capability,
 //! - ordering compares by the 128-bit value, and
 //! - a malformed string is a recoverable `Err`, not a crash.
 //!
@@ -62,13 +62,13 @@ pub fn badHex () -> Text =
 
 -- a generated uuid is well-formed: rendering it and parsing it back succeeds.
 pub fn random genValid () -> Text =
-    match Uuid.fromText (Uuid.toText (Uuid.gen ()))
+    match Uuid.fromText (Uuid.toText (Uuid.generate ()))
         Ok _  -> "valid"
         Err _ -> "invalid"
 
 -- two generated uuids differ (a v4 collision is astronomically unlikely).
 pub fn random genDistinct () -> Text =
-    if Uuid.eq (Uuid.gen ()) (Uuid.gen ()) then "same" else "distinct"
+    if Uuid.eq (Uuid.generate ()) (Uuid.generate ()) then "same" else "distinct"
 "#;
 
 fn write_workspace(root: &std::path::Path) {

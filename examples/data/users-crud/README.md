@@ -26,7 +26,7 @@ printed after each change.
   a single row by key.
 - **Update** — `Repo.setWhere` with a typed `set`, checked against the column
   at compile time.
-- **Delete** — `Repo.deleteWhere` with a predicate.
+- **Delete** — `Repo.delete` with a predicate.
 - **`?`** — every step returns a `Result`, and `?` threads the happy path so
   the program reads top to bottom without nested `match`.
 
@@ -36,7 +36,7 @@ The database lives in memory, so each run starts clean. Two one-line changes
 in `src/Main.ridge` take the same code to a database that persists:
 
 - `connectSqlite (sqliteFile "users.db")` keeps the data between runs;
-- `connect (Config { ... })` runs it against Postgres, unchanged.
+- `connect (PostgresConfig { ... })` runs it against Postgres, unchanged.
 
 The [data guide](../../../docs/data.md) walks through both, including running
 against Postgres with Docker, and the one prerequisite worth knowing up front:

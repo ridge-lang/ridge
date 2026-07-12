@@ -117,7 +117,7 @@ const STDLIB_CLASSES: &[(&str, &str)] = &[
     ("Projectable", "std.repo"),
     ("Orderable", "std.repo"),
     ("Aggregable", "std.repo"),
-    ("Decodable", "std.repo"),
+    ("Fetchable", "std.repo"),
     ("Pageable", "std.repo"),
     ("Countable", "std.repo"),
     ("Every", "std.repo"),

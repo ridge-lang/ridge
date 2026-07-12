@@ -70,11 +70,6 @@ pub fn time sinceMs (t: Timestamp) -> Int
 @ffi("timer", "sleep", 1)
 pub fn time sleep (ms: Int) -> Unit
 
--- Alias for fromIso — spec §9.2 surface compatibility.
--- Returns Ok(Timestamp) on success, Err(Error) on invalid input.
-@ffi("ridge_rt", "time_from_iso", 1)
-pub fn parse (s: Text) -> Result Timestamp Error
-
 -- Format a Timestamp as an ISO-8601 text representation.
 @ffi("ridge_rt", "time_iso", 1)
-pub fn iso (t: Timestamp) -> Text
+pub fn toIso (t: Timestamp) -> Text

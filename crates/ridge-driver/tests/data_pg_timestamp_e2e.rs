@@ -28,7 +28,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// The program source, with connection settings spliced in as sentinels so the
 /// Ridge record braces never collide with Rust string formatting.
 const SOURCE_TEMPLATE: &str = r#"
-import std.data (connect, Config, Postgres)
+import std.data (connect, PostgresConfig, Postgres)
 import std.repo as Repo
 import std.raw as Raw
 import std.sql (toSql, SqlValue)
@@ -47,8 +47,8 @@ fn instant (iso: Text) -> Timestamp =
         Ok t  -> t
         Err _ -> Time.epoch ()
 
-fn pgConfig () -> Config =
-    Config { host = "__PG_HOST__", port = __PG_PORT__, database = "__PG_DATABASE__", user = "__PG_USER__", password = "__PG_PASSWORD__", sslMode = "__PG_SSLMODE__" }
+fn pgConfig () -> PostgresConfig =
+    PostgresConfig { host = "__PG_HOST__", port = __PG_PORT__, database = "__PG_DATABASE__", user = "__PG_USER__", password = "__PG_PASSWORD__", sslMode = "__PG_SSLMODE__" }
 
 -- Create a fresh table with one timezone-aware and one naive timestamp column,
 -- then seed both from the same UTC instant.
@@ -76,7 +76,7 @@ pub fn db tzRoundTrip () -> Text =
             match r |> Repo.getBy "id" (toSql 1)
                 Err _       -> "get-err"
                 Ok None     -> "none"
-                Ok (Some e) -> Time.iso e.tz
+                Ok (Some e) -> Time.toIso e.tz
 
 -- read back the plain timestamp column: it arrives without an offset and is read
 -- as UTC, so it formats back to the same ISO string.
@@ -87,7 +87,7 @@ pub fn db naiveRoundTrip () -> Text =
             match r |> Repo.getBy "id" (toSql 1)
                 Err _       -> "get-err"
                 Ok None     -> "none"
-                Ok (Some e) -> Time.iso e.naive
+                Ok (Some e) -> Time.toIso e.naive
 "#;
 
 struct PgParts<'a> {

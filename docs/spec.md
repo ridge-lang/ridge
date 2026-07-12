@@ -312,8 +312,8 @@ Every Ridge module has a set of names in scope without any `import` declaration.
 | `Int` | `std.int` | `ModuleAlias` | Enables `Int.parse`, `Int.toText`, … |
 | `Float` | `std.float` | `ModuleAlias` | Enables `Float.fromInt`, `Float.round`, … |
 | `Decimal` | `std.decimal` | `ModuleAlias` | Enables `Decimal.fromText`, `Decimal.round`, … |
-| `Uuid` | `std.uuid` | `ModuleAlias` | Enables `Uuid.gen`, `Uuid.fromText`, … |
-| `Bytes` | `std.bytes` | `ModuleAlias` | Enables `Bytes.fromHex`, `Bytes.gen`, … |
+| `Uuid` | `std.uuid` | `ModuleAlias` | Enables `Uuid.generate`, `Uuid.fromText`, … |
+| `Bytes` | `std.bytes` | `ModuleAlias` | Enables `Bytes.fromHex`, `Bytes.generate`, … |
 | `Bool` | `std.bool` | `ModuleAlias` | Enables `Bool.not`, … |
 | `Text` | `std.text` | `ModuleAlias` | Enables `Text.padLeft`, `Text.split`, … |
 | `List` | `std.list` | `ModuleAlias` | Enables `List.map`, `List.fold`, … |
@@ -794,8 +794,8 @@ Ridge's type system is based on **Hindley-Milner with extensions**:
 Int        -- 64-bit signed integer
 Float      -- 64-bit IEEE 754 double
 Decimal    -- exact base-10, arbitrary precision (a `19.99m` literal); see §9 std.decimal
-Uuid       -- RFC 4122 identifier (no literal; from Uuid.gen / Uuid.fromText); see §9 std.uuid
-Bytes      -- raw byte string (no literal; from Bytes.fromHex / Bytes.fromUtf8 / Bytes.gen); see §9 std.bytes
+Uuid       -- RFC 4122 identifier (no literal; from Uuid.generate / Uuid.fromText); see §9 std.uuid
+Bytes      -- raw byte string (no literal; from Bytes.fromHex / Bytes.fromUtf8 / Bytes.generate); see §9 std.bytes
 Bool       -- true | false
 Text       -- UTF-8 string (BEAM binary internally)
 Unit       -- () — the single-value type
@@ -1592,16 +1592,16 @@ Rules:
 | `std.int` | Integer ops | `toText`, `parse`, `abs`, `min`, `max` |
 | `std.float` | Float ops | `toText`, `parse`, `round`, `floor`, `ceil`, `sqrt` |
 | `std.decimal` | Exact decimal ops | `fromText`, `toText`, `add`, `sub`, `mul`, `div`, `round`, `compare`; `RoundingMode` |
-| `std.uuid` | RFC 4122 identifiers | `gen`, `fromText`, `toText`, `nil`, `compare`, `eq` |
-| `std.bytes` | Raw byte strings | `fromHex`, `toHex`, `fromUtf8`, `toUtf8`, `empty`, `gen`, `length`, `concat`, `compare` |
+| `std.uuid` | RFC 4122 identifiers | `generate`, `fromText`, `toText`, `nil`, `compare`, `eq` |
+| `std.bytes` | Raw byte strings | `fromHex`, `toHex`, `fromUtf8`, `toUtf8`, `empty`, `generate`, `length`, `concat`, `compare` |
 | `std.bool` | Boolean helpers | `not`, `and`, `or` |
 | `std.text` | Text ops | `byteSize`, `concat`, `split`, `splitN`, `splitAny`, `lines`, `trim`, `toUpper`, `toLower`, `startsWith`, `endsWith`, `contains`, `replace`, `padLeft`, `padRight`, `isEmpty` |
 | `std.list` | List ops | `empty`, `length`, `isEmpty`, `head`, `tail`, `map`, `filter`, `filterMap`, `fold`, `foldRight`, `reverse`, `sort`, `sortBy`, `take`, `drop`, `groupBy`, `flatMap`, `zip`, `zipWith`, `contains`, `find`, `any`, `all`, `range`, `rangeExclusive`, `forEach` |
-| `std.map` | Persistent map | `empty`, `fromList`, `toList`, `insert`, `remove`, `get`, `contains`, `keys`, `values`, `map`, `filter`, `size`, `merge`, `update` |
-| `std.set` | Persistent set | `empty`, `fromList`, `toList`, `insert`, `remove`, `contains`, `union`, `intersect`, `difference`, `size` |
+| `std.map` | Persistent map | `empty`, `fromList`, `toList`, `insert`, `remove`, `get`, `contains`, `keys`, `values`, `map`, `filter`, `length`, `merge`, `update` |
+| `std.set` | Persistent set | `empty`, `fromList`, `toList`, `insert`, `remove`, `contains`, `union`, `intersection`, `difference`, `length` |
 | `std.option` | Option helpers | `withDefault`, `map`, `flatMap`, `orElse`, `isSome`, `isNone`, `discard` |
 | `std.result` | Result helpers | `map`, `mapErr`, `flatMap`, `withDefault`, `isOk`, `isErr`, `discard` |
-| `std.test` | Test assertions | `ensure`, `assertEq`, `assertNe`, `assertTrue`, `assertFalse`, `isOk`, `isErr`, `isSome`, `isNone` |
+| `std.test` | Test assertions | `ensure`, `assertEq`, `assertNe`, `assertTrue`, `assertFalse`, `assertOk`, `assertErr`, `assertSome`, `assertNone` |
 
 *Note:* `length` is **reserved** for future codepoint-aware semantics. `byteSize` returns the byte count under UTF-8 encoding; character/grapheme counting will arrive with `length` in a later release.
 
@@ -1620,8 +1620,8 @@ users |> List.map (.email) |> List.filter isValid |> List.take 10
 | Module | Capability | Purpose |
 |--------|-----------|---------|
 | `std.io` | `io` | `print`, `println`, `readLine`, `eprint` |
-| `std.fs` | `fs` | `readFile`, `writeFile`, `append`, `exists`, `lines` |
-| `std.time` | `time` | `now : fn time () -> Timestamp`, `epoch : Timestamp`, `fromIso : Text -> Result Timestamp Error`, `diff`, `diffMs`, `sinceMs`, `sleep`, `Duration`, `parse`, `iso` |
+| `std.fs` | `fs` | `readFile`, `writeFile`, `append`, `isFile`, `lines` |
+| `std.time` | `time` | `now : fn time () -> Timestamp`, `epoch : Timestamp`, `fromIso : Text -> Result Timestamp Error`, `diff`, `diffMs`, `sinceMs`, `sleep`, `Duration`, `toIso` |
 | `std.random` | `random` | `int`, `float`, `alphanumeric`, `choice`, `seed` |
 | `std.env` | `env` | `get`, `set`, `all` |
 | `std.cli` | `env` | `args`, `exit` (built on top of env) |

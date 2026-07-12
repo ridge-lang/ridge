@@ -23,7 +23,7 @@
 //! — `RIDGE_DB_HOST`, `RIDGE_DB_PORT`, `RIDGE_DB_DATABASE`, `RIDGE_DB_USER`,
 //! `RIDGE_DB_PASSWORD`, `RIDGE_DB_SSLMODE` — with `RIDGE_DB_DATABASE` and
 //! `RIDGE_DB_USER` required; the rest default the same way `std.data`'s
-//! `Config` would. Neither command touches the workspace's manifest, so the
+//! `PostgresConfig` would. Neither command touches the workspace's manifest, so the
 //! target project must already declare `[capabilities] allow = ["db",
 //! "env"]` for the generated driver to compile.
 //!
@@ -61,7 +61,7 @@
 //!    `M1`, ...) since they all expose `up`, and calls `std.migrate`'s `run`
 //!    with the list built from those aliases in order. `status`'s driver only
 //!    needs the connection and `std.migrate`'s `applied`. Both build the
-//!    connection `Config` from the environment at runtime inside the driver
+//!    connection `PostgresConfig` from the environment at runtime inside the driver
 //!    (via `std.env`), so no connection setting — least of all the password —
 //!    is ever written to the generated `.ridge` file.
 //! 5. Compile, locate the driver module, and run it, exactly like `add`.
@@ -626,8 +626,8 @@ fn build_driver_source(project_name: &str, has_snapshot: bool, migration_name: &
     lines.join("\n")
 }
 
-/// The `Config`-building helpers every `apply`/`status` driver shares: one
-/// function per `Config` field, each reading its own `RIDGE_DB_*` variable
+/// The `PostgresConfig`-building helpers every `apply`/`status` driver shares: one
+/// function per `PostgresConfig` field, each reading its own `RIDGE_DB_*` variable
 /// through `std.env` and falling back to the documented default, plus `cfg`,
 /// which assembles them into the record `connect` takes.
 ///
@@ -674,8 +674,8 @@ fn config_helpers_source() -> String {
         "        Some v -> v",
         "        None   -> \"disable\"",
         "",
-        "fn env cfg () -> Config =",
-        "    Config { host = cfgHost (), port = cfgPort (), database = cfgDatabase (), user = cfgUser (), password = cfgPassword (), sslMode = cfgSslMode () }",
+        "fn env cfg () -> PostgresConfig =",
+        "    PostgresConfig { host = cfgHost (), port = cfgPort (), database = cfgDatabase (), user = cfgUser (), password = cfgPassword (), sslMode = cfgSslMode () }",
     ]
     .join("\n")
 }
@@ -686,7 +686,7 @@ fn config_helpers_source() -> String {
 /// `M1`, ...) — they all expose `up`, so a shared unqualified import would
 /// collide — and calls `std.migrate`'s `run` with the aliased calls in
 /// chronological order. Exposes one zero-arity function, `applyOut`, that
-/// connects (building `Config` from the environment), runs the migrations,
+/// connects (building `PostgresConfig` from the environment), runs the migrations,
 /// and renders the `Result` as `ok:<comma-separated applied names>` or
 /// `err:<message>` — a connect failure renders through the same `err:`
 /// branch, so the caller does not need to distinguish the two.
@@ -696,7 +696,7 @@ fn build_apply_driver_source(project_name: &str, stems: &[String]) -> String {
         lines.push(format!("import {project_name}.migrations.{stem} as M{i}"));
     }
     lines.push("import std.migrate as Migrate".to_owned());
-    lines.push("import std.data (Config, connect)".to_owned());
+    lines.push("import std.data (PostgresConfig, connect)".to_owned());
     lines.push("import std.env as Env".to_owned());
     lines.push("import std.int as Int".to_owned());
     lines.push("import std.text as Text".to_owned());
@@ -729,7 +729,7 @@ fn build_rollback_driver_source(project_name: &str, stems: &[String], count: u32
         lines.push(format!("import {project_name}.migrations.{stem} as M{i}"));
     }
     lines.push("import std.migrate as Migrate".to_owned());
-    lines.push("import std.data (Config, connect)".to_owned());
+    lines.push("import std.data (PostgresConfig, connect)".to_owned());
     lines.push("import std.env as Env".to_owned());
     lines.push("import std.int as Int".to_owned());
     lines.push("import std.text as Text".to_owned());
@@ -761,7 +761,7 @@ fn build_rollback_driver_source(project_name: &str, stems: &[String], count: u32
 /// `applyOut` is.
 fn build_status_driver_source() -> String {
     let lines = vec![
-        "import std.data (Config, connect)".to_owned(),
+        "import std.data (PostgresConfig, connect)".to_owned(),
         "import std.migrate as Migrate".to_owned(),
         "import std.env as Env".to_owned(),
         "import std.int as Int".to_owned(),
@@ -1063,7 +1063,7 @@ mod tests {
         assert!(discover_migration_stems(missing).is_empty());
     }
 
-    // ── missing_required_vars (env -> Config validation) ──────────────────────
+    // ── missing_required_vars (env -> PostgresConfig validation) ──────────────────────
 
     #[test]
     fn missing_required_vars_reports_both_when_unset() {
@@ -1139,7 +1139,7 @@ mod tests {
     fn build_status_driver_source_needs_no_migration_imports() {
         let src = build_status_driver_source();
 
-        assert!(src.contains("import std.data (Config, connect)"));
+        assert!(src.contains("import std.data (PostgresConfig, connect)"));
         assert!(src.contains("import std.migrate as Migrate"));
         assert!(src.contains("Migrate.applied conn"));
         assert!(src.contains("pub fn db env statusOut () -> Text"));

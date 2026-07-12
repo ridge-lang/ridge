@@ -2959,7 +2959,7 @@ pub(crate) fn stdlib_class_home_module(class_name: &str) -> Option<&'static str>
         "SqlType" | "Row" => Some("std.sql"),
         "Adapter" => Some("std.data"),
         "HasSchema" => Some("std.schema"),
-        "Refinable" | "Projectable" | "Orderable" | "Aggregable" | "Decodable" | "Pageable"
+        "Refinable" | "Projectable" | "Orderable" | "Aggregable" | "Fetchable" | "Pageable"
         | "Countable" | "Every" | "Groupable" | "Summarizable" | "Combinable" | "Joinable"
         | "JoinShape" | "LeftJoinable" | "RightJoinable" | "FullJoinable" => Some("std.repo"),
         _ => None,
@@ -3504,7 +3504,7 @@ fn lower_literal(ctx: &mut LowerCtx<'_>, lit: &Literal) -> IrExpr {
     let span = lit.span();
     // A decimal literal has no native runtime form, so it lowers to a call that
     // rebuilds the exact value from its digits. The lexer has already validated
-    // the text, so `parseRaw` never fails here; the `m` suffix and any digit
+    // the text, so `parseStrict` never fails here; the `m` suffix and any digit
     // separators are dropped before the runtime parses the number.
     if let Literal::Decimal { raw, .. } = lit {
         let text = raw.trim_end_matches(['m', 'M']).replace('_', "");
@@ -3512,7 +3512,7 @@ fn lower_literal(ctx: &mut LowerCtx<'_>, lit: &Literal) -> IrExpr {
             id: ctx.fresh_id(None),
             sym: SymbolRef::Stdlib {
                 module: "std.decimal".to_string(),
-                name: "parseRaw".to_string(),
+                name: "parseStrict".to_string(),
             },
             span,
         };

@@ -755,7 +755,7 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         arity: 1,
         requires_caps: &[],
     },
-    // `gen` draws fresh random bytes, so it carries the `random` capability.
+    // `generate` draws fresh random bytes, so it carries the `random` capability.
     FfiAuditEntry {
         beam_module: "ridge_rt",
         fn_name: "uuid_gen",
@@ -799,7 +799,7 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         arity: 1,
         requires_caps: &[],
     },
-    // `gen` draws fresh random bytes, so it carries the `random` capability.
+    // `generate` draws fresh random bytes, so it carries the `random` capability.
     FfiAuditEntry {
         beam_module: "ridge_rt",
         fn_name: "bytes_gen",

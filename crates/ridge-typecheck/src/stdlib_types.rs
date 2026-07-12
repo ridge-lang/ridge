@@ -154,7 +154,7 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
         // holds.
         TyConDecl {
             id: TyConId(base + 3),
-            name: "Config".to_string(),
+            name: "PostgresConfig".to_string(),
             arity: 0,
             kind: TyConKind::Record(RecordSchema::new(
                 vec![],
@@ -2121,14 +2121,14 @@ pub(crate) fn reconciled_fn_scheme(
                 constraints: vec![],
             })
         }
-        // std.data `connect : Config -> Result Postgres Error` — opens a Postgres
+        // std.data `connect : PostgresConfig -> Result Postgres Error` — opens a Postgres
         // connection. Like `memAdapter` it requires the `db` capability, and its
-        // signature names the reconciled `Config` and `Postgres`, so the
+        // signature names the reconciled `PostgresConfig` and `Postgres`, so the
         // hand-curated signature table (which only sees `BuiltinTyCons`) cannot
         // express it.
         ("std.data", "connect") => {
             let postgres = *reconciled.get("Postgres")?;
-            let config = *reconciled.get("Config")?;
+            let config = *reconciled.get("PostgresConfig")?;
             Some(Scheme {
                 vars: vec![],
                 cap_vars: vec![],
@@ -2198,12 +2198,12 @@ pub(crate) fn reconciled_fn_scheme(
                 constraints: vec![],
             })
         }
-        // std.data `connectWith : Config -> PoolConfig -> Result Postgres Error` —
-        // `connect` with an explicit pool. Names the reconciled `Config`,
+        // std.data `connectWith : PostgresConfig -> PoolConfig -> Result Postgres Error` —
+        // `connect` with an explicit pool. Names the reconciled `PostgresConfig`,
         // `PoolConfig`, and `Postgres`, so the hand-curated table cannot express it.
         ("std.data", "connectWith") => {
             let postgres = *reconciled.get("Postgres")?;
-            let config = *reconciled.get("Config")?;
+            let config = *reconciled.get("PostgresConfig")?;
             let pool = *reconciled.get("PoolConfig")?;
             Some(Scheme {
                 vars: vec![],
@@ -2271,9 +2271,9 @@ pub(crate) fn reconciled_fn_scheme(
         // constrained over `Adapter a` (to reach the storage primitives) and
         // `Row e` (to decode rows into the entity), so none is expressible in
         // the hand-curated table.
-        // std.query `ascending : SortOrder -> Bool` — projects a sort direction
+        // std.query `isAscending : SortOrder -> Bool` — projects a sort direction
         // to the `ascending?` boolean the query builder and seam read.
-        ("std.query", "ascending") => {
+        ("std.query", "isAscending") => {
             let sort_order = *reconciled.get("SortOrder")?;
             Some(Scheme {
                 vars: vec![],
@@ -3394,9 +3394,9 @@ fn reconciled_repo_fn_scheme(
         // dependency fixing the predicate arity for the sibling `every`. Omitting the
         // arm routes them through the class-method path; the old `countBy` (count over
         // a predicate) is gone with them — it is `query |> filter pred |> count`.
-        // `deleteWhere` keeps its own scheme (it removes the matching rows, not a
+        // `delete` keeps its own scheme (it removes the matching rows, not a
         // count, and is unrelated to the receiver-polymorphic query builder).
-        "deleteWhere" => method(
+        "delete" => method(
             vec![quote_pred(), repo_app()],
             result(Type::Con(b.int, vec![])),
             with_adapter(),
@@ -3725,11 +3725,11 @@ fn reconciled_repo_fn_scheme(
         // join. Returning `None` here routes it through the class-method path
         // rather than the old single-receiver pub fn.
         // `toList` / `first` are no longer reconciled here: they became the methods
-        // of the `Decodable q p | q -> p` class (std.repo), one pair of terminals
+        // of the `Fetchable q p | q -> p` class (std.repo), one pair of terminals
         // that decode a query, an inner join, or a left join. A qualified
         // `Repo.toList`/`Repo.first` resolves to that class method, typed by the
-        // seeded `∀q p. q -> Result (List (Ret p)) Error where Decodable q p` scheme
-        // (see `seed_decodable_scheme`), the fundep fixing the row shape per receiver
+        // seeded `∀q p. q -> Result (List (Ret p)) Error where Fetchable q p` scheme
+        // (see `seed_fetchable_scheme`), the fundep fixing the row shape per receiver
         // and `Ret p` naming the decoded element. Omitting the arm routes them
         // through the class-method path rather than the old single-receiver pub fns.
         // single : ∀e a. Query e a -> Result (Option e) Error where Adapter a, Row e.
@@ -3837,7 +3837,7 @@ fn reconciled_repo_fn_scheme(
         // method, seeded by `seed_joinable_scheme` so its condition (`JoinCond q f`)
         // and result (`JoinResult q f`) follow the receiver. Omitting the arm routes
         // it through that class path, the same way `toList`/`first` route through
-        // `seed_decodable_scheme`.
+        // `seed_fetchable_scheme`.
         // crossJoin : ∀e f a. Repo f a -> Query e a -> Join e f a. The cartesian
         // builder: it pairs the left query with the right repository and no
         // condition, so it carries no quoted predicate. A cross join is an inner
@@ -3861,9 +3861,9 @@ fn reconciled_repo_fn_scheme(
             })
         }
         // `toPairs` is gone: an inner join's `toList`/`first` are now the
-        // `Decodable (Join e f a) …` methods (std.repo), so the join shares the
+        // `Fetchable (Join e f a) …` methods (std.repo), so the join shares the
         // query's decode terminals. `Repo.toList` over a `Join` resolves to that
-        // class method (see `seed_decodable_scheme`), `Ret p` naming the decoded
+        // class method (see `seed_fetchable_scheme`), `Ret p` naming the decoded
         // pair `(e, f)`; omitting the arm routes it through the class-method path.
         // (`selectJoin` is gone: an inner join's projection is now the
         // `Projectable (Join e f a) (fn e f -> s)` instance — see
@@ -3885,8 +3885,8 @@ fn reconciled_repo_fn_scheme(
         // binary `FullJoin` from a query, the nested `FullJoined` from a composite.
         // Omitting the arm routes it through that class path.
         // `toLeftPairs` is gone: a left join's `toList`/`first` are now the
-        // `Decodable (LeftJoin e f a) …` methods (std.repo). `Repo.toList` over a
-        // `LeftJoin` resolves to that class method (see `seed_decodable_scheme`),
+        // `Fetchable (LeftJoin e f a) …` methods (std.repo). `Repo.toList` over a
+        // `LeftJoin` resolves to that class method (see `seed_fetchable_scheme`),
         // `Ret p` naming the decoded pair `(e, Option f)` — the right side `None`
         // where a left row matched none; omitting the arm routes it through the
         // class-method path.

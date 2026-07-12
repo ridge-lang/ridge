@@ -234,7 +234,7 @@ fn stdlib_secure_cookie_field_access_is_t036() {
 #[test]
 fn stdlib_secure_cookie_setters_are_clean() {
     // Build with defaults, override an attribute through a setter, then serialize.
-    let main = "import std.net.http (secureCookie, withSecure, secureCookieHeader)\nfn ok () -> Text = secureCookieHeader (withSecure (secureCookie \"n\" \"v\") false)\n";
+    let main = "import std.net.http (secureCookie, withSecure, secureCookieHeader)\nfn ok () -> Text = secureCookieHeader (withSecure false (secureCookie \"n\" \"v\"))\n";
     let errors = typecheck_one(main);
     assert!(
         errors.is_empty(),
@@ -828,19 +828,19 @@ pub fn db checks () -> Text =
 fn repo_over_postgres_adapter_typechecks() {
     // The Postgres adapter resolves the same `Adapter` constraint as the
     // in-memory backend: `connect` (db-gated) builds a `Postgres` handle from a
-    // `Config`, and a `Repo User Postgres` auto-decodes `all` into `List User`.
+    // `PostgresConfig`, and a `Repo User Postgres` auto-decodes `all` into `List User`.
     // No database is touched — this exercises the type-level wiring (the
-    // reconciled `Config`/`Postgres`, the `connect` scheme, and the
+    // reconciled `PostgresConfig`/`Postgres`, the `connect` scheme, and the
     // `Adapter Postgres` instance).
     let main = r#"
-import std.data (connect, Config, Postgres)
+import std.data (connect, PostgresConfig, Postgres)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
 pub fn db loadUsers () -> Result (List User) Error =
-    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
+    match connect (PostgresConfig { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
             let users: Repo User Postgres = Repo.repo conn "users"
@@ -861,10 +861,10 @@ fn connect_with_tuned_pool_and_disconnect_typecheck() {
     // exercises the reconciled `PoolConfig`, the `connectWith`/`defaultPool`/
     // `with*` schemes, and the generic `disconnect`.
     let main = r"
-import std.data (connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withConnectTimeoutMs, withCheckoutTimeoutMs, withIdleTimeoutMs, withMaxLifetimeMs, withHealthCheckMs, withConnectRetries, withRetryBackoffMs, withMaxQueueDepth, Config, PoolConfig, Postgres)
+import std.data (connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withConnectTimeoutMs, withCheckoutTimeoutMs, withIdleTimeoutMs, withMaxLifetimeMs, withHealthCheckMs, withConnectRetries, withRetryBackoffMs, withMaxQueueDepth, PostgresConfig, PoolConfig, Postgres)
 import std.repo as Repo
 
-pub fn db openTuned (cfg: Config) -> Result Unit Error =
+pub fn db openTuned (cfg: PostgresConfig) -> Result Unit Error =
     match connectWith cfg (defaultPool () |> withPoolSize 20 |> withQueryTimeoutMs 60000 |> withConnectTimeoutMs 8000 |> withCheckoutTimeoutMs 3000 |> withIdleTimeoutMs 300000 |> withMaxLifetimeMs 900000 |> withHealthCheckMs 30000 |> withConnectRetries 5 |> withRetryBackoffMs 250 |> withMaxQueueDepth 64)
         Err e   -> Err e
         Ok conn -> Repo.disconnect conn
@@ -925,10 +925,10 @@ fn connect_requires_the_db_capability() {
     // pure function must be rejected, exactly as for `memAdapter`. (The handle's
     // later use is cap-free under the handle-as-proof model.)
     let main = r#"
-import std.data (connect, Config, Postgres)
+import std.data (connect, PostgresConfig, Postgres)
 
 pub fn openIt () -> Result Postgres Error =
-    connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "disable" })
+    connect (PostgresConfig { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "disable" })
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -976,7 +976,7 @@ pub fn db add () -> Result Unit Error =
     users () |> Repo.insertRow (Map.fromList [("id", toSql 1)])
 
 pub fn db purge () -> Result Int Error =
-    users () |> Repo.deleteWhere (fn (u: User) -> u.age < 18)
+    users () |> Repo.delete (fn (u: User) -> u.age < 18)
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -1275,7 +1275,7 @@ fn query_builder_over_postgres_typechecks() {
     // `fetch` is a class method both adapters implement, so a `Query User Postgres`
     // runs its terminal through the Postgres instance with no extra annotation.
     let main = r#"
-import std.data (connect, Config, Postgres)
+import std.data (connect, PostgresConfig, Postgres)
 import std.repo as Repo
 import std.query (SortOrder, Desc)
 import std.sql (SqlValue)
@@ -1283,7 +1283,7 @@ import std.sql (SqlValue)
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
 pub fn db topAdults () -> Result (List User) Error =
-    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
+    match connect (PostgresConfig { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
             let users: Repo User Postgres = Repo.repo conn "users"
@@ -1368,7 +1368,7 @@ fn query_builder_projection_over_postgres_typechecks() {
     // `project` is a class method both adapters implement, so the select-list is
     // pushed down with no change to the call.
     let main = r#"
-import std.data (connect, Config, Postgres)
+import std.data (connect, PostgresConfig, Postgres)
 import std.repo as Repo
 import std.sql (SqlValue)
 
@@ -1376,7 +1376,7 @@ pub type User = { id: Int, age: Int, name: Text, signupYear: Int } deriving (Row
 pub type Summary = { name: Text, year: Int } deriving (Row)
 
 pub fn db summaries () -> Result (List Summary) Error =
-    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
+    match connect (PostgresConfig { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
             let users: Repo User Postgres = Repo.repo conn "users"
@@ -1890,7 +1890,7 @@ fn query_builder_join_over_postgres_typechecks() {
     // lowers onto `runPlan`, a class method both adapters implement, so the call
     // is unchanged across backends.
     let main = r#"
-import std.data (connect, Config, Postgres)
+import std.data (connect, PostgresConfig, Postgres)
 import std.repo as Repo
 import std.sql (SqlValue)
 
@@ -1899,7 +1899,7 @@ pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 pub type Line = { who: Text, title: Text } deriving (Row)
 
 pub fn db authorLines () -> Result (List Line) Error =
-    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
+    match connect (PostgresConfig { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
             let users: Repo User Postgres = Repo.repo conn "users"
@@ -2058,7 +2058,7 @@ fn query_builder_left_join_over_postgres_typechecks() {
     // lowers onto `runPlan`, a class method both adapters implement, so the call
     // is unchanged across backends.
     let main = r#"
-import std.data (connect, Config, Postgres)
+import std.data (connect, PostgresConfig, Postgres)
 import std.repo as Repo
 import std.sql (SqlValue)
 
@@ -2066,7 +2066,7 @@ pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
 pub fn db authorPosts () -> Result (List (User, Option Post)) Error =
-    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
+    match connect (PostgresConfig { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
             let users: Repo User Postgres = Repo.repo conn "users"
@@ -2177,7 +2177,7 @@ fn query_builder_right_join_over_postgres_typechecks() {
     // lowers onto `runPlan`, a class method both adapters implement, so the call is
     // unchanged across backends.
     let main = r#"
-import std.data (connect, Config, Postgres)
+import std.data (connect, PostgresConfig, Postgres)
 import std.repo as Repo
 import std.sql (SqlValue)
 
@@ -2185,7 +2185,7 @@ pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
 pub fn db postAuthors () -> Result (List (Option User, Post)) Error =
-    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
+    match connect (PostgresConfig { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
             let users: Repo User Postgres = Repo.repo conn "users"
@@ -2295,7 +2295,7 @@ fn query_builder_full_join_over_postgres_typechecks() {
     // lowers onto `runPlan`, a class method both adapters implement, so the call is
     // unchanged across backends.
     let main = r#"
-import std.data (connect, Config, Postgres)
+import std.data (connect, PostgresConfig, Postgres)
 import std.repo as Repo
 import std.sql (SqlValue)
 
@@ -2303,7 +2303,7 @@ pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
 pub fn db everyone () -> Result (List (Option User, Option Post)) Error =
-    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
+    match connect (PostgresConfig { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
             let users: Repo User Postgres = Repo.repo conn "users"
@@ -2346,7 +2346,7 @@ pub fn db bad () -> Result (List (User, Option Post)) Error =
 
 #[test]
 fn query_builder_query_first_typechecks() {
-    // `first` is now a `Decodable` method, so a query still answers its first
+    // `first` is now a `Fetchable` method, so a query still answers its first
     // decoded entity (`Option User`) — the behaviour it had as a pub fn, now shared
     // with the join receivers through the functional dependency.
     let main = r#"
@@ -2521,7 +2521,7 @@ fn query_builder_select_left_join_over_postgres_typechecks() {
     // The left-join projection resolves the same `Adapter`/`Row` constraints on
     // Postgres: it lowers onto `runPlan`, a class method both adapters implement.
     let main = r#"
-import std.data (connect, Config, Postgres)
+import std.data (connect, PostgresConfig, Postgres)
 import std.repo as Repo
 import std.sql (SqlValue)
 
@@ -2530,7 +2530,7 @@ pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 pub type Line = { who: Text, title: Option Text } deriving (Row)
 
 pub fn db authorLines () -> Result (List Line) Error =
-    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
+    match connect (PostgresConfig { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
             let users: Repo User Postgres = Repo.repo conn "users"
@@ -2700,14 +2700,14 @@ fn typed_set_where_over_postgres_typechecks() {
     // and `applySet` route through `updateRows`, a class method both adapters
     // implement.
     let main = r#"
-import std.data (connect, Config, Postgres)
+import std.data (connect, PostgresConfig, Postgres)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, status: Text } deriving (Row)
 
 pub fn db promote () -> Result Int Error =
-    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
+    match connect (PostgresConfig { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
             let users: Repo User Postgres = Repo.repo conn "users"
@@ -3770,14 +3770,14 @@ fn transaction_over_postgres_adapter_typechecks() {
     // backend: `connect` builds the handle, and `transaction` runs the body on it.
     // No database is touched — this is the type-level wiring for the other backend.
     let main = r#"
-import std.data (connect, Config, Postgres)
+import std.data (connect, PostgresConfig, Postgres)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, name: Text } deriving (Row, Schema)
 
 pub fn db seed () -> Result Unit Error =
-    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
+    match connect (PostgresConfig { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
             Repo.transaction conn (fn (tx) ->

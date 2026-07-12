@@ -62,7 +62,7 @@ pub fn filter (p: fn k v -> Bool) (m: Map k v) -> Map k v
 
 -- Return the number of entries in the map.
 @ffi("maps", "size", 1)
-pub fn size (m: Map k v) -> Int
+pub fn length (m: Map k v) -> Int
 
 -- Merge two maps; entries from `b` take priority over entries from `a`.
 @ffi("maps", "merge", 2)

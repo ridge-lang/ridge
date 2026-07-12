@@ -8,7 +8,7 @@
 -- The database lives in memory, so every run starts clean and nothing is
 -- left on disk. Two one-line changes take the same code to a real database:
 --   * `connectSqlite (sqliteFile "users.db")` keeps the data between runs;
---   * `connect (Config { ... })` runs it against Postgres, unchanged.
+--   * `connect (PostgresConfig { ... })` runs it against Postgres, unchanged.
 -- The data guide in docs/data.md walks through both.
 
 import std.data (connectSqlite, sqliteMemory, Sqlite)
@@ -83,7 +83,7 @@ fn db renameUser (uid: Int) (newName: Text) (users: Repo User Sqlite) -> Result 
 
 -- DELETE: remove the rows matching a predicate; the result is how many went.
 fn db removeUser (uid: Int) (users: Repo User Sqlite) -> Result Int Error =
-    users |> Repo.deleteWhere (fn (u: User) -> u.id == uid)
+    users |> Repo.delete (fn (u: User) -> u.id == uid)
 
 -- ── The walk-through ──────────────────────────────────────────────────────
 

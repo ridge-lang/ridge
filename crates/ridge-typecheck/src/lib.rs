@@ -849,7 +849,7 @@ fn typecheck_module_inner(
             .copied();
         seed_orderable_scheme(&mut ctx, b, ct, sort_order);
         seed_aggregable_scheme(&mut ctx, b, ct);
-        seed_decodable_scheme(&mut ctx, b, ct);
+        seed_fetchable_scheme(&mut ctx, b, ct);
         seed_pageable_scheme(&mut ctx, b, ct);
         seed_countable_scheme(&mut ctx, b, ct);
         seed_combinable_scheme(&mut ctx, ct);
@@ -1441,14 +1441,14 @@ fn seed_aggregable_scheme(
     }
 }
 
-/// Seed the env schemes for `Decodable.toList`/`first` — std.repo's unified
+/// Seed the env schemes for `Fetchable.toList`/`first` — std.repo's unified
 /// decode terminals over a query, an inner join, or a left join. Registered in
 /// Rust for the same reason as [`seed_refinable_scheme`]: the stdlib class carries
 /// no source AST, so the AST-driven [`seed_class_method_schemes`] path skips it.
 ///
 /// Schemes:
-/// - `toList :: ∀q. q -> Result (List (Rows q))   Error where Decodable q`
-/// - `first  :: ∀q. q -> Result (Option (Rows q)) Error where Decodable q`
+/// - `toList :: ∀q. q -> Result (List (Rows q))   Error where Fetchable q`
+/// - `first  :: ∀q. q -> Result (Option (Rows q)) Error where Fetchable q`
 ///
 /// One class parameter, the receiver `q`. The result row is the `Rows q`
 /// projection — `e` for a query, `(e, f)` for an inner join, `(e, Option f)` for a
@@ -1458,13 +1458,13 @@ fn seed_aggregable_scheme(
 /// type the same way the old direct-`e` terminals resolved it; an associated-type
 /// projection over the receiver, not a functional dependency, since the terminals
 /// take no quoted argument to carry a second parameter.
-fn seed_decodable_scheme(
+fn seed_fetchable_scheme(
     ctx: &mut crate::ctx::InferCtx,
     b: &ridge_types::BuiltinTyCons,
     class_table: &crate::class_env::ClassTable,
 ) {
     use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
-    let Some(decodable) = class_table.id_by_name("Decodable") else {
+    let Some(fetchable) = class_table.id_by_name("Fetchable") else {
         return;
     };
     // `toList` answers a `List`, `first` an `Option`; otherwise identical.
@@ -1488,14 +1488,14 @@ fn seed_decodable_scheme(
                 cap_vars: vec![],
                 row_vars: vec![],
                 ty: fn_ty,
-                constraints: vec![Constraint::new(decodable, constraint_tys)],
+                constraints: vec![Constraint::new(fetchable, constraint_tys)],
             },
         );
     }
 }
 
 /// Seed the env scheme for `Joinable.joinOn` — std.repo's unified N-ary inner-join
-/// entry point. Registered in Rust for the same reason as [`seed_decodable_scheme`]:
+/// entry point. Registered in Rust for the same reason as [`seed_fetchable_scheme`]:
 /// the stdlib class carries no source AST, so the AST-driven
 /// [`seed_class_method_schemes`] path skips it.
 ///
@@ -1692,7 +1692,7 @@ fn seed_fulljoinable_scheme(
 /// unified page-and-distinct builder steps over a query, an inner join, or a
 /// left join. Registered in Rust rather than through the AST-driven
 /// `seed_class_method_schemes` path because the stdlib class carries no source
-/// AST (its `MethodSig` leaves `ast_param_types` empty, like `Decodable`/
+/// AST (its `MethodSig` leaves `ast_param_types` empty, like `Fetchable`/
 /// `Refinable`).
 ///
 /// Schemes: `∀q. Int -> q -> q where Pageable q` for `limit`/`offset`, and
@@ -1748,7 +1748,7 @@ fn seed_pageable_scheme(
 /// - `exists :: ∀q. q -> Result Bool Error where Countable q`
 ///
 /// One class parameter, the receiver `q`, with no functional dependency (like
-/// `Pageable`/`Decodable`): these terminals take no quoted argument, so the receiver
+/// `Pageable`/`Fetchable`): these terminals take no quoted argument, so the receiver
 /// alone pins the instance — there is no determined parameter to resolve, and so no
 /// argument-less ambiguity. The universal-predicate dual `every` lives in its own
 /// [`Every`](seed_every_scheme) class because it carries a predicate the dependency
@@ -1910,9 +1910,9 @@ fn seed_groupable_scheme(
 }
 
 /// Seeds the `runGroups` class-method scheme behind `summarize`'s per-source
-/// dispatch: `∀q. q -> Text -> Int -> QExpr -> QExpr -> Result (List (Map Text
-/// SqlValue)) Error where Summarizable q`. It hands the source, the group-key column
-/// and leaf, the projection tree, and the HAVING tree to the seam the instance
+/// dispatch: `∀q. Text -> Int -> QExpr -> QExpr -> q -> Result (List (Map Text
+/// SqlValue)) Error where Summarizable q`. It hands the group-key column and leaf,
+/// the projection tree, the HAVING tree, and the source to the seam the instance
 /// selects (a query's `groupSummarize`, or `runPlan` over a group plan for a join),
 /// returning the raw summarised rows that `summarize` then decodes through `Row s`.
 fn seed_summarizable_scheme(
@@ -1938,11 +1938,11 @@ fn seed_summarizable_scheme(
     );
     let fn_ty = Type::Fn {
         params: vec![
-            Type::Var(q),
             text(),
             Type::Con(b.int, vec![]),
             Type::Con(b.q_expr, vec![]),
             Type::Con(b.q_expr, vec![]),
+            Type::Var(q),
         ],
         ret: Box::new(result_rows),
         caps: CapRow::Concrete(CapabilitySet::PURE),

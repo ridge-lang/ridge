@@ -104,7 +104,7 @@ const MODULE_ORDER: &[&str] = &[
 // These are retained even though they do not appear as top-level `pub fn` or
 // separate `pub type` declarations in the .ridge files.
 //
-// std.proc: `ProcOutput` is declared as `pub type` in proc.ridge.
+// std.proc: `Output` is declared as `pub type` in proc.ridge.
 // std.time:  `Duration`  is declared as `pub type` in time.ridge.
 // std.json:  `JsonValue` is a language prelude union (compiler builtin), so it
 //            is NOT a std.json export — unlike the records above.
@@ -134,7 +134,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
         "std.float",
         &[
             "toText",
-            "parseRaw",
+            "parseStrict",
             "parse",
             "fromInt",
             "round",
@@ -213,7 +213,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
         "std.map",
         &[
             "empty", "fromList", "toList", "insert", "remove", "get", "contains", "keys", "values",
-            "map", "filter", "size", "merge", "update",
+            "map", "filter", "length", "merge", "update",
         ],
     ),
     (
@@ -226,9 +226,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "remove",
             "contains",
             "union",
-            "intersect",
+            "intersection",
             "difference",
-            "size",
+            "length",
         ],
     ),
     (
@@ -275,7 +275,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "readFile",
             "writeFile",
             "append",
-            "exists",
+            "isFile",
             "lines",
             "readDir",
             "isDir",
@@ -297,8 +297,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "diffMs",
             "sinceMs",
             "sleep",
-            "parse",
-            "iso",
+            "toIso",
         ],
     ),
     (
@@ -310,9 +309,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
     (
         "std.proc",
         &[
-            // `pub type ProcOutput` declared in proc.ridge.
-            "ProcOutput",
-            "run",
+            // `pub type Output` declared in proc.ridge.
+            "Output", "run",
         ],
     ),
     ("std.actor", &["mailboxSize"]),
@@ -470,7 +468,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "fromText",
             "toText",
             "fromInt",
-            "parseRaw",
+            "parseStrict",
             "toFloat",
             "add",
             "sub",
@@ -503,7 +501,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // RFC 4122 identifiers: parse/render, the nil and random-v4
             // constructors, and value-based comparisons. The canonical-text
             // representation and the raw three-way compare live in the runtime.
-            "fromText", "toText", "nil", "gen", "compare", "eq", "lt", "lte", "gt", "gte",
+            "fromText", "toText", "nil", "generate", "compare", "eq", "lt", "lte", "gt", "gte",
         ],
     ),
     (
@@ -512,8 +510,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // Raw byte strings: hex and UTF-8 codecs, the empty and random
             // constructors, size, concatenation, and value-based comparisons. The
             // raw-binary representation and the three-way compare live in the runtime.
-            "fromHex", "toHex", "fromUtf8", "toUtf8", "empty", "gen", "length", "concat", "compare",
-            "eq", "lt", "lte", "gt", "gte",
+            "fromHex", "toHex", "fromUtf8", "toUtf8", "empty", "generate", "length", "concat",
+            "compare", "eq", "lt", "lte", "gt", "gte",
         ],
     ),
     (
@@ -563,12 +561,12 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "orderSql",
             "selectSql",
             // Sort direction, declared in query.ridge. The type plus its two
-            // constructors are importable for ordering, and `ascending` projects
+            // constructors are importable for ordering, and `isAscending` projects
             // it to the `ascending?` boolean the seam reads.
             "SortOrder",
             "Asc",
             "Desc",
-            "ascending",
+            "isAscending",
             // The query-plan tree, its three constructors, and the builders that
             // wrap them, declared in query.ridge. The set-operation terminals build a
             // `QueryPlan` through the builders and hand it to a backend's `runPlan`.
@@ -709,7 +707,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // record, and the `db`-gated `connect`. Implements the same
             // `Adapter` class as the in-memory backend.
             "Postgres",
-            "Config",
+            "PostgresConfig",
             "connect",
             // Pool tuning: the `PoolConfig` record and the `connectWith` that takes
             // one, the `defaultPool` baseline, and the `with*` setters that size the
@@ -768,7 +766,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "insertManyReturning",
             "deleteReturning",
             "upsertReturning",
-            "deleteWhere",
+            "delete",
             "updateWhere",
             "update",
             // Typed partial updates: the opaque `Setter e` built by `set`, and the
@@ -814,10 +812,10 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "offset",
             "distinct",
             // The unified decode terminals `toList`/`first` are the methods of the
-            // `Decodable q p | q -> p` class, so one pair decodes a query (to its
+            // `Fetchable q p | q -> p` class, so one pair decodes a query (to its
             // entity), an inner join (to a pair), or a left join (to a pair whose
             // right side is optional), the row shape following the receiver.
-            "Decodable",
+            "Fetchable",
             "toList",
             "first",
             // Unique-row terminals: `single` answers the lone matching row or
@@ -858,7 +856,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "maxOf",
             // The two-table join builder: the opaque `Join e f a` and its `joinOn`
             // entry. Its decode terminals (`toList`/`first`) and projection
-            // (`select`/`selectFirst`) are the `Decodable`/`Projectable` methods
+            // (`select`/`selectFirst`) are the `Fetchable`/`Projectable` methods
             // above.
             "Join",
             "joinOn",
@@ -866,7 +864,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // no condition (the cartesian product), reusing the same `Join e f a`.
             "crossJoin",
             // The left-outer join: the opaque `LeftJoin e f a` and its `leftJoinOn`
-            // entry. Decode and projection unify through `Decodable`/`Projectable`,
+            // entry. Decode and projection unify through `Fetchable`/`Projectable`,
             // the right side read as `Option`.
             "LeftJoin",
             "leftJoinOn",
@@ -881,13 +879,13 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // The N-ary inner join: chaining `joinOn` past the first table produces
             // the opaque nested `Joined q f a`, the `Joinable` class unifying the
             // builder across a query (binary `Join`) and a join (nested `Joined`).
-            // Its decode terminals (`toList`/`first`) are the `Decodable` methods.
+            // Its decode terminals (`toList`/`first`) are the `Fetchable` methods.
             "Joined",
             "Joinable",
             // The N-ary LEFT outer join: chaining `leftJoinOn` onto a composite
             // produces the opaque nested `LeftJoined q f a`, the `LeftJoinable` class
             // unifying the verb across a query (binary `LeftJoin`) and a composite
-            // (nested `LeftJoined`). Its decode terminals are the `Decodable` methods.
+            // (nested `LeftJoined`). Its decode terminals are the `Fetchable` methods.
             "LeftJoined",
             "LeftJoinable",
             // The N-ary RIGHT outer join: chaining `rightJoinOn` onto a composite
@@ -1118,10 +1116,10 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "assertNe",
             "assertTrue",
             "assertFalse",
-            "isOk",
-            "isErr",
-            "isSome",
-            "isNone",
+            "assertOk",
+            "assertErr",
+            "assertSome",
+            "assertNone",
         ],
     ),
 ];

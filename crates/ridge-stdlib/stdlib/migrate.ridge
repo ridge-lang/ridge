@@ -87,17 +87,17 @@ pub fn floatCol (name: Text) -> Column = baseColumn name "float"
 
 -- Let the column admit SQL NULL — the schema dual of an `Option` field. A column
 -- is non-null until this marks it nullable.
-pub fn nullable (c: Column) -> Column =
-    Column { name = c.name, ty = c.ty, nullable = true, primaryKey = c.primaryKey, unique = c.unique }
+pub fn nullable (column: Column) -> Column =
+    Column { name = column.name, ty = column.ty, nullable = true, primaryKey = column.primaryKey, unique = column.unique }
 
 -- Make the column the table's primary key. A primary key is implicitly unique and
 -- non-null, so a backend may not need the other modifiers spelled out alongside.
-pub fn primaryKey (c: Column) -> Column =
-    Column { name = c.name, ty = c.ty, nullable = c.nullable, primaryKey = true, unique = c.unique }
+pub fn primaryKey (column: Column) -> Column =
+    Column { name = column.name, ty = column.ty, nullable = column.nullable, primaryKey = true, unique = column.unique }
 
 -- Give the column a uniqueness constraint: no two rows may share its value.
-pub fn unique (c: Column) -> Column =
-    Column { name = c.name, ty = c.ty, nullable = c.nullable, primaryKey = c.primaryKey, unique = true }
+pub fn unique (column: Column) -> Column =
+    Column { name = column.name, ty = column.ty, nullable = column.nullable, primaryKey = column.primaryKey, unique = true }
 
 -- A single migration step. Most are schema changes; `SeedRows`/`UnseedRows` are data
 -- steps. Its constructors are not exported — a value is built only through the
@@ -137,12 +137,12 @@ pub fn dropView (name: Text) -> MigrationOp =
 -- Add a column to an existing table. A non-null column added to a table that
 -- already holds rows needs a value for them, so add it `nullable` (or seed the
 -- rows in the same migration).
-pub fn addColumn (table: Text) (col: Column) -> MigrationOp =
-    AddColumn table col
+pub fn addColumn (table: Text) (column: Column) -> MigrationOp =
+    AddColumn table column
 
 -- Drop a column from a table, named by its text.
-pub fn dropColumn (table: Text) (col: Text) -> MigrationOp =
-    DropColumn table col
+pub fn dropColumn (table: Text) (column: Text) -> MigrationOp =
+    DropColumn table column
 
 -- Create an index over one or more columns of a table.
 pub fn createIndex (name: Text) (table: Text) (cols: List Text) -> MigrationOp =

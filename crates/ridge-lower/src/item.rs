@@ -504,7 +504,7 @@ pub fn lower_instance(ctx: &mut LowerCtx<'_>, decl: &InstanceDecl) -> Vec<IrItem
     // to match the receiver-only instance the typechecker resolves (see `discharge` in
     // ridge-typecheck). A multi-atom head over one of these composites is only ever a
     // fundep terminal — the receiver-keyed single-param classes (`Joinable`/`JoinShape`/
-    // `Decodable`) carry a one-atom head — so the receiver-name test alone is exact.
+    // `Fetchable`) carry a one-atom head — so the receiver-name test alone is exact.
     // Binary receivers keep their full multi-atom name unchanged.
     let receiver_is_composite_join = head_names.first().is_some_and(|n| {
         matches!(

@@ -299,8 +299,8 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(mono(ty_fn_pure(vec![ty_float(b)], ty_float(b))))
         }
         (STD_FLOAT, "fromInt") => Some(mono(ty_fn_pure(vec![ty_int(b)], ty_float(b)))),
-        // T12: parseRaw — Text -> Float (no Option — may panic on bad input).
-        (STD_FLOAT, "parseRaw") => Some(mono(ty_fn_pure(vec![ty_text(b)], ty_float(b)))),
+        // T12: parseStrict — Text -> Float (no Option — may panic on bad input).
+        (STD_FLOAT, "parseStrict") => Some(mono(ty_fn_pure(vec![ty_text(b)], ty_float(b)))),
         // T12: binary Float -> Float -> Float (add, sub, mul, div).
         (STD_FLOAT, "add" | "sub" | "mul" | "div") => {
             Some(mono(ty_fn_pure(vec![ty_float(b), ty_float(b)], ty_float(b))))
@@ -318,7 +318,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         ))),
         (STD_DECIMAL, "toText") => Some(mono(ty_fn_pure(vec![ty_decimal(b)], ty_text(b)))),
         (STD_DECIMAL, "fromInt") => Some(mono(ty_fn_pure(vec![ty_int(b)], ty_decimal(b)))),
-        (STD_DECIMAL, "parseRaw") => Some(mono(ty_fn_pure(vec![ty_text(b)], ty_decimal(b)))),
+        (STD_DECIMAL, "parseStrict") => Some(mono(ty_fn_pure(vec![ty_text(b)], ty_decimal(b)))),
         (STD_DECIMAL, "toFloat") => Some(mono(ty_fn_pure(vec![ty_decimal(b)], ty_float(b)))),
         // Exact binary arithmetic: Decimal -> Decimal -> Decimal.
         (STD_DECIMAL, "add" | "sub" | "mul") => Some(mono(ty_fn_pure(
@@ -352,8 +352,8 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         ))),
         (STD_UUID, "toText") => Some(mono(ty_fn_pure(vec![ty_uuid(b)], ty_text(b)))),
         (STD_UUID, "nil") => Some(mono(ty_fn_pure(vec![ty_unit(b)], ty_uuid(b)))),
-        // `gen` mints a fresh value, so it carries the `random` capability.
-        (STD_UUID, "gen") => {
+        // `generate` mints a fresh value, so it carries the `random` capability.
+        (STD_UUID, "generate") => {
             use ridge_ast::Capability;
             let rnd_caps = CapabilitySet::singleton(Capability::Random);
             Some(mono(ty_fn_caps(vec![ty_unit(b)], ty_uuid(b), rnd_caps)))
@@ -377,8 +377,8 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             ty_result(b, ty_text(b), ty_error(b)),
         ))),
         (STD_BYTES, "empty") => Some(mono(ty_fn_pure(vec![ty_unit(b)], ty_bytes(b)))),
-        // `gen` draws fresh random bytes, so it carries the `random` capability.
-        (STD_BYTES, "gen") => {
+        // `generate` draws fresh random bytes, so it carries the `random` capability.
+        (STD_BYTES, "generate") => {
             use ridge_ast::Capability;
             let rnd_caps = CapabilitySet::singleton(Capability::Random);
             Some(mono(ty_fn_caps(vec![ty_int(b)], ty_bytes(b), rnd_caps)))
@@ -951,7 +951,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                 ),
             ))
         }
-        (STD_MAP, "size") => {
+        (STD_MAP, "length") => {
             // forall k v. Map k v -> Int
             Some(poly(
                 vec![A, B_VAR],
@@ -1027,7 +1027,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                 ty_fn_pure(vec![Type::Var(A), ty_set(b, Type::Var(A))], ty_bool(b)),
             ))
         }
-        (STD_SET, "union" | "intersect" | "intersection" | "difference") => {
+        (STD_SET, "union" | "intersection" | "difference") => {
             // forall a. Set a -> Set a -> Set a
             Some(poly(
                 vec![A],
@@ -1037,7 +1037,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                 ),
             ))
         }
-        (STD_SET, "size") => {
+        (STD_SET, "length") => {
             // forall a. Set a -> Int
             Some(poly(
                 vec![A],
@@ -1296,7 +1296,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                 ty_result(b, ty_unit(b), ty_text(b)),
             ),
         )),
-        (STD_TEST, "isOk" | "isErr") => Some(poly(
+        (STD_TEST, "assertOk" | "assertErr") => Some(poly(
             vec![A, B_VAR],
             ty_fn_pure(
                 vec![
@@ -1306,7 +1306,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                 ty_result(b, ty_unit(b), ty_text(b)),
             ),
         )),
-        (STD_TEST, "isSome" | "isNone") => Some(poly(
+        (STD_TEST, "assertSome" | "assertNone") => Some(poly(
             vec![A],
             ty_fn_pure(
                 vec![ty_option(b, Type::Var(A)), ty_text(b)],
@@ -1353,7 +1353,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                 fs_caps,
             )))
         }
-        (STD_FS, "exists") => {
+        (STD_FS, "isFile") => {
             use ridge_ast::Capability;
             let fs_caps = CapabilitySet::singleton(Capability::Fs);
             Some(mono(ty_fn_caps(vec![ty_text(b)], ty_bool(b), fs_caps)))
@@ -1461,14 +1461,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             let time_caps = CapabilitySet::singleton(Capability::Time);
             Some(mono(ty_fn_caps(vec![ty_int(b)], ty_unit(b), time_caps)))
         }
-        (STD_TIME, "parse") => {
-            // Text -> Result Timestamp Error  (alias of fromIso — §3.12 line 353)
-            Some(mono(ty_fn_pure(
-                vec![ty_text(b)],
-                ty_result(b, ty_timestamp(b), ty_error(b)),
-            )))
-        }
-        (STD_TIME, "iso") => {
+        (STD_TIME, "toIso") => {
             // Timestamp -> Text
             Some(mono(ty_fn_pure(vec![ty_timestamp(b)], ty_text(b))))
         }
@@ -1573,7 +1566,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         (STD_PROC, "run") => {
             use ridge_ast::Capability;
             let proc_caps = CapabilitySet::singleton(Capability::Proc);
-            // Text -> List Text -> Result ProcOutput Error  (§3.16 / OQ-S007 / D123)
+            // Text -> List Text -> Result Output Error  (§3.16 / OQ-S007 / D123)
             Some(mono(ty_fn_caps(
                 vec![ty_text(b), ty_list(b, ty_text(b))],
                 ty_result(b, ty_proc_output(b), ty_error(b)),
@@ -1621,11 +1614,11 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         //
         // TODO: replace stubs with generated signatures.
         //
-        // T12: `pub type Duration` (time.ridge) and `pub type ProcOutput` (proc.ridge) are
+        // T12: `pub type Duration` (time.ridge) and `pub type Output` (proc.ridge) are
         // record TyCons declared in the stdlib source; they don't have stable TyConIds
         // in BuiltinTyCons so we use stub_phase7() for now.
         (STD_TIME, "Duration")
-        | (STD_PROC, "ProcOutput")
+        | (STD_PROC, "Output")
         | (STD_JSON,
            "encodeInt" | "encodeBool" | "encodeText"
            // JsonValue construction shims (FFI bridges to ridge_rt:json_*).
@@ -1769,24 +1762,24 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             ty_text(b),
         ))),
         (STD_NET_HTTP, "withSecure" | "withHttpOnly") => Some(mono(ty_fn_pure(
-            vec![Type::Con(b.secure_cookie, vec![]), ty_bool(b)],
+            vec![ty_bool(b), Type::Con(b.secure_cookie, vec![])],
             Type::Con(b.secure_cookie, vec![]),
         ))),
         (STD_NET_HTTP, "withSameSite") => Some(mono(ty_fn_pure(
-            vec![Type::Con(b.secure_cookie, vec![]), ty_text(b)],
+            vec![ty_text(b), Type::Con(b.secure_cookie, vec![])],
             Type::Con(b.secure_cookie, vec![]),
         ))),
         (STD_NET_HTTP, "withMaxAge") => Some(mono(ty_fn_pure(
             vec![
-                Type::Con(b.secure_cookie, vec![]),
                 Type::Con(b.option, vec![ty_int(b)]),
+                Type::Con(b.secure_cookie, vec![]),
             ],
             Type::Con(b.secure_cookie, vec![]),
         ))),
         (STD_NET_HTTP, "withPath") => Some(mono(ty_fn_pure(
             vec![
-                Type::Con(b.secure_cookie, vec![]),
                 Type::Con(b.option, vec![ty_text(b)]),
+                Type::Con(b.secure_cookie, vec![]),
             ],
             Type::Con(b.secure_cookie, vec![]),
         ))),
@@ -1954,7 +1947,7 @@ mod tests {
                             | "Asc"
                             | "Desc"
                             | "orderSql"
-                            | "ascending"
+                            | "isAscending"
                             // The reconciled `QueryPlan` tree, its constructors, and
                             // its builders are seeded via `reconciled_decls` /
                             // `reconciled_ctor_scheme` / `reconciled_fn_scheme`, not
@@ -2019,7 +2012,7 @@ mod tests {
                 // via `seed_sql_codec_schemes`;
                 // the `selectRows`/`fetch` read helpers are standalone functions seeded
                 // via `reconciled_fn_scheme` (their quoted predicate pins the entity);
-                // `MemAdapter`/`Postgres`/`Config` are reconciled types, and
+                // `MemAdapter`/`Postgres`/`PostgresConfig` are reconciled types, and
                 // `memAdapter`/`connect` are seeded via `reconciled_fn_scheme`
                 // (their signatures name reconciled types), so none resolves
                 // through this hand-curated table.
@@ -2060,7 +2053,7 @@ mod tests {
                             | "MemAdapter"
                             | "memAdapter"
                             | "Postgres"
-                            | "Config"
+                            | "PostgresConfig"
                             | "connect"
                             | "PoolConfig"
                             | "connectWith"
@@ -2260,9 +2253,9 @@ mod tests {
     // ── std.set ───────────────────────────────────────────────────────────────
 
     #[test]
-    fn std_set_size_returns_int() {
+    fn std_set_length_returns_int() {
         let b = builtins();
-        let scheme = stdlib_signature(STD_SET, "size", &b).unwrap();
+        let scheme = stdlib_signature(STD_SET, "length", &b).unwrap();
         assert!(matches!(scheme.ty, Type::Fn { ref ret, .. }
             if matches!(ret.as_ref(), Type::Con(id, _) if *id == b.int)
         ));

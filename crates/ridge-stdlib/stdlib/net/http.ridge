@@ -111,8 +111,8 @@ pub fn html (raw: Text) -> Html =
     Html { value = escaped }
 
 -- Read the escaped text out of an Html value.
-pub fn htmlValue (h: Html) -> Text =
-    h.value
+pub fn htmlValue (html: Html) -> Text =
+    html.value
 
 -- ── SecureCookie record + serializer ──────────────────────────────────────────
 --
@@ -141,20 +141,21 @@ pub fn secureCookie (name: Text) (value: Text) -> SecureCookie =
 
 -- Attribute setters. Each returns a new cookie with one field replaced — the
 -- supported way to override a default now that the record is opaque, since a
--- record-update on the value is rejected outside this module.
-pub fn withSecure (c: SecureCookie) (enabled: Bool) -> SecureCookie =
+-- record-update on the value is rejected outside this module. Data-last, so a
+-- setter chains through `|>`: `cookie |> withSecure true`.
+pub fn withSecure (enabled: Bool) (c: SecureCookie) -> SecureCookie =
     c with { secure = enabled }
 
-pub fn withHttpOnly (c: SecureCookie) (enabled: Bool) -> SecureCookie =
+pub fn withHttpOnly (enabled: Bool) (c: SecureCookie) -> SecureCookie =
     c with { httpOnly = enabled }
 
-pub fn withSameSite (c: SecureCookie) (mode: Text) -> SecureCookie =
+pub fn withSameSite (mode: Text) (c: SecureCookie) -> SecureCookie =
     c with { sameSite = mode }
 
-pub fn withMaxAge (c: SecureCookie) (seconds: Option Int) -> SecureCookie =
+pub fn withMaxAge (seconds: Option Int) (c: SecureCookie) -> SecureCookie =
     c with { maxAge = seconds }
 
-pub fn withPath (c: SecureCookie) (p: Option Text) -> SecureCookie =
+pub fn withPath (p: Option Text) (c: SecureCookie) -> SecureCookie =
     c with { path = p }
 
 -- Format a SecureCookie as the value for an HTTP `Set-Cookie:` header.
@@ -173,15 +174,15 @@ fn _cookieJoin (parts: List Text) -> Text
 @ffi("erlang", "integer_to_binary", 1)
 fn _intText (n: Int) -> Text
 
-pub fn secureCookieHeader (c: SecureCookie) -> Text =
-    let base = _cookieJoin [c.name, "=", c.value]
-    let withSecure = if c.secure then _cookieJoin [base, "; Secure"] else base
-    let withHttpOnly = if c.httpOnly then _cookieJoin [withSecure, "; HttpOnly"] else withSecure
-    let withSameSite = _cookieJoin [withHttpOnly, "; SameSite=", c.sameSite]
+pub fn secureCookieHeader (cookie: SecureCookie) -> Text =
+    let base = _cookieJoin [cookie.name, "=", cookie.value]
+    let withSecure = if cookie.secure then _cookieJoin [base, "; Secure"] else base
+    let withHttpOnly = if cookie.httpOnly then _cookieJoin [withSecure, "; HttpOnly"] else withSecure
+    let withSameSite = _cookieJoin [withHttpOnly, "; SameSite=", cookie.sameSite]
     let withMaxAge =
-        match c.maxAge
+        match cookie.maxAge
             Some n  -> _cookieJoin [withSameSite, "; Max-Age=", _intText n]
             None    -> withSameSite
-    match c.path
+    match cookie.path
         Some p  -> _cookieJoin [withMaxAge, "; Path=", p]
         None    -> withMaxAge

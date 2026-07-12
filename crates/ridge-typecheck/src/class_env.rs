@@ -1186,19 +1186,19 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
         }],
     );
 
-    // `Decodable` from std.repo — the unified decode terminals (`toList`/`first`)
+    // `Fetchable` from std.repo — the unified decode terminals (`toList`/`first`)
     // over a query, an inner join, or a left join. A single parameter, the
     // receiver `q`, with no functional dependency: the result row is the `Rows q`
     // projection (reduced during unification), not a second class parameter. The
-    // two method schemes are seeded directly (see `seed_decodable_scheme` in
+    // two method schemes are seeded directly (see `seed_fetchable_scheme` in
     // lib.rs) with no AST types, and the three instances are registered in
     // `register_stdlib_instances`. Each method takes only the receiver, so its sig
     // arity is 1.
-    let decodable_id = ct.intern("Decodable");
+    let fetchable_id = ct.intern("Fetchable");
     ct.insert_with_id(
-        decodable_id,
+        fetchable_id,
         ClassInfo {
-            name: "Decodable".to_string(),
+            name: "Fetchable".to_string(),
             arity: 1,
             method_sigs: vec![
                 MethodSig {
@@ -1250,7 +1250,7 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
     // `JoinShape` from std.repo — the internal recursion a nested join's terminal
     // stands on. A single parameter, the join source `q` (a binary `Join` or a
     // nested `Joined`), no functional dependency. Its methods are never called by
-    // user code — only the `Decodable (Joined q f a)` instance reaches them, and
+    // user code — only the `Fetchable (Joined q f a)` instance reaches them, and
     // the dicts come from the compiled stdlib — so the schemes are not seeded into
     // the env; only the class and its instances are registered (the latter in
     // `register_stdlib_instances`) so the `JoinShape q` constraint discharges.
@@ -1361,7 +1361,7 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
     // `Pageable` from std.repo — the unified page-and-distinct builder steps
     // (`limit`/`offset`/`distinct`) over a query, an inner join, or a left join. A
     // single parameter, the receiver `q`, with no functional dependency (like
-    // `Decodable`): these verbs take no quoted argument and return the receiver, so
+    // `Fetchable`): these verbs take no quoted argument and return the receiver, so
     // there is no second parameter to determine. The three method schemes are
     // seeded directly (see `seed_pageable_scheme` in lib.rs) with no AST types, and
     // the three instances are registered in `register_stdlib_instances`.
@@ -1404,7 +1404,7 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
     // `Countable` from std.repo — the unified size-and-presence terminals
     // (`count`/`exists`) over a query, an inner join, or a left join. A single
     // parameter, the receiver `q`, with no functional dependency (like `Pageable`/
-    // `Decodable`): these terminals take no quoted argument, so the receiver alone
+    // `Fetchable`): these terminals take no quoted argument, so the receiver alone
     // pins the instance — there is no predicate whose arity a dependency would fix.
     // The two method schemes are seeded directly (see `seed_countable_scheme` in
     // lib.rs) with no AST types, and the three instances (each carrying a `where
@@ -1520,8 +1520,8 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
     // through its own `Row s`. Keeping the seam call here (single `Adapter a` context)
     // and the decode in `summarize` separates the two dicts cleanly. The method
     // scheme is seeded directly (see `seed_summarizable_scheme` in lib.rs).
-    // `runGroups` takes the source, the key column and side, the projection tree, and
-    // the HAVING tree (sig arity 5).
+    // `runGroups` takes the key column and side, the projection tree, and the HAVING
+    // tree, and the source last, data-last like every other class method (sig arity 5).
     let summarizable_id = ct.intern("Summarizable");
     ct.insert_with_id(
         summarizable_id,
@@ -2236,8 +2236,8 @@ pub fn register_stdlib_instances(
         }
     }
 
-    // `Decodable (Query e a) (fn raw -> e)`, `Decodable (Join e f a) (fn (raw,
-    // raw) -> (e, f))`, and `Decodable (LeftJoin e f a) (fn (raw, Option raw) ->
+    // `Fetchable (Query e a) (fn raw -> e)`, `Fetchable (Join e f a) (fn (raw,
+    // raw) -> (e, f))`, and `Fetchable (LeftJoin e f a) (fn (raw, Option raw) ->
     // (e, Option f))` — the unified `toList`/`first` decode terminals from
     // std.repo. The decoder's parameter shape is immaterial (only its return is
     // read, through `Ret p`), so every head keys on `Fn1`; the receiver tycon
@@ -2248,8 +2248,8 @@ pub fn register_stdlib_instances(
     // list the receiver's args, then the decoder's param and return — a query gives
     // `a@1, e@0`; a join's extra right entity gives `a@2, e@0, f@1`. A join carries
     // three constraints (`Adapter a, Row e, Row f`) where a query carries two.
-    if let (Some(decodable), Some(adapter), Some(row)) = (
-        ct.id_by_name("Decodable"),
+    if let (Some(fetchable), Some(adapter), Some(row)) = (
+        ct.id_by_name("Fetchable"),
         ct.id_by_name("Adapter"),
         ct.id_by_name("Row"),
     ) {
@@ -2292,7 +2292,7 @@ pub fn register_stdlib_instances(
             origin: InstanceOrigin::Explicit,
             span: ds,
         };
-        // `Decodable (Seq a) where Row a` — the in-memory sequence's decode
+        // `Fetchable (Seq a) where Row a` — the in-memory sequence's decode
         // terminals. No adapter (the rows are already in hand), so a single
         // `Row a` constraint at the receiver's sole arg position (`a@0`).
         let seq_inst = || InstanceInfo {
@@ -2308,27 +2308,27 @@ pub fn register_stdlib_instances(
         };
         if let Some(&query) = reconciled_tycon_names.get("Query") {
             env.instances
-                .entry((decodable, smallvec![query]))
+                .entry((fetchable, smallvec![query]))
                 .or_insert_with(query_inst);
         }
         if let Some(&seq) = reconciled_tycon_names.get("Seq") {
             env.instances
-                .entry((decodable, smallvec![seq]))
+                .entry((fetchable, smallvec![seq]))
                 .or_insert_with(seq_inst);
         }
         if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
             env.instances
-                .entry((decodable, smallvec![left_join]))
+                .entry((fetchable, smallvec![left_join]))
                 .or_insert_with(join_inst);
         }
         if let Some(&right_join) = reconciled_tycon_names.get("RightJoin") {
             env.instances
-                .entry((decodable, smallvec![right_join]))
+                .entry((fetchable, smallvec![right_join]))
                 .or_insert_with(join_inst);
         }
         if let Some(&full_join) = reconciled_tycon_names.get("FullJoin") {
             env.instances
-                .entry((decodable, smallvec![full_join]))
+                .entry((fetchable, smallvec![full_join]))
                 .or_insert_with(join_inst);
         }
     }
@@ -2578,19 +2578,19 @@ pub fn register_stdlib_instances(
         }
     }
 
-    // `Decodable (Joined q f a)` — the nested join's `toList`/`first`. Single
+    // `Fetchable (Joined q f a)` — the nested join's `toList`/`first`. Single
     // parameter, keyed by `Joined`. Source `where Adapter a, JoinShape q, Row f`:
     // the dicts in body-appearance order (`a@2` for runPlan, then `q@0`/`f@1` for
     // the decode), the order the compiled instance binds them.
-    if let (Some(decodable), Some(adapter), Some(joinshape), Some(row)) = (
-        ct.id_by_name("Decodable"),
+    if let (Some(fetchable), Some(adapter), Some(joinshape), Some(row)) = (
+        ct.id_by_name("Fetchable"),
         ct.id_by_name("Adapter"),
         ct.id_by_name("JoinShape"),
         ct.id_by_name("Row"),
     ) {
         if let Some(&joined) = reconciled_tycon_names.get("Joined") {
             env.instances
-                .entry((decodable, smallvec![joined]))
+                .entry((fetchable, smallvec![joined]))
                 .or_insert_with(|| InstanceInfo {
                     def_module: None,
                     methods: vec![
@@ -2607,12 +2607,12 @@ pub fn register_stdlib_instances(
                     span: ds,
                 });
         }
-        // `Decodable (LeftJoined q f a)` — the LEFT outer composite's `toList`/`first`.
-        // Same context shape as `Decodable (Joined …)`: `Adapter a, JoinShape q,
+        // `Fetchable (LeftJoined q f a)` — the LEFT outer composite's `toList`/`first`.
+        // Same context shape as `Fetchable (Joined …)`: `Adapter a, JoinShape q,
         // Row f` at `a@2, q@0, f@1`.
         if let Some(&left_joined) = reconciled_tycon_names.get("LeftJoined") {
             env.instances
-                .entry((decodable, smallvec![left_joined]))
+                .entry((fetchable, smallvec![left_joined]))
                 .or_insert_with(|| InstanceInfo {
                     def_module: None,
                     methods: vec![
@@ -2629,12 +2629,12 @@ pub fn register_stdlib_instances(
                     span: ds,
                 });
         }
-        // `Decodable (RightJoined q f a)` — the RIGHT outer composite's `toList`/
+        // `Fetchable (RightJoined q f a)` — the RIGHT outer composite's `toList`/
         // `first`. Same context shape: `Adapter a, JoinShape q, Row f` at
         // `a@2, q@0, f@1`.
         if let Some(&right_joined) = reconciled_tycon_names.get("RightJoined") {
             env.instances
-                .entry((decodable, smallvec![right_joined]))
+                .entry((fetchable, smallvec![right_joined]))
                 .or_insert_with(|| InstanceInfo {
                     def_module: None,
                     methods: vec![
@@ -2651,11 +2651,11 @@ pub fn register_stdlib_instances(
                     span: ds,
                 });
         }
-        // `Decodable (FullJoined q f a)` — the FULL outer composite's `toList`/`first`.
+        // `Fetchable (FullJoined q f a)` — the FULL outer composite's `toList`/`first`.
         // Same context shape: `Adapter a, JoinShape q, Row f` at `a@2, q@0, f@1`.
         if let Some(&full_joined) = reconciled_tycon_names.get("FullJoined") {
             env.instances
-                .entry((decodable, smallvec![full_joined]))
+                .entry((fetchable, smallvec![full_joined]))
                 .or_insert_with(|| InstanceInfo {
                     def_module: None,
                     methods: vec![
@@ -2779,7 +2779,7 @@ pub fn register_stdlib_instances(
     // carries a single `where Adapter a` context to reach the store (they count and
     // probe, they do not decode, so no `Row`), at the flattened head position the
     // adapter occupies — `a@1` in a query, `a@2` in a join (its extra right entity
-    // shifts the slot), the same positions `Decodable` gives its `Adapter a`.
+    // shifts the slot), the same positions `Fetchable` gives its `Adapter a`.
     if let (Some(countable), Some(adapter)) = (ct.id_by_name("Countable"), ct.id_by_name("Adapter"))
     {
         let countable_inst = |position: usize| InstanceInfo {
@@ -2846,7 +2846,7 @@ pub fn register_stdlib_instances(
     // `count`/`exists`. Single-parameter, keyed by the receiver alone. Source
     // `where Adapter a, JoinShape q, Row f`: the dicts in body-appearance order
     // (`a@2` to run the count, `q@0`/`f@1` to rebuild the source plan and read the new
-    // leaf's columns), the same context shape `Decodable` gives these composites.
+    // leaf's columns), the same context shape `Fetchable` gives these composites.
     if let (Some(countable), Some(adapter), Some(joinshape), Some(row)) = (
         ct.id_by_name("Countable"),
         ct.id_by_name("Adapter"),
@@ -2946,7 +2946,7 @@ pub fn register_stdlib_instances(
     // `every`. A fundep terminal, so keyed by the RECEIVER ALONE (the predicate's leaf
     // arity grows with the join depth); discharge falls back to this receiver-only key,
     // exactly as for the composite `Refinable`. Source `where Adapter a, JoinShape q,
-    // Row f` at `a@2, q@0, f@1` — the same context shape `Countable`/`Decodable` give
+    // Row f` at `a@2, q@0, f@1` — the same context shape `Countable`/`Fetchable` give
     // these composites; only the receiver portion is read, so the determined predicate
     // does not shift the positions.
     if let (Some(every), Some(adapter), Some(joinshape), Some(row)) = (

@@ -970,7 +970,7 @@ fn builtin_tycon_id_by_name(name: &str) -> Option<TyConId> {
         "Handle" => Some(TyConId(11)),
         "Error" => Some(TyConId(12)),
         "Duration" => Some(TyConId(13)),
-        "ProcOutput" => Some(TyConId(14)),
+        "Output" => Some(TyConId(14)),
         "Ordering" => Some(TyConId(15)),
         "JsonValue" => Some(TyConId(16)),
         "QExpr" => Some(TyConId(25)),

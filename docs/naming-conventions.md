@@ -53,7 +53,10 @@ Everything domain-specific is spelled out in full: `path`, `content`, `command`,
 `conn`, not `lo` / `hi`.
 
 When two arguments differ in role, the names show it — `base` / `override`,
-`left` / `right`, `expected` / `actual` — never `a` / `b`.
+`left` / `right`, `expected` / `actual` — never `a` / `b`. The exception is a
+binary comparator or arithmetic operator over two operands of the same type,
+where `a` / `b` is the universal reading — `compare a b`, `Int.sub a b` — and
+`left` / `right` would add ceremony without clarity.
 
 ## Verbs and affixes
 
@@ -106,7 +109,9 @@ The query and persistence layer follows everything above, plus three rules of it
 - Filtering is `filter`, never `where`. `where` introduces a constraint clause in the
   language, so query narrowing uses `filter`.
 - Columns are referenced by typed accessors — `fn (u: User) -> u.email` — never by a string
-  name.
+  name. The lone exception is `getBy`, a fetch-by-key convenience that takes the key column
+  as a string the way an ORM's `find` does; `findBy` is the typed-predicate form for
+  everything else.
 - The write path is `insert`, `update`, `delete` for whole entities, and `setWhere` for a
   typed partial update. One vocabulary, not a separate verb for every shape.
 

@@ -21,8 +21,8 @@ pub type SortOrder = Asc | Desc
 -- A sort direction as the `ascending?` boolean a backend (or the query builder)
 -- reads. Defined here, where `Asc`/`Desc` are declared, so the match is over the
 -- module's own constructors.
-pub fn ascending (dir: SortOrder) -> Bool =
-    match dir
+pub fn isAscending (direction: SortOrder) -> Bool =
+    match direction
         Asc  -> true
         Desc -> false
 
@@ -78,39 +78,39 @@ pub fn ascending (dir: SortOrder) -> Bool =
 pub type QueryPlan = PlanScan Text QExpr (List (Bool, QExpr)) Int Int Bool | PlanCombine Text QueryPlan QueryPlan | PlanRefine QueryPlan QExpr (List (Bool, QExpr)) Int Int Bool | PlanJoin Text QueryPlan QueryPlan QExpr QExpr (List (Bool, Int, QExpr)) Int Int Bool (List Text) (List Text) | PlanProject QExpr QueryPlan Int Int Bool | PlanAggregate Text QExpr Int QueryPlan |PlanGroup Text Int (List (Text, Text, QExpr, Int)) QExpr QueryPlan | PlanExists QueryPlan | PlanList (List (Map Text SqlValue))
 
 -- A single-table scan plan — the plan form of `fetch`.
-pub fn planScan (table: Text) (pred: QExpr) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
-    PlanScan table pred orders lim off dist
+pub fn planScan (table: Text) (pred: QExpr) (orders: List (Bool, QExpr)) (limit: Int) (offset: Int) (distinct: Bool) -> QueryPlan =
+    PlanScan table pred orders limit offset distinct
 
--- Combine two plans with a set operation. `op` is the SQL keyword the backend runs.
-pub fn planCombine (op: Text) (left: QueryPlan) (right: QueryPlan) -> QueryPlan =
-    PlanCombine op left right
+-- Combine two plans with a set operation. `operation` is the SQL keyword the backend runs.
+pub fn planCombine (operation: Text) (left: QueryPlan) (right: QueryPlan) -> QueryPlan =
+    PlanCombine operation left right
 
 -- Wrap a plan in an outer filter, ordering, page, and distinct — the refinement a
 -- combined query's own builder steps apply on top of the combination.
-pub fn planRefine (inner: QueryPlan) (pred: QExpr) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
-    PlanRefine inner pred orders lim off dist
+pub fn planRefine (inner: QueryPlan) (pred: QExpr) (orders: List (Bool, QExpr)) (limit: Int) (offset: Int) (distinct: Bool) -> QueryPlan =
+    PlanRefine inner pred orders limit offset distinct
 
 -- Pair two sub-plans on a join. `kind` is the join shape (`INNER`/`LEFT`/`RIGHT`/
--- `FULL`), `cond` the join condition and `where2` the post-join `WHERE` (both two-row
+-- `FULL`), `condition` the join condition and `postJoinFilter` the post-join `WHERE` (both two-row
 -- trees over the left and right rows), and `orders` the side-tagged ordering keys.
 -- `leftCols`/`rightCols` are each source entity's column names (from `Row.rowColumns`),
 -- which the SQL renderer spells into the prefixed select list; the in-memory backend
 -- ignores them. The result rows are flat with each side's columns prefixed (`t0$`/`t1$`).
-pub fn planJoin (kind: Text) (left: QueryPlan) (right: QueryPlan) (cond: QExpr) (where2: QExpr) (orders: List (Bool, Int, QExpr)) (lim: Int) (off: Int) (dist: Bool) (leftCols: List Text) (rightCols: List Text) -> QueryPlan =
-    PlanJoin kind left right cond where2 orders lim off dist leftCols rightCols
+pub fn planJoin (kind: Text) (left: QueryPlan) (right: QueryPlan) (condition: QExpr) (postJoinFilter: QExpr) (orders: List (Bool, Int, QExpr)) (limit: Int) (offset: Int) (distinct: Bool) (leftCols: List Text) (rightCols: List Text) -> QueryPlan =
+    PlanJoin kind left right condition postJoinFilter orders limit offset distinct leftCols rightCols
 
--- Project a sub-plan's rows through the projection tree `proj` (a `QProj`), then
--- de-duplicate (when `dist`) and page. Wraps a `PlanJoin`, projecting its flat
+-- Project a sub-plan's rows through the projection tree `projection` (a `QProj`), then
+-- de-duplicate (when `distinct`) and page. Wraps a `PlanJoin`, projecting its flat
 -- source-prefixed rows into rows keyed by the projection's output aliases.
-pub fn planProject (proj: QExpr) (child: QueryPlan) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
-    PlanProject proj child lim off dist
+pub fn planProject (projection: QExpr) (child: QueryPlan) (limit: Int) (offset: Int) (distinct: Bool) -> QueryPlan =
+    PlanProject projection child limit offset distinct
 
--- Reduce a sub-plan to a single scalar through the aggregate `func` over `column`
+-- Reduce a sub-plan to a single scalar through the aggregate `function` over `column`
 -- (`leaf` is the index of the join leaf the column belongs to — 0/1 for a binary
 -- join's two sides, higher for a deeper composite; `column` is unused for `COUNT`).
 -- The result is one row carrying the scalar, or no row when the aggregate is SQL NULL.
-pub fn planAggregate (func: Text) (column: QExpr) (leaf: Int) (child: QueryPlan) -> QueryPlan =
-    PlanAggregate func column leaf child
+pub fn planAggregate (function: Text) (column: QExpr) (leaf: Int) (child: QueryPlan) -> QueryPlan =
+    PlanAggregate function column leaf child
 
 -- Group a sub-plan's rows by `keyCol` (on the join leaf `keyLeaf`), summarise each
 -- group into the `(alias, func, column, leaf)` aggregate columns — where `column`
@@ -422,9 +422,9 @@ fn binNodeSql (l: QExpr) (op: Text) (r: QExpr) -> { text: Text, binds: List SqlV
 -- its ordered bind values, e.g. `created_at DESC` or `(price * ?) DESC`. A plain
 -- column carries no binds; a computed key (arithmetic, a CASE) collects each
 -- literal as a `?` placeholder, left to right, never interpolated.
-pub fn orderSql (dir: SortOrder) (q: Quote f) -> (Sql, List SqlValue) =
+pub fn orderSql (direction: SortOrder) (q: Quote f) -> (Sql, List SqlValue) =
     let r = compileExpr q.tree
-    (sql (Text.concat r.text (Text.concat " " (dirKeyword dir))), r.binds)
+    (sql (Text.concat r.text (Text.concat " " (dirKeyword direction))), r.binds)
 
 fn dirKeyword (dir: SortOrder) -> Text =
     match dir
@@ -476,8 +476,8 @@ pub fn planToSql (plan: QueryPlan) -> (Sql, List SqlValue) = planToSqlFor PgDial
 -- already returns a float so it needs no `::float8`, and an interval average is a plain
 -- `AVG` over the integer-millisecond column rather than an `EXTRACT(EPOCH …)`. The dialect
 -- threads down to the aggregate renderers; the rest of the plan renders the same either way.
-pub fn planToSqlFor (d: Dialect) (plan: QueryPlan) -> (Sql, List SqlValue) =
-    let r = renderPlan d (optimize plan) 1
+pub fn planToSqlFor (dialect: Dialect) (plan: QueryPlan) -> (Sql, List SqlValue) =
+    let r = renderPlan dialect (optimize plan) 1
     (sql r.text, r.binds)
 
 -- ── Plan → inline SQL (a view body) ───────────────────────────────────────────
@@ -493,12 +493,12 @@ pub fn planToSqlFor (d: Dialect) (plan: QueryPlan) -> (Sql, List SqlValue) =
 -- literals are already escaped, so re-running the `sql` escaper would double them.
 pub fn planToSqlInline (plan: QueryPlan) -> Text = planToSqlInlineFor PgDialect plan
 
--- Render a plan to an inline-literal statement in dialect `d`. The dialect threads into
+-- Render a plan to an inline-literal statement in dialect `dialect`. The dialect threads into
 -- the bound render exactly as `planToSqlFor` uses it (only the aggregates diverge); the
 -- inlining that follows is dialect-neutral, since `sqlLiteral` spells a value the same
 -- either way.
-pub fn planToSqlInlineFor (d: Dialect) (plan: QueryPlan) -> Text =
-    let r = renderPlan d (optimize plan) 1
+pub fn planToSqlInlineFor (dialect: Dialect) (plan: QueryPlan) -> Text =
+    let r = renderPlan dialect (optimize plan) 1
     inlineLiterals r.text r.binds
 
 -- Splice each captured value into the bound SQL text, replacing the positional `$N`
@@ -550,8 +550,8 @@ fn isDigit (ch: Text) -> Bool =
 pub fn createViewDdl (name: Text) (plan: QueryPlan) -> Text =
     createViewDdlFor PgDialect name plan
 
-pub fn createViewDdlFor (d: Dialect) (name: Text) (plan: QueryPlan) -> Text =
-    Text.join "" ["CREATE VIEW ", quoteIdent name, " AS ", planToSqlInlineFor d plan]
+pub fn createViewDdlFor (dialect: Dialect) (name: Text) (plan: QueryPlan) -> Text =
+    Text.join "" ["CREATE VIEW ", quoteIdent name, " AS ", planToSqlInlineFor dialect plan]
 
 pub fn dropViewDdl (name: Text) -> Text =
     Text.concat "DROP VIEW " (quoteIdent name)

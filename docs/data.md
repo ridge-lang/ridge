@@ -140,13 +140,13 @@ return a `Result Sqlite Error`.
 
 ### Postgres
 
-`connect` takes a `Config` record and returns a `Result Postgres Error`:
+`connect` takes a `PostgresConfig` record and returns a `Result Postgres Error`:
 
 ```ridge
-import std.data (connect, Config)
+import std.data (connect, PostgresConfig)
 
-fn pgConfig () -> Config =
-    Config { host = "127.0.0.1", port = 5432, database = "app",
+fn pgConfig () -> PostgresConfig =
+    PostgresConfig { host = "127.0.0.1", port = 5432, database = "app",
              user = "app", password = "secret", sslMode = "disable" }
 
 match connect (pgConfig ())
@@ -389,7 +389,7 @@ build error, not a runtime one.
 ### Delete
 
 ```ridge
-users |> Repo.deleteWhere (fn (u: User) -> u.age < 18)
+users |> Repo.delete (fn (u: User) -> u.age < 18)
 users |> Repo.deleteReturning (fn (u: User) -> u.id == 2)  -- returns the removed rows
 ```
 
@@ -446,14 +446,14 @@ docker compose up -d
 ```
 
 That starts Postgres on `localhost:5432` with database, user, and password all
-set to `app` — matching the `Config` in the [Connecting](#connecting) section.
+set to `app` — matching the `PostgresConfig` in the [Connecting](#connecting) section.
 Point the program at Postgres by swapping the connection:
 
 ```ridge
-import std.data (connect, Config, Postgres)
+import std.data (connect, PostgresConfig, Postgres)
 
-fn pgConfig () -> Config =
-    Config { host = "127.0.0.1", port = 5432, database = "app",
+fn pgConfig () -> PostgresConfig =
+    PostgresConfig { host = "127.0.0.1", port = 5432, database = "app",
              user = "app", password = "app", sslMode = "disable" }
 ```
 

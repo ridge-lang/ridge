@@ -2,10 +2,10 @@
 -- These replicate proc.ridge FFI declarations in local scope because cross-module
 -- calls are unsupported (T17+ deferred).
 --
--- ProcOutput = { stdout: Text, stderr: Text, exitCode: Int }
--- Error      = { code: Text, message: Text }
+-- Output = { stdout: Text, stderr: Text, exitCode: Int }
+-- Error  = { code: Text, message: Text }
 @ffi("ridge_rt", "proc_run", 2)
-fn _procRun (cmd: Text) (args: List Text) -> Result ProcOutput Error
+fn _procRun (cmd: Text) (args: List Text) -> Result Output Error
 
 @test "smoke_proc"
 pub fn test_smoke_proc () -> Result Unit Text = Ok ()

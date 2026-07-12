@@ -383,7 +383,7 @@ fn build_length_ge_guard(
 /// is the literal lexeme, still carrying its `m`/`M` suffix and any `_`
 /// separators. The literal is rebuilt from its digits exactly as
 /// [`crate::core::lower_literal`] does for a decimal *expression* — strip the
-/// suffix and separators, then `std.decimal.parseRaw`. Comparison is by value,
+/// suffix and separators, then `std.decimal.parseStrict`. Comparison is by value,
 /// so a `1.5m` pattern matches a `1.50` scrutinee.
 ///
 /// `Decimal.compare` is not a BEAM guard BIF, so codegen lifts the whole guard
@@ -402,7 +402,7 @@ fn build_decimal_eq_guard(
         span,
     };
 
-    // The literal value: `std.decimal.parseRaw("<digits>")`.
+    // The literal value: `std.decimal.parseStrict("<digits>")`.
     let text = raw.trim_end_matches(['m', 'M']).replace('_', "");
     let lit_expr = IrExpr::Call {
         id: ctx.fresh_id(None),
@@ -410,7 +410,7 @@ fn build_decimal_eq_guard(
             id: ctx.fresh_id(None),
             sym: SymbolRef::Stdlib {
                 module: "std.decimal".into(),
-                name: "parseRaw".into(),
+                name: "parseStrict".into(),
             },
             span,
         }),

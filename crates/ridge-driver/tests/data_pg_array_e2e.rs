@@ -29,7 +29,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// The program source, with connection settings spliced in as sentinels so the
 /// Ridge record braces never collide with Rust string formatting.
 const SOURCE_TEMPLATE: &str = r#"
-import std.data (connect, Config, Postgres)
+import std.data (connect, PostgresConfig, Postgres)
 import std.repo as Repo
 import std.raw as Raw
 import std.sql (toSql, SqlValue)
@@ -48,8 +48,8 @@ fn lenList (xs: List Int) -> Int =
         []        -> 0
         _ :: rest -> 1 + lenList rest
 
-fn pgConfig () -> Config =
-    Config { host = "__PG_HOST__", port = __PG_PORT__, database = "__PG_DATABASE__", user = "__PG_USER__", password = "__PG_PASSWORD__", sslMode = "__PG_SSLMODE__" }
+fn pgConfig () -> PostgresConfig =
+    PostgresConfig { host = "__PG_HOST__", port = __PG_PORT__, database = "__PG_DATABASE__", user = "__PG_USER__", password = "__PG_PASSWORD__", sslMode = "__PG_SSLMODE__" }
 
 -- Create a fresh array table and seed two rows: id 1 with populated arrays, id 2 with a
 -- comma-carrying text element and an empty int array.

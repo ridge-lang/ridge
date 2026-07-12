@@ -210,7 +210,7 @@ pub struct BuiltinTyCons {
     ///
     /// Returned by `std.time.diff`.
     pub duration: TyConId,
-    /// `ProcOutput { stdout: Text, stderr: Text, exitCode: Int }` — process
+    /// `Output { stdout: Text, stderr: Text, exitCode: Int }` — process
     /// output record (§3.16 / OQ-S007 / D123).
     ///
     /// Returned as the `Ok` payload of `std.proc.run`.
@@ -339,12 +339,12 @@ pub struct BuiltinTyCons {
     pub decimal: TyConId,
     /// `Uuid` — an RFC 4122 identifier. A primitive like `Int`/`Text`, interned
     /// after `Decimal` (id 52) so the historical 0..50 index layout stays stable.
-    /// It has no literal syntax; a value comes from `std.uuid` (`gen`, `fromText`),
+    /// It has no literal syntax; a value comes from `std.uuid` (`generate`, `fromText`),
     /// and the codec that moves it across a SQL `uuid` column lives in `std.sql`.
     pub uuid: TyConId,
     /// `Bytes` — a raw byte string. A primitive like `Text`, interned after `Uuid`
     /// (id 53) so the historical 0..50 index layout stays stable. It has no literal
-    /// syntax; a value comes from `std.bytes` (`fromHex`, `fromUtf8`, `gen`), and
+    /// syntax; a value comes from `std.bytes` (`fromHex`, `fromUtf8`, `generate`), and
     /// the codec that moves it across a SQL `bytea` column lives in `std.sql`.
     pub bytes: TyConId,
     /// `Date` — a calendar date (year-month-day, no time-of-day, no timezone). A
@@ -427,7 +427,7 @@ impl BuiltinTyCons {
     ///
     /// Indices are assigned in a fixed order (Int=0, Float=1, Bool=2, Text=3,
     /// Unit=4, Timestamp=5, List=6, Map=7, Set=8, Option=9, Result=10,
-    /// Handle=11, Error=12, Duration=13, ProcOutput=14, Ordering=15,
+    /// Handle=11, Error=12, Duration=13, Output=14, Ordering=15,
     /// JsonValue=16, Sql=17, Html=18, SecureCookie=19, SqlValue=20) matching
     /// spec §4.1.
     /// Callers must pass a **fresh** arena (i.e. `arena.is_empty()` must be
@@ -667,10 +667,10 @@ impl BuiltinTyCons {
             opaque: false,
             is_anon: false,
         });
-        // §3.16 / OQ-S007 / D123: ProcOutput { stdout: Text, stderr: Text, exitCode: Int }
+        // §3.16 / OQ-S007 / D123: Output { stdout: Text, stderr: Text, exitCode: Int }
         let proc_output = arena.intern(TyConDecl {
             id: TyConId(0),
-            name: "ProcOutput".to_string(),
+            name: "Output".to_string(),
             arity: 0,
             kind: TyConKind::Record(RecordSchema::new(
                 vec![],
@@ -2103,11 +2103,11 @@ mod tests {
     fn proc_output_schema_has_stdout_stderr_exit_code() {
         let (arena, b) = make_arena_with_builtins();
         let decl = arena.get(b.proc_output);
-        assert_eq!(decl.name, "ProcOutput");
+        assert_eq!(decl.name, "Output");
         assert_eq!(decl.arity, 0);
         if let TyConKind::Record(schema) = &decl.kind {
             let fields = schema.record_fields();
-            assert_eq!(fields.len(), 3, "ProcOutput must have 3 fields");
+            assert_eq!(fields.len(), 3, "Output must have 3 fields");
             assert_eq!(fields[0].name, "stdout");
             assert_eq!(fields[1].name, "stderr");
             assert_eq!(fields[2].name, "exitCode");
@@ -2124,7 +2124,7 @@ mod tests {
                 "exitCode must be Int"
             );
         } else {
-            panic!("ProcOutput must be a Record TyCon");
+            panic!("Output must be a Record TyCon");
         }
     }
 

@@ -33,25 +33,25 @@ pub fn assertFalse (cond: Bool) (label: Text) -> Result Unit Text =
     if cond then Err label else Ok ()
 
 -- Assert a Result is Ok.
-pub fn isOk (r: Result a e) (label: Text) -> Result Unit Text =
+pub fn assertOk (r: Result a e) (label: Text) -> Result Unit Text =
     match r
         Ok _  -> Ok ()
         Err _ -> Err label
 
 -- Assert a Result is Err.
-pub fn isErr (r: Result a e) (label: Text) -> Result Unit Text =
+pub fn assertErr (r: Result a e) (label: Text) -> Result Unit Text =
     match r
         Ok _  -> Err label
         Err _ -> Ok ()
 
 -- Assert an Option is Some.
-pub fn isSome (o: Option a) (label: Text) -> Result Unit Text =
+pub fn assertSome (o: Option a) (label: Text) -> Result Unit Text =
     match o
         Some _ -> Ok ()
         None   -> Err label
 
 -- Assert an Option is None.
-pub fn isNone (o: Option a) (label: Text) -> Result Unit Text =
+pub fn assertNone (o: Option a) (label: Text) -> Result Unit Text =
     match o
         Some _ -> Err label
         None   -> Ok ()

@@ -41,7 +41,7 @@ pub fn empty (_unit: Unit) -> Bytes
 -- source, so the result is unpredictable, not just non-repeating. A non-positive
 -- n yields the empty byte string.
 @ffi("ridge_rt", "bytes_gen", 1)
-pub fn random gen (n: Int) -> Bytes
+pub fn random generate (n: Int) -> Bytes
 
 -- The number of bytes.
 @ffi("ridge_rt", "bytes_length", 1)

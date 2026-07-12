@@ -46,7 +46,7 @@ fn _filter (p: fn k -> v -> Bool) (m: Map k v) -> Map k v =
     _fromList (_filterPairs p (_toList m))
 
 @ffi("maps", "size", 1)
-fn _size (m: Map k v) -> Int
+fn _length (m: Map k v) -> Int
 
 @ffi("maps", "merge", 2)
 fn _merge (a: Map k v) (b: Map k v) -> Map k v
@@ -63,13 +63,13 @@ pub fn test_smoke_map () -> Result Unit Text = Ok ()
 
 @test "empty_size_zero"
 pub fn test_empty_size_zero () -> Result Unit Text =
-    if _size Map.empty == 0 then Ok ()
-    else Err "Map.empty size should be 0"
+    if _length Map.empty == 0 then Ok ()
+    else Err "Map.empty length should be 0"
 
 @test "fromList_round_trip"
 pub fn test_fromList_round_trip () -> Result Unit Text =
-    if _size (_fromList [("a", 1), ("b", 2)]) == 2 then Ok ()
-    else Err "Map.fromList [a,b] size should be 2"
+    if _length (_fromList [("a", 1), ("b", 2)]) == 2 then Ok ()
+    else Err "Map.fromList [a,b] length should be 2"
 
 @test "insert_then_get"
 pub fn test_insert_then_get () -> Result Unit Text =
@@ -83,33 +83,33 @@ pub fn test_get_absent_is_none () -> Result Unit Text =
 
 @test "remove_decrements"
 pub fn test_remove_decrements () -> Result Unit Text =
-    if _size (_remove "a" (_fromList [("a", 1)])) == 0 then Ok ()
-    else Err "Map.remove a from singleton should give size 0"
+    if _length (_remove "a" (_fromList [("a", 1)])) == 0 then Ok ()
+    else Err "Map.remove a from singleton should give length 0"
 
 @test "contains_present"
 pub fn test_contains_present () -> Result Unit Text =
     if _contains "a" (_fromList [("a", 1)]) then Ok ()
     else Err "Map.contains a should be true"
 
-@test "keys_count_matches_size"
-pub fn test_keys_count_matches_size () -> Result Unit Text =
+@test "keys_count_matches_length"
+pub fn test_keys_count_matches_length () -> Result Unit Text =
     if _listLength (_keys (_fromList [("a", 1), ("b", 2)])) == 2 then Ok ()
-    else Err "Map.keys count should match size"
+    else Err "Map.keys count should match length"
 
-@test "values_count_matches_size"
-pub fn test_values_count_matches_size () -> Result Unit Text =
+@test "values_count_matches_length"
+pub fn test_values_count_matches_length () -> Result Unit Text =
     if _listLength (_values (_fromList [("a", 1)])) == 1 then Ok ()
-    else Err "Map.values count should match size"
+    else Err "Map.values count should match length"
 
 @test "filter_keeps_matching"
 pub fn test_filter_keeps_matching () -> Result Unit Text =
-    if _size (_filter (fn _ -> fn v -> v > 1) (_fromList [("a", 1), ("b", 2)])) == 1 then Ok ()
+    if _length (_filter (fn _ -> fn v -> v > 1) (_fromList [("a", 1), ("b", 2)])) == 1 then Ok ()
     else Err "Map.filter v > 1 should keep 1 entry"
 
-@test "size_basic"
-pub fn test_size_basic () -> Result Unit Text =
-    if _size (_fromList [("a", 1), ("b", 2), ("c", 3)]) == 3 then Ok ()
-    else Err "Map.size fromList 3 should be 3"
+@test "length_basic"
+pub fn test_length_basic () -> Result Unit Text =
+    if _length (_fromList [("a", 1), ("b", 2), ("c", 3)]) == 3 then Ok ()
+    else Err "Map.length fromList 3 should be 3"
 
 @test "merge_overrides"
 pub fn test_merge_overrides () -> Result Unit Text =

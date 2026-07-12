@@ -1,0 +1,17 @@
+# nextest runs tests in parallel across binaries (cargo test runs one binary at a
+# time), which cuts the BEAM e2e suite's wall-clock — each of those tests spawns its
+# own erl process, so they parallelize cleanly.
+#
+# The exception is the Postgres adapter e2e: the `data_pg_*` binaries connect to a
+# live database, and the pool/concurrency probe in data_pg_e2e alone holds close to a
+# hundred connections open at once. Running several Postgres binaries concurrently
+# would blow past the server's connection cap, so they go in a serial group — one
+# Postgres binary at a time — while the rest of the suite keeps parallelizing. The
+# serial Postgres tests still overlap with the parallel BEAM tests, so this bounds the
+# connection count without serializing the whole run.
+[test-groups]
+postgres = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'binary(/^data_pg_/)'
+test-group = 'postgres'

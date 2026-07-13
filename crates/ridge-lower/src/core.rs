@@ -2136,6 +2136,17 @@ fn resolve_dict_arg(
         return dict_plan_to_expr(ctx, class, plan, class_name, span);
     }
 
+    // The constraint is satisfiable (the typecheck accepted the program) but the
+    // concrete instance could not be pinned here — the constraint variable sits
+    // in a position the lowering cannot ground, e.g. the return of a field-access
+    // key lambda passed to `sortBy`. For `Ord` fall back to the native comparator
+    // dictionary rather than a unit no-op: it is exactly right for a primitive key
+    // (whose `Ord` *is* the BEAM term order) and degrades to native ordering — not
+    // a crash — for the rare unpinnable user-typed key.
+    if class == ridge_types::ORD_CLASS {
+        return crate::prelude_dict::synth_ord_dict(ctx, span);
+    }
+
     // Defensive no-op: emit a unit literal. This should not happen in
     // well-typed programs — a typecheck error would fire for missing instances.
     let id = ctx.fresh_id(None);
@@ -3014,6 +3025,10 @@ fn class_name_of(ctx: &LowerCtx<'_>, class: ridge_types::ClassId) -> Option<Stri
 /// the prelude `Encode`/`Decode` instances, whose dictionaries are synthesised
 /// inline (see [`crate::prelude_dict`]) because they have no module-level
 /// `$inst_` constant.
+#[expect(
+    clippy::too_many_lines,
+    reason = "flat dispatch over the prelude-codec, prelude-Ord, auto-promoted, and user-instance dictionary cases"
+)]
 pub(crate) fn dict_plan_to_expr(
     ctx: &mut LowerCtx<'_>,
     _class: ridge_types::ClassId,
@@ -3069,6 +3084,15 @@ pub(crate) fn dict_plan_to_expr(
                             span,
                         }
                     });
+            }
+
+            // The built-in `Ord` instances (Int/Float/Bool/Text/Ordering) have a
+            // registered instance but no `$inst_` constant either — their `compare`
+            // is the native term comparator. Synthesise the dictionary inline so a
+            // polymorphic `where Ord a` call (notably `sort`/`sortBy`) resolves for
+            // a primitive element or key.
+            if crate::prelude_dict::is_prelude_ord_instance(class, tycon) {
+                return crate::prelude_dict::synth_ord_dict(ctx, span);
             }
 
             // An auto-promoted instance (a bare `pub fn toText`, lifted by the

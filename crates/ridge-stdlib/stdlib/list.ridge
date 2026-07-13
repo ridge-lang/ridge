@@ -70,19 +70,28 @@ pub fn reverse (xs: List a) -> List a
 @ffi("lists", "append", 2)
 pub fn concat (xs: List a) (ys: List a) -> List a
 
--- Sort a list using the default term ordering.
-@ffi("lists", "sort", 1)
-pub fn sort (xs: List a) -> List a
+-- Internal: the native `compare` shared by the built-in Ord instances
+-- (Int/Float/Bool/Text/Ordering). The synthesised primitive Ord dictionaries
+-- close over it; it returns a Ridge Ordering from the BEAM term order.
+@ffi("ridge_rt", "ord_compare_native", 2)
+fn _ordCompareNative (a: a) (b: a) -> Ordering
 
--- Sort a list using a key function to derive comparison values.
--- Routed via ridge_rt:list_sort_by so the user's
--- key function is wrapped into a comparator before being handed to
--- lists:sort/2.  The previous direct bridge invoked the key function as
--- if it were a comparator (`Key(A, B) -> bool`), producing nonsense
--- orderings for any key fn whose arity-1 signature did not coincidentally
--- accept two arguments.
-@ffi("ridge_rt", "list_sort_by", 2)
-pub fn sortBy (key: fn a -> b) (xs: List a) -> List a
+-- Internal: sort by an explicit Ordering comparator (lists:sort/2 under the
+-- hood). `cmp x y` answers where `x` falls relative to `y`, so an element sorts
+-- before another when the comparison is not `Greater`.
+@ffi("ridge_rt", "list_sort_cmp", 2)
+fn _sortCmp (cmp: fn a a -> Ordering) (xs: List a) -> List a
+
+-- Sort a list by its element type's `Ord` ordering. A derived or hand-written
+-- `Ord` decides the order, so a union sorts by its declared variant order rather
+-- than the BEAM's term order.
+pub fn sort (xs: List a) -> List a where Ord a =
+    _sortCmp (fn x y -> compare x y) xs
+
+-- Sort a list by a key extracted from each element, ordered by the key type's
+-- `Ord`. `sortBy (fn u -> u.age) users` orders by age.
+pub fn sortBy (key: fn a -> b) (xs: List a) -> List a where Ord b =
+    _sortCmp (fn x y -> compare (key x) (key y)) xs
 
 -- Return the first n elements (or fewer if the list is shorter).
 pub fn take (n: Int) (xs: List a) -> List a =

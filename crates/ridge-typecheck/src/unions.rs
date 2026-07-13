@@ -143,20 +143,16 @@ pub fn infer_variant_construction(
         }
 
         // ── Record-payload variant ───────────────────────────────────────────
-        // Treat the constructor as a single-argument record-construction.
-        // The argument expressions represent field initialisers; T9 delegates to
-        // records.rs::infer_record_construction.
+        // A record-style variant construction (`Login { userId = 1, at = t }`)
+        // arrives as an `Expr::Record` and is inferred by the record-payload branch
+        // in `infer.rs`, which calls `records::infer_record_variant_construction`.
+        // This positional core only handles nullary and positional variants, so a
+        // record payload here signals a mis-dispatch.
         VariantPayload::Record(record_schema) => {
-            // For the record-payload case the caller must supply field initialisers
-            // as a synthesised `Expr::Record` or by building FieldInit slices.
-            // In T9 this is uncommon (union variants with inline records are rare in
-            // practice); we fall through to T999 with a clear message rather than
-            // implementing a full FieldInit→Expr bridge that would duplicate records.rs.
-            // Full wiring is deferred to T17 (pipeline integration).
             let _ = record_schema; // suppress unused warning
             return emit_internal(
                 ctx,
-                "union variant with inline record payload — full expression wiring is T17",
+                "record-payload union variant reached the positional construction core",
                 span,
             );
         }
@@ -244,13 +240,14 @@ pub fn infer_variant_pattern(
         }
 
         // ── Record-payload variant ───────────────────────────────────────────
-        // Pattern side: `Login { userId, at }`.  Handled by the `fields: Some(_)`
-        // branch of `Pattern::Constructor` in `infer.rs`; T9 defers the record
-        // interior work to T8's record-pattern helpers.
+        // Pattern side: `Login { userId, at }`. Handled by the record-body branch
+        // (`fields: Some(_)`) of `Pattern::Constructor` in `infer.rs`, which calls
+        // `records::infer_record_variant_pattern`. This positional core only binds
+        // nullary and positional variants, so a record payload here is a mis-dispatch.
         VariantPayload::Record(_) => {
             let _ = emit_internal(
                 ctx,
-                "union variant with inline record payload pattern — full wiring is T17",
+                "record-payload union variant reached the positional pattern core",
                 span,
             );
         }

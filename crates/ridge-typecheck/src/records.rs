@@ -592,6 +592,158 @@ pub fn infer_record_pattern(
     }
 }
 
+// ── Record-payload union variants ───────────────────────────────────────────────
+
+/// Infer a record-style union-variant construction (`Login { userId = 1, at = t }`).
+///
+/// Mirrors [`infer_record_construction`], but the result is the *owner union*
+/// type rather than a standalone record. Fields are checked against the
+/// variant's inline [`RecordSchema`] while the type parameters come from the
+/// enclosing union, so a generic variant such as `type Box a = | Wrap { val: a }`
+/// unifies `val` with the union's `a`. `union_params` are the owner union's
+/// parameter slots (`UnionSchema::params`); the variant field types reference
+/// exactly those `TyVid`s.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "record-variant construction needs the union params, variant schema, and owner tycon separately"
+)]
+pub fn infer_record_variant_construction(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    union_params: &[TyVid],
+    record_schema: &RecordSchema,
+    owner_tycon: TyConId,
+    variant_name: &str,
+    fields: &[FieldInit],
+    span: Span,
+) -> Type {
+    let fresh_args: Vec<Type> = union_params
+        .iter()
+        .map(|_| Type::Var(ctx.fresh_tyvid()))
+        .collect();
+
+    // Flag unknown field names.
+    for fi in fields {
+        if !record_schema
+            .record_fields()
+            .iter()
+            .any(|f| f.name == fi.name.text)
+        {
+            ctx.errors.push(TypeError::UnknownField {
+                record: variant_name.to_string(),
+                field: fi.name.text.clone(),
+                suggestions: field_suggestions(&fi.name.text, record_schema),
+                span: fi.span,
+            });
+        }
+    }
+
+    // Each declared field: find its initialiser or report it missing.
+    for decl_field in record_schema.record_fields() {
+        let field_ty = subst_type(&decl_field.ty, union_params, &fresh_args);
+        match fields.iter().find(|fi| fi.name.text == decl_field.name) {
+            None => ctx.errors.push(TypeError::MissingField {
+                record: variant_name.to_string(),
+                field: decl_field.name.clone(),
+                span,
+            }),
+            Some(fi) => {
+                let value_ty = match &fi.value {
+                    Some(val_expr) => crate::infer::infer_expr(ctx, b, val_expr),
+                    // Shorthand field `{ userId }` → look up `userId` as a local.
+                    None => {
+                        if let Some(s) = ctx.env.lookup(&fi.name.text) {
+                            let s = s.clone();
+                            crate::instantiate::instantiate(ctx, &s)
+                        } else {
+                            emit_internal(
+                                ctx,
+                                format!("shorthand field '{}' not in scope", fi.name.text),
+                                fi.span,
+                            )
+                        }
+                    }
+                };
+                if let Err(e) = unify(ctx, &value_ty, &field_ty) {
+                    ctx.errors.push(attach_span(e, fi.span));
+                }
+            }
+        }
+    }
+
+    Type::Con(owner_tycon, fresh_args)
+}
+
+/// Infer and bind a record-style union-variant pattern (`Login { userId, .. }`).
+///
+/// Mirrors [`infer_record_pattern`], but unifies the scrutinee against the owner
+/// union type and substitutes field types through the union's parameters.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "record-variant pattern inference needs the full binding context"
+)]
+pub fn infer_record_variant_pattern(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    union_params: &[TyVid],
+    record_schema: &RecordSchema,
+    owner_tycon: TyConId,
+    variant_name: &str,
+    fields: &[FieldPattern],
+    has_rest: bool,
+    expected: &Type,
+    span: Span,
+) {
+    let fresh_args: Vec<Type> = union_params
+        .iter()
+        .map(|_| Type::Var(ctx.fresh_tyvid()))
+        .collect();
+    let union_ty = Type::Con(owner_tycon, fresh_args.clone());
+    if let Err(e) = unify(ctx, expected, &union_ty) {
+        ctx.errors.push(attach_span(e, span));
+    }
+
+    // Type or bind each named field; flag unknown field names.
+    for fp in fields {
+        let field_ty = if let Some(f) = record_schema
+            .record_fields()
+            .iter()
+            .find(|f| f.name == fp.name.text)
+        {
+            subst_type(&f.ty, union_params, &fresh_args)
+        } else {
+            ctx.errors.push(TypeError::UnknownField {
+                record: variant_name.to_string(),
+                field: fp.name.text.clone(),
+                suggestions: field_suggestions(&fp.name.text, record_schema),
+                span: fp.span,
+            });
+            Type::Error
+        };
+        match &fp.pattern {
+            Some(sub) => crate::infer::infer_pattern(ctx, b, sub, &field_ty),
+            // Shorthand `{ userId }` binds a new local of the field's type.
+            None => ctx.env.bind(
+                fp.name.text.clone(),
+                crate::instantiate::monoscheme(field_ty),
+            ),
+        }
+    }
+
+    // Without `..`, every declared field must be named.
+    if !has_rest {
+        for decl_field in record_schema.record_fields() {
+            if !fields.iter().any(|fp| fp.name.text == decl_field.name) {
+                ctx.errors.push(TypeError::MissingField {
+                    record: variant_name.to_string(),
+                    field: decl_field.name.clone(),
+                    span,
+                });
+            }
+        }
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

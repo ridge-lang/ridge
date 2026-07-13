@@ -245,10 +245,12 @@ fn unknown_constructor_does_not_leak_t999() {
     );
 }
 
-/// Matching a record-style union variant is not supported yet; it must report
-/// `T044`, not leak a `T999`.
+/// Matching (and constructing) a record-style union variant type-checks: the
+/// variant's fields bind against its inline record schema, the match is
+/// exhaustive, and no deferral diagnostic (`T044`) or internal error (`T999`)
+/// is emitted.
 #[test]
-fn record_style_variant_pattern_reports_t044_not_t999() {
+fn record_style_variant_pattern_type_checks() {
     let src = "type Msg = Ping | Move { dx: Int, dy: Int }\n\n\
                pub fn step (m: Msg) -> Int =\n\
                \x20   match m\n\
@@ -259,12 +261,84 @@ fn record_style_variant_pattern_reports_t044_not_t999() {
         .map(TypeError::code)
         .collect();
     assert!(
-        codes.contains(&"T044"),
-        "expected T044 for a record-style variant pattern; got: {codes:?}"
+        codes.is_empty(),
+        "a record-style variant pattern should type-check cleanly; got: {codes:?}"
     );
+}
+
+/// Constructing a record-style union variant type-checks: the field initialisers
+/// are validated against the variant's inline record schema and the result is
+/// the owner union type.
+#[test]
+fn record_style_variant_construction_type_checks() {
+    let src = "type Event = Tick | Login { userId: Int, at: Int }\n\n\
+               pub fn mk () -> Event = Login { userId = 7, at = 1000 }\n";
+    let codes: Vec<&str> = run_typecheck_on_source("record_variant_ctor", src)
+        .iter()
+        .map(TypeError::code)
+        .collect();
     assert!(
-        !codes.contains(&"T999"),
-        "a record-style variant pattern must NOT leak T999; got: {codes:?}"
+        codes.is_empty(),
+        "constructing a record-style variant should type-check cleanly; got: {codes:?}"
+    );
+}
+
+/// Regression: an exhaustive match over record-payload variants must not flag a
+/// sibling arm as redundant (`T017`). An earlier record-body pattern covers only
+/// its own variant, not the whole union, so later variants stay reachable.
+#[test]
+fn record_variant_match_not_falsely_redundant() {
+    let src = "type Event = Login { userId: Int } | Logout { userId: Int } | Tick\n\n\
+               pub fn describe (e: Event) -> Int =\n\
+               \x20   match e\n\
+               \x20       Login { userId } -> userId\n\
+               \x20       Logout { userId } -> userId\n\
+               \x20       Tick -> 0\n";
+    let codes: Vec<&str> = run_typecheck_on_source("event_exhaustive", src)
+        .iter()
+        .map(TypeError::code)
+        .collect();
+    assert!(
+        !codes.contains(&"T016") && !codes.contains(&"T017"),
+        "exhaustive record-variant match must not warn redundant/non-exhaustive; got: {codes:?}"
+    );
+}
+
+/// A match that omits a variant is still non-exhaustive (`T016`), even when the
+/// present arms are record-style variant patterns.
+#[test]
+fn record_variant_match_non_exhaustive_reports_t016() {
+    let src = "type Event = Login { userId: Int } | Logout { userId: Int } | Tick\n\n\
+               pub fn describe (e: Event) -> Int =\n\
+               \x20   match e\n\
+               \x20       Login { userId } -> userId\n\
+               \x20       Tick -> 0\n";
+    let codes: Vec<&str> = run_typecheck_on_source("event_missing", src)
+        .iter()
+        .map(TypeError::code)
+        .collect();
+    assert!(
+        codes.contains(&"T016"),
+        "a match missing a record-payload variant must report T016; got: {codes:?}"
+    );
+}
+
+/// A generic union with a record-payload variant type-checks: the field type `a`
+/// unifies with the union's type parameter at construction and in patterns.
+#[test]
+fn generic_record_variant_type_checks() {
+    let src = "type Box a = | Wrap { val: a }\n\n\
+               pub fn unwrap (b: Box Int) -> Int =\n\
+               \x20   match b\n\
+               \x20       Wrap { val } -> val\n\n\
+               pub fn make () -> Box Int = Wrap { val = 7 }\n";
+    let codes: Vec<&str> = run_typecheck_on_source("box_generic", src)
+        .iter()
+        .map(TypeError::code)
+        .collect();
+    assert!(
+        codes.is_empty(),
+        "a generic record-payload variant should type-check cleanly; got: {codes:?}"
     );
 }
 

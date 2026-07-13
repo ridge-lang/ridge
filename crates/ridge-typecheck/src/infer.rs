@@ -64,6 +64,37 @@ fn is_user_union_variant(ctx: &InferCtx, name: &str) -> bool {
     })
 }
 
+/// If `name` is a record-payload variant of some user-defined union in scope,
+/// return the owner union's `TyConId`, the union's type-parameter slots, and the
+/// variant's inline record schema. Returns `None` for positional or nullary
+/// variants and for names that are not union variants. The `tycon_decls` index
+/// is the `TyConId` (same convention as the positional-variant pattern lookup
+/// below).
+fn find_record_variant(
+    ctx: &InferCtx,
+    name: &str,
+) -> Option<(
+    ridge_types::TyConId,
+    Vec<ridge_types::TyVid>,
+    ridge_types::RecordSchema,
+)> {
+    ctx.tycon_decls.iter().enumerate().find_map(|(idx, decl)| {
+        let ridge_types::TyConKind::Union(schema) = &decl.kind else {
+            return None;
+        };
+        let variant = schema.variants.iter().find(|v| v.name == name)?;
+        let ridge_types::VariantPayload::Record(rec) = &variant.kind else {
+            return None;
+        };
+        #[expect(clippy::cast_possible_truncation, reason = "arena index fits u32")]
+        Some((
+            ridge_types::TyConId(idx as u32),
+            schema.params.clone(),
+            rec.clone(),
+        ))
+    })
+}
+
 // ── Public entry points ────────────────────────────────────────────────────────
 
 /// Infers the type of `expr` in the current `InferCtx` and writes back the
@@ -788,6 +819,24 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 RecordCtor::Qualified(qn) => qn.segments.last().map_or("", |s| s.text.as_str()),
             };
 
+            // ── Record-payload union variant: `Login { userId = 1, at = t }`. ─────
+            // Routed before the env/record fallbacks below, which bind the variant
+            // as a nullary `() -> Union` scheme and would drop the record fields.
+            if let Some((owner_tycon, union_params, rec_schema)) =
+                find_record_variant(ctx, ctor_name)
+            {
+                return crate::records::infer_record_variant_construction(
+                    ctx,
+                    b,
+                    &union_params,
+                    &rec_schema,
+                    owner_tycon,
+                    ctor_name,
+                    fields,
+                    *span,
+                );
+            }
+
             // ── Path (b): bare ctor with no fields — try env / prelude first.
             if fields.is_empty() {
                 // Try local env (covers user-defined ctor schemes seeded by collect_user_tycons).
@@ -1142,6 +1191,25 @@ pub fn infer_pattern(ctx: &mut InferCtx, b: &BuiltinTyCons, pat: &Pattern, expec
                         }
                     }
                 }
+                // Record-payload union variant pattern: `Login { userId, .. }`.
+                if let Some((owner_tycon, union_params, rec_schema)) =
+                    find_record_variant(ctx, &name.text)
+                {
+                    crate::records::infer_record_variant_pattern(
+                        ctx,
+                        b,
+                        &union_params,
+                        &rec_schema,
+                        owner_tycon,
+                        &name.text,
+                        field_pats,
+                        *has_rest,
+                        expected_ty,
+                        *span,
+                    );
+                    return;
+                }
+
                 // A record-body pattern whose head is not a record type. If the
                 // head names a type (alias/union used as a constructor) or a
                 // record-style union variant, report it here — the resolver

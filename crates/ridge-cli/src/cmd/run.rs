@@ -21,7 +21,8 @@ use std::process;
 
 use clap::Parser;
 use ridge_driver::{
-    compile_workspace, run_workspace, CompileOptions, Profile, RunError, RunOptions,
+    compile_workspace, run_workspace, select_entry_beam, CompileOptions, Profile, RunError,
+    RunOptions,
 };
 use ridge_manifest::{find_workspace_root, parse_project, parse_workspace, ProjectKind};
 
@@ -268,7 +269,7 @@ fn execute_observer(
     compile_opts.members = Some(vec![member_name.to_owned()]);
     let artefacts = compile_workspace(compile_opts).map_err(|e| {
         eprintln!("error: {e}");
-        CliError::NoWorkspaceRoot
+        CliError::AlreadyReported
     })?;
     if !artefacts.diagnostics.is_empty() {
         render_diagnostics(&artefacts.diagnostics, &artefacts.sources);
@@ -281,7 +282,8 @@ fn execute_observer(
 
     // ── c. Resolve beam_dir and module ────────────────────────────────────────
     let beam_dir = beam_dir_from_artefacts(&artefacts.beam_files);
-    let module_name = module_from_beam(&artefacts.beam_files[0]);
+    let module_name = select_entry_beam(&artefacts.entry_modules, member_name)
+        .unwrap_or_else(|| module_from_beam(&artefacts.beam_files[0]));
 
     // ── d. Print connection info to stderr ────────────────────────────────────
     eprintln!(
@@ -376,9 +378,10 @@ fn execute_watch(
     let grace = Duration::from_secs(2);
 
     // ── a. Initial compile ────────────────────────────────────────────────────
-    let beam_files = compile_for_watch(workspace_root, member_name, profile, &args.extra_args)?;
+    let (beam_files, entry_module) =
+        compile_for_watch(workspace_root, member_name, profile, &args.extra_args)?;
     let beam_dir = beam_dir_from_artefacts(&beam_files);
-    let module_name = module_from_beam(&beam_files[0]);
+    let module_name = entry_module.unwrap_or_else(|| module_from_beam(&beam_files[0]));
 
     let erl_path = which::which("erl").map_err(|_| {
         eprintln!("error: C004 ErlangNotFound: erl not found on PATH");
@@ -463,9 +466,9 @@ fn execute_watch(
         terminate_child(&mut child, grace);
 
         // ── Recompile ─────────────────────────────────────────────────────────
-        let new_beam_files =
+        let (new_beam_files, new_entry_module) =
             match compile_for_watch(workspace_root, member_name, profile, &args.extra_args) {
-                Ok(files) => files,
+                Ok(out) => out,
                 Err(e) => {
                     eprintln!("error: recompile failed: {e}");
                     eprintln!("Watching for changes (will retry on next save).");
@@ -473,14 +476,14 @@ fn execute_watch(
                     // the next iteration has something to kill.
                     child = spawn_noop_child().map_err(|e| {
                         eprintln!("error: cannot spawn sentinel child: {e}");
-                        CliError::NoWorkspaceRoot
+                        CliError::AlreadyReported
                     })?;
                     continue;
                 }
             };
 
         let new_beam_dir = beam_dir_from_artefacts(&new_beam_files);
-        let new_module = module_from_beam(&new_beam_files[0]);
+        let new_module = new_entry_module.unwrap_or_else(|| module_from_beam(&new_beam_files[0]));
 
         // ── Relaunch ──────────────────────────────────────────────────────────
         child = match spawn_beam_child(
@@ -510,29 +513,31 @@ fn execute_watch(
 }
 
 #[cfg(feature = "cli-watch")]
-/// Compile the workspace for watch mode.  Returns the beam file paths or an
-/// error string (diagnostics already printed to stderr).
+/// Compile the workspace for watch mode.  Returns the beam file paths plus the
+/// entry module's BEAM atom (the module carrying `fn main`), or a `CliError`
+/// whose cause was already printed to stderr.
 fn compile_for_watch(
     workspace_root: &Path,
     member_name: &str,
     profile: Profile,
     _extra_args: &[String],
-) -> Result<Vec<PathBuf>, CliError> {
+) -> Result<(Vec<PathBuf>, Option<String>), CliError> {
     let mut opts = CompileOptions::new(workspace_root.to_owned()).with_profile(profile);
     opts.members = Some(vec![member_name.to_owned()]);
     let artefacts = compile_workspace(opts).map_err(|e| {
         eprintln!("error: {e}");
-        CliError::NoWorkspaceRoot
+        CliError::AlreadyReported
     })?;
     if !artefacts.diagnostics.is_empty() {
         render_diagnostics(&artefacts.diagnostics, &artefacts.sources);
-        return Err(CliError::NoWorkspaceRoot);
+        return Err(CliError::AlreadyReported);
     }
     if artefacts.beam_files.is_empty() {
         eprintln!("error: no .beam files produced");
-        return Err(CliError::NoWorkspaceRoot);
+        return Err(CliError::AlreadyReported);
     }
-    Ok(artefacts.beam_files)
+    let entry = select_entry_beam(&artefacts.entry_modules, member_name);
+    Ok((artefacts.beam_files, entry))
 }
 
 #[cfg(feature = "cli-watch")]

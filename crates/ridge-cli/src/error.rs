@@ -190,6 +190,13 @@ pub enum CliError {
         /// The error message the driver reported.
         message: String,
     },
+
+    /// A failure whose specific cause has already been printed to stderr
+    /// (rendered diagnostics, a `no .beam produced` line, an escript packaging
+    /// error, …). Carries only the non-zero exit; the top-level handler prints
+    /// nothing further for it, so a failed build no longer tacks on a spurious
+    /// `C001 NoWorkspaceRoot`.
+    AlreadyReported,
 }
 
 impl fmt::Display for CliError {
@@ -203,6 +210,10 @@ impl fmt::Display for CliError {
                 f,
                 "C001 NoWorkspaceRoot: no workspace manifest found at or above the current directory"
             ),
+            // Never rendered through the top-level handler (main special-cases
+            // it), but give it an honest message in case some other caller
+            // prints it directly.
+            Self::AlreadyReported => write!(f, "build failed"),
             Self::UnknownMember { name } => write!(
                 f,
                 "C005 UnknownMember: workspace has no member named '{name}'"

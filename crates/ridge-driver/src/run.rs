@@ -92,16 +92,23 @@ pub fn run_workspace(options: RunOptions) -> Result<ProcessExitCode, RunError> {
         .unwrap_or_else(|| Path::new("."))
         .to_owned();
 
-    let module_name = options.main_module.as_ref().map_or_else(
-        || {
+    // Pick the entry module in priority order:
+    //   1. an explicit `main_module` override,
+    //   2. the module that actually defines `fn main` (matched to `--member`
+    //      when a workspace has several apps),
+    //   3. the first `.beam` produced — legacy fallback, correct only for a
+    //      single-module program.
+    let module_name = options
+        .main_module
+        .clone()
+        .or_else(|| crate::select_entry_beam(&artefacts.entry_modules, &options.main_member))
+        .unwrap_or_else(|| {
             beam_file
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("ridge_module_0")
                 .to_owned()
-        },
-        std::clone::Clone::clone,
-    );
+        });
 
     // ── 4. Invoke erl ────────────────────────────────────────────────────────
     //

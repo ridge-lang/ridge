@@ -19,7 +19,7 @@ use std::time::Instant;
 
 use clap::Parser;
 use ridge_codegen_erl::escript::package_escript_from_beam_dir;
-use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts, Profile};
+use ridge_driver::{compile_workspace, select_entry_beam, CompileOptions, EmitArtefacts, Profile};
 use ridge_manifest::find_workspace_root;
 
 use crate::error::CliError;
@@ -122,20 +122,27 @@ pub fn execute(args: &BuildArgs, cwd: &Path) -> Result<(), CliError> {
     let start = Instant::now();
     let artefacts = compile_workspace(opts).map_err(|e| {
         eprintln!("error: {e}");
-        // Return a NoWorkspaceRoot so the caller can propagate; the real
-        // error is already printed.
-        CliError::NoWorkspaceRoot
+        // The real cause is already printed; propagate a non-zero exit without
+        // tacking on a second, misleading error.
+        CliError::AlreadyReported
     })?;
 
     // ── 4. Render non-fatal diagnostics ───────────────────────────────────────
     if !artefacts.diagnostics.is_empty() {
         render_diagnostics(&artefacts.diagnostics, &artefacts.sources);
-        return Err(CliError::NoWorkspaceRoot); // non-zero exit on warnings/errors
+        return Err(CliError::AlreadyReported); // non-zero exit on warnings/errors
     }
 
     // ── 5. Emit escript artefact (--bin path) ─────────────────────────────────
     if let Some(bin_member) = &args.bin {
-        emit_escript_artefact(&workspace_root, bin_member, profile, &artefacts.beam_files)?;
+        let entry_module = select_entry_beam(&artefacts.entry_modules, bin_member);
+        emit_escript_artefact(
+            &workspace_root,
+            bin_member,
+            profile,
+            &artefacts.beam_files,
+            entry_module.as_deref(),
+        )?;
     }
 
     // ── 6. Success banner ─────────────────────────────────────────────────────
@@ -163,31 +170,32 @@ fn emit_escript_artefact(
     member: &str,
     profile: Profile,
     beam_files: &[std::path::PathBuf],
+    entry_module: Option<&str>,
 ) -> Result<(), CliError> {
     if beam_files.is_empty() {
         eprintln!("error: no .beam files produced for member '{member}'");
-        return Err(CliError::NoWorkspaceRoot);
+        return Err(CliError::AlreadyReported);
     }
 
     // Locate the beam directory from the first beam file.
     let beam_dir = beam_files[0].parent().ok_or_else(|| {
         eprintln!("error: beam file has no parent directory");
-        CliError::NoWorkspaceRoot
+        CliError::AlreadyReported
     })?;
 
-    // Derive the main BEAM module name from the first beam file stem.
-    // The member's primary module is beam_files[0] (driver orders it first).
-    let main_module = beam_files[0]
-        .file_stem()
-        .and_then(|s| s.to_str())
+    // The escript's boot module is the one that carries `fn main`. Fall back to
+    // the first beam stem only if the entry point could not be identified (a
+    // single-module program, where the first module is the entry by default).
+    let main_module = entry_module
+        .or_else(|| beam_files[0].file_stem().and_then(|s| s.to_str()))
         .unwrap_or(member);
 
     // Package the escript payload.
-    // main_module is the internal BEAM atom (e.g. "module_0").
+    // main_module is the internal BEAM atom (e.g. "ridge_module_0").
     // member is the user-visible escript entry name.
     let payload = package_escript_from_beam_dir(beam_dir, main_module, member).map_err(|e| {
         eprintln!("error: escript packaging failed: {e}");
-        CliError::NoWorkspaceRoot
+        CliError::AlreadyReported
     })?;
 
     // Determine output path: target/ridge/<profile>/<member>.escript
@@ -212,13 +220,13 @@ fn emit_escript_artefact(
             "error: could not create output directory {}: {e}",
             out_dir.display()
         );
-        CliError::NoWorkspaceRoot
+        CliError::AlreadyReported
     })?;
 
     let out_path = out_dir.join(format!("{member}.escript"));
     std::fs::write(&out_path, &payload).map_err(|e| {
         eprintln!("error: could not write escript {}: {e}", out_path.display());
-        CliError::NoWorkspaceRoot
+        CliError::AlreadyReported
     })?;
 
     // On POSIX: set file mode 0755 so it is directly executable.
@@ -228,7 +236,7 @@ fn emit_escript_artefact(
         let perms = std::fs::Permissions::from_mode(0o755);
         std::fs::set_permissions(&out_path, perms).map_err(|e| {
             eprintln!("error: could not set escript permissions: {e}");
-            CliError::NoWorkspaceRoot
+            CliError::AlreadyReported
         })?;
     }
 

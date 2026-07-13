@@ -1096,12 +1096,20 @@ fn scan_interp_body(
                 text_start = i;
             }
             b'\\' => {
-                // Escape sequence inside interp-text.
-                text_buf.push(bytes[i] as char);
+                // Escape sequence inside interp-text. The escaped character may
+                // be a multi-byte UTF-8 scalar (an invalid escape, but the lexer
+                // must not crash on it), so emit the whole scalar and advance by
+                // its byte length — never a single byte, which would leave `i`
+                // inside a scalar and panic the next `src[i..]` slice.
+                text_buf.push('\\');
                 i += 1;
                 if i < bytes.len() {
-                    text_buf.push(bytes[i] as char);
-                    i += 1;
+                    if let Some(ch) = src[i..].chars().next() {
+                        text_buf.push(ch);
+                        i += ch.len_utf8();
+                    } else {
+                        i += 1;
+                    }
                 }
             }
             b'\n' => {
@@ -1313,10 +1321,19 @@ fn scan_interp_triple_body(
                 text_start = i;
             }
             b'\\' if i + 1 < content_end => {
-                // Preserve the escape verbatim; decoding happens downstream.
-                text_buf.push(bytes[i] as char);
-                text_buf.push(bytes[i + 1] as char);
-                i += 2;
+                // Preserve the escape verbatim; decoding happens downstream. The
+                // escaped character may be a multi-byte UTF-8 scalar, so emit the
+                // whole scalar and advance by its byte length rather than a fixed
+                // two bytes, which would split a multi-byte scalar and panic the
+                // next `src[i..]` slice.
+                text_buf.push('\\');
+                i += 1;
+                if let Some(ch) = src[i..].chars().next() {
+                    text_buf.push(ch);
+                    i += ch.len_utf8();
+                } else {
+                    i += 1;
+                }
             }
             b'\n' => {
                 text_buf.push('\n');

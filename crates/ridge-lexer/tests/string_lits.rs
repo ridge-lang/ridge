@@ -511,3 +511,25 @@ fn plain_string_does_not_accept_newline() {
         out.errors
     );
 }
+
+// ── Regression: escape before a multi-byte scalar in an interpolated string ────
+//
+// A backslash followed by a multi-byte UTF-8 scalar inside an interpolated
+// string previously crashed the lexer: the escape branch advanced one byte past
+// the `\` and then sliced `src[i..]` at a position inside the scalar, panicking
+// with "byte index N is not a char boundary". The parser fuzzer found it. The
+// lexer must now emit the whole scalar and stay on a char boundary — for both
+// single-line and triple-quoted interpolation.
+
+#[test]
+fn interp_escape_before_multibyte_does_not_panic() {
+    // Single-line `$"…"`: `\` then a 3-byte, a 4-byte astral, and the exact
+    // high scalar the fuzzer produced.
+    let _ = tokenize("$\"\\\u{6c49}\"");
+    let _ = tokenize("$\"\\\u{1F600}\"");
+    let _ = tokenize("$\"a\\\u{7bd81}b\"");
+    // Triple-quoted `$"""…"""` interpolation with the same escape.
+    let _ = tokenize("$\"\"\"\n\\\u{1F600}\n\"\"\"");
+    // A run of escaped multi-byte scalars must also stay on a boundary.
+    let _ = tokenize("$\"\\\u{1F600}\\\u{6c49}\\\u{7bd81}\"");
+}

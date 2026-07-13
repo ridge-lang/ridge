@@ -1141,6 +1141,7 @@ fn lower_constructor_pattern(
         Some(Binding::Constructor {
             owner_type: owner_sym_id,
             variant,
+            is_record,
             ..
         }) => {
             // OQ-PHASE45-007: resolve SymbolId → TyConId via lookup_constructor_tycon.
@@ -1148,6 +1149,43 @@ fn lower_constructor_pattern(
             let tycon_id = ctx
                 .lookup_constructor_tycon(*owner_sym_id)
                 .unwrap_or(TyConId(0));
+
+            // Record-payload union variant pattern `Login { userId, .. }`:
+            // runtime shape `{'Login', #{userId := U, ..}}`. Nest a Record (map)
+            // pattern in the tagged tuple's single slot so the UnionVariant and
+            // Record codegen arms compose. Mirrors the construction lowering; the
+            // resolver's `is_record` flag distinguishes this from a record *type*
+            // auto-constructor pattern (`Point { x, y }`), which stays a bare map.
+            if !*is_record {
+                if let Some(fps) = fields {
+                    let ir_fields: Vec<(String, IrPat)> = fps
+                        .iter()
+                        .map(|fp| field_pattern_to_pair(ctx, fp))
+                        .collect();
+                    let inner = IrPat::Ctor {
+                        sym: SymbolRef::Constructor {
+                            ctor_kind: CtorKind::Record,
+                            owner_type: tycon_id,
+                            name: name.text.clone(),
+                            variant: 0,
+                        },
+                        fields: ir_fields,
+                        args: vec![],
+                        span,
+                    };
+                    return IrPat::Ctor {
+                        sym: SymbolRef::Constructor {
+                            ctor_kind: CtorKind::UnionVariant,
+                            owner_type: tycon_id,
+                            name: name.text.clone(),
+                            variant: *variant,
+                        },
+                        fields: vec![],
+                        args: vec![inner],
+                        span,
+                    };
+                }
+            }
 
             // Determine CtorKind from the pattern's fields presence: record form
             // (`Foo { x, y }`) → Record, positional form (`Foo a b` or bare
@@ -1462,7 +1500,7 @@ mod tests {
     }
 
     /// Build a `BindingMap` wiring `ctor_span` to `Binding::Constructor { owner_type: SymbolId(0), variant }`.
-    fn ctor_binding_ctx(ctor_span: Span, variant: u32) -> LowerCtx<'static> {
+    fn ctor_binding_ctx(ctor_span: Span, variant: u32, is_record: bool) -> LowerCtx<'static> {
         use ridge_resolve::SymbolId;
 
         let mut nid_map = NodeIdMap::default();
@@ -1472,7 +1510,7 @@ mod tests {
         binding_map[node_id.0 as usize] = Some(Binding::Constructor {
             owner_type: SymbolId(0),
             variant,
-            is_record: false,
+            is_record,
             owner_module: ModuleId(0),
         });
 
@@ -1730,7 +1768,7 @@ mod tests {
     #[test]
     fn lower_match_constructor_positional() {
         let ctor_span = sp_at(5, 9); // span of "Some"
-        let mut ctx = ctor_binding_ctx(ctor_span, 0);
+        let mut ctx = ctor_binding_ctx(ctor_span, 0, false);
 
         let ctor_pat = Pattern::Constructor {
             name: Ident {
@@ -1794,7 +1832,10 @@ mod tests {
     #[test]
     fn lower_match_record_shorthand_field() {
         let ctor_span = sp_at(0, 4); // span of "User"
-        let mut ctx = ctor_binding_ctx(ctor_span, 0);
+                                     // `User { name }` models a record *type* auto-constructor pattern, so the
+                                     // binding carries is_record = true (a bare record-map pattern). A record
+                                     // *variant* (is_record = false) would nest under a tagged tuple instead.
+        let mut ctx = ctor_binding_ctx(ctor_span, 0, true);
 
         let field_span = sp_at(7, 11);
         let fp = FieldPattern {
@@ -1830,6 +1871,87 @@ mod tests {
                         name, inner: None, ..
                     } => assert_eq!(name, "name"),
                     other => panic!("expected Bind {{ name: name, inner: None }}, got {other:?}"),
+                }
+            }
+            other => panic!("expected IrPat::Ctor, got {other:?}"),
+        }
+    }
+
+    // ── Record-payload union variant pattern ──────────────────────────────────
+    //
+    // arm `Login { userId } -> ...`: a record-*variant* pattern (is_record = false)
+    // nests a Record (map) pattern inside the tagged tuple's single positional
+    // slot — shape `{'Login', #{userId := userId}}`. Distinct from a record *type*
+    // pattern, which stays a bare map.
+
+    #[test]
+    fn lower_match_record_variant_nests_under_tag() {
+        let ctor_span = sp_at(0, 5); // span of "Login"
+        let mut ctx = ctor_binding_ctx(ctor_span, 1, false);
+
+        let field_span = sp_at(8, 14);
+        let fp = FieldPattern {
+            name: Ident {
+                text: "userId".into(),
+                span: field_span,
+            },
+            pattern: None, // shorthand
+            span: field_span,
+        };
+
+        let ctor_pat = Pattern::Constructor {
+            name: Ident {
+                text: "Login".into(),
+                span: ctor_span,
+            },
+            fields: Some(vec![fp]),
+            has_rest: true,
+            args: vec![],
+            span: sp_at(0, 20),
+        };
+
+        let ir_pat = lower_pattern_full(&mut ctx, &ctor_pat);
+
+        // Outer: UnionVariant tag with exactly one positional arg (the record map).
+        match ir_pat {
+            IrPat::Ctor {
+                sym, fields, args, ..
+            } => {
+                match sym {
+                    SymbolRef::Constructor {
+                        ctor_kind: CtorKind::UnionVariant,
+                        name,
+                        variant,
+                        ..
+                    } => {
+                        assert_eq!(name, "Login");
+                        assert_eq!(variant, 1, "variant index preserved");
+                    }
+                    other => panic!("expected outer UnionVariant sym, got {other:?}"),
+                }
+                assert!(fields.is_empty(), "outer tag carries no named fields");
+                assert_eq!(args.len(), 1, "outer tag carries the record map as one arg");
+
+                // Inner: Record (map) pattern carrying the named field.
+                match &args[0] {
+                    IrPat::Ctor {
+                        sym: inner_sym,
+                        fields: inner_fields,
+                        args: inner_args,
+                        ..
+                    } => {
+                        assert!(matches!(
+                            inner_sym,
+                            SymbolRef::Constructor {
+                                ctor_kind: CtorKind::Record,
+                                ..
+                            }
+                        ));
+                        assert!(inner_args.is_empty(), "inner record: no positional args");
+                        assert_eq!(inner_fields.len(), 1, "inner record: one named field");
+                        assert_eq!(inner_fields[0].0, "userId");
+                    }
+                    other => panic!("expected inner Record ctor pattern, got {other:?}"),
                 }
             }
             other => panic!("expected IrPat::Ctor, got {other:?}"),

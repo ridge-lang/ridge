@@ -434,21 +434,54 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
                     .lookup_constructor_tycon(*sym_id)
                     .or_else(|| ctx.lookup_tycon_by_name(&ctor_name))
                     .unwrap_or(TyConId(0));
-                let ctor_kind = if *is_record {
-                    ridge_ir::CtorKind::Record
+                if !*is_record && !ir_fields.is_empty() {
+                    // Record-payload union variant `Login { userId = 7, at = t }`.
+                    // Its runtime shape is `{'Login', #{userId => 7, at => t}}` — a
+                    // tagged tuple whose single payload is the record map. Nest the
+                    // fields inside a `Construct { Record }` slot so the existing
+                    // UnionVariant (tagged tuple) and Record (map literal) codegen
+                    // arms compose without a bespoke case. Field order is irrelevant
+                    // because the payload is a map keyed by name.
+                    let inner_id = ctx.fresh_id(None);
+                    let inner = IrExpr::Construct {
+                        id: inner_id,
+                        ctor: SymbolRef::Constructor {
+                            ctor_kind: ridge_ir::CtorKind::Record,
+                            owner_type,
+                            name: ctor_name.clone(),
+                            variant: 0,
+                        },
+                        fields: ir_fields,
+                        span: *span,
+                    };
+                    IrExpr::Construct {
+                        id,
+                        ctor: SymbolRef::Constructor {
+                            ctor_kind: ridge_ir::CtorKind::UnionVariant,
+                            owner_type,
+                            name: ctor_name,
+                            variant: *variant,
+                        },
+                        fields: vec![("0".to_string(), inner)],
+                        span: *span,
+                    }
                 } else {
-                    ridge_ir::CtorKind::UnionVariant
-                };
-                IrExpr::Construct {
-                    id,
-                    ctor: SymbolRef::Constructor {
-                        ctor_kind,
-                        owner_type,
-                        name: ctor_name,
-                        variant: *variant,
-                    },
-                    fields: ir_fields,
-                    span: *span,
+                    let ctor_kind = if *is_record {
+                        ridge_ir::CtorKind::Record
+                    } else {
+                        ridge_ir::CtorKind::UnionVariant
+                    };
+                    IrExpr::Construct {
+                        id,
+                        ctor: SymbolRef::Constructor {
+                            ctor_kind,
+                            owner_type,
+                            name: ctor_name,
+                            variant: *variant,
+                        },
+                        fields: ir_fields,
+                        span: *span,
+                    }
                 }
             } else {
                 // Defensive fallback: no binding map or unrecognised binding.
@@ -5438,6 +5471,83 @@ mod tests {
                 }
                 other => panic!("B-1: expected Constructor(UnionVariant,Info,1), got {other:?}"),
             },
+            other => panic!("expected Construct, got {other:?}"),
+        }
+    }
+
+    /// Record-payload union variant `Login { userId = 7 }` (is_record = false,
+    /// non-empty fields) → outer `Construct { UnionVariant }` whose single payload
+    /// slot holds a nested `Construct { Record }`, so the runtime shape is the
+    /// tagged tuple `{'Login', #{userId => 7}}`.
+    #[test]
+    fn lower_record_variant_construction_nests() {
+        use ridge_ast::{
+            expr::{FieldInit, RecordCtor},
+            Literal,
+        };
+        use ridge_resolve::SymbolId;
+
+        let (mut ctx, ctor_span) = make_binding_ctx(Binding::Constructor {
+            owner_type: SymbolId(0),
+            variant: 1,
+            is_record: false,
+            owner_module: ModuleId(0),
+        });
+
+        let expr = Expr::Record {
+            constructor: RecordCtor::Bare(Ident {
+                text: "Login".into(),
+                span: ctor_span,
+            }),
+            fields: vec![FieldInit {
+                name: Ident {
+                    text: "userId".into(),
+                    span: sp(),
+                },
+                value: Some(Expr::Literal(Literal::IntDec {
+                    raw: "7".into(),
+                    span: sp(),
+                })),
+                span: sp(),
+            }],
+            span: sp_at(10, 30),
+        };
+        let ir = lower_expr(&mut ctx, &expr);
+        assert!(ctx.errors.is_empty(), "errors: {:?}", ctx.errors);
+        match ir {
+            IrExpr::Construct { ctor, fields, .. } => {
+                match ctor {
+                    SymbolRef::Constructor {
+                        ctor_kind: ridge_ir::CtorKind::UnionVariant,
+                        name,
+                        variant,
+                        ..
+                    } => {
+                        assert_eq!(name, "Login");
+                        assert_eq!(variant, 1, "variant index preserved");
+                    }
+                    other => panic!("expected outer UnionVariant, got {other:?}"),
+                }
+                assert_eq!(fields.len(), 1, "outer tag has one payload slot");
+                match &fields[0].1 {
+                    IrExpr::Construct {
+                        ctor: inner_ctor,
+                        fields: inner_fields,
+                        ..
+                    } => {
+                        assert!(matches!(
+                            inner_ctor,
+                            SymbolRef::Constructor {
+                                ctor_kind: ridge_ir::CtorKind::Record,
+                                ..
+                            }
+                        ));
+                        assert_eq!(inner_fields.len(), 1, "inner record: one field");
+                        assert_eq!(inner_fields[0].0, "userId");
+                    }
+                    other => panic!("expected inner Record construct, got {other:?}"),
+                }
+            }
             other => panic!("expected Construct, got {other:?}"),
         }
     }

@@ -12,7 +12,7 @@ use ridge_codegen_erl::{
     codegen_stdlib_module_with_fqn, codegen_workspace, erlc, BuildProfile, CodegenOptions,
 };
 use ridge_diagnostics::Diagnostic;
-use ridge_ir::{IrNodeId, LoweredModule};
+use ridge_ir::{IrItem, IrNodeId, LoweredModule};
 use ridge_lower::lower_workspace;
 use ridge_manifest::find_workspace_root;
 use ridge_resolve::{discover_workspace, resolve_workspace, ModuleId, NodeId, Severity};
@@ -54,6 +54,45 @@ pub struct CompileArtefacts {
     pub sources: WorkspaceSourceCache,
     /// Per-module source maps for the LSP (maps IR node ids to AST node ids).
     pub source_maps: FxHashMap<ModuleId, SourceMap>,
+    /// Every module that defines a top-level `fn main` — the runnable entry
+    /// points. Used to launch the module that actually carries `main` rather
+    /// than the alphabetically-first compiled module. Empty for a library-only
+    /// build.
+    pub entry_modules: Vec<EntryModule>,
+}
+
+/// A module that defines a top-level `fn main`, i.e. a runnable entry point.
+///
+/// `ridge run` and `ridge build --bin` consult this to launch the module that
+/// actually carries `main`, instead of assuming it is the first `.beam`
+/// produced (the modules are ordered by fully-qualified name, so the entry
+/// module is only first by coincidence).
+#[derive(Debug, Clone)]
+pub struct EntryModule {
+    /// The owning project's `[project].name`, so a multi-app workspace can pick
+    /// the entry point that matches the requested `--member`.
+    pub project_name: String,
+    /// The module's fully-qualified name (e.g. `acme.cli.Main`).
+    pub module_fqn: String,
+    /// The BEAM module atom to invoke (e.g. `ridge_module_2`).
+    pub beam_module: String,
+}
+
+/// Pick the entry-point BEAM atom for a run or escript launch.
+///
+/// Prefers the entry module whose project matches `member`; failing that, uses
+/// the sole entry module if there is exactly one. Returns `None` when the
+/// choice is ambiguous (several apps, none matching `member`) or no module
+/// defines `main`, letting the caller fall back to its legacy behaviour.
+#[must_use]
+pub fn select_entry_beam(entries: &[EntryModule], member: &str) -> Option<String> {
+    if let Some(e) = entries.iter().find(|e| e.project_name == member) {
+        return Some(e.beam_module.clone());
+    }
+    if let [only] = entries {
+        return Some(only.beam_module.clone());
+    }
+    None
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -233,6 +272,52 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
         }
     }
 
+    // ── 5b. Entry-point modules (the modules that define `fn main`) ──────────
+    // Record the BEAM atom of every module that carries a top-level `fn main`,
+    // tagged with its project name, so `ridge run` / `ridge build --bin` launch
+    // the real entry point rather than `beam_files[0]` (which is merely the
+    // first module by fully-qualified name).
+    let beam_by_module: FxHashMap<ModuleId, String> = codegen_result
+        .modules
+        .iter()
+        .filter_map(|slot| slot.as_ref())
+        .map(|m| (m.module, m.beam_module_name.clone()))
+        .collect();
+    let mut entry_modules: Vec<EntryModule> = Vec::new();
+    for slot in &lowered.modules {
+        let Some(m) = slot else { continue };
+        let has_main = m
+            .items
+            .iter()
+            .any(|item| matches!(item, IrItem::Fn(f) if f.is_main));
+        if !has_main {
+            continue;
+        }
+        let Some(beam_module) = beam_by_module.get(&m.id).cloned() else {
+            continue;
+        };
+        let (module_fqn, project_name) = resolved
+            .graph
+            .modules
+            .iter()
+            .find(|mm| mm.id == m.id)
+            .map(|mm| {
+                let proj = resolved
+                    .graph
+                    .projects
+                    .get(mm.project.0 as usize)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_default();
+                (mm.fully_qualified_name.clone(), proj)
+            })
+            .unwrap_or_default();
+        entry_modules.push(EntryModule {
+            project_name,
+            module_fqn,
+            beam_module,
+        });
+    }
+
     // Build source cache from the workspace graph — used both here and
     // returned to the caller for rendering.
     let sources = WorkspaceSourceCache::from_workspace(&resolved.graph);
@@ -281,6 +366,7 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
         diagnostics,
         sources,
         source_maps,
+        entry_modules,
     })
 }
 
@@ -496,4 +582,53 @@ fn collect_source_maps(
         maps.insert(m.id, m.source_map.clone());
     }
     maps
+}
+
+#[cfg(test)]
+mod entry_select_tests {
+    use super::{select_entry_beam, EntryModule};
+
+    fn em(project: &str, fqn: &str, beam: &str) -> EntryModule {
+        EntryModule {
+            project_name: project.to_owned(),
+            module_fqn: fqn.to_owned(),
+            beam_module: beam.to_owned(),
+        }
+    }
+
+    #[test]
+    fn prefers_the_entry_module_matching_the_requested_member() {
+        let entries = vec![
+            em("acme.cli", "acme.cli.Main", "ridge_module_1"),
+            em("acme.worker", "acme.worker.Main", "ridge_module_3"),
+        ];
+        assert_eq!(
+            select_entry_beam(&entries, "acme.worker").as_deref(),
+            Some("ridge_module_3")
+        );
+    }
+
+    #[test]
+    fn falls_back_to_the_sole_entry_when_member_does_not_match() {
+        let entries = vec![em("demo", "demo.Main", "ridge_module_1")];
+        // Even a member name that does not match resolves to the only entry.
+        assert_eq!(
+            select_entry_beam(&entries, "something-else").as_deref(),
+            Some("ridge_module_1")
+        );
+    }
+
+    #[test]
+    fn returns_none_when_ambiguous_and_no_member_matches() {
+        let entries = vec![
+            em("acme.cli", "acme.cli.Main", "ridge_module_1"),
+            em("acme.worker", "acme.worker.Main", "ridge_module_3"),
+        ];
+        assert_eq!(select_entry_beam(&entries, "acme.other"), None);
+    }
+
+    #[test]
+    fn returns_none_when_there_is_no_entry_module() {
+        assert_eq!(select_entry_beam(&[], "anything"), None);
+    }
 }

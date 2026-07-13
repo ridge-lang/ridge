@@ -213,3 +213,76 @@ fn path_with_dotdot_traversal_resolves_correctly() {
     assert!(source_root.exists());
     assert_eq!(manifest.name, "sibling");
 }
+
+/// A `{ workspace-member = "<name>" }` dependency resolves a member that lives
+/// nested under a member glob (e.g. `libs/*`), matched by its project name
+/// rather than by an immediate child directory.
+///
+/// Regression: the resolver previously only scanned the workspace root's direct
+/// children, so a member at `libs/domain` (project `shop.domain`) was never
+/// found and the build aborted with `P101 PkgPathManifestMissing`.
+#[test]
+fn workspace_member_dep_resolves_nested_member() {
+    let tmp = TempDir::new().unwrap();
+
+    // Workspace root: members live under libs/* and apps/*.
+    fs::write(
+        tmp.path().join("ridge.toml"),
+        r#"[workspace]
+name    = "shop"
+version = "0.1.0"
+members = ["libs/*", "apps/*"]
+"#,
+    )
+    .unwrap();
+
+    // Nested library member: libs/domain, project name "shop.domain".
+    let domain_dir = tmp.path().join("libs").join("domain");
+    fs::create_dir_all(&domain_dir).unwrap();
+    fs::write(
+        domain_dir.join("ridge.toml"),
+        r#"[project]
+name    = "shop.domain"
+version = "0.1.0"
+kind    = "library"
+"#,
+    )
+    .unwrap();
+
+    // App member: apps/cli depends on the nested library by its project name.
+    let cli_dir = tmp.path().join("apps").join("cli");
+    fs::create_dir_all(&cli_dir).unwrap();
+    let cli_toml_path = cli_dir.join("ridge.toml");
+    fs::write(
+        &cli_toml_path,
+        r#"[project]
+name    = "shop.cli"
+version = "0.1.0"
+kind    = "app"
+entry   = "src/Main.ridge"
+
+[dependencies]
+domain = { workspace-member = "shop.domain" }
+"#,
+    )
+    .unwrap();
+
+    let ws_src = fs::read_to_string(tmp.path().join("ridge.toml")).unwrap();
+    let workspace =
+        ridge_manifest::parse_workspace(&ws_src, &tmp.path().join("ridge.toml")).unwrap();
+    let cli_src = fs::read_to_string(&cli_toml_path).unwrap();
+    let cli_manifest = ridge_manifest::parse_project(&cli_src, &cli_toml_path).unwrap();
+
+    let cache_tmp = TempDir::new().unwrap();
+    let resolved = ridge_pkg::resolve_dependencies(&workspace, &cli_manifest, cache_tmp.path())
+        .expect("workspace-member dep to a nested member must resolve, not P101");
+
+    let domain = resolved
+        .iter()
+        .find(|d| d.name == "domain")
+        .expect("resolved deps should include the `domain` workspace-member");
+    assert_eq!(domain.manifest.name, "shop.domain");
+    assert!(domain
+        .source_root
+        .ends_with(PathBuf::from("libs").join("domain")));
+}

@@ -195,3 +195,33 @@ fn walkdir_collect_ext(root: &Path, ext: &str) -> Vec<std::path::PathBuf> {
     }
     out
 }
+
+// ── Test 6: a failed build does not print a spurious C001 ────────────────────
+
+/// A build that fails because the source has a type error prints the real
+/// diagnostic and exits non-zero — but must NOT tack on a misleading
+/// `C001 NoWorkspaceRoot`, which used to be reused as a generic failure
+/// sentinel for every build error.
+#[test]
+fn build_failure_does_not_report_spurious_c001() {
+    // `Int` annotated, `Text` returned — a type error surfaced at typecheck,
+    // before any OTP/erlc step, so this runs on machines without OTP.
+    let source = "pub fn bad -> Int = \"not an int\"\n";
+    let tw = make_workspace("Bad", source);
+
+    let output = ridge_cmd()
+        .arg("build")
+        .current_dir(&tw.path)
+        .output()
+        .expect("ridge build spawn failed");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "a type error must fail the build.\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("C001") && !stderr.contains("NoWorkspaceRoot"),
+        "a failed build must not report a spurious C001 NoWorkspaceRoot.\nstderr: {stderr}"
+    );
+}

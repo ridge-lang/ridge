@@ -367,36 +367,58 @@ fn clone_git_rev(rev: &ridge_manifest::GitRev) -> ridge_manifest::GitRev {
 /// For 0.1.0, we do a direct directory-name match first (common case), then
 /// fall back to reading each member's `ridge.toml` to match by manifest name.
 fn find_workspace_member(ws_root: &Path, member: &str) -> Result<PathBuf, PkgError> {
-    // Fast path: directory named exactly after the member.
+    // Fast path: a directory named exactly after the member holds its manifest.
     let direct = ws_root.join(member);
     if direct.is_dir() && direct.join("ridge.toml").exists() {
         return Ok(direct);
     }
 
-    // Slow path: scan immediate subdirectories.
-    let read_dir = std::fs::read_dir(ws_root).map_err(|_e| PkgError::PkgPathManifestMissing {
-        path: ws_root.to_owned().join(member),
-    })?;
-
-    for entry in read_dir.flatten() {
-        let dir = entry.path();
-        if !dir.is_dir() {
-            continue;
-        }
-        let candidate_manifest = dir.join("ridge.toml");
-        if !candidate_manifest.exists() {
-            continue;
-        }
-        if let Ok(src) = std::fs::read_to_string(&candidate_manifest) {
-            if let Ok(proj) = ridge_manifest::parse_project(&src, &candidate_manifest) {
-                if proj.name == member {
-                    return Ok(dir);
-                }
-            }
-        }
+    // Members can live at any depth under the workspace root — member globs like
+    // `libs/*` or `apps/*` place them one level below `libs`/`apps`, not as
+    // immediate children of the root. Match by the project's declared `name`
+    // across a depth-bounded walk; the first manifest whose `name` equals
+    // `member` wins.
+    if let Some(dir) = search_member_by_name(ws_root, member, 6) {
+        return Ok(dir);
     }
 
     Err(PkgError::PkgPathManifestMissing {
         path: ws_root.join(member),
     })
+}
+
+/// Depth-bounded search for a directory whose `ridge.toml` declares
+/// `name = member`. Skips `target/`, VCS, and hidden directories so a large
+/// build tree does not dominate the walk.
+fn search_member_by_name(dir: &Path, member: &str, depth: usize) -> Option<PathBuf> {
+    let manifest = dir.join("ridge.toml");
+    if manifest.exists() {
+        if let Ok(src) = std::fs::read_to_string(&manifest) {
+            if let Ok(proj) = ridge_manifest::parse_project(&src, &manifest) {
+                if proj.name == member {
+                    return Some(dir.to_path_buf());
+                }
+            }
+        }
+    }
+    if depth == 0 {
+        return None;
+    }
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let child = entry.path();
+        if !child.is_dir() {
+            continue;
+        }
+        let name = child
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if name == "target" || name == ".git" || name.starts_with('.') {
+            continue;
+        }
+        if let Some(found) = search_member_by_name(&child, member, depth - 1) {
+            return Some(found);
+        }
+    }
+    None
 }

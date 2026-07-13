@@ -12,7 +12,7 @@
 use std::process;
 
 use clap::Parser;
-use ridge_cli::{cmd, Cli, RidgeCommand};
+use ridge_cli::{cmd, Cli, CliError, RidgeCommand};
 
 fn main() {
     let cli = Cli::parse();
@@ -38,7 +38,12 @@ fn main() {
     };
 
     if let Err(e) = result {
-        eprintln!("error: {e}");
+        // `AlreadyReported` means the command already wrote the real cause to
+        // stderr (diagnostics, a specific failure line); just carry the exit
+        // code so we don't append a misleading second error.
+        if !matches!(e, CliError::AlreadyReported) {
+            eprintln!("error: {e}");
+        }
         process::exit(1);
     }
 }

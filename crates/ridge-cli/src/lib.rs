@@ -22,6 +22,8 @@ pub mod error;
 pub mod render;
 pub mod scaffold;
 
+pub use error::CliError;
+
 use clap::{Parser, Subcommand};
 
 // ── Top-level CLI ─────────────────────────────────────────────────────────────

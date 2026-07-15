@@ -770,6 +770,92 @@ fn beam_e2e_if_no_else_as_statement() {
     );
 }
 
+// ── `Ordering` constructors are in scope without an import ────────────────────
+//
+// `Ordering = Less | Equal | Greater` is a prelude builtin (the result type of
+// `compare`), available in every module without an import. Its type name and
+// constructors are registered for type checking, but the resolver did not seed
+// the constructor names, so hand-matching a comparison result — `match compare
+// a b { Less -> … }` — or naming a bare `Less`/`Equal`/`Greater` value failed
+// name resolution with `R010` before type checking ever ran. Nothing in the
+// standard library matches on an `Ordering` (it flows straight into `List.sort`
+// and friends), so no test exercised the path.
+//
+// The constructors lower to the bare atoms `'Less'`/`'Equal'`/`'Greater'` — the
+// exact terms the runtime comparator returns — so a value built here matches a
+// value produced by `compare`. This runs both directions end to end on the BEAM.
+
+const ORDERING_CONSTRUCTORS_SOURCE: &str = r#"
+import std.io as Io
+
+-- Hand-match the result of `compare` (an `Ordering`) without importing anything.
+fn classify (a: Int) (b: Int) -> Text =
+    match compare a b
+        Less    -> "lt"
+        Equal   -> "eq"
+        Greater -> "gt"
+
+-- Round-trip a bare `Ordering` value through a match: the constructor built here
+-- must match the same atom the comparator above produces.
+fn name (o: Ordering) -> Text =
+    match o
+        Less    -> "less"
+        Equal   -> "equal"
+        Greater -> "greater"
+
+fn io main () -> Result Unit Text =
+    Io.println (classify 1 2)
+    Io.println (classify 5 5)
+    Io.println (classify 9 4)
+    Io.println (name Less)
+    Io.println (name Equal)
+    Io.println (name Greater)
+    Ok ()
+"#;
+
+/// Regression: the prelude `Ordering` constructors must resolve in user code so a
+/// comparison result can be matched by hand and a bare `Less`/`Equal`/`Greater`
+/// can be constructed. Both must agree on the runtime representation, so a value
+/// built in `name` matches the atom `compare` returns in `classify`.
+#[test]
+fn beam_e2e_ordering_constructors_resolve_and_match() {
+    let (workspace_root, _td) =
+        make_example_workspace("OrderingCtors", ORDERING_CONSTRUCTORS_SOURCE);
+    let opts = CompileOptions::new(workspace_root);
+    let artefacts =
+        compile_workspace(opts).expect("compile_workspace failed for Ordering constructors");
+
+    assert!(
+        !artefacts.beam_files.is_empty(),
+        "no .beam files produced\ndiagnostics: {:#?}",
+        artefacts.diagnostics
+    );
+
+    let beam_file = &artefacts.beam_files[0];
+    let beam_dir = beam_file.parent().expect("beam file has parent").to_owned();
+    let module_name = beam_file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .expect("beam stem is UTF-8")
+        .to_owned();
+
+    let (stdout, stderr, exit_code) = run_erl(&beam_dir, &module_name, &[]);
+    assert_eq!(
+        exit_code, 0,
+        "erl exited {exit_code}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    let lines: Vec<&str> = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    assert_eq!(
+        lines,
+        vec!["lt", "eq", "gt", "less", "equal", "greater"],
+        "unexpected output; full stdout:\n{stdout}"
+    );
+}
+
 // `std.list.foldRight` is a direct `@ffi("lists", "foldr", 3)` bridge with no
 // argument-adapting wrapper, so its correctness rests on two facts that only a
 // real BEAM run can prove: the uncurried callback the type system requires is

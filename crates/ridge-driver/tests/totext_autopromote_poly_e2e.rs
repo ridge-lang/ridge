@@ -2,14 +2,13 @@
 //! correctly when the argument's `ToText` instance is AUTO-PROMOTED — a bare
 //! `pub fn toText (x: T) -> Text`, with no `instance` and no `deriving`.
 //!
-//! Auto-promoted instances emit no `$inst_ToText_T` dictionary constant: the
-//! method IS the public module function. The monomorphic interpolation path
-//! calls that function directly, but a polymorphic caller threads a dictionary
-//! VALUE, which the solver resolves through `dict_plan_to_expr`. That path used
-//! to emit a reference to the missing `$inst_ToText_T` const and fail to compile
-//! (`E001: malformed IR: Local symbol '$inst_ToText_Widget' not found in
-//! fn-arity table (T8)`). The dictionary is now synthesised inline for
-//! auto-promoted instances, closing over the public function.
+//! Auto-promotion is pure sugar for an explicit `instance ToText T` (spec
+//! §5.6.6): the method lowers to a private `ToText__Widget__toText` fn plus a
+//! public `$inst_ToText_Widget` dictionary constant, exactly like a
+//! hand-written instance. The bare name `toText` is never a module symbol. A
+//! polymorphic caller threads a dictionary VALUE, which the solver resolves
+//! through `dict_plan_to_expr` by referencing that same `$inst_ToText_Widget`
+//! constant — the same path an explicit or derived instance takes.
 //!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 #![cfg(feature = "beam-runtime")]
@@ -21,14 +20,15 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r##"
 -- `Widget` has ToText ONLY via a bare `pub fn toText` (auto-promoted): no
--- `instance`, no `deriving`. So there is no `$inst_ToText_Widget` dictionary.
+-- `instance`, no `deriving`. The promotion still emits a `$inst_ToText_Widget`
+-- dictionary constant, exactly as an explicit instance would.
 pub type Widget = { tag: Text }
 
 pub fn toText (w: Widget) -> Text = Text.concat "W:" w.tag
 
 -- Genuinely polymorphic: inside `label`, `x` is a type variable, so the hole
 -- dispatches through the dict PARAMETER and the caller must supply the Widget
--- dictionary. That dictionary must be synthesised inline from the public fn.
+-- dictionary, resolved by referencing `$inst_ToText_Widget`.
 pub fn label (x: a) -> Text where ToText a = $"[${x}]"
 
 pub fn probe () -> Text = label (Widget { tag = "ok" })
@@ -112,6 +112,6 @@ fn polymorphic_totext_on_autopromoted_type_dispatches() {
 
     assert!(
         stdout.contains("probe=[W:ok]"),
-        "expected `probe=[W:ok]` (label wraps the auto-promoted toText through the synthesised dict)\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        "expected `probe=[W:ok]` (label wraps the auto-promoted toText through the `$inst_ToText_Widget` dictionary)\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

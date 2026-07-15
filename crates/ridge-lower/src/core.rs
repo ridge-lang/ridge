@@ -3043,10 +3043,6 @@ fn class_name_of(ctx: &LowerCtx<'_>, class: ridge_types::ClassId) -> Option<Stri
 /// the prelude `Encode`/`Decode` instances, whose dictionaries are synthesised
 /// inline (see [`crate::prelude_dict`]) because they have no module-level
 /// `$inst_` constant.
-#[expect(
-    clippy::too_many_lines,
-    reason = "flat dispatch over the prelude-codec, prelude-Ord, auto-promoted, and user-instance dictionary cases"
-)]
 pub(crate) fn dict_plan_to_expr(
     ctx: &mut LowerCtx<'_>,
     _class: ridge_types::ClassId,
@@ -3113,24 +3109,13 @@ pub(crate) fn dict_plan_to_expr(
                 return crate::prelude_dict::synth_ord_dict(ctx, span);
             }
 
-            // An auto-promoted instance (a bare `pub fn toText`, lifted by the
-            // collect pass) emits no `$inst_` constant — its method IS the public
-            // module function. A polymorphic `where ToText a` call still needs a
-            // dictionary value, so synthesise it inline, closing over that
-            // function. Without this the `$inst_…` reference below would dangle
-            // (E001: local symbol not found in the fn-arity table).
-            if info.origin == ridge_typecheck::InstanceOrigin::AutoPromoted {
-                if let Some(dict) = crate::prelude_dict::synth_auto_promoted_dict(ctx, &info, span)
-                {
-                    return dict;
-                }
-            }
-
-            // A user-defined instance: reference its module-level `$inst_`
-            // constant. For a hand-written *parametric* instance the constant is
-            // a function of the element dict(s), so apply it to `sub_dicts`
-            // (dict-of-dicts). A non-parametric instance has no sub-dicts and the
-            // bare symbol is the dictionary map.
+            // A user-defined instance — including an auto-promoted `pub fn
+            // toText` (spec §5.6.6), which lowers exactly like an explicit
+            // instance — references its module-level `$inst_` constant. For a
+            // hand-written *parametric* instance the constant is a function of
+            // the element dict(s), so apply it to `sub_dicts` (dict-of-dicts).
+            // A non-parametric instance has no sub-dicts and the bare symbol
+            // is the dictionary map.
             let decl = ctx.workspace.and_then(|ws| ws.tycons.get(tycon.0 as usize));
             let mut type_name =
                 decl.map_or_else(|| format!("TyCon{}", tycon.0), |decl| decl.name.clone());

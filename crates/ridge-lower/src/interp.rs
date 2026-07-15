@@ -64,7 +64,7 @@
 use ridge_ast::{expr::InterpPart, Expr, Span};
 use ridge_ir::{IrExpr, IrLit, SymbolRef};
 use ridge_resolve::NodeKind;
-use ridge_typecheck::{DictPlan, InstanceOrigin};
+use ridge_typecheck::DictPlan;
 use ridge_types::{TyConId, Type, TOTEXT_CLASS};
 
 use crate::core::lower_expr;
@@ -295,21 +295,17 @@ fn wrap_to_text(ctx: &mut LowerCtx<'_>, inner: IrExpr, ty: Option<Type>, span: S
 /// Try to dispatch `toText` for `tycon_id` through the workspace instance
 /// registry.
 ///
-/// Returns `Some(Call)` when the registry has a `ToText` entry for `tycon_id`,
-/// dispatched by how that instance was produced; `None` when the registry is
-/// unavailable (unit tests without the full pipeline) or no instance is
-/// registered. The caller emits `L007` on the `None` branch.
+/// Returns `Some(Call)` when the registry has a `ToText` entry for `tycon_id`;
+/// `None` when the registry is unavailable (unit tests without the full
+/// pipeline) or no instance is registered. The caller emits `L007` on the
+/// `None` branch.
 ///
-/// The dispatch differs by instance origin because the two kinds emit their
-/// method differently:
-///
-/// - **Auto-promoted** (`pub fn toText (x: T) -> Text`) is a real *public*
-///   module function literally named `toText`, so call it directly.
-/// - **Explicit or derived** (`instance ToText T`, `deriving (ToText)`) emit
-///   their method as a *private* `ToText__T__toText`, reachable only through the
-///   public `$inst_ToText_T` dictionary. Dispatch through that dictionary the way
-///   a monomorphic class-method call does — project `toText` and apply it — so it
-///   resolves cross-module too, where the private method fn would not.
+/// Every instance — explicit, derived, or auto-promoted (`pub fn toText (x: T)
+/// -> Text`, spec §5.6.6) — emits its method as a *private*
+/// `ToText__T__toText`, reachable only through the public `$inst_ToText_T`
+/// dictionary. Dispatch through that dictionary the way a monomorphic
+/// class-method call does — project `toText` and apply it — so it resolves
+/// cross-module too, where the private method fn would not.
 fn try_instance_to_text(
     ctx: &mut LowerCtx<'_>,
     inner: &IrExpr,
@@ -320,30 +316,10 @@ fn try_instance_to_text(
     // is released before `dict_plan_to_expr` takes the mutable borrow it needs.
     let inst = ctx.instance_env?.get((TOTEXT_CLASS, tycon_id))?.clone();
 
-    if matches!(inst.origin, InstanceOrigin::AutoPromoted) {
-        // A bare public `toText` in the instance's own module.
-        let owning_module = ridge_resolve::ModuleId(inst.def_module?);
-        let callee_id = ctx.fresh_id(None);
-        let call_id = ctx.fresh_id(None);
-        return Some(IrExpr::Call {
-            id: call_id,
-            callee: Box::new(IrExpr::Symbol {
-                id: callee_id,
-                sym: SymbolRef::External {
-                    module: owning_module,
-                    name: "toText".into(),
-                },
-                span,
-            }),
-            args: vec![inner.clone()],
-            span,
-        });
-    }
-
-    // Explicit or derived: reference the public `$inst_ToText_T` dictionary the
-    // same way a monomorphic class-method call resolves it, then project and
-    // apply its `toText`. A hole is always a concrete, non-parametric type, so
-    // the plan carries no extra head constructors and no sub-dictionaries.
+    // Reference the public `$inst_ToText_T` dictionary the same way a
+    // monomorphic class-method call resolves it, then project and apply its
+    // `toText`. A hole is always a concrete, non-parametric type, so the plan
+    // carries no extra head constructors and no sub-dictionaries.
     let plan = DictPlan::Static {
         class: TOTEXT_CLASS,
         info: Box::new(inst),

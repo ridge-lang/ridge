@@ -43,8 +43,8 @@
 use ridge_ast::{
     decl::{ConstDecl, FnDecl},
     module::Item,
-    typeclass::InstanceDecl,
-    Attribute, Body, Expr, Param, Pattern, Span, Visibility,
+    typeclass::{InstanceDecl, MethodDef},
+    Attribute, Body, Expr, Ident, Param, Pattern, Span, Visibility,
 };
 use ridge_ir::{CtorKind, IrConst, IrExpr, IrFfiFn, IrFn, IrItem, IrLit, IrParam, SymbolRef};
 use ridge_resolve::{NodeId, NodeKind};
@@ -111,6 +111,16 @@ pub fn lower_item_multi(ctx: &mut LowerCtx<'_>, item: &Item) -> Vec<IrItem> {
                     span: decl.span,
                 })];
             }
+            // A qualifying `pub fn toText` is auto-promoted (spec §5.6.6) into
+            // an `instance ToText T`. Lower it exactly like an explicit
+            // instance — a private mangled method fn plus a `$inst_ToText_T`
+            // dictionary constant — rather than a bare module fn, so the bare
+            // name `toText` is never a module symbol: a use-site `toText`
+            // always dispatches through the `ToText` class method, and two
+            // `pub fn toText` for different types in one module coexist.
+            if is_auto_promoted_totext(ctx, decl) {
+                return lower_auto_promoted_totext(ctx, decl);
+            }
             vec![IrItem::Fn(lower_fn(ctx, decl))]
         }
         Item::Actor(decl) => vec![IrItem::Actor(lower_actor(ctx, decl))],
@@ -125,6 +135,124 @@ pub fn lower_item_multi(ctx: &mut LowerCtx<'_>, item: &Item) -> Vec<IrItem> {
         // Class metadata lives in `TypedWorkspace.class_table`.
         Item::Import(_) | Item::ClassDecl(_) => vec![],
     }
+}
+
+/// True when `decl` is a genuinely auto-promoted `pub fn toText` (spec
+/// §5.6.6) — i.e. the workspace's instance registry carries a `ToText`
+/// instance for its parameter type with [`ridge_typecheck::InstanceOrigin::AutoPromoted`].
+///
+/// A `pub fn toText` over a type the prelude already covers (`Int`,
+/// `Decimal`, …) is never promoted — it stays an ordinary function — so
+/// checking the registered instance, rather than the declaration's syntactic
+/// shape alone, is what tells the two apart. `false` when no workspace class
+/// or instance registry is attached (unit-test scaffolding).
+fn is_auto_promoted_totext(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> bool {
+    if !matches!(decl.vis, Visibility::Pub) || decl.name.text != "toText" || decl.params.len() != 1
+    {
+        return false;
+    }
+    let param_ty = match &decl.params[0] {
+        Param::Annotated { ty, .. } | Param::PatternAnnotated { ty, .. } => ty,
+        Param::Bare(_) => return false,
+    };
+    let Some(class_table) = ctx.class_table else {
+        return false;
+    };
+    let Some(instance_env) = ctx.instance_env else {
+        return false;
+    };
+    let Some(totext_id) = class_table.id_by_name("ToText") else {
+        return false;
+    };
+    let Some(tycon_id) = lookup_totext_param_tycon(ctx, param_ty) else {
+        return false;
+    };
+    matches!(
+        instance_env.get((totext_id, tycon_id)),
+        Some(info) if info.origin == ridge_typecheck::InstanceOrigin::AutoPromoted
+    )
+}
+
+/// Resolve a `toText` parameter's AST type to its workspace [`ridge_types::TyConId`],
+/// peeling any `Paren` wrappers first.
+///
+/// Mirrors the concrete-type cases `is_auto_promoted_totext` in
+/// `ridge-typecheck` accepts (`Named` and `Primitive`); every other AST type
+/// form returns `None`.
+fn lookup_totext_param_tycon(
+    ctx: &mut LowerCtx<'_>,
+    ty: &ridge_ast::Type,
+) -> Option<ridge_types::TyConId> {
+    let mut cur = ty;
+    while let ridge_ast::Type::Paren { inner, .. } = cur {
+        cur = inner;
+    }
+    match cur {
+        ridge_ast::Type::Named { name, .. } => ctx.lookup_tycon_by_name(&name.text),
+        ridge_ast::Type::Primitive { name, .. } => {
+            use ridge_ast::PrimitiveType;
+            let type_name = match name {
+                PrimitiveType::Int => "Int",
+                PrimitiveType::Float => "Float",
+                PrimitiveType::Bool => "Bool",
+                PrimitiveType::Text => "Text",
+                PrimitiveType::Unit => "Unit",
+                PrimitiveType::Timestamp => "Timestamp",
+                PrimitiveType::Decimal => "Decimal",
+                PrimitiveType::Uuid => "Uuid",
+                PrimitiveType::Bytes => "Bytes",
+                PrimitiveType::Date => "Date",
+                PrimitiveType::Time => "Time",
+            };
+            ctx.lookup_tycon_by_name(type_name)
+        }
+        _ => None,
+    }
+}
+
+/// Lower a genuinely auto-promoted `pub fn toText` (see
+/// [`is_auto_promoted_totext`]) exactly like an explicit `instance ToText T`.
+///
+/// Synthesises the equivalent [`InstanceDecl`] — one head atom (the fn's own
+/// parameter type) and one method (the fn's own name, params, return type,
+/// and body) — and delegates entirely to [`lower_instance`]. This is what
+/// makes auto-promotion pure sugar: the emitted IR (a private
+/// `ToText__T__toText` fn plus a `$inst_ToText_T` dictionary constant) is
+/// indistinguishable from a hand-written instance, so dispatch never branches
+/// on `InstanceOrigin::AutoPromoted`.
+///
+/// Returns `[]` for the shapes `is_auto_promoted_totext` already rejects
+/// (bare param, no return annotation) — defensive; unreachable once that
+/// guard has passed.
+fn lower_auto_promoted_totext(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> Vec<IrItem> {
+    let Body::Expr(body) = &decl.body else {
+        return vec![];
+    };
+    let Some(param_ty) = decl.params.first().and_then(|p| match p {
+        Param::Annotated { ty, .. } | Param::PatternAnnotated { ty, .. } => Some(ty.clone()),
+        Param::Bare(_) => None,
+    }) else {
+        return vec![];
+    };
+    let Some(ret_ty) = decl.ret.clone() else {
+        return vec![];
+    };
+
+    let synthetic = InstanceDecl {
+        class: Ident::new("ToText", decl.name.span),
+        head: vec![param_ty],
+        constraints: vec![],
+        methods: vec![MethodDef {
+            name: decl.name.clone(),
+            params: decl.params.clone(),
+            ret: ret_ty,
+            body: body.clone(),
+            span: decl.span,
+        }],
+        span: decl.span,
+        doc: None,
+    };
+    lower_instance(ctx, &synthetic)
 }
 
 /// Emit the column-mirror values for a `deriving (Table)` record.

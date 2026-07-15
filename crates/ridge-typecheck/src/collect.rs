@@ -527,8 +527,18 @@ fn collect_auto_promoted_to_text(
         // types only. Keying on the env — rather than a fixed id range — stays
         // correct as builtins are interned past the historical 0..16 block
         // (Decimal and Uuid sit at 51/52). Explicit and derived instances are
-        // registered in later passes, so a hit here can only be a prelude seed.
-        if env.get((totext_id, tycon_id)).is_some() {
+        // registered in later passes, so a non-auto-promoted hit here can only
+        // be a prelude seed.
+        //
+        // A hit whose origin IS `AutoPromoted`, though, is a PRIOR iteration of
+        // this very loop — two `pub fn toText` for the same type in one module.
+        // That must fall through to `env.insert` below so its coherence check
+        // reports the collision (T034) instead of silently keeping only the
+        // first declaration and dropping the second without a diagnostic.
+        if env
+            .get((totext_id, tycon_id))
+            .is_some_and(|existing| existing.origin != InstanceOrigin::AutoPromoted)
+        {
             continue;
         }
 
@@ -538,21 +548,25 @@ fn collect_auto_promoted_to_text(
             continue;
         }
 
-        // Build a synthesized instance with AutoPromoted origin so that a
-        // subsequent explicit `instance ToText T` fires T034 via InstanceEnv::insert.
-        let info = InstanceInfo {
-            def_module: Some(module_id),
-            methods: vec![("toText".to_string(), decl.name.text.clone())],
-            ctx_constraints: vec![],
-            head_var_positions: vec![],
-            origin: InstanceOrigin::AutoPromoted,
-            span: decl.span,
-        };
-
         let type_name = match param_ty {
             AstType::Named { name, .. } => name.text.clone(),
             AstType::Primitive { name, .. } => format!("{name:?}"),
             _ => "<type>".to_string(),
+        };
+
+        // Build a synthesized instance with AutoPromoted origin so that a
+        // subsequent explicit `instance ToText T` fires T034 via InstanceEnv::insert.
+        // The method's impl symbol names the private mangled fn lowering emits
+        // for it (`{Class}__{Type}__{method}`, same convention as an explicit
+        // instance) rather than the bare `toText` — the method is never a bare
+        // module function once promoted.
+        let info = InstanceInfo {
+            def_module: Some(module_id),
+            methods: vec![("toText".to_string(), format!("ToText__{type_name}__toText"))],
+            ctx_constraints: vec![],
+            head_var_positions: vec![],
+            origin: InstanceOrigin::AutoPromoted,
+            span: decl.span,
         };
 
         match env.insert((totext_id, tycon_id), info, "ToText", &type_name) {
@@ -560,6 +574,56 @@ fn collect_auto_promoted_to_text(
             Err(e) => errors.push(e.into_type_error()),
         }
     }
+}
+
+/// True when `decl` is the `pub fn toText (x: T) -> Text` that this pass
+/// promoted into an auto-promoted `instance ToText T` — i.e. it has the
+/// syntactic shape [`collect_auto_promoted_to_text`] requires, *and* `env`
+/// already carries a `ToText` instance for `T` with [`InstanceOrigin::AutoPromoted`].
+///
+/// Checking the registered instance (rather than the syntactic shape alone)
+/// is what distinguishes a genuinely-promoted declaration from a `toText` over
+/// a type the prelude already covers (`Int`, `Decimal`, …), which
+/// [`collect_auto_promoted_to_text`] skips promoting — such a declaration
+/// stays an ordinary function and must keep its ordinary top-level binding.
+///
+/// Called after workspace-level collection has populated `env`. Used by the
+/// SCC pass so a genuinely auto-promoted declaration does not bind the
+/// top-level name `toText`, which would shadow the polymorphic class-method
+/// scheme for every other type in the module.
+pub(crate) fn is_auto_promoted_totext(
+    decl: &ridge_ast::FnDecl,
+    ct: &ClassTable,
+    user_tycon_names: &FxHashMap<String, TyConId>,
+    env: &InstanceEnv,
+) -> bool {
+    use ridge_ast::Visibility;
+
+    if decl.vis != Visibility::Pub || decl.name.text != "toText" || decl.params.len() != 1 {
+        return false;
+    }
+
+    let param_ty = match &decl.params[0] {
+        ridge_ast::decl::Param::Annotated { ty, .. }
+        | ridge_ast::decl::Param::PatternAnnotated { ty, .. } => ty,
+        ridge_ast::decl::Param::Bare(_) => return false,
+    };
+
+    let Some(totext_id) = ct.id_by_name("ToText") else {
+        return false;
+    };
+    let Some(tycon_id) = extract_tycon_id(param_ty, user_tycon_names) else {
+        return false;
+    };
+
+    if !decl.ret.as_ref().is_some_and(is_text_type) {
+        return false;
+    }
+
+    matches!(
+        env.get((totext_id, tycon_id)),
+        Some(info) if info.origin == InstanceOrigin::AutoPromoted
+    )
 }
 
 // ── Derived instance collection ───────────────────────────────────────────────

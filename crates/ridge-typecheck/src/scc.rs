@@ -312,9 +312,18 @@ pub fn tarjan_sccs(graph: &CallGraph) -> Vec<Vec<DeclId>> {
 /// generalises, then attached to `scheme.constraints`. This is the mechanism
 /// by which `fn describe (x: a) -> Text where ToText a` keeps its constraint
 /// in its generalised scheme.
+///
+/// A genuinely auto-promoted `pub fn toText` (§5.6.6) is the exception to the
+/// "bind the name" rule: its scheme is still generalised and, for a
+/// `Body::Expr`, still written to `ctx.schemes_accum` keyed by the body's
+/// `NodeId` — but neither `ctx.env` nor `ctx.name_schemes_accum` gets an entry
+/// under the bare name `toText`, so the low-precedence polymorphic
+/// class-method scheme seeded before SCC processing stays in effect for every
+/// use site. `class_table`/`instance_env` are threaded through only to make
+/// that check.
 #[allow(
     clippy::too_many_arguments,
-    reason = "three pre-SCC env free-var snapshots (ty/cap/row) plus retained constraints"
+    reason = "three pre-SCC env free-var snapshots (ty/cap/row) plus retained constraints and the class/instance registries needed for the auto-promotion check"
 )]
 fn write_back_schemes(
     ctx: &mut InferCtx,
@@ -325,8 +334,10 @@ fn write_back_schemes(
     env_snap_cap: &FxHashSet<CapVid>,
     env_snap_row: &FxHashSet<RowVid>,
     retained_constraints: &[Constraint],
+    class_table: &ClassTable,
+    instance_env: &InstanceEnv,
 ) {
-    let mut generalised: Vec<(&Expr, String, Scheme)> = Vec::new();
+    let mut generalised: Vec<(&Expr, String, Scheme, bool)> = Vec::new();
     for &did in scc {
         let decl = decls[did.0];
         if let Some(fn_ty) = scc_fn_types.remove(&did) {
@@ -341,11 +352,17 @@ fn write_back_schemes(
                 .filter(|c| c.tys.iter().any(|v| scheme.vars.contains(v)))
                 .cloned()
                 .collect();
+            let skip_name_bind = crate::collect::is_auto_promoted_totext(
+                decl,
+                class_table,
+                &ctx.user_tycon_names,
+                instance_env,
+            );
             // Body::Ffi has no expression span to key a scheme entry by.
             // We still bind the name in the env for forward references.
             if let Body::Expr(e) = &decl.body {
-                generalised.push((e, decl.name.text.clone(), scheme));
-            } else {
+                generalised.push((e, decl.name.text.clone(), scheme, skip_name_bind));
+            } else if !skip_name_bind {
                 // Ffi: bind the scheme in the env but skip schemes_accum.
                 ctx.name_schemes_accum
                     .insert(decl.name.text.clone(), scheme.clone());
@@ -353,7 +370,7 @@ fn write_back_schemes(
             }
         }
     }
-    for (body, name, scheme) in generalised {
+    for (body, name, scheme, skip_name_bind) in generalised {
         let (body_span, body_kind) = match body {
             Expr::Block(b) => (b.span, NodeKind::Block),
             Expr::Try { span, .. } => (*span, NodeKind::Try),
@@ -366,8 +383,10 @@ fn write_back_schemes(
         {
             ctx.schemes_accum.insert(nid, scheme.clone());
         }
-        ctx.name_schemes_accum.insert(name.clone(), scheme.clone());
-        ctx.env.bind(name, scheme);
+        if !skip_name_bind {
+            ctx.name_schemes_accum.insert(name.clone(), scheme.clone());
+            ctx.env.bind(name, scheme);
+        }
     }
 }
 
@@ -505,7 +524,19 @@ pub fn typecheck_module_decls(
             };
             scc_fn_types.insert(did, fn_ty.clone());
             scc_spans.insert(did, decl.span);
-            ctx.env.bind(decl.name.text.clone(), monoscheme(fn_ty));
+            // A genuinely auto-promoted `pub fn toText` must not bind the
+            // top-level name `toText` — that would shadow the polymorphic
+            // `ToText` class-method scheme for every other type in the module
+            // (§5.6.6). Its body is still inferred below against `fn_ty` via
+            // `scc_fn_types`; only this monomorphic self-binding is skipped.
+            if !crate::collect::is_auto_promoted_totext(
+                decl,
+                class_table,
+                &ctx.user_tycon_names,
+                instance_env,
+            ) {
+                ctx.env.bind(decl.name.text.clone(), monoscheme(fn_ty));
+            }
 
             // Seed deferred constraints from the `where` clause.
             // For each `where ClassName TyVar`, look up the TyVid allocated
@@ -653,6 +684,8 @@ pub fn typecheck_module_decls(
             &env_snap_cap,
             &env_snap_row,
             &retained,
+            class_table,
+            instance_env,
         );
     }
 

@@ -307,6 +307,77 @@ pub fn apply_external_exports(
     errors
 }
 
+// ── Auto-promotion detection ──────────────────────────────────────────────────
+
+/// True when a `fn` declaration qualifies for `ToText` auto-promotion
+/// (spec §5.6.6): a `pub fn toText` with exactly one parameter of a concrete
+/// named type, returning `Text`.
+///
+/// Mirrors the syntactic conditions in `ridge-typecheck`'s
+/// `collect_auto_promoted_to_text`. A qualifying declaration is an instance
+/// method in disguise, so it is kept out of the module's name-lookup index (see
+/// the `Item::Fn` arm) and a use-site `toText` resolves to the `ToText` class
+/// method instead of this single instance.
+///
+/// Excludes the closed set of scalars the prelude already gives a `ToText`
+/// instance (`Int`, `Float`, `Bool`, `Text`, `Timestamp`, `Ordering`,
+/// `Decimal`, `Uuid`): `collect_auto_promoted_to_text` never promotes a type
+/// the prelude already covers, so a `pub fn toText` over one of them — the
+/// stdlib's own `int.ridge`/`float.ridge`/`decimal.ridge`/`uuid.ridge` wrappers
+/// among them — stays an ordinary function and must stay indexed like one.
+fn is_auto_promoted_totext(d: &ridge_ast::FnDecl) -> bool {
+    use ridge_ast::{decl::Param, PrimitiveType, Type as AstType, Visibility};
+
+    if d.vis != Visibility::Pub || d.name.text != "toText" || d.params.len() != 1 {
+        return false;
+    }
+
+    // The sole parameter must carry an explicit, concrete named type — a type
+    // variable (`Type::Var`) never promotes.
+    let param_ty = match &d.params[0] {
+        Param::Annotated { ty, .. } | Param::PatternAnnotated { ty, .. } => ty,
+        Param::Bare(_) => return false,
+    };
+    let param_is_concrete = match peel_paren_ty(param_ty) {
+        AstType::Named { name, .. } => name.text != "Ordering",
+        AstType::Primitive { name, .. } => !matches!(
+            name,
+            PrimitiveType::Int
+                | PrimitiveType::Float
+                | PrimitiveType::Bool
+                | PrimitiveType::Text
+                | PrimitiveType::Timestamp
+                | PrimitiveType::Decimal
+                | PrimitiveType::Uuid
+        ),
+        _ => false,
+    };
+    if !param_is_concrete {
+        return false;
+    }
+
+    // The return type must be `Text`.
+    matches!(
+        d.ret.as_ref().map(peel_paren_ty),
+        Some(AstType::Primitive {
+            name: ridge_ast::PrimitiveType::Text,
+            ..
+        })
+    ) || matches!(
+        d.ret.as_ref().map(peel_paren_ty),
+        Some(AstType::Named { name, .. }) if name.text == "Text"
+    )
+}
+
+/// Strip any `Paren` wrappers from an AST type, returning the inner type.
+fn peel_paren_ty(ty: &ridge_ast::Type) -> &ridge_ast::Type {
+    let mut cur = ty;
+    while let ridge_ast::Type::Paren { inner, .. } = cur {
+        cur = inner;
+    }
+    cur
+}
+
 // ── TopLevelCollector ─────────────────────────────────────────────────────────
 
 /// Internal visitor that populates a [`SymbolTable`] while detecting R005.
@@ -379,6 +450,16 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
             Item::Import(_) | Item::ClassDecl(_) | Item::InstanceDecl(_) => {}
             Item::Fn(d) => {
                 let vis = resolve_visibility(d.vis, &d.name.text);
+                // A `pub fn toText (x: T) -> Text` is auto-promoted to an
+                // `instance ToText T` (spec §5.6.6); the method is emitted as a
+                // private instance method, not a bare `toText`. Keep such a
+                // declaration out of the name-lookup index so a use-site `toText`
+                // resolves to the polymorphic `ToText` class method rather than
+                // this one type's instance — otherwise it shadows dispatch for
+                // every other type in the module. It still lands in `entries`
+                // (so lowering emits its body and exports see it), mirroring how
+                // record auto-constructors are entries-only.
+                let register_in_index = !is_auto_promoted_totext(d);
                 self.push(
                     d.name.text.clone(),
                     SymbolKind::Fn {
@@ -386,7 +467,7 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
                     },
                     vis,
                     d.span,
-                    true,
+                    register_in_index,
                 );
             }
             Item::Const(d) => {
@@ -1428,6 +1509,80 @@ mod tests {
         );
         // An unknown name has no declaring module.
         assert_eq!(idx.declaring_module("nope"), None);
+    }
+
+    // An auto-promoted `pub fn toText (x: T) -> Text` is kept out of the
+    // name-lookup index so a use-site `toText` resolves to the polymorphic
+    // ToText class method rather than this one instance. It stays in `entries`.
+    #[test]
+    fn auto_promoted_totext_is_entries_only_not_indexed() {
+        let to_text_fn = Item::Fn(FnDecl {
+            attrs: vec![],
+            vis: Visibility::Pub,
+            caps: vec![],
+            name: id("toText"),
+            params: vec![Param::Annotated {
+                name: id("w"),
+                ty: Type::Named {
+                    name: id("Widget"),
+                    span: sp(),
+                },
+                span: sp(),
+            }],
+            ret: Some(Type::Primitive {
+                name: ridge_ast::PrimitiveType::Text,
+                span: sp(),
+            }),
+            constraints: vec![],
+            body: Body::Expr(unit_expr()),
+            span: sp(),
+            doc: None,
+        });
+        let m = module_with(vec![to_text_fn]);
+        let (table, errors) = collect_symbols(ModuleId(0), &m);
+        assert!(errors.is_empty(), "errors: {errors:?}");
+        // Present in entries (so lowering/exports see it)...
+        assert_eq!(table.entries.len(), 1, "toText must be in entries");
+        assert_eq!(table.entries[0].name, "toText");
+        // ...but NOT in the name-lookup index (so it doesn't shadow dispatch).
+        assert!(
+            table.lookup("toText").is_none(),
+            "auto-promoted toText must not be name-lookup-able"
+        );
+    }
+
+    // A `pub fn toText` on a type variable does NOT auto-promote, so it stays
+    // indexed like an ordinary function.
+    #[test]
+    fn totext_on_type_var_is_indexed_normally() {
+        let to_text_fn = Item::Fn(FnDecl {
+            attrs: vec![],
+            vis: Visibility::Pub,
+            caps: vec![],
+            name: id("toText"),
+            params: vec![Param::Annotated {
+                name: id("x"),
+                ty: Type::Var {
+                    name: id("a"),
+                    span: sp(),
+                },
+                span: sp(),
+            }],
+            ret: Some(Type::Primitive {
+                name: ridge_ast::PrimitiveType::Text,
+                span: sp(),
+            }),
+            constraints: vec![],
+            body: Body::Expr(unit_expr()),
+            span: sp(),
+            doc: None,
+        });
+        let m = module_with(vec![to_text_fn]);
+        let (table, _errors) = collect_symbols(ModuleId(0), &m);
+        assert!(
+            table.lookup("toText").is_some(),
+            "a type-variable toText is a normal fn and must be indexed"
+        );
     }
 
     // Test 15: actor with init member — init is NOT added as a handler

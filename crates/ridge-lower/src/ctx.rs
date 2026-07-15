@@ -683,6 +683,21 @@ impl<'tw> LowerCtx<'tw> {
                 }
             }
         }
+        // `Ordering` (Less | Equal | Greater) is a prelude builtin too — the
+        // result type of `compare`, in scope in every module without an import
+        // (spec §5.6.5). Resolve binds its constructors as `StdlibSymbol` like
+        // QExpr, so route them here to Ordering's union: a bare `Less`/`Equal`/
+        // `Greater` (or a pattern over one) lowers to the same nullary
+        // `UnionVariant` codegen already uses for derived `compare`, emitting the
+        // `'Less'`/`'Equal'`/`'Greater'` atom the runtime comparator returns.
+        if let Some(decl) = ws.tycons.get(ws.builtins.ordering.0 as usize) {
+            if let TyConKind::Union(u) = &decl.kind {
+                if let Some((i, v)) = u.variants.iter().enumerate().find(|(_, v)| v.name == name) {
+                    let is_record = matches!(v.kind, VariantPayload::Record(_));
+                    return Some((decl.id, i as u32, is_record));
+                }
+            }
+        }
         None
     }
 

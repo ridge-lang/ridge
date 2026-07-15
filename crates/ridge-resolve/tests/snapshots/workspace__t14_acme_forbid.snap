@@ -21,6 +21,7 @@ WorkspaceSnapshot {
     import_summary: {
         "acme.domain.RegisterUser": [
             "<bare> -> BuiltinStdlib(0)",
+            "<bare> -> BuiltinStdlib(0)",
             "<bare> -> BuiltinStdlib(17)",
             "<bare> -> BuiltinStdlib(22)",
             "<bare> -> BuiltinStdlib(7)",
@@ -28,6 +29,7 @@ WorkspaceSnapshot {
             "Pg -> WorkspaceModule(acme.infra.Postgres)",
         ],
         "acme.infra.Postgres": [
+            "<bare> -> BuiltinStdlib(0)",
             "<bare> -> BuiltinStdlib(0)",
             "<bare> -> BuiltinStdlib(17)",
             "<bare> -> BuiltinStdlib(22)",

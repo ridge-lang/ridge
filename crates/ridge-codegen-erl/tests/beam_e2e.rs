@@ -1495,3 +1495,74 @@ fn beam_e2e_multiline_interpolation_dedents_and_evaluates_holes() {
         "expected the interior newline to survive between the two lines, got:\n{stdout:?}"
     );
 }
+
+// ── Local `var` reassignment ─────────────────────────────────────────────────
+//
+// A `var`-bound local reassigned with `<-` inside a plain (non-actor) fn used
+// to emit Core Erlang whose right-hand side read the *new* SSA name the binder
+// was about to introduce — `let V_Acc1 = V_Acc1 + 10` — instead of the prior
+// version. `ridge check` passed, but the backend rejected the body with
+// `unbound variable`, so the feature was unusable outside actors. The fix
+// lowers the RHS against the pre-assignment scope, so the read resolves to the
+// previous binding and only the new binder advances the index.
+
+const LOCAL_VAR_REASSIGN_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+
+-- A single `<-` in a non-actor fn: the minimal case that used to fail at erlc.
+fn once () -> Int =
+    var acc = 0
+    acc <- acc + 10
+    acc
+
+-- A chain of reassignments. Each RHS reads the accumulator's current value, so
+-- `acc + acc` must resolve both sides to the same prior binding.
+fn running () -> Int =
+    var acc = 1
+    acc <- acc + 4
+    acc <- acc + acc
+    acc <- acc - 2
+    acc
+
+fn io main () -> Result Unit Text =
+    Io.println $"once=${Int.toText (once ())} running=${Int.toText (running ())}"
+    Ok ()
+"#;
+
+/// Regression: a `var` local reassigned with `<-` in a non-actor fn must run
+/// end to end. The RHS of each `<-` reads the accumulator's current SSA
+/// version; before the fix it read the binder's about-to-be-introduced version
+/// and the backend rejected the body with `unbound variable`.
+#[test]
+fn beam_e2e_local_var_reassignment() {
+    let (workspace_root, _td) = make_example_workspace("LocalVar", LOCAL_VAR_REASSIGN_SOURCE);
+    let opts = CompileOptions::new(workspace_root);
+    let artefacts =
+        compile_workspace(opts).expect("compile_workspace failed for local-var regression");
+
+    assert!(
+        !artefacts.beam_files.is_empty(),
+        "no .beam files produced\ndiagnostics: {:#?}",
+        artefacts.diagnostics
+    );
+
+    let beam_file = &artefacts.beam_files[0];
+    let beam_dir = beam_file.parent().expect("beam file has parent").to_owned();
+    let module_name = beam_file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .expect("beam stem is UTF-8")
+        .to_owned();
+
+    let (stdout, stderr, exit_code) = run_erl(&beam_dir, &module_name, &[]);
+    assert_eq!(
+        exit_code, 0,
+        "erl exited {exit_code}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    // once = 0 + 10 = 10; running: 1 -> +4=5 -> +acc(5+5)=10 -> -2 = 8.
+    assert!(
+        stdout.contains("once=10 running=8"),
+        "expected 'once=10 running=8' in stdout, got:\n{stdout}"
+    );
+}

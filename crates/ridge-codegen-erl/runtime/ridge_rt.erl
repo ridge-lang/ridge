@@ -768,7 +768,68 @@ float_parse(B) ->
         catch _:_ -> none end
     end.
 
-float_to_text(F) -> iolist_to_binary(io_lib:format("~p", [F])).
+%% float_to_text/1 — render a Float as human-readable decimal text.
+%%
+%% Erlang's shortest round-trip form switches to exponent notation for values
+%% like 5600.0 (`5.6e3`), which is jarring for the ordinary magnitudes a program
+%% prints (money, counts, ratios). Re-render the shortest digits in positional
+%% decimal when the base-10 exponent is in a readable range, and keep the
+%% exponent form outside it, where a positional string would be unreadable. The
+%% digits are the shortest round-trip set either way, so no precision is lost.
+float_to_text(F) ->
+    Short = iolist_to_binary(io_lib:format("~p", [F])),
+    case binary:split(Short, [<<"e">>, <<"E">>]) of
+        [_] ->
+            Short;
+        [Mant, ExpBin] ->
+            Exp = binary_to_integer(case ExpBin of
+                                        <<"+", P/binary>> -> P;
+                                        _ -> ExpBin
+                                    end),
+            case Exp >= -4 andalso Exp =< 15 of
+                true -> float_positional(Mant, Exp);
+                false -> Short
+            end
+    end.
+
+%% float_positional/2 — lay out the shortest digits of `Mant` x 10^Exp as a
+%% positional decimal, always keeping at least one fractional digit.
+float_positional(Mant, Exp) ->
+    {Sign, Body} =
+        case Mant of
+            <<"-", R/binary>> -> {<<"-">>, R};
+            _ -> {<<>>, Mant}
+        end,
+    {IntPart, FracPart} =
+        case binary:split(Body, <<".">>) of
+            [I] -> {I, <<>>};
+            [I, Fr] -> {I, Fr}
+        end,
+    %% Erlang always writes a fraction (`1.0`), so drop the non-significant
+    %% trailing zeros before laying the digits out.
+    Digits = <<IntPart/binary, (drop_trailing_zeros(FracPart))/binary>>,
+    Point = byte_size(IntPart) + Exp,
+    Len = byte_size(Digits),
+    Out =
+        if
+            Point =< 0 ->
+                <<"0.", (binary:copy(<<"0">>, -Point))/binary, Digits/binary>>;
+            Point >= Len ->
+                <<Digits/binary, (binary:copy(<<"0">>, Point - Len))/binary, ".0">>;
+            true ->
+                <<Left:Point/binary, Right/binary>> = Digits,
+                <<Left/binary, ".", Right/binary>>
+        end,
+    <<Sign/binary, Out/binary>>.
+
+%% drop_trailing_zeros/1 — strip trailing `$0` bytes from a digit binary.
+drop_trailing_zeros(<<>>) -> <<>>;
+drop_trailing_zeros(B) ->
+    L = byte_size(B),
+    case binary:at(B, L - 1) of
+        $0 -> drop_trailing_zeros(binary:part(B, 0, L - 1));
+        _ -> B
+    end.
 
 %% sql_literal/1 — render a SqlValue as an inline SQL literal for the DDL positions a
 %% bind parameter cannot fill (a column DEFAULT, a CHECK literal). A text value is

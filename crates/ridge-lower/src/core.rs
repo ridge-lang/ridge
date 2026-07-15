@@ -2668,20 +2668,37 @@ pub(crate) fn try_lower_classmethod_call(
     let mut pin_ty = classmethod_pin_type(ctx, cid, &method, args);
 
     let is_stdlib_class = stdlib_class_home_module(&class_name).is_some();
+    // The prelude classes carry registered instances (like stdlib classes) but
+    // have no home module. `Decode` is the return-type-directed one — its
+    // instance is chosen by the `Result a Error` result, not the `JsonValue`
+    // argument — so it needs the same return-type pinning as stdlib `fromSql`.
+    let is_prelude_class = matches!(
+        class_name.as_str(),
+        "ToText" | "Eq" | "Ord" | "Encode" | "Decode"
+    );
 
-    // For user-defined classes where no argument pins the constraint (return-
-    // polymorphic methods like `decode`), defer to the generic call path and
-    // its own dict-arg machinery.
-    if pin_ty.is_none() && !is_stdlib_class {
-        return None;
+    // When no argument carries the class variable the method is return-type-
+    // directed: the instance is fixed by the result, not an argument. The
+    // archetypes are stdlib `fromSql (v: SqlValue) -> Result a Error` and the
+    // prelude `decode (v: JsonValue) -> Result a Error`. Derive the pin from the
+    // call's inferred return type by matching a registered instance (a concrete
+    // call site) or the enclosing constraint's forward variable (a polymorphic
+    // one). Without this a monomorphic `decode` call falls through to the generic
+    // dict-passing path below, which has no incoming dict parameter to forward
+    // and reads a garbage local — the `maps:get(decode, ok)` crash that fires
+    // once two `Decode` instances exist in a module.
+    if pin_ty.is_none() && (is_stdlib_class || is_prelude_class) {
+        pin_ty = classmethod_pin_from_return(ctx, cid, span);
     }
 
-    // For stdlib-registered class methods where the argument does not directly
-    // carry the class variable (e.g. `fromSql (v: SqlValue) -> Result a Error`),
-    // try to derive the concrete class type from the call expression's inferred
-    // return type. Walk the return type looking for a known registered instance.
-    if pin_ty.is_none() && is_stdlib_class {
-        pin_ty = stdlib_classmethod_pin_from_return(ctx, cid, span);
+    // Still unpinned: defer to the generic dict-arg path, which threads the
+    // dictionary as a parameter. This catches user-defined classes with no
+    // argument pin and prelude methods whose return pin found no concrete
+    // instance (a polymorphic call site, where the dict is forwarded from the
+    // enclosing scope). Stdlib classes proceed with a `None` pin, which
+    // `resolve_dict_arg` forwards — their generic path is not wired the same way.
+    if pin_ty.is_none() && !is_stdlib_class {
+        return None;
     }
 
     let ir_args: Vec<IrExpr> = args.iter().map(|a| lower_expr(ctx, a)).collect();
@@ -2719,15 +2736,16 @@ pub(crate) fn try_lower_classmethod_call(
     })
 }
 
-/// Derive a pin type for a stdlib class method whose class variable is in the
-/// return type rather than the argument list (e.g. `fromSql (v: SqlValue) -> Result a Error`).
+/// Derive a pin type for a class method whose class variable is in the return
+/// type rather than the argument list — stdlib `fromSql (v: SqlValue) -> Result
+/// a Error` or the prelude `decode (v: JsonValue) -> Result a Error`.
 ///
 /// Reads the inferred return type of the call expression at `call_span`, then
 /// searches the registered instances for this class to find one whose tycon
 /// appears in that return type. Returns `Some(concrete_type)` when exactly one
 /// instance is a candidate; `None` when the return type is unavailable or no
 /// registered instance matches.
-fn stdlib_classmethod_pin_from_return(
+fn classmethod_pin_from_return(
     ctx: &LowerCtx<'_>,
     class: ridge_types::ClassId,
     call_span: Span,
@@ -2740,57 +2758,57 @@ fn stdlib_classmethod_pin_from_return(
         .and_then(|nid| ctx.node_type(nid).cloned())
         .map(|t| deep_peel_alias(&t))?;
 
-    // Walk the registered instances for this class. Each registered instance
-    // is keyed by (class, TyConId). We want the TyConId whose corresponding
-    // base type appears somewhere inside the call's return type.
+    // The dispatch type sits at the top of the return: a bare return is itself
+    // the dispatch type, and a wrapped one carries it as a direct type argument
+    // (`Result payload Error`, `EntitySchema entity`). Consider only those
+    // positions — never a deeper argument. A nested nullary such as the `Int` in
+    // `Result (Box Int) Error` belongs to a parametric payload whose head, not
+    // its argument, is the dispatch type; those payloads defer to the generic
+    // path. Restricting to the top also skips the wrapper constructor itself
+    // (`Result` carries a `Decode` instance, so matching it would misfire).
     let env = ctx.instance_env?;
+    let heads: Vec<TyConId> = match &call_type {
+        Type::Con(head, args) if args.is_empty() => vec![*head],
+        Type::Con(_, args) => args
+            .iter()
+            .filter_map(|arg| match arg {
+                Type::Con(head, head_args) if head_args.is_empty() => Some(*head),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+
+    // A top-level payload with exactly one registered instance (`Event`, `User`)
+    // pins that instance. More than one is ambiguous, and a parametric payload
+    // (`Box Int`) leaves none — both fall through to the polymorphic handling
+    // below, where the generic dict-passing path threads the nested dictionaries.
     let mut candidate: Option<TyConId> = None;
-    for (cid, head) in env.instances.keys() {
-        if *cid != class {
-            continue;
-        }
-        // Check whether a bare nullary application of any of this instance head's
-        // constructors occurs anywhere in the call's return type.
-        for &tycon in head {
-            if type_contains_tycon(&call_type, tycon) {
-                if candidate.is_some() {
-                    // Two candidates — ambiguous, give up.
-                    return None;
-                }
-                candidate = Some(tycon);
+    for head in heads {
+        let has_instance = env
+            .instances
+            .keys()
+            .any(|(cid, instance_head)| *cid == class && instance_head.contains(&head));
+        if has_instance {
+            if candidate.is_some() {
+                return None;
             }
+            candidate = Some(head);
         }
     }
     if let Some(tycon) = candidate {
         return Some(Type::Con(tycon, vec![]));
     }
 
-    // No concrete instance appears in the return type — the call is in a
-    // polymorphic context (e.g. `fromRow` inside `decodePairs … where Row e, Row
-    // f`, whose result is still `Result e Error`). When the enclosing fn carries
-    // several constraints for this class, the return type mentions exactly one of
-    // their variables; pin it so `resolve_dict_arg` forwards the matching incoming
-    // dict rather than defaulting to the first. With one constraint there is no
-    // ambiguity and this stays `None` (the single dict is forwarded regardless).
+    // No top-level payload carries an instance: the dispatch position is a bare
+    // type variable (a polymorphic context such as `fromRow` inside `decodePairs
+    // … where Row e, Row f`, whose result is still `Result e Error`). When the
+    // enclosing fn carries several constraints for this class, the return type
+    // mentions exactly one of their variables; pin it so `resolve_dict_arg`
+    // forwards the matching incoming dict rather than defaulting to the first.
+    // With one constraint there is no ambiguity and this stays `None` (the single
+    // dict is forwarded regardless).
     pin_method_dict_var(ctx, class, &call_type)
-}
-
-/// Return `true` when a bare `Type::Con(needle, [])` (nullary constructor)
-/// occurs anywhere in the type tree of `haystack`.
-fn type_contains_tycon(haystack: &Type, needle: TyConId) -> bool {
-    match haystack {
-        Type::Con(tycon, args) => {
-            *tycon == needle && args.is_empty()
-                || args.iter().any(|a| type_contains_tycon(a, needle))
-        }
-        Type::Tuple(elems) => elems.iter().any(|e| type_contains_tycon(e, needle)),
-        Type::Fn { params, ret, .. } => {
-            params.iter().any(|p| type_contains_tycon(p, needle))
-                || type_contains_tycon(ret, needle)
-        }
-        Type::Alias { body, .. } => type_contains_tycon(body, needle),
-        _ => false,
-    }
 }
 
 /// Augment a receiver type so a multi-parameter class method's context

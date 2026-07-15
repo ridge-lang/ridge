@@ -150,6 +150,38 @@ pub fn main_roundtrip_empty () -> Text =
         Err e -> e.code
 "#;
 
+/// Regression: two return-type-directed `Decode` instances in one module.
+///
+/// `decode : JsonValue -> Result a Error` picks its instance from the result
+/// type, not an argument. With a single such instance the compiler resolved the
+/// dictionary; with two or more, a monomorphic `decode` call fell through to the
+/// generic dict-passing path, which had no incoming dict to forward and read a
+/// garbage local — `maps:get(decode, ok)` crashed with `{badmap,ok}` at runtime.
+/// Both `main_event` and `main_level` decode a concrete type at a monomorphic
+/// site, so this module carries two instances and exercises the trigger.
+///
+/// No `class Decode` redeclaration here (unlike the sources above): the calls
+/// dispatch through the prelude `Decode` class, which is the exact shape the bug
+/// was reported against.
+const SOURCE_TWO_INSTANCES: &str = r#"
+type Event = { kind: Text, at: Int } deriving (Encode, Decode)
+type Level = Info | Warn deriving (Encode, Decode)
+
+fn roundtripEvent (e: Event) -> Result Event Error = decode (encode e)
+fn roundtripLevel (l: Level) -> Result Level Error = decode (encode l)
+
+pub fn main_event () -> Text =
+    match roundtripEvent (Event { kind = "boot", at = 1 })
+        Ok ev -> ev.kind
+        Err er -> er.code
+
+pub fn main_level () -> Text =
+    match roundtripLevel Warn
+        Ok Info -> "info"
+        Ok Warn -> "warn"
+        Err er -> er.code
+"#;
+
 // ── Workspace helpers ─────────────────────────────────────────────────────────
 
 fn write_workspace_source(root: &std::path::Path, source: &str) {
@@ -328,6 +360,33 @@ fn decode_derive_nullary_union() {
     assert!(
         stdout.contains("unknown=decode.unknown_tag"),
         "Unknown tag must yield decode.unknown_tag\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+/// Regression: two return-type-directed `Decode` instances coexist in one
+/// module and both dispatch to the right dictionary at monomorphic call sites.
+#[test]
+fn decode_two_return_directed_instances_dispatch() {
+    let Some((_dir, _cache, beam_dir, module)) = compile_and_find_module(SOURCE_TWO_INSTANCES)
+    else {
+        eprintln!("erl/erlc not on PATH — skipping decode_two_return_directed_instances_dispatch");
+        return;
+    };
+
+    let expr = format!(
+        "io:format(\"event=~s~n\",[{module}:main_event()]), \
+         io:format(\"level=~s~n\",[{module}:main_level()]), \
+         halt()."
+    );
+    let (stdout, stderr) = run_erl(&beam_dir, &expr);
+
+    assert!(
+        stdout.contains("event=boot"),
+        "Event must decode to its own instance (not crash on {{badmap,ok}})\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("level=warn"),
+        "Level must decode to its own instance in the same module\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }
 

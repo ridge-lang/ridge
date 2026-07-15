@@ -856,6 +856,72 @@ fn beam_e2e_ordering_constructors_resolve_and_match() {
     );
 }
 
+// ── `Float.toText` renders ordinary magnitudes without exponent notation ──────
+//
+// Erlang's shortest round-trip float form uses exponent notation for values
+// like 5600.0 (`5.6e3`), which leaked through `Float.toText` and made printed
+// floats (averages, prices, counts) jarring and inconsistent in the same column
+// of output. `Float.toText` now re-renders the shortest digits positionally for
+// a readable exponent range, keeping the round-trip digits intact, so a whole
+// or near-whole float prints as a plain decimal.
+
+const FLOAT_TOTEXT_SOURCE: &str = r#"
+import std.io as Io
+import std.float as Float
+
+fn io main () -> Result Unit Text =
+    Io.println (Float.toText 5600.0)
+    Io.println (Float.toText 90000.0)
+    Io.println (Float.toText 1200.0)
+    Io.println (Float.toText 2965.0)
+    Io.println (Float.toText 0.001)
+    Io.println (Float.toText 3.14159)
+    Io.println (Float.toText (0.0 - 5600.0))
+    Io.println (Float.toText 0.0)
+    Ok ()
+"#;
+
+/// Regression: `Float.toText` must render ordinary-magnitude floats as plain
+/// decimals rather than Erlang's shortest exponent form (`5.6e3`), while keeping
+/// the exact round-trip digits — negative and fractional values included.
+#[test]
+fn beam_e2e_float_totext_avoids_exponent_notation() {
+    let (workspace_root, _td) = make_example_workspace("FloatToText", FLOAT_TOTEXT_SOURCE);
+    let opts = CompileOptions::new(workspace_root);
+    let artefacts =
+        compile_workspace(opts).expect("compile_workspace failed for Float.toText rendering");
+
+    assert!(
+        !artefacts.beam_files.is_empty(),
+        "no .beam files produced\ndiagnostics: {:#?}",
+        artefacts.diagnostics
+    );
+
+    let beam_file = &artefacts.beam_files[0];
+    let beam_dir = beam_file.parent().expect("beam file has parent").to_owned();
+    let module_name = beam_file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .expect("beam stem is UTF-8")
+        .to_owned();
+
+    let (stdout, stderr, exit_code) = run_erl(&beam_dir, &module_name, &[]);
+    assert_eq!(
+        exit_code, 0,
+        "erl exited {exit_code}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    let lines: Vec<&str> = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    assert_eq!(
+        lines,
+        vec!["5600.0", "90000.0", "1200.0", "2965.0", "0.001", "3.14159", "-5600.0", "0.0"],
+        "unexpected output; full stdout:\n{stdout}"
+    );
+}
+
 // `std.list.foldRight` is a direct `@ffi("lists", "foldr", 3)` bridge with no
 // argument-adapting wrapper, so its correctness rests on two facts that only a
 // real BEAM run can prove: the uncurried callback the type system requires is

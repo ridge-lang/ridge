@@ -401,6 +401,9 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
             &symbol_tables,
             &exported_schemes,
         );
+        // A full workspace check interns every module's types exactly once, so
+        // there is nothing to reuse — types are collected fresh.
+        let no_own_tycon_ids = FxHashMap::default();
         let result = typecheck_module_inner(
             rm.id,
             &ast,
@@ -410,6 +413,7 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
             &imported_schemes,
             &workspace_tycon_names,
             &stdlib_tycon_names,
+            &no_own_tycon_ids,
             &mut arena,
             &b,
             Some((&class_table, &instance_env)),
@@ -551,10 +555,46 @@ pub fn typecheck_module_incremental(
     }
     let b = &typed_ws.builtins;
 
-    // The incremental path stays module-local for cross-module seeding (no
-    // imported-type or imported-scheme maps); a full rebuild covers cross-module
-    // changes.
-    let no_imported_tycons = FxHashMap::default();
+    // Recover each module's own type names → real ids from the prior arena,
+    // keyed by the declaring module. This drives two things the incremental
+    // recheck would otherwise get wrong versus a full rebuild.
+    let mut module_tycon_names: Vec<FxHashMap<String, TyConId>> =
+        vec![FxHashMap::default(); ws.modules.len()];
+    for d in &typed_ws.tycons {
+        if let Some(m) = d.def_module_raw {
+            if let Some(slot) = module_tycon_names.get_mut(m as usize) {
+                slot.insert(d.name.clone(), d.id);
+            }
+        }
+    }
+
+    // (1) Reconstruct this module's imported type names the same way a full
+    // check does, so an imported entity resolves to the producer's actual
+    // `TyConId`. With them dropped, the quoted-predicate checker cannot pin an
+    // imported entity (T042) and instance lookups over imported types miss.
+    let symbol_tables: Vec<&ridge_resolve::SymbolTable> =
+        ws.modules.iter().map(|m| &m.symbols).collect();
+    let imported_tycons = crate::cross_module::imported_tycon_names(
+        &rm.imports,
+        &symbol_tables,
+        &module_tycon_names,
+        &module_tycon_names,
+        &typed_ws.stdlib_tycons,
+        b,
+    );
+    // (2) This module's own types keep the ids the prior check assigned them,
+    // so `collect_user_tycons` refreshes them in place instead of appending
+    // duplicate ids that would orphan their derived/collected instances — e.g. a
+    // `deriving (Schema)` type spuriously losing its `HasSchema` instance (T029).
+    let own_tycon_ids = module_tycon_names
+        .get(module_id.0 as usize)
+        .cloned()
+        .unwrap_or_default();
+
+    // Cross-module value schemes are not re-seeded on the incremental path: a
+    // body edit that calls an imported workspace fn resolves the reference
+    // through the retained resolver state, and any change to the callee's own
+    // signature lands on the surface-hash (deep) path instead.
     let no_imported_schemes = FxHashMap::default();
     // The prior arena holds every workspace type, so a name→id map over it lets
     // class-method signatures resolve cross-module type references (e.g. a
@@ -569,10 +609,11 @@ pub fn typecheck_module_incremental(
         &ast,
         rm.node_ids.clone(),
         &rm.imports,
-        &no_imported_tycons,
+        &imported_tycons,
         &no_imported_schemes,
         &global_tycon_names,
         &typed_ws.stdlib_tycons,
+        &own_tycon_ids,
         &mut arena,
         b,
         Some((&typed_ws.class_table, &typed_ws.instance_env)),
@@ -748,6 +789,7 @@ fn typecheck_module_inner(
     imported_schemes: &FxHashMap<String, ridge_types::Scheme>,
     global_tycon_names: &FxHashMap<String, TyConId>,
     stdlib_tycon_names: &FxHashMap<String, TyConId>,
+    own_tycon_ids: &FxHashMap<String, TyConId>,
     arena: &mut TyConArena,
     b: &BuiltinTyCons,
     registries: Option<(
@@ -775,7 +817,8 @@ fn typecheck_module_inner(
     ctx.current_module_raw = Some(id.0);
 
     // Step A: Collect user TyCons and seed env with constructor schemes.
-    let tycon_result = collect_user_tycons(ast, id, arena, b, imported_tycons, &mut ctx);
+    let tycon_result =
+        collect_user_tycons(ast, id, arena, b, imported_tycons, own_tycon_ids, &mut ctx);
     // Populate the user_tycon_names map for ast_type_to_type resolution.
     ctx.user_tycon_names = tycon_result.user_tycon_names;
     // Seed imported type names (cross-module): a local declaration of the same

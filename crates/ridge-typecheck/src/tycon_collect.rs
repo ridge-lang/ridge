@@ -68,6 +68,7 @@ pub fn collect_user_tycons(
     arena: &mut TyConArena,
     b: &BuiltinTyCons,
     imported_tycons: &FxHashMap<String, TyConId>,
+    own_tycon_ids: &FxHashMap<String, TyConId>,
     ctx: &mut InferCtx,
 ) -> TyConCollectResult {
     // ── Pass 1: intern placeholders for every user type name ─────────────────
@@ -81,13 +82,21 @@ pub fn collect_user_tycons(
     // what previously surfaced as `T020 send (\`!\`) on non-actor / found
     // type Con(TyConId(11), [Var(TyVid(0))])` for a perfectly idiomatic
     // forward-referencing actor handle.
+    // `own_tycon_ids` is empty for a full workspace check (types are interned
+    // fresh, once each). It is populated only on an incremental single-module
+    // recheck, where the arena is pre-loaded with every type from the prior
+    // check; there, this module's own type is refreshed in place at its
+    // original id via `arena.overwrite` instead of being appended as a
+    // duplicate at a fresh id — so the derived/collected instances keyed by
+    // that original id keep resolving (otherwise a body edit spuriously loses
+    // e.g. a `deriving (Schema)` type's `HasSchema` instance).
     let mut name_to_id: FxHashMap<String, TyConId> = FxHashMap::default();
     for item in &module.items {
         match item {
             Item::Type(td) => {
                 #[expect(clippy::cast_possible_truncation, reason = "type param count fits u32")]
-                let id = arena.intern(TyConDecl {
-                    id: TyConId(0), // overwritten by intern
+                let decl = TyConDecl {
+                    id: TyConId(0), // overwritten by intern / overwrite
                     name: td.name.text.clone(),
                     arity: td.params.len() as u32,
                     kind: TyConKind::Primitive, // placeholder; replaced in pass 2
@@ -95,11 +104,18 @@ pub fn collect_user_tycons(
                     def_module_raw: Some(module_id.0),
                     opaque: td.opaque,
                     is_anon: false,
-                });
+                };
+                let id = match own_tycon_ids.get(&td.name.text) {
+                    Some(&existing) => {
+                        arena.overwrite(existing, decl);
+                        existing
+                    }
+                    None => arena.intern(decl),
+                };
                 name_to_id.insert(td.name.text.clone(), id);
             }
             Item::Actor(ad) => {
-                let id = arena.intern(TyConDecl {
+                let decl = TyConDecl {
                     id: TyConId(0),
                     name: ad.name.text.clone(),
                     arity: 0,
@@ -108,7 +124,14 @@ pub fn collect_user_tycons(
                     def_module_raw: Some(module_id.0),
                     opaque: false, // actors cannot be opaque
                     is_anon: false,
-                });
+                };
+                let id = match own_tycon_ids.get(&ad.name.text) {
+                    Some(&existing) => {
+                        arena.overwrite(existing, decl);
+                        existing
+                    }
+                    None => arena.intern(decl),
+                };
                 name_to_id.insert(ad.name.text.clone(), id);
             }
             _ => {}

@@ -977,35 +977,45 @@ impl WorkspaceIndex {
         let mi = mid.0 as usize;
         let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
 
-        // The type lives on the narrowest expression-like node (idents do not
-        // carry a written-back type).
-        let (_, type_node, _, expr_span) = self.node_at(
-            uri,
-            offset,
-            &[
-                NodeKind::Expr,
-                NodeKind::Block,
-                NodeKind::Try,
-                NodeKind::Type,
-            ],
-        )?;
-        let ty = self
-            .modules
-            .get(mi)?
-            .node_types
-            .get(type_node.0 as usize)?
-            .as_ref()?;
-        if matches!(ty, ridge_types::Type::Error) {
-            return None;
-        }
-        let type_str = render_type_with(ty, &self.tycons);
-        // The head tycon of the hovered value, used to recognise an insert-shape
-        // companion (which shares its entity's source span, so the decl-based tier
-        // would otherwise card the entity).
-        let head_tycon = match ty {
-            ridge_types::Type::Con(id, _) => Some(*id),
-            _ => None,
-        };
+        // The inferred type lives on the narrowest expression-like node (idents
+        // do not carry a written-back type). A type-position reference — `Book`
+        // in `Repo Book Sqlite`, an annotation, or a type-decl name — matches a
+        // `Type` node that carries no inferred type; that is not a dead end,
+        // because the binding path below cards it from its declaration exactly as
+        // go-to-definition resolves the same node. So a missing node type is
+        // tolerated, and only becomes fatal when there is also no binding to card.
+        let typed = self
+            .node_at(
+                uri,
+                offset,
+                &[
+                    NodeKind::Expr,
+                    NodeKind::Block,
+                    NodeKind::Try,
+                    NodeKind::Type,
+                ],
+            )
+            .and_then(|(_, type_node, _, expr_span)| {
+                let ty = self
+                    .modules
+                    .get(mi)?
+                    .node_types
+                    .get(type_node.0 as usize)?
+                    .as_ref()?;
+                if matches!(ty, ridge_types::Type::Error) {
+                    return None;
+                }
+                // The head tycon of the hovered value, used to recognise an
+                // insert-shape companion (which shares its entity's source span,
+                // so the decl-based tier would otherwise card the entity).
+                let head_tycon = match ty {
+                    ridge_types::Type::Con(id, _) => Some(*id),
+                    _ => None,
+                };
+                Some((render_type_with(ty, &self.tycons), head_tycon, expr_span))
+            });
+        let type_str = typed.as_ref().map_or("", |(s, _, _)| s.as_str());
+        let head_tycon = typed.as_ref().and_then(|(_, h, _)| *h);
 
         // The binding sits on the narrowest name node that carries one: for
         // `Mod.item` (e.g. a qualified stdlib verb `Repo.filter`) that is the whole
@@ -1026,24 +1036,30 @@ impl WorkspaceIndex {
         }) {
             let name = self.text_slice(mi, span);
             return Some((
-                self.hover_markdown(mi, offset, name, Some(binding), &type_str, head_tycon),
+                self.hover_markdown(mi, offset, name, Some(binding), type_str, head_tycon),
                 span,
             ));
         }
 
-        // No binding on any enclosing name node: an identifier still cards through
-        // its type (a record field resolves via its base type in tier 1), and a
-        // literal/expression shows the bare fenced type over its span.
+        // No binding on any enclosing name node. With an inferred type an
+        // identifier still cards through it (a record field resolves via its base
+        // type in tier 1), and a literal/expression shows the bare fenced type
+        // over its span. Without one — an unresolved type reference — there is
+        // nothing left to show.
+        let (type_str, expr_span) = match &typed {
+            Some((s, _, span)) => (s.as_str(), *span),
+            None => return None,
+        };
         if let Some((_, _, _, id_span)) =
             self.node_at(uri, offset, &[NodeKind::Ident, NodeKind::QualifiedName])
         {
             let name = self.text_slice(mi, id_span);
             Some((
-                self.hover_markdown(mi, offset, name, None, &type_str, head_tycon),
+                self.hover_markdown(mi, offset, name, None, type_str, head_tycon),
                 id_span,
             ))
         } else {
-            Some((fenced_ridge(&type_str), expr_span))
+            Some((fenced_ridge(type_str), expr_span))
         }
     }
 
@@ -1126,9 +1142,16 @@ impl WorkspaceIndex {
         }
 
         // Tier 4 — kind-labelled inferred type (locals, params, constructors, or
-        // any name without a reachable decl).
+        // any name without a reachable decl). A type-position reference reaches
+        // here only when it resolved to no workspace/stdlib declaration and thus
+        // carries no inferred type; card the bare name rather than `name : `.
         let kind = self.binding_kind_label(binding, mi);
-        render_hover_card(&format!("{name} : {inferred}"), kind, None)
+        let signature = if inferred.is_empty() {
+            name.to_owned()
+        } else {
+            format!("{name} : {inferred}")
+        };
+        render_hover_card(&signature, kind, None)
     }
 
     /// The kind label for a hovered binding in the fallback tier: a local told

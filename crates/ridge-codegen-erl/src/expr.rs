@@ -813,8 +813,12 @@ fn lower_block_stmts(
                     ..
                 } => {
                     let mangled = name_to_erl_var(name);
-                    let new_idx = scope.bump(name);
+                    // Lower the RHS against the pre-assignment scope. `x <- x + 1`
+                    // must read the current SSA version of `x`, not the one the
+                    // binder is about to introduce, so the value is lowered before
+                    // the bump; only the binder advances the index.
                     let lowered_value = lower_expr_in_scope(value, scope)?;
+                    let new_idx = scope.bump(name);
                     let lowered_rest = lower_block_stmts(rest, scope, span)?;
                     Ok(CErlExpr::Let {
                         var: ssa_var(&mangled, new_idx),

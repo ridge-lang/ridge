@@ -1167,6 +1167,12 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         arity: 2,
         requires_caps: &[],
     },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "ordering_to_text",
+        arity: 1,
+        requires_caps: &[],
+    },
     // ── ridge_rt timestamp (monotonic epoch read) ─────────────────────────────
     FfiAuditEntry {
         beam_module: "ridge_rt",

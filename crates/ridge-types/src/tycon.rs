@@ -96,6 +96,22 @@ impl TyConArena {
     pub fn replace_kind(&mut self, id: TyConId, new_kind: TyConKind) {
         self.decls[id.0 as usize].kind = new_kind;
     }
+
+    /// Overwrites the whole [`TyConDecl`] at `id`, keeping that id.
+    ///
+    /// Used by the incremental single-module recheck: the arena is pre-loaded
+    /// with every type from the prior full check, so re-collecting the edited
+    /// module's own types must refresh them *in place* at their existing id
+    /// rather than appending duplicates at fresh ids — otherwise instances
+    /// keyed by the original id no longer resolve.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id.0` is out of bounds.
+    pub fn overwrite(&mut self, id: TyConId, mut decl: TyConDecl) {
+        decl.id = id;
+        self.decls[id.0 as usize] = decl;
+    }
 }
 
 // ── TyConDecl ─────────────────────────────────────────────────────────────────

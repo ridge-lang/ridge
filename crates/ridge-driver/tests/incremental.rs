@@ -257,6 +257,90 @@ fn body_edit_in_a_typeclass_module_stays_incremental() {
 
 // ── The LSP-facing seeding + source-cache + diagnostics path ──────────────────
 
+// ── Tier-2c: data-layer deriving + quoted predicates on the fast path ──────────
+//
+// A surface-preserving body edit takes the single-module fast path
+// (`typecheck_module_incremental`), which must stay faithful to a full rebuild.
+// Two ridge.data shapes used to break it: a module that *defines* a
+// `deriving (Row, Schema)` entity and uses its derived `HasSchema` instance (the
+// module's own types must keep the ids the instances are keyed by, or the
+// instance is orphaned — a spurious `NoInstance HasSchema`), and a module that
+// *imports* such an entity and runs a quoted predicate over it (the import's
+// real id must be threaded in, or the quote checker can't pin the entity).
+
+const DATA_ENTITIES: &str = "import std.migrate as Migrate\nimport std.schema (schemaOf)\n\npub type Book = { id: Int, title: Text, cents: Int } deriving (Row, Schema)\n\nfn bookWitness () -> Option Book = None\n\npub fn schema () -> List Migration =\n    [ Migrate.migration \"0001\" [ Migrate.createSchema (schemaOf (bookWitness ())) ] ]\n";
+
+const DATA_QUERIES: &str = "import std.data (Sqlite)\nimport std.repo as Repo\nimport std.query (Asc)\nimport proj.Entities (Book)\n\npub fn db allBooks (books: Repo Book Sqlite) -> Result (List Book) Error =\n    books |> Repo.query |> Repo.orderBy Asc (fn (b: Book) -> b.id) |> Repo.toList\n";
+
+fn build_data_ws() -> TempDir {
+    let td = TempDir::new().expect("tempdir");
+    write_file(
+        td.path(),
+        "ridge.toml",
+        "[workspace]\nname = \"inc-ws\"\nversion = \"0.1.0\"\nmembers = [\"libs/*\"]\n",
+    );
+    write_file(
+        td.path(),
+        "libs/proj/ridge.toml",
+        "[project]\nname = \"proj\"\nversion = \"0.1.0\"\nkind = \"library\"\n[capabilities]\nallow = [\"db\"]\n",
+    );
+    write_file(td.path(), "libs/proj/src/Entities.ridge", DATA_ENTITIES);
+    write_file(td.path(), "libs/proj/src/Queries.ridge", DATA_QUERIES);
+    td
+}
+
+#[test]
+fn body_edit_in_deriving_schema_definer_matches_full() {
+    let td = build_data_ws();
+    let mut state = full_state(td.path());
+    assert!(
+        state.type_errors.is_empty(),
+        "seed must be clean, got: {:?}",
+        state.type_errors
+    );
+    let entities = module_id_by_suffix(&state.resolved, ".Entities");
+
+    // A surface-preserving body edit (migration name only) stays on the fast
+    // path; its `HasSchema Book` constraint must still discharge against the
+    // instance keyed by Book's original id.
+    let v2 = DATA_ENTITIES.replace("\"0001\"", "\"0002\"");
+    write_file(td.path(), "libs/proj/src/Entities.ridge", &v2);
+    let recompiled = state.recompile(entities, &v2);
+
+    assert_eq!(
+        recompiled,
+        vec![entities],
+        "a body edit recompiles only itself"
+    );
+    assert_matches_full(&state, td.path());
+}
+
+#[test]
+fn body_edit_with_quoted_predicate_over_import_matches_full() {
+    let td = build_data_ws();
+    let mut state = full_state(td.path());
+    assert!(
+        state.type_errors.is_empty(),
+        "seed must be clean, got: {:?}",
+        state.type_errors
+    );
+    let queries = module_id_by_suffix(&state.resolved, ".Queries");
+
+    // A surface-preserving body edit (predicate binder rename) stays on the fast
+    // path; the imported `Book` id must be threaded in so the quoted predicate
+    // still resolves to an entity.
+    let v2 = DATA_QUERIES.replace("fn (b: Book) -> b.id", "fn (bk: Book) -> bk.id");
+    write_file(td.path(), "libs/proj/src/Queries.ridge", &v2);
+    let recompiled = state.recompile(queries, &v2);
+
+    assert_eq!(
+        recompiled,
+        vec![queries],
+        "a body edit recompiles only itself"
+    );
+    assert_matches_full(&state, td.path());
+}
+
 #[test]
 fn check_workspace_incremental_tracks_buffer_text_and_diagnostics() {
     let td = build_ws(

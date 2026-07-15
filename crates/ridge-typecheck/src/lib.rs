@@ -815,7 +815,7 @@ fn typecheck_module_inner(
     // `deferred_constraints`, which the solver later resolves as Static or Forward.
     if let Some((ct, _)) = registries {
         seed_class_method_schemes(&mut ctx, b, ct, global_tycon_names);
-        seed_prelude_codec_schemes(&mut ctx, b);
+        seed_prelude_class_method_schemes(&mut ctx, b);
         // `SqlValue` is a builtin (#20) for user builds, but the standard
         // library's own build also interns sql.ridge's source `pub type
         // SqlValue` as a distinct tycon. There, the codec/seam method schemes
@@ -1960,24 +1960,100 @@ fn seed_summarizable_scheme(
     );
 }
 
-/// Seed type-environment schemes for the two prelude codec methods (`encode`,
-/// `decode`) so that bare calls work without an inline `class` redeclaration.
+/// Seed type-environment schemes for the five prelude class methods (`toText`,
+/// `eq`, `compare`, `encode`, `decode`) so that bare calls are typed with a
+/// concrete return type without an inline `class` redeclaration.
 ///
-/// `ToText`, `Eq`, and `Ord` are dispatched via language operators (`$"..."`,
-/// `==`, comparison) and do not need an env scheme for bare calls.  `Encode`
-/// and `Decode` have no operator and must be callable by bare name from user
-/// code, so their schemes are seeded here rather than through the AST-driven
-/// `seed_class_method_schemes` path (which requires `ast_param_types` to be
-/// populated, which the prelude registry intentionally leaves empty).
+/// The prelude class registry (`register_prelude_classes`) leaves each method's
+/// `ast_param_types`/`ast_ret_type` empty, so the AST-driven
+/// `seed_class_method_schemes` path skips them. Their schemes are therefore
+/// seeded here by hand.
+///
+/// A bare `compare a b` / `eq a b` / `toText x` still lowers correctly through
+/// the resolver-driven `ClassMethod` dictionary dispatch (`classmethod_binding`
+/// in ridge-lower) whether or not the method is in the type env — the dictionary
+/// is chosen from the argument's type, not the env scheme. But without an env
+/// scheme the *result* stays an unresolved type variable (the identifier lowers
+/// to `Type::Error`, absorbed silently), so a `$"${compare a b}"` interpolation
+/// has no concrete type to dispatch `ToText` on and splices the raw atom. Seeding
+/// `compare -> Ordering`, `eq -> Bool`, `toText -> Text` pins the result so the
+/// interpolation/derived-`ToText` render path fires.
 ///
 /// Schemes:
 ///
-/// - `encode :: ∀a. a → JsonValue where Encode a`
-/// - `decode :: ∀a. JsonValue → Result a Error where Decode a`
-fn seed_prelude_codec_schemes(ctx: &mut crate::ctx::InferCtx, b: &ridge_types::BuiltinTyCons) {
+/// - `toText  :: ∀a. a                    → Text            where ToText a`
+/// - `eq      :: ∀a. a → a                → Bool            where Eq a`
+/// - `compare :: ∀a. a → a                → Ordering        where Ord a`
+/// - `encode  :: ∀a. a                    → JsonValue       where Encode a`
+/// - `decode  :: ∀a. JsonValue           → Result a Error  where Decode a`
+fn seed_prelude_class_method_schemes(
+    ctx: &mut crate::ctx::InferCtx,
+    b: &ridge_types::BuiltinTyCons,
+) {
     use ridge_types::{
-        CapRow, CapabilitySet, Constraint, Scheme, Type, DECODE_CLASS, ENCODE_CLASS,
+        CapRow, CapabilitySet, Constraint, Scheme, Type, DECODE_CLASS, ENCODE_CLASS, EQ_CLASS,
+        ORD_CLASS, TOTEXT_CLASS,
     };
+
+    // ── toText :: ∀a. a → Text where ToText a ────────────────────────────────
+    {
+        let a = ctx.fresh_tyvid();
+        let fn_ty = Type::Fn {
+            params: vec![Type::Var(a)],
+            ret: Box::new(Type::Con(b.text, vec![])),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        ctx.env.bind(
+            "toText".to_owned(),
+            Scheme {
+                vars: vec![a],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: fn_ty,
+                constraints: vec![Constraint::single(TOTEXT_CLASS, a)],
+            },
+        );
+    }
+
+    // ── eq :: ∀a. a → a → Bool where Eq a ────────────────────────────────────
+    {
+        let a = ctx.fresh_tyvid();
+        let fn_ty = Type::Fn {
+            params: vec![Type::Var(a), Type::Var(a)],
+            ret: Box::new(Type::Con(b.bool, vec![])),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        ctx.env.bind(
+            "eq".to_owned(),
+            Scheme {
+                vars: vec![a],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: fn_ty,
+                constraints: vec![Constraint::single(EQ_CLASS, a)],
+            },
+        );
+    }
+
+    // ── compare :: ∀a. a → a → Ordering where Ord a ──────────────────────────
+    {
+        let a = ctx.fresh_tyvid();
+        let fn_ty = Type::Fn {
+            params: vec![Type::Var(a), Type::Var(a)],
+            ret: Box::new(Type::Con(b.ordering, vec![])),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        ctx.env.bind(
+            "compare".to_owned(),
+            Scheme {
+                vars: vec![a],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: fn_ty,
+                constraints: vec![Constraint::single(ORD_CLASS, a)],
+            },
+        );
+    }
 
     // ── encode :: ∀a. a → JsonValue where Encode a ───────────────────────────
     {
@@ -2025,7 +2101,7 @@ fn seed_prelude_codec_schemes(ctx: &mut crate::ctx::InferCtx, b: &ridge_types::B
 
 /// Seed env schemes for std.sql's `toSql`/`fromSql` codec methods so bare calls
 /// type-check once `std.sql` is imported (the resolver gates the names). Mirrors
-/// `seed_prelude_codec_schemes` but for the dynamically-registered `SqlType`
+/// `seed_prelude_class_method_schemes` but for the dynamically-registered `SqlType`
 /// class, whose id is looked up from the class table. Skipped when `SqlType` is
 /// absent (empty registries / LSP hot path).
 ///

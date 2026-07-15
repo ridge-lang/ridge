@@ -31,7 +31,7 @@
     sql_literal/1, sql_value_source/1,
     text_split_all/2, text_replace_all/3, text_join/2, text_slice/3,
     text_like/2,
-    list_fold/3, list_sort_by/2, list_sort_cmp/2, ord_compare_native/2,
+    list_fold/3, list_sort_by/2, list_sort_cmp/2, ord_compare_native/2, ordering_to_text/1,
     random_int/2, random_choice/1, random_float/1, random_alphanumeric/1, random_seed/1,
     env_get/1, env_all/1, env_set/2,
     proc_run/2,
@@ -882,6 +882,13 @@ list_sort_by(Key, List) ->
 ord_compare_native(A, B) when A < B -> 'Less';
 ord_compare_native(A, B) when A > B -> 'Greater';
 ord_compare_native(_, _) -> 'Equal'.
+
+%% ordering_to_text/1 — the `toText` for the built-in `Ordering`. Renders the
+%% Ordering atom that `ord_compare_native` and a derived `compare` produce, so
+%% interpolating or deriving ToText over an Ordering value prints its name.
+ordering_to_text('Less')    -> <<"Less">>;
+ordering_to_text('Equal')   -> <<"Equal">>;
+ordering_to_text('Greater') -> <<"Greater">>.
 
 %% list_sort_cmp/2 — std.list.sort / sortBy dispatched through Ord. `Cmp` is the
 %% element type's `compare` (closed over any key extractor); it answers a Ridge

@@ -2668,20 +2668,37 @@ pub(crate) fn try_lower_classmethod_call(
     let mut pin_ty = classmethod_pin_type(ctx, cid, &method, args);
 
     let is_stdlib_class = stdlib_class_home_module(&class_name).is_some();
+    // The prelude classes carry registered instances (like stdlib classes) but
+    // have no home module. `Decode` is the return-type-directed one — its
+    // instance is chosen by the `Result a Error` result, not the `JsonValue`
+    // argument — so it needs the same return-type pinning as stdlib `fromSql`.
+    let is_prelude_class = matches!(
+        class_name.as_str(),
+        "ToText" | "Eq" | "Ord" | "Encode" | "Decode"
+    );
 
-    // For user-defined classes where no argument pins the constraint (return-
-    // polymorphic methods like `decode`), defer to the generic call path and
-    // its own dict-arg machinery.
-    if pin_ty.is_none() && !is_stdlib_class {
-        return None;
+    // When no argument carries the class variable the method is return-type-
+    // directed: the instance is fixed by the result, not an argument. The
+    // archetypes are stdlib `fromSql (v: SqlValue) -> Result a Error` and the
+    // prelude `decode (v: JsonValue) -> Result a Error`. Derive the pin from the
+    // call's inferred return type by matching a registered instance (a concrete
+    // call site) or the enclosing constraint's forward variable (a polymorphic
+    // one). Without this a monomorphic `decode` call falls through to the generic
+    // dict-passing path below, which has no incoming dict parameter to forward
+    // and reads a garbage local — the `maps:get(decode, ok)` crash that fires
+    // once two `Decode` instances exist in a module.
+    if pin_ty.is_none() && (is_stdlib_class || is_prelude_class) {
+        pin_ty = classmethod_pin_from_return(ctx, cid, span);
     }
 
-    // For stdlib-registered class methods where the argument does not directly
-    // carry the class variable (e.g. `fromSql (v: SqlValue) -> Result a Error`),
-    // try to derive the concrete class type from the call expression's inferred
-    // return type. Walk the return type looking for a known registered instance.
-    if pin_ty.is_none() && is_stdlib_class {
-        pin_ty = stdlib_classmethod_pin_from_return(ctx, cid, span);
+    // Still unpinned: defer to the generic dict-arg path, which threads the
+    // dictionary as a parameter. This catches user-defined classes with no
+    // argument pin and prelude methods whose return pin found no concrete
+    // instance (a polymorphic call site, where the dict is forwarded from the
+    // enclosing scope). Stdlib classes proceed with a `None` pin, which
+    // `resolve_dict_arg` forwards — their generic path is not wired the same way.
+    if pin_ty.is_none() && !is_stdlib_class {
+        return None;
     }
 
     let ir_args: Vec<IrExpr> = args.iter().map(|a| lower_expr(ctx, a)).collect();
@@ -2719,15 +2736,16 @@ pub(crate) fn try_lower_classmethod_call(
     })
 }
 
-/// Derive a pin type for a stdlib class method whose class variable is in the
-/// return type rather than the argument list (e.g. `fromSql (v: SqlValue) -> Result a Error`).
+/// Derive a pin type for a class method whose class variable is in the return
+/// type rather than the argument list — stdlib `fromSql (v: SqlValue) -> Result
+/// a Error` or the prelude `decode (v: JsonValue) -> Result a Error`.
 ///
 /// Reads the inferred return type of the call expression at `call_span`, then
 /// searches the registered instances for this class to find one whose tycon
 /// appears in that return type. Returns `Some(concrete_type)` when exactly one
 /// instance is a candidate; `None` when the return type is unavailable or no
 /// registered instance matches.
-fn stdlib_classmethod_pin_from_return(
+fn classmethod_pin_from_return(
     ctx: &LowerCtx<'_>,
     class: ridge_types::ClassId,
     call_span: Span,

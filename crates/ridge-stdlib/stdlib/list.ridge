@@ -76,6 +76,12 @@ pub fn concat (xs: List a) (ys: List a) -> List a
 @ffi("ridge_rt", "ord_compare_native", 2)
 fn _ordCompareNative (a: a) (b: a) -> Ordering
 
+-- Internal: the `toText` for the built-in `Ordering`. Renders "Less"/"Equal"/
+-- "Greater". String interpolation and derived ToText dispatch here for an
+-- Ordering value, which has no stdlib module of its own.
+@ffi("ridge_rt", "ordering_to_text", 1)
+fn _orderingToText (o: Ordering) -> Text
+
 -- Internal: sort by an explicit Ordering comparator (lists:sort/2 under the
 -- hood). `cmp x y` answers where `x` falls relative to `y`, so an element sorts
 -- before another when the comparison is not `Greater`.

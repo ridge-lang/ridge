@@ -87,6 +87,8 @@ const TIMESTAMP_TYCON: TyConId = TyConId(5);
 const DECIMAL_TYCON: TyConId = TyConId(51);
 /// `Uuid` — `TyConId(52)` (interned after the 0–16 builtins).
 const UUID_TYCON: TyConId = TyConId(52);
+/// `Ordering` — `TyConId(15)`. The built-in result of `compare`.
+const ORDERING_TYCON: TyConId = TyConId(15);
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -231,6 +233,14 @@ fn wrap_to_text(ctx: &mut LowerCtx<'_>, inner: IrExpr, ty: Option<Type>, span: S
         // ── Type::Uuid — std.uuid.toText ─────────────────────────────────────
         Some(Type::Con(id, _)) if id == UUID_TYCON => {
             make_to_text_call(ctx, inner, "std.uuid", span)
+        }
+
+        // ── Type::Ordering — the built-in `compare` result ───────────────────
+        // Renders the `Less`/`Equal`/`Greater` atom via the runtime helper.
+        // Ordering has no stdlib module, so it does not go through the generic
+        // `std.<x>.toText` path; without this arm the raw atom is spliced.
+        Some(Type::Con(id, _)) if id == ORDERING_TYCON => {
+            make_ordering_to_text_call(ctx, inner, span)
         }
 
         // ── Type::Error — absorbing; pass through without wrapping ────────────
@@ -426,6 +436,7 @@ fn try_dict_to_text(ctx: &mut LowerCtx<'_>, inner: &IrExpr, span: Span) -> Optio
 /// | 5 (Timestamp) | `std.time.toText`    |
 /// | 51 (Decimal)  | `std.decimal.toText` |
 /// | 52 (Uuid)     | `std.uuid.toText`    |
+/// | 15 (Ordering) | `std.list._orderingToText` |
 /// | other     | identity — no known stdlib dispatch; field rendered as-is |
 ///
 /// For user-defined types the derived instance lowering emits an identity
@@ -449,6 +460,8 @@ pub(crate) fn wrap_to_text_by_tycon(
         make_to_text_call(ctx, arg, "std.decimal", span)
     } else if tycon_id == UUID_TYCON {
         make_to_text_call(ctx, arg, "std.uuid", span)
+    } else if tycon_id == ORDERING_TYCON {
+        make_ordering_to_text_call(ctx, arg, span)
     } else {
         // Text (TyConId 3) and all user-defined types: identity.
         arg
@@ -472,6 +485,35 @@ pub(crate) fn make_to_text_call(
         sym: SymbolRef::Stdlib {
             module: module.into(),
             name: "toText".into(),
+        },
+        span,
+    });
+    IrExpr::Call {
+        id: call_id,
+        callee,
+        args: vec![arg],
+        span,
+    }
+}
+
+/// Build `Call(Stdlib { "std.list", "_orderingToText" }, [arg])`.
+///
+/// `Ordering` is a builtin with no stdlib module, so its `toText` cannot go
+/// through the `std.<x>.toText` convention. It renders through a private
+/// `std.list` helper that closes over the runtime `ordering_to_text`, the same
+/// module that already hosts the native `compare` (`_ordCompareNative`).
+pub(crate) fn make_ordering_to_text_call(
+    ctx: &mut LowerCtx<'_>,
+    arg: IrExpr,
+    span: Span,
+) -> IrExpr {
+    let callee_id = ctx.fresh_id(None);
+    let call_id = ctx.fresh_id(None);
+    let callee = Box::new(IrExpr::Symbol {
+        id: callee_id,
+        sym: SymbolRef::Stdlib {
+            module: "std.list".into(),
+            name: "_orderingToText".into(),
         },
         span,
     });

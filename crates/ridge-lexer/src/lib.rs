@@ -87,7 +87,14 @@ pub fn tokenize(src: &str) -> LexOutput {
 }
 
 /// Normalise `\r\n` → `\n` and bare `\r` → `\n`.
-fn normalise_line_endings(src: &str) -> String {
+///
+/// This is the canonical line-ending normalisation the lexer applies before
+/// scanning, so **every span offset the compiler produces is measured against
+/// the normalised text**. Any consumer that maps those spans back onto source
+/// text (e.g. the diagnostic renderer) must normalise the same way first, or a
+/// `\r` that the spans do not account for shifts every offset past it.
+#[must_use]
+pub fn normalise_line_endings(src: &str) -> String {
     let mut out = String::with_capacity(src.len());
     let mut chars = src.chars().peekable();
     while let Some(ch) = chars.next() {

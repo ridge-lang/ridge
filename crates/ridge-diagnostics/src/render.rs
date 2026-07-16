@@ -25,29 +25,69 @@ struct AriadneCacheAdapter {
     parsed: HashMap<String, Source>,
     /// Display names keyed by source ID string.
     names: HashMap<String, String>,
+    /// Per source, the byte offset at which each character starts, in order.
+    ///
+    /// ariadne indexes labels by character (Unicode-scalar) offset, not byte
+    /// offset, so our byte-offset [`Span`](ridge_ast::Span)s must be converted
+    /// before they are handed to a label. This table lets that conversion run
+    /// as a binary search instead of rescanning the source for every label.
+    char_starts: HashMap<String, Vec<u32>>,
 }
 
 impl AriadneCacheAdapter {
     /// Construct an adapter from a list of diagnostics and a [`SourceCache`].
     ///
     /// All source IDs referenced by `diagnostics` are resolved up front.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "source files are bounded to 4 GiB, matching the u32 span offsets"
+    )]
     fn from_diagnostics(diagnostics: &[Diagnostic], cache: &dyn SourceCache) -> Self {
         let mut parsed = HashMap::new();
         let mut names = HashMap::new();
+        let mut char_starts: HashMap<String, Vec<u32>> = HashMap::new();
         for diag in diagnostics {
             let key = diag.source_id.as_str().to_owned();
-            if !parsed.contains_key(&key) {
-                let text = cache.fetch(&diag.source_id).unwrap_or("").to_owned();
-                let name = cache.display_name(&diag.source_id).to_owned();
-                parsed.insert(key.clone(), Source::from(text));
-                names.insert(key, name);
+            if parsed.contains_key(&key) {
+                continue;
             }
-            // Also pre-populate for note spans.
-            for note in &diag.notes {
-                let _ = note; // notes share the same source_id as the parent
-            }
+            // A genuinely missing source stays unregistered so ariadne fails to
+            // fetch and the caller renders the context-less fallback.
+            let Some(raw) = cache.fetch(&diag.source_id) else {
+                continue;
+            };
+            // Span offsets are measured against the lexer's line-ending
+            // normalisation, so the text ariadne renders (and the char-offset
+            // table below) must be normalised the same way — otherwise a `\r`
+            // the spans don't account for shifts every label past it.
+            let text = ridge_lexer::normalise_line_endings(raw);
+            let name = cache.display_name(&diag.source_id).to_owned();
+            char_starts.insert(
+                key.clone(),
+                text.char_indices().map(|(i, _)| i as u32).collect(),
+            );
+            parsed.insert(key.clone(), Source::from(text));
+            names.insert(key, name);
         }
-        Self { parsed, names }
+        Self {
+            parsed,
+            names,
+            char_starts,
+        }
+    }
+
+    /// Convert a byte offset into the character offset ariadne expects.
+    ///
+    /// Returns the number of characters that start before `byte`. A byte at or
+    /// past end-of-source clamps to the total character count; a byte that lands
+    /// inside a multi-byte character resolves to the next character boundary
+    /// (spans always sit on boundaries, so this is only a safety net). When the
+    /// source is unavailable the byte offset is passed through unchanged — the
+    /// render is context-less in that case anyway.
+    fn char_offset(&self, id: &SourceId, byte: usize) -> usize {
+        self.char_starts.get(id.as_str()).map_or(byte, |starts| {
+            starts.partition_point(|&start| (start as usize) < byte)
+        })
     }
 }
 
@@ -168,8 +208,11 @@ pub fn render_with_ariadne(
 
         let title = format!("[{}] {}", diag.code, diag.primary_message);
         let source_id = diag.source_id.clone();
-        let primary_span_start = diag.primary_span.start as usize;
-        let primary_span_end = diag.primary_span.end as usize;
+        // ariadne indexes labels by character offset, but our spans are byte
+        // offsets — convert, or any multi-byte UTF-8 before a span drifts the
+        // underline forward (a byte offset outruns its character offset).
+        let primary_span_start = adapter.char_offset(&source_id, diag.primary_span.start as usize);
+        let primary_span_end = adapter.char_offset(&source_id, diag.primary_span.end as usize);
 
         // ariadne 0.6: `Report::build` takes the full span tuple `(Id, Range)`
         // rather than the (kind, id, offset) triple used in 0.4.
@@ -190,13 +233,12 @@ pub fn render_with_ariadne(
             } else {
                 Color::Primary
             };
+            let note_start = adapter.char_offset(&diag.source_id, note.span.start as usize);
+            let note_end = adapter.char_offset(&diag.source_id, note.span.end as usize);
             report_builder = report_builder.with_label(
-                Label::new((
-                    diag.source_id.clone(),
-                    note.span.start as usize..note.span.end as usize,
-                ))
-                .with_message(&note.message)
-                .with_color(color),
+                Label::new((diag.source_id.clone(), note_start..note_end))
+                    .with_message(&note.message)
+                    .with_color(color),
             );
         }
 
@@ -233,7 +275,8 @@ pub fn render_with_ariadne(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::redundant_closure_for_method_calls,
-    clippy::doc_markdown
+    clippy::doc_markdown,
+    clippy::cast_possible_truncation
 )]
 mod tests {
     use super::*;
@@ -393,6 +436,95 @@ mod tests {
         assert!(
             out.contains('^') || out.contains('-') || out.contains('╰') || out.contains('┬'),
             "output should contain an underline marker: {out}"
+        );
+    }
+
+    /// `char_offset` converts a byte offset to the character offset ariadne
+    /// expects, discounting the extra bytes of multi-byte UTF-8 seen earlier.
+    #[test]
+    fn char_offset_converts_byte_to_char() {
+        // "-- ──\nlet y = z": each `─` (U+2500) is 3 bytes but 1 character.
+        //   byte:  - 0  - 1  ' '2  ─ 3..5  ─ 6..8  \n 9  l 10 … z 18
+        //   char:    0    1     2     3       4       5    6  …    14
+        let source = "-- ──\nlet y = z";
+        let cache = TestCache::with("m.ridge", source);
+        let diag = make_diag("T001", Severity::Error, "m.ridge");
+        let adapter = AriadneCacheAdapter::from_diagnostics(&[diag], &cache);
+        let id = SourceId::new("m.ridge");
+
+        assert_eq!(adapter.char_offset(&id, 0), 0);
+        assert_eq!(adapter.char_offset(&id, 10), 6, "start of line 2");
+        assert_eq!(
+            adapter.char_offset(&id, 18),
+            14,
+            "the `z`: 4 bytes of multi-byte drift removed"
+        );
+        // Past end-of-source clamps to the total character count (6 + 9 = 15).
+        assert_eq!(adapter.char_offset(&id, 9_999), 15);
+        // An unknown source passes the byte offset through unchanged.
+        assert_eq!(adapter.char_offset(&SourceId::new("nope.ridge"), 18), 18);
+    }
+
+    /// A span preceded by multi-byte UTF-8 anchors on its real line, not a
+    /// position drifted forward by the extra bytes — the regression where a type
+    /// error underlined a comment far below its real cause.
+    #[test]
+    fn multibyte_prefixed_span_anchors_correct_line() {
+        let _lock = COLOR_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = EnvGuard::set("RIDGE_COLOR", "never");
+        // Ten box-drawing chars on line 1 (2 extra bytes each) precede the real
+        // target `oops` on line 3.
+        let source = format!("-- {}\nlet x = 1\nlet y = oops", "─".repeat(10));
+        let cache = TestCache::with("d.ridge", &source);
+        let start = source.find("oops").expect("target present");
+        let diag = Diagnostic::new(
+            "T001",
+            Severity::Error,
+            Span::new(start as u32, (start + "oops".len()) as u32),
+            "type mismatch",
+            SourceId::new("d.ridge"),
+        );
+        let mut buf = Vec::new();
+        let result = render_with_ariadne(&[diag], &cache, &mut buf);
+        assert!(result.is_ok());
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            out.contains(":3:9"),
+            "label should anchor at line 3, col 9 (the `oops`): {out}"
+        );
+        assert!(
+            out.contains("let y = oops"),
+            "the real source line should be shown: {out}"
+        );
+    }
+
+    /// A CRLF source is normalised to LF before rendering, so a span in the
+    /// lexer's normalised coordinates still anchors correctly (the `\r` bytes
+    /// the span does not count must not shift the label).
+    #[test]
+    fn crlf_source_anchors_correct_line() {
+        let _lock = COLOR_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = EnvGuard::set("RIDGE_COLOR", "never");
+        // The cache holds the raw CRLF bytes (as read from disk); the span is in
+        // the normalised (LF) coordinates the lexer produces.
+        let raw = "let x = 1\r\nlet y = z";
+        let normalised = raw.replace("\r\n", "\n");
+        let start = normalised.find('z').expect("target present");
+        let cache = TestCache::with("crlf.ridge", raw);
+        let diag = Diagnostic::new(
+            "T001",
+            Severity::Error,
+            Span::new(start as u32, (start + 1) as u32),
+            "type mismatch",
+            SourceId::new("crlf.ridge"),
+        );
+        let mut buf = Vec::new();
+        let result = render_with_ariadne(&[diag], &cache, &mut buf);
+        assert!(result.is_ok());
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            out.contains(":2:9"),
+            "label should anchor at line 2, col 9 (the `z`): {out}"
         );
     }
 

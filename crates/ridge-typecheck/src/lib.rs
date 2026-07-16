@@ -414,6 +414,9 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
             &workspace_tycon_names,
             &stdlib_tycon_names,
             &no_own_tycon_ids,
+            // Producers are checked first, so every companion an imported entity
+            // needs is already accumulated here by the time its consumer runs.
+            &workspace_insert_companions,
             &mut arena,
             &b,
             Some((&class_table, &instance_env)),
@@ -614,6 +617,10 @@ pub fn typecheck_module_incremental(
         &global_tycon_names,
         &typed_ws.stdlib_tycons,
         &own_tycon_ids,
+        // The prior full check already resolved every companion; reuse the whole
+        // workspace map so an imported entity's `InsertShape` reduction survives
+        // an incremental recheck of the consumer module.
+        &typed_ws.insert_companions,
         &mut arena,
         b,
         Some((&typed_ws.class_table, &typed_ws.instance_env)),
@@ -790,6 +797,7 @@ fn typecheck_module_inner(
     global_tycon_names: &FxHashMap<String, TyConId>,
     stdlib_tycon_names: &FxHashMap<String, TyConId>,
     own_tycon_ids: &FxHashMap<String, TyConId>,
+    known_insert_companions: &FxHashMap<TyConId, TyConId>,
     arena: &mut TyConArena,
     b: &BuiltinTyCons,
     registries: Option<(
@@ -838,6 +846,25 @@ fn typecheck_module_inner(
     // `InsertShape e` projection reduces to. Runs after the mirror synthesis so
     // the companion's resolved field types come from the entity's finished schema.
     crate::tycon_collect::synth_insert_shapes(ast, id, arena, global_tycon_names, &mut ctx);
+    // `synth_insert_shapes` populated the insert-shape reduction maps for THIS
+    // module's own `deriving (Schema)` entities only. Capture them now — the
+    // workspace driver merges each module's own companions — then seed the live
+    // maps with every producer module's companions so a module that IMPORTS an
+    // entity (rather than declaring it) can also reduce `InsertShape e` to that
+    // entity's companion. Without the seed the reduction is stuck in a consumer:
+    // `Repo.insert`/`insertMany`'s `InsertShape e` argument falls back to the
+    // identity, pins `e` to the companion instead of the entity, and surfaces a
+    // bogus T001 (expected `<Entity>Insert`, found `<Entity>`) plus a cascading
+    // no-instance `HasSchema` on the companion. `or_insert` keeps this module's
+    // own synthesis authoritative; the ids are workspace-global, so seeding the
+    // full known set is sound and only adds entities that have a distinct shape.
+    let own_insert_companions = ctx.insert_shape_entities.clone();
+    for (&companion_id, &entity_id) in known_insert_companions {
+        ctx.insert_shape_entities
+            .entry(companion_id)
+            .or_insert(entity_id);
+        ctx.insert_shapes.entry(entity_id).or_insert(companion_id);
+    }
     // Snapshot all TyConDecls (builtins + user) for record/union inference.
     ctx.tycon_decls = arena.all().to_vec();
 
@@ -1147,8 +1174,11 @@ fn typecheck_module_inner(
 
     // Move the anon_records table out so the workspace driver can merge it.
     let anon_records = std::mem::take(&mut ctx.anon_records);
-    // Move the companion → entity map out for the same reason.
-    let insert_companions = std::mem::take(&mut ctx.insert_shape_entities);
+    // Report only the companions THIS module synthesized (captured before the
+    // cross-module seed above), so the workspace driver's merge stays a view of
+    // each producer's own `deriving (Schema)` output rather than re-reporting the
+    // imported companions the reduction maps were seeded with.
+    let insert_companions = own_insert_companions;
 
     ModuleTypecheckResult {
         typed,

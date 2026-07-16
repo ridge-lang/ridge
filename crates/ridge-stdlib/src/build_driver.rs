@@ -421,10 +421,14 @@ fn write_str(path: &Path, content: &str) -> Result<(), String> {
 /// table, returning a T204 build error on the first diagnostic.
 ///
 /// Parses the tier's modules through the resolver's module-graph pass to reach
-/// the `FnDecl` nodes, collects the `@ffi`-decorated ones, and runs
-/// [`crate::ffi_validator::validate_ffi_decls`] over them. A non-empty result
-/// means a stdlib `@ffi` drifted out of the audit table (unknown target,
-/// wrong arity, or a missing capability) and the build must stop.
+/// the `FnDecl` nodes, then validates each module's `@ffi`-decorated decls
+/// separately with [`crate::ffi_validator::validate_ffi_decls`]. Checking one
+/// module at a time keeps a failure attributed to the module that declares the
+/// offending `@ffi` rather than the tier's first module — collecting the whole
+/// tier into one batch loses that origin and would report, say, a `std.query`
+/// mistake against `std.crypto`. A diagnostic means a stdlib `@ffi` drifted out
+/// of the audit table (unknown target, wrong arity, or a missing capability)
+/// and the build must stop.
 fn validate_tier_ffi(
     tier: u32,
     modules: &[&DiscoveredModule],
@@ -432,8 +436,8 @@ fn validate_tier_ffi(
 ) -> Result<(), BuildError> {
     let graph = ridge_resolve::build_module_graph(ws_graph);
 
-    let mut ffi_decls: Vec<&ridge_ast::FnDecl> = Vec::new();
     for parsed in &graph.modules {
+        let mut ffi_decls: Vec<&ridge_ast::FnDecl> = Vec::new();
         for item in &parsed.ast.items {
             if let ridge_ast::Item::Fn(decl) = item {
                 if matches!(decl.body, ridge_ast::Body::Ffi { .. }) {
@@ -441,17 +445,17 @@ fn validate_tier_ffi(
                 }
             }
         }
-    }
 
-    let diags = crate::ffi_validator::validate_ffi_decls(&ffi_decls);
-    if let Some(first) = diags.first() {
-        let (mod_name, mod_path) = first_module_label(modules);
-        return Err(BuildError::TierBuildFailed {
-            tier,
-            module: mod_name,
-            path: mod_path,
-            source: format!("{} invalid stdlib @ffi declaration", first.code()),
-        });
+        let diags = crate::ffi_validator::validate_ffi_decls(&ffi_decls);
+        if let Some(first) = diags.first() {
+            let (module, path) = module_label_for_id(parsed.id, &ws_graph.modules, modules);
+            return Err(BuildError::TierBuildFailed {
+                tier,
+                module,
+                path,
+                source: format!("{} invalid stdlib @ffi declaration", first.code()),
+            });
+        }
     }
 
     Ok(())

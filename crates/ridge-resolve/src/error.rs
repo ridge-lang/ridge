@@ -4,7 +4,7 @@
 //! `ariadne` renderer) keys on these strings.  Never renumber an assigned code;
 //! only append new ones at the end.
 //!
-//! ## `ResolveError` (R001..R027, R999; R018 reserved)
+//! ## `ResolveError` (R001..R028, R999; R018 reserved)
 //!
 //! Produced during the name-resolution pass over source files.  Every variant
 //! carries a [`Span`] pointing to the offending source location and a stable
@@ -391,6 +391,22 @@ pub enum ResolveError {
         span: Span,
     },
 
+    /// R028 — a user `type` or union constructor reuses a name the prelude keeps
+    /// in scope in every module (a builtin type or constructor such as `Quote`,
+    /// `Ordering`, `Option`, `Ok`, `Less`). Redefining it used to register a
+    /// silent shadow that later surfaced as an incoherent type error
+    /// (`expected Quote, got Quote`); the collision is reported here instead, at
+    /// the declaration. Rename the declaration to clear it.
+    #[error("`{name}` is a built-in {kind} that is always in scope and cannot be redefined")]
+    ReservedName {
+        /// The reserved name being redefined.
+        name: String,
+        /// What the collision is with: `"type"` or `"constructor"`.
+        kind: &'static str,
+        /// Span of the offending declaration name.
+        span: Span,
+    },
+
     /// R999 — two AST nodes were assigned the same `NodeId` (signals a
     /// compiler bug, not a user error).
     #[error("internal error: NodeId collision in `{node_kind}`")]
@@ -436,6 +452,7 @@ impl ResolveError {
             Self::OpaqueConstruct { .. } => "R025",
             Self::OpaquePattern { .. } => "R026",
             Self::OrPatternBindingMismatch { .. } => "R027",
+            Self::ReservedName { .. } => "R028",
             Self::InternalNodeIdCollision { .. } => "R999",
         }
     }
@@ -483,6 +500,7 @@ impl ResolveError {
             | Self::CapabilityListOnWrongDecl { span }
             | Self::ActorStateMissingDefaultOrInit { span, .. }
             | Self::FfiOutsideStdlib { span }
+            | Self::ReservedName { span, .. }
             | Self::AmbiguousMethodName { span, .. }
             | Self::OpaqueConstruct { span, .. }
             | Self::OpaquePattern { span, .. }

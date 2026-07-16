@@ -81,7 +81,7 @@ pub mod visibility;
 pub mod walker;
 
 pub use capabilities::check_capabilities;
-pub use decl::check_ffi_outside_stdlib;
+pub use decl::{check_ffi_outside_stdlib, check_reserved_prelude_names};
 pub use discovery::{derive_module_fqn, discover_standalone, discover_workspace};
 pub use error::{ManifestError, ResolveError, Severity};
 pub use forbid::check_forbid_rules;
@@ -433,6 +433,9 @@ pub fn resolve_workspace_with(ws: WorkspaceGraph, retain_indices: bool) -> Resol
         let ffi_errors = decl::check_ffi_outside_stdlib(&pm.ast, ws.is_stdlib);
         all_errors.extend(ffi_errors.into_iter().map(|e| (pm.id, e)));
 
+        let reserved_errors = decl::check_reserved_prelude_names(&pm.ast, ws.is_stdlib);
+        all_errors.extend(reserved_errors.into_iter().map(|e| (pm.id, e)));
+
         let module_imports_owned: Vec<imports::ImportResolution> = import_result
             .imports
             .get(pm.id.0 as usize)
@@ -662,6 +665,10 @@ pub fn resolve_module_incremental(
     capabilities::check_capabilities(edited_ast, project, &cached.graph.manifest, &mut cap_errors);
     errors.extend(cap_errors);
     errors.extend(decl::check_ffi_outside_stdlib(
+        edited_ast,
+        cached.graph.is_stdlib,
+    ));
+    errors.extend(decl::check_reserved_prelude_names(
         edited_ast,
         cached.graph.is_stdlib,
     ));

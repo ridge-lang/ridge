@@ -689,6 +689,61 @@ fn quoted_captured_non_scalar_is_rejected() {
     );
 }
 
+/// A quote may compare a column against a *field* of a value captured from the
+/// enclosing scope (`u.id == link.id`), not only a bound scalar local. The field's
+/// value binds as a query parameter, so the natural "target the row I just fetched"
+/// shape — reading `link.id` inline — typechecks cleanly.
+#[test]
+fn quoted_captured_field_access_typechecks() {
+    let src = "type User = { id: Int, name: Text }\ntype Link = { id: Int }\n\nfn pred (q: Quote (User -> Bool)) -> Bool = true\n\nfn demo (link: Link) -> Bool = pred (fn u -> u.id == link.id)\n";
+    let errors = run_typecheck_on_source("quote_field_capture_ok", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.is_empty(),
+        "capturing a record field into a quote must typecheck cleanly; got: {codes:?}"
+    );
+}
+
+/// The captured field must itself be a base scalar. A record-typed field read into a
+/// quote is rejected (T040): there is no single value to bind for it.
+#[test]
+fn quoted_captured_field_access_non_scalar_is_rejected() {
+    let src = "type User = { id: Int }\ntype Inner = { n: Int }\ntype Wrap = { inner: Inner }\n\nfn pred (q: Quote (User -> Bool)) -> Bool = true\n\nfn demo (w: Wrap) -> Bool = pred (fn u -> u.id == w.inner)\n";
+    let errors = run_typecheck_on_source("quote_field_capture_nonscalar", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.contains(&"T040"),
+        "capturing a non-scalar record field must be T040; got: {codes:?}"
+    );
+}
+
+/// A text-match pattern may be a Text value captured from the enclosing scope
+/// (`startsWith u.name prefix`), not only a literal — a search term taken as a
+/// parameter binds at run time, its wildcards escaped like a literal's.
+#[test]
+fn quoted_captured_text_pattern_typechecks() {
+    let src = "type User = { name: Text }\n\nfn pred (q: Quote (User -> Bool)) -> Bool = true\n\nfn demo (prefix: Text) -> Bool = pred (fn u -> Text.startsWith u.name prefix)\n";
+    let errors = run_typecheck_on_source("quote_text_pattern_ok", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.is_empty(),
+        "capturing a Text pattern into a text match must typecheck cleanly; got: {codes:?}"
+    );
+}
+
+/// A captured text-match pattern must be Text. A captured Int pattern is rejected
+/// (T040): a LIKE pattern is text, so a non-text value has nothing to match.
+#[test]
+fn quoted_captured_non_text_pattern_is_rejected() {
+    let src = "type User = { name: Text }\n\nfn pred (q: Quote (User -> Bool)) -> Bool = true\n\nfn demo (n: Int) -> Bool = pred (fn u -> Text.startsWith u.name n)\n";
+    let errors = run_typecheck_on_source("quote_text_pattern_bad", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.contains(&"T040"),
+        "a captured non-Text text-match pattern must be T040; got: {codes:?}"
+    );
+}
+
 /// A captured `List <scalar>` is a runtime `IN` list: `List.contains u.age ages`
 /// with `ages: List Int` typechecks cleanly, the parity of `ages.Contains(u.Age)`.
 #[test]

@@ -30,7 +30,7 @@
     int_parse/0, int_parse/1, float_parse/1, float_to_text/1, bool_to_text/1,
     sql_literal/1, sql_value_source/1,
     text_split_all/2, text_replace_all/3, text_join/2, text_slice/3,
-    text_like/2,
+    text_like/2, like_prefix/1, like_suffix/1, like_contains/1,
     list_fold/3, list_sort_by/2, list_sort_cmp/2, ord_compare_native/2, ordering_to_text/1,
     random_int/2, random_choice/1, random_float/1, random_alphanumeric/1, random_seed/1,
     env_get/1, env_all/1, env_set/2,
@@ -988,6 +988,23 @@ rt_like_pct(S, PRest) ->
             []          -> false;
             [_ | SRest] -> rt_like_pct(SRest, PRest)
         end.
+
+%% like_prefix/1, like_suffix/1, like_contains/1 — build a LIKE pattern from a needle
+%% captured at run time, for a reified `startsWith`/`endsWith`/`contains` whose pattern
+%% is a bound value rather than a literal. Escape the needle's LIKE metacharacters and
+%% add the mode's `%` wildcards, so the bound pattern matches exactly the rows the
+%% compile-time literal path (the compiler's `escape_like`) would. Both forms then agree
+%% with `text_like` and the SQL `LIKE` byte for byte.
+like_prefix(S)   -> <<(like_escape(S))/binary, "%">>.
+like_suffix(S)   -> <<"%", (like_escape(S))/binary>>.
+like_contains(S) -> <<"%", (like_escape(S))/binary, "%">>.
+
+%% Escape `\`, `%`, and `_` with a leading `\` (the escape character). Backslash is
+%% replaced first so the escapes added for `%`/`_` are not themselves re-escaped.
+like_escape(S) ->
+    S1 = binary:replace(S,  <<"\\">>, <<"\\\\">>, [global]),
+    S2 = binary:replace(S1, <<"%">>,  <<"\\%">>,  [global]),
+    binary:replace(S2, <<"_">>, <<"\\_">>, [global]).
 
 %% text_join/2 — concatenate Xs with Sep between each element.
 %%

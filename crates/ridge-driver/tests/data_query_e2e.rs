@@ -231,6 +231,42 @@ pub fn db arithMod () -> Int =
             match selectRows conn "users" (fn (u: User) -> u.age % 2 == 0)
                 Ok rows -> lengthOf rows
                 Err _   -> 0 - 2
+
+-- F6: a quoted predicate can read a field of a captured record (`target.id`), not
+-- just a bound scalar local. The field's value binds as a query parameter, so this
+-- keeps the one row whose id equals the captured row's id (lin, id 2) -> 1
+pub fn db captureFieldAccess () -> Int =
+    let target = User { id = 2, age = 30, name = "lin" }
+    match setup ()
+        Err _ -> 0 - 1
+        Ok conn ->
+            match selectRows conn "users" (fn (u: User) -> u.id == target.id)
+                Ok rows -> lengthOf rows
+                Err _   -> 0 - 2
+
+-- F12: a captured text-match pattern (a parameter, not a literal) binds at run time
+-- and matches the same rows the literal form would — startsWith "l" keeps lin -> 1
+pub fn db likeStartsCaptured (prefix: Text) -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok conn ->
+            match selectRows conn "users" (fn (u: User) -> Text.startsWith u.name prefix)
+                Ok rows -> lengthOf rows
+                Err _   -> 0 - 2
+
+-- F12 escaping: a captured needle's LIKE wildcards are escaped at run time exactly as
+-- a literal's are, so `contains "50%"` matches the literal-percent label only -> 1
+pub fn db likeContainsCaptured (needle: Text) -> Int =
+    let conn = memAdapter ()
+    match appendRow conn "codes" (codeRow 1 "50%off")
+        Err _ -> 0 - 1
+        Ok _ ->
+            match appendRow conn "codes" (codeRow 2 "50Xoff")
+                Err _ -> 0 - 2
+                Ok _ ->
+                    match selectRows conn "codes" (fn (c: Code) -> Text.contains c.label needle)
+                        Ok rows -> lengthOf rows
+                        Err _   -> 0 - 3
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -317,6 +353,9 @@ fn query_surface_runs_on_beam() {
          io:format(\"arithMul=~w~n\",[{module}:arithMul()]), \
          io:format(\"arithDiv=~w~n\",[{module}:arithDiv()]), \
          io:format(\"arithMod=~w~n\",[{module}:arithMod()]), \
+         io:format(\"captureFieldAccess=~w~n\",[{module}:captureFieldAccess()]), \
+         io:format(\"likeStartsCaptured=~w~n\",[{module}:likeStartsCaptured(<<\"l\">>)]), \
+         io:format(\"likeContainsCaptured=~w~n\",[{module}:likeContainsCaptured(<<\"50%\">>)]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -355,6 +394,18 @@ fn query_surface_runs_on_beam() {
         ("arithMul=1", "age * 2 > 50 keeps lin"),
         ("arithDiv=1", "age / 10 == 2 keeps max (integer truncation)"),
         ("arithMod=2", "age % 2 == 0 keeps the even ages ada and lin"),
+        (
+            "captureFieldAccess=1",
+            "a captured record field (target.id) binds and keeps the one matching row",
+        ),
+        (
+            "likeStartsCaptured=1",
+            "a captured startsWith prefix binds and keeps lin, like the literal form",
+        ),
+        (
+            "likeContainsCaptured=1",
+            "a captured contains needle escapes its % at run time, matching 50%off only",
+        ),
     ] {
         assert!(
             stdout.contains(probe),

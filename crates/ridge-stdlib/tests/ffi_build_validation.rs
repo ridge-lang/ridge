@@ -73,3 +73,45 @@ fn arity_mismatch_fails_build_with_t001() {
         }
     }
 }
+
+/// (d) In a tier with several modules the failure names the module that
+/// actually declares the bad `@ffi`, not the tier's first module.
+///
+/// Tier 2 lists `std.text` before `std.list`, but the module graph is sorted by
+/// fully-qualified name, so `std.list` sorts first. Putting the out-of-table
+/// `@ffi` in `std.list` (clean `std.text`) makes the two orders disagree: the
+/// old code labelled every tier failure with the first *listed* module and
+/// reported this against `std.text`, sending you to rebuild the wrong file.
+#[test]
+fn failure_names_the_owning_module_within_a_multi_module_tier() {
+    let td = TempDir::new().expect("tempdir");
+    // Clean module, listed first in the tier table, with a valid in-table @ffi.
+    std::fs::write(
+        td.path().join("text.ridge"),
+        "@ffi(\"erlang\", \"abs\", 1)\npub fn absInt (x: Int) -> Int\n",
+    )
+    .expect("write text.ridge");
+    // Offending module, whose @ffi points at a target absent from the table.
+    std::fs::write(
+        td.path().join("list.ridge"),
+        "@ffi(\"some_unaudited_mod\", \"dangerous\", 1)\npub fn bad (x: Int) -> Int\n",
+    )
+    .expect("write list.ridge");
+
+    let err = build_all(td.path()).expect_err("out-of-table @ffi must fail the build");
+    match err {
+        BuildError::TierBuildFailed { module, source, .. } => {
+            assert!(
+                source.contains("T004"),
+                "expected T004 in the failure, got: {source}"
+            );
+            assert_eq!(
+                module, "std.list",
+                "the failure must name the module that declares the bad @ffi, not the first tier module"
+            );
+        }
+        BuildError::CircularImport { .. } => {
+            panic!("expected TierBuildFailed, got CircularImport")
+        }
+    }
+}

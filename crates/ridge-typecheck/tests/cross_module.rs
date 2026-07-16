@@ -4019,3 +4019,61 @@ fn db io transfer (conn: Sqlite) (fromId: Int) -> Result Unit Error =
         "the locally-built-repo transfer must type-check clean; got {errors:?}"
     );
 }
+
+// ── Cross-module insert through a derived `<Entity>Insert` companion ───────────
+
+/// An entity carrying a serial `id`, so `deriving (Schema)` synthesises the
+/// distinct `EInsert` companion (the entity minus its generated column).
+const SERIAL_KEY_ENTITY_LIB: &str = "pub type E = { id: Int, v: Text } deriving (Row, Schema)\n";
+
+#[test]
+fn foreign_module_insert_through_derived_companion_typechecks() {
+    // The insert-shape reduction (`InsertShape e` → the entity's `<Entity>Insert`
+    // companion) is driven by a per-entity registry that only the module DECLARING
+    // the entity used to populate. A module that imports the entity and writes
+    // through `Repo.insert`/`insertMany` then found the reduction stuck: the
+    // `InsertShape e` argument fell back to the identity, pinned `e` to the
+    // companion rather than the entity, and failed with a bogus T001 (expected
+    // `EInsert`, found `E`) plus a cascading no-instance `HasSchema` on the
+    // companion. Seeding the reduction registry from the workspace-global
+    // companion map fixes both. The same write in the entity's own module always
+    // worked.
+    let main = r#"
+import proj.Lib (E, EInsert)
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+
+pub fn db seedOne (r: Repo E MemAdapter) -> Result Unit Error =
+    r |> Repo.insert (EInsert { v = "hi" })
+
+pub fn db seedMany (r: Repo E MemAdapter) -> Result Unit Error =
+    r |> Repo.insertMany [ EInsert { v = "a" }, EInsert { v = "b" } ]
+"#;
+    let errors = typecheck_two_modules(main, SERIAL_KEY_ENTITY_LIB);
+    assert!(
+        errors.is_empty(),
+        "a write through the derived insert companion must type-check across a \
+         module boundary, exactly as it does in the entity's own module; got {errors:?}"
+    );
+}
+
+#[test]
+fn foreign_module_insert_companion_stays_distinct_from_entity() {
+    // The companion must not collapse onto the entity across the boundary: passing
+    // the full entity (with its generated `id`) where the insert shape is wanted is
+    // still rejected, so a hand-written serial key stays a type error cross-module.
+    let main = r#"
+import proj.Lib (E)
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+
+pub fn db seedBad (r: Repo E MemAdapter) -> Result Unit Error =
+    r |> Repo.insert (E { id = 1, v = "hi" })
+"#;
+    let errors = typecheck_two_modules(main, SERIAL_KEY_ENTITY_LIB);
+    assert!(
+        !errors.is_empty(),
+        "supplying the full entity where its insert companion is expected must be \
+         rejected across a module boundary; got no errors"
+    );
+}

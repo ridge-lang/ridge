@@ -7,8 +7,10 @@
 /// A half-open byte range `[start, end)` into a source file.
 ///
 /// Both offsets are **byte** offsets (not char or codepoint offsets).
-/// `ariadne` and `logos` both work in byte offsets natively, so no conversion
-/// is required.  Line/column numbers are a derived quantity — use
+/// `logos` works in byte offsets natively, so the lexer needs no conversion.
+/// `ariadne`, by contrast, indexes labels by character offset, so the
+/// diagnostic renderer converts byte → char before drawing (see
+/// `ridge-diagnostics`). Line/column numbers are a derived quantity — use
 /// [`LineMap::line_col`] when you need them for diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {

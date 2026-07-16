@@ -525,6 +525,27 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         arity: 2,
         requires_caps: &[],
     },
+    // LIKE-pattern builders for a captured (non-literal) text match — escape the
+    // needle's wildcards and add the mode's `%` wrappers at run time. Pure text
+    // manipulation, no capability.
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "like_prefix",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "like_suffix",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "like_contains",
+        arity: 1,
+        requires_caps: &[],
+    },
     FfiAuditEntry {
         beam_module: "ridge_rt",
         fn_name: "float_to_text",

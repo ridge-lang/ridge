@@ -1008,7 +1008,22 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, params: &[String]) -> IrExpr {
                     };
                     qexpr_node(ctx, "QColAt", 22, vec![idx_lit, name_lit], *span)
                 }
-                _ => qexpr_node(ctx, "QCol", 0, vec![name_lit], *span),
+                Some(_) => qexpr_node(ctx, "QCol", 0, vec![name_lit], *span),
+                // The base is not a quote parameter — a field of a value captured
+                // from the enclosing scope (`link.id`). The checker stamped the
+                // field's scalar type, so bind the whole access as a runtime `QLit*`,
+                // exactly like a captured plain variable, rather than reading it as a
+                // column of the row.
+                None => {
+                    if let Some((name, variant)) = captured_ident_type(ctx, *span)
+                        .and_then(|ty| captured_scalar_qlit(ctx, &ty))
+                    {
+                        let value = lower_expr(ctx, e);
+                        qexpr_node(ctx, name, variant, vec![value], *span)
+                    } else {
+                        qexpr_node(ctx, "QCol", 0, vec![name_lit], *span)
+                    }
+                }
             }
         }
 
@@ -1364,15 +1379,64 @@ fn reify_like(
     params: &[String],
 ) -> IrExpr {
     let col_ir = reify_node(ctx, col, params);
-    let needle = decoded_text(ctx, pat).unwrap_or_default();
-    let pattern = match mode {
-        LikeMode::Raw => needle,
-        LikeMode::Contains => format!("%{}%", escape_like(&needle)),
-        LikeMode::Prefix => format!("{}%", escape_like(&needle)),
-        LikeMode::Suffix => format!("%{}", escape_like(&needle)),
+    let pat_ir = if matches!(peel_paren(pat), Expr::Literal(_)) {
+        // A literal pattern — escape its wildcards and add the mode's `%` wrappers
+        // at compile time, then bind the finished string.
+        let needle = decoded_text(ctx, pat).unwrap_or_default();
+        let pattern = match mode {
+            LikeMode::Raw => needle,
+            LikeMode::Contains => format!("%{}%", escape_like(&needle)),
+            LikeMode::Prefix => format!("{}%", escape_like(&needle)),
+            LikeMode::Suffix => format!("%{}", escape_like(&needle)),
+        };
+        build_qlit_text(ctx, pattern, span)
+    } else {
+        // A captured pattern — build the LIKE string from the runtime value,
+        // escaping and wrapping it the same way at run time, so a captured
+        // `startsWith term` matches the rows a literal `startsWith "…"` would.
+        reify_captured_like_pattern(ctx, pat, mode, span)
     };
-    let pat_ir = build_qlit_text(ctx, pattern, span);
     qexpr_node(ctx, "QLike", 24, vec![col_ir, pat_ir], span)
+}
+
+/// Build the `QLitText` pattern node for a captured text-match value. The runtime
+/// value carries the raw needle; the mode's escaping and `%` wrappers are applied at
+/// run time through the stdlib `_like{Prefix,Suffix,Contains}` helpers, so the bound
+/// pattern matches the same rows the compile-time literal path would. `Raw` (`like`)
+/// binds the value verbatim — the caller supplied the pattern itself.
+fn reify_captured_like_pattern(
+    ctx: &mut LowerCtx<'_>,
+    pat: &Expr,
+    mode: LikeMode,
+    span: Span,
+) -> IrExpr {
+    let value = lower_expr(ctx, pat);
+    let built = match mode {
+        LikeMode::Raw => value,
+        LikeMode::Prefix => call_query_helper(ctx, "_likePrefix", value, span),
+        LikeMode::Suffix => call_query_helper(ctx, "_likeSuffix", value, span),
+        LikeMode::Contains => call_query_helper(ctx, "_likeContains", value, span),
+    };
+    qexpr_node(ctx, "QLitText", 2, vec![built], span)
+}
+
+/// Call a one-argument `std.query` helper on a runtime value — the reifier's bridge
+/// to the stdlib LIKE-pattern builders that escape and wrap a captured needle.
+fn call_query_helper(ctx: &mut LowerCtx<'_>, name: &str, arg: IrExpr, span: Span) -> IrExpr {
+    let sym = IrExpr::Symbol {
+        id: ctx.fresh_id(None),
+        sym: SymbolRef::Stdlib {
+            module: "std.query".into(),
+            name: name.into(),
+        },
+        span,
+    };
+    IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(sym),
+        args: vec![arg],
+        span,
+    }
 }
 
 /// Build a `QIn (column, [elements])` node from a list literal of literals.

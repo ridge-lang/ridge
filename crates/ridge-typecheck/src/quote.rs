@@ -603,6 +603,30 @@ fn check_node(ctx: &mut InferCtx, b: &BuiltinTyCons, e: &Expr, scope: &[Param]) 
                 return None;
             };
             let Some(param) = scope.iter().find(|p| p.name == base_id.text) else {
+                // Not a quote column. It may still be a field of a value captured
+                // from the enclosing scope — `link.id` where `link` is a record
+                // local. If the captured record has the field and the field is a
+                // base scalar, treat the whole access as a runtime bind, exactly as
+                // a captured plain variable is: read the field's value once and
+                // send it as a query parameter.
+                if let Some(scheme) = ctx.env.lookup(&base_id.text).cloned() {
+                    let inst = instantiate(ctx, &scheme);
+                    let base_ty = ctx.deep_resolve(&inst);
+                    if let Some((_, field_ty)) = record_fields_of(ctx, &base_ty)
+                        .into_iter()
+                        .flatten()
+                        .find(|(n, _)| n == &field.text)
+                    {
+                        let field_ty = ctx.deep_resolve(&field_ty);
+                        if is_quote_scalar(b, &field_ty) {
+                            // The quote checker never runs `infer_expr`, so record
+                            // the captured field's type here; the reifier reads it
+                            // back to pick the matching `QLit*` for the bind.
+                            ctx.write_node_type(*span, ridge_resolve::NodeKind::Expr, &field_ty);
+                            return Some(QKind::Scalar(field_ty));
+                        }
+                    }
+                }
                 ctx.errors.push(TypeError::QuoteUnsupportedExpr {
                     detail: format!(
                         "only columns of the quote parameters ({}) can be accessed",
@@ -1104,6 +1128,10 @@ fn check_captured_in_list(
 /// a `List` captured from the enclosing scope). One operand must name a column of
 /// the quote; the other must be a literal pattern (or a list whose element type
 /// matches the column) — returns `QKind::Pred` on success.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one linear validation of the predicate-helper forms (IN list, text match); splitting it would scatter the operand checks"
+)]
 fn check_predicate_call(
     ctx: &mut InferCtx,
     b: &BuiltinTyCons,
@@ -1207,14 +1235,20 @@ fn check_predicate_call(
         });
         return None;
     }
-    let Expr::Literal(lit) = other else {
+    // The pattern is a Text literal or a Text value captured from the enclosing
+    // scope — `startsWith col term`, a search term taken as a parameter. A captured
+    // pattern binds at run time with its wildcards escaped, matching the compile-time
+    // escaping a literal gets, rather than forcing the term to be written inline.
+    let pat_kind = check_node(ctx, b, other, scope)?;
+    let QKind::Scalar(pat_ty) = pat_kind else {
         ctx.errors.push(TypeError::QuoteUnsupportedExpr {
-            detail: "the pattern of a text match must be a text literal".to_string(),
+            detail: "the pattern of a text match must be a text literal or a captured Text value"
+                .to_string(),
             span: other.span(),
         });
         return None;
     };
-    if !is_text(b, &literal_type(b, lit)) {
+    if !is_text(b, &ctx.deep_resolve(&pat_ty)) {
         ctx.errors.push(TypeError::QuoteUnsupportedExpr {
             detail: "the pattern of a text match must be Text".to_string(),
             span: other.span(),

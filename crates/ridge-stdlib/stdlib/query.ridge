@@ -997,6 +997,20 @@ fn placeholder (n: Int) -> Text = Text.concat "$" (Int.toText n)
 -- delimited identifier, matching the backend's own `quote_ident`.
 fn quoteIdent (name: Text) -> Text = Text.join "" ["\"", Text.replace "\"" "\"\"" name, "\""]
 
+-- Build a LIKE pattern from a captured needle at run time: escape its `\`, `%`, and
+-- `_` (so they match as plain text, `\` the escape character) and add the mode's
+-- wildcards — `term%` for `startsWith`, `%term` for `endsWith`, `%term%` for
+-- `contains`. The compile-time literal path escapes and wraps the needle the same
+-- way, so a captured pattern matches exactly the rows a written-out one would.
+@ffi("ridge_rt", "like_prefix", 1)
+fn _likePrefix (s: Text) -> Text
+
+@ffi("ridge_rt", "like_suffix", 1)
+fn _likeSuffix (s: Text) -> Text
+
+@ffi("ridge_rt", "like_contains", 1)
+fn _likeContains (s: Text) -> Text
+
 fn distinctKw (dist: Bool) -> Text = if dist then "DISTINCT " else ""
 
 fn limitClause (lim: Int) -> Text = if lim >= 0 then Text.concat " LIMIT " (Int.toText lim) else ""

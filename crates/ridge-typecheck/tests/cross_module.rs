@@ -3970,3 +3970,52 @@ pub fn db bad () -> Result (List User) Error =
         "a non-SqlValue bind must be rejected; got no errors"
     );
 }
+
+#[test]
+fn locally_built_repo_pins_entity_for_quote_capture() {
+    // A `Repo` built by a local `Repo.repo conn "..."` binding — rather than
+    // received as a typed parameter — must pin its entity from the inline `let`
+    // annotation, exactly as a parameter annotation does. A row field fetched
+    // through that repo (`from.id : Int`) is then a genuine `Int`, so capturing
+    // it into a quoted predicate is accepted.
+    //
+    // The regression: an inline annotation naming an imported type constructor
+    // (`Repo`, absent from the consumer's own type-name map) collapsed to a fresh
+    // variable and dropped its arguments, leaving the phantom entity unresolved.
+    // The fetched field then had no type and the quote-capture check rejected it
+    // with a bogus T040 claiming the value had type `Error`. A repo threaded as a
+    // parameter pinned the entity early enough to sidestep it, so only the local
+    // form failed.
+    let main = r#"
+import std.data (Sqlite)
+import std.repo as Repo
+import std.sql (toSql)
+import std.io as Io
+
+pub type Account = { id: Int, name: Text, balance: Int } deriving (Row, Schema)
+
+fn db io transfer (conn: Sqlite) (fromId: Int) -> Result Unit Error =
+    let accounts: Repo Account Sqlite = Repo.repo conn "accounts"
+    match accounts |> Repo.getBy "id" (toSql fromId)
+        Err e -> Err e
+        Ok maybeFrom ->
+            match maybeFrom
+                None -> Ok (Io.println "no from")
+                Some from ->
+                    let fromId2 = from.id
+                    let _ = accounts
+                        |> Repo.setWhere [ Repo.set (fn (a: Account) -> a.balance) 0 ]
+                            (fn (a: Account) -> a.id == fromId2) ?
+                    Ok (Io.println "ok")
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.iter().any(|e| e.code() == "T040"),
+        "a locally-built repo must pin its entity so a fetched field can be captured \
+         in a quote, not rejected with a bogus T040; got {errors:?}"
+    );
+    assert!(
+        errors.is_empty(),
+        "the locally-built-repo transfer must type-check clean; got {errors:?}"
+    );
+}

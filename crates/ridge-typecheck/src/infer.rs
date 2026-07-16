@@ -43,7 +43,7 @@ use ridge_types::{BuiltinTyCons, CapRow, CapabilitySet, Scheme, TyConId, TyConKi
 use crate::ctx::InferCtx;
 use crate::error::TypeError;
 use crate::instantiate::{generalise, instantiate, monoscheme};
-use crate::prelude::{lookup_prelude, lookup_prelude_tycon};
+use crate::prelude::lookup_prelude;
 use crate::render::emit_internal;
 use crate::unify::unify;
 
@@ -1365,131 +1365,34 @@ pub const fn type_of_literal(b: &BuiltinTyCons, lit: &Literal) -> Type {
     }
 }
 
-/// Converts an AST `Type` expression to a `ridge_types::Type`.
+/// Converts an AST `Type` expression (from an inline `let`/`var` binding or a
+/// lambda-parameter annotation) to a `ridge_types::Type`.
 ///
-/// Handles the subset of `ridge_ast::Type` that appears in annotations:
-/// primitive types, named types, type applications (`App`), tuples, list
-/// sugar, and function types.  Unknown named types are resolved to a fresh
-/// unification variable (T7/T8 handle user-defined type resolution).
+/// This shares the signature-position converter
+/// [`crate::tycon_collect::ast_type_to_ridge_type`] so an inline annotation
+/// resolves type names exactly the way a function signature does — including the
+/// arena fallback for reconciled stdlib types such as `Repo`, `Query`, and
+/// `Postgres`, which are imported into a module's arena but never enter its
+/// user-tycon-name map. Diverging here once let an annotation like
+/// `Repo Account Sqlite` on a `let` collapse to a fresh variable, dropping the
+/// arguments — including a phantom entity the annotation was meant to pin, which
+/// then over-generalised and surfaced downstream as a bogus type.
+///
+/// An inline annotation binds no signature type variables, so the
+/// parameter-name map is empty; a bare lowercase name (`a`, `k`) that names no
+/// registered constructor is a fresh unification variable, as before.
 pub(crate) fn ast_type_to_type(
     ctx: &mut InferCtx,
     b: &BuiltinTyCons,
     ast_ty: &ridge_ast::Type,
 ) -> Type {
-    use ridge_ast::PrimitiveType;
-
-    match ast_ty {
-        // ── Primitive: Int, Float, Bool, Text, Unit, Timestamp ────────────────
-        ridge_ast::Type::Primitive { name, .. } => {
-            let tycon = match name {
-                PrimitiveType::Int => b.int,
-                PrimitiveType::Float => b.float,
-                PrimitiveType::Bool => b.bool,
-                PrimitiveType::Text => b.text,
-                PrimitiveType::Unit => b.unit,
-                PrimitiveType::Timestamp => b.timestamp,
-                PrimitiveType::Decimal => b.decimal,
-                PrimitiveType::Uuid => b.uuid,
-                PrimitiveType::Bytes => b.bytes,
-                PrimitiveType::Date => b.date,
-                PrimitiveType::Time => b.time,
-            };
-            Type::Con(tycon, vec![])
-        }
-
-        // ── Named: `User`, `Option`, etc. — zero args ─────────────────────────
-        ridge_ast::Type::Named { name, .. } => {
-            let base_name = &name.text;
-            if let Some(id) = lookup_prelude_tycon(b, base_name) {
-                return Type::Con(id, vec![]);
-            }
-            // T17: check user-defined TyCons collected by tycon_collect.
-            if let Some(&id) = ctx.user_tycon_names.get(base_name.as_str()) {
-                return Type::Con(id, vec![]);
-            }
-            // Unknown named type — fresh var placeholder.
-            Type::Var(ctx.fresh_tyvid())
-        }
-
-        // ── App: `Option Int`, `Map k v`, etc. ───────────────────────────────
-        ridge_ast::Type::App { head, args, .. } => {
-            let base_name = &head.text;
-            let arg_tys: Vec<Type> = args.iter().map(|a| ast_type_to_type(ctx, b, a)).collect();
-            if let Some(id) = lookup_prelude_tycon(b, base_name) {
-                return Type::Con(id, arg_tys);
-            }
-            // T17: check user-defined TyCons.
-            if let Some(&id) = ctx.user_tycon_names.get(base_name.as_str()) {
-                return Type::Con(id, arg_tys);
-            }
-            Type::Var(ctx.fresh_tyvid())
-        }
-
-        // ── Tuple ─────────────────────────────────────────────────────────────
-        ridge_ast::Type::Tuple { elems, .. } => {
-            let ts: Vec<Type> = elems.iter().map(|e| ast_type_to_type(ctx, b, e)).collect();
-            Type::Tuple(ts)
-        }
-
-        // ── List sugar: [a] → List a ──────────────────────────────────────────
-        ridge_ast::Type::List { elem, .. } => {
-            let elem_ty = ast_type_to_type(ctx, b, elem);
-            Type::Con(b.list, vec![elem_ty])
-        }
-
-        // ── Fn type ───────────────────────────────────────────────────────────
-        ridge_ast::Type::Fn { fn_ty, .. } => {
-            let param_tys: Vec<Type> = fn_ty
-                .params
-                .iter()
-                .map(|p| ast_type_to_type(ctx, b, p))
-                .collect();
-            let ret_ty = ast_type_to_type(ctx, b, &fn_ty.ret);
-            let cap_row = if fn_ty.caps.is_empty() {
-                CapRow::Concrete(CapabilitySet::PURE)
-            } else {
-                let mut cs = CapabilitySet::PURE;
-                for cap in &fn_ty.caps {
-                    cs = cs.union(&CapabilitySet::singleton(*cap));
-                }
-                CapRow::Concrete(cs)
-            };
-            Type::Fn {
-                params: param_tys,
-                ret: Box::new(ret_ty),
-                caps: cap_row,
-            }
-        }
-
-        // ── Paren ─────────────────────────────────────────────────────────────
-        ridge_ast::Type::Paren { inner, .. } => ast_type_to_type(ctx, b, inner),
-
-        // ── Var: lower-ident type variable (a, k, v, …) ──────────────────────
-        ridge_ast::Type::Var { .. } => {
-            // Type variable names in annotation context — allocate a fresh
-            // unification variable.  T7 will wire proper annotation-variable
-            // tracking; for T6 this is sufficient for monosignatures.
-            Type::Var(ctx.fresh_tyvid())
-        }
-
-        // ── Inline record type → a structural `Type::Record` ───────────────────
-        ridge_ast::Type::Record { fields, tail, .. } => {
-            let resolved: Vec<(String, Type)> = fields
-                .iter()
-                .map(|f| {
-                    let ty = ast_type_to_type(ctx, b, &f.ty);
-                    (f.name.text.clone(), ty)
-                })
-                .collect();
-            // A `| r` tail makes the row open over a fresh row variable.
-            let row_tail = if tail.is_some() {
-                ridge_types::RowTail::Open(ctx.fresh_rowvid())
-            } else {
-                ridge_types::RowTail::Closed
-            };
-            Type::record(resolved, row_tail)
-        }
-    }
+    // Clone the name map so the shared converter can borrow `ctx` mutably (to
+    // allocate fresh vars) while still resolving names — the same pattern the
+    // signature path uses in `scc.rs`.
+    let names = ctx.user_tycon_names.clone();
+    let no_sig_tyvars: rustc_hash::FxHashMap<&str, ridge_types::TyVid> =
+        rustc_hash::FxHashMap::default();
+    crate::tycon_collect::ast_type_to_ridge_type(b, ctx, ast_ty, &names, &no_sig_tyvars)
 }
 
 /// Binds a pattern against a `Scheme` (for `let`-bindings where generalisation

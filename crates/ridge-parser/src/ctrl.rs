@@ -213,19 +213,28 @@ pub(crate) fn parse_match(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
                 _ => {}
             }
 
-            // (2) Consume an inter-arm Newline if present, then apply the
-            //     column rule.  Both sides must have a column for the rule to
-            //     fire; if `peek_significant_column` returns `None` (no LineMap
+            // (2) Apply the column rule against the next significant token
+            //     WITHOUT consuming the inter-arm Newline first.
+            //     `peek_significant_column` already looks past Newlines, so a
+            //     dedent is detected while the separator is still in the stream.
+            //     Leaving that Newline in place is what lets an enclosing flat
+            //     block — a multi-statement lambda body around this match — see
+            //     the statement boundary once the match ends; consuming it here
+            //     swallowed the separator and stranded the next statement.
+            //     Both sides must have a column for the rule to fire; if
+            //     `peek_significant_column` returns `None` (no LineMap
             //     available), the rule is skipped — safe-fallback behaviour.
-            cur.skip_newlines();
             if let (Some(arm_col), Some(min_col)) = (cur.peek_significant_column(), match_col) {
                 if arm_col < min_col {
                     break; // dedented past MATCH_COL → arm belongs to outer
                 }
             }
 
-            // (3) After consuming Newlines, re-check hard-stops (a Newline
-            //     just before `)` etc. leaves us on the closer).
+            // (3) The next significant token is at or past MATCH_COL — commit to
+            //     another arm: consume the inter-arm Newline(s), then re-check
+            //     hard-stops (a Newline just before `)` etc. leaves us on the
+            //     closer).
+            cur.skip_newlines();
             match cur.peek() {
                 Token::RParen | Token::RBrack | Token::RBrace | Token::Eof => break,
                 _ => {}

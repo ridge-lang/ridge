@@ -218,10 +218,23 @@ pub(crate) fn process(tokens: &[(Token, Span)]) -> (Vec<(Token, Span)>, Vec<LexE
                         // New sibling statement — emit NEWLINE before its tokens.
                         out.push((Token::Newline, Span::point(line_tok_span.start)));
                     }
-                } else if line_start_byte != frame.open_line_start {
+                } else if line_start_byte != frame.open_line_start
+                    && !is_bracket_arg_continuation(line_tokens, prev_last_tok.as_ref())
+                {
                     // First non-blank logical line on a different physical line
                     // from the opener — establish the baseline.  Do NOT emit
                     // NEWLINE for this first-baseline line.
+                    //
+                    // Skip a line that is itself a bracket-leading continuation
+                    // argument of the opener (a list element whose nested
+                    // `[ … ]`/`( … )` argument opens on the next indented line).
+                    // Such a line sits deeper than the true sibling column, so
+                    // adopting it as the baseline would make every following
+                    // element's own nested bracket read as a new statement and
+                    // split the element in two (the `expected ] but found [`
+                    // papercut).  Defer to the first real sibling — a
+                    // leading-comma element, or a same-column statement — to fix
+                    // the baseline instead.
                     frame.baseline = Some(col);
                 }
                 // If same physical line as opener, do nothing (no baseline yet).
@@ -334,6 +347,21 @@ fn line_has_top_level_arrow(line_tokens: &[(Token, Span)]) -> bool {
     false
 }
 
+/// Returns `true` if `tok` may lead a continuation line but must NOT continue
+/// a line when it *trails* one.  This is the leading-only set.
+///
+/// The one member is `->` (`Arrow`).  A line that *starts* with `->` is always
+/// completing the previous line — a function signature whose return type wraps
+/// (`fn f (a) (b)\n    -> Ret =`) or a lambda header split across lines.  It is
+/// never the start of a fresh construct, since a `match` arm carries its `->`
+/// *after* the pattern, never at the head of a line.  In trailing position the
+/// opposite holds: `pat ->` and `fn x ->` open a block that the following
+/// indented line belongs to, so `->` stays out of [`is_continuation_operator`]
+/// (which drives the trailing-merge in §5.6).
+fn is_leading_continuation_operator(tok: &Token) -> bool {
+    is_continuation_operator(tok) || matches!(tok, Token::Arrow)
+}
+
 /// Returns `true` if `tok` is a binary infix operator that may lead a
 /// continuation line.  `=` and `->` are intentionally excluded; those
 /// introduce new blocks.
@@ -417,7 +445,7 @@ fn collect_logical_lines(tokens: &[(Token, Span)]) -> Vec<LogicalLine> {
 
         let first_is_continuation = line_tokens
             .first()
-            .is_some_and(|(t, _)| is_continuation_operator(t));
+            .is_some_and(|(t, _)| is_leading_continuation_operator(t));
 
         // §5.6: merge when the previous non-empty line ENDS with a continuation
         // operator — a trailing binary infix operator still needs its right-hand
@@ -917,6 +945,63 @@ mod tests {
         assert!(
             toks.contains(&Token::Newline),
             "sibling statements separated by NEWLINE: {toks:?}"
+        );
+    }
+
+    // ── continuation-line layout (wrapped signatures, nested lists) ──────────
+
+    /// A `fn` signature whose return type wraps onto a `->`-leading line joins
+    /// that line to the header instead of opening a stray INDENT block that the
+    /// body then dedents out of inconsistently.
+    #[test]
+    fn wrapped_signature_return_type_joins_header() {
+        let src = "fn seed (a: Int) (b: Int)\n        -> Result Unit Error =\n    let x = a\n    x";
+        let (toks, errs) = tokens_with_errors(src);
+        assert!(
+            errs.is_empty(),
+            "wrapped signature must not raise a layout error: {errs:?}"
+        );
+        // Only the fn body opens a block; the `->` line no longer INDENTs.
+        assert_eq!(
+            toks.iter().filter(|t| **t == Token::Indent).count(),
+            1,
+            "only the fn body should INDENT: {toks:?}"
+        );
+        // The `->` follows the parameter list with no intervening layout token.
+        assert!(
+            toks.windows(2)
+                .any(|w| w[0] == Token::RParen && w[1] == Token::Arrow),
+            "`->` should sit right after the last param's `)`: {toks:?}"
+        );
+    }
+
+    /// A `->`-leading line joins its predecessor, but a `->` that *trails* a
+    /// line (a `match` arm, a lambda header) still opens a block — the leading
+    /// and trailing roles of `->` stay distinct.
+    #[test]
+    fn trailing_arrow_still_opens_a_block() {
+        let src = "fn f =\n    match xs\n        A ->\n            body";
+        // fn body + match arms + arm body = 3 INDENTs; trailing `->` must not
+        // have merged the arm body onto the arm line.
+        assert_eq!(indents(src), 3, "{:?}", tokens(src));
+    }
+
+    /// A list whose elements carry a nested `[ … ]` argument that opens on the
+    /// next indented line stays a flat, comma-separated stream: no spurious
+    /// NEWLINE splits an element from its bracketed argument.
+    #[test]
+    fn nested_list_arg_on_continuation_line_emits_no_newline() {
+        let src = "fn migrations () -> List Int =\n    [ mig \"0001\"\n        [ createSchema ]\n    , mig \"0002\"\n        [ createIndex ] ]";
+        let toks = tokens(src);
+        assert_eq!(
+            toks.iter().filter(|t| **t == Token::Newline).count(),
+            0,
+            "a nested-bracket continuation must not inject a NEWLINE inside the list: {toks:?}"
+        );
+        assert_eq!(
+            toks.iter().filter(|t| **t == Token::Indent).count(),
+            1,
+            "only the fn body may INDENT: {toks:?}"
         );
     }
 }

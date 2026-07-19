@@ -1309,7 +1309,15 @@ pub fn lower_derived_instance(
         body,
         origin: NodeId(0),
         span: sp,
-        is_pub: false,
+        // Exported so a consumer module can reach it cross-module. The dict
+        // const that references this method is already exported for cross-module
+        // instance dispatch, and a derived codec for a type with a field from
+        // another module calls that module's `Encode__T__encode`/`Decode__T__decode`
+        // directly — a private method would fail at runtime as an undefined
+        // function. (Explicitly-written and delegated instance methods stay
+        // private for now; the same cross-module nesting through those is a
+        // narrower, separate case.)
+        is_pub: true,
         is_main: false,
         doc: None,
     };
@@ -2565,6 +2573,37 @@ fn build_encode_union_arm_body(
     }
 }
 
+/// Pick the symbol reference for a call to a nested type's derived codec
+/// function (`Encode__T__encode` / `Decode__T__decode`).
+///
+/// A type declared in another module is invoked cross-module through
+/// `SymbolRef::External` — its `def_module_raw` differs from the current
+/// module. A same-module type, or a builtin (which has no `def_module_raw`),
+/// stays a `Local` reference resolved at codegen time. Without this, a record
+/// deriving `Encode`/`Decode` whose field type lives in another module emitted
+/// a bare local call to a function that is not in the current BEAM module, which
+/// erlc rejected as an undefined function.
+fn nested_codec_symbol(
+    ctx: &LowerCtx<'_>,
+    tycon: ridge_types::TyConId,
+    fn_name: String,
+) -> SymbolRef {
+    let producer = ctx
+        .workspace
+        .and_then(|ws| ws.tycons.get(tycon.0 as usize))
+        .and_then(|d| d.def_module_raw);
+    match producer {
+        Some(m) if m != ctx.module_id.0 => SymbolRef::External {
+            module: ridge_resolve::ModuleId(m),
+            name: fn_name,
+        },
+        _ => SymbolRef::Local {
+            name: fn_name,
+            module: ctx.module_id,
+        },
+    }
+}
+
 /// Structural `encode_shape` — recursively emits the IR expression that encodes
 /// `value_expr` according to its [`FieldShape`].
 ///
@@ -2856,16 +2895,14 @@ fn encode_shape(
         // is correct for same-module usage and will produce a clear "undefined
         // function" BEAM error if a cross-module type is used — no silent
         // pass-through that corrupts JSON.
-        FieldShape::User { type_name, .. } => {
+        FieldShape::User { tycon, type_name } => {
             let fn_name = format!("Encode__{type_name}__encode");
+            let sym = nested_codec_symbol(ctx, *tycon, fn_name);
             IrExpr::Call {
                 id: ctx.fresh_id(None),
                 callee: Box::new(IrExpr::Symbol {
                     id: ctx.fresh_id(None),
-                    sym: SymbolRef::Local {
-                        name: fn_name,
-                        module: ctx.module_id,
-                    },
+                    sym,
                     span: sp,
                 }),
                 args: vec![value_expr],
@@ -4168,16 +4205,14 @@ fn decode_shape(
         }
 
         // ── User type → Decode__{TypeName}__decode(j) ────────────────────────
-        FieldShape::User { type_name, .. } => {
+        FieldShape::User { tycon, type_name } => {
             let fn_name = format!("Decode__{type_name}__decode");
+            let sym = nested_codec_symbol(ctx, *tycon, fn_name);
             IrExpr::Call {
                 id: ctx.fresh_id(None),
                 callee: Box::new(IrExpr::Symbol {
                     id: ctx.fresh_id(None),
-                    sym: SymbolRef::Local {
-                        name: fn_name,
-                        module: ctx.module_id,
-                    },
+                    sym,
                     span: sp,
                 }),
                 args: vec![json_expr],

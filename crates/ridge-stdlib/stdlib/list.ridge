@@ -172,6 +172,21 @@ pub fn find (p: fn a -> Bool) (xs: List a) -> Option a =
             if p x then Some x
             else find p rest
 
+-- Split `xs` into (elements that satisfy `p`, elements that do not), each kept
+-- in the original order.
+pub fn partition (p: fn a -> Bool) (xs: List a) -> (List a, List a) =
+    match xs
+        []        -> ([], [])
+        x :: rest ->
+            let (yes, no) = partition p rest
+            if p x then (x :: yes, no)
+            else (yes, x :: no)
+
+-- Remove duplicate elements, keeping the first occurrence of each (structural
+-- equality). Runs in O(n^2); for large inputs build a `Set` instead.
+pub fn unique (xs: List a) -> List a =
+    reverse (fold (fn seen x -> if contains x seen then seen else x :: seen) [] xs)
+
 -- Return true if any element satisfies the predicate.
 @ffi("lists", "any", 2)
 pub fn any (p: fn a -> Bool) (xs: List a) -> Bool

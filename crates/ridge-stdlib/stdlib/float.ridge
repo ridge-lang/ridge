@@ -61,6 +61,19 @@ pub fn sqrt (f: Float) -> Float
 @ffi("erlang", "abs", 1)
 pub fn abs (f: Float) -> Float
 
+-- Smaller of two floats.
+pub fn min (a: Float) (b: Float) -> Float =
+    if a <= b then a else b
+
+-- Larger of two floats.
+pub fn max (a: Float) (b: Float) -> Float =
+    if a >= b then a else b
+
+-- Raise `base` to the power `exp` (IEEE 754 double), via BEAM math:pow/2.
+-- For an integer base and exponent that must stay exact, use `std.int.pow`.
+@ffi("math", "pow", 2)
+pub fn pow (base: Float) (exp: Float) -> Float
+
 -- Addition.
 @ffi("erlang", "+", 2)
 pub fn add (a: Float) (b: Float) -> Float

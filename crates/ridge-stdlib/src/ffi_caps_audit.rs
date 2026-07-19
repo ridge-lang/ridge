@@ -188,6 +188,12 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         arity: 1,
         requires_caps: &[],
     },
+    FfiAuditEntry {
+        beam_module: "math",
+        fn_name: "pow",
+        arity: 2,
+        requires_caps: &[],
+    },
     // ── binary (text ops) ─────────────────────────────────────────────────────
     FfiAuditEntry {
         beam_module: "binary",

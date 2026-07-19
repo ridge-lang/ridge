@@ -56,6 +56,14 @@ pub fn withDefault (d: a) (r: Result a e) -> a =
         Ok v  -> v
         Err _ -> d
 
+-- Keep this Result when it is Ok, otherwise fall back to `alt`. The fallback's
+-- error type may differ, since the original Err is discarded. `alt` is evaluated
+-- eagerly (like `withDefault`).
+pub fn orElse (alt: Result a e2) (r: Result a e) -> Result a e2 =
+    match r
+        Ok v  -> Ok v
+        Err _ -> alt
+
 -- Return true if the Result is Ok.
 pub fn isOk (r: Result a e) -> Bool =
     match r

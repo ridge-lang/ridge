@@ -301,8 +301,8 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         (STD_FLOAT, "fromInt") => Some(mono(ty_fn_pure(vec![ty_int(b)], ty_float(b)))),
         // T12: parseStrict — Text -> Float (no Option — may panic on bad input).
         (STD_FLOAT, "parseStrict") => Some(mono(ty_fn_pure(vec![ty_text(b)], ty_float(b)))),
-        // T12: binary Float -> Float -> Float (add, sub, mul, div).
-        (STD_FLOAT, "add" | "sub" | "mul" | "div") => {
+        // T12: binary Float -> Float -> Float (add, sub, mul, div, min, max, pow).
+        (STD_FLOAT, "add" | "sub" | "mul" | "div" | "min" | "max" | "pow") => {
             Some(mono(ty_fn_pure(vec![ty_float(b), ty_float(b)], ty_float(b))))
         }
         // totalCompare: Float -> Float -> Int  (returns -1 / 0 / 1)
@@ -593,6 +593,27 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                     ],
                     ty_list(b, Type::Var(A)),
                 ),
+            ))
+        }
+        (STD_LIST, "partition") => {
+            // forall a c. (fn c (a -> Bool)) -> List a -> (List a, List a)
+            Some(poly_cap(
+                vec![A],
+                vec![CAP_C],
+                ty_fn_pure(
+                    vec![
+                        ty_fn_cap_var(vec![Type::Var(A)], ty_bool(b), CAP_C),
+                        ty_list(b, Type::Var(A)),
+                    ],
+                    Type::Tuple(vec![ty_list(b, Type::Var(A)), ty_list(b, Type::Var(A))]),
+                ),
+            ))
+        }
+        (STD_LIST, "unique") => {
+            // forall a. List a -> List a
+            Some(poly(
+                vec![A],
+                ty_fn_pure(vec![ty_list(b, Type::Var(A))], ty_list(b, Type::Var(A))),
             ))
         }
         (STD_LIST, "filterMap") => {
@@ -1237,6 +1258,19 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                 ty_fn_pure(
                     vec![Type::Var(A), ty_result(b, Type::Var(A), Type::Var(B_VAR))],
                     Type::Var(A),
+                ),
+            ))
+        }
+        (STD_RESULT, "orElse") => {
+            // forall a e e2. Result a e2 -> Result a e -> Result a e2
+            Some(poly(
+                vec![A, B_VAR, C_VAR],
+                ty_fn_pure(
+                    vec![
+                        ty_result(b, Type::Var(A), Type::Var(C_VAR)),
+                        ty_result(b, Type::Var(A), Type::Var(B_VAR)),
+                    ],
+                    ty_result(b, Type::Var(A), Type::Var(C_VAR)),
                 ),
             ))
         }

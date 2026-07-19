@@ -500,8 +500,11 @@ pub class Orderable q p | q -> p =
 -- fractional even over an integer column. The class ties the accessor's arity to
 -- the receiver through the functional dependency `q -> p`, so one set of verbs
 -- serves a query and a join alike and a wrong-arity accessor is a compile-time
--- error. Ordering and paging do not bound an aggregate — only the filter (and,
--- on a join, the join condition) narrows the folded rows.
+-- error. A `limit`/`offset` bounds the fold to that ordered window — `orderBy |>
+-- limit n |> sumOf` folds the top `n` rows, the way `Take(n).Sum()` does — so when a
+-- page is set the ordering decides which rows the aggregate sees. Without a page the
+-- filter (and, on a join, the join condition) alone narrows the folded rows and the
+-- ordering is immaterial to the fold.
 pub class Aggregable q p | q -> p =
     sumOf (column: Quote p) (x: q) -> Result (Option (Ret p)) Error
     avgOf (column: Quote p) (x: q) -> Result (Option Float)   Error
@@ -1690,10 +1693,13 @@ fn avgFuncFor (tree: QExpr) -> Text =
         _                 -> "AVG"
 
 -- The scalar-aggregate plan a single-table `sumOf`/`avgOf`/`minOf`/`maxOf` runs: a
--- `PlanAggregate` over the table's filtered scan, folding the named column. Leaf 0 —
--- a single table has one source, and the renderer reads the column bare.
+-- `PlanAggregate` over the table's scan, carrying the query's filter, ordering, and
+-- page, folding the named column. When the query is paged the aggregate folds only
+-- that window (the renderer wraps the paged scan as a subquery); unpaged, it folds
+-- every matched row. Leaf 0 — a single table has one source, and the renderer reads
+-- the column bare.
 fn queryScalarPlan (x: Query e a) (func: Text) (column: QExpr) -> QueryPlan =
-    planAggregate func column 0 (planScan x.repo.table x.pred.tree [] (0 - 1) 0 false)
+    planAggregate func column 0 (planScan x.repo.table x.pred.tree x.orders x.lim x.off x.dist)
 
 -- A query's scalar aggregates: fold the column the one-row accessor names over
 -- the rows the query's filter selects, through a `PlanAggregate` over the table's
@@ -2043,11 +2049,13 @@ instance Every (Seq a) (fn a -> Bool) =
 -- The scalar-aggregate plan a `sumOf`/`avgOf`/`minOf`/`maxOf` over a sequence runs: a
 -- `PlanAggregate` over the filtered inline rows, folding the column the accessor names
 -- (`aggColumn`). A single-leaf accessor names leaf 0, and the interpreter reads the bare
--- column off the unprefixed rows. The child carries only the filter (`seqCountPlan`'s
--- unbounded plan): ordering and paging do not bound an aggregate, exactly as a query's
--- aggregate folds only its filtered rows.
+-- column off the unprefixed rows. The child refine carries the sequence's filter,
+-- ordering, and page, so a paged sequence folds only that window and an unpaged one folds
+-- every matched row — the in-memory dual of the query's paged aggregate. The interpreter
+-- paginates a `PlanRefine` before the aggregate folds it, so propagating the page here is
+-- all the mem backend needs.
 fn seqScalarPlan (x: Seq a) (func: Text) (col: Quote (fn a -> n)) -> QueryPlan =
-    planAggregate func (aggColumn col) (aggLeaf col) (seqCountPlan x (0 - 1))
+    planAggregate func (aggColumn col) (aggLeaf col) (planRefine x.source x.pred.tree x.orders x.lim x.off x.dist)
 
 -- The scalar aggregates over an in-memory sequence: fold the column the one-row accessor
 -- names over the rows the sequence's filter selects, through the same `PlanAggregate` node
@@ -2155,6 +2163,15 @@ fn fullJoinSelectPlan (x: FullJoin e f a) (proj: QExpr) (lim: Int) -> QueryPlan 
 fn reduceJoinOf (kind: Text) (leftTable: Text) (leftPred: QExpr) (rightTable: Text) (cond: QExpr) (where2: QExpr) (lim: Int) -> QueryPlan =
     planJoin kind (planScan leftTable leftPred [] (0 - 1) 0 false) (planScan rightTable (keepAllTree ()) [] (0 - 1) 0 false) cond where2 [] lim 0 false [] []
 
+-- The paged dual of `reduceJoinOf`, carrying the join's ordering and page so a scalar
+-- aggregate over a paged join folds only that window. `count`/`exists` keep the unpaged
+-- `reduceJoinOf` — they measure the matched set, not a window of it. `distinct` is left
+-- off (the join aggregate never deduplicates its rows): the SQL fold reads the window's
+-- rows through a subquery that carries no row columns to distinct on, so honouring it
+-- would diverge from the in-memory fold. That gap predates paging and is tracked apart.
+fn pagedReduceJoinOf (kind: Text) (leftTable: Text) (leftPred: QExpr) (rightTable: Text) (cond: QExpr) (where2: QExpr) (orders: List (Bool, Int, QExpr)) (lim: Int) (off: Int) -> QueryPlan =
+    planJoin kind (planScan leftTable leftPred [] (0 - 1) 0 false) (planScan rightTable (keepAllTree ()) [] (0 - 1) 0 false) cond where2 orders lim off false [] []
+
 -- The outer-shape reduction-join wrappers, the duals of `reduceJoin` over a
 -- `LeftJoin`/`RightJoin`/`FullJoin`. The join `kind` keeps the outer rows; an
 -- unmatched side comes back with its columns absent, so a fold over that side skips
@@ -2212,13 +2229,13 @@ fn aggCount (rows: List (Map Text SqlValue)) -> Result Int Error =
 -- The outer-shape scalar-aggregate plans. A fold over
 -- an unmatched side reads its column as absent (SQL NULL) and skips it.
 fn leftScalarPlan (x: LeftJoin e f a) (func: Text) (col: Quote p) -> QueryPlan =
-    planAggregate func (aggColumn col) (aggLeaf col) (leftReduceJoin x x.where2.tree (0 - 1))
+    planAggregate func (aggColumn col) (aggLeaf col) (pagedReduceJoinOf "LEFT" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off)
 
 fn rightScalarPlan (x: RightJoin e f a) (func: Text) (col: Quote p) -> QueryPlan =
-    planAggregate func (aggColumn col) (aggLeaf col) (rightReduceJoin x x.where2.tree (0 - 1))
+    planAggregate func (aggColumn col) (aggLeaf col) (pagedReduceJoinOf "RIGHT" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off)
 
 fn fullScalarPlan (x: FullJoin e f a) (func: Text) (col: Quote p) -> QueryPlan =
-    planAggregate func (aggColumn col) (aggLeaf col) (fullReduceJoin x x.where2.tree (0 - 1))
+    planAggregate func (aggColumn col) (aggLeaf col) (pagedReduceJoinOf "FULL" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off)
 
 -- The base reduction plan a composite terminal (`count`/`exists`/`every`) folds over:
 -- the whole nested join carrying its condition and post-join WHERE, with neither
@@ -2227,6 +2244,13 @@ fn fullScalarPlan (x: FullJoin e f a) (func: Text) (col: Quote p) -> QueryPlan =
 -- source's left-nested plan comes from `JoinShape`, the new leaf its scan and columns.
 fn compositeReducePlan (kind: Text) (sourcePlan: QueryPlan) (rightTable: Text) (cond: QExpr) (where2: QExpr) (lim: Int) (rightCols: List Text) -> QueryPlan =
     planJoin kind sourcePlan (planScan rightTable (keepAllTree ()) [] (0 - 1) 0 false) cond where2 [] lim 0 false [] rightCols
+
+-- The paged dual of `compositeReducePlan`, carrying the composite's ordering and page so
+-- a scalar aggregate over a paged composite join folds only that window. `count`/`exists`
+-- keep the unpaged form — they measure the matched set, not a window. `distinct` is left
+-- off for the same reason as `pagedReduceJoinOf`: the join aggregate never deduplicates.
+fn pagedCompositeReducePlan (kind: Text) (sourcePlan: QueryPlan) (rightTable: Text) (cond: QExpr) (where2: QExpr) (orders: List (Bool, Int, QExpr)) (lim: Int) (off: Int) (rightCols: List Text) -> QueryPlan =
+    planJoin kind sourcePlan (planScan rightTable (keepAllTree ()) [] (0 - 1) 0 false) cond where2 orders lim off false [] rightCols
 
 -- The per-shape reduction-join wrappers, one per composite. Each unpacks its receiver
 -- (the four composites are distinct opaque types that cannot share a typed helper) and
@@ -2271,16 +2295,16 @@ fn compositeNotExists (conn: a) (plan: QueryPlan) -> Result Bool Error where Ada
 -- (`aggColumn`) on whichever leaf it belongs to (`aggLeaf` — 0/1 for the first two
 -- tables, higher for a deeper one). One per shape, the kind carried by the reduction.
 fn joinedScalarPlan (x: Joined q f a) (func: Text) (col: Quote p) -> QueryPlan where JoinShape q, Row f =
-    planAggregate func (aggColumn col) (aggLeaf col) (joinedReducePlan x x.where2.tree (0 - 1))
+    planAggregate func (aggColumn col) (aggLeaf col) (pagedCompositeReducePlan "INNER" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off (rowColumns (entityWitness x.right)))
 
 fn leftScalarComposite (x: LeftJoined q f a) (func: Text) (col: Quote p) -> QueryPlan where JoinShape q, Row f =
-    planAggregate func (aggColumn col) (aggLeaf col) (leftReducePlan x x.where2.tree (0 - 1))
+    planAggregate func (aggColumn col) (aggLeaf col) (pagedCompositeReducePlan "LEFT" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off (rowColumns (entityWitness x.right)))
 
 fn rightScalarComposite (x: RightJoined q f a) (func: Text) (col: Quote p) -> QueryPlan where JoinShape q, Row f =
-    planAggregate func (aggColumn col) (aggLeaf col) (rightReducePlan x x.where2.tree (0 - 1))
+    planAggregate func (aggColumn col) (aggLeaf col) (pagedCompositeReducePlan "RIGHT" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off (rowColumns (entityWitness x.right)))
 
 fn fullScalarComposite (x: FullJoined q f a) (func: Text) (col: Quote p) -> QueryPlan where JoinShape q, Row f =
-    planAggregate func (aggColumn col) (aggLeaf col) (fullReducePlan x x.where2.tree (0 - 1))
+    planAggregate func (aggColumn col) (aggLeaf col) (pagedCompositeReducePlan "FULL" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off (rowColumns (entityWitness x.right)))
 
 -- The query plan a composite `select` runs: a `PlanProject` over the whole nested join.
 -- The inner join keeps the composite's ordering but defers its page and distinct to the

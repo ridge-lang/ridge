@@ -633,6 +633,30 @@ pub fn db computedSum () -> Int =
                 Ok None     -> 0 - 3
                 Ok (Some n) -> n
 
+-- paged aggregate (single table): the two oldest ages summed -> 30 + 25 = 55. A
+-- `limit` before a scalar aggregate bounds the fold to that ordered window, so the
+-- youngest (18) is left out. Without the page the sum would be 18 + 30 + 25 = 73.
+pub fn db pagedTopSum () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.query |> Repo.orderBy Desc (fn (u: User) -> u.age) |> Repo.limit 2 |> Repo.sumOf (fn (u: User) -> u.age)
+                Err _       -> 0 - 2
+                Ok None     -> 0 - 3
+                Ok (Some n) -> n
+
+-- paged aggregate (join): fold the age of the single highest-`id` post's author ->
+-- post 12 (lin, 30). A `limit` before a join aggregate bounds the fold to that
+-- ordered window; without it the sum folds every pair (lin 30 + max 25 + lin 30 = 85).
+pub fn db pagedJoinTopSum () -> Int =
+    match setupJoin ()
+        Err _ -> 0 - 1
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.orderBy Desc (fn (u: User) (p: Post) -> p.id) |> Repo.limit 1 |> Repo.sumOf (fn (u: User) (p: Post) -> u.age)
+                Err _       -> 0 - 2
+                Ok None     -> 0 - 3
+                Ok (Some n) -> n
+
 -- Open one store, bind a users and a posts repository to it (so the join sees
 -- both tables), and seed three users and three posts. Post `author` references a
 -- user id: lin (id 2) owns "hello" and "again", max (id 3) owns "world", ada
@@ -2614,6 +2638,8 @@ fn repo_surface_runs_on_beam() {
          io:format(\"taggedAges=~s~n\",[{module}:taggedAges()]), \
          io:format(\"computedOrder=~s~n\",[{module}:computedOrder()]), \
          io:format(\"computedSum=~w~n\",[{module}:computedSum()]), \
+         io:format(\"pagedTopSum=~w~n\",[{module}:pagedTopSum()]), \
+         io:format(\"pagedJoinTopSum=~w~n\",[{module}:pagedJoinTopSum()]), \
          io:format(\"joinedNames=~s~n\",[{module}:joinedNames()]), \
          io:format(\"joinCalcCodes=~s~n\",[{module}:joinCalcCodes()]), \
          io:format(\"joinedTitles=~s~n\",[{module}:joinedTitles()]), \
@@ -2817,6 +2843,14 @@ fn repo_surface_runs_on_beam() {
         (
             "computedSum=146",
             "the in-memory backend folds an arithmetic expression in an aggregate",
+        ),
+        (
+            "pagedTopSum=55",
+            "a limit before a scalar aggregate bounds the fold to its ordered top-N window",
+        ),
+        (
+            "pagedJoinTopSum=30",
+            "a limit before a join aggregate bounds the fold to its ordered top-N window",
         ),
         (
             "joinedNames=lin:hello,lin:again,max:world",

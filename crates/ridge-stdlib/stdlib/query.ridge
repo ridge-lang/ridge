@@ -1017,6 +1017,13 @@ fn limitClause (lim: Int) -> Text = if lim >= 0 then Text.concat " LIMIT " (Int.
 
 fn offsetClause (off: Int) -> Text = if off > 0 then Text.concat " OFFSET " (Int.toText off) else ""
 
+-- Whether an aggregate's child scan carries a page, in which case the aggregate folds
+-- only the paged window (rendered as a subquery) rather than every matched row. A
+-- negative `lim` means no limit and a non-positive `off` means no offset, matching
+-- `limitClause`/`offsetClause`; ordering alone (no limit or offset) does not bound a
+-- fold, so it does not count as paged.
+fn isAggregatePaged (lim: Int) (off: Int) -> Bool = lim >= 0 || off > 0
+
 fn dirKw (asc: Bool) -> Text = if asc then "ASC" else "DESC"
 
 -- ORDER BY for a single-table scan: each `(ascending?, key)` rendered with its
@@ -1887,23 +1894,47 @@ fn joinSelectTerm (alias: Text) (col: QExpr) (n: Int) -> { text: Text, binds: Li
 -- folds every joined row.
 fn renderAggregate (d: Dialect) (func: Text) (column: QExpr) (leaf: Int) (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match child
-        PlanJoin kind left right cond where2 _ _ _ _ _ _ ->
-            match left
-                PlanScan lt lp _ _ _ _ ->
-                    match right
-                        PlanScan rt _ _ _ _ _ ->
-                            let ax = aggExprJoinE d func column n
-                            let sk = joinSkeleton kind lt lp rt cond where2 false ax.next
-                            { text = Text.join "" ["SELECT ", ax.text, " FROM ", sk.text], binds = ax.binds ++ sk.binds, next = sk.next }
-                        _ -> naryAggregate d func leaf column child n
-                _ -> naryAggregate d func leaf column child n
-        PlanScan table pred _ _ _ _ ->
-            -- A scalar aggregate over a single table: fold over the table's filtered rows.
-            -- The WHERE compiles bare, or base-qualified (`FROM "t" AS l`) when it carries a
-            -- correlated EXISTS, so the subquery names the outer row as `l."col"` — the same
-            -- aliasing a plain `PlanScan` uses. No ordering or paging: an aggregate folds
-            -- every matched row.
-            if containsExists pred then
+        PlanJoin kind left right cond where2 orders lim off _ _ _ ->
+            if isAggregatePaged lim off then
+                -- A paged join aggregate folds only the ordered/paged window: select the
+                -- folded value as a single `"v"` column over the join's own FROM/WHERE (its
+                -- ordering and page intact), then aggregate that subquery. The operand is
+                -- rendered inside the join's alias scope, so a column, an arithmetic
+                -- expression, or a conditional over either side all resolve as they do
+                -- unpaged.
+                match left
+                    PlanScan lt lp _ _ _ _ ->
+                        match right
+                            PlanScan rt _ _ _ _ _ ->
+                                let op = renderOperand true column n
+                                let sk = joinSkeleton kind lt lp rt cond where2 false op.next
+                                let ob = orderByClauseJoin orders sk.next
+                                { text = Text.join "" ["SELECT ", aggApply d func (quoteIdent "v"), " FROM (SELECT ", op.text, " AS ", quoteIdent "v", " FROM ", sk.text, ob.text, limitClause lim, offsetClause off, ") AS ridge_agg"], binds = op.binds ++ sk.binds ++ ob.binds, next = ob.next }
+                            _ -> naryAggregatePaged d func leaf column child orders lim off n
+                    _ -> naryAggregatePaged d func leaf column child orders lim off n
+            else
+                match left
+                    PlanScan lt lp _ _ _ _ ->
+                        match right
+                            PlanScan rt _ _ _ _ _ ->
+                                let ax = aggExprJoinE d func column n
+                                let sk = joinSkeleton kind lt lp rt cond where2 false ax.next
+                                { text = Text.join "" ["SELECT ", ax.text, " FROM ", sk.text], binds = ax.binds ++ sk.binds, next = sk.next }
+                            _ -> naryAggregate d func leaf column child n
+                    _ -> naryAggregate d func leaf column child n
+        PlanScan table pred _ lim off _ ->
+            -- A scalar aggregate over a single table. When the query is paged, fold only
+            -- the ordered/paged window: render the scan in full (its ORDER BY / LIMIT /
+            -- OFFSET intact) and aggregate over it as a subquery — the `Take(n).Sum()`
+            -- shape. Unpaged, fold every matched row directly: the WHERE compiles bare, or
+            -- base-qualified (`FROM "t" AS l`) when it carries a correlated EXISTS, so the
+            -- subquery names the outer row as `l."col"`; ordering is irrelevant to a bare
+            -- fold, so it is left off.
+            if isAggregatePaged lim off then
+                let ax = aggExprSingle d false func column n
+                let inner = renderPlan d child ax.next
+                { text = Text.join "" ["SELECT ", ax.text, " FROM (", inner.text, ") AS ridge_agg"], binds = ax.binds ++ inner.binds, next = inner.next }
+            else if containsExists pred then
                 let ax = aggExprSingle d true func column n
                 let w = whereExistsClause true 1 pred ax.next
                 { text = Text.join "" ["SELECT ", ax.text, " FROM ", quoteIdent table, " AS l", w.text], binds = ax.binds ++ w.binds, next = w.next }
@@ -1940,6 +1971,29 @@ fn naryAggregate (d: Dialect) (func: Text) (leaf: Int) (column: QExpr) (child: Q
                 let from = mixedFrom f.leaves f.steps nulls false ax.next
                 let wh = mixedWhere f.leaves f.steps nulls from.next
                 { text = Text.join "" ["SELECT ", ax.text, " FROM ", from.text, wh.text], binds = ax.binds ++ from.binds ++ wh.binds, next = wh.next }
+
+-- The paged dual of `naryAggregate`: a scalar aggregate over a composite join that
+-- carries a page. The folded value is selected as a single `"v"` column over the
+-- spine's FROM/WHERE with the composite's ordering and page applied, then aggregated
+-- over that subquery, so the fold sees only the paged window. The operand renders
+-- leaf-qualified inside the spine, exactly as the unpaged form folds it.
+fn naryAggregatePaged (d: Dialect) (func: Text) (leaf: Int) (column: QExpr) (child: QueryPlan) (orders: List (Bool, Int, QExpr)) (lim: Int) (off: Int) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let f = flattenJoin child
+    match f.leaves
+        [] -> emptyRender n
+        _  ->
+            let op = qualOperand leaf column n
+            if allInnerSteps f.steps then
+                let from = naryFrom f.leaves f.steps op.next
+                let wh = naryWhere f.leaves f.steps from.next
+                let ob = naryOrderBy orders wh.next
+                { text = Text.join "" ["SELECT ", aggApply d func (quoteIdent "v"), " FROM (SELECT ", op.text, " AS ", quoteIdent "v", " FROM ", from.text, wh.text, ob.text, limitClause lim, offsetClause off, ") AS ridge_agg"], binds = op.binds ++ from.binds ++ wh.binds ++ ob.binds, next = ob.next }
+            else
+                let nulls = nullableLeaves f.steps
+                let from = mixedFrom f.leaves f.steps nulls false op.next
+                let wh = mixedWhere f.leaves f.steps nulls from.next
+                let ob = naryOrderBy orders wh.next
+                { text = Text.join "" ["SELECT ", aggApply d func (quoteIdent "v"), " FROM (SELECT ", op.text, " AS ", quoteIdent "v", " FROM ", from.text, wh.text, ob.text, limitClause lim, offsetClause off, ") AS ridge_agg"], binds = op.binds ++ from.binds ++ wh.binds ++ ob.binds, next = ob.next }
 
 -- The aggregate expression over a composite join: `COUNT(*)` counts the joined rows;
 -- a column-folding aggregate folds its captured value (a column or a computed

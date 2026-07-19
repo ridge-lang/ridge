@@ -272,7 +272,8 @@ pub fn corrNotExistsSql () -> Text =
 
 -- Single-table aggregates over the plan: a `PlanAggregate` over a bare `PlanScan`.
 -- `COUNT(*)` counts the filtered rows; a column fold renders the bare column; `AVG`
--- casts to `float8`. None is ordered or paged — an aggregate folds every matched row.
+-- casts to `float8`. An unpaged fold reads every matched row directly; a paged one
+-- (`singleSumPagedSql`) wraps the ordered, limited scan as a subquery and folds that.
 pub fn singleCountSql () -> Text =
     renderSql (planAggregate "COUNT" (keepAll ()) 0 (adultsScan ()))
 
@@ -281,6 +282,11 @@ pub fn singleSumSql () -> Text =
 
 pub fn singleAvgSql () -> Text =
     renderSql (planAggregate "AVG" (QCol "age") 0 (adultsScan ()))
+
+-- A paged single-table aggregate folds only the ordered/paged window: the scan renders
+-- in full (ORDER BY / LIMIT intact) and the fold wraps it as a subquery.
+pub fn singleSumPagedSql () -> Text =
+    renderSql (planAggregate "SUM" (QCol "age") 0 (planScan "users" (pred1 (fn (u: User) -> u.age >= 18)) [(true, QCol "age")] 2 0 false))
 
 -- A single-table aggregate whose filter carries a correlated EXISTS: the scan aliases
 -- its table `l` so the subquery names the outer row, exactly as a plain `PlanScan` does.
@@ -427,6 +433,12 @@ pub fn projectCaseJoinSql () -> Text =
 
 pub fn aggSql () -> Text =
     renderSql (planAggregate "AVG" (col2 (fn (u: User) (p: Post) -> p.author)) 1 (wrapJoin ()))
+
+-- A paged join aggregate folds only the ordered/paged window: the folded value is
+-- selected as a single `"v"` column over the join with its page intact, then aggregated
+-- as a subquery. `col2 (fn u p -> u.age)` names the left leaf, so it renders `l."age"`.
+pub fn joinSumPagedSql () -> Text =
+    renderSql (planAggregate "SUM" (col2 (fn (u: User) (p: Post) -> u.age)) 0 (planJoin "INNER" (usersScan ()) (postsScan ()) (joinCond ()) (keepAllJoin ()) [] 2 0 false [] []))
 
 pub fn groupSql () -> Text =
     renderSql (planGroup "author" 1 [("author", "KEY", keepAllJoin (), 1), ("n", "COUNT", keepAllJoin (), 0)] (keepAllJoin ()) (wrapJoin ()))
@@ -847,7 +859,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','singleCountSql','singleSumSql','singleAvgSql','singleCountExistsSql','singleProjectSql','singleProjectExistsSql','singleProjectPagedSql','singleGroupSql','singleGroupHavingSql','singleGroupHavingBinds','singleGroupExistsSql','singleGroupAvgIntervalSql','singleGroupAvgIntervalHavingSql','joinExistsWhereSql','naryExistsWhereSql','nestedExistsSql','pgNestedSql','pgNestedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql','insertSql','insertBinds','insertManySql','insertManyBinds','updateSql','updateBinds','deleteSql','existsDeleteSql','existsDeleteBinds','deleteKeysSql','deleteKeysBinds','deleteKeysCompositeSql','existsUpdateSql','existsUpdateBinds','upsertSql','upsertBinds','insertOrIgnoreSql','upsertBareSql','insertReturningStarSql','insertReturningStarBinds','insertReturningColsSql','deleteReturningSql','updateReturningSql','upsertReturningSql','sqliteSingleSumSql','sqliteSingleAvgSql','sqliteSingleGroupSql','sqliteGroupAvgIntervalSql','sqliteGroupAvgIntervalHavingSql','sqliteAggSql','sqliteAvgThreeSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','singleCountSql','singleSumSql','singleAvgSql','singleSumPagedSql','singleCountExistsSql','singleProjectSql','singleProjectExistsSql','singleProjectPagedSql','singleGroupSql','singleGroupHavingSql','singleGroupHavingBinds','singleGroupExistsSql','singleGroupAvgIntervalSql','singleGroupAvgIntervalHavingSql','joinExistsWhereSql','naryExistsWhereSql','nestedExistsSql','pgNestedSql','pgNestedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','joinSumPagedSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql','insertSql','insertBinds','insertManySql','insertManyBinds','updateSql','updateBinds','deleteSql','existsDeleteSql','existsDeleteBinds','deleteKeysSql','deleteKeysBinds','deleteKeysCompositeSql','existsUpdateSql','existsUpdateBinds','upsertSql','upsertBinds','insertOrIgnoreSql','upsertBareSql','insertReturningStarSql','insertReturningStarBinds','insertReturningColsSql','deleteReturningSql','updateReturningSql','upsertReturningSql','sqliteSingleSumSql','sqliteSingleAvgSql','sqliteSingleGroupSql','sqliteGroupAvgIntervalSql','sqliteGroupAvgIntervalHavingSql','sqliteAggSql','sqliteAvgThreeSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -894,6 +906,9 @@ fn query_plan_compiles_to_parameterized_sql() {
     want(r#"singleCountSql=SELECT COUNT(*) FROM "users" WHERE "age" >= $1"#);
     want(r#"singleSumSql=SELECT SUM("age") FROM "users" WHERE "age" >= $1"#);
     want(r#"singleAvgSql=SELECT AVG("age")::float8 FROM "users" WHERE "age" >= $1"#);
+    want(
+        r#"singleSumPagedSql=SELECT SUM("age") FROM (SELECT * FROM "users" WHERE "age" >= $1 ORDER BY "age" ASC LIMIT 2) AS ridge_agg"#,
+    );
     want(
         r#"singleCountExistsSql=SELECT COUNT(*) FROM "users" AS l WHERE EXISTS (SELECT 1 FROM "posts" AS x1 WHERE x1."author" = l."id")"#,
     );
@@ -1091,6 +1106,12 @@ fn query_plan_compiles_to_parameterized_sql() {
     // A scalar aggregate over a join: the side-qualified column, AVG cast to float8.
     want(
         r#"aggSql=SELECT AVG(r."author")::float8 FROM "users" AS l JOIN "posts" AS r ON l."id" = r."author""#,
+    );
+
+    // A paged scalar aggregate over a join: the folded value selected as `"v"` over the
+    // join with its LIMIT intact, aggregated over that subquery.
+    want(
+        r#"joinSumPagedSql=SELECT SUM("v") FROM (SELECT l."age" AS "v" FROM "users" AS l JOIN "posts" AS r ON l."id" = r."author" LIMIT 2) AS ridge_agg"#,
     );
 
     // A grouped join: the side-qualified key, COUNT(*), GROUP BY and ORDER BY the key.

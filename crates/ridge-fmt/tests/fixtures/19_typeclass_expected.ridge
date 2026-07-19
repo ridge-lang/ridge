@@ -1,0 +1,9 @@
+-- Show renders a value as text.
+class Show a =
+    show (x: a) -> Text
+
+instance Show Int =
+    show (x: Int) -> Text = Int.toText x
+
+instance Show Bool =
+    show (x: Bool) -> Text = if x && true then "yes" else "no"

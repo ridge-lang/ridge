@@ -366,8 +366,10 @@ fn item_span(item: &Item) -> ridge_ast::Span {
         Item::Type(d) => d.span,
         Item::Fn(d) => d.span,
         Item::Actor(d) => d.span,
-        // Typeclass items are not formatted in this release; return their span
-        // for correct blank-line injection in the surrounding module layout.
+        // Like every other item, class/instance bodies are normalised by the
+        // line-level rules (operator spacing, trailing whitespace, comment
+        // reattachment); the printer does not re-emit any item structurally.
+        // Their spans drive blank-line normalisation in the surrounding layout.
         Item::ClassDecl(d) => d.span,
         Item::InstanceDecl(d) => d.span,
     }

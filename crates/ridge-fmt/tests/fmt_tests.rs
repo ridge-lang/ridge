@@ -1,12 +1,12 @@
 //! Integration tests for `ridge-fmt`.
 //!
 //! Test plan:
-//! - 18 golden fixture tests (input → expected output).
-//! - 18 idempotency tests (format(format(input)) == format(input)).
+//! - 19 golden fixture tests (input → expected output).
+//! - 19 idempotency tests (format(format(input)) == format(input)).
 //! - 1 round-trip integration test (format every `examples/*.ridge` and
 //!   `crates/ridge-stdlib/stdlib/**/*.ridge`, re-parse, assert AST equivalence).
 //!
-//! Total: 37 tests.
+//! Total: 39 tests.
 
 use ridge_fmt::{format_source, migrate_tests};
 
@@ -254,6 +254,23 @@ fn golden_18_body_blanks_preserved() {
 fn idempotent_18_body_blanks() {
     let (input, _) = fixture!("18_bodyblanks");
     assert_idempotent("18_bodyblanks", input);
+}
+
+#[test]
+fn golden_19_typeclasses() {
+    // class and instance bodies are normalised like any other item: line rules
+    // reach inside them (the `->` in a method signature and the `&&` in a method
+    // body get spaced) and blank-line normalisation applies around them (the
+    // over-long run before the first instance collapses to one, the missing run
+    // between the two instances is inserted).
+    let (input, expected) = fixture!("19_typeclass");
+    assert_formats_to("19_typeclass", input, expected);
+}
+
+#[test]
+fn idempotent_19_typeclasses() {
+    let (input, _) = fixture!("19_typeclass");
+    assert_idempotent("19_typeclass", input);
 }
 
 #[test]

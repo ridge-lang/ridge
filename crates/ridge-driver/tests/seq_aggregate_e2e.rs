@@ -6,10 +6,11 @@
 //! Each aggregate folds the column a one-row accessor names over the rows the
 //! sequence's filter selects, and answers that column's own type wrapped in
 //! `Option` (`avgOf` is always `Option Float`), with `None` over an empty fold.
-//! Like the database aggregates, only the filter narrows the folded rows —
-//! ordering and the page do not bound them. The cases below fold a whole
-//! sequence, compose with a filter, confirm a `limit` does not bound the fold,
-//! and confirm an emptied selection folds to `None`. This is also the verb that
+//! Like the database aggregates, the filter narrows the folded rows and a page
+//! bounds them: `limit n` ahead of a fold folds that window, not the whole
+//! selection. The cases below fold a whole sequence, compose with a filter,
+//! confirm a `limit` bounds the fold, and confirm an emptied selection folds to
+//! `None`. This is also the verb that
 //! exercises the interpreter's bare-column aggregate fallback: a single-leaf
 //! `Seq` row carries no `t0$` prefix, so `PlanAggregate` reads the bare column.
 //!
@@ -83,8 +84,8 @@ pub fn maxAge () -> Int =
 pub fn filteredSum () -> Int =
     optIntOf (sample () |> Repo.from |> Repo.filter (fn (u: User) -> u.age >= 30) |> Repo.sumOf (fn (u: User) -> u.age))
 
--- An aggregate ignores the page: a `limit 2` ahead of the fold does not bound it,
--- so the sum is still over all five rows, 177.
+-- An aggregate folds only the page: `limit 2` keeps Ana 34 and Beto 28, so the
+-- sum is 62 rather than all five rows — the `Take(2).Sum()` it reads like.
 pub fn pagedSum () -> Int =
     optIntOf (sample () |> Repo.from |> Repo.limit 2 |> Repo.sumOf (fn (u: User) -> u.age))
 
@@ -210,10 +211,10 @@ fn seq_aggregate_folds_on_beam() {
         stdout.contains("filteredSum=130"),
         "expected `filteredSum=130` — aggregate did not reflect the filter\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
-    // limit 2 then sum: the page does not bound the fold → still 177.
+    // limit 2 then sum: the fold reads only that window → 34 + 28 = 62.
     assert!(
-        stdout.contains("pagedSum=177"),
-        "expected `pagedSum=177` — aggregate was bounded by the page (should ignore it)\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        stdout.contains("pagedSum=62"),
+        "expected `pagedSum=62` — the fold ignored the page and summed every row\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     // An aggregate over an empty selection is None (sentinel -2).
     assert!(

@@ -642,6 +642,33 @@ fn run_unit_main_returns_zero() {
     );
 }
 
+/// A main that crashes must still exit non-zero with the reason on stderr.
+///
+/// `ridge_main_runner` now runs main in its own monitored process instead of
+/// the boot process `-s` hands it, because that process traps exits and turned
+/// a fatal signal into a silent success. This pins the crash path across that
+/// change: the outcome travels back as a message, not as the caller's own
+/// stack, so the projection has to keep working.
+#[test]
+#[cfg(feature = "beam-runtime")]
+fn run_crashing_main_returns_nonzero_with_stderr() {
+    let _guard = PATH_ENV_LOCK.lock().expect("PATH_ENV_LOCK not poisoned");
+
+    let source = "fn main () -> Unit =\n    let d = 0\n    let _ = 10 / d\n    ()\n";
+    let tw = make_workspace("Main", source);
+
+    let result = run_workspace(RunOptions::new(tw.path.clone(), "demo".to_owned()));
+    assert!(
+        result.is_err(),
+        "expected non-zero exit for a crashing main, got Ok"
+    );
+    let err_str = format!("{:?}", result.unwrap_err());
+    assert!(
+        err_str.contains("main crashed") && err_str.contains("badarith"),
+        "expected the crash reason to surface on stderr, got: {err_str}"
+    );
+}
+
 // ── Test 20: capability gate — run aborts on R016 ─────────────────────────────
 
 /// `run_workspace` returns [`RunError::CompileDiagnostics`] when the compile

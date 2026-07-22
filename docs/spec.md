@@ -1314,6 +1314,13 @@ Each actor is a lightweight process — a BEAM process on the production target.
 - Each actor processes one message at a time, FIFO.
 - Actor state is private; no direct access from outside.
 - Message send is one-way; ask is implemented as send + await reply with a reference.
+- **`spawn` does not couple lifetimes.** A crashing actor dies alone: whoever spawned it keeps running, and so does everything above it. Sharing fate is a decision you make, not one `spawn` makes for you.
+
+A dead actor is not a silent one. The runtime reports the crash, and
+`Actor.mailboxSize` reads `None` through a handle whose actor is gone
+(§6.4.1), so a program can tell the difference between an idle actor and
+an absent one. Sending to a dead actor is a no-op rather than an error;
+asking one raises in the caller, since an ask has no answer to give.
 
 #### §7.2.1. Mailbox configuration
 
@@ -1330,13 +1337,13 @@ member with a capacity `N` and an explicit overflow policy.
 | Policy | On overflow (via `!`) |
 |--------|----------------------|
 | `drop newest` | Silently drop the incoming message. `!` returns `Unit` as always. |
-| `error` | Raise an exit signal in the sender (`{mailbox_full, Pid}` on BEAM). Let-it-crash; if supervised, the supervisor decides what happens next. |
+| `error` | Raise an exit signal in the sender (`{mailbox_full, Pid}` on BEAM). Let-it-crash: the sender is the one that dies, and it dies alone. |
 
 Choosing between the two is a value judgement, not a structural one:
 `drop newest` favours the actor's liveness over delivery guarantees;
 `error` favours backpressure visibility over fire-and-forget ergonomics.
 Neither is a default; an `error`-policied actor must be paired with a
-caller (or supervisor) that knows how to respond to the signal.
+caller that knows how to respond to the signal.
 
 The `drop oldest` policy (silently drop the head-of-queue message on
 overflow) is **parsed but not yet implemented**. Programs using it
@@ -1379,7 +1386,7 @@ mailbox access.
 ### 7.4. Error handling model
 
 - **Recoverable errors**: `Result a e` — handled explicitly.
-- **Programming errors**: runtime crashes (index out of bounds, match failure at runtime, etc.) — the actor dies. Supervisors can restart it.
+- **Programming errors**: runtime crashes (index out of bounds, match failure at runtime, etc.) — the actor dies, and only that actor (§7.2). The crash is reported; its handle then reads as dead.
 - **No exceptions** in user code. Period.
 
 ### 7.5. Module semantics

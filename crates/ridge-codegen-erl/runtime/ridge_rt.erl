@@ -44,6 +44,7 @@
     http_listen/2, http_port/0, http_build_response/1,
     http_get/1, http_post/2, http_put/2, http_delete/1,
     ask/3, send/2, send_op/2, send_fn/2, mailbox_size/1, spawn_actor/3,
+    diagnostics_to_stderr/0,
     mem_new/1, mem_insert/3, mem_all/2,
     mem_delete/3, mem_update/4, mem_get_rows/4,
     mem_begin/1, mem_commit/1, mem_rollback/1, mem_close/1,
@@ -1621,6 +1622,39 @@ send_fn({ridge_handle, Pid, {bounded, N, error}}, Msg) ->
         undefined                              -> {ok}
     end.
 
+%% diagnostics_to_stderr/0 — route runtime diagnostics (crash reports, error
+%% reports) to stderr instead of stdout.
+%%
+%% The BEAM's default logger handler writes to standard_io, so a crashing actor
+%% dumped its report straight into the program's stdout — the same stream a CLI
+%% uses for its actual output. Piping such a program into another tool fed it a
+%% crash report as data. Diagnostics belong on stderr; `Io.println` keeps stdout
+%% to itself.
+%%
+%% Called from the entry points a Ridge program actually starts through
+%% (`ridge_main_runner:run/1` for `ridge run`, `escript_main/1` for a released
+%% escript). Tolerates a missing default handler — an embedded or custom-logger
+%% setup keeps whatever it configured.
+%%
+%% The handler is removed and re-added rather than reconfigured in place:
+%% logger rejects changing a std handler's `type` on a live handler with
+%% {error,{illegal_config_change,...}}. Everything else in its config (level,
+%% formatter, filters) is carried across untouched.
+diagnostics_to_stderr() ->
+    try logger:get_handler_config(default) of
+        {ok, #{module := Module, config := Config} = Handler} ->
+            _ = logger:remove_handler(default),
+            _ = logger:add_handler(
+                    default,
+                    Module,
+                    maps:without([id, module], Handler#{config => Config#{type => standard_error}})),
+            ok;
+        _ ->
+            ok
+    catch
+        _:_ -> ok
+    end.
+
 %% mailbox_size/1 — target of the stdlib `Actor.mailboxSize` fn.
 %% Returns {some, N} for a live actor or none for a dead one. The reading
 %% is instantaneous and may briefly disagree with concurrent senders; the
@@ -1631,13 +1665,23 @@ mailbox_size({ridge_handle, Pid, _Config}) ->
         undefined                -> none
     end.
 
-%% spawn_actor/3 — wraps gen_server:start_link/3 and decorates the result
-%% with the actor's declared mailbox configuration. The actor module exports
+%% spawn_actor/3 — starts an actor UNLINKED and decorates the result with the
+%% actor's declared mailbox configuration. The actor module exports
 %% '__ridge_mailbox_config'/0 (emitted by ridge-codegen-erl); spawn_actor
 %% looks it up once at spawn time so the resulting handle carries the config
 %% with no per-send dispatch cost.
+%%
+%% Unlinked is deliberate: `spawn` must not tie the caller's fate to the child.
+%% With gen_server:start_link/3 a crashing actor took its spawner down with it,
+%% and transitively every actor above it, with no way to opt out — a spawner
+%% that merely started a worker inherited its every failure. Shared fate and
+%% restart belong to a supervisor, where the policy is declared and visible;
+%% the actor module still exports start_link/N for exactly that use.
+%%
+%% A crashed actor is observable rather than silent: the BEAM logs its crash
+%% report, and mailbox_size/1 reads `none` through the handle.
 spawn_actor(Mod, Init, _Caps) ->
-    {ok, Pid} = gen_server:start_link(Mod, Init, []),
+    {ok, Pid} = gen_server:start(Mod, Init, []),
     Config =
         case erlang:function_exported(Mod, '__ridge_mailbox_config', 0) of
             true  -> Mod:'__ridge_mailbox_config'();
@@ -3319,6 +3363,7 @@ mem_take(N, [H | T])  -> [H | mem_take(N - 1, T)].
 %%
 %% Ridge type: List Text -> List Text
 escript_main(Args) ->
+    diagnostics_to_stderr(),
     %% Convert string args to binaries for Ridge's Text type.
     BinArgs = [if is_binary(A) -> A; true -> list_to_binary(A) end || A <- Args],
     %% Store in process dict so cli_args/0 returns the right args in escript mode.

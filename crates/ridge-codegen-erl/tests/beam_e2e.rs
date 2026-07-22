@@ -127,6 +127,37 @@ fn run_erl(beam_dir: &Path, module: &str, plain_args: &[&str]) -> (String, Strin
         }
     }
 
+    wait_and_capture(cmd, module)
+}
+
+/// Start a program through `ridge_main_runner`, the way `ridge run` and a
+/// released escript do, rather than calling `<module>:main/0` from the boot
+/// process. The entry point is part of the behaviour under test whenever
+/// crashes, exit codes, or diagnostic streams are involved.
+fn run_erl_via_runner(beam_dir: &Path, module: &str) -> (String, String, i32) {
+    let erl_path = which::which("erl")
+        .expect("erl not found on PATH — install OTP or run without --features beam-runtime");
+
+    let mut cmd = Command::new(&erl_path);
+    cmd.arg("-noinput")
+        .arg("-eval")
+        .arg("io:setopts(group_leader(), [{encoding, unicode}])")
+        .arg("-pa")
+        .arg(beam_dir)
+        .arg("-s")
+        .arg("ridge_main_runner")
+        .arg("run")
+        .arg(module)
+        .arg("main")
+        .arg("-s")
+        .arg("init")
+        .arg("stop");
+
+    wait_and_capture(cmd, module)
+}
+
+/// Run `cmd` to completion with a timeout, returning `(stdout, stderr, code)`.
+fn wait_and_capture(mut cmd: Command, module: &str) -> (String, String, i32) {
     // Spawn and wait with a manual timeout using a thread.
     let timeout = Duration::from_secs(ERL_TIMEOUT_SECS);
 
@@ -1018,19 +1049,17 @@ fn beam_e2e_fold_right_ffi_arg_order() {
 //   5. error    above the cap raises {mailbox_full, _} in the sender, so the
 //      BEAM exits non-zero with that reason in stderr.
 //   6. Actor.mailboxSize reports Some for a freshly-spawned (live) actor.
+//   7. Actor.mailboxSize reports None once that actor has crashed.
 //
-// The companion case — mailboxSize on a dead actor returns None — needs a
-// way to terminate an actor from Ridge source without taking the spawning
-// process down with it. gen_server:start_link links the spawner, so the
-// natural "crash on a malformed message" recipe collapses main too. That
-// case is left to a future test once a non-linking spawn or a Ridge-level
-// exit-trap primitive lands; pure-Erlang coverage of mailbox_size/1's
-// `undefined` branch is already in the runtime.
+// Case 7 was blocked for two releases: killing an actor from Ridge source
+// meant crashing it, and `gen_server:start_link` took the spawner down with
+// it, so the recipe collapsed the program instead of leaving a dead handle to
+// read. `spawn` no longer links, so the case is finally expressible.
 
-/// Helper that compiles, runs, and asserts a zero exit code, returning
-/// `(stdout, stderr)`.
-fn run_inline_actor_test(name: &str, source: &str) -> (String, String) {
-    let (workspace_root, _td) = make_example_workspace(name, source);
+/// Compiles an inline program and returns `(beam_dir, module, tempdir guard)`.
+/// The guard must stay alive while the beams are used.
+fn compile_inline_actor_test(name: &str, source: &str) -> (PathBuf, String, tempfile::TempDir) {
+    let (workspace_root, td) = make_example_workspace(name, source);
     let opts = CompileOptions::new(workspace_root);
     let artefacts = compile_workspace(opts)
         .unwrap_or_else(|e| panic!("compile_workspace failed for {name}: {e}"));
@@ -1046,7 +1075,29 @@ fn run_inline_actor_test(name: &str, source: &str) -> (String, String) {
         .and_then(|s| s.to_str())
         .expect("beam stem utf-8")
         .to_owned();
+    (beam_dir, module, td)
+}
+
+/// Helper that compiles, runs, and asserts a zero exit code, returning
+/// `(stdout, stderr)`.
+fn run_inline_actor_test(name: &str, source: &str) -> (String, String) {
+    let (beam_dir, module, _td) = compile_inline_actor_test(name, source);
     let (stdout, stderr, exit_code) = run_erl(&beam_dir, &module, &[]);
+    assert_eq!(
+        exit_code, 0,
+        "erl exited {exit_code} for {name}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    (stdout, stderr)
+}
+
+/// Same, but entered through `ridge_main_runner` — the path `ridge run` and a
+/// released escript take. Use it whenever the behaviour under test depends on
+/// the entry point: `-s <module> main` starts the program in Erlang's boot
+/// process, which traps exits and leaves the default logger on stdout, so it
+/// reports neither fatal signals nor diagnostics the way a real run does.
+fn run_inline_actor_test_via_runner(name: &str, source: &str) -> (String, String) {
+    let (beam_dir, module, _td) = compile_inline_actor_test(name, source);
+    let (stdout, stderr, exit_code) = run_erl_via_runner(&beam_dir, &module);
     assert_eq!(
         exit_code, 0,
         "erl exited {exit_code} for {name}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
@@ -1294,6 +1345,126 @@ fn beam_e2e_mailbox_size_reports_some_for_live_actor() {
     assert!(
         stdout.contains("size=0"),
         "expected 'size=0' for an idle live actor, got:\n{stdout}"
+    );
+}
+
+const MAILBOX_SIZE_DEAD_SOURCE: &str = r#"
+import std.io    as Io
+import std.time  as Time
+import std.actor as Actor
+
+actor Fragile =
+    state n: Int = 0
+
+    on io boom (d: Int) -> Unit =
+        n <- 10 / d
+        Io.println "fragile-survived"
+
+fn spawn io time main () -> Result Unit Text =
+    let f = spawn Fragile
+    f ! boom 0
+    Time.sleep 300
+    match Actor.mailboxSize f
+        Some _ -> Io.println "reads-live"
+        None -> Io.println "reads-dead"
+    Ok ()
+"#;
+
+/// A handle whose actor has crashed must read `None`, so a program can tell an
+/// absent actor from an idle one. The companion to the `Some 0` case above,
+/// and the half that could not be written while `spawn` linked.
+#[test]
+fn beam_e2e_mailbox_size_reports_none_for_dead_actor() {
+    let (stdout, _) = run_inline_actor_test("MailboxSizeDead", MAILBOX_SIZE_DEAD_SOURCE);
+    assert!(
+        stdout.contains("reads-dead"),
+        "expected 'reads-dead' after the actor crashed, got:\n{stdout}"
+    );
+}
+
+// ── Actor crash isolation ────────────────────────────────────────────────────
+
+const ACTOR_CRASH_ISOLATION_SOURCE: &str = r#"
+import std.io    as Io
+import std.time  as Time
+import std.actor as Actor
+
+actor Child =
+    state n: Int = 0
+
+    on io explode (d: Int) -> Unit =
+        n <- 10 / d
+        Io.println "child-survived"
+
+actor Parent =
+    state started: Int = 0
+
+    on spawn io time start () -> Unit =
+        let c = spawn Child
+        started <- started + 1
+        c ! explode 0
+        Time.sleep 300
+        Io.println "parent-ran-past-child-crash"
+
+fn spawn io time main () -> Result Unit Text =
+    let p = spawn Parent
+    p ! start ()
+    Time.sleep 900
+    match Actor.mailboxSize p
+        Some _ -> Io.println "parent-handle-live"
+        None -> Io.println "parent-handle-dead"
+    Ok ()
+"#;
+
+/// An actor that crashes must not take down the actor that spawned it.
+///
+/// Written actor-to-actor on purpose. `run_erl` launches `main` with `-s`, so
+/// main runs in Erlang's boot process — and that process traps exits, which
+/// masks a cascading crash. A version of this test that spawned the crashing
+/// actor straight from `main` would pass even if `spawn` went back to linking,
+/// i.e. it could never fail. A spawning actor is an ordinary `gen_server` with
+/// no `trap_exit`, so the link (when there was one) really did kill it: before
+/// `ridge_rt:spawn_actor/3` switched to an unlinked start, this program printed
+/// neither line and the handle read dead.
+///
+/// Two independent signals: the parent keeps executing its own handler after
+/// the child dies, and its handle still reads live afterwards.
+#[test]
+fn beam_e2e_actor_crash_does_not_kill_its_spawner() {
+    let (stdout, stderr) =
+        run_inline_actor_test_via_runner("ActorCrashIsolation", ACTOR_CRASH_ISOLATION_SOURCE);
+    assert!(
+        stdout.contains("parent-ran-past-child-crash"),
+        "the spawning actor died with its child, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("parent-handle-live"),
+        "the spawning actor's handle reads dead after the child crashed, got:\n{stdout}"
+    );
+    // Isolation must not mean silence: the crash is still reported.
+    assert!(
+        stderr.contains("badarith"),
+        "expected the child's crash on stderr, got:\n{stderr}"
+    );
+}
+
+/// A crash report must land on stderr, never in the program's own output.
+///
+/// The BEAM's default logger writes to stdout, so an actor dying mid-run used
+/// to inject its crash report into whatever the program was printing — enough
+/// to corrupt the output of anything piped into another tool. `Io.println`
+/// owns stdout; diagnostics go to stderr.
+#[test]
+fn beam_e2e_actor_crash_report_goes_to_stderr_not_stdout() {
+    let (stdout, stderr) =
+        run_inline_actor_test_via_runner("CrashStream", ACTOR_CRASH_ISOLATION_SOURCE);
+    assert!(
+        stderr.contains("badarith"),
+        "expected the crash report on stderr, got:\n{stderr}"
+    );
+    assert!(
+        !stdout.contains("badarith") && !stdout.contains("CRASH REPORT"),
+        "the crash report leaked into the program's stdout:\n{stdout}"
     );
 }
 

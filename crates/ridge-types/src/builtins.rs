@@ -363,6 +363,23 @@ pub struct BuiltinTyCons {
     /// (`std.time`). Distinct from `Timestamp` (a wall-clock instant): a monotonic
     /// reading only moves forward, so an elapsed `Duration` is never negative.
     pub instant: TyConId,
+    /// `ChildSpec a` — a typed supervisor child specification.
+    ///
+    /// A 1-arity opaque type like [`Self::handle`]: `a` is the actor `TyCon`
+    /// the spec starts, so a `child Counter` expression cannot be passed where
+    /// a `ChildSpec Store` is expected. Wire format (contract with the
+    /// runtime): a plain Erlang map
+    /// `#{id => Id, start => {Module, start_link, ArgsList},
+    ///    restart => permanent | transient | temporary, shutdown => Millis}`
+    /// — the shape OTP's `supervisor` behaviour consumes, unwrapped.
+    pub child_spec: TyConId,
+    /// `Supervisor a` — a reference to a running supervisor.
+    ///
+    /// A 1-arity opaque type like [`Self::handle`]: `a` is the actor `TyCon`
+    /// of the children this supervisor starts, so `startChild` cannot attach
+    /// a spec for the wrong actor. Wire format (contract with the runtime):
+    /// the tuple `{ridge_sup, Pid}`.
+    pub supervisor: TyConId,
 }
 
 impl BuiltinTyCons {
@@ -419,6 +436,8 @@ impl BuiltinTyCons {
             date: SENTINEL,
             time: SENTINEL,
             instant: SENTINEL,
+            child_spec: SENTINEL,
+            supervisor: SENTINEL,
         }
     }
 
@@ -1676,6 +1695,34 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
+        // ── ChildSpec a / Supervisor a — typed supervision ────────────────────
+        //
+        // Two 1-arity opaque types, modelled exactly on `Handle a` above: the
+        // "schema" is the actor's TyConDecl, looked up at use sites. `child
+        // ActorName (args...)` produces a `ChildSpec(ActorTyCon)`; `supervise`
+        // in `std.actor` produces a `Supervisor(ActorTyCon)`. Interned after
+        // Instant so the historical 0..56 index layout stays stable.
+        let child_spec = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "ChildSpec".to_string(),
+            arity: 1,
+            kind: TyConKind::Builtin,
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+        let supervisor = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "Supervisor".to_string(),
+            arity: 1,
+            kind: TyConKind::Builtin,
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+
         // Verify assignment order matches spec §4.1 indices 0..16.
         debug_assert_eq!(int.0, 0);
         debug_assert_eq!(float.0, 1);
@@ -1740,6 +1787,9 @@ impl BuiltinTyCons {
         debug_assert_eq!(date.0, 54);
         debug_assert_eq!(time.0, 55);
         debug_assert_eq!(instant.0, 56);
+        // ChildSpec and Supervisor are interned after Instant.
+        debug_assert_eq!(child_spec.0, 57);
+        debug_assert_eq!(supervisor.0, 58);
 
         // Suppress the "unused" lint — CapabilitySet is imported for future use
         // in T4 (actor schemas carry CapabilitySet).
@@ -1788,6 +1838,8 @@ impl BuiltinTyCons {
             date,
             time,
             instant,
+            child_spec,
+            supervisor,
         }
     }
 }
@@ -1867,7 +1919,7 @@ mod tests {
     }
 
     #[test]
-    fn arena_len_is_57() {
+    fn arena_len_is_59() {
         // 15 original builtins + Ordering + JsonValue + the std.net.http taint
         // wrappers Sql / Html / SecureCookie + std.sql's SqlValue + the
         // column-codegen builtins Column / Table + the schema-codegen builtins
@@ -1875,10 +1927,11 @@ mod tests {
         // + the 16 synthetic function-type constructors Fn/0 … Fn/15 + Ret/1 +
         // Rows/1 + JoinCond/2 + the four join-result extractors (Join/Left/Right/Full)
         // + InsertShape/1 + the Decimal, Uuid, Bytes, Date and Time primitives and
-        // the Instant monotonic reading (interned last).
+        // the Instant monotonic reading + the supervision types
+        // ChildSpec / Supervisor (interned last).
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 14);
-        assert_eq!(arena.len(), 57);
+        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 16);
+        assert_eq!(arena.len(), 59);
     }
 
     #[test]

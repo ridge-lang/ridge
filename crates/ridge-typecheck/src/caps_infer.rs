@@ -44,6 +44,10 @@ use crate::unify::unify_caps;
 /// This is a read-only pass that runs AFTER type inference (T6) is complete.
 /// All `CapRow::Var(v)` in stdlib HOF types are already resolved in `ctx.capvids`
 /// from T6's unify calls.
+#[expect(
+    clippy::too_many_lines,
+    reason = "exhaustive match over all Expr variants"
+)]
 pub fn infer_caps(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> CapabilitySet {
     match expr {
         // ── Pure leaves ───────────────────────────────────────────────────────
@@ -180,7 +184,11 @@ pub fn infer_caps(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Capabil
         Expr::Unary { expr, .. } => infer_caps(ctx, b, expr),
 
         // ── Tuple / List ──────────────────────────────────────────────────────
-        Expr::Tuple { elems, .. } | Expr::List { elems, .. } => {
+        // ChildSpec joins this arm: building a spec is a pure value
+        // construction, so only its argument expressions can contribute caps.
+        Expr::Tuple { elems, .. }
+        | Expr::List { elems, .. }
+        | Expr::ChildSpec { args: elems, .. } => {
             elems.iter().fold(CapabilitySet::PURE, |acc, e| {
                 acc.union(&infer_caps(ctx, b, e))
             })

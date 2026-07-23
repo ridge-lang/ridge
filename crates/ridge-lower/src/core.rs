@@ -540,6 +540,15 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
                 return call;
             }
 
+            // The compiler-known `std.actor.tryAsk` lowers to
+            // `IrExpr::TryAsk` — its message argument is a handler label with
+            // optional payload (like `?>`), not an ordinary expression. The
+            // type checker has already validated the call (3 args, handler
+            // known); any other shape falls through to the normal call path.
+            if ast_callee_is_std_actor_tryask(ctx, callee) && args.len() == 3 {
+                return lower_tryask_call(ctx, args, id, *span);
+            }
+
             // Look up callee type before lowering, while we still have the AST.
             let callee_node_type = lookup_callee_type(ctx, callee);
             let ir_callee = lower_expr(ctx, callee);
@@ -643,6 +652,25 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             let actor_module = resolve_actor_module(ctx, actor);
             let args = args.iter().map(|a| lower_expr(ctx, a)).collect();
             IrExpr::Spawn {
+                id,
+                actor: SymbolRef::ActorType {
+                    module: actor_module,
+                    name: actor.text.clone(),
+                },
+                args,
+                span: *span,
+            }
+        }
+
+        // ── Child spec ────────────────────────────────────────────────────────
+        //
+        // `child Actor (arg, …)` lowers to `IrExpr::ChildSpec`. Same actor
+        // module resolution as `spawn`; codegen emits the OTP child-spec map.
+        Expr::ChildSpec { actor, args, span } => {
+            let id = ctx.fresh_id(None);
+            let actor_module = resolve_actor_module(ctx, actor);
+            let args = args.iter().map(|a| lower_expr(ctx, a)).collect();
+            IrExpr::ChildSpec {
                 id,
                 actor: SymbolRef::ActorType {
                     module: actor_module,
@@ -3586,6 +3614,87 @@ fn unfold_send_message(expr: &Expr) -> (String, Vec<&Expr>) {
     }
 }
 
+// ── tryAsk ────────────────────────────────────────────────────────────────────
+
+/// `true` when `callee` resolves (via the `BindingMap`) to the compiler-known
+/// `std.actor.tryAsk` symbol. Both the bare (`tryAsk`) and the
+/// alias-qualified (`Actor.tryAsk`) forms are covered; anything without a
+/// stamped `Binding::StdlibSymbol` (including unit-test scaffolding) is not.
+fn ast_callee_is_std_actor_tryask(ctx: &LowerCtx<'_>, callee: &Expr) -> bool {
+    let (span, kind) = match callee {
+        Expr::Ident(id) => (id.span, NodeKind::Ident),
+        Expr::Qualified(qname) => (qname.span, NodeKind::QualifiedName),
+        _ => return false,
+    };
+    let binding = ctx
+        .node_id_map
+        .as_ref()
+        .and_then(|m| m.get(span, kind))
+        .and_then(|nid| {
+            ctx.binding_map
+                .and_then(|bm| bm.get(nid.0 as usize).and_then(Option::as_ref))
+        });
+    matches!(
+        binding,
+        Some(Binding::StdlibSymbol { module, name })
+            if name == "tryAsk"
+                && BUILTINS
+                    .get(module.0 as usize)
+                    .is_some_and(|m| m.name == "std.actor")
+    )
+}
+
+/// Lower `tryAsk handle message timeoutMs` to `IrExpr::TryAsk`.
+///
+/// The message argument takes the same shapes as a `!` payload — a bare
+/// handler name or `handler arg …`, routinely parenthesised — and is
+/// flattened to a `SymbolRef::Handler` plus payload args, mirroring the
+/// `Expr::Ask` lowering (including the `()`-drop for zero-arity handlers).
+/// The timeout is a required surface argument, so it always lowers to
+/// `IrTimeout::Millis`.
+fn lower_tryask_call(
+    ctx: &mut LowerCtx<'_>,
+    args: &[Expr],
+    id: ridge_ir::IrNodeId,
+    span: Span,
+) -> IrExpr {
+    let handle = Box::new(lower_expr(ctx, &args[0]));
+    // Peel parens: `tryAsk h (shorten url) 1000`.
+    let message = peel_ast_parens(&args[1]);
+    let (handler_name, msg_args) = unfold_send_message(message);
+    // Treat `name ()` as `name` so a 0-arity handler decl and the call form
+    // produce the same wire shape (mirrors the `Expr::Ask` lowering).
+    let drop_unit = msg_args.len() == 1 && matches!(msg_args[0], Expr::Unit(_));
+    let payload = if drop_unit {
+        Vec::new()
+    } else {
+        msg_args.iter().map(|a| lower_expr(ctx, a)).collect()
+    };
+    let timeout = lower_expr(ctx, &args[2]);
+    IrExpr::TryAsk {
+        id,
+        handle,
+        message: SymbolRef::Handler {
+            actor_module: ctx.module_id,
+            // Same caveat as `Expr::Ask` (OQ-PHASE45-007): the actor name is
+            // not recoverable from the binding; stays `String::new()`.
+            actor: String::new(),
+            handler: handler_name,
+        },
+        args: payload,
+        timeout: Some(ridge_ir::IrTimeout::Millis(Box::new(timeout))),
+        span,
+    }
+}
+
+/// Look through any `Paren` wrappers to the expression they enclose.
+fn peel_ast_parens(mut e: &Expr) -> &Expr {
+    while let Expr::Paren { inner, .. } = e {
+        e = inner;
+    }
+    e
+}
+
 /// Extract the constructor name string from a [`RecordCtor`].
 ///
 /// For bare constructors (`User { … }`) returns `"User"`.
@@ -4971,6 +5080,288 @@ mod tests {
             ctx.errors.is_empty(),
             "expected no errors; got: {:?}",
             ctx.errors
+        );
+    }
+
+    // ── ChildSpec lowers to IrExpr::ChildSpec with ActorType symbol ────────────
+
+    #[test]
+    fn lower_expr_child_spec_actor_name() {
+        use ridge_ast::Literal;
+
+        let mut ctx = fresh_ctx();
+        let span = sp_at(0, 18);
+        let expr = Expr::ChildSpec {
+            actor: Ident {
+                text: "Counter".into(),
+                span: sp(),
+            },
+            args: vec![Expr::Literal(Literal::IntDec {
+                raw: "0".into(),
+                span: sp(),
+            })],
+            span,
+        };
+        let ir = lower_expr(&mut ctx, &expr);
+        match ir {
+            IrExpr::ChildSpec {
+                actor,
+                args,
+                span: s,
+                ..
+            } => {
+                assert_eq!(s, span);
+                assert_eq!(args.len(), 1);
+                match actor {
+                    SymbolRef::ActorType { name, .. } => assert_eq!(name, "Counter"),
+                    other => panic!("expected ActorType, got {other:?}"),
+                }
+            }
+            other => panic!("expected IrExpr::ChildSpec, got {other:?}"),
+        }
+        assert!(
+            ctx.errors.is_empty(),
+            "expected no errors; got: {:?}",
+            ctx.errors
+        );
+    }
+
+    // ── tryAsk lowers to IrExpr::TryAsk ───────────────────────────────────────
+
+    /// The `StdlibModuleId` of `std.actor`, looked up by name so the test does
+    /// not hardcode the module's index.
+    fn std_actor_module_id() -> StdlibModuleId {
+        BUILTINS
+            .iter()
+            .find(|m| m.name == "std.actor")
+            .map_or(StdlibModuleId(0), |m| m.id)
+    }
+
+    /// Build a ctx whose BindingMap resolves the callee at `callee_span` (with
+    /// node kind `kind`) to `std.actor.tryAsk` — mirroring how the resolver
+    /// stamps a bare or alias-qualified tryAsk callee.
+    fn make_tryask_ctx(callee_span: Span, kind: NodeKind) -> LowerCtx<'static> {
+        let mut nid_map = NodeIdMap::default();
+        let node_id = nid_map.assign(callee_span, kind).unwrap();
+        let mut bm: BindingMap = vec![None; (node_id.0 + 1) as usize];
+        bm[node_id.0 as usize] = Some(Binding::StdlibSymbol {
+            module: std_actor_module_id(),
+            name: "tryAsk".into(),
+        });
+        let mut ctx = LowerCtx::new(ModuleId(0), &[]);
+        ctx.attach_bindings(nid_map, Box::leak(Box::new(bm)));
+        ctx
+    }
+
+    #[test]
+    fn lower_expr_tryask_bare_message() {
+        use ridge_ast::Literal;
+
+        let callee_span = sp_at(0, 6);
+        let mut ctx = make_tryask_ctx(callee_span, NodeKind::Ident);
+        let span = sp_at(0, 40);
+        // tryAsk counter getCount 1000
+        let expr = Expr::Call {
+            callee: Box::new(Expr::Ident(Ident {
+                text: "tryAsk".into(),
+                span: callee_span,
+            })),
+            args: vec![
+                Expr::Unit(sp()),
+                Expr::Ident(Ident {
+                    text: "getCount".into(),
+                    span: sp(),
+                }),
+                Expr::Literal(Literal::IntDec {
+                    raw: "1000".into(),
+                    span: sp(),
+                }),
+            ],
+            span,
+        };
+        let ir = lower_expr(&mut ctx, &expr);
+        match ir {
+            IrExpr::TryAsk {
+                message,
+                args,
+                timeout,
+                span: s,
+                ..
+            } => {
+                assert_eq!(s, span);
+                match message {
+                    SymbolRef::Handler { handler, .. } => assert_eq!(handler, "getCount"),
+                    other => panic!("expected Handler, got {other:?}"),
+                }
+                assert!(args.is_empty(), "bare message must produce empty args");
+                assert!(
+                    matches!(timeout, Some(ridge_ir::IrTimeout::Millis(_))),
+                    "timeout must lower to Millis, got {timeout:?}"
+                );
+            }
+            other => panic!("expected IrExpr::TryAsk, got {other:?}"),
+        }
+        assert!(
+            ctx.errors.is_empty(),
+            "expected no errors; got: {:?}",
+            ctx.errors
+        );
+    }
+
+    #[test]
+    fn lower_expr_tryask_qualified_with_payload() {
+        use ridge_ast::{expr::QualifiedName, Literal};
+
+        let callee_span = sp_at(0, 13);
+        let mut ctx = make_tryask_ctx(callee_span, NodeKind::QualifiedName);
+        let span = sp_at(0, 45);
+        // Actor.tryAsk counter (increment 5) 1000
+        let expr = Expr::Call {
+            callee: Box::new(Expr::Qualified(QualifiedName {
+                segments: vec![
+                    Ident {
+                        text: "Actor".into(),
+                        span: sp(),
+                    },
+                    Ident {
+                        text: "tryAsk".into(),
+                        span: sp(),
+                    },
+                ],
+                span: callee_span,
+            })),
+            args: vec![
+                Expr::Unit(sp()),
+                Expr::Paren {
+                    inner: Box::new(Expr::Call {
+                        callee: Box::new(Expr::Ident(Ident {
+                            text: "increment".into(),
+                            span: sp(),
+                        })),
+                        args: vec![Expr::Literal(Literal::IntDec {
+                            raw: "5".into(),
+                            span: sp(),
+                        })],
+                        span: sp(),
+                    }),
+                    span: sp(),
+                },
+                Expr::Literal(Literal::IntDec {
+                    raw: "1000".into(),
+                    span: sp(),
+                }),
+            ],
+            span,
+        };
+        let ir = lower_expr(&mut ctx, &expr);
+        match ir {
+            IrExpr::TryAsk {
+                message,
+                args,
+                timeout,
+                ..
+            } => {
+                match message {
+                    SymbolRef::Handler { handler, .. } => assert_eq!(handler, "increment"),
+                    other => panic!("expected Handler, got {other:?}"),
+                }
+                assert_eq!(args.len(), 1, "payload arg must be lowered");
+                assert!(
+                    matches!(timeout, Some(ridge_ir::IrTimeout::Millis(_))),
+                    "timeout must lower to Millis, got {timeout:?}"
+                );
+            }
+            other => panic!("expected IrExpr::TryAsk, got {other:?}"),
+        }
+        assert!(
+            ctx.errors.is_empty(),
+            "expected no errors; got: {:?}",
+            ctx.errors
+        );
+    }
+
+    #[test]
+    fn lower_expr_tryask_unit_message_args_dropped() {
+        use ridge_ast::Literal;
+
+        let callee_span = sp_at(0, 6);
+        let mut ctx = make_tryask_ctx(callee_span, NodeKind::Ident);
+        let span = sp_at(0, 40);
+        // tryAsk counter (getCount ()) 1000 — `name ()` normalises to `name`.
+        let expr = Expr::Call {
+            callee: Box::new(Expr::Ident(Ident {
+                text: "tryAsk".into(),
+                span: callee_span,
+            })),
+            args: vec![
+                Expr::Unit(sp()),
+                Expr::Paren {
+                    inner: Box::new(Expr::Call {
+                        callee: Box::new(Expr::Ident(Ident {
+                            text: "getCount".into(),
+                            span: sp(),
+                        })),
+                        args: vec![Expr::Unit(sp())],
+                        span: sp(),
+                    }),
+                    span: sp(),
+                },
+                Expr::Literal(Literal::IntDec {
+                    raw: "1000".into(),
+                    span: sp(),
+                }),
+            ],
+            span,
+        };
+        let ir = lower_expr(&mut ctx, &expr);
+        match ir {
+            IrExpr::TryAsk { args, .. } => {
+                assert!(
+                    args.is_empty(),
+                    "`name ()` must normalise to a bare tag, got {args:?}"
+                );
+            }
+            other => panic!("expected IrExpr::TryAsk, got {other:?}"),
+        }
+        assert!(
+            ctx.errors.is_empty(),
+            "expected no errors; got: {:?}",
+            ctx.errors
+        );
+    }
+
+    #[test]
+    fn lower_expr_non_tryask_stdlib_call_not_rewritten() {
+        use ridge_ast::Literal;
+
+        // Same call shape, but the callee binding is a different stdlib
+        // symbol — the call must lower as an ordinary Call.
+        let callee_span = sp_at(0, 6);
+        let mut nid_map = NodeIdMap::default();
+        let node_id = nid_map.assign(callee_span, NodeKind::Ident).unwrap();
+        let mut bm: BindingMap = vec![None; (node_id.0 + 1) as usize];
+        bm[node_id.0 as usize] = Some(Binding::StdlibSymbol {
+            module: std_actor_module_id(),
+            name: "mailboxSize".into(),
+        });
+        let mut ctx = LowerCtx::new(ModuleId(0), &[]);
+        ctx.attach_bindings(nid_map, Box::leak(Box::new(bm)));
+
+        let expr = Expr::Call {
+            callee: Box::new(Expr::Ident(Ident {
+                text: "mailboxSize".into(),
+                span: callee_span,
+            })),
+            args: vec![Expr::Literal(Literal::IntDec {
+                raw: "1".into(),
+                span: sp(),
+            })],
+            span: sp_at(0, 20),
+        };
+        let ir = lower_expr(&mut ctx, &expr);
+        assert!(
+            matches!(ir, IrExpr::Call { .. }),
+            "non-tryAsk stdlib call must stay IrExpr::Call, got {ir:?}"
         );
     }
 

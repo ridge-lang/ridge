@@ -487,6 +487,22 @@ pub enum Expr {
         span: Span,
     },
 
+    /// A child-spec expression `child Actor (arg, …)`.
+    ///
+    /// Builds a typed `ChildSpec a` value for `std.actor`'s supervision API.
+    /// Unlike `spawn`, the argument list is parenthesised and comma-separated;
+    /// each argument is checked against the actor's `init` params with the
+    /// same machinery as `spawn`. The optional argument list is absent for
+    /// actors without an `init` block (`child Logger`).
+    ChildSpec {
+        /// The actor type name.
+        actor: Ident,
+        /// The constructor arguments (empty when the parens are omitted).
+        args: Vec<Self>,
+        /// Span covering the full child-spec expression.
+        span: Span,
+    },
+
     /// A propagate expression `expr?` (grammar §6.21).
     ///
     /// Postfix at Pratt level 12 — single-site per D068.
@@ -637,6 +653,7 @@ impl Expr {
             | Self::Ask { span, .. }
             | Self::Send { span, .. }
             | Self::Spawn { span, .. }
+            | Self::ChildSpec { span, .. }
             | Self::Propagate { span, .. }
             | Self::If { span, .. }
             | Self::Match { span, .. }

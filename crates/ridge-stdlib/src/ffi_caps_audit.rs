@@ -1214,6 +1214,45 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         arity: 1,
         requires_caps: &[],
     },
+    // ── ridge_rt actor supervision ────────────────────────────────────────────
+    // Cap-free, like `mailbox_size`: the spec/supervisor values are the proof
+    // of access (see stdlib/actor.ridge).
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "start_supervisor",
+        arity: 4,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "start_supervised_child",
+        arity: 2,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "stop_supervised_child",
+        arity: 2,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "which_children",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "set_child_id",
+        arity: 2,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "set_child_restart",
+        arity: 2,
+        requires_caps: &[],
+    },
     // ── ridge_rt JSON constructors (pure value building) ──────────────────────
     FfiAuditEntry {
         beam_module: "ridge_rt",

@@ -357,10 +357,8 @@ CErlModule {
                                                                     "V_OtherErr",
                                                                 ),
                                                             ),
-                                                            Var(
-                                                                CErlVar(
-                                                                    "V_ExcStk",
-                                                                ),
+                                                            Lit(
+                                                                Nil,
                                                             ),
                                                         ],
                                                     },
@@ -399,10 +397,8 @@ CErlModule {
                                                         "V_ExcValue",
                                                     ),
                                                 ),
-                                                Var(
-                                                    CErlVar(
-                                                        "V_ExcStk",
-                                                    ),
+                                                Lit(
+                                                    Nil,
                                                 ),
                                             ],
                                         },

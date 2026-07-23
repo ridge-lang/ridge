@@ -242,6 +242,13 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
 
         // ── Call ──────────────────────────────────────────────────────────────
         Expr::Call { callee, args, span } => {
+            // A call to the compiler-known `std.actor.tryAsk` is typed
+            // like `?>`, but the overall expression is `Result reply AskError`
+            // instead of raising (see `actor::infer_tryask`).
+            if crate::actor::is_tryask_callee(ctx, callee) {
+                let arena = build_arena_from_ctx(ctx);
+                return crate::actor::infer_tryask(ctx, b, callee, args, *span, &arena);
+            }
             let callee_ty = infer_expr(ctx, b, callee);
             // Quotation: a lambda flowing into a `Quote (e -> _)` parameter is
             // captured as an expression tree, not checked as an ordinary
@@ -1001,6 +1008,12 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
         Expr::Spawn { actor, args, span } => {
             let arena = build_arena_from_ctx(ctx);
             crate::actor::infer_spawn(ctx, b, actor, args.as_slice(), *span, &arena)
+        }
+
+        // ── ChildSpec ─────────────────────────────────────────────────────────
+        Expr::ChildSpec { actor, args, span } => {
+            let arena = build_arena_from_ctx(ctx);
+            crate::actor::infer_child_spec(ctx, b, actor, args.as_slice(), *span, &arena)
         }
 
         // ── Inline record literal ─────────────────────────────────────────────
@@ -1807,7 +1820,7 @@ fn bind_or_check_field_pattern(
 ///
 /// Call-site arguments are routinely parenthesised (`f (fn u -> …)`), so the
 /// quotation hook peels parentheses before testing for a lambda.
-fn peel_parens(e: &Expr) -> &Expr {
+pub(crate) fn peel_parens(e: &Expr) -> &Expr {
     let mut cur = e;
     while let Expr::Paren { inner, .. } = cur {
         cur = inner;

@@ -21,6 +21,13 @@ const RIDGE_MAIN_RUNNER_SOURCE: &str = include_str!("../runtime/ridge_main_runne
 /// whenever a program opens a Postgres connection.
 const RIDGE_PG_SOURCE: &str = include_str!("../runtime/ridge_pg.erl");
 
+/// The bundled `ridge_sup.erl` source, embedded at compile time.
+///
+/// The OTP supervisor callback module `ridge_rt:start_supervisor/4` starts
+/// through. Installed and compiled on every build so its `.beam` is on
+/// the code path whenever a program calls `std.actor.supervise`.
+const RIDGE_SUP_SOURCE: &str = include_str!("../runtime/ridge_sup.erl");
+
 /// The bundled `ridge_bench_runner.erl` source, embedded at compile time.
 ///
 /// Unlike the other runners this is *not* installed on every build — it is only
@@ -102,6 +109,10 @@ pub fn install_runtime(out_root: &Path) -> Result<RuntimeInfo, CodegenError> {
     // And ridge_pg.erl, the first-party PostgreSQL client backing the
     // std.data Postgres adapter.
     install_runner_source(&runtime_dir, "ridge_pg.erl", RIDGE_PG_SOURCE)?;
+
+    // And ridge_sup.erl, the OTP supervisor callback module behind
+    // std.actor.supervise.
+    install_runner_source(&runtime_dir, "ridge_sup.erl", RIDGE_SUP_SOURCE)?;
 
     // And ridge_sqlite.erl, the SQLite adapter runtime — only when SQLite
     // support is built in (the baked NIF exists only under `beam-runtime`).
@@ -241,6 +252,15 @@ pub fn compile_runtime(erlc_path: &Path, out_root: &Path) -> Result<PathBuf, Cod
         &beam_out_dir,
         "ridge_pg.erl",
         "ridge_pg.beam",
+    )?;
+
+    // ── Compile ridge_sup.erl (OTP supervisor callback) ───────────────────────
+    compile_runner_if_missing(
+        erlc_path,
+        out_root,
+        &beam_out_dir,
+        "ridge_sup.erl",
+        "ridge_sup.beam",
     )?;
 
     // ── Compile ridge_sqlite.erl + write the baked NIF (SQLite runtime) ───────

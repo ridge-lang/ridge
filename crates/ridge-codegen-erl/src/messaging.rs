@@ -159,37 +159,7 @@ pub(crate) fn lower_spawn(
     span: Span,
     scope: &mut LocalScope,
 ) -> Result<CErlExpr, CodegenError> {
-    // Extract actor module name from the ActorType SymbolRef.
-    let SymbolRef::ActorType {
-        module: actor_module_id,
-        name: actor_name,
-    } = actor
-    else {
-        return Err(CodegenError::IrShapeMalformed {
-            variant: "IrExpr::Spawn",
-            span,
-            detail: format!(
-                "Spawn actor field is not SymbolRef::ActorType — got {actor:?} (Phase 5 invariant violated)"
-            ),
-        });
-    };
-
-    // Derive the actor's BEAM module atom.
-    // The actor BEAM module name is `"<parent_module_beam_name>_<actor_name_lc>"`,
-    // matching the convention in `actor.rs::lower_actor`.
-    //
-    // When `scope.own_module_beam_name` is set (from `lower_fn_with_module_name`),
-    // we use it directly.  The actor's declaration module SHOULD match the current
-    // module (spawn and actor declaration are in the same source file).
-    //
-    // Fallback: if the scope doesn't carry the module beam name (e.g. in unit tests),
-    // use the old `ridge_actor_<module_id>_<name_lc>` placeholder so existing tests
-    // that check the placeholder string continue to pass.
-    let actor_name_lc = actor_name.to_lowercase();
-    let actor_beam_module = scope.own_module_beam_name.as_ref().map_or_else(
-        || derive_actor_beam_module(actor_module_id.0, actor_name),
-        |parent_name| format!("{parent_name}_{actor_name_lc}"),
-    );
+    let actor_beam_module = actor_beam_module_name(actor, "IrExpr::Spawn", span, scope)?;
 
     // Lower args into a list literal.
     let lowered_args = args
@@ -207,6 +177,159 @@ pub(crate) fn lower_spawn(
             CErlExpr::Lit(CErlLit::Nil), // options: []
         ],
     })
+}
+
+// ── ChildSpec ──────────────────────────────────────────────────────────────────
+
+/// Lower `IrExpr::ChildSpec` to the OTP child-spec map the runtime hands to
+/// `supervisor:start_link/2`:
+///
+/// ```erlang
+/// #{id => <<"<actor_name_lc>">>,   %% binary — Ridge Text
+///   start => {ActorBeamModule, start_link, [Arg1, ..., ArgN]},
+///   restart => permanent,
+///   shutdown => 5000}
+/// ```
+///
+/// The default `id` is the actor's lowercase name as a BINARY (`child
+/// Counter` → `<<"counter">>`): Ridge-level ids are Text, and uniform binary
+/// ids keep `stopChild` / `whichChildren` / `childId` comparisons working
+/// (`<<"counter">> =/= 'counter'` to `lists:keyfind`). `std.actor.childId/2`
+/// overrides it. The default `restart` / `shutdown` are the OTP conventions;
+/// `std.actor.childRestart/2` overrides the former. The map is a plain
+/// value — building it starts no process.
+pub(crate) fn lower_child_spec(
+    actor: &SymbolRef,
+    args: &[IrExpr],
+    span: Span,
+    scope: &mut LocalScope,
+) -> Result<CErlExpr, CodegenError> {
+    let actor_beam_module = actor_beam_module_name(actor, "IrExpr::ChildSpec", span, scope)?;
+
+    let SymbolRef::ActorType {
+        name: actor_name, ..
+    } = actor
+    else {
+        return Err(CodegenError::IrShapeMalformed {
+            variant: "IrExpr::ChildSpec",
+            span,
+            detail: format!(
+                "ChildSpec actor field is not SymbolRef::ActorType — got {actor:?} (Phase 5 invariant violated)"
+            ),
+        });
+    };
+
+    let lowered_args = args
+        .iter()
+        .map(|a| lower_expr_in_scope(a, scope))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let atom = |s: &str| CErlExpr::Lit(CErlLit::Atom(CErlAtom(s.into())));
+    Ok(CErlExpr::MapLit(vec![
+        (
+            atom("id"),
+            // Binary, not an atom: Ridge ids are Text, and stopChild /
+            // whichChildren / childId compare with `=` against Text values.
+            CErlExpr::Lit(CErlLit::Binary(actor_name.to_lowercase().into_bytes())),
+        ),
+        (
+            atom("start"),
+            CErlExpr::Tuple(vec![
+                atom(&actor_beam_module),
+                atom("start_link"),
+                CErlExpr::ListLit(lowered_args),
+            ]),
+        ),
+        (atom("restart"), atom("permanent")),
+        (atom("shutdown"), CErlExpr::Lit(CErlLit::Int(5000))),
+    ]))
+}
+
+// ── tryAsk ─────────────────────────────────────────────────────────────────────
+
+/// Lower `IrExpr::TryAsk` to
+/// `call 'ridge_rt':'try_ask' (Handle, {Tag, A1, ..., AN}, Timeout)`.
+///
+/// `ridge_rt:try_ask/3` performs the same request-reply as
+/// `ridge_rt:ask/3` but returns `{ok, Reply} | {error, noproc | timeout}` —
+/// Ridge's `Result reply AskError` representation — instead of raising.
+pub(crate) fn lower_try_ask(
+    handle: &IrExpr,
+    message: &SymbolRef,
+    args: &[IrExpr],
+    timeout: Option<&IrTimeout>,
+    span: Span,
+    scope: &mut LocalScope,
+) -> Result<CErlExpr, CodegenError> {
+    let handle_expr = lower_expr_in_scope(handle, scope)?;
+    let msg_tuple = build_message_tuple(message, args, span, scope)?;
+
+    // Same timeout table as `lower_ask` (OQ-E001); `tryAsk`'s surface timeout
+    // is a required argument, so `None` is only a defensive fallback.
+    let timeout_expr = match timeout {
+        None => CErlExpr::Lit(CErlLit::Int(5000)),
+        Some(IrTimeout::Never) => CErlExpr::Lit(CErlLit::Atom(CErlAtom("infinity".into()))),
+        Some(IrTimeout::Millis(e)) => lower_expr_in_scope(e, scope)?,
+        // IrTimeout is #[non_exhaustive]; catch future variants defensively.
+        Some(_) => {
+            return Err(CodegenError::IrShapeMalformed {
+                variant: "IrTimeout",
+                span,
+                detail: "unrecognised IrTimeout variant — no lowering arm defined".into(),
+            });
+        }
+    };
+
+    Ok(CErlExpr::Call {
+        module: CErlAtom("ridge_rt".into()),
+        fn_name: CErlAtom("try_ask".into()),
+        args: vec![handle_expr, msg_tuple, timeout_expr],
+    })
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Resolve the actor's BEAM module atom from an `ActorType` [`SymbolRef`].
+///
+/// Shared by [`lower_spawn`] and [`lower_child_spec`]. `variant` names the
+/// enclosing IR variant for the error message.
+///
+/// The actor BEAM module name is `"<parent_module_beam_name>_<actor_name_lc>"`,
+/// matching the convention in `actor.rs::lower_actor`.
+///
+/// When `scope.own_module_beam_name` is set (from `lower_fn_with_module_name`),
+/// we use it directly.  The actor's declaration module SHOULD match the current
+/// module (spawn and actor declaration are in the same source file).
+///
+/// Fallback: if the scope doesn't carry the module beam name (e.g. in unit tests),
+/// use the old `ridge_actor_<module_id>_<name_lc>` placeholder so existing tests
+/// that check the placeholder string continue to pass.
+fn actor_beam_module_name(
+    actor: &SymbolRef,
+    variant: &'static str,
+    span: Span,
+    scope: &LocalScope,
+) -> Result<String, CodegenError> {
+    // Extract actor module name from the ActorType SymbolRef.
+    let SymbolRef::ActorType {
+        module: actor_module_id,
+        name: actor_name,
+    } = actor
+    else {
+        return Err(CodegenError::IrShapeMalformed {
+            variant,
+            span,
+            detail: format!(
+                "actor field is not SymbolRef::ActorType — got {actor:?} (Phase 5 invariant violated)"
+            ),
+        });
+    };
+
+    let actor_name_lc = actor_name.to_lowercase();
+    Ok(scope.own_module_beam_name.as_ref().map_or_else(
+        || derive_actor_beam_module(actor_module_id.0, actor_name),
+        |parent_name| format!("{parent_name}_{actor_name_lc}"),
+    ))
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -563,5 +686,200 @@ mod tests {
             "ridge_actor_0_limiter"
         );
         assert_eq!(derive_actor_beam_module(1, "Store"), "ridge_actor_1_store");
+    }
+
+    // ChildSpec tests
+
+    #[test]
+    fn child_spec_emits_otp_child_spec_map() {
+        let actor = actor_type_sym("Counter");
+        let args = vec![lit_int(0)];
+        let mut scope = LocalScope::new();
+
+        let result = lower_child_spec(&actor, &args, sp(), &mut scope).unwrap();
+        let CErlExpr::MapLit(pairs) = &result else {
+            panic!("expected MapLit, got {result:?}");
+        };
+        assert_eq!(pairs.len(), 4, "child-spec map must have exactly 4 keys");
+
+        // Keys in order: id, start, restart, shutdown.
+        let key_is = |i: usize, name: &str| matches!(&pairs[i].0, CErlExpr::Lit(CErlLit::Atom(CErlAtom(s))) if s == name);
+        assert!(key_is(0, "id"), "key 0 must be 'id', got {pairs:?}");
+        assert!(key_is(1, "start"), "key 1 must be 'start', got {pairs:?}");
+        assert!(
+            key_is(2, "restart"),
+            "key 2 must be 'restart', got {pairs:?}"
+        );
+        assert!(
+            key_is(3, "shutdown"),
+            "key 3 must be 'shutdown', got {pairs:?}"
+        );
+
+        // id => <<"counter">> (the actor's lowercase name as a BINARY —
+        // Ridge ids are Text, so `stopChild`/`whichChildren` comparisons
+        // against Text values must match).
+        assert!(
+            matches!(&pairs[0].1, CErlExpr::Lit(CErlLit::Binary(b)) if b == b"counter"),
+            "id must be the actor's lowercase name as a binary, got {:?}",
+            pairs[0].1
+        );
+
+        // start => {ridge_actor_0_counter, start_link, [0]}.
+        match &pairs[1].1 {
+            CErlExpr::Tuple(elems) => {
+                assert_eq!(elems.len(), 3, "start triple must have 3 elements");
+                assert!(
+                    matches!(&elems[0], CErlExpr::Lit(CErlLit::Atom(CErlAtom(s))) if s == "ridge_actor_0_counter"),
+                    "module must be the actor BEAM module, got {:?}",
+                    elems[0]
+                );
+                assert!(
+                    matches!(&elems[1], CErlExpr::Lit(CErlLit::Atom(CErlAtom(s))) if s == "start_link"),
+                    "function must be start_link, got {:?}",
+                    elems[1]
+                );
+                match &elems[2] {
+                    CErlExpr::ListLit(items) => {
+                        assert_eq!(items.len(), 1, "args list must hold the init args");
+                    }
+                    other => panic!("expected ListLit args, got {other:?}"),
+                }
+            }
+            other => panic!("expected Tuple for start, got {other:?}"),
+        }
+
+        // restart => permanent; shutdown => 5000.
+        assert!(
+            matches!(&pairs[2].1, CErlExpr::Lit(CErlLit::Atom(CErlAtom(s))) if s == "permanent"),
+            "restart default must be 'permanent', got {:?}",
+            pairs[2].1
+        );
+        assert!(
+            matches!(&pairs[3].1, CErlExpr::Lit(CErlLit::Int(5000))),
+            "shutdown default must be 5000, got {:?}",
+            pairs[3].1
+        );
+    }
+
+    #[test]
+    fn child_spec_uses_parent_module_name_in_actor_context() {
+        use crate::scope::LocalScope;
+        use rustc_hash::FxHashMap;
+        let actor = actor_type_sym("Worker");
+        let mut scope =
+            LocalScope::with_actor_parent(FxHashMap::default(), ModuleId(0), "ridge_module_0");
+        let result = lower_child_spec(&actor, &[], sp(), &mut scope).unwrap();
+        let CErlExpr::MapLit(pairs) = &result else {
+            panic!("expected MapLit, got {result:?}");
+        };
+        match &pairs[1].1 {
+            CErlExpr::Tuple(elems) => {
+                assert!(
+                    matches!(&elems[0], CErlExpr::Lit(CErlLit::Atom(CErlAtom(s))) if s == "ridge_module_0_worker"),
+                    "spec start module must match the actor sub-module name, got {:?}",
+                    elems[0]
+                );
+                assert!(
+                    matches!(&elems[2], CErlExpr::ListLit(items) if items.is_empty()),
+                    "no init args → empty args list, got {:?}",
+                    elems[2]
+                );
+            }
+            other => panic!("expected Tuple for start, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn child_spec_non_actor_type_returns_error() {
+        let bad_actor = SymbolRef::Local {
+            name: "foo".into(),
+            module: ModuleId(0),
+        };
+        let mut scope = LocalScope::new();
+        let result = lower_child_spec(&bad_actor, &[], sp(), &mut scope);
+        assert!(
+            matches!(
+                result,
+                Err(CodegenError::IrShapeMalformed {
+                    variant: "IrExpr::ChildSpec",
+                    ..
+                })
+            ),
+            "expected IrShapeMalformed for non-ActorType symbol, got {result:?}"
+        );
+    }
+
+    // TryAsk tests
+
+    #[test]
+    fn try_ask_emits_ridge_rt_try_ask() {
+        let handle = lit_unit();
+        let message = handler_sym("Counter", "getCount");
+        let args = vec![];
+        let timeout = Some(IrTimeout::Millis(Box::new(lit_int(1000))));
+        let mut scope = LocalScope::new();
+
+        let result =
+            lower_try_ask(&handle, &message, &args, timeout.as_ref(), sp(), &mut scope).unwrap();
+        match &result {
+            CErlExpr::Call {
+                module,
+                fn_name,
+                args: call_args,
+            } => {
+                assert_eq!(module.0, "ridge_rt");
+                assert_eq!(fn_name.0, "try_ask");
+                assert_eq!(
+                    call_args.len(),
+                    3,
+                    "try_ask/3 expects handle + msg + timeout"
+                );
+                // Second arg must be the message tuple {getCount} (tag only).
+                match &call_args[1] {
+                    CErlExpr::Tuple(elems) => {
+                        assert_eq!(
+                            elems.len(),
+                            1,
+                            "zero-payload handler tuple has only the tag"
+                        );
+                        assert!(
+                            matches!(&elems[0], CErlExpr::Lit(CErlLit::Atom(CErlAtom(s))) if s == "getCount")
+                        );
+                    }
+                    other => panic!("expected Tuple, got {other:?}"),
+                }
+                assert!(
+                    matches!(&call_args[2], CErlExpr::Lit(CErlLit::Int(1000))),
+                    "timeout must lower to the millis expression"
+                );
+            }
+            other => panic!("expected Call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn try_ask_with_payload_args() {
+        let handle = lit_unit();
+        let message = handler_sym("Store", "shorten");
+        let args = vec![lit_int(7)];
+        let timeout = Some(IrTimeout::Millis(Box::new(lit_int(250))));
+        let mut scope = LocalScope::new();
+
+        let result =
+            lower_try_ask(&handle, &message, &args, timeout.as_ref(), sp(), &mut scope).unwrap();
+        match &result {
+            CErlExpr::Call {
+                args: call_args, ..
+            } => match &call_args[1] {
+                CErlExpr::Tuple(elems) => {
+                    assert_eq!(elems.len(), 2, "payload handler tuple has tag + arg");
+                    assert!(
+                        matches!(&elems[0], CErlExpr::Lit(CErlLit::Atom(CErlAtom(s))) if s == "shorten")
+                    );
+                }
+                other => panic!("expected Tuple, got {other:?}"),
+            },
+            other => panic!("expected Call, got {other:?}"),
+        }
     }
 }

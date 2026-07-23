@@ -164,6 +164,14 @@ fn ty_handle(b: &BuiltinTyCons, a: Type) -> Type {
     Type::Con(b.handle, vec![a])
 }
 #[inline]
+fn ty_child_spec(b: &BuiltinTyCons, a: Type) -> Type {
+    Type::Con(b.child_spec, vec![a])
+}
+#[inline]
+fn ty_supervisor(b: &BuiltinTyCons, a: Type) -> Type {
+    Type::Con(b.supervisor, vec![a])
+}
+#[inline]
 fn ty_result(b: &BuiltinTyCons, ok: Type, err: Type) -> Type {
     Type::Con(b.result, vec![ok, err])
 }
@@ -257,6 +265,7 @@ const fn stub_phase7() -> Option<Scheme> {
 const A: TyVid = TyVid(0);
 const B_VAR: TyVid = TyVid(1);
 const C_VAR: TyVid = TyVid(2);
+const D_VAR: TyVid = TyVid(3);
 const CAP_C: CapVid = CapVid(0);
 
 // ── Main dispatch ─────────────────────────────────────────────────────────────
@@ -1622,6 +1631,69 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                 ty_fn_pure(vec![ty_handle(b, Type::Var(A))], ty_option(b, ty_int(b))),
             ))
         }
+        // Typed supervision. Cap-free, like `mailboxSize`. `supervise` and
+        // `childRestart` name the reconciled `Strategy` / `Restart` unions, so
+        // they are seeded via `reconciled_fn_scheme`, not here.
+        (STD_ACTOR, "startChild") => {
+            // forall a. Supervisor a -> ChildSpec a -> Result (Handle a) Text
+            Some(poly(
+                vec![A],
+                ty_fn_pure(
+                    vec![ty_supervisor(b, Type::Var(A)), ty_child_spec(b, Type::Var(A))],
+                    ty_result(b, ty_handle(b, Type::Var(A)), ty_text(b)),
+                ),
+            ))
+        }
+        (STD_ACTOR, "stopChild") => {
+            // forall a. Supervisor a -> Text -> Result Unit Text
+            Some(poly(
+                vec![A],
+                ty_fn_pure(
+                    vec![ty_supervisor(b, Type::Var(A)), ty_text(b)],
+                    ty_result(b, ty_unit(b), ty_text(b)),
+                ),
+            ))
+        }
+        (STD_ACTOR, "whichChildren") => {
+            // forall a. Supervisor a -> List (Text, Bool)
+            Some(poly(
+                vec![A],
+                ty_fn_pure(
+                    vec![ty_supervisor(b, Type::Var(A))],
+                    ty_list(b, Type::Tuple(vec![ty_text(b), ty_bool(b)])),
+                ),
+            ))
+        }
+        (STD_ACTOR, "childId") => {
+            // forall a. Text -> ChildSpec a -> ChildSpec a
+            Some(poly(
+                vec![A],
+                ty_fn_pure(
+                    vec![ty_text(b), ty_child_spec(b, Type::Var(A))],
+                    ty_child_spec(b, Type::Var(A)),
+                ),
+            ))
+        }
+        (STD_ACTOR, "tryAsk") => {
+            // Compiler-known: call sites are typed like `?>` by
+            // `actor::infer_tryask` — the message against the actor's `on`
+            // handlers, the result as `Result reply AskError`. This entry is
+            // the fallback scheme that seeds the env so the name resolves
+            // (e.g. when `tryAsk` is passed as a value) and so the call site
+            // absorbs `{time}` like any ask (§8.1). The message and reply
+            // types are inexpressible without handler knowledge, hence free
+            // variables here.
+            use ridge_ast::Capability;
+            let time_caps = CapabilitySet::singleton(Capability::Time);
+            Some(poly(
+                vec![A, B_VAR, C_VAR, D_VAR],
+                ty_fn_caps(
+                    vec![ty_handle(b, Type::Var(A)), Type::Var(B_VAR), ty_int(b)],
+                    ty_result(b, Type::Var(C_VAR), Type::Var(D_VAR)),
+                    time_caps,
+                ),
+            ))
+        }
 
         // ── std.json ─────────────────────────────────────────────────────────
         //
@@ -1970,6 +2042,31 @@ mod tests {
                             | "Floor"
                             | "round"
                             | "div"
+                    )
+                {
+                    continue;
+                }
+                // std.actor's supervision surface: `Strategy` / `Restart` /
+                // `AskError` and their constructors are reconciled unions seeded
+                // from the reserved arena block (`reconciled_ctor_scheme`), and
+                // `supervise` / `childRestart` name those types so they are seeded
+                // via `reconciled_fn_scheme` — none via this hand-curated table.
+                if module.name == "std.actor"
+                    && matches!(
+                        name,
+                        "Strategy"
+                            | "OneForOne"
+                            | "OneForAll"
+                            | "RestForOne"
+                            | "Restart"
+                            | "Permanent"
+                            | "Transient"
+                            | "Temporary"
+                            | "AskError"
+                            | "Noproc"
+                            | "Timeout"
+                            | "supervise"
+                            | "childRestart"
                     )
                 {
                     continue;

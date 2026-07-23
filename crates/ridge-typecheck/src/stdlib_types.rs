@@ -1928,6 +1928,92 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: false,
             is_anon: false,
         },
+        // `std.actor` — supervision strategy for `supervise`. A plain
+        // nullary union declared in Ridge (stdlib/actor.ridge); the variants
+        // lower to the verbatim atoms `'OneForOne'` / `'OneForAll'` /
+        // `'RestForOne'` that `ridge_rt:start_supervisor/4` maps to OTP's
+        // `one_for_one` / `one_for_all` / `rest_for_one`. Appended last so it
+        // disturbs no earlier reconciled id.
+        TyConDecl {
+            id: TyConId(base + 35),
+            name: "Strategy".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "OneForOne".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "OneForAll".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "RestForOne".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                ],
+            }),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
+        // `std.actor` — restart policy override for `childRestart`.
+        // Variants lower to `'Permanent'` / `'Transient'` / `'Temporary'`;
+        // `ridge_rt:set_child_restart/2` maps them to OTP's lowercase atoms.
+        TyConDecl {
+            id: TyConId(base + 36),
+            name: "Restart".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "Permanent".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "Transient".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "Temporary".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                ],
+            }),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
+        // `std.actor` — the error channel of `tryAsk`. Variants lower
+        // to `'Noproc'` / `'Timeout'`; `ridge_rt:try_ask/3` returns them in
+        // the `{error, Variant}` tuple.
+        TyConDecl {
+            id: TyConId(base + 37),
+            name: "AskError".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "Noproc".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "Timeout".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                ],
+            }),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
     ]
 }
 
@@ -2039,6 +2125,58 @@ pub(crate) fn reconciled_fn_scheme(
                     caps: CapRow::Concrete(CapabilitySet::PURE),
                 },
                 constraints: vec![Constraint::single(ORD_CLASS, key_ret)],
+            })
+        }
+        // std.actor `supervise : ∀a. Strategy -> Int -> Int -> List (ChildSpec a)
+        //   -> Result (Supervisor a) Text` — starts a supervisor over a
+        // list of typed child specs, with restart intensity and period. Names
+        // the reconciled `Strategy`, so the hand-curated table cannot express
+        // it. Cap-free, like `mailboxSize`.
+        ("std.actor", "supervise") => {
+            let strategy = *reconciled.get("Strategy")?;
+            let a = TyVid(0);
+            Some(Scheme {
+                vars: vec![a],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![
+                        Type::Con(strategy, vec![]),
+                        Type::Con(b.int, vec![]),
+                        Type::Con(b.int, vec![]),
+                        Type::Con(b.list, vec![Type::Con(b.child_spec, vec![Type::Var(a)])]),
+                    ],
+                    ret: Box::new(Type::Con(
+                        b.result,
+                        vec![
+                            Type::Con(b.supervisor, vec![Type::Var(a)]),
+                            Type::Con(b.text, vec![]),
+                        ],
+                    )),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![],
+            })
+        }
+        // std.actor `childRestart : ∀a. Restart -> ChildSpec a -> ChildSpec a`
+        // — overrides a spec's restart policy. Names the reconciled
+        // `Restart`.
+        ("std.actor", "childRestart") => {
+            let restart = *reconciled.get("Restart")?;
+            let a = TyVid(0);
+            Some(Scheme {
+                vars: vec![a],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![
+                        Type::Con(restart, vec![]),
+                        Type::Con(b.child_spec, vec![Type::Var(a)]),
+                    ],
+                    ret: Box::new(Type::Con(b.child_spec, vec![Type::Var(a)])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![],
             })
         }
         // std.query `orderSql : ∀f. SortOrder -> Quote f -> (Sql, List SqlValue)`

@@ -10,10 +10,10 @@ items:
     pub: false
     main: false
     caps: CapabilitySet(0)
-    ret_ty: Con(92)
+    ret_ty: Con(97)
     params:
       - name: p
-        ty: Con(92)
+        ty: Con(97)
     body:
       RecordUpdate(n0):
         base:

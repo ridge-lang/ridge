@@ -331,7 +331,7 @@ pub fn walk_expr<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, e: &'ast Expr) {
             v.visit_expr(handle);
             v.visit_expr(message);
         }
-        Expr::Spawn { actor, args, .. } => {
+        Expr::Spawn { actor, args, .. } | Expr::ChildSpec { actor, args, .. } => {
             v.visit_ident(actor);
             for arg in args {
                 v.visit_expr(arg);

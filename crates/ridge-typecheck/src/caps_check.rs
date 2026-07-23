@@ -243,6 +243,13 @@ fn check_body(
             }
         }
 
+        // ── ChildSpec (pure value construction; recurse into args) ───────────
+        Expr::ChildSpec { args, .. } => {
+            for a in args {
+                check_body(ctx, b, enclosing_name, enclosing_effective, a);
+            }
+        }
+
         // ── InnerFn (Rule 4 — D058) ───────────────────────────────────────────
         // The inner fn's declared caps must be ⊆ the enclosing effective set.
         // After that we recurse into the inner fn's body with its own effective

@@ -214,6 +214,7 @@ const fn expr_span(expr: &Expr) -> Span {
         | Expr::Ask { span: s, .. }
         | Expr::Send { span: s, .. }
         | Expr::Spawn { span: s, .. }
+        | Expr::ChildSpec { span: s, .. }
         | Expr::Propagate { span: s, .. }
         | Expr::If { span: s, .. }
         | Expr::Match { span: s, .. }

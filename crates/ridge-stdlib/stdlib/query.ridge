@@ -614,7 +614,7 @@ fn mutationTarget (table: Text) (pred: QExpr) -> Text =
 -- leaf `l`) when the predicate carries a correlated subquery, plain otherwise. Both
 -- yield nothing for the always-true default, leaving the statement unfiltered.
 fn mutationWhere (pred: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
-    if containsExists pred then whereExistsClause true 1 pred n
+    if containsExists pred then whereExistsClause 0 1 pred n
     else whereClause false pred n
 
 -- Render an `INSERT` over one or more rows sharing the same columns. The column list
@@ -800,7 +800,7 @@ fn renderPlan (d: Dialect) (plan: QueryPlan) (n: Int) -> { text: Text, binds: Li
                 -- The WHERE carries a correlated `EXISTS`: alias the table `l` so each
                 -- subquery can name the outer row as `l."col"`, and qualify the whole
                 -- predicate to that single base leaf (its inner tables aliased `x<i>`).
-                let w = whereExistsClause true 1 pred n
+                let w = whereExistsClause 0 1 pred n
                 let ob = orderByClause orders w.next
                 { text = Text.join "" ["SELECT ", distinctKw dist, "* FROM ", quoteIdent table, " AS l", w.text, ob.text, limitClause lim, offsetClause off], binds = w.binds ++ ob.binds, next = ob.next }
             else
@@ -813,16 +813,27 @@ fn renderPlan (d: Dialect) (plan: QueryPlan) (n: Int) -> { text: Text, binds: Li
             { text = Text.join "" ["(", l.text, ") ", op, " (", r.text, ")"], binds = l.binds ++ r.binds, next = r.next }
         PlanRefine inner pred orders lim off dist ->
             let i = renderPlan d inner n
-            if containsExists pred then
-                -- Alias the sub-select `l` (rather than `ridge_sub`) when the refinement's
-                -- WHERE carries an `EXISTS`, so each subquery correlates to the outer row.
-                let w = whereExistsClause true 1 pred i.next
-                let ob = orderByClause orders w.next
-                { text = Text.join "" ["SELECT ", distinctKw dist, "* FROM (", i.text, ") AS l", w.text, ob.text, limitClause lim, offsetClause off], binds = i.binds ++ w.binds ++ ob.binds, next = ob.next }
-            else
-                let w = whereClause false pred i.next
-                let ob = orderByClause orders w.next
-                { text = Text.join "" ["SELECT ", distinctKw dist, "* FROM (", i.text, ") AS ridge_sub", w.text, ob.text, limitClause lim, offsetClause off], binds = i.binds ++ w.binds ++ ob.binds, next = ob.next }
+            match inner
+                PlanJoin _ _ _ _ _ _ _ _ _ _ _ ->
+                    -- A refinement over a join's flat rows (a windowed `every`'s
+                    -- violator probe): the WHERE reads each leaf's columns back
+                    -- through the join's prefixed output aliases (`"t<i>$col"`,
+                    -- reference mode 2), so the subquery needs no correlation
+                    -- alias of its own.
+                    let w = whereFlatClause (leafCountOf inner) pred i.next
+                    let ob = orderByClause orders w.next
+                    { text = Text.join "" ["SELECT ", distinctKw dist, "* FROM (", i.text, ") AS ridge_sub", w.text, ob.text, limitClause lim, offsetClause off], binds = i.binds ++ w.binds ++ ob.binds, next = ob.next }
+                _ ->
+                    if containsExists pred then
+                        -- Alias the sub-select `l` (rather than `ridge_sub`) when the refinement's
+                        -- WHERE carries an `EXISTS`, so each subquery correlates to the outer row.
+                        let w = whereExistsClause 0 1 pred i.next
+                        let ob = orderByClause orders w.next
+                        { text = Text.join "" ["SELECT ", distinctKw dist, "* FROM (", i.text, ") AS l", w.text, ob.text, limitClause lim, offsetClause off], binds = i.binds ++ w.binds ++ ob.binds, next = ob.next }
+                    else
+                        let w = whereClause false pred i.next
+                        let ob = orderByClause orders w.next
+                        { text = Text.join "" ["SELECT ", distinctKw dist, "* FROM (", i.text, ") AS ridge_sub", w.text, ob.text, limitClause lim, offsetClause off], binds = i.binds ++ w.binds ++ ob.binds, next = ob.next }
         PlanJoin kind left right cond where2 orders lim off dist leftCols rightCols ->
             renderBareJoin kind left right cond where2 orders lim off dist leftCols rightCols n
         PlanProject proj child lim off dist ->
@@ -842,21 +853,30 @@ fn renderPlan (d: Dialect) (plan: QueryPlan) (n: Int) -> { text: Text, binds: Li
 -- at the first matching row and transfers one trivial column rather than every column of a
 -- row the caller never reads. The child is the reduction join an `exists` terminal builds,
 -- so the probe reuses its FROM/JOIN/WHERE with no presence markers (existence needs none).
--- A non-join child (a set-operation query) falls back to probing it as a subquery.
+-- A paged child (a windowed `exists`) renders in full — ordering and page intact — and the
+-- probe wraps it as a subquery, as does a non-join child (a set-operation query).
 fn renderExists (d: Dialect) (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match child
-        PlanJoin kind left right cond where2 _ _ _ _ _ _ ->
-            match left
-                PlanScan lt lp _ _ _ _ ->
-                    match right
-                        PlanScan rt _ _ _ _ _ ->
-                            let sk = joinSkeleton kind lt lp rt cond where2 false n
-                            { text = Text.join "" ["SELECT 1 FROM ", sk.text, " LIMIT 1"], binds = sk.binds, next = sk.next }
-                        _ -> existsNary child n
-                _ -> existsNary child n
-        _ ->
-            let r = renderPlan d child n
-            { text = Text.join "" ["SELECT 1 FROM (", r.text, ") AS ridge_exists LIMIT 1"], binds = r.binds, next = r.next }
+        PlanJoin kind left right cond where2 _ lim off _ _ _ ->
+            if isAggregatePaged lim off then
+                existsSubquery d child n
+            else
+                match left
+                    PlanScan lt lp _ _ _ _ ->
+                        match right
+                            PlanScan rt _ _ _ _ _ ->
+                                let sk = joinSkeleton kind lt lp rt cond where2 false n
+                                { text = Text.join "" ["SELECT 1 FROM ", sk.text, " LIMIT 1"], binds = sk.binds, next = sk.next }
+                            _ -> existsNary child n
+                    _ -> existsNary child n
+        _ -> existsSubquery d child n
+
+-- The generic existence probe: the child renders as a subquery and the probe reads one
+-- row off it. The shape a paged join (its page must bound the probe) or a non-join
+-- child takes, since neither can share the bare FROM/WHERE the fast paths emit.
+fn existsSubquery (d: Dialect) (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let r = renderPlan d child n
+    { text = Text.join "" ["SELECT 1 FROM (", r.text, ") AS ridge_exists LIMIT 1"], binds = r.binds, next = r.next }
 
 -- The existence probe over a composite (three-or-more table) reduction join: the flattened
 -- spine's FROM/WHERE with `SELECT 1 … LIMIT 1`, the all-inner and mixed-shape paths the
@@ -1127,82 +1147,85 @@ fn whereClause (qualified: Bool) (pred: QExpr) (n: Int) -> { text: Text, binds: 
 -- tagged it with — `QCol` leaf 0, `QColR` leaf 1, `QColAt i` leaf i) decides its
 -- alias, and each `EXISTS` introduces its inner table at the leaf one past the base.
 
--- The alias a leaf reads inside an EXISTS-bearing WHERE. A base outer leaf keeps its
--- join alias — `l`/`r` for a binary join or single scan, `t<i>` for an N-ary spine;
--- a leaf at or past `nBase` is an EXISTS inner table, aliased `x<leaf>` in a namespace
--- that never collides with the outer aliases.
-fn qualLeafRef (binaryOuter: Bool) (nBase: Int) (leaf: Int) (c: Text) -> Text =
+-- The alias a leaf reads inside an EXISTS-bearing WHERE, by reference mode. Mode 0 is
+-- a binary join or single scan (`l.`/`r.`), mode 1 an N-ary spine (`t<i>."col"`), and
+-- mode 2 a refinement over a join's flat rows, where a leaf's columns are read back
+-- through the join's prefixed output aliases (`"t<i>$col"`). A leaf at or past `nBase`
+-- is an EXISTS inner table, aliased `x<leaf>` in a namespace that never collides with
+-- the outer aliases.
+fn qualLeafRef (refMode: Int) (nBase: Int) (leaf: Int) (c: Text) -> Text =
     if leaf >= nBase then Text.join "" [xAlias leaf, ".", quoteIdent c]
-    else if binaryOuter then
+    else if refMode == 0 then
         if leaf == 0 then Text.concat "l." (quoteIdent c) else Text.concat "r." (quoteIdent c)
+    else if refMode == 2 then quoteIdent (Text.join "" [tAlias leaf, "$", c])
     else naryColRef leaf c
 
 fn xAlias (i: Int) -> Text = Text.concat "x" (Int.toText i)
 
 -- Render a captured predicate that may carry a correlated `EXISTS`, over a fixed base
--- of `nBase` outer leaves. `binaryOuter` and `nBase` decide how a column qualifies
+-- of `nBase` outer leaves. `refMode` and `nBase` decide how a column qualifies
 -- (see qualLeafRef); `depth` counts the EXISTS subqueries currently open, so the next
 -- inner table takes leaf `nBase + depth`. For an EXISTS-free predicate the output
--- matches the plain renderPred (`binaryOuter`, nBase ≤ 2) or renderQual (N-ary spine)
+-- matches the plain renderPred (mode 0, nBase ≤ 2) or renderQual (mode 1, N-ary spine)
 -- byte for byte. An `EXISTS` aliases its inner table `x<leaf>`, renders the correlated
 -- predicate one leaf deeper, and emits a `SELECT 1` probe.
-fn renderExistsPred (binaryOuter: Bool) (nBase: Int) (depth: Int) (e: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn renderExistsPred (refMode: Int) (nBase: Int) (depth: Int) (e: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match e
-        QAnd l r -> existsBin binaryOuter nBase depth l " AND " r n
-        QOr l r  -> existsBin binaryOuter nBase depth l " OR " r n
+        QAnd l r -> existsBin refMode nBase depth l " AND " r n
+        QOr l r  -> existsBin refMode nBase depth l " OR " r n
         QNot x   ->
-            let r = renderExistsPred binaryOuter nBase depth x n
+            let r = renderExistsPred refMode nBase depth x n
             { text = Text.join "" ["(NOT ", r.text, ")"], binds = r.binds, next = r.next }
         QNotTrue x ->
-            let r = renderExistsPred binaryOuter nBase depth x n
+            let r = renderExistsPred refMode nBase depth x n
             { text = Text.join "" ["(", r.text, " IS NOT TRUE)"], binds = r.binds, next = r.next }
-        QEq l r -> existsCmp binaryOuter nBase depth l " = " r n
-        QNe l r -> existsCmp binaryOuter nBase depth l " <> " r n
-        QLt l r -> existsCmp binaryOuter nBase depth l " < " r n
-        QGt l r -> existsCmp binaryOuter nBase depth l " > " r n
-        QLe l r -> existsCmp binaryOuter nBase depth l " <= " r n
-        QGe l r -> existsCmp binaryOuter nBase depth l " >= " r n
+        QEq l r -> existsCmp refMode nBase depth l " = " r n
+        QNe l r -> existsCmp refMode nBase depth l " <> " r n
+        QLt l r -> existsCmp refMode nBase depth l " < " r n
+        QGt l r -> existsCmp refMode nBase depth l " > " r n
+        QLe l r -> existsCmp refMode nBase depth l " <= " r n
+        QGe l r -> existsCmp refMode nBase depth l " >= " r n
         QLike v p ->
-            let lv = renderExistsOperand binaryOuter nBase depth v n
-            let lp = renderExistsOperand binaryOuter nBase depth p lv.next
+            let lv = renderExistsOperand refMode nBase depth v n
+            let lp = renderExistsOperand refMode nBase depth p lv.next
             { text = Text.join "" [lv.text, " LIKE ", lp.text], binds = lv.binds ++ lp.binds, next = lp.next }
         QIn v items ->
             match items
                 [] -> { text = "FALSE", binds = [], next = n }
                 _  ->
-                    let lv = renderExistsOperand binaryOuter nBase depth v n
-                    let inner = existsInList binaryOuter nBase depth items lv.next
+                    let lv = renderExistsOperand refMode nBase depth v n
+                    let inner = existsInList refMode nBase depth items lv.next
                     { text = Text.join "" [lv.text, " IN (", inner.text, ")"], binds = lv.binds ++ inner.binds, next = inner.next }
-        QCol c     -> { text = qualLeafRef binaryOuter nBase 0 c, binds = [], next = n }
-        QColR c    -> { text = qualLeafRef binaryOuter nBase 1 c, binds = [], next = n }
-        QColAt i c -> { text = qualLeafRef binaryOuter nBase i c, binds = [], next = n }
+        QCol c     -> { text = qualLeafRef refMode nBase 0 c, binds = [], next = n }
+        QColR c    -> { text = qualLeafRef refMode nBase 1 c, binds = [], next = n }
+        QColAt i c -> { text = qualLeafRef refMode nBase i c, binds = [], next = n }
         QLitBool b -> { text = boolLit b, binds = [], next = n }
         QCase c t e ->
-            let cc = renderExistsPred binaryOuter nBase depth c n
-            let ct = renderExistsPred binaryOuter nBase depth t cc.next
-            let ce = renderExistsPred binaryOuter nBase depth e ct.next
+            let cc = renderExistsPred refMode nBase depth c n
+            let ct = renderExistsPred refMode nBase depth t cc.next
+            let ce = renderExistsPred refMode nBase depth e ct.next
             { text = Text.join "" ["CASE WHEN ", cc.text, " THEN ", ct.text, " ELSE ", ce.text, " END"], binds = cc.binds ++ ct.binds ++ ce.binds, next = ce.next }
         QExists t corr ->
             let innerLeaf = nBase + depth
-            let inner = renderExistsPred binaryOuter nBase (depth + 1) corr n
+            let inner = renderExistsPred refMode nBase (depth + 1) corr n
             { text = Text.join "" ["EXISTS (SELECT 1 FROM ", quoteIdent t, " AS ", xAlias innerLeaf, " WHERE ", inner.text, ")"], binds = inner.binds, next = inner.next }
-        _ -> renderExistsOperand binaryOuter nBase depth e n
+        _ -> renderExistsOperand refMode nBase depth e n
 
-fn existsCmp (binaryOuter: Bool) (nBase: Int) (depth: Int) (l: QExpr) (op: Text) (r: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
-    let lr = renderExistsOperand binaryOuter nBase depth l n
-    let rr = renderExistsOperand binaryOuter nBase depth r lr.next
+fn existsCmp (refMode: Int) (nBase: Int) (depth: Int) (l: QExpr) (op: Text) (r: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let lr = renderExistsOperand refMode nBase depth l n
+    let rr = renderExistsOperand refMode nBase depth r lr.next
     { text = Text.join "" [lr.text, op, rr.text], binds = lr.binds ++ rr.binds, next = rr.next }
 
-fn existsBin (binaryOuter: Bool) (nBase: Int) (depth: Int) (l: QExpr) (op: Text) (r: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
-    let lr = renderExistsPred binaryOuter nBase depth l n
-    let rr = renderExistsPred binaryOuter nBase depth r lr.next
+fn existsBin (refMode: Int) (nBase: Int) (depth: Int) (l: QExpr) (op: Text) (r: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let lr = renderExistsPred refMode nBase depth l n
+    let rr = renderExistsPred refMode nBase depth r lr.next
     { text = Text.join "" ["(", lr.text, op, rr.text, ")"], binds = lr.binds ++ rr.binds, next = rr.next }
 
-fn renderExistsOperand (binaryOuter: Bool) (nBase: Int) (depth: Int) (e: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn renderExistsOperand (refMode: Int) (nBase: Int) (depth: Int) (e: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match e
-        QCol c      -> { text = qualLeafRef binaryOuter nBase 0 c, binds = [], next = n }
-        QColR c     -> { text = qualLeafRef binaryOuter nBase 1 c, binds = [], next = n }
-        QColAt i c  -> { text = qualLeafRef binaryOuter nBase i c, binds = [], next = n }
+        QCol c      -> { text = qualLeafRef refMode nBase 0 c, binds = [], next = n }
+        QColR c     -> { text = qualLeafRef refMode nBase 1 c, binds = [], next = n }
+        QColAt i c  -> { text = qualLeafRef refMode nBase i c, binds = [], next = n }
         QLitInt v   -> { text = placeholder n, binds = [sqlInt v], next = n + 1 }
         QLitText v  -> { text = placeholder n, binds = [sqlText v], next = n + 1 }
         QLitBool v  -> { text = placeholder n, binds = [sqlBool v], next = n + 1 }
@@ -1214,40 +1237,61 @@ fn renderExistsOperand (binaryOuter: Bool) (nBase: Int) (depth: Int) (e: QExpr) 
         QLitDate d -> { text = placeholder n, binds = [sqlDate (Date.toIso d)], next = n + 1 }
         QLitTime t -> { text = placeholder n, binds = [sqlTime (Time.toIso t)], next = n + 1 }
         QLitInterval d -> { text = placeholder n, binds = [sqlIntervalOf d], next = n + 1 }
-        QAdd l r    -> existsArith binaryOuter nBase depth l " + " r n
-        QSub l r    -> existsArith binaryOuter nBase depth l " - " r n
-        QMul l r    -> existsArith binaryOuter nBase depth l " * " r n
-        QDiv l r    -> existsArith binaryOuter nBase depth l " / " r n
-        QMod l r    -> existsArith binaryOuter nBase depth l " % " r n
+        QAdd l r    -> existsArith refMode nBase depth l " + " r n
+        QSub l r    -> existsArith refMode nBase depth l " - " r n
+        QMul l r    -> existsArith refMode nBase depth l " * " r n
+        QDiv l r    -> existsArith refMode nBase depth l " / " r n
+        QMod l r    -> existsArith refMode nBase depth l " % " r n
         QCase c t e ->
-            let cc = renderExistsPred binaryOuter nBase depth c n
-            let ct = renderExistsOperand binaryOuter nBase depth t cc.next
-            let ce = renderExistsOperand binaryOuter nBase depth e ct.next
+            let cc = renderExistsPred refMode nBase depth c n
+            let ct = renderExistsOperand refMode nBase depth t cc.next
+            let ce = renderExistsOperand refMode nBase depth e ct.next
             { text = Text.join "" ["CASE WHEN ", cc.text, " THEN ", ct.text, " ELSE ", ce.text, " END"], binds = cc.binds ++ ct.binds ++ ce.binds, next = ce.next }
         _           -> { text = "NULL", binds = [], next = n }
 
-fn existsArith (binaryOuter: Bool) (nBase: Int) (depth: Int) (l: QExpr) (op: Text) (r: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
-    let lr = renderExistsOperand binaryOuter nBase depth l n
-    let rr = renderExistsOperand binaryOuter nBase depth r lr.next
+fn existsArith (refMode: Int) (nBase: Int) (depth: Int) (l: QExpr) (op: Text) (r: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let lr = renderExistsOperand refMode nBase depth l n
+    let rr = renderExistsOperand refMode nBase depth r lr.next
     { text = Text.join "" ["(", lr.text, op, rr.text, ")"], binds = lr.binds ++ rr.binds, next = rr.next }
 
-fn existsInList (binaryOuter: Bool) (nBase: Int) (depth: Int) (items: List QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn existsInList (refMode: Int) (nBase: Int) (depth: Int) (items: List QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match items
         []        -> { text = "", binds = [], next = n }
-        x :: []   -> renderExistsOperand binaryOuter nBase depth x n
+        x :: []   -> renderExistsOperand refMode nBase depth x n
         x :: rest ->
-            let r1 = renderExistsOperand binaryOuter nBase depth x n
-            let r2 = existsInList binaryOuter nBase depth rest r1.next
+            let r1 = renderExistsOperand refMode nBase depth x n
+            let r2 = existsInList refMode nBase depth rest r1.next
             { text = Text.join "" [r1.text, ", ", r2.text], binds = r1.binds ++ r2.binds, next = r2.next }
 
 -- A WHERE clause for a predicate carrying a correlated EXISTS, qualified over `nBase`
 -- base outer leaves. Empty when the predicate is the always-true default a builder
 -- step leaves behind.
-fn whereExistsClause (binaryOuter: Bool) (nBase: Int) (pred: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn whereExistsClause (refMode: Int) (nBase: Int) (pred: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     if isAlwaysTrue pred then { text = "", binds = [], next = n }
     else
-        let w = renderExistsPred binaryOuter nBase 0 pred n
+        let w = renderExistsPred refMode nBase 0 pred n
         { text = Text.concat " WHERE " w.text, binds = w.binds, next = w.next }
+
+-- The WHERE of a refinement over a join's flat rows: each leaf's columns read through
+-- the join's prefixed output aliases (reference mode 2 — `"t<i>$col"`), with `nBase`
+-- set to the join's leaf count so a correlated EXISTS inside the predicate still
+-- aliases its inner table one leaf past the last outer one. Empty for the
+-- always-true default.
+fn whereFlatClause (nBase: Int) (pred: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    if isAlwaysTrue pred then { text = "", binds = [], next = n }
+    else
+        let w = renderExistsPred 2 nBase 0 pred n
+        { text = Text.concat " WHERE " w.text, binds = w.binds, next = w.next }
+
+-- The leaf count of a join plan, flattened — the `nBase` a post-join refinement's
+-- flat WHERE correlates over.
+fn leafCountOf (plan: QueryPlan) -> Int =
+    listLen (flattenJoin plan).leaves
+
+fn listLen (xs: List t) -> Int =
+    match xs
+        []        -> 0
+        _ :: rest -> 1 + listLen rest
 
 -- A binary join's post-join WHERE built from `(nBase, predicate)` conjuncts: the left
 -- scan's pre-join filter is a single-table leaf (nBase 1, its EXISTS correlates to
@@ -1266,7 +1310,7 @@ fn existsConjList (terms: List (Int, QExpr)) (n: Int) -> { texts: List Text, bin
         (nBase, pred) :: rest ->
             if isAlwaysTrue pred then existsConjList rest n
             else
-                let r = renderExistsPred true nBase 0 pred n
+                let r = renderExistsPred 0 nBase 0 pred n
                 let more = existsConjList rest r.next
                 { texts = Text.join "" ["(", r.text, ")"] :: more.texts, binds = r.binds ++ more.binds, next = more.next }
 
@@ -1516,7 +1560,7 @@ fn leafConds (leaves: List (Text, QExpr, List Text)) (idx: Int) (n: Int) -> { te
             if isAlwaysTrue pred then
                 leafConds rest (idx + 1) n
             else
-                let r = if containsExists pred then renderExistsPred false 1 0 pred n else renderQual idx pred n
+                let r = if containsExists pred then renderExistsPred 1 1 0 pred n else renderQual idx pred n
                 let more = leafConds rest (idx + 1) r.next
                 { texts = Text.join "" ["(", r.text, ")"] :: more.texts, binds = r.binds ++ more.binds, next = more.next }
 
@@ -1531,7 +1575,7 @@ fn stepConds (steps: List (Text, QExpr, QExpr)) (idx: Int) (n: Int) -> { texts: 
             if isAlwaysTrue where2 then
                 stepConds rest (idx + 1) n
             else
-                let r = renderExistsPred false (idx + 1) 0 where2 n
+                let r = renderExistsPred 1 (idx + 1) 0 where2 n
                 let more = stepConds rest (idx + 1) r.next
                 { texts = Text.join "" ["(", r.text, ")"] :: more.texts, binds = r.binds ++ more.binds, next = more.next }
 
@@ -1778,7 +1822,7 @@ fn renderProject (proj: QExpr) (child: QueryPlan) (lim: Int) (off: Int) (dist: B
             -- `l` so the subquery correlates, the same as a plain scan.
             if containsExists pred then
                 let sel = singleSelectList true proj n
-                let w = whereExistsClause true 1 pred sel.next
+                let w = whereExistsClause 0 1 pred sel.next
                 let ob = orderByClause orders w.next
                 { text = Text.join "" ["SELECT ", distinctKw dist, sel.text, " FROM ", quoteIdent table, " AS l", w.text, ob.text, limitClause lim, offsetClause off], binds = sel.binds ++ w.binds ++ ob.binds, next = ob.next }
             else
@@ -1936,7 +1980,7 @@ fn renderAggregate (d: Dialect) (func: Text) (column: QExpr) (leaf: Int) (child:
                 { text = Text.join "" ["SELECT ", ax.text, " FROM (", inner.text, ") AS ridge_agg"], binds = ax.binds ++ inner.binds, next = inner.next }
             else if containsExists pred then
                 let ax = aggExprSingle d true func column n
-                let w = whereExistsClause true 1 pred ax.next
+                let w = whereExistsClause 0 1 pred ax.next
                 { text = Text.join "" ["SELECT ", ax.text, " FROM ", quoteIdent table, " AS l", w.text], binds = ax.binds ++ w.binds, next = w.next }
             else
                 let ax = aggExprSingle d false func column n
@@ -2077,7 +2121,7 @@ fn renderGroup (d: Dialect) (keyCol: Text) (keyLeaf: Int) (cols: List (Text, Tex
             let keyExpr = renderColRef qualified false keyCol
             let cs = singleGroupSelectTerms d cols keyExpr qualified n
             if qualified then
-                let w = whereExistsClause true 1 pred cs.next
+                let w = whereExistsClause 0 1 pred cs.next
                 let h = singleHaving d having qualified keyCol w.next
                 { text = Text.join "" ["SELECT ", cs.text, " FROM ", quoteIdent table, " AS l", w.text, " GROUP BY ", keyExpr, h.text, " ORDER BY ", keyExpr], binds = cs.binds ++ w.binds ++ h.binds, next = h.next }
             else

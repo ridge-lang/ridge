@@ -657,6 +657,119 @@ pub fn db pagedJoinTopSum () -> Int =
                 Ok None     -> 0 - 3
                 Ok (Some n) -> n
 
+-- paged count (single table): the two oldest users counted -> 2. A `limit` before
+-- `count` bounds it to that ordered window — `Take(n).Count()` — where an unpaged
+-- count reads the whole matched set of three.
+pub fn db pagedTopCount () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.query |> Repo.orderBy Desc (fn (u: User) -> u.age) |> Repo.limit 2 |> Repo.count
+                Err _ -> 0 - 2
+                Ok n  -> n
+
+-- paged exists: an offset past the last row empties the window, so nothing exists
+-- even though the filter matches three rows -> "false".
+pub fn db pagedExistsPastEnd () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.age) |> Repo.offset 10 |> Repo.exists
+                Err _ -> "exists-err"
+                Ok b  -> boolText b
+
+-- paged every (single table): the oldest-first window of one holds only lin (30),
+-- so `age >= 26` holds over the window even though ada (18) would violate it
+-- unpaged -> "true".
+pub fn db pagedEveryTop () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.orderBy Desc (fn (u: User) -> u.age) |> Repo.limit 1 |> Repo.every (fn (u: User) -> u.age >= 26)
+                Err _ -> "every-err"
+                Ok b  -> boolText b
+
+-- paged every (the dual): the youngest-first window of one holds only ada (18),
+-- who violates `age >= 26`, so the universal fails over the window even though
+-- lin and max beyond the page would pass it -> "false".
+pub fn db pagedEveryViolator () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.age) |> Repo.limit 1 |> Repo.every (fn (u: User) -> u.age >= 26)
+                Err _ -> "every-err"
+                Ok b  -> boolText b
+
+-- paged count (join): the single highest-`id` post pair counted -> 1, the window
+-- the same join's paged aggregate folds; unpaged the count is 3.
+pub fn db pagedJoinCount () -> Int =
+    match setupJoin ()
+        Err _ -> 0 - 1
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.orderBy Desc (fn (u: User) (p: Post) -> p.id) |> Repo.limit 1 |> Repo.count
+                Err _ -> 0 - 2
+                Ok n  -> n
+
+-- paged every (join): the window holds only the highest-`id` pair (lin, again) —
+-- every window row titled "again" -> "true", though the pairs beyond the page
+-- (hello, world) would fail it unpaged.
+pub fn db pagedJoinEveryAgain () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.orderBy Desc (fn (u: User) (p: Post) -> p.id) |> Repo.limit 1 |> Repo.every (fn (u: User) (p: Post) -> p.title == "again")
+                Err _ -> "every-err"
+                Ok b  -> boolText b
+
+-- paged every (join, the dual): the same one-pair window fails "hello" — the
+-- violator probe finds (lin, again) inside the window -> "false".
+pub fn db pagedJoinEveryHello () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.orderBy Desc (fn (u: User) (p: Post) -> p.id) |> Repo.limit 1 |> Repo.every (fn (u: User) (p: Post) -> p.title == "hello")
+                Err _ -> "every-err"
+                Ok b  -> boolText b
+
+-- paged exists (join): an offset past every pair empties the window -> "false".
+pub fn db pagedJoinExistsPastEnd () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.orderBy Asc (fn (u: User) (p: Post) -> p.id) |> Repo.offset 10 |> Repo.exists
+                Err _ -> "exists-err"
+                Ok b  -> boolText b
+
+-- paged count (left join): a `limit 2` bounds the outer count to its window -> 2;
+-- unpaged the left join counts all four kept rows (ada's unmatched one included).
+pub fn db pagedLeftJoinCount () -> Int =
+    match setupJoin ()
+        Err _ -> 0 - 1
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.limit 2 |> Repo.count
+                Err _ -> 0 - 2
+                Ok n  -> n
+
+-- paged count (three-table composite): a `limit 2` bounds the chain's count to its
+-- window -> 2; unpaged the composite counts all three user-post-comment rows.
+pub fn db pagedCountJoined3 () -> Int =
+    match setupJoin3 ()
+        Err _ -> 0 - 1
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.joinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.limit 2 |> Repo.count
+                Err _ -> 0 - 2
+                Ok n  -> n
+
+-- paged exists (three-table composite): an offset past every joined row empties the
+-- window -> false.
+pub fn db pagedExistsJoined3PastEnd () -> Bool =
+    match setupJoin3 ()
+        Err _ -> true
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.joinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.offset 10 |> Repo.exists
+                Err _ -> true
+                Ok b  -> b
+
 -- Open one store, bind a users and a posts repository to it (so the join sees
 -- both tables), and seed three users and three posts. Post `author` references a
 -- user id: lin (id 2) owns "hello" and "again", max (id 3) owns "world", ada
@@ -2640,6 +2753,17 @@ fn repo_surface_runs_on_beam() {
          io:format(\"computedSum=~w~n\",[{module}:computedSum()]), \
          io:format(\"pagedTopSum=~w~n\",[{module}:pagedTopSum()]), \
          io:format(\"pagedJoinTopSum=~w~n\",[{module}:pagedJoinTopSum()]), \
+         io:format(\"pagedTopCount=~w~n\",[{module}:pagedTopCount()]), \
+         io:format(\"pagedExistsPastEnd=~s~n\",[{module}:pagedExistsPastEnd()]), \
+         io:format(\"pagedEveryTop=~s~n\",[{module}:pagedEveryTop()]), \
+         io:format(\"pagedEveryViolator=~s~n\",[{module}:pagedEveryViolator()]), \
+         io:format(\"pagedJoinCount=~w~n\",[{module}:pagedJoinCount()]), \
+         io:format(\"pagedJoinEveryAgain=~s~n\",[{module}:pagedJoinEveryAgain()]), \
+         io:format(\"pagedJoinEveryHello=~s~n\",[{module}:pagedJoinEveryHello()]), \
+         io:format(\"pagedJoinExistsPastEnd=~s~n\",[{module}:pagedJoinExistsPastEnd()]), \
+         io:format(\"pagedLeftJoinCount=~w~n\",[{module}:pagedLeftJoinCount()]), \
+         io:format(\"pagedCountJoined3=~w~n\",[{module}:pagedCountJoined3()]), \
+         io:format(\"pagedExistsJoined3PastEnd=~w~n\",[{module}:pagedExistsJoined3PastEnd()]), \
          io:format(\"joinedNames=~s~n\",[{module}:joinedNames()]), \
          io:format(\"joinCalcCodes=~s~n\",[{module}:joinCalcCodes()]), \
          io:format(\"joinedTitles=~s~n\",[{module}:joinedTitles()]), \
@@ -2851,6 +2975,50 @@ fn repo_surface_runs_on_beam() {
         (
             "pagedJoinTopSum=30",
             "a limit before a join aggregate bounds the fold to its ordered top-N window",
+        ),
+        (
+            "pagedTopCount=2",
+            "a limit before count bounds it to the ordered top-N window",
+        ),
+        (
+            "pagedExistsPastEnd=false",
+            "an offset past the last row empties the window exists probes",
+        ),
+        (
+            "pagedEveryTop=true",
+            "every tests only the window — the violator beyond the page does not fail it",
+        ),
+        (
+            "pagedEveryViolator=false",
+            "every finds a violator inside the window even when rows beyond the page would pass",
+        ),
+        (
+            "pagedJoinCount=1",
+            "a limit before a join count bounds it to the ordered top-N window",
+        ),
+        (
+            "pagedJoinEveryAgain=true",
+            "a join every tests only the one-pair window, not the pairs beyond the page",
+        ),
+        (
+            "pagedJoinEveryHello=false",
+            "a join every finds the violator inside its one-pair window",
+        ),
+        (
+            "pagedJoinExistsPastEnd=false",
+            "an offset past every pair empties the join window exists probes",
+        ),
+        (
+            "pagedLeftJoinCount=2",
+            "a limit before an outer-join count bounds it to the window, kept unmatched rows included",
+        ),
+        (
+            "pagedCountJoined3=2",
+            "a limit before a composite count bounds it to the window",
+        ),
+        (
+            "pagedExistsJoined3PastEnd=false",
+            "an offset past every joined row empties the composite window exists probes",
         ),
         (
             "joinedNames=lin:hello,lin:again,max:world",

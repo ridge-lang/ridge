@@ -553,24 +553,27 @@ pub class Pageable q =
 -- than by fetching the rows and measuring them. Neither takes a quoted argument, so
 -- the receiver alone fixes the instance and the class has the single parameter `q`,
 -- like `Pageable`/`Fetchable`. Both reflect the receiver's filter (and, on a join,
--- its condition and post-join `WHERE`); like the scalar aggregates, ordering and
--- paging do not bound them, and a query's set-operation plan is honoured the way the
--- decode terminals honour it. An empty selection counts 0, so `exists` is false over
--- it. (LINQ's `Count`/`Any`.)
+-- its condition and post-join `WHERE`); a `limit`/`offset` bounds them to that
+-- ordered window, exactly as it bounds a scalar aggregate — `orderBy |> limit n |>
+-- count` counts the top `n` rows, the way `Take(n).Count()` does — and a query's
+-- set-operation plan is honoured the way the decode terminals honour it. An empty
+-- window counts 0, so `exists` is false over it. (LINQ's `Count`/`Any`.)
 pub class Countable q =
     count  (x: q) -> Result Int Error
     exists (x: q) -> Result Bool Error
 
 -- The universal-predicate terminal for a query and a join — the dual of `exists`.
 -- `every` answers whether all the rows the receiver selects satisfy a further
--- predicate, comparing the receiver's row count against the count once the predicate
--- is folded in (so it is counted by the backend, never fetched). The predicate's
--- arity follows the receiver through the functional dependency `q -> p`, exactly as
--- `filter` does — a `Query e a` takes a one-row `Quote (e -> Bool)` and a
--- `Join e f a`/`LeftJoin e f a` a two-row `Quote (e -> f -> Bool)` — so a wrong-arity
--- predicate is a compile-time error. An empty selection is vacuously `true`. It sits
--- in its own class rather than beside `count`/`exists` because it carries the
--- predicate the dependency keys on, where they take no argument. (LINQ's `All`.)
+-- predicate, probing for a single row that violates it (so it is answered by the
+-- backend, never fetched). The predicate's arity follows the receiver through the
+-- functional dependency `q -> p`, exactly as `filter` does — a `Query e a` takes a
+-- one-row `Quote (e -> Bool)` and a `Join e f a`/`LeftJoin e f a` a two-row
+-- `Quote (e -> f -> Bool)` — so a wrong-arity predicate is a compile-time error.
+-- A `limit`/`offset` bounds the test to that ordered window, as it bounds `count`:
+-- the probe looks for a violator among the window's rows only. An empty window is
+-- vacuously `true`. It sits in its own class rather than beside `count`/`exists`
+-- because it carries the predicate the dependency keys on, where they take no
+-- argument. (LINQ's `All`.)
 pub class Every q p | q -> p =
     every (pred: Quote p) (x: q) -> Result Bool Error
 
@@ -2013,38 +2016,58 @@ instance Projectable (Seq a) (fn a -> s) where Row s =
     selectFirst (projection: Quote (fn a -> s)) (x: Seq a) -> Result (Option s) Error =
         firstDecoded (_evalPlanPure (seqSelectPlan x projection.tree 1))
 
--- The plan a sequence's `count`/`exists` reduces over: its inline source carrying only the
--- accumulated filter, with ordering, page, and distinct stripped (`[] (0 - 1) 0 false`) —
--- exactly as a query's `countQuery` strips them, since these terminals answer the size of
--- the matched row set, not a paged window of it. `exists` bounds `lim` to a single row;
--- `count` leaves it unbounded.
+-- Whether a receiver carries a page — a `limit` or an `offset` — so a windowed
+-- terminal (`count`/`exists`/`every`) reduces over that ordered window rather than
+-- the whole matched set, the same rule a paged scalar aggregate follows. Mirrors
+-- `isAggregatePaged` on the SQL renderer: a negative `lim` means no limit and a
+-- non-positive `off` no offset.
+fn isWindowPaged (lim: Int) (off: Int) -> Bool = lim >= 0 || off > 0
+
+-- The bound a windowed probe (`exists`, and `every`'s violator probe) pushes down:
+-- one row answers the question, unless the page is tighter — a `limit 0` window is
+-- empty, so the probe keeps the zero rather than finding a row outside it.
+fn probeLim (lim: Int) -> Int = if lim < 0 then 1 else (if lim < 1 then lim else 1)
+
+-- The plan a sequence's `groupBy`/`summarize` reduces over: its inline source
+-- carrying only the accumulated filter, with ordering, page, and distinct stripped
+-- (`[] (0 - 1) 0 false`) — a `GROUP BY` partitions the matched set, not a paged
+-- window of it. (`count`/`exists`/`every` take the windowed `seqWindowPlan`.)
 fn seqCountPlan (x: Seq a) (lim: Int) -> QueryPlan =
     planRefine x.source x.pred.tree [] lim 0 false
 
--- `count`/`exists` over an in-memory sequence: measure or probe the filtered rows through
--- the in-memory interpreter — the same size-and-presence terminals the database path counts
--- through its backend, one plan IR. Neither reaches a connection, so the instance carries no
--- context (no `Adapter`, no `Row`): the filter alone bounds the answer, the way the database
--- count does, and the in-memory evaluation cannot fail, so each result is an `Ok`.
+-- The plan a sequence's windowed terminals reduce over: the inline source carrying
+-- the whole accumulated builder state — filter, ordering, page, and distinct — so
+-- `count` measures the window the sequence's `toList` would return, `exists` probes
+-- it, and `every` tests its rows. The in-memory interpreter paginates a `PlanRefine`
+-- before the terminal reads it, exactly as the sequence's paged scalar aggregate.
+fn seqWindowPlan (x: Seq a) (lim: Int) -> QueryPlan =
+    planRefine x.source x.pred.tree x.orders lim x.off x.dist
+
+-- `count`/`exists` over an in-memory sequence: measure or probe the windowed rows
+-- through the in-memory interpreter — the same size-and-presence terminals the
+-- database path counts through its backend, one plan IR. Neither reaches a
+-- connection, so the instance carries no context (no `Adapter`, no `Row`): the
+-- filter and the page bound the answer, the way the database count's window does,
+-- and the in-memory evaluation cannot fail, so each result is an `Ok`.
 instance Countable (Seq a) =
     count (x: Seq a) -> Result Int Error =
-        Ok (lengthOf (_evalPlanPure (seqCountPlan x (0 - 1))))
+        Ok (lengthOf (_evalPlanPure (seqWindowPlan x x.lim)))
     exists (x: Seq a) -> Result Bool Error =
-        Ok (nonEmpty (_evalPlanPure (seqCountPlan x 1)))
+        Ok (nonEmpty (_evalPlanPure (seqWindowPlan x (probeLim x.lim))))
 
--- `every` over an in-memory sequence: probe for one row the sequence keeps that violates
--- the predicate, true exactly when none does — the same universal-predicate terminal the
--- database path probes, one plan IR. The further predicate is AND-folded with the
--- sequence's own filter wrapped `IS NOT TRUE` (`notTrue`), so the probe selects a kept row
--- whose predicate is false (or, where a column is NULL, not true), bounded to one row; the
--- ordering, page, and distinct are stripped, exactly as the database `every` folds its
--- violator. The probe runs through the in-memory interpreter without a connection and never
--- decodes — it only tests the rows empty — so the instance carries no context, and the
--- evaluation cannot fail, so `emptyOk` reads the answer straight off the probed rows.
+-- `every` over an in-memory sequence: probe the window for one row that violates
+-- the predicate, true exactly when none does — the same universal-predicate terminal
+-- the database path probes, one plan IR. The window materialises first (the inner
+-- refine carries the sequence's filter, ordering, page, and distinct) and the
+-- violator probe reads it from outside (the outer refine applies `IS NOT TRUE`
+-- after the page), so a violator outside the window does not fail the test. The
+-- probe runs through the in-memory interpreter without a connection and never
+-- decodes — it only tests the rows empty — so the instance carries no context, and
+-- the evaluation cannot fail, so `emptyOk` reads the answer straight off the rows.
 instance Every (Seq a) (fn a -> Bool) =
     every (pred: Quote (fn a -> Bool)) (x: Seq a) -> Result Bool Error =
-        let violator = quoteAnd x.pred (notTrue pred)
-        emptyOk (_evalPlanPure (planRefine x.source violator.tree [] 1 0 false))
+        let viol = notTrue pred
+        emptyOk (_evalPlanPure (planRefine (seqWindowPlan x x.lim) viol.tree [] 1 0 false))
 
 -- The scalar-aggregate plan a `sumOf`/`avgOf`/`minOf`/`maxOf` over a sequence runs: a
 -- `PlanAggregate` over the filtered inline rows, folding the column the accessor names
@@ -2159,18 +2182,21 @@ fn fullJoinSelectPlan (x: FullJoin e f a) (proj: QExpr) (lim: Int) -> QueryPlan 
 -- Build the base reduction join from raw fields: all matched (or outer) rows with
 -- neither ordering, offset, nor distinct. The four join receivers are distinct opaque
 -- types that cannot share a typed helper, so each shape's wrapper unpacks its receiver
--- and calls this. `lim` bounds it only for `exists`.
+-- and calls this. `lim` bounds it only for `exists`. An unpaged windowed terminal
+-- reduces over this base; a paged one takes `pagedReduceJoinOf`.
 fn reduceJoinOf (kind: Text) (leftTable: Text) (leftPred: QExpr) (rightTable: Text) (cond: QExpr) (where2: QExpr) (lim: Int) -> QueryPlan =
     planJoin kind (planScan leftTable leftPred [] (0 - 1) 0 false) (planScan rightTable (keepAllTree ()) [] (0 - 1) 0 false) cond where2 [] lim 0 false [] []
 
 -- The paged dual of `reduceJoinOf`, carrying the join's ordering and page so a scalar
--- aggregate over a paged join folds only that window. `count`/`exists` keep the unpaged
--- `reduceJoinOf` — they measure the matched set, not a window of it. `distinct` is left
--- off (the join aggregate never deduplicates its rows): the SQL fold reads the window's
--- rows through a subquery that carries no row columns to distinct on, so honouring it
--- would diverge from the in-memory fold. That gap predates paging and is tracked apart.
-fn pagedReduceJoinOf (kind: Text) (leftTable: Text) (leftPred: QExpr) (rightTable: Text) (cond: QExpr) (where2: QExpr) (orders: List (Bool, Int, QExpr)) (lim: Int) (off: Int) -> QueryPlan =
-    planJoin kind (planScan leftTable leftPred [] (0 - 1) 0 false) (planScan rightTable (keepAllTree ()) [] (0 - 1) 0 false) cond where2 orders lim off false [] []
+-- aggregate or a windowed `count`/`exists`/`every` reduces over only that window.
+-- `distinct` is left off (the join reduction never deduplicates its rows): the SQL
+-- fold reads the window's rows through a subquery that carries no row columns to
+-- distinct on, so honouring it would diverge from the in-memory fold. That gap
+-- predates paging and is tracked apart. The column lists stay empty for a fold
+-- (its subquery selects only the folded value); an `exists`/`every` probe, whose
+-- subquery must carry the prefixed row columns, passes both sides' real columns.
+fn pagedReduceJoinOf (kind: Text) (leftTable: Text) (leftPred: QExpr) (rightTable: Text) (cond: QExpr) (where2: QExpr) (orders: List (Bool, Int, QExpr)) (lim: Int) (off: Int) (leftCols: List Text) (rightCols: List Text) -> QueryPlan =
+    planJoin kind (planScan leftTable leftPred [] (0 - 1) 0 false) (planScan rightTable (keepAllTree ()) [] (0 - 1) 0 false) cond where2 orders lim off false leftCols rightCols
 
 -- The outer-shape reduction-join wrappers, the duals of `reduceJoin` over a
 -- `LeftJoin`/`RightJoin`/`FullJoin`. The join `kind` keeps the outer rows; an
@@ -2187,19 +2213,21 @@ fn fullReduceJoin (x: FullJoin e f a) (where2: QExpr) (lim: Int) -> QueryPlan =
 
 -- Run a `COUNT` aggregate plan over an outer join narrowed by `where2` and read the
 -- count off its lone row — the outer-shape duals of `countJoinPlan`, shared by each
--- shape's `count` and `every`.
+-- shape's `count`. The reduction carries the receiver's ordering and page, so a
+-- paged join counts only its window (the aggregate renderer wraps it as a subquery);
+-- unpaged, it counts every kept row directly.
 fn leftCountPlan (x: LeftJoin e f a) (where2: QExpr) -> Result Int Error where Adapter a =
-    match runPlan x.left.repo.adapter (planAggregate "COUNT" (keepAllTree ()) 0 (leftReduceJoin x where2 (0 - 1)))
+    match runPlan x.left.repo.adapter (planAggregate "COUNT" (keepAllTree ()) 0 (pagedReduceJoinOf "LEFT" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree where2 x.orders x.lim x.off [] []))
         Err err -> Err err
         Ok rows -> aggCount rows
 
 fn rightCountPlan (x: RightJoin e f a) (where2: QExpr) -> Result Int Error where Adapter a =
-    match runPlan x.left.repo.adapter (planAggregate "COUNT" (keepAllTree ()) 0 (rightReduceJoin x where2 (0 - 1)))
+    match runPlan x.left.repo.adapter (planAggregate "COUNT" (keepAllTree ()) 0 (pagedReduceJoinOf "RIGHT" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree where2 x.orders x.lim x.off [] []))
         Err err -> Err err
         Ok rows -> aggCount rows
 
 fn fullCountPlan (x: FullJoin e f a) (where2: QExpr) -> Result Int Error where Adapter a =
-    match runPlan x.left.repo.adapter (planAggregate "COUNT" (keepAllTree ()) 0 (fullReduceJoin x where2 (0 - 1)))
+    match runPlan x.left.repo.adapter (planAggregate "COUNT" (keepAllTree ()) 0 (pagedReduceJoinOf "FULL" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree where2 x.orders x.lim x.off [] []))
         Err err -> Err err
         Ok rows -> aggCount rows
 
@@ -2229,28 +2257,31 @@ fn aggCount (rows: List (Map Text SqlValue)) -> Result Int Error =
 -- The outer-shape scalar-aggregate plans. A fold over
 -- an unmatched side reads its column as absent (SQL NULL) and skips it.
 fn leftScalarPlan (x: LeftJoin e f a) (func: Text) (col: Quote p) -> QueryPlan =
-    planAggregate func (aggColumn col) (aggLeaf col) (pagedReduceJoinOf "LEFT" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off)
+    planAggregate func (aggColumn col) (aggLeaf col) (pagedReduceJoinOf "LEFT" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off [] [])
 
 fn rightScalarPlan (x: RightJoin e f a) (func: Text) (col: Quote p) -> QueryPlan =
-    planAggregate func (aggColumn col) (aggLeaf col) (pagedReduceJoinOf "RIGHT" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off)
+    planAggregate func (aggColumn col) (aggLeaf col) (pagedReduceJoinOf "RIGHT" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off [] [])
 
 fn fullScalarPlan (x: FullJoin e f a) (func: Text) (col: Quote p) -> QueryPlan =
-    planAggregate func (aggColumn col) (aggLeaf col) (pagedReduceJoinOf "FULL" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off)
+    planAggregate func (aggColumn col) (aggLeaf col) (pagedReduceJoinOf "FULL" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off [] [])
 
--- The base reduction plan a composite terminal (`count`/`exists`/`every`) folds over:
--- the whole nested join carrying its condition and post-join WHERE, with neither
--- ordering nor distinct — a reduction measures the matched set, not a window of it.
--- `lim` bounds it only for `exists`, which reads its answer from a single row. The
--- source's left-nested plan comes from `JoinShape`, the new leaf its scan and columns.
+-- The base reduction plan a composite terminal (`count`/`exists`/`every`) folds over
+-- when the receiver carries no page: the whole nested join carrying its condition and
+-- post-join WHERE, with neither ordering nor distinct. `lim` bounds it only for
+-- `exists`, which reads its answer from a single row; a paged receiver takes
+-- `pagedCompositeReducePlan` instead. The source's left-nested plan comes from
+-- `JoinShape`, the new leaf its scan and columns.
 fn compositeReducePlan (kind: Text) (sourcePlan: QueryPlan) (rightTable: Text) (cond: QExpr) (where2: QExpr) (lim: Int) (rightCols: List Text) -> QueryPlan =
     planJoin kind sourcePlan (planScan rightTable (keepAllTree ()) [] (0 - 1) 0 false) cond where2 [] lim 0 false [] rightCols
 
 -- The paged dual of `compositeReducePlan`, carrying the composite's ordering and page so
--- a scalar aggregate over a paged composite join folds only that window. `count`/`exists`
--- keep the unpaged form — they measure the matched set, not a window. `distinct` is left
--- off for the same reason as `pagedReduceJoinOf`: the join aggregate never deduplicates.
-fn pagedCompositeReducePlan (kind: Text) (sourcePlan: QueryPlan) (rightTable: Text) (cond: QExpr) (where2: QExpr) (orders: List (Bool, Int, QExpr)) (lim: Int) (off: Int) (rightCols: List Text) -> QueryPlan =
-    planJoin kind sourcePlan (planScan rightTable (keepAllTree ()) [] (0 - 1) 0 false) cond where2 orders lim off false [] rightCols
+-- a scalar aggregate or a windowed `count`/`exists`/`every` reduces over only that
+-- window. `distinct` is left off for the same reason as `pagedReduceJoinOf`: the join
+-- reduction never deduplicates. The left column list stays empty for a fold; an
+-- `exists`/`every` probe passes the source's columns (`[]` for a nested source, whose
+-- inner nodes carry their own), exactly as the composite select plans spell them.
+fn pagedCompositeReducePlan (kind: Text) (sourcePlan: QueryPlan) (rightTable: Text) (cond: QExpr) (where2: QExpr) (orders: List (Bool, Int, QExpr)) (lim: Int) (off: Int) (leftCols: List Text) (rightCols: List Text) -> QueryPlan =
+    planJoin kind sourcePlan (planScan rightTable (keepAllTree ()) [] (0 - 1) 0 false) cond where2 orders lim off false leftCols rightCols
 
 -- The per-shape reduction-join wrappers, one per composite. Each unpacks its receiver
 -- (the four composites are distinct opaque types that cannot share a typed helper) and
@@ -2295,16 +2326,16 @@ fn compositeNotExists (conn: a) (plan: QueryPlan) -> Result Bool Error where Ada
 -- (`aggColumn`) on whichever leaf it belongs to (`aggLeaf` — 0/1 for the first two
 -- tables, higher for a deeper one). One per shape, the kind carried by the reduction.
 fn joinedScalarPlan (x: Joined q f a) (func: Text) (col: Quote p) -> QueryPlan where JoinShape q, Row f =
-    planAggregate func (aggColumn col) (aggLeaf col) (pagedCompositeReducePlan "INNER" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off (rowColumns (entityWitness x.right)))
+    planAggregate func (aggColumn col) (aggLeaf col) (pagedCompositeReducePlan "INNER" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off [] (rowColumns (entityWitness x.right)))
 
 fn leftScalarComposite (x: LeftJoined q f a) (func: Text) (col: Quote p) -> QueryPlan where JoinShape q, Row f =
-    planAggregate func (aggColumn col) (aggLeaf col) (pagedCompositeReducePlan "LEFT" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off (rowColumns (entityWitness x.right)))
+    planAggregate func (aggColumn col) (aggLeaf col) (pagedCompositeReducePlan "LEFT" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off [] (rowColumns (entityWitness x.right)))
 
 fn rightScalarComposite (x: RightJoined q f a) (func: Text) (col: Quote p) -> QueryPlan where JoinShape q, Row f =
-    planAggregate func (aggColumn col) (aggLeaf col) (pagedCompositeReducePlan "RIGHT" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off (rowColumns (entityWitness x.right)))
+    planAggregate func (aggColumn col) (aggLeaf col) (pagedCompositeReducePlan "RIGHT" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off [] (rowColumns (entityWitness x.right)))
 
 fn fullScalarComposite (x: FullJoined q f a) (func: Text) (col: Quote p) -> QueryPlan where JoinShape q, Row f =
-    planAggregate func (aggColumn col) (aggLeaf col) (pagedCompositeReducePlan "FULL" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off (rowColumns (entityWitness x.right)))
+    planAggregate func (aggColumn col) (aggLeaf col) (pagedCompositeReducePlan "FULL" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off [] (rowColumns (entityWitness x.right)))
 
 -- The query plan a composite `select` runs: a `PlanProject` over the whole nested join.
 -- The inner join keeps the composite's ordering but defers its page and distinct to the
@@ -2455,16 +2486,16 @@ instance Pageable (Joined q f a) =
         Joined { source = x.source, right = x.right, cond = x.cond, where2 = x.where2, orders = x.orders, lim = x.lim, off = x.off, dist = true }
 
 -- The count of a query's rows, honouring its set-operation plan. A plain query
--- counts through the backend's `COUNT(*)` over its filter (a push-down, no rows
--- fetched); a query a set operation already built counts the combined result,
--- materialised through `runPlan` and measured. The filter applies either way,
--- ordering and paging do not — a count answers the size of the matched row set,
--- not a paged window of it, the same rule the scalar aggregates follow.
+-- counts through the backend's `COUNT(*)` over its filtered (and paged) scan — a
+-- push-down, no rows fetched; a paged scan folds as a subquery over its ordered
+-- window, exactly as a paged scalar aggregate does. A query a set operation
+-- already built counts the combined result, materialised through `runPlan` with
+-- the query's ordering, page, and distinct applied, and measured.
 fn countQuery (x: Query e a) -> Result Int Error where Adapter a =
     match x.plan
-        None   -> compositeCount x.repo.adapter (planScan x.repo.table x.pred.tree [] (0 - 1) 0 false)
+        None   -> compositeCount x.repo.adapter (planScan x.repo.table x.pred.tree x.orders x.lim x.off x.dist)
         Some p ->
-            match runPlan x.repo.adapter (planRefine p x.pred.tree [] (0 - 1) 0 false)
+            match runPlan x.repo.adapter (planRefine p x.pred.tree x.orders x.lim x.off x.dist)
                 Err err -> Err err
                 Ok rows -> Ok (lengthOf rows)
 
@@ -2491,170 +2522,254 @@ fn lengthOf (xs: List t) -> Int =
         []        -> 0
         _ :: rest -> 1 + lengthOf rest
 
--- A query's `count`/`exists`: count its filtered rows (honouring a set-operation
--- plan through `countQuery`) or probe for a single row. The behaviour the single-
--- receiver `count`/`exists` pub fns had before they unified with the join form.
+-- A query's `count`/`exists`: count its windowed rows (honouring a set-operation
+-- plan through `countQuery`) or probe the window for a single row. The probe carries
+-- the query's ordering and page, bounded to one row unless the page is tighter
+-- (`probeLim`), so an `offset` past the last row answers `false`. The behaviour the
+-- single-receiver `count`/`exists` pub fns had before they unified with the join form.
 instance Countable (Query e a) where Adapter a =
     count (x: Query e a) -> Result Int Error =
         countQuery x
     exists (x: Query e a) -> Result Bool Error =
         match x.plan
             None ->
-                match fetch x.repo.adapter x.repo.table x.pred [] 1 0 false
+                match fetch x.repo.adapter x.repo.table x.pred x.orders (probeLim x.lim) x.off x.dist
                     Err err -> Err err
                     Ok rows -> Ok (nonEmpty rows)
             Some p ->
-                match runPlan x.repo.adapter (planRefine p x.pred.tree [] 1 0 false)
+                match runPlan x.repo.adapter (planRefine p x.pred.tree x.orders (probeLim x.lim) x.off x.dist)
                     Err err -> Err err
                     Ok rows -> Ok (nonEmpty rows)
 
 -- A left join's `count`/`exists`: the dual over a `LeftJoin`, counted through
--- `countLeftJoin` (a `COUNT(*)` over the left-outer join, every left row kept).
--- `exists` is true whenever the join keeps any row — a left join keeps one per left
--- row the `where2` admits.
+-- `leftCountPlan` (a `COUNT(*)` over the left-outer join's window, every kept left
+-- row included). `exists` probes the window: unpaged it reuses the reduction join's
+-- FROM/WHERE directly; paged, the join renders with its ordering and page as a
+-- subquery the probe reads one row from.
 instance Countable (LeftJoin e f a) where Adapter a =
     count (x: LeftJoin e f a) -> Result Int Error =
         leftCountPlan x x.where2.tree
     exists (x: LeftJoin e f a) -> Result Bool Error =
-        match runPlan x.left.repo.adapter (planExists (leftReduceJoin x x.where2.tree 1))
-            Err err  -> Err err
-            Ok rows  -> Ok (nonEmpty rows)
+        if isWindowPaged x.lim x.off then
+            match runPlan x.left.repo.adapter (planExists (pagedReduceJoinOf "LEFT" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree x.where2.tree x.orders (probeLim x.lim) x.off (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right))))
+                Err err  -> Err err
+                Ok rows  -> Ok (nonEmpty rows)
+        else
+            match runPlan x.left.repo.adapter (planExists (leftReduceJoin x x.where2.tree 1))
+                Err err  -> Err err
+                Ok rows  -> Ok (nonEmpty rows)
 
 -- A right join's `count`/`exists`: the dual over a `RightJoin`, counted through
--- `countRightJoin` (a `COUNT(*)` over the right-outer join, every right row kept).
--- `exists` is true whenever the join keeps any row — a right join keeps one per right
--- row the `where2` admits.
+-- `rightCountPlan` (a `COUNT(*)` over the right-outer join's window, every kept right
+-- row included). `exists` probes the window the same split way the left join does.
 instance Countable (RightJoin e f a) where Adapter a =
     count (x: RightJoin e f a) -> Result Int Error =
         rightCountPlan x x.where2.tree
     exists (x: RightJoin e f a) -> Result Bool Error =
-        match runPlan x.left.repo.adapter (planExists (rightReduceJoin x x.where2.tree 1))
-            Err err  -> Err err
-            Ok rows  -> Ok (nonEmpty rows)
+        if isWindowPaged x.lim x.off then
+            match runPlan x.left.repo.adapter (planExists (pagedReduceJoinOf "RIGHT" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree x.where2.tree x.orders (probeLim x.lim) x.off (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right))))
+                Err err  -> Err err
+                Ok rows  -> Ok (nonEmpty rows)
+        else
+            match runPlan x.left.repo.adapter (planExists (rightReduceJoin x x.where2.tree 1))
+                Err err  -> Err err
+                Ok rows  -> Ok (nonEmpty rows)
 
 -- A full join's `count`/`exists`: the dual over a `FullJoin`, counted through
--- `countFullJoin` (a `COUNT(*)` over the full-outer join, every row of both tables
--- kept). `exists` is true whenever the join keeps any row — a full join keeps one per
--- row of either table the `where2` admits.
+-- `fullCountPlan` (a `COUNT(*)` over the full-outer join's window, every kept row of
+-- both tables included). `exists` probes the window the same split way the left join
+-- does.
 instance Countable (FullJoin e f a) where Adapter a =
     count (x: FullJoin e f a) -> Result Int Error =
         fullCountPlan x x.where2.tree
     exists (x: FullJoin e f a) -> Result Bool Error =
-        match runPlan x.left.repo.adapter (planExists (fullReduceJoin x x.where2.tree 1))
-            Err err  -> Err err
-            Ok rows  -> Ok (nonEmpty rows)
+        if isWindowPaged x.lim x.off then
+            match runPlan x.left.repo.adapter (planExists (pagedReduceJoinOf "FULL" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree x.where2.tree x.orders (probeLim x.lim) x.off (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right))))
+                Err err  -> Err err
+                Ok rows  -> Ok (nonEmpty rows)
+        else
+            match runPlan x.left.repo.adapter (planExists (fullReduceJoin x x.where2.tree 1))
+                Err err  -> Err err
+                Ok rows  -> Ok (nonEmpty rows)
 
--- A query's `every`: probe for one row that violates the predicate, true exactly when
--- none does. The further predicate is AND-folded with the query's own filter as `IS NOT
--- TRUE` (`notTrue`), so the probe selects a row the query keeps whose predicate is false
--- — or, where a column is NULL, not true — and `every` answers `true` when that probe
--- comes back empty. One probe replaces the two counts the comparison used to run, and a
--- `LIMIT 1` lets it stop at the first violator. The plan path tracks the query's own
+-- A query's `every`: probe for one row in the window that violates the predicate,
+-- true exactly when none does. Unpaged, the further predicate is AND-folded with the
+-- query's own filter as `IS NOT TRUE` (`notTrue`), so the probe selects a row the
+-- query keeps whose predicate is false — or, where a column is NULL, not true — and
+-- `every` answers `true` when that probe comes back empty. Paged, the window
+-- materialises first (filter, ordering, page, distinct) and the violator probe reads
+-- it from outside, so a violator beyond the page does not fail the test. A `LIMIT 1`
+-- lets either probe stop at the first violator. The plan path tracks the query's own
 -- filter and a set-operation plan alike, the same split `exists` makes.
 instance Every (Query e a) (fn e -> Bool) where Adapter a =
     every (pred: Quote (fn e -> Bool)) (x: Query e a) -> Result Bool Error =
         let violator = quoteAnd x.pred (notTrue pred)
+        let vn = notTrue pred
         match x.plan
             None ->
-                match fetch x.repo.adapter x.repo.table violator [] 1 0 false
-                    Err err -> Err err
-                    Ok rows -> emptyOk rows
+                if isWindowPaged x.lim x.off then
+                    match runPlan x.repo.adapter (planRefine (planScan x.repo.table x.pred.tree x.orders x.lim x.off x.dist) vn.tree [] 1 0 false)
+                        Err err -> Err err
+                        Ok rows -> emptyOk rows
+                else
+                    match fetch x.repo.adapter x.repo.table violator [] 1 0 false
+                        Err err -> Err err
+                        Ok rows -> emptyOk rows
             Some p ->
-                match runPlan x.repo.adapter (planRefine p violator.tree [] 1 0 false)
-                    Err err -> Err err
-                    Ok rows -> emptyOk rows
+                if isWindowPaged x.lim x.off then
+                    match runPlan x.repo.adapter (planRefine (planRefine p x.pred.tree x.orders x.lim x.off x.dist) vn.tree [] 1 0 false)
+                        Err err -> Err err
+                        Ok rows -> emptyOk rows
+                else
+                    match runPlan x.repo.adapter (planRefine p violator.tree [] 1 0 false)
+                        Err err -> Err err
+                        Ok rows -> emptyOk rows
 
--- A left join's `every`: the dual over a `LeftJoin`, probing the reduction join for a
--- violator. The predicate folds into the post-join `WHERE` as `IS NOT TRUE`, where a
--- test over a right column reads NULL on the unmatched rows and so flags them as
--- violations — they fail `every`, the same three-valued reading the count comparison
--- gave, now in one probe.
+-- A left join's `every`: the dual over a `LeftJoin`, probing the window for a
+-- violator. Unpaged, the predicate folds into the post-join `WHERE` as `IS NOT TRUE`,
+-- where a test over a right column reads NULL on the unmatched rows and so flags them
+-- as violations — they fail `every`, the same three-valued reading the count
+-- comparison gave, now in one probe. Paged, the window materialises first (the join
+-- with its ordering and page) and the violator probe reads it from outside — the
+-- predicate qualifies against the window's prefixed columns — so a violator beyond
+-- the page does not fail the test.
 instance Every (LeftJoin e f a) (fn e f -> Bool) where Adapter a =
     every (pred: Quote (fn e f -> Bool)) (x: LeftJoin e f a) -> Result Bool Error =
-        let folded = quoteAnd2 x.where2 (notTrue pred)
-        match runPlan x.left.repo.adapter (planExists (leftReduceJoin x folded.tree 1))
-            Err err  -> Err err
-            Ok rows  -> emptyOk rows
+        if isWindowPaged x.lim x.off then
+            let vn = notTrue pred
+            match runPlan x.left.repo.adapter (planExists (planRefine (pagedReduceJoinOf "LEFT" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right))) vn.tree [] 1 0 false))
+                Err err  -> Err err
+                Ok rows  -> emptyOk rows
+        else
+            let folded = quoteAnd2 x.where2 (notTrue pred)
+            match runPlan x.left.repo.adapter (planExists (leftReduceJoin x folded.tree 1))
+                Err err  -> Err err
+                Ok rows  -> emptyOk rows
 
--- A right join's `every`: the dual over a `RightJoin`, probing the reduction join for a
--- violator. The predicate folds into the post-join `WHERE` as `IS NOT TRUE`, where a
--- test over a left column reads NULL on the unmatched rows and so flags them as
--- violations — they fail `every`, the same three-valued reading the count comparison
--- gave, now in one probe.
+-- A right join's `every`: the dual over a `RightJoin`, probing the window for a
+-- violator. Unpaged, the predicate folds into the post-join `WHERE` as `IS NOT TRUE`,
+-- where a test over a left column reads NULL on the unmatched rows and so flags them
+-- as violations — they fail `every`, the same three-valued reading the count
+-- comparison gave, now in one probe. Paged, the probe reads the window from outside,
+-- exactly as the left join's does.
 instance Every (RightJoin e f a) (fn e f -> Bool) where Adapter a =
     every (pred: Quote (fn e f -> Bool)) (x: RightJoin e f a) -> Result Bool Error =
-        let folded = quoteAnd2 x.where2 (notTrue pred)
-        match runPlan x.left.repo.adapter (planExists (rightReduceJoin x folded.tree 1))
-            Err err  -> Err err
-            Ok rows  -> emptyOk rows
+        if isWindowPaged x.lim x.off then
+            let vn = notTrue pred
+            match runPlan x.left.repo.adapter (planExists (planRefine (pagedReduceJoinOf "RIGHT" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right))) vn.tree [] 1 0 false))
+                Err err  -> Err err
+                Ok rows  -> emptyOk rows
+        else
+            let folded = quoteAnd2 x.where2 (notTrue pred)
+            match runPlan x.left.repo.adapter (planExists (rightReduceJoin x folded.tree 1))
+                Err err  -> Err err
+                Ok rows  -> emptyOk rows
 
--- A full join's `every`: the dual over a `FullJoin`, probing the reduction join for a
--- violator. The predicate folds into the post-join `WHERE` as `IS NOT TRUE`, where a
--- test over a column of an unmatched side reads NULL and so flags those rows as
--- violations — they fail `every`, the same three-valued reading the count comparison
--- gave, now in one probe.
+-- A full join's `every`: the dual over a `FullJoin`, probing the window for a
+-- violator. Unpaged, the predicate folds into the post-join `WHERE` as `IS NOT TRUE`,
+-- where a test over a column of an unmatched side reads NULL and so flags those rows
+-- as violations — they fail `every`, the same three-valued reading the count
+-- comparison gave, now in one probe. Paged, the probe reads the window from outside,
+-- exactly as the left join's does.
 instance Every (FullJoin e f a) (fn e f -> Bool) where Adapter a =
     every (pred: Quote (fn e f -> Bool)) (x: FullJoin e f a) -> Result Bool Error =
-        let folded = quoteAnd2 x.where2 (notTrue pred)
-        match runPlan x.left.repo.adapter (planExists (fullReduceJoin x folded.tree 1))
-            Err err  -> Err err
-            Ok rows  -> emptyOk rows
+        if isWindowPaged x.lim x.off then
+            let vn = notTrue pred
+            match runPlan x.left.repo.adapter (planExists (planRefine (pagedReduceJoinOf "FULL" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right))) vn.tree [] 1 0 false))
+                Err err  -> Err err
+                Ok rows  -> emptyOk rows
+        else
+            let folded = quoteAnd2 x.where2 (notTrue pred)
+            match runPlan x.left.repo.adapter (planExists (fullReduceJoin x folded.tree 1))
+                Err err  -> Err err
+                Ok rows  -> emptyOk rows
 
 -- A composite join's `count`/`exists`: count the joined rows of a three-or-more table
 -- chain through a `COUNT(*)` over its reduction plan, or probe it for one row. One pair
 -- per composite shape, each folding over its own join kind — an outer shape counts its
--- kept-but-unmatched rows the same way the binary outer `count` does. Like the binary
--- counts, the reduction is neither ordered nor paged: these answer the matched set, not
--- a window of it.
+-- kept-but-unmatched rows the same way the binary outer `count` does. The reduction
+-- carries the composite's ordering and page, so a paged chain counts and probes only
+-- its window — the count folding it as a subquery, the probe reading one row off it —
+-- and an unpaged chain measures the whole matched set as before.
 instance Countable (Joined q f a) where Adapter a, JoinShape q, Row f =
     count (x: Joined q f a) -> Result Int Error =
-        compositeCount x.right.adapter (joinedReducePlan x x.where2.tree (0 - 1))
+        compositeCount x.right.adapter (pagedCompositeReducePlan "INNER" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off [] (rowColumns (entityWitness x.right)))
     exists (x: Joined q f a) -> Result Bool Error =
-        compositeExists x.right.adapter (joinedReducePlan x x.where2.tree 1)
+        if isWindowPaged x.lim x.off then
+            compositeExists x.right.adapter (pagedCompositeReducePlan "INNER" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders (probeLim x.lim) x.off (sourceCols x.source) (rowColumns (entityWitness x.right)))
+        else
+            compositeExists x.right.adapter (joinedReducePlan x x.where2.tree 1)
 
 instance Countable (LeftJoined q f a) where Adapter a, JoinShape q, Row f =
     count (x: LeftJoined q f a) -> Result Int Error =
-        compositeCount x.right.adapter (leftReducePlan x x.where2.tree (0 - 1))
+        compositeCount x.right.adapter (pagedCompositeReducePlan "LEFT" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off [] (rowColumns (entityWitness x.right)))
     exists (x: LeftJoined q f a) -> Result Bool Error =
-        compositeExists x.right.adapter (leftReducePlan x x.where2.tree 1)
+        if isWindowPaged x.lim x.off then
+            compositeExists x.right.adapter (pagedCompositeReducePlan "LEFT" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders (probeLim x.lim) x.off (sourceCols x.source) (rowColumns (entityWitness x.right)))
+        else
+            compositeExists x.right.adapter (leftReducePlan x x.where2.tree 1)
 
 instance Countable (RightJoined q f a) where Adapter a, JoinShape q, Row f =
     count (x: RightJoined q f a) -> Result Int Error =
-        compositeCount x.right.adapter (rightReducePlan x x.where2.tree (0 - 1))
+        compositeCount x.right.adapter (pagedCompositeReducePlan "RIGHT" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off [] (rowColumns (entityWitness x.right)))
     exists (x: RightJoined q f a) -> Result Bool Error =
-        compositeExists x.right.adapter (rightReducePlan x x.where2.tree 1)
+        if isWindowPaged x.lim x.off then
+            compositeExists x.right.adapter (pagedCompositeReducePlan "RIGHT" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders (probeLim x.lim) x.off (sourceCols x.source) (rowColumns (entityWitness x.right)))
+        else
+            compositeExists x.right.adapter (rightReducePlan x x.where2.tree 1)
 
 instance Countable (FullJoined q f a) where Adapter a, JoinShape q, Row f =
     count (x: FullJoined q f a) -> Result Int Error =
-        compositeCount x.right.adapter (fullReducePlan x x.where2.tree (0 - 1))
+        compositeCount x.right.adapter (pagedCompositeReducePlan "FULL" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off [] (rowColumns (entityWitness x.right)))
     exists (x: FullJoined q f a) -> Result Bool Error =
-        compositeExists x.right.adapter (fullReducePlan x x.where2.tree 1)
+        if isWindowPaged x.lim x.off then
+            compositeExists x.right.adapter (pagedCompositeReducePlan "FULL" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders (probeLim x.lim) x.off (sourceCols x.source) (rowColumns (entityWitness x.right)))
+        else
+            compositeExists x.right.adapter (fullReducePlan x x.where2.tree 1)
 
--- A composite join's `every`: probe the chain's reduction join for a row that violates
--- the further predicate, true exactly when none does. The predicate is the positional
--- leaf form the receiver determines; its stored two-row form folds into `where2` as `IS
--- NOT TRUE` (`notTrue` over `quoteAnd2`), so an unmatched leaf's NULL column counts as a
--- violation just as the count comparison made it. One probe per composite shape, each at
--- its own kind through the shared reduction plan, bounded to one row.
+-- A composite join's `every`: probe the chain's window for a row that violates the
+-- further predicate, true exactly when none does. Unpaged, the predicate's stored
+-- two-row form folds into `where2` as `IS NOT TRUE` (`notTrue` over `quoteAnd2`), so
+-- an unmatched leaf's NULL column counts as a violation just as the count comparison
+-- made it. Paged, the window materialises first (the reduction with its ordering and
+-- page) and the probe reads it from outside — the predicate qualifying against the
+-- window's leaf-prefixed columns — so a violator beyond the page does not fail the
+-- test. One probe per composite shape, each at its own kind, bounded to one row.
 instance Every (Joined q f a) (Map Text SqlValue -> Map Text SqlValue -> Bool) where Adapter a, JoinShape q, Row f =
     every (pred: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Joined q f a) -> Result Bool Error =
-        let folded = quoteAnd2 x.where2 (notTrue pred)
-        compositeNotExists x.right.adapter (joinedReducePlan x folded.tree 1)
+        if isWindowPaged x.lim x.off then
+            let vn = notTrue pred
+            compositeNotExists x.right.adapter (planRefine (pagedCompositeReducePlan "INNER" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off (sourceCols x.source) (rowColumns (entityWitness x.right))) vn.tree [] 1 0 false)
+        else
+            let folded = quoteAnd2 x.where2 (notTrue pred)
+            compositeNotExists x.right.adapter (joinedReducePlan x folded.tree 1)
 
 instance Every (LeftJoined q f a) (Map Text SqlValue -> Map Text SqlValue -> Bool) where Adapter a, JoinShape q, Row f =
     every (pred: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: LeftJoined q f a) -> Result Bool Error =
-        let folded = quoteAnd2 x.where2 (notTrue pred)
-        compositeNotExists x.right.adapter (leftReducePlan x folded.tree 1)
+        if isWindowPaged x.lim x.off then
+            let vn = notTrue pred
+            compositeNotExists x.right.adapter (planRefine (pagedCompositeReducePlan "LEFT" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off (sourceCols x.source) (rowColumns (entityWitness x.right))) vn.tree [] 1 0 false)
+        else
+            let folded = quoteAnd2 x.where2 (notTrue pred)
+            compositeNotExists x.right.adapter (leftReducePlan x folded.tree 1)
 
 instance Every (RightJoined q f a) (Map Text SqlValue -> Map Text SqlValue -> Bool) where Adapter a, JoinShape q, Row f =
     every (pred: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: RightJoined q f a) -> Result Bool Error =
-        let folded = quoteAnd2 x.where2 (notTrue pred)
-        compositeNotExists x.right.adapter (rightReducePlan x folded.tree 1)
+        if isWindowPaged x.lim x.off then
+            let vn = notTrue pred
+            compositeNotExists x.right.adapter (planRefine (pagedCompositeReducePlan "RIGHT" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off (sourceCols x.source) (rowColumns (entityWitness x.right))) vn.tree [] 1 0 false)
+        else
+            let folded = quoteAnd2 x.where2 (notTrue pred)
+            compositeNotExists x.right.adapter (rightReducePlan x folded.tree 1)
 
 instance Every (FullJoined q f a) (Map Text SqlValue -> Map Text SqlValue -> Bool) where Adapter a, JoinShape q, Row f =
     every (pred: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: FullJoined q f a) -> Result Bool Error =
-        let folded = quoteAnd2 x.where2 (notTrue pred)
-        compositeNotExists x.right.adapter (fullReducePlan x folded.tree 1)
+        if isWindowPaged x.lim x.off then
+            let vn = notTrue pred
+            compositeNotExists x.right.adapter (planRefine (pagedCompositeReducePlan "FULL" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off (sourceCols x.source) (rowColumns (entityWitness x.right))) vn.tree [] 1 0 false)
+        else
+            let folded = quoteAnd2 x.where2 (notTrue pred)
+            compositeNotExists x.right.adapter (fullReducePlan x folded.tree 1)
 
 -- A query's `groupBy`: name the group-key column with a one-row accessor (`fn (u:
 -- User) -> u.dept`, exactly as an `orderBy` key) and wrap the query into the unified

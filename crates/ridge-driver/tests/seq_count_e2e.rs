@@ -3,13 +3,13 @@
 //! in-memory interpreter on the BEAM, with no database or `deriving (Row)`.
 //!
 //! `count` answers how many rows the sequence selects and `exists` whether it
-//! selects any. Both reflect the accumulated filter but ignore ordering, the
-//! page, and `distinct` — they answer the size of the matched row set, not a
-//! paged window of it — exactly the rule the database `count`/`exists` follow.
-//! The cases below count a whole sequence, count after a filter, and confirm
-//! that a `limit`/`offset`/`distinct` ahead of the terminal does not change the
-//! answer; `exists` is checked true over a non-empty selection and false once a
-//! filter empties it, and likewise unmoved by an offset past the rows.
+//! selects any. Both reflect the accumulated filter, ordering, page, and
+//! `distinct` — they measure the window the sequence's `toList` would return,
+//! exactly the rule the database `count`/`exists` follow. The cases below count
+//! a whole sequence, count after a filter, confirm a `limit`/`offset` ahead of
+//! the terminal bounds the answer to that window, and confirm `distinct`
+//! collapses duplicates before the count; `exists` is checked true over a
+//! non-empty window and false once a filter or an offset empties it.
 //!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 
@@ -40,11 +40,11 @@ fn sample () -> List User =
     , User { id = 5, name = "Eva",  age = 55 }
     ]
 
--- Two rows share an age, so a `distinct` would collapse them — but a `count`
--- ignores `distinct`, the same way the database count does.
+-- Two rows are whole-row duplicates, so a `distinct` collapses them before the
+-- count reads the window — the same rows the sequence's `toList` would return.
 fn banded () -> List User =
     [ User { id = 1, name = "Ana",  age = 30 }
-    , User { id = 2, name = "Beto", age = 30 }
+    , User { id = 1, name = "Ana",  age = 30 }
     , User { id = 3, name = "Cami", age = 25 }
     ]
 
@@ -66,13 +66,14 @@ pub fn totalCount () -> Int =
 pub fn filteredCount () -> Int =
     intOf (sample () |> Repo.from |> Repo.filter (fn (u: User) -> u.age >= 30) |> Repo.count)
 
--- Count ignores the page: an `offset`/`limit` ahead of `count` does not bound it,
--- so the answer is still the whole matched set of five, not the two-row window.
+-- Count honours the page: an `offset`/`limit` ahead of `count` bounds it to that
+-- window, so the answer is the two-row window, not the whole matched set of five
+-- — the same `Take(n).Count()` rule the scalar aggregates follow.
 pub fn pagedCount () -> Int =
     intOf (sample () |> Repo.from |> Repo.offset 1 |> Repo.limit 2 |> Repo.count)
 
--- Count ignores `distinct`: the two age-30 rows are not collapsed, so three rows
--- in still count as three — the same rule the database count follows.
+-- Count honours `distinct`: the two identical Ana rows collapse to one, so the
+-- window holds two rows — the same rows the sequence's `toList` would decode.
 pub fn distinctCount () -> Int =
     intOf (banded () |> Repo.from |> Repo.distinct |> Repo.count)
 
@@ -88,8 +89,8 @@ pub fn anyFiltered () -> Int =
 pub fn existsFilteredTrue () -> Int =
     boolOf (sample () |> Repo.from |> Repo.filter (fn (u: User) -> u.age >= 50) |> Repo.exists)
 
--- `exists` ignores the page too: an offset past every row does not empty the
--- matched set, so the sequence still exists.
+-- `exists` honours the page too: an offset past every row empties the window,
+-- so nothing exists — an unpaged sequence over the same filter would.
 pub fn existsPastPage () -> Int =
     boolOf (sample () |> Repo.from |> Repo.offset 100 |> Repo.exists)
 "#;
@@ -197,15 +198,15 @@ fn seq_count_reduces_on_beam() {
         stdout.contains("filteredCount=3"),
         "expected `filteredCount=3` — count did not reflect the filter\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
-    // offset 1 |> limit 2 |> count: the page does not bound the count → still five.
+    // offset 1 |> limit 2 |> count: the page bounds the count to its window → two.
     assert!(
-        stdout.contains("pagedCount=5"),
-        "expected `pagedCount=5` — count was bounded by the page (should ignore it)\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        stdout.contains("pagedCount=2"),
+        "expected `pagedCount=2` — count ignored the page (should fold the window)\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
-    // distinct |> count over banded(): distinct is ignored → three rows, not two.
+    // distinct |> count over banded(): the duplicate Ana rows collapse → two.
     assert!(
-        stdout.contains("distinctCount=3"),
-        "expected `distinctCount=3` — count honoured `distinct` (should ignore it)\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        stdout.contains("distinctCount=2"),
+        "expected `distinctCount=2` — count ignored `distinct` (should dedupe the window)\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     // A non-empty sequence exists.
     assert!(
@@ -222,9 +223,9 @@ fn seq_count_reduces_on_beam() {
         stdout.contains("existsFilteredTrue=1"),
         "expected `existsFilteredTrue=1` — exists did not reflect the kept row\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
-    // An offset past every row does not empty the matched set.
+    // An offset past every row empties the window, so nothing exists.
     assert!(
-        stdout.contains("existsPastPage=1"),
-        "expected `existsPastPage=1` — exists was bounded by the offset (should ignore it)\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        stdout.contains("existsPastPage=0"),
+        "expected `existsPastPage=0` — exists ignored the offset (should probe the window)\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

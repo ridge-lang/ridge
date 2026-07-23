@@ -3,14 +3,14 @@
 //! in-memory interpreter on the BEAM, with no database or `deriving (Row)`.
 //!
 //! `every` answers whether all the rows the sequence selects satisfy a further
-//! predicate. It probes for one kept row that violates the predicate (folded in
-//! as `IS NOT TRUE`) and is true exactly when none does, so an empty selection
-//! is vacuously true. Like the database `every`, it reflects the accumulated
-//! filter but ignores ordering, the page, and `distinct` — it tests the whole
-//! matched set, not a paged window of it. The cases below check a true and a
-//! false universal, compose with a filter on both sides, confirm the vacuous
-//! truth over an emptied selection, and confirm a `limit` ahead of `every` does
-//! not narrow the rows it tests.
+//! predicate. It probes the window for one row that violates the predicate
+//! (applied as `IS NOT TRUE` after the page) and is true exactly when none
+//! does, so an empty window is vacuously true. Like the database `every`, it
+//! reflects the accumulated filter, ordering, and page — it tests the rows the
+//! window holds, the way `Take(n).All(...)` does. The cases below check a true
+//! and a false universal, compose with a filter on both sides, confirm the
+//! vacuous truth over an emptied selection, and confirm a `limit` ahead of
+//! `every` narrows the tested rows to the window in both directions.
 //!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 
@@ -68,11 +68,16 @@ pub fn filteredNotAllOver40 () -> Int =
 pub fn vacuousEmpty () -> Int =
     boolOf (sample () |> Repo.from |> Repo.filter (fn (u: User) -> u.age > 100) |> Repo.every (fn (u: User) -> u.age < 0))
 
--- `every` ignores the page: a `limit 1` ahead of it does not narrow the tested
--- rows to the first one, so Dan (19) still violates age >= 20 and the universal
--- fails — the whole matched set is tested, the same rule the database every follows.
-pub fn everyIgnoresPage () -> Int =
-    boolOf (sample () |> Repo.from |> Repo.limit 1 |> Repo.every (fn (u: User) -> u.age >= 20))
+-- `every` honours the page: the window holds only the oldest row (Eva 55), which
+-- is over 50, so the universal holds over it — unpaged, Ana (34) would violate it.
+pub fn everyPagedWindow () -> Int =
+    boolOf (sample () |> Repo.from |> Repo.orderBy Desc (fn (u: User) -> u.age) |> Repo.limit 1 |> Repo.every (fn (u: User) -> u.age >= 50))
+
+-- The dual: the youngest-first window holds only Dan (19), who violates
+-- age >= 20, so the universal fails over the window even though the older rows
+-- beyond the page would pass it.
+pub fn everyPagedViolator () -> Int =
+    boolOf (sample () |> Repo.from |> Repo.orderBy Asc (fn (u: User) -> u.age) |> Repo.limit 1 |> Repo.every (fn (u: User) -> u.age >= 20))
 "#;
 
 // ── Workspace setup ───────────────────────────────────────────────────────────
@@ -151,7 +156,8 @@ fn seq_every_tests_on_beam() {
          io:format(\"filteredAllOver30=~w~n\",[{module}:filteredAllOver30()]), \
          io:format(\"filteredNotAllOver40=~w~n\",[{module}:filteredNotAllOver40()]), \
          io:format(\"vacuousEmpty=~w~n\",[{module}:vacuousEmpty()]), \
-         io:format(\"everyIgnoresPage=~w~n\",[{module}:everyIgnoresPage()]), \
+         io:format(\"everyPagedWindow=~w~n\",[{module}:everyPagedWindow()]), \
+         io:format(\"everyPagedViolator=~w~n\",[{module}:everyPagedViolator()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -191,10 +197,14 @@ fn seq_every_tests_on_beam() {
         stdout.contains("vacuousEmpty=1"),
         "expected `vacuousEmpty=1` — every was not vacuously true over an emptied Seq\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
-    // limit 1 then every age >= 20: the page does not narrow the tested rows,
-    // so Dan (19) still violates → false.
+    // orderBy Desc age |> limit 1 |> every age >= 50: the window is [Eva 55] → true.
     assert!(
-        stdout.contains("everyIgnoresPage=0"),
-        "expected `everyIgnoresPage=0` — every was narrowed by the page (should ignore it)\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        stdout.contains("everyPagedWindow=1"),
+        "expected `everyPagedWindow=1` — every tested rows beyond the page\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // orderBy Asc age |> limit 1 |> every age >= 20: the window is [Dan 19] → false.
+    assert!(
+        stdout.contains("everyPagedViolator=0"),
+        "expected `everyPagedViolator=0` — every missed the violator inside the window\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

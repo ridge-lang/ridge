@@ -2451,7 +2451,7 @@ mem_eval_plan(State, Id, {'PlanCombine', Op, Left, Right}) ->
     mem_set_op(Op, L, R);
 mem_eval_plan(State, Id, {'PlanRefine', Inner, Pred, Orders, Lim, Off, Dist}) ->
     Rows = mem_eval_plan(State, Id, Inner),
-    Matches = [R || R <- Rows, mem_pred(State, Id, Pred, R)],
+    Matches = mem_refine_matches(State, Id, Inner, Pred, Rows),
     mem_paginate(mem_distinct(Dist, mem_order(Orders, Matches)), Lim, Off);
 mem_eval_plan(_State, _Id, {'PlanList', Rows}) ->
     %% The in-memory `Seq` source: the rows `from` snapshotted, carried inline in the
@@ -2520,6 +2520,17 @@ mem_eval_plan(State, Id, {'PlanAggregate', Func, Column, _Leaf, Child}) ->
 mem_eval_plan(State, Id, {'PlanGroup', KeyCol, KeyLeaf, Cols, Having, Child}) ->
     Rows = mem_eval_plan(State, Id, Child),
     mem_group_nary(Rows, KeyLeaf, KeyCol, Cols, Having).
+
+%% The rows a refinement keeps. Over a join's flat rows (a windowed `every`'s
+%% violator probe) the predicate resolves each column through its leaf's `t<i>$`
+%% prefix — the same reading the SQL renderer gives a post-window WHERE — with any
+%% correlated EXISTS probing one leaf past the join's own. Anything else keeps the
+%% scan-oriented predicate.
+mem_refine_matches(State, Id, {'PlanJoin', _, _, _, _, _, _, _, _, _, _, _} = Inner, Pred, Rows) ->
+    {Leaves, _Steps} = mem_flatten_join(Inner),
+    [R || R <- Rows, mem_where2_flat(State, Id, length(Leaves), Pred, R)];
+mem_refine_matches(State, Id, _Inner, Pred, Rows) ->
+    [R || R <- Rows, mem_pred(State, Id, Pred, R)].
 
 %% The prefixed column name a join aggregate folds: the column under its leaf's
 %% `t<Leaf>$` prefix (t0$ for the first leaf, t1$ for a binary join's right, higher

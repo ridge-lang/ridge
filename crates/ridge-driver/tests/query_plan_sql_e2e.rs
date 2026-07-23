@@ -440,6 +440,61 @@ pub fn aggSql () -> Text =
 pub fn joinSumPagedSql () -> Text =
     renderSql (planAggregate "SUM" (col2 (fn (u: User) (p: Post) -> u.age)) 0 (planJoin "INNER" (usersScan ()) (postsScan ()) (joinCond ()) (keepAllJoin ()) [] 2 0 false [] []))
 
+-- A paged single-table count folds only the ordered/paged window: the scan renders in
+-- full (ORDER BY / LIMIT intact) and the `COUNT(*)` wraps it as a subquery — the same
+-- window shape a paged scalar aggregate takes.
+pub fn singleCountPagedSql () -> Text =
+    renderSql (planAggregate "COUNT" (keepAll ()) 0 (planScan "users" (pred1 (fn (u: User) -> u.age >= 18)) [(true, QCol "age")] 2 0 false))
+
+-- A paged join count folds only the window: the always-true operand selects as `"v"`
+-- over the join with its page intact (bound, never NULL, so `COUNT("v")` counts
+-- every window row), then `COUNT` aggregates the subquery.
+pub fn joinCountPagedSql () -> Text =
+    renderSql (planAggregate "COUNT" (keepAll ()) 0 (planJoin "INNER" (usersScan ()) (postsScan ()) (joinCond ()) (keepAllJoin ()) [] 2 0 false [] []))
+
+-- A paged existence probe: the join renders in full — its prefixed columns and page
+-- intact — and the probe reads one row off the subquery, so the page bounds what
+-- `exists` sees rather than probing the whole join.
+pub fn existsPagedJoinSql () -> Text =
+    renderSql (planExists (planJoin "INNER" (usersScan ()) (postsScan ()) (joinCond ()) (keepAllJoin ()) [] 2 0 false (leftCols ()) (rightCols ())))
+
+-- A paged `every` probe: the window materialises first (the join with its page), and
+-- the violator predicate reads it from outside, qualified against the window's
+-- prefixed columns (`"t1$title"`) — so only a row inside the window can fail `every`.
+fn everyPagedJoin () -> QueryPlan =
+    planRefine
+        (planJoin "INNER" (usersScan ()) (postsScan ()) (joinCond ()) (keepAllJoin ()) [] 2 0 false (leftCols ()) (rightCols ()))
+        (QNotTrue (cond2 (fn (u: User) (p: Post) -> p.title == "hello")))
+        [] 1 0 false
+
+pub fn everyPagedJoinSql () -> Text = renderSql (planExists (everyPagedJoin ()))
+
+pub fn everyPagedJoinBinds () -> Text = renderBinds (planExists (everyPagedJoin ()))
+
+-- A three-table chain carrying a page: the same spine as `inner3` but with a two-row
+-- limit on the outer node, the shape a windowed terminal reduces over.
+fn inner3Paged () -> QueryPlan =
+    planJoin "INNER"
+        (planJoin "INNER" (adultsScan ()) (postsScan ()) (joinCond ()) (keepAllJoin ()) [] (0 - 1) 0 false (leftCols ()) (rightCols ()))
+        (commentsScan ())
+        (joinCond2 ())
+        (keepAllJoin ())
+        [] 2 0 false
+        []
+        (commentCols ())
+
+-- A paged composite count: the flattened spine renders its FROM/WHERE with the page
+-- intact inside the `"v"` subquery, then `COUNT` folds it — the three-table dual of
+-- `joinCountPagedSql`.
+pub fn countThreePagedSql () -> Text =
+    renderSql (planAggregate "COUNT" (keepAll ()) 0 (inner3Paged ()))
+
+-- A paged `every` over the three-table chain: the violator qualifies against the
+-- window's prefixed columns by leaf (`"t2$post"` against `"t1$id"`), exactly as the
+-- binary probe reads `"t1$title"`.
+pub fn everyThreePagedSql () -> Text =
+    renderSql (planExists (planRefine (inner3Paged ()) (QNotTrue (cond3 (fn (u: User) (p: Post) (c: Comment) -> c.post == p.id))) [] 1 0 false))
+
 pub fn groupSql () -> Text =
     renderSql (planGroup "author" 1 [("author", "KEY", keepAllJoin (), 1), ("n", "COUNT", keepAllJoin (), 0)] (keepAllJoin ()) (wrapJoin ()))
 
@@ -859,7 +914,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','singleCountSql','singleSumSql','singleAvgSql','singleSumPagedSql','singleCountExistsSql','singleProjectSql','singleProjectExistsSql','singleProjectPagedSql','singleGroupSql','singleGroupHavingSql','singleGroupHavingBinds','singleGroupExistsSql','singleGroupAvgIntervalSql','singleGroupAvgIntervalHavingSql','joinExistsWhereSql','naryExistsWhereSql','nestedExistsSql','pgNestedSql','pgNestedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','joinSumPagedSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql','insertSql','insertBinds','insertManySql','insertManyBinds','updateSql','updateBinds','deleteSql','existsDeleteSql','existsDeleteBinds','deleteKeysSql','deleteKeysBinds','deleteKeysCompositeSql','existsUpdateSql','existsUpdateBinds','upsertSql','upsertBinds','insertOrIgnoreSql','upsertBareSql','insertReturningStarSql','insertReturningStarBinds','insertReturningColsSql','deleteReturningSql','updateReturningSql','upsertReturningSql','sqliteSingleSumSql','sqliteSingleAvgSql','sqliteSingleGroupSql','sqliteGroupAvgIntervalSql','sqliteGroupAvgIntervalHavingSql','sqliteAggSql','sqliteAvgThreeSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','singleCountSql','singleSumSql','singleAvgSql','singleSumPagedSql','singleCountExistsSql','singleProjectSql','singleProjectExistsSql','singleProjectPagedSql','singleGroupSql','singleGroupHavingSql','singleGroupHavingBinds','singleGroupExistsSql','singleGroupAvgIntervalSql','singleGroupAvgIntervalHavingSql','joinExistsWhereSql','naryExistsWhereSql','nestedExistsSql','pgNestedSql','pgNestedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','joinSumPagedSql','singleCountPagedSql','joinCountPagedSql','existsPagedJoinSql','everyPagedJoinSql','everyPagedJoinBinds','countThreePagedSql','everyThreePagedSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql','insertSql','insertBinds','insertManySql','insertManyBinds','updateSql','updateBinds','deleteSql','existsDeleteSql','existsDeleteBinds','deleteKeysSql','deleteKeysBinds','deleteKeysCompositeSql','existsUpdateSql','existsUpdateBinds','upsertSql','upsertBinds','insertOrIgnoreSql','upsertBareSql','insertReturningStarSql','insertReturningStarBinds','insertReturningColsSql','deleteReturningSql','updateReturningSql','upsertReturningSql','sqliteSingleSumSql','sqliteSingleAvgSql','sqliteSingleGroupSql','sqliteGroupAvgIntervalSql','sqliteGroupAvgIntervalHavingSql','sqliteAggSql','sqliteAvgThreeSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -1112,6 +1167,41 @@ fn query_plan_compiles_to_parameterized_sql() {
     // join with its LIMIT intact, aggregated over that subquery.
     want(
         r#"joinSumPagedSql=SELECT SUM("v") FROM (SELECT l."age" AS "v" FROM "users" AS l JOIN "posts" AS r ON l."id" = r."author" LIMIT 2) AS ridge_agg"#,
+    );
+
+    // A paged count: the single-table form wraps the ordered, limited scan and counts
+    // it; the join form selects the always-true operand as `"v"` over the paged join
+    // (bound, never NULL, so `COUNT("v")` counts every window row) and counts that.
+    want(
+        r#"singleCountPagedSql=SELECT COUNT(*) FROM (SELECT * FROM "users" WHERE "age" >= $1 ORDER BY "age" ASC LIMIT 2) AS ridge_agg"#,
+    );
+    want(
+        r#"joinCountPagedSql=SELECT COUNT("v") FROM (SELECT $1 AS "v" FROM "users" AS l JOIN "posts" AS r ON l."id" = r."author" LIMIT 2) AS ridge_agg"#,
+    );
+
+    // A paged existence probe: the join renders in full — prefixed columns and LIMIT
+    // intact — as the subquery the probe reads one row from.
+    want(
+        r#"existsPagedJoinSql=SELECT 1 FROM (SELECT l."id" AS "t0$id", l."age" AS "t0$age", l."name" AS "t0$name", r."id" AS "t1$id", r."author" AS "t1$author", r."title" AS "t1$title" FROM "users" AS l JOIN "posts" AS r ON l."id" = r."author" LIMIT 2) AS ridge_exists LIMIT 1"#,
+    );
+
+    // A paged `every` probe: the window renders as a subquery and the violator reads
+    // it from outside through the prefixed aliases (`"t1$title"`), so only a row
+    // inside the page can fail `every`.
+    want(
+        r#"everyPagedJoinSql=SELECT 1 FROM (SELECT * FROM (SELECT l."id" AS "t0$id", l."age" AS "t0$age", l."name" AS "t0$name", r."id" AS "t1$id", r."author" AS "t1$author", r."title" AS "t1$title" FROM "users" AS l JOIN "posts" AS r ON l."id" = r."author" LIMIT 2) AS ridge_sub WHERE ("t1$title" = $1 IS NOT TRUE) LIMIT 1) AS ridge_exists LIMIT 1"#,
+    );
+    want("everyPagedJoinBinds=1");
+
+    // The composite duals over the three-table chain: the count folds the paged
+    // spine's `"v"` subquery (the operand binding `$1`, the adult filter `$2`); the
+    // `every` probe qualifies the violator against the window's prefixed columns by
+    // leaf (`"t2$post"` against `"t1$id"`).
+    want(
+        r#"countThreePagedSql=SELECT COUNT("v") FROM (SELECT $1 AS "v" FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" JOIN "comments" AS t2 ON t1."id" = t2."post" WHERE (t0."age" >= $2) LIMIT 2) AS ridge_agg"#,
+    );
+    want(
+        r#"everyThreePagedSql=SELECT 1 FROM (SELECT * FROM (SELECT t0."id" AS "t0$id", t0."age" AS "t0$age", t0."name" AS "t0$name", t1."id" AS "t1$id", t1."author" AS "t1$author", t1."title" AS "t1$title", t2."id" AS "t2$id", t2."post" AS "t2$post", t2."body" AS "t2$body" FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" JOIN "comments" AS t2 ON t1."id" = t2."post" WHERE (t0."age" >= $1) LIMIT 2) AS ridge_sub WHERE ("t2$post" = "t1$id" IS NOT TRUE) LIMIT 1) AS ridge_exists LIMIT 1"#,
     );
 
     // A grouped join: the side-qualified key, COUNT(*), GROUP BY and ORDER BY the key.

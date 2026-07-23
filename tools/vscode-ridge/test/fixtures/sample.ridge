@@ -56,4 +56,5 @@ fn ops () -> Unit =
     let chain  = parse "x" ?> handle
     let opt    = maybe?
     let c      = spawn Counter
+    let k      = child Counter
     c ! tick ()

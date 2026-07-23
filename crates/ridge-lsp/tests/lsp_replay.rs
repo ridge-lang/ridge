@@ -1384,6 +1384,54 @@ async fn test_hover_stdlib_view_and_computed_surface() {
 }
 
 #[tokio::test]
+async fn test_hover_compiler_known_tryask() {
+    // `tryAsk` has no declaration in actor.ridge — the type checker types its
+    // call sites — so the card comes from the LSP's curated entry: a header
+    // mirroring the seeded fallback scheme, plus the orphaned `--` doc block.
+    // (The call absorbs the `time` capability an undeclared `fn` lacks — a T014
+    // the retained index tolerates while still stamping the binding.)
+    let line9 = "pub fn f c = Actor.tryAsk c getCount 1000";
+    let src = concat!(
+        "import std.actor as Actor\n",
+        "actor Counter =\n",
+        "    state count: Int = 0\n",
+        "\n",
+        "    on tick =\n",
+        "        count <- count + 1\n",
+        "\n",
+        "    on getCount -> Int = count\n",
+        "\n",
+        "pub fn f c = Actor.tryAsk c getCount 1000\n",
+    );
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    let col =
+        u32::try_from(line9.find("tryAsk").expect("tryAsk use") + 1).expect("offset fits u32");
+    let md = hover_markdown(
+        server
+            .hover(hover_at(&uri, 9, col))
+            .await
+            .expect("hover ok"),
+    )
+    .expect("hover over tryAsk returns markup");
+    assert!(
+        md.contains(
+            "pub fn time tryAsk (handle: Handle a) (message: b) (timeoutMs: Int) -> Result c d"
+        ),
+        "tryAsk hover should show the curated header, got {md:?}"
+    );
+    assert!(
+        md.contains("*(stdlib function)*"),
+        "tryAsk hover should carry a stdlib kind line, got {md:?}"
+    );
+    assert!(
+        md.contains("typed ask with an explicit timeout"),
+        "tryAsk hover should include the `--` doc, got {md:?}"
+    );
+}
+
+#[tokio::test]
 async fn test_hover_enriches_function_signature_and_doc() {
     // Hovering a function use-site shows its written header — visibility, named
     // parameters, return type — inside a `ridge` code fence, plus its doc.
@@ -1847,6 +1895,81 @@ async fn test_definition_into_stdlib_class_method() {
     );
 }
 
+#[tokio::test]
+async fn test_definition_child_expression_lands_on_actor() {
+    // `child Counter` stamps the actor name as `ActorName`, like `spawn`, so
+    // go-to-def on it lands on the actor declaration.
+    let line6 = "pub fn spec = child Counter";
+    let src = concat!(
+        "actor Counter =\n",
+        "    state count: Int = 0\n",
+        "\n",
+        "    on bump () -> Unit =\n",
+        "        count <- count + 1\n",
+        "\n",
+        "pub fn spec = child Counter\n",
+    );
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    let col =
+        u32::try_from(line6.find("Counter").expect("actor use") + 1).expect("offset fits u32");
+    let resp = server
+        .goto_definition(goto_at(&uri, 6, col))
+        .await
+        .expect("ok");
+    let loc = scalar_location(resp).expect("definition of `child Counter`'s actor");
+    assert_eq!(loc.uri, uri, "the actor is declared in the same file");
+    assert_eq!(
+        loc.range.start.line, 0,
+        "lands on the `actor Counter` declaration, got {:?}",
+        loc.range.start
+    );
+}
+
+#[tokio::test]
+async fn test_definition_compiler_known_tryask() {
+    // `tryAsk` has no declaration in actor.ridge; go-to-def lands on the
+    // orphaned doc block at the end of the materialised source — never `None`.
+    let line9 = "pub fn f c = Actor.tryAsk c getCount 1000";
+    let src = concat!(
+        "import std.actor as Actor\n",
+        "actor Counter =\n",
+        "    state count: Int = 0\n",
+        "\n",
+        "    on tick =\n",
+        "        count <- count + 1\n",
+        "\n",
+        "    on getCount -> Int = count\n",
+        "\n",
+        "pub fn f c = Actor.tryAsk c getCount 1000\n",
+    );
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    let col =
+        u32::try_from(line9.find("tryAsk").expect("tryAsk use") + 1).expect("offset fits u32");
+    let resp = server
+        .goto_definition(goto_at(&uri, 9, col))
+        .await
+        .expect("ok");
+    let loc = scalar_location(resp).expect("definition of compiler-known `tryAsk`");
+    let path = loc
+        .uri
+        .to_file_path()
+        .expect("definition uri is a file path");
+    assert!(
+        path.ends_with("actor.ridge"),
+        "tryAsk definition must land in actor.ridge, got {path:?}"
+    );
+    // The doc block sits well past the start of the file, so the range is real.
+    assert!(
+        loc.range.start.line > 0,
+        "tryAsk definition range must not be the file start, got {:?}",
+        loc.range.start
+    );
+}
+
 // ── Test 19: textDocument/completion ──────────────────────────────────────────
 
 fn complete_at(uri: &Url, line: u32, character: u32) -> CompletionParams {
@@ -1986,6 +2109,64 @@ async fn test_completion_record_fields() {
         labels.iter().any(|l| l == "y"),
         "record member access should offer field `y`, got {labels:?}"
     );
+}
+
+#[tokio::test]
+async fn test_completion_offers_child_contextual_keyword() {
+    // `child` is a contextual keyword: completion offers it in expression
+    // position (here after a `ch` prefix) alongside the hard keywords, even
+    // though it stays a legal identifier name for rename purposes.
+    let (service, _socket, uri) = hover_fixture("pub fn chan = 1\npub fn f = chan\n").await;
+    let server = service.inner();
+
+    // Inside `chan` after typing `ch` (line 1, char 12).
+    let items = completion_items(
+        server
+            .completion(complete_at(&uri, 1, 12))
+            .await
+            .expect("ok"),
+    );
+    let child = items
+        .iter()
+        .find(|i| i.label == "child")
+        .expect("expression completion should offer `child`");
+    assert_eq!(child.kind, Some(CompletionItemKind::KEYWORD));
+}
+
+#[tokio::test]
+async fn test_completion_stdlib_actor_member_access() {
+    // `import std.actor as Actor`: the member completion offers the module's
+    // exports, including the typed-supervision surface and the compiler-known
+    // `tryAsk` (which has no declaration in actor.ridge but sits in the
+    // module's export list).
+    let line1 = "pub fn run = Actor.mailboxSize";
+    let (service, _socket, uri) =
+        hover_fixture("import std.actor as Actor\npub fn run = Actor.mailboxSize\n").await;
+    let server = service.inner();
+
+    // Right after `Actor.` on line 1 → std.actor's exported names.
+    let col = u32::try_from(line1.find("Actor.").expect("alias use") + 6).expect("offset fits u32");
+    let items = completion_items(
+        server
+            .completion(complete_at(&uri, 1, col))
+            .await
+            .expect("ok"),
+    );
+    let labels: Vec<String> = items.into_iter().map(|i| i.label).collect();
+    for name in [
+        "supervise",
+        "startChild",
+        "stopChild",
+        "whichChildren",
+        "childId",
+        "childRestart",
+        "tryAsk",
+    ] {
+        assert!(
+            labels.iter().any(|l| l == name),
+            "stdlib actor member access should offer `{name}`, got {labels:?}"
+        );
+    }
 }
 
 // ── Incremental: a didChange recompile reflects the buffer, not disk ───────────
@@ -4885,6 +5066,51 @@ async fn test_signature_help_stdlib_class_method() {
 }
 
 #[tokio::test]
+async fn test_signature_help_compiler_known_tryask() {
+    // `tryAsk` has no declaration in actor.ridge, so the signature comes from
+    // the LSP's curated entry — the fallback scheme the type checker seeds —
+    // with one bracketed parameter range per argument.
+    let line9 = "pub fn f c = Actor.tryAsk c getCount 1000";
+    let src = concat!(
+        "import std.actor as Actor\n",
+        "actor Counter =\n",
+        "    state count: Int = 0\n",
+        "\n",
+        "    on tick =\n",
+        "        count <- count + 1\n",
+        "\n",
+        "    on getCount -> Int = count\n",
+        "\n",
+        "pub fn f c = Actor.tryAsk c getCount 1000\n",
+    );
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    // Cursor on the `getCount` argument: the second parameter is active.
+    let col =
+        u32::try_from(line9.find("getCount").expect("message arg") + 1).expect("offset fits u32");
+    let help = server
+        .signature_help(signature_at(&uri, 9, col))
+        .await
+        .expect("signature_help ok")
+        .expect("a signature for the compiler-known `tryAsk`");
+    assert_eq!(
+        help.signatures[0].label,
+        "tryAsk (handle: Handle a) (message: b) (timeoutMs: Int) -> Result c d"
+    );
+    let label = &help.signatures[0].label;
+    assert_eq!(param_offsets(&help), vec![(7, 25), (26, 38), (39, 55)]);
+    assert_eq!(&label[7..25], "(handle: Handle a)");
+    assert_eq!(&label[26..38], "(message: b)");
+    assert_eq!(&label[39..55], "(timeoutMs: Int)");
+    assert_eq!(
+        help.active_parameter,
+        Some(1),
+        "cursor on the message argument"
+    );
+}
+
+#[tokio::test]
 async fn test_signature_help_and_goto_workspace_class_method() {
     // A class declared in the workspace with no stdlib counterpart. Its method
     // call gets both a signature (read from the declaration) and go-to-definition
@@ -6066,6 +6292,53 @@ async fn test_completion_resolve_fills_qualified_class_method() {
     assert!(
         doc.contains("for both a query and a join"),
         "resolve fills the class doc, got {doc}"
+    );
+}
+
+#[tokio::test]
+async fn test_completion_resolve_fills_compiler_known_tryask() {
+    // `tryAsk` is listed in std.actor's exports but has no declaration in
+    // actor.ridge, so resolve falls to the LSP's curated entry: the header
+    // mirroring the seeded fallback scheme plus the orphaned `--` doc block.
+    let line1 = "pub fn run = Actor.mailboxSize";
+    let (service, _socket, uri) =
+        hover_fixture("import std.actor as Actor\npub fn run = Actor.mailboxSize\n").await;
+    let server = service.inner();
+
+    let col = u32::try_from(line1.find("Actor.").expect("alias use") + 6).expect("offset fits u32");
+    let items = completion_items(
+        server
+            .completion(complete_at(&uri, 1, col))
+            .await
+            .expect("ok"),
+    );
+    let try_ask = items
+        .into_iter()
+        .find(|i| i.label == "tryAsk")
+        .expect("std.actor member access offers `tryAsk`");
+    assert!(
+        try_ask.data.is_some(),
+        "a stdlib member carries resolve data"
+    );
+
+    let resolved = server
+        .completion_resolve(try_ask)
+        .await
+        .expect("resolve ok");
+    let detail = resolved
+        .detail
+        .expect("resolve fills the compiler-known signature");
+    assert!(
+        detail.contains("pub fn time tryAsk") && detail.contains("-> Result c d"),
+        "detail should be the curated header, got {detail:?}"
+    );
+    let doc = match resolved.documentation {
+        Some(Documentation::MarkupContent(m)) => m.value,
+        other => panic!("expected a markdown doc, got {other:?}"),
+    };
+    assert!(
+        doc.contains("typed ask with an explicit timeout"),
+        "resolve fills the orphaned `--` doc, got {doc}"
     );
 }
 

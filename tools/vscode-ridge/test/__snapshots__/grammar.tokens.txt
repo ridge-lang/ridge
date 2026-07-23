@@ -283,8 +283,13 @@
  58  "="  source.ridge keyword.operator.ridge
  58  "spawn"  source.ridge keyword.other.ridge
  58  "Counter"  source.ridge entity.name.type.ridge
- 59  "    c "  source.ridge
- 59  "!"  source.ridge keyword.operator.ridge
- 59  " tick "  source.ridge
- 59  "("  source.ridge punctuation.bracket.ridge
- 59  ")"  source.ridge punctuation.bracket.ridge
+ 59  "let"  source.ridge keyword.other.ridge
+ 59  " k      "  source.ridge
+ 59  "="  source.ridge keyword.operator.ridge
+ 59  "child"  source.ridge keyword.other.ridge
+ 59  "Counter"  source.ridge entity.name.type.ridge
+ 60  "    c "  source.ridge
+ 60  "!"  source.ridge keyword.operator.ridge
+ 60  " tick "  source.ridge
+ 60  "("  source.ridge punctuation.bracket.ridge
+ 60  ")"  source.ridge punctuation.bracket.ridge

@@ -319,7 +319,34 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "Output", "run",
         ],
     ),
-    ("std.actor", &["mailboxSize"]),
+    (
+        "std.actor",
+        &[
+            "mailboxSize",
+            // Typed supervision. The three `pub type` unions and their
+            // constructors are importable; `tryAsk` is compiler-known (typed
+            // like `?>` by the type checker — see actor.ridge), so it has no
+            // body in the .ridge source.
+            "Strategy",
+            "OneForOne",
+            "OneForAll",
+            "RestForOne",
+            "Restart",
+            "Permanent",
+            "Transient",
+            "Temporary",
+            "AskError",
+            "Noproc",
+            "Timeout",
+            "supervise",
+            "startChild",
+            "stopChild",
+            "whichChildren",
+            "childId",
+            "childRestart",
+            "tryAsk",
+        ],
+    ),
     (
         "std.json",
         &[

@@ -202,7 +202,8 @@ fn collect_called_names(
         | Expr::Interp { .. }
         | Expr::Send { .. }
         | Expr::Ask { .. }
-        | Expr::Spawn { .. } => {}
+        | Expr::Spawn { .. }
+        | Expr::ChildSpec { .. } => {}
         Expr::RecordLit { fields, .. } => {
             for f in fields {
                 if let Some(ref val) = f.value {

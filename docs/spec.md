@@ -399,6 +399,8 @@ fn spawn main () =
 
 Handlers may declare capabilities; the actor's effective capability set is the union of its handlers'. Capabilities of handlers are **encapsulated**: callers of `?>` inherit only `time` (for the implicit timeout), not the handler's capabilities. See [§6.4](#64-actor-encapsulation-model-b).
 
+A bare `spawn` returns a handle to one unprotected process: when it dies, it stays dead. An actor that must come back after a crash is placed under a supervisor, which restarts it according to a declared policy — see [§7.5](#75-supervision).
+
 #### §3.9.x. init blocks
 
 When actor state cannot be given a compile-time default, an `init` block initialises it at spawn time.
@@ -1389,7 +1391,87 @@ mailbox access.
 - **Programming errors**: runtime crashes (index out of bounds, match failure at runtime, etc.) — the actor dies, and only that actor (§7.2). The crash is reported; its handle then reads as dead.
 - **No exceptions** in user code. Period.
 
-### 7.5. Module semantics
+### 7.5. Supervision
+
+`spawn` deliberately does not couple lifetimes (§7.2). Restart behaviour
+belongs to a **supervisor**: a process whose only job is to start children,
+watch them, and restart them when they die, according to a declared policy.
+The API lives in `std.actor`; on the BEAM it runs on a real OTP supervisor,
+so the semantics below are OTP's, given Ridge types.
+
+**Child specs.** A `child ActorName (args…)` expression builds a typed
+`ChildSpec a` — a pure value describing how to start one child: which actor,
+with which `init` arguments, under which registration id, with which restart
+policy. Building a spec starts nothing. `ChildSpec a` and `Supervisor a` are
+opaque types whose parameter is the actor type, so children of different
+actors cannot mix under one supervisor. A spec's id defaults to the actor's
+lowercase name; `Actor.childId "name" spec` replaces it. The id is the key
+`stopChild` and `whichChildren` report, and must be unique per supervisor. A
+spec's restart policy defaults to `Permanent`; `Actor.childRestart` replaces
+it: `Permanent` restarts on any exit, `Transient` only on an abnormal one,
+`Temporary` never.
+
+**Starting.** `Actor.supervise strategy intensity periodMs children` starts
+a supervisor over a list of specs and returns `Result (Supervisor a) Text`.
+The strategy decides who is restarted when a child exits:
+
+| Strategy | On a child exit |
+|----------|-----------------|
+| `OneForOne` | Restart only the exited child. |
+| `OneForAll` | Restart every child. |
+| `RestForOne` | Restart the exited child and every child started after it. |
+
+`intensity` and `periodMs` bound the restart rate: more than `intensity`
+restarts within `periodMs` milliseconds and the supervisor gives up and
+terminates, taking its remaining children with it. The period is expressed
+in milliseconds for uniformity with the rest of the surface; the runtime
+tracks it in whole seconds, so the value is rounded up to the nearest
+second.
+
+**Restart transparency.** A handle obtained from `startChild` keys on the
+child's registration id, not its process id. Every `!`, `?>`, and
+`Actor.mailboxSize` re-resolves the live process through the supervisor on
+each call, so a holder never observes the pid change a restart causes — only
+the state reset: a restarted child runs `init` again from the spec's
+declared arguments.
+
+**Dynamic children.** Children do not have to exist when the supervisor
+starts. `Actor.startChild sup spec` starts a spec on a running supervisor
+and returns the child's handle, or an error text when the child failed to
+start. `Actor.stopChild sup id` terminates the child and unregisters its id;
+stopping an id that is not running is an `Err`, not a crash.
+`Actor.whichChildren sup` reports the supervisor's children as `(id, alive)`
+pairs, in OTP's own order (for dynamically started children that is newest
+first).
+
+**Failure semantics.** Supervision changes who restarts a process, not how
+its callers fail.
+
+- `Actor.tryAsk handle msg timeoutMs` is the `Result`-returning ask. It is
+  typed like `?>` — the message checked against the actor's handlers, the
+  reply taken from the handler — and absorbs `time` the same way, but the
+  outcome is explicit: `Ok reply`, `Err Noproc` when the target does not
+  exist (stopped, never started, or down for restart), or `Err Timeout`
+  when the deadline passes. `Noproc` and `Timeout` are the variants of
+  `std.actor`'s `AskError` union.
+- `?>` on a target that does not exist fails fast: the caller exits with
+  the structured `ridge_ask_noproc` reason rather than a raw runtime exit.
+  Callers that want to handle the absence match on `tryAsk` instead.
+- A dead supervisor fails fast too. `whichChildren` has no error channel,
+  so calling it on a dead supervisor exits the caller with
+  `ridge_sup_noproc` rather than answering an empty list that would read as
+  "no children"; `startChild` and `stopChild` return
+  `Err "supervisor_not_running"`.
+
+**Supervisors are unlinked.** Starting a supervisor shares no fate with the
+starter: the supervisor ties its children's lifetimes, not its starter's.
+This is §7.2's rule applied one level up — fate-sharing is declared (a
+supervision tree), never inherited (a start link nobody asked for). A tree
+that should fail as a unit is built the way OTP builds it: supervisors
+supervising supervisors, with the restart policy at each level made
+explicit.
+
+### 7.6. Module semantics
 
 - One file = one module.
 - Module name derived from project name + file path: `apps/api/src/handlers/Users.ridge` in project `acme.api` → `acme.api.handlers.Users`.

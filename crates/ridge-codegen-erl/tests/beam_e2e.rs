@@ -1468,6 +1468,573 @@ fn beam_e2e_actor_crash_report_goes_to_stderr_not_stdout() {
     );
 }
 
+// ── Typed supervision ────────────────────────────────────────────────────────
+//
+// The supervision API — `child` specs, `Actor.supervise`, dynamic children,
+// `Actor.tryAsk` — runs on a real OTP supervisor underneath. These tests pin
+// its semantics end to end from Ridge source: each program is compiled to
+// BEAM and run, and the restart behaviour is observed through the program's
+// own stdout and exit code.
+//
+// Entry points mirror the crash-isolation tests above: programs that must
+// run to completion go through `run_inline_actor_test_via_runner` (asserts a
+// zero exit and keeps crash reports on stderr); programs whose `main` is
+// expected to DIE — the loud-failure cases — drive `run_erl_via_runner`
+// directly so the non-zero exit code and the structured reason can be
+// asserted. Restarts are asynchronous, so a crashed child is always given a
+// bounded sleep before the next ask, exactly like the mailbox tests give a
+// crash time to land.
+
+// ── 1. A supervised handle survives its child's restart ──────────────────────
+
+const SUPERVISION_RESTART_TRANSPARENCY_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+import std.time as Time
+import std.actor as Actor
+import std.actor (OneForOne)
+
+actor Counter =
+    state count: Int = 0
+
+    on bump =
+        count <- count + 1
+
+    on get () -> Int =
+        count
+
+    on die (d: Int) =
+        count <- 10 / d
+
+fn spawn io time main () -> Result Unit Text =
+    let sup = Actor.supervise OneForOne 3 5000 []?
+    let c = Actor.startChild sup (child Counter)?
+    c ! bump
+    c ! bump
+    let n1 = c ?> get timeout 2000
+    Io.println $"before=${Int.toText n1}"
+    c ! die 0
+    -- The restart is asynchronous: give the supervisor a moment to bring the
+    -- replacement up before asking through the same handle again.
+    Time.sleep 500
+    let n2 = c ?> get timeout 2000
+    Io.println $"after=${Int.toText n2}"
+    Io.println "main-still-running"
+    Ok ()
+"#;
+
+/// The headline supervision property: a child crashes, the supervisor
+/// restarts it with fresh state, and the handle handed out by `startChild`
+/// keeps working without the caller noticing the pid changed underneath it.
+/// `after=0` proves the restart (state re-initialised); the ask succeeding
+/// at all proves the handle resolved the replacement process; the sentinel
+/// proves `main` was never at risk.
+#[test]
+fn beam_e2e_supervised_handle_survives_restart() {
+    let (stdout, _) =
+        run_inline_actor_test_via_runner("SupRestart", SUPERVISION_RESTART_TRANSPARENCY_SOURCE);
+    assert!(
+        stdout.contains("before=2"),
+        "expected 'before=2' (two bumps before the crash), got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("after=0"),
+        "expected 'after=0' (restarted child has fresh state), got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("main-still-running"),
+        "main died with the supervised child, got:\n{stdout}"
+    );
+}
+
+// ── 2. A supervised child's crash stays inside the supervisor ───────────────
+
+const SUPERVISION_CRASH_ISOLATION_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+import std.time as Time
+import std.actor as Actor
+import std.actor (OneForOne)
+
+actor Counter =
+    state count: Int = 0
+
+    on bump =
+        count <- count + 1
+
+    on get () -> Int =
+        count
+
+    on die (d: Int) =
+        count <- 10 / d
+
+fn spawn io time main () -> Result Unit Text =
+    let sup = Actor.supervise OneForOne 3 5000 []?
+    let c = Actor.startChild sup (child Counter)?
+    c ! die 0
+    Time.sleep 500
+    Io.println "main-ran-past-child-crash"
+    let n = c ?> get timeout 2000
+    Io.println $"child-back=${Int.toText n}"
+    Ok ()
+"#;
+
+/// Crash isolation must hold under supervision too: starting a supervisor
+/// links no fate to the starter, so a child dying takes down neither the
+/// supervisor nor `main` — and the crash is still reported, on stderr.
+/// Guards the unlinked-`spawn` semantics against regressions introduced by
+/// the supervision runtime.
+#[test]
+fn beam_e2e_supervised_child_crash_leaves_main_running() {
+    let (stdout, stderr) =
+        run_inline_actor_test_via_runner("SupIsolation", SUPERVISION_CRASH_ISOLATION_SOURCE);
+    assert!(
+        stdout.contains("main-ran-past-child-crash"),
+        "main died with the supervised child, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("child-back=0"),
+        "the supervisor did not restart its child, got:\n{stdout}"
+    );
+    assert!(
+        stderr.contains("badarith"),
+        "expected the child's crash report on stderr, got:\n{stderr}"
+    );
+}
+
+// ── 3. one_for_all restarts the siblings too ────────────────────────────────
+
+const SUPERVISION_ONE_FOR_ALL_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+import std.time as Time
+import std.actor as Actor
+import std.actor (OneForAll)
+
+actor Counter =
+    state count: Int = 0
+
+    on bump =
+        count <- count + 1
+
+    on get () -> Int =
+        count
+
+    on die (d: Int) =
+        count <- 10 / d
+
+fn spawn io time main () -> Result Unit Text =
+    let sup = Actor.supervise OneForAll 3 5000 []?
+    let a = Actor.startChild sup (Actor.childId "a" (child Counter))?
+    let b = Actor.startChild sup (Actor.childId "b" (child Counter))?
+    a ! bump
+    a ! bump
+    b ! bump
+    let na = a ?> get timeout 2000
+    let nb = b ?> get timeout 2000
+    Io.println $"pre=${Int.toText na},${Int.toText nb}"
+    a ! die 0
+    Time.sleep 500
+    let ra = a ?> get timeout 2000
+    let rb = b ?> get timeout 2000
+    Io.println $"post=${Int.toText ra},${Int.toText rb}"
+    Ok ()
+"#;
+
+/// Under `one_for_all`, one child's crash restarts EVERY child. Only `a` is
+/// sent `die`, yet `b`'s state resets too — `post=0,0` is the strategy's
+/// signature. (`pre=2,1` first proves both counters accumulated distinct
+/// state, so the zeros afterwards cannot be a startup artifact.)
+#[test]
+fn beam_e2e_supervisor_one_for_all_restarts_siblings() {
+    let (stdout, _) =
+        run_inline_actor_test_via_runner("SupOneForAll", SUPERVISION_ONE_FOR_ALL_SOURCE);
+    assert!(
+        stdout.contains("pre=2,1"),
+        "expected 'pre=2,1' before the crash, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("post=0,0"),
+        "one_for_all must restart the sibling as well — expected 'post=0,0', got:\n{stdout}"
+    );
+}
+
+// ── 4. rest_for_one restarts only the tail ──────────────────────────────────
+
+const SUPERVISION_REST_FOR_ONE_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+import std.time as Time
+import std.actor as Actor
+import std.actor (RestForOne)
+
+actor Counter =
+    state count: Int = 0
+
+    on bump =
+        count <- count + 1
+
+    on get () -> Int =
+        count
+
+    on die (d: Int) =
+        count <- 10 / d
+
+fn spawn io time main () -> Result Unit Text =
+    -- Phase 1: crashing the FIRST child restarts everything started after
+    -- it as well — under rest_for_one that is the whole tail.
+    let sup1 = Actor.supervise RestForOne 3 5000 []?
+    let a1 = Actor.startChild sup1 (Actor.childId "a" (child Counter))?
+    let b1 = Actor.startChild sup1 (Actor.childId "b" (child Counter))?
+    a1 ! bump
+    a1 ! bump
+    b1 ! bump
+    a1 ! die 0
+    Time.sleep 500
+    let p1a = a1 ?> get timeout 2000
+    let p1b = b1 ?> get timeout 2000
+    Io.println $"p1-post=${Int.toText p1a},${Int.toText p1b}"
+    -- Phase 2: crashing the SECOND child leaves the earlier one alone.
+    let sup2 = Actor.supervise RestForOne 3 5000 []?
+    let a2 = Actor.startChild sup2 (Actor.childId "a" (child Counter))?
+    let b2 = Actor.startChild sup2 (Actor.childId "b" (child Counter))?
+    a2 ! bump
+    a2 ! bump
+    b2 ! bump
+    b2 ! die 0
+    Time.sleep 500
+    let p2a = a2 ?> get timeout 2000
+    let p2b = b2 ?> get timeout 2000
+    Io.println $"p2-post=${Int.toText p2a},${Int.toText p2b}"
+    Ok ()
+"#;
+
+/// `rest_for_one` scoped both ways, with a fresh supervisor per phase so the
+/// two readings cannot contaminate each other. Crashing the first child
+/// resets the second (`p1-post=0,0`); crashing the second leaves the first's
+/// accumulated state intact (`p2-post=2,0`).
+#[test]
+fn beam_e2e_supervisor_rest_for_one_restarts_tail_only() {
+    let (stdout, _) =
+        run_inline_actor_test_via_runner("SupRestForOne", SUPERVISION_REST_FOR_ONE_SOURCE);
+    assert!(
+        stdout.contains("p1-post=0,0"),
+        "crashing the first child must restart the tail — expected 'p1-post=0,0', got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("p2-post=2,0"),
+        "crashing the second child must spare the first — expected 'p2-post=2,0', got:\n{stdout}"
+    );
+}
+
+// ── 5. Restart-intensity exhaustion takes the supervisor down, loudly ───────
+
+const SUPERVISION_INTENSITY_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+import std.time as Time
+import std.actor as Actor
+import std.actor (OneForOne)
+
+actor Counter =
+    state count: Int = 0
+
+    on bump =
+        count <- count + 1
+
+    on get () -> Int =
+        count
+
+    on die (d: Int) =
+        count <- 10 / d
+
+fn spawn io time main () -> Result Unit Text =
+    let sup = Actor.supervise OneForOne 1 60000 []?
+    let c = Actor.startChild sup (child Counter)?
+    c ! die 0
+    Time.sleep 500
+    let n = c ?> get timeout 2000
+    Io.println $"back-once=${Int.toText n}"
+    c ! die 0
+    Time.sleep 500
+    -- The second restart inside the 60 s window exceeds intensity 1: the
+    -- supervisor gives up and terminates. whichChildren on a dead supervisor
+    -- must fail loudly rather than answer an empty list.
+    let _ = Actor.whichChildren sup
+    Io.println "should-not-reach"
+    Ok ()
+"#;
+
+/// More than `intensity` restarts within `period` kills the supervisor
+/// itself. The first crash is absorbed (`back-once=0`); the second inside
+/// the window exhausts the budget, and the subsequent `whichChildren` raises
+/// `ridge_sup_noproc` in `main` — a dead supervisor reads as a crash of the
+/// caller, never as a silent empty answer.
+#[test]
+fn beam_e2e_supervisor_intensity_exhaustion_fails_loudly() {
+    let (beam_dir, module, _td) =
+        compile_inline_actor_test("SupIntensity", SUPERVISION_INTENSITY_SOURCE);
+    let (stdout, stderr, exit_code) = run_erl_via_runner(&beam_dir, &module);
+    assert_ne!(
+        exit_code, 0,
+        "expected a non-zero exit (whichChildren on a dead supervisor), got 0\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(
+        stderr.contains("ridge_sup_noproc"),
+        "expected 'ridge_sup_noproc' on stderr, got:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("back-once=0"),
+        "the first restart should have succeeded before exhaustion, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("should-not-reach"),
+        "main should crash at whichChildren, before the println; stdout was:\n{stdout}"
+    );
+}
+
+// ── 6. Dynamic children: startChild / whichChildren / stopChild ─────────────
+
+const SUPERVISION_DYNAMIC_SOURCE: &str = r#"
+import std.io as Io
+import std.actor as Actor
+import std.actor (OneForOne)
+
+actor Counter =
+    state count: Int = 0
+
+    on bump =
+        count <- count + 1
+
+    on get () -> Int =
+        count
+
+fn io main () -> Result Unit Text =
+    let sup = Actor.supervise OneForOne 3 5000 []?
+    let _ = Actor.startChild sup (Actor.childId "a" (child Counter))?
+    let _ = Actor.startChild sup (Actor.childId "b" (child Counter))?
+    match Actor.whichChildren sup
+        [("b", true), ("a", true)] -> Io.println "both-alive"
+        _ -> Io.println "unexpected-children"
+    match Actor.stopChild sup "a"
+        Ok _ -> Io.println "stop-a-ok"
+        Err e -> Io.println $"stop-a-failed=${e}"
+    match Actor.whichChildren sup
+        [("b", true)] -> Io.println "only-b-left"
+        _ -> Io.println "unexpected-after-stop"
+    match Actor.stopChild sup "a"
+        Ok _ -> Io.println "second-stop-unexpectedly-ok"
+        Err _ -> Io.println "second-stop-err"
+    Ok ()
+"#;
+
+/// The dynamic-child surface over an empty static list: two `startChild`
+/// calls register under their `childId`s, `whichChildren` reports both alive
+/// (newest first, OTP's order for dynamically started children), `stopChild`
+/// removes one (terminate + delete, so the id is gone — not merely down),
+/// and stopping the same id twice is an `Err` rather than a crash or a lie.
+#[test]
+fn beam_e2e_supervisor_dynamic_children() {
+    let (stdout, _) = run_inline_actor_test("SupDynamic", SUPERVISION_DYNAMIC_SOURCE);
+    for want in ["both-alive", "stop-a-ok", "only-b-left", "second-stop-err"] {
+        assert!(
+            stdout.contains(want),
+            "expected '{want}' in stdout, got:\n{stdout}"
+        );
+    }
+    assert!(
+        !stdout.contains("unexpected") && !stdout.contains("stop-a-failed"),
+        "a dynamic-child operation misbehaved, got:\n{stdout}"
+    );
+}
+
+// ── 7. tryAsk: Ok on a live child, Timeout on a slow one, Noproc on a dead one
+
+const SUPERVISION_TRY_ASK_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+import std.time as Time
+import std.actor as Actor
+import std.actor (OneForOne, Noproc, Timeout)
+
+actor Counter =
+    state count: Int = 0
+
+    on bump =
+        count <- count + 1
+
+    on get () -> Int =
+        count
+
+actor Slow =
+    state n: Int = 0
+
+    on time ponder () -> Int =
+        Time.sleep 2000
+        n
+
+fn spawn io time main () -> Result Unit Text =
+    let sup = Actor.supervise OneForOne 3 5000 []?
+    let c = Actor.startChild sup (Actor.childId "c" (child Counter))?
+    c ! bump
+    c ! bump
+    match Actor.tryAsk c get 1000
+        Ok n -> Io.println $"live=${Int.toText n}"
+        Err Noproc -> Io.println "live-noproc"
+        Err Timeout -> Io.println "live-timeout"
+    -- Slow needs its own supervisor: Supervisor a is homogeneous, so a
+    -- Counter supervisor cannot take a Slow spec.
+    let sup2 = Actor.supervise OneForOne 3 5000 []?
+    let s = Actor.startChild sup2 (child Slow)?
+    match Actor.tryAsk s ponder 200
+        Ok n -> Io.println $"slow-ok=${Int.toText n}"
+        Err Noproc -> Io.println "slow-noproc"
+        Err Timeout -> Io.println "slow-timeout"
+    let _ = Actor.stopChild sup "c"?
+    match Actor.tryAsk c get 1000
+        Ok n -> Io.println $"stopped-ok=${Int.toText n}"
+        Err Noproc -> Io.println "stopped-noproc"
+        Err Timeout -> Io.println "stopped-timeout"
+    Ok ()
+"#;
+
+/// `tryAsk` is the `Result`-returning ask: a live child answers `Ok` with
+/// the handler's reply, a handler that outruns the deadline reads as
+/// `Err Timeout` (the 200 ms budget against a 2 s ponder), and a child that
+/// was stopped reads as `Err Noproc` — all matched in-language, so the
+/// program itself decides what each failure means instead of dying.
+#[test]
+fn beam_e2e_supervised_tryask_outcomes() {
+    let (stdout, _) = run_inline_actor_test("SupTryAsk", SUPERVISION_TRY_ASK_SOURCE);
+    for want in ["live=2", "slow-timeout", "stopped-noproc"] {
+        assert!(
+            stdout.contains(want),
+            "expected '{want}' in stdout, got:\n{stdout}"
+        );
+    }
+    for unwanted in [
+        "live-noproc",
+        "live-timeout",
+        "slow-ok",
+        "slow-noproc",
+        "stopped-ok",
+        "stopped-timeout",
+    ] {
+        assert!(
+            !stdout.contains(unwanted),
+            "unexpected '{unwanted}' in stdout, got:\n{stdout}"
+        );
+    }
+}
+
+// ── 8. `?>` on a stopped child fails fast ───────────────────────────────────
+
+const SUPERVISION_ASK_STOPPED_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+import std.actor as Actor
+import std.actor (OneForOne)
+
+actor Counter =
+    state count: Int = 0
+
+    on bump =
+        count <- count + 1
+
+    on get () -> Int =
+        count
+
+fn spawn io time main () -> Result Unit Text =
+    let sup = Actor.supervise OneForOne 3 5000 []?
+    let c = Actor.startChild sup (Actor.childId "c" (child Counter))?
+    let _ = Actor.stopChild sup "c"?
+    -- The child is gone: ask has no answer to give, so it raises the
+    -- structured ridge_ask_noproc reason in the caller instead of surfacing
+    -- a raw gen_server exit.
+    let n = c ?> get timeout 1000
+    Io.println $"should-not-reach=${Int.toText n}"
+    Ok ()
+"#;
+
+/// Asking a stopped supervised child with `?>` must fail fast with the
+/// structured `ridge_ask_noproc` reason — the caller crashes with a
+/// recognisable cause rather than hanging or surfacing an opaque
+/// `exit:{noproc,_}`. The `Err`-returning alternative for callers that want
+/// to handle the absence is `tryAsk` (previous test).
+#[test]
+fn beam_e2e_ask_on_stopped_child_fails_loudly() {
+    let (beam_dir, module, _td) =
+        compile_inline_actor_test("SupAskStopped", SUPERVISION_ASK_STOPPED_SOURCE);
+    let (stdout, stderr, exit_code) = run_erl_via_runner(&beam_dir, &module);
+    assert_ne!(
+        exit_code, 0,
+        "expected a non-zero exit (ask on a stopped child), got 0\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(
+        stderr.contains("ridge_ask_noproc"),
+        "expected 'ridge_ask_noproc' on stderr, got:\n{stderr}"
+    );
+    assert!(
+        !stdout.contains("should-not-reach"),
+        "main should crash at the ask, before the println; stdout was:\n{stdout}"
+    );
+}
+
+// ── 9. `?>` on a dead unsupervised actor, from a `?`-using main ─────────────
+
+const ASK_DEAD_PLAIN_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+import std.time as Time
+import std.actor as Actor
+import std.actor (OneForOne)
+
+actor Fragile =
+    state n: Int = 0
+
+    on get () -> Int =
+        n
+
+    on die (d: Int) =
+        n <- 10 / d
+
+fn spawn io time main () -> Result Unit Text =
+    -- Any use of `?` wraps the body in the propagation try/catch, and an
+    -- exception crossing that frame must keep its class and reason: a
+    -- previous codegen bug re-raised with an invalid stacktrace and turned
+    -- the crash into a silent `badarg` return with exit code 0.
+    let _ = Actor.supervise OneForOne 3 5000 []?
+    let f = spawn Fragile
+    f ! die 0
+    Time.sleep 300
+    let n = f ?> get timeout 1000
+    Io.println $"should-not-reach=${Int.toText n}"
+    Ok ()
+"#;
+
+/// `?>` on a dead actor must raise `ridge_ask_noproc` in the caller even
+/// when the calling function uses `?` somewhere in its body — the
+/// propagation wrapper around such bodies used to swallow the exit and
+/// report success. This is the plain-handle twin of the stopped-child case
+/// above: same structured reason, no supervisor involved.
+#[test]
+fn beam_e2e_ask_on_dead_plain_actor_fails_loudly() {
+    let (beam_dir, module, _td) = compile_inline_actor_test("AskDeadPlain", ASK_DEAD_PLAIN_SOURCE);
+    let (stdout, stderr, exit_code) = run_erl_via_runner(&beam_dir, &module);
+    assert_ne!(
+        exit_code, 0,
+        "expected a non-zero exit (ask on a dead actor), got 0\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(
+        stderr.contains("ridge_ask_noproc"),
+        "expected 'ridge_ask_noproc' on stderr, got:\n{stderr}"
+    );
+    assert!(
+        !stdout.contains("should-not-reach"),
+        "main should crash at the ask, before the println; stdout was:\n{stdout}"
+    );
+}
+
 // ── Slice pattern BEAM e2e tests (D258) ──────────────────────────────────────
 
 /// Suffix rest `[.., last]`: print the last element of a list.

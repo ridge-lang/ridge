@@ -42,8 +42,9 @@ without swapping dialects.
 - The teachable half is the surface. Pure functions, total pattern
   matches, no `null`, and types that double as documentation.
 - The shippable half is the runtime. The BEAM gives you preemptive
-  scheduling, isolated processes, supervisor trees, and crash-only
-  design without a framework on top.
+  scheduling, isolated processes, and crash-only design — and Ridge
+  puts typed supervisor trees in the language, not in a framework
+  on top.
 
 BEAM is the production target. WebAssembly and native (LLVM)
 backends are exploratory, kept on the roadmap behind a target-neutral

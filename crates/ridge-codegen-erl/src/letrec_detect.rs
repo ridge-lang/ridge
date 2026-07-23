@@ -58,11 +58,15 @@ pub(crate) fn body_references_local(body: &IrExpr, target_name: &str) -> bool {
         IrExpr::Cons { head, tail, .. } => {
             body_references_local(head, target_name) || body_references_local(tail, target_name)
         }
-        IrExpr::Send { handle, args, .. } | IrExpr::Ask { handle, args, .. } => {
+        IrExpr::Send { handle, args, .. }
+        | IrExpr::Ask { handle, args, .. }
+        | IrExpr::TryAsk { handle, args, .. } => {
             body_references_local(handle, target_name)
                 || args.iter().any(|a| body_references_local(a, target_name))
         }
-        IrExpr::Spawn { args, .. } => args.iter().any(|a| body_references_local(a, target_name)),
+        IrExpr::Spawn { args, .. } | IrExpr::ChildSpec { args, .. } => {
+            args.iter().any(|a| body_references_local(a, target_name))
+        }
         _ => false,
     }
 }

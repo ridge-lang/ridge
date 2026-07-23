@@ -233,6 +233,61 @@ pub fn infer_spawn(
     span: Span,
     arena: &ridge_types::TyConArena,
 ) -> Type {
+    let Some(actor_id) =
+        resolve_actor_and_check_init_args(ctx, b, actor_ident, args, span, arena, "spawn")
+    else {
+        return Type::Error;
+    };
+
+    // Step 4 — return `Handle<actor>` = `Type::Con(b.handle, [Con(actor_id, [])])`.
+    // D061: `spawn ActorName args` produces a `Handle(ActorTyCon)`.
+    Type::Con(b.handle, vec![Type::Con(actor_id, vec![])])
+}
+
+// ── ChildSpec ──────────────────────────────────────────────────────────────────
+
+/// Type-infer `child Actor (args…)`.
+///
+/// The argument list is checked against the actor's `init` params with exactly
+/// the same machinery as `spawn` (T025 on arity mismatch, T001 via `unify` on
+/// payload mismatch). The result is `ChildSpec<actor>` — the D061 analogue of
+/// spawn's `Handle(ActorTyCon)` — a **pure value**: no process starts until
+/// the spec reaches `std.actor.supervise`.
+pub fn infer_child_spec(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    actor_ident: &Ident,
+    args: &[Expr],
+    span: Span,
+    arena: &ridge_types::TyConArena,
+) -> Type {
+    let Some(actor_id) =
+        resolve_actor_and_check_init_args(ctx, b, actor_ident, args, span, arena, "child")
+    else {
+        return Type::Error;
+    };
+
+    // Return `ChildSpec<actor>` = `Type::Con(b.child_spec, [Con(actor_id, [])])`.
+    Type::Con(b.child_spec, vec![Type::Con(actor_id, vec![])])
+}
+
+/// Shared core of [`infer_spawn`] / [`infer_child_spec`].
+///
+/// Resolves `actor_ident` to its `TyConId` and checks the argument list
+/// against the actor's `init` params (T025 on arity mismatch, T001 via
+/// `unify` on type mismatch). `label` (`"spawn"` / `"child"`) selects the
+/// surface name used in the T999 internal-error messages.
+///
+/// Returns the actor's `TyConId` on success, `None` after reporting an error.
+fn resolve_actor_and_check_init_args(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    actor_ident: &Ident,
+    args: &[Expr],
+    span: Span,
+    arena: &ridge_types::TyConArena,
+    label: &str,
+) -> Option<TyConId> {
     // Step 1 — resolve actor name in arena.
     let actor_id_opt = arena
         .all()
@@ -241,22 +296,24 @@ pub fn infer_spawn(
         .map(|d| d.id);
 
     let Some(actor_id) = actor_id_opt else {
-        return emit_internal(
+        let _ = emit_internal(
             ctx,
             format!(
-                "spawn: actor '{}' not found in arena — resolver should have caught this",
+                "{label}: actor '{}' not found in arena — resolver should have caught this",
                 actor_ident.text
             ),
             span,
         );
+        return None;
     };
 
     let TyConKind::Actor(actor_schema_ref) = &arena.get(actor_id).kind else {
-        return emit_internal(
+        let _ = emit_internal(
             ctx,
-            format!("spawn: '{}' is not an actor type", actor_ident.text),
+            format!("{label}: '{}' is not an actor type", actor_ident.text),
             span,
         );
+        return None;
     };
     let actor_schema = actor_schema_ref.clone();
 
@@ -270,7 +327,7 @@ pub fn infer_spawn(
                     found: args.len(),
                     span,
                 });
-                return Type::Error;
+                return None;
             }
         }
         Some(params) => {
@@ -281,7 +338,7 @@ pub fn infer_spawn(
                     found: args.len(),
                     span,
                 });
-                return Type::Error;
+                return None;
             }
             for (arg, param_ty) in args.iter().zip(params.iter()) {
                 let arg_ty = infer_expr(ctx, b, arg);
@@ -294,9 +351,167 @@ pub fn infer_spawn(
         }
     }
 
-    // Step 4 — return `Handle<actor>` = `Type::Con(b.handle, [Con(actor_id, [])])`.
-    // D061: `spawn ActorName args` produces a `Handle(ActorTyCon)`.
-    Type::Con(b.handle, vec![Type::Con(actor_id, vec![])])
+    Some(actor_id)
+}
+
+// ── tryAsk ─────────────────────────────────────────────────────────────────────
+
+/// `true` when `callee` names the compiler-known `std.actor.tryAsk`.
+///
+/// Detection is via `ctx.tryask_names`, populated by
+/// [`crate::stdlib_env::seed_stdlib_env`]. Covers both the bare import form
+/// (`tryAsk …`) and the alias-qualified form (`Actor.tryAsk …`).
+#[must_use]
+pub fn is_tryask_callee(ctx: &InferCtx, callee: &Expr) -> bool {
+    let name = match callee {
+        Expr::Ident(id) => &id.text,
+        Expr::Qualified(q) => {
+            // Cheap pre-check: the last segment must be `tryAsk` before the
+            // joined name is allocated.
+            if !matches!(q.segments.last(), Some(s) if s.text == "tryAsk") {
+                return false;
+            }
+            return ctx.tryask_names.contains(&qualified_name_string(q));
+        }
+        _ => return false,
+    };
+    ctx.tryask_names.contains(name)
+}
+
+/// Join the segments of a qualified name (`Actor.tryAsk`).
+fn qualified_name_string(q: &ridge_ast::QualifiedName) -> String {
+    q.segments
+        .iter()
+        .map(|s| s.text.as_str())
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+/// Type-infer a call to the compiler-known `std.actor.tryAsk`.
+///
+/// `tryAsk handle message timeoutMs` is typed like the `?>` operator — the
+/// message is checked against the handle's `on` handlers (T015 on a miss,
+/// T003/T001 on payload mismatch) and the timeout must be an `Int` (T026) —
+/// but the overall expression type is `Result reply AskError`: the runtime
+/// (`ridge_rt:try_ask/3`) returns `{error, Noproc | Timeout}`
+/// instead of raising.
+///
+/// Precondition: [`is_tryask_callee`] returned `true` for `callee`. The
+/// callee itself is inferred only for the node-types side table (its scheme
+/// is the stdlib-seeded fallback); the call typing below replaces it.
+pub fn infer_tryask(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    callee: &Expr,
+    args: &[Expr],
+    span: Span,
+    arena: &ridge_types::TyConArena,
+) -> Type {
+    // Populate the callee's entry in the node-types side table; the result is
+    // deliberately discarded — this function owns the call's typing.
+    let _ = infer_expr(ctx, b, callee);
+
+    // tryAsk takes exactly three arguments.
+    if args.len() != 3 {
+        ctx.errors.push(TypeError::ArityMismatch {
+            callee: "std.actor.tryAsk".to_string(),
+            expected: 3,
+            found: args.len(),
+            span,
+            hint: None,
+        });
+        return Type::Error;
+    }
+    let handle = &args[0];
+    // The message is routinely parenthesised (`tryAsk h (shorten url) 1000`).
+    let message = crate::infer::peel_parens(&args[1]);
+    let timeout_expr = &args[2];
+
+    // Steps 1-2 of `infer_ask`: infer the handle, require a concrete actor.
+    let handle_ty = infer_expr(ctx, b, handle);
+
+    // Absorb: free type variable handle — return a fresh var silently
+    // (mirrors `infer_ask`; T021 fires only for concrete non-actor types).
+    if matches!(ctx.deep_resolve(&handle_ty), Type::Var(_) | Type::Error) {
+        return Type::Var(ctx.fresh_tyvid());
+    }
+
+    let Ok((actor_id, actor_schema)) = resolve_actor_type(ctx, arena, &handle_ty) else {
+        let found_ty = format!("{handle_ty:?}");
+        ctx.errors.push(TypeError::AskOnNonActor { found_ty, span });
+        return Type::Error;
+    };
+
+    // Step 3 — the message is a handler label with optional payload, in the
+    // same shapes as `!` (bare Ident or Call-over-Ident).
+    let Some((handler_name, msg_args)) = extract_handler_call(message) else {
+        return emit_internal(
+            ctx,
+            "tryAsk message is neither Ident nor Call — parser invariant violation",
+            span,
+        );
+    };
+
+    let Some(handler) = actor_schema
+        .handlers
+        .iter()
+        .find(|h| h.name == handler_name)
+    else {
+        let suggestions = ridge_resolve::suggest::suggest(
+            &handler_name,
+            actor_schema.handlers.iter().map(|h| h.name.clone()),
+        );
+        let actor_name = arena.get(actor_id).name.clone();
+        ctx.errors.push(TypeError::UnknownActorHandler {
+            actor: actor_name,
+            handler: handler_name,
+            suggestions,
+            span,
+        });
+        return Type::Error;
+    };
+
+    let ret_ty = handler.ret.clone();
+    let actor_name = arena.get(actor_id).name.clone();
+
+    // Step 4 — payload args check (T003 arity / T001 payload), as in `?>`.
+    check_handler_args(
+        ctx,
+        b,
+        &actor_name,
+        &handler.name,
+        &handler.params,
+        msg_args,
+        span,
+    );
+
+    // Step 5 — the timeout must be an `Int` (T026), as in `?>`'s `timeout <ms>`.
+    let timeout_ty = infer_expr(ctx, b, timeout_expr);
+    let int_ty = Type::Con(b.int, vec![]);
+    if unify(ctx, &timeout_ty, &int_ty).is_err() {
+        let found_ty = format!("{timeout_ty:?}");
+        ctx.errors.push(TypeError::AskTimeoutNotInt {
+            found: found_ty,
+            span: timeout_expr.span(),
+        });
+    }
+
+    // Step 6 — `Result reply AskError`. AskError is the `std.actor` union,
+    // interned into the reconciled stdlib block before module inference.
+    let Some(ask_error_id) = ctx
+        .tycon_decls
+        .iter()
+        .find(|d| d.name == "AskError" && matches!(&d.kind, TyConKind::Union(_)))
+        .map(|d| d.id)
+    else {
+        return emit_internal(
+            ctx,
+            "tryAsk: 'AskError' union not found in arena — stdlib reconciliation \
+             should have registered it",
+            span,
+        );
+    };
+    Type::Con(b.result, vec![ret_ty, Type::Con(ask_error_id, vec![])])
 }
 
 // ── Actor encapsulation check ─────────────────────────────────────────────────
@@ -1236,6 +1451,479 @@ mod tests {
             matches!(ty, Type::Con(id, _) if id == b.int),
             "Ask return type must still be Int even when timeout is maltyped; got {ty:?}"
         );
+        ctx.env.pop_frame();
+    }
+
+    // ── child (ChildSpec) ──────────────────────────────────────────────────────
+
+    #[test]
+    fn child_known_actor_ok() {
+        let (mut arena, b) = make_builtins();
+        let counter_id = register_counter(&mut arena, &b);
+
+        let mut ctx = InferCtx::new();
+        ctx.env.push_frame();
+
+        // child Counter (0)   (Counter has init: Int)
+        let actor = id("Counter");
+        let args = vec![int_lit(0)];
+
+        let ty = infer_child_spec(&mut ctx, &b, &actor, &args, ds(), &arena);
+
+        assert!(
+            ctx.errors.is_empty(),
+            "expected no errors, got {:?}",
+            ctx.errors
+        );
+        // child returns ChildSpec<Actor> = Con(b.child_spec, [Con(actor_id, [])]).
+        assert!(
+            matches!(&ty, Type::Con(id, args) if *id == b.child_spec
+                && matches!(args.first(), Some(Type::Con(inner, _)) if *inner == counter_id)),
+            "child Counter must return ChildSpec Counter, got {ty:?}"
+        );
+        ctx.env.pop_frame();
+    }
+
+    #[test]
+    fn child_no_init_args_ok() {
+        let (mut arena, b) = make_builtins();
+        let logger_id = register_logger(&mut arena, &b);
+
+        let mut ctx = InferCtx::new();
+        ctx.env.push_frame();
+
+        // child Logger   (Logger has no init; no parens)
+        let actor = id("Logger");
+
+        let ty = infer_child_spec(&mut ctx, &b, &actor, &[], ds(), &arena);
+
+        assert!(
+            ctx.errors.is_empty(),
+            "expected no errors, got {:?}",
+            ctx.errors
+        );
+        assert!(
+            matches!(&ty, Type::Con(id, args) if *id == b.child_spec
+                && matches!(args.first(), Some(Type::Con(inner, _)) if *inner == logger_id)),
+            "child Logger must return ChildSpec Logger, got {ty:?}"
+        );
+        ctx.env.pop_frame();
+    }
+
+    #[test]
+    fn child_no_init_extra_args_t025() {
+        let (mut arena, b) = make_builtins();
+        let _logger_id = register_logger(&mut arena, &b);
+
+        let mut ctx = InferCtx::new();
+        ctx.env.push_frame();
+
+        // child Logger (1, 2)   (Logger has no init, but we pass 2 args)
+        let actor = id("Logger");
+        let args = vec![int_lit(1), int_lit(2)];
+
+        let ty = infer_child_spec(&mut ctx, &b, &actor, &args, ds(), &arena);
+
+        assert_eq!(ctx.errors.len(), 1, "expected T025");
+        assert_eq!(ctx.errors[0].code(), "T025");
+        if let TypeError::SpawnArityMismatch {
+            actor: a,
+            expected,
+            found,
+            ..
+        } = &ctx.errors[0]
+        {
+            assert_eq!(a, "Logger");
+            assert_eq!(*expected, 0);
+            assert_eq!(*found, 2);
+        }
+        assert!(matches!(ty, Type::Error));
+        ctx.env.pop_frame();
+    }
+
+    #[test]
+    fn child_init_arity_mismatch_t025() {
+        let (mut arena, b) = make_builtins();
+        let _counter_id = register_counter(&mut arena, &b);
+
+        let mut ctx = InferCtx::new();
+        ctx.env.push_frame();
+
+        // child Counter ()   (Counter requires Int arg)
+        let actor = id("Counter");
+
+        let ty = infer_child_spec(&mut ctx, &b, &actor, &[], ds(), &arena);
+
+        assert_eq!(ctx.errors.len(), 1, "expected T025");
+        assert_eq!(ctx.errors[0].code(), "T025");
+        if let TypeError::SpawnArityMismatch {
+            actor: a,
+            expected,
+            found,
+            ..
+        } = &ctx.errors[0]
+        {
+            assert_eq!(a, "Counter");
+            assert_eq!(*expected, 1);
+            assert_eq!(*found, 0);
+        }
+        assert!(matches!(ty, Type::Error));
+        ctx.env.pop_frame();
+    }
+
+    #[test]
+    fn child_init_type_mismatch_t001() {
+        let (mut arena, b) = make_builtins();
+        let _counter_id = register_counter(&mut arena, &b);
+
+        let mut ctx = InferCtx::new();
+        ctx.env.push_frame();
+
+        // child Counter ("hi")   (Counter requires Int, we pass Text)
+        let actor = id("Counter");
+        let args = vec![text_lit("hi")];
+
+        infer_child_spec(&mut ctx, &b, &actor, &args, ds(), &arena);
+
+        assert_eq!(ctx.errors.len(), 1, "expected T001 from type mismatch");
+        assert_eq!(ctx.errors[0].code(), "T001");
+        ctx.env.pop_frame();
+    }
+
+    #[test]
+    fn child_is_pure_for_caps() {
+        use crate::caps_infer::infer_caps;
+
+        let (_arena, b) = make_builtins();
+
+        let mut ctx = InferCtx::new();
+        ctx.env.push_frame();
+
+        // body: child Counter (0) — pure value construction, unlike spawn.
+        let body = Expr::ChildSpec {
+            actor: id("Counter"),
+            args: vec![int_lit(0)],
+            span: ds(),
+        };
+
+        let caps = infer_caps(&mut ctx, &b, &body);
+        assert!(
+            caps.is_pure(),
+            "child must be cap-free (pure), got {caps:?}"
+        );
+        ctx.env.pop_frame();
+    }
+
+    // ── tryAsk ─────────────────────────────────────────────────────────────────
+
+    /// Register the `std.actor` `AskError = Noproc | Timeout` union in the
+    /// arena (the reconciled-stdlib block registers it in the real pipeline)
+    /// and mirror the arena into `ctx.tycon_decls` so `infer_tryask` can name
+    /// it in the `Result reply AskError` it builds.
+    fn register_ask_error(arena: &mut TyConArena, ctx: &mut InferCtx) -> TyConId {
+        use ridge_types::{UnionSchema, UnionVariant, VariantPayload};
+        let id = arena.intern(TyConDecl {
+            id: ridge_types::TyConId(0), // overwritten by intern
+            name: "AskError".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "Noproc".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "Timeout".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                ],
+            }),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+        ctx.tycon_decls = arena.all().to_vec();
+        id
+    }
+
+    /// Bind the callee name as a `std.actor.tryAsk` stand-in: record it in
+    /// `ctx.tryask_names` (what `seed_stdlib_env` does) and give it an env
+    /// scheme so inferring the callee for the side table is a no-op.
+    fn bind_tryask_callee(ctx: &mut InferCtx, name: &str, scheme_ty: Type) {
+        use ridge_types::Scheme;
+        ctx.tryask_names.insert(name.to_string());
+        ctx.env.bind(name.to_string(), Scheme::mono(scheme_ty));
+    }
+
+    #[test]
+    fn tryask_known_handler_ok() {
+        let (mut arena, b) = make_builtins();
+        let counter_id = register_counter(&mut arena, &b);
+        let ask_error_id = {
+            let mut ctx_probe = InferCtx::new();
+            let id = register_ask_error(&mut arena, &mut ctx_probe);
+            drop(ctx_probe);
+            id
+        };
+
+        let mut ctx = InferCtx::new();
+        ctx.env.push_frame();
+        ctx.tycon_decls = arena.all().to_vec();
+        bind_actor_handle(&mut ctx, "counter", counter_id);
+        bind_tryask_callee(&mut ctx, "tryAsk", Type::Con(b.unit, vec![]));
+
+        // tryAsk counter getCount 1000   (getCount returns Int)
+        let callee = Expr::Ident(id("tryAsk"));
+        let args = vec![
+            Expr::Ident(id("counter")),
+            Expr::Ident(id("getCount")),
+            int_lit(1000),
+        ];
+
+        assert!(is_tryask_callee(&ctx, &callee));
+        let ty = infer_tryask(&mut ctx, &b, &callee, &args, ds(), &arena);
+
+        assert!(
+            ctx.errors.is_empty(),
+            "expected no errors, got {:?}",
+            ctx.errors
+        );
+        // Result Int AskError = Con(b.result, [Con(int, []), Con(ask_error_id, [])]).
+        assert!(
+            matches!(&ty, Type::Con(id, args) if *id == b.result
+                && matches!(args.first(), Some(Type::Con(ok, _)) if *ok == b.int)
+                && matches!(args.get(1), Some(Type::Con(err, _)) if *err == ask_error_id)),
+            "tryAsk must return Result Int AskError, got {ty:?}"
+        );
+        ctx.env.pop_frame();
+    }
+
+    #[test]
+    fn tryask_qualified_callee_detected() {
+        use ridge_ast::QualifiedName;
+
+        let (mut arena, b) = make_builtins();
+        let counter_id = register_counter(&mut arena, &b);
+        let ask_error_id = {
+            let mut ctx_probe = InferCtx::new();
+            let id = register_ask_error(&mut arena, &mut ctx_probe);
+            drop(ctx_probe);
+            id
+        };
+
+        let mut ctx = InferCtx::new();
+        ctx.env.push_frame();
+        ctx.tycon_decls = arena.all().to_vec();
+        bind_actor_handle(&mut ctx, "counter", counter_id);
+        bind_tryask_callee(&mut ctx, "Actor.tryAsk", Type::Con(b.unit, vec![]));
+
+        // Actor.tryAsk counter getCount 1000
+        let callee = Expr::Qualified(QualifiedName {
+            segments: vec![id("Actor"), id("tryAsk")],
+            span: ds(),
+        });
+        let args = vec![
+            Expr::Ident(id("counter")),
+            Expr::Ident(id("getCount")),
+            int_lit(1000),
+        ];
+
+        assert!(is_tryask_callee(&ctx, &callee));
+        let ty = infer_tryask(&mut ctx, &b, &callee, &args, ds(), &arena);
+
+        assert!(
+            ctx.errors.is_empty(),
+            "expected no errors, got {:?}",
+            ctx.errors
+        );
+        assert!(
+            matches!(&ty, Type::Con(id, args) if *id == b.result
+                && matches!(args.first(), Some(Type::Con(ok, _)) if *ok == b.int)
+                && matches!(args.get(1), Some(Type::Con(err, _)) if *err == ask_error_id)),
+            "qualified tryAsk must return Result Int AskError, got {ty:?}"
+        );
+        ctx.env.pop_frame();
+    }
+
+    #[test]
+    fn tryask_non_tryask_callee_not_detected() {
+        let (_arena, b) = make_builtins();
+        let mut ctx = InferCtx::new();
+        ctx.env.push_frame();
+
+        // A same-named user function is not the compiler-known symbol.
+        let callee = Expr::Ident(id("tryAsk"));
+        assert!(
+            !is_tryask_callee(&ctx, &callee),
+            "an unseeded `tryAsk` name must not be special-cased"
+        );
+        let _ = b;
+        ctx.env.pop_frame();
+    }
+
+    #[test]
+    fn tryask_unknown_handler_t015() {
+        let (mut arena, b) = make_builtins();
+        let counter_id = register_counter(&mut arena, &b);
+        let mut ctx_probe = InferCtx::new();
+        let _ = register_ask_error(&mut arena, &mut ctx_probe);
+        drop(ctx_probe);
+
+        let mut ctx = InferCtx::new();
+        ctx.env.push_frame();
+        ctx.tycon_decls = arena.all().to_vec();
+        bind_actor_handle(&mut ctx, "counter", counter_id);
+        bind_tryask_callee(&mut ctx, "tryAsk", Type::Con(b.unit, vec![]));
+
+        // tryAsk counter getKount 1000   (typo of "getCount")
+        let callee = Expr::Ident(id("tryAsk"));
+        let args = vec![
+            Expr::Ident(id("counter")),
+            Expr::Ident(id("getKount")),
+            int_lit(1000),
+        ];
+
+        let ty = infer_tryask(&mut ctx, &b, &callee, &args, ds(), &arena);
+
+        assert_eq!(ctx.errors.len(), 1, "expected T015");
+        assert_eq!(ctx.errors[0].code(), "T015");
+        assert!(matches!(ty, Type::Error));
+        ctx.env.pop_frame();
+    }
+
+    #[test]
+    fn tryask_on_non_actor_t021() {
+        let (mut arena, b) = make_builtins();
+        let mut ctx_probe = InferCtx::new();
+        let _ = register_ask_error(&mut arena, &mut ctx_probe);
+        drop(ctx_probe);
+
+        let mut ctx = InferCtx::new();
+        ctx.env.push_frame();
+        ctx.tycon_decls = arena.all().to_vec();
+        bind_tryask_callee(&mut ctx, "tryAsk", Type::Con(b.unit, vec![]));
+
+        // tryAsk 42 getCount 1000
+        let callee = Expr::Ident(id("tryAsk"));
+        let args = vec![int_lit(42), Expr::Ident(id("getCount")), int_lit(1000)];
+
+        let ty = infer_tryask(&mut ctx, &b, &callee, &args, ds(), &arena);
+
+        assert_eq!(ctx.errors.len(), 1, "expected T021");
+        assert_eq!(ctx.errors[0].code(), "T021");
+        assert!(matches!(ty, Type::Error));
+        ctx.env.pop_frame();
+    }
+
+    #[test]
+    fn tryask_timeout_not_int_t026() {
+        let (mut arena, b) = make_builtins();
+        let counter_id = register_counter(&mut arena, &b);
+        let ask_error_id = {
+            let mut ctx_probe = InferCtx::new();
+            let id = register_ask_error(&mut arena, &mut ctx_probe);
+            drop(ctx_probe);
+            id
+        };
+
+        let mut ctx = InferCtx::new();
+        ctx.env.push_frame();
+        ctx.tycon_decls = arena.all().to_vec();
+        bind_actor_handle(&mut ctx, "counter", counter_id);
+        bind_tryask_callee(&mut ctx, "tryAsk", Type::Con(b.unit, vec![]));
+
+        // tryAsk counter getCount "five seconds"
+        let callee = Expr::Ident(id("tryAsk"));
+        let args = vec![
+            Expr::Ident(id("counter")),
+            Expr::Ident(id("getCount")),
+            text_lit("five seconds"),
+        ];
+
+        let ty = infer_tryask(&mut ctx, &b, &callee, &args, ds(), &arena);
+
+        let t026_count = ctx.errors.iter().filter(|e| e.code() == "T026").count();
+        assert_eq!(
+            t026_count,
+            1,
+            "expected exactly 1 T026 error; got {} errors: {:?}",
+            ctx.errors.len(),
+            ctx.errors
+        );
+        // The return type is still Result Int AskError (T026 does not
+        // short-circuit the result shape).
+        assert!(
+            matches!(&ty, Type::Con(id, args) if *id == b.result
+                && matches!(args.first(), Some(Type::Con(ok, _)) if *ok == b.int)
+                && matches!(args.get(1), Some(Type::Con(err, _)) if *err == ask_error_id)),
+            "tryAsk return type must still be Result Int AskError; got {ty:?}"
+        );
+        ctx.env.pop_frame();
+    }
+
+    #[test]
+    fn tryask_payload_type_mismatch_t001() {
+        let (mut arena, b) = make_builtins();
+        let counter_id = register_counter(&mut arena, &b);
+        let mut ctx_probe = InferCtx::new();
+        let _ = register_ask_error(&mut arena, &mut ctx_probe);
+        drop(ctx_probe);
+
+        let mut ctx = InferCtx::new();
+        ctx.env.push_frame();
+        ctx.tycon_decls = arena.all().to_vec();
+        bind_actor_handle(&mut ctx, "counter", counter_id);
+        bind_tryask_callee(&mut ctx, "tryAsk", Type::Con(b.unit, vec![]));
+
+        // tryAsk counter (increment "hi") 1000   (increment takes Int)
+        let callee = Expr::Ident(id("tryAsk"));
+        let message = Expr::Paren {
+            inner: Box::new(Expr::Call {
+                callee: Box::new(Expr::Ident(id("increment"))),
+                args: vec![text_lit("hi")],
+                span: ds(),
+            }),
+            span: ds(),
+        };
+        let args = vec![Expr::Ident(id("counter")), message, int_lit(1000)];
+
+        infer_tryask(&mut ctx, &b, &callee, &args, ds(), &arena);
+
+        assert_eq!(
+            ctx.errors.len(),
+            1,
+            "expected T001 from payload mismatch, got {:?}",
+            ctx.errors
+        );
+        assert_eq!(ctx.errors[0].code(), "T001");
+        ctx.env.pop_frame();
+    }
+
+    #[test]
+    fn tryask_wrong_arity_t003() {
+        let (mut arena, b) = make_builtins();
+        let counter_id = register_counter(&mut arena, &b);
+        let mut ctx_probe = InferCtx::new();
+        let _ = register_ask_error(&mut arena, &mut ctx_probe);
+        drop(ctx_probe);
+
+        let mut ctx = InferCtx::new();
+        ctx.env.push_frame();
+        ctx.tycon_decls = arena.all().to_vec();
+        bind_actor_handle(&mut ctx, "counter", counter_id);
+        bind_tryask_callee(&mut ctx, "tryAsk", Type::Con(b.unit, vec![]));
+
+        // tryAsk counter getCount   (missing timeout)
+        let callee = Expr::Ident(id("tryAsk"));
+        let args = vec![Expr::Ident(id("counter")), Expr::Ident(id("getCount"))];
+
+        let ty = infer_tryask(&mut ctx, &b, &callee, &args, ds(), &arena);
+
+        assert_eq!(ctx.errors.len(), 1, "expected T003");
+        assert_eq!(ctx.errors[0].code(), "T003");
+        assert!(matches!(ty, Type::Error));
         ctx.env.pop_frame();
     }
 }

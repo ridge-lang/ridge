@@ -40,7 +40,7 @@ use crate::core_ast::{CErlAtom, CErlClause, CErlExpr, CErlLit, CErlVar};
 use crate::error::CodegenError;
 use crate::letrec_detect::body_references_local;
 use crate::lit::lower_lit;
-use crate::messaging::{lower_ask, lower_send, lower_spawn};
+use crate::messaging::{lower_ask, lower_child_spec, lower_send, lower_spawn, lower_try_ask};
 use crate::pat::lower_pat;
 use crate::return_::lower_return;
 use crate::scope::{ssa_var, LocalScope};
@@ -725,6 +725,21 @@ pub(crate) fn lower_expr_in_scope(
         IrExpr::Spawn {
             actor, args, span, ..
         } => lower_spawn(actor, args, *span, scope),
+
+        // ChildSpec: the OTP child-spec map for std.actor's supervise.
+        IrExpr::ChildSpec {
+            actor, args, span, ..
+        } => lower_child_spec(actor, args, *span, scope),
+
+        // TryAsk: route through ridge_rt:try_ask/3.
+        IrExpr::TryAsk {
+            handle,
+            message,
+            args,
+            timeout,
+            span,
+            ..
+        } => lower_try_ask(handle, message, args, timeout.as_ref(), *span, scope),
 
         // IrExpr is #[non_exhaustive]; catch future variants defensively.
         _ => Err(CodegenError::IrShapeMalformed {

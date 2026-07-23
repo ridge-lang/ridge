@@ -336,6 +336,39 @@ pub enum IrExpr {
         /// Source span.
         span: Span,
     },
+
+    /// `child ActorName (arg1, ..., argN)` — returns `ChildSpec ActorType`.
+    /// A pure value: the OTP child-spec map, no process starts.
+    ChildSpec {
+        /// The IR-side node identifier.
+        id: IrNodeId,
+        /// The actor type symbol (`SymbolRef::ActorType`).
+        actor: SymbolRef,
+        /// The spec arguments (matched against the actor's `init` params).
+        args: Vec<Self>,
+        /// Source span.
+        span: Span,
+    },
+
+    /// `tryAsk handle message timeoutMs` — the compiler-known
+    /// `std.actor.tryAsk`. Typed like `?>` but the result is
+    /// `Result reply AskError`; lowers to `ridge_rt:try_ask/3`.
+    TryAsk {
+        /// The IR-side node identifier.
+        id: IrNodeId,
+        /// The actor handle expression.
+        handle: Box<Self>,
+        /// The resolved handler symbol (`SymbolRef::Handler`).
+        message: SymbolRef,
+        /// The flattened message-payload argument list.
+        args: Vec<Self>,
+        /// The timeout — always present at the surface as a required
+        /// millisecond argument, so `Some(IrTimeout::Millis(e))`; `None`
+        /// falls back to the runtime default (5000 ms) at codegen.
+        timeout: Option<IrTimeout>,
+        /// Source span.
+        span: Span,
+    },
 }
 
 // ── IrTimeout ─────────────────────────────────────────────────────────────────

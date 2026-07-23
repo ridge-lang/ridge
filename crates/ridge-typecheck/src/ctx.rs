@@ -368,6 +368,16 @@ pub struct InferCtx {
     /// driver — the gate then no-ops.
     pub current_module_raw: Option<u32>,
 
+    /// Env names that refer to the compiler-known `std.actor.tryAsk`.
+    ///
+    /// Populated by [`crate::stdlib_env::seed_stdlib_env`] for every import
+    /// shape that can name it — the bare form (`import std.actor (tryAsk)` →
+    /// `"tryAsk"`) and each alias-qualified form (`import std.actor as Actor`
+    /// → `"Actor.tryAsk"`). The `Expr::Call` inference arm checks membership
+    /// here before applying the special `?>`-like typing; a user-defined
+    /// `tryAsk` is never inserted, so it is never special-cased.
+    pub tryask_names: FxHashSet<String>,
+
     /// Top-level `fn`/`const` schemes generalised for this module, keyed by name.
     ///
     /// Captured as each declaration's scheme is written back so the workspace
@@ -490,6 +500,7 @@ impl InferCtx {
             dict_resolution_accum: rustc_hash::FxHashMap::default(),
             to_text_tycons: None,
             current_module_raw: None,
+            tryask_names: FxHashSet::default(),
             name_schemes_accum: FxHashMap::default(),
             quoted_lambdas_accum: FxHashMap::default(),
             rows_tycons: None,

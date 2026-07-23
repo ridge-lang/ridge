@@ -44,6 +44,8 @@
     http_listen/2, http_port/0, http_build_response/1,
     http_get/1, http_post/2, http_put/2, http_delete/1,
     ask/3, send/2, send_op/2, send_fn/2, mailbox_size/1, spawn_actor/3,
+    start_supervisor/4, start_supervised_child/2, stop_supervised_child/2,
+    which_children/1, set_child_id/2, set_child_restart/2, try_ask/3,
     diagnostics_to_stderr/0,
     mem_new/1, mem_insert/3, mem_all/2,
     mem_delete/3, mem_update/4, mem_get_rows/4,
@@ -1556,47 +1558,124 @@ http_request_with_body(Method, Url, Body) ->
 %% Handle wire format (since 0.2.7):
 %%
 %%   Handle a ≡ {ridge_handle, Pid, MailboxConfig}
+%%            | {ridge_sup_handle, SupPid, ChildId, MailboxConfig}
 %%   MailboxConfig ≡ unbounded
 %%                 | {bounded, pos_integer(), drop_newest | error}
 %%
 %% Handles are opaque at the Ridge surface (spec §7.2). Anything inside this
-%% module that takes a handle expects the tuple shape above. The legacy
-%% bare-Pid path is no longer reachable from Ridge-emitted code.
+%% module that takes a handle expects one of the tuple shapes above. The
+%% legacy bare-Pid path is no longer reachable from Ridge-emitted code.
+%%
+%% A supervised handle carries its supervisor's pid and the child's
+%% registration id instead of the child pid itself: the child is restarted by
+%% the supervisor, so the pid is re-resolved through the supervisor on every
+%% use (see resolve_handle_pid/1). That makes a handle obtained before a
+%% restart transparently follow the replacement process.
+
+%% resolve_handle_pid/1 — map a handle to the pid of the live process behind
+%% it, or the atom `dead`. A plain handle resolves to its own pid with a
+%% liveness check; a supervised handle asks the supervisor for the current
+%% pid of its child id — `undefined` / `restarting` in pid position, an
+%% unknown id, and a dead supervisor all read as `dead`.
+resolve_handle_pid({ridge_handle, Pid, _Config}) when is_pid(Pid) ->
+    case erlang:is_process_alive(Pid) of
+        true  -> {ok, Pid};
+        false -> dead
+    end;
+resolve_handle_pid({ridge_sup_handle, SupPid, ChildId, _Config}) ->
+    case catch supervisor:which_children(SupPid) of
+        {'EXIT', _} ->
+            dead;
+        Children when is_list(Children) ->
+            case lists:keyfind(ChildId, 1, Children) of
+                {ChildId, Pid, _Type, _Modules} when is_pid(Pid) ->
+                    case erlang:is_process_alive(Pid) of
+                        true  -> {ok, Pid};
+                        false -> dead
+                    end;
+                _ ->
+                    dead
+            end
+    end.
 
 %% ask/3 — synchronous request/response. Bounded mailbox policies do not
 %% apply: ask is a request/response primitive, not a backpressure surface.
-%% Timeout exit is re-raised as a structured error for Ridge source attribution.
-ask({ridge_handle, Pid, _Config}, Msg, Timeout) ->
-    try gen_server:call(Pid, Msg, Timeout) of
-        Reply -> Reply
-    catch
-        exit:{timeout, _} ->
-            erlang:error({ridge_rt_ask_timeout, Msg, Timeout})
+%% Timeout exit is re-raised as a structured error for Ridge source
+%% attribution; a dead target (already dead at resolution, or dying between
+%% resolution and the call) raises the structured `ridge_ask_noproc` reason
+%% instead of the raw `exit:{noproc,_}` gen_server:call would surface.
+ask(Handle, Msg, Timeout) ->
+    case resolve_handle_pid(Handle) of
+        {ok, Pid} ->
+            try gen_server:call(Pid, Msg, Timeout) of
+                Reply -> Reply
+            catch
+                exit:{timeout, _} ->
+                    erlang:error({ridge_rt_ask_timeout, Msg, Timeout});
+                exit:{noproc, _} ->
+                    exit(ridge_ask_noproc)
+            end;
+        dead ->
+            exit(ridge_ask_noproc)
+    end.
+
+%% try_ask/3 — target of the stdlib `Actor.tryAsk` fn. The
+%% Result-returning sibling of ask/3: instead of raising, a dead target
+%% reads as `{error, 'Noproc'}` and a missed deadline as
+%% `{error, 'Timeout'}` — the verbatim atoms Ridge's `AskError` union
+%% variants lower to.
+try_ask(Handle, Msg, Timeout) ->
+    case resolve_handle_pid(Handle) of
+        {ok, Pid} ->
+            try gen_server:call(Pid, Msg, Timeout) of
+                Reply -> {ok, Reply}
+            catch
+                exit:{noproc, _}  -> {error, 'Noproc'};
+                exit:{timeout, _} -> {error, 'Timeout'}
+            end;
+        dead ->
+            {error, 'Noproc'}
     end.
 
 %% send/2 — fire-and-forget cast that ignores bounded-mailbox policies.
 %% Retained as a backward-compatible bridge so callers built before 0.2.7
 %% (and any hand-written Erlang glue) still work. Ridge `!` emits send_op/2
 %% instead, which honours the mailbox configuration carried by the handle.
-send({ridge_handle, Pid, _Config}, Msg) ->
-    gen_server:cast(Pid, Msg),
-    ok.
+%% A dead actor (plain or supervised) is a no-op, matching `gen_server:cast`
+%% semantics.
+send(Handle, Msg) ->
+    case resolve_handle_pid(Handle) of
+        {ok, Pid} -> gen_server:cast(Pid, Msg), ok;
+        dead      -> ok
+    end.
 
 %% send_op/2 — target of the Ridge `!` operator. Honours the bounded-mailbox
 %% policy carried by the handle. The drop_newest path silently drops the
 %% incoming message on overflow; the error path raises in the caller so the
 %% supervisor decides what to do. Both paths treat a dead actor as a no-op
-%% to keep `gen_server:cast` semantics.
-send_op({ridge_handle, Pid, unbounded}, Msg) ->
+%% to keep `gen_server:cast` semantics. The pid is resolved first so a
+%% supervised handle reaches the child's current incarnation.
+send_op(Handle, Msg) ->
+    case resolve_handle_pid(Handle) of
+        {ok, Pid} -> send_op_cast(handle_config(Handle), Pid, Msg);
+        dead      -> ok
+    end.
+
+%% handle_config/1 — the mailbox config sits at element 3 of a plain handle
+%% and at element 4 of a supervised one (which inserts the child id).
+handle_config({ridge_handle, _Pid, Config}) -> Config;
+handle_config({ridge_sup_handle, _SupPid, _ChildId, Config}) -> Config.
+
+send_op_cast(unbounded, Pid, Msg) ->
     gen_server:cast(Pid, Msg),
     ok;
-send_op({ridge_handle, Pid, {bounded, N, drop_newest}}, Msg) ->
+send_op_cast({bounded, N, drop_newest}, Pid, Msg) ->
     case erlang:process_info(Pid, message_queue_len) of
         {message_queue_len, Len} when Len >= N -> ok;
         {message_queue_len, _Len}              -> gen_server:cast(Pid, Msg), ok;
         undefined                              -> ok
     end;
-send_op({ridge_handle, Pid, {bounded, N, error}}, Msg) ->
+send_op_cast({bounded, N, error}, Pid, Msg) ->
     case erlang:process_info(Pid, message_queue_len) of
         {message_queue_len, Len} when Len >= N -> erlang:error({mailbox_full, Pid});
         {message_queue_len, _Len}              -> gen_server:cast(Pid, Msg), ok;
@@ -1658,11 +1737,17 @@ diagnostics_to_stderr() ->
 %% mailbox_size/1 — target of the stdlib `Actor.mailboxSize` fn.
 %% Returns {some, N} for a live actor or none for a dead one. The reading
 %% is instantaneous and may briefly disagree with concurrent senders; the
-%% spec documents this as a soft-bound invariant.
-mailbox_size({ridge_handle, Pid, _Config}) ->
-    case erlang:process_info(Pid, message_queue_len) of
-        {message_queue_len, Len} -> {some, Len};
-        undefined                -> none
+%% spec documents this as a soft-bound invariant. A supervised handle reads
+%% the queue of the child's current incarnation.
+mailbox_size(Handle) ->
+    case resolve_handle_pid(Handle) of
+        {ok, Pid} ->
+            case erlang:process_info(Pid, message_queue_len) of
+                {message_queue_len, Len} -> {some, Len};
+                undefined                -> none
+            end;
+        dead ->
+            none
     end.
 
 %% spawn_actor/3 — starts an actor UNLINKED and decorates the result with the
@@ -1688,6 +1773,169 @@ spawn_actor(Mod, Init, _Caps) ->
             false -> unbounded
         end,
     {ridge_handle, Pid, Config}.
+
+%% --- Actor supervision ---
+%%
+%% Supervisor wire format:
+%%
+%%   Supervisor a ≡ {ridge_sup, SupPid}
+%%   ChildSpec  a ≡ #{id => Id,                         %% binary (Ridge Text)
+%%                    start => {Mod, start_link, Args},
+%%                    restart => permanent | transient | temporary,
+%%                    shutdown => non_neg_integer()}
+%%
+%% Child specs are plain maps built by codegen (`child`) and adjusted by
+%% `childId` / `childRestart`; building one starts no process. OTP owns all
+%% restart behaviour — ridge_rt adds no monitors or trap_exit on top of it.
+
+%% start_supervisor/4 — std.actor.supervise. Starts an OTP supervisor through
+%% the ridge_sup callback module and returns its handle. The Ridge `Strategy`
+%% union lowers to verbatim CamelCase atoms ('OneForOne' | 'OneForAll' |
+%% 'RestForOne'); they map to OTP's lowercase strategy atoms here.
+%%
+%% start_link + immediate unlink: fate-sharing is opt-in, not default —
+%% the supervisor ties its children's lifetimes, not its starter's. There is a microscopic race between start_link returning
+%% and unlink running (a starter crashing inside that window would still
+%% propagate its exit signal to the supervisor); it is accepted because the
+%% window is a single instruction and the alternative — flipping trap_exit
+%% in arbitrary user processes — is worse.
+%%
+%% The Ridge surface takes `period` in milliseconds (uniform with ask
+%% timeouts and OTP's own child-spec `shutdown`); OTP's sup_flags period is
+%% in seconds. Converted here, rounded up to a whole second (minimum 1s) —
+%% a finer granularity is not expressible in OTP.
+start_supervisor(Strategy, Intensity, PeriodMs, ChildSpecs) ->
+    Flags = #{strategy  => map_strategy(Strategy),
+              intensity => Intensity,
+              period    => erlang:max(1, (PeriodMs + 999) div 1000)},
+    Specs = [normalize_child_spec(S) || S <- ChildSpecs],
+    case supervisor:start_link(ridge_sup, {Flags, Specs}) of
+        {ok, SupPid} ->
+            unlink(SupPid),
+            {ok, {ridge_sup, SupPid}};
+        {error, Reason} ->
+            {error, sup_error_binary(Reason)}
+    end.
+
+%% start_supervised_child/2 — std.actor.startChild. Starts `Spec` as a
+%% dynamic child of a running supervisor and decorates the result with the
+%% child actor's declared mailbox configuration, the same lookup
+%% spawn_actor/3 performs. The returned handle keys on the child's
+%% registration id, not its pid, so it survives restarts.
+start_supervised_child({ridge_sup, SupPid}, Spec) when is_map(Spec) ->
+    Normalized = normalize_child_spec(Spec),
+    case catch supervisor:start_child(SupPid, Normalized) of
+        {ok, _Pid} ->
+            {ok, sup_handle(SupPid, Normalized)};
+        {ok, _Pid, _Info} ->
+            {ok, sup_handle(SupPid, Normalized)};
+        {error, Reason} ->
+            {error, sup_error_binary(Reason)};
+        {'EXIT', {noproc, _}} ->
+            {error, <<"supervisor_not_running">>}
+    end.
+
+%% stop_supervised_child/2 — std.actor.stopChild. Terminates the child AND
+%% deletes its spec: terminate alone leaves the id occupied (a terminated
+%% child's spec still blocks a later start_child of the same id), deleting
+%% frees it. Returns {ok, ok} — Ridge's `Result Unit Text` Ok arm, Unit
+%% being the 'ok' atom.
+stop_supervised_child({ridge_sup, SupPid}, Id) ->
+    case catch supervisor:terminate_child(SupPid, Id) of
+        ok ->
+            case supervisor:delete_child(SupPid, Id) of
+                ok                -> {ok, ok};
+                {error, Reason}   -> {error, sup_error_binary(Reason)}
+            end;
+        {error, Reason} ->
+            {error, sup_error_binary(Reason)};
+        {'EXIT', {noproc, _}} ->
+            {error, <<"supervisor_not_running">>}
+    end.
+
+%% which_children/1 — std.actor.whichChildren. Lists the supervisor's
+%% children as `{Id, Running}` pairs — Ridge's `List (Text, Bool)` — in
+%% OTP's own order (for dynamically started children that is newest first).
+%% `Running` is true only when the id resolves to a live pid; `undefined` /
+%% `restarting` pid slots read as false. Ids are normalised to binaries
+%% because Ridge Text is a binary (a spec carrying an atom id would
+%% otherwise surface a mixed-shape list).
+%%
+%% A dead supervisor crashes the caller with `ridge_sup_noproc` instead of
+%% answering an empty list: whichChildren has no error channel, and
+%% isolation must not mean silence — consistent with ask/3's fail-fast
+%% `ridge_ask_noproc`.
+which_children({ridge_sup, SupPid}) ->
+    case catch supervisor:which_children(SupPid) of
+        {'EXIT', {noproc, _}} ->
+            exit(ridge_sup_noproc);
+        Children when is_list(Children) ->
+            [{child_id_binary(Id), is_pid(Pid) andalso is_process_alive(Pid)}
+             || {Id, Pid, _Type, _Modules} <- Children]
+    end.
+
+%% set_child_id/2 — std.actor.childId. Returns the spec with its
+%% registration id replaced. The id is a binary (Ridge Text).
+set_child_id(Id, Spec) when is_map(Spec) ->
+    Spec#{id => Id}.
+
+%% set_child_restart/2 — std.actor.childRestart. Returns the spec with its
+%% restart policy replaced. The Ridge `Restart` union lowers to verbatim
+%% CamelCase atoms; they are normalised to OTP's lowercase atoms here.
+set_child_restart(Restart, Spec) when is_map(Spec) ->
+    Spec#{restart => normalize_restart(Restart)}.
+
+%% map_strategy/1 — Ridge strategy atom → OTP strategy atom.
+map_strategy('OneForOne')  -> one_for_one;
+map_strategy('OneForAll')  -> one_for_all;
+map_strategy('RestForOne') -> rest_for_one.
+
+%% normalize_restart/1 — CamelCase Ridge `Restart` atom → OTP atom;
+%% already-lowercase atoms (the codegen default `permanent`) pass through.
+normalize_restart('Permanent') -> permanent;
+normalize_restart('Transient') -> transient;
+normalize_restart('Temporary') -> temporary;
+normalize_restart(R)           -> R.
+
+%% normalize_child_spec/1 — normalise the restart atom and ensure the
+%% optional `shutdown` key is present (OTP default 5000); id and start are
+%% left as built.
+normalize_child_spec(Spec) when is_map(Spec) ->
+    WithRestart =
+        case maps:find(restart, Spec) of
+            {ok, R} -> Spec#{restart := normalize_restart(R)};
+            error   -> Spec
+        end,
+    case maps:is_key(shutdown, WithRestart) of
+        true  -> WithRestart;
+        false -> WithRestart#{shutdown => 5000}
+    end.
+
+%% sup_handle/2 — build the supervised handle for a freshly started child,
+%% reading the actor module's '__ridge_mailbox_config'/0 exactly like
+%% spawn_actor/3 does (an unrecognised module reads as unbounded).
+sup_handle(SupPid, Spec) ->
+    {Mod, _Fn, _Args} = maps:get(start, Spec),
+    Config =
+        case erlang:function_exported(Mod, '__ridge_mailbox_config', 0) of
+            true  -> Mod:'__ridge_mailbox_config'();
+            false -> unbounded
+        end,
+    {ridge_sup_handle, SupPid, maps:get(id, Spec), Config}.
+
+%% sup_error_binary/1 — render an OTP supervisor error as the human-readable
+%% binary Ridge's `Text` error channel carries.
+sup_error_binary(already_present)       -> <<"child id already present">>;
+sup_error_binary({already_started, _})  -> <<"child already started">>;
+sup_error_binary(not_found)             -> <<"not_found">>;
+sup_error_binary(Reason) ->
+    iolist_to_binary(io_lib:format("~p", [Reason])).
+
+%% child_id_binary/1 — ids are binaries (Ridge Text); an atom id from a
+%% hand-built spec is converted so which_children's output keeps the
+%% declared `List (Text, Bool)` shape.
+child_id_binary(Id) when is_binary(Id) -> Id;
+child_id_binary(Id) when is_atom(Id)   -> atom_to_binary(Id, utf8).
 
 %% --- In-memory data store (std.data MemAdapter) ---
 %%

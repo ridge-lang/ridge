@@ -571,6 +571,17 @@ pub(crate) fn parse_expr_atom(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> 
         // ── List literal `[…]` ────────────────────────────────────────────────
         Token::LBrack => parse_list_literal(cur),
 
+        // ── Child-spec expression `child UPPER_IDENT [ ( Expr, … ) ]` ─────────
+        // `child` is a contextual keyword: only the `child X` shape (an
+        // UPPER_IDENT immediately following) is the child-spec form; in every
+        // other position `child` remains an ordinary identifier (see
+        // `actor_ops::parse_child_spec`).
+        Token::LowerIdent(s)
+            if s == "child" && matches!(cur.peek_n(1), Some(Token::UpperIdent(_))) =>
+        {
+            actor_ops::parse_child_spec(cur)
+        }
+
         // ── Lower-case / private identifier ──────────────────────────────────
         Token::LowerIdent(_) => {
             let text = match cur.bump() {

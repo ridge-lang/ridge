@@ -1,9 +1,10 @@
--- std.actor — Actor mailbox observability (Tier 3).
+-- std.actor — Actor mailbox observability (Tier 3) and typed supervision.
 --
 -- Bounded mailboxes are configured per actor via the `mailbox` member
 -- (see spec §3.9 and §7.2.1). The `!` (send) and `?>` (ask) primitives
 -- remain operators; this module ships the observability primitive that
--- complements them.
+-- complements them, plus the typed-supervision API over OTP's supervisor
+-- behaviour.
 --
 -- The companion result-returning `Actor.send` is deferred until the
 -- typeclass-derived `Message` typing lands — without it the surface
@@ -23,3 +24,92 @@
 -- Cap-free: the handle itself is the proof of access. See spec §6.4.1.
 @ffi("ridge_rt", "mailbox_size", 1)
 pub fn mailboxSize (handle: Handle a) -> Option Int
+
+-- ── Typed supervision ───────────────────────────────────────────────────────
+--
+-- A `child ActorName (args…)` expression (a compiler built-in, typed with the
+-- same machinery as `spawn`) produces a typed `ChildSpec a` value; `supervise`
+-- starts an OTP supervisor over a list of specs. `ChildSpec a` and
+-- `Supervisor a` are opaque types whose parameter is the actor type, so
+-- children of different actors cannot mix.
+--
+-- Wire formats (contract with the runtime, `ridge_rt`):
+--
+-- - `ChildSpec a` is a plain Erlang map, the shape OTP's `supervisor`
+--   behaviour consumes:
+--   `#{id => Id, start => {Module, start_link, ArgsList},
+--      restart => permanent | transient | temporary, shutdown => Millis}`.
+-- - `Supervisor a` is the tuple `{ridge_sup, Pid}`.
+-- - The `Strategy` / `Restart` / `AskError` variants below lower to the
+--   verbatim atoms `'OneForOne'`, `'OneForAll'`, `'RestForOne'`,
+--   `'Permanent'`, `'Transient'`, `'Temporary'`, `'Noproc'`, `'Timeout'`
+--   (Ridge union variants are not renamed); the runtime maps them to OTP's
+--   lowercase atoms (`one_for_one`, `permanent`, `noproc`, …) at the
+--   boundary. A spec built by the `child` expression itself carries OTP's
+--   lowercase `permanent` / `5000` defaults directly.
+
+-- How the supervisor reacts to a child exit: restart only the exited child
+-- (`OneForOne`), restart all children (`OneForAll`), or restart the exited
+-- child and every child started after it (`RestForOne`).
+pub type Strategy = OneForOne | OneForAll | RestForOne
+
+-- When a child is restarted: always (`Permanent`), only on abnormal exit
+-- (`Transient`), or never (`Temporary`).
+pub type Restart = Permanent | Transient | Temporary
+
+-- Why a `tryAsk` failed: the target process does not exist (`Noproc`), or
+-- no reply arrived within the timeout (`Timeout`).
+pub type AskError = Noproc | Timeout
+
+-- Start a supervisor over `children`. `intensity` and `period` bound the
+-- restart rate: more than `intensity` restarts within `period` milliseconds
+-- and the supervisor itself terminates. (`period` is expressed in
+-- milliseconds for uniformity with the rest of the surface; OTP tracks it
+-- in whole seconds, so the value is rounded up to the nearest second.)
+-- Returns the supervisor reference, or an error text when the supervisor
+-- could not start.
+--
+-- Cap-free: the child specs are the proof of intent. See spec §6.4.1.
+@ffi("ridge_rt", "start_supervisor", 4)
+pub fn supervise (strategy: Strategy) (intensity: Int) (period: Int) (children: List (ChildSpec a)) -> Result (Supervisor a) Text
+
+-- Start `spec` as a dynamic child of a running supervisor, returning the
+-- child actor's handle, or an error text when the child failed to start.
+@ffi("ridge_rt", "start_supervised_child", 2)
+pub fn startChild (sup: Supervisor a) (spec: ChildSpec a) -> Result (Handle a) Text
+
+-- Stop the child registered under `id` (see `childId`). Returns an error
+-- text when no such child is running.
+@ffi("ridge_rt", "stop_supervised_child", 2)
+pub fn stopChild (sup: Supervisor a) (id: Text) -> Result Unit Text
+
+-- List the supervisor's children as `(id, alive)` pairs, in OTP's own
+-- order (for dynamically started children that is newest first).
+@ffi("ridge_rt", "which_children", 1)
+pub fn whichChildren (sup: Supervisor a) -> List (Text, Bool)
+
+-- Return `spec` with its registration id replaced. The id is the key
+-- `stopChild` and `whichChildren` report, and must be unique per supervisor.
+@ffi("ridge_rt", "set_child_id", 2)
+pub fn childId (id: Text) (spec: ChildSpec a) -> ChildSpec a
+
+-- Return `spec` with its restart policy replaced (default `permanent`).
+@ffi("ridge_rt", "set_child_restart", 2)
+pub fn childRestart (restart: Restart) (spec: ChildSpec a) -> ChildSpec a
+
+-- `tryAsk` — typed ask with an explicit timeout and a `Result` return.
+--
+-- This function is compiler-known: it has no body here because a plain FFI
+-- declaration cannot type the message against the actor's handlers. When the
+-- type checker sees a call `tryAsk handle message timeoutMs` it types it
+-- like the `?>` operator — `message` checked against the actor's `on`
+-- handlers, the reply type taken from the handler — but the overall
+-- expression is `Result reply AskError`: the runtime
+-- (`ridge_rt:try_ask/3`) returns `{ok, reply} | {error, 'Noproc' | 'Timeout'}`
+-- instead of raising. The call absorbs the `time` capability like any ask.
+--
+--     import std.actor as Actor
+--     match Actor.tryAsk counter getCount 1000
+--         Ok count    -> ...
+--         Err Noproc  -> ...
+--         Err Timeout -> ...

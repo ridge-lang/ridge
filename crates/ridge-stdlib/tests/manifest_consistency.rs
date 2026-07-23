@@ -185,12 +185,43 @@ const CONSTRUCTOR_EXPORTS: &[(&str, &str)] = &[
     ("std.schema", "Cascade"),
     ("std.schema", "SetNull"),
     ("std.schema", "SetDefault"),
+    // The `std.actor` supervision unions: constructors exported so a
+    // caller can pick a strategy, override a restart policy, or match a
+    // `tryAsk` failure, surfaced by text extraction only through the type
+    // names.
+    ("std.actor", "OneForOne"),
+    ("std.actor", "OneForAll"),
+    ("std.actor", "RestForOne"),
+    ("std.actor", "Permanent"),
+    ("std.actor", "Transient"),
+    ("std.actor", "Temporary"),
+    ("std.actor", "Noproc"),
+    ("std.actor", "Timeout"),
+];
+
+/// Compiler-known exports: names the manifest must carry so imports
+/// resolve, but that have no `pub fn` body in the `.ridge` source because the
+/// compiler types and lowers them specially.
+const COMPILER_KNOWN_EXPORTS: &[(&str, &str)] = &[
+    // `std.actor.tryAsk` is typed like `?>` by the type checker and lowered
+    // to `ridge_rt:try_ask/3` by codegen — a plain FFI declaration cannot
+    // type the message against the actor's handlers, so no body exists in
+    // actor.ridge.
+    ("std.actor", "tryAsk"),
 ];
 
 /// Return `true` if `(module, sym)` is a known exported union constructor that is
 /// legitimately in the manifest but not surfaced by text extraction.
 fn is_constructor_export(module: &str, sym: &str) -> bool {
     CONSTRUCTOR_EXPORTS
+        .iter()
+        .any(|&(m, s)| m == module && s == sym)
+}
+
+/// Return `true` if `(module, sym)` is a compiler-known export that is
+/// legitimately in the manifest without a `.ridge` body.
+fn is_compiler_known_export(module: &str, sym: &str) -> bool {
+    COMPILER_KNOWN_EXPORTS
         .iter()
         .any(|&(m, s)| m == module && s == sym)
 }
@@ -260,6 +291,9 @@ fn bidirectional_name_consistency() {
             if is_constructor_export(dotted, sym) {
                 continue; // whitelisted exported union constructor
             }
+            if is_compiler_known_export(dotted, sym) {
+                continue; // whitelisted compiler-known symbol
+            }
             panic!(
                 "T201 ManifestRegressionFailed {{ module: {dotted:?}, sym: {sym:?}, \
                  reason: \"BUILTINS.exports entry has no matching pub symbol in .ridge source \
@@ -326,6 +360,14 @@ fn signature_shape_consistency() {
             .collect();
 
         for (fn_name, ast_param_count) in &pub_fns {
+            // std.actor `supervise`/`childRestart` name the reconciled
+            // `Strategy`/`Restart` unions, so they are seeded via
+            // `reconciled_fn_scheme` rather than the `stdlib_signature`
+            // table this shape check covers. `tryAsk` is compiler-known
+            // and has no `.ridge` body, so it never appears here.
+            if dotted == "std.actor" && matches!(*fn_name, "supervise" | "childRestart") {
+                continue;
+            }
             // std.query `orderSql`/`isAscending` reference the reconciled `SortOrder`
             // type, so they are seeded via `reconciled_fn_scheme` rather than the
             // `stdlib_signature` table this shape check covers.

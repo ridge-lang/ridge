@@ -142,12 +142,16 @@ fn has_non_tail_return_inner(expr: &IrExpr, in_tail: bool) -> bool {
             has_non_tail_return_inner(head, false) || has_non_tail_return_inner(tail, false)
         }
 
-        IrExpr::Send { handle, args, .. } | IrExpr::Ask { handle, args, .. } => {
+        IrExpr::Send { handle, args, .. }
+        | IrExpr::Ask { handle, args, .. }
+        | IrExpr::TryAsk { handle, args, .. } => {
             has_non_tail_return_inner(handle, false)
                 || args.iter().any(|a| has_non_tail_return_inner(a, false))
         }
 
-        IrExpr::Spawn { args, .. } => args.iter().any(|a| has_non_tail_return_inner(a, false)),
+        IrExpr::Spawn { args, .. } | IrExpr::ChildSpec { args, .. } => {
+            args.iter().any(|a| has_non_tail_return_inner(a, false))
+        }
 
         // Atoms (Lit, Local, Symbol) and future variants: no sub-expressions
         // that can be Return.
@@ -186,12 +190,26 @@ fn has_non_tail_return_inner(expr: &IrExpr, in_tail: bool) -> bool {
 ///       case V_ExcValue of
 ///         <{'ridge_return', V_Return}> when 'true' -> V_Return
 ///         <V_OtherErr> when 'true' ->
-///           call 'erlang':'raise' ('throw', V_OtherErr, V_ExcStk)
+///           call 'erlang':'raise' ('throw', V_OtherErr, [])
 ///       end
 ///     <V_OtherClass> when 'true' ->
-///       call 'erlang':'raise' (V_OtherClass, V_ExcValue, V_ExcStk)
+///       call 'erlang':'raise' (V_OtherClass, V_ExcValue, [])
 ///   end
 /// ```
+///
+/// **The re-raise passes `[]`, not `V_ExcStk`, as the stacktrace.** In Core
+/// Erlang compiled via `+from_core` the third catch variable does NOT hold a
+/// stacktrace list — it binds the raw try tag (a `{UniqueInt, true, []}`
+/// tuple), and `erlang:raise/3` rejects that with a *thrown* `badarg`. Passing
+/// `V_ExcStk` through therefore mangled every non-`throw` exception crossing a
+/// `?`-using function body into a swallowed `badarg`: the caller returned the
+/// atom instead of dying, so a process that should have crashed (e.g. `?>`
+/// raising `ridge_ask_noproc` on a dead actor) exited 0 in silence. `[]` is a
+/// valid stacktrace argument: the re-raise preserves the exception's class and
+/// reason — the parts exit codes and crash reports are made of — and
+/// fabricates a fresh stacktrace at the raise site. (For `error`-class
+/// exceptions the original stack still rides inside the reason term, so little
+/// is lost in practice.)
 ///
 /// The `CErlClause` wrapper for the `of` clause still carries a `guard` field
 /// (set to `Lit(Atom("true"))`) so the in-memory AST is consistent; the printer
@@ -216,10 +234,10 @@ pub(crate) fn wrap_with_return_catch(body: CErlExpr) -> CErlExpr {
     //       case V_ExcValue of
     //         <{'ridge_return', V_Return}> when 'true' -> V_Return
     //         <V_OtherErr> when 'true' ->
-    //           primop 'raise' (V_ExcStk, V_OtherErr)
+    //           call 'erlang':'raise' ('throw', V_OtherErr, [])
     //       end
     //     <V_OtherClass> when 'true' ->
-    //       primop 'raise' (V_ExcStk, V_ExcValue)
+    //       call 'erlang':'raise' (V_OtherClass, V_ExcValue, [])
     //   end
     //
     // Why nested case instead of `case <V_ExcClass, V_ExcValue> of ...`:
@@ -234,14 +252,17 @@ pub(crate) fn wrap_with_return_catch(body: CErlExpr) -> CErlExpr {
     //   if a catch body has a `case` expression that doesn't exhaustively
     //   handle all exceptions (i.e. only one clause).  A wildcard rethrow
     //   satisfies the exhaustiveness requirement.
-    // call 'erlang':'raise' (Class, Value, Stacktrace) — re-raise helper.
-    // Using the standard BIF rather than `primop 'raise'` because `primop` is
-    // not a CErlExpr variant and `erlang:raise/3` is accepted by erlc +from_core.
-    let erlang_raise = |class: CErlExpr, value: CErlExpr, stk: CErlExpr| -> CErlExpr {
+    // call 'erlang':'raise' (Class, Value, []) — re-raise helper.  Using the
+    // standard BIF rather than `primop 'raise'` because `primop` is not a
+    // CErlExpr variant and `erlang:raise/3` is accepted by erlc +from_core.
+    // The stacktrace argument is `[]`, NOT `V_ExcStk`: under +from_core the
+    // third catch variable binds the raw try tag, which `erlang:raise/3`
+    // rejects with a thrown `badarg` — see the fn-level doc comment above.
+    let erlang_raise = |class: CErlExpr, value: CErlExpr| -> CErlExpr {
         CErlExpr::Call {
             module: CErlAtom("erlang".into()),
             fn_name: CErlAtom("raise".into()),
-            args: vec![class, value, stk],
+            args: vec![class, value, CErlExpr::Lit(CErlLit::Nil)],
         }
     };
 
@@ -258,14 +279,13 @@ pub(crate) fn wrap_with_return_catch(body: CErlExpr) -> CErlExpr {
                 body: CErlExpr::Var(CErlVar("V_Return".into())),
             },
             // <V_OtherErr> when 'true' ->
-            //   call 'erlang':'raise' ('throw', V_OtherErr, V_ExcStk)
+            //   call 'erlang':'raise' ('throw', V_OtherErr, [])
             CErlClause {
                 pattern: CErlPat::Var(CErlVar("V_OtherErr".into())),
                 guard: CErlExpr::Lit(CErlLit::Atom(CErlAtom("true".into()))),
                 body: erlang_raise(
                     CErlExpr::Lit(CErlLit::Atom(CErlAtom("throw".into()))),
                     CErlExpr::Var(CErlVar("V_OtherErr".into())),
-                    CErlExpr::Var(CErlVar("V_ExcStk".into())),
                 ),
             },
         ],
@@ -281,14 +301,13 @@ pub(crate) fn wrap_with_return_catch(body: CErlExpr) -> CErlExpr {
                 body: inner_case,
             },
             // <V_OtherClass> when 'true' ->
-            //   call 'erlang':'raise' (V_OtherClass, V_ExcValue, V_ExcStk)
+            //   call 'erlang':'raise' (V_OtherClass, V_ExcValue, [])
             CErlClause {
                 pattern: CErlPat::Var(CErlVar("V_OtherClass".into())),
                 guard: CErlExpr::Lit(CErlLit::Atom(CErlAtom("true".into()))),
                 body: erlang_raise(
                     CErlExpr::Var(CErlVar("V_OtherClass".into())),
                     CErlExpr::Var(CErlVar("V_ExcValue".into())),
-                    CErlExpr::Var(CErlVar("V_ExcStk".into())),
                 ),
             },
         ],
@@ -604,6 +623,55 @@ mod tests {
         assert!(
             matches!(result, CErlExpr::Try { .. }),
             "expected Try, got {result:?}"
+        );
+    }
+
+    // ── wrap_with_return_catch — re-raise stacktrace argument ────────────────
+
+    #[test]
+    fn return_wrap_reraise_passes_empty_stacktrace() {
+        // Regression: the catch body's re-raise must pass `[]` — not
+        // `V_ExcStk` — as the stacktrace argument of erlang:raise/3. Under
+        // +from_core the third catch variable binds the raw try tag, which
+        // raise/3 rejects with a thrown badarg, so an exception crossing the
+        // wrapper used to be mangled into a silent badarg return instead of
+        // crashing the process. (The beam_e2e loud-failure tests pin the
+        // end-to-end behaviour; this pins the emitted shape.)
+        let wrapped = wrap_with_return_catch(CErlExpr::Lit(CErlLit::Int(1)));
+        let CErlExpr::Try { catch, .. } = &wrapped else {
+            panic!("expected Try, got {wrapped:?}")
+        };
+        let CErlExpr::Case { clauses, .. } = &catch[0].body else {
+            panic!("expected Case as the catch body, got {:?}", catch[0].body)
+        };
+        // The non-throw arm re-raises (V_OtherClass, V_ExcValue, []).
+        let CErlExpr::Call {
+            module,
+            fn_name,
+            args,
+        } = &clauses[1].body
+        else {
+            panic!("expected raise call in the non-throw arm")
+        };
+        assert_eq!(module.0, "erlang");
+        assert_eq!(fn_name.0, "raise");
+        assert!(
+            matches!(args.get(2), Some(CErlExpr::Lit(CErlLit::Nil))),
+            "raise/3 must receive [] as its stacktrace argument, got {args:?}"
+        );
+        // The throw arm's non-ridge_return fallthrough re-raises with [] too.
+        let CErlExpr::Case { clauses: inner, .. } = &clauses[0].body else {
+            panic!("expected nested Case in the throw arm")
+        };
+        let CErlExpr::Call {
+            args: inner_args, ..
+        } = &inner[1].body
+        else {
+            panic!("expected raise call in the throw fallthrough")
+        };
+        assert!(
+            matches!(inner_args.get(2), Some(CErlExpr::Lit(CErlLit::Nil))),
+            "raise/3 must receive [] as its stacktrace argument, got {inner_args:?}"
         );
     }
 }

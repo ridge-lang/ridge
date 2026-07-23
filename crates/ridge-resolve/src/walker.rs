@@ -489,6 +489,63 @@ impl ScopeWalker<'_> {
         }
     }
 
+    /// Resolve an actor name at a `spawn` / `child` use-site to an
+    /// [`Binding::ActorName`] binding (R010 when the name is missing or is
+    /// not an actor).
+    fn resolve_actor_name(&mut self, actor: &Ident) -> Binding {
+        if let Some(sym) = self.my_table.and_then(|t| t.lookup(&actor.text)) {
+            if let SymbolKind::Actor { .. } = &sym.kind {
+                Binding::ActorName {
+                    module: self.module_id,
+                    actor: sym.id,
+                }
+            } else {
+                // Name exists but is not an actor.
+                let suggestions = self.r010_suggestions(&actor.text);
+                self.errors.push(ResolveError::UnresolvedIdent {
+                    name: actor.text.clone(),
+                    suggestions,
+                    span: actor.span,
+                });
+                Binding::Error
+            }
+        } else {
+            let suggestions = self.r010_suggestions(&actor.text);
+            self.errors.push(ResolveError::UnresolvedIdent {
+                name: actor.text.clone(),
+                suggestions,
+                span: actor.span,
+            });
+            Binding::Error
+        }
+    }
+
+    /// True when `callee` was just resolved to the compiler-known
+    /// `std.actor.tryAsk` symbol.
+    ///
+    /// Reads back the binding stamped by the immediately preceding
+    /// `visit_expr(callee)`: a bare `tryAsk` (import-list form) stamps an
+    /// `Ident` node; an alias-qualified `Actor.tryAsk` stamps a
+    /// `QualifiedName` node.
+    fn callee_is_std_actor_tryask(&self, callee: &Expr) -> bool {
+        let (span, kind) = match callee {
+            Expr::Ident(id) => (id.span, NodeKind::Ident),
+            Expr::Qualified(qn) => (qn.span, NodeKind::QualifiedName),
+            _ => return false,
+        };
+        let Some(nid) = self.node_id_map.get(span, kind) else {
+            return false;
+        };
+        matches!(
+            self.bindings.get(nid.0 as usize),
+            Some(Some(Binding::StdlibSymbol { module, name }))
+                if name == "tryAsk"
+                    && crate::BUILTINS
+                        .get(module.0 as usize)
+                        .is_some_and(|m| m.name == "std.actor")
+        )
+    }
+
     /// Build "did you mean?" candidates for an `R010 UnresolvedIdent` (T13).
     ///
     /// Mirrors the [`Self::resolve_ident`] lookup order:
@@ -1067,32 +1124,17 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
 
             Expr::Spawn { actor, args, .. } => {
                 // Resolve actor name as ActorName binding.
-                let actor_binding =
-                    if let Some(sym) = self.my_table.and_then(|t| t.lookup(&actor.text)) {
-                        if let SymbolKind::Actor { .. } = &sym.kind {
-                            Binding::ActorName {
-                                module: self.module_id,
-                                actor: sym.id,
-                            }
-                        } else {
-                            // Name exists but is not an actor.
-                            let suggestions = self.r010_suggestions(&actor.text);
-                            self.errors.push(ResolveError::UnresolvedIdent {
-                                name: actor.text.clone(),
-                                suggestions,
-                                span: actor.span,
-                            });
-                            Binding::Error
-                        }
-                    } else {
-                        let suggestions = self.r010_suggestions(&actor.text);
-                        self.errors.push(ResolveError::UnresolvedIdent {
-                            name: actor.text.clone(),
-                            suggestions,
-                            span: actor.span,
-                        });
-                        Binding::Error
-                    };
+                let actor_binding = self.resolve_actor_name(actor);
+                self.stamp(actor.span, NodeKind::Ident, actor_binding);
+                for arg in args {
+                    self.visit_expr(arg);
+                }
+            }
+
+            Expr::ChildSpec { actor, args, .. } => {
+                // Same actor-name resolution as `spawn` — the spec is
+                // typed against the actor's TyCon at type-check time.
+                let actor_binding = self.resolve_actor_name(actor);
                 self.stamp(actor.span, NodeKind::Ident, actor_binding);
                 for arg in args {
                     self.visit_expr(arg);
@@ -1282,6 +1324,38 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
                 // already silently skips it — so Send's head Ident must
                 // also be skipped to avoid spurious `R010 UnresolvedIdent`.
                 self.visit_send_message(message);
+            }
+
+            Expr::Call { callee, args, .. } => {
+                // Resolve the callee first so its binding is stamped; then
+                // decide whether this call targets the compiler-known
+                // `std.actor.tryAsk`.
+                self.visit_expr(callee);
+                if self.callee_is_std_actor_tryask(callee) {
+                    // `tryAsk handle message timeoutMs` — the message
+                    // argument's head is a handler-name LABEL, exactly like
+                    // `!` / `?>` (the type checker validates it against the
+                    // target actor's `on` handlers), so it must not be
+                    // resolved against the lexical scope. Parens are peeled
+                    // first: `tryAsk h (shorten url) 1000`.
+                    if let Some((handle, rest)) = args.split_first() {
+                        self.visit_expr(handle);
+                        if let Some((message, rest)) = rest.split_first() {
+                            let mut msg = message;
+                            while let Expr::Paren { inner, .. } = msg {
+                                msg = inner;
+                            }
+                            self.visit_send_message(msg);
+                            for arg in rest {
+                                self.visit_expr(arg);
+                            }
+                        }
+                    }
+                } else {
+                    for arg in args {
+                        self.visit_expr(arg);
+                    }
+                }
             }
 
             // Default: delegate to the standard walk_expr which recurses into children.
@@ -2864,6 +2938,108 @@ fn toJson (x: a) -> Text where Encode a =
         assert!(
             type_binding_at(src, &bindings, &nid, "Color", 0).is_none(),
             "the `type Color` declaration name must not be stamped by this pass"
+        );
+    }
+
+    // ── child / tryAsk ────────────────────────────────────────────────────────
+
+    #[test]
+    fn child_spec_resolves_actor_name() {
+        // `child Counter` stamps the actor name as ActorName, like `spawn`.
+        let src = "actor Counter =\n    state count: Int = 0\n\n    on io tick =\n        count <- count + 1\nfn f = child Counter\n";
+        let (bindings, errors, _nid) = resolve_bare(src);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        let actor_names = count_binding(&bindings, |b| matches!(b, Binding::ActorName { .. }));
+        assert_eq!(
+            actor_names, 1,
+            "expected exactly one ActorName binding for `child Counter`"
+        );
+    }
+
+    #[test]
+    fn child_spec_args_resolve_normally() {
+        // The argument list is resolved as ordinary use-site expressions.
+        let src = "actor Counter =\n    state count: Int = 0\n\n    on io tick =\n        count <- count + 1\nfn f x = child Counter (x)\n";
+        let (bindings, errors, _nid) = resolve_bare(src);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        let actor_names = count_binding(&bindings, |b| matches!(b, Binding::ActorName { .. }));
+        assert_eq!(actor_names, 1, "expected one ActorName binding");
+    }
+
+    #[test]
+    fn child_spec_unknown_actor_r010() {
+        let src = "fn f = child Bogus\n";
+        let (_bindings, errors, _nid) = resolve_bare(src);
+        let r010 = count_errors(
+            &errors,
+            |e| matches!(e, ResolveError::UnresolvedIdent { name, .. } if name == "Bogus"),
+        );
+        assert_eq!(r010, 1, "expected one R010 for `Bogus`, got {errors:?}");
+    }
+
+    #[test]
+    fn tryask_qualified_message_label_not_resolved() {
+        // `Actor.tryAsk c tick 1000` — `tick` is a handler-name label, so no
+        // R010 is emitted for it even though no such local exists.
+        let src = "import std.actor as Actor\nactor Counter =\n    state count: Int = 0\n\n    on io tick =\n        count <- count + 1\nfn f c = Actor.tryAsk c tick 1000\n";
+        let (bindings, errors, _imports, _nid) = full_resolve_single(src);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        // The callee resolved to the stdlib symbol.
+        let stdlib_syms = count_binding(
+            &bindings,
+            |b| matches!(b, Binding::StdlibSymbol { name, .. } if name == "tryAsk"),
+        );
+        assert_eq!(
+            stdlib_syms, 1,
+            "expected the tryAsk callee to resolve as StdlibSymbol"
+        );
+    }
+
+    #[test]
+    fn tryask_bare_import_message_label_not_resolved() {
+        // `import std.actor (tryAsk)` — the bare form takes the same path.
+        let src = "import std.actor (tryAsk)\nactor Counter =\n    state count: Int = 0\n\n    on io tick =\n        count <- count + 1\nfn f c = tryAsk c tick 1000\n";
+        let (_bindings, errors, _imports, _nid) = full_resolve_single(src);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
+    #[test]
+    fn tryask_payload_args_resolve_normally() {
+        // `Actor.tryAsk c (bump x) 1000` — `bump` is the handler label
+        // (skipped), but the payload argument `x` is a normal use-site.
+        let src = "import std.actor as Actor\nactor Counter =\n    state count: Int = 0\n\n    on io tick =\n        count <- count + 1\nfn f c = Actor.tryAsk c (bump x) 1000\n";
+        let (_bindings, errors, _imports, _nid) = full_resolve_single(src);
+        let r010_x = count_errors(
+            &errors,
+            |e| matches!(e, ResolveError::UnresolvedIdent { name, .. } if name == "x"),
+        );
+        assert_eq!(
+            r010_x, 1,
+            "expected exactly one R010 for payload `x`, got {errors:?}"
+        );
+        let r010_bump = count_errors(
+            &errors,
+            |e| matches!(e, ResolveError::UnresolvedIdent { name, .. } if name == "bump"),
+        );
+        assert_eq!(
+            r010_bump, 0,
+            "handler label `bump` must not be resolved: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn non_tryask_call_args_still_resolve() {
+        // Without the std.actor import, `Actor.tryAsk` is unresolved and the
+        // message argument is visited as an ordinary expression (R010).
+        let src = "fn f c = Actor.tryAsk c tick 1000\n";
+        let (_bindings, errors, _nid) = resolve_bare(src);
+        let r010_tick = count_errors(
+            &errors,
+            |e| matches!(e, ResolveError::UnresolvedIdent { name, .. } if name == "tick"),
+        );
+        assert_eq!(
+            r010_tick, 1,
+            "a non-tryAsk call must resolve the message ident normally: {errors:?}"
         );
     }
 }

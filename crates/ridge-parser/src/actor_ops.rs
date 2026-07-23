@@ -5,6 +5,7 @@
 //!
 //! - [`parse_lambda`]            — `fn Param+ -> Body` (grammar §6.16)
 //! - [`parse_spawn`]             — `spawn UPPER_IDENT arg*` (grammar §6.19)
+//! - [`parse_child_spec`]        — `child UPPER_IDENT [ ( Expr, … ) ]`
 //! - [`parse_record_construct`]  — `Constructor { FieldInit* }` (grammar §6.18)
 //! - [`parse_field_init_list`]   — comma-separated `name [= Expr]` list (shorthand form)
 //! - [`parse_interp_full`]       — full `$"…"` with expression holes
@@ -277,6 +278,82 @@ pub(crate) fn parse_spawn(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
     let span = start.merge(end_span);
 
     Ok(Expr::Spawn { actor, args, span })
+}
+
+// ── parse_child_spec ────────────────────────────────────────────────────────────
+
+/// Parse a child-spec expression `child UPPER_IDENT [ "(" ExprList ")" ]`.
+///
+/// ```text
+/// ChildSpecExpr ::= "child" UPPER_IDENT [ "(" [ Expr { "," Expr } [ "," ] ] ")" ] ;
+/// ```
+///
+/// `child` is a **contextual** keyword: the lexer keeps it as a `LOWER_IDENT`
+/// (it remains a valid variable/parameter name elsewhere — e.g. the `child`
+/// parameters in `std.query`), and it is only recognised as the child-spec
+/// introducer when immediately followed by an `UPPER_IDENT`.  This mirrors
+/// `mailbox`, the contextual member-introducer inside actor bodies (see
+/// `decl.rs::parse_mailbox_decl`).
+///
+/// Unlike `spawn` (which collects juxtaposed argument atoms), the argument
+/// list is parenthesised and comma-separated; each element is a full `Expr`,
+/// checked against the actor's `init` params with the same machinery as
+/// `spawn` (see `ridge-typecheck::actor`).  The parens are optional:
+/// `child Logger` is the zero-argument form.
+///
+/// Precondition: `cur.peek()` is `Token::LowerIdent("child")` and
+/// `cur.peek_n(1)` is `Token::UpperIdent(_)`.
+pub(crate) fn parse_child_spec(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
+    let start = cur.span();
+    cur.bump(); // consume `child`
+
+    // Expect an upper-case identifier for the actor name (same as spawn).
+    let actor_span = cur.span();
+    let actor_text = match cur.peek().clone() {
+        Token::UpperIdent(s) => {
+            cur.bump();
+            s
+        }
+        _ => {
+            return Err(ParseError::Expected {
+                span: cur.span(),
+                expected: "<actor name (UPPER_IDENT)>",
+                found: cur.peek().to_string(),
+            });
+        }
+    };
+    let actor = Ident::new(actor_text, actor_span);
+
+    // Optional parenthesised, comma-separated argument list.
+    let mut args: Vec<Expr> = Vec::new();
+    let end_span = if cur.peek() == &Token::LParen {
+        cur.bracket_depth += 1;
+        cur.bump(); // consume `(`
+        cur.skip_newlines();
+        if cur.peek() != &Token::RParen {
+            loop {
+                args.push(parse_expr(cur)?);
+                cur.skip_newlines();
+                match cur.peek() {
+                    Token::Comma => {
+                        cur.bump(); // consume `,`
+                        cur.skip_newlines();
+                        if cur.peek() == &Token::RParen {
+                            break; // trailing comma
+                        }
+                    }
+                    _ => break,
+                }
+            }
+        }
+        cur.bracket_depth -= 1;
+        cur.expect(&Token::RParen)?
+    } else {
+        actor_span
+    };
+
+    let span = start.merge(end_span);
+    Ok(Expr::ChildSpec { actor, args, span })
 }
 
 // ── parse_record_construct ────────────────────────────────────────────────────
@@ -1303,5 +1380,139 @@ mod tests {
         } else {
             panic!("expected Ask, got {e:?}");
         }
+    }
+
+    // ── parse_child_spec_no_args ──────────────────────────────────────────────
+
+    #[test]
+    fn parse_child_spec_no_args() {
+        let e = ok("child Counter");
+        if let Expr::ChildSpec { actor, args, .. } = e {
+            assert_eq!(actor.text, "Counter");
+            assert!(args.is_empty(), "expected no args, got {args:?}");
+        } else {
+            panic!("expected ChildSpec, got {e:?}");
+        }
+    }
+
+    // ── parse_child_spec_with_args ────────────────────────────────────────────
+
+    #[test]
+    fn parse_child_spec_with_args() {
+        let e = ok("child Counter (1, \"x\")");
+        if let Expr::ChildSpec { actor, args, .. } = e {
+            assert_eq!(actor.text, "Counter");
+            assert_eq!(args.len(), 2, "expected 2 args, got {}", args.len());
+            assert!(
+                matches!(&args[0], Expr::Literal(Literal::IntDec { raw, .. }) if raw == "1"),
+                "expected arg0=1, got {:?}",
+                args[0]
+            );
+            assert!(
+                matches!(&args[1], Expr::Literal(Literal::Text { raw, .. }) if raw == "x"),
+                "expected arg1=\"x\", got {:?}",
+                args[1]
+            );
+        } else {
+            panic!("expected ChildSpec, got {e:?}");
+        }
+    }
+
+    // ── parse_child_spec_empty_parens ─────────────────────────────────────────
+
+    #[test]
+    fn parse_child_spec_empty_parens() {
+        let e = ok("child Logger ()");
+        if let Expr::ChildSpec { actor, args, .. } = e {
+            assert_eq!(actor.text, "Logger");
+            assert!(args.is_empty(), "expected no args, got {args:?}");
+        } else {
+            panic!("expected ChildSpec, got {e:?}");
+        }
+    }
+
+    // ── parse_child_spec_trailing_comma ───────────────────────────────────────
+
+    #[test]
+    fn parse_child_spec_trailing_comma() {
+        let e = ok("child Counter (1, 2,)");
+        if let Expr::ChildSpec { args, .. } = e {
+            assert_eq!(args.len(), 2, "expected 2 args, got {args:?}");
+        } else {
+            panic!("expected ChildSpec, got {e:?}");
+        }
+    }
+
+    // ── parse_child_spec_multiline_args ───────────────────────────────────────
+
+    #[test]
+    fn parse_child_spec_multiline_args() {
+        let e = ok("child Counter (1,\n    2)");
+        if let Expr::ChildSpec { args, .. } = e {
+            assert_eq!(args.len(), 2, "expected 2 args, got {args:?}");
+        } else {
+            panic!("expected ChildSpec, got {e:?}");
+        }
+    }
+
+    // ── `child` not followed by UPPER_IDENT is an ordinary ident ──────────────
+
+    #[test]
+    fn parse_child_as_plain_ident() {
+        // `child x` — lower ident after `child`, so `child` is an ordinary
+        // identifier applied to `x` (juxtaposition), not a child spec.
+        let e = ok("child x");
+        if let Expr::Call { callee, args, .. } = e {
+            assert!(
+                matches!(callee.as_ref(), Expr::Ident(id) if id.text == "child"),
+                "expected callee=Ident(child), got {callee:?}"
+            );
+            assert_eq!(args.len(), 1, "expected 1 arg, got {args:?}");
+        } else {
+            panic!("expected Call(child, [x]), got {e:?}");
+        }
+    }
+
+    #[test]
+    fn parse_child_bare_is_plain_ident() {
+        // `child` alone is an ordinary identifier.
+        let e = ok("child");
+        assert!(
+            matches!(e, Expr::Ident(ref id) if id.text == "child"),
+            "expected Ident(child), got {e:?}"
+        );
+    }
+
+    // ── child spec nests as a call argument ───────────────────────────────────
+
+    #[test]
+    #[allow(clippy::items_after_statements)]
+    fn parse_child_spec_as_call_argument() {
+        // `supervise OneForOne 3 5000 [child Counter (0), child Logger]` —
+        // child specs appear as list elements inside an ordinary call.
+        let e = ok("supervise OneForOne 3 5000 [child Counter (0), child Logger]");
+        fn count_child_specs(e: &Expr) -> usize {
+            match e {
+                Expr::ChildSpec { .. } => 1,
+                Expr::Call { callee, args, .. } => {
+                    count_child_specs(callee) + args.iter().map(count_child_specs).sum::<usize>()
+                }
+                Expr::List { elems, .. } => elems.iter().map(count_child_specs).sum(),
+                _ => 0,
+            }
+        }
+        assert_eq!(
+            count_child_specs(&e),
+            2,
+            "expected two ChildSpec nodes, got {e:?}"
+        );
+    }
+
+    // ── parse_child_spec_unclosed_parens → error ─────────────────────────────
+
+    #[test]
+    fn parse_child_spec_unclosed_parens() {
+        let result = parse_e("child Counter (1, 2");
+        assert!(result.is_err(), "expected Err for unclosed parens, got Ok");
     }
 }

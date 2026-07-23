@@ -88,6 +88,16 @@ pub fn seed_stdlib_env(
                     }
                     // `import std.text (split, trim)` → local_name = "split", binding = StdlibSymbol
                     Binding::StdlibSymbol { module: mid, name } => {
+                        // Record the compiler-known `std.actor.tryAsk`
+                        // under its bare local name so the Call inference arm
+                        // can recognise it (see `ctx.tryask_names`).
+                        if name == "tryAsk"
+                            && BUILTINS
+                                .get(mid.0 as usize)
+                                .is_some_and(|m| m.name == "std.actor")
+                        {
+                            ctx.tryask_names.insert(eb.local_name.clone());
+                        }
                         if let Some(scheme) = stdlib_signature(*mid, name, b) {
                             ctx.env.bind(eb.local_name.clone(), scheme);
                         } else {
@@ -171,6 +181,12 @@ fn bind_module_qualified(
         });
         if let Some(scheme) = scheme {
             ctx.env.bind(format!("{local_alias}.{export_name}"), scheme);
+        }
+        // Record the compiler-known `std.actor.tryAsk` under its
+        // alias-qualified local name (see `ctx.tryask_names`).
+        if export_name == "tryAsk" && module.name == "std.actor" {
+            ctx.tryask_names
+                .insert(format!("{local_alias}.{export_name}"));
         }
     }
 }

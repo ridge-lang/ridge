@@ -103,7 +103,7 @@
     },
     "keyword-other": {
       "comment": "Declaration and modifier keywords.",
-      "match": "\\b(actor|as|class|const|deriving|fn|import|init|instance|let|opaque|pub|spawn|state|type|var)\\b",
+      "match": "\\b(actor|as|child|class|const|deriving|fn|import|init|instance|let|opaque|pub|spawn|state|type|var)\\b",
       "name": "keyword.other.ridge"
     },
     "number": {

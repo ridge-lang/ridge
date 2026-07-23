@@ -34,7 +34,9 @@ use ridge_lexer::LineIndex;
 use ridge_resolve::{StdlibModuleId, BUILTINS};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
-use crate::index::{build_signature, const_header, fn_header, type_header, SignatureSig};
+use crate::index::{
+    build_signature, const_header, fn_header, type_header, utf16_len, SignatureSig,
+};
 
 /// A hover card for a stdlib top-level symbol: its written header, the role to
 /// label it with, and the documentation lifted from the `--` comment block
@@ -374,6 +376,113 @@ fn class_of_module_method(module: StdlibModuleId, name: &str) -> Option<&'static
         .map(String::as_str)
 }
 
+// ── Compiler-known symbols ────────────────────────────────────────────────────
+
+/// Curated hover/signature material for a compiler-known stdlib symbol: one the
+/// resolver and type checker special-case, so it has no declaration in the
+/// embedded stdlib source for the parse-based lookups to find.
+struct CompilerKnown {
+    /// The hover header in written form (`pub fn time name (p: T) -> R`).
+    header: &'static str,
+    /// Parameter fragments of the signature-help label, in order.
+    params: &'static [&'static str],
+    /// The return-type fragment closing the signature-help label.
+    ret: &'static str,
+}
+
+/// `std.actor.tryAsk` — typed ask with an explicit timeout and a `Result`
+/// return. Call sites are typed like `?>` by the type checker (the message
+/// against the actor's handlers), which no ordinary signature expresses, so the
+/// header mirrors the fallback scheme the type checker seeds for the name —
+/// `Handle a -> b -> Int -> Result c d`, absorbing `time`. The doc is the
+/// orphaned `--` block at the end of `actor.ridge`, lifted from the embedded
+/// source rather than duplicated here.
+const TRY_ASK: CompilerKnown = CompilerKnown {
+    header: "pub fn time tryAsk (handle: Handle a) (message: b) (timeoutMs: Int) -> Result c d",
+    params: &["(handle: Handle a)", "(message: b)", "(timeoutMs: Int)"],
+    ret: "Result c d",
+};
+
+/// The curated entry for `name` exported by `module`, when `name` is a
+/// compiler-known symbol of that module.
+fn compiler_known(module: StdlibModuleId, name: &str) -> Option<&'static CompilerKnown> {
+    let builtin = BUILTINS.get(module.0 as usize)?;
+    match (builtin.name, name) {
+        ("std.actor", "tryAsk") => Some(&TRY_ASK),
+        _ => None,
+    }
+}
+
+/// The trailing `--` doc block of `module`'s embedded source: the 0-based line
+/// it starts on and its joined text. A compiler-known symbol is documented by a
+/// block no declaration follows (`tryAsk` closes `actor.ridge`), so the block
+/// is found walking up from the end of file, the same way [`doc_above`] walks
+/// up from a declaration.
+fn trailing_doc_block(module: StdlibModuleId) -> Option<(u32, String)> {
+    let builtin = BUILTINS.get(module.0 as usize)?;
+    let rel = relative_source_path(builtin.name)?;
+    let source = source_for(&rel)?;
+    let classes = classify_lines(source);
+    let len = u32::try_from(classes.len()).ok()?;
+    let doc = doc_above(len, &classes)?;
+    let mut first = len;
+    let mut idx = classes.len();
+    while idx > 0 {
+        idx -= 1;
+        match classes.get(idx) {
+            Some(LineClass::Comment(_)) => first = u32::try_from(idx).ok()?,
+            Some(LineClass::Attr) => {}
+            _ => break,
+        }
+    }
+    Some((first, doc))
+}
+
+/// The hover card of a compiler-known symbol: the curated header plus the doc
+/// block lifted from the embedded source.
+fn compiler_known_card(module: StdlibModuleId, known: &CompilerKnown) -> StdlibCard {
+    let doc = trailing_doc_block(module).map(|(_, doc)| doc);
+    StdlibCard {
+        header: known.header.to_owned(),
+        kind: "function",
+        doc,
+    }
+}
+
+/// The goto-def target of a compiler-known symbol: the first line of its doc
+/// block in the materialised stdlib source — the nearest thing to a definition
+/// site a declaration-less symbol has.
+fn compiler_known_location(module: StdlibModuleId) -> Option<Location> {
+    let (line, _) = trailing_doc_block(module)?;
+    with_module_def(module, |def| Location {
+        uri: def.uri.clone(),
+        range: Range {
+            start: Position { line, character: 0 },
+            end: Position { line, character: 0 },
+        },
+    })
+}
+
+/// The signature-help form of a compiler-known symbol: its name followed by the
+/// curated parameter fragments and return type, laid out exactly as
+/// [`build_signature`] lays out a parsed declaration.
+fn compiler_known_signature(name: &str, known: &CompilerKnown) -> SignatureSig {
+    let mut label = name.to_owned();
+    let mut cursor = utf16_len(&label);
+    let mut params = Vec::with_capacity(known.params.len());
+    for frag in known.params {
+        label.push(' ');
+        cursor += 1;
+        let start = cursor;
+        cursor += utf16_len(frag);
+        label.push_str(frag);
+        params.push([start, cursor]);
+    }
+    label.push_str(" -> ");
+    label.push_str(known.ret);
+    SignatureSig { label, params }
+}
+
 /// Build the [`StdlibModuleDef`] for a builtin module by parsing its embedded
 /// source. Returns `None` if the id is unknown, the name has no source path, or
 /// the source text is missing.
@@ -433,14 +542,18 @@ fn with_module_def<T>(module: StdlibModuleId, f: impl FnOnce(&StdlibModuleDef) -
 
 /// Resolve a stdlib symbol `name` exported by `module` to its definition site.
 ///
-/// Falls back to a class method declared in `module` when `name` is not a
-/// top-level declaration — the qualified `Module.method` form resolves to a
-/// stdlib symbol even though the method lives in a `class` body. Returns `None`
-/// when the module has no materialised source, `name` is neither a top-level
-/// declaration nor such a class method, or the cache is unavailable — goto then
-/// reports "no definition" rather than failing.
+/// Compiler-known symbols (curated, no source declaration) resolve first, to
+/// their doc block. Otherwise falls back to a class method declared in `module`
+/// when `name` is not a top-level declaration — the qualified `Module.method`
+/// form resolves to a stdlib symbol even though the method lives in a `class`
+/// body. Returns `None` when the module has no materialised source, `name` is
+/// neither a top-level declaration nor such a class method, or the cache is
+/// unavailable — goto then reports "no definition" rather than failing.
 #[must_use]
 pub fn stdlib_location(module: StdlibModuleId, name: &str) -> Option<Location> {
+    if compiler_known(module, name).is_some() {
+        return compiler_known_location(module);
+    }
     let top_level = with_module_def(module, |def| {
         let span = *def.defs.get(name)?;
         Some(Location {
@@ -460,12 +573,17 @@ pub fn stdlib_location(module: StdlibModuleId, name: &str) -> Option<Location> {
 
 /// The hover card (header + role + doc) of a stdlib symbol `name` in `module`.
 ///
-/// Falls back to a class method declared in `module` when `name` is not a
-/// top-level declaration, so the qualified `Module.method` form (which resolves
-/// to a stdlib symbol) shows the same signature and doc as the unqualified one.
-/// `None` when the module has no materialised source or `name` is neither.
+/// Compiler-known symbols (curated, no source declaration) answer first.
+/// Otherwise falls back to a class method declared in `module` when `name` is
+/// not a top-level declaration, so the qualified `Module.method` form (which
+/// resolves to a stdlib symbol) shows the same signature and doc as the
+/// unqualified one. `None` when the module has no materialised source or `name`
+/// is neither.
 #[must_use]
 pub fn stdlib_symbol_card(module: StdlibModuleId, name: &str) -> Option<StdlibCard> {
+    if let Some(known) = compiler_known(module, name) {
+        return Some(compiler_known_card(module, known));
+    }
     if let Some(card) = with_module_def(module, |def| def.cards.get(name).cloned()).flatten() {
         return Some(card);
     }
@@ -532,12 +650,16 @@ pub fn stdlib_class_method_location(class_name: &str, method: &str) -> Option<Lo
 
 /// The signature of a stdlib top-level function for signature help.
 ///
-/// Falls back to a class method declared in `module` when `name` is not a
-/// top-level function, so signature help fires on the qualified `Module.method`
-/// call form. Returns `None` when the module has no materialised source, `name`
-/// is neither, or the cache is unavailable.
+/// Compiler-known symbols (curated, no source declaration) answer first.
+/// Otherwise falls back to a class method declared in `module` when `name` is
+/// not a top-level function, so signature help fires on the qualified
+/// `Module.method` call form. Returns `None` when the module has no
+/// materialised source, `name` is neither, or the cache is unavailable.
 #[must_use]
 pub(crate) fn stdlib_fn_signature(module: StdlibModuleId, name: &str) -> Option<SignatureSig> {
+    if let Some(known) = compiler_known(module, name) {
+        return Some(compiler_known_signature(name, known));
+    }
     if let Some(sig) = with_module_def(module, |def| def.fn_sigs.get(name).cloned()).flatten() {
         return Some(sig);
     }
@@ -766,5 +888,78 @@ mod tests {
         assert!(stdlib_symbol_card(module_id("std.list"), "orderBy").is_none());
         assert!(stdlib_location(module_id("std.list"), "orderBy").is_none());
         assert!(stdlib_fn_signature(module_id("std.list"), "orderBy").is_none());
+    }
+
+    #[test]
+    fn compiler_known_tryask_card_carries_header_and_doc() {
+        // `tryAsk` has no declaration in actor.ridge (the type checker types its
+        // call sites), so the card comes from the curated override, not a parse.
+        let card = stdlib_symbol_card(module_id("std.actor"), "tryAsk")
+            .expect("std.actor should expose a card for the compiler-known `tryAsk`");
+        assert_eq!(card.kind, "function");
+        assert!(
+            card.header.contains("pub fn time tryAsk")
+                && card.header.contains("(handle: Handle a)")
+                && card.header.contains("-> Result c d"),
+            "header should mirror the type checker's seeded fallback scheme, got {:?}",
+            card.header
+        );
+        let doc = card.doc.expect("`tryAsk` is documented");
+        assert!(
+            doc.contains("typed ask with an explicit timeout"),
+            "doc should be lifted from the orphaned `--` block, got {doc:?}"
+        );
+    }
+
+    #[test]
+    fn compiler_known_tryask_location_points_into_actor_source() {
+        // No declaration exists to jump to; goto lands on the doc block that
+        // closes actor.ridge — never `None`.
+        let loc = stdlib_location(module_id("std.actor"), "tryAsk")
+            .expect("the compiler-known `tryAsk` should be locatable");
+        let path = loc.uri.to_file_path().expect("location uri is a file path");
+        assert!(
+            path.ends_with("actor.ridge"),
+            "expected a path ending in actor.ridge, got {path:?}"
+        );
+        // The doc block sits well past the start of the file, so the range is
+        // real, not `(0, 0)`.
+        assert!(
+            loc.range.start.line > 0,
+            "expected the doc-block line, got {:?}",
+            loc.range.start
+        );
+    }
+
+    #[test]
+    fn compiler_known_tryask_signature() {
+        let sig = stdlib_fn_signature(module_id("std.actor"), "tryAsk")
+            .expect("the compiler-known `tryAsk` should expose a signature");
+        assert_eq!(
+            sig.label,
+            "tryAsk (handle: Handle a) (message: b) (timeoutMs: Int) -> Result c d"
+        );
+        // The parameter offsets bracket each parameter inside the label.
+        assert_eq!(sig.params.len(), 3);
+        for (range, frag) in
+            sig.params
+                .iter()
+                .zip(["(handle: Handle a)", "(message: b)", "(timeoutMs: Int)"])
+        {
+            let start = usize::try_from(range[0]).expect("offset fits usize");
+            let end = usize::try_from(range[1]).expect("offset fits usize");
+            assert_eq!(&sig.label[start..end], frag);
+        }
+    }
+
+    #[test]
+    fn compiler_known_only_matches_actor_tryask() {
+        // Only `("std.actor", "tryAsk")` is compiler-known: the same name on
+        // another module, or an unknown name on std.actor, takes the ordinary
+        // path and misses.
+        assert!(stdlib_symbol_card(module_id("std.list"), "tryAsk").is_none());
+        assert!(stdlib_location(module_id("std.list"), "tryAsk").is_none());
+        assert!(stdlib_fn_signature(module_id("std.list"), "tryAsk").is_none());
+        assert!(stdlib_symbol_card(module_id("std.actor"), "definitelyNotAStdlibName").is_none());
     }
 }

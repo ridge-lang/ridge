@@ -37,7 +37,9 @@ use tower_lsp::lsp_types::{
 };
 
 use crate::cancel::Cancel;
-use crate::completion::{detect_context, symbol_kind, CompletionItemData, Context, KEYWORDS};
+use crate::completion::{
+    detect_context, symbol_kind, CompletionItemData, Context, CONTEXTUAL_KEYWORDS, KEYWORDS,
+};
 use crate::diagnostics::{source_id_to_uri, uri_key};
 
 /// A position-indexed view of one module's stamped nodes.
@@ -5084,7 +5086,9 @@ impl WorkspaceIndex {
                         }
                     }
                 }
-                for kw in KEYWORDS {
+                // Hard keywords and contextual ones (`child`) are both offered
+                // here; rename consults only the hard set.
+                for kw in KEYWORDS.iter().chain(CONTEXTUAL_KEYWORDS) {
                     if kw.starts_with(&prefix) {
                         out.push(item((*kw).to_owned(), CompletionItemKind::KEYWORD, '3'));
                     }
@@ -5530,7 +5534,7 @@ fn squeeze_ws(s: &str) -> String {
 }
 
 /// UTF-16 code-unit length of `s` (LSP parameter label offsets are UTF-16).
-fn utf16_len(s: &str) -> u32 {
+pub(crate) fn utf16_len(s: &str) -> u32 {
     u32::try_from(s.chars().map(char::len_utf16).sum::<usize>()).unwrap_or(u32::MAX)
 }
 
@@ -6636,5 +6640,20 @@ mod tests {
     #[test]
     fn stdlib_exports_out_of_range_is_empty() {
         assert!(stdlib_exports(StdlibModuleId(u32::MAX)).is_empty());
+    }
+
+    #[test]
+    fn rename_allows_contextual_keyword_but_not_reserved() {
+        // `child` is contextual: it stays a legal identifier name (the stdlib
+        // binds it as an ordinary parameter), so rename must accept it.
+        assert!(
+            validate_new_name("child", "foo").is_ok(),
+            "rename to the contextual `child` must be allowed"
+        );
+        // `spawn` is hard-reserved: it sits in KEYWORDS, rename's blocklist.
+        assert!(
+            validate_new_name("spawn", "foo").is_err(),
+            "rename to the reserved `spawn` must be rejected"
+        );
     }
 }

@@ -154,10 +154,19 @@ pub(crate) const fn symbol_kind(kind: &ridge_resolve::SymbolKind) -> CompletionI
 }
 
 /// Ridge keywords offered in expression position.
+///
+/// This is the hard-reserved set: it doubles as rename's blocklist
+/// (`validate_new_name`), so only words that can never name an identifier
+/// belong here.
 pub(crate) const KEYWORDS: &[&str] = &[
     "fn", "let", "var", "if", "then", "else", "match", "with", "type", "actor", "on", "init",
     "pub", "import", "as", "in", "try", "guard", "spawn", "return",
 ];
+
+/// Contextual keywords offered in expression position alongside [`KEYWORDS`],
+/// but NOT reserved: they stay legal identifier names (the stdlib binds `child`
+/// as an ordinary parameter), so rename must not reject them.
+pub(crate) const CONTEXTUAL_KEYWORDS: &[&str] = &["child"];
 
 #[cfg(test)]
 mod tests {

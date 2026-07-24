@@ -523,7 +523,8 @@ pub fn withDefaultIsolation (level: IsolationLevel) (pool: PoolConfig) -> PoolCo
 
 -- Open a connection from the settings; the runtime speaks the Postgres wire
 -- protocol directly. Returns the connection handle, or an `Err` if the connect
--- or authentication handshake fails.
+-- or authentication handshake fails. The trailing `defaultIsolation` is the
+-- isolation level `Repo.transaction` opens transactions at on this pool.
 @ffi("ridge_pg", "pg_connect", 17)
 fn _pgConnect (host: Text) (port: Int) (database: Text) (user: Text) (password: Text) (sslMode: Text) (poolSize: Int) (connectTimeoutMs: Int) (queryTimeoutMs: Int) (checkoutTimeoutMs: Int) (idleTimeoutMs: Int) (maxLifetimeMs: Int) (healthCheckMs: Int) (connectRetries: Int) (retryBackoffMs: Int) (maxQueueDepth: Int) (defaultIsolation: Text) -> Result Postgres Error
 
@@ -541,7 +542,7 @@ fn _pgGetRows (id: Int) (table: Text) (column: Text) (key: SqlValue) -> Result (
 @ffi("ridge_pg", "pg_begin", 1)
 fn _pgBegin (id: Int) -> Result Unit Error
 
--- Begin a transaction at an explicit isolation level (Repo.transactionWith).
+-- Begin a transaction at an explicit isolation level (`Repo.transactionWith`).
 @ffi("ridge_pg", "pg_begin", 2)
 fn _pgBeginLevel (id: Int) (level: Text) -> Result Unit Error
 
@@ -740,7 +741,7 @@ fn _sqliteGetRows (id: Int) (table: Text) (column: Text) (key: SqlValue) -> Resu
 @ffi("ridge_sqlite", "sqlite_begin", 1)
 fn _sqliteBegin (id: Int) -> Result Unit Error
 
--- Begin a transaction at an explicit isolation level (Repo.transactionWith).
+-- Begin a transaction at an explicit isolation level (`Repo.transactionWith`).
 @ffi("ridge_sqlite", "sqlite_begin", 2)
 fn _sqliteBeginLevel (id: Int) (level: Text) -> Result Unit Error
 

@@ -23,7 +23,7 @@ use ridge_resolve::{
     LocalId, LocalKind, ModuleId, NodeId, NodeIdMap, NodeKind, ProjectKind, ResolvedVisibility,
     ResolvedWorkspace, ScopeIndex, StdlibModuleId, SymbolKind, SymbolTable, BUILTINS,
 };
-use ridge_typecheck::{render_type_with, TypeError, TypedWorkspace};
+use ridge_typecheck::{render_type_with, CapDeclKind, TypeError, TypedWorkspace};
 use ridge_types::{CapabilitySet, TyConDecl, TyConKind, Type};
 use tower_lsp::lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CodeLens, Command,
@@ -209,20 +209,28 @@ pub struct WorkspaceIndex {
     pub syntax_fixes: Vec<SyntaxFix>,
 }
 
-/// A ready-to-apply quick-fix that declares the inferred capabilities on a
-/// function flagged by `T014`. Spans are already resolved to LSP ranges.
+/// A ready-to-apply quick-fix that adjusts a capability annotation.
+///
+/// For `T014`/`T018` the edit inserts the missing capabilities before the
+/// declaration's name (or after the `init` keyword); for `T019` it replaces
+/// the `init` block's capability tokens with the subset that stays within the
+/// actor's boundary. Spans are already resolved to LSP ranges.
 #[derive(Debug, Clone)]
 pub struct CapabilityFix {
     /// The document the function lives in.
     pub uri: Url,
-    /// The whole declaration, used to decide whether a code-action request
-    /// (which carries a cursor range) lands on this function.
+    /// The flagged declaration (or the whole actor, for `T019`), used to
+    /// decide whether a code-action request (which carries a cursor range)
+    /// lands on this fix.
     pub decl_range: Range,
-    /// The empty range just before the function name where the capability
-    /// keywords are inserted.
+    /// The range the edit applies to — an empty insertion point for
+    /// `T014`/`T018`, the capability-token region for `T019`.
     pub edit_range: Range,
-    /// The text to insert (the capabilities plus a trailing space).
+    /// The text to insert (the capabilities plus a trailing space) or the
+    /// replacement text.
     pub new_text: String,
+    /// The diagnostic code this fix answers (`T014`, `T018`, or `T019`).
+    pub code: &'static str,
     /// The code-action title shown in the editor.
     pub title: String,
 }
@@ -5721,32 +5729,42 @@ fn referent_key(binding: &Binding, module: ModuleId) -> Option<ReferentKey> {
 
 /// Build the capability quick-fixes for one compile.
 ///
-/// Walks the structured `T014 CapabilityNotDeclared` errors and, for each one
-/// raised against a top-level `fn` that declares NO capabilities, produces an
-/// edit inserting the inferred capability keywords just before the function
-/// name. Functions that already declare some capabilities, message handlers,
-/// `init` blocks, and inner functions are left to a follow-up: inserting the
-/// full inferred set ahead of an existing annotation would duplicate it, and
-/// the others are not matched by the top-level decl span used here.
+/// Walks the structured capability errors and produces a ready-to-apply edit
+/// for each one it can place:
+///
+/// - `T014` on a top-level `fn` or an `on` handler — insert the `missing`
+///   capabilities just before the declaration's name. Inserting only the
+///   missing set (rather than the full inferred one) covers both unannotated
+///   and partially annotated declarations.
+/// - `T014` on an `init` block — insert the missing capabilities after the
+///   `init` keyword.
+/// - `T014` on an inner `fn` (Rule 4: its annotation exceeds the *enclosing*
+///   effective set) — widen the enclosing top-level `fn` instead; skipped for
+///   file-private enclosing fns, whose annotations are ignored (D040).
+/// - `T018` at a call site — add the missing capabilities to the enclosing
+///   declaration (a `fn`, an `on` handler, or an `init` block), found by name
+///   plus span containment.
+/// - `T019` (an `init` block declares capabilities no handler declares) —
+///   replace the `init` capability tokens with the subset that stays within
+///   the actor's boundary, located by scanning the source after the `init`
+///   keyword.
+///
+/// `T014` and `T018` frequently flag the same declaration with the same edit;
+/// identical edits are offered only once.
 #[must_use]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match arm per capability error kind; splitting would scatter a single pipeline"
+)]
 pub fn collect_capability_fixes(
     line_indices: &[LineIndex],
     module_uris: &[Option<Url>],
+    module_text: &[Arc<str>],
     typed: &TypedWorkspace,
     type_errors: &[(ModuleId, TypeError)],
 ) -> Vec<CapabilityFix> {
     let mut out: Vec<CapabilityFix> = Vec::new();
     for (mid, err) in type_errors {
-        let TypeError::CapabilityNotDeclared {
-            inferred,
-            missing: _,
-            span,
-            decl,
-            ..
-        } = err
-        else {
-            continue;
-        };
         let mi = mid.0 as usize;
         let (Some(module), Some(Some(uri)), Some(li)) = (
             typed.modules.get(mi),
@@ -5755,44 +5773,418 @@ pub fn collect_capability_fixes(
         ) else {
             continue;
         };
-        // Match the whole-declaration span to a top-level `fn` with no written
-        // capability annotation.
-        let Some(name_start) = module.ast.items.iter().find_map(|item| match item {
-            ridge_ast::Item::Fn(f) if f.span == *span && f.caps.is_empty() => {
-                Some(f.name.span.start)
+        let text: &str = module_text.get(mi).map_or("", |t| &**t);
+        match err {
+            TypeError::CapabilityNotDeclared {
+                decl,
+                kind,
+                missing,
+                span,
+                ..
+            } => match kind {
+                CapDeclKind::Fn => {
+                    if let Some(f) = find_fn(module, *span) {
+                        push_insert_fix(
+                            &mut out,
+                            uri,
+                            li,
+                            *span,
+                            f.name.span.start,
+                            *missing,
+                            decl,
+                            "T014",
+                        );
+                    }
+                }
+                CapDeclKind::Handler => {
+                    if let Some(h) = find_handler(module, *span) {
+                        push_insert_fix(
+                            &mut out,
+                            uri,
+                            li,
+                            *span,
+                            h.name.span.start,
+                            *missing,
+                            decl,
+                            "T014",
+                        );
+                    }
+                }
+                CapDeclKind::Init => {
+                    if find_init(module, *span).is_some() {
+                        push_init_insert_fix(&mut out, uri, li, *span, *missing, "T014");
+                    }
+                }
+                CapDeclKind::InnerFn => {
+                    // The inner fn already declares the capabilities; the
+                    // resolution is to widen the enclosing fn. File-private
+                    // enclosing fns skip the declared check entirely (D040),
+                    // so widening them would change nothing.
+                    let enclosing = module.ast.items.iter().find_map(|item| match item {
+                        ridge_ast::Item::Fn(f)
+                            if f.span.start <= span.start && span.end <= f.span.end =>
+                        {
+                            Some(f)
+                        }
+                        _ => None,
+                    });
+                    if let Some(f) = enclosing {
+                        if !f.name.text.starts_with('_') {
+                            push_insert_fix(
+                                &mut out,
+                                uri,
+                                li,
+                                *span,
+                                f.name.span.start,
+                                *missing,
+                                &f.name.text,
+                                "T014",
+                            );
+                        }
+                    }
+                }
+            },
+            TypeError::CallerCapabilityInsufficient {
+                caller,
+                missing,
+                span,
+                ..
+            } => {
+                // Find the declaration whose body contains the call site.
+                for item in &module.ast.items {
+                    match item {
+                        ridge_ast::Item::Fn(f)
+                            if f.name.text == *caller && span_within(*span, f.span) =>
+                        {
+                            push_insert_fix(
+                                &mut out,
+                                uri,
+                                li,
+                                *span,
+                                f.name.span.start,
+                                *missing,
+                                caller,
+                                "T018",
+                            );
+                            break;
+                        }
+                        ridge_ast::Item::Actor(ad) => {
+                            let mut placed = false;
+                            for member in &ad.members {
+                                match member {
+                                    ridge_ast::ActorMember::On(h)
+                                        if h.name.text == *caller && span_within(*span, h.span) =>
+                                    {
+                                        push_insert_fix(
+                                            &mut out,
+                                            uri,
+                                            li,
+                                            *span,
+                                            h.name.span.start,
+                                            *missing,
+                                            caller,
+                                            "T018",
+                                        );
+                                        placed = true;
+                                        break;
+                                    }
+                                    ridge_ast::ActorMember::Init(i)
+                                        if caller == "init" && span_within(*span, i.span) =>
+                                    {
+                                        push_init_insert_fix(
+                                            &mut out, uri, li, *span, *missing, "T018",
+                                        );
+                                        placed = true;
+                                        break;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            if placed {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
             }
-            _ => None,
-        }) else {
-            continue;
-        };
-        let caps = render_caps(*inferred);
-        if caps.is_empty() {
-            continue;
+            TypeError::ActorCapabilityLeak {
+                actor,
+                leaking_caps,
+                span,
+                ..
+            } => {
+                if let Some(fix) =
+                    build_init_leak_fix(uri, li, text, module, *span, actor, *leaking_caps)
+                {
+                    out.push(fix);
+                }
+            }
+            _ => {}
         }
-        let (pl, pc) = li.byte_to_utf16(name_start);
-        let pos = Position::new(pl, pc);
-        let (sl, sc) = li.byte_to_utf16(span.start);
-        let (el, ec) = li.byte_to_utf16(span.end);
-        let noun = if caps.contains(' ') {
-            "capabilities"
-        } else {
-            "capability"
-        };
-        out.push(CapabilityFix {
-            uri: uri.clone(),
-            decl_range: Range {
-                start: Position::new(sl, sc),
-                end: Position::new(el, ec),
-            },
-            edit_range: Range {
-                start: pos,
-                end: pos,
-            },
-            new_text: format!("{caps} "),
-            title: format!("Add {noun} `{caps}` to `{decl}`"),
-        });
     }
+    // T014 and T018 often flag the same declaration with the same edit;
+    // offer it once.
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|fix| {
+        seen.insert((
+            fix.uri.clone(),
+            fix.edit_range.start.line,
+            fix.edit_range.start.character,
+            fix.edit_range.end.line,
+            fix.edit_range.end.character,
+            fix.new_text.clone(),
+        ))
+    });
     out
+}
+
+/// `true` when `inner` lies inside `outer` (byte-span containment).
+const fn span_within(inner: ridge_ast::Span, outer: ridge_ast::Span) -> bool {
+    outer.start <= inner.start && inner.end <= outer.end
+}
+
+/// Find the top-level `fn` whose whole-declaration span is `span`.
+fn find_fn(
+    module: &ridge_typecheck::TypedModule,
+    span: ridge_ast::Span,
+) -> Option<&ridge_ast::FnDecl> {
+    module.ast.items.iter().find_map(|item| match item {
+        ridge_ast::Item::Fn(f) if f.span == span => Some(f),
+        _ => None,
+    })
+}
+
+/// Find the `on` handler whose whole-declaration span is `span`.
+fn find_handler(
+    module: &ridge_typecheck::TypedModule,
+    span: ridge_ast::Span,
+) -> Option<&ridge_ast::OnHandler> {
+    module.ast.items.iter().find_map(|item| match item {
+        ridge_ast::Item::Actor(ad) => ad.members.iter().find_map(|m| match m {
+            ridge_ast::ActorMember::On(h) if h.span == span => Some(h),
+            _ => None,
+        }),
+        _ => None,
+    })
+}
+
+/// Find the `init` block whose whole-declaration span is `span`.
+fn find_init(
+    module: &ridge_typecheck::TypedModule,
+    span: ridge_ast::Span,
+) -> Option<&ridge_ast::InitDecl> {
+    module.ast.items.iter().find_map(|item| match item {
+        ridge_ast::Item::Actor(ad) => ad.members.iter().find_map(|m| match m {
+            ridge_ast::ActorMember::Init(i) if i.span == span => Some(i),
+            _ => None,
+        }),
+        _ => None,
+    })
+}
+
+/// Push an insert-the-missing-capabilities fix at `insert_byte` (the start of
+/// the declaration's name).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one ready-to-apply fix needs all of these"
+)]
+fn push_insert_fix(
+    out: &mut Vec<CapabilityFix>,
+    uri: &Url,
+    li: &LineIndex,
+    decl_span: ridge_ast::Span,
+    insert_byte: u32,
+    missing: CapabilitySet,
+    target: &str,
+    code: &'static str,
+) {
+    let caps = render_caps(missing);
+    if caps.is_empty() {
+        return;
+    }
+    let noun = if caps.contains(' ') {
+        "capabilities"
+    } else {
+        "capability"
+    };
+    out.push(CapabilityFix {
+        uri: uri.clone(),
+        decl_range: span_to_range(li, decl_span),
+        edit_range: point_range(li, insert_byte),
+        new_text: format!("{caps} "),
+        code,
+        title: format!("Add {noun} `{caps}` to `{target}`"),
+    });
+}
+
+/// Push the `init` form of the insert fix: capabilities go right after the
+/// `init` keyword, so the inserted text carries a leading space.
+fn push_init_insert_fix(
+    out: &mut Vec<CapabilityFix>,
+    uri: &Url,
+    li: &LineIndex,
+    init_span: ridge_ast::Span,
+    missing: CapabilitySet,
+    code: &'static str,
+) {
+    let caps = render_caps(missing);
+    if caps.is_empty() {
+        return;
+    }
+    let noun = if caps.contains(' ') {
+        "capabilities"
+    } else {
+        "capability"
+    };
+    out.push(CapabilityFix {
+        uri: uri.clone(),
+        decl_range: span_to_range(li, init_span),
+        edit_range: point_range(li, init_span.start + 4), // 4 = "init".len()
+        new_text: format!(" {caps}"),
+        code,
+        title: format!("Add {noun} `{caps}` to `init`"),
+    });
+}
+
+/// Build the `T019` fix: drop the capabilities the `init` block declares
+/// beyond the actor's boundary (the union of its handlers' caps).
+///
+/// The capability tokens carry no spans of their own, so they are located by
+/// scanning the source after the `init` keyword. The whole token region is
+/// replaced with the subset that stays — or deleted (with one following
+/// space) when nothing stays.
+fn build_init_leak_fix(
+    uri: &Url,
+    li: &LineIndex,
+    text: &str,
+    module: &ridge_typecheck::TypedModule,
+    actor_span: ridge_ast::Span,
+    actor: &str,
+    leaking: CapabilitySet,
+) -> Option<CapabilityFix> {
+    let init = module.ast.items.iter().find_map(|item| match item {
+        ridge_ast::Item::Actor(ad) if ad.span == actor_span => {
+            ad.members.iter().find_map(|m| match m {
+                ridge_ast::ActorMember::Init(i) => Some(i),
+                _ => None,
+            })
+        }
+        _ => None,
+    })?;
+
+    let bytes = text.as_bytes();
+    let start = init.span.start as usize;
+    if bytes.get(start..start + "init".len()) != Some(b"init") {
+        return None;
+    }
+    // Scan the capability tokens between the `init` keyword and whatever
+    // follows (params or `=`).
+    let mut pos = start + "init".len();
+    let mut first_tok: Option<usize> = None;
+    let mut last_end = pos;
+    loop {
+        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+        let mut end = pos;
+        while end < bytes.len() && bytes[end].is_ascii_alphabetic() {
+            end += 1;
+        }
+        let word = &text[pos..end];
+        if CAP_KEYWORDS.contains(&word) {
+            first_tok.get_or_insert(pos);
+            last_end = end;
+            pos = end;
+        } else {
+            break;
+        }
+    }
+    let first = first_tok?;
+
+    let kept: Vec<&str> = CAP_KEYWORDS
+        .iter()
+        .copied()
+        .filter(|kw| {
+            let cap = cap_for_keyword(kw);
+            init.caps.contains(&cap) && !leaking.contains(cap)
+        })
+        .collect();
+    let (edit_start, edit_end, new_text) = if kept.is_empty() {
+        // Swallow one following space so `init io () =` becomes `init () =`.
+        let swallow = if bytes.get(last_end) == Some(&b' ') {
+            last_end + 1
+        } else {
+            last_end
+        };
+        (first, swallow, String::new())
+    } else {
+        (first, last_end, kept.join(" "))
+    };
+
+    let leaking_rendered = render_caps(leaking);
+    let noun = if leaking_rendered.contains(' ') {
+        "capabilities"
+    } else {
+        "capability"
+    };
+    let (sl, sc) = li.byte_to_utf16(u32::try_from(edit_start).ok()?);
+    let (el, ec) = li.byte_to_utf16(u32::try_from(edit_end).ok()?);
+    Some(CapabilityFix {
+        uri: uri.clone(),
+        decl_range: span_to_range(li, actor_span),
+        edit_range: Range {
+            start: Position::new(sl, sc),
+            end: Position::new(el, ec),
+        },
+        new_text,
+        code: "T019",
+        title: format!(
+            "Remove {noun} `{leaking_rendered}` from `init` (no handler on `{actor}` declares it)"
+        ),
+    })
+}
+
+/// The capability keywords in canonical declaration order.
+const CAP_KEYWORDS: [&str; 10] = [
+    "io", "fs", "net", "time", "random", "env", "proc", "spawn", "ffi", "db",
+];
+
+/// Map a capability keyword back to its AST tag.
+fn cap_for_keyword(keyword: &str) -> ridge_ast::Capability {
+    use ridge_ast::Capability::{Db, Env, Ffi, Fs, Io, Net, Proc, Random, Spawn, Time};
+    match keyword {
+        "io" => Io,
+        "fs" => Fs,
+        "net" => Net,
+        "time" => Time,
+        "random" => Random,
+        "env" => Env,
+        "proc" => Proc,
+        "spawn" => Spawn,
+        "ffi" => Ffi,
+        "db" => Db,
+        _ => unreachable!("CAP_KEYWORDS and cap_for_keyword must stay in sync"),
+    }
+}
+
+/// Convert a byte span to an LSP range.
+fn span_to_range(li: &LineIndex, span: ridge_ast::Span) -> Range {
+    let (sl, sc) = li.byte_to_utf16(span.start);
+    let (el, ec) = li.byte_to_utf16(span.end);
+    Range {
+        start: Position::new(sl, sc),
+        end: Position::new(el, ec),
+    }
+}
+
+/// Convert a byte offset to an empty LSP range (an insertion point).
+fn point_range(li: &LineIndex, byte: u32) -> Range {
+    let (l, c) = li.byte_to_utf16(byte);
+    Range {
+        start: Position::new(l, c),
+        end: Position::new(l, c),
+    }
 }
 
 /// Render a capability set as the space-separated keyword list used in a

@@ -895,6 +895,7 @@ fn compile_blocking(
     index.capability_fixes = collect_capability_fixes(
         &index.line_indices,
         &index.module_uris,
+        &index.module_text,
         &state.typed,
         &state.type_errors,
     );
@@ -2161,10 +2162,11 @@ impl LanguageServer for RidgeLanguageServer {
             .map(SemanticTokensRangeResult::Tokens))
     }
 
-    /// `textDocument/codeAction` — quick-fixes. For a `T014` capability error
-    /// on a function that declares no capabilities, offers an edit that adds the
-    /// inferred capabilities to its signature: the annotation stays explicit and
-    /// visible, you just don't have to type it out.
+    /// `textDocument/codeAction` — quick-fixes. For a capability error
+    /// (`T014`/`T018`), offers an edit that adds the missing capabilities to
+    /// the flagged declaration's signature: the annotation stays explicit and
+    /// visible, you just don't have to type it out. For `T019`, offers to drop
+    /// the `init` capabilities that leak past the actor's boundary.
     async fn code_action(&self, params: CodeActionParams) -> LspResult<Option<CodeActionResponse>> {
         let uri = params.text_document.uri;
         let range = params.range;
@@ -2241,7 +2243,7 @@ impl LanguageServer for RidgeLanguageServer {
                     &fix.title,
                     fix.edit_range,
                     &fix.new_text,
-                    "T014",
+                    fix.code,
                     fix.decl_range,
                 )
             })

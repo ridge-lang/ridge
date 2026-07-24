@@ -4526,13 +4526,41 @@ async fn cap_workspace_fixture(
     tower_lsp::ClientSocket,
     Url,
 ) {
-    cap_workspace_fixture_with_caps(main_src, full_capabilities()).await
+    cap_workspace_fixture_full(main_src, "[\"io\"]", full_capabilities()).await
+}
+
+/// Like [`cap_workspace_fixture`] but with an explicit manifest allow-list,
+/// for sources that use capabilities beyond `io`.
+async fn cap_workspace_fixture_allow(
+    main_src: &str,
+    allow: &str,
+) -> (
+    tower_lsp::LspService<RidgeLanguageServer>,
+    tower_lsp::ClientSocket,
+    Url,
+) {
+    cap_workspace_fixture_full(main_src, allow, full_capabilities()).await
 }
 
 /// Like [`cap_workspace_fixture`] but with explicit client capabilities, for
 /// exercising the capability-degraded `codeAction` encoding.
 async fn cap_workspace_fixture_with_caps(
     main_src: &str,
+    caps: ClientCapabilities,
+) -> (
+    tower_lsp::LspService<RidgeLanguageServer>,
+    tower_lsp::ClientSocket,
+    Url,
+) {
+    cap_workspace_fixture_full(main_src, "[\"io\"]", caps).await
+}
+
+/// Build a hermetic single-file workspace whose manifest allows the `io`
+/// capability, open `main_src`, and return the service plus the index-held URI
+/// once a compile has produced an analysis index.
+async fn cap_workspace_fixture_full(
+    main_src: &str,
+    allow: &str,
     caps: ClientCapabilities,
 ) -> (
     tower_lsp::LspService<RidgeLanguageServer>,
@@ -4550,7 +4578,9 @@ async fn cap_workspace_fixture_with_caps(
     .expect("workspace manifest");
     std::fs::write(
         root.join("app").join("ridge.toml"),
-        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n\n[capabilities]\nallow = [\"io\"]\n",
+        format!(
+            "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n\n[capabilities]\nallow = {allow}\n"
+        ),
     )
     .expect("project manifest");
     std::fs::write(app_src.join("Main.ridge"), main_src).expect("write source");
@@ -4672,6 +4702,173 @@ async fn test_code_action_none_when_clean() {
         resp.is_none(),
         "no quick-fix on a correctly-annotated function"
     );
+}
+
+/// Request code actions at `pos` against an already-indexed fixture service.
+async fn request_code_actions(
+    server: &RidgeLanguageServer,
+    uri: &Url,
+    pos: Position,
+) -> Vec<CodeActionOrCommand> {
+    server
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: pos,
+                end: pos,
+            },
+            context: CodeActionContext::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code_action ok")
+        .unwrap_or_default()
+}
+
+/// Extract the single quick-fix titled `title` from a code-action response.
+fn action_titled<'a>(
+    actions: &'a [CodeActionOrCommand],
+    title: &str,
+) -> &'a tower_lsp::lsp_types::CodeAction {
+    let mut matches = actions.iter().filter_map(|a| match a {
+        CodeActionOrCommand::CodeAction(ca) if ca.title == title => Some(ca),
+        _ => None,
+    });
+    let action = matches
+        .next()
+        .unwrap_or_else(|| panic!("a quick-fix titled `{title}`, got {actions:?}"));
+    assert!(
+        matches.next().is_none(),
+        "quick-fix `{title}` offered more than once (edit not deduplicated)"
+    );
+    action
+}
+
+#[tokio::test]
+async fn test_code_action_adds_missing_capability_partial() {
+    // `partial` declares `io` but also uses `fs`, so T014 flags it with
+    // `missing = {fs}`. The fix inserts only the missing capability ahead of
+    // the name, keeping the existing annotation. T018 fires at the call site
+    // with the same edit — it must be deduplicated into one action.
+    let src = "import std.io as Io\nimport std.fs as Fs\n\npub fn io partial () -> Unit =\n    Io.println \"a\"\n    Fs.readFile \"f\"\n";
+    let (service, _socket, uri) = cap_workspace_fixture_allow(src, "[\"io\", \"fs\"]").await;
+    let server = service.inner();
+
+    let actions = request_code_actions(server, &uri, Position::new(3, 8)).await;
+    let action = action_titled(&actions, "Add capability `fs` to `partial`");
+
+    let edits = action
+        .edit
+        .as_ref()
+        .and_then(|e| e.changes.as_ref())
+        .and_then(|c| c.get(&uri))
+        .expect("an edit for this document");
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].new_text, "fs ");
+    // `pub fn io ` is ten columns: the edit lands just before `partial`,
+    // leaving the existing `io` annotation untouched.
+    assert_eq!(edits[0].range.start, Position::new(3, 10));
+    assert_eq!(edits[0].range.end, Position::new(3, 10));
+}
+
+#[tokio::test]
+async fn test_code_action_handler_capability() {
+    // `on increment` uses `io` without declaring it: T014 flags the handler
+    // and the fix inserts `io ` before the handler name.
+    let src = "import std.io as Io\n\nactor Counter =\n    state n: Int = 0\n    on increment =\n        n <- n + 1\n        Io.println \"tick\"\n";
+    let (service, _socket, uri) = cap_workspace_fixture(src).await;
+    let server = service.inner();
+
+    let actions = request_code_actions(server, &uri, Position::new(4, 7)).await;
+    let action = action_titled(&actions, "Add capability `io` to `increment`");
+
+    let edits = action
+        .edit
+        .as_ref()
+        .and_then(|e| e.changes.as_ref())
+        .and_then(|c| c.get(&uri))
+        .expect("an edit for this document");
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].new_text, "io ");
+    assert_eq!(edits[0].range.start, Position::new(4, 7));
+    assert_eq!(edits[0].range.end, Position::new(4, 7));
+}
+
+#[tokio::test]
+async fn test_code_action_init_capability() {
+    // An `init` block that uses `time` without declaring it gets the same
+    // fix, inserted right after the `init` keyword.
+    let src = "import std.time as Time\n\nactor Limiter =\n    state lastRefill: Timestamp\n    init () =\n        lastRefill <- Time.now ()\n    on get -> Int = 0\n";
+    let (service, _socket, uri) = cap_workspace_fixture_allow(src, "[\"time\"]").await;
+    let server = service.inner();
+
+    let actions = request_code_actions(server, &uri, Position::new(4, 5)).await;
+    let action = action_titled(&actions, "Add capability `time` to `init`");
+
+    let edits = action
+        .edit
+        .as_ref()
+        .and_then(|e| e.changes.as_ref())
+        .and_then(|c| c.get(&uri))
+        .expect("an edit for this document");
+    assert_eq!(edits.len(), 1);
+    // Leading space: the text lands between `init` and ` ()`.
+    assert_eq!(edits[0].new_text, " time");
+    assert_eq!(edits[0].range.start, Position::new(4, 8));
+    assert_eq!(edits[0].range.end, Position::new(4, 8));
+}
+
+#[tokio::test]
+async fn test_code_action_inner_fn_widens_enclosing() {
+    // The inner fn declares `io` but the enclosing `outer` provides none
+    // (Rule 4). The fix widens the *enclosing* signature — the inner fn
+    // already declares the capability.
+    let src = "import std.io as Io\n\npub fn outer () -> Unit =\n    fn io inner () -> Unit = Io.println \"in\"\n    inner ()\n";
+    let (service, _socket, uri) = cap_workspace_fixture(src).await;
+    let server = service.inner();
+
+    let actions = request_code_actions(server, &uri, Position::new(3, 8)).await;
+    let action = action_titled(&actions, "Add capability `io` to `outer`");
+
+    let edits = action
+        .edit
+        .as_ref()
+        .and_then(|e| e.changes.as_ref())
+        .and_then(|c| c.get(&uri))
+        .expect("an edit for this document");
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].new_text, "io ");
+    // `pub fn ` is seven columns: the edit lands just before `outer`.
+    assert_eq!(edits[0].range.start, Position::new(2, 7));
+    assert_eq!(edits[0].range.end, Position::new(2, 7));
+}
+
+#[tokio::test]
+async fn test_code_action_t019_removes_init_leak() {
+    // `init` declares `fs` but no handler does, so it leaks past the actor's
+    // boundary (T019). The fix removes the leaking token — including the
+    // space after it, so `init fs () =` becomes `init () =`.
+    let src = "import std.io as Io\nimport std.fs as Fs\n\nactor Leaky =\n    state x: Int = 0\n    init fs () =\n        x <- 1\n    on io get -> Int =\n        Io.println \"got\"\n        x\n";
+    let (service, _socket, uri) = cap_workspace_fixture_allow(src, "[\"io\", \"fs\"]").await;
+    let server = service.inner();
+
+    let actions = request_code_actions(server, &uri, Position::new(5, 5)).await;
+    let action = action_titled(
+        &actions,
+        "Remove capability `fs` from `init` (no handler on `Leaky` declares it)",
+    );
+
+    let edits = action
+        .edit
+        .as_ref()
+        .and_then(|e| e.changes.as_ref())
+        .and_then(|c| c.get(&uri))
+        .expect("an edit for this document");
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].new_text, "");
+    assert_eq!(edits[0].range.start, Position::new(5, 9));
+    assert_eq!(edits[0].range.end, Position::new(5, 12));
 }
 
 // ── Test 28b: "did you mean" syntax quick-fixes (P034 / P035) ─────────────────

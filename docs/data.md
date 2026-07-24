@@ -136,7 +136,9 @@ connectSqlite (sqliteFile "app.db")    -- a file on disk, kept between runs
 
 `sqliteFile` opens the database in write-ahead-log mode with foreign keys on;
 `sqliteMemory` is a private database that lasts as long as the connection. Both
-return a `Result Sqlite Error`.
+return a `Result Sqlite Error`. Both also default to `Serializable` isolation;
+a hand-built `SqliteConfig` refined with `withSqliteDefaultIsolation` changes
+the level plain `Repo.transaction` opens at.
 
 ### Postgres
 
@@ -156,8 +158,10 @@ match connect (pgConfig ())
 
 `sslMode` is `"disable"`, `"require"`, or `"verify-full"`. For a tuned
 connection pool, `connectWith` takes a `PoolConfig` built with
-`defaultPool ()` and refined with steps like `withPoolSize` and
-`withQueryTimeoutMs`.
+`defaultPool ()` and refined with steps like `withPoolSize`,
+`withQueryTimeoutMs`, and `withDefaultIsolation` — the last sets the isolation
+level plain `Repo.transaction` opens at (see
+[Errors and transactions](#errors-and-transactions)).
 
 ### Releasing a connection
 
@@ -433,6 +437,51 @@ match Repo.insert (UserInsert { name = "Ada", email = "ada@example.com" }) users
 
 `Repo.transaction conn (fn c -> ...)` runs a body in a transaction: it commits
 if the body returns `Ok`, and rolls back on `Err` or a failure inside.
+
+To pick the isolation level explicitly, `Repo.transactionWith level conn body`
+does the same at one of the four levels of `std.data`'s `IsolationLevel` —
+`ReadUncommitted`, `ReadCommitted`, `RepeatableRead`, and `Serializable`:
+
+```ridge
+import std.data (Serializable)
+
+Repo.transactionWith Serializable conn (fn c -> ...)
+```
+
+`Repo.transaction` keeps opening transactions at the connection's default:
+`PoolConfig.defaultIsolation` for Postgres (`ReadCommitted` out of the box,
+changed with `withDefaultIsolation`) and `SqliteConfig.defaultIsolation` for
+SQLite (`Serializable`, changed with `withSqliteDefaultIsolation`).
+
+A `transactionWith` nested inside an open transaction may only name the level
+already in force. The same level opens a savepoint; a different one fails with
+an `Err` whose `dbErrorKind` is `Unsupported` (code
+`db.tx.isolation_mismatch`), because SQL forbids changing isolation
+mid-transaction. A plain nested `Repo.transaction` demands no level and always
+opens a savepoint.
+
+The level a plain `Repo.transaction` opens at is the connection's
+`defaultIsolation`, and a nested `transactionWith` is checked against that
+level: `transactionWith ReadCommitted` nested in a plain transaction succeeds
+on a default Postgres pool (whose default is `ReadCommitted`) but fails with
+the mismatch error on a default SQLite connection (whose default is
+`Serializable`).
+
+How far each level goes depends on the backend:
+
+| Backend | ReadUncommitted | ReadCommitted | RepeatableRead | Serializable |
+|---------|-----------------|---------------|----------------|--------------|
+| Postgres | reads as ReadCommitted (PG semantics) | native | native | native |
+| SQLite | `PRAGMA read_uncommitted` for the transaction's span | degrades to Serializable | degrades to Serializable | native default |
+| In-memory | accepted (trivially serializable) | accepted | accepted | accepted |
+
+Postgres accepts all four levels natively — as PostgreSQL documents, its
+`ReadUncommitted` reads as `ReadCommitted`. SQLite is serializable by default
+and distinguishes only `ReadUncommitted`, which sets
+`PRAGMA read_uncommitted = ON` for the outer transaction's span and restores
+it on close, so `ReadCommitted` and `RepeatableRead` degrade to
+`Serializable`. The in-memory adapter is trivially serializable and accepts
+any level.
 
 ## Running against Postgres with Docker
 

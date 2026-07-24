@@ -10,6 +10,14 @@
 //! - `innerRollback` — a nested transaction inserts a row and fails (rewinding to its savepoint) while the outer commits its own row (1).
 //! - `outerRollback` — a nested transaction commits (releasing its savepoint), then the outer fails and unwinds everything (0).
 //!
+//! `Repo.transactionWith` adds an explicit isolation level. The in-memory keeper
+//! records the level of the outermost transaction, so four more probes pin the
+//! rules:
+//! - `withLevelCommits` — an explicit level commits exactly like a plain transaction (2).
+//! - `nestedSameLevel` — a nested `transactionWith` naming the outer level opens a savepoint and commits (2).
+//! - `nestedPlainInsideWith` — a plain nested `transaction` demands no level and commits inside any outer level (2).
+//! - `nestedMismatch` — a nested `transactionWith` naming a different level fails with the isolation-mismatch error (kind `Unsupported`) and writes nothing (0).
+//!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 
 #![cfg(feature = "beam-runtime")]
@@ -22,7 +30,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 // ── Source ────────────────────────────────────────────────────────────────────
 
 const SOURCE: &str = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (memAdapter, MemAdapter, IsolationLevel, ReadCommitted, Serializable, dbErrorKind, Unsupported)
 import std.repo as Repo
 import std.sql (SqlValue)
 
@@ -126,6 +134,57 @@ pub fn db outerRollback () -> Int =
     match Repo.transaction conn outerFailsAfterInnerCommit
         Ok _  -> 0 - 5
         Err _ -> countAll conn
+
+-- The error-kind check for the nested-mismatch probes.
+fn isUnsupported (e: Error) -> Bool =
+    match dbErrorKind e
+        Unsupported -> true
+        _           -> false
+
+-- An explicit level commits exactly like a plain transaction.
+pub fn db withLevelCommits () -> Int =
+    let conn = memAdapter ()
+    match Repo.transactionWith Serializable conn insertTwo
+        Ok _  -> countAll conn
+        Err _ -> 0 - 1
+
+-- A nested transactionWith naming the same level opens a savepoint and commits.
+fn nestedSameLevelBody (tx: MemAdapter) -> Result Unit Error =
+    match addUser tx "ada"
+        Err e -> Err e
+        Ok _  -> Repo.transactionWith Serializable tx (insertOne "lin")
+
+pub fn db nestedSameLevel () -> Int =
+    let conn = memAdapter ()
+    match Repo.transactionWith Serializable conn nestedSameLevelBody
+        Ok _  -> countAll conn
+        Err _ -> 0 - 1
+
+-- A plain transaction nested inside a transactionWith demands no level: it
+-- opens a savepoint regardless of the outer level.
+fn nestedPlainInsideWithBody (tx: MemAdapter) -> Result Unit Error =
+    match addUser tx "ada"
+        Err e -> Err e
+        Ok _  -> Repo.transaction tx (insertOne "lin")
+
+pub fn db nestedPlainInsideWith () -> Int =
+    let conn = memAdapter ()
+    match Repo.transactionWith Serializable conn nestedPlainInsideWithBody
+        Ok _  -> countAll conn
+        Err _ -> 0 - 1
+
+-- A nested transactionWith naming a different level fails with the
+-- isolation-mismatch error (kind Unsupported) and writes nothing.
+fn nestedMismatchBody (tx: MemAdapter) -> Result Unit Error =
+    match Repo.transactionWith ReadCommitted tx (insertOne "lin")
+        Err e -> if isUnsupported e then Ok () else Err e
+        Ok _  -> forceFail tx
+
+pub fn db nestedMismatch () -> Int =
+    let conn = memAdapter ()
+    match Repo.transactionWith Serializable conn nestedMismatchBody
+        Ok _  -> countAll conn
+        Err _ -> 0 - 1
 "#;
 
 // ── Workspace setup ───────────────────────────────────────────────────────────
@@ -203,6 +262,10 @@ fn transactions_commit_rollback_and_nest_on_beam() {
          io:format(\"rolledBack=~w~n\",[{module}:rolledBack()]), \
          io:format(\"innerRollback=~w~n\",[{module}:innerRollback()]), \
          io:format(\"outerRollback=~w~n\",[{module}:outerRollback()]), \
+         io:format(\"withLevelCommits=~w~n\",[{module}:withLevelCommits()]), \
+         io:format(\"nestedSameLevel=~w~n\",[{module}:nestedSameLevel()]), \
+         io:format(\"nestedPlainInsideWith=~w~n\",[{module}:nestedPlainInsideWith()]), \
+         io:format(\"nestedMismatch=~w~n\",[{module}:nestedMismatch()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -236,5 +299,26 @@ fn transactions_commit_rollback_and_nest_on_beam() {
     assert!(
         stdout.contains("outerRollback=0"),
         "expected `outerRollback=0` — outer rollback did not unwind the savepoint\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // An explicit isolation level commits both inserts, like a plain transaction.
+    assert!(
+        stdout.contains("withLevelCommits=2"),
+        "expected `withLevelCommits=2` — transactionWith did not commit both rows\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // A nested transactionWith naming the outer level commits as a savepoint.
+    assert!(
+        stdout.contains("nestedSameLevel=2"),
+        "expected `nestedSameLevel=2` — same-level nested transactionWith did not commit\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // A plain nested transaction demands no level and commits inside transactionWith.
+    assert!(
+        stdout.contains("nestedPlainInsideWith=2"),
+        "expected `nestedPlainInsideWith=2` — plain nested transaction inside transactionWith did not commit\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // A nested transactionWith naming a different level fails with the
+    // isolation-mismatch error (kind Unsupported) and writes nothing.
+    assert!(
+        stdout.contains("nestedMismatch=0"),
+        "expected `nestedMismatch=0` — level mismatch was not flagged Unsupported or wrote rows\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

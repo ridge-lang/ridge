@@ -49,7 +49,7 @@
     diagnostics_to_stderr/0,
     mem_new/1, mem_insert/3, mem_all/2,
     mem_delete/3, mem_update/4, mem_get_rows/4,
-    mem_begin/1, mem_commit/1, mem_rollback/1, mem_close/1,
+    mem_begin/1, mem_begin/2, mem_commit/1, mem_rollback/1, mem_close/1,
     mem_ddl_create/3, mem_ddl_drop/2, mem_ddl_add_column/3,
     mem_ddl_drop_column/3, mem_ddl_index/5, mem_ddl_drop_index/2,
     mem_migrations_applied/1, mem_record_migration/2, mem_unrecord_migration/2,
@@ -2011,6 +2011,19 @@ mem_update(Id, Table, Changes, Tree) -> mem_call({update, Id, Table, Changes, Tr
 %% Result Unit Error.
 mem_begin(Id) -> mem_call({begin_tx, Id}).
 
+%% mem_begin/2 — the same at an explicit isolation level (Repo.transactionWith).
+%% The in-memory store is trivially serializable, so the level only takes part
+%% in the nested-mismatch check. Result Unit Error.
+mem_begin(Id, Level) -> mem_call({begin_tx, Id, known_isolation(Level)}).
+
+%% Validate an isolation level name crossing the FFI; an unknown name reads as
+%% the read_committed fallback so a bad value can never take part in the
+%% nested-mismatch check as a level the runtime did not intend.
+known_isolation(<<"read_uncommitted">>) -> <<"read_uncommitted">>;
+known_isolation(<<"repeatable_read">>)  -> <<"repeatable_read">>;
+known_isolation(<<"serializable">>)     -> <<"serializable">>;
+known_isolation(_)                      -> <<"read_committed">>.
+
 %% mem_commit/1 — commit the innermost open transaction on store Id: drop its
 %% snapshot, keeping the current rows. Result Unit Error.
 mem_commit(Id) -> mem_call({commit_tx, Id}).
@@ -2187,13 +2200,44 @@ mem_key_of(_Id, _K)         -> false.
 mem_keeper_loop(State) ->
     receive
         {{begin_tx, Id}, From, Ref} ->
-            put({mem_tx, Id}, [mem_slice(Id, State) | mem_tx_stack(Id)]),
+            case mem_tx_stack(Id) of
+                [] ->
+                    put({mem_tx_level, Id}, <<"serializable">>),
+                    put({mem_tx, Id}, [mem_slice(Id, State)]);
+                _ ->
+                    put({mem_tx, Id}, [mem_slice(Id, State) | mem_tx_stack(Id)])
+            end,
             From ! {Ref, {ok, ok}},
+            mem_keeper_loop(State);
+        {{begin_tx, Id, Level}, From, Ref} ->
+            Reply =
+                case mem_tx_stack(Id) of
+                    [] ->
+                        put({mem_tx_level, Id}, Level),
+                        put({mem_tx, Id}, [mem_slice(Id, State)]),
+                        {ok, ok};
+                    _ ->
+                        case get({mem_tx_level, Id}) of
+                            Level ->
+                                put({mem_tx, Id}, [mem_slice(Id, State) | mem_tx_stack(Id)]),
+                                {ok, ok};
+                            _Other ->
+                                {error, #{code => <<"db.tx.isolation_mismatch">>,
+                                          message => <<"a nested transaction cannot change the isolation level of the transaction already open">>}}
+                        end
+                end,
+            From ! {Ref, Reply},
             mem_keeper_loop(State);
         {{commit_tx, Id}, From, Ref} ->
             case mem_tx_stack(Id) of
-                [_Top | Rest] -> put({mem_tx, Id}, Rest);
-                _             -> ok
+                [_Top | Rest] ->
+                    put({mem_tx, Id}, Rest),
+                    case Rest of
+                        [] -> erase({mem_tx_level, Id});
+                        _  -> ok
+                    end;
+                _ ->
+                    ok
             end,
             From ! {Ref, {ok, ok}},
             mem_keeper_loop(State);
@@ -2202,6 +2246,10 @@ mem_keeper_loop(State) ->
                 case mem_tx_stack(Id) of
                     [Snap | Rest] ->
                         put({mem_tx, Id}, Rest),
+                        case Rest of
+                            [] -> erase({mem_tx_level, Id});
+                            _  -> ok
+                        end,
                         Without = maps:filter(fun(K, _) -> not mem_key_of(Id, K) end, State),
                         maps:merge(Without, Snap);
                     _ ->
@@ -2213,6 +2261,7 @@ mem_keeper_loop(State) ->
             %% Drop every table of store Id and any open transaction snapshot,
             %% leaving other stores untouched.
             erase({mem_tx, Id}),
+            erase({mem_tx_level, Id}),
             Without = maps:filter(fun(K, _) -> not mem_key_of(Id, K) end, State),
             From ! {Ref, {ok, ok}},
             mem_keeper_loop(Without);

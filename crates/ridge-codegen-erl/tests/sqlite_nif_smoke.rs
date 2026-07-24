@@ -62,7 +62,7 @@ nif_level() ->
 %% The adapter glue: rich SqlValue mapping, raw decode contract, unique-error
 %% classification, nested transactions, all/get_rows, migrations, close.
 glue_level() ->
-    {ok, #{id := Id}} = ridge_sqlite:sqlite_connect(<<":memory:">>, 5000, <<>>, 1),
+    {ok, #{id := Id}} = ridge_sqlite:sqlite_connect(<<":memory:">>, 5000, <<>>, 1, <<"serializable">>),
     {ok, _} = ridge_sqlite:sqlite_raw_exec(Id,
         <<"CREATE TABLE u (id INTEGER PRIMARY KEY, email TEXT UNIQUE, active INTEGER, ts TEXT, amt TEXT)">>, []),
     %% rich params: bool -> int 0/1, instant -> ISO text, decimal -> exact text
@@ -121,7 +121,7 @@ const ESCRIPT_MAIN_ERL: &str = r#"-module(escript_main).
 -export([main/1]).
 
 main(_) ->
-    {ok, #{id := Id}} = ridge_sqlite:sqlite_connect(<<":memory:">>, 0, <<>>, 1),
+    {ok, #{id := Id}} = ridge_sqlite:sqlite_connect(<<":memory:">>, 0, <<>>, 1, <<"serializable">>),
     {ok, _} = ridge_sqlite:sqlite_raw_exec(Id, <<"CREATE TABLE t (n INTEGER)">>, []),
     {ok, 1} = ridge_sqlite:sqlite_raw_exec(Id, <<"INSERT INTO t VALUES (?)">>, [{'SqlInt', 42}]),
     {ok, [Row]} = ridge_sqlite:sqlite_raw_query(Id, <<"SELECT n FROM t">>, []),

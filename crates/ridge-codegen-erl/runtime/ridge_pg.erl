@@ -30,10 +30,11 @@
 -module(ridge_pg).
 
 -export([
-    pg_connect/16,
+    pg_connect/17,
     pg_all/2,
     pg_get_rows/4,
     pg_begin/1,
+    pg_begin/2,
     pg_commit/1,
     pg_rollback/1,
     pg_migrations_applied/1,
@@ -60,24 +61,24 @@
 
 %% --- FFI surface (mirrors the MemAdapter verbs in ridge_rt.erl) ---
 
-%% pg_connect/16 — std.data.connect/connectWith. Open and authenticate one
-%% connection from the config fields, then start a pool manager seeded with it and
-%% return the Ridge handle `#{id => Id}` (the same id-as-handle shape MemAdapter
-%% uses). The config — host/port/.../sslMode, the pool size, the connect, query,
-%% and checkout timeouts, the idle, max-lifetime, and health-check maintenance
-%% windows, the connection-retry count with its backoff, and the wait-queue depth
-%% — crosses the FFI boundary as positional scalars, not a record map, so it never
-%% depends on how a Ridge record lowers its keys. A zero maintenance window
-%% disables that maintenance, a zero retry count disables retries, and a zero queue
-%% depth leaves the wait queue unbounded. Opening one connection now means a bad
-%% host, password, or TLS mode is reported here rather than on the first query; a
-%% refused connect is retried up to the retry count, so a database not yet
-%% accepting connections at startup is waited out rather than failing the first
-%% call. Result Postgres Error.
+%% pg_connect/17 — open and authenticate one connection from the config fields,
+%% then start a pool manager seeded with it and return the Ridge handle
+%% `#{id => Id}` (the same id-as-handle shape MemAdapter uses). The config —
+%% host/port/.../sslMode, the pool size, the connect, query, and checkout
+%% timeouts, the idle, max-lifetime, and health-check maintenance windows, the
+%% connection-retry count with its backoff, the wait-queue depth, and the
+%% default transaction isolation level — crosses the FFI boundary as positional
+%% scalars, not a record map, so it never depends on how a Ridge record lowers
+%% its keys. A zero maintenance window disables that maintenance, a zero retry
+%% count disables retries, and a zero queue depth leaves the wait queue
+%% unbounded. Opening one connection now means a bad host, password, or TLS mode
+%% is reported here rather than on the first query; a refused connect is retried
+%% up to the retry count, so a database not yet accepting connections at startup
+%% is waited out rather than failing the first call. Result Postgres Error.
 pg_connect(Host, Port, Database, User, Password, SslMode, PoolSize,
            ConnectTimeoutMs, QueryTimeoutMs, CheckoutTimeoutMs,
            IdleTimeoutMs, MaxLifetimeMs, HealthCheckMs,
-           ConnectRetries, RetryBackoffMs, MaxQueueDepth) ->
+           ConnectRetries, RetryBackoffMs, MaxQueueDepth, DefaultIsolation) ->
     application:ensure_all_started(crypto),
     Config = #{host => Host, port => Port, database => Database,
                user => User, password => Password, ssl_mode => SslMode,
@@ -90,7 +91,8 @@ pg_connect(Host, Port, Database, User, Password, SslMode, PoolSize,
                health_check => maint_window(HealthCheckMs),
                connect_retries => clamp_count(ConnectRetries),
                retry_backoff => clamp_count(RetryBackoffMs),
-               max_queue => clamp_count(MaxQueueDepth)},
+               max_queue => clamp_count(MaxQueueDepth),
+               default_isolation => known_isolation(DefaultIsolation)},
     case connect_with_retry(Config) of
         {ok, Conn} ->
             Worker = spawn(fun() -> pg_conn_loop(Conn) end),
@@ -118,40 +120,78 @@ pg_raw_query(Id, Sql, Params) -> pg_call(Id, {raw_query, Sql, Params}).
 %% parameters; answer the affected row count. Result Int Error.
 pg_raw_exec(Id, Sql, Params) -> pg_call(Id, {raw_exec, Sql, Params}).
 
-%% pg_begin/1 — open a transaction on handle Id, pinning one pooled connection in
-%% this process for its span so every later verb on Id runs on it. A nested begin
-%% issues a `SAVEPOINT` on the pinned connection rather than a second `BEGIN`.
-%% Result Unit Error.
+%% pg_begin/1 — open a transaction on handle Id at the pool's default isolation
+%% level, pinning one pooled connection in this process for its span so every
+%% later verb on Id runs on it. A nested begin issues a `SAVEPOINT` on the
+%% pinned connection rather than a second `BEGIN`. Result Unit Error.
 pg_begin(Id) ->
     case get({pg_pin, Id}) of
         undefined ->
             case pg_registry_call({lookup, Id}) of
-                {ok, Pool} ->
-                    case pool_checkout(Pool) of
-                        {ok, Worker, QueryTimeout} ->
-                            case worker_request(Worker, {tx, <<"BEGIN">>}, QueryTimeout) of
-                                {ok, _} ->
-                                    put({pg_pin, Id}, {Pool, Worker, 1, QueryTimeout}),
-                                    {ok, ok};
-                                {error, E} ->
-                                    pool_checkin(Pool, Worker),
-                                    {error, E}
-                            end;
-                        {error, E} ->
-                            {error, E}
-                    end;
+                {ok, Pool} -> pg_open_tx(Id, Pool, pool_default_isolation(Pool));
                 _ ->
                     {error, #{code => <<"db.conn.closed">>,
                               message => <<"connection handle not found">>}}
             end;
-        {Pool, Worker, Depth, QueryTimeout} ->
+        Pin ->
+            pg_nested_tx(Id, Pin, none)
+    end.
+
+%% pg_begin/2 — the same at an explicit isolation level (Repo.transactionWith).
+%% A nested begin whose level differs from the open transaction's fails with
+%% db.tx.isolation_mismatch; the same level opens a savepoint as usual.
+pg_begin(Id, Level0) ->
+    Level = known_isolation(Level0),
+    case get({pg_pin, Id}) of
+        undefined ->
+            case pg_registry_call({lookup, Id}) of
+                {ok, Pool} -> pg_open_tx(Id, Pool, Level);
+                _ ->
+                    {error, #{code => <<"db.conn.closed">>,
+                              message => <<"connection handle not found">>}}
+            end;
+        Pin ->
+            pg_nested_tx(Id, Pin, Level)
+    end.
+
+pg_open_tx(Id, Pool, Level) ->
+    case pool_checkout(Pool) of
+        {ok, Worker, QueryTimeout} ->
+            case worker_request(Worker, {tx, begin_sql(Level)}, QueryTimeout) of
+                {ok, _} ->
+                    put({pg_pin, Id}, {Pool, Worker, 1, QueryTimeout, Level}),
+                    {ok, ok};
+                {error, E} ->
+                    pool_checkin(Pool, Worker),
+                    {error, E}
+            end;
+        {error, E} ->
+            {error, E}
+    end.
+
+pg_nested_tx(Id, Pin, Requested) ->
+    {_Pool, Worker, Depth, QueryTimeout, PinLevel} = Pin,
+    case Requested =:= none orelse Requested =:= PinLevel of
+        true ->
             case worker_request(Worker, {tx, [<<"SAVEPOINT ">>, savepoint_name(Depth)]}, QueryTimeout) of
                 {ok, _} ->
-                    put({pg_pin, Id}, {Pool, Worker, Depth + 1, QueryTimeout}),
+                    put({pg_pin, Id}, setelement(3, Pin, Depth + 1)),
                     {ok, ok};
                 {error, E} ->
                     {error, E}
-            end
+            end;
+        false ->
+            isolation_mismatch_error()
+    end.
+
+%% The pool's configured default isolation level, read from its manager State.
+pool_default_isolation(Pool) ->
+    Ref = make_ref(),
+    Pool ! {get_default_isolation, self(), Ref},
+    receive
+        {Ref, Level} -> Level
+    after 5000 ->
+        <<"read_committed">>
     end.
 
 %% pg_commit/1 — commit the innermost open transaction on handle Id. At the
@@ -159,14 +199,14 @@ pg_begin(Id) ->
 %% a nested commit is `RELEASE SAVEPOINT`. Result Unit Error.
 pg_commit(Id) ->
     case get({pg_pin, Id}) of
-        {Pool, Worker, 1, QueryTimeout} ->
+        {Pool, Worker, 1, QueryTimeout, _Level} ->
             R = worker_request(Worker, {tx, <<"COMMIT">>}, QueryTimeout),
             pool_checkin(Pool, Worker),
             erase({pg_pin, Id}),
             tx_unit(R);
-        {Pool, Worker, Depth, QueryTimeout} when Depth > 1 ->
+        {Pool, Worker, Depth, QueryTimeout, Level} when Depth > 1 ->
             R = worker_request(Worker, {tx, [<<"RELEASE SAVEPOINT ">>, savepoint_name(Depth - 1)]}, QueryTimeout),
-            put({pg_pin, Id}, {Pool, Worker, Depth - 1, QueryTimeout}),
+            put({pg_pin, Id}, {Pool, Worker, Depth - 1, QueryTimeout, Level}),
             tx_unit(R);
         _ ->
             {ok, ok}
@@ -177,14 +217,14 @@ pg_commit(Id) ->
 %% pool; a nested rollback is `ROLLBACK TO SAVEPOINT`. Result Unit Error.
 pg_rollback(Id) ->
     case get({pg_pin, Id}) of
-        {Pool, Worker, 1, QueryTimeout} ->
+        {Pool, Worker, 1, QueryTimeout, _Level} ->
             R = worker_request(Worker, {tx, <<"ROLLBACK">>}, QueryTimeout),
             pool_checkin(Pool, Worker),
             erase({pg_pin, Id}),
             tx_unit(R);
-        {Pool, Worker, Depth, QueryTimeout} when Depth > 1 ->
+        {Pool, Worker, Depth, QueryTimeout, Level} when Depth > 1 ->
             R = worker_request(Worker, {tx, [<<"ROLLBACK TO SAVEPOINT ">>, savepoint_name(Depth - 1)]}, QueryTimeout),
-            put({pg_pin, Id}, {Pool, Worker, Depth - 1, QueryTimeout}),
+            put({pg_pin, Id}, {Pool, Worker, Depth - 1, QueryTimeout, Level}),
             tx_unit(R);
         _ ->
             {ok, ok}
@@ -265,6 +305,31 @@ pg_close(Id) ->
 clamp_pool(N) when is_integer(N), N > 0 -> N;
 clamp_pool(_)                           -> 1.
 
+%% Validate an isolation level name crossing the FFI; an unknown name reads as
+%% the Postgres default so a bad value can never inject SQL into BEGIN.
+known_isolation(<<"read_uncommitted">>) -> <<"read_uncommitted">>;
+known_isolation(<<"repeatable_read">>)  -> <<"repeatable_read">>;
+known_isolation(<<"serializable">>)     -> <<"serializable">>;
+known_isolation(_)                      -> <<"read_committed">>.
+
+%% The BEGIN statement for an isolation level. The level names are validated by
+%% known_isolation/1 before they reach here, so the SQL text is always one of
+%% these four literals — never user data.
+begin_sql(Level) ->
+    [<<"BEGIN ISOLATION LEVEL ">>, isolation_sql(Level)].
+
+isolation_sql(<<"read_uncommitted">>) -> <<"READ UNCOMMITTED">>;
+isolation_sql(<<"repeatable_read">>)  -> <<"REPEATABLE READ">>;
+isolation_sql(<<"serializable">>)     -> <<"SERIALIZABLE">>;
+isolation_sql(_)                      -> <<"READ COMMITTED">>.
+
+%% The error a nested transactionWith answers when its explicit isolation level
+%% differs from the one the open transaction started with — SQL forbids
+%% changing a transaction's isolation level mid-transaction.
+isolation_mismatch_error() ->
+    {error, #{code => <<"db.tx.isolation_mismatch">>,
+              message => <<"a nested transaction cannot change the isolation level of the transaction already open">>}}.
+
 %% A timeout in milliseconds, falling back to Default when the caller passes a
 %% non-positive or non-integer value, so a sentinel like 0 keeps the built-in.
 clamp_timeout(Ms, _Default) when is_integer(Ms), Ms > 0 -> Ms;
@@ -298,7 +363,7 @@ now_ms() -> erlang:monotonic_time(millisecond).
 
 pg_call(Id, Verb) ->
     case get({pg_pin, Id}) of
-        {_Pool, Worker, _Depth, QueryTimeout} ->
+        {_Pool, Worker, _Depth, QueryTimeout, _Level} ->
             %% A transaction is open on this handle in this process: run the verb
             %% on the pinned connection so every op between begin and the matching
             %% commit/rollback shares one session. No checkout/checkin — the
@@ -471,6 +536,9 @@ pool_loop(State) ->
             pool_loop(State1);
         {ping_done, Ref, Worker, Result} ->
             pool_loop(finish_ping(State, Ref, Worker, Result));
+        {get_default_isolation, From, Ref} ->
+            From ! {Ref, maps:get(default_isolation, maps:get(config, State, #{}), <<"read_committed">>)},
+            pool_loop(State);
         {close, ReplyTo, Ref} ->
             close_all(State),
             ReplyTo ! {Ref, {ok, ok}}

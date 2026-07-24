@@ -144,6 +144,13 @@ const CONSTRUCTOR_EXPORTS: &[(&str, &str)] = &[
     ("std.data", "DecodeError"),
     ("std.data", "Unsupported"),
     ("std.data", "QueryError"),
+    // The `IsolationLevel` variants: exported so a caller can name the level a
+    // transaction or a pool opens at, surfaced by text extraction only through
+    // the type name.
+    ("std.data", "ReadUncommitted"),
+    ("std.data", "ReadCommitted"),
+    ("std.data", "RepeatableRead"),
+    ("std.data", "Serializable"),
     // The `DbType` column-type constructors live in std.sql (beside SqlValue),
     // exported so a schema descriptor can name a column type but surfaced by text
     // extraction only through the type name.
@@ -428,23 +435,30 @@ fn signature_shape_consistency() {
                         | "withConnectRetries"
                         | "withRetryBackoffMs"
                         | "withMaxQueueDepth"
+                        | "withDefaultIsolation"
                         // `connectSqlite` returns the reconciled `Sqlite`, and the
                         // `sqliteFile`/`sqliteMemory` presets return the reconciled
                         // `SqliteConfig`, so all are seeded via `reconciled_fn_scheme`.
                         | "connectSqlite"
                         | "sqliteFile"
                         | "sqliteMemory"
+                        | "withSqliteDefaultIsolation"
                 )
             {
                 continue;
             }
             // std.data's typed-error helpers are seeded via `reconciled_fn_scheme`
             // (they read or return the reconciled `DbErrorKind`), not the
-            // `stdlib_signature` table this shape check covers.
+            // `stdlib_signature` table this shape check covers. `isolationLevelName`
+            // reads the reconciled `IsolationLevel` the same way.
             if dotted == "std.data"
                 && matches!(
                     *fn_name,
-                    "dbErrorKind" | "dbErrorConstraint" | "dbErrorColumn" | "dbErrorTable"
+                    "dbErrorKind"
+                        | "dbErrorConstraint"
+                        | "dbErrorColumn"
+                        | "dbErrorTable"
+                        | "isolationLevelName"
                 )
             {
                 continue;

@@ -1304,6 +1304,13 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                         name: "maxQueueDepth".to_string(),
                         ty: Type::Con(b.int, vec![]),
                     },
+                    // The isolation level `Repo.transaction` opens transactions
+                    // at on this pool — the reconciled `IsolationLevel` declared
+                    // at the end of this block.
+                    RecordField {
+                        name: "defaultIsolation".to_string(),
+                        ty: Type::Con(TyConId(base + 38), vec![]),
+                    },
                 ],
             )),
             def_span: None,
@@ -1921,6 +1928,13 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                         name: "foreignKeys".to_string(),
                         ty: Type::Con(b.bool, vec![]),
                     },
+                    // The isolation level `Repo.transaction` opens transactions
+                    // at on this connection — the reconciled `IsolationLevel`
+                    // declared at the end of this block.
+                    RecordField {
+                        name: "defaultIsolation".to_string(),
+                        ty: Type::Con(TyConId(base + 38), vec![]),
+                    },
                 ],
             )),
             def_span: None,
@@ -2005,6 +2019,42 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                     },
                     UnionVariant {
                         name: "Timeout".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                ],
+            }),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
+        // `std.data` — the four SQL-standard transaction isolation levels, most
+        // permissive first. A plain nullary union declared in Ridge
+        // (stdlib/data.ridge); `Repo.transactionWith` takes one, and the
+        // `PoolConfig`/`SqliteConfig` records carry one as their
+        // `defaultIsolation` field. Appended last so it disturbs no earlier
+        // reconciled id.
+        TyConDecl {
+            id: TyConId(base + 38),
+            name: "IsolationLevel".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "ReadUncommitted".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "ReadCommitted".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "RepeatableRead".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "Serializable".to_string(),
                         kind: VariantPayload::Nullary,
                     },
                 ],
@@ -2441,6 +2491,60 @@ pub(crate) fn reconciled_fn_scheme(
                 ty: Type::Fn {
                     params: vec![Type::Con(b.int, vec![]), Type::Con(pool, vec![])],
                     ret: Box::new(Type::Con(pool, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![],
+            })
+        }
+        // std.data `isolationLevelName : IsolationLevel -> Text` — the wire name
+        // of an isolation level, as the runtime backends know it. Reads the
+        // reconciled `IsolationLevel`, so the hand-curated table cannot express it.
+        ("std.data", "isolationLevelName") => {
+            let isolation = *reconciled.get("IsolationLevel")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(isolation, vec![])],
+                    ret: Box::new(Type::Con(b.text, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![],
+            })
+        }
+        // std.data `withDefaultIsolation : IsolationLevel -> PoolConfig -> PoolConfig`
+        // — the pool-config setter for the isolation level `Repo.transaction`
+        // opens transactions at. Names the reconciled `IsolationLevel` and
+        // `PoolConfig`, so the hand-curated table cannot express it.
+        ("std.data", "withDefaultIsolation") => {
+            let isolation = *reconciled.get("IsolationLevel")?;
+            let pool = *reconciled.get("PoolConfig")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(isolation, vec![]), Type::Con(pool, vec![])],
+                    ret: Box::new(Type::Con(pool, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![],
+            })
+        }
+        // std.data `withSqliteDefaultIsolation : IsolationLevel -> SqliteConfig
+        // -> SqliteConfig` — the same default-isolation setter for a SQLite
+        // connection's settings.
+        ("std.data", "withSqliteDefaultIsolation") => {
+            let isolation = *reconciled.get("IsolationLevel")?;
+            let config = *reconciled.get("SqliteConfig")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(isolation, vec![]), Type::Con(config, vec![])],
+                    ret: Box::new(Type::Con(config, vec![])),
                     caps: CapRow::Concrete(CapabilitySet::PURE),
                 },
                 constraints: vec![],
@@ -3830,6 +3934,32 @@ fn reconciled_repo_fn_scheme(
                 row_vars: vec![],
                 ty: Type::Fn {
                     params: vec![Type::Var(a), body],
+                    ret: Box::new(result(Type::Var(r))),
+                    caps: pure(),
+                },
+                constraints: with_adapter(),
+            })
+        }
+        // transactionWith : ∀a r. IsolationLevel -> a -> (fn a -> Result r Error)
+        //   -> Result r Error where Adapter a. The `transaction` combinator at an
+        // explicit isolation level — the same shape with the reconciled
+        // `IsolationLevel` as the leading parameter, dispatched through the
+        // seam's `beginWith`.
+        "transactionWith" => {
+            let isolation = *reconciled.get("IsolationLevel")?;
+            let r = TyVid(2);
+            let cap_c = CapVid(0);
+            let body = Type::Fn {
+                params: vec![Type::Var(a)],
+                ret: Box::new(result(Type::Var(r))),
+                caps: CapRow::Var(cap_c),
+            };
+            Some(Scheme {
+                vars: vec![a, r],
+                cap_vars: vec![cap_c],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(isolation, vec![]), Type::Var(a), body],
                     ret: Box::new(result(Type::Var(r))),
                     caps: pure(),
                 },

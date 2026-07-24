@@ -2167,6 +2167,7 @@ mod tests {
                             | "runMutation"
                             | "runMutationReturning"
                             | "begin"
+                            | "beginWith"
                             | "commit"
                             | "rollback"
                             | "close"
@@ -2204,6 +2205,7 @@ mod tests {
                             | "withConnectRetries"
                             | "withRetryBackoffMs"
                             | "withMaxQueueDepth"
+                            | "withDefaultIsolation"
                             // SQLite: the reconciled `Sqlite` handle and `SqliteConfig`
                             // settings, plus `connectSqlite` and the `sqliteFile`/
                             // `sqliteMemory` presets, all name reconciled types and are
@@ -2213,6 +2215,7 @@ mod tests {
                             | "connectSqlite"
                             | "sqliteFile"
                             | "sqliteMemory"
+                            | "withSqliteDefaultIsolation"
                             // Typed database errors: the reconciled `DbErrorKind`
                             // union, its variants, the classifier, and the accessors
                             // are seeded via `reconciled_decls` / `reconciled_ctor_scheme`
@@ -2230,6 +2233,17 @@ mod tests {
                             | "dbErrorConstraint"
                             | "dbErrorColumn"
                             | "dbErrorTable"
+                            // Transaction isolation levels: the reconciled
+                            // `IsolationLevel` union, its variants, and the
+                            // wire-name projection are seeded via `reconciled_decls`
+                            // / `reconciled_ctor_scheme` / `reconciled_fn_scheme`,
+                            // not this hand-curated table.
+                            | "IsolationLevel"
+                            | "ReadUncommitted"
+                            | "ReadCommitted"
+                            | "RepeatableRead"
+                            | "Serializable"
+                            | "isolationLevelName"
                     )
                 {
                     continue;

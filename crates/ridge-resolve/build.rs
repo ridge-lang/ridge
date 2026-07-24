@@ -685,6 +685,15 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "dbErrorConstraint",
             "dbErrorColumn",
             "dbErrorTable",
+            // Transaction isolation levels: the `IsolationLevel` union and its
+            // variants, and the wire-name projection the adapter instances call
+            // to spell the level for the runtime backends.
+            "IsolationLevel",
+            "ReadUncommitted",
+            "ReadCommitted",
+            "RepeatableRead",
+            "Serializable",
+            "isolationLevelName",
             // The storage seam class and its methods, plus the in-memory adapter
             // (the opaque handle type and its `db`-gated constructor). The
             // Postgres adapter (later) implements the same `Adapter` class.
@@ -706,8 +715,10 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "runMutationReturning",
             // Transaction control: open, commit, and roll back a transaction
             // (nesting opens a savepoint). The `Repo.transaction` combinator runs
-            // these around a body.
+            // these around a body; `beginWith` is the same open at an explicit
+            // isolation level, the entry point `Repo.transactionWith` uses.
             "begin",
+            "beginWith",
             "commit",
             "rollback",
             // Connection lifecycle: release a connection's pool (Postgres) or forget
@@ -759,12 +770,18 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "withConnectRetries",
             "withRetryBackoffMs",
             "withMaxQueueDepth",
+            // Set the isolation level `Repo.transaction` opens transactions at
+            // on the pool; `Repo.transactionWith` overrides it per transaction.
+            "withDefaultIsolation",
             // The SQLite adapter: the opaque handle, its config record and presets,
             // and the unified `connect`/`Connect` seam it shares with Postgres.
             "Sqlite",
             "SqliteConfig",
             "sqliteFile",
             "sqliteMemory",
+            // Set the isolation level `Repo.transaction` opens transactions at
+            // on a SQLite connection.
+            "withSqliteDefaultIsolation",
             "connectSqlite",
         ],
     ),
@@ -811,6 +828,11 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // Run a body inside a transaction on the connection: commit on `Ok`,
             // roll back on `Err`. Nesting opens a savepoint.
             "transaction",
+            // The same combinator at an explicit isolation level: the level
+            // applies to the outermost `BEGIN`; a nested use must name the open
+            // transaction's level. Appended here, after `transaction`, so no
+            // earlier export moves.
+            "transactionWith",
             // Run a body with the connection, then close it on every path — the
             // leak-safe scoped-connection combinator.
             "withConnection",

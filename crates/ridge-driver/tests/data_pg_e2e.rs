@@ -45,6 +45,15 @@
 //! `dbErrorConstraint` reads the constraint name; a NULL into a NOT NULL column
 //! classifies as a `NotNullViolation`, and `dbErrorColumn`/`dbErrorTable` read the
 //! column and its table — all out of the Postgres `ErrorResponse`.
+//!
+//! Transaction isolation runs against the live database too: a plain
+//! transaction reads `read committed` back through `SHOW transaction_isolation`
+//! on the raw-query escape hatch, `transactionWith Serializable` and
+//! `RepeatableRead` read their own levels back, a nested `transactionWith`
+//! naming a different level fails with `db.tx.isolation_mismatch` (kind
+//! `Unsupported`) while the outer transaction commits, and a pool configured
+//! with `withDefaultIsolation Serializable` opens plain transactions at
+//! serializable.
 
 #![cfg(feature = "beam-runtime")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -56,7 +65,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// The program source, with connection settings spliced in as sentinels so the
 /// Ridge record braces never collide with Rust string formatting.
 const SOURCE_TEMPLATE: &str = r#"
-import std.data (connect, connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withCheckoutTimeoutMs, PostgresConfig, Postgres, dbErrorKind, dbErrorConstraint, dbErrorColumn, dbErrorTable, DbErrorKind, UniqueViolation, ForeignKeyViolation, NotNullViolation, CheckViolation, ConnectionError, DecodeError, Unsupported, QueryError)
+import std.data (connect, connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withCheckoutTimeoutMs, withDefaultIsolation, PostgresConfig, Postgres, IsolationLevel, ReadCommitted, RepeatableRead, Serializable, dbErrorKind, dbErrorConstraint, dbErrorColumn, dbErrorTable, DbErrorKind, UniqueViolation, ForeignKeyViolation, NotNullViolation, CheckViolation, ConnectionError, DecodeError, Unsupported, QueryError)
 import std.repo as Repo
 import std.migrate as Migrate
 import std.migrate (MigrationOp)
@@ -1856,6 +1865,94 @@ pub fn db txSavepointCount () -> Int =
                         Err _ -> 0 - 3
                         Ok _  -> pgCountUsers conn
 
+-- Isolation levels against the live database. The body of each probe reads the
+-- open transaction's level back through `SHOW transaction_isolation` on the
+-- raw-query escape hatch, decoded through Row into a one-field record — so the
+-- level the runtime actually opened the transaction at is what the probe
+-- answers, not the level it asked for.
+
+-- The one row `SHOW transaction_isolation` answers, aliased to a record field.
+pub type IsoLevel = { transaction_isolation: Text } deriving (Row)
+
+-- A transaction body that reads the live transaction's isolation level through
+-- the raw-query escape hatch and answers its text.
+fn pgShowIsolation (tx: Postgres) -> Result Text Error =
+    let q: Result (List IsoLevel) Error = Raw.query tx "SHOW transaction_isolation" []
+    match q
+        Err e -> Err e
+        Ok rows ->
+            match rows
+                []     -> Ok "empty"
+                r :: _ -> Ok r.transaction_isolation
+
+-- A plain transaction opens at the connection's default level — read committed,
+-- the level Postgres itself defaults to -> "read committed".
+pub fn db pgIsoDefault () -> Text =
+    match connect (pgConfig ())
+        Err _ -> "conn-err"
+        Ok conn ->
+            match Repo.transaction conn pgShowIsolation
+                Err _    -> "tx-err"
+                Ok level -> level
+
+-- transactionWith Serializable applies the level to the outermost BEGIN ->
+-- "serializable".
+pub fn db pgIsoSerializable () -> Text =
+    match connect (pgConfig ())
+        Err _ -> "conn-err"
+        Ok conn ->
+            match Repo.transactionWith Serializable conn pgShowIsolation
+                Err _    -> "tx-err"
+                Ok level -> level
+
+-- transactionWith RepeatableRead applies the level to the outermost BEGIN ->
+-- "repeatable read".
+pub fn db pgIsoRepeatableRead () -> Text =
+    match connect (pgConfig ())
+        Err _ -> "conn-err"
+        Ok conn ->
+            match Repo.transactionWith RepeatableRead conn pgShowIsolation
+                Err _    -> "tx-err"
+                Ok level -> level
+
+-- The error-kind check for the mismatch probe.
+fn pgIsUnsupported (e: Error) -> Bool =
+    match dbErrorKind e
+        Unsupported -> true
+        _           -> false
+
+-- The outer body of the mismatch probe: a nested transactionWith naming a
+-- different level must fail with the isolation-mismatch error (kind
+-- Unsupported), and this body then commits. Any other outcome fails the body,
+-- so the outer rolls back and the probe answers 0.
+fn pgIsoMismatchBody (tx: Postgres) -> Result Unit Error =
+    match Repo.transactionWith ReadCommitted tx pgInsertTwo
+        Err e -> if pgIsUnsupported e then Ok () else Err e
+        Ok _  -> pgForceFail tx
+
+-- Outer Serializable, inner ReadCommitted: the inner is refused as a mismatch,
+-- the outer commits -> 1 on the expected path, 0 otherwise.
+pub fn db pgIsoMismatch () -> Int =
+    match connect (pgConfig ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            match pgClearUsers conn
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match Repo.transactionWith Serializable conn pgIsoMismatchBody
+                        Ok _  -> 1
+                        Err _ -> 0
+
+-- A pool configured with `withDefaultIsolation Serializable` opens plain
+-- transactions at serializable -> "serializable".
+pub fn db pgIsoPoolDefault () -> Text =
+    match connectWith (pgConfig ()) (defaultPool () |> withDefaultIsolation Serializable)
+        Err _ -> "conn-err"
+        Ok conn ->
+            match Repo.transaction conn pgShowIsolation
+                Err _    -> "tx-err"
+                Ok level -> level
+
 -- The migration probes create their own table on the live database through the
 -- schema DSL: `CREATE TABLE ridge_mig_widgets (id bigint PRIMARY KEY, name text)`,
 -- recorded in the `_ridge_migrations` tracking table. Applying the same schema again
@@ -2678,6 +2775,11 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"txCommittedCount=~w~n\",[{module}:txCommittedCount()]), \
          io:format(\"txRolledBackCount=~w~n\",[{module}:txRolledBackCount()]), \
          io:format(\"txSavepointCount=~w~n\",[{module}:txSavepointCount()]), \
+         io:format(\"pgIsoDefault=~s~n\",[{module}:pgIsoDefault()]), \
+         io:format(\"pgIsoSerializable=~s~n\",[{module}:pgIsoSerializable()]), \
+         io:format(\"pgIsoRepeatableRead=~s~n\",[{module}:pgIsoRepeatableRead()]), \
+         io:format(\"pgIsoMismatch=~w~n\",[{module}:pgIsoMismatch()]), \
+         io:format(\"pgIsoPoolDefault=~s~n\",[{module}:pgIsoPoolDefault()]), \
          io:format(\"pgMigrateIdempotent=~w~n\",[{module}:pgMigrateIdempotent()]), \
          io:format(\"pgMigratedUsable=~w~n\",[{module}:pgMigratedUsable()]), \
          io:format(\"pgEntityCreated=~w~n\",[{module}:pgEntityCreated()]), \
@@ -3113,6 +3215,26 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "txSavepointCount=1",
             "a nested transaction's failure rewinds to its savepoint while the outer commits",
+        ),
+        (
+            "pgIsoDefault=read committed",
+            "a plain transaction opens at the connection default — read committed, Postgres's own default",
+        ),
+        (
+            "pgIsoSerializable=serializable",
+            "transactionWith Serializable applies the level to the outermost BEGIN on the live database",
+        ),
+        (
+            "pgIsoRepeatableRead=repeatable read",
+            "transactionWith RepeatableRead applies the level to the outermost BEGIN on the live database",
+        ),
+        (
+            "pgIsoMismatch=1",
+            "a nested transactionWith naming a different level fails Unsupported (db.tx.isolation_mismatch) while the outer commits",
+        ),
+        (
+            "pgIsoPoolDefault=serializable",
+            "withDefaultIsolation Serializable on the pool makes plain transactions open at serializable",
         ),
         (
             "pgMigrateIdempotent=0",

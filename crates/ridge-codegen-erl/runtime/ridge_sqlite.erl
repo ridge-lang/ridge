@@ -35,9 +35,11 @@
 
 -export([
     sqlite_connect/4,
+    sqlite_connect/5,
     sqlite_all/2,
     sqlite_get_rows/4,
     sqlite_begin/1,
+    sqlite_begin/2,
     sqlite_commit/1,
     sqlite_rollback/1,
     sqlite_migrations_applied/1,
@@ -164,18 +166,30 @@ assert_version() ->
 
 %% sqlite_connect(Path, BusyTimeoutMs, JournalMode, ForeignKeys) -> Result Sqlite Error
 %%
+%% The pre-isolation entry point, kept as a shim that delegates to
+%% sqlite_connect/5 at SQLite's native level (serializable) until the stdlib
+%% passes the level itself.
+sqlite_connect(Path, BusyTimeoutMs, JournalMode, ForeignKeys) ->
+    sqlite_connect(Path, BusyTimeoutMs, JournalMode, ForeignKeys, <<"serializable">>).
+
+%% sqlite_connect(Path, BusyTimeoutMs, JournalMode, ForeignKeys, DefaultIsolation) -> Result Sqlite Error
+%%
 %% Open (creating if absent) a connection to the database at Path (":memory:"
 %% for a private in-memory database), apply the connection pragmas, then start
 %% the worker that owns it and return the handle #{id => Id}. BusyTimeoutMs of 0
 %% keeps the built-in wait; JournalMode is a mode name such as <<"WAL">> or an
 %% empty binary to leave the default; ForeignKeys is 1 to enforce foreign keys,
-%% 0 to leave them off.
-sqlite_connect(Path, BusyTimeoutMs, JournalMode, ForeignKeys) ->
+%% 0 to leave them off. DefaultIsolation is the isolation level a plain
+%% transaction begins at; the worker tracks it with the level of the open
+%% transaction so a nested transactionWith can be checked against it.
+sqlite_connect(Path, BusyTimeoutMs, JournalMode, ForeignKeys, DefaultIsolation) ->
     case nif_open(to_bin(Path)) of
         {ok, Res} ->
             case apply_pragmas(Res, BusyTimeoutMs, JournalMode, ForeignKeys) of
                 ok ->
-                    Worker = spawn(fun() -> worker_loop(#{res => Res, depth => 0}) end),
+                    Worker = spawn(fun() -> worker_loop(#{res => Res, depth => 0,
+                                                          default_isolation => known_isolation(DefaultIsolation),
+                                                          tx_level => undefined, ru_on => false}) end),
                     Id = registry_call({register, Worker}),
                     {ok, #{id => Id}};
                 {error, E} ->
@@ -205,6 +219,10 @@ sqlite_raw_exec(Id, Sql, Params) -> call(Id, {raw_exec, Sql, Params}).
 %% sqlite_begin/1 — open a transaction, or a savepoint when one is already open.
 %% Result Unit Error.
 sqlite_begin(Id) -> tx_unit(call(Id, begin_tx)).
+
+%% sqlite_begin/2 — the same at an explicit isolation level
+%% (Repo.transactionWith). Result Unit Error.
+sqlite_begin(Id, Level) -> tx_unit(call(Id, {begin_tx, known_isolation(Level)})).
 
 %% sqlite_commit/1 — commit the innermost open transaction (COMMIT at the
 %% outermost level, RELEASE SAVEPOINT when nested). Result Unit Error.
@@ -311,18 +329,30 @@ handle_request({get_rows, Table, Column, Key}, State) ->
            <<" WHERE ">>, quote_ident(Column), <<" = ?">>],
     handle_request({raw_query, Sql, [Key]}, State);
 handle_request(begin_tx, State) ->
-    Depth = maps:get(depth, State),
-    Sql = case Depth of
-              0 -> <<"BEGIN">>;
-              _ -> [<<"SAVEPOINT ">>, savepoint_name(Depth)]
-          end,
-    run_tx(Sql, Depth + 1, State);
+    case maps:get(depth, State) of
+        0 ->
+            open_tx(maps:get(default_isolation, State), State);
+        Depth ->
+            run_tx([<<"SAVEPOINT ">>, savepoint_name(Depth)], Depth + 1, State)
+    end;
+handle_request({begin_tx, Level}, State) ->
+    case maps:get(depth, State) of
+        0 ->
+            open_tx(Level, State);
+        Depth ->
+            case Level =:= maps:get(tx_level, State) of
+                true ->
+                    run_tx([<<"SAVEPOINT ">>, savepoint_name(Depth)], Depth + 1, State);
+                false ->
+                    {isolation_mismatch_error(), State}
+            end
+    end;
 handle_request(commit_tx, State) ->
     case maps:get(depth, State) of
         0 ->
             {{ok, ok}, State};
         1 ->
-            run_tx(<<"COMMIT">>, 0, State);
+            close_tx(<<"COMMIT">>, State);
         Depth ->
             run_tx([<<"RELEASE SAVEPOINT ">>, savepoint_name(Depth - 1)], Depth - 1, State)
     end;
@@ -331,7 +361,7 @@ handle_request(rollback_tx, State) ->
         0 ->
             {{ok, ok}, State};
         1 ->
-            run_tx(<<"ROLLBACK">>, 0, State);
+            close_tx(<<"ROLLBACK">>, State);
         Depth ->
             run_tx([<<"ROLLBACK TO SAVEPOINT ">>, savepoint_name(Depth - 1)], Depth - 1, State)
     end;
@@ -362,6 +392,63 @@ run_tx(Sql, NewDepth, State) ->
         {ok, _} -> {{ok, ok}, State#{depth => NewDepth}};
         {error, E} -> {{error, db_error(E)}, State}
     end.
+
+%% Validate an isolation level name crossing the FFI; an unknown name reads as
+%% the read_committed fallback so a bad value can never drive a pragma the
+%% runtime did not intend.
+known_isolation(<<"read_uncommitted">>) -> <<"read_uncommitted">>;
+known_isolation(<<"repeatable_read">>)  -> <<"repeatable_read">>;
+known_isolation(<<"serializable">>)     -> <<"serializable">>;
+known_isolation(_)                      -> <<"read_committed">>.
+
+%% The error a nested transactionWith answers when its explicit isolation level
+%% differs from the one the open transaction started with — SQL forbids
+%% changing a transaction's isolation level mid-transaction.
+isolation_mismatch_error() ->
+    {error, #{code => <<"db.tx.isolation_mismatch">>,
+              message => <<"a nested transaction cannot change the isolation level of the transaction already open">>}}.
+
+%% Open the outermost transaction at an isolation level. SQLite is always
+%% serializable for committed reads; the one distinguishable level is
+%% read_uncommitted, honoured by the connection pragma for the transaction's
+%% span and restored when it closes. read_committed and repeatable_read degrade
+%% to serializable, which SQLite already guarantees.
+open_tx(Level, State) ->
+    Res = maps:get(res, State),
+    Pre = case Level of
+              <<"read_uncommitted">> -> nif_exec(Res, <<"PRAGMA read_uncommitted=ON">>, []);
+              _                      -> {ok, 0}
+          end,
+    case Pre of
+        {ok, _} ->
+            case nif_exec(Res, <<"BEGIN">>, []) of
+                {ok, _} ->
+                    {{ok, ok}, State#{depth => 1, tx_level => Level,
+                                      ru_on => Level =:= <<"read_uncommitted">>}};
+                {error, E} ->
+                    {{error, db_error(E)}, State}
+            end;
+        {error, E} ->
+            {{error, db_error(E)}, State}
+    end.
+
+%% Close the outermost transaction, restoring the read_uncommitted pragma when
+%% the transaction had relaxed it.
+close_tx(Sql, State) ->
+    Res = maps:get(res, State),
+    case nif_exec(Res, to_bin(Sql), []) of
+        {ok, _} ->
+            maybe_restore_ru(Res, maps:get(ru_on, State, false)),
+            {{ok, ok}, State#{depth => 0, tx_level => undefined, ru_on => false}};
+        {error, E} ->
+            {{error, db_error(E)}, State}
+    end.
+
+maybe_restore_ru(Res, true) ->
+    _ = nif_exec(Res, <<"PRAGMA read_uncommitted=OFF">>, []),
+    ok;
+maybe_restore_ru(_, false) ->
+    ok.
 
 %% A savepoint identifier for nesting level N. It names a runtime savepoint,
 %% never user data, so it needs no quoting.

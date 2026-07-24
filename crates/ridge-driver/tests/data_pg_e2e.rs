@@ -48,12 +48,14 @@
 //!
 //! Transaction isolation runs against the live database too: a plain
 //! transaction reads `read committed` back through `SHOW transaction_isolation`
-//! on the raw-query escape hatch, `transactionWith Serializable` and
-//! `RepeatableRead` read their own levels back, a nested `transactionWith`
-//! naming a different level fails with `db.tx.isolation_mismatch` (kind
-//! `Unsupported`) while the outer transaction commits, and a pool configured
-//! with `withDefaultIsolation Serializable` opens plain transactions at
-//! serializable.
+//! on the raw-query escape hatch, `transactionWith Serializable`,
+//! `RepeatableRead`, and `ReadUncommitted` read their own levels back
+//! (Postgres treats read uncommitted as read committed behaviourally but still
+//! reports the requested level), a nested `transactionWith` naming a different
+//! level fails with `db.tx.isolation_mismatch` (kind `Unsupported`) while the
+//! outer transaction commits, one naming the outer level commits both rows
+//! through a savepoint, and a pool configured with `withDefaultIsolation
+//! Serializable` opens plain transactions at serializable.
 
 #![cfg(feature = "beam-runtime")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -65,7 +67,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// The program source, with connection settings spliced in as sentinels so the
 /// Ridge record braces never collide with Rust string formatting.
 const SOURCE_TEMPLATE: &str = r#"
-import std.data (connect, connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withCheckoutTimeoutMs, withDefaultIsolation, PostgresConfig, Postgres, IsolationLevel, ReadCommitted, RepeatableRead, Serializable, dbErrorKind, dbErrorConstraint, dbErrorColumn, dbErrorTable, DbErrorKind, UniqueViolation, ForeignKeyViolation, NotNullViolation, CheckViolation, ConnectionError, DecodeError, Unsupported, QueryError)
+import std.data (connect, connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withCheckoutTimeoutMs, withDefaultIsolation, PostgresConfig, Postgres, IsolationLevel, ReadCommitted, ReadUncommitted, RepeatableRead, Serializable, dbErrorKind, dbErrorConstraint, dbErrorColumn, dbErrorTable, DbErrorKind, UniqueViolation, ForeignKeyViolation, NotNullViolation, CheckViolation, ConnectionError, DecodeError, Unsupported, QueryError)
 import std.repo as Repo
 import std.migrate as Migrate
 import std.migrate (MigrationOp)
@@ -1953,6 +1955,44 @@ pub fn db pgIsoPoolDefault () -> Text =
                 Err _    -> "tx-err"
                 Ok level -> level
 
+-- transactionWith ReadUncommitted applies the level to the outermost BEGIN.
+-- Postgres accepts READ UNCOMMITTED and treats it as read committed
+-- behaviourally, but SHOW transaction_isolation reflects the requested level
+-- -> "read uncommitted".
+pub fn db pgIsoReadUncommitted () -> Text =
+    match connect (pgConfig ())
+        Err _ -> "conn-err"
+        Ok conn ->
+            match Repo.transactionWith ReadUncommitted conn pgShowIsolation
+                Err _    -> "tx-err"
+                Ok level -> level
+
+-- A one-row insert body for the same-level nested probe.
+fn pgIsoInsertInner (tx: Postgres) -> Result Unit Error =
+    let r = Repo.repo tx "ridge_pg_users"
+    Repo.insert (User { id = 2, age = 30, name = "lin" }) r
+
+-- The outer body of the same-level nested probe: a nested transactionWith
+-- naming the outer level opens a savepoint on the pinned connection, so the
+-- inner row commits alongside the outer's.
+fn pgIsoNestedSameBody (tx: Postgres) -> Result Unit Error =
+    let r = Repo.repo tx "ridge_pg_users"
+    match Repo.insert (User { id = 1, age = 18, name = "ada" }) r
+        Err e -> Err e
+        Ok _  -> Repo.transactionWith Serializable tx pgIsoInsertInner
+
+-- Outer Serializable, inner Serializable: both inserts survive -> 2.
+pub fn db pgIsoNestedSameLevel () -> Int =
+    match connect (pgConfig ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            match pgClearUsers conn
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match Repo.transactionWith Serializable conn pgIsoNestedSameBody
+                        Ok _  -> pgCountUsers conn
+                        Err _ -> 0 - 3
+
 -- The migration probes create their own table on the live database through the
 -- schema DSL: `CREATE TABLE ridge_mig_widgets (id bigint PRIMARY KEY, name text)`,
 -- recorded in the `_ridge_migrations` tracking table. Applying the same schema again
@@ -2780,6 +2820,8 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"pgIsoRepeatableRead=~s~n\",[{module}:pgIsoRepeatableRead()]), \
          io:format(\"pgIsoMismatch=~w~n\",[{module}:pgIsoMismatch()]), \
          io:format(\"pgIsoPoolDefault=~s~n\",[{module}:pgIsoPoolDefault()]), \
+         io:format(\"pgIsoReadUncommitted=~s~n\",[{module}:pgIsoReadUncommitted()]), \
+         io:format(\"pgIsoNestedSameLevel=~w~n\",[{module}:pgIsoNestedSameLevel()]), \
          io:format(\"pgMigrateIdempotent=~w~n\",[{module}:pgMigrateIdempotent()]), \
          io:format(\"pgMigratedUsable=~w~n\",[{module}:pgMigratedUsable()]), \
          io:format(\"pgEntityCreated=~w~n\",[{module}:pgEntityCreated()]), \
@@ -3235,6 +3277,14 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "pgIsoPoolDefault=serializable",
             "withDefaultIsolation Serializable on the pool makes plain transactions open at serializable",
+        ),
+        (
+            "pgIsoReadUncommitted=read uncommitted",
+            "transactionWith ReadUncommitted applies the level to the outermost BEGIN on the live database",
+        ),
+        (
+            "pgIsoNestedSameLevel=2",
+            "a nested transactionWith naming the outer level commits both rows through a savepoint",
         ),
         (
             "pgMigrateIdempotent=0",

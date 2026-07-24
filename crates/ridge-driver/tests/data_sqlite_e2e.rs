@@ -11,9 +11,13 @@
 //! Transaction isolation runs through the same stack: `transactionWith
 //! Serializable` commits its rows; `transactionWith ReadUncommitted` turns the
 //! connection's `read_uncommitted` pragma on for the transaction's span (read
-//! back through the raw-query escape hatch); and a nested `transactionWith`
-//! naming a different level fails with `db.tx.isolation_mismatch` (kind
-//! `Unsupported`) and writes nothing.
+//! back through the raw-query escape hatch) and restores it when the span
+//! closes; `transactionWith ReadCommitted` degrades to the serializable
+//! default with the pragma untouched; `withSqliteDefaultIsolation` on the
+//! config applies to a plain `Repo.transaction`; a nested `transactionWith`
+//! naming the outer level commits through a savepoint; and one naming a
+//! different level fails with `db.tx.isolation_mismatch` (kind `Unsupported`)
+//! and writes nothing.
 //!
 //! Gated on `beam-runtime` (real OTP + the baked NIF) plus a `which` guard.
 
@@ -25,7 +29,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.data (connectSqlite, sqliteMemory, Sqlite, IsolationLevel, ReadCommitted, ReadUncommitted, Serializable, dbErrorKind, Unsupported)
+import std.data (connectSqlite, sqliteMemory, withSqliteDefaultIsolation, Sqlite, IsolationLevel, ReadCommitted, ReadUncommitted, Serializable, dbErrorKind, Unsupported)
 import std.migrate as Migrate
 import std.repo as Repo
 import std.raw as Raw
@@ -169,6 +173,67 @@ pub fn db sqliteIsoMismatch () -> Int =
                     match Repo.transactionWith Serializable conn sqliteMismatchBody
                         Ok _  -> countAccounts conn
                         Err _ -> 0 - 3
+
+-- transactionWith ReadCommitted asks for a level SQLite does not distinguish:
+-- the pragma stays off and the transaction runs at SQLite's serializable
+-- default -> 0 read inside it.
+pub fn db sqliteIsoDegrade () -> Int =
+    match connectSqlite (sqliteMemory ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            match setup conn
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match Repo.transactionWith ReadCommitted conn readUncommittedPragma
+                        Err _ -> 0 - 3
+                        Ok n  -> n
+
+-- withSqliteDefaultIsolation ReadUncommitted makes even a plain
+-- Repo.transaction open with the pragma on -> 1 read inside it.
+pub fn db sqliteIsoConfigDefault () -> Int =
+    match connectSqlite (sqliteMemory () |> withSqliteDefaultIsolation ReadUncommitted)
+        Err _ -> 0 - 1
+        Ok conn ->
+            match setup conn
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match Repo.transaction conn readUncommittedPragma
+                        Err _ -> 0 - 3
+                        Ok n  -> n
+
+-- Once a ReadUncommitted transaction commits, the pragma it relaxed for the
+-- span is restored -> 0 read back on the bare connection.
+pub fn db sqliteIsoRuRestored () -> Int =
+    match connectSqlite (sqliteMemory ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            match setup conn
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match Repo.transactionWith ReadUncommitted conn readUncommittedPragma
+                        Err _ -> 0 - 3
+                        Ok _  ->
+                            match readUncommittedPragma conn
+                                Err _ -> 0 - 4
+                                Ok n  -> n
+
+-- A nested transactionWith naming the outer level opens a savepoint: both the
+-- outer's and the inner's insert survive -> 2.
+fn sqliteNestedSameBody (tx: Sqlite) -> Result Unit Error =
+    match addAccount tx "ada" true
+        Err e -> Err e
+        Ok _  -> Repo.transactionWith Serializable tx (insertOne "lin")
+
+pub fn db sqliteIsoNestedSameLevel () -> Int =
+    match connectSqlite (sqliteMemory ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            match setup conn
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match Repo.transactionWith Serializable conn sqliteNestedSameBody
+                        Ok _  -> countAccounts conn
+                        Err _ -> 0 - 3
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -237,6 +302,10 @@ fn sqlite_adapter_roundtrips_on_beam() {
          io:format(\"isoSerializable=~w~n\",[{module}:sqliteIsoSerializable()]), \
          io:format(\"isoReadUncommitted=~w~n\",[{module}:sqliteIsoReadUncommitted()]), \
          io:format(\"isoMismatch=~w~n\",[{module}:sqliteIsoMismatch()]), \
+         io:format(\"isoDegrade=~w~n\",[{module}:sqliteIsoDegrade()]), \
+         io:format(\"isoConfigDefault=~w~n\",[{module}:sqliteIsoConfigDefault()]), \
+         io:format(\"isoRuRestored=~w~n\",[{module}:sqliteIsoRuRestored()]), \
+         io:format(\"isoNestedSameLevel=~w~n\",[{module}:sqliteIsoNestedSameLevel()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -276,5 +345,25 @@ fn sqlite_adapter_roundtrips_on_beam() {
     assert!(
         stdout.contains("isoMismatch=0"),
         "expected `isoMismatch=0` — level mismatch was not flagged Unsupported or wrote rows\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // ReadCommitted degrades to the serializable default: the pragma stays off.
+    assert!(
+        stdout.contains("isoDegrade=0"),
+        "expected `isoDegrade=0` — PRAGMA read_uncommitted did not stay 0 inside a ReadCommitted span\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // withSqliteDefaultIsolation ReadUncommitted applies to a plain transaction.
+    assert!(
+        stdout.contains("isoConfigDefault=1"),
+        "expected `isoConfigDefault=1` — the connection default isolation did not turn the pragma on\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // The pragma relaxed for a ReadUncommitted span is restored when it closes.
+    assert!(
+        stdout.contains("isoRuRestored=0"),
+        "expected `isoRuRestored=0` — PRAGMA read_uncommitted was not restored after the span closed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // A nested transactionWith naming the outer level commits through a savepoint.
+    assert!(
+        stdout.contains("isoNestedSameLevel=2"),
+        "expected `isoNestedSameLevel=2` — same-level nested transactionWith did not commit both rows\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

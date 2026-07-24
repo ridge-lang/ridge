@@ -460,6 +460,13 @@ an `Err` whose `dbErrorKind` is `Unsupported` (code
 mid-transaction. A plain nested `Repo.transaction` demands no level and always
 opens a savepoint.
 
+The level a plain `Repo.transaction` opens at is the connection's
+`defaultIsolation`, and a nested `transactionWith` is checked against that
+level: `transactionWith ReadCommitted` nested in a plain transaction succeeds
+on a default Postgres pool (whose default is `ReadCommitted`) but fails with
+the mismatch error on a default SQLite connection (whose default is
+`Serializable`).
+
 How far each level goes depends on the backend:
 
 | Backend | ReadUncommitted | ReadCommitted | RepeatableRead | Serializable |
@@ -468,7 +475,7 @@ How far each level goes depends on the backend:
 | SQLite | `PRAGMA read_uncommitted` for the transaction's span | degrades to Serializable | degrades to Serializable | native default |
 | In-memory | accepted (trivially serializable) | accepted | accepted | accepted |
 
-Postgres honors all four levels natively — as PostgreSQL documents, its
+Postgres accepts all four levels natively — as PostgreSQL documents, its
 `ReadUncommitted` reads as `ReadCommitted`. SQLite is serializable by default
 and distinguishes only `ReadUncommitted`, which sets
 `PRAGMA read_uncommitted = ON` for the outer transaction's span and restores

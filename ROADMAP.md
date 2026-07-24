@@ -233,6 +233,7 @@ are the shipping drivers; MySQL stays on the table for a later minor.
 | ✅ | SQLite driver | Native adapter via a bundled NIF, dialect-aware DDL and queries, no external database process | `crates/ridge-codegen-erl/runtime/ridge_sqlite.erl`, `native/sqlite_nif.c`; `crates/ridge-driver/tests/data_sqlite_e2e.rs` |
 | ✅ | Row deriving | `deriving (Row)` maps a record to and from a table row; nullable columns, rich scalar types, and typed writes round-trip | `crates/ridge-typecheck/src/derive.rs`; `crates/ridge-driver/tests/data_repo_e2e.rs` |
 | ✅ | Transactions | `Repo.transaction` with nested savepoints — commit on `Ok`, roll back on `Err` | `crates/ridge-stdlib/stdlib/repo.ridge`; `crates/ridge-driver/tests/data_pg_e2e.rs` |
+| ✅ | Transaction isolation | `Repo.transactionWith` + pool/connection defaults — PG native levels, SQLite read_uncommitted span, nested-mismatch guard | `crates/ridge-driver/tests/data_tx_e2e.rs`, `data_pg_e2e.rs`, `data_sqlite_e2e.rs`; `docs/data.md` |
 | ✅ | Examples corpus | `examples/data/users-crud/` with a docker-compose Postgres | `examples/data/users-crud/`, `examples/data/docker-compose.yml` |
 | ✅ | Getting-started doc | `docs/data.md` | `docs/data.md` |
 

@@ -19,7 +19,7 @@
 -- A predicate is quoted exactly as at the adapter seam: the parameter
 -- annotation pins the row type and the body is captured as a query tree.
 
-import std.data as Db (selectRows, fetch)
+import std.data as Db (selectRows, fetch, IsolationLevel)
 import std.result (traverse)
 import std.sql (SqlValue)
 import std.query (SortOrder, isAscending, QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planExists, planList, planInsert, planUpsert, planUpdate, planDelete)
@@ -399,6 +399,28 @@ pub fn setWhere (setters: List (Setter e)) (pred: Quote (Map Text SqlValue -> Bo
 -- result's `Err`; otherwise a rolled-back transaction returns the body's own error.
 pub fn transaction (conn: a) (body: fn a -> Result r Error) -> Result r Error where Adapter a =
     match begin conn
+        Err e -> Err e
+        Ok _  ->
+            match body conn
+                Ok value ->
+                    match commit conn
+                        Ok _  -> Ok value
+                        Err e -> Err e
+                Err e ->
+                    match rollback conn
+                        Ok _   -> Err e
+                        Err e2 -> Err e2
+
+-- Run `body` inside a database transaction at an explicit isolation level —
+-- the `transaction` combinator with the level named rather than left to the
+-- connection's default. The level applies to the outermost `BEGIN`; a
+-- `transactionWith` nested inside an open transaction must name the same
+-- level (it opens a savepoint), and a different level fails with
+-- `db.tx.isolation_mismatch` (kind `Unsupported`), because SQL forbids
+-- changing a transaction's isolation level mid-transaction. A plain nested
+-- `transaction` demands no level and always opens a savepoint.
+pub fn transactionWith (level: IsolationLevel) (conn: a) (body: fn a -> Result r Error) -> Result r Error where Adapter a =
+    match beginWith conn level
         Err e -> Err e
         Ok _  ->
             match body conn

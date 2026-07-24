@@ -2534,7 +2534,7 @@ fn postgres_adapter_reads_a_real_table() {
     // with retries on, proving only a refused connect is retried. All against the
     // live database.
     let pool_probe = format!(
-        "{{ok, ProbeConn}} = ridge_pg:pg_connect(<<\"{host}\">>, {port}, <<\"{db}\">>, <<\"{user}\">>, <<\"{pass}\">>, <<\"{ssl}\">>, 4, 10000, 30000, 5000, 0, 0, 0, 0, 0, 0), \
+        "{{ok, ProbeConn}} = ridge_pg:pg_connect(<<\"{host}\">>, {port}, <<\"{db}\">>, <<\"{user}\">>, <<\"{pass}\">>, <<\"{ssl}\">>, 4, 10000, 30000, 5000, 0, 0, 0, 0, 0, 0, <<\"read_committed\">>), \
          ProbeId = maps:get(id, ProbeConn), \
          ProbeSelf = self(), \
          [spawn(fun() -> ProbeSelf ! {{probe, ridge_pg:pg_all(ProbeId, <<\"ridge_pg_users\">>)}} end) || _ <- lists:seq(1, 6)], \
@@ -2542,7 +2542,7 @@ fn postgres_adapter_reads_a_real_table() {
          ProbeOk = lists:all(fun(ProbeR) -> case ProbeR of {{ok, _}} -> true; _ -> false end end, ProbeRs), \
          io:format(\"concurrent=~p~n\", [ProbeOk]), \
          ridge_pg:pg_close(ProbeId), \
-         {{ok, MaintConn}} = ridge_pg:pg_connect(<<\"{host}\">>, {port}, <<\"{db}\">>, <<\"{user}\">>, <<\"{pass}\">>, <<\"{ssl}\">>, 2, 10000, 30000, 5000, 300, 600, 200, 0, 0, 0), \
+         {{ok, MaintConn}} = ridge_pg:pg_connect(<<\"{host}\">>, {port}, <<\"{db}\">>, <<\"{user}\">>, <<\"{pass}\">>, <<\"{ssl}\">>, 2, 10000, 30000, 5000, 300, 600, 200, 0, 0, 0, <<\"read_committed\">>), \
          MaintId = maps:get(id, MaintConn), \
          MaintBefore = ridge_pg:pg_all(MaintId, <<\"ridge_pg_users\">>), \
          timer:sleep(1200), \
@@ -2550,20 +2550,20 @@ fn postgres_adapter_reads_a_real_table() {
          MaintOk = case {{MaintBefore, MaintAfter}} of {{{{ok, _}}, {{ok, _}}}} -> true; _ -> false end, \
          io:format(\"maintHeals=~p~n\", [MaintOk]), \
          ridge_pg:pg_close(MaintId), \
-         {{ok, PingConn}} = ridge_pg:pg_connect(<<\"{host}\">>, {port}, <<\"{db}\">>, <<\"{user}\">>, <<\"{pass}\">>, <<\"{ssl}\">>, 2, 10000, 30000, 5000, 0, 0, 200, 0, 0, 0), \
+         {{ok, PingConn}} = ridge_pg:pg_connect(<<\"{host}\">>, {port}, <<\"{db}\">>, <<\"{user}\">>, <<\"{pass}\">>, <<\"{ssl}\">>, 2, 10000, 30000, 5000, 0, 0, 200, 0, 0, 0, <<\"read_committed\">>), \
          PingId = maps:get(id, PingConn), \
          _ = ridge_pg:pg_all(PingId, <<\"ridge_pg_users\">>), \
          timer:sleep(800), \
          PingAfter = ridge_pg:pg_all(PingId, <<\"ridge_pg_users\">>), \
          io:format(\"pingHealthy=~p~n\", [case PingAfter of {{ok, _}} -> true; _ -> false end]), \
          ridge_pg:pg_close(PingId), \
-         RetryConn = ridge_pg:pg_connect(<<\"{host}\">>, {port}, <<\"{db}\">>, <<\"{user}\">>, <<\"{pass}\">>, <<\"{ssl}\">>, 2, 10000, 30000, 5000, 0, 0, 0, 3, 100, 8), \
+         RetryConn = ridge_pg:pg_connect(<<\"{host}\">>, {port}, <<\"{db}\">>, <<\"{user}\">>, <<\"{pass}\">>, <<\"{ssl}\">>, 2, 10000, 30000, 5000, 0, 0, 0, 3, 100, 8, <<\"read_committed\">>), \
          RetryOk = case RetryConn of {{ok, RConn}} -> RId = maps:get(id, RConn), RR = ridge_pg:pg_all(RId, <<\"ridge_pg_users\">>), ridge_pg:pg_close(RId), case RR of {{ok, _}} -> true; _ -> false end; _ -> false end, \
          io:format(\"retryHappy=~p~n\", [RetryOk]), \
-         DeadConn = ridge_pg:pg_connect(<<\"{host}\">>, 59999, <<\"{db}\">>, <<\"{user}\">>, <<\"{pass}\">>, <<\"{ssl}\">>, 1, 2000, 30000, 5000, 0, 0, 0, 2, 50, 0), \
+         DeadConn = ridge_pg:pg_connect(<<\"{host}\">>, 59999, <<\"{db}\">>, <<\"{user}\">>, <<\"{pass}\">>, <<\"{ssl}\">>, 1, 2000, 30000, 5000, 0, 0, 0, 2, 50, 0, <<\"read_committed\">>), \
          RetryExhausts = case DeadConn of {{error, #{{code := <<\"db.connect.refused\">>}}}} -> true; _ -> false end, \
          io:format(\"retryExhausts=~p~n\", [RetryExhausts]), \
-         BadDbConn = ridge_pg:pg_connect(<<\"{host}\">>, {port}, <<\"ridge_no_such_db_xyz\">>, <<\"{user}\">>, <<\"{pass}\">>, <<\"{ssl}\">>, 1, 10000, 30000, 5000, 0, 0, 0, 5, 50, 0), \
+         BadDbConn = ridge_pg:pg_connect(<<\"{host}\">>, {port}, <<\"ridge_no_such_db_xyz\">>, <<\"{user}\">>, <<\"{pass}\">>, <<\"{ssl}\">>, 1, 10000, 30000, 5000, 0, 0, 0, 5, 50, 0, <<\"read_committed\">>), \
          PermNoRetry = case BadDbConn of {{error, #{{code := PermCode}}}} -> PermCode =/= <<\"db.connect.refused\">>; _ -> false end, \
          io:format(\"permanentNoRetry=~p~n\", [PermNoRetry]), ",
         host = parts.host,

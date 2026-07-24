@@ -30,7 +30,6 @@
 -module(ridge_pg).
 
 -export([
-    pg_connect/16,
     pg_connect/17,
     pg_all/2,
     pg_get_rows/4,
@@ -61,19 +60,6 @@
 %% code is confined to xsend/2, xrecv/2 and transport_close/1.
 
 %% --- FFI surface (mirrors the MemAdapter verbs in ridge_rt.erl) ---
-
-%% pg_connect/16 — std.data.connect/connectWith. The pre-isolation entry point,
-%% kept as a shim that delegates to pg_connect/17 at the SQL default
-%% (read_committed) until the stdlib passes the level itself.
-pg_connect(Host, Port, Database, User, Password, SslMode, PoolSize,
-           ConnectTimeoutMs, QueryTimeoutMs, CheckoutTimeoutMs,
-           IdleTimeoutMs, MaxLifetimeMs, HealthCheckMs,
-           ConnectRetries, RetryBackoffMs, MaxQueueDepth) ->
-    pg_connect(Host, Port, Database, User, Password, SslMode, PoolSize,
-               ConnectTimeoutMs, QueryTimeoutMs, CheckoutTimeoutMs,
-               IdleTimeoutMs, MaxLifetimeMs, HealthCheckMs,
-               ConnectRetries, RetryBackoffMs, MaxQueueDepth,
-               <<"read_committed">>).
 
 %% pg_connect/17 — open and authenticate one connection from the config fields,
 %% then start a pool manager seeded with it and return the Ridge handle

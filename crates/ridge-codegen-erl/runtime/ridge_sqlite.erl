@@ -34,7 +34,6 @@
 -module(ridge_sqlite).
 
 -export([
-    sqlite_connect/4,
     sqlite_connect/5,
     sqlite_all/2,
     sqlite_get_rows/4,
@@ -163,14 +162,6 @@ assert_version() ->
 %% ==================================================================
 %% Adapter verbs
 %% ==================================================================
-
-%% sqlite_connect(Path, BusyTimeoutMs, JournalMode, ForeignKeys) -> Result Sqlite Error
-%%
-%% The pre-isolation entry point, kept as a shim that delegates to
-%% sqlite_connect/5 at SQLite's native level (serializable) until the stdlib
-%% passes the level itself.
-sqlite_connect(Path, BusyTimeoutMs, JournalMode, ForeignKeys) ->
-    sqlite_connect(Path, BusyTimeoutMs, JournalMode, ForeignKeys, <<"serializable">>).
 
 %% sqlite_connect(Path, BusyTimeoutMs, JournalMode, ForeignKeys, DefaultIsolation) -> Result Sqlite Error
 %%

@@ -417,6 +417,10 @@ open_tx(Level, State) ->
                     {{ok, ok}, State#{depth => 1, tx_level => Level,
                                       ru_on => Level =:= <<"read_uncommitted">>}};
                 {error, E} ->
+                    %% The pragma was already relaxed; restore it so the
+                    %% connection never keeps relaxed reads without an open
+                    %% transaction.
+                    maybe_restore_ru(Res, Level =:= <<"read_uncommitted">>),
                     {{error, db_error(E)}, State}
             end;
         {error, E} ->

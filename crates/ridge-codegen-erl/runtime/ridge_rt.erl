@@ -2014,7 +2014,15 @@ mem_begin(Id) -> mem_call({begin_tx, Id}).
 %% mem_begin/2 — the same at an explicit isolation level (Repo.transactionWith).
 %% The in-memory store is trivially serializable, so the level only takes part
 %% in the nested-mismatch check. Result Unit Error.
-mem_begin(Id, Level) -> mem_call({begin_tx, Id, Level}).
+mem_begin(Id, Level) -> mem_call({begin_tx, Id, known_isolation(Level)}).
+
+%% Validate an isolation level name crossing the FFI; an unknown name reads as
+%% the read_committed fallback so a bad value can never take part in the
+%% nested-mismatch check as a level the runtime did not intend.
+known_isolation(<<"read_uncommitted">>) -> <<"read_uncommitted">>;
+known_isolation(<<"repeatable_read">>)  -> <<"repeatable_read">>;
+known_isolation(<<"serializable">>)     -> <<"serializable">>;
+known_isolation(_)                      -> <<"read_committed">>.
 
 %% mem_commit/1 — commit the innermost open transaction on store Id: drop its
 %% snapshot, keeping the current rows. Result Unit Error.
@@ -2253,6 +2261,7 @@ mem_keeper_loop(State) ->
             %% Drop every table of store Id and any open transaction snapshot,
             %% leaving other stores untouched.
             erase({mem_tx, Id}),
+            erase({mem_tx_level, Id}),
             Without = maps:filter(fun(K, _) -> not mem_key_of(Id, K) end, State),
             From ! {Ref, {ok, ok}},
             mem_keeper_loop(Without);

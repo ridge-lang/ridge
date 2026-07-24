@@ -685,6 +685,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "dbErrorConstraint",
             "dbErrorColumn",
             "dbErrorTable",
+            // Whether a storage error is a transient contention failure worth
+            // retrying (a serialization failure, deadlock, or busy database).
+            "dbErrorIsTransient",
             // Transaction isolation levels: the `IsolationLevel` union and its
             // variants, and the wire-name projection the adapter instances call
             // to spell the level for the runtime backends.
@@ -724,6 +727,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // Connection lifecycle: release a connection's pool (Postgres) or forget
             // the in-memory store, the counterpart to `connect`/`memAdapter`.
             "close",
+            // The command-retry policy stamped on the handle at open — the
+            // fallback `Repo.transactionWithRetry` reads when called with `None`.
+            "retryPolicy",
             // Schema seam the `std.migrate` runner compiles a migration onto:
             // create/drop a table, add/drop a column, create an index, and the
             // migration tracking-table reads and writes.
@@ -773,6 +779,16 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // Set the isolation level `Repo.transaction` opens transactions at
             // on the pool; `Repo.transactionWith` overrides it per transaction.
             "withDefaultIsolation",
+            // Retry tuning for transient command failures: the `RetryPolicy`
+            // record, its default, and its `withRetry*` setters; and the pool
+            // setter for the policy `Repo.transactionWithRetry` falls back to
+            // when called with `None`.
+            "RetryPolicy",
+            "defaultRetryPolicy",
+            "withRetryMaxAttempts",
+            "withRetryBaseBackoffMs",
+            "withRetryMaxBackoffMs",
+            "withCommandRetry",
             // The SQLite adapter: the opaque handle, its config record and presets,
             // and the unified `connect`/`Connect` seam it shares with Postgres.
             "Sqlite",
@@ -782,6 +798,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // Set the isolation level `Repo.transaction` opens transactions at
             // on a SQLite connection.
             "withSqliteDefaultIsolation",
+            // Set the command-retry policy `Repo.transactionWithRetry` falls
+            // back to on a SQLite connection.
+            "withSqliteCommandRetry",
             "connectSqlite",
         ],
     ),

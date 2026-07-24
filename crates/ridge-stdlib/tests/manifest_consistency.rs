@@ -436,6 +436,7 @@ fn signature_shape_consistency() {
                         | "withRetryBackoffMs"
                         | "withMaxQueueDepth"
                         | "withDefaultIsolation"
+                        | "withCommandRetry"
                         // `connectSqlite` returns the reconciled `Sqlite`, and the
                         // `sqliteFile`/`sqliteMemory` presets return the reconciled
                         // `SqliteConfig`, so all are seeded via `reconciled_fn_scheme`.
@@ -443,6 +444,7 @@ fn signature_shape_consistency() {
                         | "sqliteFile"
                         | "sqliteMemory"
                         | "withSqliteDefaultIsolation"
+                        | "withSqliteCommandRetry"
                 )
             {
                 continue;
@@ -450,7 +452,10 @@ fn signature_shape_consistency() {
             // std.data's typed-error helpers are seeded via `reconciled_fn_scheme`
             // (they read or return the reconciled `DbErrorKind`), not the
             // `stdlib_signature` table this shape check covers. `isolationLevelName`
-            // reads the reconciled `IsolationLevel` the same way.
+            // reads the reconciled `IsolationLevel` the same way, and the retry
+            // surface — the `defaultRetryPolicy` baseline, the `withRetry*`
+            // setters, and the `dbErrorIsTransient` predicate — reads or returns
+            // the reconciled `RetryPolicy`.
             if dotted == "std.data"
                 && matches!(
                     *fn_name,
@@ -459,6 +464,11 @@ fn signature_shape_consistency() {
                         | "dbErrorColumn"
                         | "dbErrorTable"
                         | "isolationLevelName"
+                        | "defaultRetryPolicy"
+                        | "withRetryMaxAttempts"
+                        | "withRetryBaseBackoffMs"
+                        | "withRetryMaxBackoffMs"
+                        | "dbErrorIsTransient"
                 )
             {
                 continue;

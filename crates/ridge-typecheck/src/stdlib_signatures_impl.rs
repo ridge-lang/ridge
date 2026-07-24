@@ -2171,6 +2171,7 @@ mod tests {
                             | "commit"
                             | "rollback"
                             | "close"
+                            | "retryPolicy"
                             | "ddlCreate"
                             | "ddlDrop"
                             | "ddlAddColumn"
@@ -2206,6 +2207,7 @@ mod tests {
                             | "withRetryBackoffMs"
                             | "withMaxQueueDepth"
                             | "withDefaultIsolation"
+                            | "withCommandRetry"
                             // SQLite: the reconciled `Sqlite` handle and `SqliteConfig`
                             // settings, plus `connectSqlite` and the `sqliteFile`/
                             // `sqliteMemory` presets, all name reconciled types and are
@@ -2216,6 +2218,7 @@ mod tests {
                             | "sqliteFile"
                             | "sqliteMemory"
                             | "withSqliteDefaultIsolation"
+                            | "withSqliteCommandRetry"
                             // Typed database errors: the reconciled `DbErrorKind`
                             // union, its variants, the classifier, and the accessors
                             // are seeded via `reconciled_decls` / `reconciled_ctor_scheme`
@@ -2244,6 +2247,18 @@ mod tests {
                             | "RepeatableRead"
                             | "Serializable"
                             | "isolationLevelName"
+                            // Transient command retry: the reconciled
+                            // `RetryPolicy` record is seeded via
+                            // `reconciled_decls`, and its default, its setters,
+                            // and the transient-error predicate are seeded via
+                            // `reconciled_fn_scheme`, not this hand-curated
+                            // table.
+                            | "RetryPolicy"
+                            | "defaultRetryPolicy"
+                            | "withRetryMaxAttempts"
+                            | "withRetryBaseBackoffMs"
+                            | "withRetryMaxBackoffMs"
+                            | "dbErrorIsTransient"
                     )
                 {
                     continue;

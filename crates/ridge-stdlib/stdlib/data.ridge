@@ -59,6 +59,31 @@ pub fn isolationLevelName (level: IsolationLevel) -> Text =
         RepeatableRead  -> "repeatable_read"
         Serializable    -> "serializable"
 
+-- Retry tuning for a transient command failure — a serialization failure,
+-- deadlock, or busy database that a fresh attempt can clear. `maxAttempts`
+-- bounds the total tries (1 runs the attempt once, no retry); the pause before
+-- retry `n` is drawn at random between zero and `baseBackoffMs × 2^(n-1)`,
+-- capped at `maxBackoffMs`, so colliding transactions back off out of step
+-- instead of retrying in lock-step. Values are clamped at use: at least one
+-- attempt, non-negative backoffs.
+pub type RetryPolicy = { maxAttempts: Int, baseBackoffMs: Int, maxBackoffMs: Int }
+
+-- The default policy: three attempts backed off from 50 ms up to two seconds.
+pub fn defaultRetryPolicy -> RetryPolicy =
+    RetryPolicy { maxAttempts = 3, baseBackoffMs = 50, maxBackoffMs = 2000 }
+
+-- Set the total number of tries; 1 disables retry.
+pub fn withRetryMaxAttempts (maxAttempts: Int) (policy: RetryPolicy) -> RetryPolicy =
+    RetryPolicy { maxAttempts = maxAttempts, baseBackoffMs = policy.baseBackoffMs, maxBackoffMs = policy.maxBackoffMs }
+
+-- Set the backoff the first retry draws from, doubling per retry.
+pub fn withRetryBaseBackoffMs (baseBackoffMs: Int) (policy: RetryPolicy) -> RetryPolicy =
+    RetryPolicy { maxAttempts = policy.maxAttempts, baseBackoffMs = baseBackoffMs, maxBackoffMs = policy.maxBackoffMs }
+
+-- Cap how long a single retry pause can be.
+pub fn withRetryMaxBackoffMs (maxBackoffMs: Int) (policy: RetryPolicy) -> RetryPolicy =
+    RetryPolicy { maxAttempts = policy.maxAttempts, baseBackoffMs = policy.baseBackoffMs, maxBackoffMs = maxBackoffMs }
+
 -- Read an extension field a backend attached to a raw error — the constraint,
 -- table, or column a Postgres `ErrorResponse` named — or empty when it reported
 -- none.
@@ -96,6 +121,22 @@ pub fn dbErrorColumn (e: Error) -> Text =
 -- reported none.
 pub fn dbErrorTable (e: Error) -> Text =
     errorField "table" e
+
+-- Whether a storage error is a transient contention failure worth retrying:
+-- the server aborted the command cleanly and a fresh attempt can commit —
+-- a serialization failure (`40001`) or deadlock (`40P01`) from Postgres, a
+-- busy or locked SQLite database (`sqlite.5`/`sqlite.6`, after the busy
+-- timeout already waited). Everything else is permanent for these purposes:
+-- constraint violations fail the same way every time, and a transport fault
+-- is never retried because the driver cannot know whether the write committed
+-- — re-running it could apply the write twice.
+pub fn dbErrorIsTransient (e: Error) -> Bool =
+    let code = e.code
+    if code == "db.error.40001" then true
+    else if code == "db.error.40P01" then true
+    else if code == "db.error.sqlite.5" then true
+    else if code == "db.error.sqlite.6" then true
+    else false
 
 -- The storage seam. `a` is the connection-handle type; each backend provides an
 -- instance. `appendRow` appends a row; `all` returns every row of a table;
@@ -184,6 +225,7 @@ pub class Adapter a =
     commit   (conn: a) -> Result Unit Error
     rollback (conn: a) -> Result Unit Error
     close    (conn: a) -> Result Unit Error
+    retryPolicy (conn: a) -> RetryPolicy
     ddlCreate (conn: a) (table: Text) (columns: List (Text, Text, Bool, Bool, Bool)) -> Result Unit Error
     ddlDrop (conn: a) (table: Text) -> Result Unit Error
     ddlAddColumn (conn: a) (table: Text) (column: (Text, Text, Bool, Bool, Bool)) -> Result Unit Error
@@ -372,6 +414,8 @@ instance Adapter MemAdapter =
         _memRollback conn.id
     close (conn: MemAdapter) -> Result Unit Error =
         _memClose conn.id
+    retryPolicy (conn: MemAdapter) -> RetryPolicy =
+        defaultRetryPolicy ()
     ddlCreate (conn: MemAdapter) (table: Text) (columns: List (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
         _memDdlCreate conn.id table columns
     ddlDrop (conn: MemAdapter) (table: Text) -> Result Unit Error =
@@ -414,8 +458,10 @@ fn firstRow (rows: List (Map Text SqlValue)) -> Option (Map Text SqlValue) =
 
 -- A handle to an open Postgres connection. Opaque: `connect` is the only way to
 -- make one, and the `id` it carries selects this connection in the runtime's
--- handle registry, the same id-as-handle shape `MemAdapter` uses.
-pub opaque type Postgres = { id: Int }
+-- handle registry, the same id-as-handle shape `MemAdapter` uses. The handle
+-- also carries the pool's command-retry policy, stamped by `connectWith` at
+-- open, so `Repo.transactionWithRetry` can read the fallback policy.
+pub opaque type Postgres = { id: Int, commandRetry: RetryPolicy }
 
 -- Connection settings for `connect`. `sslMode` is "disable", "require" (encrypt
 -- without verifying the server certificate), or "verify-full" (encrypt and
@@ -452,10 +498,14 @@ pub type PostgresConfig = { host: Text, port: Int, database: Text, user: Text, p
 -- transaction. `defaultPool` leaves it at `ReadCommitted`, the level Postgres
 -- itself defaults to.
 --
+-- `commandRetry` is the policy `Repo.transactionWithRetry` falls back to on
+-- this pool when called with `None`; `defaultPool` leaves it at
+-- `defaultRetryPolicy`.
+--
 -- `connect` uses `defaultPool`; `connectWith` takes a tuned one, built by piping
 -- `defaultPool ()` through the `with*` setters:
 --   connectWith config (defaultPool () |> withPoolSize 20 |> withQueryTimeoutMs 60000)
-pub type PoolConfig = { size: Int, connectTimeoutMs: Int, queryTimeoutMs: Int, checkoutTimeoutMs: Int, idleTimeoutMs: Int, maxLifetimeMs: Int, healthCheckMs: Int, connectRetries: Int, retryBackoffMs: Int, maxQueueDepth: Int, defaultIsolation: IsolationLevel }
+pub type PoolConfig = { size: Int, connectTimeoutMs: Int, queryTimeoutMs: Int, checkoutTimeoutMs: Int, idleTimeoutMs: Int, maxLifetimeMs: Int, healthCheckMs: Int, connectRetries: Int, retryBackoffMs: Int, maxQueueDepth: Int, defaultIsolation: IsolationLevel, commandRetry: RetryPolicy }
 
 -- The default pool: ten connections, a ten-second connect handshake, a
 -- thirty-second statement timeout, and a five-second wait to borrow a
@@ -465,68 +515,78 @@ pub type PoolConfig = { size: Int, connectTimeoutMs: Int, queryTimeoutMs: Int, c
 -- retries are off and the wait queue is unbounded, so a connection failure
 -- surfaces at once and a full pool makes callers wait out the checkout timeout.
 pub fn defaultPool -> PoolConfig =
-    PoolConfig { size = 10, connectTimeoutMs = 10000, queryTimeoutMs = 30000, checkoutTimeoutMs = 5000, idleTimeoutMs = 600000, maxLifetimeMs = 1800000, healthCheckMs = 0, connectRetries = 0, retryBackoffMs = 200, maxQueueDepth = 0, defaultIsolation = ReadCommitted }
+    PoolConfig { size = 10, connectTimeoutMs = 10000, queryTimeoutMs = 30000, checkoutTimeoutMs = 5000, idleTimeoutMs = 600000, maxLifetimeMs = 1800000, healthCheckMs = 0, connectRetries = 0, retryBackoffMs = 200, maxQueueDepth = 0, defaultIsolation = ReadCommitted, commandRetry = defaultRetryPolicy () }
 
 -- Cap the number of connections the pool opens.
 pub fn withPoolSize (size: Int) (pool: PoolConfig) -> PoolConfig =
-    PoolConfig { size = size, connectTimeoutMs = pool.connectTimeoutMs, queryTimeoutMs = pool.queryTimeoutMs, checkoutTimeoutMs = pool.checkoutTimeoutMs, idleTimeoutMs = pool.idleTimeoutMs, maxLifetimeMs = pool.maxLifetimeMs, healthCheckMs = pool.healthCheckMs, connectRetries = pool.connectRetries, retryBackoffMs = pool.retryBackoffMs, maxQueueDepth = pool.maxQueueDepth, defaultIsolation = pool.defaultIsolation }
+    PoolConfig { size = size, connectTimeoutMs = pool.connectTimeoutMs, queryTimeoutMs = pool.queryTimeoutMs, checkoutTimeoutMs = pool.checkoutTimeoutMs, idleTimeoutMs = pool.idleTimeoutMs, maxLifetimeMs = pool.maxLifetimeMs, healthCheckMs = pool.healthCheckMs, connectRetries = pool.connectRetries, retryBackoffMs = pool.retryBackoffMs, maxQueueDepth = pool.maxQueueDepth, defaultIsolation = pool.defaultIsolation, commandRetry = pool.commandRetry }
 
 -- Set the connect-handshake timeout, in milliseconds.
 pub fn withConnectTimeoutMs (connectTimeoutMs: Int) (pool: PoolConfig) -> PoolConfig =
-    PoolConfig { size = pool.size, connectTimeoutMs = connectTimeoutMs, queryTimeoutMs = pool.queryTimeoutMs, checkoutTimeoutMs = pool.checkoutTimeoutMs, idleTimeoutMs = pool.idleTimeoutMs, maxLifetimeMs = pool.maxLifetimeMs, healthCheckMs = pool.healthCheckMs, connectRetries = pool.connectRetries, retryBackoffMs = pool.retryBackoffMs, maxQueueDepth = pool.maxQueueDepth, defaultIsolation = pool.defaultIsolation }
+    PoolConfig { size = pool.size, connectTimeoutMs = connectTimeoutMs, queryTimeoutMs = pool.queryTimeoutMs, checkoutTimeoutMs = pool.checkoutTimeoutMs, idleTimeoutMs = pool.idleTimeoutMs, maxLifetimeMs = pool.maxLifetimeMs, healthCheckMs = pool.healthCheckMs, connectRetries = pool.connectRetries, retryBackoffMs = pool.retryBackoffMs, maxQueueDepth = pool.maxQueueDepth, defaultIsolation = pool.defaultIsolation, commandRetry = pool.commandRetry }
 
 -- Set the per-statement timeout, in milliseconds.
 pub fn withQueryTimeoutMs (queryTimeoutMs: Int) (pool: PoolConfig) -> PoolConfig =
-    PoolConfig { size = pool.size, connectTimeoutMs = pool.connectTimeoutMs, queryTimeoutMs = queryTimeoutMs, checkoutTimeoutMs = pool.checkoutTimeoutMs, idleTimeoutMs = pool.idleTimeoutMs, maxLifetimeMs = pool.maxLifetimeMs, healthCheckMs = pool.healthCheckMs, connectRetries = pool.connectRetries, retryBackoffMs = pool.retryBackoffMs, maxQueueDepth = pool.maxQueueDepth, defaultIsolation = pool.defaultIsolation }
+    PoolConfig { size = pool.size, connectTimeoutMs = pool.connectTimeoutMs, queryTimeoutMs = queryTimeoutMs, checkoutTimeoutMs = pool.checkoutTimeoutMs, idleTimeoutMs = pool.idleTimeoutMs, maxLifetimeMs = pool.maxLifetimeMs, healthCheckMs = pool.healthCheckMs, connectRetries = pool.connectRetries, retryBackoffMs = pool.retryBackoffMs, maxQueueDepth = pool.maxQueueDepth, defaultIsolation = pool.defaultIsolation, commandRetry = pool.commandRetry }
 
 -- Set the timeout for borrowing a connection from a full pool, in milliseconds.
 pub fn withCheckoutTimeoutMs (checkoutTimeoutMs: Int) (pool: PoolConfig) -> PoolConfig =
-    PoolConfig { size = pool.size, connectTimeoutMs = pool.connectTimeoutMs, queryTimeoutMs = pool.queryTimeoutMs, checkoutTimeoutMs = checkoutTimeoutMs, idleTimeoutMs = pool.idleTimeoutMs, maxLifetimeMs = pool.maxLifetimeMs, healthCheckMs = pool.healthCheckMs, connectRetries = pool.connectRetries, retryBackoffMs = pool.retryBackoffMs, maxQueueDepth = pool.maxQueueDepth, defaultIsolation = pool.defaultIsolation }
+    PoolConfig { size = pool.size, connectTimeoutMs = pool.connectTimeoutMs, queryTimeoutMs = pool.queryTimeoutMs, checkoutTimeoutMs = checkoutTimeoutMs, idleTimeoutMs = pool.idleTimeoutMs, maxLifetimeMs = pool.maxLifetimeMs, healthCheckMs = pool.healthCheckMs, connectRetries = pool.connectRetries, retryBackoffMs = pool.retryBackoffMs, maxQueueDepth = pool.maxQueueDepth, defaultIsolation = pool.defaultIsolation, commandRetry = pool.commandRetry }
 
 -- Set how long an idle connection is kept before it is closed, in milliseconds;
 -- zero disables idle eviction.
 pub fn withIdleTimeoutMs (idleTimeoutMs: Int) (pool: PoolConfig) -> PoolConfig =
-    PoolConfig { size = pool.size, connectTimeoutMs = pool.connectTimeoutMs, queryTimeoutMs = pool.queryTimeoutMs, checkoutTimeoutMs = pool.checkoutTimeoutMs, idleTimeoutMs = idleTimeoutMs, maxLifetimeMs = pool.maxLifetimeMs, healthCheckMs = pool.healthCheckMs, connectRetries = pool.connectRetries, retryBackoffMs = pool.retryBackoffMs, maxQueueDepth = pool.maxQueueDepth, defaultIsolation = pool.defaultIsolation }
+    PoolConfig { size = pool.size, connectTimeoutMs = pool.connectTimeoutMs, queryTimeoutMs = pool.queryTimeoutMs, checkoutTimeoutMs = pool.checkoutTimeoutMs, idleTimeoutMs = idleTimeoutMs, maxLifetimeMs = pool.maxLifetimeMs, healthCheckMs = pool.healthCheckMs, connectRetries = pool.connectRetries, retryBackoffMs = pool.retryBackoffMs, maxQueueDepth = pool.maxQueueDepth, defaultIsolation = pool.defaultIsolation, commandRetry = pool.commandRetry }
 
 -- Set how long a connection may stay open before it is recycled, in
 -- milliseconds; zero disables lifetime recycling.
 pub fn withMaxLifetimeMs (maxLifetimeMs: Int) (pool: PoolConfig) -> PoolConfig =
-    PoolConfig { size = pool.size, connectTimeoutMs = pool.connectTimeoutMs, queryTimeoutMs = pool.queryTimeoutMs, checkoutTimeoutMs = pool.checkoutTimeoutMs, idleTimeoutMs = pool.idleTimeoutMs, maxLifetimeMs = maxLifetimeMs, healthCheckMs = pool.healthCheckMs, connectRetries = pool.connectRetries, retryBackoffMs = pool.retryBackoffMs, maxQueueDepth = pool.maxQueueDepth, defaultIsolation = pool.defaultIsolation }
+    PoolConfig { size = pool.size, connectTimeoutMs = pool.connectTimeoutMs, queryTimeoutMs = pool.queryTimeoutMs, checkoutTimeoutMs = pool.checkoutTimeoutMs, idleTimeoutMs = pool.idleTimeoutMs, maxLifetimeMs = maxLifetimeMs, healthCheckMs = pool.healthCheckMs, connectRetries = pool.connectRetries, retryBackoffMs = pool.retryBackoffMs, maxQueueDepth = pool.maxQueueDepth, defaultIsolation = pool.defaultIsolation, commandRetry = pool.commandRetry }
 
 -- Set how often an idle connection is health-checked with a `SELECT 1`, in
 -- milliseconds; zero disables the active health-check.
 pub fn withHealthCheckMs (healthCheckMs: Int) (pool: PoolConfig) -> PoolConfig =
-    PoolConfig { size = pool.size, connectTimeoutMs = pool.connectTimeoutMs, queryTimeoutMs = pool.queryTimeoutMs, checkoutTimeoutMs = pool.checkoutTimeoutMs, idleTimeoutMs = pool.idleTimeoutMs, maxLifetimeMs = pool.maxLifetimeMs, healthCheckMs = healthCheckMs, connectRetries = pool.connectRetries, retryBackoffMs = pool.retryBackoffMs, maxQueueDepth = pool.maxQueueDepth, defaultIsolation = pool.defaultIsolation }
+    PoolConfig { size = pool.size, connectTimeoutMs = pool.connectTimeoutMs, queryTimeoutMs = pool.queryTimeoutMs, checkoutTimeoutMs = pool.checkoutTimeoutMs, idleTimeoutMs = pool.idleTimeoutMs, maxLifetimeMs = pool.maxLifetimeMs, healthCheckMs = healthCheckMs, connectRetries = pool.connectRetries, retryBackoffMs = pool.retryBackoffMs, maxQueueDepth = pool.maxQueueDepth, defaultIsolation = pool.defaultIsolation, commandRetry = pool.commandRetry }
 
 -- Set how many times a refused connection is retried before giving up; zero
 -- disables retries. Only a refused connect is retried — an authentication, TLS,
 -- or SQL error is permanent and fails at once.
 pub fn withConnectRetries (connectRetries: Int) (pool: PoolConfig) -> PoolConfig =
-    PoolConfig { size = pool.size, connectTimeoutMs = pool.connectTimeoutMs, queryTimeoutMs = pool.queryTimeoutMs, checkoutTimeoutMs = pool.checkoutTimeoutMs, idleTimeoutMs = pool.idleTimeoutMs, maxLifetimeMs = pool.maxLifetimeMs, healthCheckMs = pool.healthCheckMs, connectRetries = connectRetries, retryBackoffMs = pool.retryBackoffMs, maxQueueDepth = pool.maxQueueDepth, defaultIsolation = pool.defaultIsolation }
+    PoolConfig { size = pool.size, connectTimeoutMs = pool.connectTimeoutMs, queryTimeoutMs = pool.queryTimeoutMs, checkoutTimeoutMs = pool.checkoutTimeoutMs, idleTimeoutMs = pool.idleTimeoutMs, maxLifetimeMs = pool.maxLifetimeMs, healthCheckMs = pool.healthCheckMs, connectRetries = connectRetries, retryBackoffMs = pool.retryBackoffMs, maxQueueDepth = pool.maxQueueDepth, defaultIsolation = pool.defaultIsolation, commandRetry = pool.commandRetry }
 
 -- Set how long to wait between connection retries, in milliseconds; it has no
 -- effect unless `connectRetries` is set.
 pub fn withRetryBackoffMs (retryBackoffMs: Int) (pool: PoolConfig) -> PoolConfig =
-    PoolConfig { size = pool.size, connectTimeoutMs = pool.connectTimeoutMs, queryTimeoutMs = pool.queryTimeoutMs, checkoutTimeoutMs = pool.checkoutTimeoutMs, idleTimeoutMs = pool.idleTimeoutMs, maxLifetimeMs = pool.maxLifetimeMs, healthCheckMs = pool.healthCheckMs, connectRetries = pool.connectRetries, retryBackoffMs = retryBackoffMs, maxQueueDepth = pool.maxQueueDepth, defaultIsolation = pool.defaultIsolation }
+    PoolConfig { size = pool.size, connectTimeoutMs = pool.connectTimeoutMs, queryTimeoutMs = pool.queryTimeoutMs, checkoutTimeoutMs = pool.checkoutTimeoutMs, idleTimeoutMs = pool.idleTimeoutMs, maxLifetimeMs = pool.maxLifetimeMs, healthCheckMs = pool.healthCheckMs, connectRetries = pool.connectRetries, retryBackoffMs = retryBackoffMs, maxQueueDepth = pool.maxQueueDepth, defaultIsolation = pool.defaultIsolation, commandRetry = pool.commandRetry }
 
 -- Cap how many callers may wait for a connection when the pool is full; zero
 -- leaves the wait queue unbounded. Beyond the cap a checkout fails fast instead
 -- of lengthening the queue.
 pub fn withMaxQueueDepth (maxQueueDepth: Int) (pool: PoolConfig) -> PoolConfig =
-    PoolConfig { size = pool.size, connectTimeoutMs = pool.connectTimeoutMs, queryTimeoutMs = pool.queryTimeoutMs, checkoutTimeoutMs = pool.checkoutTimeoutMs, idleTimeoutMs = pool.idleTimeoutMs, maxLifetimeMs = pool.maxLifetimeMs, healthCheckMs = pool.healthCheckMs, connectRetries = pool.connectRetries, retryBackoffMs = pool.retryBackoffMs, maxQueueDepth = maxQueueDepth, defaultIsolation = pool.defaultIsolation }
+    PoolConfig { size = pool.size, connectTimeoutMs = pool.connectTimeoutMs, queryTimeoutMs = pool.queryTimeoutMs, checkoutTimeoutMs = pool.checkoutTimeoutMs, idleTimeoutMs = pool.idleTimeoutMs, maxLifetimeMs = pool.maxLifetimeMs, healthCheckMs = pool.healthCheckMs, connectRetries = pool.connectRetries, retryBackoffMs = pool.retryBackoffMs, maxQueueDepth = maxQueueDepth, defaultIsolation = pool.defaultIsolation, commandRetry = pool.commandRetry }
 
 -- Set the isolation level `Repo.transaction` opens transactions at on this
 -- pool; `Repo.transactionWith` overrides it per transaction. The default is
 -- `ReadCommitted`, the level Postgres itself defaults to.
 pub fn withDefaultIsolation (level: IsolationLevel) (pool: PoolConfig) -> PoolConfig =
-    PoolConfig { size = pool.size, connectTimeoutMs = pool.connectTimeoutMs, queryTimeoutMs = pool.queryTimeoutMs, checkoutTimeoutMs = pool.checkoutTimeoutMs, idleTimeoutMs = pool.idleTimeoutMs, maxLifetimeMs = pool.maxLifetimeMs, healthCheckMs = pool.healthCheckMs, connectRetries = pool.connectRetries, retryBackoffMs = pool.retryBackoffMs, maxQueueDepth = pool.maxQueueDepth, defaultIsolation = level }
+    PoolConfig { size = pool.size, connectTimeoutMs = pool.connectTimeoutMs, queryTimeoutMs = pool.queryTimeoutMs, checkoutTimeoutMs = pool.checkoutTimeoutMs, idleTimeoutMs = pool.idleTimeoutMs, maxLifetimeMs = pool.maxLifetimeMs, healthCheckMs = pool.healthCheckMs, connectRetries = pool.connectRetries, retryBackoffMs = pool.retryBackoffMs, maxQueueDepth = pool.maxQueueDepth, defaultIsolation = level, commandRetry = pool.commandRetry }
+
+-- Set the policy `Repo.transactionWithRetry` falls back to on this pool when
+-- called with `None`; the default is `defaultRetryPolicy`.
+pub fn withCommandRetry (policy: RetryPolicy) (pool: PoolConfig) -> PoolConfig =
+    PoolConfig { size = pool.size, connectTimeoutMs = pool.connectTimeoutMs, queryTimeoutMs = pool.queryTimeoutMs, checkoutTimeoutMs = pool.checkoutTimeoutMs, idleTimeoutMs = pool.idleTimeoutMs, maxLifetimeMs = pool.maxLifetimeMs, healthCheckMs = pool.healthCheckMs, connectRetries = pool.connectRetries, retryBackoffMs = pool.retryBackoffMs, maxQueueDepth = pool.maxQueueDepth, defaultIsolation = pool.defaultIsolation, commandRetry = policy }
+
+-- What the runtime's connect handshake actually returns: the bare handle id.
+-- `connectWith` wraps it with the pool's command-retry policy into the public
+-- opaque handle.
+type PgRaw = { id: Int }
 
 -- Open a connection from the settings; the runtime speaks the Postgres wire
 -- protocol directly. Returns the connection handle, or an `Err` if the connect
 -- or authentication handshake fails. The trailing `defaultIsolation` is the
 -- isolation level `Repo.transaction` opens transactions at on this pool.
 @ffi("ridge_pg", "pg_connect", 17)
-fn _pgConnect (host: Text) (port: Int) (database: Text) (user: Text) (password: Text) (sslMode: Text) (poolSize: Int) (connectTimeoutMs: Int) (queryTimeoutMs: Int) (checkoutTimeoutMs: Int) (idleTimeoutMs: Int) (maxLifetimeMs: Int) (healthCheckMs: Int) (connectRetries: Int) (retryBackoffMs: Int) (maxQueueDepth: Int) (defaultIsolation: Text) -> Result Postgres Error
+fn _pgConnect (host: Text) (port: Int) (database: Text) (user: Text) (password: Text) (sslMode: Text) (poolSize: Int) (connectTimeoutMs: Int) (queryTimeoutMs: Int) (checkoutTimeoutMs: Int) (idleTimeoutMs: Int) (maxLifetimeMs: Int) (healthCheckMs: Int) (connectRetries: Int) (retryBackoffMs: Int) (maxQueueDepth: Int) (defaultIsolation: Text) -> Result PgRaw Error
 
 -- Return every row of a table on the connection identified by `id`.
 @ffi("ridge_pg", "pg_all", 2)
@@ -611,7 +671,9 @@ fn pgExecSeq (id: Int) (stmts: List Text) -> Result Unit Error =
 -- `PostgresConfig`, but taking an explicit `PoolConfig` (size and timeouts) in place of
 -- `defaultPool`. The unified `connect` (below) uses `defaultPool`.
 pub fn db connectWith (config: PostgresConfig) (pool: PoolConfig) -> Result Postgres Error =
-    _pgConnect config.host config.port config.database config.user config.password config.sslMode pool.size pool.connectTimeoutMs pool.queryTimeoutMs pool.checkoutTimeoutMs pool.idleTimeoutMs pool.maxLifetimeMs pool.healthCheckMs pool.connectRetries pool.retryBackoffMs pool.maxQueueDepth (isolationLevelName pool.defaultIsolation)
+    match _pgConnect config.host config.port config.database config.user config.password config.sslMode pool.size pool.connectTimeoutMs pool.queryTimeoutMs pool.checkoutTimeoutMs pool.idleTimeoutMs pool.maxLifetimeMs pool.healthCheckMs pool.connectRetries pool.retryBackoffMs pool.maxQueueDepth (isolationLevelName pool.defaultIsolation)
+        Err e   -> Err e
+        Ok raw  -> Ok (Postgres { id = raw.id, commandRetry = pool.commandRetry })
 
 instance Adapter Postgres =
     appendRow (conn: Postgres) (table: Text) (row: Map Text SqlValue) -> Result Unit Error =
@@ -654,6 +716,8 @@ instance Adapter Postgres =
         _pgRollback conn.id
     close (conn: Postgres) -> Result Unit Error =
         _pgClose conn.id
+    retryPolicy (conn: Postgres) -> RetryPolicy =
+        conn.commandRetry
     ddlCreate (conn: Postgres) (table: Text) (columns: List (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
         pgExecUnit conn.id (createTableDdl table columns)
     ddlDrop (conn: Postgres) (table: Text) -> Result Unit Error =
@@ -699,8 +763,9 @@ instance Adapter Postgres =
 
 -- A handle to an open SQLite connection. Opaque: `connect` (with a `SqliteConfig`)
 -- is the only way to make one, and the `id` it carries selects this connection in
--- the runtime's handle registry, the same id-as-handle shape the others use.
-pub opaque type Sqlite = { id: Int }
+-- the runtime's handle registry, the same id-as-handle shape the others use. The
+-- handle also carries the connection's command-retry policy, stamped at open.
+pub opaque type Sqlite = { id: Int, commandRetry: RetryPolicy }
 
 -- Connection settings for a SQLite database. `path` is the database file, or
 -- ":memory:" for a private in-memory database. `busyTimeoutMs` bounds how long a
@@ -710,27 +775,39 @@ pub opaque type Sqlite = { id: Int }
 -- isolation level `Repo.transaction` opens transactions at on this connection;
 -- `Repo.transactionWith` overrides it per transaction. SQLite distinguishes only
 -- `ReadUncommitted` from its serializable default, which the constructors leave
--- set.
-pub type SqliteConfig = { path: Text, busyTimeoutMs: Int, journalMode: Text, foreignKeys: Bool, defaultIsolation: IsolationLevel }
+-- set. `commandRetry` is the policy `Repo.transactionWithRetry` falls back to on
+-- this connection when called with `None`; the presets leave it at
+-- `defaultRetryPolicy`.
+pub type SqliteConfig = { path: Text, busyTimeoutMs: Int, journalMode: Text, foreignKeys: Bool, defaultIsolation: IsolationLevel, commandRetry: RetryPolicy }
 
 -- Settings for a database file with sensible defaults: a five-second busy
 -- timeout, write-ahead logging, and foreign keys enforced.
 pub fn sqliteFile (path: Text) -> SqliteConfig =
-    SqliteConfig { path = path, busyTimeoutMs = 5000, journalMode = "WAL", foreignKeys = true, defaultIsolation = Serializable }
+    SqliteConfig { path = path, busyTimeoutMs = 5000, journalMode = "WAL", foreignKeys = true, defaultIsolation = Serializable, commandRetry = defaultRetryPolicy () }
 
 -- Settings for a private in-memory database (foreign keys on, no journal file).
 pub fn sqliteMemory -> SqliteConfig =
-    SqliteConfig { path = ":memory:", busyTimeoutMs = 5000, journalMode = "", foreignKeys = true, defaultIsolation = Serializable }
+    SqliteConfig { path = ":memory:", busyTimeoutMs = 5000, journalMode = "", foreignKeys = true, defaultIsolation = Serializable, commandRetry = defaultRetryPolicy () }
 
 -- Set the isolation level `Repo.transaction` opens transactions at on this
 -- connection; `Repo.transactionWith` overrides it per transaction. SQLite
 -- distinguishes only `ReadUncommitted` from its serializable default.
 pub fn withSqliteDefaultIsolation (level: IsolationLevel) (config: SqliteConfig) -> SqliteConfig =
-    SqliteConfig { path = config.path, busyTimeoutMs = config.busyTimeoutMs, journalMode = config.journalMode, foreignKeys = config.foreignKeys, defaultIsolation = level }
+    SqliteConfig { path = config.path, busyTimeoutMs = config.busyTimeoutMs, journalMode = config.journalMode, foreignKeys = config.foreignKeys, defaultIsolation = level, commandRetry = config.commandRetry }
+
+-- Set the policy `Repo.transactionWithRetry` falls back to on this connection
+-- when called with `None`; the presets leave it at `defaultRetryPolicy`.
+pub fn withSqliteCommandRetry (policy: RetryPolicy) (config: SqliteConfig) -> SqliteConfig =
+    SqliteConfig { path = config.path, busyTimeoutMs = config.busyTimeoutMs, journalMode = config.journalMode, foreignKeys = config.foreignKeys, defaultIsolation = config.defaultIsolation, commandRetry = policy }
+
+-- What the runtime's connect handshake actually returns: the bare handle id.
+-- `connectSqlite` wraps it with the connection's command-retry policy into the
+-- public opaque handle.
+type SqliteRaw = { id: Int }
 
 -- Open a connection through the native bridge and apply the pragmas. Result Sqlite Error.
 @ffi("ridge_sqlite", "sqlite_connect", 5)
-fn _sqliteConnect (path: Text) (busyTimeoutMs: Int) (journalMode: Text) (foreignKeys: Int) (defaultIsolation: Text) -> Result Sqlite Error
+fn _sqliteConnect (path: Text) (busyTimeoutMs: Int) (journalMode: Text) (foreignKeys: Int) (defaultIsolation: Text) -> Result SqliteRaw Error
 
 @ffi("ridge_sqlite", "sqlite_all", 2)
 fn _sqliteAll (id: Int) (table: Text) -> Result (List (Map Text SqlValue)) Error
@@ -825,6 +902,8 @@ instance Adapter Sqlite =
         _sqliteRollback conn.id
     close (conn: Sqlite) -> Result Unit Error =
         _sqliteClose conn.id
+    retryPolicy (conn: Sqlite) -> RetryPolicy =
+        conn.commandRetry
     ddlCreate (conn: Sqlite) (table: Text) (columns: List (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
         sqliteExecUnit conn.id (createTableDdlFor SqliteDialect table columns)
     ddlDrop (conn: Sqlite) (table: Text) -> Result Unit Error =
@@ -882,4 +961,6 @@ pub fn db connect (config: PostgresConfig) -> Result Postgres Error =
 -- method it type-checks but a direct external call has no codegen bridge. Until one
 -- of those is lifted, the backend is chosen by the connect verb.
 pub fn db connectSqlite (config: SqliteConfig) -> Result Sqlite Error =
-    _sqliteConnect config.path config.busyTimeoutMs config.journalMode (if config.foreignKeys then 1 else 0) (isolationLevelName config.defaultIsolation)
+    match _sqliteConnect config.path config.busyTimeoutMs config.journalMode (if config.foreignKeys then 1 else 0) (isolationLevelName config.defaultIsolation)
+        Err e   -> Err e
+        Ok raw  -> Ok (Sqlite { id = raw.id, commandRetry = config.commandRetry })

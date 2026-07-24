@@ -10,6 +10,29 @@ use ridge_ast::Span;
 use ridge_types::CapabilitySet;
 
 // ---------------------------------------------------------------------------
+// Supporting types
+// ---------------------------------------------------------------------------
+
+/// What kind of declaration a `T014 CapabilityNotDeclared` was raised against.
+///
+/// The check is shared by top-level functions, actor `on` handlers, `init`
+/// blocks, and inner functions; the kind lets the diagnostic speak in the
+/// declaration's own syntax (`fn` / `on` / `init`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapDeclKind {
+    /// A top-level `fn`.
+    Fn,
+    /// An actor `on` message handler.
+    Handler,
+    /// An actor `init` block.
+    Init,
+    /// An inner `fn` — the check compares its declared set against the
+    /// *enclosing* effective set (Rule 4), so `declared` is the enclosing
+    /// set, not the inner fn's own annotation.
+    InnerFn,
+}
+
+// ---------------------------------------------------------------------------
 // TypeError enum
 // ---------------------------------------------------------------------------
 
@@ -187,6 +210,9 @@ pub enum TypeError {
     CapabilityNotDeclared {
         /// Name of the function/handler declaration.
         decl: String,
+        /// What kind of declaration was checked — drives the diagnostic's
+        /// wording (`fn` / `on` / `init` / inner `fn`).
+        kind: CapDeclKind,
         /// Capability set declared by the user.
         declared: CapabilitySet,
         /// Capability set inferred from the body.
@@ -895,6 +921,7 @@ mod tests {
     fn t014() -> TypeError {
         TypeError::CapabilityNotDeclared {
             decl: "procesarConfig".into(),
+            kind: crate::error::CapDeclKind::Fn,
             declared: CapabilitySet::singleton(ridge_ast::Capability::Io),
             inferred: CapabilitySet::singleton(ridge_ast::Capability::Fs),
             missing: CapabilitySet::singleton(ridge_ast::Capability::Fs),

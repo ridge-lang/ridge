@@ -1,0 +1,9 @@
+-- expect: T001
+-- Init bodies are type-checked: assigning a `Text` to an `Int` state field is
+-- a type error. Before init bodies were wired into `typecheck_actor_bodies`
+-- this went unreported and only failed later.
+actor A =
+    state x: Int = 0
+    init () =
+        x <- "not an int"
+    on get -> Int = x

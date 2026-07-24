@@ -1,5 +1,6 @@
 ---
 source: crates/ridge-lower/tests/snapshots.rs
+assertion_line: 23
 expression: rendered
 ---
 module: m0
@@ -18,7 +19,7 @@ items:
       - name: lastRefill
         ty: Con(5)
     init:
-      caps: CapabilitySet(0)
+      caps: CapabilitySet(8)
       params:
         - name: cap
           ty: Con(0)

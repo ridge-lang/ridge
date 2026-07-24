@@ -28,7 +28,7 @@ use ridge_types::{BuiltinTyCons, CapabilitySet};
 
 use crate::caps_infer::{infer_caps, infer_caps_block};
 use crate::ctx::InferCtx;
-use crate::error::TypeError;
+use crate::error::{CapDeclKind, TypeError};
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -60,6 +60,29 @@ pub fn check_caps_decl(
     body: &Expr,
     decl_span: Span,
 ) -> CapabilitySet {
+    check_caps_decl_kind(
+        ctx,
+        b,
+        decl_name,
+        declared,
+        body,
+        decl_span,
+        CapDeclKind::Fn,
+    )
+}
+
+/// [`check_caps_decl`] with an explicit declaration kind, so `T014` speaks in
+/// the declaration's own syntax (`on` for actor handlers, plain `fn`
+/// otherwise).
+pub fn check_caps_decl_kind(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    decl_name: &str,
+    declared: Option<CapabilitySet>,
+    body: &Expr,
+    decl_span: Span,
+    kind: CapDeclKind,
+) -> CapabilitySet {
     // Step 1: Infer caps from the body.
     let inferred = infer_caps(ctx, b, body);
 
@@ -70,6 +93,7 @@ pub fn check_caps_decl(
             let missing = inferred.difference(&declared_set);
             ctx.errors.push(TypeError::CapabilityNotDeclared {
                 decl: decl_name.to_owned(),
+                kind,
                 declared: declared_set,
                 inferred,
                 missing,
@@ -103,6 +127,7 @@ pub fn check_caps_block(
             let missing = inferred.difference(&declared_set);
             ctx.errors.push(TypeError::CapabilityNotDeclared {
                 decl: decl_name.to_owned(),
+                kind: CapDeclKind::Init,
                 declared: declared_set,
                 inferred,
                 missing,
@@ -262,6 +287,7 @@ fn check_body(
                 let missing = inner_declared.difference(&enclosing_effective);
                 ctx.errors.push(TypeError::CapabilityNotDeclared {
                     decl: decl.name.text.clone(),
+                    kind: CapDeclKind::InnerFn,
                     declared: enclosing_effective, // enclosing is the constraint
                     inferred: inner_declared,
                     missing,

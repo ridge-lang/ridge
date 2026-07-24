@@ -1,0 +1,11 @@
+-- expect-clean
+-- A handler that declares the capability its body uses checks cleanly: the
+-- declared set feeds the actor boundary (the union of handler caps) and the
+-- body check at once.
+import std.io as Io
+
+actor Counter =
+    state n: Int = 0
+    on io increment =
+        n <- n + 1
+        Io.println "tick"

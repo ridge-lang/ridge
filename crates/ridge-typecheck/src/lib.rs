@@ -53,7 +53,7 @@ pub use derive::{
     derive_instances, DelegArg, DelegResult, DelegatedMethod, DerivedInstance, DerivedMethodBody,
     FieldShape, SchemaColumnSpec,
 };
-pub use error::TypeError;
+pub use error::{CapDeclKind, TypeError};
 pub use render::{emit_internal, emit_internal_strict, render_type_with};
 pub use ridge_resolve::Severity;
 pub use ridge_types::BuiltinTyCons;
@@ -704,6 +704,8 @@ fn typecheck_actor_bodies(
     ast: &Arc<ridge_ast::Module>,
     arena: &TyConArena,
 ) {
+    use crate::caps_check::{caps_from_ast_slice, check_caps_block, check_caps_decl_kind};
+    use crate::error::CapDeclKind;
     use crate::infer::infer_expr;
     use ridge_ast::ActorMember;
     use ridge_types::TyConKind;
@@ -727,43 +729,104 @@ fn typecheck_actor_bodies(
 
         let mut handler_idx = 0usize;
         for member in &ad.members {
-            let ActorMember::On(handler) = member else {
-                continue;
-            };
-            let Some(handler_schema) = schema.handlers.get(handler_idx) else {
-                handler_idx += 1;
-                continue;
-            };
-            handler_idx += 1;
+            match member {
+                ActorMember::On(handler) => {
+                    let Some(handler_schema) = schema.handlers.get(handler_idx) else {
+                        handler_idx += 1;
+                        continue;
+                    };
+                    handler_idx += 1;
 
-            ctx.env.push_frame();
+                    ctx.env.push_frame();
 
-            // Bind state fields.
-            for field in &schema.state_fields {
-                ctx.env
-                    .bind(field.name.clone(), monoscheme(field.ty.clone()));
-            }
+                    // Bind state fields.
+                    for field in &schema.state_fields {
+                        ctx.env
+                            .bind(field.name.clone(), monoscheme(field.ty.clone()));
+                    }
 
-            // Bind handler parameters.
-            for (param, ty) in handler.params.iter().zip(handler_schema.params.iter()) {
-                match param {
-                    ridge_ast::Param::Bare(id) => {
-                        ctx.env.bind(id.text.clone(), monoscheme(ty.clone()));
+                    // Bind handler parameters.
+                    for (param, ty) in handler.params.iter().zip(handler_schema.params.iter()) {
+                        bind_actor_param(ctx, b, param, ty, &monoscheme);
                     }
-                    ridge_ast::Param::Annotated { name, .. } => {
-                        ctx.env.bind(name.text.clone(), monoscheme(ty.clone()));
-                    }
-                    ridge_ast::Param::PatternAnnotated { pat, span, .. } => {
-                        crate::infer::infer_pattern(ctx, b, pat, ty);
-                        crate::exhaustiveness::check_param_irrefutable(ctx, b, pat, ty, *span);
-                    }
+
+                    // Walk the body purely for side-effect: populates ctx.node_types_accum.
+                    let _ = infer_expr(ctx, b, &handler.body);
+
+                    // Capability-check the body against the handler's declared set
+                    // (empty annotation = pure, the same default a top-level `fn`
+                    // gets): an effect the handler does not declare is a T014, and
+                    // a call needing more than the effective set is a T018. Before
+                    // this, handler bodies were never caps-checked, so an undeclared
+                    // effect escaped the actor's boundary (union of handler caps).
+                    let declared = caps_from_ast_slice(&handler.caps);
+                    check_caps_decl_kind(
+                        ctx,
+                        b,
+                        &handler.name.text,
+                        Some(declared),
+                        &handler.body,
+                        handler.span,
+                        CapDeclKind::Handler,
+                    );
+
+                    ctx.env.pop_frame();
                 }
+                ActorMember::Init(init) => {
+                    ctx.env.push_frame();
+
+                    // Bind state fields.
+                    for field in &schema.state_fields {
+                        ctx.env
+                            .bind(field.name.clone(), monoscheme(field.ty.clone()));
+                    }
+
+                    // Bind init parameters (when the schema collected them).
+                    if let Some(param_tys) = &schema.init_params {
+                        for (param, ty) in init.params.iter().zip(param_tys.iter()) {
+                            bind_actor_param(ctx, b, param, ty, &monoscheme);
+                        }
+                    }
+
+                    // Walk each statement for side-effect: populates
+                    // ctx.node_types_accum and surfaces type errors inside the
+                    // init body, which was previously never type-checked.
+                    for stmt in &init.body.stmts {
+                        let _ = infer_expr(ctx, b, stmt);
+                    }
+
+                    // Capability-check the body against the init's declared set,
+                    // the same rule a handler gets.
+                    let declared = caps_from_ast_slice(&init.caps);
+                    check_caps_block(ctx, b, "init", Some(declared), &init.body, init.span);
+
+                    ctx.env.pop_frame();
+                }
+                ActorMember::State(_) | ActorMember::Mailbox(_) => {}
             }
+        }
+    }
+}
 
-            // Walk the body purely for side-effect: populates ctx.node_types_accum.
-            let _ = infer_expr(ctx, b, &handler.body);
-
-            ctx.env.pop_frame();
+/// Bind one actor-member parameter (`on` handler or `init`) into the current
+/// environment frame, mirroring the top-level `fn` parameter handling.
+fn bind_actor_param(
+    ctx: &mut crate::ctx::InferCtx,
+    b: &BuiltinTyCons,
+    param: &ridge_ast::Param,
+    ty: &ridge_types::Type,
+    monoscheme: &impl Fn(ridge_types::Type) -> Scheme,
+) {
+    match param {
+        ridge_ast::Param::Bare(id) => {
+            ctx.env.bind(id.text.clone(), monoscheme(ty.clone()));
+        }
+        ridge_ast::Param::Annotated { name, .. } => {
+            ctx.env.bind(name.text.clone(), monoscheme(ty.clone()));
+        }
+        ridge_ast::Param::PatternAnnotated { pat, span, .. } => {
+            crate::infer::infer_pattern(ctx, b, pat, ty);
+            crate::exhaustiveness::check_param_irrefutable(ctx, b, pat, ty, *span);
         }
     }
 }

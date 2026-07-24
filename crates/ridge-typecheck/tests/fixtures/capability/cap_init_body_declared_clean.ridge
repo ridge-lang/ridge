@@ -1,0 +1,12 @@
+-- expect-clean
+-- An init that declares the capability its body uses checks cleanly when a
+-- handler also declares it: the actor boundary is the union of handler caps,
+-- and the init's declared set must stay within it (T019 otherwise).
+import std.time as Time
+
+actor Limiter =
+    state lastRefill: Timestamp
+    init time () =
+        lastRefill <- Time.now ()
+    on time now () -> Timestamp =
+        Time.now ()

@@ -1,0 +1,11 @@
+-- expect: T014
+-- Handler bodies are capability-checked against the handler's declared set
+-- (empty = pure, the same default a top-level `fn` gets). `increment` calls
+-- `Io.println` ({io}) without declaring it, so T014 fires on the handler.
+import std.io as Io
+
+actor Counter =
+    state n: Int = 0
+    on increment =
+        n <- n + 1
+        Io.println "tick"

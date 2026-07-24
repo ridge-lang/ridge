@@ -24,7 +24,7 @@ use tempfile::TempDir;
 
 const FIXTURE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/capability");
 
-const REQUIRED_FIXTURES: usize = 7;
+const REQUIRED_FIXTURES: usize = 12;
 
 // ── Workspace setup helpers ──────────────────────────────────────────────────
 

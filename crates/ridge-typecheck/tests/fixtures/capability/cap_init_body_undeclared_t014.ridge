@@ -1,0 +1,11 @@
+-- expect: T014
+-- Init bodies are capability-checked the same way handler bodies are. This
+-- init calls `Time.now` ({time}) without declaring it, so T014 fires on the
+-- init block.
+import std.time as Time
+
+actor Limiter =
+    state lastRefill: Timestamp
+    init () =
+        lastRefill <- Time.now ()
+    on get -> Int = 0

@@ -22,7 +22,7 @@ actor Limiter =
     state refillRate: Float
     state lastRefill: Timestamp
 
-    init (cap: Int) (rate: Float) =
+    init time (cap: Int) (rate: Float) =
         capacity <- cap
         tokens <- Float.fromInt cap
         refillRate <- rate

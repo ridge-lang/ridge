@@ -30,7 +30,7 @@ use ridge_diagnostics::HasErrorCode;
 use ridge_resolve::Severity;
 
 use crate::ctx::InferCtx;
-use crate::error::TypeError;
+use crate::error::{CapDeclKind, TypeError};
 
 // ── Display impl ──────────────────────────────────────────────────────────────
 
@@ -194,15 +194,33 @@ impl fmt::Display for TypeError {
             // Display (prose portion, no source lines):
             Self::CapabilityNotDeclared {
                 decl,
+                kind,
                 declared,
                 missing,
                 inferred,
                 ..
             } => {
-                write!(
-                    f,
-                    "T014: capability not declared\n  function `{decl}` declared as `fn {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `fn {inferred} {decl}`\n    - Remove the call requiring `{missing}`"
-                )
+                match kind {
+                    CapDeclKind::Fn => write!(
+                        f,
+                        "T014: capability not declared\n  function `{decl}` declared as `fn {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `fn {inferred} {decl}`\n    - Remove the call requiring `{missing}`"
+                    ),
+                    CapDeclKind::Handler => write!(
+                        f,
+                        "T014: capability not declared\n  handler `{decl}` declared as `on {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `on {inferred} {decl}`\n    - Remove the call requiring `{missing}`"
+                    ),
+                    CapDeclKind::Init => write!(
+                        f,
+                        "T014: capability not declared\n  the init block declared as `init {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `init {inferred}`\n    - Remove the call requiring `{missing}`"
+                    ),
+                    // Rule 4 compares the inner fn's own annotation against the
+                    // *enclosing* effective set, so the resolution lives on the
+                    // enclosing declaration, not on the inner fn.
+                    CapDeclKind::InnerFn => write!(
+                        f,
+                        "T014: capability not declared\n  inner function `{decl}` declares `{inferred}` but the enclosing scope provides only `{declared}`\n  Options:\n    - Add `{missing}` to the enclosing signature\n    - Remove `{missing}` from `{decl}`"
+                    ),
+                }
             }
 
             // ── T015 ──────────────────────────────────────────────────────────
@@ -1246,6 +1264,7 @@ mod tests {
         };
         let err = TypeError::CapabilityNotDeclared {
             decl: "procesarConfig".into(),
+            kind: CapDeclKind::Fn,
             declared,
             inferred,
             missing,
@@ -1259,6 +1278,38 @@ mod tests {
         assert!(s.contains("Options:"), "options header: {s}");
         assert!(s.contains("Add"), "add option: {s}");
         assert!(s.contains("Remove"), "remove option: {s}");
+    }
+
+    /// The same error speaks in the declaration's own syntax for actor
+    /// members and inner fns.
+    #[test]
+    fn display_t014_decl_kinds() {
+        let base = |kind: CapDeclKind, decl: &str| TypeError::CapabilityNotDeclared {
+            decl: decl.into(),
+            kind,
+            declared: CapabilitySet::PURE,
+            inferred: CapabilitySet::singleton(Capability::Io),
+            missing: CapabilitySet::singleton(Capability::Io),
+            span: sp(),
+        };
+
+        let handler = base(CapDeclKind::Handler, "increment").to_string();
+        assert!(
+            handler.contains("handler `increment`"),
+            "handler: {handler}"
+        );
+        assert!(handler.contains("on {io} increment"), "handler: {handler}");
+
+        let init = base(CapDeclKind::Init, "init").to_string();
+        assert!(init.contains("init block"), "init: {init}");
+        assert!(init.contains("`init {io}`"), "init: {init}");
+
+        let inner = base(CapDeclKind::InnerFn, "helper").to_string();
+        assert!(inner.contains("inner function `helper`"), "inner: {inner}");
+        assert!(
+            inner.contains("enclosing signature"),
+            "inner points at the enclosing decl: {inner}"
+        );
     }
 
     // ── T016 Display — spec §5.4 with witnesses ───────────────────────────────

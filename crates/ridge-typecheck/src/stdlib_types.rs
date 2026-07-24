@@ -190,20 +190,31 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: false,
             is_anon: false,
         },
-        // `std.data` — the Postgres connection handle. Opaque `{ id: Int }`,
-        // declared in Ridge (stdlib/data.ridge); the `id` selects the connection
-        // in the runtime handle registry, the same id-as-handle shape MemAdapter
-        // uses.
+        // `std.data` — the Postgres connection handle. Opaque
+        // `{ id: Int, commandRetry: RetryPolicy }`, declared in Ridge
+        // (stdlib/data.ridge); the `id` selects the connection in the runtime
+        // handle registry, the same id-as-handle shape MemAdapter uses, and the
+        // `commandRetry` is the pool's command-retry policy `connectWith` stamps
+        // at open. Field order mirrors the source so the consistency check holds.
         TyConDecl {
             id: TyConId(base + 4),
             name: "Postgres".to_string(),
             arity: 0,
             kind: TyConKind::Record(RecordSchema::new(
                 vec![],
-                vec![RecordField {
-                    name: "id".to_string(),
-                    ty: Type::Con(b.int, vec![]),
-                }],
+                vec![
+                    RecordField {
+                        name: "id".to_string(),
+                        ty: Type::Con(b.int, vec![]),
+                    },
+                    // The policy `Repo.transactionWithRetry` falls back to on this
+                    // pool — the reconciled `RetryPolicy` declared at the end of
+                    // this block.
+                    RecordField {
+                        name: "commandRetry".to_string(),
+                        ty: Type::Con(TyConId(base + 39), vec![]),
+                    },
+                ],
             )),
             def_span: None,
             def_module_raw: None,
@@ -1311,6 +1322,13 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                         name: "defaultIsolation".to_string(),
                         ty: Type::Con(TyConId(base + 38), vec![]),
                     },
+                    // The policy `Repo.transactionWithRetry` falls back to on this
+                    // pool — the reconciled `RetryPolicy` declared at the end of
+                    // this block.
+                    RecordField {
+                        name: "commandRetry".to_string(),
+                        ty: Type::Con(TyConId(base + 39), vec![]),
+                    },
                 ],
             )),
             def_span: None,
@@ -1881,20 +1899,31 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: false,
             is_anon: false,
         },
-        // `std.data` — the SQLite connection handle. Opaque `{ id: Int }`,
-        // declared in Ridge (stdlib/data.ridge); the `id` selects the connection
-        // in the runtime handle registry, the same id-as-handle shape Postgres and
-        // MemAdapter use. Appended last so it disturbs no earlier reconciled id.
+        // `std.data` — the SQLite connection handle. Opaque
+        // `{ id: Int, commandRetry: RetryPolicy }`, declared in Ridge
+        // (stdlib/data.ridge); the `id` selects the connection in the runtime
+        // handle registry, the same id-as-handle shape Postgres and MemAdapter
+        // use, and the `commandRetry` is the connection's command-retry policy
+        // stamped at open. Appended last so it disturbs no earlier reconciled id.
         TyConDecl {
             id: TyConId(base + 33),
             name: "Sqlite".to_string(),
             arity: 0,
             kind: TyConKind::Record(RecordSchema::new(
                 vec![],
-                vec![RecordField {
-                    name: "id".to_string(),
-                    ty: Type::Con(b.int, vec![]),
-                }],
+                vec![
+                    RecordField {
+                        name: "id".to_string(),
+                        ty: Type::Con(b.int, vec![]),
+                    },
+                    // The policy `Repo.transactionWithRetry` falls back to on this
+                    // connection — the reconciled `RetryPolicy` declared at the
+                    // end of this block.
+                    RecordField {
+                        name: "commandRetry".to_string(),
+                        ty: Type::Con(TyConId(base + 39), vec![]),
+                    },
+                ],
             )),
             def_span: None,
             def_module_raw: None,
@@ -1934,6 +1963,13 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                     RecordField {
                         name: "defaultIsolation".to_string(),
                         ty: Type::Con(TyConId(base + 38), vec![]),
+                    },
+                    // The policy `Repo.transactionWithRetry` falls back to on this
+                    // connection — the reconciled `RetryPolicy` declared at the
+                    // end of this block.
+                    RecordField {
+                        name: "commandRetry".to_string(),
+                        ty: Type::Con(TyConId(base + 39), vec![]),
                     },
                 ],
             )),
@@ -2059,6 +2095,39 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                     },
                 ],
             }),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
+        // `std.data` — retry tuning for a transient command failure: total
+        // attempts, the backoff the first retry draws from (doubling per
+        // retry), and the cap on a single pause. A plain record declared in
+        // Ridge (stdlib/data.ridge); the `PoolConfig`/`SqliteConfig` records
+        // and the `Postgres`/`Sqlite` handles carry one as their
+        // `commandRetry` field. Appended last so it disturbs no earlier
+        // reconciled id.
+        TyConDecl {
+            id: TyConId(base + 39),
+            name: "RetryPolicy".to_string(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![
+                    RecordField {
+                        name: "maxAttempts".to_string(),
+                        ty: Type::Con(b.int, vec![]),
+                    },
+                    RecordField {
+                        name: "baseBackoffMs".to_string(),
+                        ty: Type::Con(b.int, vec![]),
+                    },
+                    RecordField {
+                        name: "maxBackoffMs".to_string(),
+                        ty: Type::Con(b.int, vec![]),
+                    },
+                ],
+            )),
             def_span: None,
             def_module_raw: None,
             opaque: false,
@@ -2332,6 +2401,20 @@ pub(crate) fn reconciled_fn_scheme(
             },
             constraints: vec![],
         }),
+        // std.data `dbErrorIsTransient : Error -> Bool` — flags the transient
+        // contention codes (40001, 40P01, sqlite busy/locked) a retry can clear.
+        // Grouped with `dbErrorKind` as the typed-error reading of an `Error`.
+        ("std.data", "dbErrorIsTransient") => Some(Scheme {
+            vars: vec![],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: Type::Fn {
+                params: vec![Type::Con(b.error, vec![])],
+                ret: Box::new(Type::Con(b.bool, vec![])),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            },
+            constraints: vec![],
+        }),
         // std.data `memAdapter : Unit -> MemAdapter` — opens a fresh in-memory
         // adapter. Requires the `db` capability (opening a store is the gated act;
         // the handle returned is the proof of access for the cap-free methods).
@@ -2496,6 +2579,41 @@ pub(crate) fn reconciled_fn_scheme(
                 constraints: vec![],
             })
         }
+        // std.data `defaultRetryPolicy : Unit -> RetryPolicy` — the pure retry
+        // baseline (three attempts, 50 ms doubling to two seconds).
+        ("std.data", "defaultRetryPolicy") => {
+            let retry_policy = *reconciled.get("RetryPolicy")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(b.unit, vec![])],
+                    ret: Box::new(Type::Con(retry_policy, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![],
+            })
+        }
+        // std.data `withRetry* : Int -> RetryPolicy -> RetryPolicy` — the pure
+        // retry-policy setters.
+        (
+            "std.data",
+            "withRetryMaxAttempts" | "withRetryBaseBackoffMs" | "withRetryMaxBackoffMs",
+        ) => {
+            let retry_policy = *reconciled.get("RetryPolicy")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(b.int, vec![]), Type::Con(retry_policy, vec![])],
+                    ret: Box::new(Type::Con(retry_policy, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![],
+            })
+        }
         // std.data `isolationLevelName : IsolationLevel -> Text` — the wire name
         // of an isolation level, as the runtime backends know it. Reads the
         // reconciled `IsolationLevel`, so the hand-curated table cannot express it.
@@ -2544,6 +2662,39 @@ pub(crate) fn reconciled_fn_scheme(
                 row_vars: vec![],
                 ty: Type::Fn {
                     params: vec![Type::Con(isolation, vec![]), Type::Con(config, vec![])],
+                    ret: Box::new(Type::Con(config, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![],
+            })
+        }
+        // std.data `withCommandRetry : RetryPolicy -> PoolConfig -> PoolConfig`
+        // and `withSqliteCommandRetry : RetryPolicy -> SqliteConfig ->
+        // SqliteConfig` — the per-pool / per-connection retry default setters.
+        ("std.data", "withCommandRetry") => {
+            let retry_policy = *reconciled.get("RetryPolicy")?;
+            let pool = *reconciled.get("PoolConfig")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(retry_policy, vec![]), Type::Con(pool, vec![])],
+                    ret: Box::new(Type::Con(pool, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![],
+            })
+        }
+        ("std.data", "withSqliteCommandRetry") => {
+            let retry_policy = *reconciled.get("RetryPolicy")?;
+            let config = *reconciled.get("SqliteConfig")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(retry_policy, vec![]), Type::Con(config, vec![])],
                     ret: Box::new(Type::Con(config, vec![])),
                     caps: CapRow::Concrete(CapabilitySet::PURE),
                 },

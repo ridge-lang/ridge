@@ -208,8 +208,8 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                         ty: Type::Con(b.int, vec![]),
                     },
                     // The policy `Repo.transactionWithRetry` falls back to on this
-                    // pool — the reconciled `RetryPolicy` declared at the end of
-                    // this block.
+                    // connection — the reconciled `RetryPolicy` declared at the
+                    // end of this block.
                     RecordField {
                         name: "commandRetry".to_string(),
                         ty: Type::Con(TyConId(base + 39), vec![]),

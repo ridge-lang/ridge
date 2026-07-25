@@ -33,6 +33,12 @@ itself needs the `db` capability, granted in the project manifest:
 allow = ["db", "io"]
 ```
 
+The transient-retry combinators (`Repo.transactionWithRetry`,
+`Repo.retryTransient`, `Repo.retryWhen`) additionally need the `time` and
+`random` capabilities — the backoff pause and its jitter — so a program that
+retries grants them too: `allow = ["db", "io", "time", "random"]`. See
+[Errors and transactions](#errors-and-transactions).
+
 The SQLite backend is compiled into the released `ridge` binaries, so an
 installed toolchain has it with nothing extra to build. Postgres needs no
 special build at all. (If you build the compiler from source with
@@ -482,6 +488,61 @@ and distinguishes only `ReadUncommitted`, which sets
 it on close, so `ReadCommitted` and `RepeatableRead` degrade to
 `Serializable`. The in-memory adapter is trivially serializable and accepts
 any level.
+
+Concurrent transactions collide. Two connections that read the same rows and
+write back can both pass their checks, and then one must lose: Postgres aborts
+the loser with a serialization failure (`40001`) or, when the writes
+interlock, a deadlock (`40P01`), and SQLite answers a contended write with a
+busy or locked error (`sqlite.5`/`sqlite.6`, after the busy timeout already
+waited). These are transient failures — the server aborted the command
+cleanly, and a fresh attempt can commit. `dbErrorIsTransient` recognises
+exactly these codes; everything else is permanent for these purposes. A
+constraint violation fails the same way every time, and a transport fault is
+never retried: the driver cannot know whether the write committed, and
+re-running it could apply the write twice.
+
+The common case is retrying a whole transaction, and
+`Repo.transactionWithRetry policy conn body` does exactly that — it re-runs
+begin, body, and commit while the transaction fails transiently. Re-running
+the whole transaction is the only correct answer to a serialization failure:
+after one, the open transaction is aborted, and a retry of any single
+statement inside it would fail the same way. The transaction opens at the
+connection's `defaultIsolation`, like `Repo.transaction`. Pass `None` for the
+policy to use the connection's own `commandRetry` —
+`PoolConfig.commandRetry` for Postgres (set with `withCommandRetry`) and
+`SqliteConfig.commandRetry` for SQLite (set with `withSqliteCommandRetry`),
+both `defaultRetryPolicy ()` out of the box — or `Some policy` to override
+it:
+
+```ridge
+Repo.transactionWithRetry None conn (fn c -> ...)
+```
+
+Reach for `Repo.retryTransient policy attempt` when the unit of work is not a
+plain transaction. Two cases come up: a transaction at an explicit isolation
+level, which composes —
+`Repo.retryTransient policy (fn (n) -> Repo.transactionWith Serializable conn body)`
+— and work that runs outside an explicit transaction, such as a standalone
+statement. The attempt receives its 1-based attempt number, so it can log,
+measure, or vary what it does per try. One rule holds either way: never wrap a
+statement that runs *inside* an explicit `Repo.transaction` — after a
+serialization failure that transaction is aborted, and only re-running the
+whole transaction is correct.
+
+A `RetryPolicy` (`maxAttempts`/`baseBackoffMs`/`maxBackoffMs`) tunes both
+combinators, built from
+`defaultRetryPolicy ()` — three attempts, backed off from 50 ms up to two
+seconds — and adjusted with `withRetryMaxAttempts` (1 runs the attempt once,
+no retry), `withRetryBaseBackoffMs`, and `withRetryMaxBackoffMs`. Values are
+clamped at use to at least one attempt and non-negative backoffs. The pause
+before retry `n` is drawn at random between zero and
+`baseBackoffMs × 2^(n-1)`, capped at `maxBackoffMs` — exponential backoff
+with full jitter, so colliding transactions back off out of step instead of
+retrying in lock-step. The pause and its jitter are what make the three
+combinators — `transactionWithRetry`, `retryTransient`, and the generic
+`Repo.retryWhen` they build on — declare the `time` and `random`
+capabilities, so a function that calls them declares both and the project
+manifest grants them (see [Prerequisites](#prerequisites)).
 
 ## Running against Postgres with Docker
 

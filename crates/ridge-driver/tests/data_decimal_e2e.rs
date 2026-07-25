@@ -24,7 +24,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.query (SortOrder, Asc, Desc)
 import std.sql (toSql, SqlValue)
@@ -49,7 +49,7 @@ fn joinLabels (ms: List Money) -> Text =
 
 -- Seed three rows whose amounts are out of order and whose numeric order differs
 -- from their lexical order (2.5 < 10.25 by value, but "10.25" < "2.5" as text).
-pub fn db setup () -> Result (Repo Money MemAdapter) Error =
+pub fn db setup () -> Result (Repo Money MemAdapter) DbError =
     let r: Repo Money MemAdapter = Repo.repo (memAdapter ()) "money"
     match Repo.insert (MoneyInsert { label = "a", amount = dec "2.5" }) r
         Err e -> Err e

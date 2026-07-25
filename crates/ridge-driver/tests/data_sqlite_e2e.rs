@@ -29,7 +29,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.data (connectSqlite, sqliteMemory, withSqliteDefaultIsolation, Sqlite, IsolationLevel, ReadCommitted, ReadUncommitted, Serializable, dbErrorKind, Unsupported)
+import std.data (DbError, connectSqlite, sqliteMemory, withSqliteDefaultIsolation, Sqlite, IsolationLevel, ReadCommitted, ReadUncommitted, Serializable, dbErrorKind, Unsupported)
 import std.migrate as Migrate
 import std.repo as Repo
 import std.raw as Raw
@@ -40,14 +40,14 @@ pub type Account = { id: Int, name: Text, active: Bool } deriving (Row, Schema)
 
 fn accountWitness () -> Option Account = None
 
-fn setup (conn: Sqlite) -> Result (List Text) Error =
+fn setup (conn: Sqlite) -> Result (List Text) DbError =
     Migrate.run conn [ Migrate.migration "0001_accounts" [ Migrate.createSchema (schemaOf (accountWitness ())) ] ]
 
-fn addAccount (conn: Sqlite) (aname: Text) (act: Bool) -> Result Unit Error =
+fn addAccount (conn: Sqlite) (aname: Text) (act: Bool) -> Result Unit DbError =
     let accounts: Repo Account Sqlite = Repo.repo conn "accounts"
     Repo.insert (AccountInsert { name = aname, active = act }) accounts
 
-fn readAccounts (conn: Sqlite) -> Result (List Account) Error =
+fn readAccounts (conn: Sqlite) -> Result (List Account) DbError =
     let accounts: Repo Account Sqlite = Repo.repo conn "accounts"
     Repo.all accounts
 
@@ -90,27 +90,27 @@ fn countAccounts (conn: Sqlite) -> Int =
         Err _   -> 0 - 9
 
 -- A transaction body that inserts two rows and succeeds.
-fn insertTwo (tx: Sqlite) -> Result Unit Error =
+fn insertTwo (tx: Sqlite) -> Result Unit DbError =
     match addAccount tx "ada" true
         Err e -> Err e
         Ok _  -> addAccount tx "lin" false
 
 -- A one-row insert body, the name fixed up front so it is a plain
--- `Sqlite -> Result Unit Error` the transaction combinator can run.
-fn insertOne (aname: Text) (tx: Sqlite) -> Result Unit Error =
+-- `Sqlite -> Result Unit DbError` the transaction combinator can run.
+fn insertOne (aname: Text) (tx: Sqlite) -> Result Unit DbError =
     addAccount tx aname true
 
 -- A deliberate failure with no SQL fault: a single-row query filtered to match
 -- nothing answers `Err` ("matched no rows"), which a transaction body returns to
 -- trigger a rollback. It is a plain SELECT, so it never aborts the transaction.
-fn forceFail (conn: Sqlite) -> Result Unit Error =
+fn forceFail (conn: Sqlite) -> Result Unit DbError =
     let accounts: Repo Account Sqlite = Repo.repo conn "accounts"
     match accounts |> Repo.query |> Repo.filter (fn (a: Account) -> a.id == 999999) |> Repo.singleOrError
         Err e -> Err e
         Ok _  -> Ok ()
 
 -- The error-kind check for the mismatch probe.
-fn isUnsupported (e: Error) -> Bool =
+fn isUnsupported (e: DbError) -> Bool =
     match dbErrorKind e
         Unsupported -> true
         _           -> false
@@ -134,8 +134,8 @@ pub type PragmaRow = { read_uncommitted: Int } deriving (Row)
 -- A transaction body that reads the connection's read_uncommitted pragma back
 -- through the raw-query escape hatch: 1 while a ReadUncommitted transaction is
 -- open.
-fn readUncommittedPragma (tx: Sqlite) -> Result Int Error =
-    let q: Result (List PragmaRow) Error = Raw.query tx "PRAGMA read_uncommitted" []
+fn readUncommittedPragma (tx: Sqlite) -> Result Int DbError =
+    let q: Result (List PragmaRow) DbError = Raw.query tx "PRAGMA read_uncommitted" []
     match q
         Err e -> Err e
         Ok rows ->
@@ -158,7 +158,7 @@ pub fn db sqliteIsoReadUncommitted () -> Int =
 
 -- A nested transactionWith naming a different level fails with the
 -- isolation-mismatch error (kind Unsupported) and writes nothing -> 0.
-fn sqliteMismatchBody (tx: Sqlite) -> Result Unit Error =
+fn sqliteMismatchBody (tx: Sqlite) -> Result Unit DbError =
     match Repo.transactionWith ReadCommitted tx (insertOne "lin")
         Err e -> if isUnsupported e then Ok () else Err e
         Ok _  -> forceFail tx
@@ -219,7 +219,7 @@ pub fn db sqliteIsoRuRestored () -> Int =
 
 -- A nested transactionWith naming the outer level opens a savepoint: both the
 -- outer's and the inner's insert survive -> 2.
-fn sqliteNestedSameBody (tx: Sqlite) -> Result Unit Error =
+fn sqliteNestedSameBody (tx: Sqlite) -> Result Unit DbError =
     match addAccount tx "ada" true
         Err e -> Err e
         Ok _  -> Repo.transactionWith Serializable tx (insertOne "lin")

@@ -26,7 +26,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// The program source, with connection settings spliced in as sentinels so the
 /// Ridge record braces never collide with Rust string formatting.
 const SOURCE_TEMPLATE: &str = r#"
-import std.data (connect, PostgresConfig, Postgres)
+import std.data (DbError, connect, PostgresConfig, Postgres)
 import std.repo as Repo
 import std.raw as Raw
 import std.sql (toSql, SqlValue)
@@ -46,7 +46,7 @@ fn pgConfig () -> PostgresConfig =
 
 -- Create a fresh numeric table and seed two decimals: one with more significant
 -- digits than a double holds, one whose fraction a binary float cannot represent.
-pub fn db setup () -> Result (Repo Amount Postgres) Error =
+pub fn db setup () -> Result (Repo Amount Postgres) DbError =
     match connect (pgConfig ())
         Err e   -> Err e
         Ok conn ->

@@ -23,7 +23,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 // ── Source ────────────────────────────────────────────────────────────────────
 
 const SOURCE: &str = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.raw as Raw
 import std.sql (sqlInt)
 
@@ -33,7 +33,7 @@ pub type Probe = { n: Int } deriving (Row)
 -- `Err {code = "raw.unsupported", …}`, so this takes the error branch.
 pub fn db queryErrs () -> Int =
     let conn = memAdapter ()
-    let r: Result (List Probe) Error = Raw.query conn "SELECT 1 AS n" []
+    let r: Result (List Probe) DbError = Raw.query conn "SELECT 1 AS n" []
     match r
         Err _ -> 1
         Ok _  -> 0

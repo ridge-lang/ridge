@@ -18,7 +18,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.data (connectSqlite, sqliteMemory, Sqlite, appendRow)
+import std.data (DbError, connectSqlite, sqliteMemory, Sqlite, appendRow)
 import std.migrate as Migrate
 import std.repo as Repo
 import std.schema (EntitySchema, schema, withColumn, mkColumn, generated, primaryKey, computed, eraseSchema, schemaToDdl, schemaToDdlFor, schemaToSource, Identity)
@@ -47,15 +47,15 @@ pub fn ddlLite () -> Text = schemaToDdlFor SqliteDialect (orderSchema ())
 -- `computed` quote.
 pub fn srcOut () -> Text = schemaToSource (eraseSchema (orderSchema ()))
 
-fn setup (conn: Sqlite) -> Result (List Text) Error =
+fn setup (conn: Sqlite) -> Result (List Text) DbError =
     Migrate.run conn [ Migrate.migration "0001_orders" [ Migrate.createSchema (orderSchema ()) ] ]
 
 -- Insert without `total` (or `id`): both are database-generated, so the row map carries only
 -- the supplied columns.
-fn insertOrder (conn: Sqlite) (q: Int) (p: Int) -> Result Unit Error =
+fn insertOrder (conn: Sqlite) (q: Int) (p: Int) -> Result Unit DbError =
     appendRow conn "orders" (Map.fromList [("qty", sqlInt q), ("price", sqlInt p)])
 
-fn readOrders (conn: Sqlite) -> Result (List Order) Error =
+fn readOrders (conn: Sqlite) -> Result (List Order) DbError =
     let orders: Repo Order Sqlite = Repo.repo conn "orders"
     Repo.all orders
 

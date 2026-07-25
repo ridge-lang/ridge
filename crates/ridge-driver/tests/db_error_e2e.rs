@@ -1,11 +1,11 @@
 //! End-to-end check for the typed `DbErrorKind` classification — running on the BEAM.
 //!
-//! `dbErrorKind` reads a raw storage `Error`'s code into a typed kind, so consumer
-//! code branches on a failure's cause — recover from a `UniqueViolation`, retry a
+//! `dbErrorKind` reads the kind off a typed `DbError`, so consumer code branches
+//! on a failure's cause — recover from a `UniqueViolation`, retry a
 //! `ConnectionError` — rather than string-matching the code. The accessors
 //! `dbErrorConstraint`/`dbErrorColumn` read the constraint or column a backend
-//! named. `toDbError` lifts the raw error into a typed `DbError` record whose
-//! `kind` field carries the same classification.
+//! named. The data layer reports every failure as the typed record, so the kind
+//! arrives already classified.
 //!
 //! User code cannot build an `Error` directly (it is nominal and has no source
 //! constructor), so this drives a genuine failure: the in-memory adapter has no SQL
@@ -26,7 +26,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.data (memAdapter, MemAdapter, dbErrorKind, dbErrorConstraint, toDbError, DbErrorKind, UniqueViolation, ForeignKeyViolation, NotNullViolation, CheckViolation, ConnectionError, DecodeError, Unsupported, QueryError)
+import std.data (memAdapter, MemAdapter, dbErrorKind, dbErrorConstraint, DbErrorKind, UniqueViolation, ForeignKeyViolation, NotNullViolation, CheckViolation, ConnectionError, DecodeError, Unsupported, QueryError)
 import std.raw as Raw
 import std.text as Text
 
@@ -43,7 +43,7 @@ fn tag (k: DbErrorKind) -> Text =
         QueryError -> "query"
 
 -- The in-memory adapter has no SQL engine, so a raw statement fails with the
--- `raw.unsupported` code — a real `Error` to classify.
+-- `raw.unsupported` code — a typed `DbError` whose kind reads as `Unsupported`.
 pub fn db unsupportedKind () -> Text =
     let conn = memAdapter ()
     match Raw.exec conn "DELETE FROM t" []
@@ -58,13 +58,13 @@ pub fn db unsupportedConstraint () -> Text =
         Err e -> Text.concat "[" (Text.concat (dbErrorConstraint e) "]")
         Ok _ -> "unexpected-ok"
 
--- `toDbError` lifts the same raw failure into a typed `DbError`; matching its
+-- `Raw.exec` already reports the failure as a typed `DbError`; matching its
 -- `kind` field tags it, the consumer shape data-layer callers use.
 pub fn db typedKind () -> Text =
     let conn = memAdapter ()
     match Raw.exec conn "DELETE FROM t" []
         Err e ->
-            let typed = toDbError e
+            let typed = e
             match typed.kind
                 Unsupported -> "unsupported"
                 _ -> "other"
@@ -234,8 +234,8 @@ fn to_db_error_lifts_raw_error_on_beam() {
 
     let (stdout, stderr) = eval_exports(&["typedKind"]);
 
-    // The same `raw.unsupported` failure, lifted by `toDbError` and matched
-    // through the typed record's `kind` field.
+    // The same `raw.unsupported` failure, arriving typed from `Raw.exec` and
+    // matched through the typed record's `kind` field.
     assert!(
         stdout.contains("typedKind=unsupported"),
         "expected `typedKind=unsupported`\nstdout:\n{stdout}\nstderr:\n{stderr}"

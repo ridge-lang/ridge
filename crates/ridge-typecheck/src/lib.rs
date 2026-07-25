@@ -969,9 +969,25 @@ fn typecheck_module_inner(
         // from the arena so `dbType` can be seeded. Absent only in empty-registry
         // hot paths, where the seed is harmlessly skipped.
         let db_type = global_tycon_names.get("DbType").copied();
-        seed_sql_codec_schemes(&mut ctx, b, ct, sql_value, db_type);
+        // `DbError` is the data layer's typed error. Three id sources, in
+        // priority order: the reconciled stdlib block for user builds; this
+        // module's own collected-or-imported names for the stdlib's own build
+        // (the source record from data.ridge at its ACTUAL arena id — the
+        // predicted `global_tycon_names` id drifts for types collected after
+        // schema.ridge's synth mirrors, so unlike the `SqlValue` dance above
+        // the prediction cannot be trusted here); the prediction only for
+        // modules that neither are nor import std.data, which can never make a
+        // data-layer call. Falls back to the builtin `Error` on empty-registry
+        // hot paths, where no data-layer call ever type-checks against the seed.
+        let db_error = stdlib_tycon_names
+            .get("DbError")
+            .or_else(|| ctx.user_tycon_names.get("DbError"))
+            .or_else(|| global_tycon_names.get("DbError"))
+            .copied()
+            .unwrap_or(b.error);
+        seed_sql_codec_schemes(&mut ctx, b, ct, sql_value, db_type, db_error);
         seed_refinable_scheme(&mut ctx, b, ct);
-        seed_projectable_scheme(&mut ctx, b, ct);
+        seed_projectable_scheme(&mut ctx, b, ct, db_error);
         // `SortOrder` is `orderBy`'s leading parameter; it lives in the reconciled
         // stdlib block (std.query) for user builds and the global arena for the
         // incremental path, so try both. Empty in the stdlib's own build, where
@@ -981,12 +997,12 @@ fn typecheck_module_inner(
             .or_else(|| global_tycon_names.get("SortOrder"))
             .copied();
         seed_orderable_scheme(&mut ctx, b, ct, sort_order);
-        seed_aggregable_scheme(&mut ctx, b, ct);
-        seed_fetchable_scheme(&mut ctx, b, ct);
+        seed_aggregable_scheme(&mut ctx, b, ct, db_error);
+        seed_fetchable_scheme(&mut ctx, b, ct, db_error);
         seed_pageable_scheme(&mut ctx, b, ct);
-        seed_countable_scheme(&mut ctx, b, ct);
+        seed_countable_scheme(&mut ctx, b, ct, db_error);
         seed_combinable_scheme(&mut ctx, ct);
-        seed_every_scheme(&mut ctx, b, ct);
+        seed_every_scheme(&mut ctx, b, ct, db_error);
 
         // Wire the reconciled receiver ids the `Rows q` projection reduces against,
         // so the decode terminals' result types (`Result (List (Rows q))`)
@@ -1031,7 +1047,7 @@ fn typecheck_module_inner(
         // reconciled `Repo` id; resolved here, before the mutable seed borrows.
         let repo_id = receiver_id("Repo");
         seed_groupable_scheme(&mut ctx, b, ct, grouped_id);
-        seed_summarizable_scheme(&mut ctx, b, ct, sql_value);
+        seed_summarizable_scheme(&mut ctx, b, ct, sql_value, db_error);
         seed_joinable_scheme(&mut ctx, b, ct, repo_id);
         seed_leftjoinable_scheme(&mut ctx, b, ct, repo_id);
         seed_rightjoinable_scheme(&mut ctx, b, ct, repo_id);
@@ -1425,6 +1441,7 @@ fn seed_projectable_scheme(
     ctx: &mut crate::ctx::InferCtx,
     b: &ridge_types::BuiltinTyCons,
     class_table: &crate::class_env::ClassTable,
+    db_error: ridge_types::TyConId,
 ) {
     use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
     let Some(projectable) = class_table.id_by_name("Projectable") else {
@@ -1437,7 +1454,7 @@ fn seed_projectable_scheme(
         let ret_p = Type::Con(b.ret, vec![Type::Var(p)]);
         let result_ty = Type::Con(
             b.result,
-            vec![Type::Con(wrap, vec![ret_p]), Type::Con(b.error, vec![])],
+            vec![Type::Con(wrap, vec![ret_p]), Type::Con(db_error, vec![])],
         );
         let fn_ty = Type::Fn {
             params: vec![Type::Con(b.quote, vec![Type::Var(p)]), Type::Var(q)],
@@ -1533,6 +1550,7 @@ fn seed_aggregable_scheme(
     ctx: &mut crate::ctx::InferCtx,
     b: &ridge_types::BuiltinTyCons,
     class_table: &crate::class_env::ClassTable,
+    db_error: ridge_types::TyConId,
 ) {
     use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
     let Some(aggregable) = class_table.id_by_name("Aggregable") else {
@@ -1555,7 +1573,7 @@ fn seed_aggregable_scheme(
         };
         let result_ty = Type::Con(
             b.result,
-            vec![Type::Con(b.option, vec![elem]), Type::Con(b.error, vec![])],
+            vec![Type::Con(b.option, vec![elem]), Type::Con(db_error, vec![])],
         );
         let fn_ty = Type::Fn {
             params: vec![Type::Con(b.quote, vec![Type::Var(p)]), Type::Var(q)],
@@ -1598,6 +1616,7 @@ fn seed_fetchable_scheme(
     ctx: &mut crate::ctx::InferCtx,
     b: &ridge_types::BuiltinTyCons,
     class_table: &crate::class_env::ClassTable,
+    db_error: ridge_types::TyConId,
 ) {
     use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
     let Some(fetchable) = class_table.id_by_name("Fetchable") else {
@@ -1609,7 +1628,7 @@ fn seed_fetchable_scheme(
         let rows_q = Type::Con(b.rows, vec![Type::Var(q)]);
         let result_ty = Type::Con(
             b.result,
-            vec![Type::Con(wrap, vec![rows_q]), Type::Con(b.error, vec![])],
+            vec![Type::Con(wrap, vec![rows_q]), Type::Con(db_error, vec![])],
         );
         let fn_ty = Type::Fn {
             params: vec![Type::Var(q)],
@@ -1893,12 +1912,13 @@ fn seed_countable_scheme(
     ctx: &mut crate::ctx::InferCtx,
     b: &ridge_types::BuiltinTyCons,
     class_table: &crate::class_env::ClassTable,
+    db_error: ridge_types::TyConId,
 ) {
     use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
     let Some(countable) = class_table.id_by_name("Countable") else {
         return;
     };
-    let result = |ok: Type| Type::Con(b.result, vec![ok, Type::Con(b.error, vec![])]);
+    let result = |ok: Type| Type::Con(b.result, vec![ok, Type::Con(db_error, vec![])]);
     // `count` answers an `Int` and `exists` a `Bool`, both from the bare receiver.
     let int_ok = Type::Con(b.int, vec![]);
     let bool_ok = Type::Con(b.bool, vec![]);
@@ -1979,6 +1999,7 @@ fn seed_every_scheme(
     ctx: &mut crate::ctx::InferCtx,
     b: &ridge_types::BuiltinTyCons,
     class_table: &crate::class_env::ClassTable,
+    db_error: ridge_types::TyConId,
 ) {
     use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
     let Some(every) = class_table.id_by_name("Every") else {
@@ -1988,7 +2009,7 @@ fn seed_every_scheme(
     let p = ctx.fresh_tyvid();
     let result_bool = Type::Con(
         b.result,
-        vec![Type::Con(b.bool, vec![]), Type::Con(b.error, vec![])],
+        vec![Type::Con(b.bool, vec![]), Type::Con(db_error, vec![])],
     );
     let fn_ty = Type::Fn {
         params: vec![Type::Con(b.quote, vec![Type::Var(p)]), Type::Var(q)],
@@ -2056,6 +2077,7 @@ fn seed_summarizable_scheme(
     b: &ridge_types::BuiltinTyCons,
     class_table: &crate::class_env::ClassTable,
     sql_value: ridge_types::TyConId,
+    db_error: ridge_types::TyConId,
 ) {
     use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
     let Some(summarizable) = class_table.id_by_name("Summarizable") else {
@@ -2070,7 +2092,7 @@ fn seed_summarizable_scheme(
     let map_row = Type::Con(b.map, vec![text(), Type::Con(sql_value, vec![])]);
     let result_rows = Type::Con(
         b.result,
-        vec![Type::Con(b.list, vec![map_row]), Type::Con(b.error, vec![])],
+        vec![Type::Con(b.list, vec![map_row]), Type::Con(db_error, vec![])],
     );
     let fn_ty = Type::Fn {
         params: vec![
@@ -2254,6 +2276,7 @@ fn seed_sql_codec_schemes(
     class_table: &crate::class_env::ClassTable,
     sql_value: ridge_types::TyConId,
     db_type: Option<ridge_types::TyConId>,
+    db_error: ridge_types::TyConId,
 ) {
     use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
     let Some(sqltype) = class_table.id_by_name("SqlType") else {
@@ -2412,7 +2435,7 @@ fn seed_sql_codec_schemes(
                 params: vec![Type::Var(a), Type::Con(b.text, vec![]), row_ty.clone()],
                 ret: Box::new(Type::Con(
                     b.result,
-                    vec![Type::Con(b.unit, vec![]), Type::Con(b.error, vec![])],
+                    vec![Type::Con(b.unit, vec![]), Type::Con(db_error, vec![])],
                 )),
                 caps: CapRow::Concrete(CapabilitySet::PURE),
             };
@@ -2434,7 +2457,7 @@ fn seed_sql_codec_schemes(
                 params: vec![Type::Var(a), Type::Con(b.text, vec![])],
                 ret: Box::new(Type::Con(
                     b.result,
-                    vec![Type::Con(b.list, vec![row_ty]), Type::Con(b.error, vec![])],
+                    vec![Type::Con(b.list, vec![row_ty]), Type::Con(db_error, vec![])],
                 )),
                 caps: CapRow::Concrete(CapabilitySet::PURE),
             };
@@ -2488,7 +2511,7 @@ fn seed_sql_codec_schemes(
                     b.result,
                     vec![
                         Type::Con(b.option, vec![map_row()]),
-                        Type::Con(b.error, vec![]),
+                        Type::Con(db_error, vec![]),
                     ],
                 )),
                 caps: CapRow::Concrete(CapabilitySet::PURE),
@@ -2512,7 +2535,7 @@ fn seed_sql_codec_schemes(
                 params: vec![Type::Var(a), Type::Con(b.text, vec![]), quote_pred(e)],
                 ret: Box::new(Type::Con(
                     b.result,
-                    vec![Type::Con(b.int, vec![]), Type::Con(b.error, vec![])],
+                    vec![Type::Con(b.int, vec![]), Type::Con(db_error, vec![])],
                 )),
                 caps: CapRow::Concrete(CapabilitySet::PURE),
             };
@@ -2542,7 +2565,7 @@ fn seed_sql_codec_schemes(
                 ],
                 ret: Box::new(Type::Con(
                     b.result,
-                    vec![Type::Con(b.int, vec![]), Type::Con(b.error, vec![])],
+                    vec![Type::Con(b.int, vec![]), Type::Con(db_error, vec![])],
                 )),
                 caps: CapRow::Concrete(CapabilitySet::PURE),
             };
@@ -2557,17 +2580,17 @@ fn seed_sql_codec_schemes(
                 },
             );
         }
-        // ddlDropIndex / unrecordMigration :: ∀a. a -> Text -> Result Unit Error where
+        // ddlDropIndex / unrecordMigration :: ∀a. a -> Text -> Result Unit DbError where
         // Adapter a. The two rollback-side schema-seam operations — dropping an index by
         // name and removing a migration from the tracking table — seeded so a bare call
-        // type-checks, the same `a -> Text -> Result Unit Error` shape.
+        // type-checks, the same `a -> Text -> Result Unit DbError` shape.
         for method in ["ddlDropIndex", "unrecordMigration"] {
             let a = ctx.fresh_tyvid();
             let fn_ty = Type::Fn {
                 params: vec![Type::Var(a), Type::Con(b.text, vec![])],
                 ret: Box::new(Type::Con(
                     b.result,
-                    vec![Type::Con(b.unit, vec![]), Type::Con(b.error, vec![])],
+                    vec![Type::Con(b.unit, vec![]), Type::Con(db_error, vec![])],
                 )),
                 caps: CapRow::Concrete(CapabilitySet::PURE),
             };

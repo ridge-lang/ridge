@@ -27,7 +27,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// proves both inserts landed by matching an exactly-two-element list; `firstName`
 /// decodes the first row back into a `User` and reads its `name`.
 const SOURCE: &str = r#"
-import std.data (memAdapter, appendRow, all)
+import std.data (DbError, memAdapter, appendRow, all)
 import std.sql (toSql, fromRow, SqlValue)
 import std.map as Map
 
@@ -36,7 +36,7 @@ pub type User = { id: Int, name: Text } deriving (Row)
 pub fn userRow (uid: Int) (uname: Text) -> Map Text SqlValue =
     Map.fromList [("id", toSql uid), ("name", toSql uname)]
 
-pub fn db seededRows () -> Result (List (Map Text SqlValue)) Error =
+pub fn db seededRows () -> Result (List (Map Text SqlValue)) DbError =
     let conn = memAdapter ()
     match appendRow conn "users" (userRow 1 "ada")
         Err e -> Err e

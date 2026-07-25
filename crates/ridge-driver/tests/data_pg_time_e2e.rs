@@ -25,7 +25,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// The program source, with connection settings spliced in as sentinels so the
 /// Ridge record braces never collide with Rust string formatting.
 const SOURCE_TEMPLATE: &str = r#"
-import std.data (connect, PostgresConfig, Postgres)
+import std.data (DbError, connect, PostgresConfig, Postgres)
 import std.repo as Repo
 import std.raw as Raw
 import std.sql (toSql, SqlValue)
@@ -38,7 +38,7 @@ fn pgConfig () -> PostgresConfig =
     PostgresConfig { host = "__PG_HOST__", port = __PG_PORT__, database = "__PG_DATABASE__", user = "__PG_USER__", password = "__PG_PASSWORD__", sslMode = "__PG_SSLMODE__" }
 
 -- Create a fresh time table and seed one row: 13:45:30.
-pub fn db setup () -> Result (Repo Item Postgres) Error =
+pub fn db setup () -> Result (Repo Item Postgres) DbError =
     match connect (pgConfig ())
         Err e   -> Err e
         Ok conn ->

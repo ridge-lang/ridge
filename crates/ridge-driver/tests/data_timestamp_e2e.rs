@@ -21,7 +21,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.query (SortOrder, Asc, Desc)
 import std.sql (toSql, SqlValue)
@@ -48,7 +48,7 @@ fn joinNames (es: List Event) -> Text =
 
 -- Seed two events out of chronological order (the 2026 row is inserted last), so a
 -- sort has something to reorder. Each probe seeds its own isolated store.
-pub fn db setup () -> Result (Repo Event MemAdapter) Error =
+pub fn db setup () -> Result (Repo Event MemAdapter) DbError =
     let r: Repo Event MemAdapter = Repo.repo (memAdapter ()) "events"
     match Repo.insert (EventInsert { name = "old", at = instant "2020-01-01T00:00:00Z" }) r
         Err e -> Err e

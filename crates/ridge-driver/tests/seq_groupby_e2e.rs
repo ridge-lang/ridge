@@ -33,6 +33,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// each row codec is synthesised structurally. Both departments size and divide
 /// cleanly, so every aggregate (including the float average) prints exactly.
 const SOURCE: &str = r#"
+import std.data (DbError)
 import std.repo as Repo
 import std.query (SortOrder, Asc, Desc)
 
@@ -47,7 +48,7 @@ fn sample () -> List User =
     , User { id = 5, name = "Eva",  dept = "eng",   salary = 300 }
     ]
 
-fn summary () -> Result (List DeptStat) Error =
+fn summary () -> Result (List DeptStat) DbError =
     sample () |> Repo.from |> Repo.groupBy (fn (u: User) -> u.dept) |> Repo.summarize (fn g -> DeptStat { dept = g.key, members = g.count, total = g.sum (fn (u: User) -> u.salary), avg = g.avg (fn (u: User) -> u.salary), lo = g.min (fn (u: User) -> u.salary), hi = g.max (fn (u: User) -> u.salary) })
 
 fn lengthD (xs: List DeptStat) -> Int =

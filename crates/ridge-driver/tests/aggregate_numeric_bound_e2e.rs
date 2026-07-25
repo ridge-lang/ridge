@@ -27,12 +27,12 @@ use ridge_driver::{check_workspace, CheckOptions};
 #[test]
 fn scalar_sum_over_numeric_is_clean() {
     let source = "
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 
 pub type Sale = { id: Int, qty: Int } deriving (Row, Schema)
 
-pub fn total (r: Repo Sale MemAdapter) -> Result (Option Int) Error =
+pub fn total (r: Repo Sale MemAdapter) -> Result (Option Int) DbError =
     r |> Repo.query |> Repo.sumOf (fn (s: Sale) -> s.qty)
 ";
     let tw = make_workspace("Models", source);
@@ -49,12 +49,12 @@ pub fn total (r: Repo Sale MemAdapter) -> Result (Option Int) Error =
 #[test]
 fn scalar_sum_over_text_is_t040() {
     let source = "
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 
 pub type Sale = { id: Int, label: Text } deriving (Row, Schema)
 
-pub fn total (r: Repo Sale MemAdapter) -> Result (Option Text) Error =
+pub fn total (r: Repo Sale MemAdapter) -> Result (Option Text) DbError =
     r |> Repo.query |> Repo.sumOf (fn (s: Sale) -> s.label)
 ";
     let tw = make_workspace("Models", source);
@@ -71,12 +71,12 @@ pub fn total (r: Repo Sale MemAdapter) -> Result (Option Text) Error =
 #[test]
 fn scalar_sum_over_duration_is_clean() {
     let source = "
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 
 pub type Job = { id: Int, took: Duration } deriving (Row, Schema)
 
-pub fn total (r: Repo Job MemAdapter) -> Result (Option Duration) Error =
+pub fn total (r: Repo Job MemAdapter) -> Result (Option Duration) DbError =
     r |> Repo.query |> Repo.sumOf (fn (j: Job) -> j.took)
 ";
     let tw = make_workspace("Models", source);
@@ -94,12 +94,12 @@ pub fn total (r: Repo Job MemAdapter) -> Result (Option Duration) Error =
 #[test]
 fn scalar_avg_over_duration_is_clean() {
     let source = "
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 
 pub type Job = { id: Int, took: Duration } deriving (Row, Schema)
 
-pub fn mean (r: Repo Job MemAdapter) -> Result (Option Float) Error =
+pub fn mean (r: Repo Job MemAdapter) -> Result (Option Float) DbError =
     r |> Repo.query |> Repo.avgOf (fn (j: Job) -> j.took)
 ";
     let tw = make_workspace("Models", source);
@@ -118,13 +118,13 @@ pub fn mean (r: Repo Job MemAdapter) -> Result (Option Float) Error =
 #[test]
 fn grouped_avg_over_duration_is_clean() {
     let source = "
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 
 pub type Job = { id: Int, dept: Text, took: Duration } deriving (Row, Schema)
 pub type DeptMean = { dept: Text, mean: Float } deriving (Row)
 
-pub fn perDept (r: Repo Job MemAdapter) -> Result (List DeptMean) Error =
+pub fn perDept (r: Repo Job MemAdapter) -> Result (List DeptMean) DbError =
     r
     |> Repo.query
     |> Repo.groupBy (fn (j: Job) -> j.dept)
@@ -144,12 +144,12 @@ pub fn perDept (r: Repo Job MemAdapter) -> Result (List DeptMean) Error =
 #[test]
 fn scalar_max_over_uuid_is_clean() {
     let source = "
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 
 pub type Doc = { id: Int, token: Uuid } deriving (Row, Schema)
 
-pub fn newest (r: Repo Doc MemAdapter) -> Result (Option Uuid) Error =
+pub fn newest (r: Repo Doc MemAdapter) -> Result (Option Uuid) DbError =
     r |> Repo.query |> Repo.maxOf (fn (d: Doc) -> d.token)
 ";
     let tw = make_workspace("Models", source);
@@ -166,13 +166,13 @@ pub fn newest (r: Repo Doc MemAdapter) -> Result (Option Uuid) Error =
 #[test]
 fn grouped_sum_over_text_is_t040() {
     let source = "
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 
 pub type Sale = { id: Int, dept: Text, label: Text } deriving (Row, Schema)
 pub type DeptSum = { dept: Text, total: Text } deriving (Row)
 
-pub fn perDept (r: Repo Sale MemAdapter) -> Result (List DeptSum) Error =
+pub fn perDept (r: Repo Sale MemAdapter) -> Result (List DeptSum) DbError =
     r
     |> Repo.query
     |> Repo.groupBy (fn (s: Sale) -> s.dept)

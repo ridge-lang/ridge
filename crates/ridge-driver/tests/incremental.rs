@@ -270,7 +270,7 @@ fn body_edit_in_a_typeclass_module_stays_incremental() {
 
 const DATA_ENTITIES: &str = "import std.migrate as Migrate\nimport std.schema (schemaOf)\n\npub type Book = { id: Int, title: Text, cents: Int } deriving (Row, Schema)\n\nfn bookWitness () -> Option Book = None\n\npub fn schema () -> List Migration =\n    [ Migrate.migration \"0001\" [ Migrate.createSchema (schemaOf (bookWitness ())) ] ]\n";
 
-const DATA_QUERIES: &str = "import std.data (Sqlite)\nimport std.repo as Repo\nimport std.query (Asc)\nimport proj.Entities (Book)\n\npub fn db allBooks (books: Repo Book Sqlite) -> Result (List Book) Error =\n    books |> Repo.query |> Repo.orderBy Asc (fn (b: Book) -> b.id) |> Repo.toList\n";
+const DATA_QUERIES: &str = "import std.data (DbError, Sqlite)\nimport std.repo as Repo\nimport std.query (Asc)\nimport proj.Entities (Book)\n\npub fn db allBooks (books: Repo Book Sqlite) -> Result (List Book) DbError =\n    books |> Repo.query |> Repo.orderBy Asc (fn (b: Book) -> b.id) |> Repo.toList\n";
 
 fn build_data_ws() -> TempDir {
     let td = TempDir::new().expect("tempdir");

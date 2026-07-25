@@ -18,7 +18,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.data (connectSqlite, sqliteMemory, Sqlite)
+import std.data (DbError, connectSqlite, sqliteMemory, Sqlite)
 import std.migrate as Migrate
 import std.repo as Repo
 import std.schema (schemaOf)
@@ -35,20 +35,20 @@ fn activeView () -> QueryPlan = planScan "accounts" (QEq (QCol "active") (QLitBo
 
 -- Create the table, then the view over it — two migrations so a rollback can drop the view
 -- alone.
-fn setup (conn: Sqlite) -> Result (List Text) Error =
+fn setup (conn: Sqlite) -> Result (List Text) DbError =
     Migrate.run conn [ Migrate.migration "0001_accounts" [ Migrate.createSchema (schemaOf (accountWitness ())) ], Migrate.migration "0002_active_view" [ Migrate.createView "active_accounts" (activeView ()) ] ]
 
-fn addAccount (conn: Sqlite) (aname: Text) (act: Bool) -> Result Unit Error =
+fn addAccount (conn: Sqlite) (aname: Text) (act: Bool) -> Result Unit DbError =
     let accounts: Repo Account Sqlite = Repo.repo conn "accounts"
     Repo.insert (AccountInsert { name = aname, active = act }) accounts
 
-fn seedTwo (conn: Sqlite) -> Result Unit Error =
+fn seedTwo (conn: Sqlite) -> Result Unit DbError =
     match addAccount conn "ada" true
         Err e -> Err e
         Ok _  -> addAccount conn "lin" false
 
 -- Read the view as `Account` through a plain `Repo` bound to the view name.
-fn readView (conn: Sqlite) -> Result (List Account) Error =
+fn readView (conn: Sqlite) -> Result (List Account) DbError =
     let view: Repo Account Sqlite = Repo.repo conn "active_accounts"
     Repo.all view
 

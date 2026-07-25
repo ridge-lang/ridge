@@ -65,12 +65,12 @@ pub fn bad () -> UserInsert = UserInsert { id = 1, email = \"a@b.com\" }
 #[test]
 fn full_entity_to_insert_is_t047() {
     let source = "
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 
 pub type User = { id: Int, email: Text } deriving (Row, Schema)
 
-pub fn seed (r: Repo User MemAdapter) -> Result Unit Error =
+pub fn seed (r: Repo User MemAdapter) -> Result Unit DbError =
     Repo.insert (User { id = 1, email = \"a@b.com\" }) r
 ";
     let tw = make_workspace("Models", source);

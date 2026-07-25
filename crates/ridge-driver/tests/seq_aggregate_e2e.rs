@@ -31,6 +31,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// decoded to a plain `Int` (-1 on the error branch, -2 on `None`); `avgOf`
 /// returns `Result (Option Float) Error`, decoded to a `Float`.
 const SOURCE: &str = r#"
+import std.data (DbError)
 import std.repo as Repo
 import std.query (SortOrder, Asc, Desc)
 
@@ -51,7 +52,7 @@ fn triple () -> List User =
     , User { id = 3, name = "Cami", age = 40 }
     ]
 
-fn optIntOf (r: Result (Option Int) Error) -> Int =
+fn optIntOf (r: Result (Option Int) DbError) -> Int =
     match r
         Err _ -> 0 - 1
         Ok o  ->
@@ -59,7 +60,7 @@ fn optIntOf (r: Result (Option Int) Error) -> Int =
                 None   -> 0 - 2
                 Some n -> n
 
-fn optFloatOf (r: Result (Option Float) Error) -> Float =
+fn optFloatOf (r: Result (Option Float) DbError) -> Float =
     match r
         Err _ -> 0.0
         Ok o  ->

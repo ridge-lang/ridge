@@ -39,7 +39,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 // ── Source ────────────────────────────────────────────────────────────────────
 
 const SOURCE: &str = r#"
-import std.data (memAdapter, MemAdapter, IsolationLevel, ReadCommitted, Serializable, dbErrorKind, Unsupported, RetryPolicy)
+import std.data (DbError, memAdapter, MemAdapter, IsolationLevel, ReadCommitted, Serializable, dbErrorKind, Unsupported, RetryPolicy)
 import std.repo as Repo
 import std.sql (SqlValue)
 
@@ -63,32 +63,32 @@ fn countAll (conn: MemAdapter) -> Int =
 -- A deliberate failure with no SQL fault: a single-row query filtered to match
 -- nothing answers `Err` ("matched no rows"), which a transaction body returns to
 -- trigger a rollback. It is a plain SELECT, so it never aborts the session.
-fn forceFail (conn: MemAdapter) -> Result Unit Error =
+fn forceFail (conn: MemAdapter) -> Result Unit DbError =
     let users: Repo User MemAdapter = Repo.repo conn "users"
     match users |> Repo.query |> Repo.filter (fn (u: User) -> u.id == 999999) |> Repo.singleOrError
         Err e -> Err e
         Ok _  -> Ok ()
 
 -- Insert one user, returning the result.
-fn addUser (conn: MemAdapter) (uname: Text) -> Result Unit Error =
+fn addUser (conn: MemAdapter) (uname: Text) -> Result Unit DbError =
     let users: Repo User MemAdapter = Repo.repo conn "users"
     Repo.insert (mkUser uname) users
 
 -- A transaction body that inserts two rows and succeeds.
-fn insertTwo (tx: MemAdapter) -> Result Unit Error =
+fn insertTwo (tx: MemAdapter) -> Result Unit DbError =
     match addUser tx "ada"
         Err e -> Err e
         Ok _  -> addUser tx "lin"
 
 -- A transaction body that inserts a row and then fails, so it rolls back.
-fn insertThenFail (tx: MemAdapter) -> Result Unit Error =
+fn insertThenFail (tx: MemAdapter) -> Result Unit DbError =
     match addUser tx "lin"
         Err e -> Err e
         Ok _  -> forceFail tx
 
 -- A transaction body whose nested transaction inserts a row and then fails: the
 -- nested failure rewinds to its savepoint, and this body commits its own row.
-fn outerKeepsInnerRollsBack (tx: MemAdapter) -> Result Unit Error =
+fn outerKeepsInnerRollsBack (tx: MemAdapter) -> Result Unit DbError =
     match addUser tx "ada"
         Err e -> Err e
         Ok _  ->
@@ -97,7 +97,7 @@ fn outerKeepsInnerRollsBack (tx: MemAdapter) -> Result Unit Error =
 
 -- A transaction body whose nested transaction inserts a row and commits (releasing
 -- its savepoint), and this body then fails: the outer rollback unwinds both rows.
-fn outerFailsAfterInnerCommit (tx: MemAdapter) -> Result Unit Error =
+fn outerFailsAfterInnerCommit (tx: MemAdapter) -> Result Unit DbError =
     match addUser tx "ada"
         Err e -> Err e
         Ok _  ->
@@ -106,8 +106,8 @@ fn outerFailsAfterInnerCommit (tx: MemAdapter) -> Result Unit Error =
                 Ok _  -> forceFail tx
 
 -- A one-row insert body, the id and name fixed up front so it is a plain
--- `MemAdapter -> Result Unit Error` the transaction combinator can run.
-fn insertOne (uname: Text) (tx: MemAdapter) -> Result Unit Error =
+-- `MemAdapter -> Result Unit DbError` the transaction combinator can run.
+fn insertOne (uname: Text) (tx: MemAdapter) -> Result Unit DbError =
     addUser tx uname
 
 -- A successful transaction: insert two rows and commit. Both survive.
@@ -145,7 +145,7 @@ pub fn db outerRollback () -> Int =
         Err _ -> countAll conn
 
 -- The error-kind check for the nested-mismatch probes.
-fn isUnsupported (e: Error) -> Bool =
+fn isUnsupported (e: DbError) -> Bool =
     match dbErrorKind e
         Unsupported -> true
         _           -> false
@@ -158,7 +158,7 @@ pub fn db withLevelCommits () -> Int =
         Err _ -> 0 - 1
 
 -- A nested transactionWith naming the same level opens a savepoint and commits.
-fn nestedSameLevelBody (tx: MemAdapter) -> Result Unit Error =
+fn nestedSameLevelBody (tx: MemAdapter) -> Result Unit DbError =
     match addUser tx "ada"
         Err e -> Err e
         Ok _  -> Repo.transactionWith Serializable tx (insertOne "lin")
@@ -171,7 +171,7 @@ pub fn db nestedSameLevel () -> Int =
 
 -- A plain transaction nested inside a transactionWith demands no level: it
 -- opens a savepoint regardless of the outer level.
-fn nestedPlainInsideWithBody (tx: MemAdapter) -> Result Unit Error =
+fn nestedPlainInsideWithBody (tx: MemAdapter) -> Result Unit DbError =
     match addUser tx "ada"
         Err e -> Err e
         Ok _  -> Repo.transaction tx (insertOne "lin")
@@ -184,7 +184,7 @@ pub fn db nestedPlainInsideWith () -> Int =
 
 -- A nested transactionWith naming a different level fails with the
 -- isolation-mismatch error (kind Unsupported) and writes nothing.
-fn nestedMismatchBody (tx: MemAdapter) -> Result Unit Error =
+fn nestedMismatchBody (tx: MemAdapter) -> Result Unit DbError =
     match Repo.transactionWith ReadCommitted tx (insertOne "lin")
         Err e -> if isUnsupported e then Ok () else Err e
         Ok _  -> forceFail tx

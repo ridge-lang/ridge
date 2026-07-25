@@ -22,7 +22,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.data (memAdapter, appendRow, selectRows, get, delete)
+import std.data (DbError, memAdapter, appendRow, selectRows, get, delete)
 import std.sql (toSql, fromRow, SqlValue)
 import std.map as Map
 import std.text as Text
@@ -40,7 +40,7 @@ pub fn codeRow (cid: Int) (clabel: Text) -> Map Text SqlValue =
 
 -- Open a fresh store and seed three users; return the handle so each probe
 -- queries its own isolated data.
-pub fn db setup () -> Result MemAdapter Error =
+pub fn db setup () -> Result MemAdapter DbError =
     let conn = memAdapter ()
     match appendRow conn "users" (userRow 1 18 "ada")
         Err e -> Err e

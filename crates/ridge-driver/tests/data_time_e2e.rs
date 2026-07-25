@@ -25,7 +25,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter, toDbError)
 import std.repo as Repo
 import std.query (SortOrder, Asc, Desc)
 import std.sql (toSql, SqlValue)
@@ -49,16 +49,16 @@ fn joinLabels (es: List Event) -> Text =
 
 -- Seed three rows whose times sort a,c,b chronologically:
 -- a = 08:15:00 < c = 13:45:30 < b = 23:59:59.
-pub fn db setup () -> Result (Repo Event MemAdapter) Error =
+pub fn db setup () -> Result (Repo Event MemAdapter) DbError =
     let r: Repo Event MemAdapter = Repo.repo (memAdapter ()) "events"
     match Time.fromHms 8 15 0
-        Err e -> Err e
+        Err e -> Err (toDbError e)
         Ok t1 ->
             match Time.fromHms 23 59 59
-                Err e -> Err e
+                Err e -> Err (toDbError e)
                 Ok t2 ->
                     match Time.fromHms 13 45 30
-                        Err e -> Err e
+                        Err e -> Err (toDbError e)
                         Ok t3 ->
                             match Repo.insert (EventInsert { label = "a", at = t1 }) r
                                 Err e -> Err e

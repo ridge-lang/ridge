@@ -24,7 +24,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (toSql, SqlValue)
 import std.schema (schemaOf, schemaToDdl)
@@ -38,7 +38,7 @@ pub type Doc = { id: Int, label: Text, body: JsonValue } deriving (Row, Schema)
 -- so the round-trip is exact without depending on map key order.
 fn doc (n: Int) -> JsonValue = Json.jList [Json.jInt n, Json.jText "z"]
 
-pub fn db setup () -> Result (Repo Doc MemAdapter) Error =
+pub fn db setup () -> Result (Repo Doc MemAdapter) DbError =
     let r: Repo Doc MemAdapter = Repo.repo (memAdapter ()) "docs"
     match Repo.insert (DocInsert { label = "a", body = doc 42 }) r
         Err e -> Err e

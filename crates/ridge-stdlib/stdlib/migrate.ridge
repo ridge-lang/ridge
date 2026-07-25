@@ -43,7 +43,7 @@
 -- migration-history verb `ridge migrate rollback` drives) shares that bare name, so
 -- the one internal call to the transaction primitive is qualified as `Db.rollback`
 -- to reach it unambiguously.
-import std.data as Db
+import std.data as Db (DbError, mkDbError)
 -- The rich schema descriptor an entity-driven migration step carries: `eraseSchema`
 -- drops its phantom entity so a non-parametric `MigrationOp` can hold it, and
 -- `schemaTable` names the table a drop targets. `colPrimaryKey` reads which columns a
@@ -563,7 +563,7 @@ fn colTuples (cols: List Column) -> List (Text, Text, Bool, Bool, Bool) =
         c :: rest -> colTuple c :: colTuples rest
 
 -- Run one schema change against the adapter's schema seam, dispatching on its kind.
-fn runStep (conn: a) (op: MigrationOp) -> Result Unit Error where Adapter a =
+fn runStep (conn: a) (op: MigrationOp) -> Result Unit DbError where Adapter a =
     match op
         CreateTable table cols      -> ddlCreate conn table (colTuples cols)
         DropTable table             -> ddlDrop conn table
@@ -587,7 +587,7 @@ fn runStep (conn: a) (op: MigrationOp) -> Result Unit Error where Adapter a =
         DropView name -> ddlDropView conn name
 
 -- Run a migration's steps in order, stopping at the first failure.
-fn runSteps (conn: a) (steps: List MigrationOp) -> Result Unit Error where Adapter a =
+fn runSteps (conn: a) (steps: List MigrationOp) -> Result Unit DbError where Adapter a =
     match steps
         []        -> Ok ()
         s :: rest ->
@@ -596,8 +596,8 @@ fn runSteps (conn: a) (steps: List MigrationOp) -> Result Unit Error where Adapt
                 Ok _  -> runSteps conn rest
 
 -- Collapse a mutation's affected-row count to Unit: a seed step reports success or its
--- error, not the count, matching the schema steps' `Result Unit Error`.
-fn resultUnit (r: Result Int Error) -> Result Unit Error =
+-- error, not the count, matching the schema steps' `Result Unit DbError`.
+fn resultUnit (r: Result Int DbError) -> Result Unit DbError =
     match r
         Ok _  -> Ok ()
         Err e -> Err e
@@ -626,7 +626,7 @@ fn memberText (x: Text) (xs: List Text) -> Bool =
 -- commit together, or roll back together on any failure. A `rollback` that itself
 -- fails surfaces as the result's error; otherwise a failed migration returns the
 -- step's own error and leaves the database as it was.
-fn applyOne (conn: a) (m: Migration) -> Result Unit Error where Adapter a =
+fn applyOne (conn: a) (m: Migration) -> Result Unit DbError where Adapter a =
     match begin conn
         Err e -> Err e
         Ok _  ->
@@ -645,7 +645,7 @@ fn applyOne (conn: a) (m: Migration) -> Result Unit Error where Adapter a =
 -- Qualified as `Db.rollback` (the `Adapter` transaction primitive) rather than
 -- the bare name: this module's own `rollback` (the migration-history verb below)
 -- would otherwise shadow it.
-fn abort (conn: a) (orig: Error) -> Result Unit Error where Adapter a =
+fn abort (conn: a) (orig: DbError) -> Result Unit DbError where Adapter a =
     match Db.rollback conn
         Ok _   -> Err orig
         Err e2 -> Err e2
@@ -662,7 +662,7 @@ fn alreadyApplied (name: Text) (applied: List Text) -> Bool =
 -- Apply each not-yet-applied migration in order, returning the names applied on
 -- this run (in order). An already-applied migration is skipped without rerunning
 -- its steps.
-fn runPending (conn: a) (migrations: List Migration) (applied: List Text) -> Result (List Text) Error where Adapter a =
+fn runPending (conn: a) (migrations: List Migration) (applied: List Text) -> Result (List Text) DbError where Adapter a =
     match migrations
         []        -> Ok []
         m :: rest ->
@@ -682,7 +682,7 @@ fn runPending (conn: a) (migrations: List Migration) (applied: List Text) -> Res
 -- this run, oldest first. Running the same list again applies nothing and answers
 -- `[]`. The first migration that fails stops the run and returns its error, with
 -- the migrations before it already committed and the failed one rolled back.
-pub fn run (conn: a) (migrations: List Migration) -> Result (List Text) Error where Adapter a =
+pub fn run (conn: a) (migrations: List Migration) -> Result (List Text) DbError where Adapter a =
     match migrationsApplied conn
         Err e      -> Err e
         Ok applied -> runPending conn migrations applied
@@ -691,23 +691,16 @@ pub fn run (conn: a) (migrations: List Migration) -> Result (List Text) Error wh
 -- a plain top-level re-export of the `Adapter` class method `migrationsApplied`,
 -- for callers (such as `ridge migrate status`) that only need to read the
 -- tracking table without running anything.
-pub fn applied (conn: a) -> Result (List Text) Error where Adapter a =
+pub fn applied (conn: a) -> Result (List Text) DbError where Adapter a =
     migrationsApplied conn
 
 -- ── Rollback engine ───────────────────────────────────────────────────────────
-
--- Build an `Error` from a code and a message. A bare record literal cannot be
--- coerced to the nominal `Error` type in a plain function (only an instance-method
--- body, as the `SqlType` decoders are), so the rollback engine tags its errors
--- through this runtime helper, the same one `std.repo`'s unique-row terminals use.
-@ffi("ridge_rt", "mk_error", 2)
-fn mkError (code: Text) (message: Text) -> Error
 
 -- The reverse of one schema step, when it can be derived. A create inverts to the
 -- matching drop, an add-column to a drop-column, an alter to the swapped alter. A
 -- drop is information-losing — the columns or index definition are gone — so it has
 -- no derivable inverse and must be reversed by an explicit `down`.
-fn invert (op: MigrationOp) -> Result MigrationOp Error =
+fn invert (op: MigrationOp) -> Result MigrationOp DbError =
     match op
         CreateTable table _         -> Ok (DropTable table)
         AddColumn table col         -> Ok (DropColumn table col.name)
@@ -717,21 +710,21 @@ fn invert (op: MigrationOp) -> Result MigrationOp Error =
         AlterColumn table old new   -> Ok (AlterColumn table new old)
         SeedRows table keyCols rows   -> Ok (UnseedRows table keyCols rows)
         UnseedRows table keyCols rows -> Ok (SeedRows table keyCols rows)
-        DropTable table             -> Err (mkError "migrate.irreversible" (irreversibleMessage "dropTable" table))
-        DropColumn table col        -> Err (mkError "migrate.irreversible" (irreversibleMessage "dropColumn" (Text.join "" [table, ".", col])))
-        DropIndex name              -> Err (mkError "migrate.irreversible" (irreversibleMessage "dropIndex" name))
-        RunSql _                    -> Err (mkError "migrate.irreversible" (irreversibleMessage "runSql" "a raw statement"))
+        DropTable table             -> Err (Db.mkDbError "migrate.irreversible" (irreversibleMessage "dropTable" table))
+        DropColumn table col        -> Err (Db.mkDbError "migrate.irreversible" (irreversibleMessage "dropColumn" (Text.join "" [table, ".", col])))
+        DropIndex name              -> Err (Db.mkDbError "migrate.irreversible" (irreversibleMessage "dropIndex" name))
+        RunSql _                    -> Err (Db.mkDbError "migrate.irreversible" (irreversibleMessage "runSql" "a raw statement"))
         CreateView name _           -> Ok (DropView name)
-        DropView name               -> Err (mkError "migrate.irreversible" (irreversibleMessage "dropView" name))
+        DropView name               -> Err (Db.mkDbError "migrate.irreversible" (irreversibleMessage "dropView" name))
 
--- The message an irreversible-step `Error` reports: the verb that has no derivable
+-- The message an irreversible-step `DbError` reports: the verb that has no derivable
 -- inverse and the table (or table.column, or index name) it acted on.
 fn irreversibleMessage (verb: Text) (subject: Text) -> Text =
     Text.join "" ["cannot auto-reverse ", verb, " on ", subject, "; give the migration an explicit down with reversibleMigration"]
 
 -- Invert each step and reverse the order (a migration is undone last step first),
 -- stopping at the first step that has no derivable inverse.
-fn invertReversed (steps: List MigrationOp) (acc: List MigrationOp) -> Result (List MigrationOp) Error =
+fn invertReversed (steps: List MigrationOp) (acc: List MigrationOp) -> Result (List MigrationOp) DbError =
     match steps
         []        -> Ok acc
         s :: rest ->
@@ -741,7 +734,7 @@ fn invertReversed (steps: List MigrationOp) (acc: List MigrationOp) -> Result (L
 
 -- The steps that reverse a migration: its explicit `down` if it has one, otherwise
 -- the derived inverse of its `steps`.
-fn downSteps (m: Migration) -> Result (List MigrationOp) Error =
+fn downSteps (m: Migration) -> Result (List MigrationOp) DbError =
     match m.down
         Some d -> Ok d
         None   -> invertReversed m.steps []
@@ -750,7 +743,7 @@ fn downSteps (m: Migration) -> Result (List MigrationOp) Error =
 -- tracking record is removed together, or roll back together on any failure —
 -- the mirror of `applyOne`. A migration with no derivable reverse and no explicit
 -- down fails here before the transaction opens.
-fn rollbackOne (conn: a) (m: Migration) -> Result Unit Error where Adapter a =
+fn rollbackOne (conn: a) (m: Migration) -> Result Unit DbError where Adapter a =
     match downSteps m
         Err e    -> Err e
         Ok steps ->
@@ -791,12 +784,12 @@ fn namesAfter (applied: List Text) (target: Text) -> List Text =
 -- Roll back the named migrations in the order given, looking each up in the
 -- provided list for its reverse steps. A name with no matching migration in the
 -- list stops the run — its reverse is unknown.
-fn rollbackNames (conn: a) (migrations: List Migration) (names: List Text) -> Result (List Text) Error where Adapter a =
+fn rollbackNames (conn: a) (migrations: List Migration) (names: List Text) -> Result (List Text) DbError where Adapter a =
     match names
         []        -> Ok []
         nm :: rest ->
             match findMigration migrations nm
-                None   -> Err (mkError "migrate.notfound" (Text.join "" ["cannot roll back \"", nm, "\": no migration with that name is in the list"]))
+                None   -> Err (Db.mkDbError "migrate.notfound" (Text.join "" ["cannot roll back \"", nm, "\": no migration with that name is in the list"]))
                 Some m ->
                     match rollbackOne conn m
                         Err e -> Err e
@@ -812,7 +805,7 @@ fn rollbackNames (conn: a) (migrations: List Migration) (names: List Text) -> Re
 -- so its reverse steps are known, and must be reversible (derivable inverse or an
 -- explicit down) — otherwise the run stops at that migration and returns its error,
 -- with the ones already reversed committed.
-pub fn rollback (conn: a) (migrations: List Migration) (n: Int) -> Result (List Text) Error where Adapter a =
+pub fn rollback (conn: a) (migrations: List Migration) (n: Int) -> Result (List Text) DbError where Adapter a =
     match migrationsApplied conn
         Err e      -> Err e
         Ok applied -> rollbackNames conn migrations (takeNames (reverseNames applied []) n)
@@ -821,13 +814,13 @@ pub fn rollback (conn: a) (migrations: List Migration) (n: Int) -> Result (List 
 -- and everything before it applied — the analogue of migrating a database down to a
 -- chosen version. Answers the names rolled back (newest first). A `target` that is
 -- not currently applied is an error.
-pub fn revertTo (conn: a) (migrations: List Migration) (target: Text) -> Result (List Text) Error where Adapter a =
+pub fn revertTo (conn: a) (migrations: List Migration) (target: Text) -> Result (List Text) DbError where Adapter a =
     match migrationsApplied conn
         Err e      -> Err e
         Ok applied ->
             match alreadyApplied target applied
                 true  -> rollbackNames conn migrations (reverseNames (namesAfter applied target) [])
-                false -> Err (mkError "migrate.notapplied" (Text.join "" ["cannot revert to \"", target, "\": it is not applied"]))
+                false -> Err (Db.mkDbError "migrate.notapplied" (Text.join "" ["cannot revert to \"", target, "\": it is not applied"]))
 
 -- ── Ridge-source renderer ─────────────────────────────────────────────────────
 --

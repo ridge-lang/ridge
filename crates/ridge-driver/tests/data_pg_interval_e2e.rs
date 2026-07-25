@@ -31,7 +31,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// The program source, with connection settings spliced in as sentinels so the
 /// Ridge record braces never collide with Rust string formatting.
 const SOURCE_TEMPLATE: &str = r#"
-import std.data (connect, PostgresConfig, Postgres)
+import std.data (DbError, connect, PostgresConfig, Postgres)
 import std.repo as Repo
 import std.raw as Raw
 import std.sql (toSql, SqlValue)
@@ -61,7 +61,7 @@ fn pgConfig () -> PostgresConfig =
 -- Create a fresh interval table and seed two rows: 1500 ms (id 1) and 500 ms (id 2),
 -- which Postgres stores as `00:00:01.5` and `00:00:00.5`. Two rows let `avg` fold to a
 -- mean, and id 1 stays the 1500 ms row the round-trip reads back.
-pub fn db setup () -> Result (Repo Item Postgres) Error =
+pub fn db setup () -> Result (Repo Item Postgres) DbError =
     match connect (pgConfig ())
         Err e   -> Err e
         Ok conn ->

@@ -25,7 +25,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.query (SortOrder, Asc, Desc)
 import std.sql (toSql, SqlValue)
@@ -56,7 +56,7 @@ fn nickOf (o: Option Text) -> Text =
 -- Open a fresh store, bind a repository, and seed three users with the TYPED
 -- `insert` — no by-hand row map. lin's nick is `None` (a NULL column), the
 -- others carry a value. Each probe seeds its own isolated store.
-pub fn db setup () -> Result (Repo User MemAdapter) Error =
+pub fn db setup () -> Result (Repo User MemAdapter) DbError =
     let r: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     match Repo.insert (UserInsert { age = 18, name = "ada", nick = Some "ace" }) r
         Err e -> Err e

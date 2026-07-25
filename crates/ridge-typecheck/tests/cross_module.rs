@@ -412,14 +412,14 @@ fn adapter_mem_insert_and_all_typecheck() {
     // instance on `MemAdapter` and type-check clean. `memAdapter` needs `db`, so
     // the callers declare it; the methods themselves are cap-free.
     let main = r#"
-import std.data (memAdapter, appendRow, all)
+import std.data (DbError, memAdapter, appendRow, all)
 import std.sql (toSql, SqlValue)
 import std.map as Map
 
-pub fn db save () -> Result Unit Error =
+pub fn db save () -> Result Unit DbError =
     appendRow (memAdapter ()) "users" (Map.fromList [("id", toSql 1)])
 
-pub fn db load () -> Result (List (Map Text SqlValue)) Error =
+pub fn db load () -> Result (List (Map Text SqlValue)) DbError =
     all (memAdapter ()) "users"
 "#;
     let errors = typecheck_one(main);
@@ -434,10 +434,10 @@ fn adapter_insert_on_non_adapter_type_is_rejected() {
     // `Int` has no `Adapter` instance, so dispatching `appendRow` on it must fail
     // rather than silently resolve.
     let main = r#"
-import std.data (appendRow)
+import std.data (DbError, appendRow)
 import std.sql (SqlValue)
 
-pub fn bad (row: Map Text SqlValue) -> Result Unit Error =
+pub fn bad (row: Map Text SqlValue) -> Result Unit DbError =
     appendRow 5 "users" row
 "#;
     let errors = typecheck_one(main);
@@ -452,10 +452,10 @@ fn adapter_open_requires_db_capability() {
     // Opening an adapter is the act gated by `db`; a pure function that calls
     // `memAdapter` must be rejected. (The query methods themselves are cap-free.)
     let main = r#"
-import std.data (memAdapter, all)
+import std.data (DbError, memAdapter, all)
 import std.sql (SqlValue)
 
-pub fn opensWithoutDb () -> Result (List (Map Text SqlValue)) Error =
+pub fn opensWithoutDb () -> Result (List (Map Text SqlValue)) DbError =
     all (memAdapter ()) "users"
 "#;
     let errors = typecheck_one(main);
@@ -472,12 +472,12 @@ fn adapter_select_rows_with_inline_annotated_predicate_typechecks() {
     // Bool)` leaves it generic), so the body is checked against User's columns
     // and `selectRows` dispatches on MemAdapter.
     let main = r#"
-import std.data (memAdapter, selectRows)
+import std.data (DbError, memAdapter, selectRows)
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int }
 
-pub fn db adults () -> Result (List (Map Text SqlValue)) Error =
+pub fn db adults () -> Result (List (Map Text SqlValue)) DbError =
     selectRows (memAdapter ()) "users" (fn (u: User) -> u.age >= 18)
 "#;
     let errors = typecheck_one(main);
@@ -493,15 +493,15 @@ fn adapter_get_and_delete_typecheck() {
     // predicate and answers the count removed. Both resolve the MemAdapter
     // instance and type-check clean.
     let main = r#"
-import std.data (memAdapter, get, delete)
+import std.data (DbError, memAdapter, get, delete)
 import std.sql (SqlValue, toSql)
 
 pub type User = { id: Int, age: Int }
 
-pub fn db one () -> Result (Option (Map Text SqlValue)) Error =
+pub fn db one () -> Result (Option (Map Text SqlValue)) DbError =
     get (memAdapter ()) "users" "id" (toSql 1)
 
-pub fn db purge () -> Result Int Error =
+pub fn db purge () -> Result Int DbError =
     delete (memAdapter ()) "users" (fn (u: User) -> u.age < 18)
 "#;
     let errors = typecheck_one(main);
@@ -516,12 +516,12 @@ fn adapter_select_predicate_unknown_column_is_rejected() {
     // The quoted predicate is checked against the entity's columns, so a field
     // the record does not declare is a real error rather than being absorbed.
     let main = r#"
-import std.data (memAdapter, selectRows)
+import std.data (DbError, memAdapter, selectRows)
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int }
 
-pub fn db bad () -> Result (List (Map Text SqlValue)) Error =
+pub fn db bad () -> Result (List (Map Text SqlValue)) DbError =
     selectRows (memAdapter ()) "users" (fn (u: User) -> u.nope >= 18)
 "#;
     let errors = typecheck_one(main);
@@ -538,14 +538,14 @@ fn predicate_like_and_in_helpers_typecheck() {
     // predicate and check against the column's type, combining with `&&` like any
     // other comparison.
     let main = r#"
-import std.data (memAdapter, selectRows)
+import std.data (DbError, memAdapter, selectRows)
 import std.sql (SqlValue)
 import std.text as Text
 import std.list as List
 
 pub type User = { id: Int, age: Int, name: Text }
 
-pub fn db matches () -> Result (List (Map Text SqlValue)) Error =
+pub fn db matches () -> Result (List (Map Text SqlValue)) DbError =
     selectRows (memAdapter ()) "users"
         (fn (u: User) ->
             Text.contains u.name "a"
@@ -566,13 +566,13 @@ fn predicate_in_list_type_mismatch_is_rejected() {
     // The `IN` set must match the column's type — a text literal against an Int
     // column is a real error, not silently absorbed.
     let main = r#"
-import std.data (memAdapter, selectRows)
+import std.data (DbError, memAdapter, selectRows)
 import std.sql (SqlValue)
 import std.list as List
 
 pub type User = { id: Int, age: Int }
 
-pub fn db bad () -> Result (List (Map Text SqlValue)) Error =
+pub fn db bad () -> Result (List (Map Text SqlValue)) DbError =
     selectRows (memAdapter ()) "users" (fn (u: User) -> List.contains u.age ["x"])
 "#;
     let errors = typecheck_one(main);
@@ -587,13 +587,13 @@ fn predicate_text_match_on_non_text_column_is_rejected() {
     // A text match applies only to a Text column; using it on an Int column is a
     // real error rather than being silently accepted.
     let main = r#"
-import std.data (memAdapter, selectRows)
+import std.data (DbError, memAdapter, selectRows)
 import std.sql (SqlValue)
 import std.text as Text
 
 pub type User = { id: Int, age: Int }
 
-pub fn db bad () -> Result (List (Map Text SqlValue)) Error =
+pub fn db bad () -> Result (List (Map Text SqlValue)) DbError =
     selectRows (memAdapter ()) "users" (fn (u: User) -> Text.contains u.age "1")
 "#;
     let errors = typecheck_one(main);
@@ -609,12 +609,12 @@ fn predicate_arithmetic_typechecks() {
     // literal, a column with a column, integer division and modulo — each combining
     // with `&&` like any other comparison.
     let main = r#"
-import std.data (memAdapter, selectRows)
+import std.data (DbError, memAdapter, selectRows)
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text, score: Float }
 
-pub fn db matches () -> Result (List (Map Text SqlValue)) Error =
+pub fn db matches () -> Result (List (Map Text SqlValue)) DbError =
     selectRows (memAdapter ()) "users"
         (fn (u: User) ->
             u.age * 2 > 50
@@ -636,12 +636,12 @@ fn predicate_arithmetic_type_mismatch_is_rejected() {
     // Arithmetic operands must share one numeric type — an Int column plus a Text
     // column is a real error, not a silently coerced expression.
     let main = r#"
-import std.data (memAdapter, selectRows)
+import std.data (DbError, memAdapter, selectRows)
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text }
 
-pub fn db bad () -> Result (List (Map Text SqlValue)) Error =
+pub fn db bad () -> Result (List (Map Text SqlValue)) DbError =
     selectRows (memAdapter ()) "users" (fn (u: User) -> u.age + u.name > 0)
 "#;
     let errors = typecheck_one(main);
@@ -656,12 +656,12 @@ fn predicate_modulo_on_float_is_rejected() {
     // `%` (modulo) is Int-only — Postgres does not define it on Float, so a Float
     // modulo is rejected rather than reaching a backend that cannot evaluate it.
     let main = r#"
-import std.data (memAdapter, selectRows)
+import std.data (DbError, memAdapter, selectRows)
 import std.sql (SqlValue)
 
 pub type User = { id: Int, score: Float }
 
-pub fn db bad () -> Result (List (Map Text SqlValue)) Error =
+pub fn db bad () -> Result (List (Map Text SqlValue)) DbError =
     selectRows (memAdapter ()) "users" (fn (u: User) -> u.score % 2.0 > 0.0)
 "#;
     let errors = typecheck_one(main);
@@ -676,12 +676,12 @@ fn predicate_division_by_literal_zero_is_rejected() {
     // A literal-zero divisor is a guaranteed error, caught at compile time rather
     // than left to abort the query (Postgres) or drop the row (in-memory) at run time.
     let main = r#"
-import std.data (memAdapter, selectRows)
+import std.data (DbError, memAdapter, selectRows)
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int }
 
-pub fn db bad () -> Result (List (Map Text SqlValue)) Error =
+pub fn db bad () -> Result (List (Map Text SqlValue)) DbError =
     selectRows (memAdapter ()) "users" (fn (u: User) -> u.age / 0 == 1)
 "#;
     let errors = typecheck_one(main);
@@ -698,13 +698,13 @@ fn repo_all_auto_decodes_to_typed_list() {
     // `Adapter MemAdapter` constraint resolves the in-memory backend, and the
     // `Row User` constraint resolves the `deriving (Row)` decoder.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
-pub fn db loadUsers () -> Result (List User) Error =
+pub fn db loadUsers () -> Result (List User) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     Repo.all users
 "#;
@@ -721,7 +721,7 @@ fn repo_findby_with_like_and_in_helpers_typechecks() {
     // the bare `contains` IN test, dispatched through the same quote machinery as a
     // comparison — the path the Postgres e2e drives over the real wire.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 import std.text as Text
@@ -729,7 +729,7 @@ import std.list (contains)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
-pub fn db hits () -> Result (List User) Error =
+pub fn db hits () -> Result (List User) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users |> Repo.findBy (fn (u: User) -> Text.contains u.name "a" && contains u.age [18, 30])
 "#;
@@ -748,7 +748,7 @@ fn repo_findby_folded_like_in_probe_typechecks() {
     // this locks the let-chain + `Int.toText` + `Text.join` shape here, over the
     // in-memory adapter (the backend does not change how the predicate type-checks).
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 import std.text as Text
@@ -762,7 +762,7 @@ fn listLen (us: List User) -> Int =
         []        -> 0
         _ :: rest -> 1 + listLen rest
 
-fn countOf (res: Result (List User) Error) -> Int =
+fn countOf (res: Result (List User) DbError) -> Int =
     match res
         Ok us -> listLen us
         Err _ -> 0 - 1
@@ -791,7 +791,7 @@ fn repo_findby_folded_arithmetic_probe_typechecks() {
     // comma-joined string. The e2e source only compiles under a live database, so this
     // locks the probe shape here over the in-memory adapter.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 import std.text as Text
@@ -804,7 +804,7 @@ fn listLen (us: List User) -> Int =
         []        -> 0
         _ :: rest -> 1 + listLen rest
 
-fn countOf (res: Result (List User) Error) -> Int =
+fn countOf (res: Result (List User) DbError) -> Int =
     match res
         Ok us -> listLen us
         Err _ -> 0 - 1
@@ -833,13 +833,13 @@ fn repo_over_postgres_adapter_typechecks() {
     // reconciled `PostgresConfig`/`Postgres`, the `connect` scheme, and the
     // `Adapter Postgres` instance).
     let main = r#"
-import std.data (connect, PostgresConfig, Postgres)
+import std.data (DbError, connect, PostgresConfig, Postgres)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
-pub fn db loadUsers () -> Result (List User) Error =
+pub fn db loadUsers () -> Result (List User) DbError =
     match connect (PostgresConfig { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
@@ -861,10 +861,10 @@ fn connect_with_tuned_pool_and_disconnect_typecheck() {
     // exercises the reconciled `PoolConfig`, the `connectWith`/`defaultPool`/
     // `with*` schemes, and the generic `disconnect`.
     let main = r"
-import std.data (connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withConnectTimeoutMs, withCheckoutTimeoutMs, withIdleTimeoutMs, withMaxLifetimeMs, withHealthCheckMs, withConnectRetries, withRetryBackoffMs, withMaxQueueDepth, PostgresConfig, PoolConfig, Postgres)
+import std.data (DbError, connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withConnectTimeoutMs, withCheckoutTimeoutMs, withIdleTimeoutMs, withMaxLifetimeMs, withHealthCheckMs, withConnectRetries, withRetryBackoffMs, withMaxQueueDepth, PostgresConfig, PoolConfig, Postgres)
 import std.repo as Repo
 
-pub fn db openTuned (cfg: PostgresConfig) -> Result Unit Error =
+pub fn db openTuned (cfg: PostgresConfig) -> Result Unit DbError =
     match connectWith cfg (defaultPool () |> withPoolSize 20 |> withQueryTimeoutMs 60000 |> withConnectTimeoutMs 8000 |> withCheckoutTimeoutMs 3000 |> withIdleTimeoutMs 300000 |> withMaxLifetimeMs 900000 |> withHealthCheckMs 30000 |> withConnectRetries 5 |> withRetryBackoffMs 250 |> withMaxQueueDepth 64)
         Err e   -> Err e
         Ok conn -> Repo.disconnect conn
@@ -886,7 +886,7 @@ fn tune_maintenance_windows_qualified_typecheck() {
     // reconciled `PoolConfig` and the qualified setters are both exercised without
     // a direct import.
     let main = r"
-import std.data as Data
+import std.data as Data (DbError)
 
 pub fn tunedIdle -> Int =
     (Data.defaultPool () |> Data.withIdleTimeoutMs 5000 |> Data.withMaxLifetimeMs 0 |> Data.withHealthCheckMs 100).idleTimeoutMs
@@ -907,7 +907,7 @@ fn tune_retry_and_backpressure_qualified_typecheck() {
     // carries the new fields and the qualified setters resolve without a direct
     // import.
     let main = r"
-import std.data as Data
+import std.data as Data (DbError)
 
 pub fn tunedQueue -> Int =
     (Data.defaultPool () |> Data.withConnectRetries 5 |> Data.withRetryBackoffMs 250 |> Data.withMaxQueueDepth 64).maxQueueDepth
@@ -925,9 +925,9 @@ fn connect_requires_the_db_capability() {
     // pure function must be rejected, exactly as for `memAdapter`. (The handle's
     // later use is cap-free under the handle-as-proof model.)
     let main = r#"
-import std.data (connect, PostgresConfig, Postgres)
+import std.data (DbError, connect, PostgresConfig, Postgres)
 
-pub fn openIt () -> Result Postgres Error =
+pub fn openIt () -> Result Postgres DbError =
     connect (PostgresConfig { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "disable" })
 "#;
     let errors = typecheck_one(main);
@@ -944,7 +944,7 @@ fn repo_full_surface_typechecks_with_pipe_and_inline_predicates() {
     // read verbs auto-decode to `User` while the aggregate/write verbs answer
     // counts and units. One module exercises the whole surface.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue, toSql)
 import std.map as Map
@@ -954,28 +954,28 @@ pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub fn db users () -> Repo User MemAdapter =
     Repo.repo (memAdapter ()) "users"
 
-pub fn db adults () -> Result (List User) Error =
+pub fn db adults () -> Result (List User) DbError =
     users () |> Repo.findBy (fn (u: User) -> u.age >= 18)
 
-pub fn db firstAdult () -> Result (Option User) Error =
+pub fn db firstAdult () -> Result (Option User) DbError =
     users () |> Repo.find (fn (u: User) -> u.age >= 18)
 
-pub fn db byId () -> Result (Option User) Error =
+pub fn db byId () -> Result (Option User) DbError =
     users () |> Repo.getBy "id" (toSql 1)
 
-pub fn db howMany () -> Result Int Error =
+pub fn db howMany () -> Result Int DbError =
     users () |> Repo.query |> Repo.count
 
-pub fn db howManyAdults () -> Result Int Error =
+pub fn db howManyAdults () -> Result Int DbError =
     users () |> Repo.query |> Repo.filter (fn (u: User) -> u.age >= 18) |> Repo.count
 
-pub fn db anyMinors () -> Result Bool Error =
+pub fn db anyMinors () -> Result Bool DbError =
     users () |> Repo.query |> Repo.filter (fn (u: User) -> u.age < 18) |> Repo.exists
 
-pub fn db add () -> Result Unit Error =
+pub fn db add () -> Result Unit DbError =
     users () |> Repo.insertRow (Map.fromList [("id", toSql 1)])
 
-pub fn db purge () -> Result Int Error =
+pub fn db purge () -> Result Int DbError =
     users () |> Repo.delete (fn (u: User) -> u.age < 18)
 "#;
     let errors = typecheck_one(main);
@@ -990,13 +990,13 @@ fn repo_predicate_unknown_column_is_rejected() {
     // The repository predicate is checked against the entity: a field the record
     // does not declare is an error, just as at the adapter seam.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
-pub fn db bad () -> Result (List User) Error =
+pub fn db bad () -> Result (List User) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users |> Repo.findBy (fn (u: User) -> u.nope >= 18)
 "#;
@@ -1032,14 +1032,14 @@ fn query_builder_pipeline_and_terminals_typecheck() {
     // `toList`/`first` terminals decode the rows into the pinned entity. The
     // `orderBy` key is a quoted column whose return type is phantom.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.query (SortOrder, Asc, Desc)
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
-pub fn db topAdults () -> Result (List User) Error =
+pub fn db topAdults () -> Result (List User) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users
       |> Repo.query
@@ -1050,7 +1050,7 @@ pub fn db topAdults () -> Result (List User) Error =
       |> Repo.offset 5
       |> Repo.toList
 
-pub fn db oldest () -> Result (Option User) Error =
+pub fn db oldest () -> Result (Option User) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users |> Repo.query |> Repo.orderBy Desc (fn (u: User) -> u.age) |> Repo.first
 "#;
@@ -1068,7 +1068,7 @@ fn query_builder_distinct_typechecks() {
     // rows over a whole-row `toList` and over the projected columns of a
     // `selectList`, and resolves through the `Adapter` seam like the other verbs.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.query (SortOrder, Asc)
 import std.sql (SqlValue)
@@ -1076,11 +1076,11 @@ import std.sql (SqlValue)
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Name = { name: Text } deriving (Row)
 
-pub fn db distinctUsers () -> Result (List User) Error =
+pub fn db distinctUsers () -> Result (List User) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users |> Repo.query |> Repo.filter (fn (u: User) -> u.age >= 18) |> Repo.distinct |> Repo.toList
 
-pub fn db distinctNames () -> Result (List Name) Error =
+pub fn db distinctNames () -> Result (List Name) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users |> Repo.query |> Repo.distinct |> Repo.orderBy Asc (fn (u: User) -> u.name) |> Repo.select (fn (u: User) -> Name { name = u.name })
 "#;
@@ -1098,20 +1098,20 @@ fn query_builder_set_operations_typecheck() {
     // `filter`/`orderBy`/`limit` and a terminal. A combined query also combines
     // again — `intersect` then `except` nests the plans.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.query (SortOrder, Asc)
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
-pub fn db combined () -> Result (List User) Error =
+pub fn db combined () -> Result (List User) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let adults = users |> Repo.query |> Repo.filter (fn (u: User) -> u.age >= 18)
     let admins = users |> Repo.query |> Repo.filter (fn (u: User) -> u.name == "admin")
     adults |> Repo.union admins |> Repo.orderBy Asc (fn (u: User) -> u.name) |> Repo.limit 10 |> Repo.toList
 
-pub fn db nested () -> Result (Option User) Error =
+pub fn db nested () -> Result (Option User) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let a = users |> Repo.query |> Repo.filter (fn (u: User) -> u.age >= 18)
     let b = users |> Repo.query |> Repo.filter (fn (u: User) -> u.age < 18)
@@ -1135,28 +1135,28 @@ fn query_builder_scalar_aggregates_typecheck() {
     // whole-table form is just `query` with no `filter`. The pinned return types
     // prove the column type flows from the accessor through the result.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
-pub fn db totalAge () -> Result (Option Int) Error =
+pub fn db totalAge () -> Result (Option Int) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users
       |> Repo.query
       |> Repo.filter (fn (u: User) -> u.age >= 18)
       |> Repo.sumOf (fn (u: User) -> u.age)
 
-pub fn db meanAge () -> Result (Option Float) Error =
+pub fn db meanAge () -> Result (Option Float) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users |> Repo.query |> Repo.avgOf (fn (u: User) -> u.age)
 
-pub fn db youngest () -> Result (Option Int) Error =
+pub fn db youngest () -> Result (Option Int) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users |> Repo.query |> Repo.minOf (fn (u: User) -> u.age)
 
-pub fn db lastName () -> Result (Option Text) Error =
+pub fn db lastName () -> Result (Option Text) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users |> Repo.query |> Repo.maxOf (fn (u: User) -> u.name)
 "#;
@@ -1176,21 +1176,21 @@ fn query_builder_unique_and_universal_terminals_typecheck() {
     // predicate and answers `Bool` — so it composes after the accumulated filter
     // without decoding a row. The pinned return types prove each terminal's shape.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
-pub fn db maybeAdmin () -> Result (Option User) Error =
+pub fn db maybeAdmin () -> Result (Option User) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users |> Repo.query |> Repo.filter (fn (u: User) -> u.name == "admin") |> Repo.single
 
-pub fn db theAdmin () -> Result User Error =
+pub fn db theAdmin () -> Result User DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users |> Repo.query |> Repo.filter (fn (u: User) -> u.id == 1) |> Repo.singleOrError
 
-pub fn db allAdult () -> Result Bool Error =
+pub fn db allAdult () -> Result Bool DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users |> Repo.query |> Repo.every (fn (u: User) -> u.age >= 18)
 "#;
@@ -1211,14 +1211,14 @@ fn query_builder_group_by_and_summarize_typecheck() {
     // vocabulary — including a cross-aggregate threshold (`g.sum … >= 100000`). The
     // pinned `List DeptStats` proves the named shape fixes the result.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, dept: Text, age: Int, salary: Int } deriving (Row)
 pub type DeptStats = { dept: Text, members: Int, payroll: Int, avgAge: Float, youngest: Int, eldest: Int } deriving (Row)
 
-pub fn db deptStats () -> Result (List DeptStats) Error =
+pub fn db deptStats () -> Result (List DeptStats) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users
       |> Repo.query
@@ -1227,7 +1227,7 @@ pub fn db deptStats () -> Result (List DeptStats) Error =
       |> Repo.having (fn g -> g.count > 3)
       |> Repo.summarize (fn g -> DeptStats { dept = g.key, members = g.count, payroll = g.sum (fn (u: User) -> u.salary), avgAge = g.avg (fn (u: User) -> u.age), youngest = g.min (fn (u: User) -> u.age), eldest = g.max (fn (u: User) -> u.age) })
 
-pub fn db wealthyDepts () -> Result (List DeptStats) Error =
+pub fn db wealthyDepts () -> Result (List DeptStats) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users
       |> Repo.query
@@ -1248,14 +1248,14 @@ fn query_builder_group_aggregate_unknown_column_is_rejected() {
     // like a filter or an `orderBy` key: summing a field the record does not
     // declare is an error, proving the entity threads through the group vocabulary.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, dept: Text, age: Int } deriving (Row)
 pub type Stats = { dept: Text, total: Int } deriving (Row)
 
-pub fn db bad () -> Result (List Stats) Error =
+pub fn db bad () -> Result (List Stats) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users
       |> Repo.query
@@ -1275,14 +1275,14 @@ fn query_builder_over_postgres_typechecks() {
     // `fetch` is a class method both adapters implement, so a `Query User Postgres`
     // runs its terminal through the Postgres instance with no extra annotation.
     let main = r#"
-import std.data (connect, PostgresConfig, Postgres)
+import std.data (DbError, connect, PostgresConfig, Postgres)
 import std.repo as Repo
 import std.query (SortOrder, Desc)
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
-pub fn db topAdults () -> Result (List User) Error =
+pub fn db topAdults () -> Result (List User) DbError =
     match connect (PostgresConfig { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
@@ -1307,13 +1307,13 @@ fn query_builder_filter_unknown_column_is_rejected() {
     // a field the record does not declare is an error, proving the entity-typed
     // scheme threads through the builder rather than erasing to the row map.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
-pub fn db bad () -> Result (List User) Error =
+pub fn db bad () -> Result (List User) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users |> Repo.query |> Repo.filter (fn (u: User) -> u.nope >= 18) |> Repo.toList
 "#;
@@ -1331,7 +1331,7 @@ fn query_builder_projection_into_named_shape_typechecks() {
     // answers `Option Summary` — no binding annotation needed to fix the shape.
     // The projection runs after the filter/order/page accumulated on the query.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.query (SortOrder, Desc)
 import std.sql (SqlValue)
@@ -1339,7 +1339,7 @@ import std.sql (SqlValue)
 pub type User = { id: Int, age: Int, name: Text, signupYear: Int } deriving (Row)
 pub type Summary = { name: Text, year: Int } deriving (Row)
 
-pub fn db summaries () -> Result (List Summary) Error =
+pub fn db summaries () -> Result (List Summary) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users
       |> Repo.query
@@ -1348,7 +1348,7 @@ pub fn db summaries () -> Result (List Summary) Error =
       |> Repo.limit 10
       |> Repo.select (fn (u: User) -> Summary { name = u.name, year = u.signupYear })
 
-pub fn db topSummary () -> Result (Option Summary) Error =
+pub fn db topSummary () -> Result (Option Summary) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users
       |> Repo.query
@@ -1368,14 +1368,14 @@ fn query_builder_projection_over_postgres_typechecks() {
     // `project` is a class method both adapters implement, so the select-list is
     // pushed down with no change to the call.
     let main = r#"
-import std.data (connect, PostgresConfig, Postgres)
+import std.data (DbError, connect, PostgresConfig, Postgres)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text, signupYear: Int } deriving (Row)
 pub type Summary = { name: Text, year: Int } deriving (Row)
 
-pub fn db summaries () -> Result (List Summary) Error =
+pub fn db summaries () -> Result (List Summary) DbError =
     match connect (PostgresConfig { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
@@ -1399,14 +1399,14 @@ fn query_builder_projection_unknown_column_is_rejected() {
     // error, proving the projection is checked against the entity rather than
     // erasing to the row map.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Summary = { label: Text } deriving (Row)
 
-pub fn db bad () -> Result (List Summary) Error =
+pub fn db bad () -> Result (List Summary) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users |> Repo.query |> Repo.select (fn (u: User) -> Summary { label = u.nope })
 "#;
@@ -1423,13 +1423,13 @@ fn query_builder_projection_must_name_its_shape() {
     // target at a generic `selectList`, so it is rejected with guidance to name
     // the result record rather than failing opaquely.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
-pub fn db bad () -> Result (List Unit) Error =
+pub fn db bad () -> Result (List Unit) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users |> Repo.query |> Repo.select (fn (u: User) -> { name = u.name })
 "#;
@@ -1447,7 +1447,7 @@ fn query_builder_join_to_list_typechecks() {
     // row pair into `(User, Post)`. The condition's left columns range over `User`,
     // its right over `Post`; both are pinned from the lambda's own annotations.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.query (SortOrder, Asc)
 import std.sql (SqlValue)
@@ -1455,7 +1455,7 @@ import std.sql (SqlValue)
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db authorPosts () -> Result (List (User, Post)) Error =
+pub fn db authorPosts () -> Result (List (User, Post)) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -1479,7 +1479,7 @@ fn query_builder_cross_join_typechecks() {
     // join vocabulary follows: `toList` decodes each pair into `(User, Color)`, and
     // a later `filter`/`orderBy` compose exactly as on an inner join.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.query (SortOrder, Asc)
 import std.sql (SqlValue)
@@ -1487,7 +1487,7 @@ import std.sql (SqlValue)
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Color = { id: Int, label: Text } deriving (Row)
 
-pub fn db pairs () -> Result (List (User, Color)) Error =
+pub fn db pairs () -> Result (List (User, Color)) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let colors: Repo Color MemAdapter = Repo.repo (memAdapter ()) "colors"
     users
@@ -1495,7 +1495,7 @@ pub fn db pairs () -> Result (List (User, Color)) Error =
       |> Repo.crossJoin colors
       |> Repo.toList
 
-pub fn db filteredOrdered () -> Result (List (User, Color)) Error =
+pub fn db filteredOrdered () -> Result (List (User, Color)) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let colors: Repo Color MemAdapter = Repo.repo (memAdapter ()) "colors"
     users
@@ -1519,14 +1519,14 @@ fn query_builder_filter_on_join_typechecks() {
     // one-row predicate on a `Query`. The functional dependency on `Refinable`
     // makes the predicate's arity follow the receiver.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db publishedPosts () -> Result (List (User, Post)) Error =
+pub fn db publishedPosts () -> Result (List (User, Post)) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -1549,7 +1549,7 @@ fn query_builder_paging_on_join_typechecks() {
     // `Query` — bounding the join's page and de-duplicating its rows — and the join
     // still decodes into `(User, Post)` through `toList`.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.query (SortOrder, Asc)
 import std.sql (SqlValue)
@@ -1557,7 +1557,7 @@ import std.sql (SqlValue)
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db pagedJoin () -> Result (List (User, Post)) Error =
+pub fn db pagedJoin () -> Result (List (User, Post)) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -1582,14 +1582,14 @@ fn query_builder_paging_on_left_join_typechecks() {
     // decodes the right entity as `Option`, while `limit`/`offset`/`distinct` bound
     // and de-duplicate the kept rows.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db pagedLeftJoin () -> Result (List (User, Option Post)) Error =
+pub fn db pagedLeftJoin () -> Result (List (User, Option Post)) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -1615,14 +1615,14 @@ fn query_builder_count_exists_every_on_join_typechecks() {
     // takes a two-row predicate over both entities (the arity the dependency fixes
     // for a join) and answers `Bool`. The pinned return types prove each shape.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db joinCount () -> Result Int Error =
+pub fn db joinCount () -> Result Int DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -1630,7 +1630,7 @@ pub fn db joinCount () -> Result Int Error =
       |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
       |> Repo.count
 
-pub fn db joinExists () -> Result Bool Error =
+pub fn db joinExists () -> Result Bool DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -1638,7 +1638,7 @@ pub fn db joinExists () -> Result Bool Error =
       |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
       |> Repo.exists
 
-pub fn db joinEvery () -> Result Bool Error =
+pub fn db joinEvery () -> Result Bool DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -1661,14 +1661,14 @@ fn query_builder_count_exists_every_on_left_join_typechecks() {
     // `Bool`. The left join keeps every left row, so `exists` is true whenever a
     // left row the predicate admits exists.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db leftJoinCount () -> Result Int Error =
+pub fn db leftJoinCount () -> Result Int DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -1676,7 +1676,7 @@ pub fn db leftJoinCount () -> Result Int Error =
       |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
       |> Repo.count
 
-pub fn db leftJoinEvery () -> Result Bool Error =
+pub fn db leftJoinEvery () -> Result Bool DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -1700,7 +1700,7 @@ fn query_builder_group_by_on_join_typechecks() {
     // `g.sum (fn u p -> p.score)` the right, `g.sum (fn u -> u.age)` the left. The
     // pinned `List CatStats` proves the named shape fixes the result.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
@@ -1708,7 +1708,7 @@ pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text, score: Int } deriving (Row)
 pub type CatStats = { cat: Text, n: Int, scores: Int, ages: Int } deriving (Row)
 
-pub fn db joinGroup () -> Result (List CatStats) Error =
+pub fn db joinGroup () -> Result (List CatStats) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -1719,7 +1719,7 @@ pub fn db joinGroup () -> Result (List CatStats) Error =
       |> Repo.summarize (fn g -> CatStats { cat = g.key, n = g.count,
            scores = g.sum (fn (u: User) (p: Post) -> p.score), ages = g.sum (fn (u: User) -> u.age) })
 
-pub fn db joinGroupHavingRight () -> Result (List CatStats) Error =
+pub fn db joinGroupHavingRight () -> Result (List CatStats) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -1744,7 +1744,7 @@ fn query_builder_group_by_on_left_join_typechecks() {
     // aggregate name `p.title`/`p.score` directly. Every left row joins a group; an
     // unmatched one contributes a NULL right side.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
@@ -1752,7 +1752,7 @@ pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text, score: Int } deriving (Row)
 pub type CatStats = { cat: Text, n: Int, scores: Int } deriving (Row)
 
-pub fn db leftJoinGroup () -> Result (List CatStats) Error =
+pub fn db leftJoinGroup () -> Result (List CatStats) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -1776,7 +1776,7 @@ fn query_builder_group_aggregate_unknown_join_column_is_rejected() {
     // reads: summing `p.nope`, a column the right entity does not declare, is an
     // error, proving both entities thread through the join group vocabulary.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
@@ -1784,7 +1784,7 @@ pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text, score: Int } deriving (Row)
 pub type CatStats = { cat: Text, total: Int } deriving (Row)
 
-pub fn db badJoinGroup () -> Result (List CatStats) Error =
+pub fn db badJoinGroup () -> Result (List CatStats) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -1807,14 +1807,14 @@ fn query_builder_one_row_every_on_join_is_rejected() {
     // `filter`: a `Join` takes a two-row predicate, so a one-row one is an arity
     // error rather than a silent mismatch.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db bad () -> Result Bool Error =
+pub fn db bad () -> Result Bool DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -1835,13 +1835,13 @@ fn query_builder_two_row_filter_on_query_is_rejected() {
     // `Query` takes a one-row predicate, so a two-row predicate is an arity
     // error rather than a silent mismatch.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
-pub fn db bad () -> Result (List User) Error =
+pub fn db bad () -> Result (List User) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users
       |> Repo.query
@@ -1861,7 +1861,7 @@ fn query_builder_join_select_into_named_shape_typechecks() {
     // which pins the decode target so the join answers `List Line` directly —
     // the two-table analogue of `selectList`.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
@@ -1869,7 +1869,7 @@ pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 pub type Line = { who: Text, title: Text } deriving (Row)
 
-pub fn db authorLines () -> Result (List Line) Error =
+pub fn db authorLines () -> Result (List Line) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -1890,7 +1890,7 @@ fn query_builder_join_over_postgres_typechecks() {
     // lowers onto `runPlan`, a class method both adapters implement, so the call
     // is unchanged across backends.
     let main = r#"
-import std.data (connect, PostgresConfig, Postgres)
+import std.data (DbError, connect, PostgresConfig, Postgres)
 import std.repo as Repo
 import std.sql (SqlValue)
 
@@ -1898,7 +1898,7 @@ pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 pub type Line = { who: Text, title: Text } deriving (Row)
 
-pub fn db authorLines () -> Result (List Line) Error =
+pub fn db authorLines () -> Result (List Line) DbError =
     match connect (PostgresConfig { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
@@ -1922,14 +1922,14 @@ fn query_builder_join_unknown_column_is_rejected() {
     // entity declares is an error, proving each side resolves against its own
     // record rather than erasing to the row map.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int } deriving (Row)
 
-pub fn db bad () -> Result (List (User, Post)) Error =
+pub fn db bad () -> Result (List (User, Post)) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.nope) |> Repo.toList
@@ -1947,14 +1947,14 @@ fn query_builder_join_condition_type_mismatch_is_rejected() {
     // a `Text` column on one entity with an `Int` column on the other is a
     // mismatch, proving the per-side column types reach the comparison check.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, title: Text } deriving (Row)
 
-pub fn db bad () -> Result (List (User, Post)) Error =
+pub fn db bad () -> Result (List (User, Post)) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.title) |> Repo.toList
@@ -1971,14 +1971,14 @@ fn query_builder_join_select_must_name_its_shape() {
     // An anonymous join projection cannot pin the decode target, so it is
     // rejected with the same guidance as a single-table projection.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db bad () -> Result (List Unit) Error =
+pub fn db bad () -> Result (List Unit) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -1999,7 +1999,7 @@ fn query_builder_left_join_to_list_typechecks() {
     // `(User, Option Post)` — the right entity is present only where the row
     // matched. The condition is written and checked exactly as for an inner join.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.query (SortOrder, Asc)
 import std.sql (SqlValue)
@@ -2007,7 +2007,7 @@ import std.sql (SqlValue)
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db authorPosts () -> Result (List (User, Option Post)) Error =
+pub fn db authorPosts () -> Result (List (User, Option Post)) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -2030,14 +2030,14 @@ fn query_builder_left_join_right_side_is_optional() {
     // left row has no right entity. Declaring the result as `(User, Post)` drops
     // the `Option` and must be rejected, proving the optionality is in the type.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db bad () -> Result (List (User, Post)) Error =
+pub fn db bad () -> Result (List (User, Post)) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -2058,14 +2058,14 @@ fn query_builder_left_join_over_postgres_typechecks() {
     // lowers onto `runPlan`, a class method both adapters implement, so the call
     // is unchanged across backends.
     let main = r#"
-import std.data (connect, PostgresConfig, Postgres)
+import std.data (DbError, connect, PostgresConfig, Postgres)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db authorPosts () -> Result (List (User, Option Post)) Error =
+pub fn db authorPosts () -> Result (List (User, Option Post)) DbError =
     match connect (PostgresConfig { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
@@ -2090,7 +2090,7 @@ fn query_builder_right_join_to_list_typechecks() {
     // only where the row matched. The condition is written exactly as for an inner or
     // left join.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.query (SortOrder, Asc)
 import std.sql (SqlValue)
@@ -2098,7 +2098,7 @@ import std.sql (SqlValue)
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db postAuthors () -> Result (List (Option User, Post)) Error =
+pub fn db postAuthors () -> Result (List (Option User, Post)) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -2120,14 +2120,14 @@ fn query_builder_right_join_left_side_is_optional() {
     // right row has no left entity. Declaring the result as `(User, Post)` drops the
     // `Option` and must be rejected, proving the optionality moved to the left side.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db bad () -> Result (List (User, Post)) Error =
+pub fn db bad () -> Result (List (User, Post)) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -2148,7 +2148,7 @@ fn query_builder_right_join_select_left_side_is_optional() {
     // that names a left column on a plain `User` parameter must be rejected — the
     // nullable side is the left for a right join, the mirror of a left join's right.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
@@ -2156,7 +2156,7 @@ pub type User = { id: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 pub type Combo = { who: Option Text, title: Text } deriving (Row)
 
-pub fn db postAuthors () -> Result (List Combo) Error =
+pub fn db postAuthors () -> Result (List Combo) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -2177,14 +2177,14 @@ fn query_builder_right_join_over_postgres_typechecks() {
     // lowers onto `runPlan`, a class method both adapters implement, so the call is
     // unchanged across backends.
     let main = r#"
-import std.data (connect, PostgresConfig, Postgres)
+import std.data (DbError, connect, PostgresConfig, Postgres)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db postAuthors () -> Result (List (Option User, Post)) Error =
+pub fn db postAuthors () -> Result (List (Option User, Post)) DbError =
     match connect (PostgresConfig { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
@@ -2208,7 +2208,7 @@ fn query_builder_full_join_to_list_typechecks() {
     // into `(Option User, Option Post)` — both sides present only where the row
     // matched. The condition is written exactly as for an inner, left, or right join.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.query (SortOrder, Asc)
 import std.sql (SqlValue)
@@ -2216,7 +2216,7 @@ import std.sql (SqlValue)
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db everyone () -> Result (List (Option User, Option Post)) Error =
+pub fn db everyone () -> Result (List (Option User, Option Post)) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -2238,14 +2238,14 @@ fn query_builder_full_join_both_sides_optional() {
     // entity and an unmatched right row has no left. Declaring the result as
     // `(User, Post)` drops both `Option`s and must be rejected.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db bad () -> Result (List (User, Post)) Error =
+pub fn db bad () -> Result (List (User, Post)) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -2266,7 +2266,7 @@ fn query_builder_full_join_select_both_sides_optional() {
     // a column on a plain `User`/`Post` parameter is rejected; reading them as
     // `Option User`/`Option Post` type-checks clean.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
@@ -2274,7 +2274,7 @@ pub type User = { id: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 pub type Combo = { who: Option Text, title: Option Text } deriving (Row)
 
-pub fn db pairs () -> Result (List Combo) Error =
+pub fn db pairs () -> Result (List Combo) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -2295,14 +2295,14 @@ fn query_builder_full_join_over_postgres_typechecks() {
     // lowers onto `runPlan`, a class method both adapters implement, so the call is
     // unchanged across backends.
     let main = r#"
-import std.data (connect, PostgresConfig, Postgres)
+import std.data (DbError, connect, PostgresConfig, Postgres)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db everyone () -> Result (List (Option User, Option Post)) Error =
+pub fn db everyone () -> Result (List (Option User, Option Post)) DbError =
     match connect (PostgresConfig { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
@@ -2325,14 +2325,14 @@ fn query_builder_left_join_unknown_column_is_rejected() {
     // The left-join condition is checked against both entities just like an inner
     // join: a column neither entity declares is an error.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int } deriving (Row)
 
-pub fn db bad () -> Result (List (User, Option Post)) Error =
+pub fn db bad () -> Result (List (User, Option Post)) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users |> Repo.query |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.nope) |> Repo.toList
@@ -2350,13 +2350,13 @@ fn query_builder_query_first_typechecks() {
     // decoded entity (`Option User`) — the behaviour it had as a pub fn, now shared
     // with the join receivers through the functional dependency.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
-pub fn db firstAdult () -> Result (Option User) Error =
+pub fn db firstAdult () -> Result (Option User) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users
       |> Repo.query
@@ -2376,14 +2376,14 @@ fn query_builder_join_first_typechecks() {
     // matched row pair, decoded into `Option (User, Post)`. The fundep fixes the
     // row shape from the `Join` receiver exactly as `toList` does.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db firstPair () -> Result (Option (User, Post)) Error =
+pub fn db firstPair () -> Result (Option (User, Post)) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -2404,14 +2404,14 @@ fn query_builder_left_join_first_typechecks() {
     // row decodes into `Option (User, Option Post)`, the inner `Option` empty where
     // the first left row matched no right row.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db firstOptional () -> Result (Option (User, Option Post)) Error =
+pub fn db firstOptional () -> Result (Option (User, Option Post)) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -2433,14 +2433,14 @@ fn query_builder_join_first_wrong_shape_is_rejected() {
     // left-join shape) must be rejected — the right side of an inner join is not
     // optional.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db bad () -> Result (Option (User, Option Post)) Error =
+pub fn db bad () -> Result (Option (User, Option Post)) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -2463,7 +2463,7 @@ fn query_builder_select_left_join_into_named_shape_typechecks() {
     // unmatched left row projects it as `None`. The join condition keeps `p: Post`
     // (the match key), only the projection's right side is optional.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
@@ -2471,7 +2471,7 @@ pub type User = { id: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 pub type Line = { who: Text, title: Option Text } deriving (Row)
 
-pub fn db authorLines () -> Result (List Line) Error =
+pub fn db authorLines () -> Result (List Line) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -2493,7 +2493,7 @@ fn query_builder_select_left_join_right_field_must_be_optional() {
     // plain `Text`. Declaring it `Text` drops the optionality and must be rejected
     // — proving the right side's columns are nullable in a left-join projection.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
@@ -2501,7 +2501,7 @@ pub type User = { id: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 pub type Line = { who: Text, title: Text } deriving (Row)
 
-pub fn db bad () -> Result (List Line) Error =
+pub fn db bad () -> Result (List Line) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -2521,7 +2521,7 @@ fn query_builder_select_left_join_over_postgres_typechecks() {
     // The left-join projection resolves the same `Adapter`/`Row` constraints on
     // Postgres: it lowers onto `runPlan`, a class method both adapters implement.
     let main = r#"
-import std.data (connect, PostgresConfig, Postgres)
+import std.data (DbError, connect, PostgresConfig, Postgres)
 import std.repo as Repo
 import std.sql (SqlValue)
 
@@ -2529,7 +2529,7 @@ pub type User = { id: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 pub type Line = { who: Text, title: Option Text } deriving (Row)
 
-pub fn db authorLines () -> Result (List Line) Error =
+pub fn db authorLines () -> Result (List Line) DbError =
     match connect (PostgresConfig { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
@@ -2575,13 +2575,13 @@ fn typed_set_where_typechecks() {
     // predicate explicit. Each `set (fn (u: User) -> u.col) value` quotes a single
     // column (its type read off the entity) and the value must match it.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, status: Text } deriving (Row)
 
-pub fn db promote () -> Result Int Error =
+pub fn db promote () -> Result Int DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let changes =
         [ Repo.set (fn (u: User) -> u.status) "adult"
@@ -2602,13 +2602,13 @@ fn typed_set_where_multiline_form_typechecks() {
     // the bracket-leading argument continuation (§5.5). Before that it tripped the
     // P006 layout error and the body never type-checked.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, status: Text } deriving (Row)
 
-pub fn db promote () -> Result Int Error =
+pub fn db promote () -> Result Int DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users
         |> Repo.setWhere
@@ -2628,13 +2628,13 @@ fn typed_apply_set_over_query_builder_typechecks() {
     // `applySet` is the query-builder write terminal: the accumulated `filter`
     // picks the rows, the setters assign their columns.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, status: Text } deriving (Row)
 
-pub fn db promote () -> Result Int Error =
+pub fn db promote () -> Result Int DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users
       |> Repo.query
@@ -2654,13 +2654,13 @@ fn typed_setter_value_type_must_match_column() {
     // compile-time error — `u.age` is `Int`, assigning `Text` must be rejected.
     // This is the safety the typed setter buys over the untyped `updateWhere` map.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, status: Text } deriving (Row)
 
-pub fn db bad () -> Result Int Error =
+pub fn db bad () -> Result Int DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users |> Repo.setWhere [ Repo.set (fn (u: User) -> u.age) "not a number" ] (fn (u: User) -> u.id == 1)
 "#;
@@ -2677,13 +2677,13 @@ fn typed_set_nullable_column_typechecks() {
     // the `SqlType (Option a)` instance, so `None` writes SQL NULL — no special
     // case over a plain column.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, nick: Option Text } deriving (Row)
 
-pub fn db clearNick () -> Result Int Error =
+pub fn db clearNick () -> Result Int DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users |> Repo.setWhere [ Repo.set (fn (u: User) -> u.nick) None ] (fn (u: User) -> u.id == 1)
 "#;
@@ -2700,13 +2700,13 @@ fn typed_set_where_over_postgres_typechecks() {
     // and `applySet` route through `updateRows`, a class method both adapters
     // implement.
     let main = r#"
-import std.data (connect, PostgresConfig, Postgres)
+import std.data (DbError, connect, PostgresConfig, Postgres)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, status: Text } deriving (Row)
 
-pub fn db promote () -> Result Int Error =
+pub fn db promote () -> Result Int DbError =
     match connect (PostgresConfig { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
@@ -2938,7 +2938,7 @@ fn query_builder_select_first_into_named_shape_typechecks() {
     // `selectFirst` is the one-row projection: the same named-record capture as
     // `select`, but answering `Option s` (a pushed-down `LIMIT 1`).
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.query (SortOrder, Desc)
 import std.sql (SqlValue)
@@ -2946,7 +2946,7 @@ import std.sql (SqlValue)
 pub type User = { id: Int, age: Int, name: Text, signupYear: Int } deriving (Row)
 pub type Summary = { name: Text, year: Int } deriving (Row)
 
-pub fn db topSummary () -> Result (Option Summary) Error =
+pub fn db topSummary () -> Result (Option Summary) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users
       |> Repo.query
@@ -2965,7 +2965,7 @@ fn query_builder_join_select_first_typechecks() {
     // `selectFirst` over an inner join — new under the unified `Projectable` class
     // (the old API had no first-row join projection). Answers `Option Line`.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
@@ -2973,7 +2973,7 @@ pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 pub type Line = { who: Text, title: Text } deriving (Row)
 
-pub fn db firstAuthorLine () -> Result (Option Line) Error =
+pub fn db firstAuthorLine () -> Result (Option Line) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -2993,7 +2993,7 @@ fn query_builder_left_join_select_first_typechecks() {
     // `selectFirst` over a left join — the right side is `Option`, so an unmatched
     // left row projects its right-derived fields as `None`. Answers `Option ComboOpt`.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
@@ -3001,7 +3001,7 @@ pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 pub type ComboOpt = { person: Text, post: Option Text } deriving (Row)
 
-pub fn db firstLeftCombo () -> Result (Option ComboOpt) Error =
+pub fn db firstLeftCombo () -> Result (Option ComboOpt) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -3021,14 +3021,14 @@ fn query_builder_select_rejects_two_row_projection_on_a_query() {
     // The fundep `q -> p` fixes a single-table query's projection to one row, so a
     // two-parameter projection lambda is a compile error, not a silent mismatch.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, name: Text } deriving (Row)
 pub type Summary = { name: Text } deriving (Row)
 
-pub fn db bad () -> Result (List Summary) Error =
+pub fn db bad () -> Result (List Summary) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users |> Repo.query |> Repo.select (fn (u: User) (x: User) -> Summary { name = u.name })
 "#;
@@ -3044,7 +3044,7 @@ fn query_builder_join_select_rejects_one_row_projection() {
     // The fundep fixes a join's projection to two rows (one per joined entity), so
     // a one-parameter projection lambda is rejected.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
@@ -3052,7 +3052,7 @@ pub type User = { id: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 pub type Line = { who: Text } deriving (Row)
 
-pub fn db bad () -> Result (List Line) Error =
+pub fn db bad () -> Result (List Line) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -3078,14 +3078,14 @@ fn query_builder_select_projection_literal_is_a_bind_not_injection() {
     // e2e tests; here the literal field is accepted and stays typed against the
     // declared shape.
     let computed = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, name: Text } deriving (Row)
 pub type Summary = { name: Text } deriving (Row)
 
-pub fn db ok () -> Result (List Summary) Error =
+pub fn db ok () -> Result (List Summary) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users |> Repo.query |> Repo.select (fn (u: User) -> Summary { name = "x'; DROP TABLE users; --" })
 "#;
@@ -3101,14 +3101,14 @@ fn query_builder_select_allows_computed_projection() {
     // A projection field can be a computed value, not only a bare column —
     // arithmetic over the entity's columns lands in the select-list.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type Item = { id: Int, qty: Int, price: Int } deriving (Row)
 pub type Stat = { total: Int } deriving (Row)
 
-pub fn db ok () -> Result (List Stat) Error =
+pub fn db ok () -> Result (List Stat) DbError =
     let items: Repo Item MemAdapter = Repo.repo (memAdapter ()) "items"
     items |> Repo.query |> Repo.select (fn (i: Item) -> Stat { total = i.qty * i.price })
 "#;
@@ -3124,14 +3124,14 @@ fn query_builder_select_allows_case_projection() {
     // A CASE (`if/then/else`) projects a value chosen per row; both branches share
     // the declared field's type.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type Item = { id: Int, spend: Int } deriving (Row)
 pub type Tier = { label: Text } deriving (Row)
 
-pub fn db ok () -> Result (List Tier) Error =
+pub fn db ok () -> Result (List Tier) DbError =
     let items: Repo Item MemAdapter = Repo.repo (memAdapter ()) "items"
     items |> Repo.query |> Repo.select (fn (i: Item) -> Tier { label = if i.spend > 100 then "gold" else "silver" })
 "#;
@@ -3146,12 +3146,12 @@ pub fn db ok () -> Result (List Tier) Error =
 fn query_builder_filter_allows_case_predicate() {
     // A CASE whose branches are predicates is itself a boolean, usable in `filter`.
     let main = r#"
-import std.data (memAdapter, selectRows)
+import std.data (DbError, memAdapter, selectRows)
 import std.sql (SqlValue)
 
 pub type User = { id: Int, vip: Bool, spend: Int }
 
-pub fn db matches () -> Result (List (Map Text SqlValue)) Error =
+pub fn db matches () -> Result (List (Map Text SqlValue)) DbError =
     selectRows (memAdapter ()) "users" (fn (u: User) -> if u.vip then u.spend > 100 else u.spend > 500)
 "#;
     let errors = typecheck_one(main);
@@ -3166,14 +3166,14 @@ fn query_builder_case_branch_type_mismatch_is_rejected() {
     // The two branches of a value CASE must share one type — a Text branch and an
     // Int branch is a real error.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type Item = { id: Int, spend: Int } deriving (Row)
 pub type Tier = { label: Text } deriving (Row)
 
-pub fn db bad () -> Result (List Tier) Error =
+pub fn db bad () -> Result (List Tier) DbError =
     let items: Repo Item MemAdapter = Repo.repo (memAdapter ()) "items"
     items |> Repo.query |> Repo.select (fn (i: Item) -> Tier { label = if i.spend > 100 then "gold" else 0 })
 "#;
@@ -3189,12 +3189,12 @@ fn query_builder_case_without_else_is_rejected() {
     // A CASE in a quote must have an else branch — there is no value for the
     // rows the condition does not match otherwise.
     let main = r#"
-import std.data (memAdapter, selectRows)
+import std.data (DbError, memAdapter, selectRows)
 import std.sql (SqlValue)
 
 pub type User = { id: Int, vip: Bool, spend: Int }
 
-pub fn db bad () -> Result (List (Map Text SqlValue)) Error =
+pub fn db bad () -> Result (List (Map Text SqlValue)) DbError =
     selectRows (memAdapter ()) "users" (fn (u: User) -> if u.vip then u.spend > 100)
 "#;
     let errors = typecheck_one(main);
@@ -3208,14 +3208,14 @@ pub fn db bad () -> Result (List (Map Text SqlValue)) Error =
 fn query_builder_case_non_boolean_condition_is_rejected() {
     // A CASE condition must be boolean — an Int column is not a condition.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type Item = { id: Int, spend: Int } deriving (Row)
 pub type Tier = { label: Text } deriving (Row)
 
-pub fn db bad () -> Result (List Tier) Error =
+pub fn db bad () -> Result (List Tier) DbError =
     let items: Repo Item MemAdapter = Repo.repo (memAdapter ()) "items"
     items |> Repo.query |> Repo.select (fn (i: Item) -> Tier { label = if i.spend then "gold" else "silver" })
 "#;
@@ -3231,14 +3231,14 @@ fn query_builder_select_computed_field_type_must_match_shape() {
     // A computed projection field's type must match the declared result field — a
     // Text field cannot be filled by an Int arithmetic expression.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type Item = { id: Int, qty: Int, price: Int } deriving (Row)
 pub type Bad = { total: Text } deriving (Row)
 
-pub fn db bad () -> Result (List Bad) Error =
+pub fn db bad () -> Result (List Bad) DbError =
     let items: Repo Item MemAdapter = Repo.repo (memAdapter ()) "items"
     items |> Repo.query |> Repo.select (fn (i: Item) -> Bad { total = i.qty * i.price })
 "#;
@@ -3254,14 +3254,14 @@ fn query_builder_select_projection_rejects_field_not_in_shape() {
     // A projection field that the named result record does not declare is rejected,
     // so the decode target and the select-list can never drift apart.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, name: Text } deriving (Row)
 pub type Summary = { name: Text } deriving (Row)
 
-pub fn db bad () -> Result (List Summary) Error =
+pub fn db bad () -> Result (List Summary) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users |> Repo.query |> Repo.select (fn (u: User) -> Summary { id = u.id })
 "#;
@@ -3281,7 +3281,7 @@ fn query_builder_order_join_by_left_column_typechecks() {
     // one-row key on a `Query`, the arity following the receiver through the
     // `Orderable` functional dependency.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.query (SortOrder, Asc)
 import std.sql (SqlValue)
@@ -3289,7 +3289,7 @@ import std.sql (SqlValue)
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db ordered () -> Result (List (User, Post)) Error =
+pub fn db ordered () -> Result (List (User, Post)) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -3312,7 +3312,7 @@ fn query_builder_order_join_by_right_column_typechecks() {
     // the seam qualifies to the right table; only the verb's arity is fixed by the
     // receiver, not which side a key names.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.query (SortOrder, Desc)
 import std.sql (SqlValue)
@@ -3320,7 +3320,7 @@ import std.sql (SqlValue)
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db ordered () -> Result (List (User, Post)) Error =
+pub fn db ordered () -> Result (List (User, Post)) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -3343,7 +3343,7 @@ fn query_builder_order_left_join_by_right_option_column_typechecks() {
     // uses. The key still names a single right column; an unmatched row sorts as a
     // missing key.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.query (SortOrder, Asc)
 import std.sql (SqlValue)
@@ -3351,7 +3351,7 @@ import std.sql (SqlValue)
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db ordered () -> Result (List (User, Option Post)) Error =
+pub fn db ordered () -> Result (List (User, Option Post)) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -3373,14 +3373,14 @@ fn query_builder_two_row_order_key_on_query_is_rejected() {
     // a `Query` takes a one-row key, so a two-row key is an arity error rather than
     // a silent mismatch — the orderBy dual of the filter arity check.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.query (SortOrder, Asc)
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
-pub fn db bad () -> Result (List User) Error =
+pub fn db bad () -> Result (List User) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users
       |> Repo.query
@@ -3399,7 +3399,7 @@ fn query_builder_one_row_order_key_on_join_is_rejected() {
     // The dual rejection: a `Join` takes a two-row key, so a one-row key is an
     // arity error.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.query (SortOrder, Asc)
 import std.sql (SqlValue)
@@ -3407,7 +3407,7 @@ import std.sql (SqlValue)
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db bad () -> Result (List (User, Post)) Error =
+pub fn db bad () -> Result (List (User, Post)) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -3431,14 +3431,14 @@ fn query_builder_order_key_computed_is_a_bind_not_injection() {
     // schema, so an unknown column or a type mismatch is still rejected — only the
     // column-only restriction is lifted.
     let computed = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.query (SortOrder, Asc)
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
-pub fn db good () -> Result (List User) Error =
+pub fn db good () -> Result (List User) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users
       |> Repo.query
@@ -3458,7 +3458,7 @@ fn query_builder_order_join_by_unknown_right_column_is_rejected() {
     // schema: a column the right entity does not declare is rejected, so a join's
     // ordering can never name a column that is not there.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.query (SortOrder, Asc)
 import std.sql (SqlValue)
@@ -3466,7 +3466,7 @@ import std.sql (SqlValue)
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db bad () -> Result (List (User, Post)) Error =
+pub fn db bad () -> Result (List (User, Post)) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -3492,14 +3492,14 @@ fn query_builder_aggregate_join_by_left_column_typechecks() {
     // `Aggregable` functional dependency. The result keeps the column's own type
     // (`Ret p` = `Int`).
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db totalAge () -> Result (Option Int) Error =
+pub fn db totalAge () -> Result (Option Int) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -3521,14 +3521,14 @@ fn query_builder_aggregate_join_by_right_column_typechecks() {
     // to the right table; only the verb's arity is fixed by the receiver, not which
     // side a column names. `maxOf` keeps the column's own type (`Int`).
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db topPostId () -> Result (Option Int) Error =
+pub fn db topPostId () -> Result (Option Int) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -3549,14 +3549,14 @@ fn query_builder_avg_join_returns_float_typechecks() {
     // type — a SQL average is fractional even over an integer column — so averaging
     // a right `Int` column type-checks against a `Float` result, not `Int`.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db avgPostId () -> Result (Option Float) Error =
+pub fn db avgPostId () -> Result (Option Float) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -3579,14 +3579,14 @@ fn query_builder_aggregate_left_join_by_right_column_typechecks() {
     // column answers `Option Text` (the column's type, `None` over an empty fold);
     // an unmatched left row's right column is a NULL the fold skips.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db latestTitle () -> Result (Option Text) Error =
+pub fn db latestTitle () -> Result (Option Text) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -3607,13 +3607,13 @@ fn query_builder_two_row_aggregate_accessor_on_query_is_rejected() {
     // receiver: a `Query` takes a one-row accessor, so a two-row one is an arity
     // error — the aggregate dual of the filter/orderBy arity checks.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
-pub fn db bad () -> Result (Option Int) Error =
+pub fn db bad () -> Result (Option Int) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users
       |> Repo.query
@@ -3631,14 +3631,14 @@ fn query_builder_one_row_aggregate_accessor_on_join_is_rejected() {
     // The dual rejection: a `Join` takes a two-row accessor, so a one-row one is an
     // arity error.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db bad () -> Result (Option Int) Error =
+pub fn db bad () -> Result (Option Int) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -3661,13 +3661,13 @@ fn query_builder_aggregate_accessor_computed_is_a_bind_not_injection() {
     // entity's schema, so an unknown column or a type mismatch is still rejected —
     // only the column-only restriction is lifted.
     let computed = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
-pub fn db good () -> Result (Option Int) Error =
+pub fn db good () -> Result (Option Int) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users
       |> Repo.query
@@ -3686,14 +3686,14 @@ fn query_builder_aggregate_join_unknown_right_column_is_rejected() {
     // entity's schema: a column the right entity does not declare is rejected, so a
     // join's aggregate can never name a column that is not there.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
-pub fn db bad () -> Result (Option Int) Error =
+pub fn db bad () -> Result (Option Int) DbError =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     users
@@ -3716,13 +3716,13 @@ fn transaction_over_a_multi_step_write_typechecks() {
     // backend, and the body is a live callback whose capability row the call site
     // absorbs (a pure body keeps the call pure, like a list HOF).
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, name: Text } deriving (Row, Schema)
 
-pub fn db seed () -> Result Unit Error =
+pub fn db seed () -> Result Unit DbError =
     let conn = memAdapter ()
     Repo.transaction conn (fn (tx) ->
         let users: Repo User MemAdapter = Repo.repo tx "users"
@@ -3743,13 +3743,13 @@ fn transaction_threads_the_body_result_type() {
     // a body answering `Result Int Error` makes `transaction` answer `Result Int
     // Error`. The body counts the rows it just inserted through the query builder.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, name: Text } deriving (Row, Schema)
 
-pub fn db seededCount () -> Result Int Error =
+pub fn db seededCount () -> Result Int DbError =
     let conn = memAdapter ()
     Repo.transaction conn (fn (tx) ->
         let users: Repo User MemAdapter = Repo.repo tx "users"
@@ -3770,13 +3770,13 @@ fn transaction_over_postgres_adapter_typechecks() {
     // backend: `connect` builds the handle, and `transaction` runs the body on it.
     // No database is touched — this is the type-level wiring for the other backend.
     let main = r#"
-import std.data (connect, PostgresConfig, Postgres)
+import std.data (DbError, connect, PostgresConfig, Postgres)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, name: Text } deriving (Row, Schema)
 
-pub fn db seed () -> Result Unit Error =
+pub fn db seed () -> Result Unit DbError =
     match connect (PostgresConfig { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
@@ -3798,7 +3798,7 @@ fn migrate_run_over_schema_typechecks() {
     // typed columns with their modifiers, and an index over a column; the
     // `Adapter MemAdapter` constraint resolves the backend the runner drives.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.migrate as Migrate
 import std.migrate (MigrationOp)
 
@@ -3816,7 +3816,7 @@ fn postsTable () -> MigrationOp =
         , Migrate.floatCol "score"
         , Migrate.boolCol  "live" ]
 
-pub fn db setup () -> Result (List Text) Error =
+pub fn db setup () -> Result (List Text) DbError =
     let conn = memAdapter ()
     let schema = [ Migrate.migration "0001_users" [ usersTable () ], Migrate.migration "0002_posts" [ postsTable (), Migrate.createIndex "posts_author_idx" "posts" ["author"] ] ]
     Migrate.run conn schema
@@ -3834,10 +3834,10 @@ fn migrate_full_migration_op_surface_typechecks() {
     // `dropTable` — all build `MigrationOp` values the `migration` builder and runner
     // accept.
     let main = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.migrate as Migrate
 
-pub fn db alter () -> Result (List Text) Error =
+pub fn db alter () -> Result (List Text) DbError =
     let conn = memAdapter ()
     let ops = [ Migrate.addColumn "users" (Migrate.intCol "age" |> Migrate.nullable), Migrate.dropColumn "users" "bio", Migrate.uniqueIndex "users_name_idx" "users" ["name"], Migrate.dropTable "posts" ]
     let schema = [ Migrate.migration "0003_alter" ops ]
@@ -3856,7 +3856,7 @@ fn migrate_run_over_postgres_typechecks() {
     // given a Postgres handle, `Migrate.run` applies the schema on it. No database
     // is touched — this is the type-level wiring for the other backend.
     let main = r#"
-import std.data (Postgres)
+import std.data (DbError, Postgres)
 import std.migrate as Migrate
 import std.migrate (MigrationOp)
 
@@ -3865,7 +3865,7 @@ fn usersTable () -> MigrationOp =
         [ Migrate.intCol  "id"   |> Migrate.primaryKey
         , Migrate.textCol "name" ]
 
-pub fn setup (conn: Postgres) -> Result (List Text) Error =
+pub fn setup (conn: Postgres) -> Result (List Text) DbError =
     let schema = [ Migrate.migration "0001_users" [ usersTable () ] ]
     Migrate.run conn schema
 "#;
@@ -3899,21 +3899,21 @@ fn raw_query_decode_and_exec_typecheck() {
     // first, and `exec` runs a row-less statement for its affected count. The
     // `Adapter MemAdapter` and `Row User` constraints both resolve.
     let main = r#"
-import std.data (memAdapter)
+import std.data (DbError, memAdapter)
 import std.raw as Raw
 import std.sql (sqlInt, sqlText, sqlBool)
 
 pub type User = { id: Int, name: Text } deriving (Row)
 
-pub fn db loadAdults () -> Result (List User) Error =
+pub fn db loadAdults () -> Result (List User) DbError =
     let conn = memAdapter ()
     Raw.query conn "SELECT id, name FROM users WHERE age > $1" [sqlInt 18]
 
-pub fn db firstNamed () -> Result (Option User) Error =
+pub fn db firstNamed () -> Result (Option User) DbError =
     let conn = memAdapter ()
     Raw.queryFirst conn "SELECT id, name FROM users WHERE name = $1" [sqlText "ada"]
 
-pub fn db deactivate () -> Result Int Error =
+pub fn db deactivate () -> Result Int DbError =
     let conn = memAdapter ()
     Raw.exec conn "UPDATE users SET active = $1 WHERE id = $2" [sqlBool false, sqlInt 1]
 "#;
@@ -3930,16 +3930,16 @@ fn raw_over_postgres_typechecks() {
     // given a Postgres handle, the raw query and statement type-check. No database
     // is touched — this is the type-level wiring for the other backend.
     let main = r#"
-import std.data (Postgres)
+import std.data (DbError, Postgres)
 import std.raw as Raw
 import std.sql (sqlInt)
 
 pub type User = { id: Int, name: Text } deriving (Row)
 
-pub fn loadAdults (conn: Postgres) -> Result (List User) Error =
+pub fn loadAdults (conn: Postgres) -> Result (List User) DbError =
     Raw.query conn "SELECT id, name FROM users WHERE age > $1" [sqlInt 18]
 
-pub fn affected (conn: Postgres) -> Result Int Error =
+pub fn affected (conn: Postgres) -> Result Int DbError =
     Raw.exec conn "DELETE FROM users WHERE id = $1" [sqlInt 1]
 "#;
     let errors = typecheck_one(main);
@@ -3955,12 +3955,12 @@ fn raw_query_params_must_be_sql_values() {
     // `sqlText`/… factory is a type error, so a bind can never smuggle an unencoded
     // value into the statement.
     let main = r#"
-import std.data (memAdapter)
+import std.data (DbError, memAdapter)
 import std.raw as Raw
 
 pub type User = { id: Int, name: Text } deriving (Row)
 
-pub fn db bad () -> Result (List User) Error =
+pub fn db bad () -> Result (List User) DbError =
     let conn = memAdapter ()
     Raw.query conn "SELECT * FROM users WHERE age > $1" [18]
 "#;
@@ -3987,14 +3987,14 @@ fn locally_built_repo_pins_entity_for_quote_capture() {
     // parameter pinned the entity early enough to sidestep it, so only the local
     // form failed.
     let main = r#"
-import std.data (Sqlite)
+import std.data (DbError, Sqlite)
 import std.repo as Repo
 import std.sql (toSql)
 import std.io as Io
 
 pub type Account = { id: Int, name: Text, balance: Int } deriving (Row, Schema)
 
-fn db io transfer (conn: Sqlite) (fromId: Int) -> Result Unit Error =
+fn db io transfer (conn: Sqlite) (fromId: Int) -> Result Unit DbError =
     let accounts: Repo Account Sqlite = Repo.repo conn "accounts"
     match accounts |> Repo.getBy "id" (toSql fromId)
         Err e -> Err e
@@ -4040,13 +4040,13 @@ fn foreign_module_insert_through_derived_companion_typechecks() {
     // worked.
     let main = r#"
 import proj.Lib (E, EInsert)
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 
-pub fn db seedOne (r: Repo E MemAdapter) -> Result Unit Error =
+pub fn db seedOne (r: Repo E MemAdapter) -> Result Unit DbError =
     r |> Repo.insert (EInsert { v = "hi" })
 
-pub fn db seedMany (r: Repo E MemAdapter) -> Result Unit Error =
+pub fn db seedMany (r: Repo E MemAdapter) -> Result Unit DbError =
     r |> Repo.insertMany [ EInsert { v = "a" }, EInsert { v = "b" } ]
 "#;
     let errors = typecheck_two_modules(main, SERIAL_KEY_ENTITY_LIB);
@@ -4064,10 +4064,10 @@ fn foreign_module_insert_companion_stays_distinct_from_entity() {
     // still rejected, so a hand-written serial key stays a type error cross-module.
     let main = r#"
 import proj.Lib (E)
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 
-pub fn db seedBad (r: Repo E MemAdapter) -> Result Unit Error =
+pub fn db seedBad (r: Repo E MemAdapter) -> Result Unit DbError =
     r |> Repo.insert (E { id = 1, v = "hi" })
 "#;
     let errors = typecheck_two_modules(main, SERIAL_KEY_ENTITY_LIB);

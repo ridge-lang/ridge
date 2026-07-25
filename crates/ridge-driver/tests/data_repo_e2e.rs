@@ -46,7 +46,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.query (SortOrder, Asc, Desc)
 import std.sql (toSql, SqlValue)
@@ -369,7 +369,7 @@ fn listLen (xs: List x) -> Int =
 
 -- Open a fresh store, bind a repository to it, and seed three users; return the
 -- repository so each probe queries its own isolated data.
-pub fn db setup () -> Result (Repo User MemAdapter) Error =
+pub fn db setup () -> Result (Repo User MemAdapter) DbError =
     let r = Repo.repo (memAdapter ()) "users"
     match Repo.insertRow (userRow 1 18 "ada") r
         Err e -> Err e
@@ -392,7 +392,7 @@ pub fn db countAll () -> Int =
 
 -- The body `withConnForgets` runs inside `withConnection`: insert a row, then count
 -- (sees 1). A named fn because a multi-line lambda in call-arg position does not parse.
-fn wcInsertCount (c: MemAdapter) -> Result Int Error =
+fn wcInsertCount (c: MemAdapter) -> Result Int DbError =
     let r = Repo.repo c "users"
     match Repo.insertRow (userRow 1 18 "ada") r
         Err e -> Err e
@@ -774,7 +774,7 @@ pub fn db pagedExistsJoined3PastEnd () -> Bool =
 -- both tables), and seed three users and three posts. Post `author` references a
 -- user id: lin (id 2) owns "hello" and "again", max (id 3) owns "world", ada
 -- (id 1) owns none. Return both repositories.
-pub fn db setupJoin () -> Result (Repo User MemAdapter, Repo Post MemAdapter) Error =
+pub fn db setupJoin () -> Result (Repo User MemAdapter, Repo Post MemAdapter) DbError =
     let conn = memAdapter ()
     let users: Repo User MemAdapter = Repo.repo conn "users"
     let posts: Repo Post MemAdapter = Repo.repo conn "posts"
@@ -964,7 +964,7 @@ pub fn db siblingExists () -> Text =
 -- each so a three-table inner join has a clean one-to-one chain: every user owns
 -- one post (`p.author == u.id`) and every post has one comment (`c.post == p.id`).
 -- ada(1) -> hello(10) -> nice, lin(2) -> world(11) -> wow, max(3) -> again(12) -> ok.
-pub fn db setupJoin3 () -> Result (Repo User MemAdapter, Repo Post MemAdapter, Repo Comment MemAdapter) Error =
+pub fn db setupJoin3 () -> Result (Repo User MemAdapter, Repo Post MemAdapter, Repo Comment MemAdapter) DbError =
     let conn = memAdapter ()
     let users: Repo User MemAdapter = Repo.repo conn "users"
     let posts: Repo Post MemAdapter = Repo.repo conn "posts"
@@ -1001,7 +1001,7 @@ pub fn db setupJoin3 () -> Result (Repo User MemAdapter, Repo Post MemAdapter, R
 -- (`r.comment == c.id`), so a four-table chain joins users to posts to comments to
 -- reactions one-to-one. nice(100) -> up, wow(101) -> down, ok(102) -> meh. Lets a depth-4
 -- join exercise the fourth leaf (`QColAt 3`).
-pub fn db setupJoin4 () -> Result (Repo User MemAdapter, Repo Post MemAdapter, Repo Comment MemAdapter, Repo Reaction MemAdapter) Error =
+pub fn db setupJoin4 () -> Result (Repo User MemAdapter, Repo Post MemAdapter, Repo Comment MemAdapter, Repo Reaction MemAdapter) DbError =
     let conn = memAdapter ()
     let users: Repo User MemAdapter = Repo.repo conn "users"
     let posts: Repo Post MemAdapter = Repo.repo conn "posts"
@@ -1049,7 +1049,7 @@ pub fn db setupJoin4 () -> Result (Repo User MemAdapter, Repo Post MemAdapter, R
 -- lin's composite row and pairs it with `None`, so the optional new leaf is
 -- observable. ada(1) -> hello(10) -> nice, lin(2) -> world(11) -> (none),
 -- max(3) -> again(12) -> ok.
-pub fn db setupLeftJoin3 () -> Result (Repo User MemAdapter, Repo Post MemAdapter, Repo Comment MemAdapter) Error =
+pub fn db setupLeftJoin3 () -> Result (Repo User MemAdapter, Repo Post MemAdapter, Repo Comment MemAdapter) DbError =
     let conn = memAdapter ()
     let users: Repo User MemAdapter = Repo.repo conn "users"
     let posts: Repo Post MemAdapter = Repo.repo conn "posts"
@@ -1342,7 +1342,7 @@ pub fn db leftJoined3First () -> Text =
 -- exist (99), so a RIGHT join onto comments keeps that comment with the whole
 -- (user, post) composite absent. ada(1) -> hello(10) -> nice, lin(2) -> world(11)
 -- -> wow, and an orphan comment(200) -> post 99 (no such post).
-pub fn db setupRightJoin3 () -> Result (Repo User MemAdapter, Repo Post MemAdapter, Repo Comment MemAdapter) Error =
+pub fn db setupRightJoin3 () -> Result (Repo User MemAdapter, Repo Post MemAdapter, Repo Comment MemAdapter) DbError =
     let conn = memAdapter ()
     let users: Repo User MemAdapter = Repo.repo conn "users"
     let posts: Repo Post MemAdapter = Repo.repo conn "posts"
@@ -1408,7 +1408,7 @@ pub fn db rightJoined3 () -> Text =
 -- shows both null-extensions: ada(post 10) matches its comment, lin/max (posts 11/12)
 -- keep their composite with the comment None, and the orphan comment keeps itself with
 -- the whole composite None.
-pub fn db setupFullJoin3 () -> Result (Repo User MemAdapter, Repo Post MemAdapter, Repo Comment MemAdapter) Error =
+pub fn db setupFullJoin3 () -> Result (Repo User MemAdapter, Repo Post MemAdapter, Repo Comment MemAdapter) DbError =
     let conn = memAdapter ()
     let users: Repo User MemAdapter = Repo.repo conn "users"
     let posts: Repo Post MemAdapter = Repo.repo conn "posts"
@@ -2081,7 +2081,7 @@ pub fn empRow (eid: Int) (edept: Text) (esalary: Int) -> Map Text SqlValue =
 
 -- Seed six employees across three departments so each grouped aggregate folds a
 -- different group size: eng {100, 200}, sales {150, 150, 300}, ops {50}.
-pub fn db setupEmps () -> Result (Repo Emp MemAdapter) Error =
+pub fn db setupEmps () -> Result (Repo Emp MemAdapter) DbError =
     let r = Repo.repo (memAdapter ()) "emps"
     match Repo.insertRow (empRow 1 "eng" 100) r
         Err e -> Err e
@@ -2312,7 +2312,7 @@ pub fn db leftJoinGroupCounts () -> Text =
 -- comments a body (hi, hi, yo), so a group keyed on a deeper leaf folds more than one
 -- composite row. ada(18) -> red(p10) -> hi, lin(30) -> red(p11) -> hi, max(25) ->
 -- blue(p12) -> yo.
-pub fn db setupGroup3 () -> Result (Repo User MemAdapter, Repo Post MemAdapter, Repo Comment MemAdapter) Error =
+pub fn db setupGroup3 () -> Result (Repo User MemAdapter, Repo Post MemAdapter, Repo Comment MemAdapter) DbError =
     let conn = memAdapter ()
     let users: Repo User MemAdapter = Repo.repo conn "users"
     let posts: Repo Post MemAdapter = Repo.repo conn "posts"
@@ -2561,7 +2561,7 @@ pub fn db salariesDistinct () -> Text =
 
 -- Seed a fresh store with three identical rows and one different one, so a
 -- whole-row distinct has exact duplicates to collapse.
-pub fn db setupDups () -> Result (Repo Emp MemAdapter) Error =
+pub fn db setupDups () -> Result (Repo Emp MemAdapter) DbError =
     let r = Repo.repo (memAdapter ()) "dups"
     match Repo.insertRow (empRow 1 "x" 10) r
         Err e -> Err e

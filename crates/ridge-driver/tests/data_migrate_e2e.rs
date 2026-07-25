@@ -22,7 +22,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 // ── Source ────────────────────────────────────────────────────────────────────
 
 const SOURCE: &str = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.migrate as Migrate
 import std.migrate (MigrationOp)
 import std.repo as Repo
@@ -53,7 +53,7 @@ fn postsTable () -> MigrationOp =
         [ Migrate.intCol "id"     |> Migrate.primaryKey
         , Migrate.intCol "author" ]
 
-fn applyAll (conn: MemAdapter) -> Result (List Text) Error =
+fn applyAll (conn: MemAdapter) -> Result (List Text) DbError =
     let schema = [ Migrate.migration "0001_users" [ usersTable () ], Migrate.migration "0002_posts" [ postsTable (), Migrate.createIndex "posts_author_idx" "posts" ["author"] ] ]
     Migrate.run conn schema
 
@@ -61,12 +61,12 @@ fn applyAll (conn: MemAdapter) -> Result (List Text) Error =
 -- index, and a create/drop of a throwaway table. On the schemaless in-memory store
 -- the column and index changes are no-ops and create/drop touch table existence;
 -- the point is that each verb runs and the migration commits.
-fn alterAll (conn: MemAdapter) -> Result (List Text) Error =
+fn alterAll (conn: MemAdapter) -> Result (List Text) DbError =
     let ops = [ Migrate.addColumn "users" (Migrate.intCol "age" |> Migrate.nullable), Migrate.dropColumn "users" "bio", Migrate.uniqueIndex "users_name_idx" "users" ["name"], Migrate.createTable "temp" [ Migrate.intCol "id" ], Migrate.dropTable "temp" ]
     Migrate.run conn [ Migrate.migration "0003_alter" ops ]
 
 -- Insert one user into the migrated table.
-fn addUser (conn: MemAdapter) (_uid: Int) (uname: Text) -> Result Unit Error =
+fn addUser (conn: MemAdapter) (_uid: Int) (uname: Text) -> Result Unit DbError =
     let users: Repo User MemAdapter = Repo.repo conn "users"
     Repo.insert (UserInsert { name = uname }) users
 
@@ -127,10 +127,10 @@ fn accountWitness () -> Option Account = None
 fn accountsSchema () -> MigrationOp =
     Migrate.createSchema (schemaOf (accountWitness ()))
 
-fn applyAccounts (conn: MemAdapter) -> Result (List Text) Error =
+fn applyAccounts (conn: MemAdapter) -> Result (List Text) DbError =
     Migrate.run conn [ Migrate.migration "0001_accounts" [ accountsSchema () ] ]
 
-fn addAccount (conn: MemAdapter) (alabel: Text) -> Result Unit Error =
+fn addAccount (conn: MemAdapter) (alabel: Text) -> Result Unit DbError =
     let accounts: Repo Account MemAdapter = Repo.repo conn "accounts"
     Repo.insert (AccountInsert { label = alabel }) accounts
 

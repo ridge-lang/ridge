@@ -29,7 +29,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (toSql, SqlValue)
 import std.schema (schemaOf, schemaToDdl)
@@ -52,7 +52,7 @@ fn lenList (xs: List Int) -> Int =
 -- Seed two rows: id 1 carries populated arrays and a present optional array; id 2
 -- carries empty arrays and a NULL optional array. Two rows exercise both the
 -- populated and the empty/absent shapes.
-pub fn db setup () -> Result (Repo Post MemAdapter) Error =
+pub fn db setup () -> Result (Repo Post MemAdapter) DbError =
     let r: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
     match Repo.insert (PostInsert { tags = ["x", "y", "z"], scores = [10, 20], extra = Some [7] }) r
         Err e -> Err e

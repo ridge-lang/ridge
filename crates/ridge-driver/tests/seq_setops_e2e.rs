@@ -32,6 +32,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// structurally. `active` is {1,2,3} and `admins` is {2,3,4} (by whole row), so the
 /// combinations have known, exact sizes the cases below assert.
 const SOURCE: &str = r#"
+import std.data (DbError)
 import std.repo as Repo
 import std.query (SortOrder, Asc)
 
@@ -49,17 +50,17 @@ fn admins () -> List User =
     , User { id = 4, name = "Dan" }
     ]
 
-fn countOr (r: Result Int Error) -> Int =
+fn countOr (r: Result Int DbError) -> Int =
     match r
         Err _ -> 0 - 1
         Ok n  -> n
 
-fn existsBit (r: Result Bool Error) -> Int =
+fn existsBit (r: Result Bool DbError) -> Int =
     match r
         Err _ -> 0 - 1
         Ok b  -> if b then 1 else 0
 
-fn firstId (r: Result (Option User) Error) -> Int =
+fn firstId (r: Result (Option User) DbError) -> Int =
     match r
         Err _       -> 0 - 1
         Ok None     -> 0 - 1

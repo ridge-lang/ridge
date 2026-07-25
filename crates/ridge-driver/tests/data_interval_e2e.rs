@@ -34,7 +34,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.query (SortOrder, Asc, Desc)
 import std.sql (toSql, SqlValue)
@@ -74,7 +74,7 @@ fn joinLabels (ts: List Task) -> Text =
 -- Seed three rows whose durations sort a,c,b by length:
 -- a = 500ms < c = 1500ms < b = 90000ms. Buckets group a and c together (bucket "x")
 -- and b alone (bucket "y"), so bucket "x" averages 500 and 1500 to 1000 ms.
-pub fn db setup () -> Result (Repo Task MemAdapter) Error =
+pub fn db setup () -> Result (Repo Task MemAdapter) DbError =
     let r: Repo Task MemAdapter = Repo.repo (memAdapter ()) "tasks"
     match Repo.insert (TaskInsert { label = "a", bucket = "x", took = ofMillis 500 }) r
         Err e -> Err e

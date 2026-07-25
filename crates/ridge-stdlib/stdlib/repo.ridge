@@ -19,8 +19,8 @@
 -- A predicate is quoted exactly as at the adapter seam: the parameter
 -- annotation pins the row type and the body is captured as a query tree.
 
-import std.data as Db (selectRows, fetch, IsolationLevel, RetryPolicy, dbErrorIsTransient)
-import std.result (traverse)
+import std.data as Db (selectRows, fetch, IsolationLevel, RetryPolicy, dbErrorIsTransient, toDbError, mkDbError, DbError)
+import std.result (traverse, mapErr)
 import std.sql (SqlValue)
 import std.query (SortOrder, isAscending, QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planExists, planList, planInsert, planUpsert, planUpdate, planDelete)
 import std.map (fromList, toList)
@@ -36,17 +36,19 @@ pub fn repo (adapter: a) (table: Text) -> Repo e a =
     Repo { adapter = adapter, table = table }
 
 -- Decode a list of raw rows into entities, stopping at the first decode failure.
-fn decodeRows (rows: List (Map Text SqlValue)) -> Result (List e) Error where Row e =
-    traverse fromRow rows
+fn decodeRows (rows: List (Map Text SqlValue)) -> Result (List e) DbError where Row e =
+    match traverse fromRow rows
+        Err err -> Err (Db.toDbError err)
+        Ok xs   -> Ok xs
 
 -- The head of a row list, decoded; `None` when the list is empty. The single-
 -- result verbs (`find`, `get`) share it.
-fn firstDecoded (rows: List (Map Text SqlValue)) -> Result (Option e) Error where Row e =
+fn firstDecoded (rows: List (Map Text SqlValue)) -> Result (Option e) DbError where Row e =
     match rows
         []       -> Ok None
         row :: _ ->
             match fromRow row
-                Err err -> Err err
+                Err err -> Err (Db.toDbError err)
                 Ok x    -> Ok (Some x)
 
 -- A quoted predicate that keeps every row — an always-true tree. The aggregate
@@ -100,7 +102,7 @@ fn notTrue (a: Quote p) -> Quote p
 -- (the in-memory store) or compiles it to nested SQL (Postgres).
 
 -- Every row of the table, decoded into entities.
-pub fn all (r: Repo e a) -> Result (List e) Error where Adapter a, Row e =
+pub fn all (r: Repo e a) -> Result (List e) DbError where Adapter a, Row e =
     match selectRows r.adapter r.table (keepAll ())
         Err err  -> Err err
         Ok rows  -> decodeRows rows
@@ -108,27 +110,27 @@ pub fn all (r: Repo e a) -> Result (List e) Error where Adapter a, Row e =
 -- The rows matching a quoted predicate, decoded into entities. The predicate is
 -- written against the entity at the call site (`fn (u: User) -> ...`) and
 -- captured as a query tree; the seam evaluates it against each stored row.
-pub fn findBy (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result (List e) Error where Adapter a, Row e =
+pub fn findBy (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result (List e) DbError where Adapter a, Row e =
     match selectRows r.adapter r.table pred
         Err err  -> Err err
         Ok rows  -> decodeRows rows
 
 -- The first entity matching a quoted predicate, or `None` when none match.
 -- Fetched with a one-row limit, so the backend stops at the first match.
-pub fn find (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result (Option e) Error where Adapter a, Row e =
+pub fn find (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result (Option e) DbError where Adapter a, Row e =
     match fetch r.adapter r.table pred [] 1 0 false
         Err err  -> Err err
         Ok rows  -> firstDecoded rows
 
 -- The entity whose `column` holds exactly `key`, or `None`. A lookup by an
 -- exact column match (typically a primary key), decoded into the entity.
-pub fn getBy (column: Text) (key: SqlValue) (r: Repo e a) -> Result (Option e) Error where Adapter a, Row e =
+pub fn getBy (column: Text) (key: SqlValue) (r: Repo e a) -> Result (Option e) DbError where Adapter a, Row e =
     match get r.adapter r.table column key
         Err err       -> Err err
         Ok None       -> Ok None
         Ok (Some row) ->
             match fromRow row
-                Err err -> Err err
+                Err err -> Err (Db.toDbError err)
                 Ok x    -> Ok (Some x)
 
 -- `count` and `exists` are the methods of the `Countable q p | q -> p` class
@@ -140,7 +142,7 @@ pub fn getBy (column: Text) (key: SqlValue) (r: Repo e a) -> Result (Option e) E
 
 -- Append a raw row to the table. The row is a column map built by hand through
 -- `SqlType.toSql`; for a typed entity reach for `insert`, which derives the row.
-pub fn insertRow (row: Map Text SqlValue) (r: Repo e a) -> Result Unit Error where Adapter a =
+pub fn insertRow (row: Map Text SqlValue) (r: Repo e a) -> Result Unit DbError where Adapter a =
     match runMutation r.adapter (planInsert r.table [row] [])
         Ok _  -> Ok ()
         Err e -> Err e
@@ -153,7 +155,7 @@ pub fn insertRow (row: Map Text SqlValue) (r: Repo e a) -> Result Unit Error whe
 -- `toInsertRow` names the remaining columns and runs each field through
 -- `SqlType.toSql`, a nullable `Option` field writing `None` as SQL NULL — the
 -- write-side dual of the decode every read verb runs.
-pub fn insert (entity: InsertShape e) (r: Repo e a) -> Result Unit Error where Adapter a, HasSchema e =
+pub fn insert (entity: InsertShape e) (r: Repo e a) -> Result Unit DbError where Adapter a, HasSchema e =
     match runMutation r.adapter (planInsert r.table [toInsertRow entity] (identityColumnsOfShape entity))
         Ok _  -> Ok ()
         Err e -> Err e
@@ -161,7 +163,7 @@ pub fn insert (entity: InsertShape e) (r: Repo e a) -> Result Unit Error where A
 -- Append many raw rows in one statement. Every row must carry the same columns —
 -- the first row fixes the column list and the rest line up against it. An empty
 -- list is a no-op. For typed entities reach for `insertMany`, which derives the rows.
-pub fn insertRows (rows: List (Map Text SqlValue)) (r: Repo e a) -> Result Unit Error where Adapter a =
+pub fn insertRows (rows: List (Map Text SqlValue)) (r: Repo e a) -> Result Unit DbError where Adapter a =
     match rows
         []  -> Ok ()
         _   ->
@@ -175,7 +177,7 @@ pub fn insertRows (rows: List (Map Text SqlValue)) (r: Repo e a) -> Result Unit 
 -- absent from every shape and every row, so the database fills each (the in-memory
 -- store assigns a contiguous run of integers across the batch). An empty list is a
 -- no-op.
-pub fn insertMany (entities: List (InsertShape e)) (r: Repo e a) -> Result Unit Error where Adapter a, HasSchema e =
+pub fn insertMany (entities: List (InsertShape e)) (r: Repo e a) -> Result Unit DbError where Adapter a, HasSchema e =
     match entities
         []      -> Ok ()
         x :: _  ->
@@ -217,7 +219,7 @@ fn conflictColumns (keys: List (Conflict e)) -> List Text =
 -- entity first like `update`, conflict keys after:
 -- `users |> Repo.upsert user [Repo.onConflict (fn (u: User) -> u.id)]`. To choose which
 -- columns the conflict updates, use the raw `upsertRow`.
-pub fn upsert (entity: e) (keys: List (Conflict e)) (r: Repo e a) -> Result Int Error where Adapter a, Row e =
+pub fn upsert (entity: e) (keys: List (Conflict e)) (r: Repo e a) -> Result Int DbError where Adapter a, Row e =
     let row = toRow entity
     let conflictCols = conflictColumns keys
     runMutation r.adapter (planUpsert r.table [row] conflictCols (nonKeyColumns row conflictCols))
@@ -227,7 +229,7 @@ pub fn upsert (entity: e) (keys: List (Conflict e)) (r: Repo e a) -> Result Int 
 -- insert-if-absent verb, the `DO NOTHING` companion of `upsert`. The body mirrors
 -- `upsert`'s shape (encode the row in a leading `let`, then `runMutation`) so the two
 -- generalise their `Adapter`/`Row` dictionaries in the same order.
-pub fn insertOrIgnore (entity: e) (keys: List (Conflict e)) (r: Repo e a) -> Result Int Error where Adapter a, Row e =
+pub fn insertOrIgnore (entity: e) (keys: List (Conflict e)) (r: Repo e a) -> Result Int DbError where Adapter a, Row e =
     let row = toRow entity
     let conflictCols = conflictColumns keys
     runMutation r.adapter (planUpsert r.table [row] conflictCols [])
@@ -237,7 +239,7 @@ pub fn insertOrIgnore (entity: e) (keys: List (Conflict e)) (r: Repo e a) -> Res
 -- explicit-control counterpart of `upsert`: the row is a hand-built column map and the
 -- caller names exactly which columns the conflict updates, where `upsert` derives both
 -- from a typed entity. An empty `updateCols` is a `DO NOTHING`.
-pub fn upsertRow (conflictColumns: List Text) (updateColumns: List Text) (row: Map Text SqlValue) (r: Repo e a) -> Result Int Error where Adapter a =
+pub fn upsertRow (conflictColumns: List Text) (updateColumns: List Text) (row: Map Text SqlValue) (r: Repo e a) -> Result Int DbError where Adapter a =
     runMutation r.adapter (planUpsert r.table [row] conflictColumns updateColumns)
 
 -- The columns of a row to overwrite on an upsert conflict: every column the row carries
@@ -268,21 +270,21 @@ fn columnMember (c: Text) (cols: List Text) -> Bool =
 -- populated, where plain `insert` answers only `Ok ()`. Errors if no row returns (the
 -- in-memory and Postgres backends both return the inserted row, so this is the decode
 -- guard, not an expected path).
-pub fn insertReturning (entity: InsertShape e) (r: Repo e a) -> Result e Error where Adapter a, Row e, HasSchema e =
+pub fn insertReturning (entity: InsertShape e) (r: Repo e a) -> Result e DbError where Adapter a, Row e, HasSchema e =
     match runMutationReturning r.adapter (planInsert r.table [toInsertRow entity] (identityColumnsOfShape entity)) []
         Err err -> Err err
         Ok rows ->
             match rows
-                []       -> Err (mkError "repo.insertReturning.empty" "insert returned no row")
+                []       -> Err (Db.mkDbError "repo.insertReturning.empty" "insert returned no row")
                 row :: _ ->
                     match fromRow row
-                        Err err -> Err err
+                        Err err -> Err (Db.toDbError err)
                         Ok x    -> Ok x
 
 -- Insert many typed entities and read every stored row back, decoded — the bulk dual of
 -- `insertReturning` over one multi-row `INSERT … RETURNING *`. An empty list is a no-op
 -- that returns no rows.
-pub fn insertManyReturning (entities: List (InsertShape e)) (r: Repo e a) -> Result (List e) Error where Adapter a, Row e, HasSchema e =
+pub fn insertManyReturning (entities: List (InsertShape e)) (r: Repo e a) -> Result (List e) DbError where Adapter a, Row e, HasSchema e =
     match entities
         []      -> Ok []
         x :: _  ->
@@ -293,7 +295,7 @@ pub fn insertManyReturning (entities: List (InsertShape e)) (r: Repo e a) -> Res
 -- Remove the rows matching a quoted predicate and read each removed row back, decoded —
 -- a `DELETE … RETURNING *`. The rows are gone from the store, but their last contents
 -- come back as entities, so a delete can report exactly what it took.
-pub fn deleteReturning (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result (List e) Error where Adapter a, Row e =
+pub fn deleteReturning (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result (List e) DbError where Adapter a, Row e =
     match runMutationReturning r.adapter (planDelete r.table pred.tree) []
         Err err -> Err err
         Ok rows -> decodeRows rows
@@ -304,28 +306,28 @@ pub fn deleteReturning (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -
 -- column populated), so an upsert can answer with the row that won. Errors if no row
 -- returns — which happens only when every column is a conflict key, leaving nothing to
 -- update (a `DO NOTHING` that skips the conflicting row).
-pub fn upsertReturning (entity: e) (keys: List (Conflict e)) (r: Repo e a) -> Result e Error where Adapter a, Row e =
+pub fn upsertReturning (entity: e) (keys: List (Conflict e)) (r: Repo e a) -> Result e DbError where Adapter a, Row e =
     let row = toRow entity
     let conflictCols = conflictColumns keys
     match runMutationReturning r.adapter (planUpsert r.table [row] conflictCols (nonKeyColumns row conflictCols)) []
         Err err -> Err err
         Ok rows ->
             match rows
-                []         -> Err (mkError "repo.upsertReturning.empty" "upsert returned no row")
+                []         -> Err (Db.mkDbError "repo.upsertReturning.empty" "upsert returned no row")
                 stored :: _ ->
                     match fromRow stored
-                        Err err -> Err err
+                        Err err -> Err (Db.toDbError err)
                         Ok x    -> Ok x
 
 -- Remove the rows matching a quoted predicate; answer how many were removed.
-pub fn delete (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int Error where Adapter a =
+pub fn delete (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int DbError where Adapter a =
     runMutation r.adapter (planDelete r.table pred.tree)
 
 -- Set the given columns on every row matching a quoted predicate; answer how many
 -- rows changed. The `changes` map is a partial column map built through
 -- `SqlType.toSql`, so one call can touch a subset of columns. To write a whole
 -- record back, use `update`.
-pub fn updateWhere (changes: Map Text SqlValue) (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int Error where Adapter a =
+pub fn updateWhere (changes: Map Text SqlValue) (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int DbError where Adapter a =
     match toList changes
         []  -> Ok 0
         _   -> runMutation r.adapter (planUpdate r.table changes pred.tree)
@@ -333,7 +335,7 @@ pub fn updateWhere (changes: Map Text SqlValue) (pred: Quote (Map Text SqlValue 
 -- Overwrite every column of the rows matching a quoted predicate with a typed
 -- entity, encoded through `toRow`. Reach for `updateWhere` when only some columns
 -- change.
-pub fn update (entity: e) (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int Error where Adapter a, Row e =
+pub fn update (entity: e) (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int DbError where Adapter a, Row e =
     updateWhere (toRow entity) pred r
 
 -- A single typed column assignment, built by `set`: the target column and its
@@ -378,7 +380,7 @@ fn settersToMap (setters: List (Setter e)) -> Map Text SqlValue =
 -- each `set (fn (u: User) -> u.col) value` is checked so the value matches the
 -- column, where `updateWhere` takes an unchecked `Map Text SqlValue`. Reach for
 -- `updateWhere` only to write a column map assembled by hand.
-pub fn setWhere (setters: List (Setter e)) (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int Error where Adapter a =
+pub fn setWhere (setters: List (Setter e)) (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int DbError where Adapter a =
     updateWhere (settersToMap setters) pred r
 
 -- Run `body` inside a database transaction on the connection. The body receives
@@ -397,7 +399,7 @@ pub fn setWhere (setters: List (Setter e)) (pred: Quote (Map Text SqlValue -> Bo
 -- sub-step can be attempted without abandoning the whole transaction. A `commit`
 -- or `rollback` that itself fails (a dropped connection, say) surfaces as the
 -- result's `Err`; otherwise a rolled-back transaction returns the body's own error.
-pub fn transaction (conn: a) (body: fn a -> Result r Error) -> Result r Error where Adapter a =
+pub fn transaction (conn: a) (body: fn a -> Result r DbError) -> Result r DbError where Adapter a =
     match begin conn
         Err e -> Err e
         Ok _  ->
@@ -419,7 +421,7 @@ pub fn transaction (conn: a) (body: fn a -> Result r Error) -> Result r Error wh
 -- `db.tx.isolation_mismatch` (kind `Unsupported`), because SQL forbids
 -- changing a transaction's isolation level mid-transaction. A plain nested
 -- `transaction` demands no level and always opens a savepoint.
-pub fn transactionWith (level: IsolationLevel) (conn: a) (body: fn a -> Result r Error) -> Result r Error where Adapter a =
+pub fn transactionWith (level: IsolationLevel) (conn: a) (body: fn a -> Result r DbError) -> Result r DbError where Adapter a =
     match beginWith conn level
         Err e -> Err e
         Ok _  ->
@@ -507,7 +509,7 @@ pub fn time random retryWhen (policy: RetryPolicy) (isTransient: fn e -> Bool) (
 -- after a serialization failure the open transaction is aborted, and only
 -- re-running the whole transaction — `transactionWithRetry`, or `retryTransient`
 -- around `transaction`/`transactionWith` — is correct.
-pub fn time random retryTransient (policy: RetryPolicy) (attempt: fn Int -> Result r Error) -> Result r Error =
+pub fn time random retryTransient (policy: RetryPolicy) (attempt: fn Int -> Result r DbError) -> Result r DbError =
     retryWhen policy dbErrorIsTransient attempt
 
 -- Run `body` inside a transaction, re-running the whole transaction —
@@ -519,7 +521,7 @@ pub fn time random retryTransient (policy: RetryPolicy) (attempt: fn Int -> Resu
 -- level, compose: `Repo.retryTransient policy (fn (n) -> Repo.transactionWith
 -- Serializable conn body)`. `None` reads the connection's `commandRetry`
 -- policy (see `withCommandRetry`); `Some` overrides it.
-pub fn time random transactionWithRetry (policy: Option RetryPolicy) (conn: a) (body: fn a -> Result r Error) -> Result r Error where Adapter a =
+pub fn time random transactionWithRetry (policy: Option RetryPolicy) (conn: a) (body: fn a -> Result r DbError) -> Result r DbError where Adapter a =
     match policy
         Some pol -> retryTransient pol (fn (_n: Int) -> transaction conn body)
         None     -> retryTransient (retryPolicy conn) (fn (_n: Int) -> transaction conn body)
@@ -536,7 +538,7 @@ pub fn time random transactionWithRetry (policy: Option RetryPolicy) (conn: a) (
 -- (its pool reuses connections) over opening one per operation. Closing is
 -- best-effort: a failure to close on teardown does not turn a successful body into an
 -- error.
-pub fn withConnection (conn: a) (body: fn a -> Result r Error) -> Result r Error where Adapter a =
+pub fn withConnection (conn: a) (body: fn a -> Result r DbError) -> Result r DbError where Adapter a =
     let outcome = body conn
     match close conn
         _ -> outcome
@@ -546,7 +548,7 @@ pub fn withConnection (conn: a) (body: fn a -> Result r Error) -> Result r Error
 -- `disconnect` at shutdown. For a short-lived connection prefer `withConnection`,
 -- which closes on every path; a bare `connect`/`disconnect` pair leaks the handle
 -- on any path that skips the close. Closing is idempotent and best-effort.
-pub fn disconnect (conn: a) -> Result Unit Error where Adapter a =
+pub fn disconnect (conn: a) -> Result Unit DbError where Adapter a =
     close conn
 
 -- A query under construction over a repository: a filter, an ordering, a page
@@ -588,8 +590,8 @@ pub class Refinable q p | q -> p =
 -- is the projection's own return type. `select` returns the whole list;
 -- `selectFirst` returns the first row — a pushed-down `LIMIT 1` — or `None`.
 pub class Projectable q p | q -> p =
-    select      (projection: Quote p) (x: q) -> Result (List (Ret p))   Error
-    selectFirst (projection: Quote p) (x: q) -> Result (Option (Ret p)) Error
+    select      (projection: Quote p) (x: q) -> Result (List (Ret p))   DbError
+    selectFirst (projection: Quote p) (x: q) -> Result (Option (Ret p)) DbError
 
 -- One `orderBy` for a query and a join. A query orders by a one-row key over its
 -- entity; a join by a two-row key over both, naming a column from either side
@@ -619,10 +621,10 @@ pub class Orderable q p | q -> p =
 -- filter (and, on a join, the join condition) alone narrows the folded rows and the
 -- ordering is immaterial to the fold.
 pub class Aggregable q p | q -> p =
-    sumOf (column: Quote p) (x: q) -> Result (Option (Ret p)) Error
-    avgOf (column: Quote p) (x: q) -> Result (Option Float)   Error
-    minOf (column: Quote p) (x: q) -> Result (Option (Ret p)) Error
-    maxOf (column: Quote p) (x: q) -> Result (Option (Ret p)) Error
+    sumOf (column: Quote p) (x: q) -> Result (Option (Ret p)) DbError
+    avgOf (column: Quote p) (x: q) -> Result (Option Float)   DbError
+    minOf (column: Quote p) (x: q) -> Result (Option (Ret p)) DbError
+    maxOf (column: Quote p) (x: q) -> Result (Option (Ret p)) DbError
 
 -- One pair of decode terminals for a query and a join. `toList` runs the
 -- accumulated query (or join) and decodes every matching row; `first` runs it
@@ -639,8 +641,8 @@ pub class Aggregable q p | q -> p =
 -- old direct-`e` terminals did. It replaces the old per-receiver `toPairs`/
 -- `toLeftPairs`, and gives a join a `first` it never had.
 pub class Fetchable q =
-    toList (x: q) -> Result (List (Rows q))   Error
-    first  (x: q) -> Result (Option (Rows q)) Error
+    toList (x: q) -> Result (List (Rows q))   DbError
+    first  (x: q) -> Result (Option (Rows q)) DbError
 
 -- One set of result-narrowing builder steps for a query and a join. `limit` keeps
 -- at most `n` rows, `offset` skips the first `n`, and `distinct` drops duplicate
@@ -672,8 +674,8 @@ pub class Pageable q =
 -- set-operation plan is honoured the way the decode terminals honour it. An empty
 -- window counts 0, so `exists` is false over it. (LINQ's `Count`/`Any`.)
 pub class Countable q =
-    count  (x: q) -> Result Int Error
-    exists (x: q) -> Result Bool Error
+    count  (x: q) -> Result Int DbError
+    exists (x: q) -> Result Bool DbError
 
 -- The universal-predicate terminal for a query and a join — the dual of `exists`.
 -- `every` answers whether all the rows the receiver selects satisfy a further
@@ -688,13 +690,13 @@ pub class Countable q =
 -- because it carries the predicate the dependency keys on, where they take no
 -- argument. (LINQ's `All`.)
 pub class Every q p | q -> p =
-    every (pred: Quote p) (x: q) -> Result Bool Error
+    every (pred: Quote p) (x: q) -> Result Bool DbError
 
 -- The negation of `exists`: whether the receiver selects no rows at all. As a
 -- terminal it is the complement of `exists` over any `Countable` receiver; inside a
 -- quoted predicate, `notExists inner (fn p -> …)` reads as a correlated `NOT EXISTS`
 -- subquery, the dual of `exists inner (fn p -> …)`. (LINQ's `!….Any()`.)
-pub fn notExists (x: q) -> Result Bool Error where Countable q =
+pub fn notExists (x: q) -> Result Bool DbError where Countable q =
     match exists x
         Err e      -> Err e
         Ok present -> Ok (if present then false else true)
@@ -720,7 +722,7 @@ pub class Groupable q p | q -> p =
 -- its own class so the seam call (one `Adapter a` context) stays separate from that
 -- decode.
 pub class Summarizable q =
-    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: q) -> Result (List (Map Text SqlValue)) Error
+    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: q) -> Result (List (Map Text SqlValue)) DbError
 
 -- The set-operation builders (`union`/`unionAll`/`intersect`/`except`) that combine
 -- two queries, or two in-memory sequences, of the same row shape. A single parameter,
@@ -753,10 +755,10 @@ pub class Combinable q =
 -- runs it through `runPlan`, so a database renders it through `planToSql` and the
 -- in-memory store interprets it — one path for every predicate, a correlated EXISTS
 -- included.
-fn fetchRows (q: Query e a) (lim: Int) -> Result (List (Map Text SqlValue)) Error where Adapter a =
+fn fetchRows (q: Query e a) (lim: Int) -> Result (List (Map Text SqlValue)) DbError where Adapter a =
     fetch q.repo.adapter q.repo.table q.pred q.orders lim q.off q.dist
 
-fn queryRows (q: Query e a) -> Result (List (Map Text SqlValue)) Error where Adapter a =
+fn queryRows (q: Query e a) -> Result (List (Map Text SqlValue)) DbError where Adapter a =
     match q.plan
         None   -> fetchRows q q.lim
         Some _ -> runPlan q.repo.adapter (planOf q)
@@ -808,14 +810,6 @@ instance Combinable (Query e a) =
     except (other: Query e a) (q: Query e a) -> Query e a =
         combineWith "EXCEPT" other q
 
--- Build an `Error` from a code and a message. A bare record literal cannot be
--- coerced to the nominal `Error` type in a plain function (only an instance-method
--- body, as the `SqlType` decoders are), so the unique-row terminals tag their
--- errors through this runtime helper, the same way the query trees are built by
--- `keepAll`/`quoteAnd`.
-@ffi("ridge_rt", "mk_error", 2)
-fn mkError (code: Text) (message: Text) -> Error
-
 -- The one row the query selects, decoded; `None` when none match and an error
 -- when more than one does. The lenient member of the pair: an empty result is
 -- `Ok None`, not a failure — reach for `singleOrError` when "no row" should fail
@@ -823,7 +817,7 @@ fn mkError (code: Text) (message: Text) -> Error
 -- match proves the result is not unique rather than scanning the whole table.
 -- The filter and offset still apply; an ordering does not change which single row
 -- is meant, only the error or the lone value. (LINQ's `SingleOrDefault`.)
-pub fn single (q: Query e a) -> Result (Option e) Error where Adapter a, Row e =
+pub fn single (q: Query e a) -> Result (Option e) DbError where Adapter a, Row e =
     match fetchRows q 2
         Err err -> Err err
         Ok rows ->
@@ -833,9 +827,9 @@ pub fn single (q: Query e a) -> Result (Option e) Error where Adapter a, Row e =
                     match rest
                         [] ->
                             match fromRow row
-                                Err err -> Err err
+                                Err err -> Err (Db.toDbError err)
                                 Ok x    -> Ok (Some x)
-                        _ -> Err (mkError "repo.single.many" "the query matched more than one row")
+                        _ -> Err (Db.mkDbError "repo.single.many" "the query matched more than one row")
 
 -- The one row the query selects, decoded, with the empty result an error rather
 -- than `None`: this answers exactly one row or fails. The strict member of the
@@ -843,19 +837,19 @@ pub fn single (q: Query e a) -> Result (Option e) Error where Adapter a, Row e =
 -- to identify a unique row (a lookup by a key the schema makes unique). Like
 -- `single` it fetches a second row only to detect a non-unique result.
 -- (LINQ's `Single`.)
-pub fn singleOrError (q: Query e a) -> Result e Error where Adapter a, Row e =
+pub fn singleOrError (q: Query e a) -> Result e DbError where Adapter a, Row e =
     match fetchRows q 2
         Err err -> Err err
         Ok rows ->
             match rows
-                []          -> Err (mkError "repo.single.empty" "the query matched no rows")
+                []          -> Err (Db.mkDbError "repo.single.empty" "the query matched no rows")
                 row :: rest ->
                     match rest
                         [] ->
                             match fromRow row
-                                Err err -> Err err
+                                Err err -> Err (Db.toDbError err)
                                 Ok x    -> Ok x
-                        _ -> Err (mkError "repo.single.many" "the query matched more than one row")
+                        _ -> Err (Db.mkDbError "repo.single.many" "the query matched more than one row")
 
 -- `every` is the universal dual of `exists` and now joins it as a method of the
 -- `Countable q p | q -> p` class (declared above), so one `every` tests a query, an
@@ -868,7 +862,7 @@ pub fn singleOrError (q: Query e a) -> Result e Error where Adapter a, Row e =
 -- reads in LINQ: the accumulated filter picks the rows, the setters assign their
 -- columns. Only the filter is used — ordering and paging do not constrain an
 -- UPDATE — so it is the pipeline form of `setWhere`.
-pub fn applySet (setters: List (Setter e)) (q: Query e a) -> Result Int Error where Adapter a =
+pub fn applySet (setters: List (Setter e)) (q: Query e a) -> Result Int DbError where Adapter a =
     updateWhere (settersToMap setters) q.pred q.repo
 
 -- Decode the optional scalar a `SELECT func(col) …` aggregate returns into an
@@ -879,7 +873,7 @@ pub fn applySet (setters: List (Setter e)) (q: Query e a) -> Result Int Error wh
 -- An aggregate cell is only ever its own type or SQL NULL — never a mismatched
 -- value — so reading a failed decode as the empty fold is safe and folds both
 -- backends to the same `None`.
-fn decodeScalar (v: Option SqlValue) -> Result (Option w) Error where SqlType w =
+fn decodeScalar (v: Option SqlValue) -> Result (Option w) DbError where SqlType w =
     match v
         None    -> Ok None
         Some sv ->
@@ -893,7 +887,7 @@ fn decodeScalar (v: Option SqlValue) -> Result (Option w) Error where SqlType w 
 -- aggregate instance that pin is not in scope and the inert column dictionary is
 -- threaded instead, decoding the float cell as the wrong type and folding to
 -- `None`. Pinning `Float` here keeps every shape's average decoding the same way.
-fn decodeFloatScalar (v: Option SqlValue) -> Result (Option Float) Error =
+fn decodeFloatScalar (v: Option SqlValue) -> Result (Option Float) DbError =
     decodeScalar v
 
 -- The scalar aggregates `sumOf`/`avgOf`/`minOf`/`maxOf` are the methods of the
@@ -948,7 +942,7 @@ pub fn having (pred: Quote (Grouped q p -> Bool)) (g: Grouped q p) -> Grouped q 
 -- `HAVING`) against the source's own seam — a query, an inner join, or a left join —
 -- and returns one row per group, ordered by the key; `summarize` then decodes each.
 -- This is the grouped dual of `select`: a projection, but over groups instead of rows.
-pub fn summarize (projection: Quote (Grouped q p -> s)) (g: Grouped q p) -> Result (List s) Error where Summarizable q, Row s =
+pub fn summarize (projection: Quote (Grouped q p -> s)) (g: Grouped q p) -> Result (List s) DbError where Summarizable q, Row s =
     match runGroups g.keyCol g.keyLeaf projection.tree g.havingTree g.source
         Err err -> Err err
         Ok rows -> decodeRows rows
@@ -1065,7 +1059,7 @@ class JoinShape q =
     joinedSourcePlan (x: q) -> QueryPlan
     -- Decode one flat result row (leaves under `t0$`, `t1$`, … prefixes) into the
     -- receiver's nested row — `e` for a bare query, `(Rows q, f)` at each step.
-    decodeJoined (w: Option q) (row: Map Text SqlValue) -> Result (Rows q) Error
+    decodeJoined (w: Option q) (row: Map Text SqlValue) -> Result (Rows q) DbError
     -- The leftmost leaf's columns, for an enclosing join to spell into its prefixed
     -- select-list. A bare query is a single scan whose columns nothing else names, so
     -- it returns them; a composite already spells every leaf through its own nested
@@ -1082,8 +1076,8 @@ instance JoinShape (Query e a) where Row e =
     joinedLeaves (w: Option (Query e a)) -> Int = 1
     joinedSourcePlan (x: Query e a) -> QueryPlan =
         planScan x.repo.table x.pred.tree [] (0 - 1) 0 false
-    decodeJoined (w: Option (Query e a)) (row: Map Text SqlValue) -> Result e Error =
-        fromRow (unprefix (leafPrefix 0) row)
+    decodeJoined (w: Option (Query e a)) (row: Map Text SqlValue) -> Result e DbError =
+        mapErr Db.toDbError (fromRow (unprefix (leafPrefix 0) row))
     sourceCols (src: Query e a) -> List Text = rowColumns (entityWitness src.repo)
 
 -- The recursive step: a nested join is its source plus one more leaf. Its leaf
@@ -1095,12 +1089,12 @@ instance JoinShape (Joined q f a) where JoinShape q, Row f =
     joinedSourcePlan (x: Joined q f a) -> QueryPlan =
         planJoin "INNER" (joinedSourcePlan x.source) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false (sourceCols x.source) (rowColumns (entityWitness x.right))
     sourceCols (src: Joined q f a) -> List Text = []
-    decodeJoined (w: Option (Joined q f a)) (row: Map Text SqlValue) -> Result (Rows q, f) Error =
+    decodeJoined (w: Option (Joined q f a)) (row: Map Text SqlValue) -> Result (Rows q, f) DbError =
         match decodeJoined (innerJoinWitness w) row
             Err err -> Err err
             Ok qr ->
                 match fromRow (unprefix (leafPrefix (joinedLeaves (innerJoinWitness w))) row)
-                    Err err -> Err err
+                    Err err -> Err (Db.toDbError err)
                     Ok fv -> Ok (qr, fv)
 
 -- Phantom witnesses: narrow a `Joined`'s type to its source's, so the recursion
@@ -1120,7 +1114,7 @@ fn joinedPlan (x: Joined q f a) (lim: Int) -> QueryPlan where JoinShape q, Row f
 -- Decode every flat result row into the nested pair `(Rows q, f)`: the source's
 -- row from `decodeJoined`, the new table from its `t<n>$` leaf where `n` is the
 -- source's leaf count.
-fn decodeJoinedRows (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) -> Result (List (Rows q, f)) Error where JoinShape q, Row f =
+fn decodeJoinedRows (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) -> Result (List (Rows q, f)) DbError where JoinShape q, Row f =
     match rows
         []        -> Ok []
         r :: rest ->
@@ -1128,13 +1122,13 @@ fn decodeJoinedRows (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) -> R
                 Err err -> Err err
                 Ok qr ->
                     match fromRow (unprefix (leafPrefix n) r)
-                        Err err -> Err err
+                        Err err -> Err (Db.toDbError err)
                         Ok fv ->
                             match decodeJoinedRows w n rest
                                 Err err -> Err err
                                 Ok more -> Ok ((qr, fv) :: more)
 
-fn firstDecodedJoined (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) -> Result (Option (Rows q, f)) Error where JoinShape q, Row f =
+fn firstDecodedJoined (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) -> Result (Option (Rows q, f)) DbError where JoinShape q, Row f =
     match rows
         []     -> Ok None
         r :: _ ->
@@ -1142,18 +1136,18 @@ fn firstDecodedJoined (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) ->
                 Err err -> Err err
                 Ok qr ->
                     match fromRow (unprefix (leafPrefix n) r)
-                        Err err -> Err err
+                        Err err -> Err (Db.toDbError err)
                         Ok fv -> Ok (Some (qr, fv))
 
 -- `toList`/`first` over a nested join: run the flattened plan and decode each row
 -- into the nested tuple `(Rows q, f)`. The plan, decode, and row shape all come
 -- from `JoinShape q`, so the same two terminals serve every depth.
 instance Fetchable (Joined q f a) where Adapter a, JoinShape q, Row f =
-    toList (x: Joined q f a) -> Result (List (Rows q, f)) Error =
+    toList (x: Joined q f a) -> Result (List (Rows q, f)) DbError =
         match runPlan x.right.adapter (joinedPlan x x.lim)
             Err err -> Err err
             Ok rows -> decodeJoinedRows (sourceWitness x) (joinedLeaves (sourceWitness x)) rows
-    first (x: Joined q f a) -> Result (Option (Rows q, f)) Error =
+    first (x: Joined q f a) -> Result (Option (Rows q, f)) DbError =
         match runPlan x.right.adapter (joinedPlan x 1)
             Err err -> Err err
             Ok rows -> firstDecodedJoined (sourceWitness x) (joinedLeaves (sourceWitness x)) rows
@@ -1221,7 +1215,7 @@ instance JoinShape (LeftJoined q f a) where JoinShape q, Row f =
     joinedSourcePlan (x: LeftJoined q f a) -> QueryPlan =
         planJoin "LEFT" (joinedSourcePlan x.source) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false (sourceCols x.source) (rowColumns (entityWitness x.right))
     sourceCols (src: LeftJoined q f a) -> List Text = []
-    decodeJoined (w: Option (LeftJoined q f a)) (row: Map Text SqlValue) -> Result (Rows q, Option f) Error =
+    decodeJoined (w: Option (LeftJoined q f a)) (row: Map Text SqlValue) -> Result (Rows q, Option f) DbError =
         match decodeJoined (leftInnerWitness w) row
             Err err -> Err err
             Ok srcRow ->
@@ -1244,7 +1238,7 @@ fn leftJoinedPlan (x: LeftJoined q f a) (lim: Int) -> QueryPlan where JoinShape 
 -- source row from `decodeJoined`, the new table from its `t<n>$` leaf where `n` is
 -- the source's leaf count — `Some` when it matched, `None` when the composite row
 -- matched no new row.
-fn decodeLeftJoinedRows (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) -> Result (List (Rows q, Option f)) Error where JoinShape q, Row f =
+fn decodeLeftJoinedRows (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) -> Result (List (Rows q, Option f)) DbError where JoinShape q, Row f =
     match rows
         []        -> Ok []
         r :: rest ->
@@ -1258,7 +1252,7 @@ fn decodeLeftJoinedRows (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) 
                                 Err err -> Err err
                                 Ok more -> Ok ((srcRow, optF) :: more)
 
-fn firstDecodedLeftJoined (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) -> Result (Option (Rows q, Option f)) Error where JoinShape q, Row f =
+fn firstDecodedLeftJoined (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) -> Result (Option (Rows q, Option f)) DbError where JoinShape q, Row f =
     match rows
         []     -> Ok None
         r :: _ ->
@@ -1273,11 +1267,11 @@ fn firstDecodedLeftJoined (w: Option q) (n: Int) (rows: List (Map Text SqlValue)
 -- each row into `(Rows q, Option f)`. The leaf count and decoder both come from
 -- `JoinShape q`, so the same two terminals serve every depth.
 instance Fetchable (LeftJoined q f a) where Adapter a, JoinShape q, Row f =
-    toList (x: LeftJoined q f a) -> Result (List (Rows q, Option f)) Error =
+    toList (x: LeftJoined q f a) -> Result (List (Rows q, Option f)) DbError =
         match runPlan x.right.adapter (leftJoinedPlan x x.lim)
             Err err -> Err err
             Ok rows -> decodeLeftJoinedRows (leftSourceWitness x) (joinedLeaves (leftSourceWitness x)) rows
-    first (x: LeftJoined q f a) -> Result (Option (Rows q, Option f)) Error =
+    first (x: LeftJoined q f a) -> Result (Option (Rows q, Option f)) DbError =
         match runPlan x.right.adapter (leftJoinedPlan x 1)
             Err err -> Err err
             Ok rows -> firstDecodedLeftJoined (leftSourceWitness x) (joinedLeaves (leftSourceWitness x)) rows
@@ -1374,9 +1368,9 @@ instance JoinShape (RightJoined q f a) where JoinShape q, Row f =
     joinedSourcePlan (x: RightJoined q f a) -> QueryPlan =
         planJoin "RIGHT" (joinedSourcePlan x.source) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false (sourceCols x.source) (rowColumns (entityWitness x.right))
     sourceCols (src: RightJoined q f a) -> List Text = []
-    decodeJoined (w: Option (RightJoined q f a)) (row: Map Text SqlValue) -> Result (Option (Rows q), f) Error =
+    decodeJoined (w: Option (RightJoined q f a)) (row: Map Text SqlValue) -> Result (Option (Rows q), f) DbError =
         match fromRow (unprefix (leafPrefix (joinedLeaves (rightInnerWitness w))) row)
-            Err err -> Err err
+            Err err -> Err (Db.toDbError err)
             Ok leafF ->
                 match decodeRightOptComposite (rightInnerWitness w) (joinedLeaves (rightInnerWitness w)) row
                     Err err   -> Err err
@@ -1388,7 +1382,7 @@ fn rightSourceWitness (x: RightJoined q f a) -> Option q = None
 
 -- Decode the composite source of a right join optionally: its row when present (any
 -- composite leaf survives), `None` when the whole composite was null-extended.
-fn decodeRightOptComposite (w: Option q) (n: Int) (r: Map Text SqlValue) -> Result (Option (Rows q)) Error where JoinShape q =
+fn decodeRightOptComposite (w: Option q) (n: Int) (r: Map Text SqlValue) -> Result (Option (Rows q)) DbError where JoinShape q =
     if compositePresent n r then
         match decodeJoined w r
             Err err   -> Err err
@@ -1402,12 +1396,12 @@ fn rightJoinedPlan (x: RightJoined q f a) (lim: Int) -> QueryPlan where JoinShap
 
 -- Decode each flat result row of a `RightJoined` into `(Option (Rows q), f)`: the
 -- new table from its `t<n>$` leaf (always present), the composite source optionally.
-fn decodeRightJoinedRows (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) -> Result (List (Option (Rows q), f)) Error where JoinShape q, Row f =
+fn decodeRightJoinedRows (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) -> Result (List (Option (Rows q), f)) DbError where JoinShape q, Row f =
     match rows
         []        -> Ok []
         r :: rest ->
             match fromRow (unprefix (leafPrefix n) r)
-                Err err -> Err err
+                Err err -> Err (Db.toDbError err)
                 Ok leafF ->
                     match decodeRightOptComposite w n r
                         Err err -> Err err
@@ -1416,12 +1410,12 @@ fn decodeRightJoinedRows (w: Option q) (n: Int) (rows: List (Map Text SqlValue))
                                 Err err -> Err err
                                 Ok more -> Ok ((optSrc, leafF) :: more)
 
-fn firstDecodedRightJoined (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) -> Result (Option (Option (Rows q), f)) Error where JoinShape q, Row f =
+fn firstDecodedRightJoined (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) -> Result (Option (Option (Rows q), f)) DbError where JoinShape q, Row f =
     match rows
         []     -> Ok None
         r :: _ ->
             match fromRow (unprefix (leafPrefix n) r)
-                Err err -> Err err
+                Err err -> Err (Db.toDbError err)
                 Ok leafF ->
                     match decodeRightOptComposite w n r
                         Err err   -> Err err
@@ -1430,11 +1424,11 @@ fn firstDecodedRightJoined (w: Option q) (n: Int) (rows: List (Map Text SqlValue
 -- `toList`/`first` over a nested right join: run the flattened RIGHT plan and decode
 -- each row into `(Option (Rows q), f)`.
 instance Fetchable (RightJoined q f a) where Adapter a, JoinShape q, Row f =
-    toList (x: RightJoined q f a) -> Result (List (Option (Rows q), f)) Error =
+    toList (x: RightJoined q f a) -> Result (List (Option (Rows q), f)) DbError =
         match runPlan x.right.adapter (rightJoinedPlan x x.lim)
             Err err -> Err err
             Ok rows -> decodeRightJoinedRows (rightSourceWitness x) (joinedLeaves (rightSourceWitness x)) rows
-    first (x: RightJoined q f a) -> Result (Option (Option (Rows q), f)) Error =
+    first (x: RightJoined q f a) -> Result (Option (Option (Rows q), f)) DbError =
         match runPlan x.right.adapter (rightJoinedPlan x 1)
             Err err -> Err err
             Ok rows -> firstDecodedRightJoined (rightSourceWitness x) (joinedLeaves (rightSourceWitness x)) rows
@@ -1505,7 +1499,7 @@ instance JoinShape (FullJoined q f a) where JoinShape q, Row f =
     joinedSourcePlan (x: FullJoined q f a) -> QueryPlan =
         planJoin "FULL" (joinedSourcePlan x.source) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false (sourceCols x.source) (rowColumns (entityWitness x.right))
     sourceCols (src: FullJoined q f a) -> List Text = []
-    decodeJoined (w: Option (FullJoined q f a)) (row: Map Text SqlValue) -> Result (Option (Rows q), Option f) Error =
+    decodeJoined (w: Option (FullJoined q f a)) (row: Map Text SqlValue) -> Result (Option (Rows q), Option f) DbError =
         match decodeOptSide (leafPrefix (joinedLeaves (fullInnerWitness w))) row
             Err err -> Err err
             Ok optF ->
@@ -1524,7 +1518,7 @@ fn fullJoinedPlan (x: FullJoined q f a) (lim: Int) -> QueryPlan where JoinShape 
 
 -- Decode each flat result row of a `FullJoined` into `(Option (Rows q), Option f)`:
 -- the new table optionally from its `t<n>$` leaf, the composite source optionally.
-fn decodeFullJoinedRows (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) -> Result (List (Option (Rows q), Option f)) Error where JoinShape q, Row f =
+fn decodeFullJoinedRows (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) -> Result (List (Option (Rows q), Option f)) DbError where JoinShape q, Row f =
     match rows
         []        -> Ok []
         r :: rest ->
@@ -1538,7 +1532,7 @@ fn decodeFullJoinedRows (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) 
                                 Err err -> Err err
                                 Ok more -> Ok ((optSrc, optF) :: more)
 
-fn firstDecodedFullJoined (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) -> Result (Option (Option (Rows q), Option f)) Error where JoinShape q, Row f =
+fn firstDecodedFullJoined (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) -> Result (Option (Option (Rows q), Option f)) DbError where JoinShape q, Row f =
     match rows
         []     -> Ok None
         r :: _ ->
@@ -1552,11 +1546,11 @@ fn firstDecodedFullJoined (w: Option q) (n: Int) (rows: List (Map Text SqlValue)
 -- `toList`/`first` over a nested full join: run the flattened FULL plan and decode
 -- each row into `(Option (Rows q), Option f)`.
 instance Fetchable (FullJoined q f a) where Adapter a, JoinShape q, Row f =
-    toList (x: FullJoined q f a) -> Result (List (Option (Rows q), Option f)) Error =
+    toList (x: FullJoined q f a) -> Result (List (Option (Rows q), Option f)) DbError =
         match runPlan x.right.adapter (fullJoinedPlan x x.lim)
             Err err -> Err err
             Ok rows -> decodeFullJoinedRows (fullSourceWitness x) (joinedLeaves (fullSourceWitness x)) rows
-    first (x: FullJoined q f a) -> Result (Option (Option (Rows q), Option f)) Error =
+    first (x: FullJoined q f a) -> Result (Option (Option (Rows q), Option f)) DbError =
         match runPlan x.right.adapter (fullJoinedPlan x 1)
             Err err -> Err err
             Ok rows -> firstDecodedFullJoined (fullSourceWitness x) (joinedLeaves (fullSourceWitness x)) rows
@@ -1630,11 +1624,11 @@ instance Refinable (FullJoined q f a) (Map Text SqlValue -> Map Text SqlValue ->
 -- each row into it. The backend pushes the select-list down so only the named
 -- columns cross, in the query's order and page; `selectFirst` adds `LIMIT 1`.
 instance Projectable (Query e a) (fn e -> s) where Adapter a, Row s =
-    select (projection: Quote (fn e -> s)) (x: Query e a) -> Result (List s) Error =
+    select (projection: Quote (fn e -> s)) (x: Query e a) -> Result (List s) DbError =
         match runPlan x.repo.adapter (planProject projection.tree (planScan x.repo.table x.pred.tree x.orders (0 - 1) 0 false) x.lim x.off x.dist)
             Err err -> Err err
             Ok rows -> decodeRows rows
-    selectFirst (projection: Quote (fn e -> s)) (x: Query e a) -> Result (Option s) Error =
+    selectFirst (projection: Quote (fn e -> s)) (x: Query e a) -> Result (Option s) DbError =
         match runPlan x.repo.adapter (planProject projection.tree (planScan x.repo.table x.pred.tree x.orders (0 - 1) 0 false) 1 x.off x.dist)
             Err err -> Err err
             Ok rows -> firstDecoded rows
@@ -1644,11 +1638,11 @@ instance Projectable (Query e a) (fn e -> s) where Adapter a, Row s =
 -- row projects its right-derived fields as `None`. Every left row is kept (a
 -- `LEFT JOIN`) and only the named columns cross.
 instance Projectable (LeftJoin e f a) (fn e (Option f) -> s) where Adapter a, Row s =
-    select (projection: Quote (fn e (Option f) -> s)) (x: LeftJoin e f a) -> Result (List s) Error =
+    select (projection: Quote (fn e (Option f) -> s)) (x: LeftJoin e f a) -> Result (List s) DbError =
         match runPlan x.left.repo.adapter (leftJoinSelectPlan x projection.tree x.lim)
             Err err  -> Err err
             Ok rows  -> decodeRows rows
-    selectFirst (projection: Quote (fn e (Option f) -> s)) (x: LeftJoin e f a) -> Result (Option s) Error =
+    selectFirst (projection: Quote (fn e (Option f) -> s)) (x: LeftJoin e f a) -> Result (Option s) DbError =
         match runPlan x.left.repo.adapter (leftJoinSelectPlan x projection.tree 1)
             Err err  -> Err err
             Ok rows  -> firstDecoded rows
@@ -1658,11 +1652,11 @@ instance Projectable (LeftJoin e f a) (fn e (Option f) -> s) where Adapter a, Ro
 -- projects its left-derived fields as `None`. Every right row is kept (a `RIGHT
 -- JOIN`) and only the named columns cross — the mirror of a left join's `select`.
 instance Projectable (RightJoin e f a) (fn (Option e) f -> s) where Adapter a, Row s =
-    select (projection: Quote (fn (Option e) f -> s)) (x: RightJoin e f a) -> Result (List s) Error =
+    select (projection: Quote (fn (Option e) f -> s)) (x: RightJoin e f a) -> Result (List s) DbError =
         match runPlan x.left.repo.adapter (rightJoinSelectPlan x projection.tree x.lim)
             Err err  -> Err err
             Ok rows  -> decodeRows rows
-    selectFirst (projection: Quote (fn (Option e) f -> s)) (x: RightJoin e f a) -> Result (Option s) Error =
+    selectFirst (projection: Quote (fn (Option e) f -> s)) (x: RightJoin e f a) -> Result (Option s) DbError =
         match runPlan x.left.repo.adapter (rightJoinSelectPlan x projection.tree 1)
             Err err  -> Err err
             Ok rows  -> firstDecoded rows
@@ -1672,11 +1666,11 @@ instance Projectable (RightJoin e f a) (fn (Option e) f -> s) where Adapter a, R
 -- projects the missing side's fields as `None`. Every row of both tables is kept (a
 -- `FULL JOIN`) and only the named columns cross.
 instance Projectable (FullJoin e f a) (fn (Option e) (Option f) -> s) where Adapter a, Row s =
-    select (projection: Quote (fn (Option e) (Option f) -> s)) (x: FullJoin e f a) -> Result (List s) Error =
+    select (projection: Quote (fn (Option e) (Option f) -> s)) (x: FullJoin e f a) -> Result (List s) DbError =
         match runPlan x.left.repo.adapter (fullJoinSelectPlan x projection.tree x.lim)
             Err err  -> Err err
             Ok rows  -> decodeRows rows
-    selectFirst (projection: Quote (fn (Option e) (Option f) -> s)) (x: FullJoin e f a) -> Result (Option s) Error =
+    selectFirst (projection: Quote (fn (Option e) (Option f) -> s)) (x: FullJoin e f a) -> Result (Option s) DbError =
         match runPlan x.left.repo.adapter (fullJoinSelectPlan x projection.tree 1)
             Err err  -> Err err
             Ok rows  -> firstDecoded rows
@@ -1688,11 +1682,11 @@ instance Projectable (FullJoin e f a) (fn (Option e) (Option f) -> s) where Adap
 -- it names cross, decoded into `s`. The plan pushes the select-list down through
 -- `joinedSelectPlan`; `selectFirst` runs it with a one-row limit.
 instance Projectable (Joined q f a) (Map Text SqlValue -> s) where Adapter a, JoinShape q, Row s =
-    select (projection: Quote (Map Text SqlValue -> s)) (x: Joined q f a) -> Result (List s) Error =
+    select (projection: Quote (Map Text SqlValue -> s)) (x: Joined q f a) -> Result (List s) DbError =
         match runPlan x.right.adapter (joinedSelectPlan x projection.tree x.lim)
             Err err -> Err err
             Ok rows -> decodeRows rows
-    selectFirst (projection: Quote (Map Text SqlValue -> s)) (x: Joined q f a) -> Result (Option s) Error =
+    selectFirst (projection: Quote (Map Text SqlValue -> s)) (x: Joined q f a) -> Result (Option s) DbError =
         match runPlan x.right.adapter (joinedSelectPlan x projection.tree 1)
             Err err -> Err err
             Ok rows -> firstDecoded rows
@@ -1706,31 +1700,31 @@ instance Projectable (Joined q f a) (Map Text SqlValue -> s) where Adapter a, Jo
 -- decode to `None`. The three shapes mirror the inner `Joined` instance, the join kind
 -- carried by each plan wrapper.
 instance Projectable (LeftJoined q f a) (Map Text SqlValue -> s) where Adapter a, JoinShape q, Row s =
-    select (projection: Quote (Map Text SqlValue -> s)) (x: LeftJoined q f a) -> Result (List s) Error =
+    select (projection: Quote (Map Text SqlValue -> s)) (x: LeftJoined q f a) -> Result (List s) DbError =
         match runPlan x.right.adapter (leftSelectComposite x projection.tree x.lim)
             Err err -> Err err
             Ok rows -> decodeRows rows
-    selectFirst (projection: Quote (Map Text SqlValue -> s)) (x: LeftJoined q f a) -> Result (Option s) Error =
+    selectFirst (projection: Quote (Map Text SqlValue -> s)) (x: LeftJoined q f a) -> Result (Option s) DbError =
         match runPlan x.right.adapter (leftSelectComposite x projection.tree 1)
             Err err -> Err err
             Ok rows -> firstDecoded rows
 
 instance Projectable (RightJoined q f a) (Map Text SqlValue -> s) where Adapter a, JoinShape q, Row s =
-    select (projection: Quote (Map Text SqlValue -> s)) (x: RightJoined q f a) -> Result (List s) Error =
+    select (projection: Quote (Map Text SqlValue -> s)) (x: RightJoined q f a) -> Result (List s) DbError =
         match runPlan x.right.adapter (rightSelectComposite x projection.tree x.lim)
             Err err -> Err err
             Ok rows -> decodeRows rows
-    selectFirst (projection: Quote (Map Text SqlValue -> s)) (x: RightJoined q f a) -> Result (Option s) Error =
+    selectFirst (projection: Quote (Map Text SqlValue -> s)) (x: RightJoined q f a) -> Result (Option s) DbError =
         match runPlan x.right.adapter (rightSelectComposite x projection.tree 1)
             Err err -> Err err
             Ok rows -> firstDecoded rows
 
 instance Projectable (FullJoined q f a) (Map Text SqlValue -> s) where Adapter a, JoinShape q, Row s =
-    select (projection: Quote (Map Text SqlValue -> s)) (x: FullJoined q f a) -> Result (List s) Error =
+    select (projection: Quote (Map Text SqlValue -> s)) (x: FullJoined q f a) -> Result (List s) DbError =
         match runPlan x.right.adapter (fullSelectComposite x projection.tree x.lim)
             Err err -> Err err
             Ok rows -> decodeRows rows
-    selectFirst (projection: Quote (Map Text SqlValue -> s)) (x: FullJoined q f a) -> Result (Option s) Error =
+    selectFirst (projection: Quote (Map Text SqlValue -> s)) (x: FullJoined q f a) -> Result (Option s) DbError =
         match runPlan x.right.adapter (fullSelectComposite x projection.tree 1)
             Err err -> Err err
             Ok rows -> firstDecoded rows
@@ -1823,19 +1817,19 @@ fn queryScalarPlan (x: Query e a) (func: Text) (column: QExpr) -> QueryPlan =
 -- had before they unified with the join form. `sumOf`/`minOf`/`maxOf` keep the
 -- column's own type (`Ret p` = `n`); `avgOf` is always a `Float`.
 instance Aggregable (Query e a) (fn e -> n) where Adapter a, SqlType n =
-    sumOf (column: Quote (fn e -> n)) (x: Query e a) -> Result (Option n) Error =
+    sumOf (column: Quote (fn e -> n)) (x: Query e a) -> Result (Option n) DbError =
         match runPlan x.repo.adapter (queryScalarPlan x "SUM" (aggColumn column))
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    avgOf (column: Quote (fn e -> n)) (x: Query e a) -> Result (Option Float) Error =
+    avgOf (column: Quote (fn e -> n)) (x: Query e a) -> Result (Option Float) DbError =
         match runPlan x.repo.adapter (queryScalarPlan x (avgFuncFor column.tree) (aggColumn column))
             Err err -> Err err
             Ok rows -> decodeFloatScalar (firstAggCell rows)
-    minOf (column: Quote (fn e -> n)) (x: Query e a) -> Result (Option n) Error =
+    minOf (column: Quote (fn e -> n)) (x: Query e a) -> Result (Option n) DbError =
         match runPlan x.repo.adapter (queryScalarPlan x "MIN" (aggColumn column))
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    maxOf (column: Quote (fn e -> n)) (x: Query e a) -> Result (Option n) Error =
+    maxOf (column: Quote (fn e -> n)) (x: Query e a) -> Result (Option n) DbError =
         match runPlan x.repo.adapter (queryScalarPlan x "MAX" (aggColumn column))
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
@@ -1850,19 +1844,19 @@ instance Aggregable (Query e a) (fn e -> n) where Adapter a, SqlType n =
 -- nullability lives in the result (`Option n` is `None` over an empty fold), not
 -- in the accessor.
 instance Aggregable (LeftJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
-    sumOf (column: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option n) Error =
+    sumOf (column: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option n) DbError =
         match runPlan x.left.repo.adapter (leftScalarPlan x "SUM" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    avgOf (column: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option Float) Error =
+    avgOf (column: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option Float) DbError =
         match runPlan x.left.repo.adapter (leftScalarPlan x (avgFuncFor column.tree) column)
             Err err -> Err err
             Ok rows -> decodeFloatScalar (firstAggCell rows)
-    minOf (column: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option n) Error =
+    minOf (column: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option n) DbError =
         match runPlan x.left.repo.adapter (leftScalarPlan x "MIN" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    maxOf (column: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option n) Error =
+    maxOf (column: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option n) DbError =
         match runPlan x.left.repo.adapter (leftScalarPlan x "MAX" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
@@ -1874,19 +1868,19 @@ instance Aggregable (LeftJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
 -- right rows (their left column is NULL, which a SQL aggregate ignores); a
 -- right-column fold still counts them. The nullability lives in the result.
 instance Aggregable (RightJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
-    sumOf (column: Quote (fn e f -> n)) (x: RightJoin e f a) -> Result (Option n) Error =
+    sumOf (column: Quote (fn e f -> n)) (x: RightJoin e f a) -> Result (Option n) DbError =
         match runPlan x.left.repo.adapter (rightScalarPlan x "SUM" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    avgOf (column: Quote (fn e f -> n)) (x: RightJoin e f a) -> Result (Option Float) Error =
+    avgOf (column: Quote (fn e f -> n)) (x: RightJoin e f a) -> Result (Option Float) DbError =
         match runPlan x.left.repo.adapter (rightScalarPlan x (avgFuncFor column.tree) column)
             Err err -> Err err
             Ok rows -> decodeFloatScalar (firstAggCell rows)
-    minOf (column: Quote (fn e f -> n)) (x: RightJoin e f a) -> Result (Option n) Error =
+    minOf (column: Quote (fn e f -> n)) (x: RightJoin e f a) -> Result (Option n) DbError =
         match runPlan x.left.repo.adapter (rightScalarPlan x "MIN" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    maxOf (column: Quote (fn e f -> n)) (x: RightJoin e f a) -> Result (Option n) Error =
+    maxOf (column: Quote (fn e f -> n)) (x: RightJoin e f a) -> Result (Option n) DbError =
         match runPlan x.left.repo.adapter (rightScalarPlan x "MAX" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
@@ -1898,19 +1892,19 @@ instance Aggregable (RightJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
 -- (their column there is NULL, which a SQL aggregate ignores). The nullability lives
 -- in the result.
 instance Aggregable (FullJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
-    sumOf (column: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option n) Error =
+    sumOf (column: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option n) DbError =
         match runPlan x.left.repo.adapter (fullScalarPlan x "SUM" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    avgOf (column: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option Float) Error =
+    avgOf (column: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option Float) DbError =
         match runPlan x.left.repo.adapter (fullScalarPlan x (avgFuncFor column.tree) column)
             Err err -> Err err
             Ok rows -> decodeFloatScalar (firstAggCell rows)
-    minOf (column: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option n) Error =
+    minOf (column: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option n) DbError =
         match runPlan x.left.repo.adapter (fullScalarPlan x "MIN" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    maxOf (column: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option n) Error =
+    maxOf (column: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option n) DbError =
         match runPlan x.left.repo.adapter (fullScalarPlan x "MAX" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
@@ -1924,73 +1918,73 @@ instance Aggregable (FullJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
 -- result (`Option n` over an empty fold), not the accessor — an outer shape folds a leaf
 -- the same way, skipping the rows where that leaf is null-extended.
 instance Aggregable (Joined q f a) (Map Text SqlValue -> n) where Adapter a, JoinShape q, Row f, SqlType n =
-    sumOf (column: Quote (Map Text SqlValue -> n)) (x: Joined q f a) -> Result (Option n) Error =
+    sumOf (column: Quote (Map Text SqlValue -> n)) (x: Joined q f a) -> Result (Option n) DbError =
         match runPlan x.right.adapter (joinedScalarPlan x "SUM" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    avgOf (column: Quote (Map Text SqlValue -> n)) (x: Joined q f a) -> Result (Option Float) Error =
+    avgOf (column: Quote (Map Text SqlValue -> n)) (x: Joined q f a) -> Result (Option Float) DbError =
         match runPlan x.right.adapter (joinedScalarPlan x (avgFuncFor column.tree) column)
             Err err -> Err err
             Ok rows -> decodeFloatScalar (firstAggCell rows)
-    minOf (column: Quote (Map Text SqlValue -> n)) (x: Joined q f a) -> Result (Option n) Error =
+    minOf (column: Quote (Map Text SqlValue -> n)) (x: Joined q f a) -> Result (Option n) DbError =
         match runPlan x.right.adapter (joinedScalarPlan x "MIN" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    maxOf (column: Quote (Map Text SqlValue -> n)) (x: Joined q f a) -> Result (Option n) Error =
+    maxOf (column: Quote (Map Text SqlValue -> n)) (x: Joined q f a) -> Result (Option n) DbError =
         match runPlan x.right.adapter (joinedScalarPlan x "MAX" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
 
 instance Aggregable (LeftJoined q f a) (Map Text SqlValue -> n) where Adapter a, JoinShape q, Row f, SqlType n =
-    sumOf (column: Quote (Map Text SqlValue -> n)) (x: LeftJoined q f a) -> Result (Option n) Error =
+    sumOf (column: Quote (Map Text SqlValue -> n)) (x: LeftJoined q f a) -> Result (Option n) DbError =
         match runPlan x.right.adapter (leftScalarComposite x "SUM" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    avgOf (column: Quote (Map Text SqlValue -> n)) (x: LeftJoined q f a) -> Result (Option Float) Error =
+    avgOf (column: Quote (Map Text SqlValue -> n)) (x: LeftJoined q f a) -> Result (Option Float) DbError =
         match runPlan x.right.adapter (leftScalarComposite x (avgFuncFor column.tree) column)
             Err err -> Err err
             Ok rows -> decodeFloatScalar (firstAggCell rows)
-    minOf (column: Quote (Map Text SqlValue -> n)) (x: LeftJoined q f a) -> Result (Option n) Error =
+    minOf (column: Quote (Map Text SqlValue -> n)) (x: LeftJoined q f a) -> Result (Option n) DbError =
         match runPlan x.right.adapter (leftScalarComposite x "MIN" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    maxOf (column: Quote (Map Text SqlValue -> n)) (x: LeftJoined q f a) -> Result (Option n) Error =
+    maxOf (column: Quote (Map Text SqlValue -> n)) (x: LeftJoined q f a) -> Result (Option n) DbError =
         match runPlan x.right.adapter (leftScalarComposite x "MAX" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
 
 instance Aggregable (RightJoined q f a) (Map Text SqlValue -> n) where Adapter a, JoinShape q, Row f, SqlType n =
-    sumOf (column: Quote (Map Text SqlValue -> n)) (x: RightJoined q f a) -> Result (Option n) Error =
+    sumOf (column: Quote (Map Text SqlValue -> n)) (x: RightJoined q f a) -> Result (Option n) DbError =
         match runPlan x.right.adapter (rightScalarComposite x "SUM" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    avgOf (column: Quote (Map Text SqlValue -> n)) (x: RightJoined q f a) -> Result (Option Float) Error =
+    avgOf (column: Quote (Map Text SqlValue -> n)) (x: RightJoined q f a) -> Result (Option Float) DbError =
         match runPlan x.right.adapter (rightScalarComposite x (avgFuncFor column.tree) column)
             Err err -> Err err
             Ok rows -> decodeFloatScalar (firstAggCell rows)
-    minOf (column: Quote (Map Text SqlValue -> n)) (x: RightJoined q f a) -> Result (Option n) Error =
+    minOf (column: Quote (Map Text SqlValue -> n)) (x: RightJoined q f a) -> Result (Option n) DbError =
         match runPlan x.right.adapter (rightScalarComposite x "MIN" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    maxOf (column: Quote (Map Text SqlValue -> n)) (x: RightJoined q f a) -> Result (Option n) Error =
+    maxOf (column: Quote (Map Text SqlValue -> n)) (x: RightJoined q f a) -> Result (Option n) DbError =
         match runPlan x.right.adapter (rightScalarComposite x "MAX" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
 
 instance Aggregable (FullJoined q f a) (Map Text SqlValue -> n) where Adapter a, JoinShape q, Row f, SqlType n =
-    sumOf (column: Quote (Map Text SqlValue -> n)) (x: FullJoined q f a) -> Result (Option n) Error =
+    sumOf (column: Quote (Map Text SqlValue -> n)) (x: FullJoined q f a) -> Result (Option n) DbError =
         match runPlan x.right.adapter (fullScalarComposite x "SUM" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    avgOf (column: Quote (Map Text SqlValue -> n)) (x: FullJoined q f a) -> Result (Option Float) Error =
+    avgOf (column: Quote (Map Text SqlValue -> n)) (x: FullJoined q f a) -> Result (Option Float) DbError =
         match runPlan x.right.adapter (fullScalarComposite x (avgFuncFor column.tree) column)
             Err err -> Err err
             Ok rows -> decodeFloatScalar (firstAggCell rows)
-    minOf (column: Quote (Map Text SqlValue -> n)) (x: FullJoined q f a) -> Result (Option n) Error =
+    minOf (column: Quote (Map Text SqlValue -> n)) (x: FullJoined q f a) -> Result (Option n) DbError =
         match runPlan x.right.adapter (fullScalarComposite x "MIN" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
-    maxOf (column: Quote (Map Text SqlValue -> n)) (x: FullJoined q f a) -> Result (Option n) Error =
+    maxOf (column: Quote (Map Text SqlValue -> n)) (x: FullJoined q f a) -> Result (Option n) DbError =
         match runPlan x.right.adapter (fullScalarComposite x "MAX" column)
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
@@ -2001,11 +1995,11 @@ instance Aggregable (FullJoined q f a) (Map Text SqlValue -> n) where Adapter a,
 -- `toList`/`first` had before they unified with the join form. `Rows (Query e a)`
 -- reduces to the entity `e`, so the result is `List e`/`Option e`.
 instance Fetchable (Query e a) where Adapter a, Row e =
-    toList (x: Query e a) -> Result (List e) Error =
+    toList (x: Query e a) -> Result (List e) DbError =
         match queryRows x
             Err err -> Err err
             Ok rows -> decodeRows rows
-    first (x: Query e a) -> Result (Option e) Error =
+    first (x: Query e a) -> Result (Option e) DbError =
         match x.plan
             None ->
                 match fetch x.repo.adapter x.repo.table x.pred x.orders 1 x.off x.dist
@@ -2072,9 +2066,9 @@ pub fn from (xs: List a) -> Seq a where Row a =
 -- interpreter, then decode the rows back into records. No connection is touched, so the
 -- instance carries only `Row a` — no `Adapter`.
 instance Fetchable (Seq a) where Row a =
-    toList (x: Seq a) -> Result (List a) Error =
+    toList (x: Seq a) -> Result (List a) DbError =
         decodeRows (_evalPlanPure (seqPlan x))
-    first (x: Seq a) -> Result (Option a) Error =
+    first (x: Seq a) -> Result (Option a) DbError =
         firstDecoded (_evalPlanPure (seqPlan x))
 
 -- `filter` over an in-memory sequence ANDs the predicate into its accumulated filter,
@@ -2124,9 +2118,9 @@ fn seqSelectPlan (x: Seq a) (proj: QExpr) (lim: Int) -> QueryPlan =
 -- row codec with no connection. `select` returns the whole list; `selectFirst` pushes a
 -- one-row limit.
 instance Projectable (Seq a) (fn a -> s) where Row s =
-    select (projection: Quote (fn a -> s)) (x: Seq a) -> Result (List s) Error =
+    select (projection: Quote (fn a -> s)) (x: Seq a) -> Result (List s) DbError =
         decodeRows (_evalPlanPure (seqSelectPlan x projection.tree x.lim))
-    selectFirst (projection: Quote (fn a -> s)) (x: Seq a) -> Result (Option s) Error =
+    selectFirst (projection: Quote (fn a -> s)) (x: Seq a) -> Result (Option s) DbError =
         firstDecoded (_evalPlanPure (seqSelectPlan x projection.tree 1))
 
 -- Whether a receiver carries a page — a `limit` or an `offset` — so a windowed
@@ -2163,9 +2157,9 @@ fn seqWindowPlan (x: Seq a) (lim: Int) -> QueryPlan =
 -- filter and the page bound the answer, the way the database count's window does,
 -- and the in-memory evaluation cannot fail, so each result is an `Ok`.
 instance Countable (Seq a) =
-    count (x: Seq a) -> Result Int Error =
+    count (x: Seq a) -> Result Int DbError =
         Ok (lengthOf (_evalPlanPure (seqWindowPlan x x.lim)))
-    exists (x: Seq a) -> Result Bool Error =
+    exists (x: Seq a) -> Result Bool DbError =
         Ok (nonEmpty (_evalPlanPure (seqWindowPlan x (probeLim x.lim))))
 
 -- `every` over an in-memory sequence: probe the window for one row that violates
@@ -2178,7 +2172,7 @@ instance Countable (Seq a) =
 -- decodes — it only tests the rows empty — so the instance carries no context, and
 -- the evaluation cannot fail, so `emptyOk` reads the answer straight off the rows.
 instance Every (Seq a) (fn a -> Bool) =
-    every (pred: Quote (fn a -> Bool)) (x: Seq a) -> Result Bool Error =
+    every (pred: Quote (fn a -> Bool)) (x: Seq a) -> Result Bool DbError =
         let viol = notTrue pred
         emptyOk (_evalPlanPure (planRefine (seqWindowPlan x x.lim) viol.tree [] 1 0 false))
 
@@ -2201,13 +2195,13 @@ fn seqScalarPlan (x: Seq a) (func: Text) (col: Quote (fn a -> n)) -> QueryPlan =
 -- cannot fail, so each reads its answer off the lone aggregate cell — `None` over an empty
 -- fold, the in-memory dual of a SQL aggregate of zero rows being NULL.
 instance Aggregable (Seq a) (fn a -> n) where SqlType n =
-    sumOf (column: Quote (fn a -> n)) (x: Seq a) -> Result (Option n) Error =
+    sumOf (column: Quote (fn a -> n)) (x: Seq a) -> Result (Option n) DbError =
         decodeScalar (firstAggCell (_evalPlanPure (seqScalarPlan x "SUM" column)))
-    avgOf (column: Quote (fn a -> n)) (x: Seq a) -> Result (Option Float) Error =
+    avgOf (column: Quote (fn a -> n)) (x: Seq a) -> Result (Option Float) DbError =
         decodeFloatScalar (firstAggCell (_evalPlanPure (seqScalarPlan x (avgFuncFor column.tree) column)))
-    minOf (column: Quote (fn a -> n)) (x: Seq a) -> Result (Option n) Error =
+    minOf (column: Quote (fn a -> n)) (x: Seq a) -> Result (Option n) DbError =
         decodeScalar (firstAggCell (_evalPlanPure (seqScalarPlan x "MIN" column)))
-    maxOf (column: Quote (fn a -> n)) (x: Seq a) -> Result (Option n) Error =
+    maxOf (column: Quote (fn a -> n)) (x: Seq a) -> Result (Option n) DbError =
         decodeScalar (firstAggCell (_evalPlanPure (seqScalarPlan x "MAX" column)))
 
 -- `groupBy` over an in-memory sequence: name the group-key column with the one-row accessor
@@ -2225,7 +2219,7 @@ instance Groupable (Seq a) (fn a -> k) =
 -- unprefixed single-leaf rows by their bare names. No connection is touched, so the instance
 -- carries no context, and the in-memory evaluation cannot fail, so the rows come back `Ok`.
 instance Summarizable (Seq a) =
-    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: Seq a) -> Result (List (Map Text SqlValue)) Error =
+    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: Seq a) -> Result (List (Map Text SqlValue)) DbError =
         Ok (_evalPlanPure (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (seqCountPlan src (0 - 1))))
 
 -- Combine two in-memory sequences into one fresh sequence carrying the captured set-
@@ -2329,17 +2323,17 @@ fn fullReduceJoin (x: FullJoin e f a) (where2: QExpr) (lim: Int) -> QueryPlan =
 -- shape's `count`. The reduction carries the receiver's ordering and page, so a
 -- paged join counts only its window (the aggregate renderer wraps it as a subquery);
 -- unpaged, it counts every kept row directly.
-fn leftCountPlan (x: LeftJoin e f a) (where2: QExpr) -> Result Int Error where Adapter a =
+fn leftCountPlan (x: LeftJoin e f a) (where2: QExpr) -> Result Int DbError where Adapter a =
     match runPlan x.left.repo.adapter (planAggregate "COUNT" (keepAllTree ()) 0 (pagedReduceJoinOf "LEFT" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree where2 x.orders x.lim x.off [] []))
         Err err -> Err err
         Ok rows -> aggCount rows
 
-fn rightCountPlan (x: RightJoin e f a) (where2: QExpr) -> Result Int Error where Adapter a =
+fn rightCountPlan (x: RightJoin e f a) (where2: QExpr) -> Result Int DbError where Adapter a =
     match runPlan x.left.repo.adapter (planAggregate "COUNT" (keepAllTree ()) 0 (pagedReduceJoinOf "RIGHT" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree where2 x.orders x.lim x.off [] []))
         Err err -> Err err
         Ok rows -> aggCount rows
 
-fn fullCountPlan (x: FullJoin e f a) (where2: QExpr) -> Result Int Error where Adapter a =
+fn fullCountPlan (x: FullJoin e f a) (where2: QExpr) -> Result Int DbError where Adapter a =
     match runPlan x.left.repo.adapter (planAggregate "COUNT" (keepAllTree ()) 0 (pagedReduceJoinOf "FULL" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree where2 x.orders x.lim x.off [] []))
         Err err -> Err err
         Ok rows -> aggCount rows
@@ -2359,12 +2353,12 @@ fn firstAggCell (rows: List (Map Text SqlValue)) -> Option SqlValue =
 
 -- The integer a `COUNT` aggregate plan returns, decoded off its lone cell. A `COUNT`
 -- is never SQL NULL (zero rows count 0), but the empty guard keeps the read total.
-fn aggCount (rows: List (Map Text SqlValue)) -> Result Int Error =
+fn aggCount (rows: List (Map Text SqlValue)) -> Result Int DbError =
     match firstAggCell rows
         None    -> Ok 0
         Some sv ->
             match fromSql sv
-                Err err -> Err err
+                Err err -> Err (Db.toDbError err)
                 Ok n    -> Ok n
 
 -- The outer-shape scalar-aggregate plans. A fold over
@@ -2416,12 +2410,12 @@ fn fullReducePlan (x: FullJoined q f a) (where2: QExpr) (lim: Int) -> QueryPlan 
 -- Run a `COUNT(*)` aggregate over a composite reduction plan and read the count off its
 -- lone row, or probe the plan for a single row. Shared by every composite's `count`,
 -- `exists`, and `every` (which counts twice).
-fn compositeCount (conn: a) (plan: QueryPlan) -> Result Int Error where Adapter a =
+fn compositeCount (conn: a) (plan: QueryPlan) -> Result Int DbError where Adapter a =
     match runPlan conn (planAggregate "COUNT" (keepAllTree ()) 0 plan)
         Err err -> Err err
         Ok rows -> aggCount rows
 
-fn compositeExists (conn: a) (plan: QueryPlan) -> Result Bool Error where Adapter a =
+fn compositeExists (conn: a) (plan: QueryPlan) -> Result Bool DbError where Adapter a =
     match runPlan conn (planExists plan)
         Err err -> Err err
         Ok rows -> Ok (nonEmpty rows)
@@ -2429,7 +2423,7 @@ fn compositeExists (conn: a) (plan: QueryPlan) -> Result Bool Error where Adapte
 -- The composite dual of `compositeExists` for `every`: probe the violator plan for a
 -- single row and answer `true` when none is found. The plan already folds the further
 -- predicate as `IS NOT TRUE`, so a returned row is a joined row that fails `every`.
-fn compositeNotExists (conn: a) (plan: QueryPlan) -> Result Bool Error where Adapter a =
+fn compositeNotExists (conn: a) (plan: QueryPlan) -> Result Bool DbError where Adapter a =
     match runPlan conn (planExists plan)
         Err err -> Err err
         Ok rows -> emptyOk rows
@@ -2495,11 +2489,11 @@ fn fullSelectComposite (x: FullJoined q f a) (proj: QExpr) (lim: Int) -> QueryPl
 -- order `decodeLeftPrefixed`/`firstDecodedLeftPrefixed` list their entity constraints, so
 -- the forwarded dictionaries land in the right slots.
 instance Fetchable (LeftJoin e f a) where Adapter a, Row f, Row e =
-    toList (x: LeftJoin e f a) -> Result (List (e, Option f)) Error =
+    toList (x: LeftJoin e f a) -> Result (List (e, Option f)) DbError =
         match runPlan x.left.repo.adapter (leftJoinPlan x x.lim (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right)))
             Err err  -> Err err
             Ok rows  -> decodeLeftPrefixed rows
-    first (x: LeftJoin e f a) -> Result (Option (e, Option f)) Error =
+    first (x: LeftJoin e f a) -> Result (Option (e, Option f)) DbError =
         match runPlan x.left.repo.adapter (leftJoinPlan x 1 (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right)))
             Err err  -> Err err
             Ok rows  -> firstDecodedLeftPrefixed rows
@@ -2513,11 +2507,11 @@ instance Fetchable (LeftJoin e f a) where Adapter a, Row f, Row e =
 -- `decodeRightPrefixed`/`firstDecodedRightPrefixed` list their entity constraints, so the
 -- forwarded dictionaries land in the right slots.
 instance Fetchable (RightJoin e f a) where Adapter a, Row f, Row e =
-    toList (x: RightJoin e f a) -> Result (List (Option e, f)) Error =
+    toList (x: RightJoin e f a) -> Result (List (Option e, f)) DbError =
         match runPlan x.left.repo.adapter (rightJoinPlan x x.lim (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right)))
             Err err  -> Err err
             Ok rows  -> decodeRightPrefixed rows
-    first (x: RightJoin e f a) -> Result (Option (Option e, f)) Error =
+    first (x: RightJoin e f a) -> Result (Option (Option e, f)) DbError =
         match runPlan x.left.repo.adapter (rightJoinPlan x 1 (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right)))
             Err err  -> Err err
             Ok rows  -> firstDecodedRightPrefixed rows
@@ -2532,11 +2526,11 @@ instance Fetchable (RightJoin e f a) where Adapter a, Row f, Row e =
 -- their generalised schemes list the entity dictionaries the same way and the
 -- forwarded dictionaries land in the right slots.
 instance Fetchable (FullJoin e f a) where Adapter a, Row f, Row e =
-    toList (x: FullJoin e f a) -> Result (List (Option e, Option f)) Error =
+    toList (x: FullJoin e f a) -> Result (List (Option e, Option f)) DbError =
         match runPlan x.left.repo.adapter (fullJoinPlan x x.lim (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right)))
             Err err  -> Err err
             Ok rows  -> decodeFullPrefixed rows
-    first (x: FullJoin e f a) -> Result (Option (Option e, Option f)) Error =
+    first (x: FullJoin e f a) -> Result (Option (Option e, Option f)) DbError =
         match runPlan x.left.repo.adapter (fullJoinPlan x 1 (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right)))
             Err err  -> Err err
             Ok rows  -> firstDecodedFullPrefixed rows
@@ -2604,7 +2598,7 @@ instance Pageable (Joined q f a) =
 -- window, exactly as a paged scalar aggregate does. A query a set operation
 -- already built counts the combined result, materialised through `runPlan` with
 -- the query's ordering, page, and distinct applied, and measured.
-fn countQuery (x: Query e a) -> Result Int Error where Adapter a =
+fn countQuery (x: Query e a) -> Result Int DbError where Adapter a =
     match x.plan
         None   -> compositeCount x.repo.adapter (planScan x.repo.table x.pred.tree x.orders x.lim x.off x.dist)
         Some p ->
@@ -2624,7 +2618,7 @@ fn nonEmpty (xs: List t) -> Bool =
 -- predicate and is satisfied precisely when none does. The dual of `nonEmpty`, kept
 -- as a `Result` so the seven `every` instances close over it without restating the
 -- empty/non-empty match.
-fn emptyOk (xs: List t) -> Result Bool Error =
+fn emptyOk (xs: List t) -> Result Bool DbError =
     match xs
         []     -> Ok true
         _ :: _ -> Ok false
@@ -2641,9 +2635,9 @@ fn lengthOf (xs: List t) -> Int =
 -- (`probeLim`), so an `offset` past the last row answers `false`. The behaviour the
 -- single-receiver `count`/`exists` pub fns had before they unified with the join form.
 instance Countable (Query e a) where Adapter a =
-    count (x: Query e a) -> Result Int Error =
+    count (x: Query e a) -> Result Int DbError =
         countQuery x
-    exists (x: Query e a) -> Result Bool Error =
+    exists (x: Query e a) -> Result Bool DbError =
         match x.plan
             None ->
                 match fetch x.repo.adapter x.repo.table x.pred x.orders (probeLim x.lim) x.off x.dist
@@ -2660,9 +2654,9 @@ instance Countable (Query e a) where Adapter a =
 -- FROM/WHERE directly; paged, the join renders with its ordering and page as a
 -- subquery the probe reads one row from.
 instance Countable (LeftJoin e f a) where Adapter a =
-    count (x: LeftJoin e f a) -> Result Int Error =
+    count (x: LeftJoin e f a) -> Result Int DbError =
         leftCountPlan x x.where2.tree
-    exists (x: LeftJoin e f a) -> Result Bool Error =
+    exists (x: LeftJoin e f a) -> Result Bool DbError =
         if isWindowPaged x.lim x.off then
             match runPlan x.left.repo.adapter (planExists (pagedReduceJoinOf "LEFT" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree x.where2.tree x.orders (probeLim x.lim) x.off (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right))))
                 Err err  -> Err err
@@ -2676,9 +2670,9 @@ instance Countable (LeftJoin e f a) where Adapter a =
 -- `rightCountPlan` (a `COUNT(*)` over the right-outer join's window, every kept right
 -- row included). `exists` probes the window the same split way the left join does.
 instance Countable (RightJoin e f a) where Adapter a =
-    count (x: RightJoin e f a) -> Result Int Error =
+    count (x: RightJoin e f a) -> Result Int DbError =
         rightCountPlan x x.where2.tree
-    exists (x: RightJoin e f a) -> Result Bool Error =
+    exists (x: RightJoin e f a) -> Result Bool DbError =
         if isWindowPaged x.lim x.off then
             match runPlan x.left.repo.adapter (planExists (pagedReduceJoinOf "RIGHT" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree x.where2.tree x.orders (probeLim x.lim) x.off (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right))))
                 Err err  -> Err err
@@ -2693,9 +2687,9 @@ instance Countable (RightJoin e f a) where Adapter a =
 -- both tables included). `exists` probes the window the same split way the left join
 -- does.
 instance Countable (FullJoin e f a) where Adapter a =
-    count (x: FullJoin e f a) -> Result Int Error =
+    count (x: FullJoin e f a) -> Result Int DbError =
         fullCountPlan x x.where2.tree
-    exists (x: FullJoin e f a) -> Result Bool Error =
+    exists (x: FullJoin e f a) -> Result Bool DbError =
         if isWindowPaged x.lim x.off then
             match runPlan x.left.repo.adapter (planExists (pagedReduceJoinOf "FULL" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree x.where2.tree x.orders (probeLim x.lim) x.off (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right))))
                 Err err  -> Err err
@@ -2715,7 +2709,7 @@ instance Countable (FullJoin e f a) where Adapter a =
 -- lets either probe stop at the first violator. The plan path tracks the query's own
 -- filter and a set-operation plan alike, the same split `exists` makes.
 instance Every (Query e a) (fn e -> Bool) where Adapter a =
-    every (pred: Quote (fn e -> Bool)) (x: Query e a) -> Result Bool Error =
+    every (pred: Quote (fn e -> Bool)) (x: Query e a) -> Result Bool DbError =
         let violator = quoteAnd x.pred (notTrue pred)
         let vn = notTrue pred
         match x.plan
@@ -2747,7 +2741,7 @@ instance Every (Query e a) (fn e -> Bool) where Adapter a =
 -- predicate qualifies against the window's prefixed columns — so a violator beyond
 -- the page does not fail the test.
 instance Every (LeftJoin e f a) (fn e f -> Bool) where Adapter a =
-    every (pred: Quote (fn e f -> Bool)) (x: LeftJoin e f a) -> Result Bool Error =
+    every (pred: Quote (fn e f -> Bool)) (x: LeftJoin e f a) -> Result Bool DbError =
         if isWindowPaged x.lim x.off then
             let vn = notTrue pred
             match runPlan x.left.repo.adapter (planExists (planRefine (pagedReduceJoinOf "LEFT" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right))) vn.tree [] 1 0 false))
@@ -2766,7 +2760,7 @@ instance Every (LeftJoin e f a) (fn e f -> Bool) where Adapter a =
 -- comparison gave, now in one probe. Paged, the probe reads the window from outside,
 -- exactly as the left join's does.
 instance Every (RightJoin e f a) (fn e f -> Bool) where Adapter a =
-    every (pred: Quote (fn e f -> Bool)) (x: RightJoin e f a) -> Result Bool Error =
+    every (pred: Quote (fn e f -> Bool)) (x: RightJoin e f a) -> Result Bool DbError =
         if isWindowPaged x.lim x.off then
             let vn = notTrue pred
             match runPlan x.left.repo.adapter (planExists (planRefine (pagedReduceJoinOf "RIGHT" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right))) vn.tree [] 1 0 false))
@@ -2785,7 +2779,7 @@ instance Every (RightJoin e f a) (fn e f -> Bool) where Adapter a =
 -- comparison gave, now in one probe. Paged, the probe reads the window from outside,
 -- exactly as the left join's does.
 instance Every (FullJoin e f a) (fn e f -> Bool) where Adapter a =
-    every (pred: Quote (fn e f -> Bool)) (x: FullJoin e f a) -> Result Bool Error =
+    every (pred: Quote (fn e f -> Bool)) (x: FullJoin e f a) -> Result Bool DbError =
         if isWindowPaged x.lim x.off then
             let vn = notTrue pred
             match runPlan x.left.repo.adapter (planExists (planRefine (pagedReduceJoinOf "FULL" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right))) vn.tree [] 1 0 false))
@@ -2805,36 +2799,36 @@ instance Every (FullJoin e f a) (fn e f -> Bool) where Adapter a =
 -- its window — the count folding it as a subquery, the probe reading one row off it —
 -- and an unpaged chain measures the whole matched set as before.
 instance Countable (Joined q f a) where Adapter a, JoinShape q, Row f =
-    count (x: Joined q f a) -> Result Int Error =
+    count (x: Joined q f a) -> Result Int DbError =
         compositeCount x.right.adapter (pagedCompositeReducePlan "INNER" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off [] (rowColumns (entityWitness x.right)))
-    exists (x: Joined q f a) -> Result Bool Error =
+    exists (x: Joined q f a) -> Result Bool DbError =
         if isWindowPaged x.lim x.off then
             compositeExists x.right.adapter (pagedCompositeReducePlan "INNER" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders (probeLim x.lim) x.off (sourceCols x.source) (rowColumns (entityWitness x.right)))
         else
             compositeExists x.right.adapter (joinedReducePlan x x.where2.tree 1)
 
 instance Countable (LeftJoined q f a) where Adapter a, JoinShape q, Row f =
-    count (x: LeftJoined q f a) -> Result Int Error =
+    count (x: LeftJoined q f a) -> Result Int DbError =
         compositeCount x.right.adapter (pagedCompositeReducePlan "LEFT" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off [] (rowColumns (entityWitness x.right)))
-    exists (x: LeftJoined q f a) -> Result Bool Error =
+    exists (x: LeftJoined q f a) -> Result Bool DbError =
         if isWindowPaged x.lim x.off then
             compositeExists x.right.adapter (pagedCompositeReducePlan "LEFT" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders (probeLim x.lim) x.off (sourceCols x.source) (rowColumns (entityWitness x.right)))
         else
             compositeExists x.right.adapter (leftReducePlan x x.where2.tree 1)
 
 instance Countable (RightJoined q f a) where Adapter a, JoinShape q, Row f =
-    count (x: RightJoined q f a) -> Result Int Error =
+    count (x: RightJoined q f a) -> Result Int DbError =
         compositeCount x.right.adapter (pagedCompositeReducePlan "RIGHT" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off [] (rowColumns (entityWitness x.right)))
-    exists (x: RightJoined q f a) -> Result Bool Error =
+    exists (x: RightJoined q f a) -> Result Bool DbError =
         if isWindowPaged x.lim x.off then
             compositeExists x.right.adapter (pagedCompositeReducePlan "RIGHT" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders (probeLim x.lim) x.off (sourceCols x.source) (rowColumns (entityWitness x.right)))
         else
             compositeExists x.right.adapter (rightReducePlan x x.where2.tree 1)
 
 instance Countable (FullJoined q f a) where Adapter a, JoinShape q, Row f =
-    count (x: FullJoined q f a) -> Result Int Error =
+    count (x: FullJoined q f a) -> Result Int DbError =
         compositeCount x.right.adapter (pagedCompositeReducePlan "FULL" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off [] (rowColumns (entityWitness x.right)))
-    exists (x: FullJoined q f a) -> Result Bool Error =
+    exists (x: FullJoined q f a) -> Result Bool DbError =
         if isWindowPaged x.lim x.off then
             compositeExists x.right.adapter (pagedCompositeReducePlan "FULL" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders (probeLim x.lim) x.off (sourceCols x.source) (rowColumns (entityWitness x.right)))
         else
@@ -2849,7 +2843,7 @@ instance Countable (FullJoined q f a) where Adapter a, JoinShape q, Row f =
 -- window's leaf-prefixed columns — so a violator beyond the page does not fail the
 -- test. One probe per composite shape, each at its own kind, bounded to one row.
 instance Every (Joined q f a) (Map Text SqlValue -> Map Text SqlValue -> Bool) where Adapter a, JoinShape q, Row f =
-    every (pred: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Joined q f a) -> Result Bool Error =
+    every (pred: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Joined q f a) -> Result Bool DbError =
         if isWindowPaged x.lim x.off then
             let vn = notTrue pred
             compositeNotExists x.right.adapter (planRefine (pagedCompositeReducePlan "INNER" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off (sourceCols x.source) (rowColumns (entityWitness x.right))) vn.tree [] 1 0 false)
@@ -2858,7 +2852,7 @@ instance Every (Joined q f a) (Map Text SqlValue -> Map Text SqlValue -> Bool) w
             compositeNotExists x.right.adapter (joinedReducePlan x folded.tree 1)
 
 instance Every (LeftJoined q f a) (Map Text SqlValue -> Map Text SqlValue -> Bool) where Adapter a, JoinShape q, Row f =
-    every (pred: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: LeftJoined q f a) -> Result Bool Error =
+    every (pred: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: LeftJoined q f a) -> Result Bool DbError =
         if isWindowPaged x.lim x.off then
             let vn = notTrue pred
             compositeNotExists x.right.adapter (planRefine (pagedCompositeReducePlan "LEFT" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off (sourceCols x.source) (rowColumns (entityWitness x.right))) vn.tree [] 1 0 false)
@@ -2867,7 +2861,7 @@ instance Every (LeftJoined q f a) (Map Text SqlValue -> Map Text SqlValue -> Boo
             compositeNotExists x.right.adapter (leftReducePlan x folded.tree 1)
 
 instance Every (RightJoined q f a) (Map Text SqlValue -> Map Text SqlValue -> Bool) where Adapter a, JoinShape q, Row f =
-    every (pred: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: RightJoined q f a) -> Result Bool Error =
+    every (pred: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: RightJoined q f a) -> Result Bool DbError =
         if isWindowPaged x.lim x.off then
             let vn = notTrue pred
             compositeNotExists x.right.adapter (planRefine (pagedCompositeReducePlan "RIGHT" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off (sourceCols x.source) (rowColumns (entityWitness x.right))) vn.tree [] 1 0 false)
@@ -2876,7 +2870,7 @@ instance Every (RightJoined q f a) (Map Text SqlValue -> Map Text SqlValue -> Bo
             compositeNotExists x.right.adapter (rightReducePlan x folded.tree 1)
 
 instance Every (FullJoined q f a) (Map Text SqlValue -> Map Text SqlValue -> Bool) where Adapter a, JoinShape q, Row f =
-    every (pred: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: FullJoined q f a) -> Result Bool Error =
+    every (pred: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: FullJoined q f a) -> Result Bool DbError =
         if isWindowPaged x.lim x.off then
             let vn = notTrue pred
             compositeNotExists x.right.adapter (planRefine (pagedCompositeReducePlan "FULL" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders x.lim x.off (sourceCols x.source) (rowColumns (entityWitness x.right))) vn.tree [] 1 0 false)
@@ -2897,7 +2891,7 @@ instance Groupable (Query e a) (fn e -> k) =
 -- one plan IR, returning one raw row per group for `summarize` to decode. The key sits
 -- on the sole leaf, so the aggregate columns carry leaf 0 (`groupColsLeaf`).
 instance Summarizable (Query e a) where Adapter a =
-    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: Query e a) -> Result (List (Map Text SqlValue)) Error =
+    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: Query e a) -> Result (List (Map Text SqlValue)) DbError =
         runPlan src.repo.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (planScan src.repo.table src.pred.tree [] (0 - 1) 0 false))
 
 -- A left join's `groupBy`: the two-row dual over a `LeftJoin`, the right side read as
@@ -2925,14 +2919,14 @@ instance Groupable (FullJoin e f a) (fn e f -> k) =
 -- `groupSummarizeLeftJoin` push-down. Every left row the post-join `WHERE` admits
 -- joins a group; an unmatched one contributes its left columns and a NULL right side.
 instance Summarizable (LeftJoin e f a) where Adapter a =
-    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: LeftJoin e f a) -> Result (List (Map Text SqlValue)) Error =
+    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: LeftJoin e f a) -> Result (List (Map Text SqlValue)) DbError =
         runPlan src.left.repo.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (leftReduceJoin src src.where2.tree (0 - 1)))
 
 -- A right join's `summarize` seam: the dual over a `RightJoin`, run through the
 -- `groupSummarizeRightJoin` push-down. Every right row the post-join `WHERE` admits
 -- joins a group; an unmatched one contributes its right columns and a NULL left side.
 instance Summarizable (RightJoin e f a) where Adapter a =
-    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: RightJoin e f a) -> Result (List (Map Text SqlValue)) Error =
+    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: RightJoin e f a) -> Result (List (Map Text SqlValue)) DbError =
         runPlan src.left.repo.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (rightReduceJoin src src.where2.tree (0 - 1)))
 
 -- A full join's `summarize` seam: the dual over a `FullJoin`, run through the
@@ -2940,7 +2934,7 @@ instance Summarizable (RightJoin e f a) where Adapter a =
 -- admits joins a group; an unmatched one contributes its present side's columns and a
 -- NULL on the missing side, grouping under the NULL key for a key over that side.
 instance Summarizable (FullJoin e f a) where Adapter a =
-    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: FullJoin e f a) -> Result (List (Map Text SqlValue)) Error =
+    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: FullJoin e f a) -> Result (List (Map Text SqlValue)) DbError =
         runPlan src.left.repo.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (fullReduceJoin src src.where2.tree (0 - 1)))
 
 -- An inner-join composite's `groupBy`: name the group-key column with a leaf accessor
@@ -2970,19 +2964,19 @@ instance Groupable (FullJoined q f a) (Map Text SqlValue -> k) =
 -- only `Adapter a` to reach the store and `JoinShape q` to plan the source spine.
 -- Returns one raw row per group for `summarize` to decode through its own `Row s`.
 instance Summarizable (Joined q f a) where Adapter a, JoinShape q =
-    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: Joined q f a) -> Result (List (Map Text SqlValue)) Error =
+    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: Joined q f a) -> Result (List (Map Text SqlValue)) DbError =
         runPlan src.right.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (compositeReducePlan "INNER" (joinedSourcePlan src.source) src.right.table src.cond.tree src.where2.tree (0 - 1) []))
 
 instance Summarizable (LeftJoined q f a) where Adapter a, JoinShape q =
-    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: LeftJoined q f a) -> Result (List (Map Text SqlValue)) Error =
+    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: LeftJoined q f a) -> Result (List (Map Text SqlValue)) DbError =
         runPlan src.right.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (compositeReducePlan "LEFT" (joinedSourcePlan src.source) src.right.table src.cond.tree src.where2.tree (0 - 1) []))
 
 instance Summarizable (RightJoined q f a) where Adapter a, JoinShape q =
-    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: RightJoined q f a) -> Result (List (Map Text SqlValue)) Error =
+    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: RightJoined q f a) -> Result (List (Map Text SqlValue)) DbError =
         runPlan src.right.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (compositeReducePlan "RIGHT" (joinedSourcePlan src.source) src.right.table src.cond.tree src.where2.tree (0 - 1) []))
 
 instance Summarizable (FullJoined q f a) where Adapter a, JoinShape q =
-    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: FullJoined q f a) -> Result (List (Map Text SqlValue)) Error =
+    runGroups (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) (src: FullJoined q f a) -> Result (List (Map Text SqlValue)) DbError =
         runPlan src.right.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (compositeReducePlan "FULL" (joinedSourcePlan src.source) src.right.table src.cond.tree src.where2.tree (0 - 1) []))
 
 -- Strip a source prefix (`t0$`/`t1$`) from the keys of a flat joined row, keeping
@@ -3013,10 +3007,10 @@ fn anyKeyHasPrefix (prefix: Text) (kvs: List (Text, SqlValue)) -> Bool =
 
 -- Decode one optional side of an outer-join row: `None` when the side matched no
 -- row, else `Some` of the entity decoded from the un-prefixed side.
-fn decodeOptSide (prefix: Text) (row: Map Text SqlValue) -> Result (Option g) Error where Row g =
+fn decodeOptSide (prefix: Text) (row: Map Text SqlValue) -> Result (Option g) DbError where Row g =
     if sidePresent prefix row then
         match fromRow (unprefix prefix row)
-            Err err -> Err err
+            Err err -> Err (Db.toDbError err)
             Ok y    -> Ok (Some y)
     else Ok None
 
@@ -3050,12 +3044,12 @@ fn markerTrue (v: SqlValue) -> Bool =
 -- to `Some` when present and `None` when the left row matched no right row. The
 -- prefixed dual of `decodeLeftPairs`; the left entity decodes first so the instance's
 -- `Row f, Row e` dictionary order threads to the right slots.
-fn decodeLeftPrefixed (rows: List (Map Text SqlValue)) -> Result (List (e, Option f)) Error where Row e, Row f =
+fn decodeLeftPrefixed (rows: List (Map Text SqlValue)) -> Result (List (e, Option f)) DbError where Row e, Row f =
     match rows
         []          -> Ok []
         row :: rest ->
             match fromRow (unprefix "t0$" row)
-                Err err -> Err err
+                Err err -> Err (Db.toDbError err)
                 Ok x    ->
                     match decodeOptSide "t1$" row
                         Err err -> Err err
@@ -3064,12 +3058,12 @@ fn decodeLeftPrefixed (rows: List (Map Text SqlValue)) -> Result (List (e, Optio
                                 Err err -> Err err
                                 Ok xs   -> Ok ((x, optY) :: xs)
 
-fn firstDecodedLeftPrefixed (rows: List (Map Text SqlValue)) -> Result (Option (e, Option f)) Error where Row e, Row f =
+fn firstDecodedLeftPrefixed (rows: List (Map Text SqlValue)) -> Result (Option (e, Option f)) DbError where Row e, Row f =
     match rows
         []       -> Ok None
         row :: _ ->
             match fromRow (unprefix "t0$" row)
-                Err err -> Err err
+                Err err -> Err (Db.toDbError err)
                 Ok x    ->
                     match decodeOptSide "t1$" row
                         Err err -> Err err
@@ -3079,7 +3073,7 @@ fn firstDecodedLeftPrefixed (rows: List (Map Text SqlValue)) -> Result (Option (
 -- `(Option e, f)` pairs: the right side (`t1$`) is always present, the left (`t0$`)
 -- decodes to `None` when the right row matched no left row. The left entity decodes
 -- first (its optional side), as in `decodeRightPairs`, to keep the dictionary order.
-fn decodeRightPrefixed (rows: List (Map Text SqlValue)) -> Result (List (Option e, f)) Error where Row e, Row f =
+fn decodeRightPrefixed (rows: List (Map Text SqlValue)) -> Result (List (Option e, f)) DbError where Row e, Row f =
     match rows
         []          -> Ok []
         row :: rest ->
@@ -3087,13 +3081,13 @@ fn decodeRightPrefixed (rows: List (Map Text SqlValue)) -> Result (List (Option 
                 Err err -> Err err
                 Ok optX ->
                     match fromRow (unprefix "t1$" row)
-                        Err err -> Err err
+                        Err err -> Err (Db.toDbError err)
                         Ok y    ->
                             match decodeRightPrefixed rest
                                 Err err -> Err err
                                 Ok xs   -> Ok ((optX, y) :: xs)
 
-fn firstDecodedRightPrefixed (rows: List (Map Text SqlValue)) -> Result (Option (Option e, f)) Error where Row e, Row f =
+fn firstDecodedRightPrefixed (rows: List (Map Text SqlValue)) -> Result (Option (Option e, f)) DbError where Row e, Row f =
     match rows
         []       -> Ok None
         row :: _ ->
@@ -3101,13 +3095,13 @@ fn firstDecodedRightPrefixed (rows: List (Map Text SqlValue)) -> Result (Option 
                 Err err -> Err err
                 Ok optX ->
                     match fromRow (unprefix "t1$" row)
-                        Err err -> Err err
+                        Err err -> Err (Db.toDbError err)
                         Ok y    -> Ok (Some (optX, y))
 
 -- Decode the flat, source-prefixed rows a `FULL` join plan returns into
 -- `(Option e, Option f)` pairs: each side decodes to `Some` when present and `None`
 -- when that side matched none. The left entity decodes first, as in `decodeFullPairs`.
-fn decodeFullPrefixed (rows: List (Map Text SqlValue)) -> Result (List (Option e, Option f)) Error where Row e, Row f =
+fn decodeFullPrefixed (rows: List (Map Text SqlValue)) -> Result (List (Option e, Option f)) DbError where Row e, Row f =
     match rows
         []          -> Ok []
         row :: rest ->
@@ -3121,7 +3115,7 @@ fn decodeFullPrefixed (rows: List (Map Text SqlValue)) -> Result (List (Option e
                                 Err err -> Err err
                                 Ok xs   -> Ok ((optX, optY) :: xs)
 
-fn firstDecodedFullPrefixed (rows: List (Map Text SqlValue)) -> Result (Option (Option e, Option f)) Error where Row e, Row f =
+fn firstDecodedFullPrefixed (rows: List (Map Text SqlValue)) -> Result (Option (Option e, Option f)) DbError where Row e, Row f =
     match rows
         []       -> Ok None
         row :: _ ->

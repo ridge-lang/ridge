@@ -28,6 +28,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// `every` returns `Result Bool Error`, decoded to 1/0 (with -1 on the
 /// unreachable error branch) so the BEAM can print it.
 const SOURCE: &str = r#"
+import std.data (DbError)
 import std.repo as Repo
 import std.query (SortOrder, Asc, Desc)
 
@@ -41,7 +42,7 @@ fn sample () -> List User =
     , User { id = 5, name = "Eva",  age = 55 }
     ]
 
-fn boolOf (r: Result Bool Error) -> Int =
+fn boolOf (r: Result Bool DbError) -> Int =
     match r
         Err _ -> 0 - 1
         Ok b  -> if b then 1 else 0

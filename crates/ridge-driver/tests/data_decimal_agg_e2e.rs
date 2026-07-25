@@ -34,7 +34,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (toSql, SqlValue)
 
@@ -80,7 +80,7 @@ fn avgCells (rows: List DeptAvg) -> Text =
 
 -- Seed two departments with binary-exact amounts so the float AVG lands cleanly:
 -- eng {1.25, 2.75} sums to 4.00 (avg 2.0), ops {0.50, 10.50} sums to 11.00 (avg 5.5).
-pub fn db setup () -> Result (Repo Sale MemAdapter) Error =
+pub fn db setup () -> Result (Repo Sale MemAdapter) DbError =
     let r: Repo Sale MemAdapter = Repo.repo (memAdapter ()) "sales"
     match Repo.insert (SaleInsert { dept = "eng", amount = dec "1.25" }) r
         Err e -> Err e

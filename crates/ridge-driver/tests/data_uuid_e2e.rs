@@ -25,7 +25,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.data (memAdapter, MemAdapter)
+import std.data (DbError, memAdapter, MemAdapter)
 import std.repo as Repo
 import std.query (SortOrder, Asc, Desc)
 import std.sql (toSql, SqlValue)
@@ -54,7 +54,7 @@ fn joinLabels (ds: List Doc) -> Text =
         d :: rest -> Text.concat d.label (Text.concat "," (joinLabels rest))
 
 -- Seed three rows whose uuids sort a,c,b by value: 1111… < 2222… < 3333….
-pub fn db setup () -> Result (Repo Doc MemAdapter) Error =
+pub fn db setup () -> Result (Repo Doc MemAdapter) DbError =
     let r: Repo Doc MemAdapter = Repo.repo (memAdapter ()) "docs"
     match Repo.insert (DocInsert { label = "a", token = uu "11111111-1111-1111-1111-111111111111" }) r
         Err e -> Err e

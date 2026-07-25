@@ -27,6 +27,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// terminal returns a `Result`, decoded to a plain `Int` (a count, or 1/0 for a
 /// boolean, with -1 on the unreachable error branch) so the BEAM can print it.
 const SOURCE: &str = r#"
+import std.data (DbError)
 import std.repo as Repo
 import std.query (SortOrder, Asc, Desc)
 
@@ -48,12 +49,12 @@ fn banded () -> List User =
     , User { id = 3, name = "Cami", age = 25 }
     ]
 
-fn intOf (r: Result Int Error) -> Int =
+fn intOf (r: Result Int DbError) -> Int =
     match r
         Err _ -> 0 - 1
         Ok n  -> n
 
-fn boolOf (r: Result Bool Error) -> Int =
+fn boolOf (r: Result Bool DbError) -> Int =
     match r
         Err _ -> 0 - 1
         Ok b  -> if b then 1 else 0

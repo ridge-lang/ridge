@@ -23,39 +23,41 @@
 -- mixes builder queries with a raw one stays `where Adapter a`, so it still runs on
 -- either backend — only the raw call fails on the memory store.
 
-import std.data as Db
+import std.data as Db (DbError, toDbError)
 import std.result (traverse)
 import std.sql (SqlValue)
 
 -- Decode a list of raw rows into entities, stopping at the first decode failure —
 -- the same row-by-row decode the repository runs, kept module-local so std.raw
 -- does not reach into std.repo's internals.
-fn decodeRows (rows: List (Map Text SqlValue)) -> Result (List e) Error where Row e =
-    traverse fromRow rows
+fn decodeRows (rows: List (Map Text SqlValue)) -> Result (List e) DbError where Row e =
+    match traverse fromRow rows
+        Err err -> Err (Db.toDbError err)
+        Ok xs   -> Ok xs
 
 -- The head of a raw-row list, decoded; `None` when the query returned nothing.
-fn firstDecoded (rows: List (Map Text SqlValue)) -> Result (Option e) Error where Row e =
+fn firstDecoded (rows: List (Map Text SqlValue)) -> Result (Option e) DbError where Row e =
     match rows
         []       -> Ok None
         row :: _ ->
             match fromRow row
-                Err err -> Err err
+                Err err -> Err (Db.toDbError err)
                 Ok x    -> Ok (Some x)
 
 -- Run a raw SQL query and decode every row into the entity `e`. The SQL carries
 -- its values as `$N` placeholders bound from `params`, so nothing is spliced into
 -- the text. The result element is pinned at the call site, the same way the
 -- repository's `all` pins it:
---   let admins: Result (List User) Error =
+--   let admins: Result (List User) DbError =
 --     Raw.query conn "SELECT * FROM users WHERE role = $1" [sqlText "admin"]
-pub fn query (conn: a) (sql: Text) (params: List SqlValue) -> Result (List e) Error where Adapter a, Row e =
+pub fn query (conn: a) (sql: Text) (params: List SqlValue) -> Result (List e) DbError where Adapter a, Row e =
     match rawQuery conn sql params
         Err err  -> Err err
         Ok rows  -> decodeRows rows
 
 -- The first row of a raw SQL query, decoded into `e`, or `None` when the query
 -- returned no rows. Reach for it when a statement identifies at most one row.
-pub fn queryFirst (conn: a) (sql: Text) (params: List SqlValue) -> Result (Option e) Error where Adapter a, Row e =
+pub fn queryFirst (conn: a) (sql: Text) (params: List SqlValue) -> Result (Option e) DbError where Adapter a, Row e =
     match rawQuery conn sql params
         Err err  -> Err err
         Ok rows  -> firstDecoded rows
@@ -63,5 +65,5 @@ pub fn queryFirst (conn: a) (sql: Text) (params: List SqlValue) -> Result (Optio
 -- Run a raw SQL statement that returns no rows — an INSERT, UPDATE, DELETE, or a
 -- DDL statement — with its values bound from `params`; answer how many rows it
 -- affected. The write-side dual of `query`.
-pub fn exec (conn: a) (sql: Text) (params: List SqlValue) -> Result Int Error where Adapter a =
+pub fn exec (conn: a) (sql: Text) (params: List SqlValue) -> Result Int DbError where Adapter a =
     rawExec conn sql params

@@ -1451,10 +1451,9 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             is_anon: false,
         },
         // `std.data` — the typed kind of a database error. A plain nullary union
-        // declared in Ridge (stdlib/data.ridge); `dbErrorKind` classifies a raw
-        // `Error`'s code into one of these, so user code matches a failure's cause
-        // (a unique violation, a connection fault, …) rather than its code string.
-        // Kept last in the block so its id is the next free slot.
+        // declared in Ridge (stdlib/data.ridge); `dbErrorKind` reads it off a
+        // `DbError`, so user code matches a failure's cause (a unique violation,
+        // a connection fault, …) rather than its code string.
         TyConDecl {
             id: TyConId(base + 24),
             name: "DbErrorKind".to_string(),
@@ -2412,17 +2411,18 @@ pub(crate) fn reconciled_fn_scheme(
                 constraints: vec![],
             })
         }
-        // std.data `dbErrorKind : Error -> DbErrorKind` — classifies a raw storage
-        // error by its code into a typed kind. Its return type names the reconciled
-        // `DbErrorKind`, so the hand-curated signature table cannot express it.
+        // std.data `dbErrorKind : DbError -> DbErrorKind` — reads the kind off a
+        // typed database error. Both sides name reconciled types, so the
+        // hand-curated signature table cannot express it.
         ("std.data", "dbErrorKind") => {
+            let db_error = *reconciled.get("DbError")?;
             let db_error_kind = *reconciled.get("DbErrorKind")?;
             Some(Scheme {
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
                 ty: Type::Fn {
-                    params: vec![Type::Con(b.error, vec![])],
+                    params: vec![Type::Con(db_error, vec![])],
                     ret: Box::new(Type::Con(db_error_kind, vec![])),
                     caps: CapRow::Concrete(CapabilitySet::PURE),
                 },
@@ -2465,35 +2465,41 @@ pub(crate) fn reconciled_fn_scheme(
                 constraints: vec![],
             })
         }
-        // std.data `dbErrorConstraint`/`dbErrorColumn`/`dbErrorTable : Error -> Text`
-        // — read the constraint, column, or table a backend named on a raw error.
-        // Grouped with `dbErrorKind` as the typed-error reading of an `Error`; seeded
+        // std.data `dbErrorConstraint`/`dbErrorColumn`/`dbErrorTable : DbError -> Text`
+        // — read the constraint, column, or table a backend named on a typed error.
+        // Grouped with `dbErrorKind` as the field readers of a `DbError`; seeded
         // here rather than the hand-curated table to keep that reading in one place.
-        ("std.data", "dbErrorConstraint" | "dbErrorColumn" | "dbErrorTable") => Some(Scheme {
-            vars: vec![],
-            cap_vars: vec![],
-            row_vars: vec![],
-            ty: Type::Fn {
-                params: vec![Type::Con(b.error, vec![])],
-                ret: Box::new(Type::Con(b.text, vec![])),
-                caps: CapRow::Concrete(CapabilitySet::PURE),
-            },
-            constraints: vec![],
-        }),
-        // std.data `dbErrorIsTransient : Error -> Bool` — flags the transient
+        ("std.data", "dbErrorConstraint" | "dbErrorColumn" | "dbErrorTable") => {
+            let db_error = *reconciled.get("DbError")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(db_error, vec![])],
+                    ret: Box::new(Type::Con(b.text, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![],
+            })
+        }
+        // std.data `dbErrorIsTransient : DbError -> Bool` — flags the transient
         // contention codes (40001, 40P01, sqlite busy/locked) a retry can clear.
-        // Grouped with `dbErrorKind` as the typed-error reading of an `Error`.
-        ("std.data", "dbErrorIsTransient") => Some(Scheme {
-            vars: vec![],
-            cap_vars: vec![],
-            row_vars: vec![],
-            ty: Type::Fn {
-                params: vec![Type::Con(b.error, vec![])],
-                ret: Box::new(Type::Con(b.bool, vec![])),
-                caps: CapRow::Concrete(CapabilitySet::PURE),
-            },
-            constraints: vec![],
-        }),
+        // Grouped with `dbErrorKind` as the typed-error reading of a `DbError`.
+        ("std.data", "dbErrorIsTransient") => {
+            let db_error = *reconciled.get("DbError")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(db_error, vec![])],
+                    ret: Box::new(Type::Con(b.bool, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![],
+            })
+        }
         // std.data `memAdapter : Unit -> MemAdapter` — opens a fresh in-memory
         // adapter. Requires the `db` capability (opening a store is the gated act;
         // the handle returned is the proof of access for the cap-free methods).
@@ -2513,7 +2519,7 @@ pub(crate) fn reconciled_fn_scheme(
                 constraints: vec![],
             })
         }
-        // std.data `connect : PostgresConfig -> Result Postgres Error` — opens a Postgres
+        // std.data `connect : PostgresConfig -> Result Postgres DbError` — opens a Postgres
         // connection. Like `memAdapter` it requires the `db` capability, and its
         // signature names the reconciled `PostgresConfig` and `Postgres`, so the
         // hand-curated signature table (which only sees `BuiltinTyCons`) cannot
@@ -2521,6 +2527,7 @@ pub(crate) fn reconciled_fn_scheme(
         ("std.data", "connect") => {
             let postgres = *reconciled.get("Postgres")?;
             let config = *reconciled.get("PostgresConfig")?;
+            let db_error = *reconciled.get("DbError")?;
             Some(Scheme {
                 vars: vec![],
                 cap_vars: vec![],
@@ -2529,20 +2536,21 @@ pub(crate) fn reconciled_fn_scheme(
                     params: vec![Type::Con(config, vec![])],
                     ret: Box::new(Type::Con(
                         b.result,
-                        vec![Type::Con(postgres, vec![]), Type::Con(b.error, vec![])],
+                        vec![Type::Con(postgres, vec![]), Type::Con(db_error, vec![])],
                     )),
                     caps: CapRow::Concrete(CapabilitySet::singleton(Capability::Db)),
                 },
                 constraints: vec![],
             })
         }
-        // std.data `connectSqlite : SqliteConfig -> Result Sqlite Error` — opens a
+        // std.data `connectSqlite : SqliteConfig -> Result Sqlite DbError` — opens a
         // SQLite connection through the native bridge. Like `connect` it requires
         // the `db` capability, and its signature names the reconciled `SqliteConfig`
         // and `Sqlite`, so the hand-curated table cannot express it.
         ("std.data", "connectSqlite") => {
             let sqlite = *reconciled.get("Sqlite")?;
             let config = *reconciled.get("SqliteConfig")?;
+            let db_error = *reconciled.get("DbError")?;
             Some(Scheme {
                 vars: vec![],
                 cap_vars: vec![],
@@ -2551,7 +2559,7 @@ pub(crate) fn reconciled_fn_scheme(
                     params: vec![Type::Con(config, vec![])],
                     ret: Box::new(Type::Con(
                         b.result,
-                        vec![Type::Con(sqlite, vec![]), Type::Con(b.error, vec![])],
+                        vec![Type::Con(sqlite, vec![]), Type::Con(db_error, vec![])],
                     )),
                     caps: CapRow::Concrete(CapabilitySet::singleton(Capability::Db)),
                 },
@@ -2590,13 +2598,14 @@ pub(crate) fn reconciled_fn_scheme(
                 constraints: vec![],
             })
         }
-        // std.data `connectWith : PostgresConfig -> PoolConfig -> Result Postgres Error` —
+        // std.data `connectWith : PostgresConfig -> PoolConfig -> Result Postgres DbError` —
         // `connect` with an explicit pool. Names the reconciled `PostgresConfig`,
         // `PoolConfig`, and `Postgres`, so the hand-curated table cannot express it.
         ("std.data", "connectWith") => {
             let postgres = *reconciled.get("Postgres")?;
             let config = *reconciled.get("PostgresConfig")?;
             let pool = *reconciled.get("PoolConfig")?;
+            let db_error = *reconciled.get("DbError")?;
             Some(Scheme {
                 vars: vec![],
                 cap_vars: vec![],
@@ -2605,7 +2614,7 @@ pub(crate) fn reconciled_fn_scheme(
                     params: vec![Type::Con(config, vec![]), Type::Con(pool, vec![])],
                     ret: Box::new(Type::Con(
                         b.result,
-                        vec![Type::Con(postgres, vec![]), Type::Con(b.error, vec![])],
+                        vec![Type::Con(postgres, vec![]), Type::Con(db_error, vec![])],
                     )),
                     caps: CapRow::Concrete(CapabilitySet::singleton(Capability::Db)),
                 },
@@ -2821,10 +2830,12 @@ pub(crate) fn reconciled_fn_scheme(
             | "mutationToSql"
             | "mutationReturningToSql",
         ) => reconciled_mutation_plan_fn_scheme(name, reconciled, b),
-        ("std.data", "selectRows" | "fetch") => reconciled_data_fn_scheme(name, b, classes?),
+        ("std.data", "selectRows" | "fetch") => {
+            reconciled_data_fn_scheme(name, reconciled, b, classes?)
+        }
         ("std.repo", _) => reconciled_repo_fn_scheme(name, reconciled, b, classes?),
         ("std.migrate", _) => reconciled_migrate_fn_scheme(name, reconciled, b, classes?),
-        ("std.raw", _) => reconciled_raw_fn_scheme(name, b, classes?),
+        ("std.raw", _) => reconciled_raw_fn_scheme(name, reconciled, b, classes?),
         ("std.schema", _) => reconciled_schema_fn_scheme(name, reconciled, b, classes?),
         _ => None,
     }
@@ -3395,10 +3406,11 @@ fn reconciled_migrate_fn_scheme(
     let entity_schema = *reconciled.get("EntitySchema")?;
     let column_schema = *reconciled.get("ColumnSchema")?;
     let query_plan = *reconciled.get("QueryPlan")?;
+    let db_error = *reconciled.get("DbError")?;
     let text = || Type::Con(b.text, vec![]);
     let list = |x: Type| Type::Con(b.list, vec![x]);
     let pure = || CapRow::Concrete(CapabilitySet::PURE);
-    let result = |ok: Type| Type::Con(b.result, vec![ok, Type::Con(b.error, vec![])]);
+    let result = |ok: Type| Type::Con(b.result, vec![ok, Type::Con(db_error, vec![])]);
     let column_ty = || Type::Con(column, vec![]);
     let migration_op_ty = || Type::Con(migration_op, vec![]);
     // `QueryPlan` — the saved query a `CreateView` step carries.
@@ -3580,9 +3592,18 @@ fn reconciled_migrate_fn_scheme(
 /// entity (`where Adapter a, Row e`); `exec` runs a row-less statement for its
 /// affected-row count (`where Adapter a`). Every verb takes the connection, the
 /// SQL text, and a `List SqlValue` of bound parameters.
-fn reconciled_raw_fn_scheme(name: &str, b: &BuiltinTyCons, classes: &ClassTable) -> Option<Scheme> {
+fn reconciled_raw_fn_scheme(
+    name: &str,
+    reconciled: &FxHashMap<String, TyConId>,
+    b: &BuiltinTyCons,
+    classes: &ClassTable,
+) -> Option<Scheme> {
     let adapter = classes.id_by_name("Adapter")?;
     let row = classes.id_by_name("Row")?;
+    // Absent only in the stdlib's own build (empty reconciled block), where the
+    // scheme serves dictionary threading alone — the error type is never read
+    // there — so the builtin `Error` stands in without consequence.
+    let db_error = reconciled.get("DbError").copied().unwrap_or(b.error);
     // Placeholder scheme vars: entity `e` and adapter `a`. The constraint order
     // must mirror what the stdlib build stores when it compiles the `std.raw`
     // source, since the lowering prepends one dictionary parameter per constraint
@@ -3594,7 +3615,7 @@ fn reconciled_raw_fn_scheme(name: &str, b: &BuiltinTyCons, classes: &ClassTable)
     let e = TyVid(0);
     let a = TyVid(1);
     let pure = || CapRow::Concrete(CapabilitySet::PURE);
-    let result = |ok: Type| Type::Con(b.result, vec![ok, Type::Con(b.error, vec![])]);
+    let result = |ok: Type| Type::Con(b.result, vec![ok, Type::Con(db_error, vec![])]);
     // conn, sql, params — the three arguments shared by every raw verb.
     let raw_params = || {
         vec![
@@ -3655,16 +3676,21 @@ fn reconciled_raw_fn_scheme(name: &str, b: &BuiltinTyCons, classes: &ClassTable)
 /// is expressible in the hand-curated signature table.
 fn reconciled_data_fn_scheme(
     name: &str,
+    reconciled: &FxHashMap<String, TyConId>,
     b: &BuiltinTyCons,
     classes: &ClassTable,
 ) -> Option<Scheme> {
     let adapter = classes.id_by_name("Adapter")?;
+    // Absent only in the stdlib's own build (empty reconciled block), where the
+    // scheme serves dictionary threading alone — the error type is never read
+    // there — so the builtin `Error` stands in without consequence.
+    let db_error = reconciled.get("DbError").copied().unwrap_or(b.error);
     // Scheme-level placeholder vars: entity `e` (in the predicate) and adapter `a`.
     // Fresh copies are made on each instantiation, so the fixed ids here are dummies.
     let e = TyVid(0);
     let a = TyVid(1);
     let pure = || CapRow::Concrete(CapabilitySet::PURE);
-    // A raw column map `Map Text SqlValue`, and the `Result (List …) Error` both verbs answer.
+    // A raw column map `Map Text SqlValue`, and the `Result (List …) DbError` both verbs answer.
     let map_row = || {
         Type::Con(
             b.map,
@@ -3676,7 +3702,7 @@ fn reconciled_data_fn_scheme(
             b.result,
             vec![
                 Type::Con(b.list, vec![map_row()]),
-                Type::Con(b.error, vec![]),
+                Type::Con(db_error, vec![]),
             ],
         )
     };
@@ -3692,7 +3718,7 @@ fn reconciled_data_fn_scheme(
             }],
         )
     };
-    // Assemble a scheme `∀e a. params -> Result (List (Map Text SqlValue)) Error`,
+    // Assemble a scheme `∀e a. params -> Result (List (Map Text SqlValue)) DbError`,
     // pure, constrained over `Adapter a` — the verbs touch only the adapter, no decode.
     let scheme = |params: Vec<Type>| {
         Some(Scheme {
@@ -3709,11 +3735,11 @@ fn reconciled_data_fn_scheme(
     };
     match name {
         // selectRows : ∀e a. a -> Text -> Quote (e -> Bool)
-        //                  -> Result (List (Map Text SqlValue)) Error where Adapter a
+        //                  -> Result (List (Map Text SqlValue)) DbError where Adapter a
         "selectRows" => scheme(vec![Type::Var(a), Type::Con(b.text, vec![]), quote_pred()]),
         // fetch : ∀e a. a -> Text -> Quote (e -> Bool) -> List (Bool, QExpr)
         //              -> Int -> Int -> Bool
-        //              -> Result (List (Map Text SqlValue)) Error where Adapter a.
+        //              -> Result (List (Map Text SqlValue)) DbError where Adapter a.
         // The order keys are `(ascending?, column)` pairs; the two Ints are the limit
         // (negative for none) and offset (non-positive for none); the Bool is `distinct`.
         "fetch" => {
@@ -3753,6 +3779,7 @@ fn reconciled_repo_fn_scheme(
 ) -> Option<Scheme> {
     let repo_con = *reconciled.get("Repo")?;
     let query_con = *reconciled.get("Query")?;
+    let db_error = *reconciled.get("DbError")?;
     let adapter = classes.id_by_name("Adapter")?;
     let row = classes.id_by_name("Row")?;
     let has_schema = classes.id_by_name("HasSchema")?;
@@ -3763,7 +3790,7 @@ fn reconciled_repo_fn_scheme(
     let repo_app = || Type::Con(repo_con, vec![Type::Var(e), Type::Var(a)]);
     let query_app = || Type::Con(query_con, vec![Type::Var(e), Type::Var(a)]);
     let pure = || CapRow::Concrete(CapabilitySet::PURE);
-    let result = |ok: Type| Type::Con(b.result, vec![ok, Type::Con(b.error, vec![])]);
+    let result = |ok: Type| Type::Con(b.result, vec![ok, Type::Con(db_error, vec![])]);
     // A list of decoded entities `List e`.
     let list_e = || Type::Con(b.list, vec![Type::Var(e)]);
     // An optional decoded entity `Option e`.

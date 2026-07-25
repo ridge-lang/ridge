@@ -74,7 +74,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// The program source, with connection settings spliced in as sentinels so the
 /// Ridge record braces never collide with Rust string formatting.
 const SOURCE_TEMPLATE: &str = r#"
-import std.data (connect, connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withCheckoutTimeoutMs, withDefaultIsolation, PostgresConfig, Postgres, IsolationLevel, ReadCommitted, ReadUncommitted, RepeatableRead, Serializable, dbErrorKind, dbErrorConstraint, dbErrorColumn, dbErrorTable, dbErrorIsTransient, DbErrorKind, UniqueViolation, ForeignKeyViolation, NotNullViolation, CheckViolation, ConnectionError, DecodeError, Unsupported, QueryError, RetryPolicy)
+import std.data (DbError, connect, connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withCheckoutTimeoutMs, withDefaultIsolation, PostgresConfig, Postgres, IsolationLevel, ReadCommitted, ReadUncommitted, RepeatableRead, Serializable, dbErrorKind, dbErrorConstraint, dbErrorColumn, dbErrorTable, dbErrorIsTransient, DbErrorKind, UniqueViolation, ForeignKeyViolation, NotNullViolation, CheckViolation, ConnectionError, DecodeError, Unsupported, QueryError, RetryPolicy)
 import std.repo as Repo
 import std.migrate as Migrate
 import std.migrate (MigrationOp)
@@ -345,7 +345,7 @@ fn listLen (xs: List x) -> Int =
 
 -- Connect, bind a repository to the table, clear any prior rows, and seed three
 -- users; return the repository so each probe queries a known, isolated state.
-pub fn db setup () -> Result (Repo User Postgres) Error =
+pub fn db setup () -> Result (Repo User Postgres) DbError =
     match connect (pgConfig ())
         Err e   -> Err e
         Ok conn ->
@@ -365,7 +365,7 @@ pub fn db setup () -> Result (Repo User Postgres) Error =
 
 -- The body `withConnRuns` runs inside `withConnection`: count the seeded users. A
 -- named fn because a multi-line lambda in call-arg position does not parse.
-fn wcCountUsers (c: Postgres) -> Result Int Error =
+fn wcCountUsers (c: Postgres) -> Result Int DbError =
     let r = Repo.repo c "ridge_pg_users"
     r |> Repo.query |> Repo.count
 
@@ -429,7 +429,7 @@ pub fn db adultsCount () -> Int =
 -- (the escaped metacharacters match no name, confirming the default backslash escape
 -- lines up with the renderer), IN [18, 30] -> 2, IN [] -> 0 — joined as
 -- "2,1,1,0,0,2,0".
-fn countOf (res: Result (List User) Error) -> Int =
+fn countOf (res: Result (List User) DbError) -> Int =
     match res
         Ok us -> listLen us
         Err _ -> 0 - 1
@@ -621,7 +621,7 @@ pub fn db topYears () -> Int =
 -- Connect, bind a users and a posts repository to the live tables, clear both,
 -- and seed three users plus one post each for lin (id 2 -> "hello") and max
 -- (id 3 -> "world"); ada (id 1) gets none. Return both repositories.
-pub fn db setupJoin () -> Result (Repo User Postgres, Repo Post Postgres) Error =
+pub fn db setupJoin () -> Result (Repo User Postgres, Repo Post Postgres) DbError =
     match connect (pgConfig ())
         Err e   -> Err e
         Ok conn ->
@@ -652,7 +652,7 @@ pub fn db setupJoin () -> Result (Repo User Postgres, Repo Post Postgres) Error 
 -- Seed the join tables on connection `c`: clear both and insert 3 users + 2 posts.
 -- The full-join probes call this from the body they hand to `Repo.withConnection`, so
 -- the connection that owns the seeded data is closed on the way out.
-fn db seedJoinData (c: Postgres) -> Result Unit Error =
+fn db seedJoinData (c: Postgres) -> Result Unit DbError =
     let users: Repo User Postgres = Repo.repo c "ridge_pg_users"
     let posts: Repo Post Postgres = Repo.repo c "ridge_pg_posts"
     match Repo.delete (fn (u: User) -> u.id >= 0) users
@@ -862,7 +862,7 @@ pub fn db rightJoinGroupAuthors () -> Text =
 -- the `(Option User, Option Post)` pair across the marker split. Each full-join probe
 -- runs its body through `Repo.withConnection`, so its connection is closed on the way
 -- out and the probe holds none after it returns.
-fn db fullCatBody (c: Postgres) -> Result Text Error =
+fn db fullCatBody (c: Postgres) -> Result Text DbError =
     match seedJoinData c
         Err e -> Err e
         Ok _  ->
@@ -884,7 +884,7 @@ pub fn db fullJoinCategories () -> Text =
 -- fields are `Option Text`. Three rows; the right-only `world` projects `who = None`
 -- and the left-only `ada` projects `title = None` -> "rows:3,noWho:1,noTitle:1".
 -- Proves `fullJoinSelect` reads both sides as Option over Postgres.
-fn db fullSelBody (c: Postgres) -> Result Text Error =
+fn db fullSelBody (c: Postgres) -> Result Text DbError =
     match seedJoinData c
         Err e -> Err e
         Ok _  ->
@@ -905,7 +905,7 @@ pub fn db fullSelectShape () -> Text =
 -- full-join count: the same narrowed full join keeps all three rows (one matched, one
 -- left-only ada, one right-only world) -> 3. Proves `countFullJoin` over a real
 -- `FULL JOIN`.
-fn db fullCountBody (c: Postgres) -> Result Int Error =
+fn db fullCountBody (c: Postgres) -> Result Int DbError =
     match seedJoinData c
         Err e -> Err e
         Ok _  ->
@@ -925,7 +925,7 @@ pub fn db fullJoinCount () -> Int =
 -- join. hello (10) and the right-only world (11) contribute; the left-only ada has no
 -- post (a NULL the fold skips) -> 21. Proves `aggregateFullJoin` over Postgres folds a
 -- right column over the matched and right-only rows, skipping the left-only NULL.
-fn db fullSumBody (c: Postgres) -> Result Int Error =
+fn db fullSumBody (c: Postgres) -> Result Int DbError =
     match seedJoinData c
         Err e -> Err e
         Ok _  ->
@@ -949,7 +949,7 @@ pub fn db fullJoinSumPostId () -> Int =
 -- and the group key is never NULL. lin owns hello (1), max owns world (1)
 -- -> "2:1,3:1". Proves `groupSummarizeFullJoin` runs the GROUP BY over the FULL JOIN
 -- and decodes the integer key.
-fn db fullGroupBody (c: Postgres) -> Result Text Error =
+fn db fullGroupBody (c: Postgres) -> Result Text DbError =
     match seedJoinData c
         Err e -> Err e
         Ok _  ->
@@ -1042,7 +1042,7 @@ pub fn db leftJoinLimited () -> Text =
 -- Connect, clear, and seed three users with the TYPED `insert` — the entity is
 -- encoded to a row through `toRow` and the backend compiles the parameterised
 -- INSERT, with no hand-built column map.
-pub fn db setupInsert () -> Result (Repo User Postgres) Error =
+pub fn db setupInsert () -> Result (Repo User Postgres) DbError =
     match connect (pgConfig ())
         Err e   -> Err e
         Ok conn ->
@@ -1466,7 +1466,7 @@ pub fn empRow (eid: Int) (edept: Text) (esalary: Int) -> Map Text SqlValue =
 
 -- Connect, clear the emps table, and seed six employees across three departments:
 -- eng {100, 200}, sales {150, 150, 300}, ops {50}.
-pub fn db setupEmps () -> Result (Repo Emp Postgres) Error =
+pub fn db setupEmps () -> Result (Repo Emp Postgres) DbError =
     match connect (pgConfig ())
         Err e   -> Err e
         Ok conn ->
@@ -1792,7 +1792,7 @@ pub fn db nestedUnionIds () -> Text =
 -- A deliberate failure with no SQL fault: a single-row query filtered to match
 -- nothing answers `Err` ("matched no rows"), which a transaction body returns to
 -- roll back. It is a plain SELECT, so it never aborts the session.
-fn pgForceFail (conn: Postgres) -> Result Unit Error =
+fn pgForceFail (conn: Postgres) -> Result Unit DbError =
     let r = Repo.repo conn "ridge_pg_users"
     match r |> Repo.query |> Repo.filter (fn (u: User) -> u.id == 999999) |> Repo.singleOrError
         Err e -> Err e
@@ -1804,19 +1804,19 @@ fn pgCountUsers (conn: Postgres) -> Int =
         Ok n  -> n
         Err _ -> 0 - 9
 
-fn pgClearUsers (conn: Postgres) -> Result Int Error =
+fn pgClearUsers (conn: Postgres) -> Result Int DbError =
     let r = Repo.repo conn "ridge_pg_users"
     Repo.delete (fn (u: User) -> u.id >= 0) r
 
 -- A transaction body that inserts two rows and succeeds.
-fn pgInsertTwo (tx: Postgres) -> Result Unit Error =
+fn pgInsertTwo (tx: Postgres) -> Result Unit DbError =
     let r = Repo.repo tx "ridge_pg_users"
     match Repo.insert (User { id = 1, age = 18, name = "ada" }) r
         Err e -> Err e
         Ok _  -> Repo.insert (User { id = 2, age = 30, name = "lin" }) r
 
 -- A transaction body that inserts a row and then fails, so it rolls back.
-fn pgInsertThenFail (tx: Postgres) -> Result Unit Error =
+fn pgInsertThenFail (tx: Postgres) -> Result Unit DbError =
     let r = Repo.repo tx "ridge_pg_users"
     match Repo.insert (User { id = 2, age = 30, name = "lin" }) r
         Err e -> Err e
@@ -1824,7 +1824,7 @@ fn pgInsertThenFail (tx: Postgres) -> Result Unit Error =
 
 -- A transaction body whose nested transaction inserts a row and fails (rewinding
 -- to its savepoint); this body commits its own row.
-fn pgOuterKeepsInnerRollsBack (tx: Postgres) -> Result Unit Error =
+fn pgOuterKeepsInnerRollsBack (tx: Postgres) -> Result Unit DbError =
     let r = Repo.repo tx "ridge_pg_users"
     match Repo.insert (User { id = 1, age = 18, name = "ada" }) r
         Err e -> Err e
@@ -1885,7 +1885,7 @@ pub type IsoLevel = { transaction_isolation: Text } deriving (Row)
 
 -- A transaction body that reads the live transaction's isolation level through
 -- the raw-query escape hatch and answers its text.
-fn pgShowIsolation (tx: Postgres) -> Result Text Error =
+fn pgShowIsolation (tx: Postgres) -> Result Text DbError =
     let q: Result (List IsoLevel) Error = Raw.query tx "SHOW transaction_isolation" []
     match q
         Err e -> Err e
@@ -1934,7 +1934,7 @@ fn pgIsUnsupported (e: Error) -> Bool =
 -- different level must fail with the isolation-mismatch error (kind
 -- Unsupported), and this body then commits. Any other outcome fails the body,
 -- so the outer rolls back and the probe answers 0.
-fn pgIsoMismatchBody (tx: Postgres) -> Result Unit Error =
+fn pgIsoMismatchBody (tx: Postgres) -> Result Unit DbError =
     match Repo.transactionWith ReadCommitted tx pgInsertTwo
         Err e -> if pgIsUnsupported e then Ok () else Err e
         Ok _  -> pgForceFail tx
@@ -1975,14 +1975,14 @@ pub fn db pgIsoReadUncommitted () -> Text =
                 Ok level -> level
 
 -- A one-row insert body for the same-level nested probe.
-fn pgIsoInsertInner (tx: Postgres) -> Result Unit Error =
+fn pgIsoInsertInner (tx: Postgres) -> Result Unit DbError =
     let r = Repo.repo tx "ridge_pg_users"
     Repo.insert (User { id = 2, age = 30, name = "lin" }) r
 
 -- The outer body of the same-level nested probe: a nested transactionWith
 -- naming the outer level opens a savepoint on the pinned connection, so the
 -- inner row commits alongside the outer's.
-fn pgIsoNestedSameBody (tx: Postgres) -> Result Unit Error =
+fn pgIsoNestedSameBody (tx: Postgres) -> Result Unit DbError =
     let r = Repo.repo tx "ridge_pg_users"
     match Repo.insert (User { id = 1, age = 18, name = "ada" }) r
         Err e -> Err e
@@ -2010,14 +2010,14 @@ fn widgetsTable () -> MigrationOp =
         [ Migrate.intCol  "id"   |> Migrate.primaryKey
         , Migrate.textCol "name" ]
 
-fn runWidgets (conn: Postgres) -> Result (List Text) Error =
+fn runWidgets (conn: Postgres) -> Result (List Text) DbError =
     Migrate.run conn [ Migrate.migration "0001_widgets" [ widgetsTable () ] ]
 
-fn pgClearWidgets (conn: Postgres) -> Result Int Error =
+fn pgClearWidgets (conn: Postgres) -> Result Int DbError =
     let r = Repo.repo conn "ridge_mig_widgets"
     Repo.delete (fn (w: Widget) -> w.id >= 0) r
 
-fn pgAddWidget (conn: Postgres) (wid: Int) (wname: Text) -> Result Unit Error =
+fn pgAddWidget (conn: Postgres) (wid: Int) (wname: Text) -> Result Unit DbError =
     let r = Repo.repo conn "ridge_mig_widgets"
     Repo.insert (Widget { id = wid, name = wname }) r
 
@@ -2074,14 +2074,14 @@ fn gadgetWitness () -> Option RidgeMigGadget = None
 fn gadgetsSchema () -> MigrationOp =
     Migrate.createSchema (schemaOf (gadgetWitness ()))
 
-fn runGadgets (conn: Postgres) -> Result (List Text) Error =
+fn runGadgets (conn: Postgres) -> Result (List Text) DbError =
     Migrate.run conn [ Migrate.migration "0001_gadgets" [ gadgetsSchema () ] ]
 
-fn pgClearGadgets (conn: Postgres) -> Result Int Error =
+fn pgClearGadgets (conn: Postgres) -> Result Int DbError =
     let r = Repo.repo conn "ridge_mig_gadgets"
     Repo.delete (fn (g: RidgeMigGadget) -> g.id >= 0) r
 
-fn pgAddGadget (conn: Postgres) (gname: Text) -> Result Unit Error =
+fn pgAddGadget (conn: Postgres) (gname: Text) -> Result Unit DbError =
     let r = Repo.repo conn "ridge_mig_gadgets"
     Repo.insert (RidgeMigGadgetInsert { name = gname }) r
 
@@ -2123,14 +2123,14 @@ fn cogWitness () -> Option RidgeMigCog = None
 fn cogErased () -> EntitySchema Unit =
     eraseSchema (schemaOf (cogWitness ()))
 
-fn runCogsDiff (conn: Postgres) -> Result (List Text) Error =
+fn runCogsDiff (conn: Postgres) -> Result (List Text) DbError =
     Migrate.run conn [ Migrate.migration "0002_cogs" (Migrate.diffSchemas [] [ cogErased () ]) ]
 
-fn pgClearCogs (conn: Postgres) -> Result Int Error =
+fn pgClearCogs (conn: Postgres) -> Result Int DbError =
     let r = Repo.repo conn "ridge_mig_cogs"
     Repo.delete (fn (c: RidgeMigCog) -> c.id >= 0) r
 
-fn pgAddCog (conn: Postgres) (clabel: Text) -> Result Unit Error =
+fn pgAddCog (conn: Postgres) (clabel: Text) -> Result Unit DbError =
     let r = Repo.repo conn "ridge_mig_cogs"
     Repo.insert (RidgeMigCogInsert { label = clabel }) r
 
@@ -2179,16 +2179,16 @@ fn boltFull () -> EntitySchema Unit =
 
 -- Create the table at v1 (id, code), then diff v1 -> the full model to add `note`. The
 -- add runs while the table is still empty, so the NOT NULL column lands cleanly.
-fn runBoltsColumnDiff (conn: Postgres) -> Result (List Text) Error =
+fn runBoltsColumnDiff (conn: Postgres) -> Result (List Text) DbError =
     let create  = Migrate.migration "0003_bolts" (Migrate.diffSchemas [] [ boltV1 () ])
     let addNote = Migrate.migration "0004_bolts_note" (Migrate.diffSchemas [ boltV1 () ] [ boltFull () ])
     Migrate.run conn [ create, addNote ]
 
-fn pgClearBolts (conn: Postgres) -> Result Int Error =
+fn pgClearBolts (conn: Postgres) -> Result Int DbError =
     let r = Repo.repo conn "ridge_mig_bolts"
     Repo.delete (fn (b: RidgeMigBolt) -> b.id >= 0) r
 
-fn pgAddBolt (conn: Postgres) (bcode: Text) (bnote: Text) -> Result Unit Error =
+fn pgAddBolt (conn: Postgres) (bcode: Text) (bnote: Text) -> Result Unit DbError =
     let r = Repo.repo conn "ridge_mig_bolts"
     Repo.insert (RidgeMigBoltInsert { code = bcode, note = bnote }) r
 
@@ -2241,16 +2241,16 @@ fn gearV2 () -> EntitySchema Unit =
 
 -- Create the table at v1 (code NOT NULL), then diff v1 -> v2 to relax `code`. The alter runs
 -- against the real table; if the rendered statement were invalid PG the migration would fail.
-fn runGearsAlterDiff (conn: Postgres) -> Result (List Text) Error =
+fn runGearsAlterDiff (conn: Postgres) -> Result (List Text) DbError =
     let create = Migrate.migration "0005_gears" (Migrate.diffSchemas [] [ gearV1 () ])
     let relax  = Migrate.migration "0006_gears_relax" (Migrate.diffSchemas [ gearV1 () ] [ gearV2 () ])
     Migrate.run conn [ create, relax ]
 
-fn pgClearGears (conn: Postgres) -> Result Int Error =
+fn pgClearGears (conn: Postgres) -> Result Int DbError =
     let r = Repo.repo conn "ridge_mig_gears"
     Repo.delete (fn (g: RidgeMigGear) -> g.id >= 0) r
 
-fn pgAddGear (conn: Postgres) (gcode: Text) -> Result Unit Error =
+fn pgAddGear (conn: Postgres) (gcode: Text) -> Result Unit DbError =
     let r = Repo.repo conn "ridge_mig_gears"
     Repo.insert (RidgeMigGearInsert { code = gcode }) r
 
@@ -2545,7 +2545,7 @@ pub fn db rawUserCount () -> Int =
 -- per-probe idiom), so the two pins never contend for one server connection.
 
 -- Drop and recreate the probe table, empty.
-fn resetRetryProbe (conn: Postgres) -> Result Unit Error =
+fn resetRetryProbe (conn: Postgres) -> Result Unit DbError =
     match Raw.exec conn "DROP TABLE IF EXISTS retry_probe" []
         Err e -> Err e
         Ok _ ->
@@ -2556,7 +2556,7 @@ fn resetRetryProbe (conn: Postgres) -> Result Unit Error =
 -- Count the probe rows on this connection (a whole-table read, so a
 -- serializable transaction's predicate lock covers every row). `count(*)`
 -- always answers one row; the `[]` arm is unreachable.
-fn countRetryProbe (conn: Postgres) -> Result Int Error =
+fn countRetryProbe (conn: Postgres) -> Result Int DbError =
     let q: Result (List RawCount) Error = Raw.query conn "SELECT count(*) AS n FROM retry_probe" []
     match q
         Err e -> Err e
@@ -2566,13 +2566,13 @@ fn countRetryProbe (conn: Postgres) -> Result Int Error =
                 []     -> Ok 0
 
 -- Insert one probe row on this connection.
-fn insertRetryProbe (conn: Postgres) -> Result Unit Error =
+fn insertRetryProbe (conn: Postgres) -> Result Unit DbError =
     match Raw.exec conn "INSERT INTO retry_probe (n) VALUES (1)" []
         Err e -> Err e
         Ok _  -> Ok ()
 
 -- The interfering transaction's body: read the probe table, then insert a row.
-fn interfereBody (tx2: Postgres) -> Result Unit Error =
+fn interfereBody (tx2: Postgres) -> Result Unit DbError =
     match countRetryProbe tx2
         Err e -> Err e
         Ok _  -> insertRetryProbe tx2
@@ -2580,7 +2580,7 @@ fn interfereBody (tx2: Postgres) -> Result Unit Error =
 -- Attempt-1-only interference: a full serializable transaction on the second
 -- connection that reads the table and inserts a row, then commits — the other
 -- half of the collision. Later attempts do nothing.
-fn interfere (other: Postgres) (n: Int) -> Result Unit Error =
+fn interfere (other: Postgres) (n: Int) -> Result Unit DbError =
     if n == 1 then
         Repo.transactionWith Serializable other interfereBody
     else
@@ -2608,7 +2608,7 @@ pub fn db uniqueViolationNotTransient () -> Int =
 -- write — the write aborts with 40001 and the body answers whether it
 -- classified transient. (The commit after an aborted transaction is a no-op
 -- rollback, so the `Ok` flag still comes back.)
-fn collisionFlagBody (other: Postgres) (tx: Postgres) -> Result Int Error =
+fn collisionFlagBody (other: Postgres) (tx: Postgres) -> Result Int DbError =
     match countRetryProbe tx
         Err e -> Err e
         Ok _ ->
@@ -2636,7 +2636,7 @@ pub fn db serializationFailureIsTransient () -> Int =
 
 -- The colliding transaction body: read the table, meet the interference
 -- (attempt 1 only), then write.
-fn collisionBody (other: Postgres) (n: Int) (tx: Postgres) -> Result Int Error =
+fn collisionBody (other: Postgres) (n: Int) (tx: Postgres) -> Result Int DbError =
     match countRetryProbe tx
         Err e -> Err e
         Ok before ->

@@ -685,6 +685,12 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "dbErrorConstraint",
             "dbErrorColumn",
             "dbErrorTable",
+            // The typed `DbError` record a data-layer call reports, and the
+            // classifiers that lift a raw `Error` into one (`toDbError`) or
+            // fabricate one from a code and message (`mkDbError`).
+            "DbError",
+            "toDbError",
+            "mkDbError",
             // Whether a storage error is a transient contention failure worth
             // retrying (a serialization failure, deadlock, or busy database).
             "dbErrorIsTransient",

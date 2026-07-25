@@ -122,6 +122,51 @@ pub fn dbErrorColumn (e: Error) -> Text =
 pub fn dbErrorTable (e: Error) -> Text =
     errorField "table" e
 
+-- A database failure with its kind in the type. Every data-layer call reports
+-- `Result … DbError`, so a caller matches the failure it cares about in the
+-- ordinary way — `match e.kind / UniqueViolation -> …` — rather than sorting a
+-- raw code post-hoc. `code` and `message` keep the backend's own words for a
+-- log line; `constraint`, `table`, and `column` name what a constraint or
+-- not-null violation refers to, empty when the backend reported none.
+pub type DbError = { kind: DbErrorKind, code: Text, message: Text, constraint: Text, table: Text, column: Text }
+
+-- Sort a raw storage error into its typed kind. The Postgres SQLSTATE travels
+-- in the code as `db.error.<sqlstate>`, so the constraint classes match an
+-- exact code; a decode failure and the in-memory raw-SQL refusal carry their
+-- own prefixes; any other `db.error.*` is a general query error and any other
+-- `db.*` a connection fault.
+fn classifyDbError (e: Error) -> DbErrorKind =
+    let code = e.code
+    if code == "db.error.23505" then UniqueViolation
+    else if code == "db.error.23503" then ForeignKeyViolation
+    else if code == "db.error.23502" then NotNullViolation
+    else if code == "db.error.23514" then CheckViolation
+    else if code == "raw.unsupported" then Unsupported
+    else if code == "db.tx.isolation_mismatch" then Unsupported
+    else if startsWith "sql.decode." code then DecodeError
+    else if startsWith "db.error." code then QueryError
+    else if startsWith "db." code then ConnectionError
+    else QueryError
+
+-- Lift a raw storage-layer error into a typed `DbError`: classify the code and
+-- pull the constraint, table, and column the backend attached. This is the one
+-- place the raw code is read; everything downstream matches `e.kind`.
+pub fn toDbError (e: Error) -> DbError =
+    DbError { kind = classifyDbError e, code = e.code, message = e.message, constraint = errorField "constraint" e, table = errorField "table" e, column = errorField "column" e }
+
+-- Build a raw `Error` from a code and a message; the runtime helper, since a
+-- bare record literal cannot be coerced to the nominal `Error` in a plain
+-- function.
+@ffi("ridge_rt", "mk_error", 2)
+fn _mkError (code: Text) (message: Text) -> Error
+
+-- Fabricate a typed database error from a code and a message — for errors the
+-- stdlib itself raises (`repo.single.empty`, `migrate.irreversible`, …). The
+-- code still classifies, so a `sql.decode.*`-shaped code lands as `DecodeError`
+-- and anything unmatched as `QueryError`.
+pub fn mkDbError (code: Text) (message: Text) -> DbError =
+    toDbError (_mkError code message)
+
 -- Whether a storage error is a transient contention failure worth retrying:
 -- the server aborted the command cleanly and a fresh attempt can commit —
 -- a serialization failure (`40001`) or deadlock (`40P01`) from Postgres, a

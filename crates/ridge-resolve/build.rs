@@ -852,6 +852,15 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // transaction's level. Appended here, after `transaction`, so no
             // earlier export moves.
             "transactionWith",
+            // Re-run an attempt while it fails transiently: `retryWhen` is the
+            // generic loop (the attempt sees its 1-based number),
+            // `retryTransient` binds the storage seam's transient codes, and
+            // `transactionWithRetry` re-runs a whole transaction, falling back
+            // to the connection's `commandRetry` policy on `None`. Appended
+            // after `transactionWith` so no earlier export moves.
+            "retryWhen",
+            "retryTransient",
+            "transactionWithRetry",
             // Run a body with the connection, then close it on every path — the
             // leak-safe scoped-connection combinator.
             "withConnection",

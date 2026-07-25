@@ -2266,7 +2266,9 @@ mod tests {
                 // std.repo: the reconciled `Repo` type and every verb over it
                 // are seeded from the reconciled arena block
                 // (`reconciled_ctor_scheme` / `reconciled_fn_scheme`), not this
-                // hand-curated table.
+                // hand-curated table. The retry combinators
+                // (`retryWhen`/`retryTransient`/`transactionWithRetry`) name the
+                // reconciled `RetryPolicy` and are seeded the same way.
                 if module.name == "std.repo" {
                     continue;
                 }

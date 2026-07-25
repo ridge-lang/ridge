@@ -481,7 +481,9 @@ fn signature_shape_consistency() {
             }
             // Every std.repo verb takes or returns the reconciled `Repo e a`, so
             // the whole module is seeded via `reconciled_fn_scheme` rather than
-            // the `stdlib_signature` table this shape check covers.
+            // the `stdlib_signature` table this shape check covers. The retry
+            // combinators (`retryWhen`/`retryTransient`/`transactionWithRetry`)
+            // name the reconciled `RetryPolicy` the same way.
             if dotted == "std.repo" {
                 continue;
             }

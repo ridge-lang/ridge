@@ -26,7 +26,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.data (memAdapter, MemAdapter, dbErrorKind, dbErrorConstraint, DbErrorKind, UniqueViolation, ForeignKeyViolation, NotNullViolation, CheckViolation, ConnectionError, DecodeError, Unsupported, QueryError)
+import std.data (memAdapter, MemAdapter, dbErrorKind, dbErrorConstraint, dbErrorIsTransient, mkDbError, DbErrorKind, UniqueViolation, ForeignKeyViolation, NotNullViolation, CheckViolation, ConnectionError, DecodeError, Unsupported, QueryError)
 import std.raw as Raw
 import std.text as Text
 
@@ -69,6 +69,17 @@ pub fn db typedKind () -> Text =
                 Unsupported -> "unsupported"
                 _ -> "other"
         Ok _ -> "unexpected-ok"
+
+-- `dbErrorIsTransient` on the typed error: a serialization-failure code is
+-- transient, the unique-violation one is not. `mkDbError` fabricates the typed
+-- error from a code, the way the stdlib's own raised errors are built.
+pub fn db transiency () -> Text =
+    let serialization = mkDbError "db.error.40001" "could not serialize"
+    let unique = mkDbError "db.error.23505" "duplicate key"
+    if dbErrorIsTransient serialization then
+        if dbErrorIsTransient unique then "both" else "transient-only"
+    else
+        "neither"
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -232,12 +243,18 @@ fn to_db_error_lifts_raw_error_on_beam() {
         return;
     }
 
-    let (stdout, stderr) = eval_exports(&["typedKind"]);
+    let (stdout, stderr) = eval_exports(&["typedKind", "transiency"]);
 
     // The same `raw.unsupported` failure, arriving typed from `Raw.exec` and
     // matched through the typed record's `kind` field.
     assert!(
         stdout.contains("typedKind=unsupported"),
         "expected `typedKind=unsupported`\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // `dbErrorIsTransient` on typed errors fabricated by `mkDbError`: the
+    // serialization-failure code is transient, the unique-violation one is not.
+    assert!(
+        stdout.contains("transiency=transient-only"),
+        "expected `transiency=transient-only`\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

@@ -11,7 +11,7 @@
 --   * `connect (PostgresConfig { ... })` runs it against Postgres, unchanged.
 -- The data guide in docs/data.md walks through both.
 
-import std.data (connectSqlite, sqliteMemory, Sqlite)
+import std.data (connectSqlite, sqliteMemory, Sqlite, DbError)
 import std.migrate as Migrate
 import std.repo as Repo
 import std.schema (schemaOf)
@@ -35,7 +35,7 @@ fn userWitness () -> Option User = None
 -- Bring the `users` table into being. `Migrate.run` records the migrations it
 -- applies in a tracking table and skips the ones already recorded, so calling
 -- it on every startup is safe — the table is created exactly once.
-fn setup (conn: Sqlite) -> Result (List Text) Error =
+fn setup (conn: Sqlite) -> Result (List Text) DbError =
     Migrate.run conn
         [ Migrate.migration "0001_create_users"
             [ Migrate.createSchema (schemaOf (userWitness ())) ] ]
@@ -50,7 +50,7 @@ fn io section (title: Text) -> Unit =
     Io.println title
 
 -- Print the whole table, ordered by id, under a heading.
-fn db io showAll (title: Text) (users: Repo User Sqlite) -> Result Unit Error =
+fn db io showAll (title: Text) (users: Repo User Sqlite) -> Result Unit DbError =
     let _ = section title
     match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.toList
         Err e -> Err e
@@ -62,14 +62,14 @@ fn db io showAll (title: Text) (users: Repo User Sqlite) -> Result Unit Error =
 
 -- CREATE: insert three users in one batch. `UserInsert` carries only the
 -- columns we own — no `id`, which the database assigns.
-fn db seedUsers (users: Repo User Sqlite) -> Result Unit Error =
+fn db seedUsers (users: Repo User Sqlite) -> Result Unit DbError =
     users |> Repo.insertMany
         [ UserInsert { name = "Ada Lovelace", email = "ada@example.com" }
         , UserInsert { name = "Alan Turing", email = "alan@example.com" }
         , UserInsert { name = "Grace Hopper", email = "grace@example.com" } ]
 
 -- READ: look one user up by primary key.
-fn db io showOne (uid: Int) (users: Repo User Sqlite) -> Result Unit Error =
+fn db io showOne (uid: Int) (users: Repo User Sqlite) -> Result Unit DbError =
     match users |> Repo.getBy "id" (toSql uid)
         Err e -> Err e
         Ok None -> Ok (Io.println $"    no user with id ${Int.toText uid}")
@@ -78,18 +78,18 @@ fn db io showOne (uid: Int) (users: Repo User Sqlite) -> Result Unit Error =
 -- UPDATE: change one column on the matching rows. `set` takes a typed setter,
 -- so the new value is checked against the column at compile time; the result
 -- is how many rows changed.
-fn db renameUser (uid: Int) (newName: Text) (users: Repo User Sqlite) -> Result Int Error =
+fn db renameUser (uid: Int) (newName: Text) (users: Repo User Sqlite) -> Result Int DbError =
     users |> Repo.setWhere [ Repo.set (fn (u: User) -> u.name) newName ] (fn (u: User) -> u.id == uid)
 
 -- DELETE: remove the rows matching a predicate; the result is how many went.
-fn db removeUser (uid: Int) (users: Repo User Sqlite) -> Result Int Error =
+fn db removeUser (uid: Int) (users: Repo User Sqlite) -> Result Int DbError =
     users |> Repo.delete (fn (u: User) -> u.id == uid)
 
 -- ── The walk-through ──────────────────────────────────────────────────────
 
--- Each step returns `Result _ Error`; `?` unwraps an `Ok` and returns early on
+-- Each step returns `Result _ DbError`; `?` unwraps an `Ok` and returns early on
 -- the first `Err`, so the happy path reads top to bottom with no nesting.
-fn db io run (conn: Sqlite) -> Result Unit Error =
+fn db io run (conn: Sqlite) -> Result Unit DbError =
     let _ = setup conn ?
     let users: Repo User Sqlite = Repo.repo conn "users"
     seedUsers users ?

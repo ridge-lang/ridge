@@ -1,5 +1,6 @@
 ---
 source: crates/ridge-lower/tests/snapshots.rs
+assertion_line: 23
 expression: rendered
 ---
 module: m0

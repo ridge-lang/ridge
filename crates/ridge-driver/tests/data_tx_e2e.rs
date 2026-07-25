@@ -18,6 +18,15 @@
 //! - `nestedPlainInsideWith` — a plain nested `transaction` demands no level and commits inside any outer level (2).
 //! - `nestedMismatch` — a nested `transactionWith` naming a different level fails with the isolation-mismatch error (kind `Unsupported`) and writes nothing (0).
 //!
+//! `Repo.retryWhen` runs an attempt function under a policy, retrying while the
+//! classifier calls the failure transient, and `Repo.transactionWithRetry` wraps
+//! a whole transaction in that loop. Five more probes pin the rules:
+//! - `retrySucceedsOnSecond` — a transient failure is retried and the second attempt's value is the result (42).
+//! - `retryStopsAtMax` — the loop stops at `maxAttempts` and returns the last error unwrapped (1).
+//! - `retryNonTransientStops` — a permanent failure comes back at once, with no second attempt (1).
+//! - `txRetryCommits` — `transactionWithRetry` commits like a plain transaction, `None` reading the adapter's default policy (2).
+//! - `txRetryRollsBack` — a non-transient body failure rolls back and is not retried, so nothing persists (0).
+//!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 
 #![cfg(feature = "beam-runtime")]
@@ -30,7 +39,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 // ── Source ────────────────────────────────────────────────────────────────────
 
 const SOURCE: &str = r#"
-import std.data (memAdapter, MemAdapter, IsolationLevel, ReadCommitted, Serializable, dbErrorKind, Unsupported)
+import std.data (memAdapter, MemAdapter, IsolationLevel, ReadCommitted, Serializable, dbErrorKind, Unsupported, RetryPolicy)
 import std.repo as Repo
 import std.sql (SqlValue)
 
@@ -185,6 +194,68 @@ pub fn db nestedMismatch () -> Int =
     match Repo.transactionWith Serializable conn nestedMismatchBody
         Ok _  -> countAll conn
         Err _ -> 0 - 1
+
+-- ── Retry probes ────────────────────────────────────────────────────────────
+--
+-- The loop is exercised through the generic `retryWhen` with `Text` errors —
+-- the nominal `Error` has no constructor, so a fabricated failure is a `Text`
+-- — and `transactionWithRetry` is exercised over the in-memory adapter.
+
+-- A two-attempt policy with negligible backoffs, so the probes stay fast.
+fn twoAttemptPolicy -> RetryPolicy =
+    RetryPolicy { maxAttempts = 2, baseBackoffMs = 1, maxBackoffMs = 4 }
+
+fn textIsTransient (err: Text) -> Bool =
+    err == "boom"
+
+fn neverTransient (err: Text) -> Bool =
+    false
+
+-- Fails transiently on attempt 1, succeeds on attempt 2.
+fn succeedsOnSecond (n: Int) -> Result Int Text =
+    if n < 2 then Err "boom" else Ok 42
+
+-- Fails transiently on attempts 1-2, succeeds on attempt 3.
+fn succeedsOnThird (n: Int) -> Result Int Text =
+    if n < 3 then Err "boom" else Ok 42
+
+-- A transient failure is retried: the second attempt's `Ok` is the result.
+-- Proves the loop runs past attempt 1.
+pub fn time random retrySucceedsOnSecond () -> Int =
+    match Repo.retryWhen (twoAttemptPolicy ()) textIsTransient succeedsOnSecond
+        Ok n  -> n
+        Err _ -> 0 - 1
+
+-- `maxAttempts` bounds the loop: a success on attempt 3 is never reached when
+-- only 2 attempts are allowed, and the last error comes back unwrapped. With
+-- `retrySucceedsOnSecond` (≥ 2 attempts ran), this pins the count at exactly 2.
+pub fn time random retryStopsAtMax () -> Int =
+    match Repo.retryWhen (twoAttemptPolicy ()) textIsTransient succeedsOnThird
+        Ok _    -> 0 - 1
+        Err err -> if err == "boom" then 1 else 0 - 2
+
+-- A non-transient error comes back at once, with no second attempt (this same
+-- attempt fn succeeds on attempt 2 when one is allowed).
+pub fn time random retryNonTransientStops () -> Int =
+    match Repo.retryWhen (twoAttemptPolicy ()) neverTransient succeedsOnSecond
+        Ok _    -> 0 - 1
+        Err err -> if err == "boom" then 1 else 0 - 2
+
+-- `transactionWithRetry` over the in-memory adapter commits like a plain
+-- transaction; `None` reads the adapter's default policy.
+pub fn db time random txRetryCommits () -> Int =
+    let conn = memAdapter ()
+    match Repo.transactionWithRetry None conn insertTwo
+        Ok _  -> countAll conn
+        Err _ -> 0 - 1
+
+-- A body that fails with a non-transient error (the store's "matched no rows")
+-- rolls back and is not retried: nothing persists.
+pub fn db time random txRetryRollsBack () -> Int =
+    let conn = memAdapter ()
+    match Repo.transactionWithRetry (Some (twoAttemptPolicy ())) conn insertThenFail
+        Ok _  -> 0 - 3
+        Err _ -> countAll conn
 "#;
 
 // ── Workspace setup ───────────────────────────────────────────────────────────
@@ -199,7 +270,7 @@ fn write_workspace(root: &std::path::Path) {
     .expect("write workspace manifest");
     std::fs::write(
         root.join("app").join("ridge.toml"),
-        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n\n[capabilities]\nallow = [\"db\"]\n",
+        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n\n[capabilities]\nallow = [\"db\", \"time\", \"random\"]\n",
     )
     .expect("write project manifest");
     std::fs::write(app_src.join("Main.ridge"), SOURCE).expect("write source");
@@ -266,6 +337,11 @@ fn transactions_commit_rollback_and_nest_on_beam() {
          io:format(\"nestedSameLevel=~w~n\",[{module}:nestedSameLevel()]), \
          io:format(\"nestedPlainInsideWith=~w~n\",[{module}:nestedPlainInsideWith()]), \
          io:format(\"nestedMismatch=~w~n\",[{module}:nestedMismatch()]), \
+         io:format(\"retrySucceedsOnSecond=~w~n\",[{module}:retrySucceedsOnSecond()]), \
+         io:format(\"retryStopsAtMax=~w~n\",[{module}:retryStopsAtMax()]), \
+         io:format(\"retryNonTransientStops=~w~n\",[{module}:retryNonTransientStops()]), \
+         io:format(\"txRetryCommits=~w~n\",[{module}:txRetryCommits()]), \
+         io:format(\"txRetryRollsBack=~w~n\",[{module}:txRetryRollsBack()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -320,5 +396,30 @@ fn transactions_commit_rollback_and_nest_on_beam() {
     assert!(
         stdout.contains("nestedMismatch=0"),
         "expected `nestedMismatch=0` — level mismatch was not flagged Unsupported or wrote rows\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // A transient failure is retried; the second attempt's value is the result.
+    assert!(
+        stdout.contains("retrySucceedsOnSecond=42"),
+        "expected `retrySucceedsOnSecond=42` — transient failure was not retried\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // The loop stops at maxAttempts and returns the last error unwrapped.
+    assert!(
+        stdout.contains("retryStopsAtMax=1"),
+        "expected `retryStopsAtMax=1` — the loop did not stop at maxAttempts\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // A non-transient error is returned with no retry.
+    assert!(
+        stdout.contains("retryNonTransientStops=1"),
+        "expected `retryNonTransientStops=1` — a permanent error was retried\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // transactionWithRetry commits like a plain transaction (None → default policy).
+    assert!(
+        stdout.contains("txRetryCommits=2"),
+        "expected `txRetryCommits=2` — transactionWithRetry did not commit both rows\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // A non-transient body failure rolls back and is not retried.
+    assert!(
+        stdout.contains("txRetryRollsBack=0"),
+        "expected `txRetryRollsBack=0` — a permanent body failure persisted rows\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

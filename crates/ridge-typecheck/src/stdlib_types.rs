@@ -4117,6 +4117,100 @@ fn reconciled_repo_fn_scheme(
                 constraints: with_adapter(),
             })
         }
+        // retryWhen : ∀e r (cap c). RetryPolicy -> (fn e -> Bool) -> (fn Int ->
+        //   Result r e)^c -> Result r e, requiring {time, random}. The generic
+        //   retry loop: the attempt sees its 1-based attempt number; its capability
+        //   row is a fresh cap var the call site absorbs, like `transaction`'s body.
+        "retryWhen" => {
+            let retry_policy = *reconciled.get("RetryPolicy")?;
+            let e = TyVid(0);
+            let r = TyVid(1);
+            let cap_c = CapVid(0);
+            let mut retry_caps = CapabilitySet::singleton(Capability::Time);
+            retry_caps.insert(Capability::Random);
+            let result_re = Type::Con(b.result, vec![Type::Var(r), Type::Var(e)]);
+            Some(Scheme {
+                vars: vec![e, r],
+                cap_vars: vec![cap_c],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![
+                        Type::Con(retry_policy, vec![]),
+                        Type::Fn {
+                            params: vec![Type::Var(e)],
+                            ret: Box::new(Type::Con(b.bool, vec![])),
+                            caps: pure(),
+                        },
+                        Type::Fn {
+                            params: vec![Type::Con(b.int, vec![])],
+                            ret: Box::new(result_re.clone()),
+                            caps: CapRow::Var(cap_c),
+                        },
+                    ],
+                    ret: Box::new(result_re),
+                    caps: CapRow::Concrete(retry_caps),
+                },
+                constraints: vec![],
+            })
+        }
+        // retryTransient : ∀r (cap c). RetryPolicy -> (fn Int -> Result r Error)^c
+        //   -> Result r Error, requiring {time, random}. `retryWhen` with
+        //   `dbErrorIsTransient` — the storage seam's transient codes.
+        "retryTransient" => {
+            let retry_policy = *reconciled.get("RetryPolicy")?;
+            let r = TyVid(0);
+            let cap_c = CapVid(0);
+            let mut retry_caps = CapabilitySet::singleton(Capability::Time);
+            retry_caps.insert(Capability::Random);
+            let body = Type::Fn {
+                params: vec![Type::Con(b.int, vec![])],
+                ret: Box::new(result(Type::Var(r))),
+                caps: CapRow::Var(cap_c),
+            };
+            Some(Scheme {
+                vars: vec![r],
+                cap_vars: vec![cap_c],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(retry_policy, vec![]), body],
+                    ret: Box::new(result(Type::Var(r))),
+                    caps: CapRow::Concrete(retry_caps),
+                },
+                constraints: vec![],
+            })
+        }
+        // transactionWithRetry : ∀a r (cap c). Option RetryPolicy -> a ->
+        //   (fn a -> Result r Error)^c -> Result r Error where Adapter a, requiring
+        //   {time, random}. Re-runs the whole transaction on a transient failure;
+        //   `None` reads the connection's `commandRetry` policy through the seam's
+        //   `retryPolicy`.
+        "transactionWithRetry" => {
+            let retry_policy = *reconciled.get("RetryPolicy")?;
+            let r = TyVid(2);
+            let cap_c = CapVid(0);
+            let mut retry_caps = CapabilitySet::singleton(Capability::Time);
+            retry_caps.insert(Capability::Random);
+            let body = Type::Fn {
+                params: vec![Type::Var(a)],
+                ret: Box::new(result(Type::Var(r))),
+                caps: CapRow::Var(cap_c),
+            };
+            Some(Scheme {
+                vars: vec![a, r],
+                cap_vars: vec![cap_c],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![
+                        Type::Con(b.option, vec![Type::Con(retry_policy, vec![])]),
+                        Type::Var(a),
+                        body,
+                    ],
+                    ret: Box::new(result(Type::Var(r))),
+                    caps: CapRow::Concrete(retry_caps),
+                },
+                constraints: with_adapter(),
+            })
+        }
         // `disconnect` releases a connection — `close conn` over the `Adapter` seam.
         // One argument, no body, answering `Result Unit Error`; `a` carries the
         // `Adapter` dictionary `close` dispatches on. The handle is the proof of

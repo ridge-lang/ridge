@@ -19,7 +19,7 @@
 -- A predicate is quoted exactly as at the adapter seam: the parameter
 -- annotation pins the row type and the body is captured as a query tree.
 
-import std.data as Db (selectRows, fetch, IsolationLevel)
+import std.data as Db (selectRows, fetch, IsolationLevel, RetryPolicy, dbErrorIsTransient)
 import std.result (traverse)
 import std.sql (SqlValue)
 import std.query (SortOrder, isAscending, QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planExists, planList, planInsert, planUpsert, planUpdate, planDelete)
@@ -432,6 +432,97 @@ pub fn transactionWith (level: IsolationLevel) (conn: a) (body: fn a -> Result r
                     match rollback conn
                         Ok _   -> Err e
                         Err e2 -> Err e2
+
+-- ── Transient retry ─────────────────────────────────────────────────────────
+--
+-- A serialization failure, deadlock, or busy database aborts a command cleanly
+-- and a fresh attempt can commit. These combinators re-run an attempt while it
+-- fails with such an error, pausing a random backoff between tries so colliding
+-- transactions back off out of step. They declare the `time` (the pause) and
+-- `random` (the jitter) capabilities.
+
+-- Backoff pause and jitter bridges, private to this module; the public
+-- combinators above declare the capabilities these need.
+@ffi("timer", "sleep", 1)
+fn _retrySleep (ms: Int) -> Unit
+
+@ffi("ridge_rt", "random_int", 2)
+fn _retryRandomInt (low: Int) (high: Int) -> Int
+
+-- Clamp a policy into its working range: at least one attempt, non-negative
+-- backoffs.
+fn clampRetry (policy: RetryPolicy) -> RetryPolicy =
+    let attempts = if policy.maxAttempts < 1 then 1 else policy.maxAttempts
+    let base = if policy.baseBackoffMs < 0 then 0 else policy.baseBackoffMs
+    let maxBackoff = if policy.maxBackoffMs < 0 then 0 else policy.maxBackoffMs
+    RetryPolicy { maxAttempts = attempts, baseBackoffMs = base, maxBackoffMs = maxBackoff }
+
+-- The backoff ceiling for retry `n` (1-based): `base × 2^(n-1)` capped at
+-- `maxBackoff`.
+fn retryCapMs (base: Int) (maxBackoff: Int) (n: Int) -> Int =
+    if n <= 1 then
+        if base < maxBackoff then base else maxBackoff
+    else
+        let prev = retryCapMs base maxBackoff (n - 1)
+        let doubled = prev * 2
+        if doubled < maxBackoff then doubled else maxBackoff
+
+-- The retry loop: run attempt number `n`; on an error `isTransient` recognises,
+-- with attempts left, sleep a jittered backoff and recurse. Anything else —
+-- success, a permanent error, or the last attempt — is the result.
+fn retryLoop (policy: RetryPolicy) (isTransient: fn e -> Bool) (attempt: fn Int -> Result r e) (n: Int) -> Result r e =
+    match attempt n
+        Ok value -> Ok value
+        Err err ->
+            if n < policy.maxAttempts then
+                if isTransient err then
+                    let cap = retryCapMs policy.baseBackoffMs policy.maxBackoffMs n
+                    let delay = if cap <= 0 then 0 else _retryRandomInt 0 cap
+                    let _ = _retrySleep delay
+                    retryLoop policy isTransient attempt (n + 1)
+                else
+                    Err err
+            else
+                Err err
+
+-- Run `attempt`, retrying it while it fails with an error `isTransient`
+-- recognises. The attempt receives its 1-based attempt number, so it can log,
+-- measure, or arrange a fault that only the first try meets. The pause before
+-- retry `n` is drawn at random between zero and the policy's capped doubling
+-- backoff, which is what keeps colliding transactions from retrying in
+-- lock-step. When the attempts run out, the last error is the result,
+-- unwrapped.
+pub fn time random retryWhen (policy: RetryPolicy) (isTransient: fn e -> Bool) (attempt: fn Int -> Result r e) -> Result r e =
+    let p = clampRetry policy
+    retryLoop p isTransient attempt 1
+
+-- `retryWhen` for the storage seam: transient means the server aborted the
+-- command cleanly — a serialization failure (`40001`), a deadlock (`40P01`),
+-- or a busy/locked SQLite database — and a fresh attempt can commit
+-- (`dbErrorIsTransient`). A transport fault is never retried: the driver
+-- cannot know whether the write committed, and re-running it could apply the
+-- write twice.
+--
+-- Never wrap a single statement that runs INSIDE an explicit `transaction`:
+-- after a serialization failure the open transaction is aborted, and only
+-- re-running the whole transaction — `transactionWithRetry`, or `retryTransient`
+-- around `transaction`/`transactionWith` — is correct.
+pub fn time random retryTransient (policy: RetryPolicy) (attempt: fn Int -> Result r Error) -> Result r Error =
+    retryWhen policy dbErrorIsTransient attempt
+
+-- Run `body` inside a transaction, re-running the whole transaction —
+-- begin, body, commit — while it fails transiently. Re-running the whole
+-- transaction is the only correct answer to a serialization failure or
+-- deadlock: after one, the open transaction is aborted and a retry of any
+-- single statement inside it would fail the same way. The transaction opens
+-- at the connection's `defaultIsolation`, like `transaction`; for an explicit
+-- level, compose: `Repo.retryTransient policy (fn (n) -> Repo.transactionWith
+-- Serializable conn body)`. `None` reads the connection's `commandRetry`
+-- policy (see `withCommandRetry`); `Some` overrides it.
+pub fn time random transactionWithRetry (policy: Option RetryPolicy) (conn: a) (body: fn a -> Result r Error) -> Result r Error where Adapter a =
+    match policy
+        Some pol -> retryTransient pol (fn (_n: Int) -> transaction conn body)
+        None     -> retryTransient (retryPolicy conn) (fn (_n: Int) -> transaction conn body)
 
 -- Run a body with the connection, then `close` it on every path — whether the body
 -- answers `Ok` or `Err`. The result is the body's own; the close is guaranteed

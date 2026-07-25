@@ -27,7 +27,8 @@
 //! probes `ridge_pg_posts (id integer, author integer, title text)`, and for the
 //! grouped-aggregate probes `ridge_pg_emps (id integer, dept text, salary
 //! integer)`; CI provisions all three on the Postgres service, and a local run
-//! expects them to exist.
+//! expects them to exist. The serialization-retry probes create and drop their
+//! own `retry_probe` table, so it needs no provisioning.
 //!
 //! The grouped aggregates run against the live database too: `groupBy` +
 //! `summarize` compile to `SELECT <aggregates> … GROUP BY <key> ORDER BY <key>`
@@ -56,6 +57,12 @@
 //! outer transaction commits, one naming the outer level commits both rows
 //! through a savepoint, and a pool configured with `withDefaultIsolation
 //! Serializable` opens plain transactions at serializable.
+//!
+//! Transient-error handling runs against the live database too: two serializable
+//! transactions on separate pools are interleaved into a real serialization
+//! failure (SQLSTATE 40001), which `dbErrorIsTransient` classifies as transient
+//! while a real unique violation (23505) classifies as permanent, and
+//! `Repo.retryTransient` re-runs the aborted transaction to a commit.
 
 #![cfg(feature = "beam-runtime")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -67,7 +74,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// The program source, with connection settings spliced in as sentinels so the
 /// Ridge record braces never collide with Rust string formatting.
 const SOURCE_TEMPLATE: &str = r#"
-import std.data (connect, connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withCheckoutTimeoutMs, withDefaultIsolation, PostgresConfig, Postgres, IsolationLevel, ReadCommitted, ReadUncommitted, RepeatableRead, Serializable, dbErrorKind, dbErrorConstraint, dbErrorColumn, dbErrorTable, DbErrorKind, UniqueViolation, ForeignKeyViolation, NotNullViolation, CheckViolation, ConnectionError, DecodeError, Unsupported, QueryError)
+import std.data (connect, connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withCheckoutTimeoutMs, withDefaultIsolation, PostgresConfig, Postgres, IsolationLevel, ReadCommitted, ReadUncommitted, RepeatableRead, Serializable, dbErrorKind, dbErrorConstraint, dbErrorColumn, dbErrorTable, dbErrorIsTransient, DbErrorKind, UniqueViolation, ForeignKeyViolation, NotNullViolation, CheckViolation, ConnectionError, DecodeError, Unsupported, QueryError, RetryPolicy)
 import std.repo as Repo
 import std.migrate as Migrate
 import std.migrate (MigrationOp)
@@ -2527,6 +2534,139 @@ pub fn db rawUserCount () -> Int =
                             match rows
                                 []     -> 0 - 4
                                 c :: _ -> c.n
+
+-- Transient-error classification and whole-transaction retry against the live
+-- database. The probes create and drop their own `retry_probe` table, mirroring
+-- the `uniqueViolationKind` idiom. The collision needs no concurrency:
+-- transaction A reads the probe table, a full serializable transaction on a
+-- second connection reads + writes + commits, then A writes — the
+-- rw-antidependency cycle aborts A with a real 40001, all sequentially in one
+-- process. Each `connect (pgConfig ())` opens its own pool (the file's
+-- per-probe idiom), so the two pins never contend for one server connection.
+
+-- Drop and recreate the probe table, empty.
+fn resetRetryProbe (conn: Postgres) -> Result Unit Error =
+    match Raw.exec conn "DROP TABLE IF EXISTS retry_probe" []
+        Err e -> Err e
+        Ok _ ->
+            match Raw.exec conn "CREATE TABLE retry_probe (id serial primary key, n integer)" []
+                Err e -> Err e
+                Ok _  -> Ok ()
+
+-- Count the probe rows on this connection (a whole-table read, so a
+-- serializable transaction's predicate lock covers every row). `count(*)`
+-- always answers one row; the `[]` arm is unreachable.
+fn countRetryProbe (conn: Postgres) -> Result Int Error =
+    let q: Result (List RawCount) Error = Raw.query conn "SELECT count(*) AS n FROM retry_probe" []
+    match q
+        Err e -> Err e
+        Ok rows ->
+            match rows
+                r :: _ -> Ok r.n
+                []     -> Ok 0
+
+-- Insert one probe row on this connection.
+fn insertRetryProbe (conn: Postgres) -> Result Unit Error =
+    match Raw.exec conn "INSERT INTO retry_probe (n) VALUES (1)" []
+        Err e -> Err e
+        Ok _  -> Ok ()
+
+-- The interfering transaction's body: read the probe table, then insert a row.
+fn interfereBody (tx2: Postgres) -> Result Unit Error =
+    match countRetryProbe tx2
+        Err e -> Err e
+        Ok _  -> insertRetryProbe tx2
+
+-- Attempt-1-only interference: a full serializable transaction on the second
+-- connection that reads the table and inserts a row, then commits — the other
+-- half of the collision. Later attempts do nothing.
+fn interfere (other: Postgres) (n: Int) -> Result Unit Error =
+    if n == 1 then
+        Repo.transactionWith Serializable other interfereBody
+    else
+        Ok ()
+
+-- A real unique violation (23505) is permanent: not transient.
+pub fn db uniqueViolationNotTransient () -> Int =
+    match connect (pgConfig ())
+        Err _ -> 0 - 10
+        Ok conn ->
+            match Raw.exec conn "DROP TABLE IF EXISTS ridge_pg_uniq" []
+                Err _ -> 0 - 11
+                Ok _ ->
+                    match Raw.exec conn "CREATE TABLE ridge_pg_uniq (id integer CONSTRAINT ridge_pg_uniq_id_key UNIQUE)" []
+                        Err _ -> 0 - 12
+                        Ok _ ->
+                            match Raw.exec conn "INSERT INTO ridge_pg_uniq (id) VALUES (1)" []
+                                Err _ -> 0 - 13
+                                Ok _ ->
+                                    match Raw.exec conn "INSERT INTO ridge_pg_uniq (id) VALUES (1)" []
+                                        Ok _  -> 0 - 14
+                                        Err e -> if dbErrorIsTransient e then 0 - 1 else 0
+
+-- The classification body: read the probe table, meet the interference, then
+-- write — the write aborts with 40001 and the body answers whether it
+-- classified transient. (The commit after an aborted transaction is a no-op
+-- rollback, so the `Ok` flag still comes back.)
+fn collisionFlagBody (other: Postgres) (tx: Postgres) -> Result Int Error =
+    match countRetryProbe tx
+        Err e -> Err e
+        Ok _ ->
+            match interfere other 1
+                Err e -> Err e
+                Ok _ ->
+                    match insertRetryProbe tx
+                        Err e -> if dbErrorIsTransient e then Ok 1 else Ok 0
+                        Ok _  -> Ok (0 - 2)
+
+-- A real serialization failure (40001), forced by the collision, is transient.
+pub fn db serializationFailureIsTransient () -> Int =
+    match connect (pgConfig ())
+        Err _ -> 0 - 10
+        Ok connA ->
+            match connect (pgConfig ())
+                Err _ -> 0 - 11
+                Ok connB ->
+                    match resetRetryProbe connA
+                        Err _ -> 0 - 12
+                        Ok _ ->
+                            match Repo.transactionWith Serializable connA (collisionFlagBody connB)
+                                Ok flag -> flag
+                                Err _   -> 0 - 3
+
+-- The colliding transaction body: read the table, meet the interference
+-- (attempt 1 only), then write.
+fn collisionBody (other: Postgres) (n: Int) (tx: Postgres) -> Result Int Error =
+    match countRetryProbe tx
+        Err e -> Err e
+        Ok before ->
+            match interfere other n
+                Err e -> Err e
+                Ok _ ->
+                    match insertRetryProbe tx
+                        Err e -> Err e
+                        Ok _  -> Ok before
+
+-- A serialization failure aborts attempt 1; the retry re-runs the whole
+-- transaction without the interference and commits. Both rows survive: the
+-- interfering transaction's (attempt 1) and the retried transaction's own
+-- (attempt 2 — attempt 1's insert rolled back).
+pub fn db time random serializableCollisionRetries () -> Int =
+    match connect (pgConfig ())
+        Err _ -> 0 - 10
+        Ok connA ->
+            match connect (pgConfig ())
+                Err _ -> 0 - 11
+                Ok connB ->
+                    match resetRetryProbe connA
+                        Err _ -> 0 - 12
+                        Ok _ ->
+                            match Repo.retryTransient (RetryPolicy { maxAttempts = 3, baseBackoffMs = 20, maxBackoffMs = 100 }) (fn (n) -> Repo.transactionWith Serializable connA (collisionBody connB n))
+                                Ok _ ->
+                                    match countRetryProbe connA
+                                        Ok n  -> n
+                                        Err _ -> 0 - 13
+                                Err _ -> 0 - 1
 "#;
 
 /// Connection settings parsed out of `RIDGE_TEST_PG_URL`.
@@ -2593,7 +2733,7 @@ fn write_workspace(root: &std::path::Path, source: &str) {
     .expect("write workspace manifest");
     std::fs::write(
         root.join("app").join("ridge.toml"),
-        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n\n[capabilities]\nallow = [\"db\"]\n",
+        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n\n[capabilities]\nallow = [\"db\", \"time\", \"random\"]\n",
     )
     .expect("write project manifest");
     std::fs::write(app_src.join("Main.ridge"), source).expect("write source");
@@ -2840,6 +2980,9 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"rawUserCount=~w~n\",[{module}:rawUserCount()]), \
          io:format(\"uniqueViolationKind=~s~n\",[{module}:uniqueViolationKind()]), \
          io:format(\"notNullViolationDetail=~s~n\",[{module}:notNullViolationDetail()]), \
+         io:format(\"serializationFailureIsTransient=~w~n\",[{module}:serializationFailureIsTransient()]), \
+         io:format(\"uniqueViolationNotTransient=~w~n\",[{module}:uniqueViolationNotTransient()]), \
+         io:format(\"serializableCollisionRetries=~w~n\",[{module}:serializableCollisionRetries()]), \
          {pool_probe} \
          halt()."
     );
@@ -3357,6 +3500,18 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "notNullViolationDetail=notnull:val:ridge_pg_notnull",
             "a real not-null violation classifies to NotNullViolation (SQLSTATE 23502); dbErrorColumn reads the offending column and dbErrorTable its table out of the ErrorResponse",
+        ),
+        (
+            "serializationFailureIsTransient=1",
+            "a real serialization failure (SQLSTATE 40001), forced by the collision, classifies as transient",
+        ),
+        (
+            "uniqueViolationNotTransient=0",
+            "a real unique violation (SQLSTATE 23505) classifies as permanent, not transient",
+        ),
+        (
+            "serializableCollisionRetries=2",
+            "the serialization failure aborts attempt 1; the retried transaction commits and both rows survive",
         ),
         (
             "concurrent=true",

@@ -2236,6 +2236,11 @@ mod tests {
                             | "dbErrorConstraint"
                             | "dbErrorColumn"
                             | "dbErrorTable"
+                            // The reconciled `DbError` record and the classifiers
+                            // that lift or fabricate one are seeded the same way.
+                            | "DbError"
+                            | "toDbError"
+                            | "mkDbError"
                             // Transaction isolation levels: the reconciled
                             // `IsolationLevel` union, its variants, and the
                             // wire-name projection are seeded via `reconciled_decls`

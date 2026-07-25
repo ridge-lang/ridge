@@ -134,8 +134,9 @@ const CONSTRUCTOR_EXPORTS: &[(&str, &str)] = &[
     ("std.query", "MutUpdate"),
     ("std.query", "MutDelete"),
     ("std.query", "MutDeleteKeys"),
-    // The `DbError` variants: exported so a caller can match the kind of a typed
-    // database error, but surfaced by text extraction only through the type name.
+    // The `DbErrorKind` variants: exported so a caller can match the kind of a
+    // typed database error, but surfaced by text extraction only through the type
+    // name.
     ("std.data", "UniqueViolation"),
     ("std.data", "ForeignKeyViolation"),
     ("std.data", "NotNullViolation"),
@@ -450,7 +451,7 @@ fn signature_shape_consistency() {
                 continue;
             }
             // std.data's typed-error helpers are seeded via `reconciled_fn_scheme`
-            // (they read or return the reconciled `DbErrorKind`), not the
+            // (they read or return the reconciled `DbErrorKind`/`DbError`), not the
             // `stdlib_signature` table this shape check covers. `isolationLevelName`
             // reads the reconciled `IsolationLevel` the same way, and the retry
             // surface — the `defaultRetryPolicy` baseline, the `withRetry*`
@@ -463,6 +464,8 @@ fn signature_shape_consistency() {
                         | "dbErrorConstraint"
                         | "dbErrorColumn"
                         | "dbErrorTable"
+                        | "toDbError"
+                        | "mkDbError"
                         | "isolationLevelName"
                         | "defaultRetryPolicy"
                         | "withRetryMaxAttempts"

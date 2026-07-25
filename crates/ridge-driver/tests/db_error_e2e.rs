@@ -4,7 +4,8 @@
 //! code branches on a failure's cause — recover from a `UniqueViolation`, retry a
 //! `ConnectionError` — rather than string-matching the code. The accessors
 //! `dbErrorConstraint`/`dbErrorColumn` read the constraint or column a backend
-//! named.
+//! named. `toDbError` lifts the raw error into a typed `DbError` record whose
+//! `kind` field carries the same classification.
 //!
 //! User code cannot build an `Error` directly (it is nominal and has no source
 //! constructor), so this drives a genuine failure: the in-memory adapter has no SQL
@@ -25,7 +26,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.data (memAdapter, MemAdapter, dbErrorKind, dbErrorConstraint, DbErrorKind, UniqueViolation, ForeignKeyViolation, NotNullViolation, CheckViolation, ConnectionError, DecodeError, Unsupported, QueryError)
+import std.data (memAdapter, MemAdapter, dbErrorKind, dbErrorConstraint, toDbError, DbErrorKind, UniqueViolation, ForeignKeyViolation, NotNullViolation, CheckViolation, ConnectionError, DecodeError, Unsupported, QueryError)
 import std.raw as Raw
 import std.text as Text
 
@@ -55,6 +56,18 @@ pub fn db unsupportedConstraint () -> Text =
     let conn = memAdapter ()
     match Raw.exec conn "DELETE FROM t" []
         Err e -> Text.concat "[" (Text.concat (dbErrorConstraint e) "]")
+        Ok _ -> "unexpected-ok"
+
+-- `toDbError` lifts the same raw failure into a typed `DbError`; matching its
+-- `kind` field tags it, the consumer shape data-layer callers use.
+pub fn db typedKind () -> Text =
+    let conn = memAdapter ()
+    match Raw.exec conn "DELETE FROM t" []
+        Err e ->
+            let typed = toDbError e
+            match typed.kind
+                Unsupported -> "unsupported"
+                _ -> "other"
         Ok _ -> "unexpected-ok"
 "#;
 
@@ -146,4 +159,85 @@ fn db_error_classifies_on_beam() {
     want("unsupportedKind=unsupported");
     // The constraint accessor resolves and reads empty on a non-constraint error.
     want("unsupportedConstraint=[]");
+}
+
+/// Compile the workspace and evaluate each named export on the BEAM, returning
+/// the `erl` run's `(stdout, stderr)`.
+fn eval_exports(exports: &[&str]) -> (String, String) {
+    let dir = tempfile::Builder::new()
+        .prefix("ridge-db-error-e2e-")
+        .tempdir()
+        .expect("temp dir");
+    let cache = tempfile::Builder::new()
+        .prefix("ridge-db-error-e2e-cache-")
+        .tempdir()
+        .expect("cache dir");
+    write_workspace(dir.path());
+
+    let artefacts = compile_workspace(
+        CompileOptions::new(dir.path().to_path_buf())
+            .with_emit(EmitArtefacts::Beam)
+            .with_cache_root(cache.path().to_path_buf()),
+    )
+    .expect("compile to BEAM");
+
+    assert!(
+        artefacts.diagnostics.is_empty(),
+        "expected a clean compile, got diagnostics: {:?}",
+        artefacts.diagnostics
+    );
+
+    let beam_dir = artefacts
+        .beam_files
+        .iter()
+        .find_map(|p| p.parent())
+        .expect("at least one beam file")
+        .to_path_buf();
+    let module = artefacts
+        .beam_files
+        .iter()
+        .filter_map(|p| p.file_stem().and_then(|s| s.to_str()))
+        .find(|stem| stem.starts_with("ridge_module_"))
+        .expect("a user module")
+        .to_owned();
+
+    let names = exports
+        .iter()
+        .map(|n| format!("'{n}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let expr = format!(
+        "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
+         lists:foreach(F,[{names}]), halt()."
+    );
+    let output = Command::new("erl")
+        .arg("-noshell")
+        .arg("-pa")
+        .arg(&beam_dir)
+        .arg("-eval")
+        .arg(&expr)
+        .output()
+        .expect("run erl");
+
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn to_db_error_lifts_raw_error_on_beam() {
+    if which::which("erlc").is_err() || which::which("erl").is_err() {
+        eprintln!("erl/erlc not on PATH — skipping to_db_error_lifts_raw_error_on_beam");
+        return;
+    }
+
+    let (stdout, stderr) = eval_exports(&["typedKind"]);
+
+    // The same `raw.unsupported` failure, lifted by `toDbError` and matched
+    // through the typed record's `kind` field.
+    assert!(
+        stdout.contains("typedKind=unsupported"),
+        "expected `typedKind=unsupported`\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
 }

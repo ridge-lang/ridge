@@ -2133,6 +2133,49 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: false,
             is_anon: false,
         },
+        // `std.data` — a database failure with its kind in the type. A plain
+        // record declared in Ridge (stdlib/data.ridge); `toDbError` lifts a raw
+        // `Error` into one and `mkDbError` fabricates one from a code and
+        // message, so consumer code matches `e.kind` rather than the code
+        // string. Kept last in the block so its id is the next free slot.
+        TyConDecl {
+            id: TyConId(base + 40),
+            name: "DbError".to_string(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![
+                    RecordField {
+                        name: "kind".to_string(),
+                        ty: Type::Con(TyConId(base + 24), vec![]),
+                    },
+                    RecordField {
+                        name: "code".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "message".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "constraint".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "table".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "column".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
     ]
 }
 
@@ -2381,6 +2424,42 @@ pub(crate) fn reconciled_fn_scheme(
                 ty: Type::Fn {
                     params: vec![Type::Con(b.error, vec![])],
                     ret: Box::new(Type::Con(db_error_kind, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![],
+            })
+        }
+        // std.data `toDbError : Error -> DbError` — lifts a raw storage error into
+        // a typed `DbError`, classifying its code. Its return type names the
+        // reconciled `DbError`, so the hand-curated signature table cannot
+        // express it.
+        ("std.data", "toDbError") => {
+            let db_error = *reconciled.get("DbError")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(b.error, vec![])],
+                    ret: Box::new(Type::Con(db_error, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![],
+            })
+        }
+        // std.data `mkDbError : Text -> Text -> DbError` — fabricates a typed
+        // database error from a code and a message, for errors the stdlib itself
+        // raises. Its return type names the reconciled `DbError`, so the
+        // hand-curated signature table cannot express it.
+        ("std.data", "mkDbError") => {
+            let db_error = *reconciled.get("DbError")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(b.text, vec![]), Type::Con(b.text, vec![])],
+                    ret: Box::new(Type::Con(db_error, vec![])),
                     caps: CapRow::Concrete(CapabilitySet::PURE),
                 },
                 constraints: vec![],

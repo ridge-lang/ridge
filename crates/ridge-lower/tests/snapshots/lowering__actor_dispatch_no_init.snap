@@ -12,6 +12,7 @@ items:
       - name: count
         ty: Con(0)
     init: null
+    terminate: null
     handlers:
       - message: increment
         caps: CapabilitySet(0)

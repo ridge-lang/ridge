@@ -19,6 +19,7 @@ items:
       body:
         Assign(n0) -> StateField(count):
           Local(n1): start
+    terminate: null
     handlers:
       - message: increment
         caps: CapabilitySet(0)

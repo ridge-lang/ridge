@@ -34,6 +34,8 @@ pub struct IrActor {
     pub state_fields: Vec<IrStateField>,
     /// The actor's `init` block, if present.
     pub init: Option<IrInit>,
+    /// The actor's `terminate` callback, if present.
+    pub terminate: Option<IrTerminate>,
     /// One handler per `on` clause, in source order.
     pub dispatch: Vec<IrHandler>,
     /// Mailbox configuration (cut 0.2.7).
@@ -110,6 +112,20 @@ pub struct IrInit {
     /// stay as plain `IrExpr` siblings.
     pub body: IrExpr, // wrapped in IrExpr::Block if multi-stmt
     /// Source span of the `init` block.
+    pub span: Span,
+}
+
+/// The lowered `terminate` callback of an actor.
+#[derive(Debug, Clone)]
+pub struct IrTerminate {
+    /// The callback's parameters (conventionally one `reason: ExitReason`).
+    pub params: Vec<IrParam>,
+    /// Capability set of the callback.
+    pub caps: CapabilitySet,
+    /// The callback body; same lowering rule as [`IrInit::body`]. Mutations
+    /// type-check but the final state is discarded by codegen.
+    pub body: IrExpr, // wrapped in IrExpr::Block if multi-stmt
+    /// Source span of the `terminate` member.
     pub span: Span,
 }
 

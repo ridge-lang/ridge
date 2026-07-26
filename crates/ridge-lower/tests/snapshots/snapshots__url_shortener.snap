@@ -100,6 +100,7 @@ items:
       - name: table
         ty: Con(7) [Con(3), Con(3)]
     init: null
+    terminate: null
     handlers:
       - message: shorten
         caps: CapabilitySet(24)

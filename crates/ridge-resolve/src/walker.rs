@@ -22,14 +22,14 @@
 
 use ridge_ast::{
     decl::{
-        ActorDecl, ActorMember, Constructor, FnDecl, InitDecl, OnHandler, Param, StateDecl,
-        TerminateDecl, TypeBody, TypeDecl,
+        ActorDecl, ActorMember, Constructor, FnDecl, InitDecl, OnDownDecl, OnHandler, Param,
+        StateDecl, TerminateDecl, TypeBody, TypeDecl,
     },
     expr::{FieldInit, LambdaParam, MatchArm, QualifiedName, RecordCtor},
     typeclass::InstanceDecl,
     visit::{
-        walk_block, walk_expr, walk_init_decl, walk_on_handler, walk_terminate_decl, walk_type,
-        Visit,
+        walk_block, walk_expr, walk_init_decl, walk_on_down_decl, walk_on_handler,
+        walk_terminate_decl, walk_type, Visit,
     },
     Block, Body, Expr, Ident, Item, ListPatElem, Module, Pattern, Type,
 };
@@ -1041,6 +1041,7 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
                 // Mailbox config has no identifier references to resolve.
             }
             ActorMember::Terminate(t) => self.visit_terminate_decl(t),
+            ActorMember::OnDown(d) => self.visit_on_down_decl(d),
         }
     }
 
@@ -1070,6 +1071,16 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
             self.add_param(param, LocalKind::TerminateParam);
         }
         walk_terminate_decl(self, d);
+        self.scope.pop_into(d.span.end);
+    }
+
+    fn visit_on_down_decl(&mut self, d: &'ast OnDownDecl) {
+        self.scope
+            .push_with_start(ScopeKind::OnDownBlock, d.span.start);
+        for param in &d.params {
+            self.add_param(param, LocalKind::OnDownParam);
+        }
+        walk_on_down_decl(self, d);
         self.scope.pop_into(d.span.end);
     }
 

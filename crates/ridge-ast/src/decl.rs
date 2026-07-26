@@ -374,6 +374,10 @@ pub enum ActorMember {
     ///
     /// At most one per actor — semantic check, not grammar.
     Terminate(TerminateDecl),
+    /// An `onDown` monitor-notification handler.
+    ///
+    /// At most one per actor — semantic check, not grammar.
+    OnDown(OnDownDecl),
 }
 
 /// A state field declaration (grammar §5.2 line 500).
@@ -436,6 +440,29 @@ pub struct TerminateDecl {
     /// The callback body.
     pub body: Block,
     /// Span covering the whole `terminate` declaration.
+    pub span: Span,
+}
+
+/// An `onDown` monitor-notification handler of an actor.
+///
+/// Runs when a process monitored via `Actor.monitor` goes down: the generated
+/// `handle_info/2` routes the DOWN message into this member with the monitor
+/// reference and the reason as an `ExitReason`. The body may read and mutate
+/// state fields, like a cast handler.
+///
+/// ```text
+/// onDown io (m: Monitor) (reason: ExitReason) =
+///     Io.println "a worker died"
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnDownDecl {
+    /// Capability annotations.
+    pub caps: Vec<Capability>,
+    /// The parameter list (conventionally `(m: Monitor) (reason: ExitReason)`).
+    pub params: Vec<Param>,
+    /// The handler body.
+    pub body: Block,
+    /// Span covering the whole `onDown` declaration.
     pub span: Span,
 }
 

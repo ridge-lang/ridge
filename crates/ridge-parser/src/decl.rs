@@ -37,7 +37,8 @@ use ridge_ast::{
     typeclass::{ClassConstraint, ClassDecl, FunDep, InstanceDecl, MethodDef, MethodSig},
     ActorDecl, ActorMember, Attribute, Body, Capability, ConstDecl, Constructor, DocComment, Expr,
     FieldDecl, FnDecl, Ident, ImportDecl, InitDecl, Item, MailboxConfig, MailboxDecl,
-    MailboxPolicy, ModulePath, OnHandler, Param, RecordTypeBody, StateDecl, TerminateDecl, Type,
+    MailboxPolicy, ModulePath, OnDownDecl, OnHandler, Param, RecordTypeBody, StateDecl, TerminateDecl,
+    Type,
     TypeBody, TypeDecl, UnionTypeBody, Visibility,
 };
 use ridge_lexer::Token;
@@ -2134,6 +2135,7 @@ pub(crate) fn parse_actor_decl(
         ActorMember::On(o) => o.span,
         ActorMember::Mailbox(mb) => mb.span,
         ActorMember::Terminate(t) => t.span,
+        ActorMember::OnDown(d) => d.span,
     });
 
     Ok(ActorDecl {
@@ -2250,10 +2252,13 @@ fn parse_actor_member(cur: &mut Cursor<'_>) -> Result<ActorMember, ParseError> {
         Token::LowerIdent(s) if s == "terminate" => {
             Ok(ActorMember::Terminate(parse_terminate_decl(cur)?))
         }
+        Token::LowerIdent(s) if s == "onDown" => {
+            Ok(ActorMember::OnDown(parse_on_down_decl(cur)?))
+        }
         _ => Err(ParseError::UnexpectedToken {
             span: cur.span(),
             description: format!(
-                "expected `state`, `init`, `on`, `mailbox`, or `terminate` in actor body, found `{}`",
+                "expected `state`, `init`, `on`, `mailbox`, `terminate`, or `onDown` in actor body, found `{}`",
                 cur.peek()
             ),
         }),
@@ -2384,6 +2389,45 @@ pub(crate) fn parse_terminate_decl(cur: &mut Cursor<'_>) -> Result<TerminateDecl
     let end_span = body.span;
 
     Ok(TerminateDecl {
+        caps,
+        params,
+        body,
+        span: start.merge(end_span),
+    })
+}
+
+// ── parse_on_down_decl ─────────────────────────────────────────────────────────
+
+/// Parse an `onDown` actor member: `onDown [caps] (params) = body`.
+///
+/// `onDown` is a contextual word (`LowerIdent`), exactly like `mailbox` and
+/// `terminate` — no lexer keyword, so it stays a legal identifier elsewhere.
+///
+/// Precondition: `cur.peek()` is `Token::LowerIdent("onDown")`.
+pub(crate) fn parse_on_down_decl(cur: &mut Cursor<'_>) -> Result<OnDownDecl, ParseError> {
+    let start = cur.span();
+    cur.bump(); // consume `onDown`
+
+    let caps = parse_cap_list(cur);
+
+    // Parameters: zero or more top-level params (same as init/fn).
+    // `()` is the zero-param marker; consume it and leave params empty.
+    let mut params: Vec<Param> = Vec::new();
+    if cur.peek() == &Token::LParen && cur.peek_n(1) == Some(&Token::RParen) {
+        cur.bump(); // consume `(`
+        cur.bump(); // consume `)`
+    } else {
+        while can_start_param(cur) {
+            params.push(parse_param_top(cur)?);
+        }
+    }
+
+    cur.expect(&Token::Assign)?;
+
+    let body = parse_block(cur)?;
+    let end_span = body.span;
+
+    Ok(OnDownDecl {
         caps,
         params,
         body,

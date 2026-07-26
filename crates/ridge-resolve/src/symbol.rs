@@ -309,9 +309,9 @@ pub fn apply_external_exports(
 
 // ── Actor singleton-member check ─────────────────────────────────────────────
 
-/// R029 helper: `init`, `mailbox`, and `terminate` are singleton actor
-/// members — the first occurrence is recorded, every later one is an error
-/// anchored at the duplicate's own span.
+/// R029 helper: `init`, `mailbox`, `terminate`, and `onDown` are singleton
+/// actor members — the first occurrence is recorded, every later one is an
+/// error anchored at the duplicate's own span.
 fn dup_member_check(
     seen: &mut Option<Span>,
     span: Span,
@@ -719,6 +719,7 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
                 let mut seen_init_span: Option<ridge_ast::Span> = None;
                 let mut seen_mailbox_span: Option<ridge_ast::Span> = None;
                 let mut seen_terminate_span: Option<ridge_ast::Span> = None;
+                let mut seen_on_down_span: Option<ridge_ast::Span> = None;
 
                 for member in &d.members {
                     match member {
@@ -761,6 +762,15 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
                                 &mut seen_terminate_span,
                                 t.span,
                                 "terminate",
+                                &d.name.text,
+                                &mut self.errors,
+                            );
+                        }
+                        ridge_ast::ActorMember::OnDown(od) => {
+                            dup_member_check(
+                                &mut seen_on_down_span,
+                                od.span,
+                                "onDown",
                                 &d.name.text,
                                 &mut self.errors,
                             );
@@ -1435,6 +1445,20 @@ mod tests {
     fn t11d_duplicate_mailbox_member_r029() {
         let m = parse_source(
             "actor W =\n    mailbox unbounded\n    mailbox unbounded\n    state n: Int = 0\n",
+        )
+        .module;
+        let (_table, errors) = collect_symbols(ModuleId(0), &m);
+        assert_eq!(
+            errors.iter().filter(|e| e.code() == "R029").count(),
+            1,
+            "expected one R029, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn t11e_duplicate_on_down_member_r029() {
+        let m = parse_source(
+            "actor W =\n    state n: Int = 0\n\n    onDown (m: Monitor) (r: ExitReason) =\n        ()\n\n    onDown (m: Monitor) (r: ExitReason) =\n        ()\n",
         )
         .module;
         let (_table, errors) = collect_symbols(ModuleId(0), &m);

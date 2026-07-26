@@ -150,6 +150,15 @@ fn check_item(
                             }
                         }
                     }
+                    ActorMember::OnDown(d) => {
+                        check_caps(&d.caps, d.span, project, workspace, errors);
+                        // Walk parameter types for inner fn-type caps.
+                        for param in &d.params {
+                            if let ridge_ast::Param::Annotated { ty, .. } = param {
+                                check_type(ty, project, workspace, errors);
+                            }
+                        }
+                    }
                 }
             }
         }

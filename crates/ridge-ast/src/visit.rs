@@ -32,7 +32,8 @@
 use crate::{
     decl::{
         ActorDecl, ActorMember, ConstDecl, Constructor, FieldDecl, FnDecl, ImportDecl, InitDecl,
-        MailboxDecl, ModulePath, OnHandler, Param, RecordTypeBody, StateDecl, TerminateDecl,
+        MailboxDecl, ModulePath, OnDownDecl, OnHandler, Param, RecordTypeBody, StateDecl,
+        TerminateDecl,
         TypeBody, TypeDecl, UnionTypeBody,
     },
     expr::{AskTimeout, FieldInit, InterpPart, LambdaParam, MatchArm, QualifiedName, RecordCtor},
@@ -179,6 +180,11 @@ pub trait Visit<'ast> {
     /// Visit a `terminate` lifecycle callback.
     fn visit_terminate_decl(&mut self, d: &'ast TerminateDecl) {
         walk_terminate_decl(self, d);
+    }
+
+    /// Visit an `onDown` monitor-notification handler.
+    fn visit_on_down_decl(&mut self, d: &'ast OnDownDecl) {
+        walk_on_down_decl(self, d);
     }
 
     /// Visit a function parameter.
@@ -691,8 +697,8 @@ pub fn walk_actor_decl<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, d: &'ast ActorD
     }
 }
 
-/// Walk an [`ActorMember`]: dispatches to state, init, on-handler, mailbox, or
-/// terminate.
+/// Walk an [`ActorMember`]: dispatches to state, init, on-handler, mailbox,
+/// terminate, or onDown.
 pub fn walk_actor_member<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, m: &'ast ActorMember) {
     match m {
         ActorMember::State(s) => v.visit_state_decl(s),
@@ -700,6 +706,7 @@ pub fn walk_actor_member<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, m: &'ast Acto
         ActorMember::On(h) => v.visit_on_handler(h),
         ActorMember::Mailbox(mb) => v.visit_mailbox_decl(mb),
         ActorMember::Terminate(t) => v.visit_terminate_decl(t),
+        ActorMember::OnDown(d) => v.visit_on_down_decl(d),
     }
 }
 
@@ -708,6 +715,14 @@ pub const fn walk_mailbox_decl<'ast, V: Visit<'ast> + ?Sized>(_v: &mut V, _d: &'
 
 /// Walk a [`TerminateDecl`]: params and block body.
 pub fn walk_terminate_decl<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, d: &'ast TerminateDecl) {
+    for param in &d.params {
+        v.visit_param(param);
+    }
+    v.visit_block(&d.body);
+}
+
+/// Walk an [`OnDownDecl`]: params and block body.
+pub fn walk_on_down_decl<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, d: &'ast OnDownDecl) {
     for param in &d.params {
         v.visit_param(param);
     }

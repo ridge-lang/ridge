@@ -205,6 +205,10 @@ const CONSTRUCTOR_EXPORTS: &[(&str, &str)] = &[
     ("std.actor", "Temporary"),
     ("std.actor", "Noproc"),
     ("std.actor", "Timeout"),
+    // The `ExitReason` variants: exported so a `terminate` callback can match
+    // the stop kind, surfaced by text extraction only through the type name.
+    ("std.actor", "Shutdown"),
+    ("std.actor", "Crashed"),
 ];
 
 /// Compiler-known exports: names the manifest must carry so imports

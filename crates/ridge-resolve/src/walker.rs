@@ -23,11 +23,11 @@
 use ridge_ast::{
     decl::{
         ActorDecl, ActorMember, Constructor, FnDecl, InitDecl, OnHandler, Param, StateDecl,
-        TypeBody, TypeDecl,
+        TerminateDecl, TypeBody, TypeDecl,
     },
     expr::{FieldInit, LambdaParam, MatchArm, QualifiedName, RecordCtor},
     typeclass::InstanceDecl,
-    visit::{walk_block, walk_expr, walk_init_decl, walk_on_handler, walk_type, Visit},
+    visit::{walk_block, walk_expr, walk_init_decl, walk_on_handler, walk_terminate_decl, walk_type, Visit},
     Block, Body, Expr, Ident, Item, ListPatElem, Module, Pattern, Type,
 };
 use ridge_lexer::Span;
@@ -1037,6 +1037,7 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
             ActorMember::Mailbox(_) => {
                 // Mailbox config has no identifier references to resolve.
             }
+            ActorMember::Terminate(t) => self.visit_terminate_decl(t),
         }
     }
 
@@ -1056,6 +1057,16 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
             self.add_param(param, LocalKind::InitParam);
         }
         walk_init_decl(self, d);
+        self.scope.pop_into(d.span.end);
+    }
+
+    fn visit_terminate_decl(&mut self, d: &'ast TerminateDecl) {
+        self.scope
+            .push_with_start(ScopeKind::TerminateBlock, d.span.start);
+        for param in &d.params {
+            self.add_param(param, LocalKind::TerminateParam);
+        }
+        walk_terminate_decl(self, d);
         self.scope.pop_into(d.span.end);
     }
 

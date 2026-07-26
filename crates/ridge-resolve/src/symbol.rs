@@ -307,6 +307,27 @@ pub fn apply_external_exports(
     errors
 }
 
+// ── Actor singleton-member check ─────────────────────────────────────────────
+
+/// R029 helper: `init`, `mailbox`, and `terminate` are singleton actor
+/// members — the first occurrence is recorded, every later one is an error
+/// anchored at the duplicate's own span.
+fn dup_member_check(
+    seen: &mut Option<Span>,
+    span: Span,
+    member: &'static str,
+    actor: &str,
+    errors: &mut Vec<ResolveError>,
+) {
+    if seen.replace(span).is_some() {
+        errors.push(ResolveError::DuplicateActorMember {
+            actor: actor.to_string(),
+            member: member.to_string(),
+            span,
+        });
+    }
+}
+
 // ── Auto-promotion detection ──────────────────────────────────────────────────
 
 /// True when a `fn` declaration qualifies for `ToText` auto-promotion
@@ -695,6 +716,9 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
                 let mut state_fields: Vec<StateField> = Vec::new();
                 let mut handlers: Vec<HandlerSig> = Vec::new();
                 let mut has_init = false;
+                let mut seen_init_span: Option<ridge_ast::Span> = None;
+                let mut seen_mailbox_span: Option<ridge_ast::Span> = None;
+                let mut seen_terminate_span: Option<ridge_ast::Span> = None;
 
                 for member in &d.members {
                     match member {
@@ -712,11 +736,34 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
                                 def_span: h.span,
                             });
                         }
-                        ridge_ast::ActorMember::Init(_) => {
+                        ridge_ast::ActorMember::Init(i) => {
                             has_init = true;
+                            dup_member_check(
+                                &mut seen_init_span,
+                                i.span,
+                                "init",
+                                &d.name.text,
+                                &mut self.errors,
+                            );
                         }
-                        ridge_ast::ActorMember::Mailbox(_) => {
+                        ridge_ast::ActorMember::Mailbox(mb) => {
                             // Mailbox config contributes no symbols.
+                            dup_member_check(
+                                &mut seen_mailbox_span,
+                                mb.span,
+                                "mailbox",
+                                &d.name.text,
+                                &mut self.errors,
+                            );
+                        }
+                        ridge_ast::ActorMember::Terminate(t) => {
+                            dup_member_check(
+                                &mut seen_terminate_span,
+                                t.span,
+                                "terminate",
+                                &d.name.text,
+                                &mut self.errors,
+                            );
                         }
                     }
                 }
@@ -889,6 +936,7 @@ mod tests {
         Ident, InitDecl, Item, Module, OnHandler, Param, RecordTypeBody, StateDecl, Type, TypeBody,
         TypeDecl, UnionTypeBody, Visibility,
     };
+    use ridge_parser::parse_source;
 
     // ── AST builder helpers ───────────────────────────────────────────────────
 
@@ -1350,6 +1398,51 @@ mod tests {
             }
             other => panic!("expected Actor, got {other:?}"),
         }
+    }
+
+    // Test 11b: R029 — duplicate singleton actor members are rejected. The
+    // at-most-one rule for init/mailbox/terminate is enforced at collection;
+    // these parse from source (the builders above cannot express duplicates).
+    #[test]
+    fn t11b_duplicate_init_member_r029() {
+        let m = parse_source(
+            "actor W =\n    state n: Int = 0\n\n    init () =\n        ()\n\n    init () =\n        ()\n",
+        )
+        .module;
+        let (_table, errors) = collect_symbols(ModuleId(0), &m);
+        assert_eq!(
+            errors.iter().filter(|e| e.code() == "R029").count(),
+            1,
+            "expected one R029, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn t11c_duplicate_terminate_member_r029() {
+        let m = parse_source(
+            "actor W =\n    state n: Int = 0\n\n    terminate (r: ExitReason) =\n        ()\n\n    terminate (r: ExitReason) =\n        ()\n",
+        )
+        .module;
+        let (_table, errors) = collect_symbols(ModuleId(0), &m);
+        assert_eq!(
+            errors.iter().filter(|e| e.code() == "R029").count(),
+            1,
+            "expected one R029, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn t11d_duplicate_mailbox_member_r029() {
+        let m = parse_source(
+            "actor W =\n    mailbox unbounded\n    mailbox unbounded\n    state n: Int = 0\n",
+        )
+        .module;
+        let (_table, errors) = collect_symbols(ModuleId(0), &m);
+        assert_eq!(
+            errors.iter().filter(|e| e.code() == "R029").count(),
+            1,
+            "expected one R029, got {errors:?}"
+        );
     }
 
     // Test 12: R005 — duplicate fn names

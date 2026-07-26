@@ -60,10 +60,12 @@ use crate::core_ast::{
     CErlAnn, CErlAtom, CErlExport, CErlExpr, CErlFn, CErlLit, CErlModule, CErlVar,
 };
 use crate::error::CodegenError;
+use crate::expr::name_to_erl_var;
 use crate::handler::{
     call_params, cast_params, lower_handler_call_clause, lower_handler_cast_clause,
 };
-use crate::init::lower_init_body;
+use crate::init::{lower_init_body, lower_terminate_body, state_var};
+use crate::scope::LocalScope;
 use ridge_ir::{IrActor, MailboxConfig, MailboxPolicy};
 use rustc_hash::FxHashMap;
 
@@ -143,7 +145,7 @@ pub(crate) fn lower_actor(
         emit_handle_call(actor, fn_arity, parent_beam_name),
         emit_handle_cast(actor, fn_arity, parent_beam_name),
         Ok(emit_handle_info_stub()),
-        Ok(emit_terminate_stub()),
+        emit_terminate(actor, fn_arity, parent_beam_name),
         Ok(emit_code_change_stub()),
         Ok(emit_mailbox_config_fn(actor)),
     ]
@@ -243,6 +245,28 @@ fn emit_init(actor: &IrActor) -> Result<CErlFn, CodegenError> {
     // §4.29: the init body lowering handles both the default-map case and the
     // user-body case.
     let init_body_expr = lower_init_body(actor.init.as_ref(), &actor.state_fields, actor.span)?;
+
+    // Actors with a `terminate` callback trap exits so the supervisor's
+    // `shutdown` exit signal is converted into a `terminate/2` call instead
+    // of instant death — a gen_server that does not trap exits never runs
+    // terminate on an ordered stop. This is internal and not observable:
+    // unsupervised actors hold no links (spawn is unlinked), so no other
+    // EXIT messages can arrive.
+    let init_body_expr = if actor.terminate.is_some() {
+        CErlExpr::Do {
+            first: Box::new(CErlExpr::Call {
+                module: CErlAtom("erlang".into()),
+                fn_name: CErlAtom("process_flag".into()),
+                args: vec![
+                    CErlExpr::Lit(CErlLit::Atom(CErlAtom("trap_exit".into()))),
+                    CErlExpr::Lit(CErlLit::Atom(CErlAtom("true".into()))),
+                ],
+            }),
+            then: Box::new(init_body_expr),
+        }
+    } else {
+        init_body_expr
+    };
 
     // The init/1 parameter is the Args list (passed from start_link).
     // For actors with no init block, Args is ignored; we bind it as V_Args anyway
@@ -414,6 +438,89 @@ fn emit_terminate_stub() -> CErlFn {
         )],
         body,
     }
+}
+
+/// Emit the `gen_server:terminate/2` callback.
+///
+/// Actors without a `terminate` member keep the no-op stub. When the member
+/// is present, emits:
+///
+/// ```erlang
+/// 'terminate'/2 = fun (V_TermReason, V_StateArg) ->
+///     let V_Reason = call 'ridge_rt':'exit_reason_to_ridge'(V_TermReason) in
+///     let V_State = V_StateArg in
+///         <user body; every leaf sequences its value and yields 'ok'>
+/// ```
+///
+/// The OTP reason is mapped to the `ExitReason` union at the runtime boundary
+/// so the body matches on `'Shutdown'` / `{'Crashed', Text}`. At most one user
+/// parameter is supported (the reason); more would have no OTP counterpart.
+fn emit_terminate(
+    actor: &IrActor,
+    fn_arity: &FxHashMap<String, u32>,
+    parent_beam_name: &str,
+) -> Result<CErlFn, CodegenError> {
+    let Some(t) = actor.terminate.as_ref() else {
+        return Ok(emit_terminate_stub());
+    };
+
+    if t.params.len() > 1 {
+        return Err(CodegenError::IrShapeMalformed {
+            variant: "IrTerminate",
+            span: t.span,
+            detail: format!(
+                "terminate declares {} params — OTP delivers exactly one (the exit reason)",
+                t.params.len()
+            ),
+        });
+    }
+
+    let mut scope =
+        LocalScope::with_actor_parent(fn_arity.clone(), actor.module, parent_beam_name);
+    let mut state_idx: u32 = 0;
+
+    let lowered_body = lower_terminate_body(&t.body, &mut scope, &mut state_idx, t.span)?;
+
+    // let V_State = V_StateArg in <body ending in 'ok' at each leaf>
+    let state_bind = CErlExpr::Let {
+        var: state_var(0),
+        value: Box::new(CErlExpr::Var(CErlVar("V_StateArg".into()))),
+        body: Box::new(lowered_body),
+    };
+
+    // let <reason-param> = call 'ridge_rt':'exit_reason_to_ridge'(V_TermReason)
+    // — bound only when the user declared the param; `terminate io () = …`
+    // ignores the reason entirely.
+    let body_expr = if let Some(reason_param) = t.params.first() {
+        CErlExpr::Let {
+            var: CErlVar(name_to_erl_var(&reason_param.name)),
+            value: Box::new(CErlExpr::Call {
+                module: CErlAtom("ridge_rt".into()),
+                fn_name: CErlAtom("exit_reason_to_ridge".into()),
+                args: vec![CErlExpr::Var(CErlVar("V_TermReason".into()))],
+            }),
+            body: Box::new(state_bind),
+        }
+    } else {
+        state_bind
+    };
+
+    let body = CErlExpr::Fun {
+        params: vec![
+            CErlVar("V_TermReason".into()),
+            CErlVar("V_StateArg".into()),
+        ],
+        body: Box::new(body_expr),
+    };
+
+    Ok(CErlFn {
+        name: CErlAtom("terminate".into()),
+        arity: 2,
+        anns: vec![CErlAnn(
+            "%% gen_server:terminate/2 — user terminate callback (§4.28)".into(),
+        )],
+        body,
+    })
 }
 
 /// `code_change/3` no-op stub.
@@ -592,6 +699,7 @@ mod tests {
             tycon: TyConId(0),
             state_fields,
             init: None,
+            terminate: None,
             dispatch: handlers,
             mailbox_config: None,
             origin: NodeId(0),

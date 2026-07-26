@@ -237,6 +237,27 @@ pub(crate) fn lower_handler_body_for_call(
     lower_actor_body_stmts_w(body, scope, state_idx, span, wrap)
 }
 
+/// Lower a `terminate` callback body for `terminate/2`.
+///
+/// The callback runs for its side effects (cleanup/flush); OTP discards the
+/// return value of `terminate/2`, so every leaf sequences its value and then
+/// yields the bare atom `'ok'` — the same shape as the cast noreply wrap but
+/// without a state to hand back (the process is dying).
+pub(crate) fn lower_terminate_body(
+    body: &IrExpr,
+    scope: &mut LocalScope,
+    state_idx: &mut u32,
+    span: Span,
+) -> Result<CErlExpr, CodegenError> {
+    let wrap: &dyn Fn(CErlExpr, u32) -> CErlExpr = &|val, _idx| {
+        CErlExpr::Do {
+            first: Box::new(val),
+            then: Box::new(CErlExpr::Lit(CErlLit::Atom(CErlAtom("ok".into())))),
+        }
+    };
+    lower_actor_body_stmts_w(body, scope, state_idx, span, wrap)
+}
+
 /// Lower a handler body for `handle_cast/2` (noreply path).
 ///
 /// B-7 fix: injects `{'noreply', V_State<final>}` AT the leaf of the body.

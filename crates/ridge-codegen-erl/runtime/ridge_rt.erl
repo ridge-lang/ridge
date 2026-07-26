@@ -46,6 +46,7 @@
     ask/3, send/2, send_op/2, send_fn/2, mailbox_size/1, spawn_actor/3,
     start_supervisor/4, start_supervised_child/2, stop_supervised_child/2,
     which_children/1, set_child_id/2, set_child_restart/2, try_ask/3,
+    exit_reason_to_ridge/1,
     diagnostics_to_stderr/0,
     mem_new/1, mem_insert/3, mem_all/2,
     mem_delete/3, mem_update/4, mem_get_rows/4,
@@ -1930,6 +1931,17 @@ sup_error_binary({already_started, _})  -> <<"child already started">>;
 sup_error_binary(not_found)             -> <<"not_found">>;
 sup_error_binary(Reason) ->
     iolist_to_binary(io_lib:format("~p", [Reason])).
+
+%% exit_reason_to_ridge/1 — map an OTP exit reason to Ridge's `ExitReason`
+%% union wire values, delivered to an actor's `terminate` callback.
+%% `shutdown`, `{shutdown, _}` and (defensively) `normal` are ordered stops;
+%% anything else is a crash, rendered as text. Monitors reuse the same mapper
+%% for their `DownReason` (which adds a noproc case).
+exit_reason_to_ridge(shutdown)        -> 'Shutdown';
+exit_reason_to_ridge({shutdown, _})   -> 'Shutdown';
+exit_reason_to_ridge(normal)          -> 'Shutdown';
+exit_reason_to_ridge(Reason) ->
+    {'Crashed', iolist_to_binary(io_lib:format("~p", [Reason]))}.
 
 %% child_id_binary/1 — ids are binaries (Ridge Text); an atom id from a
 %% hand-built spec is converted so which_children's output keeps the

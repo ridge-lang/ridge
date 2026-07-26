@@ -40,8 +40,11 @@ fn io time main () -> Result Unit Text =
     Ok ()
 ";
 
-fn compile_to_core() -> String {
-    let tw = make_workspace("supervision", "supervision", SOURCE);
+fn compile_to_core(id: &str) -> String {
+    // Each caller passes a distinct id: the temp workspace dir is keyed by it,
+    // and two tests sharing one would race (one test's cleanup empties the
+    // other's pipeline mid-run).
+    let tw = make_workspace(id, "supervision", SOURCE);
     let result = run_pipeline(&tw.path);
 
     let module_opt = &result.lowered.modules[0];
@@ -64,7 +67,7 @@ fn pipeline_typechecks_and_lowers() {
 
 #[test]
 fn child_spec_map_shape_in_core() {
-    let core = compile_to_core();
+    let core = compile_to_core("supervision_shape");
     // The OTP child-spec map: plain map with id/start/restart/shutdown keys.
     // The id is a BINARY (Ridge Text) — printed in Core Erlang bit-syntax
     // form (`c` = 99 is the first byte of "counter") — so `stopChild` /
@@ -102,7 +105,7 @@ fn child_spec_map_shape_in_core() {
 
 #[test]
 fn supervision_calls_route_through_ridge_rt() {
-    let core = compile_to_core();
+    let core = compile_to_core("supervision_route");
     for want in [
         "'start_supervisor'",
         "'start_supervised_child'",

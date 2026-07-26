@@ -1036,6 +1036,9 @@ fn builtin_tycon_id_by_name(name: &str) -> Option<TyConId> {
         // interned after `Instant` (ids 57, 58) in `BuiltinTyCons::allocate`.
         "ChildSpec" => Some(TyConId(57)),
         "Supervisor" => Some(TyConId(58)),
+        // `Monitor` — the opaque process-monitor reference (`std.actor`),
+        // interned after `Supervisor` (id 59) in `BuiltinTyCons::allocate`.
+        "Monitor" => Some(TyConId(59)),
         "Error" => Some(TyConId(12)),
         "Duration" => Some(TyConId(13)),
         "Output" => Some(TyConId(14)),

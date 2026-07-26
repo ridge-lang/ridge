@@ -2176,9 +2176,12 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             is_anon: false,
         },
         // `std.actor` — why an actor stopped, delivered to its `terminate`
-        // callback. Variants lower to `'Shutdown'` / `{'Crashed', Text}`;
-        // the runtime maps OTP exit reasons at the boundary. Appended last so
-        // it disturbs no earlier reconciled id.
+        // callback and to monitor consumers (`await`, `onDown`). `NotRunning`
+        // only ever comes from monitoring an already-dead process — it is
+        // never delivered to `terminate`. Variants lower to `'NotRunning'` /
+        // `'Shutdown'` / `{'Crashed', Text}`; the runtime maps OTP exit
+        // reasons at the boundary. Appended last so it disturbs no earlier
+        // reconciled id.
         TyConDecl {
             id: TyConId(base + 41),
             name: "ExitReason".to_string(),
@@ -2186,6 +2189,10 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             kind: TyConKind::Union(UnionSchema {
                 params: vec![],
                 variants: vec![
+                    UnionVariant {
+                        name: "NotRunning".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
                     UnionVariant {
                         name: "Shutdown".to_string(),
                         kind: VariantPayload::Nullary,
@@ -2312,6 +2319,28 @@ pub(crate) fn reconciled_fn_scheme(
                     caps: CapRow::Concrete(CapabilitySet::PURE),
                 },
                 constraints: vec![Constraint::single(ORD_CLASS, key_ret)],
+            })
+        }
+        // std.actor `await : Monitor -> Int -> Option ExitReason` — blocking
+        // receive of a monitor's DOWN with a timeout, for sequential code.
+        // Names the reconciled `ExitReason`, so the hand-curated table cannot
+        // express it. Carries the `time` capability (the `Time.sleep`
+        // precedent): the call blocks the current process up to the timeout.
+        ("std.actor", "await") => {
+            let exit_reason = *reconciled.get("ExitReason")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(b.monitor, vec![]), Type::Con(b.int, vec![])],
+                    ret: Box::new(Type::Con(
+                        b.option,
+                        vec![Type::Con(exit_reason, vec![])],
+                    )),
+                    caps: CapRow::Concrete(CapabilitySet::singleton(Capability::Time)),
+                },
+                constraints: vec![],
             })
         }
         // std.actor `supervise : ∀a. Strategy -> Int -> Int -> List (ChildSpec a)

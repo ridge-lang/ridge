@@ -168,6 +168,10 @@ fn ty_child_spec(b: &BuiltinTyCons, a: Type) -> Type {
     Type::Con(b.child_spec, vec![a])
 }
 #[inline]
+fn ty_monitor(b: &BuiltinTyCons) -> Type {
+    Type::Con(b.monitor, vec![])
+}
+#[inline]
 fn ty_supervisor(b: &BuiltinTyCons, a: Type) -> Type {
     Type::Con(b.supervisor, vec![a])
 }
@@ -1631,6 +1635,20 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                 ty_fn_pure(vec![ty_handle(b, Type::Var(A))], ty_option(b, ty_int(b))),
             ))
         }
+        // Process monitors. Cap-free, like `mailboxSize` — the handle is the
+        // proof of access. `await` names the reconciled `ExitReason` union, so
+        // it is seeded via `reconciled_fn_scheme`, not here.
+        (STD_ACTOR, "monitor") => {
+            // forall a. Handle a -> Monitor
+            Some(poly(
+                vec![A],
+                ty_fn_pure(vec![ty_handle(b, Type::Var(A))], ty_monitor(b)),
+            ))
+        }
+        (STD_ACTOR, "unmonitor") => {
+            // Monitor -> Unit
+            Some(mono(ty_fn_pure(vec![ty_monitor(b)], ty_unit(b))))
+        }
         // Typed supervision. Cap-free, like `mailboxSize`. `supervise` and
         // `childRestart` name the reconciled `Strategy` / `Restart` unions, so
         // they are seeded via `reconciled_fn_scheme`, not here.
@@ -2046,12 +2064,12 @@ mod tests {
                 {
                     continue;
                 }
-                // std.actor's supervision surface: `Strategy` / `Restart` /
-                // `AskError` / `ExitReason` and their constructors are reconciled
-                // unions seeded from the reserved arena block
+                // std.actor's supervision/monitor surface: `Strategy` /
+                // `Restart` / `AskError` / `ExitReason` and their constructors
+                // are reconciled unions seeded from the reserved arena block
                 // (`reconciled_ctor_scheme`), and `supervise` / `childRestart`
-                // name those types so they are seeded via `reconciled_fn_scheme`
-                // — none via this hand-curated table.
+                // / `await` name those types so they are seeded via
+                // `reconciled_fn_scheme` — none via this hand-curated table.
                 if module.name == "std.actor"
                     && matches!(
                         name,
@@ -2067,10 +2085,12 @@ mod tests {
                             | "Noproc"
                             | "Timeout"
                             | "ExitReason"
+                            | "NotRunning"
                             | "Shutdown"
                             | "Crashed"
                             | "supervise"
                             | "childRestart"
+                            | "await"
                     )
                 {
                     continue;

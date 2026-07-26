@@ -798,7 +798,15 @@ fn typecheck_actor_bodies(
                     // Capability-check the body against the init's declared set,
                     // the same rule a handler gets.
                     let declared = caps_from_ast_slice(&init.caps);
-                    check_caps_block(ctx, b, "init", Some(declared), &init.body, init.span);
+                    check_caps_block(
+                        ctx,
+                        b,
+                        "init",
+                        CapDeclKind::Init,
+                        Some(declared),
+                        &init.body,
+                        init.span,
+                    );
 
                     ctx.env.pop_frame();
                 }
@@ -827,7 +835,15 @@ fn typecheck_actor_bodies(
                     // Capability-check the body against the declared set,
                     // the same rule init gets.
                     let declared = caps_from_ast_slice(&t.caps);
-                    check_caps_block(ctx, b, "terminate", Some(declared), &t.body, t.span);
+                    check_caps_block(
+                        ctx,
+                        b,
+                        "terminate",
+                        CapDeclKind::Terminate,
+                        Some(declared),
+                        &t.body,
+                        t.span,
+                    );
 
                     ctx.env.pop_frame();
                 }

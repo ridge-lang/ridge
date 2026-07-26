@@ -26,6 +26,8 @@ pub enum CapDeclKind {
     Handler,
     /// An actor `init` block.
     Init,
+    /// An actor `terminate` callback.
+    Terminate,
     /// An inner `fn` — the check compares its declared set against the
     /// *enclosing* effective set (Rule 4), so `declared` is the enclosing
     /// set, not the inner fn's own annotation.

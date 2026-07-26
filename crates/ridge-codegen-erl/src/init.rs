@@ -249,11 +249,9 @@ pub(crate) fn lower_terminate_body(
     state_idx: &mut u32,
     span: Span,
 ) -> Result<CErlExpr, CodegenError> {
-    let wrap: &dyn Fn(CErlExpr, u32) -> CErlExpr = &|val, _idx| {
-        CErlExpr::Do {
-            first: Box::new(val),
-            then: Box::new(CErlExpr::Lit(CErlLit::Atom(CErlAtom("ok".into())))),
-        }
+    let wrap: &dyn Fn(CErlExpr, u32) -> CErlExpr = &|val, _idx| CErlExpr::Do {
+        first: Box::new(val),
+        then: Box::new(CErlExpr::Lit(CErlLit::Atom(CErlAtom("ok".into())))),
     };
     lower_actor_body_stmts_w(body, scope, state_idx, span, wrap)
 }

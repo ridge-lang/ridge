@@ -704,7 +704,7 @@ fn typecheck_actor_bodies(
     ast: &Arc<ridge_ast::Module>,
     arena: &TyConArena,
 ) {
-    use crate::caps_check::{caps_from_ast_slice, check_caps_block, check_caps_decl_kind};
+    use crate::caps_check::{caps_from_ast_slice, check_caps_decl_kind};
     use crate::error::CapDeclKind;
     use crate::infer::infer_expr;
     use ridge_ast::ActorMember;
@@ -773,84 +773,93 @@ fn typecheck_actor_bodies(
                     ctx.env.pop_frame();
                 }
                 ActorMember::Init(init) => {
-                    ctx.env.push_frame();
-
-                    // Bind state fields.
-                    for field in &schema.state_fields {
-                        ctx.env
-                            .bind(field.name.clone(), monoscheme(field.ty.clone()));
-                    }
-
-                    // Bind init parameters (when the schema collected them).
-                    if let Some(param_tys) = &schema.init_params {
-                        for (param, ty) in init.params.iter().zip(param_tys.iter()) {
-                            bind_actor_param(ctx, b, param, ty, &monoscheme);
-                        }
-                    }
-
-                    // Walk each statement for side-effect: populates
-                    // ctx.node_types_accum and surfaces type errors inside the
-                    // init body, which was previously never type-checked.
-                    for stmt in &init.body.stmts {
-                        let _ = infer_expr(ctx, b, stmt);
-                    }
-
-                    // Capability-check the body against the init's declared set,
-                    // the same rule a handler gets.
-                    let declared = caps_from_ast_slice(&init.caps);
-                    check_caps_block(
+                    check_actor_callback_body(
                         ctx,
                         b,
+                        schema,
                         "init",
                         CapDeclKind::Init,
-                        Some(declared),
+                        &init.caps,
+                        &init.params,
+                        schema.init_params.as_ref(),
                         &init.body,
                         init.span,
+                        &monoscheme,
                     );
-
-                    ctx.env.pop_frame();
                 }
                 ActorMember::Terminate(t) => {
-                    ctx.env.push_frame();
-
-                    // Bind state fields (the callback may read them for
-                    // cleanup/flush; mutations type-check but are discarded).
-                    for field in &schema.state_fields {
-                        ctx.env
-                            .bind(field.name.clone(), monoscheme(field.ty.clone()));
-                    }
-
-                    // Bind terminate parameters (when the schema collected them).
-                    if let Some(param_tys) = &schema.terminate_params {
-                        for (param, ty) in t.params.iter().zip(param_tys.iter()) {
-                            bind_actor_param(ctx, b, param, ty, &monoscheme);
-                        }
-                    }
-
-                    // Walk each statement for side-effect, exactly like init.
-                    for stmt in &t.body.stmts {
-                        let _ = infer_expr(ctx, b, stmt);
-                    }
-
-                    // Capability-check the body against the declared set,
-                    // the same rule init gets.
-                    let declared = caps_from_ast_slice(&t.caps);
-                    check_caps_block(
+                    check_actor_callback_body(
                         ctx,
                         b,
+                        schema,
                         "terminate",
                         CapDeclKind::Terminate,
-                        Some(declared),
+                        &t.caps,
+                        &t.params,
+                        schema.terminate_params.as_ref(),
                         &t.body,
                         t.span,
+                        &monoscheme,
                     );
-
-                    ctx.env.pop_frame();
                 }
                 ActorMember::State(_) | ActorMember::Mailbox(_) => {}
             }
         }
     }
+}
+
+/// Type-check the body of a block-bodied actor callback (`init`, `terminate`):
+/// state fields are bound (readable; `init` also writes them), the declared
+/// parameters are bound from the schema, each statement is inferred, and the
+/// body is capability-checked against the declared set — the same rule a
+/// handler gets.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one callback check needs all of these"
+)]
+fn check_actor_callback_body(
+    ctx: &mut crate::ctx::InferCtx,
+    b: &BuiltinTyCons,
+    schema: &ridge_types::ActorSchema,
+    label: &'static str,
+    kind: CapDeclKind,
+    caps: &[ridge_ast::Capability],
+    params: &[ridge_ast::Param],
+    schema_param_tys: Option<&Vec<ridge_types::Type>>,
+    body: &ridge_ast::Block,
+    span: ridge_ast::Span,
+    monoscheme: &impl Fn(ridge_types::Type) -> Scheme,
+) {
+    use crate::caps_check::{caps_from_ast_slice, check_caps_block};
+    use crate::infer::infer_expr;
+
+    ctx.env.push_frame();
+
+    // Bind state fields (the callback may read them; terminate's writes
+    // type-check but are discarded by codegen).
+    for field in &schema.state_fields {
+        ctx.env
+            .bind(field.name.clone(), monoscheme(field.ty.clone()));
+    }
+
+    // Bind the callback parameters (when the schema collected them).
+    if let Some(param_tys) = schema_param_tys {
+        for (param, ty) in params.iter().zip(param_tys.iter()) {
+            bind_actor_param(ctx, b, param, ty, monoscheme);
+        }
+    }
+
+    // Walk each statement for side-effect: populates ctx.node_types_accum and
+    // surfaces type errors inside the body.
+    for stmt in &body.stmts {
+        let _ = infer_expr(ctx, b, stmt);
+    }
+
+    // Capability-check the body against the callback's declared set.
+    let declared = caps_from_ast_slice(caps);
+    check_caps_block(ctx, b, label, kind, Some(declared), body, span);
+
+    ctx.env.pop_frame();
 }
 
 /// Bind one actor-member parameter (`on` handler or `init`) into the current

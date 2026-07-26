@@ -418,7 +418,7 @@ pub struct InitDecl {
 
 /// A `terminate` lifecycle callback of an actor.
 ///
-/// Runs when the actor's gen_server terminates — on an ordered stop from a
+/// Runs when the actor's `gen_server` terminates — on an ordered stop from a
 /// supervisor or after a handler crash — with the reason delivered as an
 /// `ExitReason`. The body may read state fields (flush/cleanup); its value is
 /// discarded.

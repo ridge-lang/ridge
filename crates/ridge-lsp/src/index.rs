@@ -5818,7 +5818,13 @@ pub fn collect_capability_fixes(
                 CapDeclKind::Terminate => {
                     if find_terminate(module, *span).is_some() {
                         push_member_insert_fix(
-                            &mut out, uri, li, *span, "terminate", *missing, "T014",
+                            &mut out,
+                            uri,
+                            li,
+                            *span,
+                            "terminate",
+                            *missing,
+                            "T014",
                         );
                     }
                 }
@@ -5911,7 +5917,12 @@ pub fn collect_capability_fixes(
                                         if caller == "terminate" && span_within(*span, t.span) =>
                                     {
                                         push_member_insert_fix(
-                                            &mut out, uri, li, t.span, "terminate", *missing,
+                                            &mut out,
+                                            uri,
+                                            li,
+                                            t.span,
+                                            "terminate",
+                                            *missing,
                                             "T018",
                                         );
                                         placed = true;
@@ -5938,7 +5949,14 @@ pub fn collect_capability_fixes(
                 // `handler` names the leaking member: "init", "terminate", or
                 // an on-handler name (the last is unreachable by construction).
                 if let Some(fix) = build_member_leak_fix(
-                    uri, li, text, module, *span, actor, handler, *leaking_caps,
+                    uri,
+                    li,
+                    text,
+                    module,
+                    *span,
+                    actor,
+                    handler,
+                    *leaking_caps,
                 ) {
                     out.push(fix);
                 }

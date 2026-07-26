@@ -370,6 +370,10 @@ pub enum ActorMember {
     ///
     /// At most one per actor — semantic check, not grammar.
     Mailbox(MailboxDecl),
+    /// A `terminate` lifecycle callback.
+    ///
+    /// At most one per actor — semantic check, not grammar.
+    Terminate(TerminateDecl),
 }
 
 /// A state field declaration (grammar §5.2 line 500).
@@ -409,6 +413,29 @@ pub struct InitDecl {
     /// The initialisation block body.
     pub body: Block,
     /// Span covering the whole `init` declaration.
+    pub span: Span,
+}
+
+/// A `terminate` lifecycle callback of an actor.
+///
+/// Runs when the actor's gen_server terminates — on an ordered stop from a
+/// supervisor or after a handler crash — with the reason delivered as an
+/// `ExitReason`. The body may read state fields (flush/cleanup); its value is
+/// discarded.
+///
+/// ```text
+/// terminate io (reason: ExitReason) =
+///     Io.println "worker stopping"
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminateDecl {
+    /// Capability annotations.
+    pub caps: Vec<Capability>,
+    /// The parameter list (conventionally one `(reason: ExitReason)` param).
+    pub params: Vec<Param>,
+    /// The callback body.
+    pub body: Block,
+    /// Span covering the whole `terminate` declaration.
     pub span: Span,
 }
 

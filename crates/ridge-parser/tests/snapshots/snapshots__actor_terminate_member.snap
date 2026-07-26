@@ -1,0 +1,153 @@
+---
+source: crates/ridge-parser/tests/snapshots.rs
+expression: result.module
+---
+Module {
+    items: [
+        Actor(
+            ActorDecl {
+                vis: Private,
+                name: Ident {
+                    text: "Worker",
+                    span: Span {
+                        start: 6,
+                        end: 12,
+                    },
+                },
+                members: [
+                    State(
+                        StateDecl {
+                            name: Ident {
+                                text: "n",
+                                span: Span {
+                                    start: 25,
+                                    end: 26,
+                                },
+                            },
+                            ty: Primitive {
+                                name: Int,
+                                span: Span {
+                                    start: 28,
+                                    end: 31,
+                                },
+                            },
+                            default: Some(
+                                Literal(
+                                    IntDec {
+                                        raw: "0",
+                                        span: Span {
+                                            start: 34,
+                                            end: 35,
+                                        },
+                                    },
+                                ),
+                            ),
+                            span: Span {
+                                start: 19,
+                                end: 35,
+                            },
+                        },
+                    ),
+                    Terminate(
+                        TerminateDecl {
+                            caps: [
+                                Io,
+                            ],
+                            params: [
+                                Annotated {
+                                    name: Ident {
+                                        text: "reason",
+                                        span: Span {
+                                            start: 55,
+                                            end: 61,
+                                        },
+                                    },
+                                    ty: Named {
+                                        name: Ident {
+                                            text: "ExitReason",
+                                            span: Span {
+                                                start: 63,
+                                                end: 73,
+                                            },
+                                        },
+                                        span: Span {
+                                            start: 63,
+                                            end: 73,
+                                        },
+                                    },
+                                    span: Span {
+                                        start: 54,
+                                        end: 74,
+                                    },
+                                },
+                            ],
+                            body: Block {
+                                stmts: [
+                                    Call {
+                                        callee: Qualified(
+                                            QualifiedName {
+                                                segments: [
+                                                    Ident {
+                                                        text: "Io",
+                                                        span: Span {
+                                                            start: 85,
+                                                            end: 87,
+                                                        },
+                                                    },
+                                                    Ident {
+                                                        text: "println",
+                                                        span: Span {
+                                                            start: 88,
+                                                            end: 95,
+                                                        },
+                                                    },
+                                                ],
+                                                span: Span {
+                                                    start: 85,
+                                                    end: 95,
+                                                },
+                                            },
+                                        ),
+                                        args: [
+                                            Literal(
+                                                Text {
+                                                    raw: "bye",
+                                                    span: Span {
+                                                        start: 96,
+                                                        end: 101,
+                                                    },
+                                                },
+                                            ),
+                                        ],
+                                        span: Span {
+                                            start: 85,
+                                            end: 101,
+                                        },
+                                    },
+                                ],
+                                span: Span {
+                                    start: 85,
+                                    end: 102,
+                                },
+                            },
+                            span: Span {
+                                start: 41,
+                                end: 102,
+                            },
+                        },
+                    ),
+                ],
+                span: Span {
+                    start: 0,
+                    end: 102,
+                },
+                doc: None,
+            },
+        ),
+    ],
+    doc: [],
+    span: Span {
+        start: 0,
+        end: 102,
+    },
+}

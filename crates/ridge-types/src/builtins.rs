@@ -1947,7 +1947,7 @@ mod tests {
     }
 
     #[test]
-    fn arena_len_is_59() {
+    fn arena_len_is_60() {
         // 15 original builtins + Ordering + JsonValue + the std.net.http taint
         // wrappers Sql / Html / SecureCookie + std.sql's SqlValue + the
         // column-codegen builtins Column / Table + the schema-codegen builtins
@@ -1956,10 +1956,11 @@ mod tests {
         // Rows/1 + JoinCond/2 + the four join-result extractors (Join/Left/Right/Full)
         // + InsertShape/1 + the Decimal, Uuid, Bytes, Date and Time primitives and
         // the Instant monotonic reading + the supervision types
-        // ChildSpec / Supervisor (interned last).
+        // ChildSpec / Supervisor + the process-monitor reference Monitor
+        // (interned last).
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 16);
-        assert_eq!(arena.len(), 59);
+        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 17);
+        assert_eq!(arena.len(), 60);
     }
 
     #[test]

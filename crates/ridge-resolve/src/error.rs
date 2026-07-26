@@ -310,6 +310,18 @@ pub enum ResolveError {
         span: Span,
     },
 
+    /// R029 — an actor declares a singleton member (`init`, `mailbox`, or
+    /// `terminate`) more than once.
+    #[error("actor `{actor}` declares more than one `{member}` member")]
+    DuplicateActorMember {
+        /// The actor name.
+        actor: String,
+        /// The duplicated member keyword (`init`, `mailbox`, or `terminate`).
+        member: String,
+        /// Span of the duplicate member declaration.
+        span: Span,
+    },
+
     /// R022 — an `@ffi` attribute was used outside the `crates/ridge-stdlib/`
     /// crate.  `@ffi` is stdlib-only in 0.1.0 (§5.5 / T003 `FfiOutsideStdlib`).
     #[error("`@ffi` is only allowed in the Ridge standard library (T003)")]
@@ -453,6 +465,7 @@ impl ResolveError {
             Self::OpaquePattern { .. } => "R026",
             Self::OrPatternBindingMismatch { .. } => "R027",
             Self::ReservedName { .. } => "R028",
+            Self::DuplicateActorMember { .. } => "R029",
             Self::InternalNodeIdCollision { .. } => "R999",
         }
     }
@@ -499,6 +512,7 @@ impl ResolveError {
             | Self::UnknownCapabilityKeyword { span, .. }
             | Self::CapabilityListOnWrongDecl { span }
             | Self::ActorStateMissingDefaultOrInit { span, .. }
+            | Self::DuplicateActorMember { span, .. }
             | Self::FfiOutsideStdlib { span }
             | Self::ReservedName { span, .. }
             | Self::AmbiguousMethodName { span, .. }

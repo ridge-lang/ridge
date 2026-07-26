@@ -38,6 +38,8 @@ pub enum ScopeKind {
     InitBlock,
     /// The body of an `on` message handler inside an actor.
     OnHandler,
+    /// The body of a `terminate` callback inside an actor.
+    TerminateBlock,
     /// The implicit scope that wraps all members of an `actor` declaration.
     ActorBody,
     /// A `try` expression body.
@@ -67,6 +69,8 @@ pub enum LocalKind {
     HandlerParam,
     /// A parameter of an `init` block.
     InitParam,
+    /// A parameter of a `terminate` callback.
+    TerminateParam,
     /// An alias pattern `name @`.
     AsAlias,
 }

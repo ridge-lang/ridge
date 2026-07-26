@@ -141,6 +141,15 @@ fn check_item(
                         // and a policy enum: no capabilities, no types, no
                         // identifiers to resolve.
                     }
+                    ActorMember::Terminate(t) => {
+                        check_caps(&t.caps, t.span, project, workspace, errors);
+                        // Walk parameter types for inner fn-type caps.
+                        for param in &t.params {
+                            if let ridge_ast::Param::Annotated { ty, .. } = param {
+                                check_type(ty, project, workspace, errors);
+                            }
+                        }
+                    }
                 }
             }
         }

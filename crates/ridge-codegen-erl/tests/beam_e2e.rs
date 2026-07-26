@@ -2041,7 +2041,7 @@ const TERMINATE_ON_STOP_SOURCE: &str = r#"
 import std.io    as Io
 import std.time  as Time
 import std.actor as Actor
-import std.actor (OneForOne, ExitReason, Shutdown, Crashed)
+import std.actor (OneForOne, ExitReason, NotRunning, Shutdown, Crashed)
 
 actor Worker =
     state n: Int = 0
@@ -2051,6 +2051,7 @@ actor Worker =
 
     terminate io (reason: ExitReason) =
         match reason
+            NotRunning -> Io.println "terminate-unreachable"
             Shutdown -> Io.println "terminate-shutdown"
             Crashed m -> Io.println "terminate-crashed"
 
@@ -2083,7 +2084,7 @@ import std.io    as Io
 import std.int   as Int
 import std.time  as Time
 import std.actor as Actor
-import std.actor (OneForOne, ExitReason, Shutdown, Crashed)
+import std.actor (OneForOne, ExitReason, NotRunning, Shutdown, Crashed)
 
 actor Worker =
     state n: Int = 0
@@ -2096,6 +2097,7 @@ actor Worker =
 
     terminate io (reason: ExitReason) =
         match reason
+            NotRunning -> Io.println "terminate-unreachable"
             Shutdown -> Io.println "terminate-shutdown"
             Crashed m -> Io.println "terminate-crashed"
 
@@ -2127,7 +2129,7 @@ fn beam_e2e_terminate_fires_on_crash_and_restart_still_works() {
 
 const INIT_CRASH_NO_TERMINATE_SOURCE: &str = r#"
 import std.io    as Io
-import std.actor (ExitReason, Shutdown, Crashed)
+import std.actor (ExitReason, NotRunning, Shutdown, Crashed)
 
 actor Worker =
     state n: Int = 0
@@ -2137,6 +2139,7 @@ actor Worker =
 
     terminate io (reason: ExitReason) =
         match reason
+            NotRunning -> Io.println "terminate-unreachable"
             Shutdown -> Io.println "terminate-fired"
             Crashed m -> Io.println "terminate-fired"
 

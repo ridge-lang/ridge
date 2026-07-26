@@ -1,6 +1,5 @@
 ---
 source: crates/ridge-lower/tests/snapshots.rs
-assertion_line: 23
 expression: rendered
 ---
 module: m0
@@ -47,6 +46,7 @@ items:
                   args:
                     -
                       Lit(n14): Unit
+    terminate: null
     handlers:
       - message: allow
         caps: CapabilitySet(8)
@@ -204,6 +204,7 @@ items:
       - name: totalDenied
         ty: Con(0)
     init: null
+    terminate: null
     handlers:
       - message: report
         caps: CapabilitySet(1)
@@ -354,18 +355,18 @@ items:
       - name: workerId
         ty: Con(0)
       - name: limiter
-        ty: Con(11) [Con(100)]
-      - name: collector
         ty: Con(11) [Con(101)]
+      - name: collector
+        ty: Con(11) [Con(102)]
     init:
       caps: CapabilitySet(0)
       params:
         - name: id
           ty: Con(0)
         - name: l
-          ty: Con(11) [Con(100)]
-        - name: col
           ty: Con(11) [Con(101)]
+        - name: col
+          ty: Con(11) [Con(102)]
       body:
         Block(n141):
           Assign(n142) -> StateField(workerId):
@@ -375,6 +376,7 @@ items:
               Local(n146): l
             Assign(n147) -> StateField(collector):
               Local(n148): col
+    terminate: null
     handlers:
       - message: run
         caps: CapabilitySet(25)
@@ -586,7 +588,7 @@ items:
                             caps: CapabilitySet(0)
                             params:
                               - name: w
-                                ty: Con(11) [Con(102)]
+                                ty: Con(11) [Con(103)]
                             body:
                               Send(n226) ! Handler(m0..run):
                                 handle:

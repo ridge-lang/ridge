@@ -1,0 +1,10 @@
+import std.actor (ExitReason)
+
+actor Worker =
+    state n: Int = 0
+
+    on tick () -> Unit =
+        n <- n + 1
+
+    terminate (reason: ExitReason) =
+        n <- n + 1

@@ -19,6 +19,7 @@ items:
       body:
         Assign(n0) -> StateField(count):
           Local(n1): start
+    terminate: null
     handlers:
       - message: get_count
         caps: CapabilitySet(0)

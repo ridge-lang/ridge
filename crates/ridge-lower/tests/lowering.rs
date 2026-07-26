@@ -128,6 +128,11 @@ fn snap_actor_dispatch_with_init() {
     snapshot_fixture("actor_dispatch_with_init");
 }
 
+#[test]
+fn snap_actor_terminate() {
+    snapshot_fixture("actor_terminate");
+}
+
 // ── Inner fn ─────────────────────────────────────────────────────────────────
 
 #[test]

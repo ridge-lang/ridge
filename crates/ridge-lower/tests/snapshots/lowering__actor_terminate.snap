@@ -1,0 +1,46 @@
+---
+source: crates/ridge-lower/tests/lowering.rs
+expression: rendered
+---
+module: m0
+items_count: 1
+items:
+  - kind: actor
+    name: Worker
+    pub: false
+    state_fields:
+      - name: n
+        ty: Con(0)
+    init: null
+    terminate:
+      caps: CapabilitySet(0)
+      params:
+        - name: reason
+          ty: Con(100)
+      body:
+        Assign(n0) -> StateField(n):
+          Call(n1):
+            callee:
+              Symbol(n2): Stdlib(std.int.add)
+            args:
+              -
+                Field(n3).n:
+                  Local(n4): __state
+              -
+                Lit(n5): Int(1)
+    handlers:
+      - message: tick
+        caps: CapabilitySet(0)
+        ret_ty: Con(4)
+        params: []
+        body:
+          Assign(n6) -> StateField(n):
+            Call(n7):
+              callee:
+                Symbol(n8): Stdlib(std.int.add)
+              args:
+                -
+                  Field(n9).n:
+                    Local(n10): __state
+                -
+                  Lit(n11): Int(1)

@@ -30,7 +30,7 @@
 
 use ridge_ir::{
     AssignTarget, CtorKind, IrActor, IrArm, IrConst, IrExpr, IrFn, IrHandler, IrInit, IrItem,
-    IrLit, IrNodeId, IrParam, IrPat, IrTimeout, LoweredModule, SymbolRef,
+    IrLit, IrNodeId, IrParam, IrPat, IrTerminate, IrTimeout, LoweredModule, SymbolRef,
 };
 use ridge_lower::lower_workspace;
 use ridge_resolve::{discover_workspace, resolve_workspace};
@@ -269,6 +269,12 @@ impl Renderer {
         } else {
             self.push("init: null");
         }
+        // terminate
+        if let Some(terminate) = &a.terminate {
+            self.render_terminate(terminate);
+        } else {
+            self.push("terminate: null");
+        }
         // dispatch
         if a.dispatch.is_empty() {
             self.push("handlers: []");
@@ -300,6 +306,27 @@ impl Renderer {
         self.push("body:");
         self.indent += 1;
         self.render_expr(&init.body);
+        self.indent -= 1;
+        self.indent -= 1;
+    }
+
+    fn render_terminate(&mut self, terminate: &IrTerminate) {
+        self.push("terminate:");
+        self.indent += 1;
+        self.push_kv("caps", &render_caps(&terminate.caps));
+        if terminate.params.is_empty() {
+            self.push("params: []");
+        } else {
+            self.push("params:");
+            self.indent += 1;
+            for p in &terminate.params {
+                self.render_param(p);
+            }
+            self.indent -= 1;
+        }
+        self.push("body:");
+        self.indent += 1;
+        self.render_expr(&terminate.body);
         self.indent -= 1;
         self.indent -= 1;
     }

@@ -25,7 +25,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// The program source, with connection settings spliced in as sentinels so the
 /// Ridge record braces never collide with Rust string formatting.
 const SOURCE_TEMPLATE: &str = r#"
-import std.data (DbError, connect, PostgresConfig, Postgres)
+import std.data (DbError, connect, PostgresConfig, Postgres, toDbError)
 import std.repo as Repo
 import std.raw as Raw
 import std.sql (toSql, SqlValue)
@@ -50,7 +50,7 @@ pub fn db setup () -> Result (Repo Item Postgres) DbError =
                         Err e -> Err e
                         Ok _  ->
                             match Date.fromYmd 2026 7 4
-                                Err e -> Err e
+                                Err e -> Err (toDbError e)
                                 Ok d  ->
                                     match Repo.insert (ItemInsert { dueOn = d }) r
                                         Err e -> Err e

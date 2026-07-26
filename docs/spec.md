@@ -469,6 +469,54 @@ requires ships in a future release. See §7.2.1 for the full semantics — how
 overflow is surfaced through `!`, how the bound is enforced under
 contention, and how observability composes via `Actor.mailboxSize`.
 
+#### §3.9.x. terminate callbacks
+
+An actor may declare one `terminate` callback — cleanup code that runs when
+the actor's process terminates, whether the stop is ordered (a supervisor's
+`stopChild`, a sibling shutdown under `one_for_all`) or a handler crash.
+
+- An actor has at most one `terminate` member; a second one is a resolve
+  error (`R029`), the same rule `init` and `mailbox` get.
+- Syntax: `terminate [capList] (params) = body` — capabilities are bare
+  prefix words, exactly like `init`. `terminate` is a contextual word, not a
+  reserved keyword.
+- The callback takes at most one parameter, conventionally
+  `(reason: ExitReason)`, and its return value is discarded.
+- The body may read state fields (flushing them somewhere is the canonical
+  use). Assignments type-check but are discarded — the process is dying.
+- Callers of `spawn` do **not** inherit the callback's capabilities
+  (consistent with handler and `init` encapsulation). The callback's
+  declared set must stay within the union of the actor's handler caps
+  (`T019` otherwise), and its body is checked against its declared set
+  (`T014` otherwise).
+
+```ridge
+actor Worker =
+    state conn: Handle Conn
+    state processed: Int = 0
+
+    init db (c: Handle Conn) =
+        conn <- c
+
+    on db work () -> Unit =
+        processed <- processed + 1
+
+    terminate io db (reason: ExitReason) =
+        match reason
+            Shutdown -> Io.println "worker stopping cleanly"
+            Crashed m -> Io.println m
+```
+
+`ExitReason` (from `std.actor`) tells the two stop kinds apart:
+
+```ridge
+pub type ExitReason = Shutdown | Crashed Text
+```
+
+`Shutdown` is an ordered stop; `Crashed` carries the OTP exit reason
+rendered as text. When the callback runs at all is §7.5's business; the
+runtime side of the contract is documented there.
+
 ### 3.10. String interpolation
 
 ```ridge
@@ -675,10 +723,11 @@ Capability    = "io" | "fs" | "net" | "time" | "random" | "env" | "proc" | "spaw
 Param         = Ident | "(" Ident ":" Type ")" .
 
 ActorDecl     = [ "pub" ] "actor" UpperIdent "=" { ActorMember } .
-ActorMember   = StateDecl | OnHandler | InitBlock .
+ActorMember   = StateDecl | OnHandler | InitBlock | TerminateBlock .
 StateDecl     = "state" Ident ":" Type [ "=" Expr ] .
 OnHandler     = "on" { Capability } Ident { Param } [ "->" Type ] "=" Expr .
 InitBlock     = "init" { Capability } "(" ParamList ")" "=" Expr .
+TerminateBlock = "terminate" { Capability } "(" ParamList ")" "=" Expr .
 
 Expr          = LetExpr | MatchExpr | IfExpr | TryExpr | GuardExpr
               | LambdaExpr | PipeExpr | AppExpr | Literal | Ident .
@@ -1470,6 +1519,18 @@ supervision tree), never inherited (a start link nobody asked for). A tree
 that should fail as a unit is built the way OTP builds it: supervisors
 supervising supervisors, with the restart policy at each level made
 explicit.
+
+**When `terminate` runs.** The `terminate` callback (§3.9) fires on every
+ordered stop the supervisor performs (`stopChild`, a sibling shutdown under
+`one_for_all`, intensity exhaustion) and on every handler crash, receiving
+`Shutdown` or `Crashed` respectively. It does **not** run when `init`
+itself crashes (OTP never calls terminate on init failure), nor on a
+`brutal_kill` shutdown or an external kill — no callback can intercept
+those. A crash inside the callback body is logged and does not prevent the
+process from dying. The gen_server traps exits internally to make this
+reliable — an implementation detail, not new surface: links and user-level
+`trap_exit` remain deliberately absent from the language, and the only
+fate-sharing mechanism is the supervision tree above.
 
 ### 7.6. Module semantics
 

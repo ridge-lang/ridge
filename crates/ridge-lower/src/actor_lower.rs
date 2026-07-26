@@ -47,11 +47,14 @@
 )]
 
 use ridge_ast::{
-    decl::{ActorDecl, ActorMember, InitDecl, OnHandler, StateDecl, TerminateDecl},
+    decl::{ActorDecl, ActorMember, InitDecl, OnDownDecl, OnHandler, StateDecl, TerminateDecl},
     Expr, Param, Pattern, Span,
 };
 use ridge_ir::{
-    actor::{IrActor, IrHandler, IrInit, IrStateField, IrTerminate, MailboxConfig, MailboxPolicy},
+    actor::{
+        IrActor, IrHandler, IrInit, IrOnDown, IrStateField, IrTerminate, MailboxConfig,
+        MailboxPolicy,
+    },
     IrParam,
 };
 use ridge_resolve::{NodeId, NodeKind};
@@ -115,6 +118,15 @@ pub fn lower_actor(ctx: &mut LowerCtx<'_>, decl: &ActorDecl) -> IrActor {
         }
     });
 
+    // ── 3c. Lower optional onDown handler ────────────────────────────────────
+    let on_down: Option<IrOnDown> = decl.members.iter().find_map(|m| {
+        if let ActorMember::OnDown(d) = m {
+            Some(lower_on_down_decl(ctx, d, &state_field_names))
+        } else {
+            None
+        }
+    });
+
     // ── 4. Lower handlers (dispatch table) ───────────────────────────────────
     let dispatch: Vec<IrHandler> = decl
         .members
@@ -144,6 +156,7 @@ pub fn lower_actor(ctx: &mut LowerCtx<'_>, decl: &ActorDecl) -> IrActor {
         state_fields,
         init,
         terminate,
+        on_down,
         dispatch,
         mailbox_config,
         // ActorDecl items carry no NodeId per the side-table convention.
@@ -283,6 +296,48 @@ fn lower_terminate_decl(
         caps: caps_from_ast_decl(&t.caps),
         body,
         span: t.span,
+    }
+}
+
+/// Lower an `onDown` monitor-notification handler to `IrOnDown`.
+///
+/// Identical pipeline to [`lower_terminate_decl`]: the body lowers in
+/// actor-body context so `<-` targets state fields, and pattern params
+/// destructure through the same synthetic-binder wrapper.
+fn lower_on_down_decl(
+    ctx: &mut LowerCtx<'_>,
+    d: &OnDownDecl,
+    state_field_names: &FxHashSet<String>,
+) -> IrOnDown {
+    let saved_in_actor_body = ctx.in_actor_body;
+    let saved_state_fields = ctx.current_state_fields.take();
+
+    ctx.in_actor_body = true;
+    ctx.current_state_fields = Some(state_field_names.clone());
+
+    let raw_body = lower_block(ctx, &d.body);
+
+    let mut params: Vec<IrParam> = Vec::with_capacity(d.params.len());
+    let mut pattern_entries: Vec<(String, &Pattern, Span)> = Vec::new();
+    for (idx, p) in d.params.iter().enumerate() {
+        if let Param::PatternAnnotated { pat, ty, span } = p {
+            let (ir, synth) = synth_destructure_param(ctx, ty, *span);
+            params.push(ir);
+            pattern_entries.push((synth, pat, *span));
+        } else {
+            params.push(param_to_ir_param(ctx, d.span, idx, p));
+        }
+    }
+    let body = wrap_pattern_params(ctx, raw_body, pattern_entries);
+
+    ctx.in_actor_body = saved_in_actor_body;
+    ctx.current_state_fields = saved_state_fields;
+
+    IrOnDown {
+        params,
+        caps: caps_from_ast_decl(&d.caps),
+        body,
+        span: d.span,
     }
 }
 

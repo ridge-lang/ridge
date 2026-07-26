@@ -36,6 +36,8 @@ pub struct IrActor {
     pub init: Option<IrInit>,
     /// The actor's `terminate` callback, if present.
     pub terminate: Option<IrTerminate>,
+    /// The actor's `onDown` monitor-notification handler, if present.
+    pub on_down: Option<IrOnDown>,
     /// One handler per `on` clause, in source order.
     pub dispatch: Vec<IrHandler>,
     /// Mailbox configuration (cut 0.2.7).
@@ -126,6 +128,21 @@ pub struct IrTerminate {
     /// type-check but the final state is discarded by codegen.
     pub body: IrExpr, // wrapped in IrExpr::Block if multi-stmt
     /// Source span of the `terminate` member.
+    pub span: Span,
+}
+
+/// The lowered `onDown` monitor-notification handler of an actor.
+#[derive(Debug, Clone)]
+pub struct IrOnDown {
+    /// The handler's parameters (conventionally `m: Monitor`,
+    /// `reason: ExitReason`).
+    pub params: Vec<IrParam>,
+    /// Capability set of the handler.
+    pub caps: CapabilitySet,
+    /// The handler body; same lowering rule as [`IrInit::body`]. State
+    /// mutations take effect, exactly like a cast handler.
+    pub body: IrExpr, // wrapped in IrExpr::Block if multi-stmt
+    /// Source span of the `onDown` member.
     pub span: Span,
 }
 

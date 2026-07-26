@@ -180,6 +180,29 @@ actor Counter =
 }
 
 #[test]
+fn snapshot_actor_terminate_member() {
+    let src = "\
+actor Worker =
+    state n: Int = 0
+
+    terminate io (reason: ExitReason) =
+        Io.println \"bye\"
+";
+    let result = parse_source(src);
+    assert!(
+        result.lex_errors.is_empty(),
+        "lex errors: {:#?}",
+        result.lex_errors
+    );
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:#?}",
+        result.errors
+    );
+    insta::assert_debug_snapshot!("actor_terminate_member", result.module);
+}
+
+#[test]
 fn snapshot_actor_mailbox_bounded_drop_newest() {
     let src = "\
 actor Limiter =

@@ -40,7 +40,7 @@ pub use block::Block;
 pub use decl::{
     ActorDecl, ActorMember, Attribute, Body, ConstDecl, Constructor, FieldDecl, FnDecl, ImportDecl,
     InitDecl, MailboxConfig, MailboxDecl, MailboxPolicy, ModulePath, OnHandler, Param,
-    RecordTypeBody, StateDecl, TypeBody, TypeDecl, UnionTypeBody,
+    RecordTypeBody, StateDecl, TerminateDecl, TypeBody, TypeDecl, UnionTypeBody,
 };
 pub use expr::{
     AskTimeout, BinOp, Expr, FieldInit, InterpPart, LambdaParam, MatchArm, QualifiedName,

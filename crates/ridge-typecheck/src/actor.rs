@@ -845,6 +845,8 @@ mod tests {
             init_caps: CapabilitySet::PURE,
             terminate_params: None,
             terminate_caps: CapabilitySet::PURE,
+            on_down_params: None,
+            on_down_caps: CapabilitySet::PURE,
             handlers: vec![
                 HandlerSchema {
                     name: "increment".to_string(),
@@ -886,6 +888,8 @@ mod tests {
             init_caps: CapabilitySet::PURE,
             terminate_params: None,
             terminate_caps: CapabilitySet::PURE,
+            on_down_params: None,
+            on_down_caps: CapabilitySet::PURE,
             handlers: vec![HandlerSchema {
                 name: "log".to_string(),
                 params: vec![Type::Con(b.text, vec![])],
@@ -1273,6 +1277,8 @@ mod tests {
             init_caps: CapabilitySet::PURE,
             terminate_params: None,
             terminate_caps: CapabilitySet::PURE,
+            on_down_params: None,
+            on_down_caps: CapabilitySet::PURE,
             handlers: vec![
                 HandlerSchema {
                     name: "doIo".to_string(),
@@ -1309,6 +1315,8 @@ mod tests {
             init_caps: CapabilitySet::PURE,
             terminate_params: None,
             terminate_caps: CapabilitySet::PURE,
+            on_down_params: None,
+            on_down_caps: CapabilitySet::PURE,
             handlers: vec![HandlerSchema {
                 name: "doIoAndFs".to_string(),
                 params: vec![],

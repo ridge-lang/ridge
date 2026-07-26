@@ -1,0 +1,14 @@
+-- expect: T014
+-- The onDown handler's body is capability-checked against its declared set
+-- (empty = pure), the same rule init, terminate, and on-handlers get. This
+-- body calls `Io.println` ({io}) without declaring it, so T014 fires.
+import std.io as Io
+import std.actor (ExitReason)
+
+actor Watcher =
+    state deaths: Int = 0
+    on io tick =
+        deaths <- deaths + 1
+        Io.println "tick"
+    onDown (m: Monitor) (reason: ExitReason) =
+        Io.println "gone"

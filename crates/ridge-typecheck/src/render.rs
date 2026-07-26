@@ -217,6 +217,10 @@ impl fmt::Display for TypeError {
                         f,
                         "T014: capability not declared\n  the terminate callback declared as `terminate {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `terminate {inferred}`\n    - Remove the call requiring `{missing}`"
                     ),
+                    CapDeclKind::OnDown => write!(
+                        f,
+                        "T014: capability not declared\n  the onDown handler declared as `onDown {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `onDown {inferred}`\n    - Remove the call requiring `{missing}`"
+                    ),
                     // Rule 4 compares the inner fn's own annotation against the
                     // *enclosing* effective set, so the resolution lives on the
                     // enclosing declaration, not on the inner fn.

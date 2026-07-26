@@ -802,13 +802,29 @@ fn typecheck_actor_bodies(
                         &monoscheme,
                     );
                 }
+                ActorMember::OnDown(d) => {
+                    check_actor_callback_body(
+                        ctx,
+                        b,
+                        schema,
+                        "onDown",
+                        CapDeclKind::OnDown,
+                        &d.caps,
+                        &d.params,
+                        schema.on_down_params.as_ref(),
+                        &d.body,
+                        d.span,
+                        &monoscheme,
+                    );
+                }
                 ActorMember::State(_) | ActorMember::Mailbox(_) => {}
             }
         }
     }
 }
 
-/// Type-check the body of a block-bodied actor callback (`init`, `terminate`):
+/// Type-check the body of a block-bodied actor callback (`init`, `terminate`,
+/// `onDown`):
 /// state fields are bound (readable; `init` also writes them), the declared
 /// parameters are bound from the schema, each statement is inferred, and the
 /// body is capability-checked against the declared set — the same rule a

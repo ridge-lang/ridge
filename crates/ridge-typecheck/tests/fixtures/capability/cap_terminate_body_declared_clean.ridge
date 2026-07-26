@@ -2,9 +2,11 @@
 -- A terminate callback that declares the capability its body uses checks
 -- cleanly when a handler also declares it: the actor boundary is the union
 -- of handler caps, and the callback's declared set must stay within it
--- (T019 otherwise). The reason param matches over ExitReason's variants.
+-- (T019 otherwise). The reason param matches over ExitReason's variants;
+-- NotRunning never reaches terminate (it only comes from monitoring an
+-- already-dead process) but the match must still cover it.
 import std.io as Io
-import std.actor (ExitReason, Shutdown, Crashed)
+import std.actor (ExitReason, NotRunning, Shutdown, Crashed)
 
 actor Worker =
     state n: Int = 0
@@ -13,5 +15,6 @@ actor Worker =
         Io.println "tick"
     terminate io (reason: ExitReason) =
         match reason
+            NotRunning -> Io.println "unreachable"
             Shutdown -> Io.println "clean"
             Crashed m -> Io.println m

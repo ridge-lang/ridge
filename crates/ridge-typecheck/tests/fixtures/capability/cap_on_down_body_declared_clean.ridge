@@ -1,0 +1,25 @@
+-- expect-clean
+-- An onDown handler that declares the capability its body uses checks
+-- cleanly when a handler also declares it: the actor boundary is the union
+-- of handler caps, and the callback's declared set must stay within it
+-- (T019 otherwise). The reason param matches over ExitReason's variants,
+-- including the monitor-only NotRunning.
+import std.io as Io
+import std.actor as Actor
+import std.actor (ExitReason, NotRunning, Shutdown, Crashed)
+
+actor Worker =
+    state n: Int = 0
+    on explode (x: Int) -> Unit =
+        n <- 1 / x
+
+actor Watcher =
+    state deaths: Int = 0
+    on io watch (w: Handle Worker) -> Unit =
+        let _ = Actor.monitor w
+        Io.println "watching"
+    onDown io (m: Monitor) (reason: ExitReason) =
+        match reason
+            NotRunning -> Io.println "gone"
+            Shutdown -> Io.println "stopped"
+            Crashed t -> Io.println t

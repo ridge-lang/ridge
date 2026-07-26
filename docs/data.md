@@ -52,7 +52,7 @@ and read and write rows. It uses an in-memory SQLite database, so it needs no
 setup and leaves nothing behind.
 
 ```ridge
-import std.data (connectSqlite, sqliteMemory, Sqlite)
+import std.data (connectSqlite, sqliteMemory, Sqlite, DbError)
 import std.migrate as Migrate
 import std.repo as Repo
 import std.schema (schemaOf)
@@ -62,12 +62,12 @@ pub type User = { id: Int, name: Text, email: Text } deriving (Row, Schema)
 
 fn userWitness () -> Option User = None
 
-fn setup (conn: Sqlite) -> Result (List Text) Error =
+fn setup (conn: Sqlite) -> Result (List Text) DbError =
     Migrate.run conn
         [ Migrate.migration "0001_create_users"
             [ Migrate.createSchema (schemaOf (userWitness ())) ] ]
 
-fn db io run (conn: Sqlite) -> Result Unit Error =
+fn db io run (conn: Sqlite) -> Result Unit DbError =
     let _ = setup conn ?
     let users: Repo User Sqlite = Repo.repo conn "users"
     Repo.insert (UserInsert { name = "Ada Lovelace", email = "ada@example.com" }) users ?
@@ -142,13 +142,13 @@ connectSqlite (sqliteFile "app.db")    -- a file on disk, kept between runs
 
 `sqliteFile` opens the database in write-ahead-log mode with foreign keys on;
 `sqliteMemory` is a private database that lasts as long as the connection. Both
-return a `Result Sqlite Error`. Both also default to `Serializable` isolation;
+return a `Result Sqlite DbError`. Both also default to `Serializable` isolation;
 a hand-built `SqliteConfig` refined with `withSqliteDefaultIsolation` changes
 the level plain `Repo.transaction` opens at.
 
 ### Postgres
 
-`connect` takes a `PostgresConfig` record and returns a `Result Postgres Error`:
+`connect` takes a `PostgresConfig` record and returns a `Result Postgres DbError`:
 
 ```ridge
 import std.data (connect, PostgresConfig)
@@ -415,31 +415,36 @@ users |> Repo.upsert (User { id = 1, name = "Ada", email = "ada@example.com" })
 
 ## Errors and transactions
 
-Every database call returns `Result a Error`. The `?` operator threads the
-happy path and returns early on the first error, so a sequence of steps reads
-top to bottom:
+Every database call returns `Result a DbError`. A `DbError` carries the failure's
+`kind` in the type — `UniqueViolation`, `ForeignKeyViolation`, `NotNullViolation`,
+`CheckViolation`, `ConnectionError`, `DecodeError`, `Unsupported`, `QueryError` —
+plus the backend's own `code` and `message` for a log line, and the `constraint`,
+`table`, or `column` it named when the failure refers to one (empty otherwise).
+The `?` operator threads the happy path and returns early on the first error, so
+a sequence of steps reads top to bottom:
 
 ```ridge
-fn db seed (users: Repo User Sqlite) -> Result Unit Error =
+fn db seed (users: Repo User Sqlite) -> Result Unit DbError =
     Repo.insert (UserInsert { name = "Ada", email = "ada@example.com" }) users ?
     Repo.insert (UserInsert { name = "Alan", email = "alan@example.com" }) users ?
     Ok ()
 ```
 
-To act on a specific failure, `dbErrorKind` sorts an `Error` into a kind —
-`UniqueViolation`, `ForeignKeyViolation`, `NotNullViolation`, `CheckViolation`,
-and so on:
+To act on a specific failure, match the kind straight off the error:
 
 ```ridge
-import std.data (dbErrorKind, UniqueViolation)
+import std.data (UniqueViolation)
 
 match Repo.insert (UserInsert { name = "Ada", email = "ada@example.com" }) users
     Ok _  -> Ok ()
     Err e ->
-        match dbErrorKind e
+        match e.kind
             UniqueViolation -> Ok ()          -- already there; treat as success
             _               -> Err e
 ```
+
+The field reads are also available as functions — `dbErrorKind`, `dbErrorConstraint`,
+`dbErrorColumn`, `dbErrorTable` — for piping or passing as values.
 
 `Repo.transaction conn (fn c -> ...)` runs a body in a transaction: it commits
 if the body returns `Ok`, and rolls back on `Err` or a failure inside.

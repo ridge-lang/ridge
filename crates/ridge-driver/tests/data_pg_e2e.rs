@@ -42,9 +42,9 @@
 //! combination in a subquery and nested unions nesting the parentheses.
 //!
 //! Typed errors run against the live database too: a duplicate insert into a named
-//! unique constraint classifies through `dbErrorKind` as a `UniqueViolation`, and
-//! `dbErrorConstraint` reads the constraint name; a NULL into a NOT NULL column
-//! classifies as a `NotNullViolation`, and `dbErrorColumn`/`dbErrorTable` read the
+//! unique constraint arrives with kind `UniqueViolation` in the typed `DbError`,
+//! and `constraint` reads the constraint name; a NULL into a NOT NULL column
+//! arrives with kind `NotNullViolation`, and `column`/`table` read the
 //! column and its table — all out of the Postgres `ErrorResponse`.
 //!
 //! Transaction isolation runs against the live database too: a plain
@@ -293,9 +293,9 @@ fn tag (k: DbErrorKind) -> Text =
 
 -- A real unique violation against Postgres carries its constraint name in the
 -- ErrorResponse. Create a throwaway table with a named unique constraint, insert a
--- duplicate, and classify the failure -> "unique:ridge_pg_uniq_id_key". Proves
--- `dbErrorKind` reads SQLSTATE 23505 as `UniqueViolation` and `dbErrorConstraint`
--- reads the constraint the backend named.
+-- duplicate, and read the failure -> "unique:ridge_pg_uniq_id_key". Proves SQLSTATE
+-- 23505 arrives with kind `UniqueViolation` in the typed error, and `constraint`
+-- names the constraint the backend reported.
 pub fn db uniqueViolationKind () -> Text =
     match connect (pgConfig ())
         Err _ -> "connect-err"
@@ -311,13 +311,12 @@ pub fn db uniqueViolationKind () -> Text =
                                 Ok _ ->
                                     match Raw.exec conn "INSERT INTO ridge_pg_uniq (id) VALUES (1)" []
                                         Ok _ -> "unexpected-ok"
-                                        Err e -> Text.concat (tag (dbErrorKind e)) (Text.concat ":" (dbErrorConstraint e))
+                                        Err e -> Text.concat (tag e.kind) (Text.concat ":" e.constraint)
 
 -- A real not-null violation against Postgres carries the offending column and its
--- table in the ErrorResponse. Insert a NULL into a NOT NULL column and classify the
--- failure -> "notnull:val:ridge_pg_notnull". Proves `dbErrorKind` reads SQLSTATE
--- 23502 as `NotNullViolation`, and `dbErrorColumn`/`dbErrorTable` read the column and
--- table the backend named.
+-- table in the ErrorResponse. Insert a NULL into a NOT NULL column and read the
+-- failure -> "notnull:val:ridge_pg_notnull". Proves SQLSTATE 23502 arrives with
+-- kind `NotNullViolation`, and `column`/`table` name what the backend reported.
 pub fn db notNullViolationDetail () -> Text =
     match connect (pgConfig ())
         Err _ -> "connect-err"
@@ -330,7 +329,7 @@ pub fn db notNullViolationDetail () -> Text =
                         Ok _ ->
                             match Raw.exec conn "INSERT INTO ridge_pg_notnull (val) VALUES (NULL)" []
                                 Ok _ -> "unexpected-ok"
-                                Err e -> Text.join ":" [tag (dbErrorKind e), dbErrorColumn e, dbErrorTable e]
+                                Err e -> Text.join ":" [tag e.kind, e.column, e.table]
 
 pub fn userRow (uid: Int) (uage: Int) (uname: Text) -> Map Text SqlValue =
     Map.fromList [("id", toSql uid), ("age", toSql uage), ("name", toSql uname)]
@@ -1886,7 +1885,7 @@ pub type IsoLevel = { transaction_isolation: Text } deriving (Row)
 -- A transaction body that reads the live transaction's isolation level through
 -- the raw-query escape hatch and answers its text.
 fn pgShowIsolation (tx: Postgres) -> Result Text DbError =
-    let q: Result (List IsoLevel) Error = Raw.query tx "SHOW transaction_isolation" []
+    let q: Result (List IsoLevel) DbError = Raw.query tx "SHOW transaction_isolation" []
     match q
         Err e -> Err e
         Ok rows ->
@@ -1925,7 +1924,7 @@ pub fn db pgIsoRepeatableRead () -> Text =
                 Ok level -> level
 
 -- The error-kind check for the mismatch probe.
-fn pgIsUnsupported (e: Error) -> Bool =
+fn pgIsUnsupported (e: DbError) -> Bool =
     match dbErrorKind e
         Unsupported -> true
         _           -> false
@@ -2336,7 +2335,7 @@ pub fn db pgSeedRollback () -> Int =
 
 -- Count the tables matching a name in the catalog — 0 once a table has been dropped.
 fn pgTableCount (conn: Postgres) (name: Text) -> Int =
-    let q: Result (List RawCount) Error = Raw.query conn "SELECT count(*) AS n FROM information_schema.tables WHERE table_name = $1" [toSql name]
+    let q: Result (List RawCount) DbError = Raw.query conn "SELECT count(*) AS n FROM information_schema.tables WHERE table_name = $1" [toSql name]
     match q
         Err _ -> 0 - 9
         Ok rows ->
@@ -2346,7 +2345,7 @@ fn pgTableCount (conn: Postgres) (name: Text) -> Int =
 
 -- Count the indexes matching a name in the catalog — 0 once an index has been dropped.
 fn pgIndexCount (conn: Postgres) (name: Text) -> Int =
-    let q: Result (List RawCount) Error = Raw.query conn "SELECT count(*) AS n FROM pg_indexes WHERE indexname = $1" [toSql name]
+    let q: Result (List RawCount) DbError = Raw.query conn "SELECT count(*) AS n FROM pg_indexes WHERE indexname = $1" [toSql name]
     match q
         Err _ -> 0 - 9
         Ok rows ->
@@ -2485,7 +2484,7 @@ pub fn db rawAdults () -> Text =
             match connect (pgConfig ())
                 Err _ -> "conn-err"
                 Ok conn ->
-                    let q: Result (List User) Error = Raw.query conn "SELECT id, age, name FROM ridge_pg_users WHERE age >= $1 ORDER BY id" [toSql 25]
+                    let q: Result (List User) DbError = Raw.query conn "SELECT id, age, name FROM ridge_pg_users WHERE age >= $1 ORDER BY id" [toSql 25]
                     match q
                         Err _ -> "raw-err"
                         Ok us -> joinNames us
@@ -2499,7 +2498,7 @@ pub fn db rawFirstName () -> Text =
             match connect (pgConfig ())
                 Err _ -> "conn-err"
                 Ok conn ->
-                    let q: Result (Option User) Error = Raw.queryFirst conn "SELECT id, age, name FROM ridge_pg_users ORDER BY age DESC" []
+                    let q: Result (Option User) DbError = Raw.queryFirst conn "SELECT id, age, name FROM ridge_pg_users ORDER BY age DESC" []
                     match q
                         Err _       -> "raw-err"
                         Ok None     -> "none"
@@ -2527,7 +2526,7 @@ pub fn db rawUserCount () -> Int =
             match connect (pgConfig ())
                 Err _ -> 0 - 2
                 Ok conn ->
-                    let q: Result (List RawCount) Error = Raw.query conn "SELECT count(*) AS n FROM ridge_pg_users" []
+                    let q: Result (List RawCount) DbError = Raw.query conn "SELECT count(*) AS n FROM ridge_pg_users" []
                     match q
                         Err _ -> 0 - 3
                         Ok rows ->
@@ -2557,7 +2556,7 @@ fn resetRetryProbe (conn: Postgres) -> Result Unit DbError =
 -- serializable transaction's predicate lock covers every row). `count(*)`
 -- always answers one row; the `[]` arm is unreachable.
 fn countRetryProbe (conn: Postgres) -> Result Int DbError =
-    let q: Result (List RawCount) Error = Raw.query conn "SELECT count(*) AS n FROM retry_probe" []
+    let q: Result (List RawCount) DbError = Raw.query conn "SELECT count(*) AS n FROM retry_probe" []
     match q
         Err e -> Err e
         Ok rows ->

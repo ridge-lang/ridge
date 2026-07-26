@@ -2175,6 +2175,32 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: false,
             is_anon: false,
         },
+        // `std.actor` — why an actor stopped, delivered to its `terminate`
+        // callback. Variants lower to `'Shutdown'` / `{'Crashed', Text}`;
+        // the runtime maps OTP exit reasons at the boundary. Appended last so
+        // it disturbs no earlier reconciled id.
+        TyConDecl {
+            id: TyConId(base + 41),
+            name: "ExitReason".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "Shutdown".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "Crashed".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(b.text, vec![])]),
+                    },
+                ],
+            }),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
     ]
 }
 

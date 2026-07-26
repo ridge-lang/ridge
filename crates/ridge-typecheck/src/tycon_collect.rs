@@ -870,6 +870,8 @@ fn build_actor_kind_fresh(
     let mut state_fields: Vec<RecordField> = Vec::new();
     let mut init_params: Option<Vec<Type>> = None;
     let mut init_caps = CapabilitySet::PURE;
+    let mut terminate_params: Option<Vec<Type>> = None;
+    let mut terminate_caps = CapabilitySet::PURE;
     let mut handlers: Vec<HandlerSchema> = Vec::new();
 
     for member in &ad.members {
@@ -922,6 +924,21 @@ fn build_actor_kind_fresh(
             ActorMember::Mailbox(_) => {
                 // Mailbox config contributes no type variables or schema info.
             }
+            ActorMember::Terminate(t) => {
+                let params: Vec<Type> = t
+                    .params
+                    .iter()
+                    .map(|p| match p {
+                        ridge_ast::Param::Bare(_) => Type::Var(ctx.fresh_tyvid()),
+                        ridge_ast::Param::Annotated { ty, .. }
+                        | ridge_ast::Param::PatternAnnotated { ty, .. } => {
+                            ast_type_to_ridge_type(b, ctx, ty, names, &empty_params)
+                        }
+                    })
+                    .collect();
+                terminate_params = Some(params);
+                terminate_caps = caps_from_ast_slice(&t.caps);
+            }
         }
     }
 
@@ -929,6 +946,8 @@ fn build_actor_kind_fresh(
         state_fields,
         init_params,
         init_caps,
+        terminate_params,
+        terminate_caps,
         handlers,
     })
 }

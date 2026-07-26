@@ -2047,10 +2047,11 @@ mod tests {
                     continue;
                 }
                 // std.actor's supervision surface: `Strategy` / `Restart` /
-                // `AskError` and their constructors are reconciled unions seeded
-                // from the reserved arena block (`reconciled_ctor_scheme`), and
-                // `supervise` / `childRestart` name those types so they are seeded
-                // via `reconciled_fn_scheme` — none via this hand-curated table.
+                // `AskError` / `ExitReason` and their constructors are reconciled
+                // unions seeded from the reserved arena block
+                // (`reconciled_ctor_scheme`), and `supervise` / `childRestart`
+                // name those types so they are seeded via `reconciled_fn_scheme`
+                // — none via this hand-curated table.
                 if module.name == "std.actor"
                     && matches!(
                         name,
@@ -2065,6 +2066,9 @@ mod tests {
                             | "AskError"
                             | "Noproc"
                             | "Timeout"
+                            | "ExitReason"
+                            | "Shutdown"
+                            | "Crashed"
                             | "supervise"
                             | "childRestart"
                     )

@@ -61,6 +61,12 @@ pub type Restart = Permanent | Transient | Temporary
 -- no reply arrived within the timeout (`Timeout`).
 pub type AskError = Noproc | Timeout
 
+-- Why an actor stopped, delivered to its `terminate` callback: an ordered
+-- stop from a supervisor (`Shutdown`), or a crash (`Crashed`, with the OTP
+-- exit reason rendered as text). Variants lower to `'Shutdown'` /
+-- `{'Crashed', Text}`; the runtime maps OTP reasons at the boundary.
+pub type ExitReason = Shutdown | Crashed Text
+
 -- Start a supervisor over `children`. `intensity` and `period` bound the
 -- restart rate: more than `intensity` restarts within `period` milliseconds
 -- and the supervisor itself terminates. (`period` is expressed in

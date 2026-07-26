@@ -802,6 +802,35 @@ fn typecheck_actor_bodies(
 
                     ctx.env.pop_frame();
                 }
+                ActorMember::Terminate(t) => {
+                    ctx.env.push_frame();
+
+                    // Bind state fields (the callback may read them for
+                    // cleanup/flush; mutations type-check but are discarded).
+                    for field in &schema.state_fields {
+                        ctx.env
+                            .bind(field.name.clone(), monoscheme(field.ty.clone()));
+                    }
+
+                    // Bind terminate parameters (when the schema collected them).
+                    if let Some(param_tys) = &schema.terminate_params {
+                        for (param, ty) in t.params.iter().zip(param_tys.iter()) {
+                            bind_actor_param(ctx, b, param, ty, &monoscheme);
+                        }
+                    }
+
+                    // Walk each statement for side-effect, exactly like init.
+                    for stmt in &t.body.stmts {
+                        let _ = infer_expr(ctx, b, stmt);
+                    }
+
+                    // Capability-check the body against the declared set,
+                    // the same rule init gets.
+                    let declared = caps_from_ast_slice(&t.caps);
+                    check_caps_block(ctx, b, "terminate", Some(declared), &t.body, t.span);
+
+                    ctx.env.pop_frame();
+                }
                 ActorMember::State(_) | ActorMember::Mailbox(_) => {}
             }
         }

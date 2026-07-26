@@ -5812,7 +5812,14 @@ pub fn collect_capability_fixes(
                 }
                 CapDeclKind::Init => {
                     if find_init(module, *span).is_some() {
-                        push_init_insert_fix(&mut out, uri, li, *span, *missing, "T014");
+                        push_member_insert_fix(&mut out, uri, li, *span, "init", *missing, "T014");
+                    }
+                }
+                CapDeclKind::Terminate => {
+                    if find_terminate(module, *span).is_some() {
+                        push_member_insert_fix(
+                            &mut out, uri, li, *span, "terminate", *missing, "T014",
+                        );
                     }
                 }
                 CapDeclKind::InnerFn => {
@@ -5891,8 +5898,21 @@ pub fn collect_capability_fixes(
                                     ridge_ast::ActorMember::Init(i)
                                         if caller == "init" && span_within(*span, i.span) =>
                                     {
-                                        push_init_insert_fix(
-                                            &mut out, uri, li, *span, *missing, "T018",
+                                        // T018's span is the call site; the
+                                        // edit must anchor at the member's
+                                        // own span (right after its keyword).
+                                        push_member_insert_fix(
+                                            &mut out, uri, li, i.span, "init", *missing, "T018",
+                                        );
+                                        placed = true;
+                                        break;
+                                    }
+                                    ridge_ast::ActorMember::Terminate(t)
+                                        if caller == "terminate" && span_within(*span, t.span) =>
+                                    {
+                                        push_member_insert_fix(
+                                            &mut out, uri, li, t.span, "terminate", *missing,
+                                            "T018",
                                         );
                                         placed = true;
                                         break;
@@ -5910,13 +5930,16 @@ pub fn collect_capability_fixes(
             }
             TypeError::ActorCapabilityLeak {
                 actor,
+                handler,
                 leaking_caps,
                 span,
                 ..
             } => {
-                if let Some(fix) =
-                    build_init_leak_fix(uri, li, text, module, *span, actor, *leaking_caps)
-                {
+                // `handler` names the leaking member: "init", "terminate", or
+                // an on-handler name (the last is unreachable by construction).
+                if let Some(fix) = build_member_leak_fix(
+                    uri, li, text, module, *span, actor, handler, *leaking_caps,
+                ) {
                     out.push(fix);
                 }
             }
@@ -5983,6 +6006,20 @@ fn find_init(
     })
 }
 
+/// Find the `terminate` callback whose whole-declaration span is `span`.
+fn find_terminate(
+    module: &ridge_typecheck::TypedModule,
+    span: ridge_ast::Span,
+) -> Option<&ridge_ast::TerminateDecl> {
+    module.ast.items.iter().find_map(|item| match item {
+        ridge_ast::Item::Actor(ad) => ad.members.iter().find_map(|m| match m {
+            ridge_ast::ActorMember::Terminate(t) if t.span == span => Some(t),
+            _ => None,
+        }),
+        _ => None,
+    })
+}
+
 /// Push an insert-the-missing-capabilities fix at `insert_byte` (the start of
 /// the declaration's name).
 #[expect(
@@ -6018,13 +6055,15 @@ fn push_insert_fix(
     });
 }
 
-/// Push the `init` form of the insert fix: capabilities go right after the
-/// `init` keyword, so the inserted text carries a leading space.
-fn push_init_insert_fix(
+/// Push the actor-member form of the insert fix: capabilities go right after
+/// the member keyword (`init`, `terminate`), so the inserted text carries a
+/// leading space.
+fn push_member_insert_fix(
     out: &mut Vec<CapabilityFix>,
     uri: &Url,
     li: &LineIndex,
-    init_span: ridge_ast::Span,
+    member_span: ridge_ast::Span,
+    keyword: &str,
     missing: CapabilitySet,
     code: &'static str,
 ) {
@@ -6037,36 +6076,42 @@ fn push_init_insert_fix(
     } else {
         "capability"
     };
+    #[expect(clippy::cast_possible_truncation, reason = "keyword is ascii")]
+    let insert_byte = member_span.start + keyword.len() as u32;
     out.push(CapabilityFix {
         uri: uri.clone(),
-        decl_range: span_to_range(li, init_span),
-        edit_range: point_range(li, init_span.start + 4), // 4 = "init".len()
+        decl_range: span_to_range(li, member_span),
+        edit_range: point_range(li, insert_byte),
         new_text: format!(" {caps}"),
         code,
-        title: format!("Add {noun} `{caps}` to `init`"),
+        title: format!("Add {noun} `{caps}` to `{keyword}`"),
     });
 }
 
-/// Build the `T019` fix: drop the capabilities the `init` block declares
-/// beyond the actor's boundary (the union of its handlers' caps).
+/// Build the `T019` fix: drop the capabilities an actor member (`init` or
+/// `terminate`, named by `member_keyword`) declares beyond the actor's
+/// boundary (the union of its handlers' caps).
 ///
 /// The capability tokens carry no spans of their own, so they are located by
-/// scanning the source after the `init` keyword. The whole token region is
+/// scanning the source after the member keyword. The whole token region is
 /// replaced with the subset that stays — or deleted (with one following
 /// space) when nothing stays.
-fn build_init_leak_fix(
+#[expect(clippy::too_many_arguments, reason = "one fix needs all of these")]
+fn build_member_leak_fix(
     uri: &Url,
     li: &LineIndex,
     text: &str,
     module: &ridge_typecheck::TypedModule,
     actor_span: ridge_ast::Span,
     actor: &str,
+    member_keyword: &str,
     leaking: CapabilitySet,
 ) -> Option<CapabilityFix> {
-    let init = module.ast.items.iter().find_map(|item| match item {
+    let (member_span, member_caps) = module.ast.items.iter().find_map(|item| match item {
         ridge_ast::Item::Actor(ad) if ad.span == actor_span => {
-            ad.members.iter().find_map(|m| match m {
-                ridge_ast::ActorMember::Init(i) => Some(i),
+            ad.members.iter().find_map(|m| match (m, member_keyword) {
+                (ridge_ast::ActorMember::Init(i), "init") => Some((i.span, &i.caps)),
+                (ridge_ast::ActorMember::Terminate(t), "terminate") => Some((t.span, &t.caps)),
                 _ => None,
             })
         }
@@ -6074,13 +6119,13 @@ fn build_init_leak_fix(
     })?;
 
     let bytes = text.as_bytes();
-    let start = init.span.start as usize;
-    if bytes.get(start..start + "init".len()) != Some(b"init") {
+    let start = member_span.start as usize;
+    if bytes.get(start..start + member_keyword.len()) != Some(member_keyword.as_bytes()) {
         return None;
     }
-    // Scan the capability tokens between the `init` keyword and whatever
+    // Scan the capability tokens between the member keyword and whatever
     // follows (params or `=`).
-    let mut pos = start + "init".len();
+    let mut pos = start + member_keyword.len();
     let mut first_tok: Option<usize> = None;
     let mut last_end = pos;
     loop {
@@ -6107,7 +6152,7 @@ fn build_init_leak_fix(
         .copied()
         .filter(|kw| {
             let cap = cap_for_keyword(kw);
-            init.caps.contains(&cap) && !leaking.contains(cap)
+            member_caps.contains(&cap) && !leaking.contains(cap)
         })
         .collect();
     let (edit_start, edit_end, new_text) = if kept.is_empty() {
@@ -6140,7 +6185,7 @@ fn build_init_leak_fix(
         new_text,
         code: "T019",
         title: format!(
-            "Remove {noun} `{leaking_rendered}` from `init` (no handler on `{actor}` declares it)"
+            "Remove {noun} `{leaking_rendered}` from `{member_keyword}` (no handler on `{actor}` declares it)"
         ),
     })
 }
@@ -7041,6 +7086,11 @@ mod tests {
         assert!(
             validate_new_name("child", "foo").is_ok(),
             "rename to the contextual `child` must be allowed"
+        );
+        // `terminate` is contextual too (actor member keyword).
+        assert!(
+            validate_new_name("terminate", "foo").is_ok(),
+            "rename to the contextual `terminate` must be allowed"
         );
         // `spawn` is hard-reserved: it sits in KEYWORDS, rename's blocklist.
         assert!(

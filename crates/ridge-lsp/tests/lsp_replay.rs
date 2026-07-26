@@ -2134,6 +2134,27 @@ async fn test_completion_offers_child_contextual_keyword() {
 }
 
 #[tokio::test]
+async fn test_completion_offers_terminate_contextual_keyword() {
+    // `terminate` is a contextual keyword like `child`: offered in
+    // expression position, never hard-reserved (rename must accept it).
+    let (service, _socket, uri) = hover_fixture("pub fn terminated = 1\npub fn f = term\n").await;
+    let server = service.inner();
+
+    // Inside `term` after typing it (line 1, char 15).
+    let items = completion_items(
+        server
+            .completion(complete_at(&uri, 1, 15))
+            .await
+            .expect("ok"),
+    );
+    let terminate = items
+        .iter()
+        .find(|i| i.label == "terminate")
+        .expect("expression completion should offer `terminate`");
+    assert_eq!(terminate.kind, Some(CompletionItemKind::KEYWORD));
+}
+
+#[tokio::test]
 async fn test_completion_stdlib_actor_member_access() {
     // `import std.actor as Actor`: the member completion offers the module's
     // exports, including the typed-supervision surface and the compiler-known
@@ -4674,6 +4695,52 @@ async fn test_code_action_adds_missing_capability() {
     assert_eq!(edits[0].new_text, "io ");
     assert_eq!(edits[0].range.start, Position::new(2, 7));
     assert_eq!(edits[0].range.end, Position::new(2, 7));
+}
+
+#[tokio::test]
+async fn test_code_action_adds_missing_capability_to_terminate() {
+    // The terminate callback's body is caps-checked like init's: calling
+    // `Io.println` without declaring `io` raises T014, and the quick-fix
+    // inserts the capability right after the `terminate` keyword.
+    let src = "import std.io as Io\nimport std.actor (ExitReason, Shutdown, Crashed)\n\nactor Worker =\n    state n: Int = 0\n\n    on io tick () -> Unit =\n        n <- n + 1\n        Io.println \"tick\"\n\n    terminate (reason: ExitReason) =\n        Io.println \"bye\"\n";
+    let (service, _socket, uri) = cap_workspace_fixture(src).await;
+    let server = service.inner();
+
+    // Inside the terminate body (line 11).
+    let resp = server
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(11, 8),
+                end: Position::new(11, 8),
+            },
+            context: CodeActionContext::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code_action ok")
+        .expect("a quick-fix is offered on the terminate callback");
+
+    assert_eq!(resp.len(), 1);
+    let CodeActionOrCommand::CodeAction(action) = &resp[0] else {
+        panic!("expected a CodeAction, got {:?}", resp[0]);
+    };
+    assert_eq!(action.title, "Add capability `io` to `terminate`");
+    assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+
+    // The edit inserts ` io` immediately after the `terminate` keyword
+    // (line 10, four indent columns + `terminate`.len() = column 13).
+    let edits = action
+        .edit
+        .as_ref()
+        .and_then(|e| e.changes.as_ref())
+        .and_then(|c| c.get(&uri))
+        .expect("an edit for this document");
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].new_text, " io");
+    assert_eq!(edits[0].range.start, Position::new(10, 13));
+    assert_eq!(edits[0].range.end, Position::new(10, 13));
 }
 
 #[tokio::test]

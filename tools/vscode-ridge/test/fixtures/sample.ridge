@@ -48,6 +48,8 @@ actor Counter =
     on time tick () -> Int =
         n <- n + 1
         return n
+    terminate io (reason: ExitReason) =
+        n <- 0
 
 fn ops () -> Unit =
     let joined = [1] ++ [2]

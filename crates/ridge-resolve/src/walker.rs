@@ -27,7 +27,10 @@ use ridge_ast::{
     },
     expr::{FieldInit, LambdaParam, MatchArm, QualifiedName, RecordCtor},
     typeclass::InstanceDecl,
-    visit::{walk_block, walk_expr, walk_init_decl, walk_on_handler, walk_terminate_decl, walk_type, Visit},
+    visit::{
+        walk_block, walk_expr, walk_init_decl, walk_on_handler, walk_terminate_decl, walk_type,
+        Visit,
+    },
     Block, Body, Expr, Ident, Item, ListPatElem, Module, Pattern, Type,
 };
 use ridge_lexer::Span;

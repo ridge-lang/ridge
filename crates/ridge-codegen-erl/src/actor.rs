@@ -475,8 +475,7 @@ fn emit_terminate(
         });
     }
 
-    let mut scope =
-        LocalScope::with_actor_parent(fn_arity.clone(), actor.module, parent_beam_name);
+    let mut scope = LocalScope::with_actor_parent(fn_arity.clone(), actor.module, parent_beam_name);
     let mut state_idx: u32 = 0;
 
     let lowered_body = lower_terminate_body(&t.body, &mut scope, &mut state_idx, t.span)?;
@@ -506,10 +505,7 @@ fn emit_terminate(
     };
 
     let body = CErlExpr::Fun {
-        params: vec![
-            CErlVar("V_TermReason".into()),
-            CErlVar("V_StateArg".into()),
-        ],
+        params: vec![CErlVar("V_TermReason".into()), CErlVar("V_StateArg".into())],
         body: Box::new(body_expr),
     };
 

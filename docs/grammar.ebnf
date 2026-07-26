@@ -535,10 +535,12 @@ ActorDecl     ::= [ Visibility ] "actor" UPPER_IDENT "=" ActorBody ;
 ActorBody     ::= INDENT { ActorMember NEWLINE } DEDENT ;
 
 (* ActorBody may contain at most one InitDecl; that is a semantic constraint,
-   not a grammar constraint (D061).                                          *)
+   not a grammar constraint (D061).  The same at-most-one rule applies to
+   TerminateDecl.                                                            *)
 ActorMember   ::= StateDecl
                |  InitDecl
-               |  OnHandler ;
+               |  OnHandler
+               |  TerminateDecl ;
 
 
 (* === 5.2  State declarations === *)
@@ -555,6 +557,12 @@ StateDecl     ::= "state" LOWER_IDENT ":" Type "=" Expr ;
    is allowed per actor body (semantic rule).  The CapList and ParamList
    shapes match those of FnDecl and OnHandler.                               *)
 InitDecl      ::= "init" [ CapList ] "(" [ ParamList ] ")" "=" Block ;
+
+(* TerminateDecl defines an actor's terminate callback, run by the gen_server
+   when the actor stops.  At most one TerminateDecl is allowed per actor body
+   (semantic rule).  "terminate" is a contextual word (LOWER_IDENT), not a
+   reserved keyword.                                                         *)
+TerminateDecl ::= "terminate" [ CapList ] "(" [ ParamList ] ")" "=" Block ;
 
 CapList       ::= { Capability } ;   (* zero or more capability names *)
 

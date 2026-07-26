@@ -138,6 +138,15 @@ actor Counter =
 ",
     ),
     (
+        &["TerminateDecl"],
+        "\
+actor Worker =
+    state n: Int = 0
+    terminate io (reason: ExitReason) =
+        Io.println \"bye\"
+",
+    ),
+    (
         &[
             "ClassDecl",
             "ClassBody",

@@ -110,18 +110,18 @@ pub fn lower_actor(ctx: &mut LowerCtx<'_>, decl: &ActorDecl) -> IrActor {
     });
 
     // ── 3b. Lower optional terminate callback ────────────────────────────────
-    let terminate: Option<IrTerminate> = decl.members.iter().find_map(|m| {
+    let terminate: Option<Box<IrTerminate>> = decl.members.iter().find_map(|m| {
         if let ActorMember::Terminate(t) = m {
-            Some(lower_terminate_decl(ctx, t, &state_field_names))
+            Some(Box::new(lower_terminate_decl(ctx, t, &state_field_names)))
         } else {
             None
         }
     });
 
     // ── 3c. Lower optional onDown handler ────────────────────────────────────
-    let on_down: Option<IrOnDown> = decl.members.iter().find_map(|m| {
+    let on_down: Option<Box<IrOnDown>> = decl.members.iter().find_map(|m| {
         if let ActorMember::OnDown(d) = m {
-            Some(lower_on_down_decl(ctx, d, &state_field_names))
+            Some(Box::new(lower_on_down_decl(ctx, d, &state_field_names)))
         } else {
             None
         }

@@ -34,10 +34,12 @@ pub struct IrActor {
     pub state_fields: Vec<IrStateField>,
     /// The actor's `init` block, if present.
     pub init: Option<IrInit>,
-    /// The actor's `terminate` callback, if present.
-    pub terminate: Option<IrTerminate>,
-    /// The actor's `onDown` monitor-notification handler, if present.
-    pub on_down: Option<IrOnDown>,
+    /// The actor's `terminate` callback, if present. Boxed to keep `IrItem`
+    /// small (the actor variant is the largest).
+    pub terminate: Option<Box<IrTerminate>>,
+    /// The actor's `onDown` monitor-notification handler, if present. Boxed
+    /// like `terminate`.
+    pub on_down: Option<Box<IrOnDown>>,
     /// One handler per `on` clause, in source order.
     pub dispatch: Vec<IrHandler>,
     /// Mailbox configuration (cut 0.2.7).

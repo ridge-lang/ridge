@@ -33,8 +33,7 @@ use crate::{
     decl::{
         ActorDecl, ActorMember, ConstDecl, Constructor, FieldDecl, FnDecl, ImportDecl, InitDecl,
         MailboxDecl, ModulePath, OnDownDecl, OnHandler, Param, RecordTypeBody, StateDecl,
-        TerminateDecl,
-        TypeBody, TypeDecl, UnionTypeBody,
+        TerminateDecl, TypeBody, TypeDecl, UnionTypeBody,
     },
     expr::{AskTimeout, FieldInit, InterpPart, LambdaParam, MatchArm, QualifiedName, RecordCtor},
     typeclass::{ClassDecl, InstanceDecl},

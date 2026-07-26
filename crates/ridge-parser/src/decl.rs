@@ -37,9 +37,8 @@ use ridge_ast::{
     typeclass::{ClassConstraint, ClassDecl, FunDep, InstanceDecl, MethodDef, MethodSig},
     ActorDecl, ActorMember, Attribute, Body, Capability, ConstDecl, Constructor, DocComment, Expr,
     FieldDecl, FnDecl, Ident, ImportDecl, InitDecl, Item, MailboxConfig, MailboxDecl,
-    MailboxPolicy, ModulePath, OnDownDecl, OnHandler, Param, RecordTypeBody, StateDecl, TerminateDecl,
-    Type,
-    TypeBody, TypeDecl, UnionTypeBody, Visibility,
+    MailboxPolicy, ModulePath, OnDownDecl, OnHandler, Param, RecordTypeBody, StateDecl,
+    TerminateDecl, Type, TypeBody, TypeDecl, UnionTypeBody, Visibility,
 };
 use ridge_lexer::Token;
 

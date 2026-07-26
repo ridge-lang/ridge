@@ -2334,10 +2334,7 @@ pub(crate) fn reconciled_fn_scheme(
                 row_vars: vec![],
                 ty: Type::Fn {
                     params: vec![Type::Con(b.monitor, vec![]), Type::Con(b.int, vec![])],
-                    ret: Box::new(Type::Con(
-                        b.option,
-                        vec![Type::Con(exit_reason, vec![])],
-                    )),
+                    ret: Box::new(Type::Con(b.option, vec![Type::Con(exit_reason, vec![])])),
                     caps: CapRow::Concrete(CapabilitySet::singleton(Capability::Time)),
                 },
                 constraints: vec![],

@@ -2035,6 +2035,134 @@ fn beam_e2e_ask_on_dead_plain_actor_fails_loudly() {
     );
 }
 
+// ── terminate callback ─────────────────────────────────────────────────────
+
+const TERMINATE_ON_STOP_SOURCE: &str = r#"
+import std.io    as Io
+import std.time  as Time
+import std.actor as Actor
+import std.actor (OneForOne, ExitReason, Shutdown, Crashed)
+
+actor Worker =
+    state n: Int = 0
+
+    on work () -> Unit =
+        n <- n + 1
+
+    terminate io (reason: ExitReason) =
+        match reason
+            Shutdown -> Io.println "terminate-shutdown"
+            Crashed m -> Io.println "terminate-crashed"
+
+fn io time main () -> Result Unit Text =
+    let sup = Actor.supervise OneForOne 3 5000 []?
+    let _ = Actor.startChild sup (Actor.childId "w" (child Worker))?
+    match Actor.stopChild sup "w"
+        Ok _ -> Io.println "stop-ok"
+        Err e -> Io.println $"stop-failed=${e}"
+    Time.sleep 300
+    Io.println "main-done"
+    Ok ()
+"#;
+
+/// An ordered stop from the supervisor must reach the callback: `stopChild`
+/// fires `terminate` with `Shutdown`, and the side effect is observed.
+#[test]
+fn beam_e2e_terminate_fires_on_supervisor_stop() {
+    let (stdout, _) = run_inline_actor_test("TerminateOnStop", TERMINATE_ON_STOP_SOURCE);
+    assert!(stdout.contains("stop-ok"), "got:\n{stdout}");
+    assert!(
+        stdout.contains("terminate-shutdown"),
+        "the callback did not observe Shutdown, got:\n{stdout}"
+    );
+    assert!(stdout.contains("main-done"), "got:\n{stdout}");
+}
+
+const TERMINATE_ON_CRASH_SOURCE: &str = r#"
+import std.io    as Io
+import std.int   as Int
+import std.time  as Time
+import std.actor as Actor
+import std.actor (OneForOne, ExitReason, Shutdown, Crashed)
+
+actor Worker =
+    state n: Int = 0
+
+    on explode (d: Int) -> Unit =
+        n <- 10 / d
+
+    on get () -> Int =
+        n
+
+    terminate io (reason: ExitReason) =
+        match reason
+            Shutdown -> Io.println "terminate-shutdown"
+            Crashed m -> Io.println "terminate-crashed"
+
+fn io time main () -> Result Unit Text =
+    let sup = Actor.supervise OneForOne 3 5000 []?
+    let w = Actor.startChild sup (Actor.childId "w" (child Worker))?
+    w ! explode 0
+    Time.sleep 500
+    let n = w ?> get ()
+    Io.println $"handle-replied=${Int.toText n}"
+    Ok ()
+"#;
+
+/// A handler crash fires `terminate` with the `Crashed` payload, and the
+/// internal trap_exit changes nothing about restart transparency: the
+/// supervisor restarts the child and the handle re-resolves (state reset).
+#[test]
+fn beam_e2e_terminate_fires_on_crash_and_restart_still_works() {
+    let (stdout, _) = run_inline_actor_test("TerminateOnCrash", TERMINATE_ON_CRASH_SOURCE);
+    assert!(
+        stdout.contains("terminate-crashed"),
+        "the callback did not observe the crash, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("handle-replied=0"),
+        "the restarted child should re-run init (state reset to 0), got:\n{stdout}"
+    );
+}
+
+const INIT_CRASH_NO_TERMINATE_SOURCE: &str = r#"
+import std.io    as Io
+import std.actor (ExitReason, Shutdown, Crashed)
+
+actor Worker =
+    state n: Int = 0
+
+    init (d: Int) =
+        n <- 10 / d
+
+    terminate io (reason: ExitReason) =
+        match reason
+            Shutdown -> Io.println "terminate-fired"
+            Crashed m -> Io.println "terminate-fired"
+
+fn spawn io main () -> Result Unit Text =
+    let _w = spawn Worker 0
+    Io.println "spawn-returned"
+    Ok ()
+"#;
+
+/// OTP never calls terminate/2 when init itself fails — the callback must
+/// NOT fire on an init crash, and the spawn failure still surfaces.
+#[test]
+fn beam_e2e_init_crash_does_not_fire_terminate() {
+    let (beam_dir, module, _td) =
+        compile_inline_actor_test("InitCrashNoTerminate", INIT_CRASH_NO_TERMINATE_SOURCE);
+    let (stdout, _stderr, exit_code) = run_erl_via_runner(&beam_dir, &module);
+    assert!(
+        !stdout.contains("terminate-fired"),
+        "terminate must not run when init crashes (OTP semantics), got:\n{stdout}"
+    );
+    assert_ne!(
+        exit_code, 0,
+        "the init crash must surface as a failure, got exit 0\n--- stdout ---\n{stdout}"
+    );
+}
+
 // ── Slice pattern BEAM e2e tests (D258) ──────────────────────────────────────
 
 /// Suffix rest `[.., last]`: print the last element of a list.

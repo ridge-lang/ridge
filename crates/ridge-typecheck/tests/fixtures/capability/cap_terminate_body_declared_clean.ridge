@@ -1,0 +1,17 @@
+-- expect-clean
+-- A terminate callback that declares the capability its body uses checks
+-- cleanly when a handler also declares it: the actor boundary is the union
+-- of handler caps, and the callback's declared set must stay within it
+-- (T019 otherwise). The reason param matches over ExitReason's variants.
+import std.io as Io
+import std.actor (ExitReason, Shutdown, Crashed)
+
+actor Worker =
+    state n: Int = 0
+    on io tick =
+        n <- n + 1
+        Io.println "tick"
+    terminate io (reason: ExitReason) =
+        match reason
+            Shutdown -> Io.println "clean"
+            Crashed m -> Io.println m

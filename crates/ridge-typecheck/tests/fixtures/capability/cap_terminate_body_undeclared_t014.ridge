@@ -1,0 +1,14 @@
+-- expect: T014
+-- The terminate callback's body is capability-checked against its declared
+-- set (empty = pure), the same rule init and on-handlers get. This body
+-- calls `Io.println` ({io}) without declaring it, so T014 fires.
+import std.io as Io
+import std.actor (ExitReason, Shutdown, Crashed)
+
+actor Worker =
+    state n: Int = 0
+    on io tick =
+        n <- n + 1
+        Io.println "tick"
+    terminate (reason: ExitReason) =
+        Io.println "bye"

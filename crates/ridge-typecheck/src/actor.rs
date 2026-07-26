@@ -583,6 +583,18 @@ pub fn check_actor_encapsulation(
         });
     }
 
+    // The terminate callback runs in the actor process exactly like init, so
+    // the same boundary rule applies: terminate_caps ⊆ actor_caps.
+    let terminate_leaking = schema.terminate_caps.difference(&actor_caps);
+    if !terminate_leaking.is_pure() {
+        errors.push(TypeError::ActorCapabilityLeak {
+            actor: actor_name.to_string(),
+            handler: "terminate".to_string(),
+            leaking_caps: terminate_leaking,
+            span: fallback_span,
+        });
+    }
+
     errors
 }
 
@@ -831,6 +843,8 @@ mod tests {
             }],
             init_params: Some(vec![Type::Con(b.int, vec![])]),
             init_caps: CapabilitySet::PURE,
+            terminate_params: None,
+            terminate_caps: CapabilitySet::PURE,
             handlers: vec![
                 HandlerSchema {
                     name: "increment".to_string(),
@@ -870,6 +884,8 @@ mod tests {
             state_fields: vec![],
             init_params: None,
             init_caps: CapabilitySet::PURE,
+            terminate_params: None,
+            terminate_caps: CapabilitySet::PURE,
             handlers: vec![HandlerSchema {
                 name: "log".to_string(),
                 params: vec![Type::Con(b.text, vec![])],
@@ -1255,6 +1271,8 @@ mod tests {
             state_fields: vec![],
             init_params: None,
             init_caps: CapabilitySet::PURE,
+            terminate_params: None,
+            terminate_caps: CapabilitySet::PURE,
             handlers: vec![
                 HandlerSchema {
                     name: "doIo".to_string(),
@@ -1289,6 +1307,8 @@ mod tests {
             state_fields: vec![],
             init_params: None,
             init_caps: CapabilitySet::PURE,
+            terminate_params: None,
+            terminate_caps: CapabilitySet::PURE,
             handlers: vec![HandlerSchema {
                 name: "doIoAndFs".to_string(),
                 params: vec![],

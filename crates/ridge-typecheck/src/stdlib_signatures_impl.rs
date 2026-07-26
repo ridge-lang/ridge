@@ -168,7 +168,7 @@ fn ty_child_spec(b: &BuiltinTyCons, a: Type) -> Type {
     Type::Con(b.child_spec, vec![a])
 }
 #[inline]
-fn ty_monitor(b: &BuiltinTyCons) -> Type {
+const fn ty_monitor(b: &BuiltinTyCons) -> Type {
     Type::Con(b.monitor, vec![])
 }
 #[inline]

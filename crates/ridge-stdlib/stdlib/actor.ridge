@@ -105,23 +105,6 @@ pub fn childId (id: Text) (spec: ChildSpec a) -> ChildSpec a
 @ffi("ridge_rt", "set_child_restart", 2)
 pub fn childRestart (restart: Restart) (spec: ChildSpec a) -> ChildSpec a
 
--- `tryAsk` — typed ask with an explicit timeout and a `Result` return.
---
--- This function is compiler-known: it has no body here because a plain FFI
--- declaration cannot type the message against the actor's handlers. When the
--- type checker sees a call `tryAsk handle message timeoutMs` it types it
--- like the `?>` operator — `message` checked against the actor's `on`
--- handlers, the reply type taken from the handler — but the overall
--- expression is `Result reply AskError`: the runtime
--- (`ridge_rt:try_ask/3`) returns `{ok, reply} | {error, 'Noproc' | 'Timeout'}`
--- instead of raising. The call absorbs the `time` capability like any ask.
---
---     import std.actor as Actor
---     match Actor.tryAsk counter getCount 1000
---         Ok count    -> ...
---         Err Noproc  -> ...
---         Err Timeout -> ...
-
 -- ── Process monitors ────────────────────────────────────────────────────────
 --
 -- A monitor observes a running process and reports its death exactly once,
@@ -157,3 +140,20 @@ pub fn unmonitor (m: Monitor) -> Unit
 -- instead. Carries the `time` capability, like `Time.sleep`.
 @ffi("ridge_rt", "await_down", 2)
 pub fn time await (m: Monitor) (timeoutMs: Int) -> Option ExitReason
+
+-- `tryAsk` — typed ask with an explicit timeout and a `Result` return.
+--
+-- This function is compiler-known: it has no body here because a plain FFI
+-- declaration cannot type the message against the actor's handlers. When the
+-- type checker sees a call `tryAsk handle message timeoutMs` it types it
+-- like the `?>` operator — `message` checked against the actor's `on`
+-- handlers, the reply type taken from the handler — but the overall
+-- expression is `Result reply AskError`: the runtime
+-- (`ridge_rt:try_ask/3`) returns `{ok, reply} | {error, 'Noproc' | 'Timeout'}`
+-- instead of raising. The call absorbs the `time` capability like any ask.
+--
+--     import std.actor as Actor
+--     match Actor.tryAsk counter getCount 1000
+--         Ok count    -> ...
+--         Err Noproc  -> ...
+--         Err Timeout -> ...

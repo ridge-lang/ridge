@@ -111,11 +111,14 @@ pub fn check_caps_decl_kind(
     effective
 }
 
-/// Convenience wrapper for `Block`-bodied decls (e.g. `InitDecl`).
+/// Convenience wrapper for `Block`-bodied decls (e.g. `InitDecl`,
+/// `TerminateDecl`). `kind` drives the T014 wording and any quick-fix
+/// placement downstream.
 pub fn check_caps_block(
     ctx: &mut InferCtx,
     b: &BuiltinTyCons,
     decl_name: &str,
+    kind: CapDeclKind,
     declared: Option<CapabilitySet>,
     block: &ridge_ast::Block,
     decl_span: Span,
@@ -127,7 +130,7 @@ pub fn check_caps_block(
             let missing = inferred.difference(&declared_set);
             ctx.errors.push(TypeError::CapabilityNotDeclared {
                 decl: decl_name.to_owned(),
-                kind: CapDeclKind::Init,
+                kind,
                 declared: declared_set,
                 inferred,
                 missing,

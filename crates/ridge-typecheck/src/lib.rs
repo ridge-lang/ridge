@@ -2092,7 +2092,10 @@ fn seed_summarizable_scheme(
     let map_row = Type::Con(b.map, vec![text(), Type::Con(sql_value, vec![])]);
     let result_rows = Type::Con(
         b.result,
-        vec![Type::Con(b.list, vec![map_row]), Type::Con(db_error, vec![])],
+        vec![
+            Type::Con(b.list, vec![map_row]),
+            Type::Con(db_error, vec![]),
+        ],
     );
     let fn_ty = Type::Fn {
         params: vec![

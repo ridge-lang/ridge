@@ -503,19 +503,57 @@ actor Worker =
 
     terminate io db (reason: ExitReason) =
         match reason
+            NotRunning -> Io.println "unreachable"
             Shutdown -> Io.println "worker stopping cleanly"
             Crashed m -> Io.println m
 ```
 
-`ExitReason` (from `std.actor`) tells the two stop kinds apart:
+`ExitReason` (from `std.actor`) tells the stop kinds apart:
 
 ```ridge
-pub type ExitReason = Shutdown | Crashed Text
+pub type ExitReason = NotRunning | Shutdown | Crashed Text
 ```
 
 `Shutdown` is an ordered stop; `Crashed` carries the OTP exit reason
-rendered as text. When the callback runs at all is §7.5's business; the
+rendered as text; `NotRunning` only ever comes from monitoring an
+already-dead process (§7.5) — it never reaches `terminate`, but matches
+must still cover it. When the callback runs at all is §7.5's business; the
 runtime side of the contract is documented there.
+
+#### §3.9.x. onDown handlers
+
+An actor may declare one `onDown` member — a handler that runs when a
+process it monitors (via `Actor.monitor`, §7.5) goes down.
+
+- An actor has at most one `onDown` member; a second one is a resolve
+  error (`R029`), the same rule `init`, `mailbox`, and `terminate` get.
+- Syntax: `onDown [capList] (params) = body` — capabilities are bare
+  prefix words, exactly like `init`. `onDown` is a contextual word, not a
+  reserved keyword.
+- The handler takes at most two parameters, conventionally
+  `(m: Monitor) (reason: ExitReason)`: the monitor reference that fired
+  and why the process went down. Correlate `m` against stored monitors
+  with `==` to tell several watched processes apart.
+- The body may read **and mutate** state fields, exactly like a cast
+  handler. Declared capabilities must stay within the union of the actor's
+  handler caps (`T019`); the body is checked against its declared set
+  (`T014`).
+- A DOWN delivered to an actor **without** an `onDown` member is
+  discarded, like any other out-of-band message.
+
+```ridge
+actor Watcher =
+    state deaths: Int = 0
+
+    on watch (w: Handle Worker) -> Unit =
+        let _ = Actor.monitor w
+
+    on count () -> Int =
+        deaths
+
+    onDown (m: Monitor) (reason: ExitReason) =
+        deaths <- deaths + 1
+```
 
 ### 3.10. String interpolation
 
@@ -723,11 +761,12 @@ Capability    = "io" | "fs" | "net" | "time" | "random" | "env" | "proc" | "spaw
 Param         = Ident | "(" Ident ":" Type ")" .
 
 ActorDecl     = [ "pub" ] "actor" UpperIdent "=" { ActorMember } .
-ActorMember   = StateDecl | OnHandler | InitBlock | TerminateBlock .
+ActorMember   = StateDecl | OnHandler | InitBlock | TerminateBlock | OnDownBlock .
 StateDecl     = "state" Ident ":" Type [ "=" Expr ] .
 OnHandler     = "on" { Capability } Ident { Param } [ "->" Type ] "=" Expr .
 InitBlock     = "init" { Capability } "(" ParamList ")" "=" Expr .
 TerminateBlock = "terminate" { Capability } "(" ParamList ")" "=" Expr .
+OnDownBlock   = "onDown" { Capability } "(" ParamList ")" "=" Expr .
 
 Expr          = LetExpr | MatchExpr | IfExpr | TryExpr | GuardExpr
               | LambdaExpr | PipeExpr | AppExpr | Literal | Ident .
@@ -1531,6 +1570,36 @@ process from dying. The gen_server traps exits internally to make this
 reliable — an implementation detail, not new surface: links and user-level
 `trap_exit` remain deliberately absent from the language, and the only
 fate-sharing mechanism is the supervision tree above.
+
+**Observing dead actors: monitors.** Supervision restarts a crashed child
+transparently — which also means nobody *hears* about the crash. When
+failure must be observable (a pool that shrinks, a job tracker, a test
+asserting death), the primitive is a **process monitor**:
+
+```ridge
+let m = Actor.monitor w          -- Monitor: an opaque reference
+match Actor.await m 3000         -- blocking, carries `time`
+    Some (Crashed r) -> ...
+    Some Shutdown -> ...
+    Some NotRunning -> ...       -- w was already dead when monitored
+    None -> ...                  -- timeout; the monitor is removed
+```
+
+- `Actor.monitor` observes the **pid**, not the logical handle: a
+  supervised child that crashes and is restarted fires DOWN for the old
+  pid; observing the new incarnation needs a fresh `monitor` call. This
+  is the same pid-vs-handle boundary §7.5's restart transparency hides
+  from `?>` — monitors are how you look behind it, deliberately.
+- `Actor.await` is for sequential code (`main`, `init`, plain functions).
+  Calling it inside an `on` handler freezes the actor's mailbox for the
+  duration — an actor that must *react* to deaths declares an `onDown`
+  member (§3.9) instead and keeps handling messages.
+- `Actor.unmonitor` cancels a monitor; a DOWN already in flight may still
+  be delivered.
+- Monitors compose with `terminate`: the watched process's own
+  `terminate` runs first (it sees `Shutdown`/`Crashed`); the watcher's
+  `onDown` or `await` observes the death from outside (and may
+  additionally see `NotRunning`, which only monitoring can produce).
 
 ### 7.6. Module semantics
 

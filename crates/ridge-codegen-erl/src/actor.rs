@@ -11,8 +11,8 @@
 //! | `init/1` | 1 | `IrInit` body + state-field defaults |
 //! | `handle_call/3` | 3 | one clause per handler (all handlers, per OQ-E005) |
 //! | `handle_cast/2` | 2 | one clause per handler (all handlers, per OQ-E005) |
-//! | `handle_info/2` | 2 | boilerplate no-op stub |
-//! | `terminate/2` | 2 | boilerplate no-op stub |
+//! | `handle_info/2` | 2 | DOWN routing when `onDown` is present, else stub |
+//! | `terminate/2` | 2 | `IrTerminate` body when present, else stub |
 //! | `code_change/3` | 3 | boilerplate no-op stub |
 //!
 //! ## `start_link/N` wrapper (§4.28)
@@ -64,7 +64,7 @@ use crate::expr::name_to_erl_var;
 use crate::handler::{
     call_params, cast_params, lower_handler_call_clause, lower_handler_cast_clause,
 };
-use crate::init::{lower_init_body, lower_terminate_body, state_var};
+use crate::init::{lower_handler_body_for_cast, lower_init_body, lower_terminate_body, state_var};
 use crate::scope::LocalScope;
 use ridge_ir::{IrActor, MailboxConfig, MailboxPolicy};
 use rustc_hash::FxHashMap;
@@ -144,7 +144,7 @@ pub(crate) fn lower_actor(
         emit_init(actor),
         emit_handle_call(actor, fn_arity, parent_beam_name),
         emit_handle_cast(actor, fn_arity, parent_beam_name),
-        Ok(emit_handle_info_stub()),
+        emit_handle_info(actor, fn_arity, parent_beam_name),
         emit_terminate(actor, fn_arity, parent_beam_name),
         Ok(emit_code_change_stub()),
         Ok(emit_mailbox_config_fn(actor)),
@@ -415,6 +415,124 @@ fn emit_handle_info_stub() -> CErlFn {
         )],
         body,
     }
+}
+
+/// Emit the `gen_server:handle_info/2` callback.
+///
+/// Actors without an `onDown` member keep the no-op stub (byte-identical
+/// output). When the member is present, DOWN messages from `Actor.monitor`
+/// are routed into the user body; every other info message is still
+/// discarded:
+///
+/// ```erlang
+/// 'handle_info'/2 = fun (V_InfoMsg, V_InfoState) ->
+///     case V_InfoMsg of
+///         {'DOWN', V_DownRef, 'process', _V_DownPid, V_DownReason} ->
+///             let <m-param> = V_DownRef in
+///             let <reason-param> = call 'ridge_rt':'exit_reason_to_ridge'(V_DownReason) in
+///             let V_State = V_InfoState in
+///                 <user body; every leaf yields {'noreply', V_State_n}>
+///         _ -> {'noreply', V_InfoState}
+///     end
+/// end
+/// ```
+///
+/// The OTP reason is mapped to the `ExitReason` union at the runtime
+/// boundary so the body matches on `'NotRunning'` / `'Shutdown'` /
+/// `{'Crashed', Text}`. At most two user parameters are supported (the
+/// monitor reference and the reason); more would have no OTP counterpart.
+fn emit_handle_info(
+    actor: &IrActor,
+    fn_arity: &FxHashMap<String, u32>,
+    parent_beam_name: &str,
+) -> Result<CErlFn, CodegenError> {
+    let Some(d) = actor.on_down.as_ref() else {
+        return Ok(emit_handle_info_stub());
+    };
+
+    if d.params.len() > 2 {
+        return Err(CodegenError::IrShapeMalformed {
+            variant: "IrOnDown",
+            span: d.span,
+            detail: format!(
+                "onDown declares {} params — OTP delivers exactly two (the monitor reference and the exit reason)",
+                d.params.len()
+            ),
+        });
+    }
+
+    let mut scope = LocalScope::with_actor_parent(fn_arity.clone(), actor.module, parent_beam_name);
+    let mut state_idx: u32 = 0;
+
+    let lowered_body = lower_handler_body_for_cast(&d.body, &mut scope, &mut state_idx, d.span)?;
+
+    // let V_State = V_InfoState in <body ending in {'noreply', V_State_n}>
+    let state_bind = CErlExpr::Let {
+        var: state_var(0),
+        value: Box::new(CErlExpr::Var(CErlVar("V_InfoState".into()))),
+        body: Box::new(lowered_body),
+    };
+
+    // Bind the declared params (innermost-out): the monitor reference to the
+    // raw DOWN ref, the reason to the mapped `ExitReason` wire value. A
+    // missing param simply ignores the value.
+    let mut body_expr = state_bind;
+    if let Some(reason_param) = d.params.get(1) {
+        body_expr = CErlExpr::Let {
+            var: CErlVar(name_to_erl_var(&reason_param.name)),
+            value: Box::new(CErlExpr::Call {
+                module: CErlAtom("ridge_rt".into()),
+                fn_name: CErlAtom("exit_reason_to_ridge".into()),
+                args: vec![CErlExpr::Var(CErlVar("V_DownReason".into()))],
+            }),
+            body: Box::new(body_expr),
+        };
+    }
+    if let Some(monitor_param) = d.params.first() {
+        body_expr = CErlExpr::Let {
+            var: CErlVar(name_to_erl_var(&monitor_param.name)),
+            value: Box::new(CErlExpr::Var(CErlVar("V_DownRef".into()))),
+            body: Box::new(body_expr),
+        };
+    }
+
+    let down_clause = crate::core_ast::CErlClause {
+        pattern: crate::core_ast::CErlPat::Tuple(vec![
+            crate::core_ast::CErlPat::Lit(CErlLit::Atom(CErlAtom("DOWN".into()))),
+            crate::core_ast::CErlPat::Var(CErlVar("V_DownRef".into())),
+            crate::core_ast::CErlPat::Lit(CErlLit::Atom(CErlAtom("process".into()))),
+            crate::core_ast::CErlPat::Wild,
+            crate::core_ast::CErlPat::Var(CErlVar("V_DownReason".into())),
+        ]),
+        guard: CErlExpr::Lit(CErlLit::Atom(CErlAtom("true".into()))),
+        body: body_expr,
+    };
+
+    let other_clause = crate::core_ast::CErlClause {
+        pattern: crate::core_ast::CErlPat::Wild,
+        guard: CErlExpr::Lit(CErlLit::Atom(CErlAtom("true".into()))),
+        body: CErlExpr::Tuple(vec![
+            CErlExpr::Lit(CErlLit::Atom(CErlAtom("noreply".into()))),
+            CErlExpr::Var(CErlVar("V_InfoState".into())),
+        ]),
+    };
+
+    let body = CErlExpr::Fun {
+        params: vec![CErlVar("V_InfoMsg".into()), CErlVar("V_InfoState".into())],
+        body: Box::new(CErlExpr::Case {
+            scrutinee: Box::new(CErlExpr::Var(CErlVar("V_InfoMsg".into()))),
+            clauses: vec![down_clause, other_clause],
+        }),
+    };
+
+    Ok(CErlFn {
+        name: CErlAtom("handle_info".into()),
+        arity: 2,
+        anns: vec![CErlAnn(
+            "%% gen_server:handle_info/2 — monitor DOWN routing (§4.28)".into(),
+        )],
+        body,
+    })
 }
 
 /// `terminate/2` no-op stub.
@@ -696,6 +814,7 @@ mod tests {
             state_fields,
             init: None,
             terminate: None,
+            on_down: None,
             dispatch: handlers,
             mailbox_config: None,
             origin: NodeId(0),

@@ -246,61 +246,78 @@
  52  "        n "  source.ridge
  52  "<-"  source.ridge keyword.operator.ridge
  52  "0"  source.ridge constant.numeric.integer.decimal.ridge
- 54  "fn"  source.ridge keyword.other.ridge
- 54  " ops "  source.ridge
- 54  "("  source.ridge punctuation.bracket.ridge
- 54  ")"  source.ridge punctuation.bracket.ridge
- 54  "->"  source.ridge keyword.operator.ridge
- 54  "Unit"  source.ridge entity.name.type.ridge
- 54  "="  source.ridge keyword.operator.ridge
- 55  "let"  source.ridge keyword.other.ridge
- 55  " joined "  source.ridge
- 55  "="  source.ridge keyword.operator.ridge
- 55  "["  source.ridge punctuation.bracket.ridge
- 55  "1"  source.ridge constant.numeric.integer.decimal.ridge
- 55  "]"  source.ridge punctuation.bracket.ridge
- 55  "++"  source.ridge keyword.operator.ridge
- 55  "["  source.ridge punctuation.bracket.ridge
- 55  "2"  source.ridge constant.numeric.integer.decimal.ridge
- 55  "]"  source.ridge punctuation.bracket.ridge
- 56  "let"  source.ridge keyword.other.ridge
- 56  " range  "  source.ridge
+ 53  "onDown"  source.ridge keyword.other.ridge
+ 53  "("  source.ridge punctuation.bracket.ridge
+ 53  "m"  source.ridge
+ 53  ":"  source.ridge punctuation.separator.colon.ridge
+ 53  "Monitor"  source.ridge entity.name.type.ridge
+ 53  ")"  source.ridge punctuation.bracket.ridge
+ 53  "("  source.ridge punctuation.bracket.ridge
+ 53  "reason"  source.ridge
+ 53  ":"  source.ridge punctuation.separator.colon.ridge
+ 53  "ExitReason"  source.ridge entity.name.type.ridge
+ 53  ")"  source.ridge punctuation.bracket.ridge
+ 53  "="  source.ridge keyword.operator.ridge
+ 54  "        n "  source.ridge
+ 54  "<-"  source.ridge keyword.operator.ridge
+ 54  " n "  source.ridge
+ 54  "-"  source.ridge keyword.operator.ridge
+ 54  "1"  source.ridge constant.numeric.integer.decimal.ridge
+ 56  "fn"  source.ridge keyword.other.ridge
+ 56  " ops "  source.ridge
+ 56  "("  source.ridge punctuation.bracket.ridge
+ 56  ")"  source.ridge punctuation.bracket.ridge
+ 56  "->"  source.ridge keyword.operator.ridge
+ 56  "Unit"  source.ridge entity.name.type.ridge
  56  "="  source.ridge keyword.operator.ridge
- 56  "1"  source.ridge constant.numeric.integer.decimal.ridge
- 56  ".."  source.ridge keyword.operator.ridge
- 56  "10"  source.ridge constant.numeric.integer.decimal.ridge
  57  "let"  source.ridge keyword.other.ridge
- 57  " consed "  source.ridge
+ 57  " joined "  source.ridge
  57  "="  source.ridge keyword.operator.ridge
+ 57  "["  source.ridge punctuation.bracket.ridge
  57  "1"  source.ridge constant.numeric.integer.decimal.ridge
- 57  "::"  source.ridge keyword.operator.ridge
- 57  " rest"  source.ridge
+ 57  "]"  source.ridge punctuation.bracket.ridge
+ 57  "++"  source.ridge keyword.operator.ridge
+ 57  "["  source.ridge punctuation.bracket.ridge
+ 57  "2"  source.ridge constant.numeric.integer.decimal.ridge
+ 57  "]"  source.ridge punctuation.bracket.ridge
  58  "let"  source.ridge keyword.other.ridge
- 58  " chain  "  source.ridge
+ 58  " range  "  source.ridge
  58  "="  source.ridge keyword.operator.ridge
- 58  " parse "  source.ridge
- 58  "\""  source.ridge string.quoted.double.ridge
- 58  "x"  source.ridge string.quoted.double.ridge
- 58  "\""  source.ridge string.quoted.double.ridge
- 58  "?>"  source.ridge keyword.operator.ridge
- 58  " handle"  source.ridge
+ 58  "1"  source.ridge constant.numeric.integer.decimal.ridge
+ 58  ".."  source.ridge keyword.operator.ridge
+ 58  "10"  source.ridge constant.numeric.integer.decimal.ridge
  59  "let"  source.ridge keyword.other.ridge
- 59  " opt    "  source.ridge
+ 59  " consed "  source.ridge
  59  "="  source.ridge keyword.operator.ridge
- 59  " maybe"  source.ridge
- 59  "?"  source.ridge keyword.operator.ridge
+ 59  "1"  source.ridge constant.numeric.integer.decimal.ridge
+ 59  "::"  source.ridge keyword.operator.ridge
+ 59  " rest"  source.ridge
  60  "let"  source.ridge keyword.other.ridge
- 60  " c      "  source.ridge
+ 60  " chain  "  source.ridge
  60  "="  source.ridge keyword.operator.ridge
- 60  "spawn"  source.ridge keyword.other.ridge
- 60  "Counter"  source.ridge entity.name.type.ridge
+ 60  " parse "  source.ridge
+ 60  "\""  source.ridge string.quoted.double.ridge
+ 60  "x"  source.ridge string.quoted.double.ridge
+ 60  "\""  source.ridge string.quoted.double.ridge
+ 60  "?>"  source.ridge keyword.operator.ridge
+ 60  " handle"  source.ridge
  61  "let"  source.ridge keyword.other.ridge
- 61  " k      "  source.ridge
+ 61  " opt    "  source.ridge
  61  "="  source.ridge keyword.operator.ridge
- 61  "child"  source.ridge keyword.other.ridge
- 61  "Counter"  source.ridge entity.name.type.ridge
- 62  "    c "  source.ridge
- 62  "!"  source.ridge keyword.operator.ridge
- 62  " tick "  source.ridge
- 62  "("  source.ridge punctuation.bracket.ridge
- 62  ")"  source.ridge punctuation.bracket.ridge
+ 61  " maybe"  source.ridge
+ 61  "?"  source.ridge keyword.operator.ridge
+ 62  "let"  source.ridge keyword.other.ridge
+ 62  " c      "  source.ridge
+ 62  "="  source.ridge keyword.operator.ridge
+ 62  "spawn"  source.ridge keyword.other.ridge
+ 62  "Counter"  source.ridge entity.name.type.ridge
+ 63  "let"  source.ridge keyword.other.ridge
+ 63  " k      "  source.ridge
+ 63  "="  source.ridge keyword.operator.ridge
+ 63  "child"  source.ridge keyword.other.ridge
+ 63  "Counter"  source.ridge entity.name.type.ridge
+ 64  "    c "  source.ridge
+ 64  "!"  source.ridge keyword.operator.ridge
+ 64  " tick "  source.ridge
+ 64  "("  source.ridge punctuation.bracket.ridge
+ 64  ")"  source.ridge punctuation.bracket.ridge

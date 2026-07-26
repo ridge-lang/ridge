@@ -147,6 +147,15 @@ actor Worker =
 ",
     ),
     (
+        &["OnDownDecl"],
+        "\
+actor Watcher =
+    state deaths: Int = 0
+    onDown io (m: Monitor) (reason: ExitReason) =
+        Io.println \"gone\"
+",
+    ),
+    (
         &[
             "ClassDecl",
             "ClassBody",

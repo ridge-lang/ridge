@@ -286,6 +286,11 @@ pub struct ActorSchema {
     pub terminate_params: Option<Vec<Type>>,
     /// Capabilities declared on the `terminate` callback (`PURE` when absent).
     pub terminate_caps: CapabilitySet,
+    /// `onDown` handler parameters; `None` if the actor has no `onDown`
+    /// member.
+    pub on_down_params: Option<Vec<Type>>,
+    /// Capabilities declared on the `onDown` handler (`PURE` when absent).
+    pub on_down_caps: CapabilitySet,
     /// Declared `on` handlers.
     pub handlers: Vec<HandlerSchema>,
 }
@@ -400,6 +405,8 @@ mod tests {
             init_caps: CapabilitySet::PURE,
             terminate_params: None,
             terminate_caps: CapabilitySet::PURE,
+            on_down_params: None,
+            on_down_caps: CapabilitySet::PURE,
             handlers: vec![],
         };
         let kind = TyConKind::Actor(schema);
@@ -442,6 +449,8 @@ mod tests {
             init_caps: CapabilitySet::PURE,
             terminate_params: None,
             terminate_caps: CapabilitySet::PURE,
+            on_down_params: None,
+            on_down_caps: CapabilitySet::PURE,
             handlers: vec![HandlerSchema {
                 name: "increment".to_string(),
                 params: vec![],

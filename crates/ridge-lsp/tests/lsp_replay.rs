@@ -2155,6 +2155,55 @@ async fn test_completion_offers_terminate_contextual_keyword() {
 }
 
 #[tokio::test]
+async fn test_completion_offers_on_down_contextual_keyword() {
+    // `onDown` is a contextual keyword like `child`/`terminate`: offered in
+    // expression position, never hard-reserved (rename must accept it).
+    let (service, _socket, uri) = hover_fixture("pub fn onDowned = 1\npub fn f = onD\n").await;
+    let server = service.inner();
+
+    // Inside `onD` after typing it (line 1, char 14).
+    let items = completion_items(
+        server
+            .completion(complete_at(&uri, 1, 14))
+            .await
+            .expect("ok"),
+    );
+    let on_down = items
+        .iter()
+        .find(|i| i.label == "onDown")
+        .expect("expression completion should offer `onDown`");
+    assert_eq!(on_down.kind, Some(CompletionItemKind::KEYWORD));
+}
+
+#[tokio::test]
+async fn test_hover_stdlib_actor_monitor_surface() {
+    // Hovering the monitor surface shows the header and `--` doc lifted from
+    // the embedded stdlib source — these are ordinary declarations in
+    // actor.ridge, so the normal stdlib hover path must find them.
+    let src = "import std.actor as Actor\npub fn run (m: Monitor) -> Unit = Actor.unmonitor m\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    // The `unmonitor` use on line 1.
+    let line1 = "pub fn run (m: Monitor) -> Unit = Actor.unmonitor m";
+    let col = u32::try_from(line1.find("unmonitor").expect("unmonitor use") + 1)
+        .expect("offset fits u32");
+    let h = server
+        .hover(hover_at(&uri, 1, col))
+        .await
+        .expect("hover ok");
+    let md = hover_markdown(h).expect("hover over a stdlib symbol returns markup");
+    assert!(
+        md.contains("pub fn unmonitor"),
+        "stdlib hover should show the written header, got {md:?}"
+    );
+    assert!(
+        md.contains("Stop monitoring"),
+        "stdlib hover should include the `--` doc, got {md:?}"
+    );
+}
+
+#[tokio::test]
 async fn test_completion_stdlib_actor_member_access() {
     // `import std.actor as Actor`: the member completion offers the module's
     // exports, including the typed-supervision surface and the compiler-known
@@ -2182,6 +2231,9 @@ async fn test_completion_stdlib_actor_member_access() {
         "childId",
         "childRestart",
         "tryAsk",
+        "monitor",
+        "unmonitor",
+        "await",
     ] {
         assert!(
             labels.iter().any(|l| l == name),

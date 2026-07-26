@@ -50,6 +50,8 @@ actor Counter =
         return n
     terminate io (reason: ExitReason) =
         n <- 0
+    onDown (m: Monitor) (reason: ExitReason) =
+        n <- n - 1
 
 fn ops () -> Unit =
     let joined = [1] ++ [2]

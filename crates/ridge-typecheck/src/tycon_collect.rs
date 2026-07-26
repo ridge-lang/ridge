@@ -872,6 +872,8 @@ fn build_actor_kind_fresh(
     let mut init_caps = CapabilitySet::PURE;
     let mut terminate_params: Option<Vec<Type>> = None;
     let mut terminate_caps = CapabilitySet::PURE;
+    let mut on_down_params: Option<Vec<Type>> = None;
+    let mut on_down_caps = CapabilitySet::PURE;
     let mut handlers: Vec<HandlerSchema> = Vec::new();
 
     for member in &ad.members {
@@ -939,6 +941,21 @@ fn build_actor_kind_fresh(
                 terminate_params = Some(params);
                 terminate_caps = caps_from_ast_slice(&t.caps);
             }
+            ActorMember::OnDown(d) => {
+                let params: Vec<Type> = d
+                    .params
+                    .iter()
+                    .map(|p| match p {
+                        ridge_ast::Param::Bare(_) => Type::Var(ctx.fresh_tyvid()),
+                        ridge_ast::Param::Annotated { ty, .. }
+                        | ridge_ast::Param::PatternAnnotated { ty, .. } => {
+                            ast_type_to_ridge_type(b, ctx, ty, names, &empty_params)
+                        }
+                    })
+                    .collect();
+                on_down_params = Some(params);
+                on_down_caps = caps_from_ast_slice(&d.caps);
+            }
         }
     }
 
@@ -948,6 +965,8 @@ fn build_actor_kind_fresh(
         init_caps,
         terminate_params,
         terminate_caps,
+        on_down_params,
+        on_down_caps,
         handlers,
     })
 }

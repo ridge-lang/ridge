@@ -339,6 +339,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "Noproc",
             "Timeout",
             "ExitReason",
+            "NotRunning",
             "Shutdown",
             "Crashed",
             "supervise",
@@ -348,6 +349,12 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "childId",
             "childRestart",
             "tryAsk",
+            // Process monitors. `Monitor` itself is a compiler-known opaque
+            // builtin (like `ChildSpec`/`Supervisor`), so it is not in this
+            // list — only the functions and the new `ExitReason` constructor.
+            "monitor",
+            "unmonitor",
+            "await",
         ],
     ),
     (

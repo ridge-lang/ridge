@@ -536,11 +536,12 @@ ActorBody     ::= INDENT { ActorMember NEWLINE } DEDENT ;
 
 (* ActorBody may contain at most one InitDecl; that is a semantic constraint,
    not a grammar constraint (D061).  The same at-most-one rule applies to
-   TerminateDecl.                                                            *)
+   TerminateDecl and OnDownDecl.                                            *)
 ActorMember   ::= StateDecl
                |  InitDecl
                |  OnHandler
-               |  TerminateDecl ;
+               |  TerminateDecl
+               |  OnDownDecl ;
 
 
 (* === 5.2  State declarations === *)
@@ -563,6 +564,12 @@ InitDecl      ::= "init" [ CapList ] "(" [ ParamList ] ")" "=" Block ;
    (semantic rule).  "terminate" is a contextual word (LOWER_IDENT), not a
    reserved keyword.                                                         *)
 TerminateDecl ::= "terminate" [ CapList ] "(" [ ParamList ] ")" "=" Block ;
+
+(* OnDownDecl defines an actor's monitor-notification handler, run when a
+   process monitored via Actor.monitor goes down.  At most one OnDownDecl is
+   allowed per actor body (semantic rule).  "onDown" is a contextual word
+   (LOWER_IDENT), not a reserved keyword.                                   *)
+OnDownDecl    ::= "onDown" [ CapList ] "(" [ ParamList ] ")" "=" Block ;
 
 CapList       ::= { Capability } ;   (* zero or more capability names *)
 

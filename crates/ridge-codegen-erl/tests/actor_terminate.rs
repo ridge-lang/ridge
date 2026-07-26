@@ -15,7 +15,7 @@ use ridge_codegen_erl::{codegen_workspace, CodegenOptions};
 
 const SOURCE: &str = "\
 import std.io as Io
-import std.actor (ExitReason, Shutdown, Crashed)
+import std.actor (ExitReason, NotRunning, Shutdown, Crashed)
 
 actor Worker =
     state n: Int = 0
@@ -25,6 +25,7 @@ actor Worker =
 
     terminate io (reason: ExitReason) =
         match reason
+            NotRunning -> Io.println \"unreachable\"
             Shutdown -> Io.println \"clean\"
             Crashed m -> Io.println m
 

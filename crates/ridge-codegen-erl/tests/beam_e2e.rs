@@ -2041,7 +2041,7 @@ const TERMINATE_ON_STOP_SOURCE: &str = r#"
 import std.io    as Io
 import std.time  as Time
 import std.actor as Actor
-import std.actor (OneForOne, ExitReason, Shutdown, Crashed)
+import std.actor (OneForOne, ExitReason, NotRunning, Shutdown, Crashed)
 
 actor Worker =
     state n: Int = 0
@@ -2051,6 +2051,7 @@ actor Worker =
 
     terminate io (reason: ExitReason) =
         match reason
+            NotRunning -> Io.println "terminate-unreachable"
             Shutdown -> Io.println "terminate-shutdown"
             Crashed m -> Io.println "terminate-crashed"
 
@@ -2083,7 +2084,7 @@ import std.io    as Io
 import std.int   as Int
 import std.time  as Time
 import std.actor as Actor
-import std.actor (OneForOne, ExitReason, Shutdown, Crashed)
+import std.actor (OneForOne, ExitReason, NotRunning, Shutdown, Crashed)
 
 actor Worker =
     state n: Int = 0
@@ -2096,6 +2097,7 @@ actor Worker =
 
     terminate io (reason: ExitReason) =
         match reason
+            NotRunning -> Io.println "terminate-unreachable"
             Shutdown -> Io.println "terminate-shutdown"
             Crashed m -> Io.println "terminate-crashed"
 
@@ -2127,7 +2129,7 @@ fn beam_e2e_terminate_fires_on_crash_and_restart_still_works() {
 
 const INIT_CRASH_NO_TERMINATE_SOURCE: &str = r#"
 import std.io    as Io
-import std.actor (ExitReason, Shutdown, Crashed)
+import std.actor (ExitReason, NotRunning, Shutdown, Crashed)
 
 actor Worker =
     state n: Int = 0
@@ -2137,6 +2139,7 @@ actor Worker =
 
     terminate io (reason: ExitReason) =
         match reason
+            NotRunning -> Io.println "terminate-unreachable"
             Shutdown -> Io.println "terminate-fired"
             Crashed m -> Io.println "terminate-fired"
 
@@ -2161,6 +2164,209 @@ fn beam_e2e_init_crash_does_not_fire_terminate() {
         exit_code, 0,
         "the init crash must surface as a failure, got exit 0\n--- stdout ---\n{stdout}"
     );
+}
+
+// ── Process-monitor BEAM e2e tests ────────────────────────────────────────────
+
+/// `await` observes a crash: the DOWN arrives with the `Crashed` payload.
+const MONITOR_AWAIT_CRASH_SOURCE: &str = r#"
+import std.io    as Io
+import std.actor as Actor
+import std.actor (ExitReason, NotRunning, Shutdown, Crashed)
+
+actor Worker =
+    state n: Int = 0
+
+    on explode (d: Int) -> Unit =
+        n <- 10 / d
+
+fn spawn io time main () -> Result Unit Text =
+    let w = spawn Worker
+    let m = Actor.monitor w
+    w ! explode 0
+    match Actor.await m 3000
+        Some (Crashed r) -> Io.println "await-crashed"
+        Some Shutdown -> Io.println "await-shutdown"
+        Some NotRunning -> Io.println "await-notrunning"
+        None -> Io.println "await-timeout"
+    Ok ()
+"#;
+
+#[test]
+fn beam_e2e_await_observes_crash() {
+    let (stdout, _) = run_inline_actor_test("MonitorAwaitCrash", MONITOR_AWAIT_CRASH_SOURCE);
+    assert!(stdout.contains("await-crashed"), "got:\n{stdout}");
+}
+
+/// `await` on a live actor times out and returns `None`.
+const MONITOR_AWAIT_TIMEOUT_SOURCE: &str = r#"
+import std.io    as Io
+import std.actor as Actor
+
+actor Worker =
+    state n: Int = 0
+
+    on ping () -> Int =
+        n
+
+fn spawn io time main () -> Result Unit Text =
+    let w = spawn Worker
+    let m = Actor.monitor w
+    match Actor.await m 300
+        Some r -> Io.println "await-unexpected-down"
+        None -> Io.println "await-timeout"
+    let _ = Actor.unmonitor m
+    Ok ()
+"#;
+
+#[test]
+fn beam_e2e_await_times_out_on_live_actor() {
+    let (stdout, _) = run_inline_actor_test("MonitorAwaitTimeout", MONITOR_AWAIT_TIMEOUT_SOURCE);
+    assert!(stdout.contains("await-timeout"), "got:\n{stdout}");
+}
+
+/// Monitoring an already-dead handle fires an immediate `NotRunning` DOWN.
+const MONITOR_DEAD_SOURCE: &str = r#"
+import std.io    as Io
+import std.time  as Time
+import std.actor as Actor
+import std.actor (ExitReason, NotRunning, Shutdown, Crashed)
+
+actor Worker =
+    state n: Int = 0
+
+    on explode (d: Int) -> Unit =
+        n <- 10 / d
+
+fn spawn io time main () -> Result Unit Text =
+    let w = spawn Worker
+    w ! explode 0
+    Time.sleep 500
+    let m = Actor.monitor w
+    match Actor.await m 1000
+        Some NotRunning -> Io.println "await-notrunning"
+        Some (Crashed r) -> Io.println "await-crashed"
+        Some Shutdown -> Io.println "await-shutdown"
+        None -> Io.println "await-timeout"
+    Ok ()
+"#;
+
+#[test]
+fn beam_e2e_monitor_dead_handle_reports_not_running() {
+    let (stdout, _) = run_inline_actor_test("MonitorDead", MONITOR_DEAD_SOURCE);
+    assert!(stdout.contains("await-notrunning"), "got:\n{stdout}");
+}
+
+/// Async delivery: a watcher actor's `onDown` member receives the DOWN and
+/// mutates its state.
+const WATCHER_SOURCE: &str = r#"
+import std.io    as Io
+import std.int   as Int
+import std.time  as Time
+import std.actor as Actor
+import std.actor (ExitReason)
+
+actor Worker =
+    state n: Int = 0
+
+    on explode (d: Int) -> Unit =
+        n <- 10 / d
+
+actor Watcher =
+    state deaths: Int = 0
+
+    on io watch (w: Handle Worker) -> Unit =
+        let _ = Actor.monitor w
+        Io.println "watching"
+
+    on count () -> Int =
+        deaths
+
+    onDown (m: Monitor) (reason: ExitReason) =
+        deaths <- deaths + 1
+
+fn spawn io time main () -> Result Unit Text =
+    let w = spawn Worker
+    let watcher = spawn Watcher
+    watcher ! watch w
+    Time.sleep 300
+    w ! explode 0
+    Time.sleep 500
+    let n = watcher ?> count ()
+    Io.println $"deaths=${Int.toText n}"
+    Ok ()
+"#;
+
+#[test]
+fn beam_e2e_watcher_actor_receives_down_in_on_down() {
+    let (stdout, _) = run_inline_actor_test("Watcher", WATCHER_SOURCE);
+    assert!(stdout.contains("watching"), "got:\n{stdout}");
+    assert!(stdout.contains("deaths=1"), "got:\n{stdout}");
+}
+
+/// Monitors observe pids, not logical handles: a supervised child that
+/// crashes and is restarted fires DOWN for the old pid.
+const MONITOR_SUPERVISED_RESTART_SOURCE: &str = r#"
+import std.io    as Io
+import std.actor as Actor
+import std.actor (OneForOne, ExitReason, NotRunning, Shutdown, Crashed)
+
+actor Worker =
+    state n: Int = 0
+
+    on explode (d: Int) -> Unit =
+        n <- 10 / d
+
+fn spawn io time main () -> Result Unit Text =
+    let sup = Actor.supervise OneForOne 3 5000 []?
+    let w = Actor.startChild sup (Actor.childId "w" (child Worker))?
+    let m = Actor.monitor w
+    w ! explode 0
+    match Actor.await m 3000
+        Some (Crashed r) -> Io.println "down-for-old-pid"
+        Some Shutdown -> Io.println "await-shutdown"
+        Some NotRunning -> Io.println "await-notrunning"
+        None -> Io.println "await-timeout"
+    Ok ()
+"#;
+
+#[test]
+fn beam_e2e_supervised_restart_fires_down_for_old_pid() {
+    let (stdout, _) = run_inline_actor_test(
+        "MonitorSupervisedRestart",
+        MONITOR_SUPERVISED_RESTART_SOURCE,
+    );
+    assert!(stdout.contains("down-for-old-pid"), "got:\n{stdout}");
+}
+
+/// `unmonitor` suppresses the DOWN: a later `await` on the same ref legally
+/// returns `None` after the timeout — no stale DOWN is flushed into it.
+const UNMONITOR_SOURCE: &str = r#"
+import std.io    as Io
+import std.actor as Actor
+import std.actor (ExitReason)
+
+actor Worker =
+    state n: Int = 0
+
+    on explode (d: Int) -> Unit =
+        n <- 10 / d
+
+fn spawn io time main () -> Result Unit Text =
+    let w = spawn Worker
+    let m = Actor.monitor w
+    let _ = Actor.unmonitor m
+    w ! explode 0
+    match Actor.await m 800
+        None -> Io.println "no-down-after-unmonitor"
+        Some r -> Io.println "down-leaked"
+    Ok ()
+"#;
+
+#[test]
+fn beam_e2e_unmonitor_suppresses_down() {
+    let (stdout, _) = run_inline_actor_test("Unmonitor", UNMONITOR_SOURCE);
+    assert!(stdout.contains("no-down-after-unmonitor"), "got:\n{stdout}");
 }
 
 // ── Slice pattern BEAM e2e tests (D258) ──────────────────────────────────────

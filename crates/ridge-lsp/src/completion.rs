@@ -166,7 +166,7 @@ pub(crate) const KEYWORDS: &[&str] = &[
 /// Contextual keywords offered in expression position alongside [`KEYWORDS`],
 /// but NOT reserved: they stay legal identifier names (the stdlib binds `child`
 /// as an ordinary parameter), so rename must not reject them.
-pub(crate) const CONTEXTUAL_KEYWORDS: &[&str] = &["child", "terminate"];
+pub(crate) const CONTEXTUAL_KEYWORDS: &[&str] = &["child", "terminate", "onDown"];
 
 #[cfg(test)]
 mod tests {

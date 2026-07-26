@@ -203,6 +203,29 @@ actor Worker =
 }
 
 #[test]
+fn snapshot_actor_on_down_member() {
+    let src = "\
+actor Watcher =
+    state deaths: Int = 0
+
+    onDown io (m: Monitor) (reason: ExitReason) =
+        Io.println \"gone\"
+";
+    let result = parse_source(src);
+    assert!(
+        result.lex_errors.is_empty(),
+        "lex errors: {:#?}",
+        result.lex_errors
+    );
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:#?}",
+        result.errors
+    );
+    insta::assert_debug_snapshot!("actor_on_down_member", result.module);
+}
+
+#[test]
 fn snapshot_actor_mailbox_bounded_drop_newest() {
     let src = "\
 actor Limiter =

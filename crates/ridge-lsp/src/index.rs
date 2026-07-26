@@ -5828,6 +5828,13 @@ pub fn collect_capability_fixes(
                         );
                     }
                 }
+                CapDeclKind::OnDown => {
+                    if find_on_down(module, *span).is_some() {
+                        push_member_insert_fix(
+                            &mut out, uri, li, *span, "onDown", *missing, "T014",
+                        );
+                    }
+                }
                 CapDeclKind::InnerFn => {
                     // The inner fn already declares the capabilities; the
                     // resolution is to widen the enclosing fn. File-private
@@ -6032,6 +6039,20 @@ fn find_terminate(
     module.ast.items.iter().find_map(|item| match item {
         ridge_ast::Item::Actor(ad) => ad.members.iter().find_map(|m| match m {
             ridge_ast::ActorMember::Terminate(t) if t.span == span => Some(t),
+            _ => None,
+        }),
+        _ => None,
+    })
+}
+
+/// Find the `onDown` handler whose whole-declaration span is `span`.
+fn find_on_down(
+    module: &ridge_typecheck::TypedModule,
+    span: ridge_ast::Span,
+) -> Option<&ridge_ast::OnDownDecl> {
+    module.ast.items.iter().find_map(|item| match item {
+        ridge_ast::Item::Actor(ad) => ad.members.iter().find_map(|m| match m {
+            ridge_ast::ActorMember::OnDown(d) if d.span == span => Some(d),
             _ => None,
         }),
         _ => None,
@@ -7109,6 +7130,11 @@ mod tests {
         assert!(
             validate_new_name("terminate", "foo").is_ok(),
             "rename to the contextual `terminate` must be allowed"
+        );
+        // `onDown` is contextual too (actor member keyword).
+        assert!(
+            validate_new_name("onDown", "foo").is_ok(),
+            "rename to the contextual `onDown` must be allowed"
         );
         // `spawn` is hard-reserved: it sits in KEYWORDS, rename's blocklist.
         assert!(

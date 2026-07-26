@@ -205,8 +205,10 @@ const CONSTRUCTOR_EXPORTS: &[(&str, &str)] = &[
     ("std.actor", "Temporary"),
     ("std.actor", "Noproc"),
     ("std.actor", "Timeout"),
-    // The `ExitReason` variants: exported so a `terminate` callback can match
-    // the stop kind, surfaced by text extraction only through the type name.
+    // The `ExitReason` variants: exported so a `terminate` callback and
+    // monitor consumers can match the stop kind, surfaced by text extraction
+    // only through the type name.
+    ("std.actor", "NotRunning"),
     ("std.actor", "Shutdown"),
     ("std.actor", "Crashed"),
 ];
@@ -375,9 +377,10 @@ fn signature_shape_consistency() {
             // std.actor `supervise`/`childRestart` name the reconciled
             // `Strategy`/`Restart` unions, so they are seeded via
             // `reconciled_fn_scheme` rather than the `stdlib_signature`
-            // table this shape check covers. `tryAsk` is compiler-known
+            // table this shape check covers. `await` likewise names the
+            // reconciled `ExitReason`. `tryAsk` is compiler-known
             // and has no `.ridge` body, so it never appears here.
-            if dotted == "std.actor" && matches!(*fn_name, "supervise" | "childRestart") {
+            if dotted == "std.actor" && matches!(*fn_name, "supervise" | "childRestart" | "await") {
                 continue;
             }
             // std.query `orderSql`/`isAscending` reference the reconciled `SortOrder`

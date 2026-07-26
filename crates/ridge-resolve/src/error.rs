@@ -310,13 +310,14 @@ pub enum ResolveError {
         span: Span,
     },
 
-    /// R029 — an actor declares a singleton member (`init`, `mailbox`, or
-    /// `terminate`) more than once.
+    /// R029 — an actor declares a singleton member (`init`, `mailbox`,
+    /// `terminate`, or `onDown`) more than once.
     #[error("actor `{actor}` declares more than one `{member}` member")]
     DuplicateActorMember {
         /// The actor name.
         actor: String,
-        /// The duplicated member keyword (`init`, `mailbox`, or `terminate`).
+        /// The duplicated member keyword (`init`, `mailbox`, `terminate`, or
+        /// `onDown`).
         member: String,
         /// Span of the duplicate member declaration.
         span: Span,

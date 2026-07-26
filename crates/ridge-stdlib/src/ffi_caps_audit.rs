@@ -1253,6 +1253,29 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         arity: 2,
         requires_caps: &[],
     },
+    // ── ridge_rt process monitors ─────────────────────────────────────────────
+    // `monitor_handle`/`demonitor_flush` are cap-free, like `mailbox_size`:
+    // the handle/monitor values are the proof of access (see
+    // stdlib/actor.ridge). `await_down` blocks the caller up to a timeout, so
+    // it requires `time` (the `Time.sleep` precedent).
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "monitor_handle",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "demonitor_flush",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "await_down",
+        arity: 2,
+        requires_caps: &[Capability::Time],
+    },
     // ── ridge_rt JSON constructors (pure value building) ──────────────────────
     FfiAuditEntry {
         beam_module: "ridge_rt",

@@ -40,6 +40,8 @@ pub enum ScopeKind {
     OnHandler,
     /// The body of a `terminate` callback inside an actor.
     TerminateBlock,
+    /// The body of an `onDown` monitor-notification handler inside an actor.
+    OnDownBlock,
     /// The implicit scope that wraps all members of an `actor` declaration.
     ActorBody,
     /// A `try` expression body.
@@ -71,6 +73,8 @@ pub enum LocalKind {
     InitParam,
     /// A parameter of a `terminate` callback.
     TerminateParam,
+    /// A parameter of an `onDown` monitor-notification handler.
+    OnDownParam,
     /// An alias pattern `name @`.
     AsAlias,
 }

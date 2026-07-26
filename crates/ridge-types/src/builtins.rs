@@ -380,6 +380,15 @@ pub struct BuiltinTyCons {
     /// a spec for the wrong actor. Wire format (contract with the runtime):
     /// the tuple `{ridge_sup, Pid}`.
     pub supervisor: TyConId,
+    /// `Monitor` — an opaque process-monitor reference (`std.actor`).
+    ///
+    /// A 0-arity opaque type: values come from `Actor.monitor` and are
+    /// consumed by `Actor.unmonitor` / `Actor.await` and delivered to the
+    /// `onDown` member. Wire format (contract with the runtime): a plain
+    /// BEAM `reference()` produced by `erlang:monitor/2`. A BEAM reference
+    /// has no Ridge type to alias, so `Monitor` is a compiler-known builtin
+    /// rather than a stdlib `pub type` declaration.
+    pub monitor: TyConId,
 }
 
 impl BuiltinTyCons {
@@ -438,6 +447,7 @@ impl BuiltinTyCons {
             instant: SENTINEL,
             child_spec: SENTINEL,
             supervisor: SENTINEL,
+            monitor: SENTINEL,
         }
     }
 
@@ -1723,6 +1733,21 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
+        // Monitor — an opaque process-monitor reference (std.actor). 0-arity,
+        // modelled on `ChildSpec`/`Supervisor` above; a BEAM `reference()` has
+        // no Ridge type to alias, so it cannot be a stdlib `pub type`. Interned
+        // after Supervisor so the historical 0..58 index layout stays stable.
+        let monitor = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "Monitor".to_string(),
+            arity: 0,
+            kind: TyConKind::Builtin,
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+
         // Verify assignment order matches spec §4.1 indices 0..16.
         debug_assert_eq!(int.0, 0);
         debug_assert_eq!(float.0, 1);
@@ -1790,6 +1815,8 @@ impl BuiltinTyCons {
         // ChildSpec and Supervisor are interned after Instant.
         debug_assert_eq!(child_spec.0, 57);
         debug_assert_eq!(supervisor.0, 58);
+        // Monitor is interned after Supervisor.
+        debug_assert_eq!(monitor.0, 59);
 
         // Suppress the "unused" lint — CapabilitySet is imported for future use
         // in T4 (actor schemas carry CapabilitySet).
@@ -1840,6 +1867,7 @@ impl BuiltinTyCons {
             instant,
             child_spec,
             supervisor,
+            monitor,
         }
     }
 }
@@ -1919,7 +1947,7 @@ mod tests {
     }
 
     #[test]
-    fn arena_len_is_59() {
+    fn arena_len_is_60() {
         // 15 original builtins + Ordering + JsonValue + the std.net.http taint
         // wrappers Sql / Html / SecureCookie + std.sql's SqlValue + the
         // column-codegen builtins Column / Table + the schema-codegen builtins
@@ -1928,10 +1956,11 @@ mod tests {
         // Rows/1 + JoinCond/2 + the four join-result extractors (Join/Left/Right/Full)
         // + InsertShape/1 + the Decimal, Uuid, Bytes, Date and Time primitives and
         // the Instant monotonic reading + the supervision types
-        // ChildSpec / Supervisor (interned last).
+        // ChildSpec / Supervisor + the process-monitor reference Monitor
+        // (interned last).
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 16);
-        assert_eq!(arena.len(), 59);
+        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 17);
+        assert_eq!(arena.len(), 60);
     }
 
     #[test]

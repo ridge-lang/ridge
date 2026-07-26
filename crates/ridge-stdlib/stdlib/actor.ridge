@@ -61,11 +61,13 @@ pub type Restart = Permanent | Transient | Temporary
 -- no reply arrived within the timeout (`Timeout`).
 pub type AskError = Noproc | Timeout
 
--- Why an actor stopped, delivered to its `terminate` callback: an ordered
--- stop from a supervisor (`Shutdown`), or a crash (`Crashed`, with the OTP
--- exit reason rendered as text). Variants lower to `'Shutdown'` /
+-- Why an actor stopped. Delivered to its `terminate` callback and to
+-- monitor consumers (`await`, `onDown`): the process was already dead when
+-- monitored (`NotRunning` — never delivered to `terminate`), stopped in an
+-- ordered way (`Shutdown`), or crashed (`Crashed`, with the OTP exit reason
+-- rendered as text). Variants lower to `'NotRunning'` / `'Shutdown'` /
 -- `{'Crashed', Text}`; the runtime maps OTP reasons at the boundary.
-pub type ExitReason = Shutdown | Crashed Text
+pub type ExitReason = NotRunning | Shutdown | Crashed Text
 
 -- Start a supervisor over `children`. `intensity` and `period` bound the
 -- restart rate: more than `intensity` restarts within `period` milliseconds
@@ -102,6 +104,42 @@ pub fn childId (id: Text) (spec: ChildSpec a) -> ChildSpec a
 -- Return `spec` with its restart policy replaced (default `permanent`).
 @ffi("ridge_rt", "set_child_restart", 2)
 pub fn childRestart (restart: Restart) (spec: ChildSpec a) -> ChildSpec a
+
+-- ── Process monitors ────────────────────────────────────────────────────────
+--
+-- A monitor observes a running process and reports its death exactly once,
+-- either to a blocking `await` in sequential code or to an actor's `onDown`
+-- member as an asynchronous message. `Monitor` is a compiler-known opaque
+-- builtin (like `Handle`): its wire value is a plain BEAM `reference()`
+-- produced by `erlang:monitor/2`, which has no Ridge type to alias.
+--
+-- Monitors observe PIDs, not logical handles: a supervised child that
+-- crashes and is restarted fires DOWN for the old pid; observing the new
+-- incarnation needs a fresh `monitor` call.
+
+-- Monitor the process behind `handle`, returning the monitor reference.
+-- Monitoring an already-dead handle fires an immediate `NotRunning` DOWN —
+-- uniform semantics, no special case at call sites.
+--
+-- Cap-free: the handle itself is the proof of access. See spec §6.4.1.
+@ffi("ridge_rt", "monitor_handle", 1)
+pub fn monitor (handle: Handle a) -> Monitor
+
+-- Stop monitoring. A DOWN already in flight may still be delivered; no new
+-- DOWN is generated afterwards. Returns Unit.
+@ffi("ridge_rt", "demonitor_flush", 1)
+pub fn unmonitor (m: Monitor) -> Unit
+
+-- Block until the monitored process goes down, up to `timeoutMs`
+-- milliseconds. Returns `Some reason` on the DOWN, or `None` on timeout
+-- (the monitor is removed automatically in that case).
+--
+-- For sequential code (`main`, `init`, plain functions). Calling `await`
+-- inside an `on` handler freezes the actor's mailbox for the duration —
+-- an actor that needs to react to deaths should use the `onDown` member
+-- instead. Carries the `time` capability, like `Time.sleep`.
+@ffi("ridge_rt", "await_down", 2)
+pub fn time await (m: Monitor) (timeoutMs: Int) -> Option ExitReason
 
 -- `tryAsk` — typed ask with an explicit timeout and a `Result` return.
 --

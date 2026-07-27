@@ -156,6 +156,16 @@ actor Watcher =
 ",
     ),
     (
+        &["MailboxDecl", "MailboxConfig", "MailboxPolicy"],
+        "\
+actor Limiter =
+    state n: Int = 0
+    mailbox bounded 100 drop newest
+    on tick =
+        n <- n + 1
+",
+    ),
+    (
         &[
             "ClassDecl",
             "ClassBody",

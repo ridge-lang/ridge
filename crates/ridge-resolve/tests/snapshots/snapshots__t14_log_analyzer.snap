@@ -4,13 +4,13 @@ expression: snap
 ---
 ResolvedSnapshot {
     errors: [],
-    nid_count: 648,
-    stamped_bindings: 164,
+    nid_count: 661,
+    stamped_bindings: 168,
     binding_kind_counts: {
         "Constructor": 7,
         "Local": 88,
         "ModuleSymbol": 18,
-        "StdlibSymbol": 51,
+        "StdlibSymbol": 55,
     },
     import_aliases: [
         "<bare> -> BuiltinStdlib(0)",

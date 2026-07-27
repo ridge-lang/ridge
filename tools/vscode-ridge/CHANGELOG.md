@@ -38,6 +38,19 @@ whatever Ridge release is installed.
   `if`.
 - Syntax highlighting for the `opaque` keyword, raw string literals
   (`r"..."`, `r#"..."#`), and triple-quoted strings (`"""..."""`).
+- Snippets: 41 language snippets — declarations (functions with a
+  capability choice list, bindings, all four `type` forms, the three
+  `import` forms), control flow (`if`, `match` with and without guards,
+  `guard`, `try`, `with`, lambda), type classes (including functional
+  dependencies), actors (skeleton, `on` handlers, `terminate`, `onDown`,
+  `spawn` + send, supervisors), `@test` blocks with the `std.test`
+  assertion API, and the frequent stdlib calls (`List`/`Option`/`Result`
+  helpers, `Repo` query pipeline, `insert`, `setWhere`).
+- Language configuration: a `wordPattern` that stops at `->` and `|>`,
+  offside (indentation-based) folding, auto-closing for triple-quoted and
+  raw strings, no more quote auto-close inside `--` comments, indentation
+  for pipeline (`|>`) continuations, and bracket pair colorization enabled
+  by default for Ridge files.
 
 ### Fixed
 

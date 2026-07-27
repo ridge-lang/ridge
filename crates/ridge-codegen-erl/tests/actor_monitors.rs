@@ -16,7 +16,7 @@ use ridge_codegen_erl::{codegen_workspace, CodegenOptions};
 
 const SOURCE: &str = "\
 import std.io as Io
-import std.actor (ExitReason, NotRunning, Shutdown, Crashed)
+import std.actor (ExitReason, Normal, NotRunning, Shutdown, Crashed)
 
 actor Watcher =
     state deaths: Int = 0

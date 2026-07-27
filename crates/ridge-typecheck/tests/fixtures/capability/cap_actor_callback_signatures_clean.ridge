@@ -2,7 +2,7 @@
 -- Well-shaped callback signatures: terminate takes at most one ExitReason
 -- (zero is fine too — see the second actor), and onDown takes exactly a
 -- Monitor and an ExitReason, in that order.
-import std.actor (ExitReason, NotRunning, Shutdown, Crashed)
+import std.actor (ExitReason, Normal, NotRunning, Shutdown, Crashed)
 
 actor Watcher =
     state deaths: Int = 0
@@ -10,6 +10,7 @@ actor Watcher =
         deaths <- deaths + 1
     terminate (reason: ExitReason) =
         match reason
+            Normal -> ()
             NotRunning -> ()
             Shutdown -> ()
             Crashed _ -> ()

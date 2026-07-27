@@ -1276,6 +1276,14 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         arity: 2,
         requires_caps: &[Capability::Time],
     },
+    // `stop_handle` is cap-free, like `monitor_handle`: the handle value is
+    // the proof of access (see stdlib/actor.ridge).
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "stop_handle",
+        arity: 1,
+        requires_caps: &[],
+    },
     // ── ridge_rt JSON constructors (pure value building) ──────────────────────
     FfiAuditEntry {
         beam_module: "ridge_rt",

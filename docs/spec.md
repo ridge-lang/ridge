@@ -503,6 +503,7 @@ actor Worker =
 
     terminate io db (reason: ExitReason) =
         match reason
+            Normal -> Io.println "worker stopped normally"
             NotRunning -> Io.println "unreachable"
             Shutdown -> Io.println "worker stopping cleanly"
             Crashed m -> Io.println m
@@ -511,14 +512,15 @@ actor Worker =
 `ExitReason` (from `std.actor`) tells the stop kinds apart:
 
 ```ridge
-pub type ExitReason = NotRunning | Shutdown | Crashed Text
+pub type ExitReason = Normal | NotRunning | Shutdown | Crashed Text
 ```
 
-`Shutdown` is an ordered stop; `Crashed` carries the OTP exit reason
-rendered as text; `NotRunning` only ever comes from monitoring an
-already-dead process (§7.5) — it never reaches `terminate`, but matches
-must still cover it. When the callback runs at all is §7.5's business; the
-runtime side of the contract is documented there.
+`Normal` is a normal stop (e.g. via `Actor.stop`); `Shutdown` is an ordered
+stop; `Crashed` carries the OTP exit reason rendered as text; `NotRunning`
+only ever comes from monitoring an already-dead process (§7.5) — it never
+reaches `terminate`, but matches must still cover it. When the callback
+runs at all is §7.5's business; the runtime side of the contract is
+documented there.
 
 #### §3.9.x. onDown handlers
 
@@ -1562,8 +1564,9 @@ explicit.
 
 **When `terminate` runs.** The `terminate` callback (§3.9) fires on every
 ordered stop the supervisor performs (`stopChild`, a sibling shutdown under
-`one_for_all`, intensity exhaustion) and on every handler crash, receiving
-`Shutdown` or `Crashed` respectively. It does **not** run when `init`
+`one_for_all`, intensity exhaustion), on a normal stop via `Actor.stop`,
+and on every handler crash, receiving `Shutdown`, `Normal`, or `Crashed`
+respectively. It does **not** run when `init`
 itself crashes (OTP never calls terminate on init failure), nor on a
 `brutal_kill` shutdown or an external kill — no callback can intercept
 those. A crash inside the callback body is logged and does not prevent the
@@ -1580,6 +1583,7 @@ asserting death), the primitive is a **process monitor**:
 ```ridge
 let m = Actor.monitor w          -- Monitor: an opaque reference
 match Actor.await m 3000         -- blocking, carries `time`
+    Some Normal -> ...           -- w stopped normally (Actor.stop)
     Some (Crashed r) -> ...
     Some Shutdown -> ...
     Some NotRunning -> ...       -- w was already dead when monitored

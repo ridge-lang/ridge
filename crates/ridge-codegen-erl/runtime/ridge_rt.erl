@@ -46,7 +46,7 @@
     ask/3, send/2, send_op/2, send_fn/2, mailbox_size/1, spawn_actor/3,
     start_supervisor/4, start_supervised_child/2, stop_supervised_child/2,
     which_children/1, set_child_id/2, set_child_restart/2, try_ask/3,
-    monitor_handle/1, demonitor_flush/1, await_down/2,
+    monitor_handle/1, demonitor_flush/1, await_down/2, stop_handle/1,
     exit_reason_to_ridge/1,
     diagnostics_to_stderr/0,
     mem_new/1, mem_insert/3, mem_all/2,
@@ -1965,16 +1965,32 @@ sup_error_binary(Reason) ->
 
 %% exit_reason_to_ridge/1 — map an OTP exit reason to Ridge's `ExitReason`
 %% union wire values, delivered to an actor's `terminate` callback and to
-%% monitor consumers (`await`, `onDown`). `shutdown`, `{shutdown, _}` and
-%% (defensively) `normal` are ordered stops; `noproc` means the monitored
-%% process was already dead (never delivered to `terminate`); anything else
-%% is a crash, rendered as text.
+%% monitor consumers (`await`, `onDown`). `normal` is a normal stop (e.g.
+%% `Actor.stop`); `shutdown` and `{shutdown, _}` are ordered stops; `noproc`
+%% means the monitored process was already dead (never delivered to
+%% `terminate`); anything else is a crash, rendered as text.
 exit_reason_to_ridge(noproc)            -> 'NotRunning';
+exit_reason_to_ridge(normal)            -> 'Normal';
 exit_reason_to_ridge(shutdown)          -> 'Shutdown';
 exit_reason_to_ridge({shutdown, _})     -> 'Shutdown';
-exit_reason_to_ridge(normal)            -> 'Shutdown';
 exit_reason_to_ridge(Reason) ->
     {'Crashed', iolist_to_binary(io_lib:format("~p", [Reason]))}.
+
+%% stop_handle/1 — target of the stdlib `Actor.stop` fn. Asks the process to
+%% stop normally (gen_server:stop/1, exit reason `normal`): its terminate/2
+%% runs and monitors fire a DOWN with `normal`. A dead target is a no-op,
+%% matching send_op, and the pid is resolved first so a supervised handle
+%% reaches the child's current incarnation. The try/catch absorbs the race
+%% where the process dies between the liveness resolution and the call.
+stop_handle(Handle) ->
+    case resolve_handle_pid(Handle) of
+        {ok, Pid} ->
+            try gen_server:stop(Pid)
+            catch exit:_ -> ok
+            end;
+        dead ->
+            ok
+    end.
 
 %% child_id_binary/1 — ids are binaries (Ridge Text); an atom id from a
 %% hand-built spec is converted so which_children's output keeps the

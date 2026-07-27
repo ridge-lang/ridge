@@ -2385,17 +2385,17 @@ fn io main () -> Unit =
 
 #[test]
 fn beam_e2e_crypto_sha256_and_base64_roundtrip() {
-    let (beam_dir, module, _td) =
-        compile_inline_actor_test("CryptoDigest", CRYPTO_DIGEST_SOURCE);
+    let (beam_dir, module, _td) = compile_inline_actor_test("CryptoDigest", CRYPTO_DIGEST_SOURCE);
     let (stdout, _stderr, exit_code) = run_erl_via_runner(&beam_dir, &module);
     assert_eq!(exit_code, 0, "got:\n{stdout}");
     assert!(
-        stdout.contains(
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        ),
+        stdout.contains("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"),
         "sha256 hex mismatch, got:\n{stdout}"
     );
-    assert!(stdout.contains("hello"), "base64 round-trip failed:\n{stdout}");
+    assert!(
+        stdout.contains("hello"),
+        "base64 round-trip failed:\n{stdout}"
+    );
 }
 
 /// Monitoring an already-dead handle fires an immediate `NotRunning` DOWN.

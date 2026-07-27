@@ -3813,14 +3813,14 @@ Module {
                             ],
                             span: Span {
                                 start: 2966,
-                                end: 3243,
+                                end: 3319,
                             },
                         },
                     ),
                 ),
                 span: Span {
                     start: 2906,
-                    end: 3243,
+                    end: 3319,
                 },
                 doc: None,
             },
@@ -3837,8 +3837,8 @@ Module {
                 name: Ident {
                     text: "main",
                     span: Span {
-                        start: 3256,
-                        end: 3260,
+                        start: 3332,
+                        end: 3336,
                     },
                 },
                 params: [],
@@ -3847,29 +3847,29 @@ Module {
                         head: Ident {
                             text: "Result",
                             span: Span {
-                                start: 3267,
-                                end: 3273,
+                                start: 3343,
+                                end: 3349,
                             },
                         },
                         args: [
                             Primitive {
                                 name: Unit,
                                 span: Span {
-                                    start: 3274,
-                                    end: 3278,
+                                    start: 3350,
+                                    end: 3354,
                                 },
                             },
                             Primitive {
                                 name: Text,
                                 span: Span {
-                                    start: 3279,
-                                    end: 3283,
+                                    start: 3355,
+                                    end: 3359,
                                 },
                             },
                         ],
                         span: Span {
-                            start: 3267,
-                            end: 3283,
+                            start: 3343,
+                            end: 3359,
                         },
                     },
                 ),
@@ -3883,13 +3883,13 @@ Module {
                                         name: Ident {
                                             text: "args",
                                             span: Span {
-                                                start: 3294,
-                                                end: 3298,
+                                                start: 3370,
+                                                end: 3374,
                                             },
                                         },
                                         span: Span {
-                                            start: 3294,
-                                            end: 3298,
+                                            start: 3370,
+                                            end: 3374,
                                         },
                                     },
                                     ty: None,
@@ -3900,40 +3900,40 @@ Module {
                                                     Ident {
                                                         text: "Cli",
                                                         span: Span {
-                                                            start: 3301,
-                                                            end: 3304,
+                                                            start: 3377,
+                                                            end: 3380,
                                                         },
                                                     },
                                                     Ident {
                                                         text: "args",
                                                         span: Span {
-                                                            start: 3305,
-                                                            end: 3309,
+                                                            start: 3381,
+                                                            end: 3385,
                                                         },
                                                     },
                                                 ],
                                                 span: Span {
-                                                    start: 3301,
-                                                    end: 3309,
+                                                    start: 3377,
+                                                    end: 3385,
                                                 },
                                             },
                                         ),
                                         args: [
                                             Unit(
                                                 Span {
-                                                    start: 3310,
-                                                    end: 3312,
+                                                    start: 3386,
+                                                    end: 3388,
                                                 },
                                             ),
                                         ],
                                         span: Span {
-                                            start: 3301,
-                                            end: 3312,
+                                            start: 3377,
+                                            end: 3388,
                                         },
                                     },
                                     span: Span {
-                                        start: 3290,
-                                        end: 3312,
+                                        start: 3366,
+                                        end: 3388,
                                     },
                                 },
                                 Guard {
@@ -3947,21 +3947,21 @@ Module {
                                                             Ident {
                                                                 text: "List",
                                                                 span: Span {
-                                                                    start: 3324,
-                                                                    end: 3328,
+                                                                    start: 3400,
+                                                                    end: 3404,
                                                                 },
                                                             },
                                                             Ident {
                                                                 text: "length",
                                                                 span: Span {
-                                                                    start: 3329,
-                                                                    end: 3335,
+                                                                    start: 3405,
+                                                                    end: 3411,
                                                                 },
                                                             },
                                                         ],
                                                         span: Span {
-                                                            start: 3324,
-                                                            end: 3335,
+                                                            start: 3400,
+                                                            end: 3411,
                                                         },
                                                     },
                                                 ),
@@ -3970,34 +3970,34 @@ Module {
                                                         Ident {
                                                             text: "args",
                                                             span: Span {
-                                                                start: 3336,
-                                                                end: 3340,
+                                                                start: 3412,
+                                                                end: 3416,
                                                             },
                                                         },
                                                     ),
                                                 ],
                                                 span: Span {
-                                                    start: 3324,
-                                                    end: 3340,
+                                                    start: 3400,
+                                                    end: 3416,
                                                 },
                                             },
                                             rhs: Literal(
                                                 IntDec {
                                                     raw: "2",
                                                     span: Span {
-                                                        start: 3344,
-                                                        end: 3345,
+                                                        start: 3420,
+                                                        end: 3421,
                                                     },
                                                 },
                                             ),
                                             span: Span {
-                                                start: 3324,
-                                                end: 3345,
+                                                start: 3400,
+                                                end: 3421,
                                             },
                                         },
                                         span: Span {
-                                            start: 3323,
-                                            end: 3346,
+                                            start: 3399,
+                                            end: 3422,
                                         },
                                     },
                                     else_branch: Block {
@@ -4009,21 +4009,21 @@ Module {
                                                             Ident {
                                                                 text: "Io",
                                                                 span: Span {
-                                                                    start: 3360,
-                                                                    end: 3362,
+                                                                    start: 3436,
+                                                                    end: 3438,
                                                                 },
                                                             },
                                                             Ident {
                                                                 text: "eprintln",
                                                                 span: Span {
-                                                                    start: 3363,
-                                                                    end: 3371,
+                                                                    start: 3439,
+                                                                    end: 3447,
                                                                 },
                                                             },
                                                         ],
                                                         span: Span {
-                                                            start: 3360,
-                                                            end: 3371,
+                                                            start: 3436,
+                                                            end: 3447,
                                                         },
                                                     },
                                                 ),
@@ -4032,15 +4032,15 @@ Module {
                                                         Text {
                                                             raw: "Usage: log_analyzer <file> <MIN_LEVEL>",
                                                             span: Span {
-                                                                start: 3372,
-                                                                end: 3412,
+                                                                start: 3448,
+                                                                end: 3488,
                                                             },
                                                         },
                                                     ),
                                                 ],
                                                 span: Span {
-                                                    start: 3360,
-                                                    end: 3412,
+                                                    start: 3436,
+                                                    end: 3488,
                                                 },
                                             },
                                             Return {
@@ -4050,15 +4050,15 @@ Module {
                                                             Ident {
                                                                 text: "Err",
                                                                 span: Span {
-                                                                    start: 3428,
-                                                                    end: 3431,
+                                                                    start: 3504,
+                                                                    end: 3507,
                                                                 },
                                                             },
                                                         ),
                                                         fields: [],
                                                         span: Span {
-                                                            start: 3428,
-                                                            end: 3431,
+                                                            start: 3504,
+                                                            end: 3507,
                                                         },
                                                     },
                                                     args: [
@@ -4066,31 +4066,31 @@ Module {
                                                             Text {
                                                                 raw: "missing arguments",
                                                                 span: Span {
-                                                                    start: 3432,
-                                                                    end: 3451,
+                                                                    start: 3508,
+                                                                    end: 3527,
                                                                 },
                                                             },
                                                         ),
                                                     ],
                                                     span: Span {
-                                                        start: 3428,
-                                                        end: 3451,
+                                                        start: 3504,
+                                                        end: 3527,
                                                     },
                                                 },
                                                 span: Span {
-                                                    start: 3421,
-                                                    end: 3451,
+                                                    start: 3497,
+                                                    end: 3527,
                                                 },
                                             },
                                         ],
                                         span: Span {
-                                            start: 3360,
-                                            end: 3516,
+                                            start: 3436,
+                                            end: 3592,
                                         },
                                     },
                                     span: Span {
-                                        start: 3317,
-                                        end: 3516,
+                                        start: 3393,
+                                        end: 3592,
                                     },
                                 },
                                 Let {
@@ -4098,13 +4098,13 @@ Module {
                                         name: Ident {
                                             text: "path",
                                             span: Span {
-                                                start: 3520,
-                                                end: 3524,
+                                                start: 3596,
+                                                end: 3600,
                                             },
                                         },
                                         span: Span {
-                                            start: 3520,
-                                            end: 3524,
+                                            start: 3596,
+                                            end: 3600,
                                         },
                                     },
                                     ty: None,
@@ -4116,21 +4116,21 @@ Module {
                                                         Ident {
                                                             text: "List",
                                                             span: Span {
-                                                                start: 3531,
-                                                                end: 3535,
+                                                                start: 3607,
+                                                                end: 3611,
                                                             },
                                                         },
                                                         Ident {
                                                             text: "head",
                                                             span: Span {
-                                                                start: 3536,
-                                                                end: 3540,
+                                                                start: 3612,
+                                                                end: 3616,
                                                             },
                                                         },
                                                     ],
                                                     span: Span {
-                                                        start: 3531,
-                                                        end: 3540,
+                                                        start: 3607,
+                                                        end: 3616,
                                                     },
                                                 },
                                             ),
@@ -4139,15 +4139,15 @@ Module {
                                                     Ident {
                                                         text: "args",
                                                         span: Span {
-                                                            start: 3541,
-                                                            end: 3545,
+                                                            start: 3617,
+                                                            end: 3621,
                                                         },
                                                     },
                                                 ),
                                             ],
                                             span: Span {
-                                                start: 3531,
-                                                end: 3545,
+                                                start: 3607,
+                                                end: 3621,
                                             },
                                         },
                                         rhs: Call {
@@ -4157,21 +4157,21 @@ Module {
                                                         Ident {
                                                             text: "Option",
                                                             span: Span {
-                                                                start: 3549,
-                                                                end: 3555,
+                                                                start: 3625,
+                                                                end: 3631,
                                                             },
                                                         },
                                                         Ident {
                                                             text: "withDefault",
                                                             span: Span {
-                                                                start: 3556,
-                                                                end: 3567,
+                                                                start: 3632,
+                                                                end: 3643,
                                                             },
                                                         },
                                                     ],
                                                     span: Span {
-                                                        start: 3549,
-                                                        end: 3567,
+                                                        start: 3625,
+                                                        end: 3643,
                                                     },
                                                 },
                                             ),
@@ -4180,25 +4180,25 @@ Module {
                                                     Text {
                                                         raw: "",
                                                         span: Span {
-                                                            start: 3568,
-                                                            end: 3570,
+                                                            start: 3644,
+                                                            end: 3646,
                                                         },
                                                     },
                                                 ),
                                             ],
                                             span: Span {
-                                                start: 3549,
-                                                end: 3570,
+                                                start: 3625,
+                                                end: 3646,
                                             },
                                         },
                                         span: Span {
-                                            start: 3531,
-                                            end: 3570,
+                                            start: 3607,
+                                            end: 3646,
                                         },
                                     },
                                     span: Span {
-                                        start: 3516,
-                                        end: 3570,
+                                        start: 3592,
+                                        end: 3646,
                                     },
                                 },
                                 Let {
@@ -4206,13 +4206,13 @@ Module {
                                         name: Ident {
                                             text: "levelArg",
                                             span: Span {
-                                                start: 3579,
-                                                end: 3587,
+                                                start: 3655,
+                                                end: 3663,
                                             },
                                         },
                                         span: Span {
-                                            start: 3579,
-                                            end: 3587,
+                                            start: 3655,
+                                            end: 3663,
                                         },
                                     },
                                     ty: None,
@@ -4223,8 +4223,8 @@ Module {
                                                     Ident {
                                                         text: "args",
                                                         span: Span {
-                                                            start: 3590,
-                                                            end: 3594,
+                                                            start: 3666,
+                                                            end: 3670,
                                                         },
                                                     },
                                                 ),
@@ -4235,21 +4235,21 @@ Module {
                                                                 Ident {
                                                                     text: "List",
                                                                     span: Span {
-                                                                        start: 3598,
-                                                                        end: 3602,
+                                                                        start: 3674,
+                                                                        end: 3678,
                                                                     },
                                                                 },
                                                                 Ident {
                                                                     text: "drop",
                                                                     span: Span {
-                                                                        start: 3603,
-                                                                        end: 3607,
+                                                                        start: 3679,
+                                                                        end: 3683,
                                                                     },
                                                                 },
                                                             ],
                                                             span: Span {
-                                                                start: 3598,
-                                                                end: 3607,
+                                                                start: 3674,
+                                                                end: 3683,
                                                             },
                                                         },
                                                     ),
@@ -4258,20 +4258,20 @@ Module {
                                                             IntDec {
                                                                 raw: "1",
                                                                 span: Span {
-                                                                    start: 3608,
-                                                                    end: 3609,
+                                                                    start: 3684,
+                                                                    end: 3685,
                                                                 },
                                                             },
                                                         ),
                                                     ],
                                                     span: Span {
-                                                        start: 3598,
-                                                        end: 3609,
+                                                        start: 3674,
+                                                        end: 3685,
                                                     },
                                                 },
                                                 span: Span {
-                                                    start: 3590,
-                                                    end: 3609,
+                                                    start: 3666,
+                                                    end: 3685,
                                                 },
                                             },
                                             rhs: Qualified(
@@ -4280,27 +4280,27 @@ Module {
                                                         Ident {
                                                             text: "List",
                                                             span: Span {
-                                                                start: 3613,
-                                                                end: 3617,
+                                                                start: 3689,
+                                                                end: 3693,
                                                             },
                                                         },
                                                         Ident {
                                                             text: "head",
                                                             span: Span {
-                                                                start: 3618,
-                                                                end: 3622,
+                                                                start: 3694,
+                                                                end: 3698,
                                                             },
                                                         },
                                                     ],
                                                     span: Span {
-                                                        start: 3613,
-                                                        end: 3622,
+                                                        start: 3689,
+                                                        end: 3698,
                                                     },
                                                 },
                                             ),
                                             span: Span {
-                                                start: 3590,
-                                                end: 3622,
+                                                start: 3666,
+                                                end: 3698,
                                             },
                                         },
                                         rhs: Call {
@@ -4310,21 +4310,21 @@ Module {
                                                         Ident {
                                                             text: "Option",
                                                             span: Span {
-                                                                start: 3626,
-                                                                end: 3632,
+                                                                start: 3702,
+                                                                end: 3708,
                                                             },
                                                         },
                                                         Ident {
                                                             text: "withDefault",
                                                             span: Span {
-                                                                start: 3633,
-                                                                end: 3644,
+                                                                start: 3709,
+                                                                end: 3720,
                                                             },
                                                         },
                                                     ],
                                                     span: Span {
-                                                        start: 3626,
-                                                        end: 3644,
+                                                        start: 3702,
+                                                        end: 3720,
                                                     },
                                                 },
                                             ),
@@ -4333,25 +4333,25 @@ Module {
                                                     Text {
                                                         raw: "WARN",
                                                         span: Span {
-                                                            start: 3645,
-                                                            end: 3651,
+                                                            start: 3721,
+                                                            end: 3727,
                                                         },
                                                     },
                                                 ),
                                             ],
                                             span: Span {
-                                                start: 3626,
-                                                end: 3651,
+                                                start: 3702,
+                                                end: 3727,
                                             },
                                         },
                                         span: Span {
-                                            start: 3590,
-                                            end: 3651,
+                                            start: 3666,
+                                            end: 3727,
                                         },
                                     },
                                     span: Span {
-                                        start: 3575,
-                                        end: 3651,
+                                        start: 3651,
+                                        end: 3727,
                                     },
                                 },
                                 Let {
@@ -4359,13 +4359,13 @@ Module {
                                         name: Ident {
                                             text: "threshold",
                                             span: Span {
-                                                start: 3660,
-                                                end: 3669,
+                                                start: 3736,
+                                                end: 3745,
                                             },
                                         },
                                         span: Span {
-                                            start: 3660,
-                                            end: 3669,
+                                            start: 3736,
+                                            end: 3745,
                                         },
                                     },
                                     ty: None,
@@ -4375,8 +4375,8 @@ Module {
                                                 Ident {
                                                     text: "parseLevel",
                                                     span: Span {
-                                                        start: 3672,
-                                                        end: 3682,
+                                                        start: 3748,
+                                                        end: 3758,
                                                     },
                                                 },
                                             ),
@@ -4385,15 +4385,15 @@ Module {
                                                     Ident {
                                                         text: "levelArg",
                                                         span: Span {
-                                                            start: 3683,
-                                                            end: 3691,
+                                                            start: 3759,
+                                                            end: 3767,
                                                         },
                                                     },
                                                 ),
                                             ],
                                             span: Span {
-                                                start: 3672,
-                                                end: 3691,
+                                                start: 3748,
+                                                end: 3767,
                                             },
                                         },
                                         rhs: Call {
@@ -4403,21 +4403,21 @@ Module {
                                                         Ident {
                                                             text: "Option",
                                                             span: Span {
-                                                                start: 3695,
-                                                                end: 3701,
+                                                                start: 3771,
+                                                                end: 3777,
                                                             },
                                                         },
                                                         Ident {
                                                             text: "withDefault",
                                                             span: Span {
-                                                                start: 3702,
-                                                                end: 3713,
+                                                                start: 3778,
+                                                                end: 3789,
                                                             },
                                                         },
                                                     ],
                                                     span: Span {
-                                                        start: 3695,
-                                                        end: 3713,
+                                                        start: 3771,
+                                                        end: 3789,
                                                     },
                                                 },
                                             ),
@@ -4427,601 +4427,744 @@ Module {
                                                         Ident {
                                                             text: "Warn",
                                                             span: Span {
-                                                                start: 3714,
-                                                                end: 3718,
+                                                                start: 3790,
+                                                                end: 3794,
                                                             },
                                                         },
                                                     ),
                                                     fields: [],
                                                     span: Span {
-                                                        start: 3714,
-                                                        end: 3718,
+                                                        start: 3790,
+                                                        end: 3794,
                                                     },
                                                 },
                                             ],
                                             span: Span {
-                                                start: 3695,
-                                                end: 3718,
+                                                start: 3771,
+                                                end: 3794,
                                             },
                                         },
                                         span: Span {
-                                            start: 3672,
-                                            end: 3718,
+                                            start: 3748,
+                                            end: 3794,
                                         },
                                     },
                                     span: Span {
-                                        start: 3656,
-                                        end: 3718,
+                                        start: 3732,
+                                        end: 3794,
                                     },
                                 },
-                                Let {
-                                    pat: Var {
-                                        name: Ident {
-                                            text: "rawLines",
-                                            span: Span {
-                                                start: 3806,
-                                                end: 3814,
-                                            },
-                                        },
-                                        span: Span {
-                                            start: 3806,
-                                            end: 3814,
-                                        },
-                                    },
-                                    ty: None,
-                                    value: Propagate {
-                                        inner: Call {
-                                            callee: Qualified(
-                                                QualifiedName {
-                                                    segments: [
-                                                        Ident {
-                                                            text: "Fs",
-                                                            span: Span {
-                                                                start: 3817,
-                                                                end: 3819,
-                                                            },
-                                                        },
-                                                        Ident {
-                                                            text: "lines",
-                                                            span: Span {
-                                                                start: 3820,
-                                                                end: 3825,
-                                                            },
-                                                        },
-                                                    ],
-                                                    span: Span {
-                                                        start: 3817,
-                                                        end: 3825,
-                                                    },
-                                                },
-                                            ),
-                                            args: [
-                                                Ident(
+                                Match {
+                                    scrutinee: Call {
+                                        callee: Qualified(
+                                            QualifiedName {
+                                                segments: [
                                                     Ident {
-                                                        text: "path",
+                                                        text: "Fs",
                                                         span: Span {
-                                                            start: 3826,
-                                                            end: 3830,
+                                                            start: 3942,
+                                                            end: 3944,
                                                         },
                                                     },
-                                                ),
-                                            ],
-                                            span: Span {
-                                                start: 3817,
-                                                end: 3830,
-                                            },
-                                        },
-                                        span: Span {
-                                            start: 3817,
-                                            end: 3832,
-                                        },
-                                    },
-                                    span: Span {
-                                        start: 3802,
-                                        end: 3832,
-                                    },
-                                },
-                                Let {
-                                    pat: Var {
-                                        name: Ident {
-                                            text: "entries",
-                                            span: Span {
-                                                start: 3841,
-                                                end: 3848,
-                                            },
-                                        },
-                                        span: Span {
-                                            start: 3841,
-                                            end: 3848,
-                                        },
-                                    },
-                                    ty: None,
-                                    value: Block(
-                                        Block {
-                                            stmts: [
-                                                Pipe {
-                                                    lhs: Pipe {
-                                                        lhs: Ident(
-                                                            Ident {
-                                                                text: "rawLines",
-                                                                span: Span {
-                                                                    start: 3859,
-                                                                    end: 3867,
-                                                                },
-                                                            },
-                                                        ),
-                                                        rhs: Call {
-                                                            callee: Qualified(
-                                                                QualifiedName {
-                                                                    segments: [
-                                                                        Ident {
-                                                                            text: "List",
-                                                                            span: Span {
-                                                                                start: 3872,
-                                                                                end: 3876,
-                                                                            },
-                                                                        },
-                                                                        Ident {
-                                                                            text: "filterMap",
-                                                                            span: Span {
-                                                                                start: 3877,
-                                                                                end: 3886,
-                                                                            },
-                                                                        },
-                                                                    ],
-                                                                    span: Span {
-                                                                        start: 3872,
-                                                                        end: 3886,
-                                                                    },
-                                                                },
-                                                            ),
-                                                            args: [
-                                                                Ident(
-                                                                    Ident {
-                                                                        text: "parseLine",
-                                                                        span: Span {
-                                                                            start: 3887,
-                                                                            end: 3896,
-                                                                        },
-                                                                    },
-                                                                ),
-                                                            ],
-                                                            span: Span {
-                                                                start: 3872,
-                                                                end: 3896,
-                                                            },
-                                                        },
+                                                    Ident {
+                                                        text: "lines",
                                                         span: Span {
-                                                            start: 3859,
-                                                            end: 3896,
+                                                            start: 3945,
+                                                            end: 3950,
                                                         },
                                                     },
-                                                    rhs: Call {
-                                                        callee: Qualified(
-                                                            QualifiedName {
-                                                                segments: [
-                                                                    Ident {
-                                                                        text: "List",
-                                                                        span: Span {
-                                                                            start: 3901,
-                                                                            end: 3905,
-                                                                        },
-                                                                    },
-                                                                    Ident {
-                                                                        text: "filter",
-                                                                        span: Span {
-                                                                            start: 3906,
-                                                                            end: 3912,
-                                                                        },
-                                                                    },
-                                                                ],
-                                                                span: Span {
-                                                                    start: 3901,
-                                                                    end: 3912,
-                                                                },
-                                                            },
-                                                        ),
-                                                        args: [
-                                                            Paren {
-                                                                inner: Call {
-                                                                    callee: Ident(
-                                                                        Ident {
-                                                                            text: "meetsThreshold",
-                                                                            span: Span {
-                                                                                start: 3914,
-                                                                                end: 3928,
-                                                                            },
-                                                                        },
-                                                                    ),
-                                                                    args: [
-                                                                        Ident(
-                                                                            Ident {
-                                                                                text: "threshold",
-                                                                                span: Span {
-                                                                                    start: 3929,
-                                                                                    end: 3938,
-                                                                                },
-                                                                            },
-                                                                        ),
-                                                                    ],
-                                                                    span: Span {
-                                                                        start: 3914,
-                                                                        end: 3938,
-                                                                    },
-                                                                },
-                                                                span: Span {
-                                                                    start: 3913,
-                                                                    end: 3939,
-                                                                },
-                                                            },
-                                                        ],
-                                                        span: Span {
-                                                            start: 3901,
-                                                            end: 3939,
-                                                        },
-                                                    },
-                                                    span: Span {
-                                                        start: 3859,
-                                                        end: 3939,
-                                                    },
-                                                },
-                                            ],
-                                            span: Span {
-                                                start: 3859,
-                                                end: 3945,
-                                            },
-                                        },
-                                    ),
-                                    span: Span {
-                                        start: 3837,
-                                        end: 3945,
-                                    },
-                                },
-                                Let {
-                                    pat: Var {
-                                        name: Ident {
-                                            text: "histogram",
-                                            span: Span {
-                                                start: 3949,
-                                                end: 3958,
-                                            },
-                                        },
-                                        span: Span {
-                                            start: 3949,
-                                            end: 3958,
-                                        },
-                                    },
-                                    ty: None,
-                                    value: Call {
-                                        callee: Ident(
-                                            Ident {
-                                                text: "buildHistogram",
+                                                ],
                                                 span: Span {
-                                                    start: 3961,
-                                                    end: 3975,
+                                                    start: 3942,
+                                                    end: 3950,
                                                 },
                                             },
                                         ),
                                         args: [
                                             Ident(
                                                 Ident {
-                                                    text: "entries",
+                                                    text: "path",
                                                     span: Span {
-                                                        start: 3976,
-                                                        end: 3983,
+                                                        start: 3951,
+                                                        end: 3955,
                                                     },
                                                 },
                                             ),
                                         ],
                                         span: Span {
-                                            start: 3961,
-                                            end: 3983,
-                                        },
-                                    },
-                                    span: Span {
-                                        start: 3945,
-                                        end: 3983,
-                                    },
-                                },
-                                Call {
-                                    callee: Qualified(
-                                        QualifiedName {
-                                            segments: [
-                                                Ident {
-                                                    text: "Io",
-                                                    span: Span {
-                                                        start: 3988,
-                                                        end: 3990,
-                                                    },
-                                                },
-                                                Ident {
-                                                    text: "println",
-                                                    span: Span {
-                                                        start: 3991,
-                                                        end: 3998,
-                                                    },
-                                                },
-                                            ],
-                                            span: Span {
-                                                start: 3988,
-                                                end: 3998,
-                                            },
-                                        },
-                                    ),
-                                    args: [
-                                        Interp {
-                                            parts: [
-                                                Text {
-                                                    raw: "Log analysis -- threshold: ",
-                                                    span: Span {
-                                                        start: 4001,
-                                                        end: 4028,
-                                                    },
-                                                },
-                                                Expr {
-                                                    expr: Ident(
-                                                        Ident {
-                                                            text: "levelArg",
-                                                            span: Span {
-                                                                start: 4030,
-                                                                end: 4038,
-                                                            },
-                                                        },
-                                                    ),
-                                                    span: Span {
-                                                        start: 4028,
-                                                        end: 4039,
-                                                    },
-                                                },
-                                            ],
-                                            span: Span {
-                                                start: 3999,
-                                                end: 4040,
-                                            },
-                                        },
-                                    ],
-                                    span: Span {
-                                        start: 3988,
-                                        end: 4040,
-                                    },
-                                },
-                                Call {
-                                    callee: Qualified(
-                                        QualifiedName {
-                                            segments: [
-                                                Ident {
-                                                    text: "Io",
-                                                    span: Span {
-                                                        start: 4045,
-                                                        end: 4047,
-                                                    },
-                                                },
-                                                Ident {
-                                                    text: "println",
-                                                    span: Span {
-                                                        start: 4048,
-                                                        end: 4055,
-                                                    },
-                                                },
-                                            ],
-                                            span: Span {
-                                                start: 4045,
-                                                end: 4055,
-                                            },
-                                        },
-                                    ),
-                                    args: [
-                                        Literal(
-                                            Text {
-                                                raw: "",
-                                                span: Span {
-                                                    start: 4056,
-                                                    end: 4058,
-                                                },
-                                            },
-                                        ),
-                                    ],
-                                    span: Span {
-                                        start: 4045,
-                                        end: 4058,
-                                    },
-                                },
-                                Match {
-                                    scrutinee: Paren {
-                                        inner: Call {
-                                            callee: Qualified(
-                                                QualifiedName {
-                                                    segments: [
-                                                        Ident {
-                                                            text: "List",
-                                                            span: Span {
-                                                                start: 4070,
-                                                                end: 4074,
-                                                            },
-                                                        },
-                                                        Ident {
-                                                            text: "length",
-                                                            span: Span {
-                                                                start: 4075,
-                                                                end: 4081,
-                                                            },
-                                                        },
-                                                    ],
-                                                    span: Span {
-                                                        start: 4070,
-                                                        end: 4081,
-                                                    },
-                                                },
-                                            ),
-                                            args: [
-                                                Ident(
-                                                    Ident {
-                                                        text: "entries",
-                                                        span: Span {
-                                                            start: 4082,
-                                                            end: 4089,
-                                                        },
-                                                    },
-                                                ),
-                                            ],
-                                            span: Span {
-                                                start: 4070,
-                                                end: 4089,
-                                            },
-                                        },
-                                        span: Span {
-                                            start: 4069,
-                                            end: 4090,
+                                            start: 3942,
+                                            end: 3955,
                                         },
                                     },
                                     arms: [
                                         MatchArm {
-                                            pattern: Literal {
-                                                lit: IntDec {
-                                                    raw: "0",
+                                            pattern: Constructor {
+                                                name: Ident {
+                                                    text: "Err",
                                                     span: Span {
-                                                        start: 4099,
-                                                        end: 4100,
+                                                        start: 3964,
+                                                        end: 3967,
                                                     },
                                                 },
+                                                fields: None,
+                                                has_rest: false,
+                                                args: [
+                                                    Wildcard {
+                                                        span: Span {
+                                                            start: 3968,
+                                                            end: 3969,
+                                                        },
+                                                    },
+                                                ],
                                                 span: Span {
-                                                    start: 4099,
-                                                    end: 4100,
+                                                    start: 3964,
+                                                    end: 3969,
                                                 },
                                             },
                                             guard: None,
-                                            body: Call {
-                                                callee: Qualified(
-                                                    QualifiedName {
-                                                        segments: [
-                                                            Ident {
-                                                                text: "Io",
-                                                                span: Span {
-                                                                    start: 4104,
-                                                                    end: 4106,
+                                            body: Block(
+                                                Block {
+                                                    stmts: [
+                                                        Call {
+                                                            callee: Qualified(
+                                                                QualifiedName {
+                                                                    segments: [
+                                                                        Ident {
+                                                                            text: "Io",
+                                                                            span: Span {
+                                                                                start: 3985,
+                                                                                end: 3987,
+                                                                            },
+                                                                        },
+                                                                        Ident {
+                                                                            text: "eprintln",
+                                                                            span: Span {
+                                                                                start: 3988,
+                                                                                end: 3996,
+                                                                            },
+                                                                        },
+                                                                    ],
+                                                                    span: Span {
+                                                                        start: 3985,
+                                                                        end: 3996,
+                                                                    },
                                                                 },
-                                                            },
-                                                            Ident {
-                                                                text: "println",
-                                                                span: Span {
-                                                                    start: 4107,
-                                                                    end: 4114,
-                                                                },
-                                                            },
-                                                        ],
-                                                        span: Span {
-                                                            start: 4104,
-                                                            end: 4114,
-                                                        },
-                                                    },
-                                                ),
-                                                args: [
-                                                    Literal(
-                                                        Text {
-                                                            raw: "No entries match the given threshold.",
+                                                            ),
+                                                            args: [
+                                                                Literal(
+                                                                    Text {
+                                                                        raw: "cannot read log file",
+                                                                        span: Span {
+                                                                            start: 3997,
+                                                                            end: 4019,
+                                                                        },
+                                                                    },
+                                                                ),
+                                                            ],
                                                             span: Span {
-                                                                start: 4115,
-                                                                end: 4154,
+                                                                start: 3985,
+                                                                end: 4019,
                                                             },
                                                         },
-                                                    ),
-                                                ],
-                                                span: Span {
-                                                    start: 4104,
-                                                    end: 4154,
+                                                        Call {
+                                                            callee: Record {
+                                                                constructor: Bare(
+                                                                    Ident {
+                                                                        text: "Err",
+                                                                        span: Span {
+                                                                            start: 4032,
+                                                                            end: 4035,
+                                                                        },
+                                                                    },
+                                                                ),
+                                                                fields: [],
+                                                                span: Span {
+                                                                    start: 4032,
+                                                                    end: 4035,
+                                                                },
+                                                            },
+                                                            args: [
+                                                                Literal(
+                                                                    Text {
+                                                                        raw: "cannot read log file",
+                                                                        span: Span {
+                                                                            start: 4036,
+                                                                            end: 4058,
+                                                                        },
+                                                                    },
+                                                                ),
+                                                            ],
+                                                            span: Span {
+                                                                start: 4032,
+                                                                end: 4058,
+                                                            },
+                                                        },
+                                                    ],
+                                                    span: Span {
+                                                        start: 3985,
+                                                        end: 4067,
+                                                    },
                                                 },
-                                            },
+                                            ),
                                             span: Span {
-                                                start: 4099,
-                                                end: 4154,
+                                                start: 3964,
+                                                end: 4067,
                                             },
                                         },
                                         MatchArm {
-                                            pattern: Wildcard {
+                                            pattern: Constructor {
+                                                name: Ident {
+                                                    text: "Ok",
+                                                    span: Span {
+                                                        start: 4067,
+                                                        end: 4069,
+                                                    },
+                                                },
+                                                fields: None,
+                                                has_rest: false,
+                                                args: [
+                                                    Var {
+                                                        name: Ident {
+                                                            text: "rawLines",
+                                                            span: Span {
+                                                                start: 4070,
+                                                                end: 4078,
+                                                            },
+                                                        },
+                                                        span: Span {
+                                                            start: 4070,
+                                                            end: 4078,
+                                                        },
+                                                    },
+                                                ],
                                                 span: Span {
-                                                    start: 4163,
-                                                    end: 4164,
+                                                    start: 4067,
+                                                    end: 4078,
                                                 },
                                             },
                                             guard: None,
-                                            body: Call {
-                                                callee: Ident(
-                                                    Ident {
-                                                        text: "printHistogram",
-                                                        span: Span {
-                                                            start: 4168,
-                                                            end: 4182,
-                                                        },
-                                                    },
-                                                ),
-                                                args: [
-                                                    Ident(
-                                                        Ident {
-                                                            text: "histogram",
+                                            body: Block(
+                                                Block {
+                                                    stmts: [
+                                                        Let {
+                                                            pat: Var {
+                                                                name: Ident {
+                                                                    text: "entries",
+                                                                    span: Span {
+                                                                        start: 4098,
+                                                                        end: 4105,
+                                                                    },
+                                                                },
+                                                                span: Span {
+                                                                    start: 4098,
+                                                                    end: 4105,
+                                                                },
+                                                            },
+                                                            ty: None,
+                                                            value: Block(
+                                                                Block {
+                                                                    stmts: [
+                                                                        Pipe {
+                                                                            lhs: Pipe {
+                                                                                lhs: Ident(
+                                                                                    Ident {
+                                                                                        text: "rawLines",
+                                                                                        span: Span {
+                                                                                            start: 4124,
+                                                                                            end: 4132,
+                                                                                        },
+                                                                                    },
+                                                                                ),
+                                                                                rhs: Call {
+                                                                                    callee: Qualified(
+                                                                                        QualifiedName {
+                                                                                            segments: [
+                                                                                                Ident {
+                                                                                                    text: "List",
+                                                                                                    span: Span {
+                                                                                                        start: 4145,
+                                                                                                        end: 4149,
+                                                                                                    },
+                                                                                                },
+                                                                                                Ident {
+                                                                                                    text: "filterMap",
+                                                                                                    span: Span {
+                                                                                                        start: 4150,
+                                                                                                        end: 4159,
+                                                                                                    },
+                                                                                                },
+                                                                                            ],
+                                                                                            span: Span {
+                                                                                                start: 4145,
+                                                                                                end: 4159,
+                                                                                            },
+                                                                                        },
+                                                                                    ),
+                                                                                    args: [
+                                                                                        Ident(
+                                                                                            Ident {
+                                                                                                text: "parseLine",
+                                                                                                span: Span {
+                                                                                                    start: 4160,
+                                                                                                    end: 4169,
+                                                                                                },
+                                                                                            },
+                                                                                        ),
+                                                                                    ],
+                                                                                    span: Span {
+                                                                                        start: 4145,
+                                                                                        end: 4169,
+                                                                                    },
+                                                                                },
+                                                                                span: Span {
+                                                                                    start: 4124,
+                                                                                    end: 4169,
+                                                                                },
+                                                                            },
+                                                                            rhs: Call {
+                                                                                callee: Qualified(
+                                                                                    QualifiedName {
+                                                                                        segments: [
+                                                                                            Ident {
+                                                                                                text: "List",
+                                                                                                span: Span {
+                                                                                                    start: 4182,
+                                                                                                    end: 4186,
+                                                                                                },
+                                                                                            },
+                                                                                            Ident {
+                                                                                                text: "filter",
+                                                                                                span: Span {
+                                                                                                    start: 4187,
+                                                                                                    end: 4193,
+                                                                                                },
+                                                                                            },
+                                                                                        ],
+                                                                                        span: Span {
+                                                                                            start: 4182,
+                                                                                            end: 4193,
+                                                                                        },
+                                                                                    },
+                                                                                ),
+                                                                                args: [
+                                                                                    Paren {
+                                                                                        inner: Call {
+                                                                                            callee: Ident(
+                                                                                                Ident {
+                                                                                                    text: "meetsThreshold",
+                                                                                                    span: Span {
+                                                                                                        start: 4195,
+                                                                                                        end: 4209,
+                                                                                                    },
+                                                                                                },
+                                                                                            ),
+                                                                                            args: [
+                                                                                                Ident(
+                                                                                                    Ident {
+                                                                                                        text: "threshold",
+                                                                                                        span: Span {
+                                                                                                            start: 4210,
+                                                                                                            end: 4219,
+                                                                                                        },
+                                                                                                    },
+                                                                                                ),
+                                                                                            ],
+                                                                                            span: Span {
+                                                                                                start: 4195,
+                                                                                                end: 4219,
+                                                                                            },
+                                                                                        },
+                                                                                        span: Span {
+                                                                                            start: 4194,
+                                                                                            end: 4220,
+                                                                                        },
+                                                                                    },
+                                                                                ],
+                                                                                span: Span {
+                                                                                    start: 4182,
+                                                                                    end: 4220,
+                                                                                },
+                                                                            },
+                                                                            span: Span {
+                                                                                start: 4124,
+                                                                                end: 4220,
+                                                                            },
+                                                                        },
+                                                                    ],
+                                                                    span: Span {
+                                                                        start: 4124,
+                                                                        end: 4234,
+                                                                    },
+                                                                },
+                                                            ),
                                                             span: Span {
-                                                                start: 4183,
-                                                                end: 4192,
+                                                                start: 4094,
+                                                                end: 4234,
                                                             },
                                                         },
-                                                    ),
-                                                ],
-                                                span: Span {
-                                                    start: 4168,
-                                                    end: 4192,
+                                                        Let {
+                                                            pat: Var {
+                                                                name: Ident {
+                                                                    text: "histogram",
+                                                                    span: Span {
+                                                                        start: 4238,
+                                                                        end: 4247,
+                                                                    },
+                                                                },
+                                                                span: Span {
+                                                                    start: 4238,
+                                                                    end: 4247,
+                                                                },
+                                                            },
+                                                            ty: None,
+                                                            value: Call {
+                                                                callee: Ident(
+                                                                    Ident {
+                                                                        text: "buildHistogram",
+                                                                        span: Span {
+                                                                            start: 4250,
+                                                                            end: 4264,
+                                                                        },
+                                                                    },
+                                                                ),
+                                                                args: [
+                                                                    Ident(
+                                                                        Ident {
+                                                                            text: "entries",
+                                                                            span: Span {
+                                                                                start: 4265,
+                                                                                end: 4272,
+                                                                            },
+                                                                        },
+                                                                    ),
+                                                                ],
+                                                                span: Span {
+                                                                    start: 4250,
+                                                                    end: 4272,
+                                                                },
+                                                            },
+                                                            span: Span {
+                                                                start: 4234,
+                                                                end: 4272,
+                                                            },
+                                                        },
+                                                        Call {
+                                                            callee: Qualified(
+                                                                QualifiedName {
+                                                                    segments: [
+                                                                        Ident {
+                                                                            text: "Io",
+                                                                            span: Span {
+                                                                                start: 4285,
+                                                                                end: 4287,
+                                                                            },
+                                                                        },
+                                                                        Ident {
+                                                                            text: "println",
+                                                                            span: Span {
+                                                                                start: 4288,
+                                                                                end: 4295,
+                                                                            },
+                                                                        },
+                                                                    ],
+                                                                    span: Span {
+                                                                        start: 4285,
+                                                                        end: 4295,
+                                                                    },
+                                                                },
+                                                            ),
+                                                            args: [
+                                                                Interp {
+                                                                    parts: [
+                                                                        Text {
+                                                                            raw: "Log analysis -- threshold: ",
+                                                                            span: Span {
+                                                                                start: 4298,
+                                                                                end: 4325,
+                                                                            },
+                                                                        },
+                                                                        Expr {
+                                                                            expr: Ident(
+                                                                                Ident {
+                                                                                    text: "levelArg",
+                                                                                    span: Span {
+                                                                                        start: 4327,
+                                                                                        end: 4335,
+                                                                                    },
+                                                                                },
+                                                                            ),
+                                                                            span: Span {
+                                                                                start: 4325,
+                                                                                end: 4336,
+                                                                            },
+                                                                        },
+                                                                    ],
+                                                                    span: Span {
+                                                                        start: 4296,
+                                                                        end: 4337,
+                                                                    },
+                                                                },
+                                                            ],
+                                                            span: Span {
+                                                                start: 4285,
+                                                                end: 4337,
+                                                            },
+                                                        },
+                                                        Call {
+                                                            callee: Qualified(
+                                                                QualifiedName {
+                                                                    segments: [
+                                                                        Ident {
+                                                                            text: "Io",
+                                                                            span: Span {
+                                                                                start: 4350,
+                                                                                end: 4352,
+                                                                            },
+                                                                        },
+                                                                        Ident {
+                                                                            text: "println",
+                                                                            span: Span {
+                                                                                start: 4353,
+                                                                                end: 4360,
+                                                                            },
+                                                                        },
+                                                                    ],
+                                                                    span: Span {
+                                                                        start: 4350,
+                                                                        end: 4360,
+                                                                    },
+                                                                },
+                                                            ),
+                                                            args: [
+                                                                Literal(
+                                                                    Text {
+                                                                        raw: "",
+                                                                        span: Span {
+                                                                            start: 4361,
+                                                                            end: 4363,
+                                                                        },
+                                                                    },
+                                                                ),
+                                                            ],
+                                                            span: Span {
+                                                                start: 4350,
+                                                                end: 4363,
+                                                            },
+                                                        },
+                                                        Match {
+                                                            scrutinee: Paren {
+                                                                inner: Call {
+                                                                    callee: Qualified(
+                                                                        QualifiedName {
+                                                                            segments: [
+                                                                                Ident {
+                                                                                    text: "List",
+                                                                                    span: Span {
+                                                                                        start: 4383,
+                                                                                        end: 4387,
+                                                                                    },
+                                                                                },
+                                                                                Ident {
+                                                                                    text: "length",
+                                                                                    span: Span {
+                                                                                        start: 4388,
+                                                                                        end: 4394,
+                                                                                    },
+                                                                                },
+                                                                            ],
+                                                                            span: Span {
+                                                                                start: 4383,
+                                                                                end: 4394,
+                                                                            },
+                                                                        },
+                                                                    ),
+                                                                    args: [
+                                                                        Ident(
+                                                                            Ident {
+                                                                                text: "entries",
+                                                                                span: Span {
+                                                                                    start: 4395,
+                                                                                    end: 4402,
+                                                                                },
+                                                                            },
+                                                                        ),
+                                                                    ],
+                                                                    span: Span {
+                                                                        start: 4383,
+                                                                        end: 4402,
+                                                                    },
+                                                                },
+                                                                span: Span {
+                                                                    start: 4382,
+                                                                    end: 4403,
+                                                                },
+                                                            },
+                                                            arms: [
+                                                                MatchArm {
+                                                                    pattern: Literal {
+                                                                        lit: IntDec {
+                                                                            raw: "0",
+                                                                            span: Span {
+                                                                                start: 4420,
+                                                                                end: 4421,
+                                                                            },
+                                                                        },
+                                                                        span: Span {
+                                                                            start: 4420,
+                                                                            end: 4421,
+                                                                        },
+                                                                    },
+                                                                    guard: None,
+                                                                    body: Call {
+                                                                        callee: Qualified(
+                                                                            QualifiedName {
+                                                                                segments: [
+                                                                                    Ident {
+                                                                                        text: "Io",
+                                                                                        span: Span {
+                                                                                            start: 4425,
+                                                                                            end: 4427,
+                                                                                        },
+                                                                                    },
+                                                                                    Ident {
+                                                                                        text: "println",
+                                                                                        span: Span {
+                                                                                            start: 4428,
+                                                                                            end: 4435,
+                                                                                        },
+                                                                                    },
+                                                                                ],
+                                                                                span: Span {
+                                                                                    start: 4425,
+                                                                                    end: 4435,
+                                                                                },
+                                                                            },
+                                                                        ),
+                                                                        args: [
+                                                                            Literal(
+                                                                                Text {
+                                                                                    raw: "No entries match the given threshold.",
+                                                                                    span: Span {
+                                                                                        start: 4436,
+                                                                                        end: 4475,
+                                                                                    },
+                                                                                },
+                                                                            ),
+                                                                        ],
+                                                                        span: Span {
+                                                                            start: 4425,
+                                                                            end: 4475,
+                                                                        },
+                                                                    },
+                                                                    span: Span {
+                                                                        start: 4420,
+                                                                        end: 4475,
+                                                                    },
+                                                                },
+                                                                MatchArm {
+                                                                    pattern: Wildcard {
+                                                                        span: Span {
+                                                                            start: 4492,
+                                                                            end: 4493,
+                                                                        },
+                                                                    },
+                                                                    guard: None,
+                                                                    body: Call {
+                                                                        callee: Ident(
+                                                                            Ident {
+                                                                                text: "printHistogram",
+                                                                                span: Span {
+                                                                                    start: 4497,
+                                                                                    end: 4511,
+                                                                                },
+                                                                            },
+                                                                        ),
+                                                                        args: [
+                                                                            Ident(
+                                                                                Ident {
+                                                                                    text: "histogram",
+                                                                                    span: Span {
+                                                                                        start: 4512,
+                                                                                        end: 4521,
+                                                                                    },
+                                                                                },
+                                                                            ),
+                                                                        ],
+                                                                        span: Span {
+                                                                            start: 4497,
+                                                                            end: 4521,
+                                                                        },
+                                                                    },
+                                                                    span: Span {
+                                                                        start: 4492,
+                                                                        end: 4521,
+                                                                    },
+                                                                },
+                                                            ],
+                                                            span: Span {
+                                                                start: 4376,
+                                                                end: 4534,
+                                                            },
+                                                        },
+                                                        Call {
+                                                            callee: Record {
+                                                                constructor: Bare(
+                                                                    Ident {
+                                                                        text: "Ok",
+                                                                        span: Span {
+                                                                            start: 4534,
+                                                                            end: 4536,
+                                                                        },
+                                                                    },
+                                                                ),
+                                                                fields: [],
+                                                                span: Span {
+                                                                    start: 4534,
+                                                                    end: 4536,
+                                                                },
+                                                            },
+                                                            args: [
+                                                                Unit(
+                                                                    Span {
+                                                                        start: 4537,
+                                                                        end: 4539,
+                                                                    },
+                                                                ),
+                                                            ],
+                                                            span: Span {
+                                                                start: 4534,
+                                                                end: 4539,
+                                                            },
+                                                        },
+                                                    ],
+                                                    span: Span {
+                                                        start: 4094,
+                                                        end: 4540,
+                                                    },
                                                 },
-                                            },
+                                            ),
                                             span: Span {
-                                                start: 4163,
-                                                end: 4192,
+                                                start: 4067,
+                                                end: 4540,
                                             },
                                         },
                                     ],
                                     span: Span {
-                                        start: 4063,
-                                        end: 4197,
-                                    },
-                                },
-                                Call {
-                                    callee: Record {
-                                        constructor: Bare(
-                                            Ident {
-                                                text: "Ok",
-                                                span: Span {
-                                                    start: 4197,
-                                                    end: 4199,
-                                                },
-                                            },
-                                        ),
-                                        fields: [],
-                                        span: Span {
-                                            start: 4197,
-                                            end: 4199,
-                                        },
-                                    },
-                                    args: [
-                                        Unit(
-                                            Span {
-                                                start: 4200,
-                                                end: 4202,
-                                            },
-                                        ),
-                                    ],
-                                    span: Span {
-                                        start: 4197,
-                                        end: 4202,
+                                        start: 3936,
+                                        end: 4540,
                                     },
                                 },
                             ],
                             span: Span {
-                                start: 3290,
-                                end: 4203,
+                                start: 3366,
+                                end: 4540,
                             },
                         },
                     ),
                 ),
                 span: Span {
-                    start: 3243,
-                    end: 4203,
+                    start: 3319,
+                    end: 4540,
                 },
                 doc: None,
             },
@@ -5030,6 +5173,6 @@ Module {
     doc: [],
     span: Span {
         start: 0,
-        end: 4203,
+        end: 4540,
     },
 }

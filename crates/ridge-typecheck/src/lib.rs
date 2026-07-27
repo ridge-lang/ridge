@@ -698,6 +698,10 @@ fn infer_caps_for_decls(
 /// against the declared return type here: this pass is only for side-effect
 /// population of `node_types`, and surfacing additional T-errors at this
 /// point would be a behaviour change beyond the scope of the dispatch fix.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per actor member; splitting the dispatch would obscure the walk"
+)]
 fn typecheck_actor_bodies(
     ctx: &mut crate::ctx::InferCtx,
     b: &BuiltinTyCons,
@@ -848,34 +852,14 @@ fn validate_actor_callback_signature(
     } else {
         params.len() == expected.len()
     };
-    // The declared head of a parameter's annotation: `Named` for type
-    // constructors (`Monitor`, `ExitReason`), the primitive's spelling for
-    // `Int`/`Text`/…, `?` for anything more complex. `Bare` is a wildcard.
-    fn annotation_head(param: &ridge_ast::Param) -> Option<String> {
-        let ty = match param {
-            ridge_ast::Param::Bare(_) => return None,
-            ridge_ast::Param::Annotated { ty, .. } | ridge_ast::Param::PatternAnnotated { ty, .. } => {
-                ty
-            }
-        };
-        fn head(ty: &ridge_ast::Type) -> String {
-            match ty {
-                ridge_ast::Type::Named { name, .. } => name.text.clone(),
-                ridge_ast::Type::Primitive { name, .. } => format!("{name:?}"),
-                ridge_ast::Type::Paren { inner, .. } => head(inner),
-                _ => "?".to_string(),
-            }
-        }
-        Some(head(ty))
-    }
     let types_ok = params
         .iter()
         .zip(expected.iter())
-        .all(|(p, want)| annotation_head(p).map_or(true, |h| h == *want));
+        .all(|(p, want)| actor_param_annotation_head(p).is_none_or(|h| h == *want));
     if !(arity_ok && types_ok) {
         let found = params
             .iter()
-            .map(|p| annotation_head(p).unwrap_or_else(|| "_".to_string()))
+            .map(|p| actor_param_annotation_head(p).unwrap_or_else(|| "_".to_string()))
             .collect::<Vec<_>>()
             .join(", ");
         ctx.errors
@@ -885,6 +869,28 @@ fn validate_actor_callback_signature(
                 found,
                 span,
             });
+    }
+}
+
+/// The declared head of an actor callback parameter's annotation: `Named`
+/// for type constructors (`Monitor`, `ExitReason`), the primitive's spelling
+/// for `Int`/`Text`/…, `?` for anything more complex. `Bare` is a wildcard.
+fn actor_param_annotation_head(param: &ridge_ast::Param) -> Option<String> {
+    let ty = match param {
+        ridge_ast::Param::Bare(_) => return None,
+        ridge_ast::Param::Annotated { ty, .. } | ridge_ast::Param::PatternAnnotated { ty, .. } => {
+            ty
+        }
+    };
+    Some(ast_type_head_name(ty))
+}
+
+fn ast_type_head_name(ty: &ridge_ast::Type) -> String {
+    match ty {
+        ridge_ast::Type::Named { name, .. } => name.text.clone(),
+        ridge_ast::Type::Primitive { name, .. } => format!("{name:?}"),
+        ridge_ast::Type::Paren { inner, .. } => ast_type_head_name(inner),
+        _ => "?".to_string(),
     }
 }
 

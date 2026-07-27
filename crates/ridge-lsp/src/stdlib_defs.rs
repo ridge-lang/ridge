@@ -449,7 +449,7 @@ fn trailing_doc_block(module: StdlibModuleId, symbol: &str) -> Option<(u32, Stri
         let mut first = idx;
         while idx > 0 {
             match classes.get(idx - 1) {
-                Some(LineClass::Comment(_)) | Some(LineClass::Attr) => {
+                Some(LineClass::Comment(_) | LineClass::Attr) => {
                     idx -= 1;
                     first = idx;
                 }

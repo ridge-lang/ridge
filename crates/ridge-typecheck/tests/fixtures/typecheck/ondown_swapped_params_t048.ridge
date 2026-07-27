@@ -1,0 +1,11 @@
+-- expect: T048
+-- onDown's parameter order is fixed: the Monitor first, the ExitReason
+-- second. Swapping them is a signature error, not a runtime surprise.
+import std.actor (ExitReason)
+
+actor W =
+    state n: Int = 0
+    on tick =
+        n <- n + 1
+    onDown (reason: ExitReason) (m: Monitor) =
+        ()

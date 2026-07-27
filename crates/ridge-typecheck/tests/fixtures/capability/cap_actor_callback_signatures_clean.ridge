@@ -1,0 +1,24 @@
+-- expect-clean
+-- Well-shaped callback signatures: terminate takes at most one ExitReason
+-- (zero is fine too — see the second actor), and onDown takes exactly a
+-- Monitor and an ExitReason, in that order.
+import std.actor (ExitReason, NotRunning, Shutdown, Crashed)
+
+actor Watcher =
+    state deaths: Int = 0
+    on tick =
+        deaths <- deaths + 1
+    terminate (reason: ExitReason) =
+        match reason
+            NotRunning -> ()
+            Shutdown -> ()
+            Crashed _ -> ()
+    onDown (m: Monitor) (reason: ExitReason) =
+        deaths <- deaths + 1
+
+actor Quiet =
+    state n: Int = 0
+    on tick =
+        n <- n + 1
+    terminate =
+        ()

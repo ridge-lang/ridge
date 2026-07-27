@@ -729,6 +729,25 @@ pub enum TypeError {
         span: Span,
     },
 
+    // ── T048 ─────────────────────────────────────────────────────────────────
+    /// An actor callback's declared parameters do not match the shape OTP
+    /// delivers: `terminate` takes at most one parameter of type `ExitReason`;
+    /// `onDown` takes exactly two — a `Monitor` and an `ExitReason`, in that
+    /// order.
+    ///
+    /// Without this check a wrong `terminate` arity surfaced as a late
+    /// codegen error, and a wrong parameter type was never diagnosed at all.
+    ActorCallbackSignature {
+        /// Which callback (`"terminate"` or `"onDown"`).
+        member: &'static str,
+        /// The required parameter types, e.g. `"Monitor, ExitReason"`.
+        expected: String,
+        /// The declared parameter types, e.g. `"Int"`.
+        found: String,
+        /// Source span of the callback declaration.
+        span: Span,
+    },
+
     // ── T999 ─────────────────────────────────────────────────────────────────
     /// Internal type-checker invariant violation — should never reach users.
     ///
@@ -799,6 +818,7 @@ impl TypeError {
             Self::UnknownFunDepVar { .. } => "T045",
             Self::ConflictingFunDep { .. } => "T046",
             Self::InsertShapeFullEntity { .. } => "T047",
+            Self::ActorCallbackSignature { .. } => "T048",
             Self::InternalTypeError { .. } => "T999",
         }
     }
@@ -1037,6 +1057,15 @@ mod tests {
         }
     }
 
+    fn t048() -> TypeError {
+        TypeError::ActorCallbackSignature {
+            member: "onDown",
+            expected: "Monitor, ExitReason".into(),
+            found: "Monitor".into(),
+            span: dummy_span(),
+        }
+    }
+
     fn t999() -> TypeError {
         TypeError::InternalTypeError {
             detail: "unexpected node kind".into(),
@@ -1188,6 +1217,19 @@ mod tests {
         assert!(msg.contains("`UserInsert`"), "{msg}");
         assert!(msg.contains("`User`"), "{msg}");
         assert!(msg.contains("database-generated column `id`"), "{msg}");
+    }
+
+    #[test]
+    fn code_t048() {
+        assert_eq!(t048().code(), "T048");
+    }
+
+    #[test]
+    fn t048_message_names_member_and_signatures() {
+        let msg = t048().to_string();
+        assert!(msg.contains("T048"), "{msg}");
+        assert!(msg.contains("onDown"), "{msg}");
+        assert!(msg.contains("Monitor, ExitReason"), "{msg}");
     }
 
     #[test]

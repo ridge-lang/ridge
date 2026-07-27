@@ -1,0 +1,12 @@
+-- expect: T048
+-- terminate takes at most one parameter (the ExitReason OTP delivers);
+-- declaring two is rejected at typecheck time instead of surfacing as a
+-- late codegen error.
+import std.actor (ExitReason)
+
+actor W =
+    state n: Int = 0
+    on tick =
+        n <- n + 1
+    terminate (a: ExitReason) (b: ExitReason) =
+        ()

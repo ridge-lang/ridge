@@ -788,6 +788,7 @@ fn typecheck_actor_bodies(
                     );
                 }
                 ActorMember::Terminate(t) => {
+                    validate_actor_callback_signature(ctx, "terminate", &t.params, t.span);
                     check_actor_callback_body(
                         ctx,
                         b,
@@ -803,6 +804,7 @@ fn typecheck_actor_bodies(
                     );
                 }
                 ActorMember::OnDown(d) => {
+                    validate_actor_callback_signature(ctx, "onDown", &d.params, d.span);
                     check_actor_callback_body(
                         ctx,
                         b,
@@ -820,6 +822,69 @@ fn typecheck_actor_bodies(
                 ActorMember::State(_) | ActorMember::Mailbox(_) => {}
             }
         }
+    }
+}
+
+/// T048 — an actor callback's declared parameters must match the shape OTP
+/// delivers: `terminate` receives at most one `ExitReason`; `onDown`
+/// receives exactly a `Monitor` and an `ExitReason`, in that order. The
+/// check reads the AST annotations directly (an un-annotated parameter is a
+/// wildcard — codegen binds the wire value regardless) — before this, a
+/// wrong `terminate` arity surfaced only as a late codegen error, and a
+/// wrong parameter type was never diagnosed at all.
+fn validate_actor_callback_signature(
+    ctx: &mut crate::ctx::InferCtx,
+    member: &'static str,
+    params: &[ridge_ast::Param],
+    span: ridge_ast::Span,
+) {
+    let expected: &[&str] = match member {
+        "terminate" => &["ExitReason"],
+        "onDown" => &["Monitor", "ExitReason"],
+        _ => return,
+    };
+    let arity_ok = if member == "terminate" {
+        params.len() <= expected.len()
+    } else {
+        params.len() == expected.len()
+    };
+    // The declared head of a parameter's annotation: `Named` for type
+    // constructors (`Monitor`, `ExitReason`), the primitive's spelling for
+    // `Int`/`Text`/…, `?` for anything more complex. `Bare` is a wildcard.
+    fn annotation_head(param: &ridge_ast::Param) -> Option<String> {
+        let ty = match param {
+            ridge_ast::Param::Bare(_) => return None,
+            ridge_ast::Param::Annotated { ty, .. } | ridge_ast::Param::PatternAnnotated { ty, .. } => {
+                ty
+            }
+        };
+        fn head(ty: &ridge_ast::Type) -> String {
+            match ty {
+                ridge_ast::Type::Named { name, .. } => name.text.clone(),
+                ridge_ast::Type::Primitive { name, .. } => format!("{name:?}"),
+                ridge_ast::Type::Paren { inner, .. } => head(inner),
+                _ => "?".to_string(),
+            }
+        }
+        Some(head(ty))
+    }
+    let types_ok = params
+        .iter()
+        .zip(expected.iter())
+        .all(|(p, want)| annotation_head(p).map_or(true, |h| h == *want));
+    if !(arity_ok && types_ok) {
+        let found = params
+            .iter()
+            .map(|p| annotation_head(p).unwrap_or_else(|| "_".to_string()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        ctx.errors
+            .push(crate::error::TypeError::ActorCallbackSignature {
+                member,
+                expected: expected.join(", "),
+                found,
+                span,
+            });
     }
 }
 

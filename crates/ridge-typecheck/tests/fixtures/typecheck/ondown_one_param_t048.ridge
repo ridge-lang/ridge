@@ -1,0 +1,11 @@
+-- expect: T048
+-- onDown takes exactly two parameters — the Monitor that fired and the
+-- ExitReason — so a one-parameter declaration is rejected.
+import std.actor (ExitReason)
+
+actor W =
+    state n: Int = 0
+    on tick =
+        n <- n + 1
+    onDown (m: Monitor) =
+        ()

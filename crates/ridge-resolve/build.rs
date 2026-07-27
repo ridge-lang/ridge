@@ -285,6 +285,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "lines",
             "readDir",
             "isDir",
+            "mkdir",
+            "remove",
+            "removeDir",
         ],
     ),
     (

@@ -830,155 +830,156 @@ items:
                                         -
                                           Local(n253): levelArg
                             body:
-                              LetIn(n254):
-                                pat:
-                                  Bind: rawLines
-                                value:
-                                  Match(n255):
-                                    scrutinee:
-                                      Call(n256):
-                                        callee:
-                                          Symbol(n257): Stdlib(std.fs.lines)
-                                        args:
-                                          -
-                                            Local(n258): path
-                                    arms:
+                              Match(n254):
+                                scrutinee:
+                                  Call(n255):
+                                    callee:
+                                      Symbol(n256): Stdlib(std.fs.lines)
+                                    args:
                                       -
-                                        pat:
-                                          Ctor: Prelude(Ok)
-                                            args:
-                                              Bind: __prop_ok_8
-                                        body:
-                                          Local(n259): __prop_ok_8
-                                      -
-                                        pat:
-                                          Ctor: Prelude(Err)
-                                            args:
-                                              Bind: __prop_err_9
-                                        body:
-                                          Return(n260):
-                                            Construct(n261):
-                                              ctor: Prelude(Err)
-                                              fields:
-                                                $0:
-                                                  Local(n262): __prop_err_9
-                                body:
-                                  LetIn(n263):
+                                        Local(n257): path
+                                arms:
+                                  -
                                     pat:
-                                      Bind: entries
-                                    value:
-                                      Call(n264):
-                                        callee:
-                                          Symbol(n265): Stdlib(std.list.filter)
+                                      Ctor: Prelude(Err)
                                         args:
-                                          -
-                                            Lambda(n266):
-                                              caps: CapabilitySet(0)
-                                              params:
-                                                - name: __pa_10
-                                                  ty: Con(104)
-                                              body:
-                                                Call(n267):
-                                                  callee:
-                                                    Symbol(n268): Local(meetsThreshold @ m0)
-                                                  args:
-                                                    -
-                                                      Local(n269): threshold
-                                                    -
-                                                      Local(n270): __pa_10
-                                          -
-                                            Call(n271):
-                                              callee:
-                                                Symbol(n272): Stdlib(std.list.filterMap)
-                                              args:
-                                                -
-                                                  Symbol(n273): Local(parseLine @ m0)
-                                                -
-                                                  Local(n274): rawLines
+                                          Wild
                                     body:
-                                      LetIn(n275):
+                                      Block(n258):
+                                        Call(n259):
+                                          callee:
+                                            Symbol(n260): Stdlib(std.io.eprintln)
+                                          args:
+                                            -
+                                              Lit(n261): Text("cannot read log file")
+                                        Call(n262):
+                                          callee:
+                                            Symbol(n263): Prelude(Err)
+                                          args:
+                                            -
+                                              Lit(n264): Text("cannot read log file")
+                                  -
+                                    pat:
+                                      Ctor: Prelude(Ok)
+                                        args:
+                                          Bind: rawLines
+                                    body:
+                                      LetIn(n265):
                                         pat:
-                                          Bind: histogram
+                                          Bind: entries
                                         value:
-                                          Call(n276):
+                                          Call(n266):
                                             callee:
-                                              Symbol(n277): Local(buildHistogram @ m0)
+                                              Symbol(n267): Stdlib(std.list.filter)
                                             args:
                                               -
-                                                Local(n278): entries
-                                        body:
-                                          Block(n279):
-                                            Call(n280):
-                                              callee:
-                                                Symbol(n281): Stdlib(std.io.println)
-                                              args:
-                                                -
-                                                  Call(n282):
-                                                    callee:
-                                                      Symbol(n283): Stdlib(std.text.concat)
-                                                    args:
-                                                      -
-                                                        Lit(n284): Text("Log analysis -- threshold: ")
-                                                      -
-                                                        Local(n285): levelArg
-                                            Block(n286):
-                                              Call(n287):
-                                                callee:
-                                                  Symbol(n288): Stdlib(std.io.println)
-                                                args:
-                                                  -
-                                                    Lit(n289): Text("")
-                                              Block(n290):
-                                                Match(n291):
-                                                  scrutinee:
-                                                    Call(n292):
+                                                Lambda(n268):
+                                                  caps: CapabilitySet(0)
+                                                  params:
+                                                    - name: __pa_8
+                                                      ty: Con(104)
+                                                  body:
+                                                    Call(n269):
                                                       callee:
-                                                        Symbol(n293): Stdlib(std.list.length)
+                                                        Symbol(n270): Local(meetsThreshold @ m0)
                                                       args:
                                                         -
-                                                          Local(n294): entries
-                                                  arms:
-                                                    -
-                                                      pat:
-                                                        Lit: Int(0)
-                                                      body:
-                                                        Call(n295):
-                                                          callee:
-                                                            Symbol(n296): Stdlib(std.io.println)
-                                                          args:
-                                                            -
-                                                              Lit(n297): Text("No entries match the given threshold.")
-                                                    -
-                                                      pat:
-                                                        Wild
-                                                      body:
-                                                        Call(n298):
-                                                          callee:
-                                                            Symbol(n299): Local(printHistogram @ m0)
-                                                          args:
-                                                            -
-                                                              Local(n300): histogram
-                                                Call(n301):
+                                                          Local(n271): threshold
+                                                        -
+                                                          Local(n272): __pa_8
+                                              -
+                                                Call(n273):
                                                   callee:
-                                                    Symbol(n302): Prelude(Ok)
+                                                    Symbol(n274): Stdlib(std.list.filterMap)
                                                   args:
                                                     -
-                                                      Lit(n303): Unit
+                                                      Symbol(n275): Local(parseLine @ m0)
+                                                    -
+                                                      Local(n276): rawLines
+                                        body:
+                                          LetIn(n277):
+                                            pat:
+                                              Bind: histogram
+                                            value:
+                                              Call(n278):
+                                                callee:
+                                                  Symbol(n279): Local(buildHistogram @ m0)
+                                                args:
+                                                  -
+                                                    Local(n280): entries
+                                            body:
+                                              Block(n281):
+                                                Call(n282):
+                                                  callee:
+                                                    Symbol(n283): Stdlib(std.io.println)
+                                                  args:
+                                                    -
+                                                      Call(n284):
+                                                        callee:
+                                                          Symbol(n285): Stdlib(std.text.concat)
+                                                        args:
+                                                          -
+                                                            Lit(n286): Text("Log analysis -- threshold: ")
+                                                          -
+                                                            Local(n287): levelArg
+                                                Block(n288):
+                                                  Call(n289):
+                                                    callee:
+                                                      Symbol(n290): Stdlib(std.io.println)
+                                                    args:
+                                                      -
+                                                        Lit(n291): Text("")
+                                                  Block(n292):
+                                                    Match(n293):
+                                                      scrutinee:
+                                                        Call(n294):
+                                                          callee:
+                                                            Symbol(n295): Stdlib(std.list.length)
+                                                          args:
+                                                            -
+                                                              Local(n296): entries
+                                                      arms:
+                                                        -
+                                                          pat:
+                                                            Lit: Int(0)
+                                                          body:
+                                                            Call(n297):
+                                                              callee:
+                                                                Symbol(n298): Stdlib(std.io.println)
+                                                              args:
+                                                                -
+                                                                  Lit(n299): Text("No entries match the given threshold.")
+                                                        -
+                                                          pat:
+                                                            Wild
+                                                          body:
+                                                            Call(n300):
+                                                              callee:
+                                                                Symbol(n301): Local(printHistogram @ m0)
+                                                              args:
+                                                                -
+                                                                  Local(n302): histogram
+                                                    Call(n303):
+                                                      callee:
+                                                        Symbol(n304): Prelude(Ok)
+                                                      args:
+                                                        -
+                                                          Lit(n305): Unit
               -
                 pat:
                   Lit: Bool(false)
                 body:
-                  Block(n304):
-                    Call(n305):
+                  Block(n306):
+                    Call(n307):
                       callee:
-                        Symbol(n306): Stdlib(std.io.eprintln)
+                        Symbol(n308): Stdlib(std.io.eprintln)
                       args:
                         -
-                          Lit(n307): Text("Usage: log_analyzer <file> <MIN_LEVEL>")
-                    Return(n308):
-                      Call(n309):
+                          Lit(n309): Text("Usage: log_analyzer <file> <MIN_LEVEL>")
+                    Return(n310):
+                      Call(n311):
                         callee:
-                          Symbol(n310): Prelude(Err)
+                          Symbol(n312): Prelude(Err)
                         args:
                           -
-                            Lit(n311): Text("missing arguments")
+                            Lit(n313): Text("missing arguments")

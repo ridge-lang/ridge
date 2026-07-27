@@ -1392,7 +1392,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             let fs_caps = CapabilitySet::singleton(Capability::Fs);
             Some(mono(ty_fn_caps(
                 vec![ty_text(b)],
-                ty_result(b, ty_text(b), ty_text(b)),
+                ty_result(b, ty_text(b), ty_error(b)),
                 fs_caps,
             )))
         }
@@ -1401,7 +1401,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             let fs_caps = CapabilitySet::singleton(Capability::Fs);
             Some(mono(ty_fn_caps(
                 vec![ty_text(b), ty_text(b)],
-                ty_result(b, ty_unit(b), ty_text(b)),
+                ty_result(b, ty_unit(b), ty_error(b)),
                 fs_caps,
             )))
         }
@@ -1415,7 +1415,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             let fs_caps = CapabilitySet::singleton(Capability::Fs);
             Some(mono(ty_fn_caps(
                 vec![ty_text(b)],
-                ty_result(b, ty_list(b, ty_text(b)), ty_text(b)),
+                ty_result(b, ty_list(b, ty_text(b)), ty_error(b)),
                 fs_caps,
             )))
         }
@@ -1424,12 +1424,12 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             let fs_caps = CapabilitySet::singleton(Capability::Fs);
             Some(mono(ty_fn_caps(vec![ty_text(b)], ty_bool(b), fs_caps)))
         }
-        (STD_FS, "createDir" | "remove") => {
+        (STD_FS, "mkdir" | "remove" | "removeDir") => {
             use ridge_ast::Capability;
             let fs_caps = CapabilitySet::singleton(Capability::Fs);
             Some(mono(ty_fn_caps(
                 vec![ty_text(b)],
-                ty_result(b, ty_unit(b), ty_text(b)),
+                ty_result(b, ty_unit(b), ty_error(b)),
                 fs_caps,
             )))
         }

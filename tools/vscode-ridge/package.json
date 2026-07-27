@@ -111,6 +111,12 @@
         "path": "./syntaxes/ridge.tmLanguage.json"
       }
     ],
+    "snippets": [
+      {
+        "language": "ridge",
+        "path": "./snippets/ridge.json"
+      }
+    ],
     "semanticTokenTypes": [
       {
         "id": "capability",
@@ -138,7 +144,7 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "bundle": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=node18",
-    "test": "pnpm run bundle && node test/grammar.test.mjs && node test/activation.test.mjs && node test/indentation.test.mjs",
+    "test": "pnpm run bundle && node test/grammar.test.mjs && node test/activation.test.mjs && node test/indentation.test.mjs && node test/snippets.test.mjs && node test/languageconfig.test.mjs",
     "vscode:prepublish": "pnpm run bundle"
   },
   "packageManager": "pnpm@11.1.1",

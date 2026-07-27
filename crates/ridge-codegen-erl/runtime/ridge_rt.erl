@@ -1714,23 +1714,32 @@ send_op_cast({bounded, N, error}, Pid, Msg) ->
         undefined                              -> ok
     end.
 
-%% send_fn/2 — target of the stdlib `Actor.send` fn. Result-returning variant
-%% of send_op. Drop-newest reports success (the user opted into silent drop);
-%% error reports {error, mailbox_full} so the caller can recover.
-send_fn({ridge_handle, Pid, unbounded}, Msg) ->
+%% send_fn/2 — target of the stdlib `Actor.send` fn. Result-returning send:
+%% `{ok, ok}` when the message was accepted (or the target is dead — a
+%% no-op, matching send_op's gen_server:cast semantics), `{error,
+%% 'MailboxFull'}` when a bounded `error`-policy mailbox is full. Drop-newest
+%% reports success (the user opted into silent drop). The pid is resolved
+%% first so a supervised handle reaches the child's current incarnation.
+send_fn(Handle, Msg) ->
+    case resolve_handle_pid(Handle) of
+        {ok, Pid} -> send_fn_cast(handle_config(Handle), Pid, Msg);
+        dead      -> {ok, ok}
+    end.
+
+send_fn_cast(unbounded, Pid, Msg) ->
     gen_server:cast(Pid, Msg),
-    {ok};
-send_fn({ridge_handle, Pid, {bounded, N, drop_newest}}, Msg) ->
+    {ok, ok};
+send_fn_cast({bounded, N, drop_newest}, Pid, Msg) ->
     case erlang:process_info(Pid, message_queue_len) of
-        {message_queue_len, Len} when Len >= N -> {ok};
-        {message_queue_len, _Len}              -> gen_server:cast(Pid, Msg), {ok};
-        undefined                              -> {ok}
+        {message_queue_len, Len} when Len >= N -> {ok, ok};
+        {message_queue_len, _Len}              -> gen_server:cast(Pid, Msg), {ok, ok};
+        undefined                              -> {ok, ok}
     end;
-send_fn({ridge_handle, Pid, {bounded, N, error}}, Msg) ->
+send_fn_cast({bounded, N, error}, Pid, Msg) ->
     case erlang:process_info(Pid, message_queue_len) of
-        {message_queue_len, Len} when Len >= N -> {error, mailbox_full};
-        {message_queue_len, _Len}              -> gen_server:cast(Pid, Msg), {ok};
-        undefined                              -> {ok}
+        {message_queue_len, Len} when Len >= N -> {error, 'MailboxFull'};
+        {message_queue_len, _Len}              -> gen_server:cast(Pid, Msg), {ok, ok};
+        undefined                              -> {ok, ok}
     end.
 
 %% diagnostics_to_stderr/0 — route runtime diagnostics (crash reports, error

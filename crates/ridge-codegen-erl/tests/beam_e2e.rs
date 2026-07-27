@@ -2267,6 +2267,103 @@ fn beam_e2e_actor_stop_delivers_normal() {
     assert!(stdout.contains("terminate-normal"), "got:\n{stdout}");
 }
 
+// ── Actor.send BEAM e2e tests ─────────────────────────────────────────────────
+
+/// `Actor.send` to a running actor answers `Ok ()` and the message lands.
+const ACTOR_SEND_OK_SOURCE: &str = r#"
+import std.io    as Io
+import std.actor as Actor
+import std.actor (MailboxFull)
+
+actor Worker =
+    state n: Int = 0
+
+    on io work (x: Int) =
+        n <- n + x
+        Io.println "handler-ran"
+
+fn spawn io main () -> Result Unit Text =
+    let w = spawn Worker
+    match Actor.send w (work 1)
+        Ok _ -> Io.println "send-ok"
+        Err MailboxFull -> Io.println "send-full"
+    Ok ()
+"#;
+
+#[test]
+fn beam_e2e_actor_send_unbounded_returns_ok() {
+    let (stdout, _) = run_inline_actor_test("ActorSendOk", ACTOR_SEND_OK_SOURCE);
+    assert!(stdout.contains("send-ok"), "got:\n{stdout}");
+}
+
+/// A full bounded `error`-policy mailbox answers `Err MailboxFull` instead
+/// of raising in the caller like `!` would.
+const ACTOR_SEND_FULL_SOURCE: &str = r#"
+import std.io    as Io
+import std.actor as Actor
+import std.actor (MailboxFull)
+import std.time  as Time
+
+actor Slow =
+    state n: Int = 0
+
+    mailbox bounded 1 error
+
+    on time work (x: Int) =
+        Time.sleep 1000
+        n <- n + x
+
+fn spawn io time main () -> Result Unit Text =
+    let w = spawn Slow
+    match Actor.send w (work 1)
+        Ok _ -> Io.println "first-ok"
+        Err MailboxFull -> Io.println "first-full"
+    Time.sleep 100
+    match Actor.send w (work 2)
+        Ok _ -> Io.println "second-ok"
+        Err MailboxFull -> Io.println "second-full"
+    match Actor.send w (work 3)
+        Ok _ -> Io.println "third-ok"
+        Err MailboxFull -> Io.println "third-full"
+    Ok ()
+"#;
+
+#[test]
+fn beam_e2e_actor_send_bounded_full_returns_mailbox_full() {
+    let (stdout, _) = run_inline_actor_test("ActorSendFull", ACTOR_SEND_FULL_SOURCE);
+    assert!(stdout.contains("first-ok"), "got:\n{stdout}");
+    assert!(stdout.contains("second-ok"), "got:\n{stdout}");
+    assert!(stdout.contains("third-full"), "got:\n{stdout}");
+}
+
+/// `Actor.send` to a dead handle is a no-op answering `Ok ()`, matching the
+/// `!` operator's dead-target semantics.
+const ACTOR_SEND_DEAD_SOURCE: &str = r#"
+import std.io    as Io
+import std.actor as Actor
+import std.actor (MailboxFull)
+
+actor Worker =
+    state n: Int = 0
+
+    on work (x: Int) =
+        n <- n + x
+
+fn spawn io main () -> Result Unit Text =
+    let w = spawn Worker
+    Actor.stop w
+    match Actor.send w (work 1)
+        Ok _ -> Io.println "send-dead-ok"
+        Err MailboxFull -> Io.println "send-full"
+    Ok ()
+"#;
+
+#[test]
+fn beam_e2e_actor_send_dead_handle_returns_ok() {
+    let (stdout, _) = run_inline_actor_test("ActorSendDead", ACTOR_SEND_DEAD_SOURCE);
+    assert!(stdout.contains("send-dead-ok"), "got:\n{stdout}");
+}
+
 /// Monitoring an already-dead handle fires an immediate `NotRunning` DOWN.
 const MONITOR_DEAD_SOURCE: &str = r#"
 import std.io    as Io

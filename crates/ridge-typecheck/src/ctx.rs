@@ -378,6 +378,12 @@ pub struct InferCtx {
     /// `tryAsk` is never inserted, so it is never special-cased.
     pub tryask_names: FxHashSet<String>,
 
+    /// Local names (bare or alias-qualified) that resolve to the
+    /// compiler-known `std.actor.send` — the same mechanism as
+    /// [`Self::tryask_names`], for the result-returning send. Checked by the
+    /// `Expr::Call` inference arm before the `!`-like typing applies.
+    pub actorsend_names: FxHashSet<String>,
+
     /// Top-level `fn`/`const` schemes generalised for this module, keyed by name.
     ///
     /// Captured as each declaration's scheme is written back so the workspace
@@ -501,6 +507,7 @@ impl InferCtx {
             to_text_tycons: None,
             current_module_raw: None,
             tryask_names: FxHashSet::default(),
+            actorsend_names: FxHashSet::default(),
             name_schemes_accum: FxHashMap::default(),
             quoted_lambdas_accum: FxHashMap::default(),
             rows_tycons: None,

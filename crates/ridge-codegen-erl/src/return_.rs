@@ -144,7 +144,8 @@ fn has_non_tail_return_inner(expr: &IrExpr, in_tail: bool) -> bool {
 
         IrExpr::Send { handle, args, .. }
         | IrExpr::Ask { handle, args, .. }
-        | IrExpr::TryAsk { handle, args, .. } => {
+        | IrExpr::TryAsk { handle, args, .. }
+        | IrExpr::ActorSend { handle, args, .. } => {
             has_non_tail_return_inner(handle, false)
                 || args.iter().any(|a| has_non_tail_return_inner(a, false))
         }

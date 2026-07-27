@@ -549,6 +549,28 @@ impl ScopeWalker<'_> {
         )
     }
 
+    /// True when `callee` was just resolved to the compiler-known
+    /// `std.actor.send` symbol — the same read-back as
+    /// [`Self::callee_is_std_actor_tryask`], for the result-returning send.
+    fn callee_is_std_actor_send(&self, callee: &Expr) -> bool {
+        let (span, kind) = match callee {
+            Expr::Ident(id) => (id.span, NodeKind::Ident),
+            Expr::Qualified(qn) => (qn.span, NodeKind::QualifiedName),
+            _ => return false,
+        };
+        let Some(nid) = self.node_id_map.get(span, kind) else {
+            return false;
+        };
+        matches!(
+            self.bindings.get(nid.0 as usize),
+            Some(Some(Binding::StdlibSymbol { module, name }))
+                if name == "send"
+                    && crate::BUILTINS
+                        .get(module.0 as usize)
+                        .is_some_and(|m| m.name == "std.actor")
+        )
+    }
+
     /// Build "did you mean?" candidates for an `R010 UnresolvedIdent` (T13).
     ///
     /// Mirrors the [`Self::resolve_ident`] lookup order:
@@ -1353,12 +1375,15 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
 
             Expr::Call { callee, args, .. } => {
                 // Resolve the callee first so its binding is stamped; then
-                // decide whether this call targets the compiler-known
-                // `std.actor.tryAsk`.
+                // decide whether this call targets a compiler-known
+                // handler-message stdlib fn (`std.actor.tryAsk` or
+                // `std.actor.send`).
                 self.visit_expr(callee);
-                if self.callee_is_std_actor_tryask(callee) {
-                    // `tryAsk handle message timeoutMs` — the message
-                    // argument's head is a handler-name LABEL, exactly like
+                if self.callee_is_std_actor_tryask(callee) || self.callee_is_std_actor_send(callee)
+                {
+                    // `tryAsk handle message timeoutMs` /
+                    // `send handle message` — the message argument's head is
+                    // a handler-name LABEL, exactly like
                     // `!` / `?>` (the type checker validates it against the
                     // target actor's `on` handlers), so it must not be
                     // resolved against the lexical scope. Parens are peeled

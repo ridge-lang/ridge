@@ -40,7 +40,9 @@ use crate::core_ast::{CErlAtom, CErlClause, CErlExpr, CErlLit, CErlVar};
 use crate::error::CodegenError;
 use crate::letrec_detect::body_references_local;
 use crate::lit::lower_lit;
-use crate::messaging::{lower_ask, lower_child_spec, lower_send, lower_spawn, lower_try_ask};
+use crate::messaging::{
+    lower_actor_send, lower_ask, lower_child_spec, lower_send, lower_spawn, lower_try_ask,
+};
 use crate::pat::lower_pat;
 use crate::return_::lower_return;
 use crate::scope::{ssa_var, LocalScope};
@@ -740,6 +742,15 @@ pub(crate) fn lower_expr_in_scope(
             span,
             ..
         } => lower_try_ask(handle, message, args, timeout.as_ref(), *span, scope),
+
+        // ActorSend: route through ridge_rt:send_fn/2.
+        IrExpr::ActorSend {
+            handle,
+            message,
+            args,
+            span,
+            ..
+        } => lower_actor_send(handle, message, args, *span, scope),
 
         // IrExpr is #[non_exhaustive]; catch future variants defensively.
         _ => Err(CodegenError::IrShapeMalformed {

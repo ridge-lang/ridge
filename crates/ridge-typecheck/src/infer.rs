@@ -249,6 +249,13 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 let arena = build_arena_from_ctx(ctx);
                 return crate::actor::infer_tryask(ctx, b, callee, args, *span, &arena);
             }
+            // A call to the compiler-known `std.actor.send` is typed like `!`,
+            // but the overall expression is `Result Unit SendError` instead of
+            // raising (see `actor::infer_actor_send`).
+            if crate::actor::is_actor_send_callee(ctx, callee) {
+                let arena = build_arena_from_ctx(ctx);
+                return crate::actor::infer_actor_send(ctx, b, callee, args, *span, &arena);
+            }
             let callee_ty = infer_expr(ctx, b, callee);
             // Quotation: a lambda flowing into a `Quote (e -> _)` parameter is
             // captured as an expression tree, not checked as an ordinary

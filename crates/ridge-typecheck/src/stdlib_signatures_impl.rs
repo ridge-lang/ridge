@@ -1720,6 +1720,22 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                 ),
             ))
         }
+        (STD_ACTOR, "send") => {
+            // Compiler-known: call sites are typed like `!` by
+            // `actor::infer_actor_send` — the message against the actor's `on`
+            // handlers, the result as `Result Unit SendError`. This entry is
+            // the fallback scheme that seeds the env so the name resolves
+            // (e.g. when `send` is passed as a value). The message and error
+            // types are inexpressible without handler knowledge, hence free
+            // variables here. Cap-free, like `!`.
+            Some(poly(
+                vec![A, B_VAR, C_VAR, D_VAR],
+                ty_fn_pure(
+                    vec![ty_handle(b, Type::Var(A)), Type::Var(B_VAR)],
+                    ty_result(b, Type::Var(C_VAR), Type::Var(D_VAR)),
+                ),
+            ))
+        }
 
         // ── std.json ─────────────────────────────────────────────────────────
         //
@@ -2092,6 +2108,8 @@ mod tests {
                             | "AskError"
                             | "Noproc"
                             | "Timeout"
+                            | "SendError"
+                            | "MailboxFull"
                             | "ExitReason"
                             | "Normal"
                             | "NotRunning"

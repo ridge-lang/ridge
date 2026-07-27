@@ -1,0 +1,14 @@
+-- expect-clean
+-- A well-typed `Actor.send`: the message names a declared handler, and the
+-- result (`Result Unit SendError`) is discarded explicitly.
+import std.actor as Actor
+
+actor Counter =
+    state count: Int = 0
+    on increment =
+        count <- count + 1
+
+fn spawn main () -> Unit =
+    let c = spawn Counter
+    let _ = Actor.send c increment
+    ()

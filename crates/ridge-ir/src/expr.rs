@@ -369,6 +369,25 @@ pub enum IrExpr {
         /// Source span.
         span: Span,
     },
+
+    /// The compiler-known `std.actor.send` — a result-returning send.
+    ///
+    /// Same payload shape as [`Self::TryAsk`] minus the timeout; codegen
+    /// lowers it to `ridge_rt:send_fn/2`, which answers
+    /// `{ok, ok} | {error, 'MailboxFull'}` — Ridge's `Result Unit SendError`
+    /// representation.
+    ActorSend {
+        /// The IR-side node identifier.
+        id: IrNodeId,
+        /// The actor handle expression.
+        handle: Box<Self>,
+        /// The resolved handler symbol (`SymbolRef::Handler`).
+        message: SymbolRef,
+        /// The flattened message-payload argument list.
+        args: Vec<Self>,
+        /// Source span.
+        span: Span,
+    },
 }
 
 // ── IrTimeout ─────────────────────────────────────────────────────────────────

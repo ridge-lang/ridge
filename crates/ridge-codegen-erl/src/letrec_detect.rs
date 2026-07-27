@@ -60,7 +60,8 @@ pub(crate) fn body_references_local(body: &IrExpr, target_name: &str) -> bool {
         }
         IrExpr::Send { handle, args, .. }
         | IrExpr::Ask { handle, args, .. }
-        | IrExpr::TryAsk { handle, args, .. } => {
+        | IrExpr::TryAsk { handle, args, .. }
+        | IrExpr::ActorSend { handle, args, .. } => {
             body_references_local(handle, target_name)
                 || args.iter().any(|a| body_references_local(a, target_name))
         }

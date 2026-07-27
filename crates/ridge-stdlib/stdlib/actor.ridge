@@ -5,10 +5,6 @@
 -- remain operators; this module ships the observability primitive that
 -- complements them, plus the typed-supervision API over OTP's supervisor
 -- behaviour.
---
--- The companion result-returning `Actor.send` is deferred until the
--- typeclass-derived `Message` typing lands — without it the surface
--- signature for the message argument is not expressible.
 
 -- Read the current mailbox occupancy of the target actor.
 --
@@ -60,6 +56,11 @@ pub type Restart = Permanent | Transient | Temporary
 -- Why a `tryAsk` failed: the target process does not exist (`Noproc`), or
 -- no reply arrived within the timeout (`Timeout`).
 pub type AskError = Noproc | Timeout
+
+-- Why an `Actor.send` failed: the target's bounded `error`-policy mailbox
+-- was full (`MailboxFull`). A full drop-policy mailbox and a dead target
+-- are not errors — the message is silently dropped, as with `!`.
+pub type SendError = MailboxFull
 
 -- Why an actor stopped. Delivered to its `terminate` callback and to
 -- monitor consumers (`await`, `onDown`): the process stopped normally
@@ -151,6 +152,24 @@ pub fn unmonitor (m: Monitor) -> Unit
 -- instead. Carries the `time` capability, like `Time.sleep`.
 @ffi("ridge_rt", "await_down", 2)
 pub fn time await (m: Monitor) (timeoutMs: Int) -> Option ExitReason
+
+-- `send` — the result-returning send.
+--
+-- This function is compiler-known: it has no body here because a plain FFI
+-- declaration cannot type the message against the actor's handlers. When
+-- the type checker sees a call `Actor.send handle message` it types it like
+-- the `!` operator — `message` checked against the actor's `on` handlers —
+-- but the overall expression is `Result Unit SendError`: the runtime
+-- (`ridge_rt:send_fn/2`) answers `{ok, ok}` when the message was accepted,
+-- or `{error, 'MailboxFull'}` when a bounded `error`-policy mailbox is
+-- full, instead of raising in the caller like `!` does. A full drop-policy
+-- mailbox and a dead target answer `Ok ()` — the message is silently
+-- dropped, exactly as with `!`.
+--
+--     import std.actor as Actor
+--     match Actor.send counter (increment 3)
+--         Ok _             -> ...
+--         Err MailboxFull  -> ...
 
 -- `tryAsk` — typed ask with an explicit timeout and a `Result` return.
 --

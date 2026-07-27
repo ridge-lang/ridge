@@ -438,9 +438,10 @@ fn emit_handle_info_stub() -> CErlFn {
 /// ```
 ///
 /// The OTP reason is mapped to the `ExitReason` union at the runtime
-/// boundary so the body matches on `'NotRunning'` / `'Shutdown'` /
-/// `{'Crashed', Text}`. At most two user parameters are supported (the
-/// monitor reference and the reason); more would have no OTP counterpart.
+/// boundary so the body matches on `'Normal'` / `'NotRunning'` /
+/// `'Shutdown'` / `{'Crashed', Text}`. At most two user parameters are
+/// supported (the monitor reference and the reason); more would have no
+/// OTP counterpart.
 fn emit_handle_info(
     actor: &IrActor,
     fn_arity: &FxHashMap<String, u32>,
@@ -571,8 +572,9 @@ fn emit_terminate_stub() -> CErlFn {
 /// ```
 ///
 /// The OTP reason is mapped to the `ExitReason` union at the runtime boundary
-/// so the body matches on `'Shutdown'` / `{'Crashed', Text}`. At most one user
-/// parameter is supported (the reason); more would have no OTP counterpart.
+/// so the body matches on `'Normal'` / `'Shutdown'` / `{'Crashed', Text}`.
+/// At most one user parameter is supported (the reason); more would have no
+/// OTP counterpart.
 fn emit_terminate(
     actor: &IrActor,
     fn_arity: &FxHashMap<String, u32>,

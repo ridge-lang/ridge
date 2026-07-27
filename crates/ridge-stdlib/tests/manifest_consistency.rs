@@ -208,6 +208,7 @@ const CONSTRUCTOR_EXPORTS: &[(&str, &str)] = &[
     // The `ExitReason` variants: exported so a `terminate` callback and
     // monitor consumers can match the stop kind, surfaced by text extraction
     // only through the type name.
+    ("std.actor", "Normal"),
     ("std.actor", "NotRunning"),
     ("std.actor", "Shutdown"),
     ("std.actor", "Crashed"),

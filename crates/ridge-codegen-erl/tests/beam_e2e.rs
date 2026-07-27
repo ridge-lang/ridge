@@ -2051,6 +2051,7 @@ actor Worker =
 
     terminate io (reason: ExitReason) =
         match reason
+            Normal -> Io.println "terminate-normal"
             NotRunning -> Io.println "terminate-unreachable"
             Shutdown -> Io.println "terminate-shutdown"
             Crashed m -> Io.println "terminate-crashed"
@@ -2097,6 +2098,7 @@ actor Worker =
 
     terminate io (reason: ExitReason) =
         match reason
+            Normal -> Io.println "terminate-normal"
             NotRunning -> Io.println "terminate-unreachable"
             Shutdown -> Io.println "terminate-shutdown"
             Crashed m -> Io.println "terminate-crashed"
@@ -2139,6 +2141,7 @@ actor Worker =
 
     terminate io (reason: ExitReason) =
         match reason
+            Normal -> Io.println "terminate-normal"
             NotRunning -> Io.println "terminate-unreachable"
             Shutdown -> Io.println "terminate-fired"
             Crashed m -> Io.println "terminate-fired"
@@ -2186,6 +2189,7 @@ fn spawn io time main () -> Result Unit Text =
     w ! explode 0
     match Actor.await m 3000
         Some (Crashed r) -> Io.println "await-crashed"
+        Some Normal -> Io.println "await-normal"
         Some Shutdown -> Io.println "await-shutdown"
         Some NotRunning -> Io.println "await-notrunning"
         None -> Io.println "await-timeout"
@@ -2225,6 +2229,44 @@ fn beam_e2e_await_times_out_on_live_actor() {
     assert!(stdout.contains("await-timeout"), "got:\n{stdout}");
 }
 
+/// `Actor.stop` asks a handle to stop normally: the actor's `terminate`
+/// callback runs with `Normal`, and a monitor's DOWN carries `Normal` too.
+const ACTOR_STOP_NORMAL_SOURCE: &str = r#"
+import std.io    as Io
+import std.actor as Actor
+import std.actor (ExitReason, Normal, NotRunning, Shutdown, Crashed)
+
+actor Worker =
+    state n: Int = 0
+
+    on tick =
+        n <- n + 1
+
+    terminate io (reason: ExitReason) =
+        match reason
+            Normal -> Io.println "terminate-normal"
+            NotRunning -> Io.println "terminate-unreachable"
+            Shutdown -> Io.println "terminate-shutdown"
+            Crashed _ -> Io.println "terminate-crashed"
+
+fn spawn io time main () -> Result Unit Text =
+    let w = spawn Worker
+    let m = Actor.monitor w
+    Actor.stop w
+    match Actor.await m 3000
+        Some Normal -> Io.println "await-normal"
+        Some _ -> Io.println "await-other"
+        None -> Io.println "await-timeout"
+    Ok ()
+"#;
+
+#[test]
+fn beam_e2e_actor_stop_delivers_normal() {
+    let (stdout, _) = run_inline_actor_test("ActorStopNormal", ACTOR_STOP_NORMAL_SOURCE);
+    assert!(stdout.contains("await-normal"), "got:\n{stdout}");
+    assert!(stdout.contains("terminate-normal"), "got:\n{stdout}");
+}
+
 /// Monitoring an already-dead handle fires an immediate `NotRunning` DOWN.
 const MONITOR_DEAD_SOURCE: &str = r#"
 import std.io    as Io
@@ -2246,6 +2288,7 @@ fn spawn io time main () -> Result Unit Text =
     match Actor.await m 1000
         Some NotRunning -> Io.println "await-notrunning"
         Some (Crashed r) -> Io.println "await-crashed"
+        Some Normal -> Io.println "await-normal"
         Some Shutdown -> Io.println "await-shutdown"
         None -> Io.println "await-timeout"
     Ok ()
@@ -2324,6 +2367,7 @@ fn spawn io time main () -> Result Unit Text =
     w ! explode 0
     match Actor.await m 3000
         Some (Crashed r) -> Io.println "down-for-old-pid"
+        Some Normal -> Io.println "await-normal"
         Some Shutdown -> Io.println "await-shutdown"
         Some NotRunning -> Io.println "await-notrunning"
         None -> Io.println "await-timeout"

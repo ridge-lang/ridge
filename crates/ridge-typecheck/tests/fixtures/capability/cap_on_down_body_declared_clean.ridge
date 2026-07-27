@@ -6,7 +6,7 @@
 -- including the monitor-only NotRunning.
 import std.io as Io
 import std.actor as Actor
-import std.actor (ExitReason, NotRunning, Shutdown, Crashed)
+import std.actor (ExitReason, Normal, NotRunning, Shutdown, Crashed)
 
 actor Worker =
     state n: Int = 0
@@ -20,6 +20,7 @@ actor Watcher =
         Io.println "watching"
     onDown io (m: Monitor) (reason: ExitReason) =
         match reason
+            Normal -> Io.println "normal"
             NotRunning -> Io.println "gone"
             Shutdown -> Io.println "stopped"
             Crashed t -> Io.println t

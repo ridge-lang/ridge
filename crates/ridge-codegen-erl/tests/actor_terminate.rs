@@ -25,6 +25,7 @@ actor Worker =
 
     terminate io (reason: ExitReason) =
         match reason
+            Normal -> Io.println \"normal\"
             NotRunning -> Io.println \"unreachable\"
             Shutdown -> Io.println \"clean\"
             Crashed m -> Io.println m

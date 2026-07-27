@@ -2178,10 +2178,10 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
         // `std.actor` — why an actor stopped, delivered to its `terminate`
         // callback and to monitor consumers (`await`, `onDown`). `NotRunning`
         // only ever comes from monitoring an already-dead process — it is
-        // never delivered to `terminate`. Variants lower to `'NotRunning'` /
-        // `'Shutdown'` / `{'Crashed', Text}`; the runtime maps OTP exit
-        // reasons at the boundary. Appended last so it disturbs no earlier
-        // reconciled id.
+        // never delivered to `terminate`. Variants lower to `'Normal'` /
+        // `'NotRunning'` / `'Shutdown'` / `{'Crashed', Text}`; the runtime
+        // maps OTP exit reasons at the boundary. Appended last so it
+        // disturbs no earlier reconciled id.
         TyConDecl {
             id: TyConId(base + 41),
             name: "ExitReason".to_string(),
@@ -2189,6 +2189,10 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             kind: TyConKind::Union(UnionSchema {
                 params: vec![],
                 variants: vec![
+                    UnionVariant {
+                        name: "Normal".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
                     UnionVariant {
                         name: "NotRunning".to_string(),
                         kind: VariantPayload::Nullary,

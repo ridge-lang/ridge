@@ -1635,6 +1635,14 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                 ty_fn_pure(vec![ty_handle(b, Type::Var(A))], ty_option(b, ty_int(b))),
             ))
         }
+        (STD_ACTOR, "stop") => {
+            // forall a. Handle a -> Unit  (cap-free, like `mailboxSize` — the
+            // handle is the proof of access; see spec §6.4.1).
+            Some(poly(
+                vec![A],
+                ty_fn_pure(vec![ty_handle(b, Type::Var(A))], ty_unit(b)),
+            ))
+        }
         // Process monitors. Cap-free, like `mailboxSize` — the handle is the
         // proof of access. `await` names the reconciled `ExitReason` union, so
         // it is seeded via `reconciled_fn_scheme`, not here.
@@ -2085,6 +2093,7 @@ mod tests {
                             | "Noproc"
                             | "Timeout"
                             | "ExitReason"
+                            | "Normal"
                             | "NotRunning"
                             | "Shutdown"
                             | "Crashed"

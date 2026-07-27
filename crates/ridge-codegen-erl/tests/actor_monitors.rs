@@ -27,6 +27,7 @@ actor Watcher =
     onDown io (m: Monitor) (reason: ExitReason) =
         deaths <- deaths + 1
         match reason
+            Normal -> Io.println \"normal\"
             NotRunning -> Io.println \"gone\"
             Shutdown -> Io.println \"stopped\"
             Crashed t -> Io.println t

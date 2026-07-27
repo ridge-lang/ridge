@@ -2041,7 +2041,7 @@ const TERMINATE_ON_STOP_SOURCE: &str = r#"
 import std.io    as Io
 import std.time  as Time
 import std.actor as Actor
-import std.actor (OneForOne, ExitReason, NotRunning, Shutdown, Crashed)
+import std.actor (OneForOne, ExitReason, Normal, NotRunning, Shutdown, Crashed)
 
 actor Worker =
     state n: Int = 0
@@ -2085,7 +2085,7 @@ import std.io    as Io
 import std.int   as Int
 import std.time  as Time
 import std.actor as Actor
-import std.actor (OneForOne, ExitReason, NotRunning, Shutdown, Crashed)
+import std.actor (OneForOne, ExitReason, Normal, NotRunning, Shutdown, Crashed)
 
 actor Worker =
     state n: Int = 0
@@ -2131,7 +2131,7 @@ fn beam_e2e_terminate_fires_on_crash_and_restart_still_works() {
 
 const INIT_CRASH_NO_TERMINATE_SOURCE: &str = r#"
 import std.io    as Io
-import std.actor (ExitReason, NotRunning, Shutdown, Crashed)
+import std.actor (ExitReason, Normal, NotRunning, Shutdown, Crashed)
 
 actor Worker =
     state n: Int = 0
@@ -2175,7 +2175,7 @@ fn beam_e2e_init_crash_does_not_fire_terminate() {
 const MONITOR_AWAIT_CRASH_SOURCE: &str = r#"
 import std.io    as Io
 import std.actor as Actor
-import std.actor (ExitReason, NotRunning, Shutdown, Crashed)
+import std.actor (ExitReason, Normal, NotRunning, Shutdown, Crashed)
 
 actor Worker =
     state n: Int = 0
@@ -2369,7 +2369,7 @@ const MONITOR_DEAD_SOURCE: &str = r#"
 import std.io    as Io
 import std.time  as Time
 import std.actor as Actor
-import std.actor (ExitReason, NotRunning, Shutdown, Crashed)
+import std.actor (ExitReason, Normal, NotRunning, Shutdown, Crashed)
 
 actor Worker =
     state n: Int = 0
@@ -2449,7 +2449,7 @@ fn beam_e2e_watcher_actor_receives_down_in_on_down() {
 const MONITOR_SUPERVISED_RESTART_SOURCE: &str = r#"
 import std.io    as Io
 import std.actor as Actor
-import std.actor (OneForOne, ExitReason, NotRunning, Shutdown, Crashed)
+import std.actor (OneForOne, ExitReason, Normal, NotRunning, Shutdown, Crashed)
 
 actor Worker =
     state n: Int = 0

@@ -11,7 +11,9 @@
     { "open": "(", "close": ")" },
     { "open": "[", "close": "]" },
     { "open": "{", "close": "}" },
-    { "open": "\"", "close": "\"" }
+    { "open": "\"", "close": "\"", "notIn": ["comment"] },
+    { "open": "\"\"\"", "close": "\"\"\"", "notIn": ["string", "comment"] },
+    { "open": "r#\"", "close": "\"#", "notIn": ["string", "comment"] }
   ],
   "surroundingPairs": [
     ["(", ")"],
@@ -19,8 +21,12 @@
     ["{", "}"],
     ["\"", "\""]
   ],
+  "wordPattern": "(-?\\d*\\.\\d\\w*)|([A-Za-z_][A-Za-z0-9_]*)",
+  "folding": {
+    "offSide": true
+  },
   "indentationRules": {
-    "increaseIndentPattern": "(^|[^=!<>])=\\s*(--.*)?$|(->|<-)\\s*(--.*)?$|\\b(then|else|try)\\b\\s*(--.*)?$|(^|=)\\s*match\\b[^>]*$",
+    "increaseIndentPattern": "(^|[^=!<>])=\\s*(--.*)?$|(->|<-)\\s*(--.*)?$|\\b(then|else|try)\\b\\s*(--.*)?$|(^|=)\\s*match\\b[^>]*$|\\|>\\s*(--.*)?$",
     "decreaseIndentPattern": "^\\s*else\\s*(--.*)?$"
   }
 }

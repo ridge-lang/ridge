@@ -1,0 +1,10 @@
+-- expect: T048
+-- terminate's single parameter must be an ExitReason — OTP delivers the
+-- exit reason, so an Int annotation can never match what the runtime
+-- passes.
+actor W =
+    state n: Int = 0
+    on tick =
+        n <- n + 1
+    terminate (reason: Int) =
+        ()

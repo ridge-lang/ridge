@@ -218,8 +218,21 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
     (
         "std.map",
         &[
-            "empty", "fromList", "toList", "insert", "remove", "get", "contains", "keys", "values",
-            "map", "filter", "length", "merge", "update", "filterMap",
+            "empty",
+            "fromList",
+            "toList",
+            "insert",
+            "remove",
+            "get",
+            "contains",
+            "keys",
+            "values",
+            "map",
+            "filter",
+            "length",
+            "merge",
+            "update",
+            "filterMap",
         ],
     ),
     (

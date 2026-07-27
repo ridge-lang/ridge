@@ -761,7 +761,8 @@ Capability    = "io" | "fs" | "net" | "time" | "random" | "env" | "proc" | "spaw
 Param         = Ident | "(" Ident ":" Type ")" .
 
 ActorDecl     = [ "pub" ] "actor" UpperIdent "=" { ActorMember } .
-ActorMember   = StateDecl | OnHandler | InitBlock | TerminateBlock | OnDownBlock .
+ActorMember   = StateDecl | OnHandler | InitBlock | TerminateBlock | OnDownBlock | MailboxBlock .
+MailboxBlock  = "mailbox" ( "unbounded" | "bounded" IntLit ( "drop" ( "newest" | "oldest" ) | "error" ) ) .
 StateDecl     = "state" Ident ":" Type [ "=" Expr ] .
 OnHandler     = "on" { Capability } Ident { Param } [ "->" Type ] "=" Expr .
 InitBlock     = "init" { Capability } "(" ParamList ")" "=" Expr .

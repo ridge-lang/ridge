@@ -27,6 +27,12 @@ pub struct CompletionItemData {
 pub(crate) enum Context {
     /// After `Alias.` — complete that module's exported symbols.
     Member { alias: String, prefix: String },
+    /// After `x |> Alias.` — complete the module's symbols, filtered
+    /// downstream by the piped value's type (see `Context::Pipeline`).
+    PipelineMember { alias: String, prefix: String },
+    /// After `x |>` (optionally followed by a partial name) — complete
+    /// bare-imported functions whose last parameter accepts the piped value.
+    Pipeline { prefix: String },
     /// After `:` or `->` — complete type names.
     Type { prefix: String },
     /// Default — complete locals, module symbols, imports, keywords.
@@ -53,15 +59,31 @@ pub(crate) fn detect_context(src: &str, offset: usize) -> Context {
     let before = &line[..line.len() - prefix.len()];
     let trimmed = before.trim_end();
 
-    // `Alias.partial` — member access on a (probable) module alias.
+    // `Alias.partial` — member access on a (probable) module alias. When the
+    // alias itself sits right after a `|>`, the pipeline's type-directed
+    // filtering applies downstream (`x |> Alias.partial`).
     if let Some(rest) = trimmed.strip_suffix('.') {
         let alias = trailing_ident(rest);
         if !alias.is_empty() {
+            let before_alias = rest[..rest.len() - alias.len()].trim_end();
+            if before_alias.ends_with("|>") {
+                return Context::PipelineMember {
+                    alias: alias.to_owned(),
+                    prefix: prefix.to_owned(),
+                };
+            }
             return Context::Member {
                 alias: alias.to_owned(),
                 prefix: prefix.to_owned(),
             };
         }
+    }
+
+    // `x |>` (possibly with a partial name already typed) — pipeline position.
+    if trimmed.ends_with("|>") {
+        return Context::Pipeline {
+            prefix: prefix.to_owned(),
+        };
     }
 
     // Type position: an annotation `: T` or a return arrow `-> T`.
@@ -216,5 +238,39 @@ mod tests {
             Context::Expr { prefix } => assert_eq!(prefix, "resul"),
             _ => panic!("expected expr"),
         }
+    }
+
+    #[test]
+    fn pipeline_positions_detected() {
+        // Only the LAST `|` is the cursor marker (the `|>` operator's pipe
+        // must survive), so remove just that byte instead of all of them.
+        fn pctx(line_with_cursor: &str) -> Context {
+            let offset = line_with_cursor.rfind('|').expect("cursor marker");
+            let mut src = line_with_cursor.to_string();
+            src.remove(offset);
+            detect_context(&src, offset)
+        }
+        match pctx("  xs |> |") {
+            Context::Pipeline { prefix } => assert_eq!(prefix, ""),
+            _ => panic!("expected pipeline"),
+        }
+        match pctx("  xs |> le|") {
+            Context::Pipeline { prefix } => assert_eq!(prefix, "le"),
+            _ => panic!("expected pipeline"),
+        }
+        // Chained pipelines still land in pipeline position.
+        match pctx("  ys |> List.map (fn x -> x) |> fi|") {
+            Context::Pipeline { prefix } => assert_eq!(prefix, "fi"),
+            _ => panic!("expected pipeline"),
+        }
+        match pctx("  xs |> List.le|") {
+            Context::PipelineMember { alias, prefix } => {
+                assert_eq!(alias, "List");
+                assert_eq!(prefix, "le");
+            }
+            _ => panic!("expected pipeline member"),
+        }
+        // A comment swallows the pipe — no completion.
+        assert!(matches!(pctx("-- xs |> |"), Context::None));
     }
 }

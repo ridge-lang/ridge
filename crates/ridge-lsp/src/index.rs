@@ -5031,43 +5031,12 @@ impl WorkspaceIndex {
             Context::PipelineMember { alias, prefix } => {
                 // `x |> Alias.partial` — the alias's stdlib exports whose LAST
                 // parameter accepts the piped value (pipe feeds the last
-                // argument, spec §3.4). Not an alias at all, or a workspace
-                // module (no schemes in the index), degrades to the ordinary
-                // member completion.
-                let mut handled = false;
-                if let Some(sid) = stdlib_alias_target(&m.imports, &alias) {
-                    handled = true;
-                    out.extend(self.pipeline_completions(
-                        mi,
-                        src,
-                        byte,
-                        &prefix,
-                        Some((&alias, sid)),
-                    ));
-                }
-                if !handled {
-                    if let Some(target) = alias_target(&m.imports, &alias) {
-                        let target_uri = self
-                            .module_uris
-                            .get(target.0 as usize)
-                            .and_then(Option::as_ref);
-                        if let Some(tm) = self.modules.get(target.0 as usize) {
-                            for e in &tm.symbols.entries {
-                                if e.visibility == ResolvedVisibility::Pub
-                                    && e.name.starts_with(&prefix)
-                                {
-                                    out.push(symbol_item(
-                                        e.name.clone(),
-                                        symbol_kind(&e.kind),
-                                        '0',
-                                        target_uri,
-                                    ));
-                                }
-                            }
-                        }
-                    } else {
-                        out.extend(self.record_field_completions(mi, byte, &prefix));
-                    }
+                // argument, spec §3.4). Not a stdlib alias at all degrades to
+                // the ordinary member completion.
+                if stdlib_alias_target(&m.imports, &alias).is_some() {
+                    out.extend(self.pipeline_completions(mi, src, byte, &prefix, Some(&alias)));
+                } else {
+                    out.extend(self.member_completions(mi, byte, &m.imports, &alias, &prefix));
                 }
             }
             Context::Pipeline { prefix } => {
@@ -5076,38 +5045,7 @@ impl WorkspaceIndex {
                 out.extend(self.pipeline_completions(mi, src, byte, &prefix, None));
             }
             Context::Member { alias, prefix } => {
-                if let Some(target) = alias_target(&m.imports, &alias) {
-                    let target_uri = self
-                        .module_uris
-                        .get(target.0 as usize)
-                        .and_then(Option::as_ref);
-                    if let Some(tm) = self.modules.get(target.0 as usize) {
-                        for e in &tm.symbols.entries {
-                            if e.visibility == ResolvedVisibility::Pub
-                                && e.name.starts_with(&prefix)
-                            {
-                                out.push(symbol_item(
-                                    e.name.clone(),
-                                    symbol_kind(&e.kind),
-                                    '0',
-                                    target_uri,
-                                ));
-                            }
-                        }
-                    }
-                } else if let Some(sid) = stdlib_alias_target(&m.imports, &alias) {
-                    // A stdlib alias (`import std.repo as Repo`) resolves to a
-                    // builtin module whose exported names live in `BUILTINS`.
-                    for &name in stdlib_exports(sid) {
-                        if name.starts_with(&prefix) {
-                            out.push(stdlib_item(name, sid));
-                        }
-                    }
-                } else {
-                    // Not a module alias: complete the fields of a value of record
-                    // type sitting just before the dot.
-                    out.extend(self.record_field_completions(mi, byte, &prefix));
-                }
+                out.extend(self.member_completions(mi, byte, &m.imports, &alias, &prefix));
             }
             Context::Type { prefix } => {
                 for decl in &self.tycons {
@@ -5199,6 +5137,51 @@ impl WorkspaceIndex {
             .collect()
     }
 
+    /// The ordinary `Alias.` member completion: a workspace module's public
+    /// symbols, a stdlib module's exports, or — when the alias is neither —
+    /// the fields of a record-typed value sitting before the dot.
+    fn member_completions(
+        &self,
+        mi: usize,
+        byte: u32,
+        imports: &[ImportResolution],
+        alias: &str,
+        prefix: &str,
+    ) -> Vec<CompletionItemData> {
+        let mut out = Vec::new();
+        if let Some(target) = alias_target(imports, alias) {
+            let target_uri = self
+                .module_uris
+                .get(target.0 as usize)
+                .and_then(Option::as_ref);
+            if let Some(tm) = self.modules.get(target.0 as usize) {
+                for e in &tm.symbols.entries {
+                    if e.visibility == ResolvedVisibility::Pub && e.name.starts_with(prefix) {
+                        out.push(symbol_item(
+                            e.name.clone(),
+                            symbol_kind(&e.kind),
+                            '0',
+                            target_uri,
+                        ));
+                    }
+                }
+            }
+        } else if let Some(sid) = stdlib_alias_target(imports, alias) {
+            // A stdlib alias (`import std.repo as Repo`) resolves to a
+            // builtin module whose exported names live in `BUILTINS`.
+            for &name in stdlib_exports(sid) {
+                if name.starts_with(prefix) {
+                    out.push(stdlib_item(name, sid));
+                }
+            }
+        } else {
+            // Not a module alias: complete the fields of a value of record
+            // type sitting just before the dot.
+            out.extend(self.record_field_completions(mi, byte, prefix));
+        }
+        out
+    }
+
     /// Type-directed completions for a pipeline: fns whose LAST parameter's
     /// head constructor matches the piped value's type head — the pipe feeds
     /// the last argument (spec §3.4). `alias` scopes the offers to one
@@ -5214,10 +5197,9 @@ impl WorkspaceIndex {
         src: &str,
         byte: u32,
         prefix: &str,
-        alias: Option<(&str, StdlibModuleId)>,
+        alias: Option<&str>,
     ) -> Vec<CompletionItemData> {
-        let Some(value_ty) = self.piped_value_type(mi, src, byte, prefix, alias.map(|(a, _)| a))
-        else {
+        let Some(value_ty) = self.piped_value_type(mi, src, byte, prefix, alias) else {
             return Vec::new();
         };
         let Some(head) = type_head_id(&value_ty) else {
@@ -5233,27 +5215,24 @@ impl WorkspaceIndex {
             let ImportTarget::BuiltinStdlib(sid) = imp.target else {
                 continue;
             };
-            let labels: Vec<String> = match &alias {
-                Some((want, want_sid)) => {
-                    if sid != *want_sid || imp.alias.as_deref() != Some(want) {
-                        continue;
-                    }
-                    stdlib_exports(sid)
-                        .iter()
-                        .map(|n| format!("{want}.{n}"))
-                        .collect()
+            let labels: Vec<String> = if let Some(want) = alias {
+                if imp.alias.as_deref() != Some(want) {
+                    continue;
                 }
-                None => {
-                    // Bare selective imports only (`import std.m (a, b)`,
-                    // no `as`): those are the names pipeline position can
-                    // complete unqualified.
-                    if imp.alias.is_some() {
-                        continue;
-                    }
-                    match &imp.explicit_items {
-                        Some(items) => items.iter().map(|it| it.name.clone()).collect(),
-                        None => continue,
-                    }
+                stdlib_exports(sid)
+                    .iter()
+                    .map(|n| format!("{want}.{n}"))
+                    .collect()
+            } else {
+                // Bare selective imports only (`import std.m (a, b)`,
+                // no `as`): those are the names pipeline position can
+                // complete unqualified.
+                if imp.alias.is_some() {
+                    continue;
+                }
+                match &imp.explicit_items {
+                    Some(items) => items.iter().map(|it| it.name.clone()).collect(),
+                    None => continue,
                 }
             };
             for label in labels {
@@ -5298,9 +5277,7 @@ impl WorkspaceIndex {
         t = t.strip_suffix("|>")?;
         // The value's LAST byte (inside its span — one past the end lands on
         // the enclosing pipeline node and reads the pipeline's own type).
-        let value_byte = u32::try_from(t.trim_end().len())
-            .ok()?
-            .checked_sub(1)?;
+        let value_byte = u32::try_from(t.trim_end().len()).ok()?.checked_sub(1)?;
         let (tnode, _, _) = self.spatial.get(mi)?.narrowest_containing(
             value_byte,
             &[
@@ -5321,7 +5298,7 @@ impl WorkspaceIndex {
 /// The head constructor of a type, for pipeline candidate matching. Only
 /// nominal constructors qualify — a type-variable, function, or anonymous
 /// head means "no type-directed offer".
-fn type_head_id(ty: &Type) -> Option<TyConId> {
+const fn type_head_id(ty: &Type) -> Option<TyConId> {
     match ty {
         Type::Con(id, _) => Some(*id),
         _ => None,

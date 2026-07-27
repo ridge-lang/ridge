@@ -1,0 +1,162 @@
+{
+  "Function (pure)": {
+    "prefix": "fn",
+    "body": [
+      "fn ${1:name} (${2:param}: ${3:Type}) -> ${4:Type} =",
+      "    ${0:body}"
+    ],
+    "description": "Pure function"
+  },
+  "Function with capability": {
+    "prefix": "fnc",
+    "body": [
+      "fn ${1|io,fs,net,time,random,env,proc,spawn,ffi,db|} ${2:name} (${3:param}: ${4:Type}) -> ${5:Type} =",
+      "    ${0:body}"
+    ],
+    "description": "Function requiring an effect capability (choice list)"
+  },
+  "Main (entry point)": {
+    "prefix": "main",
+    "body": [
+      "pub fn io main () -> Unit =",
+      "    ${0:body}"
+    ],
+    "description": "Application entry point"
+  },
+  "let binding": {
+    "prefix": "let",
+    "body": "let ${1:name} = ${2:value}",
+    "description": "Immutable local binding"
+  },
+  "const": {
+    "prefix": "const",
+    "body": "const ${1:name}: ${2:Type} = ${3:value}",
+    "description": "Top-level constant"
+  },
+  "var (mutable)": {
+    "prefix": "var",
+    "body": "var ${1:name} = ${2:initial}",
+    "description": "Mutable binding (assign with <-)"
+  },
+  "Type alias": {
+    "prefix": "typea",
+    "body": "type ${1:Name} = ${2:ExistingType}",
+    "description": "Transparent type alias"
+  },
+  "Union type": {
+    "prefix": "typeu",
+    "body": [
+      "type ${1:Name} =",
+      "    | ${2:First}",
+      "    | ${3:Second} { ${4:field}: ${5:Type} }"
+    ],
+    "description": "Union (sum) type with constructors"
+  },
+  "Record type": {
+    "prefix": "typer",
+    "body": "type ${1:Name} = { ${2:field}: ${3:Type}, ${4:field2}: ${5:Type} } deriving (${6|Eq,ToText,Ord,Encode,Decode|})",
+    "description": "Record type with deriving"
+  },
+  "Opaque type": {
+    "prefix": "typeo",
+    "body": "pub opaque type ${1:Name} = { ${2:field}: ${3:Type} }",
+    "description": "Opaque type (representation hidden)"
+  },
+  "Import module": {
+    "prefix": "import",
+    "body": "import ${1:std.list} as ${2:List}",
+    "description": "Module import, qualified"
+  },
+  "Import selective": {
+    "prefix": "imports",
+    "body": "import ${1:std.test} (${2:ensure, assertEq})",
+    "description": "Selective import of names"
+  },
+  "Import qualified + selective": {
+    "prefix": "importq",
+    "body": "import ${1:std.net.http} as ${2:Http} (${3:get, post})",
+    "description": "Qualified import with selective names"
+  },
+  "if / then / else": {
+    "prefix": "if",
+    "body": [
+      "if ${1:cond} then ${2:value}",
+      "else ${3:value}"
+    ],
+    "description": "If expression (else-if chains with 'else if')"
+  },
+  "match expression": {
+    "prefix": "match",
+    "body": [
+      "match ${1:scrutinee}",
+      "    ${2:Pattern} -> ${3:result}",
+      "    ${4:_}       -> ${5:fallback}"
+    ],
+    "description": "Match expression with cases"
+  },
+  "match with guard": {
+    "prefix": "matchg",
+    "body": [
+      "match ${1:scrutinee}",
+      "    ${2:Pattern} when ${3:cond} -> ${4:result}",
+      "    ${5:_}                      -> ${6:fallback}"
+    ],
+    "description": "Match expression with a when guard"
+  },
+  "guard": {
+    "prefix": "guard",
+    "body": "guard ${1:cond} else return ${2:fallback}",
+    "description": "Guard clause (early return)"
+  },
+  "try block": {
+    "prefix": "try",
+    "body": [
+      "try",
+      "    let ${1:x} = ${2:fallible} ?",
+      "    ${0:Ok ()}"
+    ],
+    "description": "Try block with ? propagation"
+  },
+  "Record update (with)": {
+    "prefix": "with",
+    "body": "${1:record} with { ${2:field} = ${3:value} }",
+    "description": "Record update expression"
+  },
+  "Lambda": {
+    "prefix": "lam",
+    "body": "fn (${1:x}: ${2:Type}) -> ${0:body}",
+    "description": "Anonymous function"
+  },
+  "Class": {
+    "prefix": "class",
+    "body": [
+      "class ${1:Name} ${2:a} =",
+      "    ${3:method} (x: ${2:a}) -> ${4:Type}"
+    ],
+    "description": "Type class declaration"
+  },
+  "Instance": {
+    "prefix": "instance",
+    "body": [
+      "instance ${1:Name} ${2:Type} =",
+      "    ${3:method} (${4:x}: ${2:Type}) -> ${5:Type} = ${0:body}"
+    ],
+    "description": "Type class instance"
+  },
+  "Class with functional dependency": {
+    "prefix": "classfd",
+    "body": [
+      "class ${1:Name} ${2:q} ${3:p} | ${2:q} -> ${3:p} =",
+      "    ${4:method} (x: ${2:q}) -> ${5:Type}"
+    ],
+    "description": "Type class with a functional dependency"
+  },
+  "Constrained function (where)": {
+    "prefix": "fnw",
+    "body": [
+      "fn ${1:name} (${2:param}: ${3:a}) -> ${4:Type} where ${5:Class} ${3:a} =",
+      "    ${0:body}"
+    ],
+    "description": "Function with a class constraint (where clause)"
+  }
+}

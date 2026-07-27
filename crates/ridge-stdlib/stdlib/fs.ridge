@@ -1,45 +1,63 @@
 -- std.fs — File-system utilities (Tier 3, imports std.text, std.list, std.result).
 --
 -- All functions require the `fs` capability.
--- §3.11: error values are Text (typecheck baseline: Result T Text).
+-- Error values are the standard `Error` record (`{ code, message }`) — the
+-- code is the POSIX reason (`"enoent"`, `"eacces"`, …) and the message its
+-- human-readable form.
 -- No filesystem paths as literals in 0.1.0.
 
 -- Read the entire contents of a file as Text.
--- Returns Ok(contents) or Err(reason) on failure.
--- Bridges via ridge_rt:fs_read/1 so the Err side
--- returns Text (atom_to_binary'd) rather than a raw atom.
+-- Returns Ok(contents) or Err(error) on failure.
+-- Bridges via ridge_rt:fs_read/1 so the Err side is a structured Error
+-- record rather than a bare POSIX atom.
 @ffi("ridge_rt", "fs_read", 1)
-pub fn fs readFile (path: Text) -> Result Text Text
+pub fn fs readFile (path: Text) -> Result Text Error
 
 -- Write text content to a file, replacing its contents.
--- Returns Ok(()) or Err(reason) on failure.
+-- Returns Ok(()) or Err(error) on failure.
 -- Bridges via ridge_rt:fs_write/2 so the Ok side
 -- returns the Ridge Result shape `{ok, ok}` instead of the bare Erlang atom
 -- `ok` which crashed any `match ... with Ok _ | Err _` (`if_clause`).
 @ffi("ridge_rt", "fs_write", 2)
-pub fn fs writeFile (path: Text) (content: Text) -> Result Unit Text
+pub fn fs writeFile (path: Text) (content: Text) -> Result Unit Error
 
 -- Append text content to a file (creates the file if it does not exist).
--- Returns Ok(()) or Err(reason) on failure.
+-- Returns Ok(()) or Err(error) on failure.
 @ffi("ridge_rt", "fs_append", 2)
-pub fn fs append (path: Text) (content: Text) -> Result Unit Text
+pub fn fs append (path: Text) (content: Text) -> Result Unit Error
 
 -- Return true if the path refers to a regular file.
 @ffi("filelib", "is_file", 1)
 pub fn fs isFile (path: Text) -> Bool
 
 -- Read a file and split its contents into a list of lines.
--- Returns Ok(lines) or Err(reason) on failure.
+-- Returns Ok(lines) or Err(error) on failure.
 @ffi("ridge_rt", "fs_lines", 1)
-pub fn fs lines (path: Text) -> Result (List Text) Text
+pub fn fs lines (path: Text) -> Result (List Text) Error
 
 -- List the immediate entries (file and subdirectory names) of a directory.
--- Returns Ok(names) or Err(reason) on failure.  Names are bare basenames;
+-- Returns Ok(names) or Err(error) on failure.  Names are bare basenames;
 -- their order matches the underlying OS call and is not guaranteed to be
 -- sorted.  Callers that need a deterministic order should sort the result.
 @ffi("ridge_rt", "fs_read_dir", 1)
-pub fn fs readDir (path: Text) -> Result (List Text) Text
+pub fn fs readDir (path: Text) -> Result (List Text) Error
 
 -- Return true if the path refers to a directory.
 @ffi("filelib", "is_dir", 1)
 pub fn fs isDir (path: Text) -> Bool
+
+-- Create a directory (single level — the parent must exist).
+-- Returns Ok(()) or Err(error) on failure (`"eexist"` when it already
+-- exists).
+@ffi("ridge_rt", "fs_mkdir", 1)
+pub fn fs mkdir (path: Text) -> Result Unit Error
+
+-- Delete a regular file. Returns Ok(()) or Err(error) on failure
+-- (`"enoent"` when it does not exist).
+@ffi("ridge_rt", "fs_remove", 1)
+pub fn fs remove (path: Text) -> Result Unit Error
+
+-- Delete an empty directory (fails with `"enotempty"` otherwise).
+-- Returns Ok(()) or Err(error) on failure.
+@ffi("ridge_rt", "fs_remove_dir", 1)
+pub fn fs removeDir (path: Text) -> Result Unit Error

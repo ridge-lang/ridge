@@ -1149,6 +1149,24 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         arity: 1,
         requires_caps: &[Capability::Fs],
     },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "fs_mkdir",
+        arity: 1,
+        requires_caps: &[Capability::Fs],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "fs_remove",
+        arity: 1,
+        requires_caps: &[Capability::Fs],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "fs_remove_dir",
+        arity: 1,
+        requires_caps: &[Capability::Fs],
+    },
     // ── ridge_rt scalar parsing / formatting ──────────────────────────────────
     FfiAuditEntry {
         beam_module: "ridge_rt",

@@ -1853,7 +1853,7 @@ users |> List.map (.email) |> List.filter isValid |> List.take 10
 | Module | Capability | Purpose |
 |--------|-----------|---------|
 | `std.io` | `io` | `print`, `println`, `readLine`, `eprint` |
-| `std.fs` | `fs` | `readFile`, `writeFile`, `append`, `isFile`, `lines` |
+| `std.fs` | `fs` | `readFile`, `writeFile`, `append`, `isFile`, `isDir`, `lines`, `readDir`, `mkdir`, `remove`, `removeDir` — fallible operations return `Result _ Error` |
 | `std.time` | `time` | `now : fn time () -> Timestamp`, `epoch : Timestamp`, `fromIso : Text -> Result Timestamp Error`, `diff`, `diffMs`, `sinceMs`, `sleep`, `Duration`, `toIso` |
 | `std.random` | `random` | `int`, `float`, `alphanumeric`, `choice`, `seed` |
 | `std.env` | `env` | `get`, `set`, `all` |

@@ -85,7 +85,8 @@ fn io printHistogram (histogram: Map Int Int) -> Unit =
     pairs |> List.forEach (fn (h, c) ->
         Io.println (renderBar h c))
 
--- main now returns Result Unit Text; ? propagation flows naturally.
+-- main returns Result Unit Text; the fs Error channel is mapped to Text at
+-- the boundary (pure Ridge cannot construct an Error record today).
 fn env io fs main () -> Result Unit Text =
     let args = Cli.args ()
     guard (List.length args >= 2) else
@@ -96,17 +97,22 @@ fn env io fs main () -> Result Unit Text =
     let levelArg = args |> List.drop 1 |> List.head |> Option.withDefault "WARN"
     let threshold = parseLevel levelArg |> Option.withDefault Warn
 
-    -- Fs.lines returns Result (List Text) Text; ? propagates the Err upward.
-    let rawLines = Fs.lines path ?
-    let entries =
-        rawLines
- |> List.filterMap parseLine
- |> List.filter (meetsThreshold threshold)
+    -- Fs.lines returns Result (List Text) Error; the failure is reported and
+    -- mapped onto this program's own Text error channel.
+    match Fs.lines path
+        Err _ ->
+            Io.eprintln "cannot read log file"
+            Err "cannot read log file"
+        Ok rawLines ->
+            let entries =
+                rawLines
+         |> List.filterMap parseLine
+         |> List.filter (meetsThreshold threshold)
 
-    let histogram = buildHistogram entries
-    Io.println $"Log analysis -- threshold: ${levelArg}"
-    Io.println ""
-    match (List.length entries)
-        0 -> Io.println "No entries match the given threshold."
-        _ -> printHistogram histogram
-    Ok ()
+            let histogram = buildHistogram entries
+            Io.println $"Log analysis -- threshold: ${levelArg}"
+            Io.println ""
+            match (List.length entries)
+                0 -> Io.println "No entries match the given threshold."
+                _ -> printHistogram histogram
+            Ok ()

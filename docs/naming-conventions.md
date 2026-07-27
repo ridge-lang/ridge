@@ -90,6 +90,11 @@ shape differs — a `Map` callback receives both key and value.
 Every fallible operation returns `Result _ Error`, where `Error` is the standard
 `{ code, message }` record. No module returns a bare `Text` on the error side.
 
+Test assertions are the one exception: `std.test` fns return `Result Unit Text`,
+because an assertion failure is a message for the test runner, not an operational
+error a program recovers from — and pure Ridge cannot construct an `Error` record
+today.
+
 ## Modules and types
 
 - A type is not prefixed with its module's name — the module already qualifies it. Write

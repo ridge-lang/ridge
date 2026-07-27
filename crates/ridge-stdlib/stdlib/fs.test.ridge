@@ -3,17 +3,31 @@
 -- cross-module calls are unsupported (T17+ deferred).
 -- Several tests require both `fs` and `env` capabilities (dual-cap);
 -- capability syntax: `pub fn fs env test_name ()`.
-@ffi("file", "read_file", 1)
-fn _readFile (path: Text) -> Result Text Text
+-- The fs error channel is the standard `Error` record, so the failure
+-- handlers below match `Err _` — there is no Text reason to interpolate.
+@ffi("ridge_rt", "fs_read", 1)
+fn _readFile (path: Text) -> Result Text Error
 
 @ffi("ridge_rt", "fs_write", 2)
-fn _writeFile (path: Text) (content: Text) -> Result Unit Text
+fn _writeFile (path: Text) (content: Text) -> Result Unit Error
 
 @ffi("filelib", "is_file", 1)
 fn _isFile (path: Text) -> Bool
 
+@ffi("filelib", "is_dir", 1)
+fn _isDir (path: Text) -> Bool
+
 @ffi("ridge_rt", "fs_lines", 1)
-fn _fsLines (path: Text) -> Result (List Text) Text
+fn _fsLines (path: Text) -> Result (List Text) Error
+
+@ffi("ridge_rt", "fs_mkdir", 1)
+fn _mkdir (path: Text) -> Result Unit Error
+
+@ffi("ridge_rt", "fs_remove", 1)
+fn _remove (path: Text) -> Result Unit Error
+
+@ffi("ridge_rt", "fs_remove_dir", 1)
+fn _removeDir (path: Text) -> Result Unit Error
 
 @ffi("ridge_rt", "env_get", 1)
 fn _envGet (name: Text) -> Option Text
@@ -46,10 +60,10 @@ pub fn test_smoke_fs () -> Result Unit Text = Ok ()
 pub fn fs env test_writeFile_then_readFile_round_trip () -> Result Unit Text =
     let path = _tmpPath "write-read"
     match _writeFile path "hello"
-        Err e -> Err (_concat "writeFile failed: " e)
+        Err _ -> Err "writeFile failed"
         Ok _ ->
             match _readFile path
-                Err e -> Err (_concat "readFile failed: " e)
+                Err _ -> Err "readFile failed"
                 Ok content ->
                     if content == "hello" then Ok ()
                     else Err "readFile content should equal written content"
@@ -67,7 +81,7 @@ pub fn fs env test_readFile_missing_returns_err () -> Result Unit Text =
 pub fn fs env test_isFile_true_after_write () -> Result Unit Text =
     let path = _tmpPath "exists-check"
     match _writeFile path "x"
-        Err e -> Err (_concat "writeFile failed: " e)
+        Err _ -> Err "writeFile failed"
         Ok _ ->
             if _isFile path then Ok ()
             else Err "fs.isFile should be true after writeFile"
@@ -86,10 +100,39 @@ pub fn fs test_isFile_false_for_missing () -> Result Unit Text =
 pub fn fs env test_lines_splits_on_newline () -> Result Unit Text =
     let path = _tmpPath "lines-test"
     match _writeFile path "hello"
-        Err e -> Err (_concat "writeFile failed: " e)
+        Err _ -> Err "writeFile failed"
         Ok _ ->
             match _fsLines path
-                Err e -> Err (_concat "fs.lines failed: " e)
+                Err _ -> Err "fs.lines failed"
                 Ok ls ->
                     if _listLength ls == 1 then Ok ()
                     else Err "fs.lines of single-line file should return 1 element"
+
+-- fs.mkdir creates a directory, and fs.removeDir deletes it.
+@test "mkdir_then_isDir_then_removeDir"
+pub fn fs env test_mkdir_then_isDir_then_removeDir () -> Result Unit Text =
+    let path = _tmpPath "mkdir-check"
+    match _mkdir path
+        Err _ -> Err "mkdir failed"
+        Ok _ ->
+            if _isDir path then
+                match _removeDir path
+                    Err _ -> Err "removeDir failed"
+                    Ok _ ->
+                        if _isDir path then Err "dir should be gone after removeDir"
+                        else Ok ()
+            else Err "fs.isDir should be true after mkdir"
+
+-- fs.remove deletes a file; a second remove of the same path is Err.
+@test "remove_deletes_file_second_remove_is_err"
+pub fn fs env test_remove_deletes_file_second_remove_is_err () -> Result Unit Text =
+    let path = _tmpPath "remove-check"
+    match _writeFile path "x"
+        Err _ -> Err "writeFile failed"
+        Ok _ ->
+            match _remove path
+                Err _ -> Err "remove failed"
+                Ok _ ->
+                    match _remove path
+                        Err _ -> Ok ()
+                        Ok _ -> Err "second remove of a deleted file should be Err"

@@ -7,6 +7,7 @@
     println/1, print/1, eprintln/1,
     read_line/1,
     fs_lines/1, fs_read/1, fs_write/2, fs_append/2,
+    fs_mkdir/1, fs_remove/1, fs_remove_dir/1,
     fs_read_dir/1,
     cli_args/0, cli_args/1,
     time_now/0, time_now/1, time_epoch/0, time_epoch/1,
@@ -91,7 +92,7 @@ read_line(_Unit) ->
 fs_lines(Path) ->
     case file:read_file(Path) of
         {ok, Bin}  -> {ok, binary:split(Bin, <<"\n">>, [global])};
-        {error, R} -> {error, atom_to_binary(R, utf8)}
+        {error, R} -> fs_error(R)
     end.
 
 %% fs_read/1 — std.fs.readFile
@@ -99,7 +100,7 @@ fs_lines(Path) ->
 fs_read(Path) ->
     case file:read_file(Path) of
         {ok, Bin}  -> {ok, Bin};
-        {error, R} -> {error, atom_to_binary(R, utf8)}
+        {error, R} -> fs_error(R)
     end.
 
 %% fs_write/2 — std.fs.writeFile (truncating write)
@@ -107,7 +108,7 @@ fs_read(Path) ->
 fs_write(Path, Content) ->
     case file:write_file(Path, Content) of
         ok         -> {ok, ok};
-        {error, R} -> {error, atom_to_binary(R, utf8)}
+        {error, R} -> fs_error(R)
     end.
 
 %% fs_append/2 — std.fs.append
@@ -115,7 +116,7 @@ fs_write(Path, Content) ->
 fs_append(Path, Content) ->
     case file:write_file(Path, Content, [append]) of
         ok         -> {ok, ok};
-        {error, R} -> {error, atom_to_binary(R, utf8)}
+        {error, R} -> fs_error(R)
     end.
 
 %% fs_read_dir/1 — std.fs.readDir
@@ -130,8 +131,36 @@ fs_read_dir(Path) ->
         {ok, Names} ->
             BinNames = [list_to_binary(N) || N <- Names],
             {ok, BinNames};
-        {error, R} -> {error, atom_to_binary(R, utf8)}
+        {error, R} -> fs_error(R)
     end.
+
+%% fs_mkdir/1 — std.fs.mkdir. Creates a directory (single level).
+fs_mkdir(Path) ->
+    case file:make_dir(Path) of
+        ok         -> {ok, ok};
+        {error, R} -> fs_error(R)
+    end.
+
+%% fs_remove/1 — std.fs.remove. Deletes a regular file.
+fs_remove(Path) ->
+    case file:delete(Path) of
+        ok         -> {ok, ok};
+        {error, R} -> fs_error(R)
+    end.
+
+%% fs_remove_dir/1 — std.fs.removeDir. Deletes an empty directory.
+fs_remove_dir(Path) ->
+    case file:del_dir(Path) of
+        ok         -> {ok, ok};
+        {error, R} -> fs_error(R)
+    end.
+
+%% fs_error/1 — the fs error channel's wire shape: a structured
+%% `{error_record, Code, Message}` (the standard `Error` record), with the
+%% POSIX reason as the code and `file:format_error/1` as the message.
+fs_error(R) ->
+    {error, {error_record, atom_to_binary(R, utf8),
+             iolist_to_binary(file:format_error(R))}}.
 
 %% cli_args/0: returns CLI arguments as a list of binaries.
 %% In escript mode the escript_main/1 bridge stores the pre-processed argument list

@@ -55,6 +55,11 @@ const shouldIncrease = [
   "            (\"POST\", \"/shorten\") ->",
   "        lastRefill <-",
   "    try",
+  "    onDown (m: Monitor) (reason: ExitReason) =",
+  "    terminate (reason: ExitReason) =",
+  "    on increment =",
+  "        Ok n when n > 0 ->",
+  "    users |> Repo.query |>",
 ];
 
 // Lines that complete a statement and must not pull the next line in.
@@ -77,6 +82,10 @@ const shouldNotIncrease = [
   "    try {",
   "    let again = retry",
   "    let n = country",
+  "    let c = spawn Counter",
+  "    c ! increment",
+  "        |> Repo.toList",
+  "    let n = c ?> get",
 ];
 
 // The lone `else` of an if/then/else dedents to align with the `if`.

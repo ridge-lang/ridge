@@ -18,3 +18,27 @@
 -- before comparing.
 @ffi("crypto", "hash_equals", 2)
 pub fn constantTimeEq (a: Text) (b: Text) -> Bool
+
+-- The SHA-256 digest of a text (hashed over its UTF-8 bytes). Pure — the
+-- same input always hashes to the same digest. Render it with
+-- `Bytes.toHex` for the canonical lowercase-hex form.
+@ffi("ridge_rt", "crypto_sha256", 1)
+pub fn sha256 (data: Text) -> Bytes
+
+-- HMAC-SHA256 of a text under a key (both hashed over their UTF-8 bytes).
+-- The standard message-authentication construction for shared-secret
+-- signing; verify a tag with `constantTimeEq` (via `Bytes.toHex`), never
+-- `==`, when the comparison crosses a trust boundary.
+@ffi("ridge_rt", "crypto_hmac_sha256", 2)
+pub fn hmacSha256 (key: Text) (data: Text) -> Bytes
+
+-- Base64-encode raw bytes as text (RFC 4648, standard alphabet, with
+-- padding). The inverse of `base64Decode`.
+@ffi("ridge_rt", "base64_encode", 1)
+pub fn base64Encode (b: Bytes) -> Text
+
+-- Base64-decode text back to raw bytes. Returns `Err` when the input is
+-- not valid base64, so it is the gate for untrusted encoded input. The
+-- inverse of `base64Encode`.
+@ffi("ridge_rt", "base64_decode", 1)
+pub fn base64Decode (s: Text) -> Result Bytes Error

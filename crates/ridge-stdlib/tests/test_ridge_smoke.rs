@@ -1,7 +1,7 @@
 //! Track-B `.test.ridge` smoke test.
 //!
 //! Asserts that every `<module>.test.ridge` file under `crates/ridge-stdlib/stdlib/`
-//! exists (exactly 20 of them — one per stdlib module, per §10 file-count audit)
+//! exists (21 of them — one per stdlib module, per §10 file-count audit)
 //! and that each file **parses without errors**.
 //!
 //! Full execution (compile + run via BEAM child process) is the job of
@@ -30,9 +30,9 @@ use ridge_parser::parse_source;
 
 /// Expected number of `.test.ridge` files — one per stdlib module.
 ///
-/// 20 .test.ridge files (plan line 949) plus
-/// `std.actor` shipped with the bounded-mailbox cut.
-const EXPECTED_TEST_RG_COUNT: usize = 20;
+/// 20 .test.ridge files (19 top-level plus `net/http`), plus
+/// `std.crypto` shipped with the digest/base64 cut.
+const EXPECTED_TEST_RG_COUNT: usize = 21;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

@@ -426,6 +426,11 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
         &[
             // Constant-time comparison for secret-bearing values.
             "constantTimeEq",
+            // Digests and base64 (pure; runtime bridges in ridge_rt).
+            "sha256",
+            "hmacSha256",
+            "base64Encode",
+            "base64Decode",
         ],
     ),
     (

@@ -58,3 +58,20 @@ fn constant_time_eq_is_in_the_ffi_table() {
     assert_eq!(target.fn_name, "hash_equals");
     assert_eq!(target.arity, 2);
 }
+
+#[test]
+fn digests_and_base64_are_in_the_ffi_table() {
+    let cases = [
+        ("sha256", "crypto_sha256", 1),
+        ("hmacSha256", "crypto_hmac_sha256", 2),
+        ("base64Encode", "base64_encode", 1),
+        ("base64Decode", "base64_decode", 1),
+    ];
+    for (name, target_fn, arity) in cases {
+        let target = ffi_targets::lookup("std.crypto", name)
+            .unwrap_or_else(|| panic!("std.crypto::{name} must resolve in the ffi_targets table"));
+        assert_eq!(target.beam_module, "ridge_rt", "{name}");
+        assert_eq!(target.fn_name, target_fn, "{name}");
+        assert_eq!(target.arity, arity, "{name}");
+    }
+}

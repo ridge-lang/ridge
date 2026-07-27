@@ -20,6 +20,7 @@
     decimal_round/3, decimal_div/4,
     uuid_from_text/1, uuid_to_text/1, uuid_nil/1, uuid_gen/1, uuid_cmp/2,
     bytes_from_hex/1, bytes_to_hex/1, bytes_from_utf8/1, bytes_to_utf8/1,
+    crypto_sha256/1, crypto_hmac_sha256/2, base64_encode/1, base64_decode/1,
     bytes_empty/1, bytes_gen/1, bytes_length/1, bytes_concat/2, bytes_cmp/2,
     date_from_ymd/3, date_to_iso/1, date_from_iso/1,
     date_year/1, date_month/1, date_day/1, date_today/1, date_today_utc/1,
@@ -514,6 +515,26 @@ bytes_empty(_Unit) -> <<>>.
 %% yields the empty byte string.
 bytes_gen(N) when is_integer(N), N > 0 -> crypto:strong_rand_bytes(N);
 bytes_gen(_) -> <<>>.
+
+%% ── std.crypto digests + base64 ────────────────────────────────────────────
+
+%% crypto_sha256/1 — std.crypto.sha256. Text -> Bytes digest.
+crypto_sha256(Data) -> crypto:hash(sha256, Data).
+
+%% crypto_hmac_sha256/2 — std.crypto.hmacSha256. Text key, Text data -> Bytes tag.
+crypto_hmac_sha256(Key, Data) -> crypto:mac(hmac, sha256, Key, Data).
+
+%% base64_encode/1 — std.crypto.base64Encode. Bytes -> Text (RFC 4648, padded).
+base64_encode(Bytes) -> base64:encode(Bytes).
+
+%% base64_decode/1 — std.crypto.base64Decode. Text -> Result Bytes Error;
+%% base64:decode/1 raises on malformed input, so the failure is caught and
+%% reported on the error channel instead.
+base64_decode(S) ->
+    try {ok, base64:decode(S)}
+    catch _:_ ->
+        {error, {error_record, <<"crypto.base64">>, <<"invalid base64">>}}
+    end.
 
 %% --- Date ---
 %% A Date is a calendar day held as {date, EpochDays}, where EpochDays is the whole

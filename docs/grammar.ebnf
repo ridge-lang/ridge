@@ -541,7 +541,8 @@ ActorMember   ::= StateDecl
                |  InitDecl
                |  OnHandler
                |  TerminateDecl
-               |  OnDownDecl ;
+               |  OnDownDecl
+               |  MailboxDecl ;
 
 
 (* === 5.2  State declarations === *)
@@ -570,6 +571,14 @@ TerminateDecl ::= "terminate" [ CapList ] "(" [ ParamList ] ")" "=" Block ;
    allowed per actor body (semantic rule).  "onDown" is a contextual word
    (LOWER_IDENT), not a reserved keyword.                                   *)
 OnDownDecl    ::= "onDown" [ CapList ] "(" [ ParamList ] ")" "=" Block ;
+
+(* MailboxDecl declares the actor's mailbox configuration (see spec §3.9).
+   At most one MailboxDecl is allowed per actor body (semantic rule).      *)
+MailboxDecl   ::= "mailbox" MailboxConfig ;
+MailboxConfig ::= "unbounded"
+               |  "bounded" INT_LIT MailboxPolicy ;
+MailboxPolicy ::= "drop" ( "newest" | "oldest" )
+               |  "error" ;
 
 CapList       ::= { Capability } ;   (* zero or more capability names *)
 
@@ -1226,6 +1235,7 @@ ListConsPattern ::= PatternAtom "::" Pattern ;
                      ActorDecl ActorBody ActorMember
                      StateDecl InitDecl CapList ParamList Block
                      OnHandler HandlerName
+                     MailboxDecl MailboxConfig MailboxPolicy
                      ClassDecl ClassBody MethodSig FunDeps FunDep
                      SuperList ClassConstraint
                      InstanceDecl InstanceBody MethodDef

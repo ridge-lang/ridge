@@ -120,3 +120,16 @@ pub fn test_merge_overrides () -> Result Unit Text =
 pub fn test_update_inserts_when_absent () -> Result Unit Text =
     if _get "k" (_update "k" (fn _ -> 99) Map.empty) == Some 99 then Ok ()
     else Err "Map.update absent key should insert 99"
+
+
+@ffi("ridge_rt", "map_filter_map", 2)
+fn _filterMap (f: fn k v -> Option w) (m: Map k v) -> Map k w
+
+@test "filterMap keeps and rewrites Somes"
+pub fn test_filter_map () -> Result Unit Text =
+    let m = _fromList [("a", 1), ("b", 2)]
+    let r = _filterMap (fn k v -> if v > 1 then Some (v * 10) else None) m
+    let bVal = _get "b" r
+    let aVal = _get "a" r
+    if bVal == Some 20 && aVal == None then Ok ()
+    else Err "Map.filterMap should keep b*10 and drop a"

@@ -629,6 +629,10 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                 ty_fn_pure(vec![ty_list(b, Type::Var(A))], ty_list(b, Type::Var(A))),
             ))
         }
+        (STD_LIST, "sum") => {
+            // List Int -> Int
+            Some(mono(ty_fn_pure(vec![ty_list(b, ty_int(b))], ty_int(b))))
+        }
         (STD_LIST, "filterMap") => {
             // forall a b c. (fn c (a -> Option b)) -> List a -> List b
             Some(poly_cap(
@@ -995,6 +999,24 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(poly(
                 vec![A, B_VAR],
                 ty_fn_pure(vec![ty_map(b, Type::Var(A), Type::Var(B_VAR))], ty_int(b)),
+            ))
+        }
+        (STD_MAP, "filterMap") => {
+            // forall k v w c. (fn c (k -> v -> Option w)) -> Map k v -> Map k w
+            Some(poly_cap(
+                vec![A, B_VAR, C_VAR],
+                vec![CAP_C],
+                ty_fn_pure(
+                    vec![
+                        ty_fn_cap_var(
+                            vec![Type::Var(A), Type::Var(B_VAR)],
+                            ty_option(b, Type::Var(C_VAR)),
+                            CAP_C,
+                        ),
+                        ty_map(b, Type::Var(A), Type::Var(B_VAR)),
+                    ],
+                    ty_map(b, Type::Var(A), Type::Var(C_VAR)),
+                ),
             ))
         }
         (STD_MAP, "merge") => {

@@ -187,6 +187,10 @@ pub fn partition (p: fn a -> Bool) (xs: List a) -> (List a, List a) =
 pub fn unique (xs: List a) -> List a =
     reverse (fold (fn seen x -> if contains x seen then seen else x :: seen) [] xs)
 
+-- The total of a list of integers — `sum [1, 2, 3]` is `6`; `sum []` is `0`.
+pub fn sum (xs: List Int) -> Int =
+    fold (fn acc x -> acc + x) 0 xs
+
 -- Return true if any element satisfies the predicate.
 @ffi("lists", "any", 2)
 pub fn any (p: fn a -> Bool) (xs: List a) -> Bool

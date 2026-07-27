@@ -73,3 +73,8 @@ pub fn merge (a: Map k v) (b: Map k v) -> Map k v
 pub fn update (k: k) (f: fn (Option v) -> v) (m: Map k v) -> Map k v =
     let current = get k m
     insert k (f current) m
+
+-- Apply `f` to every entry, keeping each `Some` result under its key and
+-- dropping the `None`s — map and filter in one pass.
+@ffi("ridge_rt", "map_filter_map", 2)
+pub fn filterMap (f: fn k v -> Option w) (m: Map k v) -> Map k w

@@ -22,6 +22,7 @@
     uuid_from_text/1, uuid_to_text/1, uuid_nil/1, uuid_gen/1, uuid_cmp/2,
     bytes_from_hex/1, bytes_to_hex/1, bytes_from_utf8/1, bytes_to_utf8/1,
     crypto_sha256/1, crypto_hmac_sha256/2, base64_encode/1, base64_decode/1,
+    map_filter_map/2,
     bytes_empty/1, bytes_gen/1, bytes_length/1, bytes_concat/2, bytes_cmp/2,
     date_from_ymd/3, date_to_iso/1, date_from_iso/1,
     date_year/1, date_month/1, date_day/1, date_today/1, date_today_utc/1,
@@ -564,6 +565,17 @@ base64_decode(S) ->
     catch _:_ ->
         {error, {error_record, <<"crypto.base64">>, <<"invalid base64">>}}
     end.
+
+%% map_filter_map/2 — std.map.filterMap. maps:filtermap/2 expects
+%% `true | false | {true, NewV}` from its callback; a Ridge `fn k v -> Option w`
+%% answers `{some, W} | none`, so the wrapper adapts the shapes.
+map_filter_map(F, M) ->
+    maps:filtermap(fun(K, V) ->
+        case F(K, V) of
+            {some, W} -> {true, W};
+            none      -> false
+        end
+    end, M).
 
 %% --- Date ---
 %% A Date is a calendar day held as {date, EpochDays}, where EpochDays is the whole

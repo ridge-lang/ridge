@@ -359,6 +359,11 @@ group, and `having` narrows by an aggregate.
 users |> Repo.query |> Repo.sumOf (fn (u: User) -> u.age)
 ```
 
+Aggregates compose with paging: when a query has `limit`/`offset`, the
+aggregate folds only that ordered window — `orderBy Desc (...) |> limit 10
+|> sumOf (...)` sums the top 10 rows, not every matched row. Without a
+page, the filter (and join condition) alone narrows the folded rows.
+
 ### Joins
 
 `joinOn` is an inner join; `leftJoinOn` keeps every left row and reads the right

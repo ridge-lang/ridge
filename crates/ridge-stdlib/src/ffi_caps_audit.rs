@@ -1377,6 +1377,31 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         arity: 2,
         requires_caps: &[],
     },
+    // Pure digests and base64 — no capability, like `hash_equals`.
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "crypto_sha256",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "crypto_hmac_sha256",
+        arity: 2,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "base64_encode",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "base64_decode",
+        arity: 1,
+        requires_caps: &[],
+    },
 ];
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

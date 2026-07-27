@@ -1,0 +1,58 @@
+-- Private helpers replicating std.crypto declarations in local scope
+-- (cross-module calls unsupported here — the suite re-declares the bridges
+-- it exercises, per the .test.ridge convention).
+@ffi("ridge_rt", "crypto_sha256", 1)
+fn _sha256 (data: Text) -> Bytes
+
+@ffi("ridge_rt", "crypto_hmac_sha256", 2)
+fn _hmacSha256 (key: Text) (data: Text) -> Bytes
+
+@ffi("ridge_rt", "base64_encode", 1)
+fn _base64Encode (b: Bytes) -> Text
+
+@ffi("ridge_rt", "base64_decode", 1)
+fn _base64Decode (s: Text) -> Result Bytes Error
+
+@ffi("ridge_rt", "bytes_to_hex", 1)
+fn _toHex (b: Bytes) -> Text
+
+@ffi("ridge_rt", "bytes_from_utf8", 1)
+fn _fromUtf8 (s: Text) -> Bytes
+
+@ffi("ridge_rt", "bytes_to_utf8", 1)
+fn _toUtf8 (b: Bytes) -> Result Text Error
+
+@test "sha256 of abc matches the known digest"
+pub fn test_sha256_abc () -> Result Unit Text =
+    if _toHex (_sha256 "abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    then Ok ()
+    else Err "sha256(abc) hex mismatch"
+
+@test "hmac-sha256 matches the known vector"
+pub fn test_hmac_sha256 () -> Result Unit Text =
+    if _toHex (_hmacSha256 "key" "The quick brown fox jumps over the lazy dog") == "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"
+    then Ok ()
+    else Err "hmac-sha256 hex mismatch"
+
+@test "base64 encode of hello is aGVsbG8="
+pub fn test_base64_encode () -> Result Unit Text =
+    if _base64Encode (_fromUtf8 "hello") == "aGVsbG8="
+    then Ok ()
+    else Err "base64Encode(hello) mismatch"
+
+fn _check_hello (b: Bytes) -> Result Unit Text =
+    match _toUtf8 b
+        Ok s -> if s == "hello" then Ok () else Err "round-trip text mismatch"
+        Err _ -> Err "toUtf8 failed on decoded bytes"
+
+@test "base64 decode round-trips"
+pub fn test_base64_decode_roundtrip () -> Result Unit Text =
+    match _base64Decode "aGVsbG8="
+        Ok b -> _check_hello b
+        Err _ -> Err "base64Decode(aGVsbG8=) should succeed"
+
+@test "base64 decode of invalid input is Err"
+pub fn test_base64_decode_invalid () -> Result Unit Text =
+    match _base64Decode "!!invalid!!"
+        Ok _ -> Err "base64Decode should reject invalid input"
+        Err _ -> Ok ()

@@ -1949,6 +1949,22 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             vec![ty_text(b), ty_text(b)],
             ty_bool(b),
         ))),
+        // sha256: Text -> Bytes
+        (STD_CRYPTO, "sha256") => Some(mono(ty_fn_pure(vec![ty_text(b)], ty_bytes(b)))),
+        // hmacSha256: Text -> Text -> Bytes
+        (STD_CRYPTO, "hmacSha256") => Some(mono(ty_fn_pure(
+            vec![ty_text(b), ty_text(b)],
+            ty_bytes(b),
+        ))),
+        // base64Encode: Bytes -> Text
+        (STD_CRYPTO, "base64Encode") => {
+            Some(mono(ty_fn_pure(vec![ty_bytes(b)], ty_text(b))))
+        }
+        // base64Decode: Text -> Result Bytes Error
+        (STD_CRYPTO, "base64Decode") => Some(mono(ty_fn_pure(
+            vec![ty_text(b)],
+            ty_result(b, ty_bytes(b), ty_error(b)),
+        ))),
 
         // ── std.query ─────────────────────────────────────────────────────────
         // debugShow: ∀ f. Quote f -> Text — renders a captured tree.

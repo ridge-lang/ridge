@@ -2364,6 +2364,40 @@ fn beam_e2e_actor_send_dead_handle_returns_ok() {
     assert!(stdout.contains("send-dead-ok"), "got:\n{stdout}");
 }
 
+/// std.crypto digests and base64 round-trip end to end on the BEAM.
+const CRYPTO_DIGEST_SOURCE: &str = r#"
+import std.io    as Io
+import std.bytes as Bytes
+import std.crypto as Crypto
+
+fn io checkRoundTrip (b: Bytes) -> Unit =
+    match Bytes.toUtf8 b
+        Ok s -> Io.println s
+        Err _ -> Io.println "decode-failed"
+
+fn io main () -> Unit =
+    let digest = Crypto.sha256 "abc"
+    Io.println (Bytes.toHex digest)
+    match Crypto.base64Decode (Crypto.base64Encode (Bytes.fromUtf8 "hello"))
+        Ok b -> checkRoundTrip b
+        Err _ -> Io.println "b64-failed"
+"#;
+
+#[test]
+fn beam_e2e_crypto_sha256_and_base64_roundtrip() {
+    let (beam_dir, module, _td) =
+        compile_inline_actor_test("CryptoDigest", CRYPTO_DIGEST_SOURCE);
+    let (stdout, _stderr, exit_code) = run_erl_via_runner(&beam_dir, &module);
+    assert_eq!(exit_code, 0, "got:\n{stdout}");
+    assert!(
+        stdout.contains(
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        ),
+        "sha256 hex mismatch, got:\n{stdout}"
+    );
+    assert!(stdout.contains("hello"), "base64 round-trip failed:\n{stdout}");
+}
+
 /// Monitoring an already-dead handle fires an immediate `NotRunning` DOWN.
 const MONITOR_DEAD_SOURCE: &str = r#"
 import std.io    as Io

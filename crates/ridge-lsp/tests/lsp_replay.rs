@@ -2059,8 +2059,7 @@ async fn test_completion_member_access() {
 }
 
 #[tokio::test]
-async fn test_completion_stdlib_member_access() {
-    // `import std.list as L` plus a point-free reference to a builtin function so
+async fn test_completion_stdlib_member_access() {    // `import std.list as L` plus a point-free reference to a builtin function so
     // the workspace compiles and the retained index carries the `L.` line. The
     // member completion for a stdlib alias must offer that module's exports, the
     // way it already does for a workspace-module alias.
@@ -2080,6 +2079,92 @@ async fn test_completion_stdlib_member_access() {
     assert!(
         labels.iter().any(|l| l == "map"),
         "stdlib member access should offer `map`, got {labels:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_completion_pipeline_member_is_type_directed() {
+    // `xs |> List.` with `xs: List Int`: the member completion must offer
+    // std.list fns whose LAST parameter accepts a `List` (`length`, `map`)
+    // and NOT `range`, whose last parameter is an `Int` — the pipe feeds the
+    // last argument (spec §3.4).
+    let line1 = "pub fn run (xs: List Int) -> Int = xs |> List.length";
+    let (service, _socket, uri) = hover_fixture(concat!(
+        "import std.list as List\n",
+        "pub fn run (xs: List Int) -> Int = xs |> List.length\n"
+    ))
+    .await;
+    let server = service.inner();
+
+    let col = u32::try_from(line1.find("List.").expect("alias use") + 5).expect("offset fits u32");
+    let items = completion_items(
+        server
+            .completion(complete_at(&uri, 1, col))
+            .await
+            .expect("ok"),
+    );
+    let labels: Vec<String> = items.into_iter().map(|i| i.label).collect();
+    assert!(
+        labels.iter().any(|l| l == "List.length"),
+        "pipeline member should offer `List.length`, got {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|l| l == "List.map"),
+        "pipeline member should offer `List.map`, got {labels:?}"
+    );
+    assert!(
+        !labels.iter().any(|l| l == "List.range"),
+        "pipeline member must not offer `List.range` (last param Int), got {labels:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_completion_pipeline_bare_imports_are_type_directed() {
+    // `xs |> ` with bare `import std.list (length, range)`: offer the
+    // bare-imported fns that accept the piped `List Int` (`length`) and not
+    // `range` (last param Int).
+    let line1 = "pub fn run (xs: List Int) -> Int = xs |> length";
+    let (service, _socket, uri) = hover_fixture(concat!(
+        "import std.list (length, range)\n",
+        "pub fn run (xs: List Int) -> Int = xs |> length\n"
+    ))
+    .await;
+    let server = service.inner();
+
+    let col = u32::try_from(line1.find("|>").expect("pipe") + 3).expect("offset fits u32");
+    let items = completion_items(
+        server
+            .completion(complete_at(&uri, 1, col))
+            .await
+            .expect("ok"),
+    );
+    let labels: Vec<String> = items.into_iter().map(|i| i.label).collect();
+    assert!(
+        labels.iter().any(|l| l == "length"),
+        "pipeline should offer bare-imported `length`, got {labels:?}"
+    );
+    assert!(
+        !labels.iter().any(|l| l == "range"),
+        "pipeline must not offer `range` (last param Int), got {labels:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_completion_pipeline_in_comment_offers_nothing() {
+    // `-- xs |> ` is a comment: no completion at all.
+    let src = "import std.list (length)\npub fn run (xs: List Int) -> Int = xs |> length\n-- xs |> \n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    let items = completion_items(
+        server
+            .completion(complete_at(&uri, 2, 9))
+            .await
+            .expect("ok"),
+    );
+    assert!(
+        items.is_empty(),
+        "a commented-out pipeline must offer nothing, got {items:?}"
     );
 }
 

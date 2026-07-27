@@ -23,8 +23,9 @@ use ridge_resolve::{
     LocalId, LocalKind, ModuleId, NodeId, NodeIdMap, NodeKind, ProjectKind, ResolvedVisibility,
     ResolvedWorkspace, ScopeIndex, StdlibModuleId, SymbolKind, SymbolTable, BUILTINS,
 };
+use ridge_typecheck::stdlib_signatures::stdlib_signature;
 use ridge_typecheck::{render_type_with, CapDeclKind, TypeError, TypedWorkspace};
-use ridge_types::{CapabilitySet, TyConDecl, TyConKind, Type};
+use ridge_types::{BuiltinTyCons, CapabilitySet, TyConArena, TyConDecl, TyConId, TyConKind, Type};
 use tower_lsp::lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CodeLens, Command,
     CompletionItemKind, Diagnostic, DiagnosticSeverity, DocumentHighlight, DocumentHighlightKind,
@@ -5027,6 +5028,53 @@ impl WorkspaceIndex {
         let mut out: Vec<CompletionItemData> = Vec::new();
         match detect_context(src, offset) {
             Context::None => {}
+            Context::PipelineMember { alias, prefix } => {
+                // `x |> Alias.partial` — the alias's stdlib exports whose LAST
+                // parameter accepts the piped value (pipe feeds the last
+                // argument, spec §3.4). Not an alias at all, or a workspace
+                // module (no schemes in the index), degrades to the ordinary
+                // member completion.
+                let mut handled = false;
+                if let Some(sid) = stdlib_alias_target(&m.imports, &alias) {
+                    handled = true;
+                    out.extend(self.pipeline_completions(
+                        mi,
+                        src,
+                        byte,
+                        &prefix,
+                        Some((&alias, sid)),
+                    ));
+                }
+                if !handled {
+                    if let Some(target) = alias_target(&m.imports, &alias) {
+                        let target_uri = self
+                            .module_uris
+                            .get(target.0 as usize)
+                            .and_then(Option::as_ref);
+                        if let Some(tm) = self.modules.get(target.0 as usize) {
+                            for e in &tm.symbols.entries {
+                                if e.visibility == ResolvedVisibility::Pub
+                                    && e.name.starts_with(&prefix)
+                                {
+                                    out.push(symbol_item(
+                                        e.name.clone(),
+                                        symbol_kind(&e.kind),
+                                        '0',
+                                        target_uri,
+                                    ));
+                                }
+                            }
+                        }
+                    } else {
+                        out.extend(self.record_field_completions(mi, byte, &prefix));
+                    }
+                }
+            }
+            Context::Pipeline { prefix } => {
+                // `x |> partial` — bare-imported stdlib fns whose last
+                // parameter accepts the piped value.
+                out.extend(self.pipeline_completions(mi, src, byte, &prefix, None));
+            }
             Context::Member { alias, prefix } => {
                 if let Some(target) = alias_target(&m.imports, &alias) {
                     let target_uri = self
@@ -5149,6 +5197,134 @@ impl WorkspaceIndex {
             .filter(|name| name.starts_with(prefix))
             .map(|name| item(name, CompletionItemKind::FIELD, '0'))
             .collect()
+    }
+
+    /// Type-directed completions for a pipeline: fns whose LAST parameter's
+    /// head constructor matches the piped value's type head — the pipe feeds
+    /// the last argument (spec §3.4). `alias` scopes the offers to one
+    /// stdlib alias's exports (qualified `Alias.name` labels, from
+    /// `Context::PipelineMember`); `None` offers bare-imported stdlib fns by
+    /// their local names (`Context::Pipeline`). Pragmatic matching: head
+    /// constructor equality — no unification, no class-constraint solving,
+    /// so class-method verbs and fns whose last parameter is a type variable
+    /// are simply not offered.
+    fn pipeline_completions(
+        &self,
+        mi: usize,
+        src: &str,
+        byte: u32,
+        prefix: &str,
+        alias: Option<(&str, StdlibModuleId)>,
+    ) -> Vec<CompletionItemData> {
+        let Some(value_ty) = self.piped_value_type(mi, src, byte, prefix, alias.map(|(a, _)| a))
+        else {
+            return Vec::new();
+        };
+        let Some(head) = type_head_id(&value_ty) else {
+            return Vec::new();
+        };
+        let Some(m) = self.modules.get(mi) else {
+            return Vec::new();
+        };
+        let mut arena = TyConArena::new();
+        let b = BuiltinTyCons::allocate(&mut arena);
+        let mut out = Vec::new();
+        for imp in &m.imports {
+            let ImportTarget::BuiltinStdlib(sid) = imp.target else {
+                continue;
+            };
+            let labels: Vec<String> = match &alias {
+                Some((want, want_sid)) => {
+                    if sid != *want_sid || imp.alias.as_deref() != Some(want) {
+                        continue;
+                    }
+                    stdlib_exports(sid)
+                        .iter()
+                        .map(|n| format!("{want}.{n}"))
+                        .collect()
+                }
+                None => {
+                    // Bare selective imports only (`import std.m (a, b)`,
+                    // no `as`): those are the names pipeline position can
+                    // complete unqualified.
+                    if imp.alias.is_some() {
+                        continue;
+                    }
+                    match &imp.explicit_items {
+                        Some(items) => items.iter().map(|it| it.name.clone()).collect(),
+                        None => continue,
+                    }
+                }
+            };
+            for label in labels {
+                let bare = label.rsplit('.').next().unwrap_or(&label);
+                if !bare.starts_with(prefix) {
+                    continue;
+                }
+                let Some(scheme) = stdlib_signature(sid, bare, &b) else {
+                    continue;
+                };
+                let Type::Fn { params, .. } = &scheme.ty else {
+                    continue;
+                };
+                let Some(last) = params.last() else {
+                    continue;
+                };
+                if type_head_id(last) == Some(head) {
+                    out.push(item(label, CompletionItemKind::FUNCTION, '0'));
+                }
+            }
+        }
+        out
+    }
+
+    /// The type of the value left of a `|>` at the cursor, resolved through
+    /// the spatial index and the module's node types — the same machinery
+    /// `record_field_completions` uses for `value.`.
+    fn piped_value_type(
+        &self,
+        mi: usize,
+        src: &str,
+        byte: u32,
+        prefix: &str,
+        member_alias: Option<&str>,
+    ) -> Option<Type> {
+        let before = src.get(..(byte as usize).checked_sub(prefix.len())?)?;
+        let mut t = before.trim_end();
+        if let Some(alias) = member_alias {
+            t = t.strip_suffix('.')?;
+            t = t.get(..t.len() - alias.len())?.trim_end();
+        }
+        t = t.strip_suffix("|>")?;
+        // The value's LAST byte (inside its span — one past the end lands on
+        // the enclosing pipeline node and reads the pipeline's own type).
+        let value_byte = u32::try_from(t.trim_end().len())
+            .ok()?
+            .checked_sub(1)?;
+        let (tnode, _, _) = self.spatial.get(mi)?.narrowest_containing(
+            value_byte,
+            &[
+                NodeKind::Expr,
+                NodeKind::Block,
+                NodeKind::Try,
+                NodeKind::Type,
+            ],
+        )?;
+        self.modules
+            .get(mi)?
+            .node_types
+            .get(tnode.0 as usize)?
+            .clone()
+    }
+}
+
+/// The head constructor of a type, for pipeline candidate matching. Only
+/// nominal constructors qualify — a type-variable, function, or anonymous
+/// head means "no type-directed offer".
+fn type_head_id(ty: &Type) -> Option<TyConId> {
+    match ty {
+        Type::Con(id, _) => Some(*id),
+        _ => None,
     }
 }
 

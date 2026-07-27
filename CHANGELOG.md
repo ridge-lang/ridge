@@ -77,6 +77,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The type checker validates the `terminate` and `onDown` signatures: `terminate` takes at most one parameter of type `ExitReason`, and `onDown` takes exactly a `Monitor` and an `ExitReason` in that order — a violation is a `T048` at check time, where a wrong `terminate` arity previously surfaced as a late codegen error and a wrong parameter type was never diagnosed at all.
 - The result-returning send: `Actor.send handle message` takes the same handler-label message as `!` (checked against the target actor's handlers, `T015`/`T003` as usual) but answers `Result Unit SendError` — a full bounded `error`-policy mailbox yields `Err MailboxFull` instead of raising an exit signal in the caller, so backpressure is recoverable. A full drop-policy mailbox and a dead target answer `Ok ()`, exactly as with `!`. Cap-free; `SendError = MailboxFull` is a new `std.actor` union. This ships the surface deferred in 0.2.7 in the form that fits today's message model — handler labels, not first-class message values. See spec §7.2.1.
 - `std.crypto` gains digests and base64: `sha256` and `hmacSha256` (pure — the same input always hashes the same; render with `Bytes.toHex`), and `base64Encode`/`base64Decode` (RFC 4648; decode returns `Result Bytes Error`, so malformed input is an `Err`, not a crash).
+- `List.sum` totals a `List Int`, and `Map.filterMap` maps and filters a map in one pass — `Map.filterMap (fn k v -> …) m` keeps each `Some` under its key and drops the `None`s.
 
 ### Changed
 

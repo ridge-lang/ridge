@@ -212,13 +212,14 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "range",
             "rangeExclusive",
             "forEach",
+            "sum",
         ],
     ),
     (
         "std.map",
         &[
             "empty", "fromList", "toList", "insert", "remove", "get", "contains", "keys", "values",
-            "map", "filter", "length", "merge", "update",
+            "map", "filter", "length", "merge", "update", "filterMap",
         ],
     ),
     (

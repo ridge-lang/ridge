@@ -1420,6 +1420,13 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         arity: 1,
         requires_caps: &[],
     },
+    // Pure Map.filterMap adapter (Option <-> filtermap shapes) — no capability.
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "map_filter_map",
+        arity: 2,
+        requires_caps: &[],
+    },
 ];
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

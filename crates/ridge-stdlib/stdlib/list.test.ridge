@@ -231,3 +231,17 @@ pub fn test_range_inclusive () -> Result Unit Text =
         if _head r == Some 1 then Ok ()
         else Err "List.range 1 5 head should be 1"
     else Err "List.range 1 5 should have length 5"
+
+
+fn _sum (xs: List Int) -> Int =
+    _fold (fn acc -> fn x -> acc + x) 0 xs
+
+@test "sum_of_1_to_5_is_15"
+pub fn test_sum () -> Result Unit Text =
+    if _sum [1, 2, 3, 4, 5] == 15 then Ok ()
+    else Err "List.sum [1..5] should be 15"
+
+@test "sum_empty_is_0"
+pub fn test_sum_empty () -> Result Unit Text =
+    if _sum [] == 0 then Ok ()
+    else Err "List.sum [] should be 0"

@@ -588,7 +588,8 @@ pub fn infer_actor_send(
 
     let Ok((actor_id, actor_schema)) = resolve_actor_type(ctx, arena, &handle_ty) else {
         let found_ty = format!("{handle_ty:?}");
-        ctx.errors.push(TypeError::SendOnNonActor { found_ty, span });
+        ctx.errors
+            .push(TypeError::SendOnNonActor { found_ty, span });
         return Type::Error;
     };
 

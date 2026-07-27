@@ -74,18 +74,9 @@ for (const repo of Object.values(grammar.repository ?? {})) {
     }
   }
 }
-// Reserved but unimplemented, or covered by later snippet additions.
-const noSnippetNeeded = new Set([
-  "catch",
-  "in",
-  "on",
-  "state",
-  "init",
-  "actor",
-  "child",
-  "onDown",
-  "terminate",
-]);
+// Reserved but unimplemented (`catch` has no production; `in` is
+// statement-level) — everything else must be covered by a snippet body.
+const noSnippetNeeded = new Set(["catch", "in"]);
 const allBodies = Object.values(snippets)
   .flatMap((s) => (Array.isArray(s.body) ? s.body : [s.body]))
   .join("\n");

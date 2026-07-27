@@ -158,5 +158,131 @@
       "    ${0:body}"
     ],
     "description": "Function with a class constraint (where clause)"
+  },
+  "Actor skeleton": {
+    "prefix": "actor",
+    "body": [
+      "actor ${1:Counter} =",
+      "    state ${2:count}: ${3:Int} = ${4:0}",
+      "",
+      "    init (${5:initial}: ${3:Int}) =",
+      "        ${2:count} <- ${5:initial}",
+      "",
+      "    on ${6:increment} =",
+      "        ${2:count} <- ${2:count} + 1"
+    ],
+    "description": "Actor with state, init, and a message handler"
+  },
+  "Message handler (on)": {
+    "prefix": "on",
+    "body": [
+      "on ${1:message} (${2:param}: ${3:Type}) =",
+      "    ${0:body}"
+    ],
+    "description": "Fire-and-forget message handler"
+  },
+  "Ask handler (on with reply)": {
+    "prefix": "onr",
+    "body": [
+      "on ${1:get} -> ${2:Int} =",
+      "    ${0:state}"
+    ],
+    "description": "Message handler that replies (ask with ?>)"
+  },
+  "terminate callback": {
+    "prefix": "terminate",
+    "body": [
+      "terminate (${1:reason}: ExitReason) =",
+      "    ${0:()}"
+    ],
+    "description": "Actor terminate callback"
+  },
+  "onDown monitor callback": {
+    "prefix": "ondown",
+    "body": [
+      "onDown (${1:m}: Monitor) (${2:reason}: ExitReason) =",
+      "    ${0:()}"
+    ],
+    "description": "Monitor DOWN callback"
+  },
+  "spawn + send": {
+    "prefix": "spawn",
+    "body": [
+      "let ${1:c} = spawn ${2:Actor} ${3:args}",
+      "${1:c} ! ${4:message}"
+    ],
+    "description": "Spawn an actor and send a message (ask with ?>)"
+  },
+  "Supervisor with children": {
+    "prefix": "supervise",
+    "body": "let ${1:sup} = Actor.supervise ${2:OneForOne} ${3:3} ${4:5000} [child ${5:Counter} (${6:0})]?",
+    "description": "Supervisor with a child spec"
+  },
+  "@test": {
+    "prefix": "test",
+    "body": [
+      "@test \"${1:description}\"",
+      "fn ${2:name} () -> Result Unit Text =",
+      "    ${0:Ok ()}"
+    ],
+    "description": "Unit test"
+  },
+  "@test with assertions": {
+    "prefix": "testa",
+    "body": [
+      "@test \"${1:description}\"",
+      "fn ${2:name} () -> Result Unit Text =",
+      "    ensure (${3:cond}) \"${4:message}\" ?",
+      "    assertEq (${5:actual}) (${6:expected}) \"${7:label}\" ?",
+      "    Ok ()"
+    ],
+    "description": "Unit test with ensure/assertEq (import std.test)"
+  },
+  "List.map": {
+    "prefix": "lmap",
+    "body": "List.map (fn (${1:x}: ${2:a}) -> ${3:body}) ${4:xs}",
+    "description": "Map over a list"
+  },
+  "List.fold": {
+    "prefix": "lfold",
+    "body": "List.fold (fn (${1:acc}: ${2:b}) (${3:x}: ${4:a}) -> ${5:body}) ${6:init} ${7:xs}",
+    "description": "Fold a list"
+  },
+  "List.forEach": {
+    "prefix": "foreach",
+    "body": "${1:xs} |> List.forEach (fn ${2:x} -> ${0:body})",
+    "description": "Iterate a list for effects"
+  },
+  "Option.withDefault": {
+    "prefix": "optdef",
+    "body": "Option.withDefault ${1:default} ${2:option}",
+    "description": "Unwrap an Option with a default"
+  },
+  "Result.mapErr": {
+    "prefix": "maperr",
+    "body": "Result.mapErr (fn (${1:e}: ${2:e2}) -> ${3:body}) ${4:result}",
+    "description": "Map the error channel of a Result"
+  },
+  "Repo query pipeline": {
+    "prefix": "repoquery",
+    "body": [
+      "${1:users}",
+      "    |> Repo.query",
+      "    |> Repo.filter (fn (${2:u}: ${3:User}) -> ${4:cond})",
+      "    |> Repo.orderBy ${5|Asc,Desc|} (fn (${2:u}: ${3:User}) -> ${6:key})",
+      "    |> Repo.limit ${7:20}",
+      "    |> Repo.toList"
+    ],
+    "description": "Repository query pipeline (filter/order/page/fetch)"
+  },
+  "Repo.insert": {
+    "prefix": "repoinsert",
+    "body": "${1:users} |> Repo.insert (${2:User} { ${3:id} = ${4:1} })",
+    "description": "Insert a typed entity"
+  },
+  "Repo.setWhere": {
+    "prefix": "reposetwhere",
+    "body": "${1:users} |> Repo.setWhere [Repo.set (fn (${2:u}: ${3:User}) -> ${4:column}) ${5:value}] (fn (${2:u}: ${3:User}) -> ${6:cond})",
+    "description": "Partial typed update with predicate"
   }
 }

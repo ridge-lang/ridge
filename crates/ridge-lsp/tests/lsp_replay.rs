@@ -2059,7 +2059,8 @@ async fn test_completion_member_access() {
 }
 
 #[tokio::test]
-async fn test_completion_stdlib_member_access() {    // `import std.list as L` plus a point-free reference to a builtin function so
+async fn test_completion_stdlib_member_access() {
+    // `import std.list as L` plus a point-free reference to a builtin function so
     // the workspace compiles and the retained index carries the `L.` line. The
     // member completion for a stdlib alias must offer that module's exports, the
     // way it already does for a workspace-module alias.
@@ -2152,7 +2153,8 @@ async fn test_completion_pipeline_bare_imports_are_type_directed() {
 #[tokio::test]
 async fn test_completion_pipeline_in_comment_offers_nothing() {
     // `-- xs |> ` is a comment: no completion at all.
-    let src = "import std.list (length)\npub fn run (xs: List Int) -> Int = xs |> length\n-- xs |> \n";
+    let src =
+        "import std.list (length)\npub fn run (xs: List Int) -> Int = xs |> length\n-- xs |> \n";
     let (service, _socket, uri) = hover_fixture(src).await;
     let server = service.inner();
 

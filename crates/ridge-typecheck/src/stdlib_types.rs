@@ -2212,6 +2212,27 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: false,
             is_anon: false,
         },
+        // `std.actor` — why an `Actor.send` failed: the target's bounded
+        // `error`-policy mailbox was full. A single-variant union so the
+        // channel can grow without breaking callers. Lowers to
+        // `'MailboxFull'`; the runtime answers `{error, 'MailboxFull'}` from
+        // `send_fn/2`. Appended last so it disturbs no earlier reconciled id.
+        TyConDecl {
+            id: TyConId(base + 42),
+            name: "SendError".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![UnionVariant {
+                    name: "MailboxFull".to_string(),
+                    kind: VariantPayload::Nullary,
+                }],
+            }),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
     ]
 }
 

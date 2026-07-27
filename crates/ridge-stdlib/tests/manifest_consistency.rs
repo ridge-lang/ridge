@@ -212,6 +212,8 @@ const CONSTRUCTOR_EXPORTS: &[(&str, &str)] = &[
     ("std.actor", "NotRunning"),
     ("std.actor", "Shutdown"),
     ("std.actor", "Crashed"),
+    // The `SendError` variant: same surfacing rule as `ExitReason`'s.
+    ("std.actor", "MailboxFull"),
 ];
 
 /// Compiler-known exports: names the manifest must carry so imports
@@ -223,6 +225,10 @@ const COMPILER_KNOWN_EXPORTS: &[(&str, &str)] = &[
     // type the message against the actor's handlers, so no body exists in
     // actor.ridge.
     ("std.actor", "tryAsk"),
+    // `std.actor.send` is typed like `!` by the type checker and lowered to
+    // `ridge_rt:send_fn/2` by codegen — same compiler-known treatment as
+    // `tryAsk`, for the same reason.
+    ("std.actor", "send"),
 ];
 
 /// Return `true` if `(module, sym)` is a known exported union constructor that is

@@ -1432,6 +1432,15 @@ member with a capacity `N` and an explicit overflow policy.
 | `drop newest` | Silently drop the incoming message. `!` returns `Unit` as always. |
 | `error` | Raise an exit signal in the sender (`{mailbox_full, Pid}` on BEAM). Let-it-crash: the sender is the one that dies, and it dies alone. |
 
+**Recoverable overflow: `Actor.send`.** The result-returning send,
+`Actor.send handle message`, takes the same handler-label message as `!`
+but answers `Result Unit SendError` instead of being fire-and-forget: a
+full bounded `error`-policy mailbox yields `Err MailboxFull` instead of
+raising in the caller, so backpressure can be handled without an exit
+signal. A full drop-policy mailbox and a dead target answer `Ok ()` — the
+message is silently dropped, exactly as with `!`. The call is cap-free:
+the handle is the proof of access.
+
 Choosing between the two is a value judgement, not a structural one:
 `drop newest` favours the actor's liveness over delivery guarantees;
 `error` favours backpressure visibility over fire-and-forget ergonomics.

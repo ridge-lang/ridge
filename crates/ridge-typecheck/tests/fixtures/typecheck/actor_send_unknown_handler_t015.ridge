@@ -1,0 +1,15 @@
+-- expect: T015
+-- The message of an `Actor.send` is a handler-name label checked against
+-- the target actor's `on` handlers at type-check time — a name the actor
+-- does not declare is an UnknownActorHandler, exactly like `!`.
+import std.actor as Actor
+
+actor Counter =
+    state count: Int = 0
+    on increment =
+        count <- count + 1
+
+fn spawn main () -> Unit =
+    let c = spawn Counter
+    let _ = Actor.send c decremnt
+    ()

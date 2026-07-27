@@ -514,6 +514,147 @@ pub fn infer_tryask(
     Type::Con(b.result, vec![ret_ty, Type::Con(ask_error_id, vec![])])
 }
 
+// ── Actor.send ──────────────────────────────────────────────────────────────────
+
+/// `true` when `callee` names the compiler-known `std.actor.send`.
+///
+/// Detection is via `ctx.actorsend_names`, populated by
+/// [`crate::stdlib_env::seed_stdlib_env`]. Covers both the bare import form
+/// (`send …`) and the alias-qualified form (`Actor.send …`).
+#[must_use]
+pub fn is_actor_send_callee(ctx: &InferCtx, callee: &Expr) -> bool {
+    let name = match callee {
+        Expr::Ident(id) => &id.text,
+        Expr::Qualified(q) => {
+            // Cheap pre-check: the last segment must be `send` before the
+            // joined name is allocated.
+            if !matches!(q.segments.last(), Some(s) if s.text == "send") {
+                return false;
+            }
+            return ctx.actorsend_names.contains(&qualified_name_string(q));
+        }
+        _ => return false,
+    };
+    ctx.actorsend_names.contains(name)
+}
+
+/// Type-infer a call to the compiler-known `std.actor.send`.
+///
+/// `send handle message` is typed like the `!` operator — the message is
+/// checked against the handle's `on` handlers (T015 on a miss, T003/T001 on
+/// payload mismatch) — but the overall expression type is
+/// `Result Unit SendError`: the runtime (`ridge_rt:send_fn/2`) answers
+/// `{error, 'MailboxFull'}` when a bounded `error`-policy mailbox is full
+/// instead of raising in the caller like `!`.
+///
+/// Precondition: [`is_actor_send_callee`] returned `true` for `callee`. The
+/// callee itself is inferred only for the node-types side table (its scheme
+/// is the stdlib-seeded fallback); the call typing below replaces it.
+pub fn infer_actor_send(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    callee: &Expr,
+    args: &[Expr],
+    span: Span,
+    arena: &ridge_types::TyConArena,
+) -> Type {
+    // Populate the callee's entry in the node-types side table; the result is
+    // deliberately discarded — this function owns the call's typing.
+    let _ = infer_expr(ctx, b, callee);
+
+    // send takes exactly two arguments (handle + message).
+    if args.len() != 2 {
+        ctx.errors.push(TypeError::ArityMismatch {
+            callee: "std.actor.send".to_string(),
+            expected: 2,
+            found: args.len(),
+            span,
+            hint: None,
+        });
+        return Type::Error;
+    }
+    let handle = &args[0];
+    // The message is routinely parenthesised (`send h (increment 3)`).
+    let message = crate::infer::peel_parens(&args[1]);
+
+    // Steps 1-2 of `infer_send`: infer the handle, require a concrete actor.
+    let handle_ty = infer_expr(ctx, b, handle);
+
+    // Absorb: free type variable handle — return a fresh var silently
+    // (mirrors `infer_send`; T020 fires only for concrete non-actor types).
+    if matches!(ctx.deep_resolve(&handle_ty), Type::Var(_) | Type::Error) {
+        return Type::Var(ctx.fresh_tyvid());
+    }
+
+    let Ok((actor_id, actor_schema)) = resolve_actor_type(ctx, arena, &handle_ty) else {
+        let found_ty = format!("{handle_ty:?}");
+        ctx.errors.push(TypeError::SendOnNonActor { found_ty, span });
+        return Type::Error;
+    };
+
+    // Step 3 — the message is a handler label with optional payload, in the
+    // same shapes as `!` (bare Ident or Call-over-Ident).
+    let Some((handler_name, msg_args)) = extract_handler_call(message) else {
+        return emit_internal(
+            ctx,
+            "Actor.send message is neither Ident nor Call — parser invariant violation",
+            span,
+        );
+    };
+
+    let Some(handler) = actor_schema
+        .handlers
+        .iter()
+        .find(|h| h.name == handler_name)
+    else {
+        let suggestions = ridge_resolve::suggest::suggest(
+            &handler_name,
+            actor_schema.handlers.iter().map(|h| h.name.clone()),
+        );
+        let actor_name = arena.get(actor_id).name.clone();
+        ctx.errors.push(TypeError::UnknownActorHandler {
+            actor: actor_name,
+            handler: handler_name,
+            suggestions,
+            span,
+        });
+        return Type::Error;
+    };
+
+    let actor_name = arena.get(actor_id).name.clone();
+
+    // Step 4 — payload args check (T003 arity / T001 payload), as in `!`.
+    check_handler_args(
+        ctx,
+        b,
+        &actor_name,
+        &handler.name,
+        &handler.params,
+        msg_args,
+        span,
+    );
+
+    // Step 5 — `Result Unit SendError`. SendError is the `std.actor` union,
+    // interned into the reconciled stdlib block before module inference.
+    let Some(send_error_id) = ctx
+        .tycon_decls
+        .iter()
+        .find(|d| d.name == "SendError" && matches!(&d.kind, TyConKind::Union(_)))
+        .map(|d| d.id)
+    else {
+        return emit_internal(
+            ctx,
+            "Actor.send: 'SendError' union not found in arena — stdlib reconciliation \
+             should have registered it",
+            span,
+        );
+    };
+    Type::Con(
+        b.result,
+        vec![Type::Con(b.unit, vec![]), Type::Con(send_error_id, vec![])],
+    )
+}
+
 // ── Actor encapsulation check ─────────────────────────────────────────────────
 
 /// Per §4.15 rule 2: the actor's declared cap set must equal the union of its

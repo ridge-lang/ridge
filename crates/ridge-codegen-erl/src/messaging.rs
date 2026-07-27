@@ -287,6 +287,31 @@ pub(crate) fn lower_try_ask(
     })
 }
 
+// ── Actor.send ──────────────────────────────────────────────────────────────────
+
+/// Lower `IrExpr::ActorSend` to
+/// `call 'ridge_rt':'send_fn' (Handle, {Tag, A1, ..., AN})`.
+///
+/// `ridge_rt:send_fn/2` answers `{ok, ok} | {error, 'MailboxFull'}` —
+/// Ridge's `Result Unit SendError` representation — instead of raising in
+/// the caller like `send_op/2` does on a full `error`-policy mailbox.
+pub(crate) fn lower_actor_send(
+    handle: &IrExpr,
+    message: &SymbolRef,
+    args: &[IrExpr],
+    span: Span,
+    scope: &mut LocalScope,
+) -> Result<CErlExpr, CodegenError> {
+    let handle_expr = lower_expr_in_scope(handle, scope)?;
+    let msg_tuple = build_message_tuple(message, args, span, scope)?;
+
+    Ok(CErlExpr::Call {
+        module: CErlAtom("ridge_rt".into()),
+        fn_name: CErlAtom("send_fn".into()),
+        args: vec![handle_expr, msg_tuple],
+    })
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Resolve the actor's BEAM module atom from an `ActorType` [`SymbolRef`].

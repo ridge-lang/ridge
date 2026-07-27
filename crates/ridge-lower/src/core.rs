@@ -549,6 +549,13 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
                 return lower_tryask_call(ctx, args, id, *span);
             }
 
+            // The compiler-known `std.actor.send` lowers to
+            // `IrExpr::ActorSend` — same handler-label message shape as
+            // `tryAsk`, without the timeout.
+            if ast_callee_is_std_actor_send(ctx, callee) && args.len() == 2 {
+                return lower_actor_send_call(ctx, args, id, *span);
+            }
+
             // Look up callee type before lowering, while we still have the AST.
             let callee_node_type = lookup_callee_type(ctx, callee);
             let ir_callee = lower_expr(ctx, callee);
@@ -3683,6 +3690,72 @@ fn lower_tryask_call(
         },
         args: payload,
         timeout: Some(ridge_ir::IrTimeout::Millis(Box::new(timeout))),
+        span,
+    }
+}
+
+/// `true` when `callee` resolves (via the `BindingMap`) to the compiler-known
+/// `std.actor.send` symbol — the same check as
+/// [`ast_callee_is_std_actor_tryask`] for the result-returning send.
+fn ast_callee_is_std_actor_send(ctx: &LowerCtx<'_>, callee: &Expr) -> bool {
+    let (span, kind) = match callee {
+        Expr::Ident(id) => (id.span, NodeKind::Ident),
+        Expr::Qualified(qname) => (qname.span, NodeKind::QualifiedName),
+        _ => return false,
+    };
+    let binding = ctx
+        .node_id_map
+        .as_ref()
+        .and_then(|m| m.get(span, kind))
+        .and_then(|nid| {
+            ctx.binding_map
+                .and_then(|bm| bm.get(nid.0 as usize).and_then(Option::as_ref))
+        });
+    matches!(
+        binding,
+        Some(Binding::StdlibSymbol { module, name })
+            if name == "send"
+                && BUILTINS
+                    .get(module.0 as usize)
+                    .is_some_and(|m| m.name == "std.actor")
+    )
+}
+
+/// Lower `send handle message` to `IrExpr::ActorSend`.
+///
+/// The message argument takes the same shapes as a `!` payload — a bare
+/// handler name or `handler arg …`, routinely parenthesised — flattened to a
+/// `SymbolRef::Handler` plus payload args, mirroring [`lower_tryask_call`]
+/// (including the `()`-drop for zero-arity handlers).
+fn lower_actor_send_call(
+    ctx: &mut LowerCtx<'_>,
+    args: &[Expr],
+    id: ridge_ir::IrNodeId,
+    span: Span,
+) -> IrExpr {
+    let handle = Box::new(lower_expr(ctx, &args[0]));
+    // Peel parens: `send h (increment 3)`.
+    let message = peel_ast_parens(&args[1]);
+    let (handler_name, msg_args) = unfold_send_message(message);
+    // Treat `name ()` as `name` so a 0-arity handler decl and the call form
+    // produce the same wire shape (mirrors the `Expr::Send` lowering).
+    let drop_unit = msg_args.len() == 1 && matches!(msg_args[0], Expr::Unit(_));
+    let payload = if drop_unit {
+        Vec::new()
+    } else {
+        msg_args.iter().map(|a| lower_expr(ctx, a)).collect()
+    };
+    IrExpr::ActorSend {
+        id,
+        handle,
+        message: SymbolRef::Handler {
+            actor_module: ctx.module_id,
+            // Same caveat as `Expr::Ask` (OQ-PHASE45-007): the actor name is
+            // not recoverable from the binding; stays `String::new()`.
+            actor: String::new(),
+            handler: handler_name,
+        },
+        args: payload,
         span,
     }
 }

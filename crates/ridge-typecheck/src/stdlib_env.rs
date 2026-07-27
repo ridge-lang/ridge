@@ -98,6 +98,15 @@ pub fn seed_stdlib_env(
                         {
                             ctx.tryask_names.insert(eb.local_name.clone());
                         }
+                        // Same recording for the compiler-known
+                        // `std.actor.send` (see `ctx.actorsend_names`).
+                        if name == "send"
+                            && BUILTINS
+                                .get(mid.0 as usize)
+                                .is_some_and(|m| m.name == "std.actor")
+                        {
+                            ctx.actorsend_names.insert(eb.local_name.clone());
+                        }
                         if let Some(scheme) = stdlib_signature(*mid, name, b) {
                             ctx.env.bind(eb.local_name.clone(), scheme);
                         } else {
@@ -186,6 +195,11 @@ fn bind_module_qualified(
         // alias-qualified local name (see `ctx.tryask_names`).
         if export_name == "tryAsk" && module.name == "std.actor" {
             ctx.tryask_names
+                .insert(format!("{local_alias}.{export_name}"));
+        }
+        // Same recording for the compiler-known `std.actor.send`.
+        if export_name == "send" && module.name == "std.actor" {
+            ctx.actorsend_names
                 .insert(format!("{local_alias}.{export_name}"));
         }
     }

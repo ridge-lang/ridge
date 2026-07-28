@@ -90,7 +90,19 @@ fn param_shadowing_top_level_fn_runs_on_beam() {
         .beam_files
         .iter()
         .filter_map(|p| p.file_stem().and_then(|s| s.to_str()))
-        .find(|stem| stem.starts_with("ridge_") && !matches!(*stem, "ridge_rt" | "ridge_main_runner" | "ridge_test_runner" | "ridge_pg" | "ridge_sup" | "ridge_sqlite" | "ridge_bench_runner"))
+        .find(|stem| {
+            stem.starts_with("ridge_")
+                && !matches!(
+                    *stem,
+                    "ridge_rt"
+                        | "ridge_main_runner"
+                        | "ridge_test_runner"
+                        | "ridge_pg"
+                        | "ridge_sup"
+                        | "ridge_sqlite"
+                        | "ridge_bench_runner"
+                )
+        })
         .expect("a user module")
         .to_owned();
 

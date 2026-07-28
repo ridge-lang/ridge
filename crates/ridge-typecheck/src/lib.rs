@@ -184,6 +184,21 @@ pub struct TypedWorkspace {
     /// the standard library's own build. The lowering pass reads this to resolve
     /// a reconciled type's constructor to its `(owner, variant)` from the arena.
     pub stdlib_tycons: FxHashMap<String, TyConId>,
+    /// Per-module exported value schemes (`fn`/`const` name → [`Scheme`]),
+    /// indexed by [`ModuleId::0`].
+    ///
+    /// These are the same maps the workspace driver threads into importing
+    /// modules; retained here so downstream consumers (snapshot extraction,
+    /// tooling) can read a module's public signatures without re-running
+    /// inference.
+    pub module_schemes: Vec<FxHashMap<String, ridge_types::Scheme>>,
+    /// Per-module own type names → the real `TyConId`s assigned during that
+    /// module's check, indexed by [`ModuleId::0`].
+    ///
+    /// Retained for the same reason as [`Self::module_schemes`]: consumers that
+    /// need the producer's actual ids (not the pre-check prediction) read them
+    /// here.
+    pub module_tycon_names: Vec<FxHashMap<String, TyConId>>,
 }
 
 /// A single module after type-checking.
@@ -479,6 +494,8 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
             instance_env,
             derived_instances,
             stdlib_tycons: stdlib_tycon_names,
+            module_schemes: exported_schemes,
+            module_tycon_names: actual_module_tycon_names,
         },
         errors: all_errors,
     }

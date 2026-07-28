@@ -318,11 +318,8 @@ fn ridge_meta_attr(beam_name: &str, m: &LoweredModule, ws: &LoweredWorkspace) ->
             if !(fn_.is_pub || fn_.is_main) {
                 continue;
             }
-            let mut caps: Vec<CErlExpr> = fn_
-                .caps
-                .iter()
-                .map(|c| atom(capability_atom(c)))
-                .collect();
+            let mut caps: Vec<CErlExpr> =
+                fn_.caps.iter().map(|c| atom(capability_atom(c))).collect();
             caps.sort_by_key(|c| format!("{c:?}"));
             fn_entries.push(CErlExpr::Tuple(vec![
                 atom("fn"),

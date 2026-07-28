@@ -255,7 +255,8 @@ fn emit_start_link(actor_beam_name: &str, n_params: usize) -> Result<CErlFn, Cod
 fn emit_init(actor: &IrActor, tables: &CodegenTables) -> Result<CErlFn, CodegenError> {
     // §4.29: the init body lowering handles both the default-map case and the
     // user-body case.
-    let init_body_expr = lower_init_body(actor.init.as_ref(), &actor.state_fields, actor.span, tables)?;
+    let init_body_expr =
+        lower_init_body(actor.init.as_ref(), &actor.state_fields, actor.span, tables)?;
 
     // Actors with a `terminate` callback trap exits so the supervisor's
     // `shutdown` exit signal is converted into a `terminate/2` call instead
@@ -883,7 +884,13 @@ mod tests {
     #[test]
     fn actor_module_name_derives_from_parent_and_actor() {
         let actor = make_actor("Limiter", vec![], vec![]);
-        let m = lower_actor(&actor, "ridge_examples_rate_limiter", &FxHashMap::default(), &CodegenTables::default()).unwrap();
+        let m = lower_actor(
+            &actor,
+            "ridge_examples_rate_limiter",
+            &FxHashMap::default(),
+            &CodegenTables::default(),
+        )
+        .unwrap();
         assert_eq!(m.name.0, "ridge_examples_rate_limiter_limiter");
     }
 
@@ -936,7 +943,13 @@ mod tests {
         // terminate + code_change + __ridge_mailbox_config +
         // __ridge_state_version.
         let actor = make_actor("Counter", vec![], vec![]);
-        let m = lower_actor(&actor, "ridge_examples", &FxHashMap::default(), &CodegenTables::default()).unwrap();
+        let m = lower_actor(
+            &actor,
+            "ridge_examples",
+            &FxHashMap::default(),
+            &CodegenTables::default(),
+        )
+        .unwrap();
         assert_eq!(
             m.fns.len(),
             9,
@@ -947,7 +960,9 @@ mod tests {
             "actor module must expose __ridge_state_version/0"
         );
         assert!(
-            m.exports.iter().any(|e| e.name.0 == "__ridge_state_version"),
+            m.exports
+                .iter()
+                .any(|e| e.name.0 == "__ridge_state_version"),
             "__ridge_state_version/0 must be exported"
         );
     }
@@ -975,7 +990,13 @@ mod tests {
             body: lit_unit(),
             span: sp(),
         });
-        let m = lower_actor(&actor, "ridge_examples_rate_limiter", &FxHashMap::default(), &CodegenTables::default()).unwrap();
+        let m = lower_actor(
+            &actor,
+            "ridge_examples_rate_limiter",
+            &FxHashMap::default(),
+            &CodegenTables::default(),
+        )
+        .unwrap();
 
         let sl = m.fns.iter().find(|f| f.name.0 == "start_link").unwrap();
         assert_eq!(sl.arity, 2, "start_link arity must match init param count");
@@ -988,7 +1009,13 @@ mod tests {
     fn handle_call_and_cast_both_have_handler_clauses() {
         let handlers = vec![make_handler("increment"), make_handler("get_count")];
         let actor = make_actor("Counter", handlers, vec![]);
-        let m = lower_actor(&actor, "ridge_examples", &FxHashMap::default(), &CodegenTables::default()).unwrap();
+        let m = lower_actor(
+            &actor,
+            "ridge_examples",
+            &FxHashMap::default(),
+            &CodegenTables::default(),
+        )
+        .unwrap();
 
         let handle_call = m.fns.iter().find(|f| f.name.0 == "handle_call").unwrap();
         let handle_cast = m.fns.iter().find(|f| f.name.0 == "handle_cast").unwrap();
@@ -1058,7 +1085,13 @@ mod tests {
     fn init_with_default_state_fields_emits_ok_map() {
         let fields = vec![make_state_field("count", Some(lit_int(0)))];
         let actor = make_actor("Counter", vec![], fields);
-        let m = lower_actor(&actor, "ridge_examples", &FxHashMap::default(), &CodegenTables::default()).unwrap();
+        let m = lower_actor(
+            &actor,
+            "ridge_examples",
+            &FxHashMap::default(),
+            &CodegenTables::default(),
+        )
+        .unwrap();
 
         let init_fn = m.fns.iter().find(|f| f.name.0 == "init").unwrap();
         assert_eq!(init_fn.arity, 1);

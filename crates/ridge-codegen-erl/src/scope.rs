@@ -131,7 +131,8 @@ pub(crate) struct CodegenTables {
     /// Stable beam module names, indexed by `ModuleId.0`.
     pub(crate) beam_names: std::sync::Arc<Vec<String>>,
     /// Record version metadata, keyed by type-constructor id.
-    pub(crate) record_meta: std::sync::Arc<rustc_hash::FxHashMap<ridge_types::TyConId, crate::record_meta::RecordMeta>>,
+    pub(crate) record_meta:
+        std::sync::Arc<rustc_hash::FxHashMap<ridge_types::TyConId, crate::record_meta::RecordMeta>>,
 }
 
 impl CodegenTables {

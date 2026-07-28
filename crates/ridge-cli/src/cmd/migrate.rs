@@ -828,11 +828,13 @@ fn compile_and_locate_driver(
         .ok_or_else(|| CliError::MigrateInternal {
             message: format!("could not find the generated driver module '{driver_fqn}'"),
         })?;
-    let driver_beam_module =
-        ridge_codegen_erl::module::beam_name_for_fqn(&driver_module.fully_qualified_name, driver_module.id)
-            .map_err(|e| CliError::MigrateInternal {
-                message: format!("could not mangle the driver module name: {e:?}"),
-            })?;
+    let driver_beam_module = ridge_codegen_erl::module::beam_name_for_fqn(
+        &driver_module.fully_qualified_name,
+        driver_module.id,
+    )
+    .map_err(|e| CliError::MigrateInternal {
+        message: format!("could not mangle the driver module name: {e:?}"),
+    })?;
 
     let cache_dir = tempfile::TempDir::new().map_err(|e| CliError::MigrateInternal {
         message: format!("could not create a temporary package cache: {e}"),

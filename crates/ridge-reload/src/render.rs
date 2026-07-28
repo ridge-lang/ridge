@@ -37,7 +37,7 @@ pub fn render_scheme(ctx: &RenderCtx<'_>, scheme: &Scheme) -> String {
 /// Single recursive walk behind [`render_type`] and [`render_scheme`]: a
 /// `Type::Var` found in `vars` renders as its positional letter, anything
 /// else as `_`.
-fn render_type_vars(ctx: &RenderCtx<'_>, ty: &Type, vars: &[TyVid]) -> String {
+pub(crate) fn render_type_vars(ctx: &RenderCtx<'_>, ty: &Type, vars: &[TyVid]) -> String {
     match ty {
         Type::Var(v) => vars
             .iter()
@@ -171,7 +171,7 @@ const fn primitive_name(p: ridge_ast::PrimitiveType) -> &'static str {
     }
 }
 
-const fn capability_name(c: ridge_ast::Capability) -> &'static str {
+pub(crate) const fn capability_name(c: ridge_ast::Capability) -> &'static str {
     use ridge_ast::Capability as C;
     match c {
         C::Io => "io",

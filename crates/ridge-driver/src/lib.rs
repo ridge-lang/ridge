@@ -25,6 +25,7 @@ pub mod diag_adapters;
 pub mod error;
 pub mod incremental;
 pub mod options;
+pub mod reload;
 pub mod run;
 pub mod sources;
 
@@ -41,6 +42,7 @@ pub use compile::{
 pub use error::{CheckError, CompileDiagnostics, CompileError, ProcessExitCode, RunError};
 pub use incremental::IncrementalState;
 pub use options::{CheckOptions, CompileOptions, EmitArtefacts, Profile, RunOptions};
+pub use reload::{reload_check, snapshot_path_for, ReloadCheckError};
 pub use run::run_workspace;
 pub use sources::WorkspaceSourceCache;
 

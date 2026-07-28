@@ -374,6 +374,26 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
         diagnostics.push(diag_from_codegen(e, sid));
     }
 
+    // ── 6. Reload snapshot (auxiliary state — never fails the build) ─────────
+    // Persist the public surface so a later `reload --check` can diff against
+    // it. Only written when the workspace compiled without errors; write
+    // failures are logged and ignored.
+    if !diagnostics.iter().any(|d| matches!(d.severity, Severity::Error)) {
+        let snapshot = ridge_reload::snapshot::extract_snapshot(&resolved, &typecheck_result.typed);
+        match serde_json::to_string_pretty(&snapshot) {
+            Ok(json) => {
+                let path = codegen_out_root.join("reload-snapshot.json");
+                if let Err(e) = std::fs::write(&path, json) {
+                    eprintln!(
+                        "warning: could not write reload snapshot at {}: {e}",
+                        path.display()
+                    );
+                }
+            }
+            Err(e) => eprintln!("warning: could not serialise reload snapshot: {e}"),
+        }
+    }
+
     Ok(CompileArtefacts {
         beam_files,
         core_files,

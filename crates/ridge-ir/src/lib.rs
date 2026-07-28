@@ -96,6 +96,8 @@ mod tests {
         let ws = LoweredWorkspace {
             modules: vec![],
             tycon_count: 0,
+            target_names: vec![],
+            tycons: vec![],
         };
         assert!(ws.modules.is_empty());
     }

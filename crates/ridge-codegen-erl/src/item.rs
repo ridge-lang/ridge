@@ -90,6 +90,9 @@ pub(crate) fn lower_fn_with_module_name(
     // zero-arity fn in another module drops its unit-paren `()` instead of
     // emitting an arity-1 call that would be `undef` against the arity-0 callee.
     scope.external_arity = std::sync::Arc::new(crate::module::build_external_arity(ws));
+    // Seed the shared codegen tables (stable beam names + record metadata)
+    // so cross-module calls and record construction lower correctly.
+    scope.tables = crate::scope::CodegenTables::from_workspace(ws);
     // §4.9 — Route through elide/wrap based on whether non-tail Returns exist.
     //
     // - Non-tail Returns present: lower as-is (Return nodes emit throws) then
@@ -168,6 +171,9 @@ pub(crate) fn lower_const(
 ) -> Result<CErlFn, CodegenError> {
     let mut scope = LocalScope::with_arity(fn_arity.clone());
     scope.external_arity = std::sync::Arc::new(crate::module::build_external_arity(ws));
+    // Seed the shared codegen tables (stable beam names + record metadata)
+    // so cross-module calls and record construction lower correctly.
+    scope.tables = crate::scope::CodegenTables::from_workspace(ws);
     let lowered_value = lower_expr_in_scope(&c.value, &mut scope)?;
 
     // §4.27: `%% Const: <name>: <ty_metadata_only>` annotation.

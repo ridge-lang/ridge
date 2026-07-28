@@ -29,7 +29,8 @@ pub(crate) mod item;
 pub(crate) mod letrec_detect;
 pub(crate) mod lit;
 pub(crate) mod messaging;
-pub(crate) mod module;
+pub mod module;
+pub(crate) mod record_meta;
 pub(crate) mod pat;
 pub(crate) mod return_;
 pub(crate) mod scope;
@@ -230,12 +231,16 @@ fn codegen_one_module(
     module_slot: &mut Option<CodegenModuleResult>,
     errors: &mut Vec<CodegenError>,
 ) {
-    // Derive placeholder beam-name segment from module id.
-    // A future task will replace this with the FQN from workspace metadata.
-    let id_segment = format!("module_{}", m.id.0);
-    let path_ref: &str = &id_segment;
+    // Beam module name: prefer the stable FQN-derived name the driver seeded
+    // into the workspace; fall back to the legacy ModuleId segment for
+    // hand-built workspaces (unit tests, snapshot helpers).
+    let beam_name = ws.target_names.get(m.id.0 as usize).cloned().unwrap_or_else(|| {
+        let id_segment = format!("module_{}", m.id.0);
+        module::mangle_module_name(&[id_segment.as_str()], m.id)
+            .unwrap_or_else(|_| format!("ridge_module_{}", m.id.0))
+    });
 
-    let (main, actors) = match module::lower_module_all(m, ws, &[path_ref]) {
+    let (main, actors) = match module::lower_module_all_named(m, ws, &beam_name) {
         Ok(pair) => pair,
         Err(e) => {
             errors.push(e);
@@ -403,6 +408,9 @@ pub fn codegen_module_ast(
     m: &LoweredModule,
     ws: &LoweredWorkspace,
 ) -> Result<CErlModule, CodegenError> {
+    if let Some(name) = ws.target_names.get(m.id.0 as usize) {
+        return module::lower_module_with_name(m, ws, name);
+    }
     let id_segment = format!("module_{}", m.id.0);
     let path_ref: &str = &id_segment;
     module::lower_module(m, ws, &[path_ref])
@@ -415,20 +423,24 @@ pub fn codegen_module_ast(
 /// and `beam_path`.  Errors during lowering produce a degenerate result with an
 /// empty `beam_module_name`.
 ///
-/// `beam_module_name` is a stable placeholder derived from the module id
-/// (`"ridge_module_<n>"`).  A future task will replace it with the FQN from
-/// workspace metadata.
+/// The beam name prefers the FQN-derived entry seeded in `ws.target_names`;
+/// hand-built workspaces without it keep the legacy `module_<id>` segment.
 #[must_use]
 pub fn codegen_module(
     m: &LoweredModule,
     ws: &LoweredWorkspace,
     _opts: &CodegenOptions,
 ) -> CodegenModuleResult {
-    // Derive a stable path from the module id as a placeholder.
-    let id_segment = format!("module_{}", m.id.0);
-    let path_ref: &str = &id_segment;
+    let lowered = if let Some(name) = ws.target_names.get(m.id.0 as usize) {
+        module::lower_module_with_name(m, ws, name)
+    } else {
+        // Legacy fallback for hand-built workspaces: derive the segment from
+        // the module id.
+        let id_segment = format!("module_{}", m.id.0);
+        module::lower_module(m, ws, &[id_segment.as_str()])
+    };
 
-    match module::lower_module(m, ws, &[path_ref]) {
+    match lowered {
         Ok(cerl_module) => CodegenModuleResult {
             module: m.id,
             beam_module_name: cerl_module.name.0,

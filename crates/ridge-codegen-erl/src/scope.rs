@@ -72,6 +72,11 @@ pub(crate) struct LocalScope {
     /// cross-module call apply the same unit-paren shim the local path uses.
     /// Shared (Arc) so cloning a scope stays cheap.
     pub(crate) external_arity: Arc<FxHashMap<ModuleId, FxHashMap<String, u32>>>,
+    /// Workspace-wide codegen tables (beam names + record metadata).
+    ///
+    /// Shared via `Arc`s inside so cloning a scope stays cheap. Empty in
+    /// unit tests — call sites fall back to legacy behavior then.
+    pub(crate) tables: CodegenTables,
     /// When lowering actor bodies: `(parent_module_id, parent_beam_name)`.
     ///
     /// Any `SymbolRef::Local { module: M }` where `M == parent_module_id` must be
@@ -112,6 +117,42 @@ pub(crate) struct LocalScope {
     pub(crate) actor_state_idx: u32,
 }
 
+/// Workspace-wide tables shared by every scope in a compilation.
+///
+/// - `beam_names`: `ModuleId.0 → stable FQN-derived beam name`. A
+///   `SymbolRef::External` call knows only its callee's `ModuleId`; this
+///   table keeps cross-module calls resolving when modules are added,
+///   removed, or reordered. Empty in unit tests — the external-call site
+///   falls back to the legacy `module_<id>` segment.
+/// - `record_meta`: `TyConId → RecordMeta` used to tag record values with
+///   their type identity (`__ridge_v`). Empty in unit tests — no tags.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CodegenTables {
+    /// Stable beam module names, indexed by `ModuleId.0`.
+    pub(crate) beam_names: std::sync::Arc<Vec<String>>,
+    /// Record version metadata, keyed by type-constructor id.
+    pub(crate) record_meta: std::sync::Arc<rustc_hash::FxHashMap<ridge_types::TyConId, crate::record_meta::RecordMeta>>,
+}
+
+impl CodegenTables {
+    /// Build the shared tables from a lowered workspace.
+    ///
+    /// `beam_names` comes straight from the workspace (seeded by the driver;
+    /// empty in hand-built workspaces). `record_meta` is derived from the
+    /// workspace's type-constructor declarations; it is empty when the
+    /// workspace carries no tycons (unit tests), which disables `__ridge_v`
+    /// tagging.
+    pub(crate) fn from_workspace(ws: &ridge_ir::LoweredWorkspace) -> Self {
+        Self {
+            beam_names: Arc::new(ws.target_names.clone()),
+            record_meta: Arc::new(crate::record_meta::build_record_meta(
+                &ws.tycons,
+                &ws.target_names,
+            )),
+        }
+    }
+}
+
 impl LocalScope {
     /// Create a fresh empty scope with no var-bound names and an empty arity table.
     pub(crate) fn new() -> Self {
@@ -123,6 +164,7 @@ impl LocalScope {
             own_module_beam_name: None,
             actor_state_idx: 0,
             external_arity: Arc::new(FxHashMap::default()),
+            tables: CodegenTables::default(),
         }
     }
 
@@ -139,6 +181,7 @@ impl LocalScope {
             own_module_beam_name: None,
             actor_state_idx: 0,
             external_arity: Arc::new(FxHashMap::default()),
+            tables: CodegenTables::default(),
         }
     }
 
@@ -159,6 +202,7 @@ impl LocalScope {
             own_module_beam_name: Some(Arc::from(module_beam_name)),
             actor_state_idx: 0,
             external_arity: Arc::new(FxHashMap::default()),
+            tables: CodegenTables::default(),
         }
     }
 
@@ -175,6 +219,7 @@ impl LocalScope {
             own_module_beam_name: None,
             actor_state_idx: 0,
             external_arity: Arc::new(FxHashMap::default()),
+            tables: CodegenTables::default(),
         }
     }
 
@@ -203,6 +248,7 @@ impl LocalScope {
             own_module_beam_name: Some(Arc::from(parent_beam_name)),
             actor_state_idx: 0,
             external_arity: Arc::new(FxHashMap::default()),
+            tables: CodegenTables::default(),
         }
     }
 

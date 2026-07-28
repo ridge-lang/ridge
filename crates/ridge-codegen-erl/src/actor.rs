@@ -65,9 +65,10 @@ use crate::handler::{
     call_params, cast_params, lower_handler_call_clause, lower_handler_cast_clause,
 };
 use crate::init::{lower_handler_body_for_cast, lower_init_body, lower_terminate_body, state_var};
-use crate::scope::LocalScope;
+use crate::scope::{CodegenTables, LocalScope};
 use ridge_ir::{IrActor, MailboxConfig, MailboxPolicy};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHasher};
+use std::hash::Hasher;
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
@@ -80,12 +81,17 @@ use rustc_hash::FxHashMap;
 /// `fn_arity` is the parent module's fn/const arity table so that handler bodies
 /// can reference module-level fns and constants via `SymbolRef::Local`.
 ///
+/// `tables` carries the workspace-wide codegen tables (stable beam names +
+/// record metadata) so that cross-module calls and record construction inside
+/// actor bodies lower correctly; empty in unit tests (legacy fallback).
+///
 /// # Errors
 /// Returns `Err(CodegenError::IrShapeMalformed)` on Phase-5 invariant violations.
 pub(crate) fn lower_actor(
     actor: &IrActor,
     parent_beam_name: &str,
     fn_arity: &FxHashMap<String, u32>,
+    tables: &CodegenTables,
 ) -> Result<CErlModule, CodegenError> {
     // Derive actor BEAM module name: parent + "_" + actor_name_lowercase.
     let actor_name_lc = actor.name.to_lowercase();
@@ -129,6 +135,10 @@ pub(crate) fn lower_actor(
             name: CErlAtom("__ridge_mailbox_config".into()),
             arity: 0,
         },
+        CErlExport {
+            name: CErlAtom("__ridge_state_version".into()),
+            arity: 0,
+        },
     ];
 
     // ── Attributes ────────────────────────────────────────────────────────────
@@ -141,13 +151,14 @@ pub(crate) fn lower_actor(
     // accessor read by `ridge_rt:spawn_actor/3`.
     let fns_result: Result<Vec<_>, _> = [
         emit_start_link(&actor_beam_name, init_params_count),
-        emit_init(actor),
-        emit_handle_call(actor, fn_arity, parent_beam_name),
-        emit_handle_cast(actor, fn_arity, parent_beam_name),
-        emit_handle_info(actor, fn_arity, parent_beam_name),
-        emit_terminate(actor, fn_arity, parent_beam_name),
+        emit_init(actor, tables),
+        emit_handle_call(actor, fn_arity, parent_beam_name, tables),
+        emit_handle_cast(actor, fn_arity, parent_beam_name, tables),
+        emit_handle_info(actor, fn_arity, parent_beam_name, tables),
+        emit_terminate(actor, fn_arity, parent_beam_name, tables),
         Ok(emit_code_change_stub()),
         Ok(emit_mailbox_config_fn(actor)),
+        Ok(emit_state_version_fn(actor)),
     ]
     .into_iter()
     .collect();
@@ -241,10 +252,10 @@ fn emit_start_link(actor_beam_name: &str, n_params: usize) -> Result<CErlFn, Cod
 /// If the init body raises, `gen_server:start_link/3` propagates the failure.
 /// `ridge_rt:spawn_actor/3` re-raises it (BEAM-crash).  This is the deliberate
 /// language-level asymmetry (§4.29).
-fn emit_init(actor: &IrActor) -> Result<CErlFn, CodegenError> {
+fn emit_init(actor: &IrActor, tables: &CodegenTables) -> Result<CErlFn, CodegenError> {
     // §4.29: the init body lowering handles both the default-map case and the
     // user-body case.
-    let init_body_expr = lower_init_body(actor.init.as_ref(), &actor.state_fields, actor.span)?;
+    let init_body_expr = lower_init_body(actor.init.as_ref(), &actor.state_fields, actor.span, tables)?;
 
     // Actors with a `terminate` callback trap exits so the supervisor's
     // `shutdown` exit signal is converted into a `terminate/2` call instead
@@ -302,6 +313,7 @@ fn emit_handle_call(
     actor: &IrActor,
     fn_arity: &FxHashMap<String, u32>,
     parent_beam_name: &str,
+    tables: &CodegenTables,
 ) -> Result<CErlFn, CodegenError> {
     let mut clauses = Vec::with_capacity(actor.dispatch.len() + 1);
 
@@ -313,6 +325,7 @@ fn emit_handle_call(
             fn_arity,
             actor.module,
             parent_beam_name,
+            tables,
         )?);
     }
 
@@ -354,6 +367,7 @@ fn emit_handle_cast(
     actor: &IrActor,
     fn_arity: &FxHashMap<String, u32>,
     parent_beam_name: &str,
+    tables: &CodegenTables,
 ) -> Result<CErlFn, CodegenError> {
     let mut clauses = Vec::with_capacity(actor.dispatch.len() + 1);
 
@@ -365,6 +379,7 @@ fn emit_handle_cast(
             fn_arity,
             actor.module,
             parent_beam_name,
+            tables,
         )?);
     }
 
@@ -446,6 +461,7 @@ fn emit_handle_info(
     actor: &IrActor,
     fn_arity: &FxHashMap<String, u32>,
     parent_beam_name: &str,
+    tables: &CodegenTables,
 ) -> Result<CErlFn, CodegenError> {
     let Some(d) = actor.on_down.as_ref() else {
         return Ok(emit_handle_info_stub());
@@ -463,6 +479,7 @@ fn emit_handle_info(
     }
 
     let mut scope = LocalScope::with_actor_parent(fn_arity.clone(), actor.module, parent_beam_name);
+    scope.tables = tables.clone();
     let mut state_idx: u32 = 0;
 
     let lowered_body = lower_handler_body_for_cast(&d.body, &mut scope, &mut state_idx, d.span)?;
@@ -579,6 +596,7 @@ fn emit_terminate(
     actor: &IrActor,
     fn_arity: &FxHashMap<String, u32>,
     parent_beam_name: &str,
+    tables: &CodegenTables,
 ) -> Result<CErlFn, CodegenError> {
     let Some(t) = actor.terminate.as_ref() else {
         return Ok(emit_terminate_stub());
@@ -596,6 +614,7 @@ fn emit_terminate(
     }
 
     let mut scope = LocalScope::with_actor_parent(fn_arity.clone(), actor.module, parent_beam_name);
+    scope.tables = tables.clone();
     let mut state_idx: u32 = 0;
 
     let lowered_body = lower_terminate_body(&t.body, &mut scope, &mut state_idx, t.span)?;
@@ -660,9 +679,42 @@ fn emit_code_change_stub() -> CErlFn {
         name: CErlAtom("code_change".into()),
         arity: 3,
         anns: vec![CErlAnn(
-            "%% gen_server:code_change/3 — boilerplate no-op stub (§4.28)".into(),
+            "%% gen_server:code_change/3 — pass-through (state shape unchanged); the code loader adds migration dispatch".into(),
         )],
         body,
+    }
+}
+
+// ── __ridge_state_version/0 ───────────────────────────────────────────────────
+
+/// Emit the `'__ridge_state_version'/0` accessor: a constant term
+/// `{ActorName, StateLayoutHash}` identifying the actor's state-field layout.
+/// The runtime code loader reads it to decide whether a suspended actor's
+/// state needs migration before the new code resumes it.
+fn emit_state_version_fn(actor: &IrActor) -> CErlFn {
+    let mut h = FxHasher::default();
+    h.write(actor.name.as_bytes());
+    for field in &actor.state_fields {
+        h.write(field.name.as_bytes());
+        h.write(b":");
+        h.write(format!("{:?}", field.ty).as_bytes());
+        h.write(b";");
+    }
+    #[allow(clippy::cast_possible_wrap)]
+    let term = CErlExpr::Tuple(vec![
+        CErlExpr::Lit(CErlLit::Atom(CErlAtom(actor.name.clone()))),
+        CErlExpr::Lit(CErlLit::Int(h.finish() as i64)),
+    ]);
+    CErlFn {
+        name: CErlAtom("__ridge_state_version".into()),
+        arity: 0,
+        anns: vec![CErlAnn(
+            "%% Ridge actor state layout version (read by the code loader)".into(),
+        )],
+        body: CErlExpr::Fun {
+            params: vec![],
+            body: Box::new(term),
+        },
     }
 }
 
@@ -831,7 +883,7 @@ mod tests {
     #[test]
     fn actor_module_name_derives_from_parent_and_actor() {
         let actor = make_actor("Limiter", vec![], vec![]);
-        let m = lower_actor(&actor, "ridge_examples_rate_limiter", &FxHashMap::default()).unwrap();
+        let m = lower_actor(&actor, "ridge_examples_rate_limiter", &FxHashMap::default(), &CodegenTables::default()).unwrap();
         assert_eq!(m.name.0, "ridge_examples_rate_limiter_limiter");
     }
 
@@ -842,6 +894,7 @@ mod tests {
             &actor,
             "ridge_examples_url_shortener",
             &FxHashMap::default(),
+            &CodegenTables::default(),
         )
         .unwrap();
 
@@ -878,15 +931,24 @@ mod tests {
     }
 
     #[test]
-    fn actor_module_has_eight_fns() {
+    fn actor_module_has_nine_fns() {
         // start_link + init + handle_call + handle_cast + handle_info +
-        // terminate + code_change + __ridge_mailbox_config.
+        // terminate + code_change + __ridge_mailbox_config +
+        // __ridge_state_version.
         let actor = make_actor("Counter", vec![], vec![]);
-        let m = lower_actor(&actor, "ridge_examples", &FxHashMap::default()).unwrap();
+        let m = lower_actor(&actor, "ridge_examples", &FxHashMap::default(), &CodegenTables::default()).unwrap();
         assert_eq!(
             m.fns.len(),
-            8,
-            "actor module must have exactly 8 callback fns"
+            9,
+            "actor module must have exactly 9 callback fns"
+        );
+        assert!(
+            m.fns.iter().any(|f| f.name.0 == "__ridge_state_version"),
+            "actor module must expose __ridge_state_version/0"
+        );
+        assert!(
+            m.exports.iter().any(|e| e.name.0 == "__ridge_state_version"),
+            "__ridge_state_version/0 must be exported"
         );
     }
 
@@ -913,7 +975,7 @@ mod tests {
             body: lit_unit(),
             span: sp(),
         });
-        let m = lower_actor(&actor, "ridge_examples_rate_limiter", &FxHashMap::default()).unwrap();
+        let m = lower_actor(&actor, "ridge_examples_rate_limiter", &FxHashMap::default(), &CodegenTables::default()).unwrap();
 
         let sl = m.fns.iter().find(|f| f.name.0 == "start_link").unwrap();
         assert_eq!(sl.arity, 2, "start_link arity must match init param count");
@@ -926,7 +988,7 @@ mod tests {
     fn handle_call_and_cast_both_have_handler_clauses() {
         let handlers = vec![make_handler("increment"), make_handler("get_count")];
         let actor = make_actor("Counter", handlers, vec![]);
-        let m = lower_actor(&actor, "ridge_examples", &FxHashMap::default()).unwrap();
+        let m = lower_actor(&actor, "ridge_examples", &FxHashMap::default(), &CodegenTables::default()).unwrap();
 
         let handle_call = m.fns.iter().find(|f| f.name.0 == "handle_call").unwrap();
         let handle_cast = m.fns.iter().find(|f| f.name.0 == "handle_cast").unwrap();
@@ -996,7 +1058,7 @@ mod tests {
     fn init_with_default_state_fields_emits_ok_map() {
         let fields = vec![make_state_field("count", Some(lit_int(0)))];
         let actor = make_actor("Counter", vec![], fields);
-        let m = lower_actor(&actor, "ridge_examples", &FxHashMap::default()).unwrap();
+        let m = lower_actor(&actor, "ridge_examples", &FxHashMap::default(), &CodegenTables::default()).unwrap();
 
         let init_fn = m.fns.iter().find(|f| f.name.0 == "init").unwrap();
         assert_eq!(init_fn.arity, 1);

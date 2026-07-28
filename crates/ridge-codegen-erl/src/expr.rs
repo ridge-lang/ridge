@@ -911,11 +911,12 @@ fn lower_construct(
         // ── Record constructor → MapLit or MapUpdate (with peephole). ─────────
         SymbolRef::Constructor {
             ctor_kind: CtorKind::Record,
+            owner_type,
             ..
         } => {
             // Record construction → full map literal. (`with` updates lower to
             // `IrExpr::RecordUpdate` → `MapUpdate`, handled in `lower_expr`.)
-            let pairs = fields
+            let mut pairs = fields
                 .iter()
                 .map(|(key, value)| {
                     let k = CErlExpr::Lit(CErlLit::Atom(CErlAtom(key.clone())));
@@ -923,6 +924,24 @@ fn lower_construct(
                     Ok((k, v))
                 })
                 .collect::<Result<Vec<_>, CodegenError>>()?;
+            // Tag the value with its type identity (`__ridge_v`) so the
+            // runtime can tell which record type — and which layout version —
+            // a live map belongs to. Anonymous/built-in records have no meta
+            // and stay untagged.
+            if let Some(meta) = scope.tables.record_meta.get(owner_type) {
+                let tag = CErlExpr::Tuple(vec![
+                    CErlExpr::Lit(CErlLit::Atom(CErlAtom(meta.fqn.clone()))),
+                    CErlExpr::Lit(CErlLit::Atom(CErlAtom(meta.name.clone()))),
+                    CErlExpr::Lit(CErlLit::Int(i64::from(meta.version))),
+                ]);
+                pairs.insert(
+                    0,
+                    (
+                        CErlExpr::Lit(CErlLit::Atom(CErlAtom("__ridge_v".into()))),
+                        tag,
+                    ),
+                );
+            }
             Ok(CErlExpr::MapLit(pairs))
         }
 
@@ -1177,6 +1196,9 @@ fn lower_lambda(
     // Inherited so a cross-module zero-arity call inside a lambda body keeps the
     // callee-arity information the unit-paren shim needs.
     lambda_scope.external_arity = std::sync::Arc::clone(&outer_scope.external_arity);
+    // Inherited so cross-module calls inside a lambda body keep resolving
+    // callee beam names and record metadata via the shared tables.
+    lambda_scope.tables = outer_scope.tables.clone();
     let param_vars: Vec<CErlVar> = params
         .iter()
         .map(|p| CErlVar(name_to_erl_var(&p.name)))
@@ -1390,8 +1412,15 @@ fn lower_static_call(
                 .iter()
                 .map(|a| lower_expr_in_scope(a, scope))
                 .collect::<Result<Vec<_>, _>>()?;
-            let segment = format!("module_{}", module.0);
-            let beam_module = crate::module::mangle_module_name(&[segment.as_str()], *module)?;
+            let beam_module = match scope.tables.beam_names.get(module.0 as usize) {
+                Some(name) => name.clone(),
+                None => {
+                    // Legacy fallback (unit tests without a workspace table):
+                    // derive the segment from the ModuleId.
+                    let segment = format!("module_{}", module.0);
+                    crate::module::mangle_module_name(&[segment.as_str()], *module)?
+                }
+            };
             Ok(CErlExpr::Call {
                 module: CErlAtom(beam_module),
                 fn_name: CErlAtom(name.clone()),

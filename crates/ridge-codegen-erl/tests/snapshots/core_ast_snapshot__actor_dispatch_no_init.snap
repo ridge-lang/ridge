@@ -7,6 +7,36 @@ CErlModule {
         "ridge_module_0",
     ),
     exports: [],
-    attributes: [],
+    attributes: [
+        CErlAttribute {
+            name: CErlAtom(
+                "ridge_meta",
+            ),
+            value: Tuple(
+                [
+                    Lit(
+                        Atom(
+                            CErlAtom(
+                                "ridge_meta_v1",
+                            ),
+                        ),
+                    ),
+                    Lit(
+                        Atom(
+                            CErlAtom(
+                                "ridge_module_0",
+                            ),
+                        ),
+                    ),
+                    ListLit(
+                        [],
+                    ),
+                    ListLit(
+                        [],
+                    ),
+                ],
+            ),
+        },
+    ],
     fns: [],
 }

@@ -17,7 +17,9 @@
 
 use crate::actor::lower_actor;
 use crate::anf::normalise_module;
-use crate::core_ast::{CErlAtom, CErlExport, CErlExpr, CErlFn, CErlModule, CErlVar};
+use crate::core_ast::{
+    CErlAtom, CErlAttribute, CErlExport, CErlExpr, CErlFn, CErlLit, CErlModule, CErlVar,
+};
 use crate::error::CodegenError;
 use crate::item::{lower_const, lower_fn_with_module_name};
 use ridge_ir::{IrFfiFn, IrItem, LoweredModule, LoweredWorkspace};
@@ -83,7 +85,7 @@ const RESERVED_RT: &str = "ridge_rt";
 /// # Errors
 /// Returns [`CodegenError::BeamModuleNameCollision`] (`E006`) if the mangled
 /// name equals `ridge_rt` (reserved for the runtime bridge module).
-pub(crate) fn mangle_module_name(
+pub fn mangle_module_name(
     module_path: &[&str],
     module_id: ModuleId,
 ) -> Result<String, CodegenError> {
@@ -101,6 +103,20 @@ pub(crate) fn mangle_module_name(
     }
 
     Ok(mangled)
+}
+
+/// Compute the stable BEAM module name for a dotted FQN (e.g.
+/// `"acme.domain.Models"` → `ridge_acme_domain_Models`).
+///
+/// Used by the driver and CLI so every consumer derives beam names from the
+/// FQN — never from `ModuleId` ordering — keeping names stable across builds.
+///
+/// # Errors
+/// Returns [`CodegenError::BeamModuleNameCollision`] (`E006`) if the mangled
+/// name collides with the reserved `ridge_rt` atom.
+pub fn beam_name_for_fqn(fqn: &str, module_id: ModuleId) -> Result<String, CodegenError> {
+    let segments: Vec<&str> = fqn.split('.').collect();
+    mangle_module_name(&segments, module_id)
 }
 
 // ── Module assembly (§4.26 + §4.27) ─────────────────────────────────────────
@@ -253,7 +269,7 @@ pub(crate) fn lower_module_with_name(
     let mut module = CErlModule {
         name: CErlAtom(beam_name.into()),
         exports,
-        attributes: vec![],
+        attributes: vec![ridge_meta_attr(beam_name, m, ws)],
         fns,
     };
     // ANF normalisation: hoist non-atomic arguments in call/apply/case positions
@@ -262,22 +278,108 @@ pub(crate) fn lower_module_with_name(
     Ok(module)
 }
 
-/// Lower a [`LoweredModule`] to the main [`CErlModule`] **plus** all actor
-/// sub-modules.
+// ── ridge_meta beam attribute ────────────────────────────────────────────────
+
+/// Lowercase atom name for a capability, in bit order (spec §3.5).
+fn capability_atom(c: ridge_ast::Capability) -> &'static str {
+    match c {
+        ridge_ast::Capability::Io => "io",
+        ridge_ast::Capability::Fs => "fs",
+        ridge_ast::Capability::Net => "net",
+        ridge_ast::Capability::Time => "time",
+        ridge_ast::Capability::Random => "random",
+        ridge_ast::Capability::Env => "env",
+        ridge_ast::Capability::Proc => "proc",
+        ridge_ast::Capability::Spawn => "spawn",
+        ridge_ast::Capability::Ffi => "ffi",
+        ridge_ast::Capability::Db => "db",
+    }
+}
+
+/// Build the `ridge_meta` module attribute as a structured constant term:
 ///
-/// Returns `(main_module, actor_modules)`.  The actor modules must each be
-/// compiled separately by `erlc +from_core` (they are separate BEAM modules).
+/// ```text
+/// {'ridge_meta_v1', BeamName,
+///   [{fn, Name, Arity, [CapAtom]}...],
+///   [{record, Name, LayoutVersion}...]}
+/// ```
 ///
-/// This is the T9 entry point wired into the workspace-level codegen.
-/// `lower_module` (the original T8 entry point) remains available for
-/// snapshot tests and the LSP hot-path that only needs the main module.
+/// The term is constant (atoms, ints, tuples, lists) so the Core Erlang
+/// parser accepts it in attribute position — binary literals are rejected
+/// there. Fn lines cover the exported fns (caps sorted); record lines cover
+/// records declared in this module. Both lists are sorted for snapshot
+/// determinism.
+fn ridge_meta_attr(beam_name: &str, m: &LoweredModule, ws: &LoweredWorkspace) -> CErlAttribute {
+    let atom = |s: &str| CErlExpr::Lit(CErlLit::Atom(CErlAtom(s.to_owned())));
+
+    let mut fn_entries: Vec<CErlExpr> = Vec::new();
+    for item in &m.items {
+        if let IrItem::Fn(fn_) = item {
+            if !(fn_.is_pub || fn_.is_main) {
+                continue;
+            }
+            let mut caps: Vec<CErlExpr> = fn_
+                .caps
+                .iter()
+                .map(|c| atom(capability_atom(c)))
+                .collect();
+            caps.sort_by_key(|c| format!("{c:?}"));
+            fn_entries.push(CErlExpr::Tuple(vec![
+                atom("fn"),
+                atom(&fn_.name),
+                #[allow(clippy::cast_possible_wrap)]
+                CErlExpr::Lit(CErlLit::Int(fn_.params.len() as i64)),
+                CErlExpr::ListLit(caps),
+            ]));
+        }
+    }
+    fn_entries.sort_by_key(|e| format!("{e:?}"));
+
+    let meta = crate::record_meta::build_record_meta(&ws.tycons, &ws.target_names);
+    let mut record_entries: Vec<CErlExpr> = ws
+        .tycons
+        .iter()
+        .filter(|d| d.def_module_raw == Some(m.id.0))
+        .filter_map(|d| meta.get(&d.id))
+        .map(|rm| {
+            CErlExpr::Tuple(vec![
+                atom("record"),
+                atom(&rm.name),
+                CErlExpr::Lit(CErlLit::Int(i64::from(rm.version))),
+            ])
+        })
+        .collect();
+    record_entries.sort_by_key(|e| format!("{e:?}"));
+
+    CErlAttribute {
+        name: CErlAtom("ridge_meta".into()),
+        value: CErlExpr::Tuple(vec![
+            atom("ridge_meta_v1"),
+            atom(beam_name),
+            CErlExpr::ListLit(fn_entries),
+            CErlExpr::ListLit(record_entries),
+        ]),
+    }
+}
+
 pub(crate) fn lower_module_all(
     m: &LoweredModule,
     ws: &LoweredWorkspace,
     module_path: &[&str],
 ) -> Result<(CErlModule, Vec<CErlModule>), CodegenError> {
     let beam_name = mangle_module_name(module_path, m.id)?;
-    let main_module = lower_module_with_name(m, ws, &beam_name)?;
+    lower_module_all_named(m, ws, &beam_name)
+}
+
+/// Lower a [`LoweredModule`] like [`lower_module_all`], but with the BEAM
+/// module name supplied directly (already FQN-derived by the caller) instead
+/// of being mangled from path segments.
+pub(crate) fn lower_module_all_named(
+    m: &LoweredModule,
+    ws: &LoweredWorkspace,
+    beam_name: &str,
+) -> Result<(CErlModule, Vec<CErlModule>), CodegenError> {
+    let main_module = lower_module_with_name(m, ws, beam_name)?;
 
     // Collect actor sub-modules.
     // Rebuild fn_arity to pass to lower_actor so handlers can reference
@@ -305,7 +407,8 @@ pub(crate) fn lower_module_all(
     let mut actor_modules = Vec::new();
     for item in &m.items {
         if let IrItem::Actor(actor) = item {
-            let mut actor_module = lower_actor(actor, &beam_name, &fn_arity_for_actors)?;
+            let tables = crate::scope::CodegenTables::from_workspace(ws);
+            let mut actor_module = lower_actor(actor, beam_name, &fn_arity_for_actors, &tables)?;
             normalise_module(&mut actor_module);
             actor_modules.push(actor_module);
         }
@@ -436,6 +539,23 @@ mod tests {
     }
 
     // ── mangle_module_name tests ──────────────────────────────────────────────
+
+    #[test]
+    fn beam_name_uses_fqn_not_module_id() {
+        // Same FQN, two different ModuleIds → identical beam name. This is the
+        // stability contract hot code reloading depends on: names must not
+        // shift when modules are added, removed, or reordered.
+        let a = mangle_module_name(&["blog_engine", "models"], ModuleId(3)).unwrap();
+        let b = mangle_module_name(&["blog_engine", "models"], ModuleId(17)).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a, "ridge_blog_engine_models");
+    }
+
+    #[test]
+    fn beam_name_for_fqn_splits_dotted_path() {
+        let name = beam_name_for_fqn("acme.domain.Models", ModuleId(0)).unwrap();
+        assert_eq!(name, "ridge_acme_domain_Models");
+    }
 
     #[test]
     fn mangle_happy_path() {

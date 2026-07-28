@@ -15,7 +15,7 @@ pub struct CErlModule {
     pub name: CErlAtom,
     /// Exported name/arity pairs, e.g. `[main/1, parseLine/1, ...]`.
     pub exports: Vec<CErlExport>,
-    /// Module attributes: `attributes [{file, ...}, {capabilities, ...}]`.
+    /// Module attributes, printed as `attributes ['name' = [value], ...]`.
     pub attributes: Vec<CErlAttribute>,
     /// Top-level function definitions.
     pub fns: Vec<CErlFn>,
@@ -35,8 +35,11 @@ pub struct CErlExport {
 pub struct CErlAttribute {
     /// Attribute name atom.
     pub name: CErlAtom,
-    /// Attribute value literal.
-    pub value: CErlLit,
+    /// Attribute value term. Must be a *constant* expression (literals,
+    /// tuples, and lists of literals) — the Core Erlang parser rejects
+    /// anything else in attribute position. Notably, binary literals are
+    /// rejected there, so structured terms are used instead of binaries.
+    pub value: CErlExpr,
 }
 
 /// A top-level function definition.
@@ -254,7 +257,7 @@ mod tests {
             }],
             attributes: vec![CErlAttribute {
                 name: CErlAtom("file".into()),
-                value: CErlLit::Atom(CErlAtom("test.ridge".into())),
+                value: CErlExpr::Lit(CErlLit::Atom(CErlAtom("test.ridge".into()))),
             }],
             fns: vec![CErlFn {
                 name: CErlAtom("main".into()),

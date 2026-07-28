@@ -1,10 +1,9 @@
 ---
 source: crates/ridge-codegen-erl/tests/core_text_snapshot.rs
-assertion_line: 47
 expression: "&core_text"
 ---
 module 'ridge_module_0' ['main'/0]
-  attributes []
+  attributes ['ridge_meta' = [{'ridge_meta_v1', 'ridge_module_0', [{'fn', 'main', 0, ['env', 'io', 'time']}], []}]]
   %% File: <source>, Offset: 795
   %% Caps: {}
 'cellAt'/3 =

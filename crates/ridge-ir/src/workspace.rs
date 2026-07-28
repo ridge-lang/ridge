@@ -3,7 +3,7 @@
 use crate::id::IrNodeId;
 use crate::item::IrItem;
 use ridge_resolve::{ModuleId, NodeId};
-use ridge_types::Type;
+use ridge_types::{TyConDecl, Type};
 use rustc_hash::FxHashMap;
 
 // OQ-L001: LoweredWorkspace stores modules as a Vec (parallel-value indexed by ModuleId.0),
@@ -17,6 +17,21 @@ pub struct LoweredWorkspace {
     pub modules: Vec<Option<LoweredModule>>,
     /// Re-exported reference into `TypedWorkspace.tycons`.  Phase 6 reads both.
     pub tycon_count: u32,
+    /// Stable target-module names, indexed by `ModuleId.0`.
+    ///
+    /// The name each module will carry in the active codegen target
+    /// (populated by the driver from each module's fully-qualified name
+    /// before codegen). Empty in hand-built workspaces and unit tests,
+    /// where codegen falls back to the legacy `module_<id>` segment.
+    /// Names derive from FQNs — not from `ModuleId` ordering — so they
+    /// stay stable when modules are added, removed, or reordered.
+    pub target_names: Vec<String>,
+    /// Type-constructor declarations from the typecheck phase.
+    ///
+    /// Populated by `ridge-lower` from `TypedWorkspace.tycons`; codegen reads
+    /// them to compute record version metadata (`__ridge_v` tags). Empty in
+    /// hand-built workspaces and unit tests — no tags are emitted then.
+    pub tycons: Vec<TyConDecl>,
 }
 
 impl LoweredWorkspace {
@@ -29,6 +44,8 @@ impl LoweredWorkspace {
         Self {
             modules: (0..module_count).map(|_| None).collect(),
             tycon_count,
+            target_names: Vec::new(),
+            tycons: Vec::new(),
         }
     }
 
@@ -41,6 +58,8 @@ impl LoweredWorkspace {
         Self {
             modules,
             tycon_count,
+            target_names: Vec::new(),
+            tycons: Vec::new(),
         }
     }
 }

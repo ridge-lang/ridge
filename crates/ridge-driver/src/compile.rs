@@ -201,7 +201,21 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
 
     let resolved = resolve_workspace(ws_graph);
     let typecheck_result = typecheck_workspace(&resolved);
-    let lowered = lower_workspace(&typecheck_result.typed, &resolved);
+    let mut lowered = lower_workspace(&typecheck_result.typed, &resolved);
+
+    // Seed stable FQN-derived target module names so codegen never derives
+    // names from ModuleId ordering. Mangling cannot fail here: user module
+    // FQNs always carry at least a project prefix, so the reserved `ridge_rt`
+    // atom is unreachable — but fall back to the legacy segment defensively.
+    lowered.target_names = resolved
+        .graph
+        .modules
+        .iter()
+        .map(|m| {
+            ridge_codegen_erl::module::beam_name_for_fqn(&m.fully_qualified_name, m.id)
+                .unwrap_or_else(|_| format!("ridge_module_{}", m.id.0))
+        })
+        .collect();
 
     // ── 3. Collect source maps ────────────────────────────────────────────────
     let source_maps = collect_source_maps(&lowered.modules);

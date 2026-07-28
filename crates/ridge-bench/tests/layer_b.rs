@@ -26,6 +26,7 @@ const EXPECTED_BENCHES: &[&str] = &[
     "bench_list_sum_10k",
     "bench_string_build",
     "bench_record_churn",
+    "bench_record_build_100k",
 ];
 
 #[test]
@@ -68,7 +69,22 @@ fn layer_b_benches_compile_and_report_timings() {
         .beam_files
         .iter()
         .filter_map(|p| p.file_stem().and_then(|s| s.to_str()))
-        .filter(|stem| stem.starts_with("ridge_module_"))
+        .filter(|stem| {
+            // User modules only: FQN-derived `ridge_<project>_...` (current
+            // naming) or legacy `ridge_module_<id>`, excluding the bundled
+            // runtime modules (ridge_rt, ridge_main_runner, ridge_pg, …).
+            stem.starts_with("ridge_")
+                && !matches!(
+                    *stem,
+                    "ridge_rt"
+                        | "ridge_main_runner"
+                        | "ridge_test_runner"
+                        | "ridge_pg"
+                        | "ridge_sup"
+                        | "ridge_sqlite"
+                        | "ridge_bench_runner"
+                )
+        })
         .map(ToOwned::to_owned)
         .collect();
     assert!(

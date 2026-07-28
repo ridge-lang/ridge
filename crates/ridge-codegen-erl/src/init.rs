@@ -781,7 +781,8 @@ mod tests {
             state_field("count", Some(lit_int(0))),
             state_field("limit", Some(lit_int(100))),
         ];
-        let result = lower_init_body(None, &fields, sp(), &crate::scope::CodegenTables::default()).unwrap();
+        let result =
+            lower_init_body(None, &fields, sp(), &crate::scope::CodegenTables::default()).unwrap();
 
         // Must be {'ok', MapLit(...)}.
         match &result {
@@ -799,7 +800,8 @@ mod tests {
     #[test]
     fn init_body_no_init_no_defaults_returns_ok_empty_map() {
         // No fields: returns {'ok', #{}} (empty map).
-        let result = lower_init_body(None, &[], sp(), &crate::scope::CodegenTables::default()).unwrap();
+        let result =
+            lower_init_body(None, &[], sp(), &crate::scope::CodegenTables::default()).unwrap();
         match &result {
             CErlExpr::Tuple(elems) => {
                 assert_eq!(elems.len(), 2);
@@ -853,7 +855,13 @@ mod tests {
             body: lit_unit(), // simple body: just 'ok'
             span: sp(),
         };
-        let result = lower_init_body(Some(&init), &fields, sp(), &crate::scope::CodegenTables::default()).unwrap();
+        let result = lower_init_body(
+            Some(&init),
+            &fields,
+            sp(),
+            &crate::scope::CodegenTables::default(),
+        )
+        .unwrap();
 
         // Must be Let { var: V_State, value: MapLit, body: Do(body, {'ok', V_State}) }
         match &result {

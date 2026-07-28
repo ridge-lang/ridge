@@ -43,7 +43,9 @@ pub(crate) fn build_record_meta(
         let TyConKind::Record(schema) = &decl.kind else {
             continue;
         };
-        let Some(raw) = decl.def_module_raw else { continue };
+        let Some(raw) = decl.def_module_raw else {
+            continue;
+        };
         // No beam name ⇒ no stable module identity (built-ins, hand-built
         // workspaces in unit tests) ⇒ untagged, mirroring the built-in skip.
         let Some(fqn) = beam_names.get(raw as usize).cloned() else {
@@ -122,10 +124,7 @@ mod tests {
 
     #[test]
     fn version_changes_when_layout_changes() {
-        let a = build_record_meta(
-            &[record_decl("User", 0, 0, &[("name", text())])],
-            &beams(),
-        );
+        let a = build_record_meta(&[record_decl("User", 0, 0, &[("name", text())])], &beams());
         let b = build_record_meta(
             &[record_decl(
                 "User",

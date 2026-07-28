@@ -30,8 +30,8 @@ pub(crate) mod letrec_detect;
 pub(crate) mod lit;
 pub(crate) mod messaging;
 pub mod module;
-pub(crate) mod record_meta;
 pub(crate) mod pat;
+pub(crate) mod record_meta;
 pub(crate) mod return_;
 pub(crate) mod scope;
 pub(crate) mod symbol;
@@ -234,11 +234,15 @@ fn codegen_one_module(
     // Beam module name: prefer the stable FQN-derived name the driver seeded
     // into the workspace; fall back to the legacy ModuleId segment for
     // hand-built workspaces (unit tests, snapshot helpers).
-    let beam_name = ws.target_names.get(m.id.0 as usize).cloned().unwrap_or_else(|| {
-        let id_segment = format!("module_{}", m.id.0);
-        module::mangle_module_name(&[id_segment.as_str()], m.id)
-            .unwrap_or_else(|_| format!("ridge_module_{}", m.id.0))
-    });
+    let beam_name = ws
+        .target_names
+        .get(m.id.0 as usize)
+        .cloned()
+        .unwrap_or_else(|| {
+            let id_segment = format!("module_{}", m.id.0);
+            module::mangle_module_name(&[id_segment.as_str()], m.id)
+                .unwrap_or_else(|_| format!("ridge_module_{}", m.id.0))
+        });
 
     let (main, actors) = match module::lower_module_all_named(m, ws, &beam_name) {
         Ok(pair) => pair,

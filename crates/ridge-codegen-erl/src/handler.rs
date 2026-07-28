@@ -49,7 +49,7 @@ use crate::core_ast::{CErlAtom, CErlClause, CErlExpr, CErlLit, CErlPat, CErlVar}
 use crate::error::CodegenError;
 use crate::expr::name_to_erl_var;
 use crate::init::{lower_handler_body_for_call, lower_handler_body_for_cast, state_var};
-use crate::scope::LocalScope;
+use crate::scope::{CodegenTables, LocalScope};
 use ridge_ir::IrHandler;
 use ridge_resolve::ModuleId;
 use rustc_hash::FxHashMap;
@@ -84,9 +84,11 @@ pub(crate) fn lower_handler_call_clause(
     fn_arity: &FxHashMap<String, u32>,
     parent_module_id: ModuleId,
     parent_beam_name: &str,
+    tables: &CodegenTables,
 ) -> Result<CErlClause, CodegenError> {
     let mut scope =
         LocalScope::with_actor_parent(fn_arity.clone(), parent_module_id, parent_beam_name);
+    scope.tables = tables.clone();
     let mut state_idx: u32 = 0;
 
     // Pattern: {handler_tag, P1, ..., PN}
@@ -128,9 +130,11 @@ pub(crate) fn lower_handler_cast_clause(
     fn_arity: &FxHashMap<String, u32>,
     parent_module_id: ModuleId,
     parent_beam_name: &str,
+    tables: &CodegenTables,
 ) -> Result<CErlClause, CodegenError> {
     let mut scope =
         LocalScope::with_actor_parent(fn_arity.clone(), parent_module_id, parent_beam_name);
+    scope.tables = tables.clone();
     let mut state_idx: u32 = 0;
 
     // Pattern: {handler_tag, P1, ..., PN}
@@ -301,7 +305,7 @@ mod tests {
     fn call_clause_pattern_has_handler_tag() {
         let handler = make_handler("increment", vec![make_param("amount")], lit_unit());
         let (pid, pbm) = no_parent();
-        let clause = lower_handler_call_clause(&handler, &FxHashMap::default(), pid, pbm).unwrap();
+        let clause = lower_handler_call_clause(&handler, &FxHashMap::default(), pid, pbm, &CodegenTables::default()).unwrap();
 
         // Pattern must be a Tuple starting with the handler name atom.
         match &clause.pattern {
@@ -320,7 +324,7 @@ mod tests {
     fn call_clause_zero_params_tuple_has_only_tag() {
         let handler = make_handler("reset", vec![], lit_unit());
         let (pid, pbm) = no_parent();
-        let clause = lower_handler_call_clause(&handler, &FxHashMap::default(), pid, pbm).unwrap();
+        let clause = lower_handler_call_clause(&handler, &FxHashMap::default(), pid, pbm, &CodegenTables::default()).unwrap();
 
         match &clause.pattern {
             CErlPat::Tuple(pats) => {
@@ -334,7 +338,7 @@ mod tests {
     fn call_clause_guard_is_true() {
         let handler = make_handler("get", vec![], lit_unit());
         let (pid, pbm) = no_parent();
-        let clause = lower_handler_call_clause(&handler, &FxHashMap::default(), pid, pbm).unwrap();
+        let clause = lower_handler_call_clause(&handler, &FxHashMap::default(), pid, pbm, &CodegenTables::default()).unwrap();
         assert!(
             matches!(&clause.guard, CErlExpr::Lit(CErlLit::Atom(CErlAtom(s))) if s == "true"),
             "guard must be 'true'"
@@ -346,7 +350,7 @@ mod tests {
         // Body must start: let V_State = V_StateArg in ...
         let handler = make_handler("increment", vec![], lit_unit());
         let (pid, pbm) = no_parent();
-        let clause = lower_handler_call_clause(&handler, &FxHashMap::default(), pid, pbm).unwrap();
+        let clause = lower_handler_call_clause(&handler, &FxHashMap::default(), pid, pbm, &CodegenTables::default()).unwrap();
 
         match &clause.body {
             CErlExpr::Let { var, value, .. } => {
@@ -367,9 +371,9 @@ mod tests {
         let handler = make_handler("send_event", vec![make_param("event")], lit_unit());
         let (pid, pbm) = no_parent();
         let call_clause =
-            lower_handler_call_clause(&handler, &FxHashMap::default(), pid, pbm).unwrap();
+            lower_handler_call_clause(&handler, &FxHashMap::default(), pid, pbm, &CodegenTables::default()).unwrap();
         let cast_clause =
-            lower_handler_cast_clause(&handler, &FxHashMap::default(), pid, pbm).unwrap();
+            lower_handler_cast_clause(&handler, &FxHashMap::default(), pid, pbm, &CodegenTables::default()).unwrap();
 
         // Both clauses must have the same pattern structure.
         match (&call_clause.pattern, &cast_clause.pattern) {
@@ -389,7 +393,7 @@ mod tests {
     fn cast_clause_body_contains_noreply() {
         let handler = make_handler("reset", vec![], lit_unit());
         let (pid, pbm) = no_parent();
-        let clause = lower_handler_cast_clause(&handler, &FxHashMap::default(), pid, pbm).unwrap();
+        let clause = lower_handler_cast_clause(&handler, &FxHashMap::default(), pid, pbm, &CodegenTables::default()).unwrap();
 
         // Walk down to find the noreply tuple. Skip past Let and Do — the cast
         // leaf wrap is now `Do { first: <leaf side effect>, then: <noreply> }`
@@ -426,7 +430,7 @@ mod tests {
         };
         let handler = make_handler("ping", vec![], leaf_call);
         let (pid, pbm) = no_parent();
-        let clause = lower_handler_cast_clause(&handler, &FxHashMap::default(), pid, pbm).unwrap();
+        let clause = lower_handler_cast_clause(&handler, &FxHashMap::default(), pid, pbm, &CodegenTables::default()).unwrap();
 
         // The body must contain a Do node whose `then` reaches the noreply tuple;
         // if it doesn't, the leaf side effect would be silently dropped.

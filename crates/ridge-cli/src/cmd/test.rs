@@ -575,7 +575,7 @@ fn discover_tests(typed: &TypedWorkspace, graph: &WorkspaceGraph) -> Vec<Discove
 
     for module in &typed.modules {
         let module_name = module_display_name(module, graph);
-        let beam_module = beam_module_name(module);
+        let beam_module = beam_module_name(module, graph);
 
         for item in &module.ast.items {
             let AstItem::Fn(f) = item else { continue };
@@ -770,12 +770,18 @@ fn module_display_name(module: &TypedModule, graph: &WorkspaceGraph) -> String {
 
 /// Derive the BEAM module name used when spawning `erl`.
 ///
-/// The codegen crate (Phase 6) currently mangles the BEAM module name as
-/// `ridge_module_<id>` (see `codegen_one_module` in `ridge-codegen-erl`).
-/// This is the stable identifier in 0.1.0.  A future task will replace it
-/// with the FQN-derived name once codegen uses full workspace metadata.
-fn beam_module_name(module: &TypedModule) -> String {
-    format!("ridge_module_{}", module.id.0)
+/// Mirrors codegen's FQN-derived naming (`beam_name_for_fqn` in
+/// `ridge-codegen-erl`); falls back to the legacy `module_<id>` segment when
+/// the module is absent from the graph (e.g. stdlib built-ins), matching
+/// codegen's own fallback for unseeded workspaces.
+fn beam_module_name(module: &TypedModule, graph: &WorkspaceGraph) -> String {
+    module_meta(module, graph).map_or_else(
+        || format!("ridge_module_{}", module.id.0),
+        |meta| {
+            ridge_codegen_erl::module::beam_name_for_fqn(&meta.fully_qualified_name, module.id)
+                .unwrap_or_else(|_| format!("ridge_module_{}", module.id.0))
+        },
+    )
 }
 
 // ── BEAM execution ────────────────────────────────────────────────────────────

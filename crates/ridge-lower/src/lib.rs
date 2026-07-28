@@ -85,7 +85,11 @@ pub fn lower_workspace(twork: &TypedWorkspace, rwork: &ResolvedWorkspace) -> Low
     // Safety: a workspace with more than 2^32 TyCons is not a valid Ridge
     // program; treat overflow as saturating (defensive).
     let tycon_count = u32::try_from(twork.tycons.len()).unwrap_or(u32::MAX);
-    LoweredWorkspace::new(modules, tycon_count)
+    let mut ws = LoweredWorkspace::new(modules, tycon_count);
+    // Carry the type-constructor declarations forward so codegen can compute
+    // record version metadata without re-running any typecheck pass.
+    ws.tycons = twork.tycons.clone();
+    ws
 }
 
 /// Lower a single typed module to Core IR.

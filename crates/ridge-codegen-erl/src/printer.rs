@@ -36,15 +36,15 @@ pub fn print_module(m: &CErlModule) -> String {
     }
     s.push_str("]\n");
 
-    // attributes [...]
+    // attributes ['name' = [value], ...]
     s.push_str("  attributes [");
     for (i, attr) in m.attributes.iter().enumerate() {
         if i > 0 {
             s.push_str(", ");
         }
         let name = print_atom(&attr.name);
-        let val = print_lit(&attr.value);
-        let _ = write!(s, "{{{name},[{val}]}}");
+        let val = print_expr(&attr.value);
+        let _ = write!(s, "{name} = [{val}]");
     }
     s.push_str("]\n");
 
@@ -800,7 +800,7 @@ mod tests {
             ],
             attributes: vec![CErlAttribute {
                 name: CErlAtom("file".into()),
-                value: CErlLit::Atom(CErlAtom("smoke.ridge".into())),
+                value: CErlExpr::Lit(CErlLit::Atom(CErlAtom("smoke.ridge".into()))),
             }],
             fns: vec![
                 CErlFn {

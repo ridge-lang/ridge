@@ -14,7 +14,64 @@ CErlModule {
             arity: 0,
         },
     ],
-    attributes: [],
+    attributes: [
+        CErlAttribute {
+            name: CErlAtom(
+                "ridge_meta",
+            ),
+            value: Tuple(
+                [
+                    Lit(
+                        Atom(
+                            CErlAtom(
+                                "ridge_meta_v1",
+                            ),
+                        ),
+                    ),
+                    Lit(
+                        Atom(
+                            CErlAtom(
+                                "ridge_module_0",
+                            ),
+                        ),
+                    ),
+                    ListLit(
+                        [
+                            Tuple(
+                                [
+                                    Lit(
+                                        Atom(
+                                            CErlAtom(
+                                                "fn",
+                                            ),
+                                        ),
+                                    ),
+                                    Lit(
+                                        Atom(
+                                            CErlAtom(
+                                                "main",
+                                            ),
+                                        ),
+                                    ),
+                                    Lit(
+                                        Int(
+                                            0,
+                                        ),
+                                    ),
+                                    ListLit(
+                                        [],
+                                    ),
+                                ],
+                            ),
+                        ],
+                    ),
+                    ListLit(
+                        [],
+                    ),
+                ],
+            ),
+        },
+    ],
     fns: [
         CErlFn {
             name: CErlAtom(

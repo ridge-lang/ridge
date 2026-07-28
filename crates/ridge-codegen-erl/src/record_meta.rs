@@ -7,6 +7,10 @@
 //! code loader reads the tag to decide when a live value needs migration;
 //! anonymous inline records stay untagged (they have no stable identity).
 
+// pub(crate) on items in a pub(crate) module is redundant per clippy; kept
+// for explicitness, matching the convention in `module.rs`.
+#![allow(clippy::redundant_pub_crate)]
+
 use ridge_types::{TyConDecl, TyConId, TyConKind};
 use rustc_hash::{FxHashMap, FxHasher};
 use std::hash::Hasher;

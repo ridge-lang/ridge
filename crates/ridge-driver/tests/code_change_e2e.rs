@@ -1,7 +1,7 @@
 //! End-to-end check that the OTP hot-upgrade seam works on a compiled Ridge
-//! actor: `sys:change_code/4` against a live gen_server preserves its state,
-//! and the actor module exposes `__ridge_state_version/0` for the future code
-//! loader to read.
+//! actor: `sys:change_code/4` against a live `gen_server` preserves its
+//! state, and the actor module exposes `__ridge_state_version/0` for the
+//! future code loader to read.
 //!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 

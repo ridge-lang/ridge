@@ -281,7 +281,7 @@ pub(crate) fn lower_module_with_name(
 // ── ridge_meta beam attribute ────────────────────────────────────────────────
 
 /// Lowercase atom name for a capability, in bit order (spec §3.5).
-fn capability_atom(c: ridge_ast::Capability) -> &'static str {
+const fn capability_atom(c: ridge_ast::Capability) -> &'static str {
     match c {
         ridge_ast::Capability::Io => "io",
         ridge_ast::Capability::Fs => "fs",

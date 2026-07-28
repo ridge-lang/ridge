@@ -1412,14 +1412,13 @@ fn lower_static_call(
                 .iter()
                 .map(|a| lower_expr_in_scope(a, scope))
                 .collect::<Result<Vec<_>, _>>()?;
-            let beam_module = match scope.tables.beam_names.get(module.0 as usize) {
-                Some(name) => name.clone(),
-                None => {
-                    // Legacy fallback (unit tests without a workspace table):
-                    // derive the segment from the ModuleId.
-                    let segment = format!("module_{}", module.0);
-                    crate::module::mangle_module_name(&[segment.as_str()], *module)?
-                }
+            let beam_module = if let Some(name) = scope.tables.beam_names.get(module.0 as usize) {
+                name.clone()
+            } else {
+                // Legacy fallback (unit tests without a workspace table):
+                // derive the segment from the ModuleId.
+                let segment = format!("module_{}", module.0);
+                crate::module::mangle_module_name(&[segment.as_str()], *module)?
             };
             Ok(CErlExpr::Call {
                 module: CErlAtom(beam_module),

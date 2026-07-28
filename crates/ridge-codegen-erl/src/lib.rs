@@ -435,14 +435,15 @@ pub fn codegen_module(
     ws: &LoweredWorkspace,
     _opts: &CodegenOptions,
 ) -> CodegenModuleResult {
-    let lowered = if let Some(name) = ws.target_names.get(m.id.0 as usize) {
-        module::lower_module_with_name(m, ws, name)
-    } else {
-        // Legacy fallback for hand-built workspaces: derive the segment from
-        // the module id.
-        let id_segment = format!("module_{}", m.id.0);
-        module::lower_module(m, ws, &[id_segment.as_str()])
-    };
+    let lowered = ws.target_names.get(m.id.0 as usize).map_or_else(
+        || {
+            // Legacy fallback for hand-built workspaces: derive the segment
+            // from the module id.
+            let id_segment = format!("module_{}", m.id.0);
+            module::lower_module(m, ws, &[id_segment.as_str()])
+        },
+        |name| module::lower_module_with_name(m, ws, name),
+    );
 
     match lowered {
         Ok(cerl_module) => CodegenModuleResult {

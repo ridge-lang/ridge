@@ -9,6 +9,7 @@ pub mod fmt;
 pub mod init;
 pub mod migrate;
 pub mod new;
+pub mod reload;
 pub mod repl;
 pub mod run;
 pub mod test;

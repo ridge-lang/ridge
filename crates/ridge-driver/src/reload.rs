@@ -4,12 +4,13 @@
 use std::path::{Path, PathBuf};
 
 use ridge_diagnostics::Severity;
-use ridge_reload::check::CheckReport;
 use ridge_reload::snapshot::WorkspaceSnapshot;
 
 use crate::check::check_workspace_typed;
 use crate::error::CheckError;
 use crate::options::CheckOptions;
+
+pub use ridge_reload::check::{CheckReport, Verdict};
 
 /// Where a profile's snapshot lives inside the workspace.
 #[must_use]

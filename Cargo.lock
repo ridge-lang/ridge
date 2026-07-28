@@ -1828,6 +1828,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ridge-reload"
+version = "0.3.0-rc4"
+dependencies = [
+ "ridge-ast",
+ "ridge-resolve",
+ "ridge-typecheck",
+ "ridge-types",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "ridge-resolve"
 version = "0.3.0-rc4"
 dependencies = [

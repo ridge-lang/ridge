@@ -1,0 +1,21 @@
+[package]
+name        = "ridge-reload"
+description = "Workspace snapshots, compatibility diffing, and reload checks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive", "rc"] }
+serde_json.workspace = true
+rustc-hash.workspace = true
+ridge-ast = { path = "../ridge-ast" }
+ridge-resolve = { path = "../ridge-resolve" }
+ridge-typecheck = { path = "../ridge-typecheck" }
+ridge-types = { path = "../ridge-types" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

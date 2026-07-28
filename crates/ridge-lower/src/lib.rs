@@ -88,7 +88,7 @@ pub fn lower_workspace(twork: &TypedWorkspace, rwork: &ResolvedWorkspace) -> Low
     let mut ws = LoweredWorkspace::new(modules, tycon_count);
     // Carry the type-constructor declarations forward so codegen can compute
     // record version metadata without re-running any typecheck pass.
-    ws.tycons = twork.tycons.clone();
+    ws.tycons.clone_from(&twork.tycons);
     ws
 }
 

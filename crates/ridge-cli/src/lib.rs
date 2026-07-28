@@ -66,6 +66,13 @@ pub enum RidgeCommand {
     /// `Add-Migration`: it diffs the model against the last snapshot and
     /// writes a new migration file plus a refreshed snapshot.
     Migrate(cmd::migrate::MigrateArgs),
+    /// Source-level reload tooling.
+    ///
+    /// `ridge reload --check` diffs the last build's snapshot against the
+    /// current source and reports, per public symbol, whether a reload would
+    /// be compatible, need a generated migration, or be incompatible. Exit
+    /// code is 0 only when the report is reloadable with no scaffold holes.
+    Reload(cmd::reload::ReloadArgs),
     /// Start an interactive REPL session.
     ///
     /// Reads expressions from stdin, evaluates each one, and prints the result.

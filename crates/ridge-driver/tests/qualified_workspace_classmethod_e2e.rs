@@ -113,7 +113,7 @@ fn qualified_workspace_classmethod_dispatch_survives_beam() {
         .beam_files
         .iter()
         .filter_map(|p| p.file_stem().and_then(|s| s.to_str()))
-        .filter(|stem| stem.starts_with("ridge_module_"))
+        .filter(|stem| stem.starts_with("ridge_") && !matches!(*stem, "ridge_rt" | "ridge_main_runner" | "ridge_test_runner" | "ridge_pg" | "ridge_sup" | "ridge_sqlite" | "ridge_bench_runner"))
         .map(ToOwned::to_owned)
         .collect();
     assert!(!modules.is_empty(), "expected at least one user module");

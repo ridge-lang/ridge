@@ -21,10 +21,14 @@ pub enum FieldAction {
 /// anything else treats additions (and retypes) as holes.
 #[must_use]
 pub fn field_plan(old: &[FieldSnap], new: &[FieldSnap]) -> Vec<FieldAction> {
-    let old_pairs: Vec<(&str, &str)> =
-        old.iter().map(|f| (f.name.as_str(), f.ty.as_str())).collect();
-    let new_pairs: Vec<(&str, &str)> =
-        new.iter().map(|f| (f.name.as_str(), f.ty.as_str())).collect();
+    let old_pairs: Vec<(&str, &str)> = old
+        .iter()
+        .map(|f| (f.name.as_str(), f.ty.as_str()))
+        .collect();
+    let new_pairs: Vec<(&str, &str)> = new
+        .iter()
+        .map(|f| (f.name.as_str(), f.ty.as_str()))
+        .collect();
     plan_impl(&old_pairs, &new_pairs)
 }
 
@@ -35,10 +39,14 @@ pub fn field_plan(old: &[FieldSnap], new: &[FieldSnap]) -> Vec<FieldAction> {
 /// addition here becomes a hole.
 #[must_use]
 pub fn state_plan(old: &[StateSnap], new: &[StateSnap]) -> Vec<FieldAction> {
-    let old_pairs: Vec<(&str, &str)> =
-        old.iter().map(|f| (f.name.as_str(), f.ty.as_str())).collect();
-    let new_pairs: Vec<(&str, &str)> =
-        new.iter().map(|f| (f.name.as_str(), f.ty.as_str())).collect();
+    let old_pairs: Vec<(&str, &str)> = old
+        .iter()
+        .map(|f| (f.name.as_str(), f.ty.as_str()))
+        .collect();
+    let new_pairs: Vec<(&str, &str)> = new
+        .iter()
+        .map(|f| (f.name.as_str(), f.ty.as_str()))
+        .collect();
     plan_impl(&old_pairs, &new_pairs)
 }
 
@@ -68,13 +76,21 @@ fn plan_impl(old: &[(&str, &str)], new: &[(&str, &str)]) -> Vec<FieldAction> {
         .map(|(n, t)| {
             if let Some((from, to)) = rename {
                 if *n == to {
-                    return FieldAction::Rename { from: from.to_string(), to: to.to_string() };
+                    return FieldAction::Rename {
+                        from: from.to_string(),
+                        to: to.to_string(),
+                    };
                 }
             }
             match old.iter().find(|(on, _)| on == n) {
-                Some((_, ot)) if ot == t => FieldAction::Keep { name: (*n).to_string() },
+                Some((_, ot)) if ot == t => FieldAction::Keep {
+                    name: (*n).to_string(),
+                },
                 // Added or retyped: the compiler cannot invent the value.
-                _ => FieldAction::Hole { name: (*n).to_string(), ty: (*t).to_string() },
+                _ => FieldAction::Hole {
+                    name: (*n).to_string(),
+                    ty: (*t).to_string(),
+                },
             }
         })
         .collect()
@@ -94,8 +110,10 @@ pub fn record_migrate(
     plan: &[FieldAction],
     auto_fills: &[(String, String)],
 ) -> String {
-    let fields: Vec<String> =
-        new_fields.iter().map(|f| format!("{}: {}", f.name, f.ty)).collect();
+    let fields: Vec<String> = new_fields
+        .iter()
+        .map(|f| format!("{}: {}", f.name, f.ty))
+        .collect();
     let new_version = old_version.saturating_add(1);
     format!(
         "// module: {module_fqn}\ntype {name} @version({new_version}) = {} do\n{}\nend\n",
@@ -131,18 +149,27 @@ fn migrate_block(
         .map(|a| match a {
             FieldAction::Keep { name } => format!("{name}: old.{name}"),
             FieldAction::Rename { from, to } => format!("{to}: old.{from}"),
-            FieldAction::Hole { name, .. } => auto_fills
-                .iter()
-                .find(|(n, _)| n == name)
-                .map_or_else(|| format!("{name}: ???"), |(_, expr)| format!("{name}: {expr}")),
+            FieldAction::Hole { name, .. } => {
+                auto_fills.iter().find(|(n, _)| n == name).map_or_else(
+                    || format!("{name}: ???"),
+                    |(_, expr)| format!("{name}: {expr}"),
+                )
+            }
         })
         .collect();
-    format!("{pad}migrate (old: {name}@{old_version}) -> {name} =\n{inner}{}", brace_list(&entries))
+    format!(
+        "{pad}migrate (old: {name}@{old_version}) -> {name} =\n{inner}{}",
+        brace_list(&entries)
+    )
 }
 
 /// `{ a, b, c }` — or `{}` when empty.
 fn brace_list(items: &[String]) -> String {
-    if items.is_empty() { "{}".to_string() } else { format!("{{ {} }}", items.join(", ")) }
+    if items.is_empty() {
+        "{}".to_string()
+    } else {
+        format!("{{ {} }}", items.join(", "))
+    }
 }
 
 #[cfg(test)]
@@ -152,7 +179,10 @@ mod tests {
     fn fields(pairs: &[(&str, &str)]) -> Vec<FieldSnap> {
         pairs
             .iter()
-            .map(|(n, t)| FieldSnap { name: (*n).to_string(), ty: (*t).to_string() })
+            .map(|(n, t)| FieldSnap {
+                name: (*n).to_string(),
+                ty: (*t).to_string(),
+            })
             .collect()
     }
 
@@ -174,8 +204,12 @@ mod tests {
         assert_eq!(
             plan,
             vec![
-                FieldAction::Keep { name: "name".to_string() },
-                FieldAction::Keep { name: "age".to_string() },
+                FieldAction::Keep {
+                    name: "name".to_string()
+                },
+                FieldAction::Keep {
+                    name: "age".to_string()
+                },
             ]
         );
     }
@@ -188,8 +222,13 @@ mod tests {
         assert_eq!(
             plan,
             vec![
-                FieldAction::Rename { from: "name".to_string(), to: "full_name".to_string() },
-                FieldAction::Keep { name: "age".to_string() },
+                FieldAction::Rename {
+                    from: "name".to_string(),
+                    to: "full_name".to_string()
+                },
+                FieldAction::Keep {
+                    name: "age".to_string()
+                },
             ]
         );
     }
@@ -202,15 +241,23 @@ mod tests {
         assert_eq!(
             plan,
             vec![
-                FieldAction::Keep { name: "name".to_string() },
-                FieldAction::Hole { name: "email".to_string(), ty: "Text".to_string() },
+                FieldAction::Keep {
+                    name: "name".to_string()
+                },
+                FieldAction::Hole {
+                    name: "email".to_string(),
+                    ty: "Text".to_string()
+                },
             ]
         );
         // A retype is a hole too: the old value no longer fits.
         let retyped = fields(&[("name", "Int")]);
         assert_eq!(
             field_plan(&old, &retyped),
-            vec![FieldAction::Hole { name: "name".to_string(), ty: "Int".to_string() }]
+            vec![FieldAction::Hole {
+                name: "name".to_string(),
+                ty: "Int".to_string()
+            }]
         );
     }
 
@@ -220,7 +267,10 @@ mod tests {
         let new = states(&[("total", "Int", true)]);
         assert_eq!(
             state_plan(&old, &new),
-            vec![FieldAction::Rename { from: "count".to_string(), to: "total".to_string() }]
+            vec![FieldAction::Rename {
+                from: "count".to_string(),
+                to: "total".to_string()
+            }]
         );
     }
 
@@ -249,8 +299,13 @@ mod tests {
     #[test]
     fn actor_scaffold_text() {
         let plan = vec![
-            FieldAction::Keep { name: "count".to_string() },
-            FieldAction::Hole { name: "step".to_string(), ty: "Int".to_string() },
+            FieldAction::Keep {
+                name: "count".to_string(),
+            },
+            FieldAction::Hole {
+                name: "step".to_string(),
+                ty: "Int".to_string(),
+            },
         ];
         let fills = vec![("step".to_string(), "1".to_string())];
         let text = actor_migrate("Counter", 1, &plan, &fills);

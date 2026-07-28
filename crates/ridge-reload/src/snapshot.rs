@@ -38,13 +38,22 @@ pub enum SymbolSnapshot {
     /// A constant: rendered type.
     Const { signature: String },
     /// A record type with its layout version and declared fields.
-    Record { version: u32, fields: Vec<FieldSnap> },
+    Record {
+        version: u32,
+        fields: Vec<FieldSnap>,
+    },
     /// A union type with its layout version and declared variants.
-    Union { version: u32, variants: Vec<VariantSnap> },
+    Union {
+        version: u32,
+        variants: Vec<VariantSnap>,
+    },
     /// A type alias: rendered expansion.
     Alias { target: String },
     /// An actor: state fields and message-handler capability bits.
-    Actor { state: Vec<StateSnap>, handlers: BTreeMap<String, u16> },
+    Actor {
+        state: Vec<StateSnap>,
+        handlers: BTreeMap<String, u16>,
+    },
 }
 
 /// A record field: name and rendered type.
@@ -82,17 +91,17 @@ pub struct VariantSnap {
 /// symbols are captured. Synthesised constructors and field accessors are
 /// covered by their owner type's snapshot and skipped.
 #[must_use]
-pub fn extract_snapshot(
-    resolved: &ResolvedWorkspace,
-    typed: &TypedWorkspace,
-) -> WorkspaceSnapshot {
+pub fn extract_snapshot(resolved: &ResolvedWorkspace, typed: &TypedWorkspace) -> WorkspaceSnapshot {
     let module_fqns: Vec<String> = resolved
         .graph
         .modules
         .iter()
         .map(|m| m.fully_qualified_name.clone())
         .collect();
-    let ctx = RenderCtx { tycons: &typed.tycons, module_fqns: &module_fqns };
+    let ctx = RenderCtx {
+        tycons: &typed.tycons,
+        module_fqns: &module_fqns,
+    };
 
     let mut modules = BTreeMap::new();
     for rmod in &resolved.modules {
@@ -108,7 +117,10 @@ pub fn extract_snapshot(
             continue;
         };
         let empty_schemes = rustc_hash::FxHashMap::default();
-        let schemes = typed.module_schemes.get(rmod.id.0 as usize).unwrap_or(&empty_schemes);
+        let schemes = typed
+            .module_schemes
+            .get(rmod.id.0 as usize)
+            .unwrap_or(&empty_schemes);
 
         let mut symbols = BTreeMap::new();
         for entry in &rmod.symbols.entries {
@@ -121,7 +133,10 @@ pub fn extract_snapshot(
                         .get(&entry.name)
                         .map_or_else(|| "?".to_string(), |s| render_scheme(&ctx, s));
                     let caps_bits = fn_caps_bits(ast, &entry.name, caps, tmod);
-                    SymbolSnapshot::Fn { signature, caps_bits }
+                    SymbolSnapshot::Fn {
+                        signature,
+                        caps_bits,
+                    }
                 }
                 SymbolKind::Const => {
                     let signature = schemes
@@ -139,9 +154,7 @@ pub fn extract_snapshot(
                     let state = actor_state_snaps(ast, &entry.name);
                     let handlers = handlers
                         .iter()
-                        .map(|h| {
-                            (h.name.clone(), caps_from_ast_slice(&h.caps).bits())
-                        })
+                        .map(|h| (h.name.clone(), caps_from_ast_slice(&h.caps).bits()))
                         .collect();
                     SymbolSnapshot::Actor { state, handlers }
                 }
@@ -154,7 +167,10 @@ pub fn extract_snapshot(
         modules.insert(fqn, ModuleSnapshot { symbols });
     }
 
-    WorkspaceSnapshot { format: SNAPSHOT_FORMAT, modules }
+    WorkspaceSnapshot {
+        format: SNAPSHOT_FORMAT,
+        modules,
+    }
 }
 
 /// Inferred capability bits for a top-level fn, read through the proxy
@@ -199,7 +215,10 @@ fn type_snapshot(
             fields: schema
                 .record_fields()
                 .iter()
-                .map(|f| FieldSnap { name: f.name.clone(), ty: render_type(ctx, &f.ty) })
+                .map(|f| FieldSnap {
+                    name: f.name.clone(),
+                    ty: render_type(ctx, &f.ty),
+                })
                 .collect(),
         }),
         TyConKind::Union(schema) => Some(SymbolSnapshot::Union {
@@ -224,13 +243,17 @@ fn type_snapshot(
                             format!("{{{}}}", fs.join(", "))
                         }
                     };
-                    VariantSnap { name: v.name.clone(), payload }
+                    VariantSnap {
+                        name: v.name.clone(),
+                        payload,
+                    }
                 })
                 .collect(),
         }),
         TyConKind::Alias { params, body } => Some(SymbolSnapshot::Alias {
             target: render_type_vars(ctx, body, params),
-        }),        _ => None,
+        }),
+        _ => None,
     }
 }
 
@@ -315,7 +338,10 @@ pub actor Counter =
         assert!(module.symbols.contains_key("answer"), "pub fn captured");
         assert!(module.symbols.contains_key("User"), "pub record captured");
         assert!(module.symbols.contains_key("Counter"), "pub actor captured");
-        assert!(!module.symbols.contains_key("_helper"), "file-private fn skipped");
+        assert!(
+            !module.symbols.contains_key("_helper"),
+            "file-private fn skipped"
+        );
         match &module.symbols["answer"] {
             SymbolSnapshot::Fn { signature, .. } => assert_eq!(signature, "fn() -> Int"),
             other => panic!("answer should be a fn, got {other:?}"),
@@ -327,21 +353,33 @@ pub actor Counter =
         let mut symbols = BTreeMap::new();
         symbols.insert(
             "answer".to_string(),
-            SymbolSnapshot::Fn { signature: "fn() -> Int".to_string(), caps_bits: 0 },
+            SymbolSnapshot::Fn {
+                signature: "fn() -> Int".to_string(),
+                caps_bits: 0,
+            },
         );
         symbols.insert(
             "User".to_string(),
             SymbolSnapshot::Record {
                 version: 1,
                 fields: vec![
-                    FieldSnap { name: "name".to_string(), ty: "Text".to_string() },
-                    FieldSnap { name: "age".to_string(), ty: "Int".to_string() },
+                    FieldSnap {
+                        name: "name".to_string(),
+                        ty: "Text".to_string(),
+                    },
+                    FieldSnap {
+                        name: "age".to_string(),
+                        ty: "Int".to_string(),
+                    },
                 ],
             },
         );
         let mut modules = BTreeMap::new();
         modules.insert("demo.main".to_string(), ModuleSnapshot { symbols });
-        let snap = WorkspaceSnapshot { format: SNAPSHOT_FORMAT, modules };
+        let snap = WorkspaceSnapshot {
+            format: SNAPSHOT_FORMAT,
+            modules,
+        };
 
         let json = serde_json::to_string_pretty(&snap).expect("serialize");
         let back: WorkspaceSnapshot = serde_json::from_str(&json).expect("deserialize");
@@ -356,8 +394,10 @@ pub actor Counter =
         match &module.symbols["User"] {
             SymbolSnapshot::Record { version, fields } => {
                 assert_eq!(*version, 1);
-                let got: Vec<(&str, &str)> =
-                    fields.iter().map(|f| (f.name.as_str(), f.ty.as_str())).collect();
+                let got: Vec<(&str, &str)> = fields
+                    .iter()
+                    .map(|f| (f.name.as_str(), f.ty.as_str()))
+                    .collect();
                 assert_eq!(got, [("name", "Text"), ("age", "Int")]);
             }
             other => panic!("User should be a record, got {other:?}"),

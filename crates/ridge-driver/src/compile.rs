@@ -378,7 +378,10 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
     // Persist the public surface so a later `reload --check` can diff against
     // it. Only written when the workspace compiled without errors; write
     // failures are logged and ignored.
-    if !diagnostics.iter().any(|d| matches!(d.severity, Severity::Error)) {
+    if !diagnostics
+        .iter()
+        .any(|d| matches!(d.severity, Severity::Error))
+    {
         let snapshot = ridge_reload::snapshot::extract_snapshot(&resolved, &typecheck_result.typed);
         match serde_json::to_string_pretty(&snapshot) {
             Ok(json) => {

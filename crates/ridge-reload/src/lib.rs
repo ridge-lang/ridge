@@ -4,13 +4,10 @@
 //! snapshots, and classifying each change. No filesystem or target-runtime
 //! access lives here — callers (driver, CLI) own all I/O.
 
-#![cfg_attr(
-    test,
-    allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)
-)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+pub mod check;
+pub mod diff;
 pub mod render;
 pub mod scaffold;
 pub mod snapshot;
-pub mod check;
-pub mod diff;

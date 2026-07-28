@@ -10,5 +10,7 @@
 )]
 
 pub mod render;
+pub mod scaffold;
 pub mod snapshot;
+pub mod check;
 pub mod diff;

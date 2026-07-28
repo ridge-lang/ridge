@@ -30,3 +30,11 @@ pub fn bench_record_churn () -> Int =
         List.range 1 10000
      |> List.fold (fn acc x -> acc with { v = acc.v + x, n = acc.n + 1 }) (Cell { v = 0, n = 0 })
     f.v + f.n
+
+-- Record construction heavy: 100k fresh records, one field read each.
+-- Exercises the allocation path of the record runtime representation.
+pub fn bench_record_build_100k () -> Int =
+    List.range 1 100000
+ |> List.fold (fn acc x ->
+        let c = Cell { v = x, n = x }
+        acc + c.v) 0

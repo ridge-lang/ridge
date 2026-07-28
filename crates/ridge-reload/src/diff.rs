@@ -15,9 +15,15 @@ pub enum ModuleChange {
     /// Module exists only in the new snapshot.
     Added { fqn: String },
     /// Module exists only in the old snapshot.
-    Removed { fqn: String, had_public_symbols: bool },
+    Removed {
+        fqn: String,
+        had_public_symbols: bool,
+    },
     /// Module exists in both with at least one symbol change.
-    Changed { fqn: String, symbols: Vec<SymbolChange> },
+    Changed {
+        fqn: String,
+        symbols: Vec<SymbolChange>,
+    },
 }
 
 /// A symbol-level change.
@@ -26,13 +32,28 @@ pub enum SymbolChange {
     /// Symbol exists only in the new snapshot.
     Added { name: String },
     /// Symbol exists only in the old snapshot.
-    Removed { name: String, old_kind: &'static str },
+    Removed {
+        name: String,
+        old_kind: &'static str,
+    },
     /// Same fn, different rendered signature.
-    FnSignatureChanged { name: String, old: String, new: String },
+    FnSignatureChanged {
+        name: String,
+        old: String,
+        new: String,
+    },
     /// Same fn and signature, different capability bits.
-    FnCapsChanged { name: String, old_bits: u16, new_bits: u16 },
+    FnCapsChanged {
+        name: String,
+        old_bits: u16,
+        new_bits: u16,
+    },
     /// Same const, different rendered type.
-    ConstChanged { name: String, old: String, new: String },
+    ConstChanged {
+        name: String,
+        old: String,
+        new: String,
+    },
     /// Record whose declared fields differ.
     RecordShapeChanged {
         name: String,
@@ -50,7 +71,11 @@ pub enum SymbolChange {
         payload_changed: Vec<String>,
     },
     /// Alias whose rendered expansion changed.
-    AliasChanged { name: String, old: String, new: String },
+    AliasChanged {
+        name: String,
+        old: String,
+        new: String,
+    },
     /// Actor whose state field list differs.
     ActorStateChanged {
         name: String,
@@ -66,7 +91,11 @@ pub enum SymbolChange {
         caps_changed: Vec<(String, u16, u16)>,
     },
     /// Same name, different symbol kind.
-    KindChanged { name: String, old_kind: &'static str, new_kind: &'static str },
+    KindChanged {
+        name: String,
+        old_kind: &'static str,
+        new_kind: &'static str,
+    },
 }
 
 /// Diffs old against new. Module and symbol order in the result is
@@ -88,7 +117,10 @@ pub fn diff(old: &WorkspaceSnapshot, new: &WorkspaceSnapshot) -> ChangeSet {
             (Some(om), Some(nm)) => {
                 let symbols = diff_symbols(&om.symbols, &nm.symbols);
                 if !symbols.is_empty() {
-                    modules.push(ModuleChange::Changed { fqn: fqn.clone(), symbols });
+                    modules.push(ModuleChange::Changed {
+                        fqn: fqn.clone(),
+                        symbols,
+                    });
                 }
             }
             (None, None) => {}
@@ -111,7 +143,10 @@ fn diff_symbols(
     for name in names {
         match (old.get(name), new.get(name)) {
             (Some(o), None) => {
-                out.push(SymbolChange::Removed { name: name.clone(), old_kind: kind_name(o) });
+                out.push(SymbolChange::Removed {
+                    name: name.clone(),
+                    old_kind: kind_name(o),
+                });
             }
             (None, Some(_)) => out.push(SymbolChange::Added { name: name.clone() }),
             (Some(o), Some(n)) => diff_symbol_pair(name, o, n, &mut out),
@@ -135,8 +170,14 @@ fn diff_symbol_pair(
 ) {
     match (old, new) {
         (
-            SymbolSnapshot::Fn { signature: os, caps_bits: ob },
-            SymbolSnapshot::Fn { signature: ns, caps_bits: nb },
+            SymbolSnapshot::Fn {
+                signature: os,
+                caps_bits: ob,
+            },
+            SymbolSnapshot::Fn {
+                signature: ns,
+                caps_bits: nb,
+            },
         ) => {
             if os != ns {
                 out.push(SymbolChange::FnSignatureChanged {
@@ -162,7 +203,10 @@ fn diff_symbol_pair(
             }
         }
         (
-            SymbolSnapshot::Record { version: ov, fields: of },
+            SymbolSnapshot::Record {
+                version: ov,
+                fields: of,
+            },
             SymbolSnapshot::Record { fields: nf, .. },
         ) => {
             if of != nf {
@@ -175,8 +219,13 @@ fn diff_symbol_pair(
             }
         }
         (
-            SymbolSnapshot::Union { version: ov, variants: ovars },
-            SymbolSnapshot::Union { variants: nvars, .. },
+            SymbolSnapshot::Union {
+                version: ov,
+                variants: ovars,
+            },
+            SymbolSnapshot::Union {
+                variants: nvars, ..
+            },
         ) => {
             let added: Vec<VariantSnap> = nvars
                 .iter()
@@ -218,8 +267,14 @@ fn diff_symbol_pair(
             }
         }
         (
-            SymbolSnapshot::Actor { state: os, handlers: oh },
-            SymbolSnapshot::Actor { state: ns, handlers: nh },
+            SymbolSnapshot::Actor {
+                state: os,
+                handlers: oh,
+            },
+            SymbolSnapshot::Actor {
+                state: ns,
+                handlers: nh,
+            },
         ) => {
             if os != ns {
                 out.push(SymbolChange::ActorStateChanged {
@@ -228,14 +283,22 @@ fn diff_symbol_pair(
                     new_state: ns.clone(),
                 });
             }
-            let added: Vec<String> =
-                nh.keys().filter(|h| !oh.contains_key(*h)).cloned().collect();
-            let removed: Vec<String> =
-                oh.keys().filter(|h| !nh.contains_key(*h)).cloned().collect();
+            let added: Vec<String> = nh
+                .keys()
+                .filter(|h| !oh.contains_key(*h))
+                .cloned()
+                .collect();
+            let removed: Vec<String> = oh
+                .keys()
+                .filter(|h| !nh.contains_key(*h))
+                .cloned()
+                .collect();
             let caps_changed: Vec<(String, u16, u16)> = oh
                 .iter()
                 .filter_map(|(h, ob)| {
-                    nh.get(h).filter(|nb| *nb != ob).map(|nb| (h.clone(), *ob, *nb))
+                    nh.get(h)
+                        .filter(|nb| *nb != ob)
+                        .map(|nb| (h.clone(), *ob, *nb))
                 })
                 .collect();
             if !added.is_empty() || !removed.is_empty() || !caps_changed.is_empty() {
@@ -279,7 +342,10 @@ mod tests {
     use super::*;
 
     fn fun(sig: &str, bits: u16) -> SymbolSnapshot {
-        SymbolSnapshot::Fn { signature: sig.to_string(), caps_bits: bits }
+        SymbolSnapshot::Fn {
+            signature: sig.to_string(),
+            caps_bits: bits,
+        }
     }
 
     fn record(fields: &[(&str, &str)]) -> SymbolSnapshot {
@@ -287,7 +353,10 @@ mod tests {
             version: 1,
             fields: fields
                 .iter()
-                .map(|(n, t)| FieldSnap { name: (*n).to_string(), ty: (*t).to_string() })
+                .map(|(n, t)| FieldSnap {
+                    name: (*n).to_string(),
+                    ty: (*t).to_string(),
+                })
                 .collect(),
         }
     }
@@ -297,7 +366,10 @@ mod tests {
             version: 1,
             variants: variants
                 .iter()
-                .map(|(n, p)| VariantSnap { name: (*n).to_string(), payload: (*p).to_string() })
+                .map(|(n, p)| VariantSnap {
+                    name: (*n).to_string(),
+                    payload: (*p).to_string(),
+                })
                 .collect(),
         }
     }
@@ -352,8 +424,13 @@ mod tests {
         assert_eq!(
             diff(&old, &new).modules,
             vec![
-                ModuleChange::Added { fqn: "app.new".to_string() },
-                ModuleChange::Removed { fqn: "app.old".to_string(), had_public_symbols: true },
+                ModuleChange::Added {
+                    fqn: "app.new".to_string()
+                },
+                ModuleChange::Removed {
+                    fqn: "app.old".to_string(),
+                    had_public_symbols: true
+                },
             ]
         );
         // A removed module with no public symbols reports had_public_symbols = false.
@@ -361,16 +438,30 @@ mod tests {
         assert_eq!(
             diff(&old2, &new).modules,
             vec![
-                ModuleChange::Removed { fqn: "app.empty".to_string(), had_public_symbols: false },
-                ModuleChange::Added { fqn: "app.new".to_string() },
+                ModuleChange::Removed {
+                    fqn: "app.empty".to_string(),
+                    had_public_symbols: false
+                },
+                ModuleChange::Added {
+                    fqn: "app.new".to_string()
+                },
             ]
         );
     }
 
     #[test]
     fn added_removed_changed_symbols() {
-        let old = ws(&[("app.m", &[("a", fun("fn() -> Int", 0)), ("b", fun("fn() -> Int", 0))])]);
-        let new = ws(&[("app.m", &[("a", fun("fn(Int) -> Int", 0)), ("c", fun("fn() -> Int", 0))])]);
+        let old = ws(&[(
+            "app.m",
+            &[("a", fun("fn() -> Int", 0)), ("b", fun("fn() -> Int", 0))],
+        )]);
+        let new = ws(&[(
+            "app.m",
+            &[
+                ("a", fun("fn(Int) -> Int", 0)),
+                ("c", fun("fn() -> Int", 0)),
+            ],
+        )]);
         assert_eq!(
             diff(&old, &new).modules,
             vec![ModuleChange::Changed {
@@ -381,8 +472,13 @@ mod tests {
                         old: "fn() -> Int".to_string(),
                         new: "fn(Int) -> Int".to_string(),
                     },
-                    SymbolChange::Removed { name: "b".to_string(), old_kind: "fn" },
-                    SymbolChange::Added { name: "c".to_string() },
+                    SymbolChange::Removed {
+                        name: "b".to_string(),
+                        old_kind: "fn"
+                    },
+                    SymbolChange::Added {
+                        name: "c".to_string()
+                    },
                 ],
             }]
         );
@@ -408,11 +504,18 @@ mod tests {
     #[test]
     fn record_shape_change_classified() {
         let old = ws(&[("app.m", &[("User", record(&[("name", "Text")]))])]);
-        let new =
-            ws(&[("app.m", &[("User", record(&[("name", "Text"), ("age", "Int")]))])]);
+        let new = ws(&[(
+            "app.m",
+            &[("User", record(&[("name", "Text"), ("age", "Int")]))],
+        )]);
         match &diff(&old, &new).modules[0] {
             ModuleChange::Changed { symbols, .. } => match &symbols[0] {
-                SymbolChange::RecordShapeChanged { name, old_version, old_fields, new_fields } => {
+                SymbolChange::RecordShapeChanged {
+                    name,
+                    old_version,
+                    old_fields,
+                    new_fields,
+                } => {
                     assert_eq!(name, "User");
                     assert_eq!(*old_version, 1);
                     assert_eq!(old_fields.len(), 1);
@@ -436,9 +539,26 @@ mod tests {
         )]);
         match &diff(&old, &new).modules[0] {
             ModuleChange::Changed { symbols, .. } => match &symbols[0] {
-                SymbolChange::UnionVariantsChanged { added, removed, payload_changed, .. } => {
-                    assert_eq!(added, &[VariantSnap { name: "D".to_string(), payload: String::new() }]);
-                    assert_eq!(removed, &[VariantSnap { name: "C".to_string(), payload: "Text".to_string() }]);
+                SymbolChange::UnionVariantsChanged {
+                    added,
+                    removed,
+                    payload_changed,
+                    ..
+                } => {
+                    assert_eq!(
+                        added,
+                        &[VariantSnap {
+                            name: "D".to_string(),
+                            payload: String::new()
+                        }]
+                    );
+                    assert_eq!(
+                        removed,
+                        &[VariantSnap {
+                            name: "C".to_string(),
+                            payload: "Text".to_string()
+                        }]
+                    );
                     assert_eq!(payload_changed, &["B".to_string()]);
                 }
                 other => panic!("expected UnionVariantsChanged, got {other:?}"),
@@ -451,7 +571,10 @@ mod tests {
     fn actor_state_and_handler_deltas() {
         let old = ws(&[(
             "app.m",
-            &[("C", actor(&[("count", "Int", true)], &[("bump", 0), ("get", 0)]))],
+            &[(
+                "C",
+                actor(&[("count", "Int", true)], &[("bump", 0), ("get", 0)]),
+            )],
         )]);
         let new = ws(&[(
             "app.m",
@@ -473,7 +596,12 @@ mod tests {
                     other => panic!("expected ActorStateChanged, got {other:?}"),
                 }
                 match &symbols[1] {
-                    SymbolChange::ActorHandlersChanged { added, removed, caps_changed, .. } => {
+                    SymbolChange::ActorHandlersChanged {
+                        added,
+                        removed,
+                        caps_changed,
+                        ..
+                    } => {
                         assert_eq!(added, &["set".to_string()]);
                         assert_eq!(removed, &["get".to_string()]);
                         assert_eq!(caps_changed, &[("bump".to_string(), 0, 1)]);

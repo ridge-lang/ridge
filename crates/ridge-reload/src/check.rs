@@ -42,14 +42,22 @@ impl CheckReport {
     /// True when nothing is `Incompatible`.
     #[must_use]
     pub fn is_reloadable(&self) -> bool {
-        self.verdicts.iter().all(|v| !matches!(v.verdict, Verdict::Incompatible { .. }))
+        self.verdicts
+            .iter()
+            .all(|v| !matches!(v.verdict, Verdict::Incompatible { .. }))
     }
 
     /// True when any scaffold still contains a `???` hole.
     #[must_use]
     pub fn has_holes(&self) -> bool {
         self.verdicts.iter().any(|v| {
-            matches!(v.verdict, Verdict::RequiresMigration { has_holes: true, .. })
+            matches!(
+                v.verdict,
+                Verdict::RequiresMigration {
+                    has_holes: true,
+                    ..
+                }
+            )
         })
     }
 }
@@ -65,7 +73,10 @@ pub fn check(cs: &ChangeSet) -> CheckReport {
                 symbol: fqn.clone(),
                 verdict: Verdict::Compatible,
             }),
-            ModuleChange::Removed { fqn, had_public_symbols } => {
+            ModuleChange::Removed {
+                fqn,
+                had_public_symbols,
+            } => {
                 let verdict = if *had_public_symbols {
                     Verdict::Incompatible {
                         reason: format!("module `{fqn}` with public symbols was removed"),
@@ -73,7 +84,11 @@ pub fn check(cs: &ChangeSet) -> CheckReport {
                 } else {
                     Verdict::Compatible
                 };
-                verdicts.push(SymbolVerdict { module: fqn.clone(), symbol: fqn.clone(), verdict });
+                verdicts.push(SymbolVerdict {
+                    module: fqn.clone(),
+                    symbol: fqn.clone(),
+                    verdict,
+                });
             }
             ModuleChange::Changed { fqn, symbols } => {
                 for s in symbols {
@@ -116,34 +131,38 @@ fn classify(fqn: &str, c: &SymbolChange) -> Verdict {
         SymbolChange::FnSignatureChanged { old, new, .. } => Verdict::Incompatible {
             reason: format!("signature changed ({old} -> {new})"),
         },
-        SymbolChange::FnCapsChanged { old_bits, new_bits, .. } => {
-            caps_verdict(*old_bits, *new_bits)
-        }
+        SymbolChange::FnCapsChanged {
+            old_bits, new_bits, ..
+        } => caps_verdict(*old_bits, *new_bits),
         SymbolChange::ConstChanged { old, new, .. } => Verdict::Incompatible {
             reason: format!("const type changed ({old} -> {new})"),
         },
         SymbolChange::AliasChanged { old, new, .. } => Verdict::Incompatible {
             reason: format!("alias target changed ({old} -> {new})"),
         },
-        SymbolChange::KindChanged { old_kind, new_kind, .. } => Verdict::Incompatible {
+        SymbolChange::KindChanged {
+            old_kind, new_kind, ..
+        } => Verdict::Incompatible {
             reason: format!("symbol kind changed ({old_kind} -> {new_kind})"),
         },
-        SymbolChange::RecordShapeChanged { name, old_version, old_fields, new_fields } => {
+        SymbolChange::RecordShapeChanged {
+            name,
+            old_version,
+            old_fields,
+            new_fields,
+        } => {
             let plan = scaffold::field_plan(old_fields, new_fields);
             let has_holes = plan.iter().any(|a| matches!(a, FieldAction::Hole { .. }));
             Verdict::RequiresMigration {
-                scaffold: scaffold::record_migrate(
-                    fqn,
-                    name,
-                    *old_version,
-                    new_fields,
-                    &plan,
-                    &[],
-                ),
+                scaffold: scaffold::record_migrate(fqn, name, *old_version, new_fields, &plan, &[]),
                 has_holes,
             }
         }
-        SymbolChange::UnionVariantsChanged { removed, payload_changed, .. } => {
+        SymbolChange::UnionVariantsChanged {
+            removed,
+            payload_changed,
+            ..
+        } => {
             if !removed.is_empty() {
                 let names: Vec<&str> = removed.iter().map(|v| v.name.as_str()).collect();
                 Verdict::Incompatible {
@@ -151,7 +170,10 @@ fn classify(fqn: &str, c: &SymbolChange) -> Verdict {
                 }
             } else if !payload_changed.is_empty() {
                 Verdict::Incompatible {
-                    reason: format!("union variant payloads changed: {}", payload_changed.join(", ")),
+                    reason: format!(
+                        "union variant payloads changed: {}",
+                        payload_changed.join(", ")
+                    ),
                 }
             } else {
                 // Pure append: the reverse-dependency closure recompiles and
@@ -159,10 +181,16 @@ fn classify(fqn: &str, c: &SymbolChange) -> Verdict {
                 Verdict::Compatible
             }
         }
-        SymbolChange::ActorStateChanged { name, old_state, new_state } => {
-            actor_state_verdict(name, old_state, new_state)
-        }
-        SymbolChange::ActorHandlersChanged { removed, caps_changed, .. } => {
+        SymbolChange::ActorStateChanged {
+            name,
+            old_state,
+            new_state,
+        } => actor_state_verdict(name, old_state, new_state),
+        SymbolChange::ActorHandlersChanged {
+            removed,
+            caps_changed,
+            ..
+        } => {
             if removed.is_empty() {
                 let widened: Vec<&(String, u16, u16)> = caps_changed
                     .iter()
@@ -194,7 +222,10 @@ fn caps_verdict(old_bits: u16, new_bits: u16) -> Verdict {
         Verdict::Compatible
     } else {
         Verdict::Incompatible {
-            reason: format!("capability set widened (gained {})", gained_caps(old_bits, new_bits)),
+            reason: format!(
+                "capability set widened (gained {})",
+                gained_caps(old_bits, new_bits)
+            ),
         }
     }
 }
@@ -223,12 +254,11 @@ fn actor_state_verdict(
         .iter()
         .filter(|s| !old_state.iter().any(|o| o.name == s.name))
         .collect();
-    let retyped = old_state.iter().any(|o| {
-        new_state.iter().any(|n| n.name == o.name && n.ty != o.ty)
-    });
+    let retyped = old_state
+        .iter()
+        .any(|o| new_state.iter().any(|n| n.name == o.name && n.ty != o.ty));
 
-    if !has_removed && !retyped && !added.is_empty() && added.iter().all(|s| s.has_default)
-    {
+    if !has_removed && !retyped && !added.is_empty() && added.iter().all(|s| s.has_default) {
         let names: Vec<String> = added.iter().map(|s| format!("`{}`", s.name)).collect();
         let note = if names.len() == 1 {
             format!("state field {} gets its default", names[0])
@@ -256,7 +286,10 @@ mod tests {
 
     fn cs(symbols: Vec<SymbolChange>) -> ChangeSet {
         ChangeSet {
-            modules: vec![ModuleChange::Changed { fqn: "app.m".to_string(), symbols }],
+            modules: vec![ModuleChange::Changed {
+                fqn: "app.m".to_string(),
+                symbols,
+            }],
         }
     }
 
@@ -269,7 +302,10 @@ mod tests {
     fn fields(pairs: &[(&str, &str)]) -> Vec<FieldSnap> {
         pairs
             .iter()
-            .map(|(n, t)| FieldSnap { name: (*n).to_string(), ty: (*t).to_string() })
+            .map(|(n, t)| FieldSnap {
+                name: (*n).to_string(),
+                ty: (*t).to_string(),
+            })
             .collect()
     }
 
@@ -287,7 +323,10 @@ mod tests {
     fn variants(pairs: &[(&str, &str)]) -> Vec<VariantSnap> {
         pairs
             .iter()
-            .map(|(n, p)| VariantSnap { name: (*n).to_string(), payload: (*p).to_string() })
+            .map(|(n, p)| VariantSnap {
+                name: (*n).to_string(),
+                payload: (*p).to_string(),
+            })
             .collect()
     }
 
@@ -295,13 +334,18 @@ mod tests {
 
     #[test]
     fn added_fn_compatible() {
-        let v = only(&cs(vec![SymbolChange::Added { name: "f".to_string() }]));
+        let v = only(&cs(vec![SymbolChange::Added {
+            name: "f".to_string(),
+        }]));
         assert_eq!(v, Verdict::Compatible);
     }
 
     #[test]
     fn removed_pub_fn_incompatible() {
-        let v = only(&cs(vec![SymbolChange::Removed { name: "f".to_string(), old_kind: "fn" }]));
+        let v = only(&cs(vec![SymbolChange::Removed {
+            name: "f".to_string(),
+            old_kind: "fn",
+        }]));
         assert!(matches!(v, Verdict::Incompatible { .. }), "{v:?}");
     }
 
@@ -314,7 +358,10 @@ mod tests {
         }]));
         match v {
             Verdict::Incompatible { reason } => {
-                assert!(reason.contains("fn(Int) -> Int -> fn(Text) -> Int"), "{reason}");
+                assert!(
+                    reason.contains("fn(Int) -> Int -> fn(Text) -> Int"),
+                    "{reason}"
+                );
             }
             other => panic!("expected Incompatible, got {other:?}"),
         }
@@ -355,7 +402,10 @@ mod tests {
             new_fields: fields(&[("name", "Text"), ("email", "Text")]),
         }]));
         match v {
-            Verdict::RequiresMigration { scaffold, has_holes } => {
+            Verdict::RequiresMigration {
+                scaffold,
+                has_holes,
+            } => {
                 assert!(has_holes, "added field has no fill");
                 assert!(scaffold.contains("email: ???"), "{scaffold}");
                 assert!(scaffold.contains("@version(2)"), "{scaffold}");
@@ -373,7 +423,10 @@ mod tests {
             new_fields: fields(&[("full_name", "Text"), ("age", "Int")]),
         }]));
         match v {
-            Verdict::RequiresMigration { scaffold, has_holes } => {
+            Verdict::RequiresMigration {
+                scaffold,
+                has_holes,
+            } => {
                 assert!(!has_holes, "rename scaffold is complete");
                 assert!(scaffold.contains("full_name: old.name"), "{scaffold}");
             }
@@ -390,7 +443,10 @@ mod tests {
             new_fields: fields(&[("name", "Text")]),
         }]));
         match v {
-            Verdict::RequiresMigration { scaffold, has_holes } => {
+            Verdict::RequiresMigration {
+                scaffold,
+                has_holes,
+            } => {
                 assert!(!has_holes, "dropping a field needs no fill");
                 assert!(!scaffold.contains("age"), "{scaffold}");
             }
@@ -503,10 +559,16 @@ mod tests {
             new_state: states(&[("count", "Int", true), ("step", "Int", false)]),
         }]));
         match v {
-            Verdict::RequiresMigration { scaffold, has_holes } => {
+            Verdict::RequiresMigration {
+                scaffold,
+                has_holes,
+            } => {
                 assert!(has_holes);
                 assert!(scaffold.contains("step: ???"), "{scaffold}");
-                assert!(scaffold.contains("migrate (old: Counter@1) -> Counter"), "{scaffold}");
+                assert!(
+                    scaffold.contains("migrate (old: Counter@1) -> Counter"),
+                    "{scaffold}"
+                );
             }
             other => panic!("expected RequiresMigration, got {other:?}"),
         }
@@ -520,7 +582,10 @@ mod tests {
             new_state: states(&[("total", "Int", true)]),
         }]));
         match v {
-            Verdict::RequiresMigration { scaffold, has_holes } => {
+            Verdict::RequiresMigration {
+                scaffold,
+                has_holes,
+            } => {
                 assert!(!has_holes, "rename scaffold is complete");
                 assert!(scaffold.contains("total: old.count"), "{scaffold}");
             }
@@ -584,7 +649,9 @@ mod tests {
     #[test]
     fn module_added_compatible() {
         let report = check(&ChangeSet {
-            modules: vec![ModuleChange::Added { fqn: "app.new".to_string() }],
+            modules: vec![ModuleChange::Added {
+                fqn: "app.new".to_string(),
+            }],
         });
         assert_eq!(report.verdicts[0].verdict, Verdict::Compatible);
     }
@@ -616,13 +683,24 @@ mod tests {
     #[test]
     fn report_reloadable_only_without_incompatible() {
         let good = check(&cs(vec![
-            SymbolChange::Added { name: "f".to_string() },
-            SymbolChange::FnCapsChanged { name: "g".to_string(), old_bits: 1, new_bits: 0 },
+            SymbolChange::Added {
+                name: "f".to_string(),
+            },
+            SymbolChange::FnCapsChanged {
+                name: "g".to_string(),
+                old_bits: 1,
+                new_bits: 0,
+            },
         ]));
         assert!(good.is_reloadable());
         let bad = check(&cs(vec![
-            SymbolChange::Added { name: "f".to_string() },
-            SymbolChange::Removed { name: "g".to_string(), old_kind: "fn" },
+            SymbolChange::Added {
+                name: "f".to_string(),
+            },
+            SymbolChange::Removed {
+                name: "g".to_string(),
+                old_kind: "fn",
+            },
         ]));
         assert!(!bad.is_reloadable());
     }
@@ -636,7 +714,10 @@ mod tests {
             new_fields: fields(&[("name", "Text"), ("email", "Text")]),
         }]));
         assert!(with_holes.has_holes());
-        assert!(with_holes.is_reloadable(), "holes are not incompatibilities");
+        assert!(
+            with_holes.is_reloadable(),
+            "holes are not incompatibilities"
+        );
 
         let complete = check(&cs(vec![SymbolChange::RecordShapeChanged {
             name: "User".to_string(),

@@ -15,7 +15,10 @@ pub use ridge_reload::check::{CheckReport, Verdict};
 /// Where a profile's snapshot lives inside the workspace.
 #[must_use]
 pub fn snapshot_path_for(root: &Path, profile: &str) -> PathBuf {
-    root.join("target").join("ridge").join(profile).join("reload-snapshot.json")
+    root.join("target")
+        .join("ridge")
+        .join(profile)
+        .join("reload-snapshot.json")
 }
 
 /// Errors a `reload --check` run can produce.
@@ -54,12 +57,20 @@ pub fn reload_check(
         .map_err(|_| ReloadCheckError::MissingSnapshot(snapshot_path.to_path_buf()))?;
     let old: WorkspaceSnapshot = serde_json::from_str(&raw)?;
     if old.format != ridge_reload::snapshot::SNAPSHOT_FORMAT {
-        return Err(ReloadCheckError::UnsupportedFormat(snapshot_path.to_path_buf()));
+        return Err(ReloadCheckError::UnsupportedFormat(
+            snapshot_path.to_path_buf(),
+        ));
     }
     let artefacts = check_workspace_typed(options)?;
-    if artefacts.diagnostics.iter().any(|d| matches!(d.severity, Severity::Error)) {
+    if artefacts
+        .diagnostics
+        .iter()
+        .any(|d| matches!(d.severity, Severity::Error))
+    {
         return Err(ReloadCheckError::SourceHasErrors);
     }
     let new = ridge_reload::snapshot::extract_snapshot(&artefacts.resolved, &artefacts.typed);
-    Ok(ridge_reload::check::check(&ridge_reload::diff::diff(&old, &new)))
+    Ok(ridge_reload::check::check(&ridge_reload::diff::diff(
+        &old, &new,
+    )))
 }

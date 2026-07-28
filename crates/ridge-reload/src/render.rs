@@ -48,8 +48,10 @@ pub(crate) fn render_type_vars(ctx: &RenderCtx<'_>, ty: &Type, vars: &[TyVid]) -
             if args.is_empty() {
                 name
             } else {
-                let inner: Vec<String> =
-                    args.iter().map(|a| render_type_vars(ctx, a, vars)).collect();
+                let inner: Vec<String> = args
+                    .iter()
+                    .map(|a| render_type_vars(ctx, a, vars))
+                    .collect();
                 format!("{name}<{}>", inner.join(", "))
             }
         }
@@ -57,13 +59,21 @@ pub(crate) fn render_type_vars(ctx: &RenderCtx<'_>, ty: &Type, vars: &[TyVid]) -
         // concrete caps travel in the snapshot's `caps_bits`, and variable
         // rows have no stable name.
         Type::Fn { params, ret, .. } => {
-            let ps: Vec<String> =
-                params.iter().map(|p| render_type_vars(ctx, p, vars)).collect();
-            format!("fn({}) -> {}", ps.join(", "), render_type_vars(ctx, ret, vars))
+            let ps: Vec<String> = params
+                .iter()
+                .map(|p| render_type_vars(ctx, p, vars))
+                .collect();
+            format!(
+                "fn({}) -> {}",
+                ps.join(", "),
+                render_type_vars(ctx, ret, vars)
+            )
         }
         Type::Tuple(elems) => {
-            let es: Vec<String> =
-                elems.iter().map(|e| render_type_vars(ctx, e, vars)).collect();
+            let es: Vec<String> = elems
+                .iter()
+                .map(|e| render_type_vars(ctx, e, vars))
+                .collect();
             format!("({})", es.join(", "))
         }
         Type::Record { fields, tail } => {
@@ -102,10 +112,9 @@ fn tycon_name(ctx: &RenderCtx<'_>, id: TyConId) -> String {
     decl.def_module_raw.map_or_else(
         || decl.name.clone(),
         |m| {
-            ctx.module_fqns.get(m as usize).map_or_else(
-                || decl.name.clone(),
-                |fqn| format!("{fqn}.{}", decl.name),
-            )
+            ctx.module_fqns
+                .get(m as usize)
+                .map_or_else(|| decl.name.clone(), |fqn| format!("{fqn}.{}", decl.name))
         },
     )
 }
@@ -138,7 +147,11 @@ pub fn render_ast_type(ty: &AstType) -> String {
                 let names: Vec<&str> = fn_ty.caps.iter().map(|c| capability_name(*c)).collect();
                 format!("({})", names.join(", "))
             };
-            format!("fn{caps}({}) -> {}", rendered.join(", "), render_ast_type(&fn_ty.ret))
+            format!(
+                "fn{caps}({}) -> {}",
+                rendered.join(", "),
+                render_ast_type(&fn_ty.ret)
+            )
         }
         AstType::Record { fields, tail, .. } => {
             let mut rendered: Vec<String> = fields
@@ -196,7 +209,13 @@ mod tests {
 
     use super::*;
 
-    fn tycon(id: u32, name: &str, arity: u32, kind: TyConKind, def_module: Option<u32>) -> TyConDecl {
+    fn tycon(
+        id: u32,
+        name: &str,
+        arity: u32,
+        kind: TyConKind,
+        def_module: Option<u32>,
+    ) -> TyConDecl {
         TyConDecl {
             id: TyConId(id),
             name: name.to_string(),
@@ -244,15 +263,24 @@ mod tests {
     #[test]
     fn renders_primitive_and_app() {
         let (tycons, fqns) = fixture();
-        let ctx = RenderCtx { tycons: &tycons, module_fqns: &fqns };
-        assert_eq!(render_type(&ctx, &con(3, vec![con(0, vec![])])), "List<Int>");
+        let ctx = RenderCtx {
+            tycons: &tycons,
+            module_fqns: &fqns,
+        };
+        assert_eq!(
+            render_type(&ctx, &con(3, vec![con(0, vec![])])),
+            "List<Int>"
+        );
         assert_eq!(render_type(&ctx, &con(4, vec![])), "app.user.User");
     }
 
     #[test]
     fn renders_fn_tuple_record_alias_error() {
         let (tycons, fqns) = fixture();
-        let ctx = RenderCtx { tycons: &tycons, module_fqns: &fqns };
+        let ctx = RenderCtx {
+            tycons: &tycons,
+            module_fqns: &fqns,
+        };
         let fn_ty = Type::Fn {
             params: vec![con(0, vec![]), con(1, vec![])],
             ret: Box::new(con(2, vec![])),
@@ -271,7 +299,10 @@ mod tests {
             ridge_types::ty::RowTail::Closed,
         );
         assert_eq!(render_type(&ctx, &rec), "{a: Int, b: Text}");
-        let alias = Type::Alias { name: TyConId(5), body: Box::new(con(0, vec![])) };
+        let alias = Type::Alias {
+            name: TyConId(5),
+            body: Box::new(con(0, vec![])),
+        };
         assert_eq!(render_type(&ctx, &alias), "app.user.MyInt");
         assert_eq!(render_type(&ctx, &Type::Error), "?");
     }
@@ -279,7 +310,10 @@ mod tests {
     #[test]
     fn renders_scheme_vars_as_letters() {
         let (tycons, fqns) = fixture();
-        let ctx = RenderCtx { tycons: &tycons, module_fqns: &fqns };
+        let ctx = RenderCtx {
+            tycons: &tycons,
+            module_fqns: &fqns,
+        };
         let scheme = Scheme {
             vars: vec![TyVid(0), TyVid(1)],
             cap_vars: vec![],
@@ -301,7 +335,10 @@ mod tests {
     fn renders_record_schema_fields_via_record_con() {
         // A nominal record renders by name even though its schema has fields.
         let (tycons, fqns) = fixture();
-        let ctx = RenderCtx { tycons: &tycons, module_fqns: &fqns };
+        let ctx = RenderCtx {
+            tycons: &tycons,
+            module_fqns: &fqns,
+        };
         let user = con(4, vec![]);
         assert_eq!(render_type(&ctx, &user), "app.user.User");
     }

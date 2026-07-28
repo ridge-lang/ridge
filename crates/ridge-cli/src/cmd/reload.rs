@@ -86,7 +86,9 @@ pub fn execute(args: &ReloadArgs, cwd: &Path) -> Result<(), CliError> {
             }
             Verdict::RequiresMigration { scaffold, .. } => {
                 migrate += 1;
-                println!("needs-migration {target} — apply this scaffold and re-check:\n{scaffold}");
+                println!(
+                    "needs-migration {target} — apply this scaffold and re-check:\n{scaffold}"
+                );
             }
             Verdict::Incompatible { reason } => {
                 incompatible += 1;
@@ -100,5 +102,9 @@ pub fn execute(args: &ReloadArgs, cwd: &Path) -> Result<(), CliError> {
         "{}: {compatible} compatible, {auto} auto-migrated, {migrate} need migration, {incompatible} incompatible",
         if ok { "reloadable" } else { "not reloadable" },
     );
-    if ok { Ok(()) } else { Err(CliError::AlreadyReported) }
+    if ok {
+        Ok(())
+    } else {
+        Err(CliError::AlreadyReported)
+    }
 }

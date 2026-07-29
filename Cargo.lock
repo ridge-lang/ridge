@@ -1653,6 +1653,8 @@ dependencies = [
  "ridge-fmt",
  "ridge-manifest",
  "ridge-resolve",
+ "rustc-hash",
+ "serde_json",
  "tempfile",
  "which",
 ]
@@ -1719,6 +1721,7 @@ dependencies = [
  "ridge-stdlib",
  "ridge-typecheck",
  "rustc-hash",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror",

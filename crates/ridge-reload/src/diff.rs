@@ -19,7 +19,11 @@ pub enum ModuleChange {
         fqn: String,
         had_public_symbols: bool,
     },
-    /// Module exists in both with at least one symbol change.
+    /// Module exists in both with at least one symbol change, or with a
+    /// different content hash (a body-only edit the symbol surface cannot
+    /// see). A content-only change carries an empty `symbols` list: the
+    /// compatibility checker produces no verdicts for it, but the dev-loop
+    /// loader still reloads the module.
     Changed {
         fqn: String,
         symbols: Vec<SymbolChange>,
@@ -116,7 +120,7 @@ pub fn diff(old: &WorkspaceSnapshot, new: &WorkspaceSnapshot) -> ChangeSet {
             (None, Some(_)) => modules.push(ModuleChange::Added { fqn: fqn.clone() }),
             (Some(om), Some(nm)) => {
                 let symbols = diff_symbols(&om.symbols, &nm.symbols);
-                if !symbols.is_empty() {
+                if !symbols.is_empty() || om.content_hash != nm.content_hash {
                     modules.push(ModuleChange::Changed {
                         fqn: fqn.clone(),
                         symbols,
@@ -404,6 +408,7 @@ mod tests {
                                 .iter()
                                 .map(|(n, s)| ((*n).to_string(), s.clone()))
                                 .collect::<BTreeMap<_, _>>(),
+                            content_hash: 0,
                         },
                     )
                 })
@@ -415,6 +420,23 @@ mod tests {
     fn unchanged_snapshot_diffs_empty() {
         let a = ws(&[("app.m", &[("f", fun("fn() -> Int", 0))])]);
         assert_eq!(diff(&a, &a).modules, vec![]);
+    }
+
+    #[test]
+    fn content_only_change_marks_module_changed_with_no_symbol_changes() {
+        let old = ws(&[("app.m", &[("f", fun("fn() -> Int", 0))])]);
+        let mut new = old.clone();
+        new.modules
+            .get_mut("app.m")
+            .expect("module")
+            .content_hash = 42;
+        assert_eq!(
+            diff(&old, &new).modules,
+            vec![ModuleChange::Changed {
+                fqn: "app.m".to_string(),
+                symbols: vec![],
+            }]
+        );
     }
 
     #[test]

@@ -42,7 +42,10 @@ pub use compile::{
 pub use error::{CheckError, CompileDiagnostics, CompileError, ProcessExitCode, RunError};
 pub use incremental::IncrementalState;
 pub use options::{CheckOptions, CompileOptions, EmitArtefacts, Profile, RunOptions};
-pub use reload::{reload_check, snapshot_path_for, ReloadCheckError};
+pub use reload::{
+    manifest_path_for, plan_reload, reload_check, snapshot_path_for, snapshot_vsn, ActorMigration,
+    ReloadCheckError, ReloadPlan, UpgradeManifest, WorkspaceSnapshot,
+};
 pub use run::run_workspace;
 pub use sources::WorkspaceSourceCache;
 

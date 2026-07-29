@@ -32,7 +32,11 @@ use crate::render::render_diagnostics;
 // ── Argument struct ───────────────────────────────────────────────────────────
 
 /// Compile and run a Ridge workspace on the BEAM runtime.
+///
+/// The bools are independent clap flags (`--release`, `--watch`, `--reload`,
+/// `--observer`), not state — a state machine would only obscure the CLI.
 #[derive(Debug, Parser)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct RunArgs {
     /// Only run the named workspace member (must have `kind = "app"` or `kind = "service"`).
     #[arg(long, value_name = "NAME")]
@@ -854,8 +858,7 @@ fn execute_reload(
         }
 
         // ── Recompile ─────────────────────────────────────────────────────
-        if let Err(e) = compile_for_watch(workspace_root, member_name, profile, &args.extra_args)
-        {
+        if let Err(e) = compile_for_watch(workspace_root, member_name, profile, &args.extra_args) {
             let _ = e; // diagnostics already rendered by compile_for_watch
             eprintln!("compile failed; node keeps running the previous code.");
             continue;
@@ -922,7 +925,10 @@ fn read_snapshot(path: &Path) -> Result<WorkspaceSnapshot, CliError> {
         CliError::AlreadyReported
     })?;
     serde_json::from_str(&text).map_err(|e| {
-        eprintln!("error: cannot parse reload snapshot {}: {e}", path.display());
+        eprintln!(
+            "error: cannot parse reload snapshot {}: {e}",
+            path.display()
+        );
         CliError::AlreadyReported
     })
 }
@@ -947,7 +953,9 @@ fn spawn_reload_node(
         .arg("-pa")
         .arg(beam_dir)
         .arg("-eval")
-        .arg(format!("persistent_term:put(ridge_loader_vsn, <<\"{vsn}\">>)."))
+        .arg(format!(
+            "persistent_term:put(ridge_loader_vsn, <<\"{vsn}\">>)."
+        ))
         .arg("-s")
         .arg("ridge_main_runner")
         .arg("run_detached")
@@ -983,7 +991,11 @@ fn probe_apply(
     );
     let output = process::Command::new(erl_path)
         .arg("-name")
-        .arg(format!("ridge_probe_{}_{}@127.0.0.1", std::process::id(), seq))
+        .arg(format!(
+            "ridge_probe_{}_{}@127.0.0.1",
+            std::process::id(),
+            seq
+        ))
         .arg("-setcookie")
         .arg(cookie)
         .arg("-noshell")

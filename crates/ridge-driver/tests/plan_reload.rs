@@ -16,10 +16,7 @@ fn counter_source(ws: &common::TempWorkspace) -> std::path::PathBuf {
 
 /// Compile the fixture, read the snapshot it wrote, then apply `edit` to the
 /// single source file and return the plan for the edited source.
-fn plan_after_edit(
-    ws: &common::TempWorkspace,
-    edit: impl FnOnce(&str) -> String,
-) -> ReloadPlan {
+fn plan_after_edit(ws: &common::TempWorkspace, edit: impl FnOnce(&str) -> String) -> ReloadPlan {
     let dir = ws.path.clone();
     compile_workspace(CompileOptions::new(dir.clone()).with_emit(EmitArtefacts::Core))
         .expect("initial compile");

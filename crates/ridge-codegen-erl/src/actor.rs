@@ -729,10 +729,7 @@ fn emit_state_fields_fn(actor: &IrActor) -> CErlFn {
 /// declared default. The code loader reads it (from the NEW module, after
 /// loading) to fill added state fields during migration; defaults are
 /// evaluated at call time, exactly as `init/1` evaluates them.
-fn emit_state_defaults_fn(
-    actor: &IrActor,
-    tables: &CodegenTables,
-) -> Result<CErlFn, CodegenError> {
+fn emit_state_defaults_fn(actor: &IrActor, tables: &CodegenTables) -> Result<CErlFn, CodegenError> {
     let pairs = crate::init::default_state_pairs(&actor.state_fields, tables)?;
     Ok(CErlFn {
         name: CErlAtom("__ridge_state_defaults".into()),
@@ -1149,7 +1146,10 @@ mod tests {
         let actor = make_actor(
             "Counter",
             vec![],
-            vec![make_state_field("count", None), make_state_field("step", None)],
+            vec![
+                make_state_field("count", None),
+                make_state_field("step", None),
+            ],
         );
         let f = emit_state_fields_fn(&actor);
         assert_eq!(f.name.0, "__ridge_state_fields");
@@ -1182,7 +1182,10 @@ mod tests {
         .unwrap_or_else(|e| panic!("lower_actor: {e:?}"));
         for wanted in ["__ridge_state_fields", "__ridge_state_defaults"] {
             assert!(
-                module.exports.iter().any(|e| e.name.0 == wanted && e.arity == 0),
+                module
+                    .exports
+                    .iter()
+                    .any(|e| e.name.0 == wanted && e.arity == 0),
                 "missing export {wanted}/0"
             );
         }

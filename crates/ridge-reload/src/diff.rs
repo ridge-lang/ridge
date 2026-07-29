@@ -426,10 +426,7 @@ mod tests {
     fn content_only_change_marks_module_changed_with_no_symbol_changes() {
         let old = ws(&[("app.m", &[("f", fun("fn() -> Int", 0))])]);
         let mut new = old.clone();
-        new.modules
-            .get_mut("app.m")
-            .expect("module")
-            .content_hash = 42;
+        new.modules.get_mut("app.m").expect("module").content_hash = 42;
         assert_eq!(
             diff(&old, &new).modules,
             vec![ModuleChange::Changed {

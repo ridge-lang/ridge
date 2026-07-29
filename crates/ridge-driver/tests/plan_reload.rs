@@ -73,6 +73,25 @@ fn renamed_state_field_produces_rename_instruction() {
 }
 
 #[test]
+fn body_only_edit_reloads_module_without_actor_entries() {
+    let ws = common::make_counter_workspace();
+    let plan = plan_after_edit(&ws, |src| {
+        src.replace("count <- count + 1", "count <- 1 + count")
+    });
+    let manifest = plan.manifest.expect("body-only edit must be reloadable");
+    assert!(
+        manifest.modules.iter().any(|m| m.ends_with("_counter")),
+        "the actor module must reload on a body edit: {:?}",
+        manifest.modules
+    );
+    assert!(manifest.actors.is_empty(), "no state shape change");
+    assert!(
+        plan.report.verdicts.is_empty(),
+        "a body-only edit produces no verdicts"
+    );
+}
+
+#[test]
 fn incompatible_edit_yields_no_manifest() {
     let ws = common::make_counter_workspace();
     let plan = plan_after_edit(&ws, |src| {

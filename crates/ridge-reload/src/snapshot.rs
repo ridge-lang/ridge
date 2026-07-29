@@ -11,7 +11,7 @@ use ridge_types::tycon::{TyConKind, VariantPayload};
 use crate::render::{render_ast_type, render_scheme, render_type, render_type_vars, RenderCtx};
 
 /// Bump when the on-disk layout changes; old snapshots are rejected.
-pub const SNAPSHOT_FORMAT: u32 = 1;
+pub const SNAPSHOT_FORMAT: u32 = 2;
 
 /// The public surface of one compiled workspace.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -27,6 +27,11 @@ pub struct WorkspaceSnapshot {
 pub struct ModuleSnapshot {
     /// Keyed by symbol name. Public symbols only.
     pub symbols: BTreeMap<String, SymbolSnapshot>,
+    /// Hash of the module's parsed AST: changes on ANY source edit (including
+    /// body-only ones the symbol surface cannot see), so the dev-loop loader
+    /// knows which modules to reload. Not used by the compatibility checker.
+    #[serde(default)]
+    pub content_hash: u64,
 }
 
 /// One public symbol's reload-relevant shape.
@@ -164,7 +169,22 @@ pub fn extract_snapshot(resolved: &ResolvedWorkspace, typed: &TypedWorkspace) ->
             };
             symbols.insert(entry.name.clone(), snap);
         }
-        modules.insert(fqn, ModuleSnapshot { symbols });
+        // Content hash over the module AST: identical source parses to an
+        // identical tree (spans included), so any edit — even one invisible
+        // to the symbol surface, like a handler-body rewrite — flips it.
+        let content_hash = {
+            use std::hash::Hasher;
+            let mut h = rustc_hash::FxHasher::default();
+            h.write(format!("{ast:?}").as_bytes());
+            h.finish()
+        };
+        modules.insert(
+            fqn,
+            ModuleSnapshot {
+                symbols,
+                content_hash,
+            },
+        );
     }
 
     WorkspaceSnapshot {
@@ -375,7 +395,13 @@ pub actor Counter =
             },
         );
         let mut modules = BTreeMap::new();
-        modules.insert("demo.main".to_string(), ModuleSnapshot { symbols });
+        modules.insert(
+            "demo.main".to_string(),
+            ModuleSnapshot {
+                symbols,
+                content_hash: 0,
+            },
+        );
         let snap = WorkspaceSnapshot {
             format: SNAPSHOT_FORMAT,
             modules,

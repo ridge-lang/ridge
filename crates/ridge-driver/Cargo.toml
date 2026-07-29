@@ -24,6 +24,7 @@ ridge-pkg         = { path = "../ridge-pkg" }
 ridge-ir          = { path = "../ridge-ir" }
 rustc-hash        = { workspace = true }
 thiserror         = { workspace = true }
+serde             = { workspace = true }
 serde_json        = { workspace = true }
 ridge-reload      = { path = "../ridge-reload" }
 tempfile          = "3"

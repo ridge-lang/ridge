@@ -111,6 +111,16 @@ pub fn make_multi_member_workspace() -> TempWorkspace {
     tw
 }
 
+/// Build a workspace whose single module holds an actor with one state field
+/// (plus a public fn, so signature-break edits are exercisable). Used by the
+/// reload-planning tests.
+pub fn make_counter_workspace() -> TempWorkspace {
+    make_workspace(
+        "Counter",
+        "pub fn label () -> Text = \"counter\"\n\nactor Counter =\n    state count: Int = 0\n\n    on tick =\n        count <- count + 1\n\n    on count () -> Int =\n        count\n",
+    )
+}
+
 /// Build a workspace with a forbid rule that will be violated by an import.
 ///
 /// The rule forbids `acme.ui.**` from importing `acme.db.**`.  The `Ui` module

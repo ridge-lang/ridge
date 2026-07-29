@@ -55,8 +55,9 @@ fn actor_beam_of(beam_dir: &std::path::Path) -> String {
 /// appended before `halt(0)` (for the mismatch case).
 fn boot_v1(ws: &common::TempWorkspace, eval_extra: &str) -> ReloadNode {
     let dir = ws.path.clone();
-    let artefacts = compile_workspace(CompileOptions::new(dir.clone()).with_emit(EmitArtefacts::Beam))
-        .expect("v1 compile");
+    let artefacts =
+        compile_workspace(CompileOptions::new(dir.clone()).with_emit(EmitArtefacts::Beam))
+            .expect("v1 compile");
     assert!(
         !artefacts
             .diagnostics
@@ -196,7 +197,10 @@ fn reload_preserves_state_on_body_change() {
         out.contains("modules_loaded => 2"),
         "body change reloads the module and its actor: {out}"
     );
-    assert!(out.contains("STATE=#{count => 2}"), "state preserved: {out}");
+    assert!(
+        out.contains("STATE=#{count => 2}"),
+        "state preserved: {out}"
+    );
     assert!(out.contains("ASK=2"), "new code serves requests: {out}");
 }
 
@@ -302,8 +306,9 @@ fn reload_rejects_base_vsn_mismatch() {
 /// and blocks forever (killed by the caller).
 fn boot_named_v1(ws: &common::TempWorkspace, node_name: &str, cookie: &str) -> ReloadNode {
     let dir = ws.path.clone();
-    let artefacts = compile_workspace(CompileOptions::new(dir.clone()).with_emit(EmitArtefacts::Beam))
-        .expect("v1 compile");
+    let artefacts =
+        compile_workspace(CompileOptions::new(dir.clone()).with_emit(EmitArtefacts::Beam))
+            .expect("v1 compile");
     assert!(
         !artefacts
             .diagnostics
@@ -388,7 +393,10 @@ fn await_ready(node: &mut ReloadNode) {
 fn probe(cookie: &str, eval: &str, seq: u64) -> String {
     let output = std::process::Command::new("erl")
         .arg("-name")
-        .arg(format!("ridge_probe_e2e_{}_{seq}@127.0.0.1", std::process::id()))
+        .arg(format!(
+            "ridge_probe_e2e_{}_{seq}@127.0.0.1",
+            std::process::id()
+        ))
         .arg("-setcookie")
         .arg(cookie)
         .arg("-noshell")

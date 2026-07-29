@@ -149,9 +149,10 @@ pub fn manifest_path_for(root: &Path, profile: &str) -> PathBuf {
         .join("upgrade.manifest.json")
 }
 
-/// Diff the running snapshot against the current source and, when the edit
-/// is auto-reloadable, write the upgrade manifest the runtime loader
-/// consumes. The caller (CLI) owns booting, probing, and fallbacks.
+/// Diff the running snapshot against the current source.
+///
+/// When the edit is auto-reloadable, writes the upgrade manifest the runtime
+/// loader consumes. The caller (CLI) owns booting, probing, and fallbacks.
 ///
 /// ## Errors
 ///

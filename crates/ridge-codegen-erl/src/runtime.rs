@@ -374,8 +374,9 @@ mod tests {
     fn install_runtime_writes_ridge_loader_source() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         install_runtime(tmp.path()).expect("install_runtime");
-        let installed = std::fs::read_to_string(tmp.path().join("runtime").join("ridge_loader.erl"))
-            .expect("ridge_loader.erl must be installed");
+        let installed =
+            std::fs::read_to_string(tmp.path().join("runtime").join("ridge_loader.erl"))
+                .expect("ridge_loader.erl must be installed");
         assert!(
             installed.contains("-module(ridge_loader)."),
             "installed ridge_loader.erl must declare the ridge_loader module"

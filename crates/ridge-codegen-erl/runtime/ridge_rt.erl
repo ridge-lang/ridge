@@ -50,7 +50,7 @@
     start_supervisor/4, start_supervised_child/2, stop_supervised_child/2,
     which_children/1, set_child_id/2, set_child_restart/2, try_ask/3,
     monitor_handle/1, demonitor_flush/1, await_down/2, stop_handle/1,
-    exit_reason_to_ridge/1,
+    exit_reason_to_ridge/1, apply_code_change/2,
     diagnostics_to_stderr/0,
     mem_new/1, mem_insert/3, mem_all/2,
     mem_delete/3, mem_update/4, mem_get_rows/4,
@@ -2062,6 +2062,41 @@ stop_handle(Handle) ->
         dead ->
             ok
     end.
+
+%% apply_code_change/2 — code_change helper every generated actor delegates to.
+%%
+%% Extra = {ridge_migrate, Instr} transforms the state map per the code
+%% loader's instructions: apply renames, fill added fields from the NEW
+%% module's defaults, then drop keys that no longer exist. Any other Extra
+%% is a pass-through: a plain code reload keeps the running state.
+apply_code_change(State, {ridge_migrate, Instr}) when is_map(State), is_map(Instr) ->
+    try
+        Renames  = maps:get(renames, Instr, []),
+        Added    = maps:get(added, Instr, []),
+        Fields   = maps:get(fields, Instr, []),
+        Defaults = maps:get(defaults, Instr, #{}),
+        S1 = lists:foldl(fun({From, To}, Acc) ->
+                case maps:take(From, Acc) of
+                    {V, Acc1} -> maps:put(To, V, Acc1);
+                    error -> Acc
+                end
+            end, State, Renames),
+        S2 = lists:foldl(fun(F, Acc) ->
+                case maps:is_key(F, Acc) of
+                    true  -> Acc;
+                    false -> maps:put(F, maps:get(F, Defaults), Acc)
+                end
+            end, S1, Added),
+        S3 = case Fields of
+            [] -> S2;
+            _  -> maps:with(Fields, S2)
+        end,
+        {ok, S3}
+    catch
+        Class:Reason -> {error, {ridge_state_migration_failed, Class, Reason}}
+    end;
+apply_code_change(State, _Extra) ->
+    {ok, State}.
 
 %% child_id_binary/1 — ids are binaries (Ridge Text); an atom id from a
 %% hand-built spec is converted so which_children's output keeps the

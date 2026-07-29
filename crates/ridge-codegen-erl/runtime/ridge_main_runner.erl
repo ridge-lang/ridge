@@ -24,7 +24,7 @@
 %% makes what you see while developing match what the program does when it
 %% ships.
 -module(ridge_main_runner).
--export([run/1]).
+-export([run/1, run_detached/1]).
 
 run([ModAtom, FnAtom]) ->
     ridge_rt:diagnostics_to_stderr(),
@@ -39,6 +39,26 @@ run([ModAtom, FnAtom]) ->
             erlang:halt(1)
     end;
 run(Other) ->
+    io:format(standard_error, "ridge_main_runner: bad runner args ~p~n", [Other]),
+    erlang:halt(2).
+
+%% run_detached/1 — dev-node variant of run/1 for `ridge run --reload`.
+%%
+%% Spawns main in its own process and returns immediately, so the node stays
+%% alive after main returns (or crashes) and the code loader can keep
+%% upgrading it. Crashes are logged, never halt the VM.
+run_detached([ModAtom, FnAtom]) ->
+    ridge_rt:diagnostics_to_stderr(),
+    spawn(fun() ->
+        try ModAtom:FnAtom() of
+            _ -> ok
+        catch
+            Class:Reason:Stack ->
+                io:format(standard_error, "main crashed: ~p:~p~nstack: ~p~n", [Class, Reason, Stack])
+        end
+    end),
+    ok;
+run_detached(Other) ->
     io:format(standard_error, "ridge_main_runner: bad runner args ~p~n", [Other]),
     erlang:halt(2).
 

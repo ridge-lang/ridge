@@ -13,7 +13,7 @@
 //! | `handle_cast/2` | 2 | one clause per handler (all handlers, per OQ-E005) |
 //! | `handle_info/2` | 2 | DOWN routing when `onDown` is present, else stub |
 //! | `terminate/2` | 2 | `IrTerminate` body when present, else stub |
-//! | `code_change/3` | 3 | boilerplate no-op stub |
+//! | `code_change/3` | 3 | delegates to `ridge_rt:apply_code_change/2` |
 //!
 //! ## `start_link/N` wrapper (§4.28)
 //!
@@ -139,6 +139,14 @@ pub(crate) fn lower_actor(
             name: CErlAtom("__ridge_state_version".into()),
             arity: 0,
         },
+        CErlExport {
+            name: CErlAtom("__ridge_state_fields".into()),
+            arity: 0,
+        },
+        CErlExport {
+            name: CErlAtom("__ridge_state_defaults".into()),
+            arity: 0,
+        },
     ];
 
     // ── Attributes ────────────────────────────────────────────────────────────
@@ -156,7 +164,9 @@ pub(crate) fn lower_actor(
         emit_handle_cast(actor, fn_arity, parent_beam_name, tables),
         emit_handle_info(actor, fn_arity, parent_beam_name, tables),
         emit_terminate(actor, fn_arity, parent_beam_name, tables),
-        Ok(emit_code_change_stub()),
+        Ok(emit_code_change()),
+        emit_state_defaults_fn(actor, tables),
+        Ok(emit_state_fields_fn(actor)),
         Ok(emit_mailbox_config_fn(actor)),
         Ok(emit_state_version_fn(actor)),
     ]
@@ -659,31 +669,82 @@ fn emit_terminate(
     })
 }
 
-/// `code_change/3` no-op stub.
+/// `code_change/3` — delegates state transformation to the runtime helper.
 ///
-/// Returns `{ok, State}`.
-fn emit_code_change_stub() -> CErlFn {
-    // fun (_OldVsn, State, _Extra) -> {ok, State} end
+/// The code loader passes `{ridge_migrate, Instr}` as `Extra` when the
+/// actor's state shape changed; any other `Extra` is a pass-through, so a
+/// plain code reload keeps the running state untouched.
+fn emit_code_change() -> CErlFn {
     let params = vec![
         CErlVar("_V_OldVsn".into()),
         CErlVar("V_CcState".into()),
-        CErlVar("_V_Extra".into()),
+        CErlVar("V_Extra".into()),
     ];
     let body = CErlExpr::Fun {
         params,
-        body: Box::new(CErlExpr::Tuple(vec![
-            CErlExpr::Lit(CErlLit::Atom(CErlAtom("ok".into()))),
-            CErlExpr::Var(CErlVar("V_CcState".into())),
-        ])),
+        body: Box::new(CErlExpr::Call {
+            module: CErlAtom("ridge_rt".into()),
+            fn_name: CErlAtom("apply_code_change".into()),
+            args: vec![
+                CErlExpr::Var(CErlVar("V_CcState".into())),
+                CErlExpr::Var(CErlVar("V_Extra".into())),
+            ],
+        }),
     };
     CErlFn {
         name: CErlAtom("code_change".into()),
         arity: 3,
         anns: vec![CErlAnn(
-            "%% gen_server:code_change/3 — pass-through (state shape unchanged); the code loader adds migration dispatch".into(),
+            "%% gen_server:code_change/3 — delegates to ridge_rt:apply_code_change/2 (pass-through unless the code loader passes migration instructions)".into(),
         )],
         body,
     }
+}
+
+/// `'__ridge_state_fields'/0` — the declared state field names in source
+/// order. The code loader diffs old vs new lists to compute added/removed
+/// fields during a state migration.
+fn emit_state_fields_fn(actor: &IrActor) -> CErlFn {
+    let fields = CErlExpr::ListLit(
+        actor
+            .state_fields
+            .iter()
+            .map(|f| CErlExpr::Lit(CErlLit::Atom(CErlAtom(f.name.clone()))))
+            .collect(),
+    );
+    CErlFn {
+        name: CErlAtom("__ridge_state_fields".into()),
+        arity: 0,
+        anns: vec![CErlAnn(
+            "%% Ridge actor state field names (read by the code loader)".into(),
+        )],
+        body: CErlExpr::Fun {
+            params: vec![],
+            body: Box::new(fields),
+        },
+    }
+}
+
+/// `'__ridge_state_defaults'/0` — `#{field => default}` for fields with a
+/// declared default. The code loader reads it (from the NEW module, after
+/// loading) to fill added state fields during migration; defaults are
+/// evaluated at call time, exactly as `init/1` evaluates them.
+fn emit_state_defaults_fn(
+    actor: &IrActor,
+    tables: &CodegenTables,
+) -> Result<CErlFn, CodegenError> {
+    let pairs = crate::init::default_state_pairs(&actor.state_fields, tables)?;
+    Ok(CErlFn {
+        name: CErlAtom("__ridge_state_defaults".into()),
+        arity: 0,
+        anns: vec![CErlAnn(
+            "%% Ridge actor state field defaults (read by the code loader)".into(),
+        )],
+        body: CErlExpr::Fun {
+            params: vec![],
+            body: Box::new(CErlExpr::MapLit(pairs)),
+        },
+    })
 }
 
 // ── __ridge_state_version/0 ───────────────────────────────────────────────────
@@ -938,9 +999,10 @@ mod tests {
     }
 
     #[test]
-    fn actor_module_has_nine_fns() {
+    fn actor_module_has_eleven_fns() {
         // start_link + init + handle_call + handle_cast + handle_info +
-        // terminate + code_change + __ridge_mailbox_config +
+        // terminate + code_change + __ridge_state_defaults +
+        // __ridge_state_fields + __ridge_mailbox_config +
         // __ridge_state_version.
         let actor = make_actor("Counter", vec![], vec![]);
         let m = lower_actor(
@@ -952,8 +1014,8 @@ mod tests {
         .unwrap();
         assert_eq!(
             m.fns.len(),
-            9,
-            "actor module must have exactly 9 callback fns"
+            11,
+            "actor module must have exactly 11 callback fns"
         );
         assert!(
             m.fns.iter().any(|f| f.name.0 == "__ridge_state_version"),
@@ -1062,20 +1124,67 @@ mod tests {
     }
 
     #[test]
-    fn code_change_stub_returns_ok_state_tuple() {
-        let stub = emit_code_change_stub();
-        assert_eq!(stub.name.0, "code_change");
-        assert_eq!(stub.arity, 3);
-        match &stub.body {
-            CErlExpr::Fun { body, .. } => match body.as_ref() {
-                CErlExpr::Tuple(elems) => {
-                    assert!(
-                        matches!(&elems[0], CErlExpr::Lit(CErlLit::Atom(CErlAtom(s))) if s == "ok")
-                    );
-                }
-                other => panic!("expected Tuple, got {other:?}"),
-            },
-            other => panic!("expected Fun, got {other:?}"),
+    fn code_change_delegates_to_runtime_helper() {
+        let f = emit_code_change();
+        assert_eq!(f.name.0, "code_change");
+        assert_eq!(f.arity, 3);
+        let CErlExpr::Fun { body, .. } = &f.body else {
+            panic!("code_change body must be a fun");
+        };
+        let CErlExpr::Call {
+            module,
+            fn_name,
+            args,
+        } = body.as_ref()
+        else {
+            panic!("code_change must delegate to ridge_rt:apply_code_change/2");
+        };
+        assert_eq!(module.0, "ridge_rt");
+        assert_eq!(fn_name.0, "apply_code_change");
+        assert_eq!(args.len(), 2);
+    }
+
+    #[test]
+    fn state_fields_fn_lists_field_atoms_in_source_order() {
+        let actor = make_actor(
+            "Counter",
+            vec![],
+            vec![make_state_field("count", None), make_state_field("step", None)],
+        );
+        let f = emit_state_fields_fn(&actor);
+        assert_eq!(f.name.0, "__ridge_state_fields");
+        let CErlExpr::Fun { body, .. } = &f.body else {
+            panic!("fun")
+        };
+        let CErlExpr::ListLit(items) = body.as_ref() else {
+            panic!("list")
+        };
+        assert_eq!(items.len(), 2);
+        assert!(
+            matches!(&items[0], CErlExpr::Lit(CErlLit::Atom(CErlAtom(s))) if s == "count"),
+            "first field must be count"
+        );
+        assert!(
+            matches!(&items[1], CErlExpr::Lit(CErlLit::Atom(CErlAtom(s))) if s == "step"),
+            "second field must be step"
+        );
+    }
+
+    #[test]
+    fn exports_include_state_metadata_accessors() {
+        let actor = make_actor("Counter", vec![], vec![make_state_field("count", None)]);
+        let module = lower_actor(
+            &actor,
+            "ridge_app_Main",
+            &FxHashMap::default(),
+            &CodegenTables::default(),
+        )
+        .unwrap_or_else(|e| panic!("lower_actor: {e:?}"));
+        for wanted in ["__ridge_state_fields", "__ridge_state_defaults"] {
+            assert!(
+                module.exports.iter().any(|e| e.name.0 == wanted && e.arity == 0),
+                "missing export {wanted}/0"
+            );
         }
     }
 

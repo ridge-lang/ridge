@@ -93,11 +93,15 @@ fn terminate_member_emits_real_callback() {
         core.contains("'exit_reason_to_ridge'"),
         "terminate must map the OTP reason through the runtime, core:\n{core}"
     );
-    // The no-op stub body is the bare atom 'ok' with a boilerplate
-    // annotation; a real callback lowers the user body instead.
+    // The old code_change/3 pass-through stub annotation is gone; the real
+    // callback delegates state transformation to the runtime helper.
     assert!(
-        !core.contains("boilerplate no-op stub (§4.28)\"\n    end\n\n'code_change'"),
-        "terminate must no longer be the no-op stub, core:\n{core}"
+        !core.contains("state shape unchanged"),
+        "code_change must no longer be the pass-through stub, core:\n{core}"
+    );
+    assert!(
+        core.contains("delegates to ridge_rt"),
+        "code_change must delegate to ridge_rt:apply_code_change/2, core:\n{core}"
     );
 }
 

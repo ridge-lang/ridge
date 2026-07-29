@@ -142,6 +142,28 @@ fn wrap_in_args_destructure(params: &[IrParam], inner_expr: CErlExpr) -> CErlExp
 /// Returns `Err(CodegenError::IrShapeMalformed)` if any state field lacks a
 /// default *and* there is no `init` block to set it (defensive — Phase 5 should
 /// have rejected this pattern during type-checking).
+/// Lower the `field => default-expr` map pairs shared by `init/1` and the
+/// `'__ridge_state_defaults'/0` accessor the code loader reads.
+///
+/// Only fields with a declared default produce a pair; the map key is the
+/// field name atom.
+pub(crate) fn default_state_pairs(
+    state_fields: &[IrStateField],
+    tables: &crate::scope::CodegenTables,
+) -> Result<Vec<(CErlExpr, CErlExpr)>, CodegenError> {
+    let mut pairs: Vec<(CErlExpr, CErlExpr)> = Vec::new();
+    for f in state_fields {
+        if let Some(default_expr) = f.default.as_ref() {
+            let key = CErlExpr::Lit(CErlLit::Atom(CErlAtom(f.name.clone())));
+            let mut default_scope = LocalScope::new();
+            default_scope.tables = tables.clone();
+            let val = lower_expr_in_scope(default_expr, &mut default_scope)?;
+            pairs.push((key, val));
+        }
+    }
+    Ok(pairs)
+}
+
 pub(crate) fn lower_init_body(
     init: Option<&IrInit>,
     state_fields: &[IrStateField],
@@ -153,16 +175,7 @@ pub(crate) fn lower_init_body(
     // dropped field leaves the state map without that key, so every later
     // `maps:get(field, V_State)` blows up with `badkey` at runtime, and the
     // codegen error that explained why never reaches the user.
-    let mut default_pairs: Vec<(CErlExpr, CErlExpr)> = Vec::new();
-    for f in state_fields {
-        if let Some(default_expr) = f.default.as_ref() {
-            let key = CErlExpr::Lit(CErlLit::Atom(CErlAtom(f.name.clone())));
-            let mut default_scope = LocalScope::new();
-            default_scope.tables = tables.clone();
-            let val = lower_expr_in_scope(default_expr, &mut default_scope)?;
-            default_pairs.push((key, val));
-        }
-    }
+    let default_pairs = default_state_pairs(state_fields, tables)?;
 
     // The initial state expression (default map).
     let initial_state = CErlExpr::MapLit(default_pairs);

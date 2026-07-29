@@ -49,6 +49,14 @@ pub struct RunArgs {
     #[arg(long)]
     pub watch: bool,
 
+    /// Watch sources and hot-reload compatible edits into the running dev
+    /// node without losing actor state.
+    ///
+    /// Falls back to a manual restart for edits the checker rejects.
+    /// Requires feature `cli-watch` and OTP 27+.
+    #[arg(long, conflicts_with_all = ["watch", "observer"])]
+    pub reload: bool,
+
     /// Connect an Erlang observer to the running node.
     ///
     /// Starts BEAM as a named node (`ridge_app@127.0.0.1`) and prints
@@ -93,6 +101,16 @@ pub fn execute(args: &RunArgs, cwd: &Path) -> Result<(), CliError> {
             process::exit(1);
         }
     }
+    if args.reload {
+        #[cfg(not(feature = "cli-watch"))]
+        {
+            eprintln!(
+                "error: --reload requires the `cli-watch` feature.\n\
+                 Rebuild with: cargo build -p ridge-cli --features cli-watch"
+            );
+            process::exit(1);
+        }
+    }
 
     // ── 2. Locate workspace root ──────────────────────────────────────────────
     let workspace_root = find_workspace_root(cwd).ok_or(CliError::NoWorkspaceRoot)?;
@@ -111,6 +129,15 @@ pub fn execute(args: &RunArgs, cwd: &Path) -> Result<(), CliError> {
         #[cfg(feature = "cli-watch")]
         {
             execute_watch(args, &workspace_root, &member_name, profile)?;
+        }
+        #[cfg(not(feature = "cli-watch"))]
+        {
+            // Already handled above — unreachable here.
+        }
+    } else if args.reload {
+        #[cfg(feature = "cli-watch")]
+        {
+            execute_reload(args, &workspace_root, &member_name, profile)?;
         }
         #[cfg(not(feature = "cli-watch"))]
         {
@@ -672,4 +699,364 @@ fn module_from_beam(beam_path: &Path) -> String {
         .and_then(|s| s.to_str())
         .unwrap_or("ridge_module_0")
         .to_owned()
+}
+
+// ── ridge run --reload (cli-watch) ────────────────────────────────────────────
+
+#[cfg(feature = "cli-watch")]
+use ridge_driver::{
+    manifest_path_for, plan_reload, snapshot_path_for, snapshot_vsn, CheckOptions,
+    WorkspaceSnapshot,
+};
+
+#[cfg(feature = "cli-watch")]
+/// Execute `ridge run --reload`: boot a persistent dev node, then per save
+/// compile → plan → hot-apply into the node. Rejected edits keep the node on
+/// its current code and offer a cold restart.
+fn execute_reload(
+    args: &RunArgs,
+    workspace_root: &Path,
+    member_name: &str,
+    profile: Profile,
+) -> Result<(), CliError> {
+    use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    let debounce = Duration::from_millis(500);
+    let grace = Duration::from_secs(2);
+    let profile_name = profile.dir_name();
+
+    let erl_path = which::which("erl").map_err(|_| {
+        eprintln!("error: C004 ErlangNotFound: erl not found on PATH");
+        CliError::NoWorkspaceRoot
+    })?;
+
+    // Cookie for the probe<->node handshake: user-provided or generated.
+    let cookie = args.cookie.clone().unwrap_or_else(|| {
+        use std::hash::Hasher;
+        let mut h = rustc_hash::FxHasher::default();
+        h.write_u128(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        );
+        h.write_usize(std::process::id() as usize);
+        format!("ridge{:016x}", h.finish())
+    });
+    let node_name = format!("ridge_dev_{}@127.0.0.1", std::process::id());
+
+    // ── Initial compile + boot ────────────────────────────────────────────
+    let (beam_files, entry_module) =
+        compile_for_watch(workspace_root, member_name, profile, &args.extra_args)?;
+    let beam_dir = beam_dir_from_artefacts(&beam_files);
+    let module_name = entry_module.unwrap_or_else(|| module_from_beam(&beam_files[0]));
+
+    let snap_path = snapshot_path_for(workspace_root, profile_name);
+    let manifest_path = manifest_path_for(workspace_root, profile_name);
+    let mut node_snapshot: WorkspaceSnapshot = read_snapshot(&snap_path)?;
+    let mut node_vsn = snapshot_vsn(&node_snapshot);
+
+    let mut child = spawn_reload_node(
+        &erl_path,
+        &beam_dir,
+        &module_name,
+        &node_name,
+        &cookie,
+        &node_vsn,
+        &args.extra_args,
+    )?;
+    eprintln!(
+        "dev node {node_name} up (vsn {node_vsn}); watching for changes. \
+         Press r + Enter to restart, Ctrl-C to exit."
+    );
+
+    // ── stdin restart channel ─────────────────────────────────────────────
+    let (stdin_tx, stdin_rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let stdin = std::io::stdin();
+        for line in stdin.lock().lines() {
+            if line.map(|l| stdin_tx.send(l)).is_err() {
+                return;
+            }
+        }
+    });
+
+    // ── File watcher (same shape as --watch) ──────────────────────────────
+    let last_event: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+    let last_event_clone = Arc::clone(&last_event);
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let mut watcher: RecommendedWatcher =
+        notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
+            let Ok(event) = res else { return };
+            if !matches!(
+                event.kind,
+                EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+            ) {
+                return;
+            }
+            if let Ok(mut guard) = last_event_clone.lock() {
+                *guard = Some(Instant::now());
+            }
+            let _ = tx.send(());
+        })
+        .map_err(|e| {
+            eprintln!("error: failed to create file watcher: {e}");
+            CliError::NoWorkspaceRoot
+        })?;
+    watcher
+        .watch(workspace_root, RecursiveMode::Recursive)
+        .map_err(|e| {
+            eprintln!("error: failed to watch workspace: {e}");
+            CliError::NoWorkspaceRoot
+        })?;
+
+    let mut probe_seq: u64 = 0;
+
+    loop {
+        // Restart requests are honored between file events.
+        if rx.recv().is_err() {
+            break;
+        }
+        while rx.try_recv().is_ok() {}
+        loop {
+            let elapsed = {
+                let guard = last_event.lock().map_err(|_| CliError::NoWorkspaceRoot)?;
+                guard
+                    .as_ref()
+                    .map_or(debounce + Duration::from_millis(1), Instant::elapsed)
+            };
+            if elapsed >= debounce {
+                break;
+            }
+            std::thread::sleep(debounce.saturating_sub(elapsed));
+        }
+
+        // Drain any queued restart request first.
+        if drain_restart(&stdin_rx) {
+            restart_node(
+                &erl_path,
+                &mut child,
+                grace,
+                workspace_root,
+                member_name,
+                profile,
+                &args.extra_args,
+                &node_name,
+                &cookie,
+                &snap_path,
+                &mut node_snapshot,
+                &mut node_vsn,
+            )?;
+            continue;
+        }
+
+        // ── Recompile ─────────────────────────────────────────────────────
+        if let Err(e) = compile_for_watch(workspace_root, member_name, profile, &args.extra_args)
+        {
+            let _ = e; // diagnostics already rendered by compile_for_watch
+            eprintln!("compile failed; node keeps running the previous code.");
+            continue;
+        }
+
+        // ── Plan ──────────────────────────────────────────────────────────
+        let plan = match plan_reload(
+            &node_snapshot,
+            CheckOptions::new(workspace_root.to_owned()),
+            &manifest_path,
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("reload planning failed: {e}; node keeps running the previous code.");
+                continue;
+            }
+        };
+
+        let Some(manifest) = plan.manifest else {
+            crate::cmd::reload::print_reload_rejection(&plan.report);
+            eprintln!(
+                "reload rejected — press r + Enter to restart with the new code, or keep editing."
+            );
+            continue;
+        };
+
+        if manifest.modules.is_empty() {
+            // Identical rebuild (e.g. our own build outputs retriggered the
+            // watcher): nothing to load, nothing to report.
+            continue;
+        }
+
+        // ── Apply via probe ───────────────────────────────────────────────
+        probe_seq += 1;
+        match probe_apply(
+            &erl_path,
+            &node_name,
+            &cookie,
+            &manifest_path,
+            &manifest.base_vsn,
+            probe_seq,
+        ) {
+            Ok(line) => {
+                node_snapshot = plan.new_snapshot;
+                node_vsn = manifest.new_vsn.clone();
+                eprintln!("{line}");
+            }
+            Err(msg) => {
+                eprintln!("reload failed at the node: {msg}");
+                eprintln!("node is unchanged — press r + Enter to restart, or keep editing.");
+            }
+        }
+    }
+
+    terminate_child(&mut child, grace);
+    Ok(())
+}
+
+#[cfg(feature = "cli-watch")]
+/// Read and parse the workspace snapshot written by the last clean compile.
+fn read_snapshot(path: &Path) -> Result<WorkspaceSnapshot, CliError> {
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        eprintln!("error: cannot read reload snapshot {}: {e}", path.display());
+        CliError::AlreadyReported
+    })?;
+    serde_json::from_str(&text).map_err(|e| {
+        eprintln!("error: cannot parse reload snapshot {}: {e}", path.display());
+        CliError::AlreadyReported
+    })
+}
+
+#[cfg(feature = "cli-watch")]
+/// Boot the persistent dev node: named, cookied, stays alive after main.
+fn spawn_reload_node(
+    erl_path: &Path,
+    beam_dir: &Path,
+    module_name: &str,
+    node_name: &str,
+    cookie: &str,
+    vsn: &str,
+    extra_args: &[String],
+) -> Result<process::Child, CliError> {
+    let mut cmd = process::Command::new(erl_path);
+    cmd.arg("-name")
+        .arg(node_name)
+        .arg("-setcookie")
+        .arg(cookie)
+        .arg("-noshell")
+        .arg("-pa")
+        .arg(beam_dir)
+        .arg("-eval")
+        .arg(format!("persistent_term:put(ridge_loader_vsn, <<\"{vsn}\">>)."))
+        .arg("-s")
+        .arg("ridge_main_runner")
+        .arg("run_detached")
+        .arg(module_name)
+        .arg("main");
+    for arg in extra_args {
+        cmd.arg(arg);
+    }
+    cmd.spawn().map_err(|e| {
+        eprintln!("error: failed to spawn dev node: {e}");
+        CliError::NoWorkspaceRoot
+    })
+}
+
+#[cfg(feature = "cli-watch")]
+/// Apply the manifest in the dev node via a short-lived probe node.
+/// Returns the one-line report on success, or the node's error term.
+fn probe_apply(
+    erl_path: &Path,
+    node_name: &str,
+    cookie: &str,
+    manifest_path: &Path,
+    base_vsn: &str,
+    seq: u64,
+) -> Result<String, String> {
+    // Erlang string literals treat backslashes as escapes — use forward slashes.
+    let manifest_fwd = manifest_path.to_string_lossy().replace('\\', "/");
+    let eval = format!(
+        "case rpc:call('{node_name}', ridge_loader, apply, [\"{manifest_fwd}\", <<\"{base_vsn}\">>]) of \
+            {{ok, Rep}} -> io:format(\"RIDGE_RELOAD_OK ~w ~w ~w~n\", [maps:get(modules_loaded, Rep), maps:get(actors_migrated, Rep), maps:get(duration_ms, Rep)]); \
+            Err -> io:format(\"RIDGE_RELOAD_ERR ~p~n\", [Err]) \
+        end."
+    );
+    let output = process::Command::new(erl_path)
+        .arg("-name")
+        .arg(format!("ridge_probe_{}_{}@127.0.0.1", std::process::id(), seq))
+        .arg("-setcookie")
+        .arg(cookie)
+        .arg("-noshell")
+        .arg("-eval")
+        .arg(eval)
+        .arg("-s")
+        .arg("init")
+        .arg("stop")
+        .output()
+        .map_err(|e| format!("failed to spawn probe: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if let Some(rest) = line.strip_prefix("RIDGE_RELOAD_OK ") {
+            let parts: Vec<&str> = rest.split_whitespace().collect();
+            if let [modules, actors, ms] = parts.as_slice() {
+                return Ok(format!(
+                    "reloaded {modules} modules, migrated {actors} actors in {ms}ms"
+                ));
+            }
+        }
+        if let Some(rest) = line.strip_prefix("RIDGE_RELOAD_ERR ") {
+            return Err(rest.to_string());
+        }
+    }
+    Err(format!("probe produced no verdict (stdout: {stdout})"))
+}
+
+#[cfg(feature = "cli-watch")]
+/// True when the user typed `r` since the last drain.
+fn drain_restart(stdin_rx: &std::sync::mpsc::Receiver<String>) -> bool {
+    let mut restart = false;
+    while let Ok(line) = stdin_rx.try_recv() {
+        if line.trim() == "r" {
+            restart = true;
+        }
+    }
+    restart
+}
+
+#[cfg(feature = "cli-watch")]
+/// Cold-restart the dev node on the current on-disk build, rebasing the
+/// running snapshot/version. Used for the interactive fallback.
+#[allow(clippy::too_many_arguments)]
+fn restart_node(
+    erl_path: &Path,
+    child: &mut process::Child,
+    grace: std::time::Duration,
+    workspace_root: &Path,
+    member_name: &str,
+    profile: Profile,
+    extra_args: &[String],
+    node_name: &str,
+    cookie: &str,
+    snap_path: &Path,
+    node_snapshot: &mut WorkspaceSnapshot,
+    node_vsn: &mut String,
+) -> Result<(), CliError> {
+    terminate_child(child, grace);
+    let (beam_files, entry_module) =
+        compile_for_watch(workspace_root, member_name, profile, extra_args)?;
+    let beam_dir = beam_dir_from_artefacts(&beam_files);
+    let module_name = entry_module.unwrap_or_else(|| module_from_beam(&beam_files[0]));
+    *node_snapshot = read_snapshot(snap_path)?;
+    *node_vsn = snapshot_vsn(node_snapshot);
+    *child = spawn_reload_node(
+        erl_path,
+        &beam_dir,
+        &module_name,
+        node_name,
+        cookie,
+        node_vsn,
+        extra_args,
+    )?;
+    eprintln!("restarted on current code (vsn {node_vsn}).");
+    Ok(())
 }

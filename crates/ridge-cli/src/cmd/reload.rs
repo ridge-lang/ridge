@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 
 use clap::Args as ClapArgs;
-use ridge_driver::reload::{reload_check, snapshot_path_for, Verdict};
+use ridge_driver::reload::{reload_check, snapshot_path_for, CheckReport, Verdict};
 use ridge_driver::{CheckOptions, Profile};
 use ridge_manifest::find_workspace_root;
 
@@ -67,6 +67,21 @@ pub fn execute(args: &ReloadArgs, cwd: &Path) -> Result<(), CliError> {
         }
     };
 
+    print_reload_rejection(&report);
+
+    let ok = report.is_reloadable() && !report.has_holes();
+    if ok {
+        Ok(())
+    } else {
+        Err(CliError::AlreadyReported)
+    }
+}
+
+/// Print the per-symbol verdicts and the summary line for a check report.
+///
+/// Shared by `ridge reload --check` and the `ridge run --reload` rejection
+/// path.
+pub(crate) fn print_reload_rejection(report: &CheckReport) {
     let (mut compatible, mut auto, mut migrate, mut incompatible) = (0u32, 0u32, 0u32, 0u32);
     for v in &report.verdicts {
         // Module-level rows repeat the FQN as the symbol; print it once.
@@ -102,9 +117,4 @@ pub fn execute(args: &ReloadArgs, cwd: &Path) -> Result<(), CliError> {
         "{}: {compatible} compatible, {auto} auto-migrated, {migrate} need migration, {incompatible} incompatible",
         if ok { "reloadable" } else { "not reloadable" },
     );
-    if ok {
-        Ok(())
-    } else {
-        Err(CliError::AlreadyReported)
-    }
 }

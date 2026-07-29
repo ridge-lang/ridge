@@ -29,6 +29,8 @@ notify          = { version = "8", optional = true }
 which           = "8"
 dirs            = "6"
 tempfile        = "3"
+rustc-hash      = { workspace = true }
+serde_json      = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

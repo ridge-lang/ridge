@@ -1766,6 +1766,9 @@ ridge build               # build the whole workspace respecting dependencies
 ridge build --member api  # only apps/api and its dependencies
 ridge check               # type-check without codegen (fast feedback)
 ridge run --member api    # build and run
+ridge run --watch         # rebuild and restart on every source change
+ridge run --reload        # watch sources and hot-reload compatible edits into the running node (OTP 27+)
+ridge reload --check      # dry-run: compatibility verdicts for the current edits, nothing touches a runtime
 ridge test                # run all tests
 ridge test --member X     # run tests of member X
 ridge test --filter G     # run tests whose qualified name matches glob G

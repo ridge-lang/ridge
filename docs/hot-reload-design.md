@@ -1,5 +1,14 @@
 # Hot-reload design — deferred to 0.2.0+
 
+> **Status note (2026-07):** the dev loop half of this story has landed.
+> `ridge run --reload` boots a persistent dev node and hot-loads compatible
+> edits into it — body changes, additive state fields with defaults, and
+> pure state-field renames apply in place with actor state preserved;
+> anything else prints the `ridge reload --check` report and offers a cold
+> restart. The runtime loader requires OTP 27+. Still deferred, per the
+> sections below: hand-written `migrate` hooks and versioned types
+> (`@version(N)`, `User@1`), mailbox migration, and stdlib reload.
+
 This document is a **placeholder** for the Ridge hot-reload story. It enumerates the four open design questions that any 0.2.0+ implementation must resolve before work begins.
 
 For 0.1.0, the dev-loop substitute is `ridge run --watch` (cheap kill-and-relaunch on file change).  `ridge run --observer` adds the BEAM introspection half (`remsh` / `observer` attach via node name + cookie) at ~1 h cost.  Together these capture roughly 70% of the dev-loop value of true hot-reload at a fraction of the implementation budget, while the harder typed-hot-reload work remains deferred until each of the four questions below has a designed answer.

@@ -932,7 +932,8 @@ fn lower_construct(
                 let tag = CErlExpr::Tuple(vec![
                     CErlExpr::Lit(CErlLit::Atom(CErlAtom(meta.fqn.clone()))),
                     CErlExpr::Lit(CErlLit::Atom(CErlAtom(meta.name.clone()))),
-                    CErlExpr::Lit(CErlLit::Int(i64::from(meta.version))),
+                    #[allow(clippy::cast_possible_wrap)]
+                    CErlExpr::Lit(CErlLit::Int(meta.version as i64)),
                 ]);
                 pairs.insert(
                     0,
@@ -1165,7 +1166,7 @@ fn lower_field(
 /// [`CErlVar`].  The body is lowered in a **fresh per-lambda scope** (Erlang
 /// funs introduce their own variable scope; outer SSA indices must not leak
 /// in).  `caps` is erased (Model B capability erasure).
-fn lower_lambda(
+pub(crate) fn lower_lambda(
     params: &[IrParam],
     body: &IrExpr,
     outer_scope: &LocalScope,

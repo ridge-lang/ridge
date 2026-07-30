@@ -13,7 +13,7 @@
 //! | `handle_cast/2` | 2 | one clause per handler (all handlers, per OQ-E005) |
 //! | `handle_info/2` | 2 | DOWN routing when `onDown` is present, else stub |
 //! | `terminate/2` | 2 | `IrTerminate` body when present, else stub |
-//! | `code_change/3` | 3 | delegates to `ridge_rt:apply_code_change/2` |
+//! | `code_change/3` | 3 | `{ridge_migrate_hook, FromHash}` → user hook; else `ridge_rt:apply_code_change/2` |
 //!
 //! ## `start_link/N` wrapper (§4.28)
 //!
@@ -102,7 +102,7 @@ pub(crate) fn lower_actor(
     let init_params_count = actor.init.as_ref().map_or(0, |i| i.params.len());
     let start_link_arity = u32::try_from(init_params_count).unwrap_or(0);
 
-    let exports = vec![
+    let mut exports = vec![
         CErlExport {
             name: CErlAtom("start_link".into()),
             arity: start_link_arity,
@@ -148,6 +148,14 @@ pub(crate) fn lower_actor(
             arity: 0,
         },
     ];
+    // Actors with `migrate` members also export the hook dispatcher that
+    // `code_change/3` calls for `{ridge_migrate_hook, FromHash}`.
+    if !actor.migrations.is_empty() {
+        exports.push(CErlExport {
+            name: CErlAtom("__ridge_migrate_hook".into()),
+            arity: 2,
+        });
+    }
 
     // ── Attributes ────────────────────────────────────────────────────────────
     // §6: capabilities emitted as metadata comment only (Model B erasure).
@@ -157,22 +165,23 @@ pub(crate) fn lower_actor(
     // ── Functions ─────────────────────────────────────────────────────────────
     // Assemble the gen_server callbacks plus the `__ridge_mailbox_config/0`
     // accessor read by `ridge_rt:spawn_actor/3`.
-    let fns_result: Result<Vec<_>, _> = [
+    let fns_results: Vec<Result<CErlFn, CodegenError>> = vec![
         emit_start_link(&actor_beam_name, init_params_count),
         emit_init(actor, tables),
         emit_handle_call(actor, fn_arity, parent_beam_name, tables),
         emit_handle_cast(actor, fn_arity, parent_beam_name, tables),
         emit_handle_info(actor, fn_arity, parent_beam_name, tables),
         emit_terminate(actor, fn_arity, parent_beam_name, tables),
-        Ok(emit_code_change()),
+        Ok(emit_code_change(actor)),
         emit_state_defaults_fn(actor, tables),
         Ok(emit_state_fields_fn(actor)),
         Ok(emit_mailbox_config_fn(actor)),
         Ok(emit_state_version_fn(actor)),
-    ]
-    .into_iter()
-    .collect();
-    let mut fns = fns_result?;
+    ];
+    let mut fns = fns_results.into_iter().collect::<Result<Vec<_>, _>>()?;
+    if !actor.migrations.is_empty() {
+        fns.push(emit_migrate_hook_fn(actor, fn_arity, parent_beam_name, tables)?);
+    }
 
     // §4.28: doc comment as annotation.
     // We add it as an attribute annotation rather than a function annotation
@@ -316,6 +325,9 @@ fn emit_init(actor: &IrActor, tables: &CodegenTables) -> Result<CErlFn, CodegenE
 ///
 /// One clause per handler in `actor.dispatch`, in source order.
 /// Falls through to a default `{stop, unexpected_call, ok}` clause.
+/// The whole dispatch is wrapped in the lazy mailbox migration step: the
+/// message first passes through `ridge_rt:migrate_message/1` and only
+/// `{ok, M}` reaches the handler clauses (see [`wrap_migrated_dispatch`]).
 ///
 /// Per OQ-E005 (§8.2): all handlers emit into `handle_call/3` regardless of
 /// return type — `!` vs `?>` is a call-site decision.
@@ -348,17 +360,14 @@ fn emit_handle_call(
 
     let body = CErlExpr::Fun {
         params,
-        body: Box::new(CErlExpr::Case {
-            scrutinee: Box::new(CErlExpr::Var(CErlVar("V_Msg".into()))),
-            clauses,
-        }),
+        body: Box::new(wrap_migrated_dispatch(clauses)),
     };
 
     Ok(CErlFn {
         name: CErlAtom("handle_call".into()),
         arity: 3,
         anns: vec![CErlAnn(
-            "%% gen_server:handle_call/3 — ask handlers (§4.30, OQ-E005)".into(),
+            "%% gen_server:handle_call/3 — ask handlers, messages migrated lazily at receive (§4.30, OQ-E005)".into(),
         )],
         body,
     })
@@ -370,6 +379,9 @@ fn emit_handle_call(
 ///
 /// One clause per handler in `actor.dispatch`, in source order.
 /// Falls through to a default `{noreply, State}` clause.
+/// The whole dispatch is wrapped in the lazy mailbox migration step: the
+/// message first passes through `ridge_rt:migrate_message/1` and only
+/// `{ok, M}` reaches the handler clauses (see [`wrap_migrated_dispatch`]).
 ///
 /// Per OQ-E005 (§8.2): all handlers emit into `handle_cast/2` regardless of
 /// return type.
@@ -402,17 +414,14 @@ fn emit_handle_cast(
 
     let body = CErlExpr::Fun {
         params,
-        body: Box::new(CErlExpr::Case {
-            scrutinee: Box::new(CErlExpr::Var(CErlVar("V_Msg".into()))),
-            clauses,
-        }),
+        body: Box::new(wrap_migrated_dispatch(clauses)),
     };
 
     Ok(CErlFn {
         name: CErlAtom("handle_cast".into()),
         arity: 2,
         anns: vec![CErlAnn(
-            "%% gen_server:handle_cast/2 — send handlers (§4.30, OQ-E005)".into(),
+            "%% gen_server:handle_cast/2 — send handlers, messages migrated lazily at receive (§4.30, OQ-E005)".into(),
         )],
         body,
     })
@@ -669,36 +678,137 @@ fn emit_terminate(
     })
 }
 
-/// `code_change/3` — delegates state transformation to the runtime helper.
+/// `code_change/3` — hook dispatch over the runtime helper.
 ///
-/// The code loader passes `{ridge_migrate, Instr}` as `Extra` when the
-/// actor's state shape changed; any other `Extra` is a pass-through, so a
-/// plain code reload keeps the running state untouched.
-fn emit_code_change() -> CErlFn {
+/// Without user `migrate` members this is the plain delegation to
+/// `ridge_rt:apply_code_change/2`. With them, the extra form
+/// `{ridge_migrate_hook, FromHash}` — which the loader sends ONLY for hook
+/// actors, per the manifest — dispatches to the generated
+/// `'__ridge_migrate_hook'/2`; any other `Extra` still delegates, so
+/// automatic additive/rename instructions keep working for the same actor
+/// and the hook takes precedence only when the loader chooses it.
+fn emit_code_change(actor: &IrActor) -> CErlFn {
     let params = vec![
         CErlVar("_V_OldVsn".into()),
         CErlVar("V_CcState".into()),
         CErlVar("V_Extra".into()),
     ];
-    let body = CErlExpr::Fun {
-        params,
-        body: Box::new(CErlExpr::Call {
-            module: CErlAtom("ridge_rt".into()),
-            fn_name: CErlAtom("apply_code_change".into()),
-            args: vec![
-                CErlExpr::Var(CErlVar("V_CcState".into())),
-                CErlExpr::Var(CErlVar("V_Extra".into())),
-            ],
-        }),
+    let delegate = CErlExpr::Call {
+        module: CErlAtom("ridge_rt".into()),
+        fn_name: CErlAtom("apply_code_change".into()),
+        args: vec![
+            CErlExpr::Var(CErlVar("V_CcState".into())),
+            CErlExpr::Var(CErlVar("V_Extra".into())),
+        ],
+    };
+    let body_expr = if actor.migrations.is_empty() {
+        delegate
+    } else {
+        let hook_clause = crate::core_ast::CErlClause {
+            pattern: crate::core_ast::CErlPat::Tuple(vec![
+                crate::core_ast::CErlPat::Lit(CErlLit::Atom(CErlAtom("ridge_migrate_hook".into()))),
+                crate::core_ast::CErlPat::Var(CErlVar("V_FromHash".into())),
+            ]),
+            guard: CErlExpr::Lit(CErlLit::Atom(CErlAtom("true".into()))),
+            body: CErlExpr::Tuple(vec![
+                CErlExpr::Lit(CErlLit::Atom(CErlAtom("ok".into()))),
+                CErlExpr::Apply {
+                    callee: Box::new(CErlExpr::LocalFnRef {
+                        name: CErlAtom("__ridge_migrate_hook".into()),
+                        arity: 2,
+                    }),
+                    args: vec![
+                        CErlExpr::Var(CErlVar("V_FromHash".into())),
+                        CErlExpr::Var(CErlVar("V_CcState".into())),
+                    ],
+                },
+            ]),
+        };
+        let fallback_clause = crate::core_ast::CErlClause {
+            pattern: crate::core_ast::CErlPat::Wild,
+            guard: CErlExpr::Lit(CErlLit::Atom(CErlAtom("true".into()))),
+            body: delegate,
+        };
+        CErlExpr::Case {
+            scrutinee: Box::new(CErlExpr::Var(CErlVar("V_Extra".into()))),
+            clauses: vec![hook_clause, fallback_clause],
+        }
     };
     CErlFn {
         name: CErlAtom("code_change".into()),
         arity: 3,
         anns: vec![CErlAnn(
-            "%% gen_server:code_change/3 — delegates to ridge_rt:apply_code_change/2 (pass-through unless the code loader passes migration instructions)".into(),
+            "%% gen_server:code_change/3 — {ridge_migrate_hook, FromHash} dispatches to the user migrate hook; anything else delegates to ridge_rt:apply_code_change/2".into(),
         )],
-        body,
+        body: CErlExpr::Fun {
+            params,
+            body: Box::new(body_expr),
+        },
     }
+}
+
+/// `'__ridge_migrate_hook'/2` — one clause per version edge, keyed by the
+/// FROM hash literal the loader passes in `{ridge_migrate_hook, FromHash}`.
+/// A hash with no edge raises `ridge_no_migration_edge`: `sys:change_code`
+/// then reports the migration as failed and the loader resumes the actor on
+/// its old state with a loud error (current failure semantics).
+fn emit_migrate_hook_fn(
+    actor: &IrActor,
+    fn_arity: &FxHashMap<String, u32>,
+    parent_beam_name: &str,
+    tables: &CodegenTables,
+) -> Result<CErlFn, CodegenError> {
+    let mut clauses: Vec<crate::core_ast::CErlClause> = Vec::new();
+    for mig in &actor.migrations {
+        let Some(from_hash) = mig.from_hash else {
+            continue; // Typecheck already reported the unknown edge; no clause for it.
+        };
+        let param = ridge_ir::IrParam {
+            name: mig.param_name.clone(),
+            ty: ridge_types::Type::Error, // Erased at codegen.
+            span: mig.span,
+        };
+        let mut scope = LocalScope::with_actor_parent(fn_arity.clone(), actor.module, parent_beam_name);
+        scope.tables = tables.clone();
+        let fun = crate::expr::lower_lambda(&[param], &mig.body, &scope)?;
+        clauses.push(crate::core_ast::CErlClause {
+            pattern: crate::core_ast::CErlPat::Lit(
+                #[allow(clippy::cast_possible_wrap)]
+                CErlLit::Int(from_hash as i64),
+            ),
+            guard: CErlExpr::Lit(CErlLit::Atom(CErlAtom("true".into()))),
+            body: CErlExpr::Apply {
+                callee: Box::new(fun),
+                args: vec![CErlExpr::Var(CErlVar("V_Old".into()))],
+            },
+        });
+    }
+    clauses.push(crate::core_ast::CErlClause {
+        pattern: crate::core_ast::CErlPat::Wild,
+        guard: CErlExpr::Lit(CErlLit::Atom(CErlAtom("true".into()))),
+        body: CErlExpr::Call {
+            module: CErlAtom("erlang".into()),
+            fn_name: CErlAtom("error".into()),
+            args: vec![CErlExpr::Tuple(vec![
+                CErlExpr::Lit(CErlLit::Atom(CErlAtom("ridge_no_migration_edge".into()))),
+                CErlExpr::Var(CErlVar("V_FromHash".into())),
+            ])],
+        },
+    });
+    Ok(CErlFn {
+        name: CErlAtom("__ridge_migrate_hook".into()),
+        arity: 2,
+        anns: vec![CErlAnn(
+            "%% User migrate hooks keyed by FROM state-shape hash (called by code_change/3)".into(),
+        )],
+        body: CErlExpr::Fun {
+            params: vec![CErlVar("V_FromHash".into()), CErlVar("V_Old".into())],
+            body: Box::new(CErlExpr::Case {
+                scrutinee: Box::new(CErlExpr::Var(CErlVar("V_FromHash".into()))),
+                clauses,
+            }),
+        },
+    })
 }
 
 /// `'__ridge_state_fields'/0` — the declared state field names in source
@@ -827,6 +937,52 @@ fn mailbox_config_term(config: Option<&MailboxConfig>) -> CErlExpr {
     }
 }
 
+// ── Lazy mailbox migration wrapper ────────────────────────────────────────────
+
+/// Wrap the handler-dispatch case in the lazy mailbox migration step.
+///
+/// Every incoming message first passes through the runtime dispatcher:
+/// current/untagged payloads pass through at the cost of one map-key check;
+/// stale-tagged records are migrated through the chain; non-migratable
+/// payloads are reported and dropped here — the handler clauses never see
+/// them. For `handle_call/3`, `{noreply, State}` is a legal
+/// reply-without-answer (the caller's ask times out); for `handle_cast/2`
+/// the same tuple is the plain "message consumed" form. The actor never
+/// crashes on a stale message.
+fn wrap_migrated_dispatch(clauses: Vec<crate::core_ast::CErlClause>) -> CErlExpr {
+    let migrated_scrutinee = CErlExpr::Call {
+        module: CErlAtom("ridge_rt".into()),
+        fn_name: CErlAtom("migrate_message".into()),
+        args: vec![CErlExpr::Var(CErlVar("V_Msg".into()))],
+    };
+    let ok_clause = crate::core_ast::CErlClause {
+        pattern: crate::core_ast::CErlPat::Tuple(vec![
+            crate::core_ast::CErlPat::Lit(CErlLit::Atom(CErlAtom("ok".into()))),
+            crate::core_ast::CErlPat::Var(CErlVar("V_MsgM".into())),
+        ]),
+        guard: CErlExpr::Lit(CErlLit::Atom(CErlAtom("true".into()))),
+        body: CErlExpr::Case {
+            scrutinee: Box::new(CErlExpr::Var(CErlVar("V_MsgM".into()))),
+            clauses,
+        },
+    };
+    let drop_clause = crate::core_ast::CErlClause {
+        pattern: crate::core_ast::CErlPat::Tuple(vec![
+            crate::core_ast::CErlPat::Lit(CErlLit::Atom(CErlAtom("drop".into()))),
+            crate::core_ast::CErlPat::Var(CErlVar("_V_DropReason".into())),
+        ]),
+        guard: CErlExpr::Lit(CErlLit::Atom(CErlAtom("true".into()))),
+        body: CErlExpr::Tuple(vec![
+            CErlExpr::Lit(CErlLit::Atom(CErlAtom("noreply".into()))),
+            CErlExpr::Var(CErlVar("V_StateArg".into())),
+        ]),
+    };
+    CErlExpr::Case {
+        scrutinee: Box::new(migrated_scrutinee),
+        clauses: vec![ok_clause, drop_clause],
+    }
+}
+
 // ── Defensive catch-all clauses ───────────────────────────────────────────────
 
 /// Catch-all clause for `handle_call/3`: stops the server on unknown call.
@@ -936,6 +1092,30 @@ mod tests {
             is_pub: true,
             doc: None,
         }
+    }
+
+    /// An actor with the given state fields and no migrate hooks.
+    fn test_actor_with_state(fields: &[&str]) -> IrActor {
+        make_actor(
+            "Counter",
+            vec![],
+            fields.iter().map(|f| make_state_field(f, None)).collect(),
+        )
+    }
+
+    /// An actor with the given state fields and one migrate hook keyed by
+    /// `from_hash`.
+    fn test_actor_with_migration(fields: &[&str], from_hash: u64) -> IrActor {
+        let mut actor = test_actor_with_state(fields);
+        actor.migrations = vec![ridge_ir::item::IrMigration {
+            owner: TyConId(0),
+            from_ordinal: 1,
+            from_hash: Some(from_hash),
+            param_name: "old".into(),
+            body: lit_unit(),
+            span: sp(),
+        }];
+        actor
     }
 
     // §4.28 — Actor module emission
@@ -1080,13 +1260,24 @@ mod tests {
         let handle_call = m.fns.iter().find(|f| f.name.0 == "handle_call").unwrap();
         let handle_cast = m.fns.iter().find(|f| f.name.0 == "handle_cast").unwrap();
 
-        // Both must have a Case with 3 clauses: 2 handlers + 1 catch-all.
+        // The receive path wraps the handler dispatch in a
+        // `ridge_rt:migrate_message/1` case: Fun → wrapper Case (ok/drop) →
+        // the ok clause's body is the handler-dispatch Case.
         fn count_clauses(fn_: &CErlFn) -> usize {
-            match &fn_.body {
-                CErlExpr::Fun { body, .. } => match body.as_ref() {
-                    CErlExpr::Case { clauses, .. } => clauses.len(),
-                    _ => 0,
-                },
+            let CErlExpr::Fun { body, .. } = &fn_.body else {
+                return 0;
+            };
+            let CErlExpr::Case {
+                clauses: wrapper, ..
+            } = body.as_ref()
+            else {
+                return 0;
+            };
+            let Some(ok_clause) = wrapper.first() else {
+                return 0;
+            };
+            match &ok_clause.body {
+                CErlExpr::Case { clauses, .. } => clauses.len(),
                 _ => 0,
             }
         }
@@ -1123,7 +1314,8 @@ mod tests {
 
     #[test]
     fn code_change_delegates_to_runtime_helper() {
-        let f = emit_code_change();
+        let actor = test_actor_with_state(&[]);
+        let f = emit_code_change(&actor);
         assert_eq!(f.name.0, "code_change");
         assert_eq!(f.arity, 3);
         let CErlExpr::Fun { body, .. } = &f.body else {
@@ -1140,6 +1332,106 @@ mod tests {
         assert_eq!(module.0, "ridge_rt");
         assert_eq!(fn_name.0, "apply_code_change");
         assert_eq!(args.len(), 2);
+    }
+
+    #[test]
+    fn code_change_with_hook_dispatches_on_hook_extra() {
+        let actor = test_actor_with_migration(&["count"], 42);
+        let f = emit_code_change(&actor);
+        let text = format!("{f:?}");
+        assert!(text.contains("ridge_migrate_hook"), "{text}");
+        assert!(text.contains("__ridge_migrate_hook"), "{text}");
+        assert!(text.contains("apply_code_change"), "fallback preserved: {text}");
+    }
+
+    #[test]
+    fn code_change_without_hook_is_plain_delegation() {
+        let actor = test_actor_with_state(&["count"]);
+        let f = emit_code_change(&actor);
+        let CErlExpr::Fun { body, .. } = &f.body else {
+            panic!("code_change body must be a fun");
+        };
+        // The annotation mentions the hook form unconditionally; the BODY
+        // must not dispatch on it when the actor declares no migrate member.
+        let text = format!("{body:?}");
+        assert!(!text.contains("ridge_migrate_hook"), "{text}");
+    }
+
+    #[test]
+    fn handle_cast_wraps_message_in_migrate_message() {
+        let actor = test_actor_with_state(&["count"]);
+        let f = emit_handle_cast(
+            &actor,
+            &FxHashMap::default(),
+            "ridge_app_main",
+            &CodegenTables::default(),
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+        let text = format!("{f:?}");
+        assert!(text.contains("migrate_message"), "{text}");
+    }
+
+    #[test]
+    fn handle_call_wraps_message_in_migrate_message() {
+        let actor = test_actor_with_state(&["count"]);
+        let f = emit_handle_call(
+            &actor,
+            &FxHashMap::default(),
+            "ridge_app_main",
+            &CodegenTables::default(),
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+        let text = format!("{f:?}");
+        assert!(text.contains("migrate_message"), "{text}");
+    }
+
+    #[test]
+    fn actor_with_migrations_exports_migrate_hook() {
+        let actor = test_actor_with_migration(&["count"], 42);
+        let m = lower_actor(
+            &actor,
+            "ridge_examples",
+            &FxHashMap::default(),
+            &CodegenTables::default(),
+        )
+        .unwrap();
+        assert!(
+            m.exports
+                .iter()
+                .any(|e| e.name.0 == "__ridge_migrate_hook" && e.arity == 2),
+            "actor with migrate members must export __ridge_migrate_hook/2"
+        );
+        let hook = m
+            .fns
+            .iter()
+            .find(|f| f.name.0 == "__ridge_migrate_hook")
+            .expect("hook fn");
+        let text = format!("{hook:?}");
+        assert!(text.contains("42"), "hook clause keyed by from_hash: {text}");
+        assert!(
+            text.contains("ridge_no_migration_edge"),
+            "unknown hash raises: {text}"
+        );
+    }
+
+    #[test]
+    fn actor_without_migrations_has_no_migrate_hook() {
+        let actor = test_actor_with_state(&["count"]);
+        let m = lower_actor(
+            &actor,
+            "ridge_examples",
+            &FxHashMap::default(),
+            &CodegenTables::default(),
+        )
+        .unwrap();
+        assert!(
+            !m.exports.iter().any(|e| e.name.0 == "__ridge_migrate_hook"),
+            "no migrate members ⇒ no hook export"
+        );
+        assert!(
+            !m.fns.iter().any(|f| f.name.0 == "__ridge_migrate_hook"),
+            "no migrate members ⇒ no hook fn"
+        );
     }
 
     #[test]

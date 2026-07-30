@@ -18,7 +18,7 @@
 use crate::actor::lower_actor;
 use crate::anf::normalise_module;
 use crate::core_ast::{
-    CErlAtom, CErlAttribute, CErlExport, CErlExpr, CErlFn, CErlLit, CErlModule, CErlVar,
+    CErlAnn, CErlAtom, CErlAttribute, CErlExport, CErlExpr, CErlFn, CErlLit, CErlModule, CErlVar,
 };
 use crate::error::CodegenError;
 use crate::item::{lower_const, lower_fn_with_module_name};
@@ -207,6 +207,12 @@ pub(crate) fn lower_module_with_name(
     // by the resolver, so BEAM export pollution is the only cost.
     let module_has_actor = m.items.iter().any(|item| matches!(item, IrItem::Actor(_)));
 
+    // Record version metadata for the whole workspace, computed once and
+    // shared between the `ridge_meta` attribute and the migration-chain
+    // exports below.
+    let record_meta =
+        crate::record_meta::build_record_meta(&ws.tycons, &ws.target_names, &ws.module_fqns);
+
     let mut fns = Vec::new();
     let mut exports = Vec::new();
 
@@ -266,10 +272,39 @@ pub(crate) fn lower_module_with_name(
         }
     }
 
+    // ── Record version identity + migration chain (hot reload) ─────────────
+    // Modules declaring at least one tagged record export two accessors the
+    // runtime dispatcher reads: the current hash per record, and the
+    // migration chain keyed by FROM hash.
+    let record_metas: Vec<crate::record_meta::RecordMeta> = ws
+        .tycons
+        .iter()
+        .filter(|d| d.def_module_raw == Some(m.id.0))
+        .filter_map(|d| record_meta.get(&d.id).cloned())
+        .collect();
+    if !record_metas.is_empty() {
+        exports.push(CErlExport {
+            name: CErlAtom("__ridge_record_versions".into()),
+            arity: 0,
+        });
+        exports.push(CErlExport {
+            name: CErlAtom("__ridge_record_migrations".into()),
+            arity: 0,
+        });
+        fns.push(emit_record_versions_fn(&record_metas));
+        fns.push(emit_record_migrations_fn(
+            m,
+            ws,
+            &record_metas,
+            &fn_arity,
+            beam_name,
+        )?);
+    }
+
     let mut module = CErlModule {
         name: CErlAtom(beam_name.into()),
         exports,
-        attributes: vec![ridge_meta_attr(beam_name, m, ws)],
+        attributes: vec![ridge_meta_attr(beam_name, m, ws, &record_meta)],
         fns,
     };
     // ANF normalisation: hoist non-atomic arguments in call/apply/case positions
@@ -309,7 +344,12 @@ const fn capability_atom(c: ridge_ast::Capability) -> &'static str {
 /// there. Fn lines cover the exported fns (caps sorted); record lines cover
 /// records declared in this module. Both lists are sorted for snapshot
 /// determinism.
-fn ridge_meta_attr(beam_name: &str, m: &LoweredModule, ws: &LoweredWorkspace) -> CErlAttribute {
+fn ridge_meta_attr(
+    beam_name: &str,
+    m: &LoweredModule,
+    ws: &LoweredWorkspace,
+    meta: &FxHashMap<ridge_types::TyConId, crate::record_meta::RecordMeta>,
+) -> CErlAttribute {
     let atom = |s: &str| CErlExpr::Lit(CErlLit::Atom(CErlAtom(s.to_owned())));
 
     let mut fn_entries: Vec<CErlExpr> = Vec::new();
@@ -332,7 +372,6 @@ fn ridge_meta_attr(beam_name: &str, m: &LoweredModule, ws: &LoweredWorkspace) ->
     }
     fn_entries.sort_by_key(|e| format!("{e:?}"));
 
-    let meta = crate::record_meta::build_record_meta(&ws.tycons, &ws.target_names);
     let mut record_entries: Vec<CErlExpr> = ws
         .tycons
         .iter()
@@ -342,7 +381,8 @@ fn ridge_meta_attr(beam_name: &str, m: &LoweredModule, ws: &LoweredWorkspace) ->
             CErlExpr::Tuple(vec![
                 atom("record"),
                 atom(&rm.name),
-                CErlExpr::Lit(CErlLit::Int(i64::from(rm.version))),
+                #[allow(clippy::cast_possible_wrap)]
+                CErlExpr::Lit(CErlLit::Int(rm.version as i64)),
             ])
         })
         .collect();
@@ -356,6 +396,229 @@ fn ridge_meta_attr(beam_name: &str, m: &LoweredModule, ws: &LoweredWorkspace) ->
             CErlExpr::ListLit(fn_entries),
             CErlExpr::ListLit(record_entries),
         ]),
+    }
+}
+
+// ── Record version + migration chain accessors (hot reload) ──────────────────
+
+/// `'__ridge_record_versions'/0` — `#{RecordName => CurrentHash}` for every
+/// record declared in this module. The runtime dispatcher reads it to tell a
+/// current tag from a stale one.
+fn emit_record_versions_fn(metas: &[crate::record_meta::RecordMeta]) -> CErlFn {
+    let pairs = metas
+        .iter()
+        .map(|rm| {
+            (
+                CErlExpr::Lit(CErlLit::Atom(CErlAtom(rm.name.clone()))),
+                #[allow(clippy::cast_possible_wrap)]
+                CErlExpr::Lit(CErlLit::Int(rm.version as i64)),
+            )
+        })
+        .collect();
+    CErlFn {
+        name: CErlAtom("__ridge_record_versions".into()),
+        arity: 0,
+        anns: vec![CErlAnn(
+            "%% Current shape hash per record (read by the runtime migration dispatcher)".into(),
+        )],
+        body: CErlExpr::Fun {
+            params: vec![],
+            body: Box::new(CErlExpr::MapLit(pairs)),
+        },
+    }
+}
+
+/// `'__ridge_record_migrations'/0` — the full migration chain
+/// `[{FromHash, fun((Old) -> New)}]`: user `migrate` blocks in source order,
+/// then compiler-derived structural edges (rename/keep/drop) for every
+/// history entry with no user edge and a hole-free plan.
+fn emit_record_migrations_fn(
+    m: &LoweredModule,
+    ws: &LoweredWorkspace,
+    metas: &[crate::record_meta::RecordMeta],
+    fn_arity: &FxHashMap<String, u32>,
+    beam_name: &str,
+) -> Result<CErlFn, CodegenError> {
+    let mut entries: Vec<CErlExpr> = Vec::new();
+    let mut covered_hashes: Vec<u64> = Vec::new();
+
+    // ── User edges, in source order ─────────────────────────────────────────
+    for item in &m.items {
+        let IrItem::Migration(mig) = item else {
+            continue;
+        };
+        let Some(from_hash) = mig.from_hash else {
+            continue; // Typecheck already reported the unknown version; no edge for it.
+        };
+        covered_hashes.push(from_hash);
+        entries.push(migration_entry(
+            from_hash,
+            user_migration_fun(mig, fn_arity, beam_name, ws)?,
+        ));
+    }
+
+    // ── Derived edges: one per hole-free history entry, keyed by its hash ───
+    let fqn = ws.module_fqns.get(m.id.0 as usize).cloned().unwrap_or_default();
+    for rm in metas {
+        let Some(history) = ws
+            .version_history
+            .records
+            .get(&(fqn.clone(), rm.name.clone()))
+        else {
+            continue;
+        };
+        let current_shape: Vec<(String, String)> = current_rendered_shape(ws, rm);
+        for entry in history {
+            if entry.hash == rm.version || covered_hashes.contains(&entry.hash) {
+                continue; // Current shape, or a user hook already covers it.
+            }
+            let Some((renames, removed)) = derive_plan(&entry.shape, &current_shape) else {
+                continue; // Holes are not derivable — a chain gap by design.
+            };
+            covered_hashes.push(entry.hash);
+            entries.push(migration_entry(
+                entry.hash,
+                derived_migration_fun(rm, &renames, &removed),
+            ));
+        }
+    }
+
+    Ok(CErlFn {
+        name: CErlAtom("__ridge_record_migrations".into()),
+        arity: 0,
+        anns: vec![CErlAnn(
+            "%% Record migration chain: [{FromHash, fun((Old) -> New)}] — user migrate blocks plus derived structural edges (read by the runtime migration dispatcher)".into(),
+        )],
+        body: CErlExpr::Fun {
+            params: vec![],
+            body: Box::new(CErlExpr::ListLit(entries)),
+        },
+    })
+}
+
+/// `{FromHash, Fun}` as a Core Erlang tuple.
+fn migration_entry(from_hash: u64, fun: CErlExpr) -> CErlExpr {
+    CErlExpr::Tuple(vec![
+        #[allow(clippy::cast_possible_wrap)]
+        CErlExpr::Lit(CErlLit::Int(from_hash as i64)),
+        fun,
+    ])
+}
+
+/// Lower a user migrate block to `fun(V_OldParam) -> <body>`.
+///
+/// The scope mirrors module-level fn bodies (same-module local calls stay
+/// unqualified applies; the shared tables carry record metadata so the NEW
+/// record value the body builds gets its `__ridge_v` tag).
+fn user_migration_fun(
+    mig: &ridge_ir::item::IrMigration,
+    fn_arity: &FxHashMap<String, u32>,
+    beam_name: &str,
+    ws: &LoweredWorkspace,
+) -> Result<CErlExpr, CodegenError> {
+    let mut scope =
+        crate::scope::LocalScope::with_arity_and_module(fn_arity.clone(), beam_name);
+    scope.external_arity = std::sync::Arc::new(build_external_arity(ws));
+    scope.tables = crate::scope::CodegenTables::from_workspace(ws);
+    let param = ridge_ir::IrParam {
+        name: mig.param_name.clone(),
+        ty: ridge_types::Type::Error, // Erased at codegen; see IrParam uses in tests.
+        span: mig.span,
+    };
+    crate::expr::lower_lambda(&[param], &mig.body, &scope)
+}
+
+/// The record's current shape as `(name, rendered-type)` pairs — the same
+/// rendering `record_meta` hashes, so derived plans compare like with like.
+fn current_rendered_shape(
+    ws: &LoweredWorkspace,
+    rm: &crate::record_meta::RecordMeta,
+) -> Vec<(String, String)> {
+    let ctx = ridge_types::render::RenderCtx {
+        tycons: &ws.tycons,
+        module_fqns: &ws.module_fqns,
+    };
+    ws.tycons
+        .iter()
+        .find(|d| !d.is_anon && d.name == rm.name && d.def_module_raw.is_some())
+        .and_then(|d| match &d.kind {
+            ridge_types::TyConKind::Record(schema) => Some(
+                schema
+                    .record_fields()
+                    .iter()
+                    .map(|f| (f.name.clone(), ridge_types::render::render_type(&ctx, &f.ty)))
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+/// A derived migration plan: field renames `(old, new)` plus dropped fields.
+type MigrationPlan = (Vec<(String, String)>, Vec<String>);
+
+/// The mechanical migration plan from an old shape to the current one,
+/// mirroring the scaffold's rename heuristic: a field present in both with
+/// the same type keeps its value; exactly one removal + one addition with
+/// the same type is a rename; removals drop. Any other addition or retype is
+/// a hole — NOT derivable — and the whole edge is a chain gap by design
+/// (`None`).
+fn derive_plan(old: &[(String, String)], new: &[(String, String)]) -> Option<MigrationPlan> {
+    let removed: Vec<&(String, String)> = old
+        .iter()
+        .filter(|(n, _)| !new.iter().any(|(nn, _)| nn == n))
+        .collect();
+    let added: Vec<&(String, String)> = new
+        .iter()
+        .filter(|(n, _)| !old.iter().any(|(on, _)| on == n))
+        .collect();
+    // Retyped field (same name, different rendered type): not derivable.
+    if old
+        .iter()
+        .any(|(n, t)| new.iter().any(|(nn, nt)| nn == n && nt != t))
+    {
+        return None;
+    }
+    match (removed.as_slice(), added.as_slice()) {
+        ([], []) => Some((vec![], vec![])),
+        ([(on, _)], []) => Some((vec![], vec![on.clone()])),
+        ([(on, ot)], [(nn, nt)]) if ot == nt => Some((vec![(on.clone(), nn.clone())], vec![])),
+        _ => None,
+    }
+}
+
+/// `fun(V_Old) -> call 'ridge_rt':'derive_record_migration'(V_Old, Renames, Removed, NewTag)`
+fn derived_migration_fun(
+    rm: &crate::record_meta::RecordMeta,
+    renames: &[(String, String)],
+    removed: &[String],
+) -> CErlExpr {
+    let atom = |s: &str| CErlExpr::Lit(CErlLit::Atom(CErlAtom(s.into())));
+    let rename_list = CErlExpr::ListLit(
+        renames
+            .iter()
+            .map(|(f, t)| CErlExpr::Tuple(vec![atom(f), atom(t)]))
+            .collect(),
+    );
+    let removed_list = CErlExpr::ListLit(removed.iter().map(|f| atom(f)).collect());
+    let tag = CErlExpr::Tuple(vec![
+        atom(&rm.fqn),
+        atom(&rm.name),
+        #[allow(clippy::cast_possible_wrap)]
+        CErlExpr::Lit(CErlLit::Int(rm.version as i64)),
+    ]);
+    CErlExpr::Fun {
+        params: vec![CErlVar("V_Old".into())],
+        body: Box::new(CErlExpr::Call {
+            module: CErlAtom("ridge_rt".into()),
+            fn_name: CErlAtom("derive_record_migration".into()),
+            args: vec![
+                CErlExpr::Var(CErlVar("V_Old".into())),
+                rename_list,
+                removed_list,
+                tag,
+            ],
+        }),
     }
 }
 
@@ -713,6 +976,146 @@ mod tests {
         assert!(
             matches!(err, CodegenError::BeamModuleNameCollision { .. }),
             "expected E006 error"
+        );
+    }
+
+    // ── Record version + migration chain exports ──────────────────────────────
+
+    fn user_record_tycons() -> Vec<ridge_types::TyConDecl> {
+        use ridge_types::{RecordField, RecordSchema, TyConDecl, TyConId, TyConKind};
+        let text = TyConDecl {
+            id: TyConId(1),
+            name: "Text".to_owned(),
+            arity: 0,
+            kind: TyConKind::Primitive,
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        };
+        let user = TyConDecl {
+            id: TyConId(0),
+            name: "User".to_owned(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![RecordField {
+                    name: "name".to_owned(),
+                    ty: Type::Con(TyConId(1), vec![]),
+                }],
+            )),
+            def_span: None,
+            def_module_raw: Some(0),
+            opaque: false,
+            is_anon: false,
+        };
+        vec![user, text]
+    }
+
+    /// Workspace with one record `User { name: Text }` in module 0, beam name
+    /// `ridge_app_models`, fqn "app.models", empty history.
+    fn fixture_workspace_with_user_record(items: Vec<IrItem>) -> (LoweredModule, LoweredWorkspace) {
+        let mut ws = LoweredWorkspace::empty(1, 2);
+        ws.tycons = user_record_tycons();
+        ws.target_names = vec!["ridge_app_models".to_owned()];
+        ws.module_fqns = vec!["app.models".to_owned()];
+        (make_module(0, items), ws)
+    }
+
+    /// Adds a two-entry history for `User` and one user hook covering @1
+    /// (`from_hash` Some(111)); @2 (hash 222) drops a field, which yields a
+    /// derived edge.
+    fn fixture_workspace_with_user_record_and_history() -> (LoweredModule, LoweredWorkspace) {
+        use ridge_types::history::VersionEntry;
+        let mig = ridge_ir::item::IrMigration {
+            owner: ridge_types::TyConId(0),
+            from_ordinal: 1,
+            from_hash: Some(111),
+            param_name: "old".into(),
+            body: lit_unit(),
+            span: sp(),
+        };
+        let (m, mut ws) = fixture_workspace_with_user_record(vec![IrItem::Migration(mig)]);
+        ws.version_history.records.insert(
+            ("app.models".to_owned(), "User".to_owned()),
+            vec![
+                VersionEntry {
+                    ordinal: 1,
+                    hash: 111,
+                    shape: vec![("name".to_owned(), "Text".to_owned())],
+                },
+                VersionEntry {
+                    ordinal: 2,
+                    hash: 222,
+                    shape: vec![
+                        ("name".to_owned(), "Text".to_owned()),
+                        ("nick".to_owned(), "Text".to_owned()),
+                    ],
+                },
+            ],
+        );
+        (m, ws)
+    }
+
+    #[test]
+    fn module_with_records_exports_version_accessors() {
+        let (m, ws) = fixture_workspace_with_user_record(vec![]);
+        let module = lower_module_all_named(&m, &ws, "ridge_app_models")
+            .expect("lower")
+            .0;
+        for wanted in ["__ridge_record_versions", "__ridge_record_migrations"] {
+            assert!(
+                module.exports.iter().any(|e| e.name.0 == wanted && e.arity == 0),
+                "missing export {wanted}/0"
+            );
+        }
+    }
+
+    #[test]
+    fn migrations_fn_lists_user_edges_then_derived() {
+        let (m, ws) = fixture_workspace_with_user_record_and_history();
+        let module = lower_module_all_named(&m, &ws, "ridge_app_models")
+            .expect("lower")
+            .0;
+        let f = module
+            .fns
+            .iter()
+            .find(|f| f.name.0 == "__ridge_record_migrations")
+            .expect("migrations fn");
+        let text = format!("{f:?}");
+        assert!(text.contains("111"), "user edge keyed by from_hash: {text}");
+        assert!(text.contains("222"), "derived edge keyed by history hash: {text}");
+        assert!(
+            text.contains("derive_record_migration"),
+            "derived edge delegates to the runtime: {text}"
+        );
+        let user_pos = text.find("111").expect("user edge");
+        let derived_pos = text.find("222").expect("derived edge");
+        assert!(
+            user_pos < derived_pos,
+            "user edges come before derived edges: {text}"
+        );
+    }
+
+    #[test]
+    fn module_without_records_has_no_migration_exports() {
+        let items = vec![IrItem::Fn(make_fn("do_work", true, false, vec![]))];
+        let m = make_module(0, items);
+        let ws = empty_ws();
+        let module = lower_module_all_named(&m, &ws, "ridge_app_main")
+            .expect("lower")
+            .0;
+        assert!(
+            !module
+                .exports
+                .iter()
+                .any(|e| e.name.0 == "__ridge_record_migrations")
+        );
+        assert!(
+            !module
+                .exports
+                .iter()
+                .any(|e| e.name.0 == "__ridge_record_versions")
         );
     }
 }

@@ -148,6 +148,23 @@ pub(crate) fn parse_type_atom(cur: &mut Cursor<'_>) -> Result<Type, ParseError> 
                 _ => None,
             };
 
+            // A `@<int>` suffix (`User@1`) is a versioned type reference,
+            // legal ONLY inside `migrate` signatures. Everywhere else it gets
+            // its own diagnostic rather than a generic "unexpected `@`".
+            if cur.peek() == &Token::At && matches!(cur.peek_n(1), Some(Token::IntDec(_))) {
+                let at_span = cur.span();
+                cur.bump(); // consume `@`
+                let version = match cur.bump() {
+                    Token::IntDec(s) => s.clone(),
+                    other => unreachable!("peeked IntDec, got {other}"),
+                };
+                return Err(ParseError::VersionedRefOutsideMigrate {
+                    span: span.merge(at_span),
+                    name: text,
+                    version,
+                });
+            }
+
             prim.map_or_else(
                 || {
                     Ok(Type::Named {

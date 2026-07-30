@@ -136,10 +136,10 @@ fn check_item(
                     ActorMember::State(state) => {
                         check_type(&state.ty, project, workspace, errors);
                     }
-                    ActorMember::Mailbox(_) => {
+                    ActorMember::Mailbox(_) | ActorMember::Migrate(_) => {
                         // The mailbox member carries only the bound (an `i64`)
-                        // and a policy enum: no capabilities, no types, no
-                        // identifiers to resolve.
+                        // and a policy enum, and a migrate hook declares no
+                        // capabilities: nothing to resolve in either.
                     }
                     ActorMember::Terminate(t) => {
                         check_caps(&t.caps, t.span, project, workspace, errors);

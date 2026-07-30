@@ -32,6 +32,15 @@ pub struct LoweredWorkspace {
     /// them to compute record version metadata (`__ridge_v` tags). Empty in
     /// hand-built workspaces and unit tests — no tags are emitted then.
     pub tycons: Vec<TyConDecl>,
+    /// Fully-qualified module names, indexed by `ModuleId.0`.
+    ///
+    /// Seeded by the driver alongside `target_names`; codegen needs FQNs (not
+    /// just beam names) to render field types for the shared shape hash.
+    /// Empty in hand-built workspaces and unit tests.
+    pub module_fqns: Vec<String>,
+    /// Previous-build version history, threaded from `TypedWorkspace` by
+    /// `ridge-lower::lower_workspace`. Empty on a fresh build.
+    pub version_history: ridge_types::history::VersionHistory,
 }
 
 impl LoweredWorkspace {
@@ -46,6 +55,8 @@ impl LoweredWorkspace {
             tycon_count,
             target_names: Vec::new(),
             tycons: Vec::new(),
+            module_fqns: Vec::new(),
+            version_history: ridge_types::history::VersionHistory::default(),
         }
     }
 
@@ -54,12 +65,14 @@ impl LoweredWorkspace {
     /// `modules` may contain `None` for any module slot that was skipped due
     /// to typecheck errors.
     #[must_use]
-    pub const fn new(modules: Vec<Option<LoweredModule>>, tycon_count: u32) -> Self {
+    pub fn new(modules: Vec<Option<LoweredModule>>, tycon_count: u32) -> Self {
         Self {
             modules,
             tycon_count,
             target_names: Vec::new(),
             tycons: Vec::new(),
+            module_fqns: Vec::new(),
+            version_history: ridge_types::history::VersionHistory::default(),
         }
     }
 }

@@ -79,7 +79,12 @@ pub fn lower_workspace(twork: &TypedWorkspace, rwork: &ResolvedWorkspace) -> Low
         .enumerate()
         .map(|(i, typed)| {
             let rmod = rwork.modules.get(i);
-            Some(lower_module(typed, twork, rmod, &stdlib_fqns))
+            let module_fqn = rwork
+                .graph
+                .modules
+                .get(i)
+                .map_or("", |m| m.fully_qualified_name.as_str());
+            Some(lower_module(typed, twork, rmod, &stdlib_fqns, module_fqn))
         })
         .collect();
     // Safety: a workspace with more than 2^32 TyCons is not a valid Ridge
@@ -89,6 +94,9 @@ pub fn lower_workspace(twork: &TypedWorkspace, rwork: &ResolvedWorkspace) -> Low
     // Carry the type-constructor declarations forward so codegen can compute
     // record version metadata without re-running any typecheck pass.
     ws.tycons.clone_from(&twork.tycons);
+    // Thread the injected version history: codegen keys migration chains by
+    // hash and derives structural migrations from it.
+    ws.version_history = twork.version_history.clone();
     ws
 }
 
@@ -117,8 +125,11 @@ pub fn lower_module(
     ws: &TypedWorkspace,
     rmod: Option<&ridge_resolve::ResolvedModule>,
     stdlib_fqns: &FxHashMap<ModuleId, String>,
+    module_fqn: &str,
 ) -> LoweredModule {
     let mut ctx = LowerCtx::new(typed.id, &typed.node_types);
+    // The module FQN keys version-history lookups for `migrate` hooks.
+    module_fqn.clone_into(&mut ctx.module_fqn);
     // Attach workspace-level context (tycons + builtins) for `with` schema
     // lookup (§4.5) and interp `ToText` dispatch (§4.6).
     ctx.attach_workspace(ws);

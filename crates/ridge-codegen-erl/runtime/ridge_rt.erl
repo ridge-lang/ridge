@@ -51,6 +51,8 @@
     which_children/1, set_child_id/2, set_child_restart/2, try_ask/3,
     monitor_handle/1, demonitor_flush/1, await_down/2, stop_handle/1,
     exit_reason_to_ridge/1, apply_code_change/2, migrate_message/1,
+    migrate_value/1, derive_record_migration/4, migration_count/0,
+    set_migrate_report/1,
     diagnostics_to_stderr/0,
     mem_new/1, mem_insert/3, mem_all/2,
     mem_delete/3, mem_update/4, mem_get_rows/4,
@@ -2098,14 +2100,156 @@ apply_code_change(State, {ridge_migrate, Instr}) when is_map(State), is_map(Inst
 apply_code_change(State, _Extra) ->
     {ok, State}.
 
-%% migrate_message/1 — receive-path wrapper the generated handle_call/3 and
-%% handle_cast/2 case on. Pass-through placeholder: the full lazy-migration
-%% dispatcher (stale-tagged records walk the declaring module's
-%% __ridge_record_migrations/0 chain, non-migratable payloads are reported
-%% and dropped) replaces this clause when the runtime side of record
-%% migration lands.
+%% --- Record migration dispatcher (lazy mailbox migration) ------------------
+%%
+%% Every non-anonymous record value carries a __ridge_v tag:
+%% {DefiningModule, RecordName, ShapeHash}. Modules declaring records export
+%% __ridge_record_versions/0 (current hash per record) and
+%% __ridge_record_migrations/0 ([{FromHash, fun((Old) -> New)}] — user migrate
+%% blocks plus derived structural edges). migrate_message/1 sits in the
+%% generated receive path: current-tagged and untagged values pass through at
+%% the cost of one map-key check per container; stale-tagged values are
+%% migrated through the chain before any handler sees them; non-migratable
+%% payloads are reported and dropped, never delivered (delivering them would
+%% be a badmatch in the handler).
+
+-define(MIGRATE_SILENT_KEY, ridge_migrate_silent).
+-define(MIGRATE_COUNT_KEY, ridge_migrate_count).
+
+%% migrate_message/1 — receive-path wrapper. {ok, Msg} re-dispatches to the
+%% handler clauses; {drop, Reason} drops the message after the dev report.
 migrate_message(Msg) ->
-    {ok, Msg}.
+    case migrate_value(Msg) of
+        {ok, Msg2} ->
+            {ok, Msg2};
+        {error, Reason} ->
+            report_dropped_message(Msg, Reason),
+            {drop, Reason}
+    end.
+
+%% migrate_value/1 — recursive walk; see the walk-order rules above.
+migrate_value(V) when is_map(V) ->
+    case V of
+        #{'__ridge_v' := {Mod, Name, Hash}}
+          when is_atom(Mod), is_atom(Name), is_integer(Hash) ->
+            migrate_tagged(Mod, Name, Hash, V);
+        _ ->
+            migrate_map_children(V)
+    end;
+migrate_value(V) when is_tuple(V) ->
+    migrate_list_elements(tuple_to_list(V), fun(Es) -> {ok, list_to_tuple(Es)} end);
+migrate_value(V) when is_list(V) ->
+    migrate_list_elements(V, fun(Es) -> {ok, Es} end);
+migrate_value(V) ->
+    {ok, V}.
+
+migrate_tagged(Mod, Name, Hash, V) ->
+    case current_record_hash(Mod, Name) of
+        {ok, Hash} ->
+            %% Current shape: children were built by shape-current code.
+            {ok, V};
+        {ok, _Current} ->
+            case record_migration_edges(Mod) of
+                {ok, Edges} ->
+                    case lists:keyfind(Hash, 1, Edges) of
+                        {Hash, Fun} when is_function(Fun, 1) ->
+                            bump_migration_count(),
+                            %% Re-walk the result: multi-hop chains and nested
+                            %% stale values inside the hook's output.
+                            migrate_value(Fun(V));
+                        _ ->
+                            {error, {no_migration, Mod, Name, Hash}}
+                    end;
+                error ->
+                    {error, {no_migrations_module, Mod}}
+            end;
+        error ->
+            {error, {unknown_record, Mod, Name}}
+    end.
+
+migrate_map_children(V) ->
+    Pairs = maps:to_list(V),
+    migrate_list_elements(Pairs, fun(Es) -> {ok, maps:from_list(Es)} end).
+
+migrate_list_elements(Es, Rebuild) ->
+    migrate_list_elements(Es, [], Rebuild).
+
+migrate_list_elements([], Acc, Rebuild) ->
+    Rebuild(lists:reverse(Acc));
+migrate_list_elements([E | Rest], Acc, Rebuild) ->
+    case migrate_value(E) of
+        {ok, E2} -> migrate_list_elements(Rest, [E2 | Acc], Rebuild);
+        {error, Reason} -> {error, Reason}
+    end.
+
+current_record_hash(Mod, Name) ->
+    %% function_exported/3 does not load the module, and a record's defining
+    %% module may never have been called in this node (values are built
+    %% inline by callers) — load on demand so current-tagged values are not
+    %% mistaken for unknown records.
+    _ = code:ensure_loaded(Mod),
+    case erlang:function_exported(Mod, '__ridge_record_versions', 0) of
+        true ->
+            case Mod:'__ridge_record_versions'() of
+                #{Name := Hash} -> {ok, Hash};
+                _ -> error
+            end;
+        false ->
+            error
+    end.
+
+record_migration_edges(Mod) ->
+    _ = code:ensure_loaded(Mod),
+    case erlang:function_exported(Mod, '__ridge_record_migrations', 0) of
+        true -> {ok, Mod:'__ridge_record_migrations'()};
+        false -> error
+    end.
+
+%% derive_record_migration/4 — the mechanical edge codegen emits for
+%% hole-free shape changes: drop removed fields, move renamed ones, re-tag
+%% with the current identity. Kept fields ride along untouched.
+derive_record_migration(Old, Renames, Removed, NewTag) when is_map(Old) ->
+    S1 = maps:without(Removed, Old),
+    S2 = lists:foldl(
+        fun({From, To}, Acc) ->
+            case maps:take(From, Acc) of
+                {Val, Acc1} -> maps:put(To, Val, Acc1);
+                error -> Acc
+            end
+        end,
+        S1,
+        Renames
+    ),
+    maps:put('__ridge_v', NewTag, S2).
+
+%% migration_count/0 — cumulative count of applied migration edges this node
+%% (the dev report's lazy count of migrated in-flight messages).
+migration_count() ->
+    persistent_term:get(?MIGRATE_COUNT_KEY, 0).
+
+bump_migration_count() ->
+    persistent_term:put(?MIGRATE_COUNT_KEY, migration_count() + 1).
+
+%% set_migrate_report/1 — dev switch for the drop report. `loud` (default)
+%% prints every non-migratable message to stderr before dropping it; `silent`
+%% suppresses the print (drops still happen). Production structured logging
+%% replaces this switch in the transport phase; this is the hook point.
+set_migrate_report(loud) ->
+    persistent_term:put(?MIGRATE_SILENT_KEY, false),
+    ok;
+set_migrate_report(silent) ->
+    persistent_term:put(?MIGRATE_SILENT_KEY, true),
+    ok.
+
+report_dropped_message(Msg, Reason) ->
+    case persistent_term:get(?MIGRATE_SILENT_KEY, false) of
+        true ->
+            ok;
+        false ->
+            io:format(standard_error,
+                      "ridge: dropped non-migratable message (~p): ~p~n",
+                      [Reason, Msg])
+    end.
 
 %% child_id_binary/1 — ids are binaries (Ridge Text); an atom id from a
 %% hand-built spec is converted so which_children's output keeps the

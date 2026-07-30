@@ -77,6 +77,9 @@ apply_manifest(ManifestPath, Started) ->
         %% soft purge succeeds.
         [_ = code:soft_purge(M) || M <- Modules],
         [{module, M} = code:load_file(M) || M <- Modules],
+        %% The new code may carry different record shape hashes: drop the
+        %% cached versions so the next tagged message re-reads them.
+        ok = ridge_rt:invalidate_record_versions(Modules),
         Migrated = migrate_actors(Pids, ActorMigs, OldFieldsByMod),
         [ok = sys:resume(P) || P <- Pids],
         persistent_term:put(?VSN_KEY, NewVsn),

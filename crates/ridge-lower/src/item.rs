@@ -6792,6 +6792,8 @@ mod tests {
                 span: sp(),
             }),
             deriving: vec![],
+            version: None,
+            migrates: Vec::new(),
             span: sp(),
             doc: None,
         });

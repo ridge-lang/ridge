@@ -216,6 +216,8 @@ mod tests {
             params: vec![],
             body: TypeBody::Union(UnionTypeBody { alternatives, span }),
             deriving: vec![],
+            version: None,
+            migrates: Vec::new(),
             span,
             doc: None,
         };

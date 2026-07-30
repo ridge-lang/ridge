@@ -336,6 +336,8 @@ Module {
                     },
                 ),
                 deriving: [],
+                version: None,
+                migrates: [],
                 span: Span {
                     start: 666,
                     end: 741,

@@ -41,6 +41,7 @@
 //! - `P033 LetInNotSupported`
 //! - `P034 GuardKeywordInMatch`
 //! - `P035 RecordUpdateSyntax`
+//! - `P036 VersionedRefOutsideMigrate`
 //!
 //! Later tasks (T3–T12) will extend this enum; adding variants is
 //! non-breaking because the enum is not `#[non_exhaustive]` — the parser
@@ -397,6 +398,19 @@ pub enum ParseError {
         record: String,
     },
 
+    /// P036 — a versioned type reference (`Name@N`) appeared outside a
+    /// `migrate` signature. Versioned refs name a PREVIOUS shape of a type
+    /// and are meaningful only as the `old` parameter of a `migrate` hook.
+    #[error("versioned type reference `{name}@{version}` is only allowed inside a `migrate` signature")]
+    VersionedRefOutsideMigrate {
+        /// Source location of the `@N` suffix.
+        span: Span,
+        /// The type name that carried the suffix.
+        name: String,
+        /// The ordinal that was rejected here.
+        version: String,
+    },
+
     /// P999 — the lexer's bracket-suppression invariant was violated (should
     /// be unreachable; signals a lexer bug, not a user error).
     #[error("internal error: layout invariant violated inside bracketed region")]
@@ -439,6 +453,7 @@ impl ParseError {
             Self::LetInNotSupported { .. } => "P033",
             Self::GuardKeywordInMatch { .. } => "P034",
             Self::RecordUpdateSyntax { .. } => "P035",
+            Self::VersionedRefOutsideMigrate { .. } => "P036",
             Self::InternalLayoutInvariantViolated { .. } => "P999",
         }
     }
@@ -473,6 +488,7 @@ impl ParseError {
             | Self::LetInNotSupported { span }
             | Self::GuardKeywordInMatch { span }
             | Self::RecordUpdateSyntax { span, .. }
+            | Self::VersionedRefOutsideMigrate { span, .. }
             | Self::InternalLayoutInvariantViolated { span } => *span,
         }
     }

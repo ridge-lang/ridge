@@ -1963,6 +1963,8 @@ mod tests {
             params: vec![],
             body,
             deriving: deriving.into_iter().map(ident).collect(),
+            version: None,
+            migrates: Vec::new(),
             span: ds(),
             doc: None,
         }

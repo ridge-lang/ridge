@@ -303,6 +303,221 @@ fn parse_test_attr(cur: &mut Cursor<'_>) -> Result<Attribute, ParseError> {
     }
 }
 
+// ── @version attribute + migrate sections ─────────────────────────────────────
+
+/// Parse the `@version(IntLit)` attribute on a type declaration.
+///
+/// Precondition: `cur.peek() == &Token::At`.
+fn parse_version_attr(cur: &mut Cursor<'_>) -> Result<u32, ParseError> {
+    cur.expect(&Token::At)?; // consume `@`
+    let name_span = cur.span();
+    match cur.peek().clone() {
+        Token::LowerIdent(ref s) if s == "version" => {
+            cur.bump();
+        }
+        _ => {
+            return Err(ParseError::Expected {
+                span: name_span,
+                expected: "`version`",
+                found: cur.peek().to_string(),
+            });
+        }
+    }
+    cur.expect(&Token::LParen)?;
+    let n_span = cur.span();
+    let version: u32 = match cur.peek().clone() {
+        Token::IntDec(ref s) => {
+            let raw = s.clone();
+            cur.bump();
+            raw.parse::<u32>().map_err(|_| ParseError::UnexpectedToken {
+                span: n_span,
+                description: format!(
+                    "@version expects a positive integer that fits in u32, found `{raw}`"
+                ),
+            })?
+        }
+        _ => {
+            return Err(ParseError::Expected {
+                span: n_span,
+                expected: "<integer literal (version)>",
+                found: cur.peek().to_string(),
+            });
+        }
+    };
+    if version == 0 {
+        return Err(ParseError::UnexpectedToken {
+            span: n_span,
+            description: "@version ordinals start at 1".to_string(),
+        });
+    }
+    cur.expect(&Token::RParen)?;
+    Ok(version)
+}
+
+/// Parse a versioned type reference `UPPER_IDENT "@" IntLit` — the only
+/// position where the `@N` suffix is legal.
+///
+/// Precondition: `cur.peek()` is `Token::UpperIdent`.
+fn parse_versioned_type_ref(
+    cur: &mut Cursor<'_>,
+) -> Result<ridge_ast::VersionedTypeRef, ParseError> {
+    let start = cur.span();
+    let name = match cur.bump() {
+        Token::UpperIdent(s) => ridge_ast::Ident::new(s.clone(), start),
+        other => {
+            return Err(ParseError::Expected {
+                span: start,
+                expected: "<type name>",
+                found: other.to_string(),
+            });
+        }
+    };
+    cur.expect(&Token::At)?;
+    let v_span = cur.span();
+    let version: u32 = match cur.peek().clone() {
+        Token::IntDec(ref s) => {
+            let raw = s.clone();
+            cur.bump();
+            raw.parse::<u32>().map_err(|_| ParseError::UnexpectedToken {
+                span: v_span,
+                description: format!(
+                    "a version ordinal must be a positive integer that fits in u32, found `{raw}`"
+                ),
+            })?
+        }
+        _ => {
+            return Err(ParseError::Expected {
+                span: v_span,
+                expected: "<integer literal (version ordinal)>",
+                found: cur.peek().to_string(),
+            });
+        }
+    };
+    if version == 0 {
+        return Err(ParseError::UnexpectedToken {
+            span: v_span,
+            description: "version ordinals start at 1".to_string(),
+        });
+    }
+    Ok(ridge_ast::VersionedTypeRef {
+        name,
+        version,
+        span: start.merge(v_span),
+    })
+}
+
+/// Parse one `migrate (old: Name@N) -> Name = body` member.
+///
+/// `migrate` is a contextual word (`LowerIdent`), exactly like `terminate` —
+/// no lexer keyword, so it stays a legal identifier elsewhere.
+///
+/// Precondition: `cur.peek()` is `Token::LowerIdent("migrate")`.
+pub(crate) fn parse_migrate_decl(
+    cur: &mut Cursor<'_>,
+) -> Result<ridge_ast::MigrateDecl, ParseError> {
+    let start = cur.span();
+    cur.bump(); // consume `migrate`
+
+    cur.expect(&Token::LParen)?;
+    let param_span = cur.span();
+    let param = match cur.peek().clone() {
+        Token::LowerIdent(s) => {
+            cur.bump();
+            ridge_ast::Ident::new(s, param_span)
+        }
+        _ => {
+            return Err(ParseError::Expected {
+                span: param_span,
+                expected: "<parameter name>",
+                found: cur.peek().to_string(),
+            });
+        }
+    };
+    cur.expect(&Token::Colon)?;
+    let old_type = parse_versioned_type_ref(cur)?;
+    cur.expect(&Token::RParen)?;
+
+    cur.expect(&Token::Arrow)?;
+    let ret = parse_type(cur)?;
+
+    cur.expect(&Token::Assign)?;
+    let body = parse_branch_body(cur)?;
+    let end_span = body.span();
+
+    Ok(ridge_ast::MigrateDecl {
+        param,
+        old_type,
+        ret,
+        body,
+        span: start.merge(end_span),
+    })
+}
+
+/// Parse the `do … end` migrate section of a type declaration.
+///
+/// `do` and `end` are contextual (`LowerIdent`), not keywords. Canonical
+/// layout (what the reload scaffold emits): `do` on the same line as the
+/// type body, one `migrate` member per line inside the indented block,
+/// `end` at the declaration's indentation:
+///
+/// ```text
+/// type User @version(2) = { name: Text, email: Text } do
+///     migrate (old: User@1) -> User =
+///         User { name = old.name, email = old.email }
+/// end
+/// ```
+///
+/// Precondition: `cur.peek()` is `Token::LowerIdent("do")`.
+fn parse_migrate_section(
+    cur: &mut Cursor<'_>,
+) -> Result<Vec<ridge_ast::MigrateDecl>, ParseError> {
+    cur.bump(); // consume `do`
+    cur.expect(&Token::Indent)?;
+    let mut out = Vec::new();
+    loop {
+        while cur.peek() == &Token::Newline {
+            cur.bump();
+        }
+        if cur.peek() == &Token::Dedent || cur.at_eof() {
+            break;
+        }
+        match cur.peek() {
+            Token::LowerIdent(s) if s == "migrate" => out.push(parse_migrate_decl(cur)?),
+            _ => {
+                return Err(ParseError::UnexpectedToken {
+                    span: cur.span(),
+                    description: format!(
+                        "only `migrate` members are allowed in a type's `do … end` section, found `{}`",
+                        cur.peek()
+                    ),
+                });
+            }
+        }
+        while cur.peek() == &Token::Newline {
+            cur.bump();
+        }
+    }
+    cur.expect(&Token::Dedent)?;
+    // The dedent closing the section is followed by a Newline before `end`.
+    while cur.peek() == &Token::Newline {
+        cur.bump();
+    }
+    let end_span = cur.span();
+    match cur.peek() {
+        Token::LowerIdent(s) if s == "end" => {
+            cur.bump();
+        }
+        _ => {
+            return Err(ParseError::Expected {
+                span: end_span,
+                expected: "`end`",
+                found: cur.peek().to_string(),
+            });
+        }
+    }
+    Ok(out)
+}
+
 // ── parse_item ────────────────────────────────────────────────────────────────
 
 /// Parse a single top-level item (grammar §2.1 `TopLevel`).
@@ -842,6 +1057,13 @@ pub(crate) fn parse_type_decl(
         }
     }
 
+    // Optional `@version(N)` override between the type name/params and `=`.
+    let version = if cur.peek() == &Token::At {
+        Some(parse_version_attr(cur)?)
+    } else {
+        None
+    };
+
     cur.expect(&Token::Assign)?;
 
     // A body written on more-indented following lines opens one layout block
@@ -902,6 +1124,15 @@ pub(crate) fn parse_type_decl(
         }
     };
 
+    // Optional `do … end` migrate section (same-line `do`). A `do` on a
+    // following line inside a multi-line body is NOT recognized (documented
+    // limitation; the canonical/scaffold form is same-line).
+    let migrates = if matches!(cur.peek(), Token::LowerIdent(s) if s == "do") {
+        parse_migrate_section(cur)?
+    } else {
+        Vec::new()
+    };
+
     // Close the layout block(s) still open for this declaration.
     while open_blocks > 0 {
         cur.expect(&Token::Dedent)?;
@@ -909,6 +1140,7 @@ pub(crate) fn parse_type_decl(
     }
 
     let end_span = deriving.last().map_or(body_end_span, |id: &Ident| id.span);
+    let end_span = migrates.last().map_or(end_span, |m| m.span);
 
     Ok(TypeDecl {
         vis,
@@ -917,6 +1149,8 @@ pub(crate) fn parse_type_decl(
         params,
         body,
         deriving,
+        version,
+        migrates,
         span: start.merge(end_span),
         doc,
     })
@@ -2135,6 +2369,7 @@ pub(crate) fn parse_actor_decl(
         ActorMember::Mailbox(mb) => mb.span,
         ActorMember::Terminate(t) => t.span,
         ActorMember::OnDown(d) => d.span,
+        ActorMember::Migrate(m) => m.span,
     });
 
     Ok(ActorDecl {
@@ -2231,7 +2466,7 @@ fn sync_to_next_actor_member(cur: &mut Cursor<'_>) {
             | Token::Dedent
             | Token::Eof
             | Token::Newline => return,
-            Token::LowerIdent(s) if s == "mailbox" => return,
+            Token::LowerIdent(s) if s == "mailbox" || s == "migrate" => return,
             _ => {
                 cur.bump();
             }
@@ -2254,10 +2489,13 @@ fn parse_actor_member(cur: &mut Cursor<'_>) -> Result<ActorMember, ParseError> {
         Token::LowerIdent(s) if s == "onDown" => {
             Ok(ActorMember::OnDown(parse_on_down_decl(cur)?))
         }
+        Token::LowerIdent(s) if s == "migrate" => {
+            Ok(ActorMember::Migrate(parse_migrate_decl(cur)?))
+        }
         _ => Err(ParseError::UnexpectedToken {
             span: cur.span(),
             description: format!(
-                "expected `state`, `init`, `on`, `mailbox`, `terminate`, or `onDown` in actor body, found `{}`",
+                "expected `state`, `init`, `on`, `mailbox`, `terminate`, `onDown`, or `migrate` in actor body, found `{}`",
                 cur.peek()
             ),
         }),
@@ -4062,5 +4300,53 @@ mod tests {
             td.deriving.is_empty(),
             "type without deriving must have empty deriving list"
         );
+    }
+
+    // ── @version(N) + do … end migrate section ───────────────────────────────
+    #[test]
+    fn parse_type_decl_with_version_and_migrate() {
+        let src = "type User @version(2) = { name: Text, email: Text } do\n    migrate (old: User@1) -> User =\n        User { name = old.name, email = old.email }\nend\n";
+        let d = parse_td(src).expect("should parse");
+        assert_eq!(d.version, Some(2));
+        assert_eq!(d.migrates.len(), 1);
+        let m = &d.migrates[0];
+        assert_eq!(m.param.text, "old");
+        assert_eq!(m.old_type.name.text, "User");
+        assert_eq!(m.old_type.version, 1);
+    }
+
+    #[test]
+    fn parse_type_decl_without_section_unchanged() {
+        let d = parse_td("type User = { name: Text }\n").expect("should parse");
+        assert_eq!(d.version, None);
+        assert!(d.migrates.is_empty());
+    }
+
+    #[test]
+    fn parse_actor_with_migrate_member() {
+        let src = "actor Counter =\n    state count: Int = 0\n    migrate (old: Counter@1) -> Counter =\n        { count = old.count }\n";
+        let a = parse_actor(src).expect("should parse");
+        assert!(a
+            .members
+            .iter()
+            .any(|m| matches!(m, ActorMember::Migrate(_))));
+    }
+
+    #[test]
+    fn versioned_ref_outside_migrate_is_p036() {
+        // In a fn parameter annotation the `@1` suffix gets the dedicated error.
+        let result = parse_fn("fn f (x: User@1) -> Int = 1\n");
+        let Err(e) = result else {
+            panic!("expected parse error");
+        };
+        assert_eq!(e.code(), "P036", "{e:?}");
+    }
+
+    #[test]
+    fn migrate_body_record_uses_named_constructor_syntax() {
+        // The body is an ordinary expression: `User { name = old.name }` parses;
+        // the colon form (`{ name: old.name }`) is record TYPE syntax and must NOT.
+        let bad = "type User = { name: Text } do\n    migrate (old: User@1) -> User =\n        { name: old.name }\nend\n";
+        assert!(parse_td(bad).is_err());
     }
 }

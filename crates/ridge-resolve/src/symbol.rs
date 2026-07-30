@@ -766,6 +766,10 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
                                 &mut self.errors,
                             );
                         }
+                        ridge_ast::ActorMember::Migrate(_) => {
+                            // A migrate member declares no module symbols —
+                            // the hook is carried by its owner type/actor.
+                        }
                         ridge_ast::ActorMember::OnDown(od) => {
                             dup_member_check(
                                 &mut seen_on_down_span,
@@ -1029,6 +1033,8 @@ mod tests {
             params: vec![],
             body: TypeBody::Alias(prim_type_int()),
             deriving: vec![],
+            version: None,
+            migrates: Vec::new(),
             span: sp(),
             doc: None,
         })
@@ -1053,6 +1059,8 @@ mod tests {
                 span: sp(),
             }),
             deriving: vec![],
+            version: None,
+            migrates: Vec::new(),
             span: sp(),
             doc: None,
         })
@@ -1077,6 +1085,8 @@ mod tests {
                 span: sp(),
             }),
             deriving: vec![],
+            version: None,
+            migrates: Vec::new(),
             span: sp(),
             doc: None,
         })
@@ -1106,6 +1116,8 @@ mod tests {
                 span: sp(),
             }),
             deriving: deriving.into_iter().map(id).collect(),
+            version: None,
+            migrates: Vec::new(),
             span: sp(),
             doc: None,
         })

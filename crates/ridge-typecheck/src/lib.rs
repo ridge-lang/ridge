@@ -840,7 +840,7 @@ fn typecheck_actor_bodies(
                         &monoscheme,
                     );
                 }
-                ActorMember::State(_) | ActorMember::Mailbox(_) => {}
+                ActorMember::State(_) | ActorMember::Mailbox(_) | ActorMember::Migrate(_) => {}
             }
         }
     }

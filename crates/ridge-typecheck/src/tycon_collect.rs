@@ -923,8 +923,10 @@ fn build_actor_kind_fresh(
                     caps: handler_caps,
                 });
             }
-            ActorMember::Mailbox(_) => {
-                // Mailbox config contributes no type variables or schema info.
+            ActorMember::Mailbox(_) | ActorMember::Migrate(_) => {
+                // Mailbox config contributes no type variables or schema info,
+                // and migrate hooks are checked against the snapshot history
+                // in the typecheck pass — nothing to collect from either.
             }
             ActorMember::Terminate(t) => {
                 let params: Vec<Type> = t

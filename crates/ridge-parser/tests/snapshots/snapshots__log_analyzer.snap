@@ -421,6 +421,8 @@ Module {
                     },
                 ),
                 deriving: [],
+                version: None,
+                migrates: [],
                 span: Span {
                     start: 591,
                     end: 623,
@@ -537,6 +539,8 @@ Module {
                     },
                 ),
                 deriving: [],
+                version: None,
+                migrates: [],
                 span: Span {
                     start: 672,
                     end: 766,

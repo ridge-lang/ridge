@@ -32,8 +32,8 @@
 use crate::{
     decl::{
         ActorDecl, ActorMember, ConstDecl, Constructor, FieldDecl, FnDecl, ImportDecl, InitDecl,
-        MailboxDecl, ModulePath, OnDownDecl, OnHandler, Param, RecordTypeBody, StateDecl,
-        TerminateDecl, TypeBody, TypeDecl, UnionTypeBody,
+        MailboxDecl, MigrateDecl, ModulePath, OnDownDecl, OnHandler, Param, RecordTypeBody,
+        StateDecl, TerminateDecl, TypeBody, TypeDecl, UnionTypeBody,
     },
     expr::{AskTimeout, FieldInit, InterpPart, LambdaParam, MatchArm, QualifiedName, RecordCtor},
     typeclass::{ClassDecl, InstanceDecl},
@@ -184,6 +184,11 @@ pub trait Visit<'ast> {
     /// Visit an `onDown` monitor-notification handler.
     fn visit_on_down_decl(&mut self, d: &'ast OnDownDecl) {
         walk_on_down_decl(self, d);
+    }
+
+    /// Visit a `migrate` hook (on a record type or an actor's state).
+    fn visit_migrate_decl(&mut self, d: &'ast MigrateDecl) {
+        walk_migrate_decl(self, d);
     }
 
     /// Visit a function parameter.
@@ -595,7 +600,8 @@ pub fn walk_const_decl<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, d: &'ast ConstD
     v.visit_expr(&d.value);
 }
 
-/// Walk a [`TypeDecl`]: name, type params, body, and deriving list.
+/// Walk a [`TypeDecl`]: name, type params, body, deriving list, and any
+/// `migrate` hooks from its `do … end` section.
 pub fn walk_type_decl<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, d: &'ast TypeDecl) {
     v.visit_ident(&d.name);
     for tp in &d.params {
@@ -604,6 +610,9 @@ pub fn walk_type_decl<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, d: &'ast TypeDec
     v.visit_type_body(&d.body);
     for class_name in &d.deriving {
         v.visit_ident(class_name);
+    }
+    for m in &d.migrates {
+        v.visit_migrate_decl(m);
     }
 }
 
@@ -697,7 +706,7 @@ pub fn walk_actor_decl<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, d: &'ast ActorD
 }
 
 /// Walk an [`ActorMember`]: dispatches to state, init, on-handler, mailbox,
-/// terminate, or onDown.
+/// terminate, onDown, or migrate.
 pub fn walk_actor_member<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, m: &'ast ActorMember) {
     match m {
         ActorMember::State(s) => v.visit_state_decl(s),
@@ -706,7 +715,17 @@ pub fn walk_actor_member<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, m: &'ast Acto
         ActorMember::Mailbox(mb) => v.visit_mailbox_decl(mb),
         ActorMember::Terminate(t) => v.visit_terminate_decl(t),
         ActorMember::OnDown(d) => v.visit_on_down_decl(d),
+        ActorMember::Migrate(m) => v.visit_migrate_decl(m),
     }
+}
+
+/// Walk a [`MigrateDecl`]: the parameter binder, the return type, and the
+/// body. The versioned ref (`User@1`) carries no resolvable names — it is
+/// interpreted by typecheck against the snapshot history.
+pub fn walk_migrate_decl<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, d: &'ast MigrateDecl) {
+    v.visit_ident(&d.param);
+    v.visit_type(&d.ret);
+    v.visit_expr(&d.body);
 }
 
 /// Walk a [`MailboxDecl`]: no inner nodes traversed (config is a value type).

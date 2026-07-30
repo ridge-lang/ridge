@@ -167,6 +167,14 @@ pub struct TypeDecl {
     /// `Show` is desugared to `ToText` at parse time; entries here always use
     /// canonical class names.
     pub deriving: Vec<Ident>,
+    /// Optional `@version(N)` override for the declared version ordinal.
+    /// `None` means the compiler assigns the ordinal (previous + 1 on shape
+    /// change, 1 for a new type).
+    pub version: Option<u32>,
+    /// `migrate` hooks from the optional `do … end` section — one per
+    /// version edge; blocks accumulate in source so multi-step chains
+    /// (1→2→3) are available in every build.
+    pub migrates: Vec<MigrateDecl>,
     /// Span covering the whole declaration.
     pub span: Span,
     /// Attached doc comment (set to `None` in T10; T11 fills this).
@@ -183,6 +191,43 @@ pub enum TypeBody {
     Union(UnionTypeBody),
     /// Type alias: a bare type expression.
     Alias(Type),
+}
+
+/// A `migrate` hook: one version edge of a record type or an actor's state
+/// (grammar §3.1 / §5.1 extension).
+///
+/// ```text
+/// migrate (old: User@1) -> User =
+///     User { name = old.name, email = old.email }
+/// ```
+///
+/// The hook is a pure fn `Old -> New`; the `old` parameter's type is the
+/// recorded shape of version `N` (resolved by typecheck against the snapshot
+/// history, not by the parser).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrateDecl {
+    /// The parameter name (conventionally `old`).
+    pub param: Ident,
+    /// The versioned source shape reference (`User@1`).
+    pub old_type: VersionedTypeRef,
+    /// The target type after `->` (the current shape).
+    pub ret: Type,
+    /// The hook body expression.
+    pub body: Expr,
+    /// Span covering the whole `migrate` member.
+    pub span: Span,
+}
+
+/// A versioned named-type reference (`User@1`), legal ONLY inside `migrate`
+/// signatures — the parser rejects it anywhere else with its own diagnostic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionedTypeRef {
+    /// The type (or actor-state) name.
+    pub name: Ident,
+    /// The source-level ordinal.
+    pub version: u32,
+    /// Span covering `Name@N`.
+    pub span: Span,
 }
 
 /// The body of a record type (grammar §3.2 line 363).
@@ -378,6 +423,10 @@ pub enum ActorMember {
     ///
     /// At most one per actor — semantic check, not grammar.
     OnDown(OnDownDecl),
+    /// A `migrate` hook for the actor's state shape, at the level of
+    /// `init`/`terminate`. Multiple members are allowed — one per version
+    /// edge; a duplicate ordinal is a typecheck error.
+    Migrate(MigrateDecl),
 }
 
 /// A state field declaration (grammar §5.2 line 500).

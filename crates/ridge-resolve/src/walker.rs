@@ -1064,6 +1064,7 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
             }
             ActorMember::Terminate(t) => self.visit_terminate_decl(t),
             ActorMember::OnDown(d) => self.visit_on_down_decl(d),
+            ActorMember::Migrate(m) => self.visit_migrate_decl(m),
         }
     }
 

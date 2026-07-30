@@ -33,7 +33,8 @@ pub mod sources;
 
 pub use check::{
     check_standalone_incremental, check_workspace, check_workspace_incremental,
-    check_workspace_typed, collect_diagnostics, CheckArtefacts, CheckTypedArtefacts,
+    check_workspace_typed, check_workspace_typed_with_history, collect_diagnostics, CheckArtefacts,
+    CheckTypedArtefacts,
 };
 pub use compile::{
     compile_workspace, select_entry_beam, write_stdlib_test_workspace, CompileArtefacts,
@@ -43,8 +44,9 @@ pub use error::{CheckError, CompileDiagnostics, CompileError, ProcessExitCode, R
 pub use incremental::IncrementalState;
 pub use options::{CheckOptions, CompileOptions, EmitArtefacts, Profile, RunOptions};
 pub use reload::{
-    manifest_path_for, plan_reload, reload_check, snapshot_path_for, snapshot_vsn, ActorMigration,
-    ReloadCheckError, ReloadPlan, UpgradeManifest, WorkspaceSnapshot,
+    load_version_history, manifest_path_for, plan_reload, reload_check, snapshot_path_for,
+    snapshot_vsn, ActorMigration, ReloadCheckError, ReloadPlan, UpgradeManifest, VersionHistory,
+    WorkspaceSnapshot,
 };
 pub use run::run_workspace;
 pub use sources::WorkspaceSourceCache;

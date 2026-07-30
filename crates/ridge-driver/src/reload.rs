@@ -13,12 +13,13 @@ use ridge_reload::snapshot::extract_snapshot;
 use ridge_resolve::{ModuleId, ResolvedWorkspace};
 use rustc_hash::FxHasher;
 
-use crate::check::check_workspace_typed;
+use crate::check::check_workspace_typed_with_history;
 use crate::error::CheckError;
 use crate::options::CheckOptions;
 
 pub use ridge_reload::check::{CheckReport, Verdict};
 pub use ridge_reload::snapshot::WorkspaceSnapshot;
+pub use ridge_reload::VersionHistory;
 
 /// Where a profile's snapshot lives inside the workspace.
 #[must_use]
@@ -72,12 +73,16 @@ pub fn reload_check(
     let raw = std::fs::read_to_string(snapshot_path)
         .map_err(|_| ReloadCheckError::MissingSnapshot(snapshot_path.to_path_buf()))?;
     let old: WorkspaceSnapshot = serde_json::from_str(&raw)?;
-    if old.format != ridge_reload::snapshot::SNAPSHOT_FORMAT {
+    // Older formats read through `#[serde(default)]` fields as "no history" —
+    // a safe v1 start. Only a NEWER format (written by a newer compiler) is
+    // rejected.
+    if old.format > ridge_reload::snapshot::SNAPSHOT_FORMAT {
         return Err(ReloadCheckError::UnsupportedFormat(
             snapshot_path.to_path_buf(),
         ));
     }
-    let artefacts = check_workspace_typed(options)?;
+    let history = ridge_reload::snapshot::history_of(&old);
+    let artefacts = check_workspace_typed_with_history(options, &history)?;
     if artefacts
         .diagnostics
         .iter()
@@ -94,7 +99,11 @@ pub fn reload_check(
 // ── Reload planning (upgrade manifest) ───────────────────────────────────────
 
 /// Version of the upgrade manifest format written by [`plan_reload`].
-pub const UPGRADE_MANIFEST_FORMAT: u32 = 1;
+///
+/// Format 2 adds `migrate_hook`, `old_state_hash`, and `new_state_hash` to
+/// actor entries. The runtime loader never reads this field — the bump is
+/// documentary; older manifests keep loading through key defaults.
+pub const UPGRADE_MANIFEST_FORMAT: u32 = 2;
 
 /// Per-actor migration instructions carried by the upgrade manifest.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -103,6 +112,20 @@ pub struct ActorMigration {
     pub beam: String,
     /// `[from, to]` state-field renames, from the rename heuristic.
     pub renames: Vec<[String; 2]>,
+    /// The actor's NEW source declares `migrate` members: the loader sends
+    /// `{ridge_migrate_hook, old_state_hash}` instead of `{ridge_migrate, _}`.
+    #[serde(default)]
+    pub migrate_hook: bool,
+    /// State shape hash of the OLD build (the FROM edge key the generated
+    /// `code_change` clause matches). Narrowed to the signed two's-complement
+    /// representation the runtime tags carry, so the JSON value round-trips
+    /// into an exact term match.
+    #[serde(default)]
+    pub old_state_hash: i64,
+    /// State shape hash of the NEW build (report/verification value), in the
+    /// same signed representation as [`old_state_hash`](Self::old_state_hash).
+    #[serde(default)]
+    pub new_state_hash: i64,
 }
 
 /// The upgrade manifest consumed by the runtime loader.
@@ -164,7 +187,8 @@ pub fn plan_reload(
     options: CheckOptions,
     manifest_path: &Path,
 ) -> Result<ReloadPlan, ReloadCheckError> {
-    let artefacts = check_workspace_typed(options)?;
+    let history = ridge_reload::snapshot::history_of(old_snapshot);
+    let artefacts = check_workspace_typed_with_history(options, &history)?;
     if artefacts
         .diagnostics
         .iter()
@@ -265,7 +289,7 @@ fn build_manifest(
     modules.sort();
     modules.dedup();
 
-    let actors = actor_migrations(cs, &id_of);
+    let actors = actor_migrations(cs, &id_of, old_snapshot, new_snapshot);
 
     UpgradeManifest {
         format: UPGRADE_MANIFEST_FORMAT,
@@ -277,8 +301,14 @@ fn build_manifest(
 }
 
 /// One manifest entry per actor whose state shape changed, carrying the
-/// rename instructions the loader cannot derive at runtime.
-fn actor_migrations(cs: &ChangeSet, id_of: &HashMap<&str, ModuleId>) -> Vec<ActorMigration> {
+/// rename instructions the loader cannot derive at runtime plus the hook
+/// dispatch data (old/new state hashes) the loader cannot know at all.
+fn actor_migrations(
+    cs: &ChangeSet,
+    id_of: &HashMap<&str, ModuleId>,
+    old_snapshot: &WorkspaceSnapshot,
+    new_snapshot: &WorkspaceSnapshot,
+) -> Vec<ActorMigration> {
     let mut out = Vec::new();
     for m in &cs.modules {
         let ModuleChange::Changed { fqn, symbols } = m else {
@@ -302,15 +332,80 @@ fn actor_migrations(cs: &ChangeSet, id_of: &HashMap<&str, ModuleId>) -> Vec<Acto
                     _ => None,
                 })
                 .collect();
+            let (old_hash, new_hash, hook) = actor_hash_info(old_snapshot, new_snapshot, fqn, name);
             if let Some(id) = id_of.get(fqn.as_str()) {
                 if let Ok(beam) = beam_name_for_fqn(fqn, *id) {
                     out.push(ActorMigration {
                         beam: format!("{beam}_{}", name.to_lowercase()),
                         renames,
+                        migrate_hook: hook,
+                        old_state_hash: old_hash,
+                        new_state_hash: new_hash,
                     });
                 }
             }
         }
     }
     out
+}
+
+/// `(old hash, new hash, hook?)` for one actor from the two snapshots.
+///
+/// A pre-history snapshot carries hash 0 — the loader still sends the hook
+/// form when `hook` is set; a zero old-hash simply matches no clause and the
+/// actor resumes on old state with a loud error (the existing failure
+/// semantics for an unmigratable actor).
+fn actor_hash_info(
+    old: &WorkspaceSnapshot,
+    new: &WorkspaceSnapshot,
+    fqn: &str,
+    name: &str,
+) -> (i64, i64, bool) {
+    let lookup = |snap: &WorkspaceSnapshot| -> Option<(u64, bool)> {
+        match snap.modules.get(fqn)?.symbols.get(name)? {
+            ridge_reload::snapshot::SymbolSnapshot::Actor {
+                hash,
+                migrate_edges,
+                ..
+            } => Some((*hash, !migrate_edges.is_empty())),
+            _ => None,
+        }
+    };
+    let (old_hash, _) = lookup(old).unwrap_or((0, false));
+    let (new_hash, hook) = lookup(new).unwrap_or((0, false));
+    // The runtime matches these against signed tag values: narrow to the same
+    // two's-complement representation the code generator emits.
+    #[allow(clippy::cast_possible_wrap)]
+    let old_narrowed = old_hash as i64;
+    #[allow(clippy::cast_possible_wrap)]
+    let new_narrowed = new_hash as i64;
+    (old_narrowed, new_narrowed, hook)
+}
+
+/// Read the profile's stored snapshot, if it exists and parses.
+///
+/// Shared by [`load_version_history`] and the compile pipeline's snapshot
+/// write, which both consume the previous build's snapshot before it is
+/// replaced.
+#[must_use]
+pub fn read_prev_snapshot(root: &Path, profile: &str) -> Option<WorkspaceSnapshot> {
+    let text = std::fs::read_to_string(snapshot_path_for(root, profile)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Best-effort load of the previous build's version history from the
+/// profile's snapshot.
+///
+/// Any failure — missing file, corrupt JSON, a NEWER format — yields an empty
+/// history: a safe v1 start, never a crash, and never a compile failure (a
+/// fresh build behaves identically).
+#[must_use]
+pub fn load_version_history(root: &Path, profile: &str) -> VersionHistory {
+    let Some(snap) = read_prev_snapshot(root, profile) else {
+        return VersionHistory::default();
+    };
+    if snap.format > ridge_reload::snapshot::SNAPSHOT_FORMAT {
+        return VersionHistory::default();
+    }
+    ridge_reload::snapshot::history_of(&snap)
 }

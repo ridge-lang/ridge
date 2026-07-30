@@ -216,6 +216,13 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
                 .unwrap_or_else(|_| format!("ridge_module_{}", m.id.0))
         })
         .collect();
+    // FQNs alongside: codegen renders field types for the shared shape hash.
+    lowered.module_fqns = resolved
+        .graph
+        .modules
+        .iter()
+        .map(|m| m.fully_qualified_name.clone())
+        .collect();
 
     // ── 3. Collect source maps ────────────────────────────────────────────────
     let source_maps = collect_source_maps(&lowered.modules);

@@ -49,6 +49,9 @@ pub struct IrActor {
     /// means an explicit `mailbox unbounded` member was declared. The two are
     /// semantically equivalent; the field preserves source fidelity.
     pub mailbox_config: Option<MailboxConfig>,
+    /// `migrate` hooks for the actor's state shape — one per version edge,
+    /// in source order. Empty when the actor declares none.
+    pub migrations: Vec<crate::item::IrMigration>,
     /// AST `ActorDecl` `NodeId` for diagnostics.
     pub origin: NodeId,
     /// Source span of the actor declaration.

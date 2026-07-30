@@ -5,7 +5,7 @@ use crate::actor::IrActor;
 use crate::expr::IrExpr;
 use ridge_ast::Span;
 use ridge_resolve::{ModuleId, NodeId};
-use ridge_types::{CapabilitySet, Scheme, Type};
+use ridge_types::{CapabilitySet, Scheme, TyConId, Type};
 
 /// A top-level item in the Ridge Core IR.
 #[derive(Debug, Clone)]
@@ -32,6 +32,32 @@ pub enum IrItem {
     /// without `erlc +from_core` rejecting the Core Erlang module with
     /// "undefined function X/N".
     Ffi(IrFfiFn),
+    /// A `migrate` hook from a record type's `do … end` section.
+    ///
+    /// Actor-level hooks live on [`IrActor::migrations`] instead; this item
+    /// form carries the type-level ones so codegen can emit per-beam
+    /// migration chains.
+    Migration(IrMigration),
+}
+
+/// A lowered `migrate` hook: one version edge of a record type or an actor's
+/// state shape.
+#[derive(Debug, Clone)]
+pub struct IrMigration {
+    /// Record tycon (type-level hooks) or actor tycon (actor members).
+    pub owner: TyConId,
+    /// Source ordinal of the edge (`User@1` → 1) — diagnostic value only.
+    pub from_ordinal: u32,
+    /// Runtime hash of the FROM shape, resolved from the injected history.
+    /// `None` when the history had no such entry — typecheck has already
+    /// reported T049 in that case; no chain edge is emitted for it.
+    pub from_hash: Option<u64>,
+    /// The hook's parameter name (conventionally `old`).
+    pub param_name: String,
+    /// The hook body: builds the NEW value out of the parameter.
+    pub body: IrExpr,
+    /// Source span of the `migrate` member.
+    pub span: Span,
 }
 
 /// A lowered function declaration.

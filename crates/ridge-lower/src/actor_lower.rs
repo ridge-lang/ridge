@@ -55,6 +55,7 @@ use ridge_ir::{
         IrActor, IrHandler, IrInit, IrOnDown, IrStateField, IrTerminate, MailboxConfig,
         MailboxPolicy,
     },
+    item::IrMigration,
     IrParam,
 };
 use ridge_resolve::{NodeId, NodeKind};
@@ -149,6 +150,19 @@ pub fn lower_actor(ctx: &mut LowerCtx<'_>, decl: &ActorDecl) -> IrActor {
         }
     });
 
+    // ── 6. Lower migrate hooks (pure fns; no actor-body context) ─────────────
+    let migrations: Vec<IrMigration> = decl
+        .members
+        .iter()
+        .filter_map(|m| {
+            if let ActorMember::Migrate(md) = m {
+                Some(lower_migrate_decl(ctx, md, &decl.name.text))
+            } else {
+                None
+            }
+        })
+        .collect();
+
     IrActor {
         name: decl.name.text.clone(),
         module: ctx.module_id,
@@ -159,6 +173,7 @@ pub fn lower_actor(ctx: &mut LowerCtx<'_>, decl: &ActorDecl) -> IrActor {
         on_down,
         dispatch,
         mailbox_config,
+        migrations,
         // ActorDecl items carry no NodeId per the side-table convention.
         origin: NodeId(0),
         span: decl.span,
@@ -497,6 +512,35 @@ fn caps_from_ast_decl(caps: &[ridge_ast::Capability]) -> CapabilitySet {
 /// no matching tycon is found (the actor name is not registered in the arena).
 fn lookup_actor_tycon(ctx: &mut LowerCtx<'_>, name: &str) -> TyConId {
     ctx.lookup_tycon_by_name(name).unwrap_or(TyConId(0))
+}
+
+/// Lower one `migrate` member to `IrMigration`.
+///
+/// The body is lowered in non-actor-body context: a hook is a pure fn
+/// `Old -> New`, so `<-` state assignment is not active inside it. The
+/// `from_hash` is resolved against the injected version history (ordinal →
+/// hash); `None` means the edge referenced an unknown version — typecheck
+/// has already reported it, and codegen emits no chain entry for it.
+fn lower_migrate_decl(
+    ctx: &mut LowerCtx<'_>,
+    m: &ridge_ast::MigrateDecl,
+    owner_name: &str,
+) -> IrMigration {
+    let from_hash = ctx
+        .workspace
+        .and_then(|w| {
+            w.version_history
+                .lookup_actor(&ctx.module_fqn, owner_name, m.old_type.version)
+        })
+        .map(|e| e.hash);
+    IrMigration {
+        owner: lookup_actor_tycon(ctx, owner_name),
+        from_ordinal: m.old_type.version,
+        from_hash,
+        param_name: m.param.text.clone(),
+        body: lower_expr(ctx, &m.body),
+        span: m.span,
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

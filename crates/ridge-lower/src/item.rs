@@ -46,7 +46,9 @@ use ridge_ast::{
     typeclass::{InstanceDecl, MethodDef},
     Attribute, Body, Expr, Ident, Param, Pattern, Span, Visibility,
 };
-use ridge_ir::{CtorKind, IrConst, IrExpr, IrFfiFn, IrFn, IrItem, IrLit, IrParam, SymbolRef};
+use ridge_ir::{
+    CtorKind, IrConst, IrExpr, IrFfiFn, IrFn, IrItem, IrLit, IrMigration, IrParam, SymbolRef,
+};
 use ridge_resolve::{NodeId, NodeKind};
 use ridge_types::{Scheme, Type};
 
@@ -130,7 +132,11 @@ pub fn lower_item_multi(ctx: &mut LowerCtx<'_>, item: &Item) -> Vec<IrItem> {
         // its column-mirror values (the type itself stays in the arena). A
         // `deriving (Schema)` record instead derives a `HasSchema` instance,
         // lowered from `TypedWorkspace.derived_instances` like every other derive.
-        Item::Type(decl) => lower_table_mirrors(ctx, decl),
+        Item::Type(decl) => {
+            let mut items = lower_table_mirrors(ctx, decl);
+            items.extend(lower_type_migrations(ctx, decl));
+            items
+        }
         // Import and class declarations are erased at the IR level.
         // Class metadata lives in `TypedWorkspace.class_table`.
         Item::Import(_) | Item::ClassDecl(_) => vec![],
@@ -261,6 +267,40 @@ fn lower_auto_promoted_totext(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> Vec<IrIt
 /// top-level constants (the mirror type itself is erased; it lives in the
 /// arena):
 ///
+/// Lower a record type's `do … end` migrate section into one
+/// `IrItem::Migration` per hook. Type declarations otherwise erase.
+fn lower_type_migrations(ctx: &mut LowerCtx<'_>, decl: &ridge_ast::TypeDecl) -> Vec<IrItem> {
+    if decl.migrates.is_empty() {
+        return Vec::new();
+    }
+    let Some(owner) = ctx.lookup_tycon_by_name(&decl.name.text) else {
+        return Vec::new();
+    };
+    decl.migrates
+        .iter()
+        .map(|m| {
+            let from_hash = ctx
+                .workspace
+                .and_then(|w| {
+                    w.version_history.lookup_record(
+                        &ctx.module_fqn,
+                        &decl.name.text,
+                        m.old_type.version,
+                    )
+                })
+                .map(|e| e.hash);
+            IrItem::Migration(IrMigration {
+                owner,
+                from_ordinal: m.old_type.version,
+                from_hash,
+                param_name: m.param.text.clone(),
+                body: lower_expr(ctx, &m.body),
+                span: m.span,
+            })
+        })
+        .collect()
+}
+
 /// - `userCols  = { id = Column { name = "id", table = "users" }, … }`
 /// - `userTable = { name = "users", columns = ["id", …] }`
 ///

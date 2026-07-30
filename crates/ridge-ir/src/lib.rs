@@ -36,7 +36,7 @@ pub use actor::{
 };
 pub use expr::{AssignTarget, IrArm, IrExpr, IrTimeout};
 pub use id::IrNodeId;
-pub use item::{IrConst, IrFfiFn, IrFn, IrItem, IrParam};
+pub use item::{IrConst, IrFfiFn, IrFn, IrItem, IrMigration, IrParam};
 pub use lit::IrLit;
 pub use pat::IrPat;
 pub use symbol::{CtorKind, SymbolRef};
@@ -98,6 +98,8 @@ mod tests {
             tycon_count: 0,
             target_names: vec![],
             tycons: vec![],
+            module_fqns: vec![],
+            version_history: ridge_types::history::VersionHistory::default(),
         };
         assert!(ws.modules.is_empty());
     }

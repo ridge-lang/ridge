@@ -204,6 +204,13 @@ pub struct LowerCtx<'tw> {
     /// user modules. `None` outside the full pipeline (and empty during a user
     /// build, where stdlib calls already resolve as `StdlibSymbol`).
     pub stdlib_module_fqns: Option<&'tw FxHashMap<ModuleId, String>>,
+
+    /// Fully-qualified name of the module being lowered (`""` in unit tests).
+    ///
+    /// Keys the version-history lookups that resolve a `migrate` hook's
+    /// ordinal to its runtime hash. The version history itself is read from
+    /// [`Self::workspace`] (`TypedWorkspace::version_history`).
+    pub module_fqn: String,
 }
 
 impl<'tw> LowerCtx<'tw> {
@@ -242,6 +249,7 @@ impl<'tw> LowerCtx<'tw> {
             actor_module_cache: None,
             symbol_table: None,
             stdlib_module_fqns: None,
+            module_fqn: String::new(),
         }
     }
 

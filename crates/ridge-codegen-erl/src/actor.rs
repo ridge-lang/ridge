@@ -930,6 +930,7 @@ mod tests {
             on_down: None,
             dispatch: handlers,
             mailbox_config: None,
+            migrations: vec![],
             origin: NodeId(0),
             span: sp(),
             is_pub: true,

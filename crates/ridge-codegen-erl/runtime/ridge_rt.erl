@@ -52,7 +52,7 @@
     monitor_handle/1, demonitor_flush/1, await_down/2, stop_handle/1,
     exit_reason_to_ridge/1, apply_code_change/2, migrate_message/1,
     migrate_value/1, derive_record_migration/4, migration_count/0,
-    set_migrate_report/1,
+    set_migrate_report/1, invalidate_record_versions/1,
     diagnostics_to_stderr/0,
     mem_new/1, mem_insert/3, mem_all/2,
     mem_delete/3, mem_update/4, mem_get_rows/4,
@@ -2118,7 +2118,21 @@ apply_code_change(State, _Extra) ->
 
 %% migrate_message/1 — receive-path wrapper. {ok, Msg} re-dispatches to the
 %% handler clauses; {drop, Reason} drops the message after the dev report.
+%% The canonical Ridge message — {HandlerTag, OneRecordPayload} — gets a
+%% fast path: a current tag means the payload was built by shape-current
+%% code, so the message returns untouched with no walk and no allocation.
+migrate_message({Tag, #{'__ridge_v' := {Mod, Name, Hash}}} = Msg)
+  when is_atom(Tag), is_atom(Mod), is_atom(Name), is_integer(Hash) ->
+    case cached_record_versions(Mod) of
+        {ok, #{Name := Hash}} ->
+            {ok, Msg};
+        _ ->
+            migrate_message_slow(Msg)
+    end;
 migrate_message(Msg) ->
+    migrate_message_slow(Msg).
+
+migrate_message_slow(Msg) ->
     case migrate_value(Msg) of
         {ok, Msg2} ->
             {ok, Msg2};
@@ -2137,9 +2151,17 @@ migrate_value(V) when is_map(V) ->
             migrate_map_children(V)
     end;
 migrate_value(V) when is_tuple(V) ->
-    migrate_list_elements(tuple_to_list(V), fun(Es) -> {ok, list_to_tuple(Es)} end);
+    case migrate_children(tuple_to_list(V)) of
+        {ok, unchanged} -> {ok, V};
+        {ok, Es} -> {ok, list_to_tuple(Es)};
+        {error, Reason} -> {error, Reason}
+    end;
 migrate_value(V) when is_list(V) ->
-    migrate_list_elements(V, fun(Es) -> {ok, Es} end);
+    case migrate_children(V) of
+        {ok, unchanged} -> {ok, V};
+        {ok, Es} -> {ok, Es};
+        {error, Reason} -> {error, Reason}
+    end;
 migrate_value(V) ->
     {ok, V}.
 
@@ -2168,35 +2190,75 @@ migrate_tagged(Mod, Name, Hash, V) ->
     end.
 
 migrate_map_children(V) ->
-    Pairs = maps:to_list(V),
-    migrate_list_elements(Pairs, fun(Es) -> {ok, maps:from_list(Es)} end).
+    case migrate_children(maps:to_list(V)) of
+        {ok, unchanged} -> {ok, V};
+        {ok, Pairs} -> {ok, maps:from_list(Pairs)};
+        {error, Reason} -> {error, Reason}
+    end.
 
-migrate_list_elements(Es, Rebuild) ->
-    migrate_list_elements(Es, [], Rebuild).
+%% Walk a list of children. {ok, unchanged} means every element came back
+%% as the exact same term, so the caller returns its ORIGINAL container
+%% instead of allocating an identical copy — the steady-state path (nothing
+%% stale) must not allocate. Element identity is safe to test with =:=
+%% because every arm except an applied migration edge returns its input
+%% verbatim, and same-reference comparison short-circuits.
+migrate_children(Es) ->
+    migrate_children(Es, [], unchanged).
 
-migrate_list_elements([], Acc, Rebuild) ->
-    Rebuild(lists:reverse(Acc));
-migrate_list_elements([E | Rest], Acc, Rebuild) ->
+migrate_children([], Acc, Status) ->
+    case Status of
+        unchanged -> {ok, unchanged};
+        changed -> {ok, lists:reverse(Acc)}
+    end;
+migrate_children([E | Rest], Acc, Status) ->
     case migrate_value(E) of
-        {ok, E2} -> migrate_list_elements(Rest, [E2 | Acc], Rebuild);
+        {ok, E} -> migrate_children(Rest, [E | Acc], Status);
+        {ok, E2} -> migrate_children(Rest, [E2 | Acc], changed);
         {error, Reason} -> {error, Reason}
     end.
 
 current_record_hash(Mod, Name) ->
-    %% function_exported/3 does not load the module, and a record's defining
-    %% module may never have been called in this node (values are built
-    %% inline by callers) — load on demand so current-tagged values are not
-    %% mistaken for unknown records.
-    _ = code:ensure_loaded(Mod),
-    case erlang:function_exported(Mod, '__ridge_record_versions', 0) of
-        true ->
-            case Mod:'__ridge_record_versions'() of
+    case cached_record_versions(Mod) of
+        {ok, Vsns} ->
+            case Vsns of
                 #{Name := Hash} -> {ok, Hash};
                 _ -> error
             end;
-        false ->
+        error ->
             error
     end.
+
+%% The versions map is read per tagged record per message, so it is cached
+%% in persistent_term; ridge_loader invalidates the entry when it reloads
+%% Mod, which is the only way the answer can change. Unknown modules are NOT
+%% negatively cached: a reload can give a module versions it never had.
+cached_record_versions(Mod) ->
+    case persistent_term:get({ridge_rt_rec_vsn, Mod}, undefined) of
+        undefined ->
+            %% function_exported/3 does not load the module, and a record's
+            %% defining module may never have been called in this node
+            %% (values are built inline by callers) — load on demand so
+            %% current-tagged values are not mistaken for unknown records.
+            _ = code:ensure_loaded(Mod),
+            case erlang:function_exported(Mod, '__ridge_record_versions', 0) of
+                true ->
+                    Vsns = Mod:'__ridge_record_versions'(),
+                    persistent_term:put({ridge_rt_rec_vsn, Mod}, Vsns),
+                    {ok, Vsns};
+                false ->
+                    error
+            end;
+        Vsns ->
+            {ok, Vsns}
+    end.
+
+%% invalidate_record_versions/1 — drop the cached shape hashes of freshly
+%% reloaded modules so the next tagged message re-reads them from the new
+%% code. Called by ridge_loader between loading the modules and resuming the
+%% actors; erase on a missing key is a no-op.
+invalidate_record_versions(Modules) when is_list(Modules) ->
+    [_ = persistent_term:erase({ridge_rt_rec_vsn, M}) || M <- Modules],
+    ok.
 
 record_migration_edges(Mod) ->
     _ = code:ensure_loaded(Mod),

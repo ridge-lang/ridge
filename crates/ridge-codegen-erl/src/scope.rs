@@ -72,7 +72,8 @@ pub(crate) struct LocalScope {
     /// cross-module call apply the same unit-paren shim the local path uses.
     /// Shared (Arc) so cloning a scope stays cheap.
     pub(crate) external_arity: Arc<FxHashMap<ModuleId, FxHashMap<String, u32>>>,
-    /// Workspace-wide codegen tables (beam names + record metadata).
+    /// Workspace-wide codegen tables (beam names, record metadata, module
+    /// FQNs, version history).
     ///
     /// Shared via `Arc`s inside so cloning a scope stays cheap. Empty in
     /// unit tests — call sites fall back to legacy behavior then.
@@ -126,6 +127,10 @@ pub(crate) struct LocalScope {
 ///   falls back to the legacy `module_<id>` segment.
 /// - `record_meta`: `TyConId → RecordMeta` used to tag record values with
 ///   their type identity (`__ridge_v`). Empty in unit tests — no tags.
+/// - `module_fqns`: `ModuleId.0 → dotted FQN`, needed to render field types
+///   for the shared shape hash.
+/// - `version_history`: previous-build record/actor shapes; codegen reads it
+///   to derive structural migration edges. Empty on fresh builds.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct CodegenTables {
     /// Stable beam module names, indexed by `ModuleId.0`.
@@ -133,6 +138,10 @@ pub(crate) struct CodegenTables {
     /// Record version metadata, keyed by type-constructor id.
     pub(crate) record_meta:
         std::sync::Arc<rustc_hash::FxHashMap<ridge_types::TyConId, crate::record_meta::RecordMeta>>,
+    /// Fully-qualified module names, indexed by `ModuleId.0`.
+    pub(crate) module_fqns: std::sync::Arc<Vec<String>>,
+    /// Previous-build version history (empty on fresh builds).
+    pub(crate) version_history: std::sync::Arc<ridge_types::history::VersionHistory>,
 }
 
 impl CodegenTables {
@@ -142,14 +151,18 @@ impl CodegenTables {
     /// empty in hand-built workspaces). `record_meta` is derived from the
     /// workspace's type-constructor declarations; it is empty when the
     /// workspace carries no tycons (unit tests), which disables `__ridge_v`
-    /// tagging.
+    /// tagging. `module_fqns` and `version_history` ride the same workspace
+    /// fields the driver seeds.
     pub(crate) fn from_workspace(ws: &ridge_ir::LoweredWorkspace) -> Self {
         Self {
             beam_names: Arc::new(ws.target_names.clone()),
             record_meta: Arc::new(crate::record_meta::build_record_meta(
                 &ws.tycons,
                 &ws.target_names,
+                &ws.module_fqns,
             )),
+            module_fqns: Arc::new(ws.module_fqns.clone()),
+            version_history: Arc::new(ws.version_history.clone()),
         }
     }
 }

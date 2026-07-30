@@ -121,6 +121,16 @@ pub fn make_counter_workspace() -> TempWorkspace {
     )
 }
 
+/// Build a workspace with a record type riding in actor messages: `Note`
+/// is the payload of the `store` handler, so a record shape change produces
+/// stale-tagged in-flight messages across a reload.
+pub fn make_store_workspace() -> TempWorkspace {
+    make_workspace(
+        "Store",
+        "pub type Note = { text: Text }\n\nactor Store =\n    state note: Note = Note { text = \"init\" }\n\n    on store (n: Note) =\n        note <- n\n\n    on get () -> Note =\n        note\n",
+    )
+}
+
 /// Build a workspace with a forbid rule that will be violated by an import.
 ///
 /// The rule forbids `acme.ui.**` from importing `acme.db.**`.  The `Ui` module

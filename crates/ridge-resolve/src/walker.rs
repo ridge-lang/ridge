@@ -22,8 +22,8 @@
 
 use ridge_ast::{
     decl::{
-        ActorDecl, ActorMember, Constructor, FnDecl, InitDecl, OnDownDecl, OnHandler, Param,
-        StateDecl, TerminateDecl, TypeBody, TypeDecl,
+        ActorDecl, ActorMember, Constructor, FnDecl, InitDecl, MigrateDecl, OnDownDecl, OnHandler,
+        Param, StateDecl, TerminateDecl, TypeBody, TypeDecl,
     },
     expr::{FieldInit, LambdaParam, MatchArm, QualifiedName, RecordCtor},
     typeclass::InstanceDecl,
@@ -944,8 +944,15 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
             // A type declaration introduces no use-sites for the value resolver,
             // but its body references other types (record field types, union
             // constructor arguments, an alias target). Stamp those so type
-            // references inside type definitions are findable too.
-            Item::Type(d) => self.visit_type_decl_refs(d),
+            // references inside type definitions are findable too. `migrate`
+            // hooks in the `do … end` section are walked too — their bodies are
+            // ordinary value expressions with a bound parameter.
+            Item::Type(d) => {
+                self.visit_type_decl_refs(d);
+                for m in &d.migrates {
+                    self.visit_migrate_decl(m);
+                }
+            }
             // Instance method bodies are resolved so that use-sites inside them
             // (module fns, locals, prelude constructors, and — crucially for
             // parametric instances — bare class-method calls on the constrained
@@ -1115,6 +1122,19 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
         }
         walk_on_handler(self, h);
         self.scope.pop_into(h.span.end);
+    }
+
+    fn visit_migrate_decl(&mut self, d: &'ast MigrateDecl) {
+        // A migrate hook is a pure fn `Old -> New`: its parameter binds like a
+        // fn param so the body's `old.field` accesses resolve. The versioned
+        // ref (`User@1`) carries no resolvable names — typecheck interprets
+        // it against the snapshot history.
+        self.scope.push_with_start(ScopeKind::FnBody, d.span.start);
+        self.check_r017_state_shadow(&d.param);
+        self.add_local_binding(&d.param, LocalKind::FnParam);
+        self.visit_type(&d.ret);
+        self.visit_expr(&d.body);
+        self.scope.pop_into(d.span.end);
     }
 
     // ── Block ─────────────────────────────────────────────────────────────────

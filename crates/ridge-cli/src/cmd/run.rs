@@ -985,7 +985,7 @@ fn probe_apply(
     let manifest_fwd = manifest_path.to_string_lossy().replace('\\', "/");
     let eval = format!(
         "case rpc:call('{node_name}', ridge_loader, apply, [\"{manifest_fwd}\", <<\"{base_vsn}\">>]) of \
-            {{ok, Rep}} -> io:format(\"RIDGE_RELOAD_OK ~w ~w ~w~n\", [maps:get(modules_loaded, Rep), maps:get(actors_migrated, Rep), maps:get(duration_ms, Rep)]); \
+            {{ok, Rep}} -> io:format(\"RIDGE_RELOAD_OK ~w ~w ~w ~w~n\", [maps:get(modules_loaded, Rep), maps:get(actors_migrated, Rep), maps:get(messages_migrated, Rep), maps:get(duration_ms, Rep)]); \
             Err -> io:format(\"RIDGE_RELOAD_ERR ~p~n\", [Err]) \
         end."
     );
@@ -1010,9 +1010,15 @@ fn probe_apply(
     for line in stdout.lines() {
         if let Some(rest) = line.strip_prefix("RIDGE_RELOAD_OK ") {
             let parts: Vec<&str> = rest.split_whitespace().collect();
-            if let [modules, actors, ms] = parts.as_slice() {
+            if let [modules, actors, messages, ms] = parts.as_slice() {
+                if messages == &"0" {
+                    // Zero-suppressed: keep the common case on the terse line.
+                    return Ok(format!(
+                        "reloaded {modules} modules, migrated {actors} actors in {ms}ms"
+                    ));
+                }
                 return Ok(format!(
-                    "reloaded {modules} modules, migrated {actors} actors in {ms}ms"
+                    "reloaded {modules} modules, migrated {actors} actors, {messages} in-flight messages in {ms}ms"
                 ));
             }
         }

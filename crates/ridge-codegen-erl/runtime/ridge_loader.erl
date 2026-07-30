@@ -56,7 +56,9 @@ apply_manifest(ManifestPath, Started) ->
             renames => [
                 {binary_to_atom(F), binary_to_atom(T)}
                 || [F, T] <- maps:get(<<"renames">>, A)
-            ]
+            ],
+            migrate_hook => maps:get(<<"migrate_hook">>, A, false),
+            old_state_hash => maps:get(<<"old_state_hash">>, A, 0)
         }
         || A <- ActorMigs0
     ],
@@ -77,6 +79,10 @@ apply_manifest(ManifestPath, Started) ->
             modules_loaded => length(Modules),
             actors_suspended => length(Pids),
             actors_migrated => length(Migrated),
+            %% Cumulative and lazy: migrations happen as messages arrive AFTER
+            %% the upgrade, so this mostly reflects traffic since the previous
+            %% reload — the next reload's report includes this window's.
+            messages_migrated => ridge_rt:migration_count(),
             duration_ms => Duration
         }}
     catch
@@ -108,17 +114,26 @@ migrate_actors(Pids, ActorMigs, OldFieldsByMod) ->
             [] ->
                 false;
             [Entry] ->
-                NewFields = M:'__ridge_state_fields'(),
-                Defaults = M:'__ridge_state_defaults'(),
-                OldFields = maps:get(M, OldFieldsByMod, []),
-                Added = [F || F <- NewFields, not lists:member(F, OldFields)],
-                Instr = #{
-                    renames => maps:get(renames, Entry),
-                    added => Added,
-                    fields => NewFields,
-                    defaults => Defaults
-                },
-                case sys:change_code(P, M, old, {ridge_migrate, Instr}) of
+                Extra = case maps:get(migrate_hook, Entry, false) of
+                    true ->
+                        %% The actor's new code carries user migrate hooks:
+                        %% code_change dispatches on the OLD state-shape hash
+                        %% and the hook takes precedence over automatic
+                        %% rename/default instructions.
+                        {ridge_migrate_hook, maps:get(old_state_hash, Entry, 0)};
+                    false ->
+                        NewFields = M:'__ridge_state_fields'(),
+                        Defaults = M:'__ridge_state_defaults'(),
+                        OldFields = maps:get(M, OldFieldsByMod, []),
+                        Added = [F || F <- NewFields, not lists:member(F, OldFields)],
+                        {ridge_migrate, #{
+                            renames => maps:get(renames, Entry),
+                            added => Added,
+                            fields => NewFields,
+                            defaults => Defaults
+                        }}
+                end,
+                case sys:change_code(P, M, old, Extra) of
                     ok -> {true, P};
                     {error, Reason} -> erlang:error({migration_failed, M, Reason})
                 end

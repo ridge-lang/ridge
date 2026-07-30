@@ -16,7 +16,7 @@ use ridge_ir::{IrItem, IrNodeId, LoweredModule};
 use ridge_lower::lower_workspace;
 use ridge_manifest::find_workspace_root;
 use ridge_resolve::{discover_workspace, resolve_workspace, ModuleId, NodeId, Severity};
-use ridge_typecheck::typecheck_workspace;
+use ridge_typecheck::{typecheck_workspace, typecheck_workspace_with_history};
 
 use crate::diag_adapters::{diag_from_codegen, diag_from_typecheck};
 use crate::error::CompileError;
@@ -200,7 +200,18 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
     }
 
     let resolved = resolve_workspace(ws_graph);
-    let typecheck_result = typecheck_workspace(&resolved);
+    // Read the previous build's snapshot before anything overwrites it: its
+    // version history is injected into typechecking so `migrate` hooks can
+    // resolve `Name@N`, and it is passed back into `extract_snapshot` at the
+    // end of the compile. Both are best-effort — a missing snapshot or one in
+    // a NEWER format is an empty history, i.e. a fresh build.
+    let prev_snapshot =
+        crate::reload::read_prev_snapshot(&options.workspace_root, options.profile.dir_name())
+            .filter(|s| s.format <= ridge_reload::snapshot::SNAPSHOT_FORMAT);
+    let version_history = prev_snapshot
+        .as_ref()
+        .map_or_else(ridge_reload::VersionHistory::default, ridge_reload::snapshot::history_of);
+    let typecheck_result = typecheck_workspace_with_history(&resolved, &version_history);
     let mut lowered = lower_workspace(&typecheck_result.typed, &resolved);
 
     // Seed stable FQN-derived target module names so codegen never derives
@@ -389,7 +400,11 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
         .iter()
         .any(|d| matches!(d.severity, Severity::Error))
     {
-        let snapshot = ridge_reload::snapshot::extract_snapshot(&resolved, &typecheck_result.typed, None);
+        let snapshot = ridge_reload::snapshot::extract_snapshot(
+            &resolved,
+            &typecheck_result.typed,
+            prev_snapshot.as_ref(),
+        );
         match serde_json::to_string_pretty(&snapshot) {
             Ok(json) => {
                 let path = codegen_out_root.join("reload-snapshot.json");

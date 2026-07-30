@@ -11,3 +11,8 @@ pub mod diff;
 pub mod render;
 pub mod scaffold;
 pub mod snapshot;
+
+// The history a snapshot carries, re-exported so snapshot consumers (the
+// driver's reload glue) can thread it into typechecking without depending on
+// the shared-types crate directly.
+pub use ridge_types::history::VersionHistory;

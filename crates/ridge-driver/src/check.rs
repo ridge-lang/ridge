@@ -7,11 +7,12 @@ use std::sync::Arc;
 
 use ridge_diagnostics::Diagnostic;
 use ridge_manifest::find_workspace_root;
+use ridge_reload::VersionHistory;
 use ridge_resolve::{
     discover_standalone, discover_workspace, resolve_workspace_with, ModuleId, ResolveError,
     ResolvedWorkspace,
 };
-use ridge_typecheck::{typecheck_workspace, TypeError, TypedWorkspace};
+use ridge_typecheck::{typecheck_workspace, typecheck_workspace_with_history, TypeError, TypedWorkspace};
 
 use crate::diag_adapters::diag_from_typecheck;
 use crate::error::CheckError;
@@ -170,6 +171,23 @@ pub fn check_workspace(options: CheckOptions) -> Result<CheckArtefacts, CheckErr
 /// Fatal errors (`C001`–`C003`) are returned as [`CheckError`].
 #[allow(clippy::needless_pass_by_value)]
 pub fn check_workspace_typed(options: CheckOptions) -> Result<CheckTypedArtefacts, CheckError> {
+    check_workspace_typed_with_history(options, &VersionHistory::default())
+}
+
+/// Like [`check_workspace_typed`] but with the previous build's version
+/// history injected into typechecking.
+///
+/// Reload tooling passes the history of the snapshot it diffs against, so
+/// `migrate` hooks resolve exactly what the running node can hold.
+///
+/// ## Errors
+///
+/// Fatal errors (`C001`–`C003`) are returned as [`CheckError`].
+#[allow(clippy::needless_pass_by_value)]
+pub fn check_workspace_typed_with_history(
+    options: CheckOptions,
+    history: &VersionHistory,
+) -> Result<CheckTypedArtefacts, CheckError> {
     // ── 1. Verify workspace root ──────────────────────────────────────────────
     let _manifest_dir = find_workspace_root(&options.workspace_root).ok_or_else(|| {
         CheckError::NoWorkspaceRoot {
@@ -190,7 +208,7 @@ pub fn check_workspace_typed(options: CheckOptions) -> Result<CheckTypedArtefact
     ws_graph.is_stdlib = options.is_stdlib;
 
     let resolved = resolve_workspace_with(ws_graph, options.retain_indices);
-    let typecheck_result = typecheck_workspace(&resolved);
+    let typecheck_result = typecheck_workspace_with_history(&resolved, history);
 
     // ── 3. Collect diagnostics ────────────────────────────────────────────────
     let sources = WorkspaceSourceCache::from_workspace(&resolved.graph);
@@ -238,7 +256,13 @@ pub fn check_workspace_incremental(options: CheckOptions) -> Result<IncrementalS
     ws_graph.is_stdlib = options.is_stdlib;
 
     let resolved = resolve_workspace_with(ws_graph, options.retain_indices);
-    let typecheck_result = typecheck_workspace(&resolved);
+    // Seed with the previous debug build's version history (best-effort, empty
+    // when absent) so editor diagnostics for `migrate` hooks match the CLI's.
+    let history = crate::reload::load_version_history(
+        &options.workspace_root,
+        crate::options::Profile::Debug.dir_name(),
+    );
+    let typecheck_result = typecheck_workspace_with_history(&resolved, &history);
 
     // Capture each module's on-disk text (indexed by ModuleId.0) so the engine
     // can track per-module source across edits.

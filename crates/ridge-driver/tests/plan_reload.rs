@@ -41,7 +41,7 @@ fn additive_state_field_produces_manifest_with_actor_entry() {
         )
     });
     let manifest = plan.manifest.expect("additive edit must be reloadable");
-    assert_eq!(manifest.format, 1);
+    assert_eq!(manifest.format, ridge_driver::reload::UPGRADE_MANIFEST_FORMAT);
     assert_ne!(manifest.base_vsn, manifest.new_vsn);
     assert!(manifest.modules.iter().any(|m| m.ends_with("_counter")));
     let actor = manifest.actors.first().expect("actor entry");
@@ -112,3 +112,41 @@ fn retyped_state_field_yields_no_manifest() {
     assert!(plan.manifest.is_none());
     assert!(plan.report.has_holes());
 }
+
+#[test]
+fn actor_with_migrate_hook_produces_hook_manifest_entry() {
+    let ws = common::make_counter_workspace();
+    let plan = plan_after_edit(&ws, |src| {
+        src.replace(
+            "state count: Int = 0",
+            "state count: Int = 0\n    state step: Int = 1\n    migrate (old: Counter@1) -> Counter =\n        { count = old.count, step = 1 }",
+        )
+    });
+    let manifest = plan.manifest.expect("hook edit must be reloadable");
+    let actor = manifest.actors.first().expect("actor entry");
+    assert!(actor.migrate_hook, "hook dispatch requested: {actor:?}");
+    assert_ne!(actor.old_state_hash, 0);
+    assert_ne!(actor.new_state_hash, 0);
+    assert_ne!(actor.old_state_hash, actor.new_state_hash);
+    assert!(actor.renames.is_empty(), "hooks carry no rename instructions");
+}
+
+#[test]
+fn automatic_migration_keeps_hook_flag_off() {
+    let ws = common::make_counter_workspace();
+    let plan = plan_after_edit(&ws, |src| {
+        src.replace(
+            "state count: Int = 0",
+            "state count: Int = 0\n    state step: Int = 2",
+        )
+    });
+    let actor = plan
+        .manifest
+        .expect("manifest")
+        .actors
+        .first()
+        .expect("actor")
+        .clone();
+    assert!(!actor.migrate_hook);
+}
+

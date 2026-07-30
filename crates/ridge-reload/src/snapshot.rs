@@ -9,9 +9,14 @@ use ridge_typecheck::TypedWorkspace;
 use ridge_types::tycon::{TyConKind, VariantPayload};
 
 use crate::render::{render_ast_type, render_scheme, render_type, render_type_vars, RenderCtx};
+use ridge_types::history::{VersionEntry, VersionHistory};
 
-/// Bump when the on-disk layout changes; old snapshots are rejected.
-pub const SNAPSHOT_FORMAT: u32 = 2;
+/// Bump when the on-disk layout changes.
+///
+/// Older formats are still READ — missing history deserializes as empty —
+/// but only [`SNAPSHOT_FORMAT`] is written. Formats NEWER than this are
+/// rejected by the driver.
+pub const SNAPSHOT_FORMAT: u32 = 3;
 
 /// The public surface of one compiled workspace.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -44,8 +49,19 @@ pub enum SymbolSnapshot {
     Const { signature: String },
     /// A record type with its layout version and declared fields.
     Record {
+        /// Current ordinal (1 for a type with no recorded history).
         version: u32,
+        /// Current shape hash (shared shape hash over `fields`).
+        #[serde(default)]
+        hash: u64,
         fields: Vec<FieldSnap>,
+        /// Previous versions, oldest first. Empty for a first-version type
+        /// and for snapshots written before version history existed.
+        #[serde(default)]
+        history: Vec<VersionSnap>,
+        /// Ordinals the source's `migrate` blocks cover.
+        #[serde(default)]
+        migrate_edges: Vec<u32>,
     },
     /// A union type with its layout version and declared variants.
     Union {
@@ -58,7 +74,30 @@ pub enum SymbolSnapshot {
     Actor {
         state: Vec<StateSnap>,
         handlers: BTreeMap<String, u16>,
+        /// Current state-shape ordinal.
+        #[serde(default)]
+        version: u32,
+        /// Current state-shape hash.
+        #[serde(default)]
+        hash: u64,
+        /// Previous state shapes, oldest first.
+        #[serde(default)]
+        history: Vec<VersionSnap>,
+        /// Ordinals the actor's `migrate` members cover.
+        #[serde(default)]
+        migrate_edges: Vec<u32>,
     },
+}
+
+/// One recorded version of a record's or actor state's shape.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct VersionSnap {
+    /// Source-level ordinal (`@version(N)` or the assigned sequence).
+    pub ordinal: u32,
+    /// Runtime identity: the shared 64-bit shape hash.
+    pub hash: u64,
+    /// The shape at this version (ordered fields).
+    pub shape: Vec<FieldSnap>,
 }
 
 /// A record field: name and rendered type.
@@ -94,9 +133,15 @@ pub struct VariantSnap {
 ///
 /// Symbol identity is `(module FQN, symbol name)`; only non-file-private
 /// symbols are captured. Synthesised constructors and field accessors are
-/// covered by their owner type's snapshot and skipped.
+/// covered by their owner type's snapshot and skipped. `prev` is the snapshot
+/// of the previous build, when one exists; it seeds version ordinals and
+/// history.
 #[must_use]
-pub fn extract_snapshot(resolved: &ResolvedWorkspace, typed: &TypedWorkspace) -> WorkspaceSnapshot {
+pub fn extract_snapshot(
+    resolved: &ResolvedWorkspace,
+    typed: &TypedWorkspace,
+    prev: Option<&WorkspaceSnapshot>,
+) -> WorkspaceSnapshot {
     let module_fqns: Vec<String> = resolved
         .graph
         .modules
@@ -150,18 +195,14 @@ pub fn extract_snapshot(resolved: &ResolvedWorkspace, typed: &TypedWorkspace) ->
                     SymbolSnapshot::Const { signature }
                 }
                 SymbolKind::Type { .. } => {
-                    let Some(snap) = type_snapshot(&ctx, tmod, typed, &entry.name) else {
+                    let Some(snap) = type_snapshot(&ctx, tmod, typed, &entry.name, prev, &fqn, ast)
+                    else {
                         continue;
                     };
                     snap
                 }
                 SymbolKind::Actor { handlers, .. } => {
-                    let state = actor_state_snaps(ast, &entry.name);
-                    let handlers = handlers
-                        .iter()
-                        .map(|h| (h.name.clone(), caps_from_ast_slice(&h.caps).bits()))
-                        .collect();
-                    SymbolSnapshot::Actor { state, handlers }
+                    actor_snapshot(ast, &entry.name, handlers, prev, &fqn)
                 }
                 // Constructors and field accessors are covered by their owner
                 // type's snapshot; unknown future kinds are skipped too.
@@ -219,28 +260,44 @@ fn fn_caps_bits(
 /// Snapshot for a `type` symbol, looked up through the module's own
 /// name → `TyConId` table so synthesised types elsewhere in the arena do not
 /// confuse the lookup. `None` for kinds that carry no public shape here
-/// (actor `TyCons` are covered by [`SymbolKind::Actor`] entries).
+/// (actor `TyCons` are covered by [`SymbolKind::Actor`] entries). `prev`
+/// seeds the version identity; `fqn` and `ast` locate the symbol in the
+/// previous snapshot and read its declared `migrate` edges from source.
 fn type_snapshot(
     ctx: &RenderCtx<'_>,
     tmod: &ridge_typecheck::TypedModule,
     typed: &TypedWorkspace,
     name: &str,
+    prev: Option<&WorkspaceSnapshot>,
+    fqn: &str,
+    ast: &ridge_ast::Module,
 ) -> Option<SymbolSnapshot> {
     let names = typed.module_tycon_names.get(tmod.id.0 as usize)?;
     let id = names.get(name)?;
     let decl = typed.tycons.get(id.0 as usize)?;
     match &decl.kind {
-        TyConKind::Record(schema) => Some(SymbolSnapshot::Record {
-            version: 1,
-            fields: schema
+        TyConKind::Record(schema) => {
+            let fields: Vec<FieldSnap> = schema
                 .record_fields()
                 .iter()
                 .map(|f| FieldSnap {
                     name: f.name.clone(),
                     ty: render_type(ctx, &f.ty),
                 })
-                .collect(),
-        }),
+                .collect();
+            let (version, hash, history) = versioned_identity(
+                prev_versioned(prev, fqn, name),
+                declared_version(ast, name),
+                &fields,
+            );
+            Some(SymbolSnapshot::Record {
+                version,
+                hash,
+                fields,
+                history,
+                migrate_edges: declared_migrate_edges(ast, name),
+            })
+        }
         TyConKind::Union(schema) => Some(SymbolSnapshot::Union {
             version: 1,
             variants: schema
@@ -277,10 +334,235 @@ fn type_snapshot(
     }
 }
 
+/// Snapshot for an `actor` symbol: state shape, version identity, handler
+/// capability bits, and declared `migrate` edges.
+fn actor_snapshot(
+    ast: &ridge_ast::Module,
+    name: &str,
+    handlers: &[ridge_resolve::HandlerSig],
+    prev: Option<&WorkspaceSnapshot>,
+    fqn: &str,
+) -> SymbolSnapshot {
+    let state = actor_state_snaps(ast, name);
+    let shape: Vec<FieldSnap> = state
+        .iter()
+        .map(|s| FieldSnap {
+            name: s.name.clone(),
+            ty: s.ty.clone(),
+        })
+        .collect();
+    let (version, hash, history) =
+        versioned_identity(prev_versioned(prev, fqn, name), None, &shape);
+    let handlers = handlers
+        .iter()
+        .map(|h| (h.name.clone(), caps_from_ast_slice(&h.caps).bits()))
+        .collect();
+    SymbolSnapshot::Actor {
+        state,
+        handlers,
+        version,
+        hash,
+        history,
+        migrate_edges: actor_migrate_edges(ast, name),
+    }
+}
+
+/// Compute `(version, hash, history)` for a shape-bearing symbol.
+///
+/// `prev_versioned` is the same symbol's `(version, hash, shape, history)`
+/// from the previous snapshot, when it existed. `declared` is an optional
+/// `@version(N)` override from source (records only; actors pass `None`).
+/// Rules:
+/// - same shape ⇒ same ordinal and hash, history carried over unchanged;
+/// - changed shape ⇒ ordinal = `declared` or `prev.version + 1`, fresh hash,
+///   and the previous CURRENT version is appended to the history;
+/// - no previous version ⇒ ordinal = `declared` or 1, empty history.
+///
+/// The comparison is by shape, not by hash: a pre-history snapshot (hash 0)
+/// with unchanged fields keeps its ordinal instead of spuriously bumping.
+fn versioned_identity(
+    prev_versioned: Option<(u32, u64, Vec<FieldSnap>, Vec<VersionSnap>)>,
+    declared: Option<u32>,
+    current_shape: &[FieldSnap],
+) -> (u32, u64, Vec<VersionSnap>) {
+    let pairs: Vec<(String, String)> = current_shape
+        .iter()
+        .map(|f| (f.name.clone(), f.ty.clone()))
+        .collect();
+    let hash = ridge_types::shape::shape_hash(&pairs);
+    match prev_versioned {
+        Some((pv, _, pshape, phist)) if pshape == current_shape => (pv, hash, phist),
+        Some((pv, ph, pshape, phist)) => {
+            let mut history = phist;
+            history.push(VersionSnap {
+                ordinal: pv,
+                hash: ph,
+                shape: pshape,
+            });
+            (declared.unwrap_or(pv + 1), hash, history)
+        }
+        None => (declared.unwrap_or(1), hash, Vec::new()),
+    }
+}
+
+/// The previous snapshot's versioned view of one symbol, if it carried one.
+/// Pre-history actor entries (hash 0) yield `None` — a safe v1 start.
+fn prev_versioned(
+    prev: Option<&WorkspaceSnapshot>,
+    fqn: &str,
+    name: &str,
+) -> Option<(u32, u64, Vec<FieldSnap>, Vec<VersionSnap>)> {
+    let sym = prev?.modules.get(fqn)?.symbols.get(name)?;
+    match sym {
+        SymbolSnapshot::Record {
+            version,
+            hash,
+            fields,
+            history,
+            ..
+        } => Some((*version, *hash, fields.clone(), history.clone())),
+        SymbolSnapshot::Actor {
+            state,
+            version,
+            hash,
+            history,
+            ..
+        } if *hash != 0 => Some((
+            *version,
+            *hash,
+            state
+                .iter()
+                .map(|s| FieldSnap {
+                    name: s.name.clone(),
+                    ty: s.ty.clone(),
+                })
+                .collect(),
+            history.clone(),
+        )),
+        _ => None,
+    }
+}
+
+/// The declared `@version(N)` override of one type declaration, if any.
+fn declared_version(ast: &ridge_ast::Module, type_name: &str) -> Option<u32> {
+    for item in &ast.items {
+        if let Item::Type(t) = item {
+            if t.name.text == type_name {
+                return t.version;
+            }
+        }
+    }
+    None
+}
+
+/// Ordinals covered by `migrate` blocks in one type declaration's source.
+fn declared_migrate_edges(ast: &ridge_ast::Module, type_name: &str) -> Vec<u32> {
+    for item in &ast.items {
+        if let Item::Type(t) = item {
+            if t.name.text == type_name {
+                return t.migrates.iter().map(|m| m.old_type.version).collect();
+            }
+        }
+    }
+    Vec::new()
+}
+
+/// Ordinals covered by `migrate` members in one actor declaration's source.
+fn actor_migrate_edges(ast: &ridge_ast::Module, actor_name: &str) -> Vec<u32> {
+    for item in &ast.items {
+        if let Item::Actor(a) = item {
+            if a.name.text == actor_name {
+                return a
+                    .members
+                    .iter()
+                    .filter_map(|m| match m {
+                        ActorMember::Migrate(md) => Some(md.old_type.version),
+                        _ => None,
+                    })
+                    .collect();
+            }
+        }
+    }
+    Vec::new()
+}
+
+/// Build the compiler-facing version history from a snapshot.
+///
+/// Every list ends with the version the snapshot considers current (a
+/// `migrate` hook always targets a shape the RUNNING build may still hold).
+/// Symbols whose ordinal is 0 came from a pre-history snapshot format and
+/// produce no entries — "no history" is a safe v1 start, never a crash.
+#[must_use]
+pub fn history_of(snapshot: &WorkspaceSnapshot) -> VersionHistory {
+    let mut out = VersionHistory::default();
+    for (fqn, m) in &snapshot.modules {
+        for (name, sym) in &m.symbols {
+            let (kind_is_record, version, hash, shape, history) = match sym {
+                SymbolSnapshot::Record {
+                    version,
+                    hash,
+                    fields,
+                    history,
+                    ..
+                } => (true, *version, *hash, fields.clone(), history.clone()),
+                SymbolSnapshot::Actor {
+                    state,
+                    version,
+                    hash,
+                    history,
+                    ..
+                } => (
+                    false,
+                    *version,
+                    *hash,
+                    state
+                        .iter()
+                        .map(|s| FieldSnap {
+                            name: s.name.clone(),
+                            ty: s.ty.clone(),
+                        })
+                        .collect(),
+                    history.clone(),
+                ),
+                _ => continue,
+            };
+            if version == 0 {
+                continue;
+            }
+            let mut entries: Vec<VersionEntry> = history
+                .iter()
+                .map(|v| VersionEntry {
+                    ordinal: v.ordinal,
+                    hash: v.hash,
+                    shape: v
+                        .shape
+                        .iter()
+                        .map(|f| (f.name.clone(), f.ty.clone()))
+                        .collect(),
+                })
+                .collect();
+            entries.push(VersionEntry {
+                ordinal: version,
+                hash,
+                shape: shape
+                    .iter()
+                    .map(|f| (f.name.clone(), f.ty.clone()))
+                    .collect(),
+            });
+            let key = (fqn.clone(), name.clone());
+            if kind_is_record {
+                out.records.insert(key, entries);
+            } else {
+                out.actors.insert(key, entries);
+            }
+        }
+    }
+    out
+}
+
 /// State-field snapshots for an actor, read from its AST declaration (state
 /// field types never get a semantic `Type` outside inference).
-fn actor_state_snaps(ast: &ridge_ast::Module, name: &str) -> Vec<StateSnap> {
-    for item in &ast.items {
+fn actor_state_snaps(ast: &ridge_ast::Module, name: &str) -> Vec<StateSnap> {    for item in &ast.items {
         if let Item::Actor(a) = item {
             if a.name.text == name {
                 return a
@@ -337,7 +619,31 @@ mod tests {
         let ws = disc.graph.expect("graph");
         let resolved = ridge_resolve::resolve_workspace(ws);
         let checked = ridge_typecheck::typecheck_workspace(&resolved);
-        extract_snapshot(&resolved, &checked.typed)
+        extract_snapshot(&resolved, &checked.typed, None)
+    }
+
+    /// Recompile `src` against the previous snapshot and extract.
+    /// (Same body as `snapshot_of` with `Some(prev)` threaded through — a
+    /// deliberate duplicate, not a refactor of the existing helper.)
+    fn snapshot_with_prev(src: &str, prev: &WorkspaceSnapshot) -> WorkspaceSnapshot {
+        let td = TempDir::new().expect("tempdir");
+        write_file(
+            td.path(),
+            "ridge.toml",
+            "[workspace]\nname = \"test-ws\"\nversion = \"0.1.0\"\nmembers = [\"apps/*\"]\n",
+        );
+        write_file(
+            td.path(),
+            "apps/demo/ridge.toml",
+            "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
+        );
+        write_file(td.path(), "apps/demo/src/main.ridge", src);
+
+        let disc = ridge_resolve::discover_workspace(td.path());
+        let ws = disc.graph.expect("graph");
+        let resolved = ridge_resolve::resolve_workspace(ws);
+        let checked = ridge_typecheck::typecheck_workspace(&resolved);
+        extract_snapshot(&resolved, &checked.typed, Some(prev))
     }
 
     const DEMO_SRC: &str = "\
@@ -382,6 +688,7 @@ pub actor Counter =
             "User".to_string(),
             SymbolSnapshot::Record {
                 version: 1,
+                hash: 42,
                 fields: vec![
                     FieldSnap {
                         name: "name".to_string(),
@@ -392,6 +699,8 @@ pub actor Counter =
                         ty: "Int".to_string(),
                     },
                 ],
+                history: vec![],
+                migrate_edges: vec![],
             },
         );
         let mut modules = BTreeMap::new();
@@ -418,8 +727,14 @@ pub actor Counter =
         let snap = snapshot_of(DEMO_SRC);
         let module = snap.modules.values().next().expect("one module");
         match &module.symbols["User"] {
-            SymbolSnapshot::Record { version, fields } => {
+            SymbolSnapshot::Record {
+                version,
+                hash,
+                fields,
+                ..
+            } => {
                 assert_eq!(*version, 1);
+                assert_ne!(*hash, 0, "fresh build computes a real shape hash");
                 let got: Vec<(&str, &str)> = fields
                     .iter()
                     .map(|f| (f.name.as_str(), f.ty.as_str()))
@@ -429,15 +744,176 @@ pub actor Counter =
             other => panic!("User should be a record, got {other:?}"),
         }
         match &module.symbols["Counter"] {
-            SymbolSnapshot::Actor { state, handlers } => {
+            SymbolSnapshot::Actor {
+                state,
+                handlers,
+                hash,
+                version,
+                ..
+            } => {
                 assert_eq!(state.len(), 2);
                 assert_eq!(state[0].name, "count");
                 assert!(state[0].has_default, "count has a default");
                 assert_eq!(state[1].name, "step");
                 assert!(!state[1].has_default, "step has no default");
                 assert!(handlers.contains_key("bump"), "handler captured");
+                assert_eq!(*version, 1);
+                assert_ne!(*hash, 0, "actor state carries a real shape hash");
             }
             other => panic!("Counter should be an actor, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn unchanged_shape_keeps_ordinal_and_hash() {
+        let s1 = snapshot_of(DEMO_SRC);
+        let s2 = snapshot_with_prev(DEMO_SRC, &s1);
+        let (
+            SymbolSnapshot::Record {
+                version: v1,
+                hash: h1,
+                history: hist1,
+                ..
+            },
+            SymbolSnapshot::Record {
+                version: v2,
+                hash: h2,
+                history: hist2,
+                ..
+            },
+        ) = (
+            &s1.modules["demo.main"].symbols["User"],
+            &s2.modules["demo.main"].symbols["User"],
+        )
+        else {
+            panic!("records")
+        };
+        assert_eq!((v1, h1), (v2, h2), "unchanged shape keeps identity");
+        assert!(hist1.is_empty() && hist2.is_empty(), "no version appended");
+    }
+
+    #[test]
+    fn changed_shape_bumps_ordinal_and_records_history() {
+        let s1 = snapshot_of(DEMO_SRC);
+        let edited = DEMO_SRC.replace("age: Int", "age: Int, email: Text");
+        let s2 = snapshot_with_prev(&edited, &s1);
+        let SymbolSnapshot::Record {
+            version,
+            hash,
+            history,
+            ..
+        } = &s2.modules["demo.main"].symbols["User"]
+        else {
+            panic!("record")
+        };
+        assert_eq!(*version, 2);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].ordinal, 1);
+        assert_ne!(history[0].hash, *hash);
+        assert_eq!(history[0].shape.len(), 2, "old shape had 2 fields");
+    }
+
+    #[test]
+    fn version_attr_overrides_ordinal() {
+        let s1 = snapshot_of(DEMO_SRC);
+        let edited = DEMO_SRC
+            .replace("pub type User =", "pub type User @version(7) =")
+            .replace("age: Int", "age: Int, email: Text");
+        let s2 = snapshot_with_prev(&edited, &s1);
+        let SymbolSnapshot::Record {
+            version,
+            migrate_edges,
+            ..
+        } = &s2.modules["demo.main"].symbols["User"]
+        else {
+            panic!("record")
+        };
+        assert_eq!(*version, 7);
+        assert!(migrate_edges.is_empty(), "no migrate blocks in source");
+    }
+
+    #[test]
+    fn migrate_edges_recorded_from_source() {
+        let src = "pub type User = { name: Text, email: Text } do\n    migrate (old: User@1) -> User =\n        User { name = old.name, email = old.email }\nend\n";
+        let snap = snapshot_of(src);
+        let SymbolSnapshot::Record {
+            migrate_edges, ..
+        } = &snap.modules["demo.main"].symbols["User"]
+        else {
+            panic!("record")
+        };
+        assert_eq!(migrate_edges, &vec![1]);
+    }
+
+    #[test]
+    fn actor_state_history_and_edges() {
+        let v1 = "pub actor Counter =\n    state count: Int = 0\n    on bump =\n        count <- count + 1\n";
+        let s1 = snapshot_of(v1);
+        let v2 = "pub actor Counter =\n    state count: Int = 0\n    state step: Int = 1\n    migrate (old: Counter@1) -> Counter =\n        { count = old.count, step = 1 }\n    on bump =\n        count <- count + 1\n";
+        let s2 = snapshot_with_prev(v2, &s1);
+        let SymbolSnapshot::Actor {
+            version,
+            hash,
+            history,
+            migrate_edges,
+            ..
+        } = &s2.modules["demo.main"].symbols["Counter"]
+        else {
+            panic!("actor")
+        };
+        assert_eq!(*version, 2);
+        assert_eq!(history.len(), 1);
+        assert_eq!(migrate_edges, &vec![1]);
+        let SymbolSnapshot::Actor { hash: h1, .. } = &s1.modules["demo.main"].symbols["Counter"]
+        else {
+            panic!("actor")
+        };
+        assert_eq!(
+            history[0].hash, *h1,
+            "history stores the previous current hash"
+        );
+        let _ = hash;
+    }
+
+    #[test]
+    fn history_of_includes_current_versions() {
+        let s1 = snapshot_of(DEMO_SRC);
+        let h = history_of(&s1);
+        let e = h.lookup_record("demo.main", "User", 1).expect("v1 known");
+        assert_eq!(e.shape.len(), 2);
+        let a = h.lookup_actor("demo.main", "Counter", 1).expect("actor v1 known");
+        assert_eq!(a.shape.len(), 2);
+    }
+
+    #[test]
+    fn format2_snapshot_deserializes_with_empty_history() {
+        // A minimal format-2 document (no history fields anywhere) must still
+        // parse: "no history" — a safe v1 start, never a crash.
+        let json = r#"{
+        "format": 2,
+        "modules": {
+            "demo.main": {
+                "symbols": {
+                    "User": { "kind": "record", "version": 1, "fields": [{"name": "name", "ty": "Text"}] }
+                },
+                "content_hash": 0
+            }
+        }
+    }"#;
+        let snap: WorkspaceSnapshot = serde_json::from_str(json).expect("format 2 parses");
+        let SymbolSnapshot::Record {
+            history,
+            migrate_edges,
+            ..
+        } = &snap.modules["demo.main"].symbols["User"]
+        else {
+            panic!("record")
+        };
+        assert!(history.is_empty() && migrate_edges.is_empty());
+        let h = history_of(&snap);
+        assert_eq!(
+            h.lookup_record("demo.main", "User", 1).map(|e| e.ordinal),
+            Some(1)
+        );
     }
 }

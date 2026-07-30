@@ -5,9 +5,9 @@ use crate::snapshot::{FieldSnap, StateSnap};
 /// How one field of the NEW shape is filled from the OLD shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldAction {
-    /// Field kept as-is: `name: old.name`.
+    /// Field kept as-is: `name = old.name`.
     Keep { name: String },
-    /// Field renamed: `to: old.from`.
+    /// Field renamed: `to = old.from`.
     Rename { from: String, to: String },
     /// Added or retyped field the compiler cannot fill: renders as `???`
     /// unless the caller supplies an auto-fill expression.
@@ -118,7 +118,7 @@ pub fn record_migrate(
     format!(
         "// module: {module_fqn}\ntype {name} @version({new_version}) = {} do\n{}\nend\n",
         brace_list(&fields),
-        migrate_block(name, old_version, plan, auto_fills, 4),
+        migrate_block(name, old_version, plan, auto_fills, 4, Some(name)),
     )
 }
 
@@ -130,35 +130,42 @@ pub fn actor_migrate(
     plan: &[FieldAction],
     auto_fills: &[(String, String)],
 ) -> String {
-    migrate_block(name, old_version, plan, auto_fills, 0)
+    migrate_block(name, old_version, plan, auto_fills, 0, None)
 }
 
-/// The `migrate (old: Name@N) -> Name = { ... }` block, indented `indent`
-/// spaces (the literal body sits one level deeper).
+/// The `migrate (old: Name@N) -> Name =` block, indented `indent` spaces.
+///
+/// `ctor` is the record's constructor name for record migrations (the body
+/// builds a NAMED value: `User { name = old.name, … }`); actors pass `None`
+/// and build the anonymous state record (`{ count = old.count, … }`). Both
+/// use `=` — Ridge record values do; the colon form is record TYPE syntax
+/// and does not parse in expression position.
 fn migrate_block(
     name: &str,
     old_version: u32,
     plan: &[FieldAction],
     auto_fills: &[(String, String)],
     indent: usize,
+    ctor: Option<&str>,
 ) -> String {
     let pad = " ".repeat(indent);
     let inner = " ".repeat(indent + 4);
     let entries: Vec<String> = plan
         .iter()
         .map(|a| match a {
-            FieldAction::Keep { name } => format!("{name}: old.{name}"),
-            FieldAction::Rename { from, to } => format!("{to}: old.{from}"),
+            FieldAction::Keep { name } => format!("{name} = old.{name}"),
+            FieldAction::Rename { from, to } => format!("{to} = old.{from}"),
             FieldAction::Hole { name, .. } => {
                 auto_fills.iter().find(|(n, _)| n == name).map_or_else(
-                    || format!("{name}: ???"),
-                    |(_, expr)| format!("{name}: {expr}"),
+                    || format!("{name} = ???"),
+                    |(_, expr)| format!("{name} = {expr}"),
                 )
             }
         })
         .collect();
+    let head = ctor.map_or_else(String::new, |c| format!("{c} "));
     format!(
-        "{pad}migrate (old: {name}@{old_version}) -> {name} =\n{inner}{}",
+        "{pad}migrate (old: {name}@{old_version}) -> {name} =\n{inner}{head}{}",
         brace_list(&entries)
     )
 }
@@ -282,7 +289,7 @@ mod tests {
         let text = record_migrate("app.user", "User", 1, &new, &plan, &[]);
         assert_eq!(
             text,
-            "// module: app.user\ntype User @version(2) = { name: Text, email: Text, role: Role } do\n    migrate (old: User@1) -> User =\n        { name: old.name, email: old.email, role: ??? }\nend\n"
+            "// module: app.user\ntype User @version(2) = { name: Text, email: Text, role: Role } do\n    migrate (old: User@1) -> User =\n        User { name = old.name, email = old.email, role = ??? }\nend\n"
         );
     }
 
@@ -293,7 +300,7 @@ mod tests {
         let plan = field_plan(&old, &new);
         let text = record_migrate("app.user", "User", 1, &new, &plan, &[]);
         assert!(!text.contains("???"), "rename scaffold is complete: {text}");
-        assert!(text.contains("full_name: old.name"));
+        assert!(text.contains("full_name = old.name"));
     }
 
     #[test]
@@ -311,7 +318,39 @@ mod tests {
         let text = actor_migrate("Counter", 1, &plan, &fills);
         assert_eq!(
             text,
-            "migrate (old: Counter@1) -> Counter =\n    { count: old.count, step: 1 }"
+            "migrate (old: Counter@1) -> Counter =\n    { count = old.count, step = 1 }"
+        );
+    }
+
+    #[test]
+    fn record_scaffold_uses_named_constructor_with_equals() {
+        let old = fields(&[("name", "Text"), ("age", "Int")]);
+        let new = fields(&[("full_name", "Text"), ("age", "Int")]);
+        let plan = field_plan(&old, &new);
+        let text = record_migrate("app.user", "User", 1, &new, &plan, &[]);
+        assert!(
+            text.contains("User { full_name = old.name, age = old.age }"),
+            "{text}"
+        );
+        assert!(!text.contains(": old."), "{text}");
+    }
+
+    #[test]
+    fn actor_scaffold_uses_anon_record_with_equals() {
+        let plan = vec![
+            FieldAction::Keep {
+                name: "count".to_string(),
+            },
+            FieldAction::Hole {
+                name: "step".to_string(),
+                ty: "Int".to_string(),
+            },
+        ];
+        let fills = vec![("step".to_string(), "1".to_string())];
+        let text = actor_migrate("Counter", 1, &plan, &fills);
+        assert_eq!(
+            text,
+            "migrate (old: Counter@1) -> Counter =\n    { count = old.count, step = 1 }"
         );
     }
 }

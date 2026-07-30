@@ -401,7 +401,9 @@ pub enum ParseError {
     /// P036 — a versioned type reference (`Name@N`) appeared outside a
     /// `migrate` signature. Versioned refs name a PREVIOUS shape of a type
     /// and are meaningful only as the `old` parameter of a `migrate` hook.
-    #[error("versioned type reference `{name}@{version}` is only allowed inside a `migrate` signature")]
+    #[error(
+        "versioned type reference `{name}@{version}` is only allowed inside a `migrate` signature"
+    )]
     VersionedRefOutsideMigrate {
         /// Source location of the `@N` suffix.
         span: Span,

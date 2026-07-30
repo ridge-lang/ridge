@@ -235,10 +235,7 @@ mod tests {
         let vars = vec![TyVid(0), TyVid(1)];
         assert_eq!(render_type_vars(&ctx, &fn_ty, &vars), "fn(a) -> b");
         // A var outside `vars` renders as an opaque unknown.
-        assert_eq!(
-            render_type_vars(&ctx, &Type::Var(TyVid(9)), &vars),
-            "_"
-        );
+        assert_eq!(render_type_vars(&ctx, &Type::Var(TyVid(9)), &vars), "_");
     }
 
     #[test]

@@ -81,8 +81,14 @@ mod tests {
         );
         // Duplicate ordinals (a re-used @version override) resolve to the
         // most recent entry.
-        assert_eq!(h.lookup_record("app.m", "User", 1).map(|e| e.hash), Some(222));
-        assert_eq!(h.lookup_record("app.m", "User", 2).map(|e| e.hash), Some(333));
+        assert_eq!(
+            h.lookup_record("app.m", "User", 1).map(|e| e.hash),
+            Some(222)
+        );
+        assert_eq!(
+            h.lookup_record("app.m", "User", 2).map(|e| e.hash),
+            Some(333)
+        );
         assert!(h.lookup_record("app.m", "User", 9).is_none());
         assert!(h.lookup_record("app.m", "Other", 1).is_none());
         assert!(h.lookup_actor("app.m", "User", 1).is_none());

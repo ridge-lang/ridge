@@ -208,9 +208,10 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
     let prev_snapshot =
         crate::reload::read_prev_snapshot(&options.workspace_root, options.profile.dir_name())
             .filter(|s| s.format <= ridge_reload::snapshot::SNAPSHOT_FORMAT);
-    let version_history = prev_snapshot
-        .as_ref()
-        .map_or_else(ridge_reload::VersionHistory::default, ridge_reload::snapshot::history_of);
+    let version_history = prev_snapshot.as_ref().map_or_else(
+        ridge_reload::VersionHistory::default,
+        ridge_reload::snapshot::history_of,
+    );
     let typecheck_result = typecheck_workspace_with_history(&resolved, &version_history);
     let mut lowered = lower_workspace(&typecheck_result.typed, &resolved);
 

@@ -458,7 +458,11 @@ fn emit_record_migrations_fn(
     }
 
     // ── Derived edges: one per hole-free history entry, keyed by its hash ───
-    let fqn = ws.module_fqns.get(m.id.0 as usize).cloned().unwrap_or_default();
+    let fqn = ws
+        .module_fqns
+        .get(m.id.0 as usize)
+        .cloned()
+        .unwrap_or_default();
     for rm in metas {
         let Some(history) = ws
             .version_history
@@ -516,8 +520,7 @@ fn user_migration_fun(
     beam_name: &str,
     ws: &LoweredWorkspace,
 ) -> Result<CErlExpr, CodegenError> {
-    let mut scope =
-        crate::scope::LocalScope::with_arity_and_module(fn_arity.clone(), beam_name);
+    let mut scope = crate::scope::LocalScope::with_arity_and_module(fn_arity.clone(), beam_name);
     scope.external_arity = std::sync::Arc::new(build_external_arity(ws));
     scope.tables = crate::scope::CodegenTables::from_workspace(ws);
     let param = ridge_ir::IrParam {
@@ -546,7 +549,12 @@ fn current_rendered_shape(
                 schema
                     .record_fields()
                     .iter()
-                    .map(|f| (f.name.clone(), ridge_types::render::render_type(&ctx, &f.ty)))
+                    .map(|f| {
+                        (
+                            f.name.clone(),
+                            ridge_types::render::render_type(&ctx, &f.ty),
+                        )
+                    })
                     .collect(),
             ),
             _ => None,
@@ -1065,7 +1073,10 @@ mod tests {
             .0;
         for wanted in ["__ridge_record_versions", "__ridge_record_migrations"] {
             assert!(
-                module.exports.iter().any(|e| e.name.0 == wanted && e.arity == 0),
+                module
+                    .exports
+                    .iter()
+                    .any(|e| e.name.0 == wanted && e.arity == 0),
                 "missing export {wanted}/0"
             );
         }
@@ -1084,7 +1095,10 @@ mod tests {
             .expect("migrations fn");
         let text = format!("{f:?}");
         assert!(text.contains("111"), "user edge keyed by from_hash: {text}");
-        assert!(text.contains("222"), "derived edge keyed by history hash: {text}");
+        assert!(
+            text.contains("222"),
+            "derived edge keyed by history hash: {text}"
+        );
         assert!(
             text.contains("derive_record_migration"),
             "derived edge delegates to the runtime: {text}"
@@ -1105,17 +1119,13 @@ mod tests {
         let module = lower_module_all_named(&m, &ws, "ridge_app_main")
             .expect("lower")
             .0;
-        assert!(
-            !module
-                .exports
-                .iter()
-                .any(|e| e.name.0 == "__ridge_record_migrations")
-        );
-        assert!(
-            !module
-                .exports
-                .iter()
-                .any(|e| e.name.0 == "__ridge_record_versions")
-        );
+        assert!(!module
+            .exports
+            .iter()
+            .any(|e| e.name.0 == "__ridge_record_migrations"));
+        assert!(!module
+            .exports
+            .iter()
+            .any(|e| e.name.0 == "__ridge_record_versions"));
     }
 }

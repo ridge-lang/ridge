@@ -329,12 +329,13 @@ fn parse_version_attr(cur: &mut Cursor<'_>) -> Result<u32, ParseError> {
         Token::IntDec(ref s) => {
             let raw = s.clone();
             cur.bump();
-            raw.parse::<u32>().map_err(|_| ParseError::UnexpectedToken {
-                span: n_span,
-                description: format!(
-                    "@version expects a positive integer that fits in u32, found `{raw}`"
-                ),
-            })?
+            raw.parse::<u32>()
+                .map_err(|_| ParseError::UnexpectedToken {
+                    span: n_span,
+                    description: format!(
+                        "@version expects a positive integer that fits in u32, found `{raw}`"
+                    ),
+                })?
         }
         _ => {
             return Err(ParseError::Expected {
@@ -378,12 +379,13 @@ fn parse_versioned_type_ref(
         Token::IntDec(ref s) => {
             let raw = s.clone();
             cur.bump();
-            raw.parse::<u32>().map_err(|_| ParseError::UnexpectedToken {
-                span: v_span,
-                description: format!(
+            raw.parse::<u32>()
+                .map_err(|_| ParseError::UnexpectedToken {
+                    span: v_span,
+                    description: format!(
                     "a version ordinal must be a positive integer that fits in u32, found `{raw}`"
                 ),
-            })?
+                })?
         }
         _ => {
             return Err(ParseError::Expected {
@@ -468,9 +470,7 @@ pub(crate) fn parse_migrate_decl(
 /// ```
 ///
 /// Precondition: `cur.peek()` is `Token::LowerIdent("do")`.
-fn parse_migrate_section(
-    cur: &mut Cursor<'_>,
-) -> Result<Vec<ridge_ast::MigrateDecl>, ParseError> {
+fn parse_migrate_section(cur: &mut Cursor<'_>) -> Result<Vec<ridge_ast::MigrateDecl>, ParseError> {
     cur.bump(); // consume `do`
     cur.expect(&Token::Indent)?;
     let mut out = Vec::new();

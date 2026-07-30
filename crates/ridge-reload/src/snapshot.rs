@@ -562,7 +562,8 @@ pub fn history_of(snapshot: &WorkspaceSnapshot) -> VersionHistory {
 
 /// State-field snapshots for an actor, read from its AST declaration (state
 /// field types never get a semantic `Type` outside inference).
-fn actor_state_snaps(ast: &ridge_ast::Module, name: &str) -> Vec<StateSnap> {    for item in &ast.items {
+fn actor_state_snaps(ast: &ridge_ast::Module, name: &str) -> Vec<StateSnap> {
+    for item in &ast.items {
         if let Item::Actor(a) = item {
             if a.name.text == name {
                 return a
@@ -836,9 +837,8 @@ pub actor Counter =
     fn migrate_edges_recorded_from_source() {
         let src = "pub type User = { name: Text, email: Text } do\n    migrate (old: User@1) -> User =\n        User { name = old.name, email = old.email }\nend\n";
         let snap = snapshot_of(src);
-        let SymbolSnapshot::Record {
-            migrate_edges, ..
-        } = &snap.modules["demo.main"].symbols["User"]
+        let SymbolSnapshot::Record { migrate_edges, .. } =
+            &snap.modules["demo.main"].symbols["User"]
         else {
             panic!("record")
         };
@@ -881,7 +881,9 @@ pub actor Counter =
         let h = history_of(&s1);
         let e = h.lookup_record("demo.main", "User", 1).expect("v1 known");
         assert_eq!(e.shape.len(), 2);
-        let a = h.lookup_actor("demo.main", "Counter", 1).expect("actor v1 known");
+        let a = h
+            .lookup_actor("demo.main", "Counter", 1)
+            .expect("actor v1 known");
         assert_eq!(a.shape.len(), 2);
     }
 

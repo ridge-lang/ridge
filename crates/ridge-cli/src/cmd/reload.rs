@@ -99,6 +99,10 @@ pub(crate) fn print_reload_rejection(report: &CheckReport) {
                 auto += 1;
                 println!("auto-migrate    {target}: {note}");
             }
+            Verdict::CompatibleViaMigration { note } => {
+                auto += 1;
+                println!("migrate-hook    {target}: {note}");
+            }
             Verdict::RequiresMigration { scaffold, .. } => {
                 migrate += 1;
                 println!(
@@ -114,7 +118,7 @@ pub(crate) fn print_reload_rejection(report: &CheckReport) {
 
     let ok = report.is_reloadable() && !report.has_holes();
     println!(
-        "{}: {compatible} compatible, {auto} auto-migrated, {migrate} need migration, {incompatible} incompatible",
+        "{}: {compatible} compatible, {auto} auto/hook-migrated, {migrate} need migration, {incompatible} incompatible",
         if ok { "reloadable" } else { "not reloadable" },
     );
 }

@@ -14,6 +14,9 @@ pub enum Verdict {
     /// Reload applies; the compiler derives the migration (additive actor
     /// state with defaults).
     AutoMigrate { note: String },
+    /// The change is breaking, but the source already carries the typed
+    /// `migrate` hook that covers it — reload applies through the hook.
+    CompatibleViaMigration { note: String },
     /// Reload applies only after the user accepts/completes the scaffold.
     RequiresMigration { scaffold: String, has_holes: bool },
     /// Reload cannot apply; reason is user-facing.
@@ -150,15 +153,15 @@ fn classify(fqn: &str, c: &SymbolChange) -> Verdict {
             old_version,
             old_fields,
             new_fields,
-            ..
-        } => {
-            let plan = scaffold::field_plan(old_fields, new_fields);
-            let has_holes = plan.iter().any(|a| matches!(a, FieldAction::Hole { .. }));
-            Verdict::RequiresMigration {
-                scaffold: scaffold::record_migrate(fqn, name, *old_version, new_fields, &plan, &[]),
-                has_holes,
-            }
-        }
+            covered_by_hook,
+        } => record_shape_verdict(
+            fqn,
+            name,
+            *old_version,
+            old_fields,
+            new_fields,
+            *covered_by_hook,
+        ),
         SymbolChange::UnionVariantsChanged {
             removed,
             payload_changed,
@@ -186,8 +189,17 @@ fn classify(fqn: &str, c: &SymbolChange) -> Verdict {
             name,
             old_state,
             new_state,
-            ..
-        } => actor_state_verdict(name, old_state, new_state),
+            covered_by_hook,
+        } => {
+            if *covered_by_hook {
+                return Verdict::CompatibleViaMigration {
+                    note: format!(
+                        "actor `{name}` state changes shape; its `migrate` hook covers the previous version"
+                    ),
+                };
+            }
+            actor_state_verdict(name, old_state, new_state)
+        }
         SymbolChange::ActorHandlersChanged {
             removed,
             caps_changed,
@@ -239,6 +251,32 @@ fn gained_caps(old_bits: u16, new_bits: u16) -> String {
         .map(capability_name)
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Record shape deltas: a typed `migrate` hook already covering the edge
+/// upgrades the verdict; otherwise the change needs a scaffold, hole-free
+/// when every new field can be filled from the old shape.
+fn record_shape_verdict(
+    fqn: &str,
+    name: &str,
+    old_version: u32,
+    old_fields: &[crate::snapshot::FieldSnap],
+    new_fields: &[crate::snapshot::FieldSnap],
+    covered_by_hook: bool,
+) -> Verdict {
+    if covered_by_hook {
+        return Verdict::CompatibleViaMigration {
+            note: format!(
+                "record `{name}` changes shape; its `migrate` hook covers @{old_version}"
+            ),
+        };
+    }
+    let plan = scaffold::field_plan(old_fields, new_fields);
+    let has_holes = plan.iter().any(|a| matches!(a, FieldAction::Hole { .. }));
+    Verdict::RequiresMigration {
+        scaffold: scaffold::record_migrate(fqn, name, old_version, new_fields, &plan, &[]),
+        has_holes,
+    }
 }
 
 /// Actor state deltas: pure additions with defaults auto-migrate; a pure
@@ -418,6 +456,34 @@ mod tests {
     }
 
     #[test]
+    fn record_change_covered_by_hook_upgrades_verdict() {
+        let v = only(&cs(vec![SymbolChange::RecordShapeChanged {
+            name: "User".to_string(),
+            old_version: 1,
+            old_fields: fields(&[("name", "Text")]),
+            new_fields: fields(&[("name", "Text"), ("email", "Text")]),
+            covered_by_hook: true,
+        }]));
+        match v {
+            Verdict::CompatibleViaMigration { note } => assert!(note.contains("User"), "{note}"),
+            other => panic!("expected CompatibleViaMigration, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn uncovered_record_change_still_requires_migration() {
+        // Existing behavior is unchanged when no hook covers the edge.
+        let v = only(&cs(vec![SymbolChange::RecordShapeChanged {
+            name: "User".to_string(),
+            old_version: 1,
+            old_fields: fields(&[("name", "Text")]),
+            new_fields: fields(&[("name", "Text"), ("email", "Text")]),
+            covered_by_hook: false,
+        }]));
+        assert!(matches!(v, Verdict::RequiresMigration { .. }), "{v:?}");
+    }
+
+    #[test]
     fn record_rename_heuristic_full_scaffold() {
         let v = only(&cs(vec![SymbolChange::RecordShapeChanged {
             name: "User".to_string(),
@@ -556,6 +622,17 @@ mod tests {
             Verdict::AutoMigrate { note } => assert!(note.contains("step"), "{note}"),
             other => panic!("expected AutoMigrate, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn actor_change_covered_by_hook_upgrades_verdict() {
+        let v = only(&cs(vec![SymbolChange::ActorStateChanged {
+            name: "Counter".to_string(),
+            old_state: states(&[("count", "Int", true)]),
+            new_state: states(&[("count", "Int", true), ("step", "Int", false)]),
+            covered_by_hook: true,
+        }]));
+        assert!(matches!(v, Verdict::CompatibleViaMigration { .. }), "{v:?}");
     }
 
     #[test]

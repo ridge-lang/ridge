@@ -11,7 +11,10 @@
 pub mod builtins;
 pub mod capability_set;
 pub mod constraint;
+pub mod history;
+pub mod render;
 pub mod scheme;
+pub mod shape;
 pub mod shape_key;
 pub mod subst;
 pub mod ty;
@@ -29,6 +32,7 @@ pub use capability_set::CapabilitySet;
 pub use constraint::{
     ClassId, Constraint, DECODE_CLASS, ENCODE_CLASS, EQ_CLASS, ORD_CLASS, TOTEXT_CLASS,
 };
+pub use history::{VersionEntry, VersionHistory};
 pub use scheme::Scheme;
 pub use shape_key::{shape_key, type_to_key, AnonRecordTable, CapKey, ShapeKey, TyKey};
 pub use subst::Subst;

@@ -636,6 +636,22 @@ impl fmt::Display for TypeError {
                 )
             }
 
+            // ── T049 ──────────────────────────────────────────────────────────
+            Self::UnknownTypeVersion { name, ordinal, .. } => {
+                write!(
+                    f,
+                    "T049: no previous version known for `{name}@{ordinal}`\n  versioned references resolve against the previous build's snapshot; none records this version"
+                )
+            }
+
+            // ── T050 ──────────────────────────────────────────────────────────
+            Self::DuplicateMigration { name, ordinal, .. } => {
+                write!(
+                    f,
+                    "T050: duplicate `migrate` for `{name}@{ordinal}`\n  this version edge already has a hook"
+                )
+            }
+
             // ── T999 ──────────────────────────────────────────────────────────
             Self::InternalTypeError { detail, .. } => {
                 write!(f, "T999: internal type error\n  {detail}\n  This is a compiler bug. Please report it.")
@@ -708,6 +724,8 @@ impl HasErrorCode for TypeError {
             }
             | Self::InsertShapeFullEntity { span, .. }
             | Self::ActorCallbackSignature { span, .. }
+            | Self::UnknownTypeVersion { span, .. }
+            | Self::DuplicateMigration { span, .. }
             | Self::InternalTypeError { span, .. } => *span,
 
             // T034: uses `totext_span` (the explicit instance) as the primary span.

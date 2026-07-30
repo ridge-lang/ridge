@@ -748,6 +748,31 @@ pub enum TypeError {
         span: Span,
     },
 
+    // ── T049 ─────────────────────────────────────────────────────────────────
+    /// A versioned type reference (`User@1`) named a version the compiler has
+    /// no record of. The snapshot history is empty on a fresh build, so any
+    /// `Name@N` reference fails until at least one previous build exists.
+    UnknownTypeVersion {
+        /// The referenced type or actor-state name.
+        name: String,
+        /// The referenced ordinal.
+        ordinal: u32,
+        /// Where the versioned reference appears.
+        span: Span,
+    },
+
+    // ── T050 ─────────────────────────────────────────────────────────────────
+    /// Two `migrate` members on the same type or actor cover the same
+    /// version edge. Each edge may be migrated exactly once.
+    DuplicateMigration {
+        /// The owning type or actor name.
+        name: String,
+        /// The duplicated ordinal.
+        ordinal: u32,
+        /// Where the duplicate member appears.
+        span: Span,
+    },
+
     // ── T999 ─────────────────────────────────────────────────────────────────
     /// Internal type-checker invariant violation — should never reach users.
     ///
@@ -765,7 +790,7 @@ pub enum TypeError {
 impl TypeError {
     /// Returns the stable `T###` error code for this variant.
     ///
-    /// The codes are allocated in `T001..T047` and `T999` is the catch-all
+    /// The codes are allocated in `T001..T050` and `T999` is the catch-all
     /// internal error. No overlap with `R###`/`M###`.
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -819,6 +844,8 @@ impl TypeError {
             Self::ConflictingFunDep { .. } => "T046",
             Self::InsertShapeFullEntity { .. } => "T047",
             Self::ActorCallbackSignature { .. } => "T048",
+            Self::UnknownTypeVersion { .. } => "T049",
+            Self::DuplicateMigration { .. } => "T050",
             Self::InternalTypeError { .. } => "T999",
         }
     }

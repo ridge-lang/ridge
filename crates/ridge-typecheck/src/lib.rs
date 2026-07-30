@@ -30,6 +30,7 @@ pub mod exhaustiveness;
 pub mod infer;
 pub mod instantiate;
 pub mod interp;
+mod migrate;
 pub mod pipe_propagate;
 pub mod prelude;
 pub mod quote;
@@ -64,6 +65,7 @@ pub use ridge_types::{MatchWitness, WitnessKind, WitnessPat};
 
 use ridge_ast::Item;
 use ridge_resolve::{ModuleId, NodeId, ResolvedWorkspace};
+use ridge_types::history::VersionHistory;
 use ridge_types::{
     AnonRecordTable, CapabilitySet, Scheme, TyConArena, TyConDecl, TyConId, TyVid, Type,
 };
@@ -199,6 +201,10 @@ pub struct TypedWorkspace {
     /// need the producer's actual ids (not the pre-check prediction) read them
     /// here.
     pub module_tycon_names: Vec<FxHashMap<String, TyConId>>,
+    /// The version history this check ran with (empty on a fresh build).
+    /// Lowering threads it into `LoweredWorkspace` so codegen can key
+    /// migration chains by hash and derive structural migrations.
+    pub version_history: VersionHistory,
 }
 
 /// A single module after type-checking.
@@ -270,12 +276,35 @@ pub struct TypedModule {
 ///    e. Run `check_actor_encapsulation` for each `actor` decl.
 /// 4. Accumulate all diagnostics; return them alongside the typed workspace.
 #[must_use]
+pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
+    typecheck_workspace_with_history(ws, &VersionHistory::default())
+}
+
+/// Type-check the entire workspace with the previous build's version
+/// history injected.
+///
+/// `migrate` hooks resolve `Name@N` references against `history`. The driver
+/// builds the history from the on-disk snapshot, mirroring how it seeds beam
+/// target names; tooling without a snapshot passes an empty one.
+#[must_use]
 #[expect(
     clippy::too_many_lines,
     reason = "linear workspace typecheck driver; splitting would obscure the pass order"
 )]
-pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
+pub fn typecheck_workspace_with_history(
+    ws: &ResolvedWorkspace,
+    history: &VersionHistory,
+) -> TypecheckResult {
     let mut all_errors: Vec<(ModuleId, TypeError)> = Vec::new();
+
+    // Fully-qualified module names, indexed by `ModuleId.0` — the migrate
+    // pass resolves dotted rendered types (`app.m.Role`) against them.
+    let module_fqns: Vec<String> = ws
+        .graph
+        .modules
+        .iter()
+        .map(|m| m.fully_qualified_name.clone())
+        .collect();
 
     // Step 1: Shared TyCon arena + built-in registration.
     let mut arena = TyConArena::new();
@@ -419,6 +448,11 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
         // A full workspace check interns every module's types exactly once, so
         // there is nothing to reuse — types are collected fresh.
         let no_own_tycon_ids = FxHashMap::default();
+        let migrate_ctx = crate::migrate::MigrateHistoryCtx {
+            history,
+            module_fqns: &module_fqns,
+            checked_tycon_names: &actual_module_tycon_names,
+        };
         let result = typecheck_module_inner(
             rm.id,
             &ast,
@@ -435,6 +469,7 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
             &mut arena,
             &b,
             Some((&class_table, &instance_env)),
+            &migrate_ctx,
         );
         // `node_types` is indexed by `NodeId.0` and grown on demand, so it can be
         // shorter than the full map but must never exceed it. A violation means
@@ -496,6 +531,7 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
             stdlib_tycons: stdlib_tycon_names,
             module_schemes: exported_schemes,
             module_tycon_names: actual_module_tycon_names,
+            version_history: history.clone(),
         },
         errors: all_errors,
     }
@@ -624,6 +660,20 @@ pub fn typecheck_module_incremental(
         .iter()
         .map(|d| (d.name.clone(), d.id))
         .collect();
+    // Migrate hooks resolve against the same history the full check ran with
+    // (kept on the typed workspace), so an incremental recheck of a module
+    // with `migrate` members does not degrade to spurious T049s.
+    let module_fqns: Vec<String> = ws
+        .graph
+        .modules
+        .iter()
+        .map(|m| m.fully_qualified_name.clone())
+        .collect();
+    let migrate_ctx = crate::migrate::MigrateHistoryCtx {
+        history: &typed_ws.version_history,
+        module_fqns: &module_fqns,
+        checked_tycon_names: &module_tycon_names,
+    };
     let result = typecheck_module_inner(
         module_id,
         &ast,
@@ -641,6 +691,7 @@ pub fn typecheck_module_incremental(
         &mut arena,
         b,
         Some((&typed_ws.class_table, &typed_ws.instance_env)),
+        &migrate_ctx,
     );
 
     ModuleTypecheckIncremental {
@@ -1025,6 +1076,7 @@ fn typecheck_module_inner(
         &crate::class_env::ClassTable,
         &crate::class_env::InstanceEnv,
     )>,
+    migrate_ctx: &crate::migrate::MigrateHistoryCtx<'_>,
 ) -> ModuleTypecheckResult {
     use crate::actor::{check_actor_encapsulation, check_actor_mailbox_config};
     use crate::ctx::InferCtx;
@@ -1310,6 +1362,15 @@ fn typecheck_module_inner(
     // for `BinOp::Div`) can't tell which family to pick and fall back to the
     // Int default, which emits `erlang:div/2` and crashes on Float operands.
     typecheck_actor_bodies(&mut ctx, b, ast, arena);
+
+    // Step D2b: Migrate hooks — checked last, when every tycon and scheme is
+    // final. The own-module FQN keys the injected history lookups.
+    let own_fqn = migrate_ctx
+        .module_fqns
+        .get(id.0 as usize)
+        .cloned()
+        .unwrap_or_default();
+    crate::migrate::typecheck_migrate_hooks(&mut ctx, b, ast, arena, migrate_ctx, &own_fqn);
 
     // Step D3: Type-check instance method bodies. They are otherwise never
     // inferred, so node_types carries nothing for the expressions inside them and

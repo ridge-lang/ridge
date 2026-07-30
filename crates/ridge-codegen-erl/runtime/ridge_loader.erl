@@ -70,6 +70,12 @@ apply_manifest(ManifestPath, Started) ->
     try
         %% Capture OLD field lists before loading the new code.
         OldFieldsByMod = maps:from_list([{M, M:'__ridge_state_fields'()} || M <- MigMods]),
+        %% A module holds at most two loaded versions, and code:load_file
+        %% does not purge by itself: the second upgrade on a node fails with
+        %% not_purged unless the oldest version is dropped first. The actors
+        %% are already suspended, so nothing executes the old code and the
+        %% soft purge succeeds.
+        [_ = code:soft_purge(M) || M <- Modules],
         [{module, M} = code:load_file(M) || M <- Modules],
         Migrated = migrate_actors(Pids, ActorMigs, OldFieldsByMod),
         [ok = sys:resume(P) || P <- Pids],

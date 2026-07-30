@@ -61,7 +61,11 @@ const ACTOR_SRC: &str = "pub actor Counter =\n    state count: Int = 0\n    stat
 
 #[test]
 fn actor_migrate_member_lowers_with_resolved_hash() {
-    let lowered = lower_with_history("mig_actor", ACTOR_SRC, &history_with_actor("Counter", 1, 4242));
+    let lowered = lower_with_history(
+        "mig_actor",
+        ACTOR_SRC,
+        &history_with_actor("Counter", 1, 4242),
+    );
     let module = lowered.modules[0].as_ref().expect("one module");
     let actor = module
         .items
@@ -86,10 +90,8 @@ fn actor_migrate_without_history_lowers_with_none_hash() {
     let disc = discover_workspace(&tw.path);
     let ws_graph = disc.graph.expect("workspace graph must be present");
     let resolved = resolve_workspace(ws_graph);
-    let checked = ridge_typecheck::typecheck_workspace_with_history(
-        &resolved,
-        &VersionHistory::default(),
-    );
+    let checked =
+        ridge_typecheck::typecheck_workspace_with_history(&resolved, &VersionHistory::default());
     let lowered = ridge_lower::lower_workspace(&checked.typed, &resolved);
     let module = lowered.modules[0].as_ref().expect("one module");
     let actor = module
@@ -124,7 +126,11 @@ fn type_migrate_section_lowers_to_migration_items() {
 
 #[test]
 fn version_history_threads_into_lowered_workspace() {
-    let lowered = lower_with_history("mig_thread", ACTOR_SRC, &history_with_actor("Counter", 1, 4242));
+    let lowered = lower_with_history(
+        "mig_thread",
+        ACTOR_SRC,
+        &history_with_actor("Counter", 1, 4242),
+    );
     assert_eq!(
         lowered
             .version_history

@@ -62,10 +62,8 @@ pub fn typecheck_migrate_hooks(
                 let TyConKind::Record(schema) = &arena.get(tycon).kind else {
                     continue;
                 };
-                let new_ty = Type::Con(
-                    tycon,
-                    schema.params.iter().map(|v| Type::Var(*v)).collect(),
-                );
+                let new_ty =
+                    Type::Con(tycon, schema.params.iter().map(|v| Type::Var(*v)).collect());
                 let mut seen_ordinals: Vec<u32> = Vec::new();
                 for m in &decl.migrates {
                     check_one_hook(
@@ -162,14 +160,12 @@ fn check_one_hook(
     seen_ordinals.push(m.old_type.version);
 
     let entry = match kind {
-        OwnerKind::Record => {
-            hctx.history
-                .lookup_record(module_fqn, owner_name, m.old_type.version)
-        }
-        OwnerKind::Actor => {
-            hctx.history
-                .lookup_actor(module_fqn, owner_name, m.old_type.version)
-        }
+        OwnerKind::Record => hctx
+            .history
+            .lookup_record(module_fqn, owner_name, m.old_type.version),
+        OwnerKind::Actor => hctx
+            .history
+            .lookup_actor(module_fqn, owner_name, m.old_type.version),
     };
     let Some(entry) = entry else {
         ctx.errors.push(TypeError::UnknownTypeVersion {
@@ -227,7 +223,10 @@ fn resolve_rendered(
     hctx: &MigrateHistoryCtx<'_>,
     s: &str,
 ) -> Type {
-    let mut p = RendP { s: s.as_bytes(), i: 0 };
+    let mut p = RendP {
+        s: s.as_bytes(),
+        i: 0,
+    };
     p.ty(ctx, b, hctx)
 }
 
@@ -314,7 +313,12 @@ impl RendP<'_> {
             None => Type::Var(ctx.fresh_tyvid()),
         }
     }
-    fn fn_ty(&mut self, ctx: &mut InferCtx, b: &BuiltinTyCons, hctx: &MigrateHistoryCtx<'_>) -> Type {
+    fn fn_ty(
+        &mut self,
+        ctx: &mut InferCtx,
+        b: &BuiltinTyCons,
+        hctx: &MigrateHistoryCtx<'_>,
+    ) -> Type {
         // `fn(P1, P2) -> R` — already past `fn(`.
         let mut params = Vec::new();
         if !self.eat(b')') {
@@ -336,7 +340,12 @@ impl RendP<'_> {
         }
     }
 
-    fn tuple(&mut self, ctx: &mut InferCtx, b: &BuiltinTyCons, hctx: &MigrateHistoryCtx<'_>) -> Type {
+    fn tuple(
+        &mut self,
+        ctx: &mut InferCtx,
+        b: &BuiltinTyCons,
+        hctx: &MigrateHistoryCtx<'_>,
+    ) -> Type {
         let _ = self.eat(b'(');
         let mut elems = vec![self.ty(ctx, b, hctx)];
         while self.eat(b',') {
@@ -350,7 +359,12 @@ impl RendP<'_> {
         }
     }
 
-    fn record(&mut self, ctx: &mut InferCtx, b: &BuiltinTyCons, hctx: &MigrateHistoryCtx<'_>) -> Type {
+    fn record(
+        &mut self,
+        ctx: &mut InferCtx,
+        b: &BuiltinTyCons,
+        hctx: &MigrateHistoryCtx<'_>,
+    ) -> Type {
         let _ = self.eat(b'{');
         let mut fields = Vec::new();
         loop {
@@ -407,11 +421,7 @@ impl RendP<'_> {
         // 2. Dotted `fqn.Name` — resolve through the producer's checked table.
         if let Some((fqn, bare)) = name.rsplit_once('.') {
             if let Some(mid) = hctx.module_fqns.iter().position(|f| f == fqn) {
-                if let Some(id) = hctx
-                    .checked_tycon_names
-                    .get(mid)
-                    .and_then(|t| t.get(bare))
-                {
+                if let Some(id) = hctx.checked_tycon_names.get(mid).and_then(|t| t.get(bare)) {
                     return Type::Con(*id, args);
                 }
             }

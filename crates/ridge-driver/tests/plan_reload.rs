@@ -41,7 +41,10 @@ fn additive_state_field_produces_manifest_with_actor_entry() {
         )
     });
     let manifest = plan.manifest.expect("additive edit must be reloadable");
-    assert_eq!(manifest.format, ridge_driver::reload::UPGRADE_MANIFEST_FORMAT);
+    assert_eq!(
+        manifest.format,
+        ridge_driver::reload::UPGRADE_MANIFEST_FORMAT
+    );
     assert_ne!(manifest.base_vsn, manifest.new_vsn);
     assert!(manifest.modules.iter().any(|m| m.ends_with("_counter")));
     let actor = manifest.actors.first().expect("actor entry");
@@ -128,7 +131,10 @@ fn actor_with_migrate_hook_produces_hook_manifest_entry() {
     assert_ne!(actor.old_state_hash, 0);
     assert_ne!(actor.new_state_hash, 0);
     assert_ne!(actor.old_state_hash, actor.new_state_hash);
-    assert!(actor.renames.is_empty(), "hooks carry no rename instructions");
+    assert!(
+        actor.renames.is_empty(),
+        "hooks carry no rename instructions"
+    );
 }
 
 #[test]
@@ -149,4 +155,3 @@ fn automatic_migration_keeps_hook_flag_off() {
         .clone();
     assert!(!actor.migrate_hook);
 }
-

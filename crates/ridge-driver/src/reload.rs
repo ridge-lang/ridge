@@ -90,7 +90,8 @@ pub fn reload_check(
     {
         return Err(ReloadCheckError::SourceHasErrors);
     }
-    let new = ridge_reload::snapshot::extract_snapshot(&artefacts.resolved, &artefacts.typed, Some(&old));
+    let new =
+        ridge_reload::snapshot::extract_snapshot(&artefacts.resolved, &artefacts.typed, Some(&old));
     Ok(ridge_reload::check::check(&ridge_reload::diff::diff(
         &old, &new,
     )))

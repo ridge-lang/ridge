@@ -180,7 +180,12 @@ pub(crate) fn lower_actor(
     ];
     let mut fns = fns_results.into_iter().collect::<Result<Vec<_>, _>>()?;
     if !actor.migrations.is_empty() {
-        fns.push(emit_migrate_hook_fn(actor, fn_arity, parent_beam_name, tables)?);
+        fns.push(emit_migrate_hook_fn(
+            actor,
+            fn_arity,
+            parent_beam_name,
+            tables,
+        )?);
     }
 
     // §4.28: doc comment as annotation.
@@ -768,7 +773,8 @@ fn emit_migrate_hook_fn(
             ty: ridge_types::Type::Error, // Erased at codegen.
             span: mig.span,
         };
-        let mut scope = LocalScope::with_actor_parent(fn_arity.clone(), actor.module, parent_beam_name);
+        let mut scope =
+            LocalScope::with_actor_parent(fn_arity.clone(), actor.module, parent_beam_name);
         scope.tables = tables.clone();
         let fun = crate::expr::lower_lambda(&[param], &mig.body, &scope)?;
         clauses.push(crate::core_ast::CErlClause {
@@ -1341,7 +1347,10 @@ mod tests {
         let text = format!("{f:?}");
         assert!(text.contains("ridge_migrate_hook"), "{text}");
         assert!(text.contains("__ridge_migrate_hook"), "{text}");
-        assert!(text.contains("apply_code_change"), "fallback preserved: {text}");
+        assert!(
+            text.contains("apply_code_change"),
+            "fallback preserved: {text}"
+        );
     }
 
     #[test]
@@ -1407,7 +1416,10 @@ mod tests {
             .find(|f| f.name.0 == "__ridge_migrate_hook")
             .expect("hook fn");
         let text = format!("{hook:?}");
-        assert!(text.contains("42"), "hook clause keyed by from_hash: {text}");
+        assert!(
+            text.contains("42"),
+            "hook clause keyed by from_hash: {text}"
+        );
         assert!(
             text.contains("ridge_no_migration_edge"),
             "unknown hash raises: {text}"

@@ -12,7 +12,9 @@ use ridge_resolve::{
     discover_standalone, discover_workspace, resolve_workspace_with, ModuleId, ResolveError,
     ResolvedWorkspace,
 };
-use ridge_typecheck::{typecheck_workspace, typecheck_workspace_with_history, TypeError, TypedWorkspace};
+use ridge_typecheck::{
+    typecheck_workspace, typecheck_workspace_with_history, TypeError, TypedWorkspace,
+};
 
 use crate::diag_adapters::diag_from_typecheck;
 use crate::error::CheckError;

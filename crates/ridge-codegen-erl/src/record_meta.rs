@@ -41,7 +41,10 @@ pub(crate) fn build_record_meta(
     beam_names: &[String],
     module_fqns: &[String],
 ) -> FxHashMap<TyConId, RecordMeta> {
-    let ctx = ridge_types::render::RenderCtx { tycons, module_fqns };
+    let ctx = ridge_types::render::RenderCtx {
+        tycons,
+        module_fqns,
+    };
     let mut out = FxHashMap::default();
     for decl in tycons {
         if decl.is_anon {
@@ -61,7 +64,12 @@ pub(crate) fn build_record_meta(
         let shape: Vec<(String, String)> = schema
             .record_fields()
             .iter()
-            .map(|f| (f.name.clone(), ridge_types::render::render_type(&ctx, &f.ty)))
+            .map(|f| {
+                (
+                    f.name.clone(),
+                    ridge_types::render::render_type(&ctx, &f.ty),
+                )
+            })
             .collect();
         out.insert(
             decl.id,
@@ -147,8 +155,16 @@ mod tests {
 
     #[test]
     fn version_is_stable_for_same_layout() {
-        let m1 = build_record_meta(&tycons_with(record_decl("User", 0, 0, &[("name", text())])), &beams(), &fqns());
-        let m2 = build_record_meta(&tycons_with(record_decl("User", 0, 0, &[("name", text())])), &beams(), &fqns());
+        let m1 = build_record_meta(
+            &tycons_with(record_decl("User", 0, 0, &[("name", text())])),
+            &beams(),
+            &fqns(),
+        );
+        let m2 = build_record_meta(
+            &tycons_with(record_decl("User", 0, 0, &[("name", text())])),
+            &beams(),
+            &fqns(),
+        );
         assert_eq!(m1[&TyConId(0)], m2[&TyConId(0)]);
         assert_eq!(m1[&TyConId(0)].fqn, "ridge_app_models");
         assert_eq!(m1[&TyConId(0)].name, "User");
@@ -156,7 +172,11 @@ mod tests {
 
     #[test]
     fn version_changes_when_layout_changes() {
-        let a = build_record_meta(&tycons_with(record_decl("User", 0, 0, &[("name", text())])), &beams(), &fqns());
+        let a = build_record_meta(
+            &tycons_with(record_decl("User", 0, 0, &[("name", text())])),
+            &beams(),
+            &fqns(),
+        );
         let b = build_record_meta(
             &tycons_with(record_decl(
                 "User",
@@ -172,8 +192,16 @@ mod tests {
 
     #[test]
     fn version_changes_when_field_retyped() {
-        let a = build_record_meta(&tycons_with(record_decl("User", 0, 0, &[("age", text())])), &beams(), &fqns());
-        let b = build_record_meta(&tycons_with(record_decl("User", 0, 0, &[("age", int())])), &beams(), &fqns());
+        let a = build_record_meta(
+            &tycons_with(record_decl("User", 0, 0, &[("age", text())])),
+            &beams(),
+            &fqns(),
+        );
+        let b = build_record_meta(
+            &tycons_with(record_decl("User", 0, 0, &[("age", int())])),
+            &beams(),
+            &fqns(),
+        );
         assert_ne!(a[&TyConId(0)].version, b[&TyConId(0)].version);
     }
 

@@ -248,6 +248,39 @@ type Result a e = | Ok a | Err e
 type List a = | Empty | Cons a (List a)     -- conceptual; List is built-in
 ```
 
+#### Versioned types and `migrate` sections
+
+A record type may carry explicit version history so that values built by
+older code can be migrated after a hot reload. Every record shape has a
+content hash regardless — the compiler tags each constructed value with it
+— and the history makes two shapes of the same type relateable.
+
+- `@version(N)` pins the ordinal of the current shape. Without the
+  annotation the ordinal is assigned from the build's snapshot history
+  (first shape is `@1`).
+- A `do … end` section on the type declaration holds `migrate` hooks:
+  `migrate (old: User@N) -> User = body`, one per previous shape. The
+  body is an ordinary expression returning the new record, computed from
+  `old`'s fields. The `User@N` type form is legal only in `migrate`
+  signatures; anywhere else it is rejected with `P036`.
+- When a shape changes without a hook, the compiler derives a structural
+  migration where it can: renamed fields keep their values, removed
+  fields are dropped. A change that is neither hook-covered nor derivable
+  makes the reload rejected until a hook is supplied — `ridge reload
+  --check` prints the scaffold.
+- At runtime, a tagged value whose hash names an older shape is migrated
+  through the chain of edges — user hooks first, derived edges after —
+  when it reaches a receiver, so a message that sat in an actor's mailbox
+  across the upgrade arrives in the current shape. A value with no
+  applicable edge is reported and dropped, never delivered.
+
+```ridge
+type User @version(2) = { name: Text, email: Text } do
+    migrate (old: User@1) -> User =
+        User { name = old.name, email = "unknown" }
+end
+```
+
 ### 3.6. Pattern matching
 
 ```ridge
@@ -555,6 +588,36 @@ actor Watcher =
 
     onDown (m: Monitor) (reason: ExitReason) =
         deaths <- deaths + 1
+```
+
+#### §3.9.x. migrate members
+
+An actor may declare `migrate` members — hand-written state migrations
+that run when a hot reload changes the actor's state shape (see
+§3.5 "Versioned types" for the shared versioning model).
+
+- Syntax: `migrate (old: ActorName@N) -> ActorName = body`, where `N` is
+  the ordinal of a previous state shape. The `Name@N` form is legal only
+  in `migrate` signatures (`P036` anywhere else).
+- The body is an ordinary expression returning the new state as a record
+  literal, typically computed from `old`'s fields.
+- When a reload changes the state shape and a `migrate` member exists,
+  the running actor's state passes through it instead of the mechanical
+  default fill — the hook takes precedence over the generated migration.
+- `ridge reload --check` reports `migrate-hook` for a change the source
+  already covers, and prints a `migrate` scaffold (with `???` holes) for
+  one it does not.
+
+```ridge
+actor Counter =
+    state count: Int = 0
+    state step: Int = 0
+
+    migrate (old: Counter@1) -> Counter =
+        { count = old.count, step = 1 }
+
+    on io tick =
+        count <- count + step
 ```
 
 ### 3.10. String interpolation

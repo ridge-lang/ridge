@@ -2,8 +2,11 @@
 //! upgrade manifest produced from NEW code, through `ridge_loader:apply/2`.
 //!
 //! Covered: state preserved on body changes, additive state-field migration,
-//! rename migration, and the base-version gate. Gated on `beam-runtime`
-//! (real OTP) plus a `which` guard for `erl`/`erlc`.
+//! rename migration, the base-version gate, actor `migrate` hooks, lazy
+//! mailbox migration of stale-tagged records, multi-step migration chains
+//! across two successive reloads, and the drop policy for non-migratable
+//! messages. Gated on `beam-runtime` (real OTP) plus a `which` guard for
+//! `erl`/`erlc`.
 
 #![cfg(feature = "beam-runtime")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -12,7 +15,7 @@ mod common;
 
 use ridge_driver::{
     compile_workspace, manifest_path_for, plan_reload, snapshot_path_for, snapshot_vsn,
-    CheckOptions, CompileOptions, EmitArtefacts, WorkspaceSnapshot,
+    CheckOptions, CompileOptions, EmitArtefacts, ReloadPlan, WorkspaceSnapshot,
 };
 
 struct ReloadNode {
@@ -121,7 +124,12 @@ fn boot_v1(ws: &common::TempWorkspace, eval_extra: &str) -> ReloadNode {
 }
 
 /// Edit source, recompile, plan (writes the manifest the node polls for).
-fn apply_edit(node: &ReloadNode, ws: &common::TempWorkspace, edit: impl FnOnce(&str) -> String) {
+/// Returns the plan so a case can inspect the manifest entries.
+fn apply_edit(
+    node: &ReloadNode,
+    ws: &common::TempWorkspace,
+    edit: impl FnOnce(&str) -> String,
+) -> ReloadPlan {
     let src_path = counter_source(ws);
     let src = std::fs::read_to_string(&src_path).expect("src");
     std::fs::write(&src_path, edit(&src)).expect("write");
@@ -147,6 +155,7 @@ fn apply_edit(node: &ReloadNode, ws: &common::TempWorkspace, edit: impl FnOnce(&
         "edit must be reloadable: {:?}",
         plan.report
     );
+    plan
 }
 
 /// Join the node (60 s cap) and return its stdout.
@@ -452,4 +461,429 @@ fn reload_via_rpc_probe() {
 
     let _ = node.child.kill();
     let _ = node.child.wait();
+}
+
+// ── Migrate hooks and lazy mailbox migration (store fixture) ─────────────────
+
+/// The store fixture's single source file.
+fn store_source(ws: &common::TempWorkspace) -> std::path::PathBuf {
+    ws.path.join("apps/demo/src/Store.ridge")
+}
+
+/// `(parent_beam, actor_beam)` discovered from the beam dir. The parent keeps
+/// the module's capital (`ridge_demo_Store`), so only the actor stem
+/// (`ridge_demo_Store_store`) matches the lowercase `_store` suffix.
+fn store_beams(beam_dir: &std::path::Path) -> (String, String) {
+    let stems: Vec<String> = std::fs::read_dir(beam_dir)
+        .expect("read beam dir")
+        .filter_map(std::result::Result::ok)
+        .filter_map(|e| {
+            e.path()
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(str::to_owned)
+        })
+        .filter(|s| s.starts_with("ridge_demo"))
+        .collect();
+    let actor = stems
+        .iter()
+        .find(|s| s.ends_with("_store"))
+        .expect("actor beam")
+        .clone();
+    let parent = stems
+        .iter()
+        .find(|s| !s.ends_with("_store"))
+        .expect("parent beam")
+        .clone();
+    (parent, actor)
+}
+
+/// Compile v1 of the store fixture and snapshot it (mirrors `boot_v1`'s front
+/// half, without booting a node).
+fn compile_store_v1(ws: &common::TempWorkspace) -> (WorkspaceSnapshot, std::path::PathBuf) {
+    let artefacts =
+        compile_workspace(CompileOptions::new(ws.path.clone()).with_emit(EmitArtefacts::Beam))
+            .expect("v1 compile");
+    assert!(
+        !artefacts
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.severity, ridge_diagnostics::Severity::Error)),
+        "v1 must compile clean: {:?}",
+        artefacts.diagnostics
+    );
+    let snap: WorkspaceSnapshot = serde_json::from_str(
+        &std::fs::read_to_string(snapshot_path_for(&ws.path, "debug")).expect("snapshot"),
+    )
+    .expect("parse snapshot");
+    let beam_dir = artefacts
+        .beam_files
+        .iter()
+        .find_map(|p| p.parent())
+        .expect("beam dir")
+        .to_path_buf();
+    (snap, beam_dir)
+}
+
+/// A node whose stdout is streamed line-by-line from a reader thread, so a
+/// test can wait for mid-stream markers (multi-apply flows). `lines` keeps
+/// every line seen so far: `wait_marker` consumes the channel, so the final
+/// assertions read the full log from here instead.
+struct StreamedNode {
+    child: std::process::Child,
+    rx: std::sync::mpsc::Receiver<String>,
+    lines: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    stderr: std::sync::Arc<std::sync::Mutex<String>>,
+    stdout_thread: Option<std::thread::JoinHandle<()>>,
+    stderr_thread: Option<std::thread::JoinHandle<()>>,
+}
+
+/// Spawn an anonymous `-noshell` node running `eval`, streaming stdout and
+/// collecting stderr in the background.
+fn spawn_streamed(beam_dir: &std::path::Path, eval: &str) -> StreamedNode {
+    let mut child = std::process::Command::new("erl")
+        .arg("-noshell")
+        .arg("-pa")
+        .arg(beam_dir)
+        .arg("-eval")
+        .arg(eval)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn erl");
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let lines: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+    let line_sink = std::sync::Arc::clone(&lines);
+    let mut stdout = child.stdout.take().expect("stdout");
+    let stdout_thread = std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(&mut stdout).lines() {
+            match line {
+                Ok(l) => {
+                    if let Ok(mut guard) = line_sink.lock() {
+                        guard.push(l.clone());
+                    }
+                    if tx.send(l).is_err() {
+                        return;
+                    }
+                }
+                Err(_) => return,
+            }
+        }
+    });
+    let stderr: std::sync::Arc<std::sync::Mutex<String>> = Default::default();
+    let err_sink = std::sync::Arc::clone(&stderr);
+    let mut stderr_pipe = child.stderr.take().expect("stderr");
+    let stderr_thread = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = String::new();
+        let _ = stderr_pipe.read_to_string(&mut buf);
+        if let Ok(mut guard) = err_sink.lock() {
+            *guard = buf;
+        }
+    });
+    StreamedNode {
+        child,
+        rx,
+        lines,
+        stderr,
+        stdout_thread: Some(stdout_thread),
+        stderr_thread: Some(stderr_thread),
+    }
+}
+
+/// Wait (bounded) for a stdout line starting with `prefix`; returns the line.
+fn wait_marker(node: &StreamedNode, prefix: &str, timeout: std::time::Duration) -> String {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match node.rx.recv_timeout(std::time::Duration::from_millis(200)) {
+            Ok(line) if line.starts_with(prefix) => return line,
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "node produced no `{prefix}` marker within {timeout:?}"
+                );
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("node's stdout closed before the `{prefix}` marker")
+            }
+        }
+    }
+}
+
+/// Join a streamed node (60 s cap) and return `(stdout_lines, stderr)`. The
+/// reader threads are joined first so late lines and the full stderr are in
+/// before the caller asserts on them.
+fn join_streamed(mut node: StreamedNode) -> (Vec<String>, String) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        match node.child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            _ => {
+                let _ = node.child.kill();
+                let _ = node.child.wait();
+                break;
+            }
+        }
+    }
+    if let Some(t) = node.stdout_thread.take() {
+        let _ = t.join();
+    }
+    if let Some(t) = node.stderr_thread.take() {
+        let _ = t.join();
+    }
+    let lines = node.lines.lock().map(|g| g.clone()).unwrap_or_default();
+    let stderr = node.stderr.lock().map(|g| g.clone()).unwrap_or_default();
+    (lines, stderr)
+}
+
+/// Edit + recompile + plan, writing the manifest the node polls for; the
+/// plan's old snapshot is supplied explicitly (multi-apply flows rebase it).
+fn apply_store_edit(
+    old_snapshot: &WorkspaceSnapshot,
+    ws: &common::TempWorkspace,
+    edit: impl FnOnce(&str) -> String,
+) -> ReloadPlan {
+    let src = std::fs::read_to_string(store_source(ws)).expect("src");
+    std::fs::write(store_source(ws), edit(&src)).expect("write edit");
+    let artefacts =
+        compile_workspace(CompileOptions::new(ws.path.clone()).with_emit(EmitArtefacts::Beam))
+            .expect("recompile");
+    assert!(
+        !artefacts
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.severity, ridge_diagnostics::Severity::Error)),
+        "edit must compile clean: {:?}",
+        artefacts.diagnostics
+    );
+    let plan = plan_reload(
+        old_snapshot,
+        CheckOptions::new(ws.path.clone()),
+        &manifest_path_for(&ws.path, "debug"),
+    )
+    .expect("plan_reload");
+    assert!(
+        plan.manifest.is_some(),
+        "edit must be reloadable: {:?}",
+        plan.report
+    );
+    plan
+}
+
+#[test]
+fn reload_applies_actor_migrate_hook() {
+    if !otp_available() {
+        eprintln!("erl/erlc not on PATH — skipping reload_applies_actor_migrate_hook");
+        return;
+    }
+    let ws = common::make_counter_workspace();
+    let node = boot_v1(&ws, "");
+    // The hook's fill (`step = 1`) differs from the field default (`0`) on
+    // purpose: seeing 1 in the post-upgrade state proves the hook ran, not
+    // the mechanical default fill.
+    let plan = apply_edit(&node, &ws, |src| {
+        src.replace(
+            "state count: Int = 0",
+            "state count: Int = 0\n    state step: Int = 0\n    migrate (old: Counter@1) -> Counter =\n        { count = old.count, step = 1 }",
+        )
+    });
+    let manifest = plan.manifest.as_ref().expect("manifest");
+    let actor = manifest.actors.first().expect("hook actor entry");
+    assert!(actor.migrate_hook, "hook dispatch: {actor:?}");
+    assert_ne!(actor.old_state_hash, actor.new_state_hash);
+    let out = join(node);
+    assert!(out.contains("APPLY={ok,"), "{out}");
+    assert!(
+        out.contains("step => 1"),
+        "hook filled the new field: {out}"
+    );
+    assert!(out.contains("count => 2"), "state preserved: {out}");
+    assert!(out.contains("ASK=2"), "{out}");
+}
+
+#[test]
+fn reload_migrates_mailbox_record_lazily() {
+    if !otp_available() {
+        eprintln!("erl/erlc not on PATH — skipping reload_migrates_mailbox_record_lazily");
+        return;
+    }
+    let ws = common::make_store_workspace();
+    let (snap, beam_dir) = compile_store_v1(&ws);
+    let base = snapshot_vsn(&snap);
+    let manifest = manifest_path_for(&ws.path, "debug");
+    let _ = std::fs::remove_file(&manifest);
+    let (parent, actor) = store_beams(&beam_dir);
+    let manifest_fwd = manifest.to_string_lossy().replace('\\', "/");
+    // Suspend the actor, cast a v1-tagged note (it queues), then upgrade: the
+    // loader's suspend+resume leaves the actor running, so the queued cast is
+    // delivered to the NEW handle_cast, which migrates it at receive.
+    let eval = format!(
+        "persistent_term:put(ridge_loader_vsn, <<\"{base}\">>),\n\
+         H = {{ridge_handle, Pid, _}} = ridge_rt:spawn_actor('{actor}', [], []),\n\
+         H1 = maps:get('Note', '{parent}':'__ridge_record_versions'()),\n\
+         ok = sys:suspend(Pid),\n\
+         ok = ridge_rt:send_op(H, {{store, #{{'__ridge_v' => {{'{parent}', 'Note', H1}}, text => <<\"hello\">>}}}}),\n\
+         W = fun W() -> case filelib:is_file(\"{manifest}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
+         W(),\n\
+         R = ridge_loader:apply(\"{manifest}\", <<\"{base}\">>),\n\
+         io:format(\"APPLY=~p~n\", [R]),\n\
+         io:format(\"GOT=~p~n\", [ridge_rt:ask(H, {{get}}, 5000)]),\n\
+         io:format(\"MIGRATED=~p~n\", [ridge_rt:migration_count()]),\n\
+         halt(0).",
+        base = base,
+        actor = actor,
+        parent = parent,
+        manifest = manifest_fwd,
+    );
+    let node = spawn_streamed(&beam_dir, &eval);
+    apply_store_edit(&snap, &ws, |src| src.replace("text", "body"));
+    let (lines, _stderr) = join_streamed(node);
+    let out = lines.join("\n");
+    assert!(out.contains("APPLY={ok,"), "{out}");
+    assert!(
+        out.contains("body => <<\"hello\">>"),
+        "stale note migrated at receive: {out}"
+    );
+    assert!(!out.contains("text =>"), "old field name gone: {out}");
+    let migrated = lines
+        .iter()
+        .find_map(|l| l.strip_prefix("MIGRATED="))
+        .expect("MIGRATED marker");
+    assert!(
+        migrated.parse::<u64>().unwrap_or(0) >= 1,
+        "lazy count bumped: {out}"
+    );
+}
+
+#[test]
+fn reload_migrates_record_chain_across_two_reloads() {
+    if !otp_available() {
+        eprintln!(
+            "erl/erlc not on PATH — skipping reload_migrates_record_chain_across_two_reloads"
+        );
+        return;
+    }
+    let ws = common::make_store_workspace();
+    let (snap_v1, beam_dir) = compile_store_v1(&ws);
+    let base = snapshot_vsn(&snap_v1);
+    let manifest = manifest_path_for(&ws.path, "debug");
+    let _ = std::fs::remove_file(&manifest);
+    let (parent, actor) = store_beams(&beam_dir);
+    let manifest_fwd = manifest.to_string_lossy().replace('\\', "/");
+    // Two upgrades in one node: after APPLY1 the test rebases the manifest
+    // (delete + rewrite), which the node's D/W polls ride to APPLY2. The
+    // second cast still carries the v1 tag, so the v3 beam must migrate it
+    // straight to the v3 shape.
+    let eval = format!(
+        "persistent_term:put(ridge_loader_vsn, <<\"{base}\">>),\n\
+         H = {{ridge_handle, Pid, _}} = ridge_rt:spawn_actor('{actor}', [], []),\n\
+         H1 = maps:get('Note', '{parent}':'__ridge_record_versions'()),\n\
+         ok = sys:suspend(Pid),\n\
+         ok = ridge_rt:send_op(H, {{store, #{{'__ridge_v' => {{'{parent}', 'Note', H1}}, text => <<\"first\">>}}}}),\n\
+         W = fun W() -> case filelib:is_file(\"{manifest}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
+         D = fun D() -> case filelib:is_file(\"{manifest}\") of true -> timer:sleep(50), D(); false -> ok end end,\n\
+         W(),\n\
+         R1 = ridge_loader:apply(\"{manifest}\", <<\"{base}\">>),\n\
+         io:format(\"APPLY1=~p~n\", [R1]),\n\
+         io:format(\"GOT1=~p~n\", [ridge_rt:ask(H, {{get}}, 5000)]),\n\
+         ok = sys:suspend(Pid),\n\
+         ok = ridge_rt:send_op(H, {{store, #{{'__ridge_v' => {{'{parent}', 'Note', H1}}, text => <<\"second\">>}}}}),\n\
+         D(), W(),\n\
+         R2 = ridge_loader:apply(\"{manifest}\", ridge_loader:current_version()),\n\
+         io:format(\"APPLY2=~p~n\", [R2]),\n\
+         io:format(\"GOT2=~p~n\", [ridge_rt:ask(H, {{get}}, 5000)]),\n\
+         halt(0).",
+        base = base,
+        actor = actor,
+        parent = parent,
+        manifest = manifest_fwd,
+    );
+    let node = spawn_streamed(&beam_dir, &eval);
+    // First reload: text → body.
+    apply_store_edit(&snap_v1, &ws, |src| src.replace("text", "body"));
+    wait_marker(&node, "GOT1=", std::time::Duration::from_secs(60));
+    // Rebase: the on-disk snapshot is v2's now. Clear the manifest so the
+    // node's deletion-poll re-arms, then apply the second edit (body → title).
+    let snap_v2: WorkspaceSnapshot = serde_json::from_str(
+        &std::fs::read_to_string(snapshot_path_for(&ws.path, "debug")).expect("v2 snapshot"),
+    )
+    .expect("parse v2 snapshot");
+    std::fs::remove_file(&manifest).expect("clear manifest");
+    apply_store_edit(&snap_v2, &ws, |src| src.replace("body", "title"));
+    let (lines, _stderr) = join_streamed(node);
+    let out = lines.join("\n");
+    assert!(
+        out.contains("APPLY1={ok,") && out.contains("APPLY2={ok,"),
+        "{out}"
+    );
+    assert!(out.contains("GOT1="), "{out}");
+    // The second message rode BOTH upgrades with its v1 tag and landed as v3.
+    assert!(
+        out.contains("title => <<\"second\">>"),
+        "v1-tagged message reached v3 shape: {out}"
+    );
+    assert!(!out.contains("text => <<\"second\">>"), "{out}");
+}
+
+#[test]
+fn reload_drops_non_migratable_and_unknown_hash_messages() {
+    if !otp_available() {
+        eprintln!(
+            "erl/erlc not on PATH — skipping reload_drops_non_migratable_and_unknown_hash_messages"
+        );
+        return;
+    }
+    let ws = common::make_store_workspace();
+    let (snap, beam_dir) = compile_store_v1(&ws);
+    let base = snapshot_vsn(&snap);
+    let manifest = manifest_path_for(&ws.path, "debug");
+    let _ = std::fs::remove_file(&manifest);
+    let (parent, actor) = store_beams(&beam_dir);
+    let manifest_fwd = manifest.to_string_lossy().replace('\\', "/");
+    let eval = format!(
+        "persistent_term:put(ridge_loader_vsn, <<\"{base}\">>),\n\
+         H = {{ridge_handle, Pid, _}} = ridge_rt:spawn_actor('{actor}', [], []),\n\
+         W = fun W() -> case filelib:is_file(\"{manifest}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
+         W(),\n\
+         R = ridge_loader:apply(\"{manifest}\", <<\"{base}\">>),\n\
+         io:format(\"APPLY=~p~n\", [R]),\n\
+         Before = ridge_rt:migration_count(),\n\
+         Bad = #{{'__ridge_v' => {{'{parent}', 'Note', 999999999}}, text => <<\"x\">>}},\n\
+         ok = ridge_rt:send_op(H, {{store, Bad}}),\n\
+         Got = ridge_rt:ask(H, {{get}}, 5000),\n\
+         io:format(\"GOT=~p~n\", [Got]),\n\
+         io:format(\"BEFORE=~p~n\", [Before]),\n\
+         io:format(\"MIGRATED=~p~n\", [ridge_rt:migration_count()]),\n\
+         halt(0).",
+        base = base,
+        actor = actor,
+        parent = parent,
+        manifest = manifest_fwd,
+    );
+    let node = spawn_streamed(&beam_dir, &eval);
+    apply_store_edit(&snap, &ws, |src| src.replace("text", "body"));
+    let (lines, stderr) = join_streamed(node);
+    let out = lines.join("\n");
+    assert!(out.contains("APPLY={ok,"), "{out}");
+    assert!(
+        stderr.contains("dropped non-migratable"),
+        "loud dev report: {stderr}"
+    );
+    assert!(out.contains("GOT="), "actor survived the drop: {out}");
+    let before: u64 = lines
+        .iter()
+        .find_map(|l| l.strip_prefix("BEFORE="))
+        .and_then(|s| s.parse().ok())
+        .expect("BEFORE marker");
+    let after: u64 = lines
+        .iter()
+        .find_map(|l| l.strip_prefix("MIGRATED="))
+        .and_then(|s| s.parse().ok())
+        .expect("MIGRATED marker");
+    assert_eq!(before, after, "a dropped message applies no edge: {out}");
 }

@@ -382,7 +382,7 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
         .iter()
         .any(|d| matches!(d.severity, Severity::Error))
     {
-        let snapshot = ridge_reload::snapshot::extract_snapshot(&resolved, &typecheck_result.typed);
+        let snapshot = ridge_reload::snapshot::extract_snapshot(&resolved, &typecheck_result.typed, None);
         match serde_json::to_string_pretty(&snapshot) {
             Ok(json) => {
                 let path = codegen_out_root.join("reload-snapshot.json");

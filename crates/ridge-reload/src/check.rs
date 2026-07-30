@@ -150,6 +150,7 @@ fn classify(fqn: &str, c: &SymbolChange) -> Verdict {
             old_version,
             old_fields,
             new_fields,
+            ..
         } => {
             let plan = scaffold::field_plan(old_fields, new_fields);
             let has_holes = plan.iter().any(|a| matches!(a, FieldAction::Hole { .. }));
@@ -185,6 +186,7 @@ fn classify(fqn: &str, c: &SymbolChange) -> Verdict {
             name,
             old_state,
             new_state,
+            ..
         } => actor_state_verdict(name, old_state, new_state),
         SymbolChange::ActorHandlersChanged {
             removed,
@@ -400,6 +402,7 @@ mod tests {
             old_version: 1,
             old_fields: fields(&[("name", "Text")]),
             new_fields: fields(&[("name", "Text"), ("email", "Text")]),
+            covered_by_hook: false,
         }]));
         match v {
             Verdict::RequiresMigration {
@@ -407,7 +410,7 @@ mod tests {
                 has_holes,
             } => {
                 assert!(has_holes, "added field has no fill");
-                assert!(scaffold.contains("email: ???"), "{scaffold}");
+                assert!(scaffold.contains("email = ???"), "{scaffold}");
                 assert!(scaffold.contains("@version(2)"), "{scaffold}");
             }
             other => panic!("expected RequiresMigration, got {other:?}"),
@@ -421,6 +424,7 @@ mod tests {
             old_version: 1,
             old_fields: fields(&[("name", "Text"), ("age", "Int")]),
             new_fields: fields(&[("full_name", "Text"), ("age", "Int")]),
+            covered_by_hook: false,
         }]));
         match v {
             Verdict::RequiresMigration {
@@ -428,7 +432,7 @@ mod tests {
                 has_holes,
             } => {
                 assert!(!has_holes, "rename scaffold is complete");
-                assert!(scaffold.contains("full_name: old.name"), "{scaffold}");
+                assert!(scaffold.contains("full_name = old.name"), "{scaffold}");
             }
             other => panic!("expected RequiresMigration, got {other:?}"),
         }
@@ -441,6 +445,7 @@ mod tests {
             old_version: 1,
             old_fields: fields(&[("name", "Text"), ("age", "Int")]),
             new_fields: fields(&[("name", "Text")]),
+            covered_by_hook: false,
         }]));
         match v {
             Verdict::RequiresMigration {
@@ -461,6 +466,7 @@ mod tests {
             old_version: 1,
             old_fields: fields(&[("age", "Int")]),
             new_fields: fields(&[("age", "Text")]),
+            covered_by_hook: false,
         }]));
         match v {
             Verdict::RequiresMigration { has_holes, .. } => {
@@ -544,6 +550,7 @@ mod tests {
             name: "Counter".to_string(),
             old_state: states(&[("count", "Int", true)]),
             new_state: states(&[("count", "Int", true), ("step", "Int", true)]),
+            covered_by_hook: false,
         }]));
         match v {
             Verdict::AutoMigrate { note } => assert!(note.contains("step"), "{note}"),
@@ -557,6 +564,7 @@ mod tests {
             name: "Counter".to_string(),
             old_state: states(&[("count", "Int", true)]),
             new_state: states(&[("count", "Int", true), ("step", "Int", false)]),
+            covered_by_hook: false,
         }]));
         match v {
             Verdict::RequiresMigration {
@@ -564,7 +572,7 @@ mod tests {
                 has_holes,
             } => {
                 assert!(has_holes);
-                assert!(scaffold.contains("step: ???"), "{scaffold}");
+                assert!(scaffold.contains("step = ???"), "{scaffold}");
                 assert!(
                     scaffold.contains("migrate (old: Counter@1) -> Counter"),
                     "{scaffold}"
@@ -580,6 +588,7 @@ mod tests {
             name: "Counter".to_string(),
             old_state: states(&[("count", "Int", true)]),
             new_state: states(&[("total", "Int", true)]),
+            covered_by_hook: false,
         }]));
         match v {
             Verdict::RequiresMigration {
@@ -587,7 +596,7 @@ mod tests {
                 has_holes,
             } => {
                 assert!(!has_holes, "rename scaffold is complete");
-                assert!(scaffold.contains("total: old.count"), "{scaffold}");
+                assert!(scaffold.contains("total = old.count"), "{scaffold}");
             }
             other => panic!("expected RequiresMigration, got {other:?}"),
         }
@@ -712,6 +721,7 @@ mod tests {
             old_version: 1,
             old_fields: fields(&[("name", "Text")]),
             new_fields: fields(&[("name", "Text"), ("email", "Text")]),
+            covered_by_hook: false,
         }]));
         assert!(with_holes.has_holes());
         assert!(
@@ -724,6 +734,7 @@ mod tests {
             old_version: 1,
             old_fields: fields(&[("name", "Text")]),
             new_fields: fields(&[("full_name", "Text")]),
+            covered_by_hook: false,
         }]));
         assert!(!complete.has_holes());
     }

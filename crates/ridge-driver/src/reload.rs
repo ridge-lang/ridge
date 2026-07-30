@@ -85,7 +85,7 @@ pub fn reload_check(
     {
         return Err(ReloadCheckError::SourceHasErrors);
     }
-    let new = ridge_reload::snapshot::extract_snapshot(&artefacts.resolved, &artefacts.typed);
+    let new = ridge_reload::snapshot::extract_snapshot(&artefacts.resolved, &artefacts.typed, Some(&old));
     Ok(ridge_reload::check::check(&ridge_reload::diff::diff(
         &old, &new,
     )))
@@ -172,7 +172,7 @@ pub fn plan_reload(
     {
         return Err(ReloadCheckError::SourceHasErrors);
     }
-    let new_snapshot = extract_snapshot(&artefacts.resolved, &artefacts.typed);
+    let new_snapshot = extract_snapshot(&artefacts.resolved, &artefacts.typed, Some(old_snapshot));
     let cs = diff(old_snapshot, &new_snapshot);
     let report = ridge_reload::check::check(&cs);
     if !report.is_reloadable() || report.has_holes() {
@@ -289,6 +289,7 @@ fn actor_migrations(cs: &ChangeSet, id_of: &HashMap<&str, ModuleId>) -> Vec<Acto
                 name,
                 old_state,
                 new_state,
+                ..
             } = s
             else {
                 continue;

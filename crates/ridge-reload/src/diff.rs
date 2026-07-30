@@ -64,6 +64,9 @@ pub enum SymbolChange {
         old_version: u32,
         old_fields: Vec<FieldSnap>,
         new_fields: Vec<FieldSnap>,
+        /// The NEW source declares a `migrate` block whose ordinal matches
+        /// the OLD current version.
+        covered_by_hook: bool,
     },
     /// Union whose variant set or payloads differ.
     UnionVariantsChanged {
@@ -85,6 +88,9 @@ pub enum SymbolChange {
         name: String,
         old_state: Vec<StateSnap>,
         new_state: Vec<StateSnap>,
+        /// The NEW source declares a `migrate` member whose ordinal matches
+        /// the OLD current version.
+        covered_by_hook: bool,
     },
     /// Actor whose handler set or handler caps differ.
     ActorHandlersChanged {
@@ -210,8 +216,13 @@ fn diff_symbol_pair(
             SymbolSnapshot::Record {
                 version: ov,
                 fields: of,
+                ..
             },
-            SymbolSnapshot::Record { fields: nf, .. },
+            SymbolSnapshot::Record {
+                fields: nf,
+                migrate_edges: edges,
+                ..
+            },
         ) => {
             if of != nf {
                 out.push(SymbolChange::RecordShapeChanged {
@@ -219,6 +230,7 @@ fn diff_symbol_pair(
                     old_version: *ov,
                     old_fields: of.clone(),
                     new_fields: nf.clone(),
+                    covered_by_hook: edges.contains(ov),
                 });
             }
         }
@@ -274,10 +286,14 @@ fn diff_symbol_pair(
             SymbolSnapshot::Actor {
                 state: os,
                 handlers: oh,
+                version: ov,
+                ..
             },
             SymbolSnapshot::Actor {
                 state: ns,
                 handlers: nh,
+                migrate_edges: edges,
+                ..
             },
         ) => {
             if os != ns {
@@ -285,6 +301,7 @@ fn diff_symbol_pair(
                     name: name.to_string(),
                     old_state: os.clone(),
                     new_state: ns.clone(),
+                    covered_by_hook: edges.contains(ov),
                 });
             }
             let added: Vec<String> = nh
@@ -355,6 +372,7 @@ mod tests {
     fn record(fields: &[(&str, &str)]) -> SymbolSnapshot {
         SymbolSnapshot::Record {
             version: 1,
+            hash: 0,
             fields: fields
                 .iter()
                 .map(|(n, t)| FieldSnap {
@@ -362,6 +380,8 @@ mod tests {
                     ty: (*t).to_string(),
                 })
                 .collect(),
+            history: vec![],
+            migrate_edges: vec![],
         }
     }
 
@@ -392,6 +412,10 @@ mod tests {
                 .iter()
                 .map(|(n, b)| ((*n).to_string(), *b))
                 .collect(),
+            version: 1,
+            hash: 0,
+            history: vec![],
+            migrate_edges: vec![],
         }
     }
 
@@ -534,6 +558,7 @@ mod tests {
                     old_version,
                     old_fields,
                     new_fields,
+                    ..
                 } => {
                     assert_eq!(name, "User");
                     assert_eq!(*old_version, 1);

@@ -1,13 +1,30 @@
 # Hot-reload design — deferred to 0.2.0+
 
-> **Status note (2026-07):** the dev loop half of this story has landed.
-> `ridge run --reload` boots a persistent dev node and hot-loads compatible
-> edits into it — body changes, additive state fields with defaults, and
-> pure state-field renames apply in place with actor state preserved;
-> anything else prints the `ridge reload --check` report and offers a cold
-> restart. The runtime loader requires OTP 27+. Still deferred, per the
-> sections below: hand-written `migrate` hooks and versioned types
-> (`@version(N)`, `User@1`), mailbox migration, and stdlib reload.
+> **Status note (2026-07):** the dev loop half of this story has landed,
+> and so has the versioning machinery. `ridge run --reload` boots a
+> persistent dev node and hot-loads compatible edits into it — body
+> changes, additive state fields with defaults, and pure state-field
+> renames apply in place with actor state preserved; anything else prints
+> the `ridge reload --check` report and offers a cold restart. On top of
+> that, records and actors now carry real version identity: every record
+> shape is content-hashed to a 64-bit value shared between the generated
+> beams and the on-disk snapshot, tagged onto each record value at
+> construction (`__ridge_v`), and checked at receive time. A type may
+> declare explicit history — `type User @version(2) = …` plus a
+> `do … end` section with `migrate (old: User@1) -> User = …` hooks — and
+> an actor may declare a `migrate` member for its state; when no hook
+> exists, the compiler derives structural edges (renames, dropped fields)
+> so stale-tagged messages in an actor's mailbox are migrated lazily at
+> receive instead of crashing the handler, and a message with no
+> applicable edge is reported and dropped, never delivered.
+> `ridge reload --check` upgrades to a `migrate-hook` verdict when the
+> source already covers the change, and its scaffolds roundtrip (what it
+> prints parses and compiles). The runtime loader requires OTP 27+.
+> Steady-state cost, measured: ~75 ns per message for the receive-path
+> wrapper and ~9 words per tagged record. Still deferred to the next
+> phase, per the sections below: the production transport
+> (`ridge reload --node`), blue/green restart on migration failure, code
+> purging after a quiescence window, and stdlib reload.
 
 This document is a **placeholder** for the Ridge hot-reload story. It enumerates the four open design questions that any 0.2.0+ implementation must resolve before work begins.
 

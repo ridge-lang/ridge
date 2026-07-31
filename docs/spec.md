@@ -33,7 +33,9 @@
 
 ## 1. Executive Summary
 
-**Ridge** is a general-purpose programming language built around four pillars: **developer experience, safety from the root, first-class performance, and approachability**. It combines immutable data, actor-based concurrency, and a granular effect system visible in function signatures. Ridge compiles to Core Erlang for the BEAM runtime, which is the production target. The intermediate representation is held target-neutral; WebAssembly and native (LLVM) backends remain exploratory work kept feasible by the shared IR (see §11).
+**Ridge** is a general-purpose programming language built around four pillars: **developer experience**\*, **safety from the root**, **first-class performance**, and **approachability**. It combines immutable data, actor-based concurrency, and a granular effect system visible in function signatures. Ridge compiles to Core Erlang for the BEAM runtime, which is the production target. The intermediate representation is held target-neutral; WebAssembly and native (LLVM) backends remain exploratory work kept feasible by the shared IR (see §11).
+
+\* Developer experience includes the syntax itself. Every syntactic construct is a DX feature — designed, reviewed, and changed under the same bar as any other DX surface, never treated as neutral grammar (see §2.1, principle 1).
 
 The target audience is software developers who want a language that scales from scripts to distributed systems without mode switching — fast to write, easy to reason about, hard to misuse.
 
@@ -70,7 +72,7 @@ These are the principles that guide every design decision. When in doubt, refer 
 
 ### 2.1. Core Principles
 
-1. **Readability over cleverness.** Code is read 10× more than written. Every syntactic choice prioritizes the reader.
+1. **Readability over cleverness.** Code is read 10× more than written. Syntax is developer experience: every syntactic choice prioritizes the reader, and no syntactic construct is exempt from the DX bar.
 2. **Explicitness where it matters, inference where it doesn't.** Types are inferred. Effects are not. Mutation is not. Concurrency is not.
 3. **Make the right thing easy and the wrong thing hard.** Immutability is default. `null` doesn't exist. Mutation requires an actor. Effects require capabilities.
 4. **One obvious way.** Avoid offering three syntaxes for the same thing.

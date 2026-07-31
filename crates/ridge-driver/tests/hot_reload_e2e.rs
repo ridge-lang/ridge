@@ -887,3 +887,136 @@ fn reload_drops_non_migratable_and_unknown_hash_messages() {
         .expect("MIGRATED marker");
     assert_eq!(before, after, "a dropped message applies no edge: {out}");
 }
+
+// ── Blue/green isolation: one failing migration never aborts the upgrade ─────
+
+#[test]
+fn reload_restarts_actor_with_throwing_migrate_hook() {
+    if !otp_available() {
+        eprintln!(
+            "erl/erlc not on PATH — skipping reload_restarts_actor_with_throwing_migrate_hook"
+        );
+        return;
+    }
+    let ws = common::make_counter_workspace();
+    let artefacts =
+        compile_workspace(CompileOptions::new(ws.path.clone()).with_emit(EmitArtefacts::Beam))
+            .expect("v1 compile");
+    assert!(
+        !artefacts
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.severity, ridge_diagnostics::Severity::Error)),
+        "v1 must compile clean: {:?}",
+        artefacts.diagnostics
+    );
+    let snap: WorkspaceSnapshot = serde_json::from_str(
+        &std::fs::read_to_string(snapshot_path_for(&ws.path, "debug")).expect("snapshot"),
+    )
+    .expect("parse snapshot");
+    let base = snapshot_vsn(&snap);
+    let manifest = manifest_path_for(&ws.path, "debug");
+    let _ = std::fs::remove_file(&manifest);
+    let beam_dir = artefacts
+        .beam_files
+        .iter()
+        .find_map(|p| p.parent())
+        .expect("beam dir")
+        .to_path_buf();
+    let beam_mod = actor_beam_of(&beam_dir);
+    let manifest_fwd = manifest.to_string_lossy().replace('\\', "/");
+    // Two instances of the same actor: P1 seeded to count=2 (the hook divides
+    // by `2 - old.count` and crashes for it), P2 left at count=0 (the hook
+    // lands step=5). A monitor process stands in for the supervisor: when P1
+    // dies it respawns the actor, which must come up on the NEW code with the
+    // init state. The upgrade itself must succeed and migrate P2.
+    let eval = format!(
+        "persistent_term:put(ridge_loader_vsn, <<\"{base}\">>),\n\
+         H1 = {{ridge_handle, P1, _}} = ridge_rt:spawn_actor('{beam_mod}', [], []),\n\
+         ok = ridge_rt:send_op(H1, {{tick}}),\n\
+         ok = ridge_rt:send_op(H1, {{tick}}),\n\
+         2 = ridge_rt:ask(H1, {{count}}, 5000),\n\
+         H2 = {{ridge_handle, P2, _}} = ridge_rt:spawn_actor('{beam_mod}', [], []),\n\
+         0 = ridge_rt:ask(H2, {{count}}, 5000),\n\
+         spawn(fun() ->\n\
+         \x20   Mref = monitor(process, P1),\n\
+         \x20   receive\n\
+         \x20       {{'DOWN', Mref, process, P1, _}} ->\n\
+         \x20           {{ridge_handle, Pn, _}} = ridge_rt:spawn_actor('{beam_mod}', [], []),\n\
+         \x20           register(reborn, Pn)\n\
+         \x20   end\n\
+         end),\n\
+         W = fun W() -> case filelib:is_file(\"{manifest}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
+         W(),\n\
+         R = ridge_loader:apply(\"{manifest}\", <<\"{base}\">>),\n\
+         io:format(\"APPLY=~p~n\", [R]),\n\
+         timer:sleep(500),\n\
+         io:format(\"ALIVE1=~p~n\", [is_process_alive(P1)]),\n\
+         io:format(\"ASK2=~p~n\", [ridge_rt:ask(H2, {{count}}, 5000)]),\n\
+         io:format(\"STATE2=~p~n\", [sys:get_state(P2)]),\n\
+         case whereis(reborn) of\n\
+         \x20   undefined -> io:format(\"REBORN=none~n\");\n\
+         \x20   Pn2 -> io:format(\"REBORN=~p~n\", [sys:get_state(Pn2)])\n\
+         end,\n\
+         halt(0).",
+        base = base,
+        beam_mod = beam_mod,
+        manifest = manifest_fwd,
+    );
+    let node = spawn_streamed(&beam_dir, &eval);
+    // Additive field + hook that crashes only when count = 2. Edit +
+    // recompile + plan inline (apply_edit needs a ReloadNode; this case
+    // boots its own streamed node).
+    let src_path = counter_source(&ws);
+    let src = std::fs::read_to_string(&src_path).expect("src");
+    std::fs::write(
+        &src_path,
+        src.replace(
+            "state count: Int = 0",
+            "state count: Int = 0\n    state step: Int = 0\n    migrate (old: Counter@1) -> Counter =\n        { count = old.count, step = 10 / (2 - old.count) }",
+        ),
+    )
+    .expect("write edit");
+    let artefacts =
+        compile_workspace(CompileOptions::new(ws.path.clone()).with_emit(EmitArtefacts::Beam))
+            .expect("recompile");
+    assert!(
+        !artefacts
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.severity, ridge_diagnostics::Severity::Error)),
+        "edit must compile clean: {:?}",
+        artefacts.diagnostics
+    );
+    let plan = plan_reload(&snap, CheckOptions::new(ws.path.clone()), &manifest)
+        .expect("plan_reload");
+    assert!(
+        plan.manifest.is_some(),
+        "edit must be reloadable: {:?}",
+        plan.report
+    );
+    let (lines, _stderr) = join_streamed(node);
+    let out = lines.join("\n");
+    assert!(out.contains("APPLY={ok,"), "upgrade completes: {out}");
+    assert!(
+        out.contains("actors_migrated => 1"),
+        "the healthy sibling migrated: {out}"
+    );
+    assert!(
+        out.contains("actors_restarted => 1"),
+        "the failing actor is reported as restarted: {out}"
+    );
+    assert!(
+        out.contains("ALIVE1=false"),
+        "the failing actor was never resumed on corrupt state: {out}"
+    );
+    assert!(out.contains("ASK2=0"), "sibling serves requests: {out}");
+    assert!(
+        out.contains("STATE2=#{count => 0,step => 5}"),
+        "sibling state went through the hook: {out}"
+    );
+    assert!(
+        out.contains("REBORN=#{count => 0,step => 0}"),
+        "respawned actor boots the NEW code with init state: {out}"
+    );
+}

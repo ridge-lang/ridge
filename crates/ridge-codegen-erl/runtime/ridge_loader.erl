@@ -35,7 +35,10 @@ apply(ManifestPath, ExpectedVsn) ->
             try
                 ensure_json(),
                 {ok, Bin} = file:read_file(ManifestPath),
-                do_apply(json:decode(Bin), Started, fun load_from_path/2, undefined)
+                do_apply(json:decode(Bin), Started, fun load_from_path/2, undefined,
+                         %% Dev loop: no quiescence purge — the node holds two
+                         %% code versions until restart, as before.
+                         #{purge_after_ms => 0})
             catch
                 Class:Reason:Stack ->
                     {error, {upgrade_failed, Class, Reason, Stack}}
@@ -62,7 +65,10 @@ apply_bundle(ManifestBin, BeamBins, Opts)
                 BinMap = maps:from_list([{binary_to_atom(N), B} || {N, B} <- BeamBins]),
                 do_apply(
                     json:decode(ManifestBin), Started,
-                    fun load_from_binary/2, BinMap
+                    fun load_from_binary/2, BinMap,
+                    %% Production default: purge the old code after a 60 s
+                    %% quiescence window; 0 disables it.
+                    #{purge_after_ms => maps:get(purge_after_ms, Opts, 60000)}
                 )
             catch
                 Class:Reason:Stack ->
@@ -82,7 +88,7 @@ ensure_json() ->
 validate_beam(<<"FOR1", _Size:32/big, "BEAM", _/binary>>) -> ok;
 validate_beam(_) -> erlang:error(invalid_beam_blob).
 
-do_apply(Mf, Started, LoadFun, LoadCtx) ->
+do_apply(Mf, Started, LoadFun, LoadCtx, Opts) ->
     #{
         <<"base_vsn">> := BaseVsn,
         <<"new_vsn">> := NewVsn,
@@ -114,6 +120,9 @@ do_apply(Mf, Started, LoadFun, LoadCtx) ->
     try
         %% Capture OLD field lists before loading the new code.
         OldFieldsByMod = maps:from_list([{M, M:'__ridge_state_fields'()} || M <- MigMods]),
+        %% A pending quiescence purge must not fire mid-swap: cancel it
+        %% before loading (it is rescheduled below if purging is enabled).
+        ok = cancel_pending_purge(),
         ok = LoadFun(Modules, LoadCtx),
         %% The new code may carry different record shape hashes: drop the
         %% cached versions so the next tagged message re-reads them.
@@ -124,12 +133,21 @@ do_apply(Mf, Started, LoadFun, LoadCtx) ->
         [ok = sys:resume(P) || P <- Pids, is_process_alive(P)],
         persistent_term:put(?VSN_KEY, NewVsn),
         Duration = erlang:monotonic_time(millisecond) - Started,
+        PurgeAfter = maps:get(purge_after_ms, Opts, 0),
+        Purge = case PurgeAfter of
+            0 ->
+                #{scheduled => false, after_ms => 0};
+            _ ->
+                ok = schedule_purge(Modules, PurgeAfter),
+                #{scheduled => true, after_ms => PurgeAfter}
+        end,
         {ok, #{
             modules_loaded => length(Modules),
             actors_suspended => length(Pids),
             actors_migrated => length(Migrated),
             actors_restarted => length(Restarts),
             restarts => lists:reverse(Restarts),
+            purge => Purge,
             %% Cumulative and lazy: migrations happen as messages arrive AFTER
             %% the upgrade, so this mostly reflects traffic since the previous
             %% reload — the next reload's report includes this window's.
@@ -168,6 +186,51 @@ load_from_binary(Modules, BinMap) ->
 
 beam_label(M) ->
     atom_to_list(M) ++ ".beam (ridge reload bundle)".
+
+%% ── Quiescence purge ────────────────────────────────────────────────────────
+%%
+%% A loaded module keeps TWO code versions until the old one is purged.
+%% After a successful upgrade the old code may still be referenced (a
+%% suspended-then-resumed actor finishing a call, a fun captured in a
+%% message), so the purge is deferred by a quiescence window. The timer
+%% runs as a registered process: a new upgrade cancels any pending purge
+%% before loading (and reschedules its own on success).
+
+-define(PURGE_REG, ridge_loader_purge).
+
+schedule_purge(Modules, DelayMs) ->
+    ok = cancel_pending_purge(),
+    Pid = spawn(fun() -> purge_timer(Modules, DelayMs) end),
+    true = register(?PURGE_REG, Pid),
+    ok.
+
+cancel_pending_purge() ->
+    case whereis(?PURGE_REG) of
+        undefined ->
+            ok;
+        P ->
+            %% Wait for the old timer to die before returning: the caller
+            %% may re-register the name immediately after.
+            Ref = monitor(process, P),
+            P ! ridge_purge_cancel,
+            receive
+                {'DOWN', Ref, process, P, _} -> ok
+            after 5000 ->
+                ok
+            end
+    end.
+
+purge_timer(Modules, DelayMs) ->
+    receive
+        ridge_purge_cancel -> ok
+    after DelayMs ->
+        %% Best-effort: a process still running old code keeps the version
+        %% referenced (purge returns false); the next upgrade's purge gets
+        %% another shot at it.
+        [_ = code:soft_purge(M) || M <- Modules],
+        [_ = code:purge(M) || M <- Modules],
+        ok
+    end.
 
 %% The callback module of a gen_server, via the '$initial_call' dictionary
 %% entry gen_server plants at boot. Returns undefined for non-gen_servers.

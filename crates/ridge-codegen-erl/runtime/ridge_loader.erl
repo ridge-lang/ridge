@@ -80,14 +80,18 @@ apply_manifest(ManifestPath, Started) ->
         %% The new code may carry different record shape hashes: drop the
         %% cached versions so the next tagged message re-reads them.
         ok = ridge_rt:invalidate_record_versions(Modules),
-        Migrated = migrate_actors(Pids, ActorMigs, OldFieldsByMod),
-        [ok = sys:resume(P) || P <- Pids],
+        {Migrated, Restarts} = migrate_actors(Pids, ActorMigs, OldFieldsByMod),
+        %% A restarted actor is dead by now (killed below, or crashed inside
+        %% its own code_change) — resume only the survivors.
+        [ok = sys:resume(P) || P <- Pids, is_process_alive(P)],
         persistent_term:put(?VSN_KEY, NewVsn),
         Duration = erlang:monotonic_time(millisecond) - Started,
         {ok, #{
             modules_loaded => length(Modules),
             actors_suspended => length(Pids),
             actors_migrated => length(Migrated),
+            actors_restarted => length(Restarts),
+            restarts => lists:reverse(Restarts),
             %% Cumulative and lazy: migrations happen as messages arrive AFTER
             %% the upgrade, so this mostly reflects traffic since the previous
             %% reload — the next reload's report includes this window's.
@@ -117,11 +121,11 @@ initial_call_module(P) ->
     end.
 
 migrate_actors(Pids, ActorMigs, OldFieldsByMod) ->
-    lists:filtermap(fun(P) ->
+    lists:foldl(fun(P, {Mig, Rst}) ->
         M = initial_call_module(P),
         case [A || A = #{beam := B} <- ActorMigs, B =:= M] of
             [] ->
-                false;
+                {Mig, Rst};
             [Entry] ->
                 Extra = case maps:get(migrate_hook, Entry, false) of
                     true ->
@@ -142,9 +146,43 @@ migrate_actors(Pids, ActorMigs, OldFieldsByMod) ->
                             defaults => Defaults
                         }}
                 end,
-                case sys:change_code(P, M, old, Extra) of
-                    ok -> {true, P};
-                    {error, Reason} -> erlang:error({migration_failed, M, Reason})
+                case migrate_actor(P, M, Extra) of
+                    ok -> {[P | Mig], Rst};
+                    {restarted, Reason} -> {Mig, [#{module => M, reason => Reason} | Rst]}
                 end
         end
-    end, Pids).
+    end, {[], []}, Pids).
+
+%% Blue/green isolation: one actor's failed migration never aborts the
+%% upgrade. The migration is retried once (migrations are idempotent), and
+%% if it still fails the actor is killed so its supervisor restarts it on
+%% init state — it is never resumed with corrupt state. A migrate hook that
+%% throws crashes the gen_server inside its own code_change: the actor is
+%% already dead by the time we look, and the supervisor restarts it the
+%% same way. The failure is reported, not hidden.
+migrate_actor(P, M, Extra) ->
+    case try_change_code(P, M, Extra) of
+        ok ->
+            ok;
+        {failed, Reason1} ->
+            case is_process_alive(P) of
+                false ->
+                    {restarted, Reason1};
+                true ->
+                    case try_change_code(P, M, Extra) of
+                        ok ->
+                            ok;
+                        {failed, Reason2} ->
+                            exit(P, kill),
+                            {restarted, Reason2}
+                    end
+            end
+    end.
+
+try_change_code(P, M, Extra) ->
+    try sys:change_code(P, M, old, Extra) of
+        ok -> ok;
+        {error, Reason} -> {failed, Reason}
+    catch
+        Class:Reason -> {failed, {Class, Reason}}
+    end.

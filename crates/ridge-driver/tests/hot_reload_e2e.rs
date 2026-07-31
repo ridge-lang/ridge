@@ -1519,3 +1519,99 @@ fn reload_prod_bundle_rejects_corrupt_beam() {
         "no partial loads from a corrupt bundle: {state}"
     );
 }
+
+// ── Hardening / chaos ────────────────────────────────────────────────────────
+
+#[test]
+fn reload_prod_node_death_is_a_clean_error() {
+    if !otp_available() {
+        eprintln!("erl/erlc not on PATH — skipping reload_prod_node_death_is_a_clean_error");
+        return;
+    }
+    let ws = common::make_counter_workspace();
+    let node_name = format!("ridge_prod_dead_{}@127.0.0.1", std::process::id());
+    let cookie = "ridge_prod_cookie";
+    let (mut node, beam_dir) = boot_named_v1(&ws, &node_name, cookie);
+    await_ready(&mut node);
+
+    apply_edit(&node, &ws, |src| {
+        src.replace(
+            "state count: Int = 0",
+            "state count: Int = 0\n    state step: Int = 2",
+        )
+    });
+
+    // The node dies before the apply lands — the same noconnection the CLI
+    // sees when a node dies MID-apply, minus the race. The probe must
+    // surface a clean error fast, not hang.
+    let _ = node.child.kill();
+    let _ = node.child.wait();
+
+    let manifest_fwd = node.manifest_path.to_string_lossy().replace('\\', "/");
+    let beam_dir_fwd = beam_dir.to_string_lossy().replace('\\', "/");
+    let eval = prod_apply_eval(
+        &node_name,
+        &manifest_fwd,
+        &beam_dir_fwd,
+        &format!("<<\"{}\">>", node.base_vsn),
+        false,
+    );
+    let started = std::time::Instant::now();
+    let out = probe(cookie, &eval, 40);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(30),
+        "a dead node must error fast, not hang: {out}"
+    );
+    let flat: String = out.split_whitespace().collect();
+    assert!(
+        flat.contains("RIDGE_RELOAD_ERR{badrpc,nodedown}")
+            || flat.contains("RIDGE_RELOAD_ERR{badrpc,noconnection}"),
+        "clean node-down error: {out}"
+    );
+}
+
+#[test]
+fn reload_prod_blue_green_restart_over_rpc() {
+    if !otp_available() {
+        eprintln!("erl/erlc not on PATH — skipping reload_prod_blue_green_restart_over_rpc");
+        return;
+    }
+    let ws = common::make_counter_workspace();
+    let node_name = format!("ridge_prod_bg_{}@127.0.0.1", std::process::id());
+    let cookie = "ridge_prod_cookie";
+    let (mut node, beam_dir) = boot_named_v1(&ws, &node_name, cookie);
+    await_ready(&mut node);
+
+    // The counter is seeded to count=2 by the harness; this hook divides by
+    // (2 - old.count) and crashes the actor inside its own code_change.
+    apply_edit(&node, &ws, |src| {
+        src.replace(
+            "state count: Int = 0",
+            "state count: Int = 0\n    state step: Int = 0\n    migrate (old: Counter@1) -> Counter =\n        { count = old.count, step = 10 / (2 - old.count) }",
+        )
+    });
+
+    let manifest_fwd = node.manifest_path.to_string_lossy().replace('\\', "/");
+    let beam_dir_fwd = beam_dir.to_string_lossy().replace('\\', "/");
+    let eval = prod_apply_eval(
+        &node_name,
+        &manifest_fwd,
+        &beam_dir_fwd,
+        &format!("<<\"{}\">>", node.base_vsn),
+        false,
+    );
+    let out = probe(cookie, &eval, 41);
+    let json_line = out
+        .lines()
+        .find_map(|l| l.strip_prefix("RIDGE_RELOAD_JSON "))
+        .unwrap_or_else(|| panic!("the upgrade completes with restarts: {out}"));
+    let report: serde_json::Value = serde_json::from_str(json_line).expect("valid JSON report");
+    assert_eq!(report["actors_migrated"], 0, "{json_line}");
+    assert_eq!(report["actors_restarted"], 1, "{json_line}");
+    let restarts = report["restarts"].as_array().expect("restarts array");
+    assert_eq!(restarts.len(), 1, "{json_line}");
+    assert!(
+        restarts[0]["reason"].is_string(),
+        "restart reasons are sanitized to text for JSON: {json_line}"
+    );
+}

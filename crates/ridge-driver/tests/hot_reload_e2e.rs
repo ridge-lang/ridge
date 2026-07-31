@@ -336,7 +336,11 @@ fn reload_rejects_base_vsn_mismatch() {
 /// Boot a NAMED node that seeds state, registers the actor pid, prints READY,
 /// and blocks forever (killed by the caller). Returns the node handle and
 /// the beam dir (production cases ship blobs from it after recompiling).
-fn boot_named_v1(ws: &common::TempWorkspace, node_name: &str, cookie: &str) -> (ReloadNode, std::path::PathBuf) {
+fn boot_named_v1(
+    ws: &common::TempWorkspace,
+    node_name: &str,
+    cookie: &str,
+) -> (ReloadNode, std::path::PathBuf) {
     let dir = ws.path.clone();
     let artefacts =
         compile_workspace(CompileOptions::new(dir.clone()).with_emit(EmitArtefacts::Beam))
@@ -1430,9 +1434,15 @@ fn prod_case(
     let beam_dir_fwd = beam_dir.to_string_lossy().replace('\\', "/");
     let base_expr = edit_base_vsn.map_or_else(
         || format!("<<\"{}\">>", node.base_vsn),
-        |vsn| format!("<<\"{vsn}\">>")
+        |vsn| format!("<<\"{vsn}\">>"),
     );
-    let eval = prod_apply_eval(&node_name, &manifest_fwd, &beam_dir_fwd, &base_expr, corrupt);
+    let eval = prod_apply_eval(
+        &node_name,
+        &manifest_fwd,
+        &beam_dir_fwd,
+        &base_expr,
+        corrupt,
+    );
     let out = probe(cookie, &eval, seq_base);
     (out, ws, node)
 }

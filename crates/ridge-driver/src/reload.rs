@@ -56,6 +56,15 @@ pub enum ReloadCheckError {
         /// The underlying I/O error message.
         message: String,
     },
+    /// A module named by the manifest has no compiled `.beam` artefact —
+    /// the bundle would be incomplete, so it is never shipped.
+    #[error("module {module} has no compiled beam artefact at {path}")]
+    MissingBeam {
+        /// Manifest module name without an artefact.
+        module: String,
+        /// Where the `.beam` was expected.
+        path: PathBuf,
+    },
 }
 
 /// Re-checks the current source, diffs against the stored snapshot, and
@@ -409,4 +418,82 @@ pub fn load_version_history(root: &Path, profile: &str) -> VersionHistory {
         return VersionHistory::default();
     }
     ridge_reload::snapshot::history_of(&snap)
+}
+
+// ── Production bundle packaging ──────────────────────────────────────────────
+
+/// Resolve every module named by the upgrade manifest to its compiled
+/// `.beam` artefact under `beam_dir`, in manifest order.
+///
+/// The production transport ships these blobs to the target node; a module
+/// without an artefact would leave the node half-upgraded, so a missing
+/// file is a hard error — the bundle is never shipped incomplete.
+///
+/// ## Errors
+///
+/// Returns [`ReloadCheckError::MissingBeam`] for the first manifest module
+/// whose `.beam` is not a regular file under `beam_dir`.
+pub fn collect_bundle_beams(
+    manifest: &UpgradeManifest,
+    beam_dir: &Path,
+) -> Result<Vec<(String, PathBuf)>, ReloadCheckError> {
+    manifest
+        .modules
+        .iter()
+        .map(|m| {
+            let path = beam_dir.join(format!("{m}.beam"));
+            if path.is_file() {
+                Ok((m.clone(), path))
+            } else {
+                Err(ReloadCheckError::MissingBeam {
+                    module: m.clone(),
+                    path,
+                })
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manifest_with(modules: &[&str]) -> UpgradeManifest {
+        UpgradeManifest {
+            format: UPGRADE_MANIFEST_FORMAT,
+            base_vsn: "a".into(),
+            new_vsn: "b".into(),
+            modules: modules.iter().map(|s| (*s).to_owned()).collect(),
+            actors: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn collect_bundle_beams_resolves_every_module_in_order() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for name in ["mod_b", "mod_a"] {
+            std::fs::write(dir.path().join(format!("{name}.beam")), b"FOR1").expect("beam");
+        }
+        let beams = collect_bundle_beams(&manifest_with(&["mod_a", "mod_b"]), dir.path())
+            .expect("all modules resolve");
+        assert_eq!(
+            beams,
+            vec![
+                ("mod_a".to_owned(), dir.path().join("mod_a.beam")),
+                ("mod_b".to_owned(), dir.path().join("mod_b.beam")),
+            ]
+        );
+    }
+
+    #[test]
+    fn collect_bundle_beams_rejects_a_missing_artefact() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("present.beam"), b"FOR1").expect("beam");
+        let err = collect_bundle_beams(&manifest_with(&["present", "absent"]), dir.path())
+            .expect_err("a module without a beam must fail the bundle");
+        assert!(
+            matches!(err, ReloadCheckError::MissingBeam { ref module, .. } if module == "absent"),
+            "the missing module is named: {err}"
+        );
+    }
 }

@@ -2113,7 +2113,7 @@ apply_code_change(State, _Extra) ->
 %% payloads are reported and dropped, never delivered (delivering them would
 %% be a badmatch in the handler).
 
--define(MIGRATE_SILENT_KEY, ridge_migrate_silent).
+-define(MIGRATE_REPORT_KEY, ridge_migrate_report_mode).
 -define(MIGRATE_COUNT_KEY, ridge_migrate_count).
 
 %% migrate_message/1 — receive-path wrapper. {ok, Msg} re-dispatches to the
@@ -2292,26 +2292,49 @@ migration_count() ->
 bump_migration_count() ->
     persistent_term:put(?MIGRATE_COUNT_KEY, migration_count() + 1).
 
-%% set_migrate_report/1 — dev switch for the drop report. `loud` (default)
-%% prints every non-migratable message to stderr before dropping it; `silent`
-%% suppresses the print (drops still happen). Production structured logging
-%% replaces this switch in the transport phase; this is the hook point.
+%% set_migrate_report/1 — drop-report mode. `loud` (default) prints every
+%% non-migratable message to stderr before dropping it; `silent` suppresses
+%% the print (drops still happen); `structured` is the production mode:
+%% one JSON line per dropped message on stderr (the audit trail CI/CD and
+%% compliance tooling consume). Structured mode needs OTP 27+ (the `json`
+%% module) — the same floor as the loader.
 set_migrate_report(loud) ->
-    persistent_term:put(?MIGRATE_SILENT_KEY, false),
+    persistent_term:put(?MIGRATE_REPORT_KEY, loud),
     ok;
 set_migrate_report(silent) ->
-    persistent_term:put(?MIGRATE_SILENT_KEY, true),
+    persistent_term:put(?MIGRATE_REPORT_KEY, silent),
+    ok;
+set_migrate_report(structured) ->
+    persistent_term:put(?MIGRATE_REPORT_KEY, structured),
     ok.
 
 report_dropped_message(Msg, Reason) ->
-    case persistent_term:get(?MIGRATE_SILENT_KEY, false) of
-        true ->
+    case persistent_term:get(?MIGRATE_REPORT_KEY, loud) of
+        silent ->
             ok;
-        false ->
+        loud ->
             io:format(standard_error,
                       "ridge: dropped non-migratable message (~p): ~p~n",
-                      [Reason, Msg])
+                      [Reason, Msg]);
+        structured ->
+            io:format(standard_error, "~s~n", [json:encode(structured_drop(Reason))])
     end.
+
+%% The audit record for one dropped message. Record identity is lifted from
+%% the reason when it names the record; arbitrary reasons still produce a
+%% valid line (reason is the ~p rendering, pid the DROPPING actor).
+structured_drop(Reason) ->
+    Info = case Reason of
+        {no_migration, Mod, Name, Hash} -> #{module => Mod, name => Name, old_vsn => Hash};
+        {unknown_record, Mod, Name}     -> #{module => Mod, name => Name};
+        _                               -> #{}
+    end,
+    Info#{
+        event => ridge_migrate_drop,
+        reason => iolist_to_binary(io_lib:format("~p", [Reason])),
+        pid => iolist_to_binary(io_lib:format("~p", [self()])),
+        ts => list_to_binary(calendar:system_time_to_rfc3339(erlang:system_time(second)))
+    }.
 
 %% child_id_binary/1 — ids are binaries (Ridge Text); an atom id from a
 %% hand-built spec is converted so which_children's output keeps the

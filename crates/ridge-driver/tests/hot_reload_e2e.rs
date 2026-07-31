@@ -964,37 +964,13 @@ fn reload_restarts_actor_with_throwing_migrate_hook() {
         manifest = manifest_fwd,
     );
     let node = spawn_streamed(&beam_dir, &eval);
-    // Additive field + hook that crashes only when count = 2. Edit +
-    // recompile + plan inline (apply_edit needs a ReloadNode; this case
-    // boots its own streamed node).
-    let src_path = counter_source(&ws);
-    let src = std::fs::read_to_string(&src_path).expect("src");
-    std::fs::write(
-        &src_path,
+    // Additive field + hook that crashes only when count = 2.
+    apply_edit_counter(&snap, &ws, &manifest, |src| {
         src.replace(
             "state count: Int = 0",
             "state count: Int = 0\n    state step: Int = 0\n    migrate (old: Counter@1) -> Counter =\n        { count = old.count, step = 10 / (2 - old.count) }",
-        ),
-    )
-    .expect("write edit");
-    let artefacts =
-        compile_workspace(CompileOptions::new(ws.path.clone()).with_emit(EmitArtefacts::Beam))
-            .expect("recompile");
-    assert!(
-        !artefacts
-            .diagnostics
-            .iter()
-            .any(|d| matches!(d.severity, ridge_diagnostics::Severity::Error)),
-        "edit must compile clean: {:?}",
-        artefacts.diagnostics
-    );
-    let plan = plan_reload(&snap, CheckOptions::new(ws.path.clone()), &manifest)
-        .expect("plan_reload");
-    assert!(
-        plan.manifest.is_some(),
-        "edit must be reloadable: {:?}",
-        plan.report
-    );
+        )
+    });
     let (lines, _stderr) = join_streamed(node);
     let out = lines.join("\n");
     assert!(out.contains("APPLY={ok,"), "upgrade completes: {out}");
@@ -1019,4 +995,118 @@ fn reload_restarts_actor_with_throwing_migrate_hook() {
         out.contains("REBORN=#{count => 0,step => 0}"),
         "respawned actor boots the NEW code with init state: {out}"
     );
+}
+
+// ── Production transport: apply_bundle ships beams as binaries ───────────────
+
+#[test]
+fn reload_via_bundle_apply() {
+    if !otp_available() {
+        eprintln!("erl/erlc not on PATH — skipping reload_via_bundle_apply");
+        return;
+    }
+    let ws = common::make_counter_workspace();
+    let artefacts =
+        compile_workspace(CompileOptions::new(ws.path.clone()).with_emit(EmitArtefacts::Beam))
+            .expect("v1 compile");
+    assert!(
+        !artefacts
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.severity, ridge_diagnostics::Severity::Error)),
+        "v1 must compile clean: {:?}",
+        artefacts.diagnostics
+    );
+    let snap: WorkspaceSnapshot = serde_json::from_str(
+        &std::fs::read_to_string(snapshot_path_for(&ws.path, "debug")).expect("snapshot"),
+    )
+    .expect("parse snapshot");
+    let base = snapshot_vsn(&snap);
+    let manifest = manifest_path_for(&ws.path, "debug");
+    let _ = std::fs::remove_file(&manifest);
+    let beam_dir = artefacts
+        .beam_files
+        .iter()
+        .find_map(|p| p.parent())
+        .expect("beam dir")
+        .to_path_buf();
+    let beam_mod = actor_beam_of(&beam_dir);
+    let manifest_fwd = manifest.to_string_lossy().replace('\\', "/");
+    let beam_dir_fwd = beam_dir.to_string_lossy().replace('\\', "/");
+    // The node polls for the manifest file (written once the edit is
+    // compiled), then applies the upgrade from BINARIES it reads itself —
+    // the same path the production probe drives over rpc. The manifest
+    // names the modules; the blobs come from the just-recompiled beam dir.
+    let eval = format!(
+        "persistent_term:put(ridge_loader_vsn, <<\"{base}\">>),\n\
+         H = {{ridge_handle, Pid, _}} = ridge_rt:spawn_actor('{beam_mod}', [], []),\n\
+         ok = ridge_rt:send_op(H, {{tick}}),\n\
+         ok = ridge_rt:send_op(H, {{tick}}),\n\
+         2 = ridge_rt:ask(H, {{count}}, 5000),\n\
+         W = fun W() -> case filelib:is_file(\"{manifest}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
+         W(),\n\
+         {{ok, MBin}} = file:read_file(\"{manifest}\"),\n\
+         Mf = json:decode(MBin),\n\
+         Bins = [{{M, element(2, file:read_file(\"{beam_dir}/\" ++ binary_to_list(M) ++ \".beam\"))}}\n\
+         \x20       || M <- maps:get(<<\"modules\">>, Mf)],\n\
+         R = ridge_loader:apply_bundle(MBin, Bins, #{{base_vsn => <<\"{base}\">>}}),\n\
+         io:format(\"APPLY=~p~n\", [R]),\n\
+         io:format(\"STATE=~p~n\", [sys:get_state(Pid)]),\n\
+         io:format(\"ASK=~p~n\", [ridge_rt:ask(H, {{count}}, 5000)]),\n\
+         halt(0).",
+        base = base,
+        beam_mod = beam_mod,
+        manifest = manifest_fwd,
+        beam_dir = beam_dir_fwd,
+    );
+    let node = spawn_streamed(&beam_dir, &eval);
+    apply_edit_counter(&snap, &ws, &manifest, |src| {
+        src.replace(
+            "state count: Int = 0",
+            "state count: Int = 0\n    state step: Int = 2",
+        )
+    });
+    let (lines, _stderr) = join_streamed(node);
+    let out = lines.join("\n");
+    assert!(out.contains("APPLY={ok,"), "bundle apply succeeds: {out}");
+    assert!(
+        out.contains("actors_migrated => 1"),
+        "one actor migrated: {out}"
+    );
+    assert!(
+        out.contains("STATE=#{count => 2,step => 2}"),
+        "state migrated through the bundle-loaded code: {out}"
+    );
+    assert!(out.contains("ASK=2"), "new code serves requests: {out}");
+}
+
+/// Edit + recompile + plan for the counter fixture, writing the manifest
+/// the node polls for. Mirrors `apply_store_edit` for the counter source.
+fn apply_edit_counter(
+    old_snapshot: &WorkspaceSnapshot,
+    ws: &common::TempWorkspace,
+    manifest: &std::path::Path,
+    edit: impl FnOnce(&str) -> String,
+) -> ReloadPlan {
+    let src = std::fs::read_to_string(counter_source(ws)).expect("src");
+    std::fs::write(counter_source(ws), edit(&src)).expect("write edit");
+    let artefacts =
+        compile_workspace(CompileOptions::new(ws.path.clone()).with_emit(EmitArtefacts::Beam))
+            .expect("recompile");
+    assert!(
+        !artefacts
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.severity, ridge_diagnostics::Severity::Error)),
+        "edit must compile clean: {:?}",
+        artefacts.diagnostics
+    );
+    let plan = plan_reload(old_snapshot, CheckOptions::new(ws.path.clone()), manifest)
+        .expect("plan_reload");
+    assert!(
+        plan.manifest.is_some(),
+        "edit must be reloadable: {:?}",
+        plan.report
+    );
+    plan
 }

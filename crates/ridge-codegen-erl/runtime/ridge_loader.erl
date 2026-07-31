@@ -1,17 +1,25 @@
-%% ridge_loader — hot code upgrade orchestrator for the Ridge dev loop.
+%% ridge_loader — hot code upgrade orchestrator.
 %%
-%% Applies an upgrade manifest written by `ridge run --reload`: validates the
-%% base version, suspends the affected actors, loads the recompiled modules,
-%% migrates actor state through sys:change_code, resumes, and reports.
+%% Applies an upgrade manifest: validates the base version, suspends the
+%% affected actors, loads the recompiled modules, migrates actor state
+%% through sys:change_code, resumes, and reports. Two transports funnel
+%% into the same sequence:
+%%
+%%   apply/2        — dev loop (`ridge run --reload`): the manifest is a
+%%                    JSON file and the node loads the new code from its own
+%%                    code path.
+%%   apply_bundle/3 — production (`ridge reload --node`): the manifest and
+%%                    the new .beam blobs arrive over rpc; no filesystem on
+%%                    the target node is involved.
 %%
 %% The node tracks the version of the code it runs in
-%% persistent_term[?VSN_KEY]; `ridge run --reload` seeds it at boot and this
-%% module advances it after every successful upgrade. A manifest whose
-%% base_vsn does not match is rejected before anything is touched.
+%% persistent_term[?VSN_KEY]; the CLI seeds it at boot and this module
+%% advances it after every successful upgrade. A manifest whose base_vsn
+%% does not match is rejected before anything is touched.
 %%
 %% Requires OTP 27+ (the `json` module).
 -module(ridge_loader).
--export([current_version/0, apply/2]).
+-export([current_version/0, apply/2, apply_bundle/3]).
 
 -define(VSN_KEY, ridge_loader_vsn).
 
@@ -25,20 +33,56 @@ apply(ManifestPath, ExpectedVsn) ->
         true ->
             Started = erlang:monotonic_time(millisecond),
             try
-                apply_manifest(ManifestPath, Started)
+                ensure_json(),
+                {ok, Bin} = file:read_file(ManifestPath),
+                do_apply(json:decode(Bin), Started, fun load_from_path/2, undefined)
             catch
                 Class:Reason:Stack ->
                     {error, {upgrade_failed, Class, Reason, Stack}}
             end
     end.
 
-apply_manifest(ManifestPath, Started) ->
+%% Production transport: ManifestBin is the manifest JSON as a binary and
+%% BeamBins is [{ModuleNameBin, BeamBinary}] — every .beam blob of the
+%% bundle. Opts carries base_vsn (the version the node must be running)
+%% and, optionally, purge_after_ms (quiescence purge, see schedule_purge).
+%% Every blob is validated before ANY module is loaded, so a corrupt
+%% bundle leaves the node untouched.
+apply_bundle(ManifestBin, BeamBins, Opts)
+  when is_binary(ManifestBin), is_list(BeamBins), is_map(Opts) ->
+    ExpectedVsn = maps:get(base_vsn, Opts),
+    case current_version() =:= ExpectedVsn of
+        false ->
+            {error, {base_version_mismatch, ExpectedVsn, current_version()}};
+        true ->
+            Started = erlang:monotonic_time(millisecond),
+            try
+                ensure_json(),
+                [ok = validate_beam(B) || {_, B} <- BeamBins],
+                BinMap = maps:from_list([{binary_to_atom(N), B} || {N, B} <- BeamBins]),
+                do_apply(
+                    json:decode(ManifestBin), Started,
+                    fun load_from_binary/2, BinMap
+                )
+            catch
+                Class:Reason:Stack ->
+                    {error, {upgrade_failed, Class, Reason, Stack}}
+            end
+    end.
+
+ensure_json() ->
     case code:ensure_loaded(json) of
         {module, json} -> ok;
         _ -> erlang:error(ridge_loader_requires_otp_27)
-    end,
-    {ok, Bin} = file:read_file(ManifestPath),
-    Mf = json:decode(Bin),
+    end.
+
+%% Cheap structural check: an IFF form declaring the BEAM chunk. Catches
+%% truncated/garbage blobs before any load; it is not a full validator
+%% (the compiler produced these files).
+validate_beam(<<"FOR1", _Size:32/big, "BEAM", _/binary>>) -> ok;
+validate_beam(_) -> erlang:error(invalid_beam_blob).
+
+do_apply(Mf, Started, LoadFun, LoadCtx) ->
     #{
         <<"base_vsn">> := BaseVsn,
         <<"new_vsn">> := NewVsn,
@@ -70,13 +114,7 @@ apply_manifest(ManifestPath, Started) ->
     try
         %% Capture OLD field lists before loading the new code.
         OldFieldsByMod = maps:from_list([{M, M:'__ridge_state_fields'()} || M <- MigMods]),
-        %% A module holds at most two loaded versions, and code:load_file
-        %% does not purge by itself: the second upgrade on a node fails with
-        %% not_purged unless the oldest version is dropped first. The actors
-        %% are already suspended, so nothing executes the old code and the
-        %% soft purge succeeds.
-        [_ = code:soft_purge(M) || M <- Modules],
-        [{module, M} = code:load_file(M) || M <- Modules],
+        ok = LoadFun(Modules, LoadCtx),
         %% The new code may carry different record shape hashes: drop the
         %% cached versions so the next tagged message re-reads them.
         ok = ridge_rt:invalidate_record_versions(Modules),
@@ -107,6 +145,29 @@ apply_manifest(ManifestPath, Started) ->
             [catch sys:resume(P) || P <- Pids],
             erlang:raise(Class, Reason, Stack)
     end.
+
+%% Dev transport: the new code is on the node's own code path. A module
+%% holds at most two loaded versions, and neither load_file nor
+%% load_binary purges by itself: the second upgrade on a node fails with
+%% not_purged unless the oldest version is dropped first. The actors are
+%% already suspended, so nothing executes the old code and the soft purge
+%% succeeds.
+load_from_path(Modules, _) ->
+    [_ = code:soft_purge(M) || M <- Modules],
+    [{module, M} = code:load_file(M) || M <- Modules],
+    ok.
+
+%% Production transport: replace the loaded code straight from the shipped
+%% blobs — no temp files, no code-path changes (the module is already
+%% loaded; load_binary swaps it in place). A manifest module with no blob
+%% in the bundle raises here, before anything else is touched further.
+load_from_binary(Modules, BinMap) ->
+    [_ = code:soft_purge(M) || M <- Modules],
+    [{module, M} = code:load_binary(M, beam_label(M), maps:get(M, BinMap)) || M <- Modules],
+    ok.
+
+beam_label(M) ->
+    atom_to_list(M) ++ ".beam (ridge reload bundle)".
 
 %% The callback module of a gen_server, via the '$initial_call' dictionary
 %% entry gen_server plants at boot. Returns undefined for non-gen_servers.

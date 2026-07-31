@@ -1280,3 +1280,61 @@ fn reload_reschedules_purge_on_second_apply() {
     );
     assert!(out.contains("ASK=1"), "actor keeps serving: {out}");
 }
+
+// ── Production drop policy: structured JSON audit lines ──────────────────────
+
+#[test]
+fn reload_drop_structured_mode_emits_json() {
+    if !otp_available() {
+        eprintln!("erl/erlc not on PATH — skipping reload_drop_structured_mode_emits_json");
+        return;
+    }
+    let ws = common::make_store_workspace();
+    let (snap, beam_dir) = compile_store_v1(&ws);
+    let base = snapshot_vsn(&snap);
+    let manifest = manifest_path_for(&ws.path, "debug");
+    let _ = std::fs::remove_file(&manifest);
+    let (parent, actor) = store_beams(&beam_dir);
+    let manifest_fwd = manifest.to_string_lossy().replace('\\', "/");
+    // Same drop as the loud-policy case, but the node runs in structured
+    // mode: the drop must surface as ONE parseable JSON line on stderr.
+    let eval = format!(
+        "persistent_term:put(ridge_loader_vsn, <<\"{base}\">>),\n\
+         ok = ridge_rt:set_migrate_report(structured),\n\
+         H = {{ridge_handle, _Pid, _}} = ridge_rt:spawn_actor('{actor}', [], []),\n\
+         W = fun W() -> case filelib:is_file(\"{manifest}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
+         W(),\n\
+         R = ridge_loader:apply(\"{manifest}\", <<\"{base}\">>),\n\
+         io:format(\"APPLY=~p~n\", [R]),\n\
+         Bad = #{{'__ridge_v' => {{'{parent}', 'Note', 999999999}}, text => <<\"x\">>}},\n\
+         ok = ridge_rt:send_op(H, {{store, Bad}}),\n\
+         io:format(\"GOT=~p~n\", [ridge_rt:ask(H, {{get}}, 5000)]),\n\
+         halt(0).",
+        base = base,
+        actor = actor,
+        parent = parent,
+        manifest = manifest_fwd,
+    );
+    let node = spawn_streamed(&beam_dir, &eval);
+    apply_store_edit(&snap, &ws, |src| src.replace("text", "body"));
+    let (lines, stderr) = join_streamed(node);
+    let out = lines.join("\n");
+    assert!(out.contains("APPLY={ok,"), "{out}");
+    assert!(out.contains("GOT="), "actor survived the drop: {out}");
+    assert!(
+        !stderr.contains("dropped non-migratable"),
+        "structured mode replaces the dev rendering: {stderr}"
+    );
+    let json_line = stderr
+        .lines()
+        .find(|l| l.contains("\"event\":\"ridge_migrate_drop\""))
+        .unwrap_or_else(|| panic!("a structured drop line on stderr: {stderr}"));
+    let parsed: serde_json::Value =
+        serde_json::from_str(json_line).expect("the drop line is valid JSON");
+    assert_eq!(parsed["event"], "ridge_migrate_drop");
+    assert_eq!(parsed["module"], parent, "record identity: {json_line}");
+    assert_eq!(parsed["name"], "Note", "record identity: {json_line}");
+    assert!(parsed["reason"].is_string(), "reason text: {json_line}");
+    assert!(parsed["pid"].is_string(), "pid: {json_line}");
+    assert!(parsed["ts"].is_string(), "timestamp: {json_line}");
+}

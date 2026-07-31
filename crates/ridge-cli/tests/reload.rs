@@ -178,7 +178,13 @@ fn probe_state(cookie: &str, node_name: &str, seq: &str) -> String {
 }
 
 /// `ridge reload --node` on the edited workspace; returns the process output.
-fn reload_cmd(ws: &common::TempWorkspace, node_name: &str, cookie: &str, seed: bool, json: bool) -> std::process::Output {
+fn reload_cmd(
+    ws: &common::TempWorkspace,
+    node_name: &str,
+    cookie: &str,
+    seed: bool,
+    json: bool,
+) -> std::process::Output {
     let mut cmd = ridge_cmd();
     cmd.arg("reload")
         .arg("--node")

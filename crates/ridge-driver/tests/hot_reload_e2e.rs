@@ -1110,3 +1110,173 @@ fn apply_edit_counter(
     );
     plan
 }
+
+// ── Quiescence purge: old code is dropped after the window ───────────────────
+
+/// Compile v1, boot a streamed node holding one counter actor, return
+/// `(snapshot, beam_dir, beam_mod, manifest_path, node)`. Shared by the
+/// purge cases.
+fn boot_counter_streamed(
+    ws: &common::TempWorkspace,
+    eval_body: impl FnOnce(&str, &str, &str) -> String,
+) -> (WorkspaceSnapshot, std::path::PathBuf, StreamedNode) {
+    let artefacts =
+        compile_workspace(CompileOptions::new(ws.path.clone()).with_emit(EmitArtefacts::Beam))
+            .expect("v1 compile");
+    assert!(
+        !artefacts
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.severity, ridge_diagnostics::Severity::Error)),
+        "v1 must compile clean: {:?}",
+        artefacts.diagnostics
+    );
+    let snap: WorkspaceSnapshot = serde_json::from_str(
+        &std::fs::read_to_string(snapshot_path_for(&ws.path, "debug")).expect("snapshot"),
+    )
+    .expect("parse snapshot");
+    let manifest = manifest_path_for(&ws.path, "debug");
+    let _ = std::fs::remove_file(&manifest);
+    let beam_dir = artefacts
+        .beam_files
+        .iter()
+        .find_map(|p| p.parent())
+        .expect("beam dir")
+        .to_path_buf();
+    let beam_mod = actor_beam_of(&beam_dir);
+    let eval = eval_body(
+        &snapshot_vsn(&snap),
+        &beam_mod,
+        &beam_dir.to_string_lossy().replace('\\', "/"),
+    );
+    let node = spawn_streamed(&beam_dir, &eval);
+    (snap, beam_dir, node)
+}
+
+#[test]
+fn reload_purges_old_code_after_quiescence() {
+    if !otp_available() {
+        eprintln!("erl/erlc not on PATH — skipping reload_purges_old_code_after_quiescence");
+        return;
+    }
+    let ws = common::make_counter_workspace();
+    let manifest = manifest_path_for(&ws.path, "debug");
+    let manifest_fwd = manifest.to_string_lossy().replace('\\', "/");
+    let (snap, _beam_dir, node) = boot_counter_streamed(&ws, |base, beam_mod, beam_dir| {
+        format!(
+            "persistent_term:put(ridge_loader_vsn, <<\"{base}\">>),\n\
+             H = {{ridge_handle, Pid, _}} = ridge_rt:spawn_actor('{beam_mod}', [], []),\n\
+             ok = ridge_rt:send_op(H, {{tick}}),\n\
+             1 = ridge_rt:ask(H, {{count}}, 5000),\n\
+             W = fun W() -> case filelib:is_file(\"{manifest}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
+             W(),\n\
+             {{ok, MBin}} = file:read_file(\"{manifest}\"),\n\
+             Mf = json:decode(MBin),\n\
+             Bins = [{{M, element(2, file:read_file(\"{beam_dir}/\" ++ binary_to_list(M) ++ \".beam\"))}}\n\
+             \x20       || M <- maps:get(<<\"modules\">>, Mf)],\n\
+             R = ridge_loader:apply_bundle(MBin, Bins, #{{base_vsn => <<\"{base}\">>, purge_after_ms => 200}}),\n\
+             io:format(\"APPLY=~p~n\", [R]),\n\
+             io:format(\"OLDCODE_NOW=~p~n\", [erlang:check_old_code('{beam_mod}')]),\n\
+             timer:sleep(800),\n\
+             io:format(\"OLDCODE_LATER=~p~n\", [erlang:check_old_code('{beam_mod}')]),\n\
+             io:format(\"ASK=~p~n\", [ridge_rt:ask(H, {{count}}, 5000)]),\n\
+             halt(0).",
+            base = base,
+            beam_mod = beam_mod,
+            beam_dir = beam_dir,
+            manifest = manifest_fwd,
+        )
+    });
+    apply_edit_counter(&snap, &ws, &manifest, |src| {
+        src.replace(
+            "state count: Int = 0",
+            "state count: Int = 0\n    state step: Int = 2",
+        )
+    });
+    let (lines, _stderr) = join_streamed(node);
+    let out = lines.join("\n");
+    assert!(out.contains("APPLY={ok,"), "apply succeeds: {out}");
+    assert!(
+        out.contains("scheduled => true") && out.contains("after_ms => 200"),
+        "purge scheduled in the report: {out}"
+    );
+    assert!(
+        out.contains("OLDCODE_NOW=true"),
+        "old code still held right after the upgrade: {out}"
+    );
+    assert!(
+        out.contains("OLDCODE_LATER=false"),
+        "old code purged after the quiescence window: {out}"
+    );
+    assert!(out.contains("ASK=1"), "actor keeps serving: {out}");
+}
+
+#[test]
+fn reload_reschedules_purge_on_second_apply() {
+    if !otp_available() {
+        eprintln!("erl/erlc not on PATH — skipping reload_reschedules_purge_on_second_apply");
+        return;
+    }
+    let ws = common::make_counter_workspace();
+    let manifest = manifest_path_for(&ws.path, "debug");
+    let manifest_fwd = manifest.to_string_lossy().replace('\\', "/");
+    let (snap_v1, _beam_dir, node) = boot_counter_streamed(&ws, |base, beam_mod, beam_dir| {
+        format!(
+            "persistent_term:put(ridge_loader_vsn, <<\"{base}\">>),\n\
+             H = {{ridge_handle, _Pid, _}} = ridge_rt:spawn_actor('{beam_mod}', [], []),\n\
+             ok = ridge_rt:send_op(H, {{tick}}),\n\
+             1 = ridge_rt:ask(H, {{count}}, 5000),\n\
+             Rd = fun(MBin) ->\n\
+             \x20   Mf = json:decode(MBin),\n\
+             \x20   [{{M, element(2, file:read_file(\"{beam_dir}/\" ++ binary_to_list(M) ++ \".beam\"))}}\n\
+             \x20    || M <- maps:get(<<\"modules\">>, Mf)]\n\
+             end,\n\
+             W = fun W() -> case filelib:is_file(\"{manifest}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
+             D = fun D() -> case filelib:is_file(\"{manifest}\") of true -> timer:sleep(50), D(); false -> ok end end,\n\
+             W(),\n\
+             {{ok, MBin1}} = file:read_file(\"{manifest}\"),\n\
+             R1 = ridge_loader:apply_bundle(MBin1, Rd(MBin1), #{{base_vsn => <<\"{base}\">>, purge_after_ms => 60000}}),\n\
+             io:format(\"APPLY1=~p~n\", [R1]),\n\
+             D(), W(),\n\
+             {{ok, MBin2}} = file:read_file(\"{manifest}\"),\n\
+             R2 = ridge_loader:apply_bundle(MBin2, Rd(MBin2), #{{base_vsn => ridge_loader:current_version(), purge_after_ms => 60000}}),\n\
+             io:format(\"APPLY2=~p~n\", [R2]),\n\
+             io:format(\"OLDCODE=~p~n\", [erlang:check_old_code('{beam_mod}')]),\n\
+             io:format(\"ASK=~p~n\", [ridge_rt:ask(H, {{count}}, 5000)]),\n\
+             halt(0).",
+            base = base,
+            beam_mod = beam_mod,
+            beam_dir = beam_dir,
+            manifest = manifest_fwd,
+        )
+    });
+    // First upgrade: additive field.
+    apply_edit_counter(&snap_v1, &ws, &manifest, |src| {
+        src.replace(
+            "state count: Int = 0",
+            "state count: Int = 0\n    state step: Int = 2",
+        )
+    });
+    wait_marker(&node, "APPLY1=", std::time::Duration::from_secs(60));
+    // Rebase and second upgrade: plain body change.
+    let snap_v2: WorkspaceSnapshot = serde_json::from_str(
+        &std::fs::read_to_string(snapshot_path_for(&ws.path, "debug")).expect("v2 snapshot"),
+    )
+    .expect("parse v2 snapshot");
+    std::fs::remove_file(&manifest).expect("clear manifest");
+    apply_edit_counter(&snap_v2, &ws, &manifest, |src| {
+        src.replace("count <- count + 1", "count <- 1 + count")
+    });
+    let (lines, _stderr) = join_streamed(node);
+    let out = lines.join("\n");
+    assert!(
+        out.contains("APPLY1={ok,") && out.contains("APPLY2={ok,"),
+        "back-to-back upgrades never hit not_purged and the second register \
+         of the purge timer does not clash: {out}"
+    );
+    assert!(
+        out.contains("OLDCODE=true"),
+        "the long quiescence window still holds the old code: {out}"
+    );
+    assert!(out.contains("ASK=1"), "actor keeps serving: {out}");
+}

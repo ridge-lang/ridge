@@ -72,6 +72,8 @@ pub enum RidgeCommand {
     /// current source and reports, per public symbol, whether a reload would
     /// be compatible, need a generated migration, or be incompatible. Exit
     /// code is 0 only when the report is reloadable with no scaffold holes.
+    /// `ridge reload --node` applies the upgrade to a running node over
+    /// Erlang distribution.
     Reload(cmd::reload::ReloadArgs),
     /// Start an interactive REPL session.
     ///

@@ -21,10 +21,14 @@
 > source already covers the change, and its scaffolds roundtrip (what it
 > prints parses and compiles). The runtime loader requires OTP 27+.
 > Steady-state cost, measured: ~75 ns per message for the receive-path
-> wrapper and ~9 words per tagged record. Still deferred to the next
-> phase, per the sections below: the production transport
-> (`ridge reload --node`), blue/green restart on migration failure, code
-> purging after a quiescence window, and stdlib reload.
+> wrapper and ~9 words per tagged record. The production half has landed
+> too (2026-07-31): `ridge reload --node` ships a bundle (manifest + beam
+> blobs) to a running node over distribution and applies it with
+> blue/green migration-failure semantics (retry once, then the supervisor
+> restarts that actor on init state while every sibling migrates
+> normally), a quiescence purge of the old code, a structured JSON drop
+> report for non-migratable messages, and a full JSON upgrade report for
+> CI/CD and audit. Still deferred: stdlib reload.
 
 This document is a **placeholder** for the Ridge hot-reload story. It enumerates the four open design questions that any 0.2.0+ implementation must resolve before work begins.
 

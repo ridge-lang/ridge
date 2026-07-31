@@ -1889,6 +1889,13 @@ Semantics worth knowing before relying on it:
   60s`); `--json` carries the full structure: modules loaded, actors
   suspended/migrated/restarted with per-actor restart reasons, in-flight
   messages migrated, wall-clock duration, and the purge schedule.
+- **Probe death is safe.** The upgrade runs to completion on the target
+  node itself, wrapped so any failure resumes the suspended actors on
+  their current code. If the CLI's probe (or the operator's machine) dies
+  mid-apply, the node is never left with suspended actors — the in-flight
+  apply finishes, or the system is exactly as before. A failed apply also
+  restores the local pre-compile snapshot, so the next
+  `ridge reload --node` diffs against the build the node actually runs.
 
 Reload is for compatible code changes. Cold deploy is for changes to the
 shape of the world: large database migrations, infrastructure changes

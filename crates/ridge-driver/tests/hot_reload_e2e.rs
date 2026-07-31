@@ -28,6 +28,17 @@ struct ReloadNode {
     manifest_path: std::path::PathBuf,
 }
 
+impl Drop for ReloadNode {
+    /// A panicking test must not leak its node: a leaked erl process
+    /// inherits cargo's stdout pipe and hangs the whole test pipeline on
+    /// Windows. `join` reaps the child first; killing an exited process is
+    /// a harmless error.
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 /// Absolute path to the counter fixture's single source file.
 fn counter_source(ws: &common::TempWorkspace) -> std::path::PathBuf {
     ws.path.join("apps/demo/src/Counter.ridge")
@@ -175,9 +186,20 @@ fn join(mut node: ReloadNode) -> String {
             }
         }
     }
-    let out = node.child.wait_with_output().expect("output");
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let _ = node.child.wait();
+    // The child exited (or was killed): the pipes are at EOF. Read what is
+    // left straight from the handles — `wait_with_output` would move
+    // `child` out, which the Drop guard forbids.
+    let mut stdout = String::new();
+    if let Some(mut so) = node.child.stdout.take() {
+        use std::io::Read;
+        let _ = so.read_to_string(&mut stdout);
+    }
+    let mut stderr = String::new();
+    if let Some(mut se) = node.child.stderr.take() {
+        use std::io::Read;
+        let _ = se.read_to_string(&mut stderr);
+    }
     assert!(
         !killed,
         "node did not finish within 60s\nstdout:\n{stdout}\nstderr:\n{stderr}"
@@ -312,8 +334,9 @@ fn reload_rejects_base_vsn_mismatch() {
 // ── Distributed probe path (the exact mechanism `ridge run --reload` uses) ───
 
 /// Boot a NAMED node that seeds state, registers the actor pid, prints READY,
-/// and blocks forever (killed by the caller).
-fn boot_named_v1(ws: &common::TempWorkspace, node_name: &str, cookie: &str) -> ReloadNode {
+/// and blocks forever (killed by the caller). Returns the node handle and
+/// the beam dir (production cases ship blobs from it after recompiling).
+fn boot_named_v1(ws: &common::TempWorkspace, node_name: &str, cookie: &str) -> (ReloadNode, std::path::PathBuf) {
     let dir = ws.path.clone();
     let artefacts =
         compile_workspace(CompileOptions::new(dir.clone()).with_emit(EmitArtefacts::Beam))
@@ -366,12 +389,15 @@ fn boot_named_v1(ws: &common::TempWorkspace, node_name: &str, cookie: &str) -> R
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawn named erl node");
-    ReloadNode {
-        child,
-        old_snapshot,
-        base_vsn,
-        manifest_path,
-    }
+    (
+        ReloadNode {
+            child,
+            old_snapshot,
+            base_vsn,
+            manifest_path,
+        },
+        beam_dir,
+    )
 }
 
 /// Read the node's stdout until the READY line (30 s cap).
@@ -428,7 +454,7 @@ fn reload_via_rpc_probe() {
     let ws = common::make_counter_workspace();
     let node_name = format!("ridge_e2e_{}@127.0.0.1", std::process::id());
     let cookie = "ridge_e2e_cookie";
-    let mut node = boot_named_v1(&ws, &node_name, cookie);
+    let (mut node, _beam_dir) = boot_named_v1(&ws, &node_name, cookie);
     await_ready(&mut node);
 
     apply_edit(&node, &ws, |src| {
@@ -1337,4 +1363,159 @@ fn reload_drop_structured_mode_emits_json() {
     assert!(parsed["reason"].is_string(), "reason text: {json_line}");
     assert!(parsed["pid"].is_string(), "pid: {json_line}");
     assert!(parsed["ts"].is_string(), "timestamp: {json_line}");
+}
+
+// ── Production transport over rpc: named node, blobs shipped by the probe ────
+
+/// Probe eval that mirrors the CLI's production apply: read the manifest
+/// and the beam blobs from disk, ship them over rpc, print the JSON report
+/// or the node-side error.
+fn prod_apply_eval(
+    node_name: &str,
+    manifest_fwd: &str,
+    beam_dir_fwd: &str,
+    base_vsn_expr: &str,
+    corrupt_first_blob: bool,
+) -> String {
+    let corrupt = if corrupt_first_blob {
+        "\x20       [H1 | T1] = Bins0, Bins = [{element(1, H1), <<\"garbage\">>} | T1],\n"
+    } else {
+        "\x20       Bins = Bins0,\n"
+    };
+    format!(
+        "{{ok, MBin}} = file:read_file(\"{manifest_fwd}\"),\n\
+         Mf = json:decode(MBin),\n\
+         Bins0 = [{{M, element(2, file:read_file(\"{beam_dir}/\" ++ binary_to_list(M) ++ \".beam\"))}}\n\
+         \x20        || M <- maps:get(<<\"modules\">>, Mf)],\n\
+         {corrupt}\
+         R = rpc:call('{node_name}', ridge_loader, apply_bundle,\n\
+         \x20     [MBin, Bins, #{{base_vsn => {base_vsn_expr}, purge_after_ms => 60000}}]),\n\
+         case R of\n\
+         \x20   {{ok, Rep}} ->\n\
+         \x20       Safe = Rep#{{restarts => [#{{module => M, reason => iolist_to_binary(io_lib:format(\"~p\", [Why]))}}\n\
+         \x20                             || #{{module := M, reason := Why}} <- maps:get(restarts, Rep, [])]}},\n\
+         \x20       io:format(\"RIDGE_RELOAD_JSON ~s~n\", [json:encode(Safe)]);\n\
+         \x20   Err -> io:format(\"RIDGE_RELOAD_ERR ~p~n\", [Err])\n\
+         end.",
+        beam_dir = beam_dir_fwd,
+    )
+}
+
+/// Boot the counter fixture as a named production node (v1), apply the
+/// `step` field edit through the bundle transport, return probe stdout.
+/// `edit_base_vsn` overrides the expected base version; `corrupt` swaps the
+/// first blob for garbage. `seq_base` keeps probe node names unique across
+/// tests running in parallel inside one process.
+#[allow(clippy::too_many_lines)]
+fn prod_case(
+    node_label: &str,
+    edit_base_vsn: Option<&str>,
+    corrupt: bool,
+    seq_base: u64,
+) -> (String, common::TempWorkspace, ReloadNode) {
+    let ws = common::make_counter_workspace();
+    let node_name = format!("{node_label}_{}@127.0.0.1", std::process::id());
+    let cookie = "ridge_prod_cookie";
+    let (mut node, beam_dir) = boot_named_v1(&ws, &node_name, cookie);
+    await_ready(&mut node);
+
+    apply_edit(&node, &ws, |src| {
+        src.replace(
+            "state count: Int = 0",
+            "state count: Int = 0\n    state step: Int = 2",
+        )
+    });
+
+    let manifest_fwd = node.manifest_path.to_string_lossy().replace('\\', "/");
+    let beam_dir_fwd = beam_dir.to_string_lossy().replace('\\', "/");
+    let base_expr = edit_base_vsn.map_or_else(
+        || format!("<<\"{}\">>", node.base_vsn),
+        |vsn| format!("<<\"{vsn}\">>")
+    );
+    let eval = prod_apply_eval(&node_name, &manifest_fwd, &beam_dir_fwd, &base_expr, corrupt);
+    let out = probe(cookie, &eval, seq_base);
+    (out, ws, node)
+}
+
+#[test]
+fn reload_prod_bundle_over_rpc() {
+    if !otp_available() {
+        eprintln!("erl/erlc not on PATH — skipping reload_prod_bundle_over_rpc");
+        return;
+    }
+    let (out, _ws, mut node) = prod_case("ridge_prod_ok", None, false, 10);
+    let json_line = out
+        .lines()
+        .find_map(|l| l.strip_prefix("RIDGE_RELOAD_JSON "))
+        .unwrap_or_else(|| panic!("bundle apply must succeed: {out}"));
+    let report: serde_json::Value = serde_json::from_str(json_line).expect("valid JSON report");
+    assert_eq!(report["modules_loaded"], 2, "{json_line}");
+    assert_eq!(report["actors_migrated"], 1, "{json_line}");
+    assert_eq!(report["purge"]["scheduled"], true, "{json_line}");
+
+    let state_eval = format!(
+        "io:format(\"STATE=~p~n\", [rpc:call('{}', sys, get_state, [rpc:call('{}', erlang, whereis, [counter_pid])])]).",
+        format!("ridge_prod_ok_{}@127.0.0.1", std::process::id()),
+        format!("ridge_prod_ok_{}@127.0.0.1", std::process::id()),
+    );
+    let state = probe("ridge_prod_cookie", &state_eval, 11);
+    assert!(state.contains("count => 2"), "state preserved: {state}");
+    assert!(state.contains("step => 2"), "state migrated: {state}");
+
+    let _ = node.child.kill();
+    let _ = node.child.wait();
+}
+
+#[test]
+fn reload_prod_bundle_rejects_vsn_mismatch() {
+    if !otp_available() {
+        eprintln!("erl/erlc not on PATH — skipping reload_prod_bundle_rejects_vsn_mismatch");
+        return;
+    }
+    let (out, _ws, _node) = prod_case("ridge_prod_vsn", Some("deadbeefdeadbeef0000"), false, 20);
+    // ~p pretty-prints long tuples across lines — match on a squashed copy.
+    let flat: String = out.split_whitespace().collect();
+    assert!(
+        flat.contains("RIDGE_RELOAD_ERR{error,{base_version_mismatch"),
+        "stale base version rejected: {out}"
+    );
+
+    let state_eval = format!(
+        "io:format(\"STATE=~p~n\", [rpc:call('{}', sys, get_state, [rpc:call('{}', erlang, whereis, [counter_pid])])]).",
+        format!("ridge_prod_vsn_{}@127.0.0.1", std::process::id()),
+        format!("ridge_prod_vsn_{}@127.0.0.1", std::process::id()),
+    );
+    let state = probe("ridge_prod_cookie", &state_eval, 21);
+    assert!(state.contains("count => 2"), "state untouched: {state}");
+    assert!(
+        !state.contains("step =>"),
+        "nothing loaded on a rejected upgrade: {state}"
+    );
+}
+
+#[test]
+fn reload_prod_bundle_rejects_corrupt_beam() {
+    if !otp_available() {
+        eprintln!("erl/erlc not on PATH — skipping reload_prod_bundle_rejects_corrupt_beam");
+        return;
+    }
+    let (out, _ws, _node) = prod_case("ridge_prod_corrupt", None, true, 30);
+    // ~p pretty-prints long tuples across lines — match on a squashed copy.
+    let flat: String = out.split_whitespace().collect();
+    assert!(
+        flat.contains("RIDGE_RELOAD_ERR{error,{upgrade_failed,error,invalid_beam_blob"),
+        "corrupt blob rejected before any load: {out}"
+    );
+
+    let state_eval = format!(
+        "io:format(\"STATE=~p~n\", [rpc:call('{}', sys, get_state, [rpc:call('{}', erlang, whereis, [counter_pid])])]).",
+        format!("ridge_prod_corrupt_{}@127.0.0.1", std::process::id()),
+        format!("ridge_prod_corrupt_{}@127.0.0.1", std::process::id()),
+    );
+    let state = probe("ridge_prod_cookie", &state_eval, 31);
+    assert!(state.contains("count => 2"), "state untouched: {state}");
+    assert!(
+        !state.contains("step =>"),
+        "no partial loads from a corrupt bundle: {state}"
+    );
 }

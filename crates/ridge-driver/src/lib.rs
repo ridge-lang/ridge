@@ -44,9 +44,9 @@ pub use error::{CheckError, CompileDiagnostics, CompileError, ProcessExitCode, R
 pub use incremental::IncrementalState;
 pub use options::{CheckOptions, CompileOptions, EmitArtefacts, Profile, RunOptions};
 pub use reload::{
-    load_version_history, manifest_path_for, plan_reload, reload_check, snapshot_path_for,
-    snapshot_vsn, ActorMigration, ReloadCheckError, ReloadPlan, UpgradeManifest, VersionHistory,
-    WorkspaceSnapshot,
+    collect_bundle_beams, load_version_history, manifest_path_for, plan_reload, reload_check,
+    snapshot_path_for, snapshot_vsn, ActorMigration, ReloadCheckError, ReloadPlan, UpgradeManifest,
+    VersionHistory, WorkspaceSnapshot,
 };
 pub use run::run_workspace;
 pub use sources::WorkspaceSourceCache;

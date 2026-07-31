@@ -113,8 +113,13 @@ pub fn execute(args: &ReloadArgs, cwd: &Path) -> Result<(), CliError> {
 // ── ridge reload --node (production transport) ────────────────────────────────
 
 /// Apply the current source as a hot upgrade to a running node.
+///
+/// The compile advances the on-disk snapshot to the NEW build, but the
+/// node only advances when the apply succeeds. Every failure path before
+/// that point restores the pre-compile snapshot file — otherwise the next
+/// `ridge reload --node` would diff against a build the node never ran
+/// and refuse on a base-version mismatch forever.
 fn execute_apply(args: &ReloadArgs, cwd: &Path) -> Result<(), CliError> {
-    let node = args.node.clone().unwrap_or_default();
     let root = find_workspace_root(cwd).ok_or(CliError::NoWorkspaceRoot)?;
     let profile = if args.release {
         Profile::Release
@@ -128,20 +133,79 @@ fn execute_apply(args: &ReloadArgs, cwd: &Path) -> Result<(), CliError> {
         CliError::NoWorkspaceRoot
     })?;
 
-    let (old_snapshot, base_vsn) = read_running_snapshot(&root, profile_name)?;
-    let (manifest_path, manifest, beams) = compile_and_plan(&root, profile_name, &old_snapshot)?;
+    let snap_path = snapshot_path_for(&root, profile_name);
+    let (old_snapshot, base_vsn, raw_snapshot) = read_running_snapshot(&snap_path)?;
+    let json_line = match plan_and_apply(
+        args,
+        &erl_path,
+        &root,
+        profile_name,
+        &old_snapshot,
+        &base_vsn,
+    ) {
+        Ok(Some(line)) => line,
+        Ok(None) => return Ok(()),
+        Err(e) => {
+            if let Err(io) = std::fs::write(&snap_path, &raw_snapshot) {
+                eprintln!(
+                    "warning: could not restore the pre-reload snapshot at {}: {io}",
+                    snap_path.display()
+                );
+            }
+            return Err(e);
+        }
+    };
+
+    // From here the node DID advance: the new snapshot on disk is correct,
+    // and report-handling problems are warnings, not reload failures.
+    let report: serde_json::Value = match serde_json::from_str(&json_line) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("warning: the node applied the upgrade but returned a malformed report: {e}");
+            return Ok(());
+        }
+    };
+    println!("{}", summary_line(&report));
+
+    if let Some(json_path) = &args.json {
+        let pretty = serde_json::to_string_pretty(&report).unwrap_or_default();
+        if json_path.as_os_str().is_empty() {
+            println!("{pretty}");
+        } else if let Err(e) = std::fs::write(json_path, &pretty) {
+            eprintln!(
+                "warning: reload applied, but could not write the JSON report to {}: {e}",
+                json_path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Compile, plan, and apply through the probe. `Ok(None)` means the node
+/// already runs this code (nothing to reload); `Ok(Some(_))` carries the
+/// node's JSON report line. Any `Err` happens BEFORE the node advanced.
+fn plan_and_apply(
+    args: &ReloadArgs,
+    erl_path: &Path,
+    root: &Path,
+    profile_name: &str,
+    old_snapshot: &WorkspaceSnapshot,
+    base_vsn: &str,
+) -> Result<Option<String>, CliError> {
+    let node = args.node.clone().unwrap_or_default();
+    let (manifest_path, manifest, beams) = compile_and_plan(root, profile_name, old_snapshot)?;
     if manifest.modules.is_empty() {
         println!("nothing to reload: the node already runs this code.");
-        return Ok(());
+        return Ok(None);
     }
 
     let cookie = args.cookie.clone().unwrap_or_else(default_cookie);
     let out = probe_apply_bundle(
-        &erl_path,
+        erl_path,
         &node,
         &cookie,
         &manifest_path,
-        &base_vsn,
+        base_vsn,
         &beams,
         args.timeout,
         args.purge_after,
@@ -163,36 +227,16 @@ fn execute_apply(args: &ReloadArgs, cwd: &Path) -> Result<(), CliError> {
         eprintln!("node is unchanged unless the failure was reported after the load step.");
         return Err(CliError::AlreadyReported);
     };
-
-    let report: serde_json::Value = serde_json::from_str(json_line).map_err(|e| {
-        eprintln!("error: the node returned a malformed report: {e}");
-        CliError::AlreadyReported
-    })?;
-    println!("{}", summary_line(&report));
-
-    if let Some(json_path) = &args.json {
-        let pretty = serde_json::to_string_pretty(&report).unwrap_or_default();
-        if json_path.as_os_str().is_empty() {
-            println!("{pretty}");
-        } else if let Err(e) = std::fs::write(json_path, &pretty) {
-            eprintln!(
-                "error: could not write the JSON report to {}: {e}",
-                json_path.display()
-            );
-            return Err(CliError::AlreadyReported);
-        }
-    }
-    Ok(())
+    Ok(Some(json_line.to_owned()))
 }
 
-/// Read the snapshot of the build the node is running. Must happen BEFORE
-/// compiling, because the compile replaces the file on disk.
+/// Read the snapshot of the build the node is running, with its raw text
+/// for the failure-path restore. Must happen BEFORE compiling, because
+/// the compile replaces the file on disk.
 fn read_running_snapshot(
-    root: &Path,
-    profile_name: &str,
-) -> Result<(WorkspaceSnapshot, String), CliError> {
-    let snap_path = snapshot_path_for(root, profile_name);
-    let text = std::fs::read_to_string(&snap_path).map_err(|e| {
+    snap_path: &Path,
+) -> Result<(WorkspaceSnapshot, String, String), CliError> {
+    let text = std::fs::read_to_string(snap_path).map_err(|e| {
         eprintln!(
             "error: no build snapshot found at {}; run `ridge build` first ({e})",
             snap_path.display()
@@ -207,7 +251,7 @@ fn read_running_snapshot(
         CliError::AlreadyReported
     })?;
     let vsn = snapshot_vsn(&snapshot);
-    Ok((snapshot, vsn))
+    Ok((snapshot, vsn, text))
 }
 
 /// What [`compile_and_plan`] returns: the manifest path, the manifest, and

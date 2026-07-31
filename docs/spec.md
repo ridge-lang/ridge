@@ -272,7 +272,10 @@ content hash regardless — the compiler tags each constructed value with it
   through the chain of edges — user hooks first, derived edges after —
   when it reaches a receiver, so a message that sat in an actor's mailbox
   across the upgrade arrives in the current shape. A value with no
-  applicable edge is reported and dropped, never delivered.
+  applicable edge is reported and dropped, never delivered. The report has
+  three modes: `loud` (default; human-readable, dev), `silent`, and
+  `structured` (one JSON audit line per drop; `ridge reload --node`
+  switches the node to it on apply).
 
 ```ridge
 type User @version(2) = { name: Text, email: Text } do
@@ -1832,6 +1835,8 @@ ridge run --member api    # build and run
 ridge run --watch         # rebuild and restart on every source change
 ridge run --reload        # watch sources and hot-reload compatible edits into the running node (OTP 27+)
 ridge reload --check      # dry-run: compatibility verdicts for the current edits, nothing touches a runtime
+ridge reload --node app@host --cookie c
+                          # apply the current edits as a hot upgrade to a running node (OTP 27+)
 ridge test                # run all tests
 ridge test --member X     # run tests of member X
 ridge test --filter G     # run tests whose qualified name matches glob G
@@ -1841,6 +1846,54 @@ ridge new <name>          # scaffold a new project
 ridge init                # initialize a workspace in the current directory
 ridge repl                # interactive REPL
 ```
+
+**Production hot reload.** `ridge reload --node` applies the current edits to
+a running node, local or remote over Erlang distribution:
+
+```bash
+ridge reload --node app@prod.example --cookie "$RIDGE_COOKIE" --json report.json
+```
+
+The command reads the snapshot of the build the node runs, compiles the
+current source, and plans the upgrade with the same checker `ridge reload
+--check` runs — a rejected edit prints the per-symbol verdicts and touches
+nothing. An accepted edit is packaged as a bundle (the upgrade manifest plus
+the compiled `.beam` blobs) and shipped through a short-lived probe node;
+the target node's loader validates every blob before loading anything, then
+suspends the affected actors, swaps the code, migrates actor state, and
+resumes. Flags: `--cookie` (distribution cookie), `--timeout <ms>` (rpc
+timeout for the apply call, default 30000), `--purge-after <s>` (quiescence
+window before the old code is purged, default 60, `0` disables),
+`--release` (use the release profile's snapshot and artefacts), and
+`--json [path]` (write the full structured report to a file, or stdout).
+The node must carry a version marker seeded at boot; a node without one is
+refused loudly, and `--seed` opts into seeding it on first contact.
+
+Semantics worth knowing before relying on it:
+
+- **Blue/green migration failure.** A migration that fails for one actor
+  never aborts the upgrade and never resumes that actor with corrupt state:
+  the migration is retried once, then the actor is killed and its supervisor
+  restarts it on its init state. Every other actor migrates normally, and
+  the report names each restarted actor with the reason.
+- **Quiescence purge.** The node holds two code versions after an upgrade;
+  the old one is purged after the `--purge-after` window. A new upgrade
+  cancels and reschedules any pending purge.
+- **Structured drop report.** The apply switches the node to the structured
+  drop policy: every in-flight message that no migration chain covers is
+  dropped with one JSON line on stderr (`event`, `module`, `name`,
+  `old_vsn`, `reason`, `pid`, `ts`), the audit trail production tooling
+  consumes. Dev loops keep the loud human-readable rendering.
+- **The report.** Success prints one line (`reloaded 2 modules, migrated 1
+  actors (+0 restarted), 0 in-flight messages in 12ms; old code purges in
+  60s`); `--json` carries the full structure: modules loaded, actors
+  suspended/migrated/restarted with per-actor restart reasons, in-flight
+  messages migrated, wall-clock duration, and the purge schedule.
+
+Reload is for compatible code changes. Cold deploy is for changes to the
+shape of the world: large database migrations, infrastructure changes
+(ports, node topology), runtime upgrades, and anything `ridge reload
+--check` declares incompatible.
 
 **Test discovery.** `ridge test` recognises two forms:
 

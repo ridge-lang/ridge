@@ -3,8 +3,9 @@
 -- cross-module calls are unsupported (T17+ deferred).
 -- Several tests require both `fs` and `env` capabilities (dual-cap);
 -- capability syntax: `pub fn fs env test_name ()`.
--- The fs error channel is the standard `Error` record, so the failure
--- handlers below match `Err _` — there is no Text reason to interpolate.
+-- The fs error channel is the standard `Error` record; its `code` and
+-- `message` fields are readable on the Err branch (see
+-- readFile_missing_error_fields_readable).
 @ffi("ridge_rt", "fs_read", 1)
 fn _readFile (path: Text) -> Result Text Error
 
@@ -136,3 +137,17 @@ pub fn fs env test_remove_deletes_file_second_remove_is_err () -> Result Unit Te
                     match _remove path
                         Err _ -> Ok ()
                         Ok _ -> Err "second remove of a deleted file should be Err"
+
+-- The Err payload is readable: a missing file reports code "enoent" and a
+-- non-empty message. Before the runtime wire-shape fix the error came back as
+-- a tagged tuple and reading `e.code` crashed with badmap.
+@test "readFile_missing_error_fields_readable"
+pub fn fs env test_readFile_missing_error_fields_readable () -> Result Unit Text =
+    let path = _tmpPath "definitely-does-not-exist-xyz789"
+    match _readFile path
+        Ok _ -> Err "readFile of missing path should return Err"
+        Err e ->
+            if e.code == "enoent" then
+                if e.message != "" then Ok ()
+                else Err "fs error message should not be empty"
+            else Err "fs error code should be enoent for a missing path"

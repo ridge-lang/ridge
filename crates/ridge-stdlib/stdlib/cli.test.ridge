@@ -1,4 +1,7 @@
--- Private FFI bridges for std.cli test suite.
+import std.test (ensure)
+import std.cli as Cli
+
+-- Private FFI bridges for the std.cli test suite.
 -- These replicate cli.ridge FFI declarations in local scope because cross-module
 -- calls are unsupported (T17+ deferred).
 @ffi("ridge_rt", "cli_args", 1)
@@ -24,3 +27,70 @@ pub fn env test_args_consistent_across_calls () -> Result Unit Text =
     let b = _listLength (_cliArgs ())
     if a == b then Ok ()
     else Err "cli.args length should be consistent across calls"
+
+-- ── Parser (parse/flag/has/positional) ─────────────────────────────────
+
+@test "parse_empty"
+pub fn test_parse_empty () -> Result Unit Text =
+    let p = Cli.parse []
+    ensure (Cli.flag "x" p == None && Cli.has "x" p == false && Cli.positional 0 p == None) "parse [] should yield no flags, switches or positionals"
+
+@test "parse_long_equals"
+pub fn test_parse_long_equals () -> Result Unit Text =
+    ensure (Cli.flag "name" (Cli.parse ["--name=value"]) == Some "value") "--name=value should bind name=value"
+
+@test "parse_long_space"
+pub fn test_parse_long_space () -> Result Unit Text =
+    ensure (Cli.flag "name" (Cli.parse ["--name", "value"]) == Some "value") "--name value should bind name=value"
+
+@test "parse_long_switch_at_end"
+pub fn test_parse_long_switch_at_end () -> Result Unit Text =
+    let p = Cli.parse ["--verbose"]
+    ensure (Cli.has "verbose" p && Cli.flag "verbose" p == None) "trailing --verbose should be a switch"
+
+@test "parse_long_switch_before_flag"
+pub fn test_parse_long_switch_before_flag () -> Result Unit Text =
+    let p = Cli.parse ["--verbose", "--n=1"]
+    ensure (Cli.has "verbose" p && Cli.flag "n" p == Some "1") "--verbose followed by a flag should be a switch"
+
+@test "parse_short_switch"
+pub fn test_parse_short_switch () -> Result Unit Text =
+    ensure (Cli.has "v" (Cli.parse ["-v"])) "-v should be a switch"
+
+@test "parse_short_equals"
+pub fn test_parse_short_equals () -> Result Unit Text =
+    ensure (Cli.flag "n" (Cli.parse ["-n=5"]) == Some "5") "-n=5 should bind n=5"
+
+@test "parse_short_space"
+pub fn test_parse_short_space () -> Result Unit Text =
+    ensure (Cli.flag "n" (Cli.parse ["-n", "5"]) == Some "5") "-n 5 should bind n=5"
+
+@test "parse_terminator"
+pub fn test_parse_terminator () -> Result Unit Text =
+    let p = Cli.parse ["--", "-v", "file"]
+    ensure (Cli.has "v" p == false && Cli.positional 0 p == Some "-v" && Cli.positional 1 p == Some "file") "everything after -- should be positional"
+
+@test "parse_positionals_keep_order"
+pub fn test_parse_positionals_keep_order () -> Result Unit Text =
+    let p = Cli.parse ["a", "b", "c"]
+    ensure (Cli.positional 0 p == Some "a" && Cli.positional 2 p == Some "c" && Cli.positional 3 p == None) "positionals should keep their order"
+
+@test "parse_lone_dash_is_positional"
+pub fn test_parse_lone_dash_is_positional () -> Result Unit Text =
+    ensure (Cli.positional 0 (Cli.parse ["-"]) == Some "-") "a lone - should be positional"
+
+@test "parse_subcommand_slot"
+pub fn test_parse_subcommand_slot () -> Result Unit Text =
+    let p = Cli.parse ["add", "--tag", "x", "-f"]
+    ensure (Cli.positional 0 p == Some "add" && Cli.flag "tag" p == Some "x" && Cli.has "f" p) "first positional is the subcommand slot"
+
+@test "parse_duplicate_flag_last_wins"
+pub fn test_parse_duplicate_flag_last_wins () -> Result Unit Text =
+    ensure (Cli.flag "k" (Cli.parse ["--k=1", "--k=2"]) == Some "2") "a repeated flag should keep the last value"
+
+-- Documents the value-capture heuristic: a flag followed by a non-flag
+-- token always captures it, even when the user meant a switch.
+@test "parse_flag_captures_next_token"
+pub fn test_parse_flag_captures_next_token () -> Result Unit Text =
+    let p = Cli.parse ["--verbose", "file.txt"]
+    ensure (Cli.flag "verbose" p == Some "file.txt" && Cli.positional 0 p == None) "--verbose file.txt captures file.txt as the value (documented)"

@@ -140,6 +140,10 @@ const fn ty_proc_output(b: &BuiltinTyCons) -> Type {
     Type::Con(b.proc_output, vec![])
 }
 #[inline]
+const fn ty_cli_parsed(b: &BuiltinTyCons) -> Type {
+    Type::Con(b.cli_parsed, vec![])
+}
+#[inline]
 const fn ty_json_value(b: &BuiltinTyCons) -> Type {
     Type::Con(b.json_value, vec![])
 }
@@ -508,7 +512,8 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             ty_list(b, ty_text(b)),
         ))),
         (STD_TEXT, "splitN") => Some(mono(ty_fn_pure(
-            vec![ty_text(b), ty_text(b), ty_int(b)],
+            // Matches text.ridge: (n: Int) (sep: Text) (s: Text).
+            vec![ty_int(b), ty_text(b), ty_text(b)],
             ty_list(b, ty_text(b)),
         ))),
         (STD_TEXT, "lines") => Some(mono(ty_fn_pure(vec![ty_text(b)], ty_list(b, ty_text(b))))),
@@ -797,10 +802,10 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             ))
         }
         (STD_LIST, "contains") => {
-            // forall a. List a -> a -> Bool
+            // forall a. a -> List a -> Bool  (matches list.ridge: (x) (xs))
             Some(poly(
                 vec![A],
-                ty_fn_pure(vec![ty_list(b, Type::Var(A)), Type::Var(A)], ty_bool(b)),
+                ty_fn_pure(vec![Type::Var(A), ty_list(b, Type::Var(A))], ty_bool(b)),
             ))
         }
         (STD_LIST, "find") => {
@@ -1636,6 +1641,24 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             // Int -> Unit (does not return)
             Some(mono(ty_fn_caps(vec![ty_int(b)], ty_unit(b), proc_caps)))
         }
+        // Pure argument parser (cli.ridge). Parsed is a builtin record TyCon
+        // (flags/switches/positionals), so field access typechecks app-side.
+        (STD_CLI, "parse") => Some(mono(ty_fn_pure(
+            vec![ty_list(b, ty_text(b))],
+            ty_cli_parsed(b),
+        ))),
+        (STD_CLI, "flag") => Some(mono(ty_fn_pure(
+            vec![ty_text(b), ty_cli_parsed(b)],
+            ty_option(b, ty_text(b)),
+        ))),
+        (STD_CLI, "has") => Some(mono(ty_fn_pure(
+            vec![ty_text(b), ty_cli_parsed(b)],
+            ty_bool(b),
+        ))),
+        (STD_CLI, "positional") => Some(mono(ty_fn_pure(
+            vec![ty_int(b), ty_cli_parsed(b)],
+            ty_option(b, ty_text(b)),
+        ))),
         // ── std.proc ──────────────────────────────────────────────────────────
         (STD_PROC, "run") => {
             use ridge_ast::Capability;
@@ -1781,7 +1804,6 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         // construction shims, and the accessor companions) is still stubbed —
         // see the shared stub arm below.
         //
-        // ── std.cli (partial stubs) ───────────────────────────────────────────
         // ── std.net.http (partial stubs) ──────────────────────────────────────
         //
         // Request and Response are record TyCons that don't exist in Phase 4's
@@ -1794,6 +1816,10 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         // in BuiltinTyCons so we use stub_phase7() for now.
         (STD_TIME, "Duration")
         | (STD_PROC, "Output")
+        // `Parsed` (cli.ridge) is a record TyCon declared in stdlib source;
+        // field access typechecks via the real builtin `cli_parsed` TyCon, but
+        // the type NAME has no value scheme — same treatment as `Output`.
+        | (STD_CLI, "Parsed")
         | (STD_JSON,
            "encodeInt" | "encodeBool" | "encodeText"
            // JsonValue construction shims (FFI bridges to ridge_rt:json_*).
@@ -1803,7 +1829,6 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
            // JsonValue accessor companions — peel one variant off a decoded
            // JsonValue as an Option-shaped escape hatch.
            | "asInt" | "asFloat" | "asBool" | "asText" | "asList" | "asObject" | "isNull")
-        | (STD_CLI, "parseArgs" | "help" | "version")
         | (STD_NET_HTTP,
            "get" | "post" | "put" | "delete" | "respond" | "Request" | "Response"
            // `Html` / `SecureCookie` as a bare value (the constructor) stay
@@ -2631,6 +2656,15 @@ mod tests {
         let scheme = stdlib_signature(STD_CLI, "exit", &b).unwrap();
         assert!(matches!(scheme.ty, Type::Fn { ref ret, .. }
             if matches!(ret.as_ref(), Type::Con(id, _) if *id == b.unit)
+        ));
+    }
+
+    #[test]
+    fn std_cli_parse_returns_parsed() {
+        let b = builtins();
+        let scheme = stdlib_signature(STD_CLI, "parse", &b).unwrap();
+        assert!(matches!(scheme.ty, Type::Fn { ref ret, .. }
+            if matches!(ret.as_ref(), Type::Con(id, _) if *id == b.cli_parsed)
         ));
     }
 

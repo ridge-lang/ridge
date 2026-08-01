@@ -16,7 +16,7 @@ items:
       caps: CapabilitySet(0)
       params:
         - name: reason
-          ty: Con(101)
+          ty: Con(102)
       body:
         Assign(n0) -> StateField(n):
           Call(n1):

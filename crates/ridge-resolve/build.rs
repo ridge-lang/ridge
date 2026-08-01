@@ -328,7 +328,19 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
         &["int", "float", "alphanumeric", "choice", "seed"],
     ),
     ("std.env", &["get", "set", "all"]),
-    ("std.cli", &["args", "exit"]),
+    (
+        "std.cli",
+        &[
+            // `pub type Parsed` declared in cli.ridge.
+            "Parsed",
+            "args",
+            "exit",
+            "parse",
+            "flag",
+            "has",
+            "positional",
+        ],
+    ),
     (
         "std.proc",
         &[

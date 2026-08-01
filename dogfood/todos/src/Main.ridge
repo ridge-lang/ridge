@@ -92,7 +92,7 @@ fn fs io saveTodos (todos: List Todo) -> Unit =
                    |> List.fold (fn acc line -> if acc == "" then line else Text.concat (Text.concat acc "\n") line) ""
     match Fs.writeFile dbPath body
         Ok _ -> ()
-        Err msg -> Io.eprintln (Text.concat "todos: save failed: " msg)
+        Err e -> Io.eprintln (Text.concat "todos: save failed: " e.message)
 
 -- ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -148,23 +148,22 @@ fn io usage (_unit: Unit) -> Unit =
 -- ── Entry point ──────────────────────────────────────────────────────────────
 
 fn env fs io main () -> Unit =
-    let args = Cli.args ()
-    match List.head args
+    let parsed = Cli.parse (Cli.args ())
+    match Cli.positional 0 parsed
         None -> usage ()
         Some cmd ->
-            let rest = List.drop 1 args
             if cmd == "list" then
                 listCmd ()
             else if cmd == "add" then
-                match List.head rest
+                match Cli.positional 1 parsed
                     Some title -> addCmd title
                     None -> Io.eprintln "todos: add requires a title"
             else if cmd == "done" then
-                match List.head rest
+                match Cli.positional 1 parsed
                     Some id -> doneCmd id
                     None -> Io.eprintln "todos: done requires an id"
             else if cmd == "rm" then
-                match List.head rest
+                match Cli.positional 1 parsed
                     Some id -> rmCmd id
                     None -> Io.eprintln "todos: rm requires an id"
             else

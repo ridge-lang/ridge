@@ -79,14 +79,14 @@ eprintln(B) -> io:format(standard_error, "~ts~n", [B]).
 
 %% read_line/1 — std.io.readLine
 %% Reads one line from stdin.
-%% Returns {ok, Line} on success or {error, {error_record, Code, Message}} on
-%% EOF / read error.  Ridge type: Result Text Error.
+%% Returns {ok, Line} on success or {error, #{code, message}} (the standard
+%% Error map) on EOF / read error.  Ridge type: Result Text Error.
 %% Ridge calling convention: zero-param fns receive the Unit `ok` arg.
 read_line(_Unit) ->
     case io:get_line("") of
-        eof        -> {error, {error_record, <<"eof">>,     <<"end of input">>}};
-        {error, R} -> {error, {error_record, <<"io_error">>,
-                                iolist_to_binary(io_lib:format("~p", [R]))}};
+        eof        -> {error, mk_error(<<"eof">>, <<"end of input">>)};
+        {error, R} -> {error, mk_error(<<"io_error">>,
+                                       iolist_to_binary(io_lib:format("~p", [R])))};
         Line       -> {ok, iolist_to_binary(string:trim(Line, trailing, "\n"))}
     end.
 
@@ -158,12 +158,12 @@ fs_remove_dir(Path) ->
         {error, R} -> fs_error(R)
     end.
 
-%% fs_error/1 — the fs error channel's wire shape: a structured
-%% `{error_record, Code, Message}` (the standard `Error` record), with the
-%% POSIX reason as the code and `file:format_error/1` as the message.
+%% fs_error/1 — the fs error channel's wire shape: the standard `Error` map
+%% `#{code, message}`, with the POSIX reason as the code and
+%% `file:format_error/1` as the message.
 fs_error(R) ->
-    {error, {error_record, atom_to_binary(R, utf8),
-             iolist_to_binary(file:format_error(R))}}.
+    {error, mk_error(atom_to_binary(R, utf8),
+                     iolist_to_binary(file:format_error(R)))}.
 
 %% cli_args/0: returns CLI arguments as a list of binaries.
 %% In escript mode the escript_main/1 bridge stores the pre-processed argument list
@@ -221,7 +221,7 @@ mono_since({instant, Start}, {instant, End}) ->
 
 %% time_from_iso/1 — std.time.fromIso
 %% Parses an ISO-8601 text into a Timestamp.
-%% Returns {ok, {timestamp, Micros}} or {error, {error_record, Code, Message}}.
+%% Returns {ok, {timestamp, Micros}} or {error, #{code, message}}.
 %% Ridge type: Text -> Result Timestamp Error  (§3.12 lines 348, 353).
 time_from_iso(Text) ->
     Str = binary_to_list(Text),
@@ -229,8 +229,8 @@ time_from_iso(Text) ->
         Micros = calendar:rfc3339_to_system_time(Str, [{unit, microsecond}]),
         {ok, {timestamp, Micros}}
     catch
-        _:_ -> {error, {error_record, <<"parse_error">>,
-                         <<"invalid ISO-8601 timestamp">>}}
+        _:_ -> {error, mk_error(<<"parse_error">>,
+                                <<"invalid ISO-8601 timestamp">>)}
     end.
 
 %% time_since_ms/1 — std.time.sinceMs
@@ -266,8 +266,8 @@ time_from_micros(Micros) -> {timestamp, Micros}.
 decimal_from_text(Bin) ->
     case decimal_parse(string:trim(binary_to_list(Bin))) of
         {ok, U, S} -> {ok, {decimal, U, S}};
-        error      -> {error, {error_record, <<"decimal.parse">>,
-                               <<"invalid decimal literal">>}}
+        error      -> {error, mk_error(<<"decimal.parse">>,
+                                       <<"invalid decimal literal">>)}
     end.
 
 %% decimal_to_text/1 — std.decimal.toText. Canonical text, scale preserved.
@@ -357,7 +357,7 @@ decimal_round_step('HalfEven', _Sign, Q, R, P) ->
 %% decimal_div/4 — std.decimal.div. Divides to T fractional digits, rounding the
 %% result with Mode. A zero divisor is an error record (Ridge `Err`).
 decimal_div(_Mode, _T, _A, {decimal, 0, _Sb}) ->
-    {error, {error_record, <<"decimal.divide_by_zero">>, <<"division by zero">>}};
+    {error, mk_error(<<"decimal.divide_by_zero">>, <<"division by zero">>)};
 decimal_div(Mode, T, {decimal, Ua, Sa}, {decimal, Ub, Sb}) ->
     E = T + Sb - Sa,
     {Num, Den} =
@@ -460,8 +460,8 @@ decimal_of_text(S) ->
 uuid_from_text(Bin) ->
     case uuid_canonicalize(Bin) of
         {ok, Canon} -> {ok, {uuid, Canon}};
-        error       -> {error, {error_record, <<"uuid.parse">>,
-                                <<"invalid uuid">>}}
+        error       -> {error, mk_error(<<"uuid.parse">>,
+                                        <<"invalid uuid">>)}
     end.
 
 %% uuid_to_text/1 — std.uuid.toText. The canonical lowercase text.
@@ -518,8 +518,8 @@ uuid_hexstr(Bin) ->
 bytes_from_hex(Bin) ->
     case bytes_decode_hex(Bin) of
         {ok, Raw} -> {ok, Raw};
-        error     -> {error, {error_record, <<"bytes.parse">>,
-                              <<"invalid hex">>}}
+        error     -> {error, mk_error(<<"bytes.parse">>,
+                                      <<"invalid hex">>)}
     end.
 
 %% bytes_to_hex/1 — std.bytes.toHex (and the SQL codec's canonical form). Lowercase
@@ -536,8 +536,8 @@ bytes_from_utf8(Bin) -> Bin.
 bytes_to_utf8(Raw) ->
     case unicode:characters_to_binary(Raw, utf8, utf8) of
         Bin when is_binary(Bin) -> {ok, Bin};
-        _ -> {error, {error_record, <<"bytes.utf8">>,
-                      <<"not valid UTF-8">>}}
+        _ -> {error, mk_error(<<"bytes.utf8">>,
+                              <<"not valid UTF-8">>)}
     end.
 
 %% bytes_empty/1 — std.bytes.empty. The empty byte string.
@@ -565,7 +565,7 @@ base64_encode(Bytes) -> base64:encode(Bytes).
 base64_decode(S) ->
     try {ok, base64:decode(S)}
     catch _:_ ->
-        {error, {error_record, <<"crypto.base64">>, <<"invalid base64">>}}
+        {error, mk_error(<<"crypto.base64">>, <<"invalid base64">>)}
     end.
 
 %% map_filter_map/2 — std.map.filterMap. maps:filtermap/2 expects
@@ -596,7 +596,7 @@ date_epoch_gd() -> calendar:date_to_gregorian_days(1970, 1, 1).
 date_from_ymd(Y, M, D) when is_integer(Y), is_integer(M), is_integer(D) ->
     case calendar:valid_date(Y, M, D) of
         true  -> {ok, {date, calendar:date_to_gregorian_days(Y, M, D) - date_epoch_gd()}};
-        false -> {error, {error_record, <<"date.invalid">>, <<"invalid calendar date">>}}
+        false -> {error, mk_error(<<"date.invalid">>, <<"invalid calendar date">>)}
     end.
 
 %% date_to_iso/1 — std.date.toIso (and the SQL codec's canonical form). ISO 8601
@@ -612,9 +612,9 @@ date_from_iso(Bin) ->
         {ok, Y, M, D} ->
             case calendar:valid_date(Y, M, D) of
                 true  -> {ok, {date, calendar:date_to_gregorian_days(Y, M, D) - date_epoch_gd()}};
-                false -> {error, {error_record, <<"date.invalid">>, <<"date out of range">>}}
+                false -> {error, mk_error(<<"date.invalid">>, <<"date out of range">>)}
             end;
-        error -> {error, {error_record, <<"date.parse">>, <<"invalid ISO-8601 date">>}}
+        error -> {error, mk_error(<<"date.parse">>, <<"invalid ISO-8601 date">>)}
     end.
 
 %% Parse "YYYY-MM-DD" into {ok, Y, M, D} or error. Each component is a run of digits
@@ -673,7 +673,7 @@ tod_from_hms(H, M, S) when is_integer(H), is_integer(M), is_integer(S) ->
     case (H >= 0) andalso (H =< 23) andalso (M >= 0) andalso (M =< 59)
          andalso (S >= 0) andalso (S =< 59) of
         true  -> {ok, {time, (H * 3600 + M * 60 + S) * 1000000}};
-        false -> {error, {error_record, <<"time.invalid">>, <<"invalid time of day">>}}
+        false -> {error, mk_error(<<"time.invalid">>, <<"invalid time of day">>)}
     end.
 
 %% tod_to_iso/1 — std.timeofday.toIso (and the SQL codec's canonical form). ISO 8601
@@ -700,10 +700,10 @@ tod_from_iso(Bin) ->
             case (H >= 0) andalso (H =< 23) andalso (M >= 0) andalso (M =< 59)
                  andalso (S >= 0) andalso (S =< 59) of
                 true  -> {ok, {time, (H * 3600 + M * 60 + S) * 1000000 + Frac}};
-                false -> {error, {error_record, <<"time.invalid">>, <<"time out of range">>}}
+                false -> {error, mk_error(<<"time.invalid">>, <<"time out of range">>)}
             end;
         error ->
-            {error, {error_record, <<"time.invalid">>, <<"invalid ISO-8601 time">>}}
+            {error, mk_error(<<"time.invalid">>, <<"invalid ISO-8601 time">>)}
     end.
 
 %% Parse "HH:MM:SS" (with an optional ".ffffff") into {ok, H, M, S, FracMicros} or error.
@@ -1169,7 +1169,7 @@ env_set(Name, Value) ->
 %% proc_run/2 — std.proc.run
 %% Runs an external command with the given argument list.
 %% Returns {ok, {proc_output, Stdout, Stderr, ExitCode}} or
-%%         {error, {error_record, Code, Message}}.
+%%         {error, #{code, message}} (the standard Error map).
 %% Ridge type: Text -> List Text -> Result Output Error  (§3.16 / D123).
 %%
 %% stdout and stderr are captured separately using two ports:
@@ -1197,7 +1197,7 @@ proc_run(Cmd, Args) ->
     catch
         _:Reason ->
             Msg = iolist_to_binary(io_lib:format("~p", [Reason])),
-            {error, {error_record, <<"spawn_error">>, Msg}}
+            {error, mk_error(<<"spawn_error">>, Msg)}
     end.
 
 %% Collect port data until exit_status; build Output.
@@ -1232,7 +1232,7 @@ proc_run_collect(Port, Acc, Deadline) ->
             {ok, #{stdout => Stdout, stderr => <<>>, exitCode => Code}}
     after Remaining ->
         port_close(Port),
-        {error, {error_record, <<"timeout">>, <<"process exceeded 30s timeout">>}}
+        {error, mk_error(<<"timeout">>, <<"process exceeded 30s timeout">>)}
     end.
 
 %% --- JSON (§3.17) ---
@@ -1304,7 +1304,7 @@ join_binaries([H | T], Sep) ->
 %% json_decode/1 — std.json.decode
 %% Decodes a JSON binary to a JsonValue tagged-tuple tree using OTP-27's
 %% native json module.  Falls back to a simple error response on OTP 26.
-%% Returns {ok, JsonValue} | {error, {error_record, Code, Message}}.
+%% Returns {ok, JsonValue} | {error, #{code, message}} (the standard Error map).
 %% Ridge type: Text -> Result JsonValue Error  (§3.17).
 json_decode(Text) ->
     try
@@ -1315,11 +1315,11 @@ json_decode(Text) ->
     catch
         error:undef ->
             %% OTP 26 fallback: json module not available.
-            {error, {error_record, <<"not_implemented">>,
-                     <<"json:decode/1 requires OTP 27+">>}};
+            {error, mk_error(<<"not_implemented">>,
+                             <<"json:decode/1 requires OTP 27+">>)};
         _:Reason ->
             Msg = iolist_to_binary(io_lib:format("~p", [Reason])),
-            {error, {error_record, <<"decode_error">>, Msg}}
+            {error, mk_error(<<"decode_error">>, Msg)}
     end.
 
 %% erlang_to_json_value/1 — convert OTP-27 json:decode/1 output to JsonValue.
@@ -2413,11 +2413,15 @@ quote_and(A, B) ->
 quote_not_true(A) ->
     #{tree => {'QNotTrue', maps:get(tree, A)}}.
 
-%% mk_error/2 — build an `Error` record from a code and a message. `Error` is a
+%% mk_error/2 — build an `Error` value from a code and a message. `Error` is a
 %% builtin record `{ code: Text, message: Text }`, which codegen lowers to an
-%% atom-keyed map (field access `e.code` compiles to `maps:get(code, _)`). A bare
-%% record literal cannot be coerced to the nominal `Error` type outside an
-%% instance-method body, so the unique-row terminals build their errors here.
+%% atom-keyed map (field access `e.code` compiles to `maps:get(code, _)`). This
+%% is the ONE wire shape for the standard error channel: every `Result _ Error`
+%% producer in this module routes through here, because the old tagged-tuple
+%% shape `{error_record, Code, Message}` crashed any caller reading `e.code` or
+%% `e.message` with `badmap`. A bare record literal cannot be coerced to the
+%% nominal `Error` type outside an instance-method body, so stdlib code that
+%% fabricates errors calls here too.
 mk_error(Code, Message) ->
     #{code => Code, message => Message}.
 

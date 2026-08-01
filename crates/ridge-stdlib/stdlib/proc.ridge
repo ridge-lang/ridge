@@ -20,7 +20,7 @@ pub type Output = { stdout: Text, stderr: Text, exitCode: Int }
 -- by keeping command and args separated (signed off 2026-04-29).
 -- Bridge: ridge_rt:proc_run/2 returns
 --   {ok, #{stdout => Stdout, stderr => Stderr, exitCode => Code}}
---   or {error, {error_record, Code, Message}}.
+--   or {error, #{code, message}} (the standard Error map).
 -- The ok shape is a map (not a tagged tuple) so it matches Output's
 -- record→map codegen lowering — field access `.exitCode` compiles to
 -- erlang:map_get.

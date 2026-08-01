@@ -40,3 +40,17 @@ pub fn proc test_run_captures_stderr () -> Result Unit Text =
         Ok out ->
             if out.exitCode != 0 then Ok ()
             else Err "erl halt(1) should exit non-zero"
+
+-- The Err payload is readable: a missing executable reports code
+-- "spawn_error" (open_port failure) and a non-empty message. Before the
+-- runtime wire-shape fix the error came back as a tagged tuple and reading
+-- `e.code` crashed with badmap.
+@test "run_nonexistent_error_fields_readable"
+pub fn proc test_run_nonexistent_error_fields_readable () -> Result Unit Text =
+    match _procRun "this_command_does_not_exist_ridge_test" []
+        Ok _ -> Err "proc.run nonexistent should return Err"
+        Err e ->
+            if e.code == "spawn_error" then
+                if e.message != "" then Ok ()
+                else Err "proc error message should not be empty"
+            else Err "proc error code should be spawn_error for a missing executable"

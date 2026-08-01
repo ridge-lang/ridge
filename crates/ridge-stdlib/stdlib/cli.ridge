@@ -3,6 +3,35 @@
 -- §3.15 / §9.2: the capability is `env` for `args`, `proc` for `exit`.
 -- Both functions are exposed under the `std.cli` module but their
 -- capability annotations follow the spec (not a separate `cli` capability).
+--
+-- The parser (parse/flag/has/positional) is pure: it works on any
+-- List Text, so it is testable without the `env` capability.
+--
+-- Parsing conventions (fixed — no flag spec needed):
+--   --name value    long flag, value is the next token
+--   --name=value    long flag, inline value
+--   -n value        short flag, value is the next token
+--   -n=value        short flag, inline value
+--   --verbose, -v   switch (a flag with no value: last token, or
+--                   immediately followed by another flag token)
+--   --              terminator: every token after it is positional
+--   anything else   positional, kept in order
+--
+-- Note: a flag followed by a non-flag token always captures that token as
+-- its value, so `--verbose file` binds verbose="file". When a switch is
+-- followed by a positional, put the switch last or use `--`.
+--
+-- Subcommands need no machinery: the first positional is the conventional
+-- subcommand slot. Match on `positional 0 parsed` and dispatch.
+
+import std.list as List
+import std.map as Map
+import std.text as Text
+
+-- The result of parsing a command line.
+-- `flags` holds name → value pairs; `switches` holds value-less flags;
+-- `positionals` holds the remaining arguments in order.
+pub type Parsed = { flags: Map Text Text, switches: List Text, positionals: List Text }
 
 -- Return the command-line arguments as a list of Text values.
 -- Capability: env (arguments are part of the process environment).
@@ -14,3 +43,74 @@ pub fn env args (_unit: Unit) -> List Text
 -- Note: formally returns Unit but never actually returns.
 @ffi("erlang", "halt", 1)
 pub fn proc exit (code: Int) -> Unit
+
+-- Parse raw arguments into flags, switches and positionals.
+pub fn parse (args: List Text) -> Parsed =
+    let (f, sw, pos) = parseLoop args (Map.fromList [], [], [])
+    Parsed { flags = f, switches = List.reverse sw, positionals = List.reverse pos }
+
+-- Look up the value of a flag (--name value, --name=value, -n value, -n=value).
+pub fn flag (name: Text) (p: Parsed) -> Option Text = Map.get name p.flags
+
+-- Return true if the flag or switch was present on the command line.
+pub fn has (name: Text) (p: Parsed) -> Bool =
+    Map.contains name p.flags || List.contains name p.switches
+
+-- Return the n-th positional argument (0-based), or None if out of range.
+-- The first positional is the conventional subcommand slot.
+pub fn positional (n: Int) (p: Parsed) -> Option Text =
+    List.head (List.drop n p.positionals)
+
+-- ── Internals ───────────────────────────────────────────────────────────
+
+-- Walking accumulator: (flags, switches, positionals). Switches and
+-- positionals accumulate in reverse; `parse` reverses them at the end.
+fn parseLoop (tokens: List Text) (acc: (Map Text Text, List Text, List Text)) -> (Map Text Text, List Text, List Text) =
+    match tokens
+        [] -> acc
+        tok :: rest ->
+            let (f, sw, pos) = acc
+            if tok == "--" then
+                (f, sw, List.concat (List.reverse rest) pos)
+            else if Text.startsWith "--" tok then
+                parseLong (Text.slice 2 (Text.length tok - 2) tok) rest f sw pos
+            else if Text.startsWith "-" tok && Text.length tok > 1 then
+                parseShort (Text.slice 1 (Text.length tok - 1) tok) rest f sw pos
+            else
+                parseLoop rest (f, sw, tok :: pos)
+
+fn parseLong (body: Text) (rest: List Text) (f: Map Text Text) (sw: List Text) (pos: List Text) -> (Map Text Text, List Text, List Text) =
+    match splitOnce "=" body
+        Some kv ->
+            let (k, v) = kv
+            parseLoop rest (Map.insert k v f, sw, pos)
+        None -> flagOrSwitch body rest f sw pos
+
+fn parseShort (body: Text) (rest: List Text) (f: Map Text Text) (sw: List Text) (pos: List Text) -> (Map Text Text, List Text, List Text) =
+    match splitOnce "=" body
+        Some kv ->
+            let (k, v) = kv
+            parseLoop rest (Map.insert k v f, sw, pos)
+        None -> flagOrSwitch body rest f sw pos
+
+-- Split on the FIRST occurrence of sep, keeping the remainder intact
+-- ("a=b=c" on "=" gives ("a", "b=c")). None when sep does not occur.
+-- Note: Text.splitN only takes leading parts and drops the remainder,
+-- so it cannot be used here.
+fn splitOnce (sep: Text) (s: Text) -> Option (Text, Text) =
+    match Text.split sep s
+        k :: rest ->
+            if List.isEmpty rest then None
+            else Some (k, Text.join sep rest)
+        [] -> None
+
+-- A bare flag token captures the next token as its value, unless the next
+-- token is itself a flag (or absent) — then it is a switch.
+fn flagOrSwitch (name: Text) (rest: List Text) (f: Map Text Text) (sw: List Text) (pos: List Text) -> (Map Text Text, List Text, List Text) =
+    match rest
+        next :: tail ->
+            if Text.startsWith "-" next && Text.length next > 1 then
+                parseLoop rest (f, name :: sw, pos)
+            else
+                parseLoop tail (Map.insert name next f, sw, pos)
+        [] -> parseLoop rest (f, name :: sw, pos)

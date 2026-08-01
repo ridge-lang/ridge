@@ -20,8 +20,8 @@ import std.list as List
 import std.option as Option
 
 fn env io fs main () -> Unit =
-    let args = Cli.args ()
-    match List.head args
+    let parsed = Cli.parse (Cli.args ())
+    match Cli.positional 0 parsed
         None -> Io.println "usage: ridge run -- <file>"
         Some path ->
             match Fs.lines path

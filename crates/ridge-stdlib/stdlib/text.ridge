@@ -54,7 +54,8 @@ fn _splitAll (sep: Text) (s: Text) -> List Text
 pub fn split (sep: Text) (s: Text) -> List Text =
     _splitAll sep s
 
--- Split text on a separator, returning at most n+1 parts.
+-- Split text on a separator, returning at most n parts (the remainder is
+-- dropped; there is no split-once helper that keeps it).
 pub fn splitN (n: Int) (sep: Text) (s: Text) -> List Text =
     let parts = split sep s
     _take n parts

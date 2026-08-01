@@ -389,6 +389,10 @@ pub struct BuiltinTyCons {
     /// has no Ridge type to alias, so `Monitor` is a compiler-known builtin
     /// rather than a stdlib `pub type` declaration.
     pub monitor: TyConId,
+    /// `Parsed { flags: Map Text Text, switches: List Text, positionals: List Text }`
+    /// — the result type of `std.cli.parse`. Registered as a `TyConKind::Record`
+    /// so that field access (`p.flags`, `p.positionals`) is typeable.
+    pub cli_parsed: TyConId,
 }
 
 impl BuiltinTyCons {
@@ -448,6 +452,7 @@ impl BuiltinTyCons {
             child_spec: SENTINEL,
             supervisor: SENTINEL,
             monitor: SENTINEL,
+            cli_parsed: SENTINEL,
         }
     }
 
@@ -1748,6 +1753,37 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
+        // Parsed { flags: Map Text Text, switches: List Text, positionals: List Text }
+        // — the result type of `std.cli.parse`. Registered as a record so field
+        // access (`p.positionals`) is typeable at app compile time, mirroring
+        // `proc_output`. Interned last so the 0..59 layout stays stable.
+        let cli_parsed = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "Parsed".to_string(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![
+                    RecordField {
+                        name: "flags".to_string(),
+                        ty: Type::Con(map, vec![Type::Con(text, vec![]), Type::Con(text, vec![])]),
+                    },
+                    RecordField {
+                        name: "switches".to_string(),
+                        ty: Type::Con(list, vec![Type::Con(text, vec![])]),
+                    },
+                    RecordField {
+                        name: "positionals".to_string(),
+                        ty: Type::Con(list, vec![Type::Con(text, vec![])]),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+
         // Verify assignment order matches spec §4.1 indices 0..16.
         debug_assert_eq!(int.0, 0);
         debug_assert_eq!(float.0, 1);
@@ -1817,6 +1853,8 @@ impl BuiltinTyCons {
         debug_assert_eq!(supervisor.0, 58);
         // Monitor is interned after Supervisor.
         debug_assert_eq!(monitor.0, 59);
+        // Parsed (std.cli) is interned last so the 0..59 layout stays stable.
+        debug_assert_eq!(cli_parsed.0, 60);
 
         // Suppress the "unused" lint — CapabilitySet is imported for future use
         // in T4 (actor schemas carry CapabilitySet).
@@ -1868,6 +1906,7 @@ impl BuiltinTyCons {
             child_spec,
             supervisor,
             monitor,
+            cli_parsed,
         }
     }
 }
@@ -1947,7 +1986,7 @@ mod tests {
     }
 
     #[test]
-    fn arena_len_is_60() {
+    fn arena_len_is_61() {
         // 15 original builtins + Ordering + JsonValue + the std.net.http taint
         // wrappers Sql / Html / SecureCookie + std.sql's SqlValue + the
         // column-codegen builtins Column / Table + the schema-codegen builtins
@@ -1957,10 +1996,10 @@ mod tests {
         // + InsertShape/1 + the Decimal, Uuid, Bytes, Date and Time primitives and
         // the Instant monotonic reading + the supervision types
         // ChildSpec / Supervisor + the process-monitor reference Monitor
-        // (interned last).
+        // + std.cli's Parsed record (interned last).
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 17);
-        assert_eq!(arena.len(), 60);
+        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 18);
+        assert_eq!(arena.len(), 61);
     }
 
     #[test]

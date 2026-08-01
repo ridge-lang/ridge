@@ -1,4 +1,4 @@
-//! Track-A tests for `std.cli` — 2 public functions.
+//! Track-A tests for `std.cli` — 6 public functions.
 //!
 //! Each test asserts that `cli.ridge` compiles through the T4 build pipeline
 //! and that the module appears in the build summary.
@@ -51,6 +51,30 @@ fn std_cli_args_compiles() {
 
 #[test]
 fn std_cli_exit_compiles() {
+    assert_std_cli_built();
+    assert_cli_ridge_discovered();
+}
+
+#[test]
+fn std_cli_parse_compiles() {
+    assert_std_cli_built();
+    assert_cli_ridge_discovered();
+}
+
+#[test]
+fn std_cli_flag_compiles() {
+    assert_std_cli_built();
+    assert_cli_ridge_discovered();
+}
+
+#[test]
+fn std_cli_has_compiles() {
+    assert_std_cli_built();
+    assert_cli_ridge_discovered();
+}
+
+#[test]
+fn std_cli_positional_compiles() {
     assert_std_cli_built();
     assert_cli_ridge_discovered();
 }

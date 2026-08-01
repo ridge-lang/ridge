@@ -8,15 +8,14 @@ Usage:
 import std.io as Io
 import std.cli as Cli
 import std.random as Random
-import std.list as List
 import std.option as Option
 
 const defaultLength: Int = 16
 
 fn env io random main () -> Unit =
-    let args = Cli.args ()
+    let parsed = Cli.parse (Cli.args ())
     let len =
-        List.head args
+        Cli.positional 0 parsed
  |> Option.flatMap Int.parse
  |> Option.withDefault defaultLength
     if len <= 0 then

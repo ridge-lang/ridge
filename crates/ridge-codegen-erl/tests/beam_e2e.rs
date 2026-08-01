@@ -2035,6 +2035,214 @@ fn beam_e2e_ask_on_dead_plain_actor_fails_loudly() {
     );
 }
 
+// ── 10. Static children: the supervisor starts its own spec list ────────────
+
+const SUPERVISION_STATIC_CHILDREN_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+import std.list as List
+import std.actor as Actor
+import std.actor (OneForOne)
+
+actor Seeded =
+    state count: Int = 0
+
+    init (start: Int) =
+        count <- start
+
+    on get () -> Int =
+        count
+
+fn spawn io main () -> Result Unit Text =
+    let sup = Actor.supervise OneForOne 3 5000 [child Seeded (7)]?
+    let kids = Actor.whichChildren sup
+    Io.println $"kids=${Int.toText (List.length kids)}"
+    match List.all (fn (_, alive) -> alive) kids
+        True -> Io.println "all-alive"
+        False -> Io.println "some-dead"
+    Ok ()
+"#;
+
+/// Every other supervision test builds its children dynamically (`[]` +
+/// `startChild`). The static-list path — `supervise … [child Seeded (7)]` —
+/// must start the children itself: the supervisor comes up with the child
+/// already running (`kids=1`, `all-alive`), and the init argument crossed
+/// through the spec's start tuple.
+#[test]
+fn beam_e2e_supervisor_static_children_start_with_the_supervisor() {
+    let (stdout, _) =
+        run_inline_actor_test_via_runner("SupStatic", SUPERVISION_STATIC_CHILDREN_SOURCE);
+    assert!(
+        stdout.contains("kids=1"),
+        "the static child should be running under the supervisor, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("all-alive"),
+        "the static child should be alive, got:\n{stdout}"
+    );
+}
+
+const SUPERVISION_STATIC_INIT_CRASH_SOURCE: &str = r#"
+import std.io as Io
+import std.actor as Actor
+import std.actor (OneForOne)
+
+actor Doomed =
+    state n: Int = 0
+
+    init (d: Int) =
+        n <- 10 / d
+
+fn spawn io main () -> Result Unit Text =
+    match Actor.supervise OneForOne 3 5000 [child Doomed (0)]
+        Ok _ -> Io.println "unexpected-ok"
+        Err _ -> Io.println "start-failed"
+    Io.println "main-survived"
+    Ok ()
+"#;
+
+/// A static child whose init fails takes the supervisor's start down with
+/// it: `supervise` must answer `Err` (OTP's start_link propagates the child
+/// start failure), not crash `main` and not answer a half-built supervisor.
+#[test]
+fn beam_e2e_supervisor_static_child_init_crash_returns_err() {
+    let (stdout, _) = run_inline_actor_test_via_runner(
+        "SupStaticInitCrash",
+        SUPERVISION_STATIC_INIT_CRASH_SOURCE,
+    );
+    assert!(
+        stdout.contains("start-failed"),
+        "supervise should return Err when a static child's init crashes, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("main-survived"),
+        "main should continue past the failed supervise, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("unexpected-ok"),
+        "supervise answered Ok for a child that could never start, got:\n{stdout}"
+    );
+}
+
+// ── 11. transient: normal stop stays down, abnormal exit restarts ───────────
+
+const SUPERVISION_TRANSIENT_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+import std.time as Time
+import std.actor as Actor
+import std.actor (OneForOne, Transient, Noproc, Timeout)
+
+actor Counter =
+    state count: Int = 0
+
+    on bump =
+        count <- count + 1
+
+    on get () -> Int =
+        count
+
+    on die (d: Int) =
+        count <- 10 / d
+
+fn spawn io time main () -> Result Unit Text =
+    let sup = Actor.supervise OneForOne 3 5000 []?
+    let a = Actor.startChild sup (Actor.childId "a" (Actor.childRestart Transient (child Counter)))?
+    a ! bump
+    -- A NORMAL stop must not restart a transient child: the ask afterwards
+    -- finds nothing to answer.
+    Actor.stop a
+    Time.sleep 300
+    match Actor.tryAsk a get 1000
+        Err Noproc -> Io.println "normal-stop-stayed-down"
+        Ok n -> Io.println $"unexpected-reply=${Int.toText n}"
+        Err Timeout -> Io.println "unexpected-timeout"
+    -- An abnormal exit MUST restart a transient child, with fresh state:
+    -- bumped once before the crash, the restarted counter reads 0, not 1.
+    let b = Actor.startChild sup (Actor.childId "b" (Actor.childRestart Transient (child Counter)))?
+    b ! bump
+    b ! die 0
+    Time.sleep 500
+    let n = b ?> get timeout 2000
+    Io.println $"crash-restarted=${Int.toText n}"
+    Ok ()
+"#;
+
+/// `Transient` is the middle restart policy and the only one that
+/// distinguishes exit reasons: a normal stop leaves the child down
+/// (`normal-stop-stayed-down`), a crash brings it back with re-run init
+/// (`crash-restarted=0` — bumped once before dying, so 0 proves the reset).
+/// The `Restart` variant crosses the FFI boundary as a verbatim atom that
+/// `ridge_rt` maps to OTP's lowercase one; a mapping bug would show up here
+/// as a restarted normal-stop or a never-restarted crash.
+#[test]
+fn beam_e2e_supervisor_transient_restarts_only_on_abnormal_exit() {
+    let (stdout, _) =
+        run_inline_actor_test_via_runner("SupTransient", SUPERVISION_TRANSIENT_SOURCE);
+    assert!(
+        stdout.contains("normal-stop-stayed-down"),
+        "a transient child stopped normally must NOT be restarted, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("crash-restarted=0"),
+        "a transient child that crashed must restart with fresh state, got:\n{stdout}"
+    );
+}
+
+// ── 12. temporary: a crash leaves the child down ────────────────────────────
+
+const SUPERVISION_TEMPORARY_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+import std.time as Time
+import std.actor as Actor
+import std.actor (OneForOne, Temporary, Noproc, Timeout)
+
+actor Counter =
+    state count: Int = 0
+
+    on bump =
+        count <- count + 1
+
+    on get () -> Int =
+        count
+
+    on die (d: Int) =
+        count <- 10 / d
+
+fn spawn io time main () -> Result Unit Text =
+    let sup = Actor.supervise OneForOne 3 5000 []?
+    let c = Actor.startChild sup (Actor.childId "c" (Actor.childRestart Temporary (child Counter)))?
+    c ! bump
+    c ! die 0
+    Time.sleep 500
+    match Actor.tryAsk c get 1000
+        Err Noproc -> Io.println "crash-stayed-down"
+        Ok n -> Io.println $"unexpected-reply=${Int.toText n}"
+        Err Timeout -> Io.println "unexpected-timeout"
+    Io.println "main-still-running"
+    Ok ()
+"#;
+
+/// `Temporary` children are never restarted — not even on a crash. The
+/// bumped counter dies and stays dead (`crash-stayed-down`), while the
+/// supervisor and `main` carry on (`main-still-running`). Without this pin
+/// a `temporary → transient` mapping slip at the runtime boundary would be
+/// invisible: the child would silently come back.
+#[test]
+fn beam_e2e_supervisor_temporary_never_restarts() {
+    let (stdout, _) =
+        run_inline_actor_test_via_runner("SupTemporary", SUPERVISION_TEMPORARY_SOURCE);
+    assert!(
+        stdout.contains("crash-stayed-down"),
+        "a temporary child must NOT be restarted after a crash, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("main-still-running"),
+        "main died with the temporary child, got:\n{stdout}"
+    );
+}
+
 // ── terminate callback ─────────────────────────────────────────────────────
 
 const TERMINATE_ON_STOP_SOURCE: &str = r#"

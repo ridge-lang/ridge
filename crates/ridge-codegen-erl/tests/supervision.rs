@@ -40,11 +40,11 @@ fn io time main () -> Result Unit Text =
     Ok ()
 ";
 
-fn compile_to_core(id: &str) -> String {
+fn compile_to_core(id: &str, source: &str) -> String {
     // Each caller passes a distinct id: the temp workspace dir is keyed by it,
     // and two tests sharing one would race (one test's cleanup empties the
     // other's pipeline mid-run).
-    let tw = make_workspace(id, "supervision", SOURCE);
+    let tw = make_workspace(id, "supervision", source);
     let result = run_pipeline(&tw.path);
 
     let module_opt = &result.lowered.modules[0];
@@ -67,7 +67,7 @@ fn pipeline_typechecks_and_lowers() {
 
 #[test]
 fn child_spec_map_shape_in_core() {
-    let core = compile_to_core("supervision_shape");
+    let core = compile_to_core("supervision_shape", SOURCE);
     // The OTP child-spec map: plain map with id/start/restart/shutdown keys.
     // The id is a BINARY (Ridge Text) — printed in Core Erlang bit-syntax
     // form (`c` = 99 is the first byte of "counter") — so `stopChild` /
@@ -105,7 +105,7 @@ fn child_spec_map_shape_in_core() {
 
 #[test]
 fn supervision_calls_route_through_ridge_rt() {
-    let core = compile_to_core("supervision_route");
+    let core = compile_to_core("supervision_route", SOURCE);
     for want in [
         "'start_supervisor'",
         "'start_supervised_child'",
@@ -126,5 +126,38 @@ fn supervision_calls_route_through_ridge_rt() {
     assert!(
         core.contains("'OneForOne'"),
         "strategy variant must lower to the verbatim atom, core:\n{core}"
+    );
+}
+
+const RESTART_SOURCE: &str = "\
+import std.io as Io
+import std.actor as Actor
+import std.actor (OneForOne, Transient)
+
+actor Counter =
+    state count: Int = 0
+
+    on getCount () -> Int =
+        count
+
+fn spawn io main () -> Result Unit Text =
+    let sup = Actor.supervise OneForOne 3 5000 []?
+    let _ = Actor.startChild sup (Actor.childRestart Transient (child Counter))?
+    Ok ()
+";
+
+/// `childRestart` rewrites the spec through `ridge_rt:set_child_restart`,
+/// and the `Restart` variant crosses the boundary as the verbatim CamelCase
+/// atom (the runtime normalises it to OTP's lowercase `transient`).
+#[test]
+fn child_restart_routes_through_ridge_rt() {
+    let core = compile_to_core("supervision_restart", RESTART_SOURCE);
+    assert!(
+        core.contains("'set_child_restart'"),
+        "childRestart must route through ridge_rt:set_child_restart, core:\n{core}"
+    );
+    assert!(
+        core.contains("'Transient'"),
+        "restart variant must lower to the verbatim atom, core:\n{core}"
     );
 }

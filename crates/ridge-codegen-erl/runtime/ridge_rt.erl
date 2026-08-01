@@ -1898,12 +1898,19 @@ spawn_actor(Mod, Init, _Caps) ->
 %% union lowers to verbatim CamelCase atoms ('OneForOne' | 'OneForAll' |
 %% 'RestForOne'); they map to OTP's lowercase strategy atoms here.
 %%
-%% start_link + immediate unlink: fate-sharing is opt-in, not default —
-%% the supervisor ties its children's lifetimes, not its starter's. There is a microscopic race between start_link returning
-%% and unlink running (a starter crashing inside that window would still
-%% propagate its exit signal to the supervisor); it is accepted because the
-%% window is a single instruction and the alternative — flipping trap_exit
-%% in arbitrary user processes — is worse.
+%% start_link runs inside a short-lived starter process, not the caller.
+%% When the supervisor fails to boot (a static child's init crashed) the
+%% process exits with a non-normal reason and — still linked to whoever
+%% called start_link — takes that caller down before the {error, ...} tuple
+%% is ever seen. The starter traps the exit and reports the outcome as a
+%% plain message, so the documented contract holds: a failed start answers
+%% {error, Text} and the caller decides what to do. Flipping trap_exit in
+%% the caller itself was rejected — arbitrary user processes must not have
+%% their exit handling changed, not even inside a narrow window.
+%%
+%% On success the starter unlinks before reporting: fate-sharing is opt-in,
+%% not default — the supervisor ties its children's lifetimes, not its
+%% starter's.
 %%
 %% The Ridge surface takes `period` in milliseconds (uniform with ask
 %% timeouts and OTP's own child-spec `shutdown`); OTP's sup_flags period is
@@ -1914,12 +1921,28 @@ start_supervisor(Strategy, Intensity, PeriodMs, ChildSpecs) ->
               intensity => Intensity,
               period    => erlang:max(1, (PeriodMs + 999) div 1000)},
     Specs = [normalize_child_spec(S) || S <- ChildSpecs],
-    case supervisor:start_link(ridge_sup, {Flags, Specs}) of
-        {ok, SupPid} ->
-            unlink(SupPid),
-            {ok, {ridge_sup, SupPid}};
-        {error, Reason} ->
-            {error, sup_error_binary(Reason)}
+    Caller = self(),
+    Ref = make_ref(),
+    Starter = spawn(fun() ->
+        process_flag(trap_exit, true),
+        case supervisor:start_link(ridge_sup, {Flags, Specs}) of
+            {ok, SupPid} ->
+                unlink(SupPid),
+                Caller ! {Ref, {ok, SupPid}};
+            {error, Reason} ->
+                Caller ! {Ref, {error, Reason}}
+        end
+    end),
+    MonRef = monitor(process, Starter),
+    receive
+        {Ref, {ok, SupPid1}} ->
+            demonitor(MonRef, [flush]),
+            {ok, {ridge_sup, SupPid1}};
+        {Ref, {error, Reason1}} ->
+            demonitor(MonRef, [flush]),
+            {error, sup_error_binary(Reason1)};
+        {'DOWN', MonRef, process, Starter, DownReason} ->
+            {error, sup_error_binary(DownReason)}
     end.
 
 %% start_supervised_child/2 — std.actor.startChild. Starts `Spec` as a

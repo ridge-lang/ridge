@@ -1732,6 +1732,7 @@ dependencies = [
 name = "ridge-fmt"
 version = "0.3.0-rc4"
 dependencies = [
+ "proptest",
  "ridge-ast",
  "ridge-lexer",
  "ridge-parser",

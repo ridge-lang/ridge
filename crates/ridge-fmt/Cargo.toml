@@ -16,3 +16,4 @@ ridge-lexer  = { path = "../ridge-lexer" }
 thiserror.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true

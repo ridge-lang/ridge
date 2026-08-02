@@ -652,6 +652,14 @@ impl fmt::Display for TypeError {
                 )
             }
 
+            // ── T051 ──────────────────────────────────────────────────────────
+            Self::UnsupportedInstanceHead { class, reason, .. } => {
+                write!(
+                    f,
+                    "T051: unsupported instance head for `{class}`\n  {reason}"
+                )
+            }
+
             // ── T999 ──────────────────────────────────────────────────────────
             Self::InternalTypeError { detail, .. } => {
                 write!(f, "T999: internal type error\n  {detail}\n  This is a compiler bug. Please report it.")
@@ -726,6 +734,7 @@ impl HasErrorCode for TypeError {
             | Self::ActorCallbackSignature { span, .. }
             | Self::UnknownTypeVersion { span, .. }
             | Self::DuplicateMigration { span, .. }
+            | Self::UnsupportedInstanceHead { span, .. }
             | Self::InternalTypeError { span, .. } => *span,
 
             // T034: uses `totext_span` (the explicit instance) as the primary span.

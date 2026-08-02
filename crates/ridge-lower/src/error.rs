@@ -47,6 +47,7 @@ use std::fmt;
 /// | `ToTextLowering`          | `L007` | §4.6  |
 /// | `WithOnNonRecord`         | `L008` | §4.7  |
 /// | `RefutableSliceElement`   | `L009` | §4.8  |
+/// | `IntLiteralOutOfRange`    | `L010` | §4.9  |
 /// | `UnsolvedTypeInIR`        | `L997` | §5    |
 /// | `CapVarInIR`              | `L998` | §5    |
 /// | `InternalLoweringError`   | `L999` | §5    |
@@ -107,6 +108,19 @@ pub enum LowerError {
         /// The span of the refutable sub-pattern.
         span: Span,
     },
+    /// `L010` — an integer literal does not fit in the `Int` range (`i64`).
+    ///
+    /// Unlike the other variants this one IS reachable from valid-typed user
+    /// input: the lexer validates the literal's *form* but not its *value*, so
+    /// `99999999999999999999` typechecks as `Int` and only fails here, where
+    /// the raw lexeme is parsed.  Not a compiler bug — a user error with a
+    /// dedicated code.
+    IntLiteralOutOfRange {
+        /// The span of the offending literal.
+        span: Span,
+        /// The raw lexeme as written in the source.
+        raw: String,
+    },
     /// `L997` — an unsolved type variable reached the IR, indicating incomplete
     /// typecheck output was passed to the lowerer.
     UnsolvedTypeInIR {
@@ -142,6 +156,7 @@ impl LowerError {
             Self::ToTextLowering { .. } => "L007",
             Self::WithOnNonRecord { .. } => "L008",
             Self::RefutableSliceElement { .. } => "L009",
+            Self::IntLiteralOutOfRange { .. } => "L010",
             Self::UnsolvedTypeInIR { .. } => "L997",
             Self::CapVarInIR { .. } => "L998",
             Self::InternalLoweringError { .. } => "L999",
@@ -161,6 +176,7 @@ impl LowerError {
             | Self::ToTextLowering { span }
             | Self::WithOnNonRecord { span }
             | Self::RefutableSliceElement { span }
+            | Self::IntLiteralOutOfRange { span, .. }
             | Self::UnsolvedTypeInIR { span }
             | Self::CapVarInIR { span }
             | Self::InternalLoweringError { span, .. } => *span,
@@ -224,6 +240,13 @@ impl fmt::Display for LowerError {
                      use a variable or `_` here (P026)"
                 )
             }
+            Self::IntLiteralOutOfRange { span, raw } => {
+                write!(
+                    f,
+                    "[L010] integer literal `{raw}` at {span:?} is out of range for Int \
+                     (min -9223372036854775808, max 9223372036854775807)"
+                )
+            }
             Self::UnsolvedTypeInIR { span } => {
                 write!(
                     f,
@@ -273,6 +296,14 @@ mod tests {
         assert_eq!(
             LowerError::RefutableSliceElement { span: sp() }.code(),
             "L009"
+        );
+        assert_eq!(
+            LowerError::IntLiteralOutOfRange {
+                span: sp(),
+                raw: String::new()
+            }
+            .code(),
+            "L010"
         );
         assert_eq!(LowerError::UnsolvedTypeInIR { span: sp() }.code(), "L997");
         assert_eq!(LowerError::CapVarInIR { span: sp() }.code(), "L998");

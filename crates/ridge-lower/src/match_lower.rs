@@ -53,8 +53,8 @@ use crate::core::lower_expr;
 use crate::ctx::LowerCtx;
 use crate::error::LowerError;
 
-// Re-export the literal helper from core by duplicating it here to avoid
-// a circular dependency between core ↔ match_lower.
+// Numeric literal parsing is shared with `core` (`parse_int_*` helpers), so
+// pattern-site and expression-site literals behave identically.
 use ridge_ast::Literal;
 
 // ── Public entry points ───────────────────────────────────────────────────────
@@ -1004,7 +1004,7 @@ pub fn lower_pattern_full(ctx: &mut LowerCtx<'_>, pat: &Pattern) -> IrPat {
                 };
             }
             IrPat::Lit {
-                value: literal_to_ir_lit(lit),
+                value: literal_to_ir_lit(ctx, lit),
                 span: *span,
             }
         }
@@ -1349,35 +1349,16 @@ fn field_pattern_to_pair(ctx: &mut LowerCtx<'_>, fp: &FieldPattern) -> (String, 
 
 /// Convert an AST [`Literal`] to an [`IrLit`] in a pattern context.
 ///
-/// Pattern contexts have no `LowerCtx` available for error reporting, so
-/// parse failures fall back to neutral values.
-fn literal_to_ir_lit(lit: &Literal) -> ridge_ir::IrLit {
+/// Numeric literals share the expression-site parsers from [`crate::core`], so
+/// base prefixes are case-insensitive and out-of-range values are reported as
+/// `L010` instead of silently collapsing to zero.
+fn literal_to_ir_lit(ctx: &mut LowerCtx<'_>, lit: &Literal) -> ridge_ir::IrLit {
+    let span = lit.span();
     match lit {
-        Literal::IntDec { raw, .. } => {
-            let cleaned = raw.replace('_', "");
-            cleaned
-                .parse::<i64>()
-                .map(ridge_ir::IrLit::Int)
-                .unwrap_or(ridge_ir::IrLit::Int(0))
-        }
-        Literal::IntBin { raw, .. } => {
-            let cleaned = raw.trim_start_matches("0b").replace('_', "");
-            i64::from_str_radix(&cleaned, 2)
-                .map(ridge_ir::IrLit::Int)
-                .unwrap_or(ridge_ir::IrLit::Int(0))
-        }
-        Literal::IntOct { raw, .. } => {
-            let cleaned = raw.trim_start_matches("0o").replace('_', "");
-            i64::from_str_radix(&cleaned, 8)
-                .map(ridge_ir::IrLit::Int)
-                .unwrap_or(ridge_ir::IrLit::Int(0))
-        }
-        Literal::IntHex { raw, .. } => {
-            let cleaned = raw.trim_start_matches("0x").replace('_', "");
-            i64::from_str_radix(&cleaned, 16)
-                .map(ridge_ir::IrLit::Int)
-                .unwrap_or(ridge_ir::IrLit::Int(0))
-        }
+        Literal::IntDec { raw, .. } => crate::core::parse_int_dec(ctx, raw, span),
+        Literal::IntBin { raw, .. } => crate::core::parse_int_bin(ctx, raw, span),
+        Literal::IntOct { raw, .. } => crate::core::parse_int_oct(ctx, raw, span),
+        Literal::IntHex { raw, .. } => crate::core::parse_int_hex(ctx, raw, span),
         Literal::Float { raw, .. } => {
             let cleaned = raw.replace('_', "");
             cleaned
@@ -1472,6 +1453,86 @@ mod tests {
             ctx.pending_pattern_guards.len(),
             1,
             "a decimal pattern must push exactly one value-comparison guard"
+        );
+    }
+
+    // ── Integer literal pattern edge cases (B3) ──────────────────────────────
+
+    /// Upper-case base prefixes in a pattern must parse to the same value as
+    /// their lower-case form — previously `0B101` silently collapsed to a
+    /// pattern for `0`, a miscompile.
+    #[test]
+    fn literal_pattern_uppercase_base_prefixes() {
+        for (lit, expected) in [
+            (
+                Literal::IntBin {
+                    raw: "0B101".into(),
+                    span: sp(),
+                },
+                5,
+            ),
+            (
+                Literal::IntOct {
+                    raw: "0O777".into(),
+                    span: sp(),
+                },
+                511,
+            ),
+            (
+                Literal::IntHex {
+                    raw: "0XFF".into(),
+                    span: sp(),
+                },
+                255,
+            ),
+        ] {
+            let mut ctx = fresh_ctx();
+            let pat = Pattern::Literal { lit, span: sp() };
+            let ir = lower_pattern_full(&mut ctx, &pat);
+            assert!(
+                ctx.errors.is_empty(),
+                "expected no errors; got: {:?}",
+                ctx.errors
+            );
+            match ir {
+                IrPat::Lit {
+                    value: IrLit::Int(n),
+                    ..
+                } => assert_eq!(n, expected),
+                other => panic!("expected IrPat::Lit Int({expected}), got {other:?}"),
+            }
+        }
+    }
+
+    /// An out-of-range integer literal in a pattern reports `L010` instead of
+    /// silently matching zero.
+    #[test]
+    fn literal_pattern_int_out_of_range_is_l010() {
+        let mut ctx = fresh_ctx();
+        let pat = Pattern::Literal {
+            lit: Literal::IntDec {
+                raw: "99999999999999999999".into(),
+                span: sp(),
+            },
+            span: sp(),
+        };
+        let ir = lower_pattern_full(&mut ctx, &pat);
+        assert_eq!(ctx.errors.len(), 1, "expected exactly one error");
+        assert!(
+            matches!(ctx.errors[0], LowerError::IntLiteralOutOfRange { .. }),
+            "expected IntLiteralOutOfRange, got {:?}",
+            ctx.errors[0]
+        );
+        assert_eq!(ctx.errors[0].code(), "L010");
+        assert!(
+            matches!(
+                ir,
+                IrPat::Lit {
+                    value: IrLit::Int(0),
+                    ..
+                }
+            ),
+            "fallback pattern must be a neutral zero literal, got {ir:?}"
         );
     }
 

@@ -3803,9 +3803,9 @@ fn record_ctor_span(ctor: &RecordCtor) -> ridge_ast::Span {
 /// Lower an AST [`Literal`] to an [`IrExpr::Lit`].
 ///
 /// Integer variants (`IntDec`, `IntBin`, `IntOct`, `IntHex`) are parsed to
-/// `i64`.  On parse failure a defensive `L999` error is emitted and
-/// `IrLit::Int(0)` is returned so the surrounding expression tree is still
-/// structurally valid.
+/// `i64`.  A value that does not fit in `i64` is reported as `L010`
+/// (`IntLiteralOutOfRange`) and `IrLit::Int(0)` is returned so the
+/// surrounding expression tree is still structurally valid.
 fn lower_literal(ctx: &mut LowerCtx<'_>, lit: &Literal) -> IrExpr {
     let span = lit.span();
     // A decimal literal has no native runtime form, so it lowers to a call that
@@ -4366,63 +4366,49 @@ fn stdlib_module_name(id: StdlibModuleId) -> String {
 }
 
 /// Parse a decimal integer raw lexeme (possibly with `_` separators) to `i64`.
-fn parse_int_dec(ctx: &mut LowerCtx<'_>, raw: &str, span: Span) -> IrLit {
-    let cleaned = raw.replace('_', "");
-    match cleaned.parse::<i64>() {
-        Ok(n) => IrLit::Int(n),
-        Err(e) => {
-            ctx.errors.push(LowerError::InternalLoweringError {
-                span,
-                message: format!("decimal integer `{raw}` could not be parsed as i64: {e}"),
-            });
-            IrLit::Int(0)
-        }
-    }
+pub(crate) fn parse_int_dec(ctx: &mut LowerCtx<'_>, raw: &str, span: Span) -> IrLit {
+    parse_int_radix(ctx, raw, span, 10)
 }
 
-/// Parse a binary integer raw lexeme (`0b…`) to `i64`.
-fn parse_int_bin(ctx: &mut LowerCtx<'_>, raw: &str, span: Span) -> IrLit {
-    let cleaned = raw.trim_start_matches("0b").replace('_', "");
-    match i64::from_str_radix(&cleaned, 2) {
-        Ok(n) => IrLit::Int(n),
-        Err(e) => {
-            ctx.errors.push(LowerError::InternalLoweringError {
-                span,
-                message: format!("binary integer `{raw}` could not be parsed as i64: {e}"),
-            });
-            IrLit::Int(0)
-        }
-    }
+/// Parse a binary integer raw lexeme (`0b…`/`0B…`) to `i64`.
+pub(crate) fn parse_int_bin(ctx: &mut LowerCtx<'_>, raw: &str, span: Span) -> IrLit {
+    parse_int_radix(ctx, raw, span, 2)
 }
 
-/// Parse an octal integer raw lexeme (`0o…`) to `i64`.
-fn parse_int_oct(ctx: &mut LowerCtx<'_>, raw: &str, span: Span) -> IrLit {
-    let cleaned = raw.trim_start_matches("0o").replace('_', "");
-    match i64::from_str_radix(&cleaned, 8) {
-        Ok(n) => IrLit::Int(n),
-        Err(e) => {
-            ctx.errors.push(LowerError::InternalLoweringError {
-                span,
-                message: format!("octal integer `{raw}` could not be parsed as i64: {e}"),
-            });
-            IrLit::Int(0)
-        }
-    }
+/// Parse an octal integer raw lexeme (`0o…`/`0O…`) to `i64`.
+pub(crate) fn parse_int_oct(ctx: &mut LowerCtx<'_>, raw: &str, span: Span) -> IrLit {
+    parse_int_radix(ctx, raw, span, 8)
 }
 
-/// Parse a hex integer raw lexeme (`0x…`) to `i64`.
-fn parse_int_hex(ctx: &mut LowerCtx<'_>, raw: &str, span: Span) -> IrLit {
-    let cleaned = raw.trim_start_matches("0x").replace('_', "");
-    match i64::from_str_radix(&cleaned, 16) {
-        Ok(n) => IrLit::Int(n),
-        Err(e) => {
-            ctx.errors.push(LowerError::InternalLoweringError {
+/// Parse a hex integer raw lexeme (`0x…`/`0X…`) to `i64`.
+pub(crate) fn parse_int_hex(ctx: &mut LowerCtx<'_>, raw: &str, span: Span) -> IrLit {
+    parse_int_radix(ctx, raw, span, 16)
+}
+
+/// Shared integer-literal parser. The lexer has already validated the literal's
+/// form, so a failure here can only mean the value does not fit in `i64` —
+/// reported as `L010` (`IntLiteralOutOfRange`), a user error, not an internal
+/// invariant violation. Base-prefixed literals strip the two-byte prefix
+/// (`0b`/`0B`, `0o`/`0O`, `0x`/`0X`): the prefix letter case is insignificant.
+fn parse_int_radix(ctx: &mut LowerCtx<'_>, raw: &str, span: Span, radix: u32) -> IrLit {
+    let digits = if radix == 10 {
+        raw
+    } else {
+        // The lexer guarantees a two-byte ASCII prefix; `get` is defensive
+        // against hand-built ASTs in tests.
+        raw.get(2..).unwrap_or(raw)
+    };
+    let cleaned = digits.replace('_', "");
+    i64::from_str_radix(&cleaned, radix).map_or_else(
+        |_| {
+            ctx.errors.push(LowerError::IntLiteralOutOfRange {
                 span,
-                message: format!("hex integer `{raw}` could not be parsed as i64: {e}"),
+                raw: raw.to_owned(),
             });
             IrLit::Int(0)
-        }
-    }
+        },
+        IrLit::Int,
+    )
 }
 
 /// Parse a float raw lexeme (possibly with `_` separators) to `f64`.
@@ -4573,6 +4559,128 @@ mod tests {
                 assert_eq!(s, span);
             }
             other => panic!("expected IrExpr::Lit Int(42), got {other:?}"),
+        }
+    }
+
+    // ── Integer literal edge cases (B3) ───────────────────────────────────────
+
+    /// The lexer accepts upper-case base prefixes (`0B`, `0O`, `0X`); lowering
+    /// must treat the prefix letter case as insignificant.
+    #[test]
+    fn lower_expr_literal_int_uppercase_base_prefixes() {
+        for (raw, expected) in [
+            ("0B101", 5),
+            ("0O777", 511),
+            ("0XFF", 255),
+            ("0b101", 5),
+            ("0o777", 511),
+            ("0xff", 255),
+            ("0X1_DEAD", 122_541),
+        ] {
+            let mut ctx = fresh_ctx();
+            let span = sp();
+            let lit = match raw.get(..2) {
+                Some("0b" | "0B") => Literal::IntBin {
+                    raw: raw.into(),
+                    span,
+                },
+                Some("0o" | "0O") => Literal::IntOct {
+                    raw: raw.into(),
+                    span,
+                },
+                _ => Literal::IntHex {
+                    raw: raw.into(),
+                    span,
+                },
+            };
+            let ir = lower_expr(&mut ctx, &Expr::Literal(lit));
+            assert!(
+                ctx.errors.is_empty(),
+                "expected no errors for {raw}; got: {:?}",
+                ctx.errors
+            );
+            match ir {
+                IrExpr::Lit {
+                    value: IrLit::Int(n),
+                    ..
+                } => assert_eq!(n, expected, "wrong value for {raw}"),
+                other => panic!("expected IrExpr::Lit Int({expected}) for {raw}, got {other:?}"),
+            }
+        }
+    }
+
+    /// An integer literal that does not fit in `i64` is a user error with its
+    /// own code (`L010`), not an internal invariant violation (`L999`).
+    #[test]
+    fn lower_expr_literal_int_out_of_range_is_l010() {
+        for raw in ["99999999999999999999", "0xFFFFFFFFFFFFFFFFF"] {
+            let mut ctx = fresh_ctx();
+            let span = sp();
+            let lit = if raw.starts_with("0x") {
+                Literal::IntHex {
+                    raw: raw.into(),
+                    span,
+                }
+            } else {
+                Literal::IntDec {
+                    raw: raw.into(),
+                    span,
+                }
+            };
+            let ir = lower_expr(&mut ctx, &Expr::Literal(lit));
+            assert_eq!(ctx.errors.len(), 1, "expected one error for {raw}");
+            match &ctx.errors[0] {
+                LowerError::IntLiteralOutOfRange { span: s, raw: r } => {
+                    assert_eq!(*s, span);
+                    assert_eq!(r, raw);
+                    assert_eq!(ctx.errors[0].code(), "L010");
+                }
+                other => panic!("expected IntLiteralOutOfRange for {raw}, got {other:?}"),
+            }
+            // The tree stays structurally valid: a neutral zero literal.
+            match ir {
+                IrExpr::Lit {
+                    value: IrLit::Int(0),
+                    ..
+                } => {}
+                other => panic!("expected fallback IrExpr::Lit Int(0) for {raw}, got {other:?}"),
+            }
+        }
+    }
+
+    /// Boundary values at both ends of the `i64` range must parse cleanly.
+    #[test]
+    fn lower_expr_literal_int_i64_boundaries() {
+        for (raw, expected) in [
+            ("9223372036854775807", i64::MAX),
+            ("0x7FFFFFFFFFFFFFFF", i64::MAX),
+        ] {
+            let mut ctx = fresh_ctx();
+            let span = sp();
+            let lit = if raw.starts_with("0x") {
+                Literal::IntHex {
+                    raw: raw.into(),
+                    span,
+                }
+            } else {
+                Literal::IntDec {
+                    raw: raw.into(),
+                    span,
+                }
+            };
+            let ir = lower_expr(&mut ctx, &Expr::Literal(lit));
+            assert!(
+                ctx.errors.is_empty(),
+                "expected no errors for {raw}; got: {:?}",
+                ctx.errors
+            );
+            match ir {
+                IrExpr::Lit {
+                    value: IrLit::Int(n),
+                    ..
+                } => assert_eq!(n, expected, "wrong value for {raw}"),
+                other => panic!("expected IrExpr::Lit Int for {raw}, got {other:?}"),
+            }
         }
     }
 

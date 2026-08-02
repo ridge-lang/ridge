@@ -115,7 +115,11 @@ pub(crate) fn parse_lambda(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
 /// Used to detect `fn params -> RetType = body` (anonymous function with a
 /// declared return type).
 fn lambda_has_return_type_eq(cur: &Cursor<'_>) -> bool {
-    const SCAN_LIMIT: usize = 64;
+    // Same anti-pathology bound as `fn_is_inner_fn` (4096): far beyond any
+    // realistic return-type annotation, so no valid program is misclassified.
+    // Past the cap the annotation is treated as body — that surfaces as a
+    // parse error downstream, never a silent success.
+    const SCAN_LIMIT: usize = 4096;
     let mut depth: i32 = 0;
     for i in 0..SCAN_LIMIT {
         match cur.peek_n(i) {

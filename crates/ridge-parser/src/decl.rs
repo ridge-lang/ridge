@@ -2808,11 +2808,11 @@ pub(crate) fn parse_mailbox_decl(cur: &mut Cursor<'_>) -> Result<MailboxDecl, Pa
 /// dispatches literal lowering.
 fn parse_mailbox_capacity(cur: &mut Cursor<'_>) -> Result<(i64, ridge_ast::Span), ParseError> {
     let span = cur.span();
-    let (raw, radix, prefix) = match cur.peek().clone() {
-        Token::IntDec(raw) => (raw, 10, ""),
-        Token::IntBin(raw) => (raw, 2, "0b"),
-        Token::IntOct(raw) => (raw, 8, "0o"),
-        Token::IntHex(raw) => (raw, 16, "0x"),
+    let (raw, radix) = match cur.peek().clone() {
+        Token::IntDec(raw) => (raw, 10),
+        Token::IntBin(raw) => (raw, 2),
+        Token::IntOct(raw) => (raw, 8),
+        Token::IntHex(raw) => (raw, 16),
         _ => {
             return Err(ParseError::Expected {
                 span,
@@ -2822,7 +2822,16 @@ fn parse_mailbox_capacity(cur: &mut Cursor<'_>) -> Result<(i64, ridge_ast::Span)
         }
     };
     cur.bump();
-    let cleaned = raw.trim_start_matches(prefix).replace('_', "");
+    // Strip the two-byte base prefix (`0b`/`0B`, `0o`/`0O`, `0x`/`0X`): the
+    // prefix letter case is insignificant. The lexer's regex guarantees the
+    // prefix, so byte-stripping is exact (unlike `trim_start_matches`, which
+    // only recognises the lower-case form).
+    let digits = if radix == 10 {
+        raw.as_str()
+    } else {
+        raw.get(2..).unwrap_or(&raw)
+    };
+    let cleaned = digits.replace('_', "");
     match i64::from_str_radix(&cleaned, radix) {
         Ok(n) if n >= 1 => Ok((n, span)),
         _ => Err(ParseError::MailboxBoundInvalid { span, raw }),
@@ -2931,6 +2940,40 @@ mod tests {
         let mut cur = Cursor::new(&toks);
         let vis = parse_visibility(&mut cur).unwrap();
         parse_actor_decl(&mut cur, vis, None)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // mailbox capacity: base-prefixed literals (B3)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// The capacity of a bounded mailbox accepts any integer literal form,
+    /// including upper-case base prefixes (`0X10`, `0B101`, `0O777`).
+    #[test]
+    fn parse_actor_mailbox_capacity_base_prefixes() {
+        for (cap_src, expected) in [
+            ("100", 100),
+            ("0x64", 100),
+            ("0X64", 100),
+            ("0B1100100", 100),
+            ("0o144", 100),
+            ("0O144", 100),
+        ] {
+            let src = format!(
+                "actor Limiter =\n    mailbox bounded {cap_src} drop newest\n    state n: Int = 0\n    on tick = n <- n + 1\n"
+            );
+            let actor = parse_actor(&src)
+                .unwrap_or_else(|e| panic!("capacity `{cap_src}` should parse: {e:?}"));
+            let mailbox = actor.members.iter().find_map(|m| match m {
+                ActorMember::Mailbox(decl) => Some(&decl.config),
+                _ => None,
+            });
+            match mailbox {
+                Some(MailboxConfig::Bounded { capacity, .. }) => {
+                    assert_eq!(*capacity, expected, "wrong capacity for `{cap_src}`");
+                }
+                other => panic!("expected bounded mailbox for `{cap_src}`, got {other:?}"),
+            }
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────

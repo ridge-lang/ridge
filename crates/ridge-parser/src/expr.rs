@@ -1148,8 +1148,14 @@ const fn op_static_str(op: BinOp) -> &'static str {
 ///
 /// Precondition: `cur.peek() == &Token::KwFn`.
 fn fn_is_inner_fn(cur: &Cursor<'_>) -> bool {
-    // Scan up to 200 tokens after `fn` (offset 0).
-    const SCAN_LIMIT: usize = 200;
+    // Scan up to 4096 tokens after `fn` (offset 0). The cap is an
+    // anti-pathology bound on lookahead work, not a language limit: at 4096
+    // tokens no realistic signature is misclassified. Past the cap the
+    // classification silently defaults to Lambda, which is correct for real
+    // lambdas (their decisive token is always close) but would misclassify an
+    // inner fn with a >4096-token signature — accepted as a documented,
+    // absurd-input-only edge.
+    const SCAN_LIMIT: usize = 4096;
 
     // ── Step 1: skip capabilities; check for a function name ─────────────────
     const CAPS: &[&str] = &[

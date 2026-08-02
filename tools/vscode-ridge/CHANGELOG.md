@@ -13,6 +13,10 @@ whatever Ridge release is installed.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-02
+
+Tracks the Ridge language v0.3.0 release line.
+
 ### Added
 
 - Per-lens settings `ridge.codeLens.references`, `ridge.codeLens.implementations`,
@@ -92,6 +96,7 @@ shipping alongside the Ridge language v0.2.0 release.
 - Version bumped from `0.1.0` to `0.2.0` so the extension tracks the
   Ridge language release line.
 
-[Unreleased]: https://github.com/ridge-lang/ridge/compare/vscode-v0.2.1...HEAD
+[Unreleased]: https://github.com/ridge-lang/ridge/compare/vscode-v0.3.0...HEAD
+[0.3.0]: https://github.com/ridge-lang/ridge/compare/vscode-v0.2.1...vscode-v0.3.0
 [0.2.1]: https://github.com/ridge-lang/ridge/compare/vscode-v0.2.0...vscode-v0.2.1
 [0.2.0]: https://github.com/ridge-lang/ridge/releases/tag/vscode-v0.2.0

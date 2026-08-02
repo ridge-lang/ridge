@@ -330,6 +330,41 @@ fn collect_class_decls(
 
 // ── Instance collection ──────────────────────────────────────────────────────
 
+/// Extract one dispatch-key `TyConId` per head atom of an instance declaration.
+///
+/// Returns `None` for unsupported head forms (the caller skips the instance).
+/// One case is NOT silent: a function-type head keys on the synthetic
+/// `Fn/arity` constructor, which only exists for arities 0..15. Beyond that
+/// there is no dispatch key, so it is rejected here with `T051` — dropping it
+/// silently would surface later as a confusing `T029 NoInstance` at use sites.
+fn extract_head_tycons(
+    head_atoms: &[ridge_ast::Type],
+    class: &str,
+    span: ridge_ast::Span,
+    user_tycon_names: &FxHashMap<String, TyConId>,
+    errors: &mut Vec<TypeError>,
+) -> Option<InstanceHead> {
+    let mut head_tycons = InstanceHead::new();
+    for atom in head_atoms {
+        if let ridge_ast::Type::Fn { fn_ty, .. } = peel_paren(atom) {
+            if fn_ty.params.len() >= ridge_types::FN_ARITY_COUNT {
+                errors.push(TypeError::UnsupportedInstanceHead {
+                    class: class.to_string(),
+                    reason: format!(
+                        "function-type instance head has arity {} (maximum supported is {})",
+                        fn_ty.params.len(),
+                        ridge_types::FN_ARITY_COUNT - 1
+                    ),
+                    span,
+                });
+                return None;
+            }
+        }
+        head_tycons.push(extract_tycon_id(atom, user_tycon_names)?);
+    }
+    Some(head_tycons)
+}
+
 fn collect_instance_decls(
     ast: &Module,
     module_id: u32,
@@ -356,18 +391,15 @@ fn collect_instance_decls(
         // recorded in `head_var_positions`; for a multi-parameter head
         // (`Convert Celsius Fahrenheit`) it is one TyCon per atom. User-defined
         // types resolve via the pre-collected name map.
-        let mut head_tycons = InstanceHead::new();
-        let mut head_ok = true;
-        for atom in &decl.head {
-            let Some(id) = extract_tycon_id(atom, user_tycon_names) else {
-                head_ok = false;
-                break;
-            };
-            head_tycons.push(id);
-        }
-        if !head_ok {
+        let Some(head_tycons) = extract_head_tycons(
+            &decl.head,
+            &decl.class.text,
+            decl.span,
+            user_tycon_names,
+            errors,
+        ) else {
             continue; // Unsupported head form — ignored in this pass.
-        }
+        };
 
         // Arity check: the head must supply exactly as many type atoms as the
         // class declares type parameters.

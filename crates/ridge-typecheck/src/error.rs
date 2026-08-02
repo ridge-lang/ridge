@@ -773,6 +773,22 @@ pub enum TypeError {
         span: Span,
     },
 
+    // ── T051 ─────────────────────────────────────────────────────────────────
+    /// An `instance` head has a form the dispatcher cannot key on. The only
+    /// reachable case today is a function-type head whose arity exceeds the
+    /// reserved `Fn/0..Fn/15` block (`FN_ARITY_COUNT`): without a synthetic
+    /// constructor there is no dispatch key, so collecting the instance
+    /// silently would surface later as a confusing `NoInstance` (T029) at use
+    /// sites. Rejected here, at the declaration.
+    UnsupportedInstanceHead {
+        /// The class being instantiated.
+        class: String,
+        /// Why the head is unsupported.
+        reason: String,
+        /// Source span of the `instance` declaration.
+        span: Span,
+    },
+
     // ── T999 ─────────────────────────────────────────────────────────────────
     /// Internal type-checker invariant violation — should never reach users.
     ///
@@ -790,7 +806,7 @@ pub enum TypeError {
 impl TypeError {
     /// Returns the stable `T###` error code for this variant.
     ///
-    /// The codes are allocated in `T001..T050` and `T999` is the catch-all
+    /// The codes are allocated in `T001..T051` and `T999` is the catch-all
     /// internal error. No overlap with `R###`/`M###`.
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -846,6 +862,7 @@ impl TypeError {
             Self::ActorCallbackSignature { .. } => "T048",
             Self::UnknownTypeVersion { .. } => "T049",
             Self::DuplicateMigration { .. } => "T050",
+            Self::UnsupportedInstanceHead { .. } => "T051",
             Self::InternalTypeError { .. } => "T999",
         }
     }

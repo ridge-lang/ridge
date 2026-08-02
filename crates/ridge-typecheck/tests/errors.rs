@@ -377,6 +377,41 @@ pub fn callIt () -> Int =\n\
     );
 }
 
+/// A function-type instance head whose arity exceeds the reserved
+/// `Fn/0..Fn/15` dispatch-key block is rejected at the declaration with
+/// `T051`, not silently dropped (which previously surfaced as a confusing
+/// `T029 NoInstance` at use sites, or nothing at all when unused).
+#[test]
+fn function_type_instance_head_arity_over_limit_is_t051() {
+    let src = "\
+class Run f =\n\
+\x20   run (self: f) (x: Int) -> Int\n\
+\n\
+instance Run (fn a b c d e f g h i j k l m n o p -> Int) =\n\
+\x20   run (g: fn a b c d e f g h i j k l m n o p -> Int) (x: Int) -> Int = x\n\
+";
+    let errors = run_typecheck_on_source("fn_instance_arity_over", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.contains(&"T051"),
+        "a 16-ary function-type instance head must be rejected with T051; got: {codes:?}"
+    );
+    // The boundary just under the limit must still collect fine.
+    let ok_src = "\
+class Run f =\n\
+\x20   run (self: f) (x: Int) -> Int\n\
+\n\
+instance Run (fn a b c d e f g h i j k l m n o -> Int) =\n\
+\x20   run (g: fn a b c d e f g h i j k l m n o -> Int) (x: Int) -> Int = x\n\
+";
+    let ok_errors = run_typecheck_on_source("fn_instance_arity_at", ok_src);
+    let ok_codes: Vec<&str> = ok_errors.iter().map(TypeError::code).collect();
+    assert!(
+        !ok_codes.contains(&"T051"),
+        "a 15-ary function-type instance head is inside the dispatch-key block; got: {ok_codes:?}"
+    );
+}
+
 /// A polymorphic, constrained consumer (`useRun … where Run a`) forwards its
 /// retained `Run a` constraint; at the concrete call site the constraint pins
 /// `a` to a function type and discharges to the `Fn/1` instance. Guards the

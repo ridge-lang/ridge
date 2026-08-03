@@ -77,7 +77,9 @@ jobs:
         # `ridge` for this runner's target, so a released binary carries the bridge
         # with no C toolchain on the user's machine. The OTP install above provides
         # the `erl_nif.h` the build script compiles the NIF against.
-        run: cargo build --release --locked -p ridge-cli -p ridge-lsp --features ridge-cli/beam-runtime --target ${{ matrix.target }}
+        # `ridge-cli/cli-watch` enables `run --watch` / `run --reload` — without it
+        # the shipped binary rejects hot-reload with a rebuild-from-source error.
+        run: cargo build --release --locked -p ridge-cli -p ridge-lsp --features ridge-cli/beam-runtime,ridge-cli/cli-watch --target ${{ matrix.target }}
 
       - name: Ad-hoc sign (macOS)
         if: runner.os == 'macOS'

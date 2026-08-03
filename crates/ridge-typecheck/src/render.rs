@@ -684,6 +684,23 @@ impl fmt::Display for TypeError {
                 )
             }
 
+            // ── T054 ──────────────────────────────────────────────────────────
+            Self::FieldAccessOnNonRecord {
+                ty,
+                field,
+                suggestion,
+                ..
+            } => {
+                write!(
+                    f,
+                    "T054: field access on non-record\n  `{ty}` has no field `{field}` — it is not a record"
+                )?;
+                if let Some(s) = suggestion {
+                    write!(f, "\n  did you mean `{s}`?")?;
+                }
+                Ok(())
+            }
+
             // ── T999 ──────────────────────────────────────────────────────────
             Self::InternalTypeError { detail, .. } => {
                 write!(f, "T999: internal type error\n  {detail}\n  This is a compiler bug. Please report it.")
@@ -761,6 +778,7 @@ impl HasErrorCode for TypeError {
             | Self::UnsupportedInstanceHead { span, .. }
             | Self::ArithmeticOnNonNumeric { span, .. }
             | Self::MainHasParams { span, .. }
+            | Self::FieldAccessOnNonRecord { span, .. }
             | Self::InternalTypeError { span, .. } => *span,
 
             // T034: uses `totext_span` (the explicit instance) as the primary span.

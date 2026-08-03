@@ -621,10 +621,15 @@ impl ScopeWalker<'_> {
             }
         }
 
-        // 3. Import effective bindings.
+        // 3. Import effective bindings — except internal prelude names (the
+        //    quotation runtime's `Q*` constructors and the query builder's
+        //    projection types): in scope for the machinery, never a name the
+        //    user means, so never a did-you-mean candidate.
         for ir in self.module_imports {
             for eb in &ir.effective_bindings {
-                if eb.local_name != target {
+                if eb.local_name != target
+                    && !crate::imports::is_internal_prelude_name(&eb.local_name)
+                {
                     out.push(eb.local_name.clone());
                 }
             }
@@ -1768,6 +1773,28 @@ mod tests {
             r010.first().map(String::as_str),
             Some("Io.println"),
             "well-known shorthand must be first; got: {r010:?}"
+        );
+    }
+
+    /// `QAd` is one edit away from `QAdd`, an internal `QExpr` constructor the
+    /// prelude carries for the quotation runtime. Did-you-mean must never offer
+    /// query-DSL internals to users — they are not names a user can mean.
+    #[test]
+    fn r010_never_suggests_internal_prelude_names() {
+        let (_, errors, _, _nid) = full_resolve_single("fn f = QAd\n");
+        let r010 = errors
+            .iter()
+            .find_map(|e| match e {
+                ResolveError::UnresolvedIdent {
+                    name, suggestions, ..
+                } if name == "QAd" => Some(suggestions.clone()),
+                _ => None,
+            })
+            .expect("expected an R010 for `QAd`");
+        assert!(
+            r010.iter()
+                .all(|s| !crate::imports::is_internal_prelude_name(s)),
+            "internal prelude names must not be suggested; got: {r010:?}"
         );
     }
 

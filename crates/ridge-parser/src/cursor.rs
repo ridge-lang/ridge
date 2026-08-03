@@ -291,10 +291,10 @@ impl Drop for DepthGuard<'_, '_> {
 /// `cursor.expect(...)`.
 const fn token_description(tok: &Token) -> &'static str {
     match tok {
-        Token::Eof => "<EOF>",
-        Token::Newline => "<NEWLINE>",
-        Token::Indent => "<INDENT>",
-        Token::Dedent => "<DEDENT>",
+        Token::Eof => "end of input",
+        Token::Newline => "a line break",
+        Token::Indent => "an indented block",
+        Token::Dedent => "the end of an indented block",
         Token::KwFn => "fn",
         Token::KwLet => "let",
         Token::KwVar => "var",
@@ -431,6 +431,19 @@ mod tests {
         if let Err(e) = result {
             assert_eq!(e.code(), "P001");
         }
+    }
+
+    #[test]
+    fn token_description_layout_tokens_speak_user_language() {
+        // The `expected` side of P001 must never show the internal
+        // `<INDENT>`/`<DEDENT>`/`<NEWLINE>`/`<EOF>` synthesised-token names.
+        assert_eq!(token_description(&Token::Indent), "an indented block");
+        assert_eq!(
+            token_description(&Token::Dedent),
+            "the end of an indented block"
+        );
+        assert_eq!(token_description(&Token::Newline), "a line break");
+        assert_eq!(token_description(&Token::Eof), "end of input");
     }
 
     #[test]

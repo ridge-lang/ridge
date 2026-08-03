@@ -159,9 +159,15 @@ pub fn resolve_qualified_name(
                             name: last_text.clone(),
                         };
                     }
-                    // Miss — R014 with stdlib-export suggestions.
-                    let suggestions =
-                        suggest::suggest(last_text, m.exports.iter().map(|s| (*s).to_owned()));
+                    // Miss — R014 with stdlib-export suggestions (internal
+                    // prelude names excluded — see `is_internal_prelude_name`).
+                    let suggestions = suggest::suggest(
+                        last_text,
+                        m.exports
+                            .iter()
+                            .filter(|s| !crate::imports::is_internal_prelude_name(s))
+                            .map(|s| (*s).to_owned()),
+                    );
                     errors.push(ResolveError::UnknownStdlibSymbol {
                         module: m.name.to_owned(),
                         name: last_text.clone(),
@@ -267,9 +273,15 @@ fn resolve_in_target(
                         name: last_text.clone(),
                     };
                 }
-                // Unknown stdlib symbol — R014 with suggestions.
-                let suggestions =
-                    suggest::suggest(last_text, m.exports.iter().map(|s| (*s).to_owned()));
+                // Unknown stdlib symbol — R014 with suggestions (internal
+                // prelude names excluded — see `is_internal_prelude_name`).
+                let suggestions = suggest::suggest(
+                    last_text,
+                    m.exports
+                        .iter()
+                        .filter(|s| !crate::imports::is_internal_prelude_name(s))
+                        .map(|s| (*s).to_owned()),
+                );
                 errors.push(ResolveError::UnknownStdlibSymbol {
                     module: m.name.to_owned(),
                     name: last_text.clone(),

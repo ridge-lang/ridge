@@ -877,6 +877,107 @@ fn quoted_captured_in_list_type_mismatch_is_rejected() {
 
 // ── T001 message rendering: real type names, never `#N` ───────────────────────
 
+/// A discarded expression's type must render with user-facing names, never the
+/// internal `Debug` dump (`Con(TyConId(6), [Var(TyVid(103))])`). Discarding a
+/// polymorphic value (`List.empty`) exercises the unresolved-variable arm.
+#[test]
+fn discarded_result_renders_user_facing_type() {
+    let src = "import std.list as List\n\npub fn f () -> Int =\n    List.empty\n    0\n";
+    let errors = run_typecheck_on_source("discard_list_empty", src);
+    let t022 = errors
+        .iter()
+        .find_map(|e| match e {
+            TypeError::DiscardedResult { ty, .. } => Some(ty.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("expected a T022 DiscardedResult; got: {errors:?}"));
+    assert!(
+        !t022.contains("TyVid") && !t022.contains("Con(") && !t022.contains('#'),
+        "T022 must not leak internal type representations; got {t022:?}"
+    );
+    assert!(
+        t022.contains("List"),
+        "T022 should name the discarded type as `List ...`; got {t022:?}"
+    );
+}
+
+/// Field access on a non-record (`xs.length` on `List Int`) is a `T054` that
+/// speaks of field access — not the `T006` "`with` on non-record" the user
+/// never wrote — renders the base type by name, and suggests the module
+/// function (`List.length`) when the type's constructor shares its name with
+/// a stdlib module exporting that function.
+#[test]
+fn field_access_on_non_record_is_t054_with_module_suggestion() {
+    let src = "pub fn f (xs: List Int) -> Int = xs.length\n";
+    let errors = run_typecheck_on_source("list_dot_length", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.contains(&"T054"),
+        "expected T054 for field access on a non-record; got: {codes:?}"
+    );
+    assert!(
+        !codes.contains(&"T006"),
+        "T006 is for `with`-updates; the user wrote no `with`; got: {codes:?}"
+    );
+    let t054 = errors
+        .iter()
+        .find_map(|e| match e {
+            TypeError::FieldAccessOnNonRecord {
+                ty,
+                field,
+                suggestion,
+                ..
+            } => Some((ty.clone(), field.clone(), suggestion.clone())),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no T054 produced; got: {errors:?}"));
+    assert_eq!(t054.0, "List Int", "base type renders by name");
+    assert_eq!(t054.1, "length");
+    assert_eq!(
+        t054.2.as_deref(),
+        Some("List.length"),
+        "should suggest the module function"
+    );
+}
+
+/// Field access on a non-record whose type has no same-named module function
+/// still reports `T054`, just without a suggestion.
+#[test]
+fn field_access_on_int_is_t054_without_suggestion() {
+    let src = "pub fn f (x: Int) -> Int = x.length\n";
+    let errors = run_typecheck_on_source("int_dot_length", src);
+    let t054 = errors
+        .iter()
+        .find_map(|e| match e {
+            TypeError::FieldAccessOnNonRecord { ty, suggestion, .. } => {
+                Some((ty.clone(), suggestion.clone()))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no T054 produced; got: {errors:?}"));
+    assert_eq!(t054.0, "Int", "base type renders by name, not `#0`");
+    assert_eq!(t054.1, None, "no `Int.length` exists — no suggestion");
+}
+
+/// A genuine `with`-update on a non-record keeps `T006`, but the found type
+/// renders by name rather than as raw arena ids.
+#[test]
+fn with_on_non_record_renders_user_facing_type() {
+    let src = "pub fn f (xs: List Int) -> List Int = xs with { length = 3 }\n";
+    let errors = run_typecheck_on_source("with_on_list", src);
+    let t006 = errors
+        .iter()
+        .find_map(|e| match e {
+            TypeError::WithOnNonRecord { ty, .. } => Some(ty.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("expected a T006 WithOnNonRecord; got: {errors:?}"));
+    assert_eq!(
+        t006, "List Int",
+        "T006 must not leak `#6 (#0)`; got {t006:?}"
+    );
+}
+
 /// Pull the `(expected, found)` strings of the first `T001 TypeMismatch`.
 fn first_mismatch(stem: &str, src: &str) -> (String, String) {
     run_typecheck_on_source(stem, src)

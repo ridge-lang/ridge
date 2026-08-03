@@ -287,9 +287,23 @@ pub fn infer_field_access(
             }
         }
     }
-    // Non-record type, unknown TyConId, or non-Con base.
-    ctx.errors.push(TypeError::WithOnNonRecord {
-        ty: format!("{base_resolved}"),
+    // Non-record type, unknown TyConId, or non-Con base: the user wrote a
+    // field access, not a `with` — report T054 in those terms. When the base
+    // type's constructor shares its name with a module that exports a function
+    // of the field's name (`xs.length` on `List Int` ↔ `List.length`), suggest
+    // the module function the user most likely meant.
+    let suggestion = if let Type::Con(tycon_id, _) = &base_resolved {
+        tycons.get(tycon_id.0 as usize).and_then(|decl| {
+            let candidate = format!("{}.{}", decl.name, field_name.text);
+            ctx.env.lookup(&candidate).map(|_| candidate)
+        })
+    } else {
+        None
+    };
+    ctx.errors.push(TypeError::FieldAccessOnNonRecord {
+        ty: crate::render::render_type_with(&base_resolved, tycons),
+        field: field_name.text.clone(),
+        suggestion,
         span: field_span,
     });
     Type::Error
@@ -341,7 +355,7 @@ pub fn infer_record_with(
         (*id, args.clone())
     } else {
         ctx.errors.push(TypeError::WithOnNonRecord {
-            ty: format!("{base_resolved}"),
+            ty: crate::render::render_type_with(&base_resolved, tycons),
             span,
         });
         return Type::Error;
@@ -350,7 +364,7 @@ pub fn infer_record_with(
     let decl = tycons.get(tycon_id.0 as usize);
     let Some(ridge_types::TyConKind::Record(schema)) = decl.map(|d| &d.kind) else {
         ctx.errors.push(TypeError::WithOnNonRecord {
-            ty: format!("{base_resolved}"),
+            ty: crate::render::render_type_with(&base_resolved, tycons),
             span,
         });
         return Type::Error;
@@ -1012,10 +1026,10 @@ mod tests {
         assert!(t005, "expected T005 UnknownField; got {:?}", ctx.errors);
     }
 
-    // ── Test 8: field access on non-record → T006 ─────────────────────────────
+    // ── Test 8: field access on non-record → T054 ─────────────────────────────
 
     #[test]
-    fn t8_field_access_on_non_record_emits_t006() {
+    fn t8_field_access_on_non_record_emits_t054() {
         let mut arena = TyConArena::new();
         let b = BuiltinTyCons::allocate(&mut arena);
         let mut ctx = InferCtx::new();
@@ -1025,8 +1039,12 @@ mod tests {
         let field = id("name");
         let _ = infer_field_access(&mut ctx, &b, &base_ty, &field, ds(), arena.all());
 
-        let t006 = ctx.errors.iter().any(|e| e.code() == "T006");
-        assert!(t006, "expected T006 WithOnNonRecord; got {:?}", ctx.errors);
+        let t054 = ctx.errors.iter().any(|e| e.code() == "T054");
+        assert!(
+            t054,
+            "expected T054 FieldAccessOnNonRecord; got {:?}",
+            ctx.errors
+        );
     }
 
     // ── Test 9: with-update happy path ────────────────────────────────────────

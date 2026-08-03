@@ -1,0 +1,5 @@
+-- expect: T054
+-- Field access on a non-record type (`xs.length` on `List Int`) reports T054
+-- in field-access terms — not the `with`-specific T006 — and suggests the
+-- module function (`List.length`).
+pub fn f (xs: List Int) -> Int = xs.length

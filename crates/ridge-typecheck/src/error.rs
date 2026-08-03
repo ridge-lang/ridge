@@ -825,6 +825,25 @@ pub enum TypeError {
         span: Span,
     },
 
+    // ── T054 ─────────────────────────────────────────────────────────────────
+    /// A field access `base.field` is applied to a non-record type.
+    ///
+    /// Distinct from `T006 WithOnNonRecord`, which covers the `with`-update
+    /// expression: the user wrote a field access, so the diagnostic speaks of
+    /// field access. When the base type's constructor shares its name with a
+    /// stdlib module that exports a function of the field's name (e.g. `xs.length`
+    /// on `List Int` ↔ `List.length`), `suggestion` carries that qualified name.
+    FieldAccessOnNonRecord {
+        /// The actual type of the base expression, rendered user-facing.
+        ty: String,
+        /// The field name the user wrote.
+        field: String,
+        /// Qualified module function to suggest (e.g. `List.length`), if any.
+        suggestion: Option<String>,
+        /// Source span of the field access.
+        span: Span,
+    },
+
     // ── T999 ─────────────────────────────────────────────────────────────────
     /// Internal type-checker invariant violation — should never reach users.
     ///
@@ -842,7 +861,7 @@ pub enum TypeError {
 impl TypeError {
     /// Returns the stable `T###` error code for this variant.
     ///
-    /// The codes are allocated in `T001..T053` and `T999` is the catch-all
+    /// The codes are allocated in `T001..T054` and `T999` is the catch-all
     /// internal error. No overlap with `R###`/`M###`.
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -901,6 +920,7 @@ impl TypeError {
             Self::UnsupportedInstanceHead { .. } => "T051",
             Self::ArithmeticOnNonNumeric { .. } => "T052",
             Self::MainHasParams { .. } => "T053",
+            Self::FieldAccessOnNonRecord { .. } => "T054",
             Self::InternalTypeError { .. } => "T999",
         }
     }
@@ -1155,6 +1175,15 @@ mod tests {
         }
     }
 
+    fn t054() -> TypeError {
+        TypeError::FieldAccessOnNonRecord {
+            ty: "List Int".into(),
+            field: "length".into(),
+            suggestion: Some("List.length".into()),
+            span: dummy_span(),
+        }
+    }
+
     // ── code() tests — one per T### ───────────────────────────────────────────
 
     #[test]
@@ -1317,6 +1346,11 @@ mod tests {
     #[test]
     fn code_t999() {
         assert_eq!(t999().code(), "T999");
+    }
+
+    #[test]
+    fn code_t054() {
+        assert_eq!(t054().code(), "T054");
     }
 
     // ── T029–T030 helpers and code tests ─────────────────────────────────────

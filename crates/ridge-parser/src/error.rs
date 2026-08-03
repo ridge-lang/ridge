@@ -63,7 +63,7 @@ pub enum ParseError {
     Expected {
         /// Source location of the unexpected token.
         span: Span,
-        /// Static description of the expected token (e.g. `"<EOF>"`, `"->"`).
+        /// Static description of the expected token (e.g. `"end of input"`, `"->"`).
         expected: &'static str,
         /// The actual token's `Display` representation.
         found: String,

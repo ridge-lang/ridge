@@ -649,11 +649,16 @@ fn resolve_item(
             } else {
                 // T13: suggest closest stdlib export name.  Stdlib exports are
                 // always visible to every importer (no per-project restriction).
+                // Internal prelude names are excluded — see
+                // `is_internal_prelude_name`.
                 let suggestions = builtin
                     .map(|m| {
                         crate::suggest::suggest(
                             item_name,
-                            m.exports.iter().map(|s| (*s).to_owned()),
+                            m.exports
+                                .iter()
+                                .filter(|s| !is_internal_prelude_name(s))
+                                .map(|s| (*s).to_owned()),
                         )
                     })
                     .unwrap_or_default();
@@ -1036,6 +1041,71 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
         },
         aliases_ir,
     ]
+}
+
+/// Names the prelude exposes for the quotation runtime and the stdlib's own
+/// internals — the `Q*` `QExpr` constructors and the query-builder projection
+/// types (`Ret`, `Rows`, `JoinCond`, …).
+///
+/// They are in scope so quoted predicates type-check and the runtime can match
+/// the tree, but they are not names a user ever types, so did-you-mean
+/// suggesters (R010/R014/R008) must not offer them: a typo'd function should
+/// never be answered with "did you mean `QAdd`?". `Quote` and `QExpr`
+/// themselves are user-facing (they appear in annotations) and stay suggestible.
+#[must_use]
+pub fn is_internal_prelude_name(name: &str) -> bool {
+    matches!(
+        name,
+        "QCol"
+            | "QLitInt"
+            | "QLitText"
+            | "QLitBool"
+            | "QLitFloat"
+            | "QLitDecimal"
+            | "QLitUuid"
+            | "QLitInstant"
+            | "QLitBytes"
+            | "QLitDate"
+            | "QLitTime"
+            | "QLitInterval"
+            | "QAnd"
+            | "QOr"
+            | "QNot"
+            | "QNotTrue"
+            | "QEq"
+            | "QNe"
+            | "QLt"
+            | "QGt"
+            | "QLe"
+            | "QGe"
+            | "QProj"
+            | "QColR"
+            | "QColAt"
+            | "QGroupKey"
+            | "QAggCount"
+            | "QAggSum"
+            | "QAggAvg"
+            | "QAggMin"
+            | "QAggMax"
+            | "QAggAvgInterval"
+            | "QLike"
+            | "QIn"
+            | "QAdd"
+            | "QSub"
+            | "QMul"
+            | "QDiv"
+            | "QMod"
+            | "QCase"
+            | "QExists"
+            | "Ret"
+            | "Rows"
+            | "JoinCond"
+            | "JoinResult"
+            | "LeftJoinResult"
+            | "RightJoinResult"
+            | "FullJoinResult"
+            | "InsertShape"
+    )
 }
 
 // ── detect_cycles_authoritative ───────────────────────────────────────────────

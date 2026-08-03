@@ -1438,14 +1438,42 @@ fn infer_binary(
     let rhs_ty = infer_expr(ctx, b, rhs);
 
     match op {
-        // Arithmetic `+ - * / % **` or Concat `++`: unify operands, return same type
-        BinOp::Add
-        | BinOp::Sub
-        | BinOp::Mul
-        | BinOp::Div
-        | BinOp::Mod
-        | BinOp::Pow
-        | BinOp::Concat => {
+        // Arithmetic `+ - * / % **`: unify operands, then reject concrete
+        // non-numeric types — they compile to BEAM numeric BIFs and would
+        // crash at runtime (`badarith`).  Unresolved variables are left
+        // alone: constraining generics to numeric needs a `Num`-style
+        // constraint the language does not have yet.
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::Pow => {
+            if let Err(e) = unify(ctx, &lhs_ty, &rhs_ty) {
+                ctx.errors.push(attach_span(e, span));
+                return Type::Error;
+            }
+            let resolved = ctx.shallow_resolve(&lhs_ty);
+            if let Type::Con(id, _) = &resolved {
+                if *id != b.int && *id != b.float {
+                    let op_sym = match op {
+                        BinOp::Add => "+",
+                        BinOp::Sub => "-",
+                        BinOp::Mul => "*",
+                        BinOp::Div => "/",
+                        BinOp::Mod => "%",
+                        BinOp::Pow => "**",
+                        _ => "?",
+                    };
+                    let found = crate::render::render_type_with(&resolved, &ctx.tycon_decls);
+                    ctx.errors.push(TypeError::ArithmeticOnNonNumeric {
+                        op: op_sym,
+                        found,
+                        span,
+                    });
+                    return Type::Error;
+                }
+            }
+            resolved
+        }
+
+        // Concat `++`: unify operands, return same type (Text or List).
+        BinOp::Concat => {
             if let Err(e) = unify(ctx, &lhs_ty, &rhs_ty) {
                 ctx.errors.push(attach_span(e, span));
                 return Type::Error;
@@ -2076,6 +2104,102 @@ mod tests {
         });
         let ty = infer_expr(&mut ctx, &b, &lit);
         assert!(matches!(ty, Type::Con(id, _) if id == b.int));
+    }
+
+    // ── Binary arithmetic: T052 concrete non-numeric rejection ───────────────
+
+    fn lit_int(n: i64) -> Expr {
+        Expr::Literal(Literal::IntDec {
+            raw: n.to_string(),
+            span: dummy_span(),
+        })
+    }
+
+    fn lit_text(s: &str) -> Expr {
+        Expr::Literal(Literal::Text {
+            raw: format!("\"{s}\""),
+            span: dummy_span(),
+        })
+    }
+
+    fn binary(op: BinOp, lhs: Expr, rhs: Expr) -> Expr {
+        Expr::Binary {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span: dummy_span(),
+        }
+    }
+
+    #[test]
+    fn infer_binary_int_add_ok() {
+        let b = make_builtins();
+        let mut ctx = InferCtx::new();
+        let ty = infer_expr(&mut ctx, &b, &binary(BinOp::Add, lit_int(1), lit_int(2)));
+        assert!(matches!(ty, Type::Con(id, _) if id == b.int));
+        assert!(ctx.errors.is_empty(), "got: {:?}", ctx.errors);
+    }
+
+    #[test]
+    fn infer_binary_text_concat_ok() {
+        let b = make_builtins();
+        let mut ctx = InferCtx::new();
+        let ty = infer_expr(
+            &mut ctx,
+            &b,
+            &binary(BinOp::Concat, lit_text("a"), lit_text("b")),
+        );
+        assert!(matches!(ty, Type::Con(id, _) if id == b.text));
+        assert!(ctx.errors.is_empty(), "got: {:?}", ctx.errors);
+    }
+
+    #[test]
+    fn infer_binary_text_add_rejected_t052() {
+        let b = make_builtins();
+        let mut ctx = InferCtx::new();
+        let ty = infer_expr(
+            &mut ctx,
+            &b,
+            &binary(BinOp::Add, lit_text("a"), lit_text("b")),
+        );
+        assert!(matches!(ty, Type::Error));
+        assert_eq!(ctx.errors.len(), 1, "got: {:?}", ctx.errors);
+        assert_eq!(ctx.errors[0].code(), "T052");
+        let msg = ctx.errors[0].to_string();
+        assert!(msg.contains("++"), "hint must point at `++`: {msg}");
+    }
+
+    #[test]
+    fn infer_binary_bool_sub_rejected_t052() {
+        let b = make_builtins();
+        let mut ctx = InferCtx::new();
+        let true_lit = || {
+            Expr::Literal(Literal::Bool {
+                value: true,
+                span: dummy_span(),
+            })
+        };
+        let ty = infer_expr(&mut ctx, &b, &binary(BinOp::Sub, true_lit(), true_lit()));
+        assert!(matches!(ty, Type::Error));
+        assert_eq!(ctx.errors.len(), 1, "got: {:?}", ctx.errors);
+        assert_eq!(ctx.errors[0].code(), "T052");
+    }
+
+    /// Unresolved variables stay polymorphic: a `Num`-style constraint does
+    /// not exist yet, so generic arithmetic is still accepted (documented
+    /// limitation — the runtime risk remains for monomorphised call sites).
+    #[test]
+    fn infer_binary_unresolved_var_not_rejected() {
+        let b = make_builtins();
+        let mut ctx = InferCtx::new();
+        ctx.env.push_frame();
+        let x_var = ctx.fresh_tyvid();
+        ctx.env
+            .bind("x".to_string(), Scheme::mono(Type::Var(x_var)));
+        let expr = binary(BinOp::Add, Expr::Ident(make_ident("x")), lit_int(1));
+        let ty = infer_expr(&mut ctx, &b, &expr);
+        assert!(matches!(ty, Type::Con(id, _) if id == b.int));
+        assert!(ctx.errors.is_empty(), "got: {:?}", ctx.errors);
     }
 
     // ── Ident: local env lookup ───────────────────────────────────────────────

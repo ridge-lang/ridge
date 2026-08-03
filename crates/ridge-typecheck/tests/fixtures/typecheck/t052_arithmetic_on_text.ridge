@@ -1,0 +1,5 @@
+-- expect: T052
+-- T052 ArithmeticOnNonNumeric: `+` applied to Text operands must be
+-- rejected at typecheck time; today it slips through and crashes at
+-- runtime with a BEAM `badarith`.
+fn f -> Text = "a" + "b"

@@ -789,6 +789,25 @@ pub enum TypeError {
         span: Span,
     },
 
+    // ── T052 ─────────────────────────────────────────────────────────────────
+    /// An arithmetic operator (`+ - * / % **`) was applied to operands whose
+    /// type is concrete and not numeric (`Int` or `Float`).
+    ///
+    /// Arithmetic lowers to the BEAM's numeric BIFs, so `+` over `Text`, a
+    /// list, or a user type used to compile cleanly and then crash at runtime
+    /// with `badarith`. Text and list concatenation is `++`. Operands whose
+    /// type is still an unresolved variable are left alone — pinning generics
+    /// to numeric requires a `Num`-style constraint the language does not
+    /// have yet.
+    ArithmeticOnNonNumeric {
+        /// The operator as written in source (e.g. `"+"`).
+        op: &'static str,
+        /// The concrete non-numeric operand type, rendered for display.
+        found: String,
+        /// Source span of the binary expression.
+        span: Span,
+    },
+
     // ── T999 ─────────────────────────────────────────────────────────────────
     /// Internal type-checker invariant violation — should never reach users.
     ///
@@ -806,7 +825,7 @@ pub enum TypeError {
 impl TypeError {
     /// Returns the stable `T###` error code for this variant.
     ///
-    /// The codes are allocated in `T001..T051` and `T999` is the catch-all
+    /// The codes are allocated in `T001..T052` and `T999` is the catch-all
     /// internal error. No overlap with `R###`/`M###`.
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -863,6 +882,7 @@ impl TypeError {
             Self::UnknownTypeVersion { .. } => "T049",
             Self::DuplicateMigration { .. } => "T050",
             Self::UnsupportedInstanceHead { .. } => "T051",
+            Self::ArithmeticOnNonNumeric { .. } => "T052",
             Self::InternalTypeError { .. } => "T999",
         }
     }

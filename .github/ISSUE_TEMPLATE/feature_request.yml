@@ -7,6 +7,15 @@ body:
       value: |
         Thanks for taking the time to suggest a feature.
 
+  - type: checkboxes
+    id: dupes
+    attributes:
+      label: Duplicate search
+      description: Confirm you searched existing issues before filing.
+      options:
+        - label: I searched open and closed issues for this feature (e.g. `tools/dev/issue-dupes.sh <keywords>` or `gh issue list --search "<keywords>"`) and found no duplicate.
+          required: true
+
   - type: textarea
     id: problem
     attributes:

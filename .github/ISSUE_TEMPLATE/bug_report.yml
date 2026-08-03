@@ -8,6 +8,15 @@ body:
         Thanks for reporting a bug. Please fill out the form so we can help quickly.
         For security issues, see SECURITY.md — do not file a public issue.
 
+  - type: checkboxes
+    id: dupes
+    attributes:
+      label: Duplicate search
+      description: Confirm you searched existing issues before filing.
+      options:
+        - label: I searched open and closed issues for this bug (e.g. `tools/dev/issue-dupes.sh <keywords>` or `gh issue list --search "<keywords>"`) and found no duplicate.
+          required: true
+
   - type: input
     id: version
     attributes:

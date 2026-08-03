@@ -1,0 +1,5 @@
+-- expect: T001
+-- Issue #377 Trap A: `add(1, 2)` applies `add` to the tuple `(1, 2)`; the
+-- T001 carries a hint teaching the space-separated call shape (`add 1 2`).
+pub fn add (a: Int) (b: Int) -> Int = a + b
+pub fn f () -> Int = add(1, 2)

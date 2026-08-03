@@ -442,6 +442,7 @@ pub fn unify_caps(ctx: &mut InferCtx, a: &CapRow, b: &CapRow) -> Result<(), Type
                     expected: format!("{s1}"),
                     found: format!("{s2}"),
                     span: dummy_span(),
+                    hint: None,
                 })
             }
         }
@@ -715,13 +716,70 @@ fn mismatch(ctx: &mut InferCtx, expected: &Type, found: &Type) -> TypeError {
         return err;
     }
 
+    // Issue #377 Trap B: an anonymous record literal (`{ name = "a" }`) where
+    // a named record type is expected. Attach the constructor-shape hint while
+    // both sides are still types — after rendering only strings remain.
+    let hint = record_ctor_hint(&ctx.tycon_decls, &expected, &found);
+
     let (expected, found) =
         crate::render::render_type_pair_with(&expected, &found, &ctx.tycon_decls);
     TypeError::TypeMismatch {
         expected,
         found,
         span: dummy_span(),
+        hint,
     }
+}
+
+/// Issue #377 Trap B — the teaching hint for an anonymous record literal
+/// supplied where a named record type is expected.
+///
+/// Fires when `expected` is a *nominal* record type (a `Con` whose tycon
+/// declaration is a named, non-anonymous record) and `found` is a structural
+/// record whose field set is a subset of (or equal to) the nominal record's
+/// fields — the shape a newcomer writes when they do not yet know that Ridge
+/// record literals name their constructor (`User { name = "a" }`, not
+/// `{ name = "a" }`). Both types must already be deep-resolved. Returns `None`
+/// for any other pair (including inline/anonymous record types on the expected
+/// side, which have no constructor name to teach).
+pub(crate) fn record_ctor_hint(
+    decls: &[TyConDecl],
+    expected: &Type,
+    found: &Type,
+) -> Option<String> {
+    let Type::Con(id, _) = expected else {
+        return None;
+    };
+    let decl = decls.iter().find(|d| d.id == *id)?;
+    if decl.is_anon {
+        return None;
+    }
+    let TyConKind::Record(schema) = &decl.kind else {
+        return None;
+    };
+    let Type::Record { fields, .. } = found else {
+        return None;
+    };
+    let nominal: rustc_hash::FxHashSet<&str> = schema
+        .record_fields()
+        .iter()
+        .map(|field| field.name.as_str())
+        .collect();
+    if !fields
+        .iter()
+        .all(|(name, _)| nominal.contains(name.as_str()))
+    {
+        return None;
+    }
+    let names = fields
+        .iter()
+        .map(|(name, _)| format!("{name} = …"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let record = decl.name.as_str();
+    Some(format!(
+        "record literals name their constructor — write `{record} {{ {names} }}`, not `{{ {names} }}`"
+    ))
 }
 
 /// When a full entity (`found`) is supplied where its `<Entity>Insert` companion

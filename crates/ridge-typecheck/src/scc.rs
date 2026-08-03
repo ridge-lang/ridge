@@ -609,6 +609,10 @@ pub fn typecheck_module_decls(
                         .unwrap_or_else(|| Span::point(0));
                     let expected_ty = ctx.deep_resolve(ret_ty_box);
                     let found_ty = ctx.deep_resolve(&body_ty);
+                    // Issue #377 Trap B: an anonymous record literal where a
+                    // named record type is expected gets the constructor hint.
+                    let hint =
+                        crate::unify::record_ctor_hint(&ctx.tycon_decls, &expected_ty, &found_ty);
                     let (expected, found) = crate::render::render_type_pair_with(
                         &expected_ty,
                         &found_ty,
@@ -618,6 +622,7 @@ pub fn typecheck_module_decls(
                         expected,
                         found,
                         span,
+                        hint,
                     });
                 }
 
@@ -833,12 +838,15 @@ pub fn infer_instance_methods(
             if unify(ctx, &body_ty, &ret_ty).is_err() {
                 let expected_ty = ctx.deep_resolve(&ret_ty);
                 let found_ty = ctx.deep_resolve(&body_ty);
+                let hint =
+                    crate::unify::record_ctor_hint(&ctx.tycon_decls, &expected_ty, &found_ty);
                 let (expected, found) =
                     crate::render::render_type_pair_with(&expected_ty, &found_ty, &ctx.tycon_decls);
                 ctx.errors.push(TypeError::TypeMismatch {
                     expected,
                     found,
                     span: method.span,
+                    hint,
                 });
             }
 

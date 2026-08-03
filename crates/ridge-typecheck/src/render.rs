@@ -40,9 +40,16 @@ impl fmt::Display for TypeError {
         match self {
             // ── T001 ──────────────────────────────────────────────────────────
             Self::TypeMismatch {
-                expected, found, ..
+                expected,
+                found,
+                hint,
+                ..
             } => {
-                write!(f, "T001: type mismatch\n  expected {expected}, got {found}")
+                write!(f, "T001: type mismatch\n  expected {expected}, got {found}")?;
+                if let Some(h) = hint {
+                    write!(f, "\n  hint: {h}")?;
+                }
+                Ok(())
             }
 
             // ── T002 ──────────────────────────────────────────────────────────
@@ -1325,6 +1332,7 @@ mod tests {
             expected: "Int".into(),
             found: "Text".into(),
             span: sp(),
+            hint: None,
         };
         let s = err.to_string();
         assert!(s.contains("T001"), "should contain code: {s}");
@@ -1497,6 +1505,7 @@ mod tests {
             expected: "Int".into(),
             found: "Text".into(),
             span: sp(),
+            hint: None,
         };
 
         assert_eq!(
@@ -1527,6 +1536,7 @@ mod tests {
             expected: "Int".into(),
             found: "Text".into(),
             span: sp(),
+            hint: None,
         };
         assert_has_error_code(&err);
         // Also verify the code/span/severity methods are callable

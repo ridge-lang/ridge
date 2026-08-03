@@ -43,6 +43,12 @@
 //! - `P035 RecordUpdateSyntax`
 //! - `P036 VersionedRefOutsideMigrate`
 //!
+//! Guidance for common syntax traps from C-family languages adds:
+//! - `P037 IndexSyntaxNotSupported`
+//! - `P038 BangNegationNotSupported`
+//! - `P039 MatchBraceBlock`
+//! - `P040 LoopNotSupported`
+//!
 //! Later tasks (T3–T12) will extend this enum; adding variants is
 //! non-breaking because the enum is not `#[non_exhaustive]` — the parser
 //! crate owns all construction sites.
@@ -413,6 +419,60 @@ pub enum ParseError {
         version: String,
     },
 
+    /// P037 — an expression was immediately followed by `[` with no
+    /// intervening whitespace: the C-family `xs[i]` index spelling. Coming
+    /// from C, Rust, Python, Java, or Go this is the natural way to fetch a
+    /// list element, but Ridge has no index operator — elements are fetched
+    /// with the stdlib `List.at`. The dedicated diagnostic fires only on
+    /// adjacency: `f [0]` with a space remains an ordinary function call
+    /// with a list-literal argument.
+    #[error(
+        "Ridge has no `xs[i]` index syntax — use `List.at i xs` to fetch the element at index `i`"
+    )]
+    IndexSyntaxNotSupported {
+        /// Source location of the `[` immediately following the expression.
+        span: Span,
+    },
+
+    /// P038 — `!` was written in expression-atom position, the C-family
+    /// boolean-negation spelling. Ridge has no `!` negation operator — the
+    /// stdlib `Bool.not` negates a boolean. (`!` does exist in Ridge, but
+    /// only as the postfix actor-send operator between a handle and a
+    /// message, never in prefix position.)
+    #[error("Ridge has no `!` negation operator — use `Bool.not x` to negate a boolean")]
+    BangNegationNotSupported {
+        /// Source location of the `!` token.
+        span: Span,
+    },
+
+    /// P039 — a `match` scrutinee was followed directly by `{`, the
+    /// Rust-style brace-delimited arm block. Ridge match arms are laid out
+    /// by indentation: there are no braces, and each arm is indented under
+    /// the `match`. Without this diagnostic the stray `{` surfaced as two
+    /// to three cascading generic errors that never named the real mistake.
+    #[error(
+        "`match` arms are laid out by indentation, not braces — drop the `{{` `}}` and indent the arms under the `match`"
+    )]
+    MatchBraceBlock {
+        /// Source location of the `{` following the scrutinee.
+        span: Span,
+    },
+
+    /// P040 — a `for` or `while` loop was written. Ridge has no loop
+    /// keywords: iteration is expressed with the stdlib `List.forEach` (or
+    /// `List.map` and friends when the loop produces a value) or with a
+    /// recursive function. `for` and `while` are reserved keywords so this
+    /// diagnostic can name the trap directly.
+    #[error(
+        "Ridge has no `{keyword}` loops — use `List.forEach` for iteration or write a recursive function"
+    )]
+    LoopNotSupported {
+        /// Source location of the loop keyword.
+        span: Span,
+        /// The loop keyword that was written (`"for"` or `"while"`).
+        keyword: &'static str,
+    },
+
     /// P999 — the lexer's bracket-suppression invariant was violated (should
     /// be unreachable; signals a lexer bug, not a user error).
     #[error("internal error: layout invariant violated inside bracketed region")]
@@ -456,6 +516,10 @@ impl ParseError {
             Self::GuardKeywordInMatch { .. } => "P034",
             Self::RecordUpdateSyntax { .. } => "P035",
             Self::VersionedRefOutsideMigrate { .. } => "P036",
+            Self::IndexSyntaxNotSupported { .. } => "P037",
+            Self::BangNegationNotSupported { .. } => "P038",
+            Self::MatchBraceBlock { .. } => "P039",
+            Self::LoopNotSupported { .. } => "P040",
             Self::InternalLayoutInvariantViolated { .. } => "P999",
         }
     }
@@ -491,6 +555,10 @@ impl ParseError {
             | Self::GuardKeywordInMatch { span }
             | Self::RecordUpdateSyntax { span, .. }
             | Self::VersionedRefOutsideMigrate { span, .. }
+            | Self::IndexSyntaxNotSupported { span }
+            | Self::BangNegationNotSupported { span }
+            | Self::MatchBraceBlock { span }
+            | Self::LoopNotSupported { span, .. }
             | Self::InternalLayoutInvariantViolated { span } => *span,
         }
     }
@@ -643,5 +711,53 @@ mod tests {
         let msg = e.to_string();
         assert!(msg.contains("record update"));
         assert!(msg.contains("with"));
+    }
+
+    #[test]
+    fn p037_code_and_display() {
+        let e = ParseError::IndexSyntaxNotSupported {
+            span: Span::new(6, 7),
+        };
+        assert_eq!(e.code(), "P037");
+        let msg = e.to_string();
+        assert!(msg.contains("index"));
+        assert!(msg.contains("List.at"));
+    }
+
+    #[test]
+    fn p038_code_and_display() {
+        let e = ParseError::BangNegationNotSupported {
+            span: Span::new(4, 5),
+        };
+        assert_eq!(e.code(), "P038");
+        let msg = e.to_string();
+        assert!(msg.contains('!'));
+        assert!(msg.contains("Bool.not"));
+    }
+
+    #[test]
+    fn p039_code_and_display() {
+        let e = ParseError::MatchBraceBlock {
+            span: Span::new(8, 9),
+        };
+        assert_eq!(e.code(), "P039");
+        let msg = e.to_string();
+        assert!(msg.contains("match"));
+        assert!(msg.contains("indentation"));
+        assert!(msg.contains("braces"));
+    }
+
+    #[test]
+    fn p040_code_and_display() {
+        let e = ParseError::LoopNotSupported {
+            span: Span::new(4, 7),
+            keyword: "for",
+        };
+        assert_eq!(e.code(), "P040");
+        assert_eq!(e.span(), Span::new(4, 7));
+        let msg = e.to_string();
+        assert!(msg.contains("`for`"));
+        assert!(msg.contains("List.forEach"));
+        assert!(msg.contains("recursive"));
     }
 }

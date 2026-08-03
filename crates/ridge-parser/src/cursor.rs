@@ -326,6 +326,8 @@ const fn token_description(tok: &Token) -> &'static str {
         Token::KwClass => "class",
         Token::KwDeriving => "deriving",
         Token::KwInstance => "instance",
+        Token::KwFor => "for",
+        Token::KwWhile => "while",
         Token::Assign => "=",
         Token::Colon => ":",
         Token::Comma => ",",

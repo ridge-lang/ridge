@@ -285,11 +285,15 @@ pub fn resolve_prelude_ctor(b: &BuiltinTyCons, name: &str) -> Option<(TyConId, u
 fn attach_span(e: TypeError, span: Span) -> TypeError {
     match e {
         TypeError::TypeMismatch {
-            expected, found, ..
+            expected,
+            found,
+            hint,
+            ..
         } => TypeError::TypeMismatch {
             expected,
             found,
             span,
+            hint,
         },
         TypeError::OccursCheck { var, ty, .. } => TypeError::OccursCheck { var, ty, span },
         TypeError::InsertShapeFullEntity {

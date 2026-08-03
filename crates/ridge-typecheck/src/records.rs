@@ -512,11 +512,15 @@ pub fn attach_span_pub(e: TypeError, span: Span) -> TypeError {
 fn attach_span(e: TypeError, span: Span) -> TypeError {
     match e {
         TypeError::TypeMismatch {
-            expected, found, ..
+            expected,
+            found,
+            hint,
+            ..
         } => TypeError::TypeMismatch {
             expected,
             found,
             span,
+            hint,
         },
         TypeError::OccursCheck { var, ty, .. } => TypeError::OccursCheck { var, ty, span },
         TypeError::InsertShapeFullEntity {

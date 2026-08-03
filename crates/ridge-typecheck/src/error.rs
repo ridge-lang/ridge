@@ -57,6 +57,12 @@ pub enum TypeError {
         found: String,
         /// Source span of the sub-expression.
         span: Span,
+        /// Optional diagnostic hint shown below the main message — for example
+        /// "Ridge calls are space-separated: `add 1 2`, not `add(1, 2)`" when
+        /// the mismatch comes from a parenthesised comma call, or "record
+        /// literals name their constructor" when an anonymous record literal
+        /// is supplied where a named record type is expected.
+        hint: Option<String>,
     },
 
     // ── T002 ─────────────────────────────────────────────────────────────────
@@ -942,6 +948,7 @@ mod tests {
             expected: "Int".into(),
             found: "Text".into(),
             span: dummy_span(),
+            hint: None,
         }
     }
 

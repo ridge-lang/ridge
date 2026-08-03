@@ -1,0 +1,7 @@
+-- expect: P039
+-- Trigger: Rust-style `match x { … }`; Ridge match arms are laid out by
+-- indentation, with no braces around the arm block.
+fn f (x: Int) -> Int =
+    match x {
+        n -> 1
+    }

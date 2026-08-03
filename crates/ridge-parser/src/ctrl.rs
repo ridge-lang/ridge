@@ -146,6 +146,19 @@ pub(crate) fn parse_match(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
         cur.bump();
     }
 
+    // ── `match x { … }` — Rust-style braces (P039) ──────────────────────────
+    // A `{` directly after the scrutinee is USUALLY the brace-delimited arm
+    // block from Rust/C-family languages — but it can also be a legitimate
+    // inline record pattern starting the first arm (`match p\n{ x, y } -> x`
+    // in bracket-suppressed context). Disambiguate by scanning inside the
+    // braces: record patterns never contain `->`, so an arm arrow before the
+    // closing brace means the arms were braced. Report the dedicated guidance
+    // here, BEFORE the brace can fall through into arm parsing and cascade
+    // into two or three generic errors.
+    if cur.peek() == &Token::LBrace && brace_block_has_inner_arrow(cur) {
+        return Err(ParseError::MatchBraceBlock { span: cur.span() });
+    }
+
     if cur.peek() == &Token::Indent {
         // ── Layout mode: INDENT … DEDENT ─────────────────────────────────────
         cur.bump(); // consume `Indent`
@@ -256,6 +269,37 @@ pub(crate) fn parse_match(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
             span,
         })
     }
+}
+
+/// Return `true` if the `{` at the cursor opens a Rust-style brace arm block
+/// rather than a legitimate inline record pattern starting the first arm.
+///
+/// The tell: an arm arrow `->` appears BEFORE the brace that closes this
+/// block. Record patterns never contain `->` (patterns hold no expressions),
+/// so an arrow at inner brace depth means the user wrote `match x { arms }`.
+///
+/// Scans forward from the `{` at the cursor position, tracking bracket depth:
+/// - the matching close brace with no inner arrow → `false` (record pattern)
+/// - `Arrow` while inside the braces            → `true` (braced arm block)
+/// - `Eof` / scan limit                          → `false` (safe fallback)
+fn brace_block_has_inner_arrow(cur: &Cursor<'_>) -> bool {
+    const SCAN_LIMIT: usize = 200;
+    let mut depth: i32 = 0;
+    for i in 0..SCAN_LIMIT {
+        match cur.peek_n(i) {
+            Some(Token::LBrace | Token::InterpExprStart) => depth += 1,
+            Some(Token::RBrace | Token::InterpExprEnd) => {
+                depth -= 1;
+                if depth == 0 {
+                    return false; // closed with no inner arrow — record pattern
+                }
+            }
+            Some(Token::Arrow) if depth >= 1 => return true,
+            Some(Token::Eof) | None => return false,
+            _ => {}
+        }
+    }
+    false // scan limit reached: assume record pattern
 }
 
 /// Return `true` if the match expression at the current cursor position is

@@ -10,7 +10,7 @@
 /// the layout post-processor and carry zero-width spans.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Token {
-    // ── Keywords (grammar §1.2, 31 total) ────────────────────────────────────
+    // ── Keywords (grammar §1.2, 33 total) ────────────────────────────────────
     KwActor,
     KwAs,
     KwCatch,
@@ -20,6 +20,7 @@ pub enum Token {
     KwElse,
     KwFalse,
     KwFn,
+    KwFor,
     KwGuard,
     KwIf,
     KwImport,
@@ -41,6 +42,7 @@ pub enum Token {
     KwVar,
     KwWhen,
     KwWhere,
+    KwWhile,
     KwWith,
 
     // ── Identifiers (grammar §1.4) ───────────────────────────
@@ -203,6 +205,7 @@ impl Token {
             Self::KwElse => Some("else"),
             Self::KwFalse => Some("false"),
             Self::KwFn => Some("fn"),
+            Self::KwFor => Some("for"),
             Self::KwGuard => Some("guard"),
             Self::KwIf => Some("if"),
             Self::KwImport => Some("import"),
@@ -224,6 +227,7 @@ impl Token {
             Self::KwVar => Some("var"),
             Self::KwWhen => Some("when"),
             Self::KwWhere => Some("where"),
+            Self::KwWhile => Some("while"),
             Self::KwWith => Some("with"),
             _ => None,
         }
@@ -242,6 +246,7 @@ impl std::fmt::Display for Token {
             Self::KwElse => write!(f, "else"),
             Self::KwFalse => write!(f, "false"),
             Self::KwFn => write!(f, "fn"),
+            Self::KwFor => write!(f, "for"),
             Self::KwGuard => write!(f, "guard"),
             Self::KwIf => write!(f, "if"),
             Self::KwImport => write!(f, "import"),
@@ -263,6 +268,7 @@ impl std::fmt::Display for Token {
             Self::KwVar => write!(f, "var"),
             Self::KwWhen => write!(f, "when"),
             Self::KwWhere => write!(f, "where"),
+            Self::KwWhile => write!(f, "while"),
             Self::KwWith => write!(f, "with"),
 
             Self::LowerIdent(s)
@@ -352,6 +358,7 @@ mod tests {
             ("else", Token::KwElse),
             ("false", Token::KwFalse),
             ("fn", Token::KwFn),
+            ("for", Token::KwFor),
             ("guard", Token::KwGuard),
             ("if", Token::KwIf),
             ("import", Token::KwImport),
@@ -373,6 +380,7 @@ mod tests {
             ("var", Token::KwVar),
             ("when", Token::KwWhen),
             ("where", Token::KwWhere),
+            ("while", Token::KwWhile),
             ("with", Token::KwWith),
         ];
         for (src, tok) in pairs {

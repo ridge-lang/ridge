@@ -402,6 +402,11 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             ) && arg_types.len() == 1
                 && matches!(&arg_types[0], Type::Con(id, _) if *id == b.unit);
 
+            // Issue #377 Trap A: `f(1, 2)` — a parenthesised comma-list hard
+            // against the callee reads as a single tuple argument. The hint is
+            // attached below only if the call actually fails to typecheck.
+            let paren_call_hint = paren_comma_call_hint(callee, args);
+
             if is_zero_param_unit_call {
                 // Extract the return type directly — no argument unification needed.
                 if let Type::Fn { ret, caps, .. } = resolved_callee {
@@ -442,9 +447,19 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 if n_args < n_params {
                     // Unify each supplied arg with the corresponding param.
                     let mut ok = true;
-                    for (arg_ty, param_ty) in arg_types.iter().zip(callee_params.iter()) {
+                    for (i, (arg_ty, param_ty)) in
+                        arg_types.iter().zip(callee_params.iter()).enumerate()
+                    {
                         if let Err(e) = unify(ctx, arg_ty, param_ty) {
-                            ctx.errors.push(attach_span(e, *span));
+                            let mut e = attach_span(e, *span);
+                            // Trap A: the failing first argument is the
+                            // parenthesised comma-list.
+                            if i == 0 {
+                                if let Some(h) = &paren_call_hint {
+                                    set_type_mismatch_hint(&mut e, h.clone());
+                                }
+                            }
+                            ctx.errors.push(e);
                             ok = false;
                         }
                     }
@@ -474,7 +489,14 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             };
             if let Err(e) = unify(ctx, &callee_ty, &expected_fn_ty) {
                 // Attach the call site span to the error and push it.
-                let e_with_span = attach_span(e, *span);
+                let mut e_with_span = attach_span(e, *span);
+                // Trap A: only when the callee really is a function — otherwise
+                // the problem is not the parenthesised call shape.
+                if let Some(h) = &paren_call_hint {
+                    if matches!(ctx.deep_resolve(&callee_ty), Type::Fn { .. }) {
+                        set_type_mismatch_hint(&mut e_with_span, h.clone());
+                    }
+                }
                 ctx.errors.push(e_with_span);
                 return Type::Error;
             }
@@ -1936,11 +1958,15 @@ fn mark_avg_interval_accessor(
 fn attach_span(err: TypeError, span: Span) -> TypeError {
     match err {
         TypeError::TypeMismatch {
-            expected, found, ..
+            expected,
+            found,
+            hint,
+            ..
         } => TypeError::TypeMismatch {
             expected,
             found,
             span,
+            hint,
         },
         TypeError::ArityMismatch {
             callee,
@@ -1968,6 +1994,73 @@ fn attach_span(err: TypeError, span: Span) -> TypeError {
             span,
         },
         other => other,
+    }
+}
+
+/// Issue #377 Trap A — `f(1, 2)` reads as `f` applied to the tuple `(1, 2)`.
+///
+/// Returns the teaching hint when the first call argument is syntactically a
+/// parenthesised comma-list (an `Expr::Tuple`, possibly wrapped in `Paren`)
+/// hard against the callee — `arg.span.start == callee.span.end`, i.e. no
+/// whitespace, the tell-tale of a C-style call. A tuple argument written with
+/// a space (`f (1, 2)`) is deliberate and gets no hint. The caller attaches
+/// the hint only when the call actually fails to typecheck; a well-typed
+/// tuple argument produces no error at all.
+fn paren_comma_call_hint(callee: &Expr, args: &[Expr]) -> Option<String> {
+    let first = args.first()?;
+    if first.span().start != callee.span().end {
+        return None;
+    }
+    let Expr::Tuple { elems, .. } = peel_parens(first) else {
+        return None;
+    };
+    let name = match peel_parens(callee) {
+        Expr::Ident(id) => id.text.as_str(),
+        _ => "f",
+    };
+    let rendered: Option<Vec<String>> = elems.iter().map(simple_call_arg_text).collect();
+    Some(rendered.map_or_else(
+        || {
+            format!(
+                "Ridge calls are space-separated — pass arguments without parentheses or commas (`{name} x y`, not `{name}(x, y)`)"
+            )
+        },
+        |parts| {
+            format!(
+                "Ridge calls are space-separated — write `{name} {}`, not `{name}({})`",
+                parts.join(" "),
+                parts.join(", "),
+            )
+        },
+    ))
+}
+
+/// Renders a call argument for the Trap A hint when it is a simple atom (a
+/// literal or a plain identifier); anything richer returns `None` and the
+/// hint falls back to generic placeholders.
+fn simple_call_arg_text(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Literal(lit) => match lit {
+            Literal::IntDec { raw, .. }
+            | Literal::IntBin { raw, .. }
+            | Literal::IntOct { raw, .. }
+            | Literal::IntHex { raw, .. }
+            | Literal::Float { raw, .. }
+            | Literal::Decimal { raw, .. }
+            | Literal::Text { raw, .. } => Some(raw.clone()),
+            Literal::Bool { value, .. } => Some(value.to_string()),
+            Literal::RawText { .. } => None,
+        },
+        Expr::Ident(id) => Some(id.text.clone()),
+        _ => None,
+    }
+}
+
+/// Sets the teaching hint on a `T001 TypeMismatch`; all other variants are
+/// left untouched.
+fn set_type_mismatch_hint(e: &mut TypeError, hint: String) {
+    if let TypeError::TypeMismatch { hint: slot, .. } = e {
+        *slot = Some(hint);
     }
 }
 

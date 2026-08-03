@@ -118,6 +118,12 @@ pub fn drop (n: Int) (xs: List a) -> List a =
     else if n >= len then []
     else _nthtail n xs
 
+-- Return the element at zero-based index `n` wrapped in Some, or None if `n`
+-- is negative or out of range.
+pub fn at (n: Int) (xs: List a) -> Option a =
+    if n < 0 then None
+    else head (drop n xs)
+
 -- Group elements by a key function, returning a Map from key to list of elements.
 -- Private BEAM bridges used to avoid importing std.map (prevents SCC within tier-2).
 @ffi("maps", "new", 0)

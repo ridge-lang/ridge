@@ -76,6 +76,10 @@ fn _drop (n: Int) (xs: List a) -> List a =
     else if n >= len then []
     else _nthtail n xs
 
+fn _at (n: Int) (xs: List a) -> Option a =
+    if n < 0 then None
+    else _head (_drop n xs)
+
 fn _zip (xs: List a) (ys: List b) -> List (a, b) =
     match xs
         [] -> []
@@ -203,6 +207,36 @@ pub fn test_drop_zero_keeps_all () -> Result Unit Text =
 pub fn test_drop_past_end_is_empty () -> Result Unit Text =
     if _drop 10 [1, 2] == [] then Ok ()
     else Err "List.drop 10 [1,2] should be []"
+
+@test "at_in_range_returns_some"
+pub fn test_at_in_range_returns_some () -> Result Unit Text =
+    if _at 1 [10, 20, 30] == Some 20 then Ok ()
+    else Err "List.at 1 [10,20,30] should be Some 20"
+
+@test "at_zero_returns_head"
+pub fn test_at_zero_returns_head () -> Result Unit Text =
+    if _at 0 [1, 2, 3] == Some 1 then Ok ()
+    else Err "List.at 0 [1,2,3] should be Some 1"
+
+@test "at_last_index_returns_some"
+pub fn test_at_last_index_returns_some () -> Result Unit Text =
+    if _at 2 [10, 20, 30] == Some 30 then Ok ()
+    else Err "List.at 2 [10,20,30] should be Some 30"
+
+@test "at_negative_is_none"
+pub fn test_at_negative_is_none () -> Result Unit Text =
+    if _at (0 - 1) [1, 2, 3] == None then Ok ()
+    else Err "List.at -1 [1,2,3] should be None"
+
+@test "at_out_of_range_is_none"
+pub fn test_at_out_of_range_is_none () -> Result Unit Text =
+    if _at 3 [1, 2, 3] == None then Ok ()
+    else Err "List.at 3 [1,2,3] should be None"
+
+@test "at_empty_is_none"
+pub fn test_at_empty_is_none () -> Result Unit Text =
+    if _at 0 [] == None then Ok ()
+    else Err "List.at 0 [] should be None"
 
 @test "zip_truncates_to_shorter"
 pub fn test_zip_truncates_to_shorter () -> Result Unit Text =

@@ -1,4 +1,4 @@
-//! Track-A tests for `std.list` — 26 public functions.
+//! Track-A tests for `std.list` — 27 public functions.
 //!
 //! Each test asserts that `list.ridge` compiles through the T4 build pipeline
 //! and that the module appears in the build summary.
@@ -135,6 +135,12 @@ fn std_list_take_compiles() {
 
 #[test]
 fn std_list_drop_compiles() {
+    assert_std_list_built();
+    assert_list_ridge_discovered();
+}
+
+#[test]
+fn std_list_at_compiles() {
     assert_std_list_built();
     assert_list_ridge_discovered();
 }

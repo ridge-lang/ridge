@@ -1,3 +1,16 @@
+## Linked issue
+
+<!--
+Ridge is issue-first: every non-trivial change starts from an ACCEPTED issue.
+Write `Closes #N` below. If this is a trivial change (typo, small docs fix,
+CI tweak, dependency bump), check the exemption box instead.
+-->
+
+Closes #
+
+- [ ] The linked issue carries the `accepted` label
+- [ ] OR: this is a trivial change and no issue is required
+
 ## Summary
 
 <!-- One or two sentences: what does this PR do, and why? -->

@@ -195,15 +195,14 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 let scheme = scheme.clone();
                 return instantiate(ctx, &scheme);
             }
-            // Unknown qualified name — T999 (cross-module lookup beyond stdlib
-            // is deferred; the resolver should have caught truly missing names).
-            emit_internal(
-                ctx,
-                format!(
-                    "qualified name '{full_name}' not found in env (cross-module lookup deferred)"
-                ),
-                q.span,
-            )
+            // Unknown qualified name — the resolver already reported it
+            // (R014 for a stdlib-symbol miss, R012 for any other unresolved
+            // qualified head; a suppressed `External`/`Unresolved` import
+            // target was reported earlier still).  Emitting T999 here too
+            // would double-report and, worse, frame the user's own typo as
+            // a "compiler bug" — the message the resolver gave is the right
+            // one.  Absorb silently, mirroring the `Ident` arm above.
+            Type::Error
         }
 
         // ── Lambda ────────────────────────────────────────────────────────────

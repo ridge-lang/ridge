@@ -245,6 +245,22 @@ fn unknown_constructor_does_not_leak_t999() {
     );
 }
 
+/// A mistyped stdlib symbol (`Io.printn`) is reported by the resolver as
+/// `R014` with did-you-mean suggestions; the type checker must absorb the
+/// same name silently rather than cascading into a `T999` "compiler bug".
+#[test]
+fn unknown_stdlib_symbol_does_not_leak_t999() {
+    let src = "import std.io as Io\n\npub fn io hi () -> Unit = Io.printn \"hi\"\n";
+    let codes: Vec<&str> = run_typecheck_on_source("io_printn", src)
+        .iter()
+        .map(TypeError::code)
+        .collect();
+    assert!(
+        !codes.contains(&"T999"),
+        "an R014-reported unknown stdlib symbol must NOT leak T999; got: {codes:?}"
+    );
+}
+
 /// Matching (and constructing) a record-style union variant type-checks: the
 /// variant's fields bind against its inline record schema, the match is
 /// exhaustive, and no deferral diagnostic (`T044`) or internal error (`T999`)

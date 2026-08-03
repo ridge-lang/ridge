@@ -660,6 +660,21 @@ impl fmt::Display for TypeError {
                 )
             }
 
+            // ── T052 ──────────────────────────────────────────────────────────
+            Self::ArithmeticOnNonNumeric { op, found, .. } => {
+                if found == "Text" {
+                    write!(
+                        f,
+                        "T052: arithmetic on non-numeric type\n  `{op}` requires `Int` or `Float` operands, found `Text`\n  hint: use `++` to concatenate text"
+                    )
+                } else {
+                    write!(
+                        f,
+                        "T052: arithmetic on non-numeric type\n  `{op}` requires `Int` or `Float` operands, found `{found}`\n  hint: use `++` to concatenate text or lists"
+                    )
+                }
+            }
+
             // ── T999 ──────────────────────────────────────────────────────────
             Self::InternalTypeError { detail, .. } => {
                 write!(f, "T999: internal type error\n  {detail}\n  This is a compiler bug. Please report it.")
@@ -735,6 +750,7 @@ impl HasErrorCode for TypeError {
             | Self::UnknownTypeVersion { span, .. }
             | Self::DuplicateMigration { span, .. }
             | Self::UnsupportedInstanceHead { span, .. }
+            | Self::ArithmeticOnNonNumeric { span, .. }
             | Self::InternalTypeError { span, .. } => *span,
 
             // T034: uses `totext_span` (the explicit instance) as the primary span.

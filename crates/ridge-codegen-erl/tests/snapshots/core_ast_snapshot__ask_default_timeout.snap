@@ -85,9 +85,6 @@ CErlModule {
                 CErlAnn(
                     "%% Caps: {}",
                 ),
-                CErlAnn(
-                    "%% Warning: main/0 — canonical main should have arity 1 (§4.26)",
-                ),
             ],
             body: Fun {
                 params: [],

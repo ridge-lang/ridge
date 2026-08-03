@@ -35,9 +35,12 @@ use rustc_hash::FxHashMap;
 /// Future LLVM/WASM-GC backends will consume these from `LoweredModule.node_types`.
 ///
 /// ## `is_main` arity check (§4.26)
-/// A canonical `main` function must take exactly 1 argument (the CLI args list).
-/// If `is_main` is true and `params.len() != 1`, a `%% Warning: main/N arity` annotation
-/// is added and lowering continues — codegen is not failed.
+/// The BEAM runner invokes the entry point with no arguments, so a canonical
+/// `main` takes exactly 0 parameters. `ridge-typecheck` enforces this upstream
+/// (`T053`); the annotation here is a defensive remnant for IR built outside
+/// the standard pipeline. If `is_main` is true and `params.len() != 0`, a
+/// `%% Warning: main/N arity` annotation is added and lowering continues —
+/// codegen is not failed.
 ///
 /// ## Name quoting (§4.26)
 /// Always quote function name in emission for safety.
@@ -122,13 +125,16 @@ pub(crate) fn lower_fn_with_module_name(
     let mut anns = vec![file_ann, caps_ann];
 
     // §4.26: is_main arity check warning.
-    // A canonical main function takes exactly 1 argument (the CLI args list).
-    // We do not fail codegen — we annotate and continue.
+    // The runner invokes the entry point with no arguments, so a canonical
+    // main has arity 0. `ridge-typecheck` rejects a parameterized `main`
+    // upstream (T053) — this annotation is the defensive remnant for IR that
+    // bypasses the standard pipeline. We do not fail codegen — we annotate
+    // and continue.
     // NOTE: tracing is not a dependency of this crate; warning is emitted as
     //       a CErlAnn annotation (metadata-only, §4.26 contract).
-    if fn_.is_main && arity != 1 {
+    if fn_.is_main && arity != 0 {
         anns.push(CErlAnn(format!(
-            "%% Warning: main/{arity} — canonical main should have arity 1 (§4.26)"
+            "%% Warning: main/{arity} — canonical main should have arity 0 (§4.26)"
         )));
     }
 
@@ -344,7 +350,11 @@ mod tests {
         let fn_ = IrFn {
             name: "main".into(),
             module: ModuleId(0),
-            params: vec![], // arity 0, but is_main expects 1
+            params: vec![IrParam {
+                name: "args".into(),
+                ty: Type::Error,
+                span: sp(),
+            }], // arity 1, but canonical main is arity 0
             ret_ty: Type::Error,
             caps: CapabilitySet::PURE,
             scheme: Scheme::mono(Type::Error),
@@ -362,21 +372,17 @@ mod tests {
         let has_warning = result.anns.iter().any(|CErlAnn(s)| s.contains("Warning:"));
         assert!(
             has_warning,
-            "expected Warning annotation for is_main with arity != 1"
+            "expected Warning annotation for is_main with arity != 0"
         );
     }
 
     #[test]
     fn lower_fn_main_correct_arity_no_warning() {
-        // is_main with correct arity (1) → no warning.
+        // is_main with correct arity (0) → no warning.
         let fn_ = IrFn {
             name: "main".into(),
             module: ModuleId(0),
-            params: vec![IrParam {
-                name: "args".into(),
-                ty: Type::Error,
-                span: sp(),
-            }],
+            params: vec![],
             ret_ty: Type::Error,
             caps: CapabilitySet::PURE,
             scheme: Scheme::mono(Type::Error),
@@ -391,7 +397,7 @@ mod tests {
         let result = lower_fn(&fn_, &ws, &empty_arity()).unwrap();
 
         let has_warning = result.anns.iter().any(|CErlAnn(s)| s.contains("Warning:"));
-        assert!(!has_warning, "unexpected Warning annotation for main/1");
+        assert!(!has_warning, "unexpected Warning annotation for main/0");
     }
 
     // ── lower_const tests ─────────────────────────────────────────────────────

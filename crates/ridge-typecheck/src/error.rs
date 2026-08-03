@@ -808,6 +808,23 @@ pub enum TypeError {
         span: Span,
     },
 
+    // ── T053 ─────────────────────────────────────────────────────────────────
+    /// A top-level `fn main` declares parameters.
+    ///
+    /// `main` is the program entry point: the BEAM runner invokes it with no
+    /// arguments, so a `main` that takes parameters compiled cleanly and then
+    /// crashed at startup with `undef` (`main/0` does not exist). The name is
+    /// effectively reserved — the lowerer already marks any top-level `main`
+    /// as the entry point regardless of project kind — so the arity rule
+    /// applies in libraries too. Command-line arguments are read through the
+    /// stdlib (`Cli.args ()`), not through parameters.
+    MainHasParams {
+        /// Number of declared parameters.
+        found: usize,
+        /// Source span of the `fn main` declaration.
+        span: Span,
+    },
+
     // ── T999 ─────────────────────────────────────────────────────────────────
     /// Internal type-checker invariant violation — should never reach users.
     ///
@@ -825,7 +842,7 @@ pub enum TypeError {
 impl TypeError {
     /// Returns the stable `T###` error code for this variant.
     ///
-    /// The codes are allocated in `T001..T052` and `T999` is the catch-all
+    /// The codes are allocated in `T001..T053` and `T999` is the catch-all
     /// internal error. No overlap with `R###`/`M###`.
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -883,6 +900,7 @@ impl TypeError {
             Self::DuplicateMigration { .. } => "T050",
             Self::UnsupportedInstanceHead { .. } => "T051",
             Self::ArithmeticOnNonNumeric { .. } => "T052",
+            Self::MainHasParams { .. } => "T053",
             Self::InternalTypeError { .. } => "T999",
         }
     }

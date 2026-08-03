@@ -1,0 +1,5 @@
+-- expect: T053
+-- T053 MainHasParams: the entry point is invoked with no arguments, so a
+-- `main` that declares parameters compiles and then crashes at startup
+-- with `undef`.
+pub fn io main (x: Int) -> Unit = ()

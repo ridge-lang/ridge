@@ -29,10 +29,10 @@
 //!
 //! # `is_main` detection
 //!
-//! A top-level `fn main` with no parameters (after the resolver strips any
-//! capability annotations) is marked `is_main = true`.  The resolver already
-//! validated that at most one such `fn` exists; the lowerer simply reflects the
-//! marker.
+//! A top-level `fn main` is marked `is_main = true` by name alone. The
+//! entry-point contract (no parameters, since the BEAM runner invokes
+//! `main/0`) is enforced upstream by `ridge-typecheck` (`T053`); the lowerer
+//! simply reflects the marker.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![cfg_attr(

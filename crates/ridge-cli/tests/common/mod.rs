@@ -105,8 +105,9 @@ pub fn make_workspace(module_name: &str, source: &str) -> TempWorkspace {
 ///     src/<module>.ridge
 /// ```
 ///
-/// The source must define `pub fn main()` (zero-argument) or
-/// `pub fn main(args: List Text) -> Unit` (one-argument).
+/// The source must define `pub fn main()` (zero-argument). A `main` with
+/// parameters is rejected at check time (T053); CLI arguments are read via
+/// `Cli.args ()` from `std.cli`.
 pub fn make_app_workspace(module_name: &str, source: &str) -> TempWorkspace {
     let tw = TempWorkspace::new();
     write_file(

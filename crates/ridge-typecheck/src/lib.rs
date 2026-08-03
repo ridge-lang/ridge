@@ -1343,6 +1343,20 @@ fn typecheck_module_inner(
         })
         .collect();
 
+    // Entry-point contract: the BEAM runner invokes `main` with no arguments,
+    // so a `main` that declares parameters compiles and then crashes at
+    // startup with `undef`. Reject it here (T053). The rule fires in libraries
+    // too — the lowerer already marks any top-level `main` as the entry
+    // point, so the name is effectively reserved.
+    for decl in &fn_decls {
+        if decl.name.text == "main" && !decl.params.is_empty() {
+            ctx.errors.push(TypeError::MainHasParams {
+                found: decl.params.len(),
+                span: decl.span,
+            });
+        }
+    }
+
     // Use the caller-supplied registries when available; fall back to empty
     // registries so the constraint solver is a no-op for unconstrained modules.
     let scratch_class_table = crate::class_env::ClassTable::new();

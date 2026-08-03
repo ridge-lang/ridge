@@ -59,7 +59,6 @@ module 'ridge_module_0' ['main'/0]
       -| [] )
   %% File: <source>, Offset: 3251
   %% Caps: {io time env}
-  %% Warning: main/0 — canonical main should have arity 1 (§4.26)
 'main'/0 =
     ( fun () ->
           let V_Args = call 'ridge_rt':'cli_args' ('ok') in let V_Generations = let V_Anf87 = apply 'defaultGenerations'/0 () in let V_Anf90 = let V_Anf88 = ( fun (V_X0) -> call 'ridge_rt':'int_parse' (V_X0) -| [] ) in let V_Anf89 = call 'std.list':'head' (V_Args) in call 'std.option':'flatMap' (V_Anf88, V_Anf89) in call 'std.option':'withDefault' (V_Anf87, V_Anf90) in letrec 'loop'/2 =

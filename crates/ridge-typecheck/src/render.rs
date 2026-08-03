@@ -675,6 +675,15 @@ impl fmt::Display for TypeError {
                 }
             }
 
+            // ── T053 ──────────────────────────────────────────────────────────
+            Self::MainHasParams { found, .. } => {
+                write!(
+                    f,
+                    "T053: `main` must not take parameters\n  `main` is the program entry point and is invoked with no arguments, but declares {found} parameter{s}\n  hint: declare it as `fn main () -> ...`; read command-line arguments via `Cli.args ()` from `std.cli`",
+                    s = if *found == 1 { "" } else { "s" }
+                )
+            }
+
             // ── T999 ──────────────────────────────────────────────────────────
             Self::InternalTypeError { detail, .. } => {
                 write!(f, "T999: internal type error\n  {detail}\n  This is a compiler bug. Please report it.")
@@ -751,6 +760,7 @@ impl HasErrorCode for TypeError {
             | Self::DuplicateMigration { span, .. }
             | Self::UnsupportedInstanceHead { span, .. }
             | Self::ArithmeticOnNonNumeric { span, .. }
+            | Self::MainHasParams { span, .. }
             | Self::InternalTypeError { span, .. } => *span,
 
             // T034: uses `totext_span` (the explicit instance) as the primary span.

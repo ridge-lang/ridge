@@ -123,6 +123,33 @@ fn check_parse_error() {
     );
 }
 
+/// A failing `ridge check` must not tack a spurious `C001 NoWorkspaceRoot`
+/// onto the real diagnostic — the workspace root WAS found; the check simply
+/// failed. Regression test for the `AlreadyReported` migration gap.
+#[test]
+fn check_type_error_no_spurious_c001() {
+    let bad_source = "pub fn foo -> Text = 42\n";
+    let tw = make_workspace("Broken", bad_source);
+
+    let output = ridge_cmd()
+        .arg("check")
+        .current_dir(&tw.path)
+        .output()
+        .expect("ridge check spawn failed");
+
+    assert!(!output.status.success());
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("T001"),
+        "expected the real T001 diagnostic, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("C001") && !stderr.contains("NoWorkspaceRoot"),
+        "spurious C001 NoWorkspaceRoot after the real diagnostic: {stderr}"
+    );
+}
+
 // ── Test 6: --member selection ────────────────────────────────────────────────
 
 /// `ridge check --member api` only checks the `api` member.

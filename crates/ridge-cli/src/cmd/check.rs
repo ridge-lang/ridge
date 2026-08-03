@@ -51,13 +51,13 @@ pub fn execute(args: &CheckArgs, cwd: &Path) -> Result<(), CliError> {
         ..
     } = check_workspace(opts).map_err(|e| {
         eprintln!("error: {e}");
-        CliError::NoWorkspaceRoot
+        CliError::AlreadyReported
     })?;
 
     // ── 4. Render diagnostics ─────────────────────────────────────────────────
     if !diagnostics.is_empty() {
         render_diagnostics(&diagnostics, &sources);
-        return Err(CliError::NoWorkspaceRoot);
+        return Err(CliError::AlreadyReported);
     }
 
     println!("Type-check passed.");

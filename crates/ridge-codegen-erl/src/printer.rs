@@ -458,9 +458,12 @@ fn print_pat_with_wc(p: &CErlPat, wc_counter: &mut u32) -> String {
             format!("[{h}|{t}]")
         }
         CErlPat::Alias { var, inner } => {
+            // Core Erlang's alias production is `variable '=' pattern`. Printing
+            // the inner pattern first parses as a pattern followed by a stray
+            // `=` and erlc rejects the whole module.
             let inner = print_pat_with_wc(inner, wc_counter);
             let v = print_var(var);
-            format!("{inner} = {v}")
+            format!("{v} = {inner}")
         }
         CErlPat::MapPat(pairs) => {
             let pair_strs = pairs
@@ -781,6 +784,19 @@ mod tests {
         let m = build_sample_module();
         let printed = print_module(&m);
         insta::assert_snapshot!(printed);
+    }
+
+    // ── Test 10 ───────────────────────────────────────────────────────────────
+
+    /// Core Erlang's alias production is `variable '=' pattern`. The inner-first
+    /// order is a syntax error, and it took the whole `as`-pattern form with it.
+    #[test]
+    fn printer_alias_puts_the_variable_first() {
+        let alias = CErlPat::Alias {
+            var: CErlVar("V_N".into()),
+            inner: Box::new(CErlPat::Lit(CErlLit::Int(1))),
+        };
+        assert_eq!(print_pat(&alias), "V_N = 1");
     }
 
     // ── Helper ────────────────────────────────────────────────────────────────

@@ -3262,3 +3262,47 @@ fn beam_e2e_stop_is_a_barrier_for_earlier_sends() {
         "FIFO order must hold and both must precede `done`, got:\n{stdout}"
     );
 }
+
+/// An `as` pattern over a literal, a union variant and a record body — the
+/// three shapes the form has to cover.
+const AS_PATTERN_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+
+type Role = Admin | Guest
+type User = { role: Role }
+
+fn classify (n: Int) -> Text =
+    match n
+        one @ 1 -> $"one=${Int.toText one}"
+        other -> $"other=${Int.toText other}"
+
+fn describe (r: Role) -> Text =
+    match r
+        a @ Admin -> "admin"
+        _ -> "guest"
+
+fn whoIs (u: User) -> Text =
+    match u
+        found @ User { role } -> describe found.role
+
+fn io main () -> Result Unit Text =
+    Io.println (classify 1)
+    Io.println (classify 7)
+    Io.println (describe Admin)
+    Io.println (whoIs (User { role = Guest }))
+    Ok ()
+"#;
+
+/// Every `as` pattern used to emit `<Pat = Var>`, which is not the Core Erlang
+/// alias order — erlc rejected the module and the form was unusable.
+#[test]
+fn beam_e2e_as_patterns_compile_and_bind() {
+    let (stdout, _) = run_inline_actor_test("AsPattern", AS_PATTERN_SOURCE);
+    for expected in ["one=1", "other=7", "admin", "guest"] {
+        assert!(
+            stdout.contains(expected),
+            "expected '{expected}' in output, got:\n{stdout}"
+        );
+    }
+}

@@ -199,7 +199,7 @@ pub enum CErlPat {
         /// Tail pattern.
         tail: Box<CErlPat>,
     },
-    /// Alias pattern `Pat = Var` — used for `as`-patterns.
+    /// Alias pattern `Var = Pat` — used for `as`-patterns.
     Alias {
         /// The alias variable.
         var: CErlVar,

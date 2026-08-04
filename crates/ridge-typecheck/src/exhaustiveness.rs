@@ -17,10 +17,10 @@
 //! When `total_missing > witnesses.len()`, the renderer appends
 //! `... and N more` where `N = total_missing - witnesses.len()`.
 
-use ridge_ast::{ListPatElem, Literal, Pattern, Span};
+use ridge_ast::{FieldPattern, ListPatElem, Literal, Pattern, Span};
 use ridge_types::{
-    BuiltinTyCons, MatchWitness, TyConArena, TyConId, TyConKind, Type, UnionVariant,
-    VariantPayload, WitnessKind, WitnessPat,
+    BuiltinTyCons, MatchWitness, RecordField, RecordSchema, TyConArena, TyConId, TyConKind, Type,
+    UnionVariant, VariantPayload, WitnessKind, WitnessPat,
 };
 
 use crate::ctx::InferCtx;
@@ -136,6 +136,251 @@ impl PatternMatrix {
 
 // ── Lifting ridge_ast::Pattern → NormPat ─────────────────────────────────────
 
+/// A record-shaped constructor resolved from a pattern head: what to lift into,
+/// and the declared fields in the order the matrix expects them.
+///
+/// A record-body pattern names its fields in any order and may leave some out,
+/// so the field patterns have to be placed into the schema's order before they
+/// mean anything to specialisation.
+struct RecordShape {
+    /// The constructor the pattern lifts to.
+    ctor: Constructor,
+    /// Declared fields, in schema order, with type arguments substituted.
+    fields: Vec<RecordField>,
+    /// Whether an all-irrefutable pattern over this shape is just a wildcard.
+    ///
+    /// True for a record *type*, which has a single constructor. False for a
+    /// union *variant*: collapsing `Login { userId }` to a wildcard would stop
+    /// the sibling variants from being required.
+    collapsible: bool,
+}
+
+/// Build the fields of a record shape, substituting the type arguments applied
+/// to the owning type constructor.
+fn shape_fields(
+    schema_params: &[ridge_types::TyVid],
+    fields: &[RecordField],
+    args: &[Type],
+) -> Vec<RecordField> {
+    fields
+        .iter()
+        .map(|f| RecordField {
+            name: f.name.clone(),
+            ty: subst_ty(&f.ty, schema_params, args),
+        })
+        .collect()
+}
+
+/// The record constructor for `ty`, when `ty` is a nominal record type.
+fn record_shape_for_ty(ty: Option<&Type>, arena: &TyConArena) -> Option<RecordShape> {
+    match ty? {
+        Type::Alias { body, .. } => record_shape_for_ty(Some(body.as_ref()), arena),
+        Type::Con(id, args) if (id.0 as usize) < arena.len() => {
+            let decl = arena.get(*id);
+            let TyConKind::Record(schema) = &decl.kind else {
+                return None;
+            };
+            Some(record_shape(*id, decl.name.clone(), schema, args))
+        }
+        _ => None,
+    }
+}
+
+/// The record type named `name`, used when the scrutinee's own type does not
+/// resolve (the name is still enough to know the field order).
+fn record_shape_for_name(arena: &TyConArena, name: &str) -> Option<RecordShape> {
+    (0..arena.len()).find_map(|idx| {
+        #[expect(clippy::cast_possible_truncation, reason = "arena index fits u32")]
+        let id = TyConId(idx as u32);
+        let decl = arena.get(id);
+        if decl.name != name {
+            return None;
+        }
+        let TyConKind::Record(schema) = &decl.kind else {
+            return None;
+        };
+        Some(record_shape(id, decl.name.clone(), schema, &[]))
+    })
+}
+
+fn record_shape(id: TyConId, name: String, schema: &RecordSchema, args: &[Type]) -> RecordShape {
+    let fields = shape_fields(&schema.params, schema.record_fields(), args);
+    RecordShape {
+        ctor: Constructor::Record {
+            record_id: id,
+            arity: fields.len(),
+            name,
+        },
+        fields,
+        collapsible: true,
+    }
+}
+
+/// Locate the union variant named `name`.
+///
+/// Prefers the union `ty` names, so a variant name two unions share resolves to
+/// the one actually being matched; falls back to scanning the arena when the
+/// scrutinee's type is not known.
+fn find_variant(arena: &TyConArena, name: &str, ty: Option<&Type>) -> Option<(TyConId, usize)> {
+    let from_ty = match ty {
+        Some(Type::Con(id, _)) if (id.0 as usize) < arena.len() => match &arena.get(*id).kind {
+            TyConKind::Union(schema) => schema
+                .variants
+                .iter()
+                .position(|v| v.name == name)
+                .map(|idx| (*id, idx)),
+            _ => None,
+        },
+        _ => None,
+    };
+    from_ty.or_else(|| {
+        (0..arena.len()).find_map(|idx| {
+            #[expect(clippy::cast_possible_truncation, reason = "arena index fits u32")]
+            let id = TyConId(idx as u32);
+            let TyConKind::Union(schema) = &arena.get(id).kind else {
+                return None;
+            };
+            schema
+                .variants
+                .iter()
+                .position(|v| v.name == name)
+                .map(|vi| (id, vi))
+        })
+    })
+}
+
+/// The record-payload union variant named `name`, as a shape to lift into.
+/// `None` for positional and nullary variants, which take the `fields: None` path.
+fn variant_shape(arena: &TyConArena, name: &str, ty: Option<&Type>) -> Option<RecordShape> {
+    let (union_id, variant_idx) = find_variant(arena, name, ty)?;
+    let TyConKind::Union(schema) = &arena.get(union_id).kind else {
+        return None;
+    };
+    let variant = schema.variants.get(variant_idx)?;
+    let VariantPayload::Record(rs) = &variant.kind else {
+        return None;
+    };
+    let type_args: &[Type] = match ty {
+        Some(Type::Con(_, args)) => args,
+        _ => &[],
+    };
+    let fields = shape_fields(&schema.params, rs.record_fields(), type_args);
+    Some(RecordShape {
+        ctor: Constructor::Variant {
+            union_id,
+            variant_idx,
+            arity: fields.len(),
+            name: name.to_string(),
+        },
+        fields,
+        collapsible: false,
+    })
+}
+
+/// Identity and payload types of the positional variant `name`.
+fn positional_variant(
+    arena: &TyConArena,
+    name: &str,
+    ty: Option<&Type>,
+) -> Option<(TyConId, usize, Vec<Type>)> {
+    let (union_id, variant_idx) = find_variant(arena, name, ty)?;
+    let TyConKind::Union(schema) = &arena.get(union_id).kind else {
+        return None;
+    };
+    let variant = schema.variants.get(variant_idx)?;
+    let col_ty = ty.cloned().unwrap_or(Type::Error);
+    Some((
+        union_id,
+        variant_idx,
+        variant_payload_types(variant, &col_ty, schema),
+    ))
+}
+
+/// Place a record-body pattern's field patterns into the shape's field order.
+///
+/// A field the pattern leaves out — whether through `..` or through the D053
+/// shorthand, which binds rather than tests — contributes a wildcard.
+fn lift_record_shape(
+    shape: &RecordShape,
+    field_pats: &[FieldPattern],
+    arena: &TyConArena,
+) -> NormPat {
+    let subs: Vec<NormPat> = shape
+        .fields
+        .iter()
+        .map(|f| {
+            field_pats
+                .iter()
+                .find(|fp| fp.name.text == f.name)
+                .and_then(|fp| fp.pattern.as_ref())
+                .map_or(NormPat::Wildcard, |p| lift_pattern(p, arena, Some(&f.ty)))
+        })
+        .collect();
+
+    // A record type with nothing to test is exactly a wildcard. Keeping it as a
+    // constructor would be equally correct but grows every matrix it appears in.
+    if shape.collapsible && subs.iter().all(|s| matches!(s, NormPat::Wildcard)) {
+        return NormPat::Wildcard;
+    }
+    NormPat::Ctor(shape.ctor.clone(), subs)
+}
+
+/// Lift a record-body constructor pattern.
+///
+/// The head is either a record-payload union variant (`Login { userId = 0 }`)
+/// or a record type's auto constructor (`User { role = Admin }`); both carry
+/// their refutability in the field patterns. A head that resolves to neither
+/// stays a wildcard — there is no field order to place the patterns into.
+fn lift_record_body_ctor(
+    name: &str,
+    field_pats: &[FieldPattern],
+    arena: &TyConArena,
+    ty: Option<&Type>,
+) -> NormPat {
+    variant_shape(arena, name, ty)
+        .or_else(|| record_shape_for_ty(ty, arena))
+        .or_else(|| record_shape_for_name(arena, name))
+        .map_or(NormPat::Wildcard, |shape| {
+            lift_record_shape(&shape, field_pats, arena)
+        })
+}
+
+/// Lift a positional constructor pattern (`Some x`, `Circle r`).
+///
+/// The real union ids are carried only when the declared payload agrees with
+/// what was written; on an arity mismatch — reported elsewhere as its own error
+/// — the placeholders keep the sub-columns from disagreeing with the number of
+/// sub-patterns.
+fn lift_positional_ctor(
+    name: &str,
+    args: &[Pattern],
+    arena: &TyConArena,
+    ty: Option<&Type>,
+) -> NormPat {
+    let resolved =
+        positional_variant(arena, name, ty).filter(|(_, _, tys)| tys.len() == args.len());
+    let arg_types: Vec<Option<Type>> = resolved.as_ref().map_or_else(
+        || vec![None; args.len()],
+        |(_, _, tys)| tys.iter().cloned().map(Some).collect(),
+    );
+    let sub: Vec<NormPat> = args
+        .iter()
+        .zip(&arg_types)
+        .map(|(a, t)| lift_pattern(a, arena, t.as_ref()))
+        .collect();
+    let (union_id, variant_idx) =
+        resolved.map_or((TyConId(u32::MAX), usize::MAX), |(u, v, _)| (u, v));
+    NormPat::Ctor(
+        Constructor::Variant {
+            union_id,
+            variant_idx,
+            arity: sub.len(),
+            name: name.to_string(),
+        },
+        sub,
+    )
+}
+
 /// Lift a `ridge_ast::Pattern` into a `NormPat`.
 ///
 /// Binding forms (`Var`, `As`) lift to `Wildcard`.
@@ -143,85 +388,71 @@ impl PatternMatrix {
 /// `Constructor` lifts to `Ctor(...)` with its sub-patterns.
 /// `Tuple` lifts to a `Ctor(Tuple { arity }, sub-pats)`.
 /// `Literal` lifts to `Literal(LitKey)`.
-/// `Cons` (list pattern) lifts to `Wildcard` — list exhaustiveness is out of
-/// scope for 0.1.0 (no closed domain; treated as non-closed).
-fn lift_pattern(pat: &Pattern, arena: &TyConArena) -> NormPat {
+///
+/// `ty` is the type of the value this pattern is matched against, when it is
+/// known. It is what makes a record pattern's field patterns visible: a record
+/// pattern is irrefutable only when every field pattern is, and deciding that
+/// needs the record's declared field order. Without a type the pattern falls
+/// back to a wildcard, which is what it was before the fields were read at all.
+fn lift_pattern(pat: &Pattern, arena: &TyConArena, ty: Option<&Type>) -> NormPat {
     match pat {
-        // Wildcard, variable bindings, and inline record patterns lift to Wildcard.
-        // Inline records are irrefutable over their matched type (single-constructor
-        // record); the `has_rest` flag does not change this — even an exact-field
-        // pattern covers the whole constructor.
-        Pattern::Wildcard { .. } | Pattern::Var { .. } | Pattern::Record { .. } => {
-            NormPat::Wildcard
-        }
+        Pattern::Wildcard { .. } | Pattern::Var { .. } => NormPat::Wildcard,
+
+        // Inline record pattern `{ role = Admin }` — the constructor is implied
+        // by the matched type, so the type is the only way to reach the fields.
+        Pattern::Record { fields, .. } => record_shape_for_ty(ty, arena)
+            .map_or(NormPat::Wildcard, |shape| {
+                lift_record_shape(&shape, fields, arena)
+            }),
 
         // Empty-list pattern `[]` — 0-arity ListNil constructor.
         Pattern::ListNil { .. } => NormPat::Ctor(Constructor::ListNil, vec![]),
 
         // Cons pattern `head :: tail` — 2-arity ListCons constructor.
-        Pattern::Cons { head, tail, .. } => NormPat::Ctor(
-            Constructor::ListCons,
-            vec![lift_pattern(head, arena), lift_pattern(tail, arena)],
-        ),
+        Pattern::Cons { head, tail, .. } => {
+            let elem_ty = match ty {
+                Some(Type::Con(_, args)) => args.first().cloned(),
+                _ => None,
+            };
+            NormPat::Ctor(
+                Constructor::ListCons,
+                vec![
+                    lift_pattern(head, arena, elem_ty.as_ref()),
+                    lift_pattern(tail, arena, ty),
+                ],
+            )
+        }
 
-        Pattern::As { inner, .. } | Pattern::Paren { inner, .. } => lift_pattern(inner, arena),
+        Pattern::As { inner, .. } | Pattern::Paren { inner, .. } => lift_pattern(inner, arena, ty),
 
         Pattern::Literal { lit, .. } => NormPat::Literal(lit_to_key(lit)),
 
         Pattern::Tuple { elems, .. } => {
-            let sub: Vec<NormPat> = elems.iter().map(|e| lift_pattern(e, arena)).collect();
+            let elem_types: Vec<Option<Type>> = match ty {
+                Some(Type::Tuple(ts)) if ts.len() == elems.len() => {
+                    ts.iter().cloned().map(Some).collect()
+                }
+                _ => vec![None; elems.len()],
+            };
+            let sub: Vec<NormPat> = elems
+                .iter()
+                .zip(&elem_types)
+                .map(|(e, t)| lift_pattern(e, arena, t.as_ref()))
+                .collect();
             let arity = sub.len();
             NormPat::Ctor(Constructor::Tuple { arity }, sub)
         }
 
         Pattern::Constructor {
             name, args, fields, ..
-        } => {
-            if fields.is_some() {
-                // Record-body constructor pattern. Two cases distinguished via the
-                // schema arena:
-                //
-                // - A record-payload union *variant* (`Login { userId, .. }`):
-                //   lift to its variant constructor with an all-wildcard payload of
-                //   the variant's declared arity, so sibling variants are still
-                //   required (no false redundancy on `Logout` after `Login {…}`).
-                //   The interior is treated as irrefutable — consistent with how
-                //   anonymous record patterns lift to Wildcard above; interior field
-                //   refutability (`Login { userId = 0 }`) is conservatively ignored.
-                //
-                // - A record *type* auto-constructor (`Point { x, y }`) or an
-                //   unknown head: a record type has a single constructor, so the
-                //   pattern is irrefutable over its type → Wildcard, as before.
-                record_variant_arity(arena, &name.text).map_or(NormPat::Wildcard, |arity| {
-                    NormPat::Ctor(
-                        Constructor::Variant {
-                            union_id: TyConId(u32::MAX), // placeholder; resolved via ctor_set
-                            variant_idx: usize::MAX,     // placeholder
-                            arity,
-                            name: name.text.clone(),
-                        },
-                        vec![NormPat::Wildcard; arity],
-                    )
-                })
-            } else {
-                // Positional constructor — arity known from args.
-                let sub: Vec<NormPat> = args.iter().map(|a| lift_pattern(a, arena)).collect();
-                let arity = sub.len();
-                NormPat::Ctor(
-                    Constructor::Variant {
-                        union_id: TyConId(u32::MAX), // placeholder; resolved via ctor_set
-                        variant_idx: usize::MAX,     // placeholder
-                        arity,
-                        name: name.text.clone(),
-                    },
-                    sub,
-                )
-            }
-        }
+        } => fields.as_ref().map_or_else(
+            || lift_positional_ctor(&name.text, args, arena, ty),
+            |field_pats| lift_record_body_ctor(&name.text, field_pats, arena, ty),
+        ),
 
         // Bracketed list pattern — desugar to Cons/ListNil/Wildcard and recurse.
         Pattern::List { elements, span } => {
-            lift_pattern(&desugar_list_pattern_for_matrix(elements, *span), arena)
+            lift_pattern(&desugar_list_pattern_for_matrix(elements, *span), arena, ty)
         }
 
         // Or-patterns are expanded to one matrix row per alternative by the
@@ -230,27 +461,8 @@ fn lift_pattern(pat: &Pattern, arena: &TyConArena) -> NormPat {
         // Lift the first alternative as a total, conservative fallback.
         Pattern::Or { alts, .. } => alts
             .first()
-            .map_or(NormPat::Wildcard, |a| lift_pattern(a, arena)),
+            .map_or(NormPat::Wildcard, |a| lift_pattern(a, arena, ty)),
     }
-}
-
-/// If `name` is a record-payload variant of some union in `arena`, return its
-/// declared field count. Returns `None` for record *types* (a single ctor, lifted
-/// to a wildcard) and for names not found as a record-style variant.
-fn record_variant_arity(arena: &TyConArena, name: &str) -> Option<usize> {
-    (0..arena.len()).find_map(|idx| {
-        #[expect(clippy::cast_possible_truncation, reason = "arena index fits u32")]
-        let decl = arena.get(TyConId(idx as u32));
-        let TyConKind::Union(schema) = &decl.kind else {
-            return None;
-        };
-        let variant = schema.variants.iter().find(|v| v.name == name)?;
-        match &variant.kind {
-            VariantPayload::Record(rs) => Some(rs.record_fields().len()),
-            // Positional/nullary variants are lifted through the `fields: None` path.
-            VariantPayload::Positional(_) | VariantPayload::Nullary => None,
-        }
-    })
 }
 
 /// Declared field names (in source order) of a record-payload union variant, or
@@ -273,16 +485,41 @@ fn record_variant_field_names(arena: &TyConArena, name: &str) -> Option<Vec<Stri
     })
 }
 
-/// Rewrite any `WitnessPat::Ctor` that names a record-payload union variant into
-/// a record-style `WitnessPat::Record`, so the rendered T016 witness is a valid
-/// pattern (`Logout { userId = _, reason = _ }`) rather than a positional form
-/// (`Logout _ _`) that would not parse for a record-style variant.
+/// Declared field names (in source order) of a record *type*, or `None` if
+/// `name` is not one. A record type's witness has to render in record style for
+/// the same reason a record-style variant's does — `User _` does not parse.
+fn record_type_field_names(arena: &TyConArena, name: &str) -> Option<Vec<String>> {
+    (0..arena.len()).find_map(|idx| {
+        #[expect(clippy::cast_possible_truncation, reason = "arena index fits u32")]
+        let decl = arena.get(TyConId(idx as u32));
+        if decl.name != name {
+            return None;
+        }
+        let TyConKind::Record(schema) = &decl.kind else {
+            return None;
+        };
+        Some(
+            schema
+                .record_fields()
+                .iter()
+                .map(|f| f.name.clone())
+                .collect(),
+        )
+    })
+}
+
+/// Rewrite any `WitnessPat::Ctor` that names a record-payload union variant or a
+/// record type into a record-style `WitnessPat::Record`, so the rendered T016
+/// witness is a valid pattern (`Logout { userId = _, reason = _ }`) rather than a
+/// positional form (`Logout _ _`) that would not parse.
 fn recordify_witness(w: &WitnessPat, arena: &TyConArena) -> WitnessPat {
     match w {
         WitnessPat::Ctor { name, args } => {
             let rewritten: Vec<WitnessPat> =
                 args.iter().map(|a| recordify_witness(a, arena)).collect();
-            match record_variant_field_names(arena, name) {
+            match record_variant_field_names(arena, name)
+                .or_else(|| record_type_field_names(arena, name))
+            {
                 Some(field_names) if field_names.len() == rewritten.len() => WitnessPat::Record {
                     ctor: name.clone(),
                     fields: field_names.into_iter().zip(rewritten).collect(),
@@ -777,10 +1014,13 @@ fn updated_col_types(
             } else {
                 let decl = arena.get(*record_id);
                 if let TyConKind::Record(schema) = &decl.kind {
-                    schema
-                        .record_fields()
-                        .iter()
-                        .map(|f| f.ty.clone())
+                    let type_args: &[Type] = match col_ty {
+                        Type::Con(_, args) => args,
+                        _ => &[],
+                    };
+                    shape_fields(&schema.params, schema.record_fields(), type_args)
+                        .into_iter()
+                        .map(|f| f.ty)
                         .collect()
                 } else {
                     vec![Type::Error; *arity]
@@ -969,7 +1209,7 @@ pub fn render_witness(w: &WitnessPat) -> String {
             if args.is_empty() {
                 name.clone()
             } else {
-                let rendered_args: Vec<String> = args.iter().map(render_witness).collect();
+                let rendered_args: Vec<String> = args.iter().map(render_witness_arg).collect();
                 format!("{} {}", name, rendered_args.join(" "))
             }
         }
@@ -984,6 +1224,21 @@ pub fn render_witness(w: &WitnessPat) -> String {
                 .collect();
             format!("{} {{ {} }}", ctor, field_strs.join(", "))
         }
+    }
+}
+
+/// Render a witness in argument position.
+///
+/// An applied constructor or a record body needs parentheses there, or
+/// `W User { role = Guest }` reads as a two-argument application instead of the
+/// nested value it is — and a witness a reader cannot paste into an arm is not
+/// worth printing.
+fn render_witness_arg(w: &WitnessPat) -> String {
+    let rendered = render_witness(w);
+    match w {
+        WitnessPat::Ctor { args, .. } if !args.is_empty() => format!("({rendered})"),
+        WitnessPat::Record { .. } => format!("({rendered})"),
+        _ => rendered,
     }
 }
 
@@ -1051,7 +1306,7 @@ pub fn check_exhaustiveness(
     let mut matrix = PatternMatrix::default();
     for arm in arms {
         if arm.guard.is_none() {
-            for row in arm_pattern_rows(&arm.pattern, arena) {
+            for row in arm_pattern_rows(&arm.pattern, arena, scrutinee_ty) {
                 matrix.push(row);
             }
         }
@@ -1101,7 +1356,7 @@ pub fn check_exhaustiveness(
         // An or-pattern arm contributes one row per alternative. The arm is
         // redundant only when EVERY alternative is already covered by earlier
         // arms; if any alternative is still useful, the arm is reachable.
-        let rows = arm_pattern_rows(&arm.pattern, arena);
+        let rows = arm_pattern_rows(&arm.pattern, arena, scrutinee_ty);
         let any_useful = rows.iter().any(|row| {
             matches!(
                 useful(&prefix_matrix, row, &column_types, b, arena),
@@ -1124,10 +1379,13 @@ pub fn check_exhaustiveness(
 
 /// The exhaustiveness-matrix rows contributed by one arm pattern: one row per
 /// alternative for a top-level or-pattern, otherwise a single row.
-fn arm_pattern_rows(pat: &Pattern, arena: &TyConArena) -> Vec<Vec<NormPat>> {
+fn arm_pattern_rows(pat: &Pattern, arena: &TyConArena, ty: &Type) -> Vec<Vec<NormPat>> {
     match pat {
-        Pattern::Or { alts, .. } => alts.iter().map(|a| vec![lift_pattern(a, arena)]).collect(),
-        other => vec![vec![lift_pattern(other, arena)]],
+        Pattern::Or { alts, .. } => alts
+            .iter()
+            .map(|a| vec![lift_pattern(a, arena, Some(ty))])
+            .collect(),
+        other => vec![vec![lift_pattern(other, arena, Some(ty))]],
     }
 }
 
@@ -1156,7 +1414,7 @@ pub fn param_pattern_witness(
     }
 
     let mut matrix = PatternMatrix::default();
-    matrix.push(vec![lift_pattern(pat, arena)]);
+    matrix.push(vec![lift_pattern(pat, arena, Some(param_ty))]);
     let column_types = vec![param_ty.clone()];
 
     match useful(&matrix, &[NormPat::Wildcard], &column_types, b, arena) {

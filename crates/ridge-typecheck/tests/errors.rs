@@ -1147,3 +1147,183 @@ fn main_with_params_hint_names_the_capability() {
         "hint must mention the manifest allow-list: {rendered}"
     );
 }
+
+// ── Record field patterns in exhaustiveness ───────────────────────────────────
+
+/// A record pattern is refutable through its field patterns. Treating any
+/// record pattern as matching every value of its type made a match that misses
+/// a case look complete, so the program passed `check` and died at runtime.
+#[test]
+fn record_field_pattern_makes_the_match_non_exhaustive() {
+    let src = "type Role = Admin | Guest\n\
+               type User = { role: Role }\n\n\
+               pub fn describe (u: User) -> Text =\n\
+               \x20   match u\n\
+               \x20       User { role = Admin } -> \"admin\"\n";
+    let codes: Vec<&str> = run_typecheck_on_source("record_field_gap", src)
+        .iter()
+        .map(TypeError::code)
+        .collect();
+    assert!(
+        codes.contains(&"T016"),
+        "a record pattern that tests a field cannot cover the whole type; got: {codes:?}"
+    );
+}
+
+/// The other half of the same bug: the fallback arm that made the match total
+/// was reported redundant, so following the advice deleted the only arm a
+/// `Guest` user could reach.
+#[test]
+fn fallback_after_record_field_pattern_is_not_redundant() {
+    let src = "type Role = Admin | Guest\n\
+               type User = { role: Role }\n\n\
+               pub fn describe (u: User) -> Text =\n\
+               \x20   match u\n\
+               \x20       User { role = Admin } -> \"admin\"\n\
+               \x20       _ -> \"other\"\n";
+    let codes: Vec<&str> = run_typecheck_on_source("record_field_fallback", src)
+        .iter()
+        .map(TypeError::code)
+        .collect();
+    assert!(
+        !codes.contains(&"T016") && !codes.contains(&"T017"),
+        "the fallback is the only arm a Guest reaches; got: {codes:?}"
+    );
+}
+
+/// Covering every value of the field covers the record, with no fallback.
+#[test]
+fn record_field_patterns_can_be_exhaustive_on_their_own() {
+    let src = "type Role = Admin | Guest\n\
+               type User = { role: Role }\n\n\
+               pub fn describe (u: User) -> Text =\n\
+               \x20   match u\n\
+               \x20       User { role = Admin } -> \"admin\"\n\
+               \x20       User { role = Guest } -> \"guest\"\n";
+    let codes: Vec<&str> = run_typecheck_on_source("record_field_total", src)
+        .iter()
+        .map(TypeError::code)
+        .collect();
+    assert!(
+        codes.is_empty(),
+        "both roles are covered, so the match is total; got: {codes:?}"
+    );
+}
+
+/// A field pattern that only binds — the D053 shorthand, or `..` — still covers
+/// the whole record, the way it always did.
+#[test]
+fn binding_only_record_patterns_stay_irrefutable() {
+    let src = "type Role = Admin | Guest\n\
+               type User = { role: Role, age: Int }\n\n\
+               pub fn describe (u: User) -> Int =\n\
+               \x20   match u\n\
+               \x20       User { role, age } -> age\n\n\
+               pub fn other (u: User) -> Int =\n\
+               \x20   match u\n\
+               \x20       User { .. } -> 0\n";
+    let codes: Vec<&str> = run_typecheck_on_source("record_bindings_only", src)
+        .iter()
+        .map(TypeError::code)
+        .collect();
+    assert!(
+        codes.is_empty(),
+        "a record pattern that only binds covers its type; got: {codes:?}"
+    );
+}
+
+/// The constructor-less form has no name to resolve, so it reaches its fields
+/// only through the scrutinee's type.
+#[test]
+fn inline_record_pattern_is_checked_too() {
+    let src = "type Role = Admin | Guest\n\
+               type User = { role: Role }\n\n\
+               pub fn describe (u: User) -> Text =\n\
+               \x20   match u\n\
+               \x20       { role = Admin } -> \"admin\"\n";
+    let codes: Vec<&str> = run_typecheck_on_source("inline_record_gap", src)
+        .iter()
+        .map(TypeError::code)
+        .collect();
+    assert!(
+        codes.contains(&"T016"),
+        "an inline record pattern testing a field is refutable too; got: {codes:?}"
+    );
+}
+
+/// Nested records recurse through the same path.
+#[test]
+fn nested_record_field_pattern_is_checked() {
+    let src = "type Role = Admin | Guest\n\
+               type Inner = { role: Role }\n\
+               type Outer = { inner: Inner }\n\n\
+               pub fn describe (o: Outer) -> Text =\n\
+               \x20   match o\n\
+               \x20       Outer { inner = Inner { role = Admin } } -> \"admin\"\n";
+    let codes: Vec<&str> = run_typecheck_on_source("nested_record_gap", src)
+        .iter()
+        .map(TypeError::code)
+        .collect();
+    assert!(
+        codes.contains(&"T016"),
+        "the gap is one level down but it is still a gap; got: {codes:?}"
+    );
+}
+
+/// The interior of a record-payload union variant is refutable in exactly the
+/// same way, and used to be discarded for exactly the same reason.
+#[test]
+fn record_variant_interior_is_checked() {
+    let src = "type Event = Login { userId: Int } | Tick\n\n\
+               pub fn describe (e: Event) -> Int =\n\
+               \x20   match e\n\
+               \x20       Login { userId = 0 } -> 1\n\
+               \x20       Tick -> 0\n";
+    let codes: Vec<&str> = run_typecheck_on_source("variant_interior_gap", src)
+        .iter()
+        .map(TypeError::code)
+        .collect();
+    assert!(
+        codes.contains(&"T016"),
+        "a tested userId does not cover every Login; got: {codes:?}"
+    );
+}
+
+/// A refutable record pattern in a parameter binder is a `T043` — a function is
+/// applied to every value of its type, so the pattern cannot be allowed to fail.
+#[test]
+fn refutable_record_parameter_reports_t043() {
+    let src = "type Role = Admin | Guest\n\
+               type User = { role: Role }\n\n\
+               pub fn describe (User { role = Admin }: User) -> Text = \"admin\"\n";
+    let codes: Vec<&str> = run_typecheck_on_source("refutable_record_param", src)
+        .iter()
+        .map(TypeError::code)
+        .collect();
+    assert!(
+        codes.contains(&"T043"),
+        "a parameter pattern that tests a field is refutable; got: {codes:?}"
+    );
+}
+
+/// The witness has to be a value the reader can paste back into an arm: record
+/// style rather than `User _`, and parenthesised where it sits as an argument.
+#[test]
+fn record_witness_renders_as_a_constructible_pattern() {
+    let src = "type Role = Admin | Guest\n\
+               type User = { role: Role }\n\
+               type Wrap = W User | Z\n\n\
+               pub fn describe (w: Wrap) -> Text =\n\
+               \x20   match w\n\
+               \x20       W (User { role = Admin }) -> \"admin\"\n\
+               \x20       Z -> \"z\"\n";
+    let rendered = run_typecheck_on_source("record_witness", src)
+        .iter()
+        .find(|e| matches!(e, TypeError::NonExhaustiveMatch { .. }))
+        .map(ToString::to_string)
+        .expect("T016 reported");
+    assert!(
+        rendered.contains("W (User { role = Guest })"),
+        "witness must parse as written: {rendered}"
+    );
+}

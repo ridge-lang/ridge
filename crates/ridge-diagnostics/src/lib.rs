@@ -25,7 +25,7 @@ pub mod render;
 // ── Flat re-exports ───────────────────────────────────────────────────────────
 
 pub use diagnostic::{
-    Diagnostic, DiagnosticNote, NoteSeverity, RenderError, SourceCache, SourceId,
+    Diagnostic, DiagnosticNote, MessageParts, NoteSeverity, RenderError, SourceCache, SourceId,
 };
 
 /// Re-export `Severity` from `ridge_resolve` — one canonical type workspace-wide.

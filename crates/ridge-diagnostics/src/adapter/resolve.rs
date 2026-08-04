@@ -64,10 +64,10 @@ impl Diagnostic {
             | ResolveError::UnresolvedImportItem { suggestions, .. }
             | ResolveError::UnresolvedQualifiedName { suggestions, .. }
             | ResolveError::UnknownStdlibSymbol { suggestions, .. } => {
-                for sug in suggestions {
+                if let Some(message) = crate::diagnostic::did_you_mean(suggestions) {
                     diag.notes.push(DiagnosticNote {
                         span: primary_span,
-                        message: format!("did you mean `{sug}`?"),
+                        message,
                         severity: NoteSeverity::Help,
                     });
                 }

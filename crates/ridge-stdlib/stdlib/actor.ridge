@@ -5,6 +5,11 @@
 -- remain operators; this module ships the observability primitive that
 -- complements them, plus the typed-supervision API over OTP's supervisor
 -- behaviour.
+--
+-- A send is asynchronous and is not guaranteed to be handled if the
+-- program ends first (spec §7.2.2). Waiting is written down: `?>` and
+-- `stop` both return only after every message this process sent to that
+-- actor has been handled, because mailboxes are FIFO.
 
 -- Read the current mailbox occupancy of the target actor.
 --
@@ -98,6 +103,14 @@ pub fn stopChild (sup: Supervisor a) (id: Text) -> Result Unit Text
 -- callback runs with `Normal`, monitors receive a DOWN with `Normal`, and
 -- stopping an already-dead handle is a no-op. Synchronous — returns once
 -- the process is down.
+--
+-- Doubles as the shutdown barrier for everything sent earlier. Mailboxes
+-- are FIFO, so the stop request queues behind messages this process has
+-- already sent and they are handled before the actor goes down. That
+-- matters at the end of `main`: a bare `!` carries no delivery guarantee
+-- once the program ends, and messages still queued are discarded with the
+-- actor (spec §7.2.2). To wait without stopping the actor, ask it
+-- something instead — `?>` is a barrier for the same reason.
 --
 -- Cap-free: the handle itself is the proof of access. See spec §6.4.1.
 @ffi("ridge_rt", "stop_handle", 1)

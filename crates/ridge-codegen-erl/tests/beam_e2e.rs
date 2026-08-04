@@ -3173,3 +3173,92 @@ fn beam_e2e_local_var_reassignment() {
         "expected 'once=10 running=8' in stdout, got:\n{stdout}"
     );
 }
+
+// ── Shutdown barriers (spec §7.2.2) ─────────────────────────────────────────
+//
+// A send is asynchronous and carries no delivery guarantee once the program
+// ends: messages still queued when `main` returns are discarded with the
+// actor. Mailboxes are FIFO, so any synchronous interaction with that actor
+// acts as a barrier for everything sent to it earlier. These pin both forms
+// through `ridge_main_runner` — the path `ridge run` takes, and therefore the
+// one where shutdown actually races the handler.
+//
+// The handler sleeps before printing so a passing test means the barrier
+// waited, not that the handler happened to win the race.
+
+const ASK_BARRIER_SOURCE: &str = r#"
+import std.io as Io
+import std.time as Time
+
+actor Worker =
+    state n: Int = 0
+    on io slow (msg: Text) =
+        Time.sleep 150
+        Io.println $"handled: ${msg}"
+    on ping (n: Int) -> Int = n
+
+fn spawn io time main () -> Result Unit Text =
+    let w = spawn Worker
+    w ! slow "one"
+    w ! slow "two"
+    let _ = w ?> ping 1
+    Io.println "done"
+    Ok ()
+"#;
+
+/// An ask drains everything sent earlier to the same actor, and the actor is
+/// still alive afterwards.
+#[test]
+fn beam_e2e_ask_is_a_barrier_for_earlier_sends() {
+    let (stdout, _) = run_inline_actor_test_via_runner("AskBarrier", ASK_BARRIER_SOURCE);
+    let handled_one = stdout.find("handled: one");
+    let handled_two = stdout.find("handled: two");
+    let done = stdout.find("done");
+    assert!(
+        handled_one.is_some() && handled_two.is_some(),
+        "both sends must be handled before the ask returns, got:\n{stdout}"
+    );
+    assert!(
+        handled_one < handled_two && handled_two < done,
+        "FIFO order must hold and both must precede `done`, got:\n{stdout}"
+    );
+}
+
+const STOP_BARRIER_SOURCE: &str = r#"
+import std.io as Io
+import std.time as Time
+import std.actor as Actor
+
+actor Worker =
+    state n: Int = 0
+    on io slow (msg: Text) =
+        Time.sleep 150
+        Io.println $"handled: ${msg}"
+
+fn spawn io time main () -> Result Unit Text =
+    let w = spawn Worker
+    w ! slow "one"
+    w ! slow "two"
+    let _ = Actor.stop w
+    Io.println "done"
+    Ok ()
+"#;
+
+/// `Actor.stop` queues behind the sends already in the mailbox, so they are
+/// handled before the actor goes down — the barrier to reach for at the end
+/// of a program.
+#[test]
+fn beam_e2e_stop_is_a_barrier_for_earlier_sends() {
+    let (stdout, _) = run_inline_actor_test_via_runner("StopBarrier", STOP_BARRIER_SOURCE);
+    let handled_one = stdout.find("handled: one");
+    let handled_two = stdout.find("handled: two");
+    let done = stdout.find("done");
+    assert!(
+        handled_one.is_some() && handled_two.is_some(),
+        "both sends must be handled before stop returns, got:\n{stdout}"
+    );
+    assert!(
+        handled_one < handled_two && handled_two < done,
+        "FIFO order must hold and both must precede `done`, got:\n{stdout}"
+    );
+}

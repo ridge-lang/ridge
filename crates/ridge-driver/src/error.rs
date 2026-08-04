@@ -61,6 +61,23 @@ pub enum CompileError {
     #[error("C004 ErlangNotFound: erlang toolchain not found on PATH (install OTP 26+)")]
     ErlangNotFound,
 
+    /// `C010` — the Ridge standard library could not be compiled to BEAM.
+    ///
+    /// Only fatal when the caller is about to execute what it built
+    /// ([`crate::CompileOptions::will_execute`]). A `ridge build` still
+    /// succeeds with a warning, because the artefacts are for a later step that
+    /// can act on the problem; `ridge run` and `ridge test` *are* that step, and
+    /// launching a program whose stdlib is missing only trades a diagnostic for
+    /// an Erlang `undef` crash report.
+    #[error(
+        "C010 StdlibBundleFailed: the Ridge standard library could not be compiled to BEAM ({message})\n  \
+         a program calling any Ridge-bodied stdlib function would fail at startup with `undef`"
+    )]
+    StdlibBundleFailed {
+        /// What the stdlib compile reported.
+        message: String,
+    },
+
     /// Internal I/O error writing output files.
     #[error("I/O error: {message}")]
     Io {

@@ -296,7 +296,9 @@ fn execute_observer(
     let cookie = resolve_cookie(args)?;
 
     // ── b. Compile ────────────────────────────────────────────────────────────
-    let mut compile_opts = CompileOptions::new(workspace_root.to_owned()).with_profile(profile);
+    let mut compile_opts = CompileOptions::new(workspace_root.to_owned())
+        .with_profile(profile)
+        .executing();
     compile_opts.members = Some(vec![member_name.to_owned()]);
     let artefacts = compile_workspace(compile_opts).map_err(|e| {
         eprintln!("error: {e}");

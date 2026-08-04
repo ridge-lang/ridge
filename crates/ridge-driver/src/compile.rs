@@ -276,14 +276,21 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
     // the stdlib on the BEAM code path.
     if invoke_erlc {
         let beam_dir = codegen_out_root.join("beam");
-        // Non-fatal at the user's build level: a stdlib bundling failure leaves
-        // the user with a typecheck-clean build that crashes at boot with
-        // `undef`. Surface the error to stderr so the next layer (user, CI)
-        // can act on it rather than discovering it during runtime.
+        // A failure here leaves a typecheck-clean build whose stdlib modules are
+        // absent, so anything calling a Ridge-bodied stdlib function dies at
+        // startup with `undef`. How loudly to say so depends on whether this
+        // invocation is the one that runs it: `build` hands the artefacts to a
+        // later step that can act on a warning, while `run` and `test` are that
+        // step and gain nothing from starting a program already known to be
+        // broken.
         if let Err(e) =
             compile_stdlib_beams(&beam_dir, &codegen_out_root, map_profile(options.profile))
         {
-            eprintln!("warning: stdlib BEAM bundling failed: {e:?}");
+            let reason = describe_stdlib_bundle_failure(&e);
+            if options.will_execute {
+                return Err(CompileError::StdlibBundleFailed { message: reason });
+            }
+            eprintln!("warning: stdlib BEAM bundling failed: {reason}");
             eprintln!(
                 "warning: programs calling Ridge-bodied stdlib functions (List.head, Option.withDefault, ...) will crash at runtime with `undef`."
             );
@@ -461,6 +468,37 @@ pub fn write_stdlib_test_workspace(ws_root: &std::path::Path) -> std::io::Result
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Describe why the stdlib could not be bundled, in terms a user can act on.
+///
+/// `CodegenError` has no `Display`, and its `Debug` form buries the useful part
+/// — which module failed and what the toolchain said — inside a struct dump
+/// with escaped newlines.
+fn describe_stdlib_bundle_failure(e: &ridge_codegen_erl::CodegenError) -> String {
+    use ridge_codegen_erl::CodegenError as E;
+    match e {
+        E::ErlcRejectedInput {
+            core_path,
+            stderr,
+            exit_code,
+        } => {
+            let module = core_path.file_stem().map_or_else(
+                || core_path.display().to_string(),
+                |s| s.to_string_lossy().into_owned(),
+            );
+            let detail = stderr.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+            format!("erlc rejected `{module}` (exit {exit_code}): {detail}")
+        }
+        E::ErlcNotFound { .. } => "erlc was not found on PATH".to_owned(),
+        E::OutputDirNotWritable { path, io_err } => {
+            format!(
+                "output directory {} is not writable: {io_err}",
+                path.display()
+            )
+        }
+        other => format!("{other:?}"),
+    }
+}
 
 /// Compile Ridge stdlib `.ridge` sources to `.beam` files and place them in `beam_dir`.
 ///
@@ -646,7 +684,9 @@ fn collect_source_maps(
 
 #[cfg(test)]
 mod entry_select_tests {
-    use super::{select_entry_beam, EntryModule};
+    use super::{
+        describe_stdlib_bundle_failure, select_entry_beam, CompileOptions, EntryModule, PathBuf,
+    };
 
     fn em(project: &str, fqn: &str, beam: &str) -> EntryModule {
         EntryModule {
@@ -685,6 +725,54 @@ mod entry_select_tests {
             em("acme.worker", "acme.worker.Main", "ridge_module_3"),
         ];
         assert_eq!(select_entry_beam(&entries, "acme.other"), None);
+    }
+
+    // ── stdlib bundle failure reporting ───────────────────────────────────────
+
+    fn erlc_rejected(module: &str) -> ridge_codegen_erl::CodegenError {
+        ridge_codegen_erl::CodegenError::ErlcRejectedInput {
+            core_path: PathBuf::from(format!("target/ridge/debug/core/{module}.core")),
+            stderr: "
+Function: mixedStepConds/2
+internal error in pass beam_ssa_codegen
+"
+            .to_owned(),
+            exit_code: 1,
+        }
+    }
+
+    /// The message names the module and what the toolchain said, rather than
+    /// dumping the error struct with its newlines escaped.
+    #[test]
+    fn bundle_failure_reads_as_prose() {
+        let text = describe_stdlib_bundle_failure(&erlc_rejected("std.query"));
+        assert!(text.contains("std.query"), "{text}");
+        assert!(text.contains("Function: mixedStepConds/2"), "{text}");
+        assert!(!text.contains("ErlcRejectedInput"), "{text}");
+        // The `Debug` form renders the captured stderr with its newlines
+        // escaped, which is the tell that the struct dump leaked through.
+        assert!(!text.contains(r"\n"), "escaped newlines leaked: {text}");
+    }
+
+    /// A missing toolchain says so plainly instead of listing probe paths.
+    #[test]
+    fn missing_erlc_reads_as_prose() {
+        let e = ridge_codegen_erl::CodegenError::ErlcNotFound {
+            searched_paths: vec![PathBuf::from("/usr/bin")],
+        };
+        assert_eq!(
+            describe_stdlib_bundle_failure(&e),
+            "erlc was not found on PATH"
+        );
+    }
+
+    /// `will_execute` is what separates `build` (warn and carry on) from `run`
+    /// and `test` (stop before launching a program known to be broken).
+    #[test]
+    fn only_executing_builds_treat_a_bundle_failure_as_fatal() {
+        let build = CompileOptions::new(PathBuf::from("."));
+        assert!(!build.will_execute, "plain builds stay non-fatal");
+        assert!(build.executing().will_execute);
     }
 
     #[test]

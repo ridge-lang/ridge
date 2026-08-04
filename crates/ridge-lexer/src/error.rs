@@ -35,32 +35,30 @@ impl std::fmt::Display for UnicodeEscapeError {
 pub enum LexError {
     /// A tab character was found in source code outside a string literal.
     /// Tabs are forbidden per spec §4.2 line 517.
-    #[error(
-        "tab character is not allowed in Ridge source; use spaces for indentation (at byte {span})"
-    )]
+    #[error("tab character is not allowed in Ridge source; use spaces for indentation")]
     TabForbidden { span: Span },
 
     /// A string literal was opened but never closed before end-of-line or EOF.
-    #[error("unterminated string literal opened at byte {open_span}")]
+    #[error("unterminated string literal")]
     UnterminatedString { open_span: Span },
 
     /// An interpolated string (`$"..."`) was opened but never closed.
-    #[error("unterminated interpolated string opened at byte {open_span}")]
+    #[error("unterminated interpolated string")]
     UnterminatedInterpolation { open_span: Span },
 
     /// A block doc-comment (`---` ... `---`) was opened but EOF was reached
     /// before the closing `---` line.
-    #[error("unterminated doc-comment block opened at byte {open_span}")]
+    #[error("unterminated doc-comment block")]
     UnterminatedDocComment { open_span: Span },
 
     /// An unrecognised escape sequence inside a string literal or interpolated
     /// text segment (e.g. `\x`, `\j`, …).
-    #[error("invalid escape sequence `{got}` at byte {span}")]
+    #[error("invalid escape sequence `{got}`")]
     InvalidEscape { span: Span, got: String },
 
     /// A `\u{{...}}` escape sequence was syntactically present but its value
     /// could not be decoded.
-    #[error("invalid Unicode escape at byte {span}: {reason}")]
+    #[error("invalid Unicode escape: {reason}")]
     InvalidUnicodeEscape {
         span: Span,
         reason: UnicodeEscapeError,
@@ -68,7 +66,7 @@ pub enum LexError {
 
     /// A dedent returned to a column that does not match any previously pushed
     /// level (e.g. indenting by 5 spaces after pushing 4, then dedenting to 2).
-    #[error("inconsistent dedent at byte {span}: column {col} does not match any open block (open levels: {expected:?})")]
+    #[error("inconsistent dedent: column {col} does not match any open block (open levels: {expected:?})")]
     InconsistentDedent {
         span: Span,
         /// The column that was found.
@@ -79,41 +77,49 @@ pub enum LexError {
 
     /// A numeric literal had a leading underscore where none is allowed
     /// (e.g. `_123`).
-    #[error("numeric literal may not begin with an underscore at byte {span}")]
+    #[error("numeric literal may not begin with an underscore")]
     LeadingUnderscoreLiteral { span: Span },
 
     /// A numeric literal had a trailing underscore (e.g. `1_000_`).
-    #[error("numeric literal may not end with an underscore at byte {span}")]
+    #[error("numeric literal may not end with an underscore")]
     TrailingUnderscoreLiteral { span: Span },
 
     /// A base-prefix literal had no digits after the prefix (e.g. `0x`, `0b`).
-    #[error("empty numeric literal: expected digits after the base prefix at byte {span}")]
+    #[error("empty numeric literal: expected digits after the base prefix")]
     EmptyNumericLiteral { span: Span },
 
     /// An unexpected character that belongs to no token class.
-    #[error("unexpected character `{ch}` at byte {span}")]
+    #[error("unexpected character `{ch}`")]
     UnexpectedCharacter { span: Span, ch: char },
 
+    /// A statement terminator carried over from a C-family language.
+    ///
+    /// Split out of [`Self::UnexpectedCharacter`] because it is the single
+    /// most common reflex a newcomer arrives with, and "unexpected character"
+    /// says what the lexer could not do rather than what Ridge expects.
+    #[error("Ridge does not use `;` — an expression ends at the end of the line")]
+    SemicolonNotUsed { span: Span },
+
     /// The first non-blank line of the file is indented (column > 0).
-    #[error("top-level declaration must begin at column 0; found indentation at byte {span}")]
+    #[error("top-level declaration must begin at column 0; found indentation")]
     IndentAtTopLevel { span: Span },
 
     /// A triple-quoted string `"""` had non-whitespace content on the opening line.
     ///
     /// The character immediately after the opening `"""` must be a newline.
-    #[error("content after opening `\"\"\"` on the same line is not allowed at byte {span}")]
+    #[error("content after opening `\"\"\"` on the same line is not allowed")]
     MultilineStringOpenContent { span: Span },
 
     /// An interior line of a triple-quoted string had less leading whitespace
     /// than the closing `"""` delimiter, which defines the dedent margin.
     #[error(
-        "interior line of triple-quoted string has less indentation than the closing `\"\"\"` margin at byte {span}"
+        "interior line of triple-quoted string has less indentation than the closing `\"\"\"` margin"
     )]
     MultilineStringInsufficientIndent { span: Span },
 
     /// A triple-quoted string or raw string was opened but EOF was reached
     /// before the matching closing delimiter.
-    #[error("unterminated {kind} string literal opened at byte {open_span}")]
+    #[error("unterminated {kind} string literal")]
     UnterminatedMultilineString {
         open_span: Span,
         /// A short description of the string kind for the message ("triple-quoted" or "raw").
@@ -125,8 +131,8 @@ impl LexError {
     /// Return the stable `L###` error code for this variant.
     ///
     /// Codes are **stable across releases** — never renumber an assigned code.
-    /// `L001`–`L010` are allocated for the ten `LexError` variants (lexer
-    /// sub-namespace; does not collide with the `L800`–`L899` LSP reservation).
+    /// `L001` upward is the lexer sub-namespace, one code per `LexError`
+    /// variant; it does not collide with the `L800`–`L899` LSP reservation.
     ///
     /// Approved as a frozen-crate additive exception per FROZEN-01 (2026-05-01).
     #[must_use]
@@ -147,6 +153,7 @@ impl LexError {
             Self::MultilineStringOpenContent { .. } => "L013",
             Self::MultilineStringInsufficientIndent { .. } => "L014",
             Self::UnterminatedMultilineString { .. } => "L015",
+            Self::SemicolonNotUsed { .. } => "L016",
         }
     }
 
@@ -162,6 +169,7 @@ impl LexError {
             | Self::TrailingUnderscoreLiteral { span }
             | Self::EmptyNumericLiteral { span }
             | Self::UnexpectedCharacter { span, .. }
+            | Self::SemicolonNotUsed { span }
             | Self::IndentAtTopLevel { span }
             | Self::MultilineStringOpenContent { span }
             | Self::MultilineStringInsufficientIndent { span } => *span,
@@ -326,7 +334,12 @@ mod tests {
         };
         let s = e.to_string();
         assert!(s.contains("tab"), "message should mention 'tab': {s}");
-        assert!(s.contains("0..1"), "message should contain span: {s}");
+        // The span travels structurally and the renderer draws it as
+        // line:column; quoting the byte range here would only repeat it.
+        assert!(
+            !s.contains("0..1"),
+            "message should not quote the span: {s}"
+        );
     }
 
     #[test]

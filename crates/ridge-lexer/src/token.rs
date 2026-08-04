@@ -324,10 +324,13 @@ impl std::fmt::Display for Token {
 
             Self::DocComment(s) => write!(f, "---\n{s}\n---"),
 
-            Self::Newline => write!(f, "<NEWLINE>"),
-            Self::Indent => write!(f, "<INDENT>"),
-            Self::Dedent => write!(f, "<DEDENT>"),
-            Self::Eof => write!(f, "<EOF>"),
+            // Layout tokens are shown to users in parse diagnostics, so they
+            // speak user language ("indentation", "line break"), never the
+            // internal `<INDENT>`/`<DEDENT>` synthesised-token names.
+            Self::Newline => write!(f, "line break"),
+            Self::Indent => write!(f, "indentation"),
+            Self::Dedent => write!(f, "end of block"),
+            Self::Eof => write!(f, "end of input"),
         }
     }
 }
@@ -412,6 +415,21 @@ mod tests {
         ];
         for (src, tok) in pairs {
             assert_eq!(&tok.to_string(), src, "punctuation mismatch for `{src}`");
+        }
+    }
+
+    #[test]
+    fn layout_token_display_speaks_user_language() {
+        // Layout tokens appear in user-facing parse diagnostics; the internal
+        // `<INDENT>`/`<DEDENT>`/`<NEWLINE>`/`<EOF>` names must never show.
+        let pairs: &[(&str, Token)] = &[
+            ("line break", Token::Newline),
+            ("indentation", Token::Indent),
+            ("end of block", Token::Dedent),
+            ("end of input", Token::Eof),
+        ];
+        for (src, tok) in pairs {
+            assert_eq!(&tok.to_string(), src, "layout token mismatch for `{src}`");
         }
     }
 }

@@ -278,7 +278,9 @@ pub fn check_discarded_result(ctx: &mut InferCtx, b: &BuiltinTyCons, stmt: &Expr
         return;
     }
     ctx.errors.push(TypeError::DiscardedResult {
-        ty: format!("{resolved:?}"),
+        // Render with the user-facing renderer — a `Debug` dump would leak
+        // internal shapes (`Con(TyConId(6), …)`, `Var(TyVid(103))`).
+        ty: crate::render::render_type_with(&resolved, &ctx.tycon_decls),
         span: stmt.span(),
     });
 }

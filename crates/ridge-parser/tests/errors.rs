@@ -226,3 +226,40 @@ mod unit {
         assert!(codes.is_empty());
     }
 }
+
+// ── Layout tokens render in user language ─────────────────────────────────────
+
+/// Layout diagnostics must speak of "indentation" and "line breaks", never the
+/// internal synthesised-token names (`<INDENT>`, `<DEDENT>`, `<NEWLINE>`,
+/// `<EOF>`). Covers the two shapes users actually hit: an over-indented match
+/// arm (`expected -> but found indentation`) and a non-indented fn body
+/// (`unexpected token line break in expression position`).
+#[test]
+fn layout_errors_use_user_facing_token_names() {
+    // The `->` arm is over-indented: the parser finds indentation where it
+    // wants `->`.
+    let result =
+        parse_source("pub fn f (x: Int) -> Int =\n    match x\n        Some\n            y -> 1\n");
+    let msgs: Vec<String> = result.errors.iter().map(ToString::to_string).collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("indentation")),
+        "found-side should name `indentation`; got: {msgs:?}"
+    );
+
+    // The fn body is not indented: the parser finds a line break where it
+    // wants the body's expression.
+    let result = parse_source("pub fn f () -> Int =\n42\n");
+    let msgs: Vec<String> = result.errors.iter().map(ToString::to_string).collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("line break")),
+        "found-side should name `line break`; got: {msgs:?}"
+    );
+
+    assert!(
+        msgs.iter().all(|m| !m.contains("<INDENT>")
+            && !m.contains("<DEDENT>")
+            && !m.contains("<NEWLINE>")
+            && !m.contains("<EOF>")),
+        "layout token internals must not leak into diagnostics: {msgs:?}"
+    );
+}

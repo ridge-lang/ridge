@@ -53,6 +53,9 @@ pub fn run_workspace(options: RunOptions) -> Result<ProcessExitCode, RunError> {
         emit: EmitArtefacts::Beam,
         cache_root: None,
         is_stdlib: false,
+        // This call launches the BEAM a few lines down, so a build that cannot
+        // produce a working stdlib has to stop here rather than at startup.
+        will_execute: true,
     };
     let artefacts = compile_workspace(compile_opts)?;
 

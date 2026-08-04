@@ -189,7 +189,10 @@ pub fn execute(args: &TestArgs, cwd: &Path) -> Result<(), CliError> {
     }
 
     // ── 6. Compile workspace (needs erlc on PATH) ──────────────────────────────
-    let mut compile_opts = CompileOptions::new(workspace_root.clone());
+    // The suites run on these artefacts in this same invocation, so a stdlib
+    // that failed to bundle has to stop the command rather than surface as a
+    // wall of `undef` failures once the BEAM is up.
+    let mut compile_opts = CompileOptions::new(workspace_root.clone()).executing();
     // Same internal stdlib flag as the typecheck pass: the compile re-runs the
     // pipeline, so it must also treat the embedded stdlib as the stdlib.
     compile_opts.is_stdlib = args.stdlib;

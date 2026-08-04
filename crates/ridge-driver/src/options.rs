@@ -100,6 +100,17 @@ pub struct CompileOptions {
     /// not pollute the user's cache and can assert the cache contents
     /// deterministically.  (T8 / G5)
     pub cache_root: Option<PathBuf>,
+
+    /// Whether this invocation is about to execute what it builds.
+    ///
+    /// It decides how a failure to bundle the standard library is treated.
+    /// `ridge build` produces artefacts for a later step, so the failure is
+    /// reported and the build carries on — the user or CI can act on it. For
+    /// `ridge run` and `ridge test` there is no later step: starting a program
+    /// whose stdlib is missing only replaces a diagnostic with an Erlang
+    /// `undef` crash report, so the same failure is fatal
+    /// ([`crate::CompileError::StdlibBundleFailed`]).
+    pub will_execute: bool,
 }
 
 impl CompileOptions {
@@ -116,7 +127,17 @@ impl CompileOptions {
             emit: EmitArtefacts::Beam,
             cache_root: None,
             is_stdlib: false,
+            will_execute: false,
         }
+    }
+
+    /// Declare that this invocation will execute what it builds.
+    ///
+    /// Set by `ridge run` and `ridge test`; see [`Self::will_execute`].
+    #[must_use]
+    pub const fn executing(mut self) -> Self {
+        self.will_execute = true;
+        self
     }
 
     /// Set the emit mode and return `self` (builder style).

@@ -1121,3 +1121,29 @@ pub fn f () -> { name: Int } = { name = \"a\" }
         "a structural-record mismatch must NOT gain the constructor hint; got:\n{t001}"
     );
 }
+
+// ── T053 hint completeness ────────────────────────────────────────────────────
+
+/// The hint on `T053` names `Cli.args ()`, which is `env`-gated. A reader who
+/// follows it without being told that lands in `T014`, then `R016` for the
+/// manifest — three steps the message has to own, or it sends people down a
+/// path that does not compile.
+#[test]
+fn main_with_params_hint_names_the_capability() {
+    let errors = run_typecheck_on_source("entry", "pub fn main (x: Int) -> Int =\n  x\n");
+    let rendered = errors
+        .iter()
+        .find(|e| matches!(e, TypeError::MainHasParams { .. }))
+        .map(ToString::to_string)
+        .expect("T053 reported");
+
+    assert!(rendered.contains("Cli.args"), "{rendered}");
+    assert!(
+        rendered.contains("fn {env} main"),
+        "hint must show the capability on the signature: {rendered}"
+    );
+    assert!(
+        rendered.contains("allow"),
+        "hint must mention the manifest allow-list: {rendered}"
+    );
+}

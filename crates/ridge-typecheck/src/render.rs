@@ -686,7 +686,7 @@ impl fmt::Display for TypeError {
             Self::MainHasParams { found, .. } => {
                 write!(
                     f,
-                    "T053: `main` must not take parameters\n  `main` is the program entry point and is invoked with no arguments, but declares {found} parameter{s}\n  hint: declare it as `fn main () -> ...`; read command-line arguments via `Cli.args ()` from `std.cli`",
+                    "T053: `main` must not take parameters\n  `main` is the program entry point and is invoked with no arguments, but declares {found} parameter{s}\n  hint: declare it as `fn main () -> ...`\n  hint: to read command-line arguments, call `Cli.args ()` from `std.cli` — it needs the `env` capability, so write `fn {{env}} main` and add `\"env\"` to the manifest's `[capabilities] allow`",
                     s = if *found == 1 { "" } else { "s" }
                 )
             }

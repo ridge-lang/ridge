@@ -347,3 +347,58 @@ fn multiple_errors_in_one_file() {
         .iter()
         .any(|e| matches!(e, LexError::InvalidEscape { .. })));
 }
+
+// ── SemicolonNotUsed ──────────────────────────────────────────────────────────
+
+#[test]
+fn semicolon_gets_its_own_error() {
+    let e = first_error("let x = 1;\n");
+    assert!(
+        matches!(e, LexError::SemicolonNotUsed { span } if span.start == 9),
+        "{e:?}"
+    );
+    assert_eq!(e.code(), "L016");
+}
+
+/// The message says what Ridge expects, not what the lexer could not do.
+#[test]
+fn semicolon_message_teaches_the_rule() {
+    let e = first_error("let x = 1;\n");
+    let msg = e.to_string();
+    assert!(msg.contains("end of the line"), "{msg}");
+    assert!(!msg.contains("unexpected character"), "{msg}");
+}
+
+/// Other unrecognised characters keep the generic error.
+#[test]
+fn other_characters_still_report_l011() {
+    let e = first_error("let x = 1 ~ 2\n");
+    assert!(matches!(e, LexError::UnexpectedCharacter { .. }), "{e:?}");
+    assert_eq!(e.code(), "L011");
+}
+
+// ── Message text carries no byte offsets ──────────────────────────────────────
+
+/// The rendered snippet already shows the span as line:column, so repeating it
+/// as a raw byte range is noise the reader cannot act on.
+#[test]
+fn messages_do_not_quote_byte_offsets() {
+    let sources = [
+        "\tlet x = 1",
+        "let s = \"unterminated\n",
+        "let x = 1000_\n",
+        "let x = 1 ~ 2\n",
+        "let x = 1;\n",
+        r#"let s = "bad \q escape""#,
+        "  indented_top_level = 1\n",
+    ];
+    for src in sources {
+        for e in errors(src) {
+            let msg = e.to_string();
+            assert!(
+                !msg.contains("at byte"),
+                "message quotes a byte offset: {msg:?} (from {src:?})"
+            );
+        }
+    }
+}

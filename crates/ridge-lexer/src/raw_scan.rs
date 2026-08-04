@@ -612,8 +612,13 @@ pub(crate) fn scan(src: &str) -> (Vec<(RawToken, Span)>, Vec<LexError>) {
 
             Err(()) => {
                 // logos returns `Err(())` for unrecognised characters.
-                if let Some(ch) = slice.chars().next() {
-                    errors.push(LexError::UnexpectedCharacter { span, ch });
+                match slice.chars().next() {
+                    // The most common reflex a newcomer brings from a C-family
+                    // language deserves the same teaching message the other
+                    // syntax traps get, not just "unrecognised character".
+                    Some(';') => errors.push(LexError::SemicolonNotUsed { span }),
+                    Some(ch) => errors.push(LexError::UnexpectedCharacter { span, ch }),
+                    None => {}
                 }
             }
         }
@@ -643,6 +648,9 @@ fn scan_from(src: &str, offset: usize) -> (Vec<(RawToken, Span)>, Vec<LexError>)
 fn shift_error(e: LexError, delta: u32) -> LexError {
     match e {
         LexError::TabForbidden { span } => LexError::TabForbidden {
+            span: shift(span, delta),
+        },
+        LexError::SemicolonNotUsed { span } => LexError::SemicolonNotUsed {
             span: shift(span, delta),
         },
         LexError::UnterminatedString { open_span } => LexError::UnterminatedString {

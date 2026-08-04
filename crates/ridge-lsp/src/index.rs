@@ -324,6 +324,44 @@ pub fn collect_syntax_fixes(
     out
 }
 
+/// Build the quick-fixes that answer a lexical error.
+///
+/// Only `L016 SemicolonNotUsed` has one today, and its edit is unambiguous:
+/// Ridge has no use for the character anywhere, so deleting it is always the
+/// right answer.
+#[must_use]
+pub fn collect_lex_fixes(
+    line_indices: &[LineIndex],
+    module_uris: &[Option<Url>],
+    lex_errors: &[(ModuleId, ridge_lexer::LexError)],
+) -> Vec<SyntaxFix> {
+    let mut out: Vec<SyntaxFix> = Vec::new();
+    for (mid, err) in lex_errors {
+        let ridge_lexer::LexError::SemicolonNotUsed { span } = err else {
+            continue;
+        };
+        let mi = mid.0 as usize;
+        let (Some(Some(uri)), Some(li)) = (module_uris.get(mi), line_indices.get(mi)) else {
+            continue;
+        };
+        let (sl, sc) = li.byte_to_utf16(span.start);
+        let (el, ec) = li.byte_to_utf16(span.end);
+        let range = Range {
+            start: Position::new(sl, sc),
+            end: Position::new(el, ec),
+        };
+        out.push(SyntaxFix {
+            uri: uri.clone(),
+            decl_range: range,
+            edit_range: range,
+            new_text: String::new(),
+            code: "L016",
+            title: "Remove `;`".to_owned(),
+        });
+    }
+    out
+}
+
 /// Build the "uncurry a curried lambda" quick-fixes for one compile.
 ///
 /// A curried lambda `fn x -> fn y -> body` passed where a higher-order function
@@ -7088,6 +7126,50 @@ mod tests {
 
     fn byte_of(src: &str, needle: &str) -> u32 {
         u32::try_from(src.find(needle).expect("needle present")).expect("offset fits u32")
+    }
+
+    // ── lexical quick-fixes ───────────────────────────────────────────────────
+
+    /// A stray `;` offers a fix that deletes exactly that character.
+    #[test]
+    fn semicolon_offers_a_delete_fix() {
+        let src = "pub fn main () -> Int =
+  1;
+";
+        let uri = Url::parse("file:///t.ridge").expect("valid url");
+        let indices = vec![LineIndex::new(src)];
+        let uris = vec![Some(uri)];
+        let lex_errors = ridge_lexer::tokenize(src)
+            .errors
+            .into_iter()
+            .map(|e| (ModuleId(0), e))
+            .collect::<Vec<_>>();
+
+        let fixes = collect_lex_fixes(&indices, &uris, &lex_errors);
+        assert_eq!(fixes.len(), 1, "{fixes:?}");
+        let fix = &fixes[0];
+        assert_eq!(fix.code, "L016");
+        assert_eq!(fix.new_text, "");
+        assert_eq!(fix.edit_range.start.line, 1);
+        assert_eq!(fix.edit_range.start.character, 3);
+        assert_eq!(fix.edit_range.end.character, 4);
+    }
+
+    /// Other lexical errors carry no fix — nothing mechanical to apply.
+    #[test]
+    fn other_lex_errors_offer_no_fix() {
+        let src = "pub fn main () -> Int =
+  1 ~ 2
+";
+        let uri = Url::parse("file:///t.ridge").expect("valid url");
+        let indices = vec![LineIndex::new(src)];
+        let uris = vec![Some(uri)];
+        let lex_errors = ridge_lexer::tokenize(src)
+            .errors
+            .into_iter()
+            .map(|e| (ModuleId(0), e))
+            .collect::<Vec<_>>();
+        assert!(collect_lex_fixes(&indices, &uris, &lex_errors).is_empty());
     }
 
     // ── semantic-token delta (diff_tokens) ────────────────────────────────────

@@ -1470,7 +1470,7 @@ The compiler unifies `c` with the callback's inferred capability set at each use
 
 Each actor is a lightweight process — a BEAM process on the production target. A native backend would map actors to green threads under an M:N scheduler.
 
-- **`actor ! msg`** (send): asynchronous, returns immediately, returns `Unit`. No capability required beyond having the handle.
+- **`actor ! msg`** (send): asynchronous, returns immediately, returns `Unit`. No capability required beyond having the handle. Delivery is not guaranteed if the program ends first — see §7.2.2.
 - **`actor ?> msg`** (ask): synchronous from caller's perspective, blocks the calling process until reply. Requires `time` in the caller (for the timeout), nothing else.
 - Each actor processes one message at a time, FIFO.
 - Actor state is private; no direct access from outside.
@@ -1482,6 +1482,52 @@ A dead actor is not a silent one. The runtime reports the crash, and
 (§6.4.1), so a program can tell the difference between an idle actor and
 an absent one. Sending to a dead actor is a no-op rather than an error;
 asking one raises in the caller, since an ask has no answer to give.
+
+#### §7.2.2. Delivery and program termination
+
+A send hands a message to the receiver's mailbox and returns. It does not
+wait for the handler to run, and — this is the part worth stating plainly
+— **it carries no guarantee that the handler will ever run.** A program
+ends when `main` returns. Messages still queued at that moment are
+discarded along with the actors holding them.
+
+```
+pub fn io spawn main () -> Unit =
+  let c = spawn Counter
+  c ! bump "x"            -- may never be handled
+  Io.println "done"       -- main returns here; the program ends
+```
+
+Whether `bump` runs is a race between the handler and the shutdown, so
+this is not a bug that shows up reliably: a cheap handler often wins, an
+expensive one often loses, and the same program can do both on different
+days. Treat a bare send as delivered-if-there-is-time, never as done.
+
+**Waiting is explicit.** Because each actor processes its mailbox in FIFO
+order, any synchronous interaction with that actor is a barrier for
+everything sent to it earlier from the same process. Two forms exist, and
+neither is new machinery — they are the ordering guarantee above, used
+deliberately:
+
+```
+  c ?> ping 1             -- barrier; the actor stays alive
+  Actor.stop c            -- barrier; the actor terminates afterwards
+```
+
+Both return only after every earlier send from this process has been
+handled. `?>` is the one to reach for mid-program; `Actor.stop` is the one
+to reach for at the end, when the actor has no more work to do.
+
+The barrier is per actor and per sender. Sending to two actors and
+draining one says nothing about the other, and another process's messages
+may still be queued behind yours.
+
+**Why not drain automatically.** A runtime that refused to exit until every
+mailbox emptied would hang on any actor that keeps receiving — a server
+loop, a ticker, an actor fed by a peer that has not stopped either. Ridge
+would be trading a lost message for a program that never ends, which is
+the worse failure. The language asks instead that the wait be written
+down, where it is visible to the reader and bounded by the author.
 
 #### §7.2.1. Mailbox configuration
 

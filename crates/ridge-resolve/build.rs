@@ -199,6 +199,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "sortBy",
             "take",
             "drop",
+            "at",
             "groupBy",
             "flatMap",
             "zip",

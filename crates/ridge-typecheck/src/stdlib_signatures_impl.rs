@@ -743,6 +743,16 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                 ),
             ))
         }
+        (STD_LIST, "at") => {
+            // forall a. Int -> List a -> Option a
+            Some(poly(
+                vec![A],
+                ty_fn_pure(
+                    vec![ty_int(b), ty_list(b, Type::Var(A))],
+                    ty_option(b, Type::Var(A)),
+                ),
+            ))
+        }
         (STD_LIST, "groupBy") => {
             // forall a b c. (fn c (a -> b)) -> List a -> Map b (List a)
             Some(poly_cap(

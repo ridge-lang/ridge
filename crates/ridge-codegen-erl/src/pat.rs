@@ -44,7 +44,7 @@ pub(crate) fn lower_pat(pat: &IrPat) -> Result<CErlPat, CodegenError> {
             match inner {
                 // Plain variable binding: `name` → `V_Name`.
                 None => Ok(CErlPat::Var(var)),
-                // As-pattern: `p as name` → `<lower(p)> = V_Name`.
+                // As-pattern: `name @ p` → `V_Name = <lower(p)>`.
                 Some(inner_pat) => Ok(CErlPat::Alias {
                     var,
                     inner: Box::new(lower_pat(inner_pat)?),

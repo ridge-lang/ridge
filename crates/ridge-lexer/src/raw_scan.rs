@@ -101,6 +101,8 @@ enum LogosToken<'src> {
     KwFalse,
     #[token("fn")]
     KwFn,
+    #[token("for")]
+    KwFor,
     #[token("guard")]
     KwGuard,
     #[token("if")]
@@ -143,6 +145,8 @@ enum LogosToken<'src> {
     KwWhen,
     #[token("where")]
     KwWhere,
+    #[token("while")]
+    KwWhile,
     #[token("with")]
     KwWith,
 
@@ -543,6 +547,7 @@ pub(crate) fn scan(src: &str) -> (Vec<(RawToken, Span)>, Vec<LexError>) {
             Ok(LogosToken::KwElse) => tokens.push((RawToken::Token(Token::KwElse), span)),
             Ok(LogosToken::KwFalse) => tokens.push((RawToken::Token(Token::KwFalse), span)),
             Ok(LogosToken::KwFn) => tokens.push((RawToken::Token(Token::KwFn), span)),
+            Ok(LogosToken::KwFor) => tokens.push((RawToken::Token(Token::KwFor), span)),
             Ok(LogosToken::KwGuard) => tokens.push((RawToken::Token(Token::KwGuard), span)),
             Ok(LogosToken::KwIf) => tokens.push((RawToken::Token(Token::KwIf), span)),
             Ok(LogosToken::KwImport) => tokens.push((RawToken::Token(Token::KwImport), span)),
@@ -564,6 +569,7 @@ pub(crate) fn scan(src: &str) -> (Vec<(RawToken, Span)>, Vec<LexError>) {
             Ok(LogosToken::KwVar) => tokens.push((RawToken::Token(Token::KwVar), span)),
             Ok(LogosToken::KwWhen) => tokens.push((RawToken::Token(Token::KwWhen), span)),
             Ok(LogosToken::KwWhere) => tokens.push((RawToken::Token(Token::KwWhere), span)),
+            Ok(LogosToken::KwWhile) => tokens.push((RawToken::Token(Token::KwWhile), span)),
             Ok(LogosToken::KwWith) => tokens.push((RawToken::Token(Token::KwWith), span)),
 
             // ── Operators / punctuation ───────────────────────────────────────

@@ -291,11 +291,15 @@ pub fn check_discarded_result(ctx: &mut InferCtx, b: &BuiltinTyCons, stmt: &Expr
 fn attach_span(err: TypeError, span: Span) -> TypeError {
     match err {
         TypeError::TypeMismatch {
-            expected, found, ..
+            expected,
+            found,
+            hint,
+            ..
         } => TypeError::TypeMismatch {
             expected,
             found,
             span,
+            hint,
         },
         TypeError::ArityMismatch {
             callee,

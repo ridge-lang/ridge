@@ -1018,3 +1018,106 @@ fn type_mismatch_renders_real_type_names() {
         "one side must name `Text`; got expected={expected:?} found={found:?}"
     );
 }
+
+// ── Issue #377 — syntax-trap teaching hints on T001 ───────────────────────────
+
+/// Render the first `T001 TypeMismatch` to its `Display` text.
+fn first_t001_display(stem: &str, src: &str) -> String {
+    run_typecheck_on_source(stem, src)
+        .into_iter()
+        .find(|e| e.code() == "T001")
+        .map_or_else(|| panic!("no T001 produced for {stem}"), |e| e.to_string())
+}
+
+/// Trap A: `add(1, 2)` is parsed as applying `add` to the tuple `(1, 2)`.
+/// The mismatch must carry a hint teaching the space-separated call shape.
+#[test]
+fn paren_comma_call_gets_space_separated_hint() {
+    let src = "\
+pub fn add (a: Int) (b: Int) -> Int = a + b
+pub fn f () -> Int = add(1, 2)
+";
+    let t001 = first_t001_display("trap_paren_call", src);
+    assert!(
+        t001.contains("hint:"),
+        "T001 must carry a hint for the `add(1, 2)` trap; got:\n{t001}"
+    );
+    assert!(
+        t001.contains("space-separated"),
+        "hint must teach that Ridge calls are space-separated; got:\n{t001}"
+    );
+    assert!(
+        t001.contains("add 1 2"),
+        "hint must show the correct shape `add 1 2`; got:\n{t001}"
+    );
+}
+
+/// Trap A negative control: `add (1, 2)` — a space before the parens — is a
+/// deliberate (if ill-typed) tuple argument, so no call-shape hint.
+#[test]
+fn spaced_tuple_argument_gets_no_call_hint() {
+    let src = "\
+pub fn add (a: Int) (b: Int) -> Int = a + b
+pub fn f () -> Int = add (1, 2)
+";
+    let t001 = first_t001_display("trap_spaced_tuple", src);
+    assert!(
+        !t001.contains("space-separated"),
+        "a spaced tuple argument must NOT gain the call-shape hint; got:\n{t001}"
+    );
+}
+
+/// Trap A control: passing a tuple to a function that takes a tuple
+/// typechecks — no error at all, with or without a space before the parens.
+#[test]
+fn correct_tuple_call_produces_no_error() {
+    for (stem, call) in [
+        ("trap_ok_tuple_adjacent", "g(1, 2)"),
+        ("trap_ok_tuple_spaced", "g (1, 2)"),
+    ] {
+        let src = format!("pub fn g (p: (Int, Int)) -> Int = 0\npub fn f () -> Int = {call}\n");
+        let errors = run_typecheck_on_source(stem, &src);
+        let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+        assert!(
+            codes.is_empty(),
+            "a correct tuple-argument call (`{call}`) must typecheck cleanly; got: {codes:?}"
+        );
+    }
+}
+
+/// Trap B: an anonymous record literal where a named record type is expected
+/// must teach that record literals name their constructor.
+#[test]
+fn anonymous_record_for_nominal_gets_constructor_hint() {
+    let src = "\
+type User = { name: Text }
+pub fn f () -> User = { name = \"a\" }
+";
+    let t001 = first_t001_display("trap_anon_record", src);
+    assert!(
+        t001.contains("hint:"),
+        "T001 must carry a hint for the anonymous-record trap; got:\n{t001}"
+    );
+    assert!(
+        t001.contains("constructor"),
+        "hint must teach that record literals name their constructor; got:\n{t001}"
+    );
+    assert!(
+        t001.contains("User {"),
+        "hint must show the correct shape `User {{ … }}`; got:\n{t001}"
+    );
+}
+
+/// Trap B negative control: a structural-to-structural record mismatch (the
+/// expected side has no constructor name) stays hint-free.
+#[test]
+fn structural_record_mismatch_gets_no_constructor_hint() {
+    let src = "\
+pub fn f () -> { name: Int } = { name = \"a\" }
+";
+    let t001 = first_t001_display("trap_structural_record", src);
+    assert!(
+        !t001.contains("constructor"),
+        "a structural-record mismatch must NOT gain the constructor hint; got:\n{t001}"
+    );
+}

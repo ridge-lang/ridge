@@ -1,0 +1,6 @@
+-- expect: P040
+-- Trigger: a `for` loop; Ridge has no loop keywords — iterate with the
+-- stdlib `List.forEach` or write a recursive function.
+fn f (xs: List Int) -> Int =
+    for x in xs
+        x

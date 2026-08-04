@@ -1,0 +1,5 @@
+-- expect: P037
+-- Trigger: `xs[0]` — the C-family index spelling; Ridge has no index
+-- operator, the stdlib `List.at` fetches an element by index.
+fn first (xs: List Int) -> Int =
+    xs[0]

@@ -899,10 +899,12 @@ fn attach_span(e: TypeError, span: Span) -> TypeError {
             expected,
             found,
             span: s,
+            hint,
         } if s == dummy => TypeError::TypeMismatch {
             expected,
             found,
             span,
+            hint,
         },
         TypeError::OccursCheck { var, ty, span: s } if s == dummy => {
             TypeError::OccursCheck { var, ty, span }

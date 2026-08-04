@@ -229,6 +229,15 @@ fn parse_expr_bp(cur: &mut Cursor<'_>, min_bp: u8) -> Result<Expr, ParseError> {
             continue;
         }
 
+        // ── `expr[` adjacency check (P037) ─────────────────────────────────
+        // A `[` whose span starts EXACTLY where the lhs ends (spans are byte
+        // offsets, so adjacency means no whitespace) is the C-family `xs[i]`
+        // index spelling, not an application argument. `f [0]` with a space
+        // stays an ordinary call with a list-literal argument.
+        if cur.peek() == &Token::LBrack && cur.span().start == lhs.span().end {
+            return Err(ParseError::IndexSyntaxNotSupported { span: cur.span() });
+        }
+
         // ── Juxtaposition-as-call (level 11, lbp=20) ─────────────────────────
         // Must be checked before binary ops so that `f x + y` parses as
         // `(f x) + y` (call binds tighter than addition).
@@ -696,6 +705,26 @@ pub(crate) fn parse_expr_atom(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> 
         // own line (the inline case is caught in `parse_let`). Report the
         // let-layout guidance directly rather than a generic "unexpected `in`".
         Token::KwIn => Err(ParseError::LetInNotSupported { span }),
+
+        // ── `!` in expression position → negation confusion (P038) ──────────
+        // `!` exists in Ridge only as the postfix actor-send operator
+        // (`handle ! message`), never in prefix position. In atom position it
+        // is almost always the C-family boolean-negation spelling; name the
+        // Ridge form (`Bool.not`) instead of a bare "unexpected token `!`".
+        Token::Bang => Err(ParseError::BangNegationNotSupported { span }),
+
+        // ── `for` / `while` in expression position → loop confusion (P040) ──
+        // Both are reserved keywords with no grammar productions: Ridge has no
+        // loops. Report the iteration guidance (`List.forEach` / recursion)
+        // rather than a generic "unexpected token".
+        Token::KwFor => Err(ParseError::LoopNotSupported {
+            span,
+            keyword: "for",
+        }),
+        Token::KwWhile => Err(ParseError::LoopNotSupported {
+            span,
+            keyword: "while",
+        }),
 
         // ── Everything else ───────────────────────────────────────────────────
         _ => Err(ParseError::UnexpectedToken {

@@ -1,0 +1,5 @@
+-- expect: P038
+-- Trigger: `!x` — the C-family boolean-negation spelling; Ridge negates
+-- with the stdlib `Bool.not`.
+fn neg (x: Bool) -> Bool =
+    !x

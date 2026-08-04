@@ -1,0 +1,6 @@
+-- expect: T001
+-- Issue #377 Trap B: an anonymous record literal where a named record type
+-- is expected; the T001 carries a hint teaching that record literals name
+-- their constructor (`User { name = "a" }`).
+type User = { name: Text }
+pub fn f () -> User = { name = "a" }

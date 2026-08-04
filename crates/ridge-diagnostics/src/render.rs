@@ -206,7 +206,11 @@ pub fn render_with_ariadne(
             _ => ReportKind::Error,
         };
 
-        let title = format!("[{}] {}", diag.code, diag.primary_message);
+        // Only the headline goes next to the caret. A body dropped into a
+        // label would carry its newlines into ariadne's box drawing, pushing
+        // the text outside the gutter and misaligning the frame that follows.
+        let parts = diag.message_parts();
+        let title = format!("[{}] {}", diag.code, parts.headline);
         let source_id = diag.source_id.clone();
         // ariadne indexes labels by character offset, but our spans are byte
         // offsets — convert, or any multi-byte UTF-8 before a span drifts the
@@ -224,8 +228,15 @@ pub fn render_with_ariadne(
         .with_message(&title)
         .with_label(
             Label::new((source_id.clone(), primary_span_start..primary_span_end))
-                .with_message(&diag.primary_message),
+                .with_message(parts.headline),
         );
+
+        if let Some(note) = &parts.note {
+            report_builder = report_builder.with_note(note);
+        }
+        for help in &parts.helps {
+            report_builder = report_builder.with_help(help);
+        }
 
         for note in &diag.notes {
             let color = if use_colour {
@@ -259,8 +270,14 @@ pub fn render_with_ariadne(
                 writer,
                 "{kind}[{code}]: {msg}",
                 code = diag.code,
-                msg = diag.primary_message,
+                msg = parts.headline,
             )?;
+            if let Some(note) = &parts.note {
+                writeln!(writer, "{note}")?;
+            }
+            for help in &parts.helps {
+                writeln!(writer, "help: {help}")?;
+            }
             writeln!(writer, "  --> <unknown source> (source not available)")?;
         }
     }
@@ -554,6 +571,98 @@ mod tests {
         assert!(
             out.contains("R005") || out.contains("duplicate"),
             "output should mention the error: {out}"
+        );
+    }
+
+    // ── Multi-line message layout ─────────────────────────────────────────────
+
+    /// The message a typechecker builds for a non-numeric `+`: summary line,
+    /// indented explanation, and a `hint:` carrying the fix.
+    fn multi_line_diag(src: &str) -> Diagnostic {
+        Diagnostic::new(
+            "T052",
+            Severity::Error,
+            Span::new(2, 11),
+            "T052: arithmetic on non-numeric type\n  \
+             `+` requires `Int` or `Float` operands, found `Text`\n  \
+             hint: use `++` to concatenate text",
+            SourceId::new(src),
+        )
+    }
+
+    /// Every line of a report sits inside the frame: an optional line number
+    /// followed by a box-drawing glyph. A message that reaches a label with its
+    /// newlines intact breaks out of that margin and misaligns everything after
+    /// it, which is what this guards against.
+    #[test]
+    fn multi_line_message_stays_inside_the_frame() {
+        let _lock = COLOR_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = EnvGuard::set("RIDGE_COLOR", "never");
+        let cache = TestCache::with("test.ridge", "  \"a\" + \"b\"\n");
+        let mut buf = Vec::new();
+        render_with_ariadne(&[multi_line_diag("test.ridge")], &cache, &mut buf).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+
+        let mut inside = false;
+        for line in out.lines() {
+            if line.contains("╭─[") {
+                inside = true;
+                continue;
+            }
+            if inside && line.trim_start().starts_with("───╯") {
+                inside = false;
+                continue;
+            }
+            if inside && !line.trim().is_empty() {
+                let rest = line
+                    .trim_start()
+                    .trim_start_matches(|c: char| c.is_ascii_digit());
+                assert!(
+                    rest.trim_start()
+                        .starts_with(['│', '┆', '╭', '├', '╰', '─']),
+                    "line escaped the frame: {line:?}\nfull output:\n{out}"
+                );
+            }
+        }
+    }
+
+    /// The code prefixes the report title, so a message that repeats it would
+    /// print `[T052] T052: …`.
+    #[test]
+    fn code_is_not_repeated_in_the_title() {
+        let _lock = COLOR_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = EnvGuard::set("RIDGE_COLOR", "never");
+        let cache = TestCache::with("test.ridge", "  \"a\" + \"b\"\n");
+        let mut buf = Vec::new();
+        render_with_ariadne(&[multi_line_diag("test.ridge")], &cache, &mut buf).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            out.contains("[T052] arithmetic on non-numeric type"),
+            "title should carry the headline once: {out}"
+        );
+        assert!(
+            !out.contains("T052: arithmetic"),
+            "code should not appear twice: {out}"
+        );
+    }
+
+    /// The explanation and the fix are both reachable — they move below the
+    /// snippet rather than disappearing.
+    #[test]
+    fn body_and_hint_survive_as_note_and_help() {
+        let _lock = COLOR_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = EnvGuard::set("RIDGE_COLOR", "never");
+        let cache = TestCache::with("test.ridge", "  \"a\" + \"b\"\n");
+        let mut buf = Vec::new();
+        render_with_ariadne(&[multi_line_diag("test.ridge")], &cache, &mut buf).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            out.contains("requires `Int` or `Float` operands"),
+            "explanation should still be rendered: {out}"
+        );
+        assert!(
+            out.contains("use `++` to concatenate text"),
+            "hint should still be rendered: {out}"
         );
     }
 

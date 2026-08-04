@@ -34,10 +34,10 @@ pub fn diag_from_typecheck(e: &TypeError, source_id: SourceId) -> Diagnostic {
         TypeError::UnknownField { suggestions, .. }
         | TypeError::UnknownConstructor { suggestions, .. }
         | TypeError::UnknownActorHandler { suggestions, .. } => {
-            for sug in suggestions {
+            if let Some(message) = ridge_diagnostics::diagnostic::did_you_mean(suggestions) {
                 diag.notes.push(DiagnosticNote {
                     span: primary_span,
-                    message: format!("did you mean `{sug}`?"),
+                    message,
                     severity: NoteSeverity::Help,
                 });
             }

@@ -141,6 +141,25 @@ pub const fn file_start_range() -> Range {
 
 // ── Diagnostic conversion ─────────────────────────────────────────────────────
 
+/// Build the message an editor shows for `diag`.
+///
+/// Editors render the whole body, so unlike the terminal we keep it — but the
+/// `"{code}: "` prefix goes, because `code` travels as its own LSP field and
+/// would otherwise show up twice in the problems panel.
+fn lsp_message(diag: &Diagnostic) -> String {
+    let parts = diag.message_parts();
+    let mut message = parts.headline.to_owned();
+    if let Some(note) = &parts.note {
+        message.push('\n');
+        message.push_str(note);
+    }
+    for help in &parts.helps {
+        message.push_str("\nhelp: ");
+        message.push_str(help);
+    }
+    message
+}
+
 /// Convert a Ridge `Diagnostic` to an LSP `Diagnostic`.
 ///
 /// `file_uri`   — the document URI the diagnostic belongs to.
@@ -175,7 +194,7 @@ pub fn to_lsp_diagnostic(diag: &Diagnostic, file_uri: &Url, src: Option<&str>) -
         code: Some(NumberOrString::String(diag.code.to_owned())),
         code_description: None,
         source: Some("ridge".to_owned()),
-        message: diag.primary_message.clone(),
+        message: lsp_message(diag),
         related_information: if related.is_empty() {
             None
         } else {

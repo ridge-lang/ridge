@@ -1407,3 +1407,55 @@ pub fn fs report () -> Result Text Text =\n\
         "the hint must say why the obvious fix is refused: {hint}"
     );
 }
+
+/// T029 also comes out of the constraint solver, not just an interpolation hole,
+/// and that path had its own copy of the same defect: it printed the raw
+/// `TyConId`. The interpolation fix left it untouched, so a plain failed dispatch
+/// still named no type.
+#[test]
+fn t029_from_the_solver_names_the_type_rather_than_its_id() {
+    let src = "\
+type Colour = Red | Green | Blue\n\
+\n\
+class Sizeable a =\n\
+\x20   size (x: a) -> Int\n\
+\n\
+pub fn measure () -> Int =\n\
+\x20   size Red\n\
+";
+    let (ty, hint) = only_no_instance(&run_typecheck_on_source("t029_solver", src));
+    assert_eq!(ty, "Colour");
+    assert!(
+        !ty.contains('#') && !ty.contains("TyConId"),
+        "no internal id may reach the reader: {ty}"
+    );
+    assert!(
+        !hint.contains("TyConId") && !hint.contains("`T`"),
+        "the hint must name the real type, not a template letter: {hint}"
+    );
+}
+
+/// The solver's hint owes the reader the same orphan-rule honesty the
+/// interpolation one does: for a type they cannot extend, `deriving` is not on
+/// the table.
+#[test]
+fn t029_from_the_solver_respects_the_orphan_rule() {
+    let src = "\
+class Sizeable a =\n\
+\x20   size (x: a) -> Int\n\
+\n\
+pub fn measure (d: Duration) -> Int =\n\
+\x20   size d\n\
+";
+    let errors = run_typecheck_on_source("t029_solver_orphan", src);
+    let (ty, hint) = only_no_instance(&errors);
+    assert_eq!(ty, "Duration");
+    assert!(
+        !hint.contains("deriving (Sizeable)"),
+        "`deriving` is not available on a type the reader does not declare: {hint}"
+    );
+    assert!(
+        hint.contains("orphan"),
+        "the hint must say why the obvious fix is refused: {hint}"
+    );
+}

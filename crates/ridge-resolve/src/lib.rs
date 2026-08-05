@@ -55,8 +55,9 @@
 //! [`ResolvedWorkspace`], [`ResolvedModule`], [`ModuleResolveResult`], and
 //! [`BindingMap`] / [`ScopeTree`] type aliases.
 //! [`SymbolEntry::exported_externally`] flag, populated by
-//! [`apply_external_exports`] post-pass in [`resolve_workspace`];
-//! `M020 ExportNotFound` manifest error for non-`pub` export patterns.
+//! [`apply_external_exports`] post-pass in [`resolve_workspace`] for the `pub`
+//! symbols of every module an export pattern names; `M020 ExportNotFound` for
+//! an export pattern that names no module of its project.
 
 #![warn(missing_docs)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -363,12 +364,11 @@ pub fn resolve_workspace_with(ws: WorkspaceGraph, retain_indices: bool) -> Resol
         // DR-08 post-pass: cross-reference [project.exports].public.
         let project_idx = ws.modules[pm.id.0 as usize].project.0 as usize;
         let project = &ws.projects[project_idx];
-        let export_errors = symbol::apply_external_exports(
+        symbol::apply_external_exports(
             &mut table,
             &project.exports_public,
-            &project.manifest_path,
+            &ws.modules[pm.id.0 as usize].fully_qualified_name,
         );
-        all_manifest_errors.extend(export_errors);
 
         symbol_tables.push(table);
     }
@@ -460,6 +460,10 @@ pub fn resolve_workspace_with(ws: WorkspaceGraph, retain_indices: bool) -> Resol
     forbid::check_forbid_rules(&ws, &import_result.imports, &mut forbid_errors);
     all_errors.extend(forbid_errors);
 
+    // Whether an export pattern names anything is a question about the project,
+    // so it is asked once per project rather than inside the per-module loop.
+    unmatched_export_patterns(&ws, &mut all_manifest_errors);
+
     ResolvedWorkspace {
         modules: resolved_modules,
         graph: ws,
@@ -472,6 +476,36 @@ pub fn resolve_workspace_with(ws: WorkspaceGraph, retain_indices: bool) -> Resol
             .iter()
             .map(|pm| std::sync::Arc::clone(&pm.ast))
             .collect(),
+    }
+}
+
+/// `M020` for every export pattern that names no module of its project.
+///
+/// The question is about the project, not about any one module: a pattern is a
+/// typo when nothing in the project answers to it. Asking it per module instead
+/// reported the same pattern once for every module that did not happen to be
+/// the one it named.
+fn unmatched_export_patterns(ws: &WorkspaceGraph, out: &mut Vec<ManifestError>) {
+    for project in &ws.projects {
+        let fqns: Vec<&str> = ws
+            .modules
+            .iter()
+            .filter(|m| m.project == project.id)
+            .map(|m| m.fully_qualified_name.as_str())
+            .collect();
+
+        for pat in project
+            .exports_public
+            .iter()
+            .chain(project.exports_internal.iter())
+        {
+            if !fqns.iter().any(|fqn| pat.matches(fqn)) {
+                out.push(ManifestError::ExportNotFound {
+                    name: pat.raw.clone(),
+                    manifest_path: project.manifest_path.clone(),
+                });
+            }
+        }
     }
 }
 
@@ -579,13 +613,13 @@ pub fn resolve_module_incremental(
     let project_idx = cached.graph.modules[ei].project.0 as usize;
     {
         let project = &cached.graph.projects[project_idx];
-        // External-export validation is a manifest-level concern; the symbol
-        // table it produces is what matters for resolution, so the M### errors
-        // are not threaded into this module's R### result.
-        let _ = symbol::apply_external_exports(
+        // Marks which `pub` symbols are visible outside the project; the M###
+        // side of the manifest's export list is a whole-project question and is
+        // answered by the workspace pass, not on an incremental re-resolve.
+        symbol::apply_external_exports(
             &mut edited_symbols,
             &project.exports_public,
-            &project.manifest_path,
+            &cached.graph.modules[ei].fully_qualified_name,
         );
     }
 

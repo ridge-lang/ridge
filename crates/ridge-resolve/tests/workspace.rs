@@ -280,3 +280,73 @@ fn dr08_exported_externally_roundtrip() {
     // Sanity: the non-pub count tracks correctly (may be zero if all are pub).
     let _ = nonpub_not_exported; // used in assertion loop above
 }
+
+// ── Export patterns name modules, not symbols ─────────────────────────────────
+
+/// `[project.exports].public` is a glob over module names (spec §8.4), and the
+/// `acme_exports` fixture spells its patterns that way — fully qualified, as
+/// the import-visibility check has always read them.
+///
+/// Matching those patterns against bare symbol names instead can never succeed:
+/// a module glob carries dotted segments a symbol name does not have. Every
+/// pattern was reported as a typo, and no symbol was marked exported. It went
+/// unnoticed because the other fixtures use `["**"]`, which matches under both
+/// readings.
+#[test]
+fn qualified_export_pattern_marks_the_modules_symbols() {
+    let path = acme_workspace_path("acme_exports");
+    let resolved = resolve_workspace(discover_workspace(&path).graph.expect("graph present"));
+
+    let domain: Vec<&str> = resolved
+        .modules
+        .iter()
+        .flat_map(|m| &m.symbols.entries)
+        .filter(|e| e.name == "doIt")
+        .map(|e| if e.exported_externally { "yes" } else { "no" })
+        .collect();
+    assert_eq!(
+        domain,
+        vec!["yes"],
+        "`acme.domain.**` names the module that declares `doIt`"
+    );
+}
+
+/// A pattern that names no module of its project is the typo `M020` exists to
+/// catch — and `acme.infra.Typo` is the only one here.
+#[test]
+fn m020_fires_only_for_a_pattern_that_names_nothing() {
+    let path = acme_workspace_path("acme_exports");
+    let resolved = resolve_workspace(discover_workspace(&path).graph.expect("graph present"));
+
+    let reported: Vec<String> = resolved
+        .manifest_errors
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(
+        reported.len(),
+        1,
+        "one bad pattern, one diagnostic — not one per module: {reported:?}"
+    );
+    assert!(
+        reported[0].contains("acme.infra.Typo"),
+        "the reported pattern must be the one that names nothing: {reported:?}"
+    );
+}
+
+/// A non-`pub` symbol stays unexported however the module is named.
+#[test]
+fn export_patterns_do_not_override_symbol_visibility() {
+    let path = acme_workspace_path("acme_exports");
+    let resolved = resolve_workspace(discover_workspace(&path).graph.expect("graph present"));
+
+    for entry in resolved.modules.iter().flat_map(|m| &m.symbols.entries) {
+        if entry.visibility != ResolvedVisibility::Pub {
+            assert!(
+                !entry.exported_externally,
+                "`{}` is not pub and must stay unexported",
+                entry.name
+            );
+        }
+    }
+}

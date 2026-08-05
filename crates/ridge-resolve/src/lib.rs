@@ -476,7 +476,10 @@ pub fn resolve_workspace_with(ws: WorkspaceGraph, retain_indices: bool) -> Resol
 
     // Whether an export pattern names anything is a question about the project,
     // so it is asked once per project rather than inside the per-module loop.
+    // The declared entry point is the same shape of question, and needs the
+    // parsed ASTs, so both run here rather than in discovery.
     unmatched_export_patterns(&ws, &mut all_manifest_errors);
+    check_declared_entries(&ws, &g, &mut all_manifest_errors);
 
     ResolvedWorkspace {
         modules: resolved_modules,
@@ -520,6 +523,78 @@ fn unmatched_export_patterns(ws: &WorkspaceGraph, out: &mut Vec<ManifestError>) 
                 });
             }
         }
+    }
+}
+
+/// Check each project's declared `entry` against the modules that were found.
+///
+/// The manifest names the module a program starts from. Two things can be
+/// wrong with that name, and both used to be silent because the key was
+/// dropped after being validated for presence: it can point at a file that is
+/// not a module of the project, and the module it points at can declare no
+/// `main`. The first is checked wherever an `entry` is declared; the second
+/// only for the kinds that are started by calling `main`.
+fn check_declared_entries(
+    ws: &WorkspaceGraph,
+    g: &module_graph::ModuleGraph,
+    out: &mut Vec<ManifestError>,
+) {
+    for project in &ws.projects {
+        let Some(entry) = &project.entry else {
+            continue;
+        };
+        let entry_display = entry.display().to_string();
+
+        // Both sides come from the same discovery walk, so a plain comparison
+        // holds. `paths_agree` also catches a `src/../src/Main.ridge` spelling,
+        // which compares unequal but names the same module.
+        let Some(module) = ws
+            .modules
+            .iter()
+            .find(|m| m.file_path == *entry || paths_agree(&m.file_path, entry))
+        else {
+            out.push(ManifestError::EntryModuleNotFound {
+                entry: entry_display,
+                manifest_path: project.manifest_path.clone(),
+            });
+            continue;
+        };
+
+        if !matches!(
+            project.kind,
+            manifest::ProjectKind::App | manifest::ProjectKind::Service
+        ) {
+            continue;
+        }
+
+        let declares_main = g
+            .modules
+            .iter()
+            .find(|pm| pm.id == module.id)
+            .is_some_and(|pm| {
+                pm.ast
+                    .items
+                    .iter()
+                    .any(|item| matches!(item, ridge_ast::Item::Fn(f) if f.name.text == "main"))
+            });
+        if !declares_main {
+            out.push(ManifestError::EntryHasNoMain {
+                entry: entry_display,
+                manifest_path: project.manifest_path.clone(),
+            });
+        }
+    }
+}
+
+/// Whether two paths name the same file on disk.
+///
+/// Falls back to `false` when either side cannot be canonicalised — a path that
+/// does not exist is not the entry module, which is what the caller concludes
+/// anyway.
+fn paths_agree(a: &std::path::Path, b: &std::path::Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
     }
 }
 

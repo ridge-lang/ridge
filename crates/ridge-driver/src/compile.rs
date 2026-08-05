@@ -95,6 +95,29 @@ pub fn select_entry_beam(entries: &[EntryModule], member: &str) -> Option<String
     None
 }
 
+/// Whether `module` is the entry its project declared, or belongs to a project
+/// that declares none.
+///
+/// A project with no `entry` — a library, a test project — has no declared
+/// entry to disagree with, so every module carrying a `main` stays a
+/// candidate, as before.
+fn is_declared_entry(graph: &ridge_resolve::WorkspaceGraph, module: ModuleId) -> bool {
+    let Some(meta) = graph.modules.iter().find(|m| m.id == module) else {
+        return false;
+    };
+    let Some(project) = graph.projects.get(meta.project.0 as usize) else {
+        return false;
+    };
+    let Some(entry) = &project.entry else {
+        return true;
+    };
+    meta.file_path == *entry
+        || match (meta.file_path.canonicalize(), entry.canonicalize()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 /// Compile a Ridge workspace, producing `.beam` and/or `.core` artefacts.
@@ -331,6 +354,15 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
             .iter()
             .any(|item| matches!(item, IrItem::Fn(f) if f.is_main));
         if !has_main {
+            continue;
+        }
+        // A project that declares an entry has exactly one: the module the
+        // manifest names. Any other `main` in the same project is an ordinary
+        // function that happens to carry the name, not a second candidate —
+        // treating it as one made the alphabetically-first module win over the
+        // declared entry. Projects with no declared entry (libraries) keep the
+        // has-a-`main` rule.
+        if !is_declared_entry(&resolved.graph, m.id) {
             continue;
         }
         let Some(beam_module) = beam_by_module.get(&m.id).cloned() else {

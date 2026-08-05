@@ -28,7 +28,7 @@ use rustc_hash::FxHashMap;
 use ridge_ast::{visit::Visit, Capability, Item, Module, Span};
 
 use crate::{
-    error::{ManifestError, ResolveError},
+    error::ResolveError,
     globs::GlobPattern,
     visibility::{resolve_visibility, ResolvedVisibility},
     ModuleId, SymbolId,
@@ -67,8 +67,10 @@ pub struct SymbolEntry {
     /// Whether this symbol is exported externally from the project.
     ///
     /// Set to `true` when the symbol's `visibility` is
-    /// [`ResolvedVisibility::Pub`] **and** the symbol name is matched by at
-    /// least one pattern in `[project.exports].public`.
+    /// [`ResolvedVisibility::Pub`] **and** its module's fully-qualified name is
+    /// matched by at least one pattern in `[project.exports].public` — the two
+    /// layers of spec §8.4, where the manifest selects modules and `pub`
+    /// selects symbols within them.
     ///
     /// Populated by `apply_external_exports` (DR-08 post-pass) in
     /// [`crate::resolve_workspace`] after T6 symbol collection.  Defaults to
@@ -237,56 +239,46 @@ pub fn collect_symbols(module_id: ModuleId, ast: &Module) -> (SymbolTable, Vec<R
 ///
 /// # Algorithm
 ///
-/// For each entry in `exports_public`:
-/// - Check whether any `pub` symbol's name matches the pattern.
-/// - If matched: set `exported_externally = true` on every matching `pub` entry.
-/// - If NO symbol at all (pub or private) matched the pattern: emit
-///   [`ManifestError::ExportNotFound`] (`M020`) — the pattern likely contains
-///   a typo or references a removed symbol.
+/// `[project.exports].public` is a glob over *module* names (spec §8.4), and
+/// visibility outside the project is the conjunction of the two layers: the
+/// manifest selects modules, `pub` selects symbols within them. So a module
+/// whose fully-qualified name matches an export pattern has every one of its
+/// `pub` symbols marked `exported_externally`; a module that matches none has
+/// none.
 ///
-/// Wildcard patterns (e.g. `"**"`) typically match everything and do not
-/// trigger M020.  Only a pattern that matches zero symbols fires the error.
+/// Matching the patterns against bare symbol names instead — as this did — can
+/// never succeed for a well-formed pattern, because a module glob carries
+/// dotted segments a symbol name does not have. `Models.*` marked nothing and
+/// reported every pattern as a typo.
 ///
 /// Synthesised entries (constructors, field-accessors) inherit the flag from
 /// their owning type entry when the owning type is exported externally.
 ///
-/// # Errors
-///
-/// Returns `M020 ExportNotFound` for every export pattern that matched no
-/// symbols in this module's table.
+/// Whether a pattern matched anything at all is a question about the project,
+/// not about one module, so `M020` is raised by
+/// [`unmatched_export_patterns`](crate::unmatched_export_patterns) once per
+/// project rather than here.
 pub fn apply_external_exports(
     table: &mut SymbolTable,
     exports_public: &[GlobPattern],
-    manifest_path: &std::path::Path,
-) -> Vec<ManifestError> {
+    module_fqn: &str,
+) {
     if exports_public.is_empty() {
-        return Vec::new();
+        return;
+    }
+    if !exports_public.iter().any(|pat| pat.matches(module_fqn)) {
+        return;
     }
 
-    let mut errors: Vec<ManifestError> = Vec::new();
     let mut exported_type_ids: std::collections::HashSet<SymbolId> =
         std::collections::HashSet::new();
 
-    // Per-pattern pass: check each export pattern against the symbol table.
-    for pat in exports_public {
-        let mut any_matched = false;
-        for entry in &mut table.entries {
-            if pat.matches(&entry.name) {
-                any_matched = true;
-                if entry.visibility == ResolvedVisibility::Pub {
-                    entry.exported_externally = true;
-                    if let SymbolKind::Type { .. } | SymbolKind::Actor { .. } = entry.kind {
-                        exported_type_ids.insert(entry.id);
-                    }
-                }
+    for entry in &mut table.entries {
+        if entry.visibility == ResolvedVisibility::Pub {
+            entry.exported_externally = true;
+            if let SymbolKind::Type { .. } | SymbolKind::Actor { .. } = entry.kind {
+                exported_type_ids.insert(entry.id);
             }
-        }
-        if !any_matched {
-            // Pattern matched nothing at all — likely a typo in the manifest.
-            errors.push(ManifestError::ExportNotFound {
-                name: pat.raw.clone(),
-                manifest_path: manifest_path.to_path_buf(),
-            });
         }
     }
 
@@ -303,8 +295,6 @@ pub fn apply_external_exports(
             _ => {}
         }
     }
-
-    errors
 }
 
 // ── Actor singleton-member check ─────────────────────────────────────────────

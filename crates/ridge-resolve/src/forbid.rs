@@ -196,6 +196,7 @@ mod tests {
             modules,
             deps: vec![vec![]; len],
             is_stdlib: false,
+            manifest_errors: Vec::new(),
         }
     }
 

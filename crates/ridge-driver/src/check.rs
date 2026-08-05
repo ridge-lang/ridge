@@ -87,6 +87,16 @@ pub fn collect_diagnostics(
             WorkspaceSourceCache::unknown_source_id(),
         ));
     }
+    // Manifest errors also have no module to point at — the project they belong
+    // to was skipped, which is exactly why they must be shown. Reporting zero
+    // diagnostics for a workspace whose only project was dropped reads as
+    // success.
+    for e in &resolved.manifest_errors {
+        diagnostics.push(Diagnostic::from_manifest(
+            e,
+            WorkspaceSourceCache::unknown_source_id(),
+        ));
+    }
     for (mid, e) in &resolved.lex_errors {
         diagnostics.push(Diagnostic::from_lex(*mid, e, sources.id_for_module(*mid)));
     }

@@ -369,6 +369,14 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
         diagnostics.push(Diagnostic::from_resolve(e, sid));
     }
 
+    // A project whose manifest did not parse was skipped by discovery, so it
+    // contributes no modules and no errors of any other kind. Without this the
+    // build reports "Compiled 0 module(s)" and exits 0.
+    for e in &resolved.manifest_errors {
+        let sid = WorkspaceSourceCache::unknown_source_id();
+        diagnostics.push(Diagnostic::from_manifest(e, sid));
+    }
+
     // Surface lex + parse errors first — they are upstream of every other
     // pass.  Missing them silently meant `ridge build` would compile "0
     // modules" without telling the user the source was malformed.

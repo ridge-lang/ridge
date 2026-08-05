@@ -51,8 +51,9 @@ impl AriadneCacheAdapter {
             if parsed.contains_key(&key) {
                 continue;
             }
-            // A genuinely missing source stays unregistered so ariadne fails to
-            // fetch and the caller renders the context-less fallback.
+            // A source that does not resolve stays unregistered; the render
+            // loop asks before it builds a report, so ariadne is never handed
+            // an id it cannot fetch.
             let Some(raw) = cache.fetch(&diag.source_id) else {
                 continue;
             };
@@ -74,6 +75,16 @@ impl AriadneCacheAdapter {
             names,
             char_starts,
         }
+    }
+
+    /// Whether this adapter can resolve `id` to source text.
+    ///
+    /// Asked before a report is built: ariadne prints its own
+    /// `Unable to fetch source` line to stderr when a fetch fails, so a
+    /// diagnostic with no source has to be diverted before the render, not
+    /// after it.
+    fn has_source(&self, id: &SourceId) -> bool {
+        self.parsed.contains_key(id.as_str())
     }
 
     /// Convert a byte offset into the character offset ariadne expects.
@@ -212,6 +223,25 @@ pub fn render_with_ariadne(
         let parts = diag.message_parts();
         let title = format!("[{}] {}", diag.code, parts.headline);
         let source_id = diag.source_id.clone();
+
+        // A manifest error, or a codegen toolchain error, has no `.ridge` file
+        // to underline. There is nothing for a frame to show, so print the
+        // headline in the same shape ariadne's header has and move on.
+        if !adapter.has_source(&source_id) {
+            let kind = match diag.severity {
+                Severity::Error => "Error",
+                _ => "Warning",
+            };
+            writeln!(writer, "{kind}: {title}")?;
+            if let Some(note) = &parts.note {
+                writeln!(writer, "  Note: {note}")?;
+            }
+            for help in &parts.helps {
+                writeln!(writer, "  Help: {help}")?;
+            }
+            continue;
+        }
+
         // ariadne indexes labels by character offset, but our spans are byte
         // offsets — convert, or any multi-byte UTF-8 before a span drifts the
         // underline forward (a byte offset outruns its character offset).
@@ -362,6 +392,35 @@ mod tests {
         assert_eq!(result.unwrap(), 1);
         let out = String::from_utf8_lossy(&buf);
         assert!(!out.is_empty(), "should produce some output: {out:?}");
+    }
+
+    /// A diagnostic with no source — a manifest error, say — renders as one
+    /// headline and nothing else.
+    ///
+    /// Handing ariadne an id it cannot fetch makes it print its own
+    /// `Unable to fetch source` line to stderr, above the error it belongs to,
+    /// and then draw an empty frame around a blank line. Neither is something a
+    /// reader can act on.
+    #[test]
+    fn source_less_diagnostic_renders_one_line_and_no_frame() {
+        let _lock = COLOR_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = EnvGuard::set("RIDGE_COLOR", "never");
+        let cache = TestCache::empty();
+        let diag = make_diag("M011", Severity::Error, "<unknown>");
+        let mut buf = Vec::new();
+        render_with_ariadne(&[diag], &cache, &mut buf).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+
+        assert_eq!(
+            out.lines().count(),
+            1,
+            "a source-less diagnostic is one line: {out:?}"
+        );
+        assert!(out.starts_with("Error: [M011]"), "{out:?}");
+        assert!(
+            !out.contains('╭') && !out.contains('│'),
+            "no frame without a source to frame: {out:?}"
+        );
     }
 
     /// `RIDGE_COLOR=never` → no ANSI escape sequences.

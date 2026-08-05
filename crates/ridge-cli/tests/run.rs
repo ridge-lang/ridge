@@ -27,6 +27,7 @@ use assert_cmd::Command;
 use common::make_workspace;
 #[cfg(feature = "beam-runtime")]
 use common::{make_app_workspace, make_example_app_workspace, make_mixed_workspace, write_file};
+use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -194,6 +195,39 @@ fn run_no_executable_member() {
         .assert()
         .failure()
         .stderr(contains("C006"));
+}
+
+/// A member whose manifest does not parse is skipped by the collector, so the
+/// workspace looks memberless from here — and `run` used to answer `C006`,
+/// pointing at the `kind` key on a manifest that declares it. The manifest
+/// error is what the reader needs.
+#[test]
+fn run_names_the_broken_manifest_not_c006() {
+    let tw = common::TempWorkspace::new();
+    common::write_file(
+        &tw.path,
+        "ridge.toml",
+        "[workspace]\nname = \"test-ws\"\nversion = \"0.1.0\"\nmembers = [\"apps/*\"]\n",
+    );
+    common::write_file(
+        &tw.path,
+        "apps/demo/ridge.toml",
+        "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n\n\
+         [capabilities]\nallow = [\"io\", \"rand\"]\n",
+    );
+    common::write_file(
+        &tw.path,
+        "apps/demo/src/Main.ridge",
+        "fn main () -> Int = 0\n",
+    );
+
+    ridge_cmd()
+        .arg("run")
+        .current_dir(&tw.path)
+        .assert()
+        .failure()
+        .stderr(contains("M011"))
+        .stderr(contains("C006").not());
 }
 
 // ── Test 8: --watch recompile + restart cycle ─────────────────────────────────

@@ -56,7 +56,7 @@ fn write_workspace(root: &std::path::Path, source: &str) {
     .expect("write workspace manifest");
     std::fs::write(
         root.join("app").join("ridge.toml"),
-        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n",
+        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
     )
     .expect("write project manifest");
     std::fs::write(app_src.join("Main.ridge"), source).expect("write source");

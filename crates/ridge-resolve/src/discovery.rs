@@ -257,6 +257,8 @@ pub fn discover_standalone(files: &[PathBuf]) -> WorkspaceGraph {
             kind: crate::manifest::ProjectKind::Library,
             manifest_path: src_root.join("ridge.toml"),
             src_root,
+            // A loose file has no manifest, so nothing declares an entry.
+            entry: None,
             exports_public: Vec::new(),
             exports_internal: Vec::new(),
             dependencies: Vec::new(),

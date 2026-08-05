@@ -107,27 +107,68 @@ fn check_hole_to_text(
             );
 
             if !has_instance {
-                let ty_name = format!("{tr}");
+                let ty_name = crate::render::render_type_with(tr, &ctx.tycon_decls);
+                let hint = to_text_hint(&ty_name, user_can_extend(ctx, tr));
                 ctx.errors.push(TypeError::NoInstance {
                     class: "ToText".to_string(),
                     ty: ty_name,
                     span,
-                    fix_hint: "add `instance ToText T` or `deriving (ToText)` to the type"
-                        .to_string(),
+                    fix_hint: hint,
                 });
             }
         }
 
         // Any other type form (Fn, Tuple, Alias, etc.) — no ToText instance.
         other => {
-            let ty_name = format!("{other}");
+            let ty_name = crate::render::render_type_with(other, &ctx.tycon_decls);
+            let hint = to_text_hint(&ty_name, user_can_extend(ctx, other));
             ctx.errors.push(TypeError::NoInstance {
                 class: "ToText".to_string(),
                 ty: ty_name,
                 span,
-                fix_hint: "add `instance ToText T` or `deriving (ToText)` to the type".to_string(),
+                fix_hint: hint,
             });
         }
+    }
+}
+
+/// Whether the reader can attach a `ToText` instance to this type at all.
+///
+/// `def_module_raw` is `None` for built-ins and for stdlib declarations, and
+/// those are exactly the types the orphan rule puts out of reach: there is no
+/// declaration of theirs to hang a `deriving` clause on, and an instance
+/// written anywhere else is an orphan (T031). A tuple or a function type has no
+/// declaration to extend either.
+fn user_can_extend(ctx: &InferCtx, ty: &Type) -> bool {
+    match ty {
+        Type::Con(id, _) => ctx
+            .tycon_decls
+            .iter()
+            .find(|d| d.id == *id)
+            .is_some_and(|d| d.def_module_raw.is_some()),
+        _ => false,
+    }
+}
+
+/// The `T029` fix hint for an interpolation hole, naming the reader's type.
+///
+/// The old text said "add `instance ToText T` … to the type". `T` was a literal
+/// from the template rather than anything in the program, so the reader was told
+/// to add an instance and never told what for. Naming the type is only half the
+/// job: for a type they do not own, both of the offered fixes are refused by the
+/// orphan rule, so following the advice exactly lands on a second error.
+fn to_text_hint(ty_name: &str, extendable: bool) -> String {
+    if extendable {
+        format!(
+            "add `deriving (ToText)` to `{ty_name}` where it is declared, \
+             or write `instance ToText {ty_name}`"
+        )
+    } else {
+        format!(
+            "`{ty_name}` is declared outside your workspace: it takes no `deriving` \
+             clause of yours, and an `instance ToText {ty_name}` here would be an \
+             orphan (T031) — interpolate a printable field of it instead"
+        )
     }
 }
 

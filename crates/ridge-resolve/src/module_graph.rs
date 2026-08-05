@@ -815,6 +815,7 @@ mod tests {
             modules,
             deps: vec![vec![]; n],
             is_stdlib: false,
+            manifest_errors: Vec::new(),
         };
 
         let mg = ModuleGraph {

@@ -181,7 +181,14 @@ fn resolve_executable_member(workspace_root: &Path, args: &RunArgs) -> Result<St
 
     // No --member specified.
     match executable_members.len() {
-        0 => Err(CliError::NoExecutableMember),
+        // A member whose manifest does not parse is skipped by the collector,
+        // so "no executable member" is also what a typo in `ridge.toml` looks
+        // like from here. Say which it is, or `run` sends the reader to the
+        // `kind` key on a manifest that already declares it.
+        0 => Err(first_member_manifest_error(workspace_root)
+            .map_or(CliError::NoExecutableMember, |rendered| {
+                CliError::MemberManifestInvalid { rendered }
+            })),
         1 => Ok(executable_members.into_iter().next().unwrap_or_default()),
         _ if args.watch => Err(CliError::WatchAmbiguousMember),
         _ => {
@@ -191,6 +198,38 @@ fn resolve_executable_member(workspace_root: &Path, args: &RunArgs) -> Result<St
             Ok(executable_members.into_iter().next().unwrap_or_default())
         }
     }
+}
+
+/// The first member manifest that fails to parse, rendered with its `M###`
+/// code, searching the same places [`collect_members_with_filter`] does and in
+/// the same order.
+fn first_member_manifest_error(workspace_root: &Path) -> Option<String> {
+    let apps_dir = workspace_root.join("apps");
+    if let Ok(entries) = std::fs::read_dir(&apps_dir) {
+        // read_dir order is not defined, so sort to keep the reported error
+        // stable across runs and platforms.
+        let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        paths.sort();
+        for path in paths {
+            let manifest_path = path.join("ridge.toml");
+            let Ok(src) = std::fs::read_to_string(&manifest_path) else {
+                continue;
+            };
+            if let Err(e) = parse_project(&src, &manifest_path) {
+                return Some(format!("[{}] {e}", e.code()));
+            }
+        }
+    }
+
+    let root_manifest = workspace_root.join("ridge.toml");
+    let src = std::fs::read_to_string(&root_manifest).ok()?;
+    let ws = parse_workspace(&src, &root_manifest).ok()?;
+    if !ws.members_globs.iter().any(|p| p == ".") {
+        return None;
+    }
+    parse_project(&src, &root_manifest)
+        .err()
+        .map(|e| format!("[{}] {e}", e.code()))
 }
 
 /// Collect the names of all members under `<workspace_root>/apps/`.

@@ -553,7 +553,7 @@ impl ResolveError {
 /// future versions (e.g. M021+).  Match arms outside this crate must include
 /// a wildcard (`_`) arm.
 #[non_exhaustive]
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum ManifestError {
     /// M001 — the manifest TOML could not be parsed.
     #[error("TOML parse error in `{path}`: {message}")]

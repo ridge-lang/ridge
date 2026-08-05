@@ -189,6 +189,7 @@ pub fn discover_workspace(root: &Path) -> DiscoveryResult {
             // the stdlib build paths set this after discovery. User builds
             // leave it false, so user `@ffi` is rejected by R022.
             is_stdlib: false,
+            manifest_errors: manifest_errors.clone(),
         }),
         manifest_errors,
         resolve_errors,
@@ -282,6 +283,8 @@ pub fn discover_standalone(files: &[PathBuf]) -> WorkspaceGraph {
         modules,
         deps: vec![Vec::new(); files.len()],
         is_stdlib: false,
+        // Synthetic graph: there are no member manifests to be wrong about.
+        manifest_errors: Vec::new(),
     }
 }
 

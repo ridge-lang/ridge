@@ -26,6 +26,17 @@ pub enum CliError {
     /// `C006` — no `app` or `service` member found in the workspace (for `ridge run`).
     NoExecutableMember,
 
+    /// A member's manifest could not be read, so the workspace looked as though
+    /// it had no runnable member at all.
+    ///
+    /// Reported in place of `C006`, which would blame the `kind` key on a
+    /// manifest whose real problem is somewhere else entirely. The manifest
+    /// error carries its own `M###` code and message.
+    MemberManifestInvalid {
+        /// The manifest error, already rendered with its code.
+        rendered: String,
+    },
+
     /// `C006a` — `--watch` requested but multiple executable members exist and
     /// `--member` was not specified.
     WatchAmbiguousMember,
@@ -222,6 +233,7 @@ impl fmt::Display for CliError {
                 f,
                 "C006 NoExecutableMember: workspace has no member with kind = \"app\" or kind = \"service\""
             ),
+            Self::MemberManifestInvalid { rendered } => write!(f, "{rendered}"),
             Self::WatchAmbiguousMember => write!(
                 f,
                 "C006a WatchAmbiguousMember: --watch requires --member when the workspace has multiple executable members"

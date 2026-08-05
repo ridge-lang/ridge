@@ -160,6 +160,16 @@ pub struct WorkspaceGraph {
     /// be trusted (the stdlib is built from copied sources under a throwaway
     /// path, and a user directory could be named `ridge-stdlib`).
     pub is_stdlib: bool,
+    /// Manifest errors from the discovery that produced this graph.
+    ///
+    /// Discovery is non-fatal: a project whose `ridge.toml` does not parse is
+    /// skipped and the error recorded. The graph carries those errors so they
+    /// survive into [`ResolvedWorkspace::manifest_errors`] and reach whoever
+    /// renders diagnostics. Without this they end on [`DiscoveryResult`], which
+    /// the driver consumes for its graph and drops — and a workspace whose only
+    /// project was skipped then type-checks clean, because an empty workspace
+    /// has nothing to complain about.
+    pub manifest_errors: Vec<ManifestError>,
 }
 
 /// Metadata for a single `.ridge` source file discovered during the filesystem walk.
@@ -335,7 +345,11 @@ pub fn resolve_workspace(ws: WorkspaceGraph) -> ResolvedWorkspace {
 #[must_use]
 pub fn resolve_workspace_with(ws: WorkspaceGraph, retain_indices: bool) -> ResolvedWorkspace {
     let mut all_errors: Vec<(ModuleId, ResolveError)> = Vec::new();
-    let mut all_manifest_errors: Vec<ManifestError> = Vec::new();
+    // Carry forward whatever discovery already found. A project whose manifest
+    // did not parse never became a member of this graph, so nothing later in
+    // the pipeline can rediscover it — these are the only record that it was
+    // meant to be here.
+    let mut all_manifest_errors: Vec<ManifestError> = ws.manifest_errors.clone();
 
     // Build module graph (parse source files, collect tentative edges).
     let g = module_graph::build_module_graph(&ws);

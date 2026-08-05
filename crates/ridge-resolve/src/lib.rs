@@ -567,16 +567,27 @@ fn check_declared_entries(
             continue;
         }
 
-        let declares_main = g
-            .modules
+        let Some(parsed) = g.modules.iter().find(|pm| pm.id == module.id) else {
+            continue;
+        };
+
+        // A module that did not parse has an empty or partial AST, so the
+        // absence of `main` is not established. The lex, parse or read failure
+        // is the real fault and is already reported on its own channel; saying
+        // "declares no `main`" on top of it names the wrong cause and points
+        // the reader at the manifest instead of at the source.
+        if parsed.read_error.is_some()
+            || !parsed.parse_errors.is_empty()
+            || !parsed.lex_errors.is_empty()
+        {
+            continue;
+        }
+
+        let declares_main = parsed
+            .ast
+            .items
             .iter()
-            .find(|pm| pm.id == module.id)
-            .is_some_and(|pm| {
-                pm.ast
-                    .items
-                    .iter()
-                    .any(|item| matches!(item, ridge_ast::Item::Fn(f) if f.name.text == "main"))
-            });
+            .any(|item| matches!(item, ridge_ast::Item::Fn(f) if f.name.text == "main"));
         if !declares_main {
             out.push(ManifestError::EntryHasNoMain {
                 entry: entry_display,

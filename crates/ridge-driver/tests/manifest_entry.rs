@@ -135,6 +135,38 @@ fn a_library_keeps_the_has_a_main_rule() {
     assert_eq!(artefacts.entry_modules.len(), 1);
 }
 
+/// A module that does not parse has an empty or partial AST, so `main` is
+/// missing from it whether or not the source declares one. Reporting M022 there
+/// names the manifest for a fault that is in the source, and sends the reader
+/// to the wrong file.
+#[test]
+fn a_parse_error_in_the_entry_does_not_report_m022() {
+    let tw = app_workspace(
+        "src/Main.ridge",
+        &[(
+            "src/Main.ridge",
+            "pub fn main () -> Int =\n    let x = 1 @@@\n    x\n",
+        )],
+    );
+    let got = codes(&tw);
+    assert!(!got.contains(&"M022"), "got: {got:?}");
+    assert!(
+        got.iter().any(|c| c.starts_with('P') || c.starts_with('L')),
+        "the parse failure itself must still be reported: {got:?}"
+    );
+}
+
+/// The suppression is scoped to modules that failed to parse: an entry that
+/// parses cleanly and genuinely has no `main` still reports.
+#[test]
+fn a_clean_entry_without_main_still_reports_m022() {
+    let tw = app_workspace(
+        "src/Main.ridge",
+        &[("src/Main.ridge", "pub fn helper () -> Int = 1\n")],
+    );
+    assert!(codes(&tw).contains(&"M022"), "got: {:?}", codes(&tw));
+}
+
 /// An app whose manifest and sources agree stays quiet.
 #[test]
 fn a_coherent_app_reports_nothing() {

@@ -346,11 +346,17 @@ fn dispatch_constraint(
             let class_name = class_table
                 .get(c.class)
                 .map_or("?", |info| info.name.as_str());
+            let ty_name = crate::render::render_type_with(resolved, &ctx.tycon_decls);
+            let fix_hint = crate::render::no_instance_hint(
+                class_name,
+                &ty_name,
+                crate::render::user_can_extend(resolved, &ctx.tycon_decls),
+            );
             ctx.errors.push(TypeError::NoInstance {
                 class: class_name.to_string(),
-                ty: format!("{resolved:?}"),
+                ty: ty_name,
                 span: scc_span,
-                fix_hint: format!("add `instance {class_name} T` where `T` is the concrete type"),
+                fix_hint,
             });
         }
     }
@@ -478,14 +484,25 @@ fn dispatch_multi_constraint(
         let Some((info, matched_head)) = matched else {
             let head_disp = head_tycons
                 .iter()
-                .map(|t| format!("{t:?}"))
+                .map(|t| {
+                    crate::render::render_type_with(
+                        &ridge_types::Type::Con(*t, Vec::new()),
+                        &ctx.tycon_decls,
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join(" ");
+            // The orphan rule is a disjunction over the head, so one type the
+            // reader owns is enough to make an instance theirs to write.
+            let extendable = head_tycons
+                .iter()
+                .any(|t| crate::render::user_can_extend_tycon(*t, &ctx.tycon_decls));
+            let fix_hint = crate::render::no_instance_hint(class_name, &head_disp, extendable);
             ctx.errors.push(TypeError::NoInstance {
                 class: class_name.to_string(),
                 ty: head_disp,
                 span: scc_span,
-                fix_hint: format!("add `instance {class_name} …` for this combination of types"),
+                fix_hint,
             });
             return;
         };
@@ -882,10 +899,14 @@ fn discharge_concrete(
                 }
             }
             // T029 — no instance for this (class, type) pair.
-            let fix_hint = build_fix_hint(class_name, tyconid);
+            let ty_name = crate::render::render_type_with(
+                &ridge_types::Type::Con(tyconid, Vec::new()),
+                &ctx.tycon_decls,
+            );
+            let fix_hint = build_fix_hint(class_name, tyconid, &ty_name, &ctx.tycon_decls);
             ctx.errors.push(TypeError::NoInstance {
                 class: class_name.to_string(),
-                ty: format!("{tyconid:?}"),
+                ty: ty_name,
                 span: scc_span,
                 fix_hint,
             });
@@ -1155,10 +1176,14 @@ fn resolve_dict_plan(
                 let class_name = class_table
                     .get(class)
                     .map_or("?", |info| info.name.as_str());
-                let fix_hint = build_fix_hint(class_name, tyconid);
+                let ty_name = crate::render::render_type_with(
+                    &ridge_types::Type::Con(tyconid, Vec::new()),
+                    &ctx.tycon_decls,
+                );
+                let fix_hint = build_fix_hint(class_name, tyconid, &ty_name, &ctx.tycon_decls);
                 ctx.errors.push(TypeError::NoInstance {
                     class: class_name.to_string(),
-                    ty: format!("{tyconid:?}"),
+                    ty: ty_name,
                     span: scc_span,
                     fix_hint,
                 });
@@ -1285,11 +1310,14 @@ fn collect_ambiguous_element_vars(
 ///
 /// For the special case of `Eq Float` the hint includes the floating-point
 /// footgun warning per the spec. All other cases get the generic suggestion.
-fn build_fix_hint(class_name: &str, tyconid: TyConId) -> String {
+fn build_fix_hint(
+    class_name: &str,
+    tyconid: TyConId,
+    ty_name: &str,
+    tycons: &[ridge_types::TyConDecl],
+) -> String {
     // Float is TyConId(1) in the builtin arena (builtins.rs allocation order:
     // Int=0, Float=1, Bool=2, Text=3, Unit=4, Timestamp=5, …).
-    // We use the numeric id because `class_name` is the class, not the type,
-    // and we have only the raw TyConId for the type at this call site.
     let is_eq_float = class_name == "Eq" && tyconid == ridge_types::TyConId(1);
 
     if is_eq_float {
@@ -1298,8 +1326,10 @@ fn build_fix_hint(class_name: &str, tyconid: TyConId) -> String {
          Use explicit comparison or `Crypto.constantTimeEq` for secrets."
             .to_string()
     } else {
-        format!(
-            "add `instance {class_name} T` or add `deriving ({class_name})` to the type declaration"
+        crate::render::no_instance_hint(
+            class_name,
+            ty_name,
+            crate::render::user_can_extend_tycon(tyconid, tycons),
         )
     }
 }

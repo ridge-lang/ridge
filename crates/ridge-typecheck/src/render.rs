@@ -886,6 +886,59 @@ pub fn render_type_with(ty: &ridge_types::Type, tycons: &[ridge_types::TyConDecl
     render_at_depth(ty, tycons, 0, &mut namer)
 }
 
+/// Whether the reader can attach an instance to this type at all.
+///
+/// `def_module_raw` is `None` for built-ins and for stdlib declarations, and
+/// those are exactly the types the orphan rule puts out of reach: there is no
+/// declaration of theirs to hang a `deriving` clause on, and an instance written
+/// anywhere else is an orphan (T031). A tuple or a function type has no
+/// declaration to extend either.
+#[must_use]
+pub fn user_can_extend(ty: &ridge_types::Type, tycons: &[ridge_types::TyConDecl]) -> bool {
+    match ty {
+        ridge_types::Type::Con(id, _) => user_can_extend_tycon(*id, tycons),
+        _ => false,
+    }
+}
+
+/// The [`user_can_extend`] test for a bare constructor id.
+///
+/// The constraint solver reaches T029 holding a `TyConId` rather than a whole
+/// type, so it needs this half directly.
+#[must_use]
+pub fn user_can_extend_tycon(id: ridge_types::TyConId, tycons: &[ridge_types::TyConDecl]) -> bool {
+    tycons
+        .iter()
+        .find(|d| d.id == id)
+        .is_some_and(|d| d.def_module_raw.is_some())
+}
+
+/// The T029 fix hint, naming both the class and the reader's own type.
+///
+/// The old text said "add `instance ToText T`". `T` was a literal from the
+/// template rather than anything in the program, so the reader was told to add
+/// an instance and never told what for. Naming the type is only half the job:
+/// for a type they do not own, both of the offered fixes are refused by the
+/// orphan rule, so following the advice exactly lands on a second error.
+///
+/// Callers with advice specific to how the constraint arose — interpolation, for
+/// one — append it to this.
+#[must_use]
+pub fn no_instance_hint(class_name: &str, ty_name: &str, extendable: bool) -> String {
+    if extendable {
+        format!(
+            "add `deriving ({class_name})` to `{ty_name}` where it is declared, \
+             or write `instance {class_name} {ty_name}`"
+        )
+    } else {
+        format!(
+            "`{ty_name}` is declared outside your workspace: it takes no `deriving` \
+             clause of yours, and an `instance {class_name} {ty_name}` here would be \
+             an orphan (T031)"
+        )
+    }
+}
+
 /// Render an `expected`/`found` mismatch pair under one shared variable namer.
 ///
 /// A variable that occurs in both halves is given the same letter in each, so

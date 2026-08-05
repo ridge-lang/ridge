@@ -107,27 +107,49 @@ fn check_hole_to_text(
             );
 
             if !has_instance {
-                let ty_name = format!("{tr}");
+                let ty_name = crate::render::render_type_with(tr, &ctx.tycon_decls);
+                let hint = interp_hint(
+                    &ty_name,
+                    crate::render::user_can_extend(tr, &ctx.tycon_decls),
+                );
                 ctx.errors.push(TypeError::NoInstance {
                     class: "ToText".to_string(),
                     ty: ty_name,
                     span,
-                    fix_hint: "add `instance ToText T` or `deriving (ToText)` to the type"
-                        .to_string(),
+                    fix_hint: hint,
                 });
             }
         }
 
         // Any other type form (Fn, Tuple, Alias, etc.) — no ToText instance.
         other => {
-            let ty_name = format!("{other}");
+            let ty_name = crate::render::render_type_with(other, &ctx.tycon_decls);
+            let hint = interp_hint(
+                &ty_name,
+                crate::render::user_can_extend(other, &ctx.tycon_decls),
+            );
             ctx.errors.push(TypeError::NoInstance {
                 class: "ToText".to_string(),
                 ty: ty_name,
                 span,
-                fix_hint: "add `instance ToText T` or `deriving (ToText)` to the type".to_string(),
+                fix_hint: hint,
             });
         }
+    }
+}
+
+/// The T029 fix hint for an interpolation hole.
+///
+/// Adds the part that is specific to interpolation: a type the reader cannot
+/// extend still has fields, and printing one of those is the way out. The rest
+/// of the wording is shared with the constraint solver's T029, which reaches the
+/// same dead end by a different route.
+fn interp_hint(ty_name: &str, extendable: bool) -> String {
+    let base = crate::render::no_instance_hint("ToText", ty_name, extendable);
+    if extendable {
+        base
+    } else {
+        format!("{base} — interpolate a printable field of it instead")
     }
 }
 

@@ -1327,3 +1327,135 @@ fn record_witness_renders_as_a_constructible_pattern() {
         "witness must parse as written: {rendered}"
     );
 }
+
+// ── T029 names the reader's type ──────────────────────────────────────────────
+
+/// Pull the `(ty, fix_hint)` of the single `NoInstance` in `errors`.
+fn only_no_instance(errors: &[TypeError]) -> (String, String) {
+    let mut found = errors.iter().filter_map(|e| match e {
+        TypeError::NoInstance { ty, fix_hint, .. } => Some((ty.clone(), fix_hint.clone())),
+        _ => None,
+    });
+    let first = found.next().expect("expected one T029");
+    assert!(found.next().is_none(), "expected exactly one T029");
+    first
+}
+
+/// Interpolating a value whose type has no `ToText` instance must name that
+/// type. It used to render the raw `Type` through `Display`, which has no
+/// access to the `TyCon` table and printed the constructor's numeric id — so
+/// the reader was told an instance was missing and never told for what.
+#[test]
+fn t029_names_the_type_rather_than_its_id() {
+    let src = "\
+type Colour = Red | Green | Blue\n\
+\n\
+pub fn describe () -> Text =\n\
+\x20   let c = Red\n\
+\x20   $\"colour: ${c}\"\n\
+";
+    let (ty, hint) = only_no_instance(&run_typecheck_on_source("t029_name", src));
+    assert_eq!(ty, "Colour");
+    assert!(
+        !ty.contains('#') && !hint.contains('#'),
+        "no internal id may reach the reader: ty={ty}, hint={hint}"
+    );
+}
+
+/// The hint has to name the type too. It used to read "add `instance ToText T`",
+/// where `T` was a literal from the message template rather than anything in
+/// the program.
+#[test]
+fn t029_hint_names_the_type_for_a_type_the_reader_owns() {
+    let src = "\
+type Colour = Red | Green | Blue\n\
+\n\
+pub fn describe () -> Text =\n\
+\x20   let c = Red\n\
+\x20   $\"colour: ${c}\"\n\
+";
+    let (_, hint) = only_no_instance(&run_typecheck_on_source("t029_hint", src));
+    assert!(hint.contains("Colour"), "hint must name the type: {hint}");
+    assert!(
+        hint.contains("deriving (ToText)") && hint.contains("instance ToText Colour"),
+        "both fixes are open for a type the reader declares: {hint}"
+    );
+}
+
+/// A type declared outside the workspace takes neither fix: there is no
+/// declaration of the reader's to carry a `deriving` clause, and an instance
+/// written here is an orphan. Offering them anyway sends the reader to a second
+/// error, so the hint has to say something they can act on instead.
+#[test]
+fn t029_hint_does_not_offer_a_fix_the_orphan_rule_refuses() {
+    let src = "\
+import std.fs as Fs\n\
+\n\
+pub fn fs report () -> Result Text Text =\n\
+\x20   match Fs.readFile \"x.txt\"\n\
+\x20       Err e -> Err $\"failed: ${e}\"\n\
+\x20       Ok raw -> Ok raw\n\
+";
+    let (ty, hint) = only_no_instance(&run_typecheck_on_source("t029_orphan", src));
+    assert_eq!(ty, "Error");
+    assert!(
+        !hint.contains("deriving (ToText)"),
+        "`deriving` is not available on a type the reader does not declare: {hint}"
+    );
+    assert!(
+        hint.contains("orphan"),
+        "the hint must say why the obvious fix is refused: {hint}"
+    );
+}
+
+/// T029 also comes out of the constraint solver, not just an interpolation hole,
+/// and that path had its own copy of the same defect: it printed the raw
+/// `TyConId`. The interpolation fix left it untouched, so a plain failed dispatch
+/// still named no type.
+#[test]
+fn t029_from_the_solver_names_the_type_rather_than_its_id() {
+    let src = "\
+type Colour = Red | Green | Blue\n\
+\n\
+class Sizeable a =\n\
+\x20   size (x: a) -> Int\n\
+\n\
+pub fn measure () -> Int =\n\
+\x20   size Red\n\
+";
+    let (ty, hint) = only_no_instance(&run_typecheck_on_source("t029_solver", src));
+    assert_eq!(ty, "Colour");
+    assert!(
+        !ty.contains('#') && !ty.contains("TyConId"),
+        "no internal id may reach the reader: {ty}"
+    );
+    assert!(
+        !hint.contains("TyConId") && !hint.contains("`T`"),
+        "the hint must name the real type, not a template letter: {hint}"
+    );
+}
+
+/// The solver's hint owes the reader the same orphan-rule honesty the
+/// interpolation one does: for a type they cannot extend, `deriving` is not on
+/// the table.
+#[test]
+fn t029_from_the_solver_respects_the_orphan_rule() {
+    let src = "\
+class Sizeable a =\n\
+\x20   size (x: a) -> Int\n\
+\n\
+pub fn measure (d: Duration) -> Int =\n\
+\x20   size d\n\
+";
+    let errors = run_typecheck_on_source("t029_solver_orphan", src);
+    let (ty, hint) = only_no_instance(&errors);
+    assert_eq!(ty, "Duration");
+    assert!(
+        !hint.contains("deriving (Sizeable)"),
+        "`deriving` is not available on a type the reader does not declare: {hint}"
+    );
+    assert!(
+        hint.contains("orphan"),
+        "the hint must say why the obvious fix is refused: {hint}"
+    );
+}

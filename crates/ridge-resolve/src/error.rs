@@ -738,6 +738,33 @@ pub enum ManifestError {
         /// Path of the project manifest.
         manifest_path: PathBuf,
     },
+
+    /// M021 — `entry` names a file that is not a module of the project.
+    ///
+    /// Either the path is wrong, or the file sits outside the project's source
+    /// root and so was never walked. A misnamed entry used to be silent: the
+    /// key was validated for presence and then dropped, so nothing ever
+    /// compared it against the modules that were found.
+    #[error("entry `{entry}` in `{manifest_path}` is not a module of this project")]
+    EntryModuleNotFound {
+        /// The entry path as resolved against the manifest's directory.
+        entry: String,
+        /// Path of the project manifest.
+        manifest_path: PathBuf,
+    },
+
+    /// M022 — the module named by `entry` declares no `main`.
+    ///
+    /// An `app` or a `service` is started by calling `main` on its entry
+    /// module. Without one there is nothing to call, and the failure used to
+    /// surface as a runtime crash at startup rather than a compile error.
+    #[error("entry module `{entry}` in `{manifest_path}` declares no `main`")]
+    EntryHasNoMain {
+        /// The entry path as resolved against the manifest's directory.
+        entry: String,
+        /// Path of the project manifest.
+        manifest_path: PathBuf,
+    },
 }
 
 impl ManifestError {
@@ -767,6 +794,8 @@ impl ManifestError {
             Self::HexDependencyUsedIn010 { .. } => "M018",
             Self::UnknownManifestKey { .. } => "M019",
             Self::ExportNotFound { .. } => "M020",
+            Self::EntryModuleNotFound { .. } => "M021",
+            Self::EntryHasNoMain { .. } => "M022",
         }
     }
 

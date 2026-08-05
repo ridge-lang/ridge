@@ -344,6 +344,7 @@ mod tests {
             kind: ProjectKind::Library,
             manifest_path: PathBuf::from("ridge.toml"),
             src_root: PathBuf::from("src"),
+            entry: None,
             exports_public: vec![],
             exports_internal: vec![],
             dependencies: vec![],

@@ -136,9 +136,10 @@ pub fn build_incremental_workspace(n: usize) -> std::io::Result<tempfile::TempDi
 
 /// A single-member Ridge workspace written to a temp directory, removed on drop.
 ///
-/// The entry module (`app/src/Main.ridge`) holds the generated source. The
-/// manifest uses the same schema the driver integration tests rely on (a named,
-/// versioned workspace with one app member).
+/// `app/src/Main.ridge` holds the generated source. The member is declared a
+/// library because that is what it is: the generators emit functions to measure
+/// the pipeline over, not a program, and nothing here runs one. Declaring it an
+/// app would claim an entry point that most generated sources do not have.
 pub struct BenchWorkspace {
     dir: tempfile::TempDir,
 }
@@ -161,7 +162,7 @@ impl BenchWorkspace {
         )?;
         std::fs::write(
             root.join("app").join("ridge.toml"),
-            "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n\n[capabilities]\nallow = []\n",
+            "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"library\"\n\n[capabilities]\nallow = []\n",
         )?;
         std::fs::write(app_src.join("Main.ridge"), source)?;
         Ok(Self { dir })

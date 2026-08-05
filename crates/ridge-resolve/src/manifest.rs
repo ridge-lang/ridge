@@ -74,6 +74,15 @@ pub struct Project {
     pub manifest_path: PathBuf,
     /// Absolute path to the source root directory.
     pub src_root: PathBuf,
+    /// Absolute path to the module named by `entry`, when the manifest declares
+    /// one. Required for `app` and `service` (`M006`), optional otherwise.
+    ///
+    /// Stored resolved against the manifest's own directory so a consumer can
+    /// compare it with a [`ModuleMetadata::file_path`](crate::ModuleMetadata)
+    /// directly. Keeping it is what lets the declared entry point be honoured
+    /// at all: the key used to be validated for presence and then dropped, so
+    /// nothing downstream could tell which module the manifest meant.
+    pub entry: Option<PathBuf>,
     /// Glob patterns for the project's public-export surface.
     pub exports_public: Vec<GlobPattern>,
     /// Glob patterns for the project's internal-export surface.
@@ -390,6 +399,10 @@ pub fn parse_project_manifest(
             path: manifest_path.to_owned(),
         });
     }
+    let entry = proj
+        .entry
+        .as_ref()
+        .map(|e| manifest_path.parent().unwrap_or(manifest_path).join(e));
 
     // Step 5 — dependency shapes.
     let mut dependencies = Vec::new();
@@ -400,18 +413,8 @@ pub fn parse_project_manifest(
 
     // Step 6 — export globs.
     let exports = proj.exports.unwrap_or_default();
-    let mut exports_public = Vec::new();
-    for pat_str in exports.public.unwrap_or_default() {
-        let pat = GlobPattern::new(&pat_str)
-            .map_err(|e: GlobError| e.into_export_pattern_invalid(manifest_path.to_owned()))?;
-        exports_public.push(pat);
-    }
-    let mut exports_internal = Vec::new();
-    for pat_str in exports.internal.unwrap_or_default() {
-        let pat = GlobPattern::new(&pat_str)
-            .map_err(|e: GlobError| e.into_export_pattern_invalid(manifest_path.to_owned()))?;
-        exports_internal.push(pat);
-    }
+    let exports_public = compile_export_globs(exports.public, manifest_path)?;
+    let exports_internal = compile_export_globs(exports.internal, manifest_path)?;
 
     // Step 7 — capability names.
     let caps_raw = raw.capabilities.unwrap_or_default();
@@ -446,6 +449,7 @@ pub fn parse_project_manifest(
         kind,
         manifest_path: manifest_path.to_owned(),
         src_root,
+        entry,
         exports_public,
         exports_internal,
         dependencies,
@@ -632,6 +636,23 @@ fn parse_shared_dependency(
         raw: name.to_owned(),
         path: manifest_path.to_owned(),
     })
+}
+
+/// Compile one `[project.exports]` list into glob patterns.
+///
+/// An absent list is an empty surface, not an error.
+fn compile_export_globs(
+    patterns: Option<Vec<String>>,
+    manifest_path: &Path,
+) -> Result<Vec<GlobPattern>, ManifestError> {
+    patterns
+        .unwrap_or_default()
+        .iter()
+        .map(|pat| {
+            GlobPattern::new(pat)
+                .map_err(|e: GlobError| e.into_export_pattern_invalid(manifest_path.to_owned()))
+        })
+        .collect()
 }
 
 fn parse_project_dependency(

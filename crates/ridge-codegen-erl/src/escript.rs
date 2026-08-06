@@ -50,6 +50,10 @@ use crate::{erlc, printer, runtime, CErlModule};
 ///
 /// All variants carry enough context to produce a human-readable diagnostic
 /// without panicking.
+///
+/// Escript packaging is a codegen phase, so its codes live in this crate's `E`
+/// range rather than the CLI's. They occupy the `E2xx` block, the same
+/// hundreds-block convention `E101`–`E102` already follows.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum EmitError {
@@ -75,15 +79,11 @@ pub enum EmitError {
         name: String,
     },
     /// A workspace member marked as a `library` (no entry point) was passed.
-    ///
-    /// **Code C008.**
     EscriptNeedsEntry {
         /// The member name identified as a library.
         member: String,
     },
     /// The `main` function's arity is not 0 or 1.
-    ///
-    /// **Code C009.**
     EscriptMainArityInvalid {
         /// Module name containing the bad `main`.
         module: String,
@@ -97,10 +97,30 @@ pub enum EmitError {
     },
 }
 
+impl EmitError {
+    /// The stable code for this failure.
+    ///
+    /// Every variant has one. A failure a reader can see but not name is one
+    /// they cannot search for, filter in CI, or report precisely.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::ErlcNotFound => "E201",
+            Self::ErlcFailed { .. } => "E202",
+            Self::Io { .. } => "E203",
+            Self::MainModuleNotFound { .. } => "E204",
+            Self::EscriptNeedsEntry { .. } => "E205",
+            Self::EscriptMainArityInvalid { .. } => "E206",
+            Self::ZipFailed { .. } => "E207",
+        }
+    }
+}
+
 impl std::fmt::Display for EmitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let c = self.code();
         match self {
-            Self::ErlcNotFound => write!(f, "C008: erlc not found on PATH"),
+            Self::ErlcNotFound => write!(f, "{c} ErlcNotFound: erlc not found on PATH"),
             Self::ErlcFailed {
                 module,
                 stderr,
@@ -108,26 +128,28 @@ impl std::fmt::Display for EmitError {
             } => {
                 write!(
                     f,
-                    "erlc rejected module '{module}' (exit {exit_code}): {stderr}"
+                    "{c} ErlcFailed: erlc rejected module '{module}' (exit {exit_code}): {stderr}"
                 )
             }
-            Self::Io { detail } => write!(f, "I/O error: {detail}"),
+            Self::Io { detail } => write!(f, "{c} Io: {detail}"),
             Self::MainModuleNotFound { name } => {
                 write!(
                     f,
-                    "C008: main module '{name}' not found in compiled modules"
+                    "{c} MainModuleNotFound: main module '{name}' not found in compiled modules"
                 )
             }
             Self::EscriptNeedsEntry { member } => write!(
                 f,
-                "C008 EscriptNeedsEntry: '{member}' is a library with no entry point"
+                "{c} EscriptNeedsEntry: '{member}' is a library with no entry point"
             ),
             Self::EscriptMainArityInvalid { module, arity } => write!(
                 f,
-                "C009 EscriptMainArityInvalid: '{module}::main' has arity {arity}; \
+                "{c} EscriptMainArityInvalid: '{module}::main' has arity {arity}; \
                  escript entry must be arity 0 or 1"
             ),
-            Self::ZipFailed { detail } => write!(f, "zip archive creation failed: {detail}"),
+            Self::ZipFailed { detail } => {
+                write!(f, "{c} ZipFailed: zip archive creation failed: {detail}")
+            }
         }
     }
 }

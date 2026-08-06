@@ -1,0 +1,3 @@
+[workspace]
+version = "0.1.0"
+members = ["apps/*"]

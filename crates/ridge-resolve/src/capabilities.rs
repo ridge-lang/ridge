@@ -283,20 +283,20 @@ fn check_caps(
         }
 
         // R015 — project-level deny.
-        if project.capabilities_deny.contains(&cap) {
+        if project.manifest.capabilities_deny.contains(&cap) {
             errors.push(ResolveError::CapabilityDenied {
                 cap,
-                denied_at: project.name.clone(),
+                denied_at: project.manifest.name.clone(),
                 span: decl_span,
             });
         }
 
         // R016 — project whitelist (only when capabilities_allow is Some).
-        if let Some(allow_list) = &project.capabilities_allow {
+        if let Some(allow_list) = &project.manifest.capabilities_allow {
             if !allow_list.contains(&cap) {
                 errors.push(ResolveError::CapabilityNotAllowed {
                     cap,
-                    project: project.name.clone(),
+                    project: project.manifest.name.clone(),
                     span: decl_span,
                 });
             }
@@ -339,17 +339,19 @@ mod tests {
     fn project(name: &str, allow: Option<Vec<Capability>>, deny: Vec<Capability>) -> Project {
         Project {
             id: ProjectId(0),
-            name: name.to_owned(),
-            version: "0.1.0".to_owned(),
-            kind: ProjectKind::Library,
-            manifest_path: PathBuf::from("ridge.toml"),
-            src_root: PathBuf::from("src"),
-            entry: None,
-            exports_public: vec![],
-            exports_internal: vec![],
-            dependencies: vec![],
-            capabilities_allow: allow,
-            capabilities_deny: deny,
+            manifest: crate::manifest::ProjectManifest {
+                name: name.to_owned(),
+                version: "0.1.0".to_owned(),
+                kind: ProjectKind::Library,
+                manifest_path: PathBuf::from("ridge.toml"),
+                src_root: PathBuf::from("src"),
+                entry: None,
+                exports_public: vec![],
+                exports_internal: vec![],
+                dependencies: vec![],
+                capabilities_allow: allow,
+                capabilities_deny: deny,
+            },
         }
     }
 

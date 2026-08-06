@@ -1,4 +1,4 @@
-//! FFI validation: T001–T004 diagnostic checks for `@ffi`-decorated decls.
+//! FFI validation: T101–T103 diagnostic checks for `@ffi`-decorated decls.
 //!
 //! [`validate_ffi_decls`] is the public entry point consumed by the T4 build
 //! driver.  It checks every `@ffi` decl in a module against the closed-list
@@ -6,9 +6,9 @@
 //! [`FfiDiag`] values — one per violation.
 //!
 //! Error codes:
-//! - `T001 FfiArityMismatch`   — declared Ridge param count ≠ `@ffi` arity.
-//! - `T002 FfiCapabilityMismatch` — BEAM target needs cap `c`; Ridge decl missing `c`.
-//! - `T004 FfiTargetUnknown`   — BEAM `module:name/arity` not in audit table.
+//! - `T101 FfiArityMismatch`   — declared Ridge param count ≠ `@ffi` arity.
+//! - `T102 FfiCapabilityMismatch` — BEAM target needs cap `c`; Ridge decl missing `c`.
+//! - `T103 FfiTargetUnknown`   — BEAM `module:name/arity` not in audit table.
 //!
 //! `T003 FfiOutsideStdlib` is handled by `ridge-resolve` (`R022`) and is
 //! therefore absent from this enum.
@@ -22,7 +22,7 @@ use crate::ffi_caps_audit::{lookup, FfiAuditEntry};
 /// A diagnostic produced by [`validate_ffi_decls`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FfiDiag {
-    /// T001 — the `@ffi` arity doesn't match the Ridge parameter count.
+    /// T101 — the `@ffi` arity doesn't match the Ridge parameter count.
     FfiArityMismatch {
         /// BEAM module the `@ffi` points at.
         beam_module: String,
@@ -36,7 +36,7 @@ pub enum FfiDiag {
         span: Span,
     },
 
-    /// T002 — the Ridge decl is missing a capability that the BEAM target requires.
+    /// T102 — the Ridge decl is missing a capability that the BEAM target requires.
     FfiCapabilityMismatch {
         /// BEAM module the `@ffi` points at.
         beam_module: String,
@@ -48,7 +48,7 @@ pub enum FfiDiag {
         span: Span,
     },
 
-    /// T004 — the BEAM `module:name/arity` triplet is not in the audit table.
+    /// T103 — the BEAM `module:name/arity` triplet is not in the audit table.
     FfiTargetUnknown {
         /// BEAM module from the `@ffi` attribute.
         beam_module: String,
@@ -66,9 +66,9 @@ impl FfiDiag {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::FfiArityMismatch { .. } => "T001",
-            Self::FfiCapabilityMismatch { .. } => "T002",
-            Self::FfiTargetUnknown { .. } => "T004",
+            Self::FfiArityMismatch { .. } => "T101",
+            Self::FfiCapabilityMismatch { .. } => "T102",
+            Self::FfiTargetUnknown { .. } => "T103",
         }
     }
 }
@@ -107,7 +107,7 @@ fn validate_one(
     let span = decl.name.span;
     let ridge_params = decl.params.len();
 
-    // T004 — unknown target.
+    // T103 — unknown target.
     let Some(entry) = lookup(beam_module, beam_fn, ffi_arity) else {
         out.push(FfiDiag::FfiTargetUnknown {
             beam_module: beam_module.to_owned(),
@@ -115,11 +115,11 @@ fn validate_one(
             arity: ffi_arity,
             span,
         });
-        // Cannot check T001/T002 without a valid entry; early-return.
+        // Cannot check T101/T102 without a valid entry; early-return.
         return;
     };
 
-    // T001 — arity mismatch.
+    // T101 — arity mismatch.
     #[allow(clippy::cast_possible_truncation)]
     if ridge_params as u32 != ffi_arity {
         out.push(FfiDiag::FfiArityMismatch {
@@ -131,7 +131,7 @@ fn validate_one(
         });
     }
 
-    // T002 — capability mismatch.
+    // T102 — capability mismatch.
     check_cap_requirements(decl, entry, span, out);
 }
 
@@ -201,15 +201,15 @@ mod tests {
         }
     }
 
-    // ── T001 FfiArityMismatch ─────────────────────────────────────────────────
+    // ── T101 FfiArityMismatch ─────────────────────────────────────────────────
 
     #[test]
-    fn t001_arity_mismatch_fires_when_param_count_differs() {
+    fn t101_arity_mismatch_fires_when_param_count_differs() {
         // erlang:+/2 expects 2 params, but we declare only 1.
         let decl = ffi_decl(vec![], vec![bare_param("a")], "erlang", "+", 2);
         let diags = validate_ffi_decls(&[&decl]);
         assert_eq!(diags.len(), 1, "expected exactly one diagnostic");
-        assert_eq!(diags[0].code(), "T001");
+        assert_eq!(diags[0].code(), "T101");
         assert!(matches!(
             diags[0],
             FfiDiag::FfiArityMismatch {
@@ -221,7 +221,7 @@ mod tests {
     }
 
     #[test]
-    fn t001_no_diagnostic_when_arity_matches() {
+    fn t101_no_diagnostic_when_arity_matches() {
         let decl = ffi_decl(
             vec![],
             vec![bare_param("a"), bare_param("b")],
@@ -231,22 +231,22 @@ mod tests {
         );
         let diags = validate_ffi_decls(&[&decl]);
         assert!(
-            diags.iter().all(|d| d.code() != "T001"),
-            "must not fire T001 when arity matches"
+            diags.iter().all(|d| d.code() != "T101"),
+            "must not fire T101 when arity matches"
         );
     }
 
-    // ── T002 FfiCapabilityMismatch ────────────────────────────────────────────
+    // ── T102 FfiCapabilityMismatch ────────────────────────────────────────────
 
     #[test]
-    fn t002_fires_when_required_cap_not_declared() {
+    fn t102_fires_when_required_cap_not_declared() {
         // ridge_rt:println/1 requires io, but we declare no caps.
         let decl = ffi_decl(vec![], vec![bare_param("s")], "ridge_rt", "println", 1);
         let diags = validate_ffi_decls(&[&decl]);
-        let t002: Vec<_> = diags.iter().filter(|d| d.code() == "T002").collect();
-        assert_eq!(t002.len(), 1, "expected one T002");
+        let t102: Vec<_> = diags.iter().filter(|d| d.code() == "T102").collect();
+        assert_eq!(t102.len(), 1, "expected one T102");
         assert!(matches!(
-            t002[0],
+            t102[0],
             FfiDiag::FfiCapabilityMismatch {
                 required_cap: Capability::Io,
                 ..
@@ -255,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn t002_no_diagnostic_when_cap_is_declared() {
+    fn t102_no_diagnostic_when_cap_is_declared() {
         // ridge_rt:println/1 requires io, and we declare io.
         let decl = ffi_decl(
             vec![Capability::Io],
@@ -266,13 +266,13 @@ mod tests {
         );
         let diags = validate_ffi_decls(&[&decl]);
         assert!(
-            diags.iter().all(|d| d.code() != "T002"),
-            "must not fire T002 when required cap is declared"
+            diags.iter().all(|d| d.code() != "T102"),
+            "must not fire T102 when required cap is declared"
         );
     }
 
     #[test]
-    fn t002_no_diagnostic_for_pure_target() {
+    fn t102_no_diagnostic_for_pure_target() {
         // erlang:+/2 requires no capabilities.
         let decl = ffi_decl(
             vec![],
@@ -283,15 +283,15 @@ mod tests {
         );
         let diags = validate_ffi_decls(&[&decl]);
         assert!(
-            diags.iter().all(|d| d.code() != "T002"),
-            "pure target must not fire T002"
+            diags.iter().all(|d| d.code() != "T102"),
+            "pure target must not fire T102"
         );
     }
 
-    // ── T004 FfiTargetUnknown ─────────────────────────────────────────────────
+    // ── T103 FfiTargetUnknown ─────────────────────────────────────────────────
 
     #[test]
-    fn t004_fires_for_unknown_beam_target() {
+    fn t103_fires_for_unknown_beam_target() {
         let decl = ffi_decl(
             vec![],
             vec![bare_param("x")],
@@ -301,7 +301,7 @@ mod tests {
         );
         let diags = validate_ffi_decls(&[&decl]);
         assert_eq!(diags.len(), 1, "expected exactly one diagnostic");
-        assert_eq!(diags[0].code(), "T004");
+        assert_eq!(diags[0].code(), "T103");
         assert!(matches!(
             &diags[0],
             FfiDiag::FfiTargetUnknown { beam_module, beam_fn, arity: 1, .. }
@@ -310,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn t004_no_diagnostic_for_known_target() {
+    fn t103_no_diagnostic_for_known_target() {
         // lists:map/2 is in the audit table.
         let decl = ffi_decl(
             vec![],
@@ -321,19 +321,19 @@ mod tests {
         );
         let diags = validate_ffi_decls(&[&decl]);
         assert!(
-            diags.iter().all(|d| d.code() != "T004"),
-            "known target must not fire T004"
+            diags.iter().all(|d| d.code() != "T103"),
+            "known target must not fire T103"
         );
     }
 
     #[test]
-    fn t004_suppresses_t001_and_t002() {
-        // When the target is unknown, T001/T002 must NOT fire (no audit entry
+    fn t103_suppresses_t101_and_t102() {
+        // When the target is unknown, T101/T102 must NOT fire (no audit entry
         // means no reference for arity or capability checks).
         let decl = ffi_decl(vec![], vec![], "ghost_lib", "ghost_fn", 99);
         let diags = validate_ffi_decls(&[&decl]);
-        // Only T004 should appear; T001/T002 must not.
-        assert!(diags.iter().all(|d| d.code() == "T004"));
+        // Only T103 should appear; T101/T102 must not.
+        assert!(diags.iter().all(|d| d.code() == "T103"));
         assert_eq!(diags.len(), 1);
     }
 
@@ -360,7 +360,7 @@ mod tests {
     // ── Code stability ────────────────────────────────────────────────────────
 
     #[test]
-    fn t001_code_is_stable() {
+    fn t101_code_is_stable() {
         let d = FfiDiag::FfiArityMismatch {
             beam_module: "erlang".into(),
             beam_fn: "+".into(),
@@ -368,28 +368,28 @@ mod tests {
             ridge_params: 1,
             span: sp(),
         };
-        assert_eq!(d.code(), "T001");
+        assert_eq!(d.code(), "T101");
     }
 
     #[test]
-    fn t002_code_is_stable() {
+    fn t102_code_is_stable() {
         let d = FfiDiag::FfiCapabilityMismatch {
             beam_module: "ridge_rt".into(),
             beam_fn: "println".into(),
             required_cap: Capability::Io,
             span: sp(),
         };
-        assert_eq!(d.code(), "T002");
+        assert_eq!(d.code(), "T102");
     }
 
     #[test]
-    fn t004_code_is_stable() {
+    fn t103_code_is_stable() {
         let d = FfiDiag::FfiTargetUnknown {
             beam_module: "ghost".into(),
             beam_fn: "fn".into(),
             arity: 0,
             span: sp(),
         };
-        assert_eq!(d.code(), "T004");
+        assert_eq!(d.code(), "T103");
     }
 }

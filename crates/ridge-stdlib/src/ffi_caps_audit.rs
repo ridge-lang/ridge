@@ -2,7 +2,7 @@
 //!
 //! Every BEAM `module:name/arity` triplet that Ridge stdlib `@ffi` declarations
 //! may reference must appear in [`AUDIT_TABLE`].  A target absent from the table
-//! produces `T004 FfiTargetUnknown`.  Adding a new target requires editing this
+//! produces `T103 FfiTargetUnknown`.  Adding a new target requires editing this
 //! file — intentional friction that keeps the capability table authoritative.
 //!
 //! Capability requirements are expressed as bitmasks from [`ridge_ast::Capability`].
@@ -31,7 +31,7 @@ pub struct FfiAuditEntry {
 
 /// Look up a BEAM target in the audit table.
 ///
-/// Returns `None` when the triple is not in the closed list (→ T004).
+/// Returns `None` when the triple is not in the closed list (→ T103).
 #[must_use]
 pub fn lookup(module: &str, name: &str, arity: u32) -> Option<&'static FfiAuditEntry> {
     AUDIT_TABLE

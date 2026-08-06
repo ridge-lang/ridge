@@ -1,5 +1,5 @@
 //! Regression coverage for the `@ffi` audit-table gate wired into the stdlib
-//! build (T001 arity, T002 capability, T004 unknown target).
+//! build (T101 arity, T102 capability, T103 unknown target).
 //!
 //! The build refuses to compile a standard-library module whose `@ffi`
 //! declaration drifts out of `ffi_caps_audit::AUDIT_TABLE`. These tests pin
@@ -30,9 +30,9 @@ fn real_stdlib_passes_ffi_validation() {
 }
 
 /// (b) An `@ffi` pointing at a BEAM target absent from the audit table fails
-/// the build with T004.
+/// the build with T103.
 #[test]
-fn out_of_table_target_fails_build_with_t004() {
+fn out_of_table_target_fails_build_with_t103() {
     let td = temp_stdlib_with_int(
         "@ffi(\"some_unaudited_mod\", \"dangerous\", 1)\npub fn bad (x: Int) -> Int\n",
     );
@@ -41,8 +41,8 @@ fn out_of_table_target_fails_build_with_t004() {
     match err {
         BuildError::TierBuildFailed { source, .. } => {
             assert!(
-                source.contains("T004"),
-                "expected T004 in the failure, got: {source}"
+                source.contains("T103"),
+                "expected T103 in the failure, got: {source}"
             );
         }
         BuildError::CircularImport { .. } => {
@@ -52,11 +52,11 @@ fn out_of_table_target_fails_build_with_t004() {
 }
 
 /// (c) An in-table target whose declared Ridge arity disagrees with the `@ffi`
-/// arity fails the build with T001.
+/// arity fails the build with T101.
 #[test]
-fn arity_mismatch_fails_build_with_t001() {
+fn arity_mismatch_fails_build_with_t101() {
     // `erlang:abs/1` is in the audit table, but the Ridge signature declares
-    // two parameters — a T001 arity mismatch.
+    // two parameters — a T101 arity mismatch.
     let td =
         temp_stdlib_with_int("@ffi(\"erlang\", \"abs\", 1)\npub fn bad (a: Int) (b: Int) -> Int\n");
 
@@ -64,8 +64,8 @@ fn arity_mismatch_fails_build_with_t001() {
     match err {
         BuildError::TierBuildFailed { source, .. } => {
             assert!(
-                source.contains("T001"),
-                "expected T001 in the failure, got: {source}"
+                source.contains("T101"),
+                "expected T101 in the failure, got: {source}"
             );
         }
         BuildError::CircularImport { .. } => {
@@ -102,8 +102,8 @@ fn failure_names_the_owning_module_within_a_multi_module_tier() {
     match err {
         BuildError::TierBuildFailed { module, source, .. } => {
             assert!(
-                source.contains("T004"),
-                "expected T004 in the failure, got: {source}"
+                source.contains("T103"),
+                "expected T103 in the failure, got: {source}"
             );
             assert_eq!(
                 module, "std.list",

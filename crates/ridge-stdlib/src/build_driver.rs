@@ -297,7 +297,7 @@ fn compile_tier(
     ws_graph.is_stdlib = true;
 
     // Validate the stdlib's own `@ffi` declarations against the closed-list
-    // audit table (T001 arity, T002 capability, T004 unknown target) before
+    // audit table (T101 arity, T102 capability, T103 unknown target) before
     // the sources are compiled. The audit table is the single source of truth
     // for which BEAM targets the standard library is permitted to reach, so a
     // declaration that drifts out of the table must fail the build rather than

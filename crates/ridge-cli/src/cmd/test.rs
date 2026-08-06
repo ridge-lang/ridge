@@ -330,10 +330,10 @@ fn run_tests_and_report(
             }
             TestClassification::BoolDeprecated => {
                 eprintln!(
-                    "warning: C303 BoolTestDeprecated: '{}' returns Bool (deprecated); \
-                     -- migrate: change return type to Result Unit Text; \
-                     replace 'true' with 'Ok ()' and 'false' with 'Err \"<reason>\"'",
-                    test.qualified_name
+                    "{}",
+                    crate::error::CliWarning::BoolTestDeprecated {
+                        qualified_name: test.qualified_name.clone(),
+                    }
                 );
                 bool_tests += 1;
                 Slot::Runnable
@@ -649,13 +649,13 @@ fn discover_tests(typed: &TypedWorkspace, graph: &WorkspaceGraph) -> Vec<Discove
                 continue;
             }
 
-            // C304: emit deprecation warning for every prefix-matched test.
+            // Every prefix-matched test earns the deprecation advisory.
             eprintln!(
-                "warning: C304 PrefixTestDeprecated: '{}.{}' uses the deprecated `test_` prefix; \
-                 add `@test \"{}\"` above the function and remove the prefix in 0.3.0",
-                module_name,
-                f.name.text,
-                f.name.text.strip_prefix("test_").unwrap_or(&f.name.text),
+                "{}",
+                crate::error::CliWarning::PrefixTestDeprecated {
+                    module: module_name.clone(),
+                    name: f.name.text.clone(),
+                }
             );
 
             let qualified_name = format!("{module_name}.{}", f.name.text);

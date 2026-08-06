@@ -241,3 +241,53 @@ fn dod_hot_reload_doc_exists() {
         );
     }
 }
+
+// ── Codes and messages cannot drift apart ────────────────────────────────────
+
+/// Every `CliError` that carries a code prints it first, and every `CliWarning`
+/// does the same after its `warning:` prefix.
+///
+/// The code and the message used to be written out separately in each `Display`
+/// arm, which is how `C004` ended up with two spellings in one crate — "erlang
+/// toolchain not found" in one enum and "erlang runtime not found" in another.
+/// Asserting the two agree is cheaper than trusting they will.
+#[test]
+fn a_code_carrying_error_prints_its_code_first() {
+    use ridge_cli::error::{CliError, CliWarning};
+
+    let cases: Vec<CliError> = vec![
+        CliError::NoWorkspaceRoot,
+        CliError::UnknownMember { name: "x".into() },
+        CliError::NoExecutableMember,
+        CliError::WatchAmbiguousMember,
+        CliError::MigrateErlangNotFound,
+        CliError::MigrateCompileFailed,
+    ];
+    for e in cases {
+        let code = e.code().expect("these variants all carry a code");
+        let text = e.to_string();
+        assert!(
+            text.starts_with(code),
+            "`{code}` must open its own message, got: {text}"
+        );
+    }
+
+    // The two sentinels answer `None` rather than inventing a code.
+    assert!(CliError::AlreadyReported.code().is_none());
+
+    for w in [
+        CliWarning::BoolTestDeprecated {
+            qualified_name: "Main.test_x".into(),
+        },
+        CliWarning::PrefixTestDeprecated {
+            module: "Main".into(),
+            name: "test_x".into(),
+        },
+    ] {
+        let text = w.to_string();
+        assert!(
+            text.starts_with(&format!("warning: {}", w.code())),
+            "an advisory opens with `warning: <code>`, got: {text}"
+        );
+    }
+}

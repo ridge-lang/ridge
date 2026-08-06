@@ -37,7 +37,7 @@ pub enum CliError {
         rendered: String,
     },
 
-    /// `C006a` — `--watch` requested but multiple executable members exist and
+    /// `C011` — `--watch` requested but multiple executable members exist and
     /// `--member` was not specified.
     WatchAmbiguousMember,
 
@@ -129,16 +129,6 @@ pub enum CliError {
         qualified_name: String,
     },
 
-    /// `C303` — a `pub fn test_*` function returns `Bool` (deprecated).
-    ///
-    /// This is a **warning**, not a fatal error.  The test is still executed.
-    /// `Bool` return acceptance is removed in 0.2.0 — migrate to
-    /// `Result Unit Text`.
-    BoolTestDeprecated {
-        /// The qualified name of the test function.
-        qualified_name: String,
-    },
-
     /// `C401` — `<src_root>/migrations/Model.ridge` is missing.
     MigrateModelMissing {
         /// The path where `Model.ridge` was expected.
@@ -210,6 +200,103 @@ pub enum CliError {
     AlreadyReported,
 }
 
+impl CliError {
+    /// The stable code for this failure, when it has one.
+    ///
+    /// Two variants answer `None` on purpose. `AlreadyReported` is a sentinel
+    /// for "the real cause is already on stderr", and `MemberManifestInvalid`
+    /// forwards a rendered manifest error that carries its own `M###`. Giving
+    /// either one a `C###` would invent a code for something that is not a
+    /// distinct failure.
+    #[must_use]
+    pub const fn code(&self) -> Option<&'static str> {
+        Some(match self {
+            Self::NoWorkspaceRoot => "C001",
+            Self::UnknownMember { .. } => "C005",
+            Self::NoExecutableMember => "C006",
+            Self::LibraryNotExecutable { .. } => "C007",
+            Self::ObserverNoCookie { .. } => "C008",
+            Self::WatchAmbiguousMember => "C011",
+            Self::FmtPathNotFound { .. } => "C102",
+            Self::FmtIoError { .. } => "C103",
+            Self::FmtCheckFailed { .. } => "C104",
+            Self::LegacyRgFile { .. } => "C105",
+            Self::InvalidProjectName { .. } => "C201",
+            Self::DirectoryExists { .. } => "C202",
+            Self::ReservedName { .. } => "C203",
+            Self::DirectoryNotEmpty { .. } => "C204",
+            Self::CwdUnreadable { .. } => "C205",
+            Self::TestArityInvalid { .. } => "C301",
+            Self::TestCapabilityForbidden { .. } => "C302",
+            Self::MigrateModelMissing { .. } => "C401",
+            Self::MigrateErlangNotFound => "C402",
+            Self::MigrateCompileFailed => "C403",
+            Self::MigrateInternal { .. } => "C404",
+            Self::MigrateInvalidName { .. } => "C405",
+            Self::MigrateEnvMissing { .. } => "C406",
+            Self::MigrateApplyFailed { .. } => "C407",
+            Self::MigrateStatusFailed { .. } => "C408",
+            Self::MigrateRollbackFailed { .. } => "C409",
+            Self::AlreadyReported | Self::MemberManifestInvalid { .. } => return None,
+        })
+    }
+}
+
+// ── CliWarning ──
+
+/// An advisory the CLI reports without failing.
+///
+/// Kept apart from [`CliError`] for the reason `ridge-pkg` keeps `PkgWarning`
+/// apart from `PkgError`: when severity is the type, an emit site cannot get it
+/// wrong. Both of these used to be raw `eprintln!` calls, outside the
+/// diagnostic system entirely — one of them shadowed by a `CliError`
+/// variant that was never constructed.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum CliWarning {
+    /// `C303` — a discovered test returns `Bool` rather than `Result Unit Text`.
+    BoolTestDeprecated {
+        /// Fully qualified `Module.function` name of the test.
+        qualified_name: String,
+    },
+
+    /// `C304` — a test was found by its `test_` prefix rather than `@test`.
+    PrefixTestDeprecated {
+        /// Module the test lives in.
+        module: String,
+        /// The function name, prefix included.
+        name: String,
+    },
+}
+
+impl CliWarning {
+    /// The stable code for this advisory.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::BoolTestDeprecated { .. } => "C303",
+            Self::PrefixTestDeprecated { .. } => "C304",
+        }
+    }
+}
+
+impl fmt::Display for CliWarning {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let c = self.code();
+        match self {
+            Self::BoolTestDeprecated { qualified_name } => write!(
+                f,
+                "warning: {c} BoolTestDeprecated: '{qualified_name}' returns Bool (deprecated);                  -- migrate: change return type to Result Unit Text;                  replace 'true' with 'Ok ()' and 'false' with 'Err \"<reason>\"'"
+            ),
+            Self::PrefixTestDeprecated { module, name } => write!(
+                f,
+                "warning: {c} PrefixTestDeprecated: '{module}.{name}' uses the deprecated `test_`                  prefix; add `@test \"{stem}\"` above the function and remove the prefix in 0.3.0",
+                stem = name.strip_prefix("test_").unwrap_or(name)
+            ),
+        }
+    }
+}
+
 impl fmt::Display for CliError {
     #[allow(
         clippy::too_many_lines,
@@ -236,7 +323,7 @@ impl fmt::Display for CliError {
             Self::MemberManifestInvalid { rendered } => write!(f, "{rendered}"),
             Self::WatchAmbiguousMember => write!(
                 f,
-                "C006a WatchAmbiguousMember: --watch requires --member when the workspace has multiple executable members"
+                "C011 WatchAmbiguousMember: --watch requires --member when the workspace has multiple executable members"
             ),
             Self::LibraryNotExecutable { name } => write!(
                 f,
@@ -307,12 +394,6 @@ impl fmt::Display for CliError {
                 f,
                 "C302 TestCapabilityForbidden: '{qualified_name}' declares the 'ffi' capability; \
                  ffi tests are not permitted in ridge test 0.1.0"
-            ),
-            Self::BoolTestDeprecated { qualified_name } => write!(
-                f,
-                "C303 BoolTestDeprecated: '{qualified_name}' returns Bool (deprecated); \
-                 -- migrate: change return type to Result Unit Text; \
-                 replace 'true' with 'Ok ()' and 'false' with 'Err \"<reason>\"'"
             ),
             Self::MigrateModelMissing { path } => write!(
                 f,

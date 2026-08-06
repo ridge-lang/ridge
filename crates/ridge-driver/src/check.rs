@@ -129,11 +129,8 @@ pub fn collect_diagnostics(
 #[allow(clippy::needless_pass_by_value)]
 pub fn check_workspace(options: CheckOptions) -> Result<CheckArtefacts, CheckError> {
     // ── 1. Verify workspace root ──────────────────────────────────────────────
-    let _manifest_dir = find_workspace_root(&options.workspace_root).ok_or_else(|| {
-        CheckError::NoWorkspaceRoot {
-            path: options.workspace_root.clone(),
-        }
-    })?;
+    let _manifest_dir = find_workspace_root(&options.workspace_root)
+        .ok_or_else(|| CheckError::no_workspace_root(options.workspace_root.clone()))?;
 
     // ── 2. Pipeline: discover → resolve → typecheck ───────────────────────────
     let disc = discover_workspace(&options.workspace_root);
@@ -142,9 +139,9 @@ pub fn check_workspace(options: CheckOptions) -> Result<CheckArtefacts, CheckErr
     // before consuming the struct.
     let disc_resolve_errors = disc.resolve_errors;
 
-    let mut ws_graph = disc.graph.ok_or_else(|| CheckError::NoWorkspaceRoot {
-        path: options.workspace_root.clone(),
-    })?;
+    let mut ws_graph = disc
+        .graph
+        .ok_or_else(|| CheckError::no_workspace_root(options.workspace_root.clone()))?;
     ws_graph.is_stdlib = options.is_stdlib;
 
     let resolved = resolve_workspace_with(ws_graph, options.retain_indices);
@@ -201,11 +198,8 @@ pub fn check_workspace_typed_with_history(
     history: &VersionHistory,
 ) -> Result<CheckTypedArtefacts, CheckError> {
     // ── 1. Verify workspace root ──────────────────────────────────────────────
-    let _manifest_dir = find_workspace_root(&options.workspace_root).ok_or_else(|| {
-        CheckError::NoWorkspaceRoot {
-            path: options.workspace_root.clone(),
-        }
-    })?;
+    let _manifest_dir = find_workspace_root(&options.workspace_root)
+        .ok_or_else(|| CheckError::no_workspace_root(options.workspace_root.clone()))?;
 
     // ── 2. Pipeline: discover → resolve → typecheck ───────────────────────────
     let disc = discover_workspace(&options.workspace_root);
@@ -214,9 +208,9 @@ pub fn check_workspace_typed_with_history(
     // before consuming the struct.
     let disc_resolve_errors = disc.resolve_errors;
 
-    let mut ws_graph = disc.graph.ok_or_else(|| CheckError::NoWorkspaceRoot {
-        path: options.workspace_root.clone(),
-    })?;
+    let mut ws_graph = disc
+        .graph
+        .ok_or_else(|| CheckError::no_workspace_root(options.workspace_root.clone()))?;
     ws_graph.is_stdlib = options.is_stdlib;
 
     let resolved = resolve_workspace_with(ws_graph, options.retain_indices);
@@ -254,17 +248,14 @@ pub fn check_workspace_typed_with_history(
 /// Fatal errors (`C001`–`C003`) are returned as [`CheckError`].
 #[allow(clippy::needless_pass_by_value)]
 pub fn check_workspace_incremental(options: CheckOptions) -> Result<IncrementalState, CheckError> {
-    let _manifest_dir = find_workspace_root(&options.workspace_root).ok_or_else(|| {
-        CheckError::NoWorkspaceRoot {
-            path: options.workspace_root.clone(),
-        }
-    })?;
+    let _manifest_dir = find_workspace_root(&options.workspace_root)
+        .ok_or_else(|| CheckError::no_workspace_root(options.workspace_root.clone()))?;
 
     let disc = discover_workspace(&options.workspace_root);
     let disc_resolve_errors = disc.resolve_errors;
-    let mut ws_graph = disc.graph.ok_or_else(|| CheckError::NoWorkspaceRoot {
-        path: options.workspace_root.clone(),
-    })?;
+    let mut ws_graph = disc
+        .graph
+        .ok_or_else(|| CheckError::no_workspace_root(options.workspace_root.clone()))?;
     ws_graph.is_stdlib = options.is_stdlib;
 
     let resolved = resolve_workspace_with(ws_graph, options.retain_indices);

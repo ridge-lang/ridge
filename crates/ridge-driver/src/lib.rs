@@ -40,7 +40,10 @@ pub use compile::{
     compile_workspace, select_entry_beam, write_stdlib_test_workspace, CompileArtefacts,
     EntryModule, SourceMap,
 };
-pub use error::{CheckError, CompileDiagnostics, CompileError, ProcessExitCode, RunError};
+pub use error::{
+    CheckError, CompileDiagnostics, CompileError, ProcessExitCode, RunError, ToolchainError,
+    WorkspaceError,
+};
 pub use incremental::IncrementalState;
 pub use options::{CheckOptions, CompileOptions, EmitArtefacts, Profile, RunOptions};
 pub use reload::{

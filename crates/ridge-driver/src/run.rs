@@ -15,7 +15,7 @@ use std::process::Command;
 use ridge_resolve::Severity;
 
 use crate::compile::compile_workspace;
-use crate::error::{ProcessExitCode, RunError};
+use crate::error::{ProcessExitCode, RunError, ToolchainError};
 use crate::options::{CompileOptions, EmitArtefacts, RunOptions};
 
 /// Timeout in seconds for the `erl` child process (60 s per plan §9).
@@ -39,10 +39,10 @@ const ERL_TIMEOUT_SECS: u64 = 60;
 /// - [`RunError::CompileFailed`] — upstream fatal compile error.
 /// - [`RunError::CompileDiagnostics`] — pipeline accumulated error-severity
 ///   diagnostics (e.g. `R016` capability not declared).
-/// - [`RunError::ErlangNotFound`] — `erl` not on PATH (C004).
+/// - [`RunError::Toolchain`] — `erl` not on PATH (`C004`).
 /// - [`RunError::NoBeamModule`] — codegen produced no `.beam` output.
 /// - [`RunError::ErlExitNonZero`] — BEAM node exited non-zero.
-/// - [`RunError::SpawnFailed`] — OS could not spawn `erl`.
+/// - [`RunError::Toolchain`] — OS could not spawn `erl` (`C013`).
 #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 pub fn run_workspace(options: RunOptions) -> Result<ProcessExitCode, RunError> {
     // ── 1. Compile ────────────────────────────────────────────────────────────
@@ -152,9 +152,7 @@ pub fn run_workspace(options: RunOptions) -> Result<ProcessExitCode, RunError> {
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| RunError::SpawnFailed {
-            message: e.to_string(),
-        })?;
+        .map_err(|e| RunError::from(ToolchainError::erl_spawn_failed(&e)))?;
 
     // ── 5. Wait with timeout ──────────────────────────────────────────────────
     let timeout = std::time::Duration::from_secs(ERL_TIMEOUT_SECS);
@@ -192,7 +190,7 @@ pub fn run_workspace(options: RunOptions) -> Result<ProcessExitCode, RunError> {
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
             Err(e) => {
-                return Err(RunError::SpawnFailed {
+                return Err(RunError::WaitFailed {
                     message: format!("error waiting for erl process: {e}"),
                 });
             }
@@ -204,9 +202,9 @@ pub fn run_workspace(options: RunOptions) -> Result<ProcessExitCode, RunError> {
 
 /// Probe `erl` on `PATH`.
 ///
-/// Returns the absolute path to `erl` or `RunError::ErlangNotFound` (C004).
+/// Returns the absolute path to `erl` or `C004 ErlangNotFound`.
 fn probe_erl() -> Result<std::path::PathBuf, RunError> {
-    which::which("erl").map_err(|_| RunError::ErlangNotFound)
+    which::which("erl").map_err(|_| ToolchainError::erl_not_found().into())
 }
 
 /// Drain a child process stdio pipe into a `String`.

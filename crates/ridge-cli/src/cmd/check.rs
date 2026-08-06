@@ -15,7 +15,7 @@ use ridge_driver::{check_workspace, CheckArtefacts, CheckOptions};
 use ridge_manifest::find_workspace_root;
 
 use crate::error::CliError;
-use crate::render::render_diagnostics;
+use crate::render::{report_diagnostics, WarningPolicy};
 
 // ── Argument struct ───────────────────────────────────────────────────────────
 
@@ -25,6 +25,10 @@ pub struct CheckArgs {
     /// Only check the named workspace member.
     #[arg(long, value_name = "NAME")]
     pub member: Option<String>,
+
+    /// Whether warnings are fatal.
+    #[command(flatten)]
+    pub warnings: WarningPolicy,
 }
 
 // ── Execute ───────────────────────────────────────────────────────────────────
@@ -34,8 +38,9 @@ pub struct CheckArgs {
 /// # Errors
 ///
 /// Returns a [`CliError`] if the workspace root cannot be found or the driver
-/// reports a fatal error.  Non-fatal diagnostics are printed to stderr and
-/// also cause a non-zero exit.
+/// reports a fatal error.  Error-severity diagnostics are printed to stderr and
+/// cause a non-zero exit; warnings are printed and counted in the summary line,
+/// and only fail the check under `--deny-warnings`.
 pub fn execute(args: &CheckArgs, cwd: &Path) -> Result<(), CliError> {
     // ── 1. Locate workspace root ──────────────────────────────────────────────
     let workspace_root = find_workspace_root(cwd).ok_or(CliError::NoWorkspaceRoot)?;
@@ -55,11 +60,11 @@ pub fn execute(args: &CheckArgs, cwd: &Path) -> Result<(), CliError> {
     })?;
 
     // ── 4. Render diagnostics ─────────────────────────────────────────────────
-    if !diagnostics.is_empty() {
-        render_diagnostics(&diagnostics, &sources);
+    let report = report_diagnostics(&diagnostics, &sources, args.warnings.deny_warnings);
+    if report.fatal() {
         return Err(CliError::AlreadyReported);
     }
 
-    println!("Type-check passed.");
+    println!("Type-check passed{}.", report.warning_suffix());
     Ok(())
 }

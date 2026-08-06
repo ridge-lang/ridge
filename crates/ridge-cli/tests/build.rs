@@ -225,3 +225,48 @@ fn build_failure_does_not_report_spurious_c001() {
         "a failed build must not report a spurious C001 NoWorkspaceRoot.\nstderr: {stderr}"
     );
 }
+
+// ── Test 7: warnings do not fail the build ────────────────────────────────────
+
+/// A warning is advisory: the artefacts it describes are sound, so `ridge build`
+/// emits them, says so, and exits 0.
+///
+/// Permissive about OTP like its neighbours above: without `erlc` the driver
+/// stops at `C004` long before the diagnostic gate, and only the presence of
+/// the warning can be checked.
+#[test]
+fn a_warning_does_not_fail_the_build() {
+    let source = "type Role = Admin | Guest\n\
+                  \n\
+                  pub fn tag () -> Int =\n\
+                  \x20 match Guest\n\
+                  \x20     Admin -> 1\n\
+                  \x20     Guest -> 2\n\
+                  \x20     _ -> 3\n";
+    let tw = make_workspace("Warned", source);
+
+    let output = ridge_cmd()
+        .arg("build")
+        .current_dir(&tw.path)
+        .output()
+        .expect("ridge build spawn failed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stderr.contains("T017"),
+        "the warning must be printed whatever the build's fate.\nstderr: {stderr}"
+    );
+
+    if output.status.success() {
+        assert!(
+            stdout.contains("Compiled") && stdout.contains("1 warning"),
+            "the success banner must count the warning, got: {stdout}"
+        );
+    } else {
+        assert!(
+            stderr.contains("C004") || stderr.contains("erl"),
+            "only a missing OTP may fail a warning-only build.\nstderr: {stderr}"
+        );
+    }
+}

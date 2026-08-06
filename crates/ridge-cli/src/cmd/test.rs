@@ -45,7 +45,7 @@ use ridge_driver::{
 use ridge_manifest::find_workspace_root;
 
 use crate::error::CliError;
-use crate::render::render_diagnostics;
+use crate::render::{report_diagnostics, report_errors_only, WarningPolicy};
 
 // ── Argument struct ───────────────────────────────────────────────────────────
 
@@ -84,6 +84,10 @@ pub struct TestArgs {
     /// test output ordering).
     #[arg(long, short = 'j', value_name = "N")]
     pub jobs: Option<usize>,
+
+    /// Whether warnings are fatal.
+    #[command(flatten)]
+    pub warnings: WarningPolicy,
 }
 
 // ── Execute ───────────────────────────────────────────────────────────────────
@@ -137,8 +141,13 @@ pub fn execute(args: &TestArgs, cwd: &Path) -> Result<(), CliError> {
         }
     };
 
-    if !typed_artefacts.diagnostics.is_empty() {
-        render_diagnostics(&typed_artefacts.diagnostics, &typed_artefacts.sources);
+    if report_diagnostics(
+        &typed_artefacts.diagnostics,
+        &typed_artefacts.sources,
+        args.warnings.deny_warnings,
+    )
+    .fatal()
+    {
         process::exit(1);
     }
 
@@ -208,8 +217,8 @@ pub fn execute(args: &TestArgs, cwd: &Path) -> Result<(), CliError> {
         }
     };
 
-    if !artefacts.diagnostics.is_empty() {
-        render_diagnostics(&artefacts.diagnostics, &artefacts.sources);
+    // Step 2 already reported this pipeline's warnings; only errors are new here.
+    if report_errors_only(&artefacts.diagnostics, &artefacts.sources).fatal() {
         process::exit(1);
     }
 

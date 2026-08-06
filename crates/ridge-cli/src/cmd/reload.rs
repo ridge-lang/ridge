@@ -277,8 +277,8 @@ fn compile_and_plan(
             eprintln!("error: {e}");
             CliError::AlreadyReported
         })?;
-    if !artefacts.diagnostics.is_empty() {
-        crate::render::render_diagnostics(&artefacts.diagnostics, &artefacts.sources);
+    if crate::render::report_diagnostics(&artefacts.diagnostics, &artefacts.sources, false).fatal()
+    {
         return Err(CliError::AlreadyReported);
     }
     let Some(beam_dir) = artefacts.beam_files.iter().find_map(|p| p.parent()) else {

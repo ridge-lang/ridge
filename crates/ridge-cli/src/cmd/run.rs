@@ -27,7 +27,7 @@ use ridge_driver::{
 use ridge_manifest::{find_workspace_root, parse_project, parse_workspace, ProjectKind};
 
 use crate::error::CliError;
-use crate::render::render_diagnostics;
+use crate::render::{render_diagnostics, report_diagnostics};
 
 // ── Argument struct ───────────────────────────────────────────────────────────
 
@@ -343,8 +343,7 @@ fn execute_observer(
         eprintln!("error: {e}");
         CliError::AlreadyReported
     })?;
-    if !artefacts.diagnostics.is_empty() {
-        render_diagnostics(&artefacts.diagnostics, &artefacts.sources);
+    if report_diagnostics(&artefacts.diagnostics, &artefacts.sources, false).fatal() {
         process::exit(1);
     }
     if artefacts.beam_files.is_empty() {
@@ -600,8 +599,7 @@ fn compile_for_watch(
         eprintln!("error: {e}");
         CliError::AlreadyReported
     })?;
-    if !artefacts.diagnostics.is_empty() {
-        render_diagnostics(&artefacts.diagnostics, &artefacts.sources);
+    if report_diagnostics(&artefacts.diagnostics, &artefacts.sources, false).fatal() {
         return Err(CliError::AlreadyReported);
     }
     if artefacts.beam_files.is_empty() {

@@ -23,7 +23,7 @@ use ridge_driver::{compile_workspace, select_entry_beam, CompileOptions, EmitArt
 use ridge_manifest::find_workspace_root;
 
 use crate::error::CliError;
-use crate::render::render_diagnostics;
+use crate::render::{report_diagnostics, WarningPolicy};
 
 // ── Argument struct ───────────────────────────────────────────────────────────
 
@@ -59,6 +59,10 @@ pub struct BuildArgs {
     /// and its `main` function must accept 0 or 1 argument.
     #[arg(long, value_name = "MEMBER")]
     pub bin: Option<String>,
+
+    /// Whether warnings are fatal.
+    #[command(flatten)]
+    pub warnings: WarningPolicy,
 }
 
 /// User-facing emit choice for `--emit`.
@@ -127,10 +131,16 @@ pub fn execute(args: &BuildArgs, cwd: &Path) -> Result<(), CliError> {
         CliError::AlreadyReported
     })?;
 
-    // ── 4. Render non-fatal diagnostics ───────────────────────────────────────
-    if !artefacts.diagnostics.is_empty() {
-        render_diagnostics(&artefacts.diagnostics, &artefacts.sources);
-        return Err(CliError::AlreadyReported); // non-zero exit on warnings/errors
+    // ── 4. Render diagnostics ─────────────────────────────────────────────────
+    // A warning is advisory: the artefacts it describes are sound, so the build
+    // keeps going and the count lands in the success banner instead.
+    let report = report_diagnostics(
+        &artefacts.diagnostics,
+        &artefacts.sources,
+        args.warnings.deny_warnings,
+    );
+    if report.fatal() {
+        return Err(CliError::AlreadyReported);
     }
 
     // ── 5. Emit escript artefact (--bin path) ─────────────────────────────────
@@ -148,7 +158,10 @@ pub fn execute(args: &BuildArgs, cwd: &Path) -> Result<(), CliError> {
     // ── 6. Success banner ─────────────────────────────────────────────────────
     let n = artefacts.beam_files.len() + artefacts.core_files.len();
     let elapsed = start.elapsed().as_millis();
-    println!("Compiled {n} module(s) in {elapsed}ms");
+    println!(
+        "Compiled {n} module(s) in {elapsed}ms{}",
+        report.warning_suffix()
+    );
 
     Ok(())
 }

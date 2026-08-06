@@ -1,6 +1,6 @@
 //! Integration tests for `ridge check`.
 //!
-//! All six tests run without OTP — `ridge check` does not invoke `erlc`.
+//! Every test here runs without OTP — `ridge check` does not invoke `erlc`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -147,6 +147,108 @@ fn check_type_error_no_spurious_c001() {
     assert!(
         !stderr.contains("C001") && !stderr.contains("NoWorkspaceRoot"),
         "spurious C001 NoWorkspaceRoot after the real diagnostic: {stderr}"
+    );
+}
+
+// ── Warning-severity diagnostics ──────────────────────────────────────────────
+
+/// A source whose only diagnostic is `T017 redundant pattern` — the third arm
+/// is unreachable because the first two already cover `Role`.
+const WARNING_SOURCE: &str = "type Role = Admin | Guest\n\
+                              \n\
+                              pub fn tag () -> Int =\n\
+                              \x20 match Guest\n\
+                              \x20     Admin -> 1\n\
+                              \x20     Guest -> 2\n\
+                              \x20     _ -> 3\n";
+
+/// A warning is advisory: `ridge check` prints it and exits 0.
+///
+/// Warnings exist to say "you may want to look at this" without stopping the
+/// build. While they exited non-zero, no lint could be added to the compiler
+/// without breaking every project that tripped it.
+#[test]
+fn a_warning_does_not_fail_the_check() {
+    let tw = make_workspace("Warned", WARNING_SOURCE);
+
+    let output = ridge_cmd()
+        .arg("check")
+        .current_dir(&tw.path)
+        .output()
+        .expect("ridge check spawn failed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "a warning-only check must exit 0.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("T017"),
+        "the warning must still be printed, not swallowed: {stderr}"
+    );
+    assert!(
+        stdout.contains("passed") && stdout.contains("1 warning"),
+        "the summary line must count the warning it just printed, got: {stdout}"
+    );
+}
+
+/// `--deny-warnings` is how a project that wants zero warnings asks for it.
+#[test]
+fn deny_warnings_makes_a_warning_fatal() {
+    let tw = make_workspace("Warned", WARNING_SOURCE);
+
+    let output = ridge_cmd()
+        .arg("check")
+        .arg("--deny-warnings")
+        .current_dir(&tw.path)
+        .output()
+        .expect("ridge check spawn failed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "--deny-warnings must exit non-zero on a warning.\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("T017"),
+        "the warning that failed the check must be shown: {stderr}"
+    );
+    assert!(
+        !stdout.contains("passed"),
+        "a denied warning must not print a success line, got: {stdout}"
+    );
+}
+
+/// A warning next to an error must not launder the error into a pass.
+#[test]
+fn an_error_alongside_a_warning_still_fails() {
+    let source = format!("{WARNING_SOURCE}\npub fn broken () -> Int = \"not an int\"\n");
+    let tw = make_workspace("Warned", &source);
+
+    let output = ridge_cmd()
+        .arg("check")
+        .current_dir(&tw.path)
+        .output()
+        .expect("ridge check spawn failed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "an error must fail the check whatever else is in the batch.\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("T017"),
+        "the warning is still worth printing alongside the error: {stderr}"
+    );
+    assert!(
+        !stdout.contains("passed"),
+        "no success line when an error was reported, got: {stdout}"
     );
 }
 

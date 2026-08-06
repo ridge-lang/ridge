@@ -268,3 +268,53 @@ fn test_attr_wins_over_prefix_no_c304() {
         // C301 confirms the test was actually discovered.
         .stderr(contains("C301 TestArityInvalid"));
 }
+
+// ── Warnings do not stop the suite, and are reported once ─────────────────────
+
+/// A warning does not stop `ridge test`, and is printed once.
+///
+/// `test` walks the pipeline twice — type-check to discover the suite, then
+/// compile to run it — and both passes carry the same warnings. Now that a
+/// warning no longer stops the command at the first pass, rendering the whole
+/// batch again at the second would show every warning twice.
+///
+/// Un-gated: the count holds with or without OTP, since the type-check pass
+/// that prints the warning runs before anything needs `erlc`.
+#[test]
+fn a_warning_is_reported_once_and_does_not_stop_the_suite() {
+    let source = "type Role = Admin | Guest\n\
+                  \n\
+                  pub fn tag () -> Int =\n\
+                  \x20 match Guest\n\
+                  \x20     Admin -> 1\n\
+                  \x20     Guest -> 2\n\
+                  \x20     _ -> 3\n\
+                  \n\
+                  @test \"tag picks the matching arm\"\n\
+                  pub fn tagIsTwo () -> Result Unit Text =\n\
+                  \x20 if tag () == 2 then Ok () else Err \"expected 2\"\n";
+    let tw = make_test_workspace("Warned", source);
+
+    let output = ridge_cmd()
+        .arg("test")
+        .current_dir(&tw.path)
+        .output()
+        .expect("ridge test spawn failed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let both = format!("{stdout}{stderr}");
+
+    assert_eq!(
+        both.matches("T017").count(),
+        1,
+        "the warning must be reported exactly once across both pipeline \
+         passes.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    if output.status.success() {
+        assert!(
+            stdout.contains("1 passed"),
+            "the suite must run despite the warning, got: {stdout}"
+        );
+    }
+}

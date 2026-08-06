@@ -74,7 +74,7 @@ use std::process;
 use std::time::Instant;
 
 use clap::Parser;
-use ridge_diagnostics::Diagnostic;
+use ridge_diagnostics::{Diagnostic, Severity};
 use ridge_driver::{compile_workspace, CompileOptions, WorkspaceSourceCache};
 
 use crate::error::CliError;
@@ -380,7 +380,11 @@ impl ReplSession {
         let opts = CompileOptions::new(self.workspace_root.clone());
         match compile_workspace(opts) {
             Ok(artefacts) => {
-                if !artefacts.diagnostics.is_empty() {
+                if artefacts
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.severity == Severity::Error)
+                {
                     return Err(CompileError::Diagnostics(
                         artefacts.diagnostics,
                         artefacts.sources,
@@ -394,7 +398,11 @@ impl ReplSession {
                     .and_then(|s| s.to_str())
                     .unwrap_or("ridge_module_0")
                     .to_owned();
-                Ok(CompileResult { beam_module })
+                Ok(CompileResult {
+                    beam_module,
+                    warnings: artefacts.diagnostics,
+                    sources: artefacts.sources,
+                })
             }
             Err(e) => Err(CompileError::Driver(e.to_string())),
         }
@@ -407,6 +415,12 @@ impl ReplSession {
 struct CompileResult {
     /// BEAM module name (file stem, e.g. `ridge_module_0`).
     beam_module: String,
+    /// Warnings the snippet raised. Printed before its value, so a line that
+    /// merely deserves a remark still gives the reader the answer they typed
+    /// for.
+    warnings: Vec<Diagnostic>,
+    /// Source cache the warnings point into.
+    sources: WorkspaceSourceCache,
 }
 
 /// Error during REPL compilation.
@@ -503,6 +517,8 @@ pub fn execute(_args: &ReplArgs, _cwd: &Path) -> Result<(), CliError> {
 
         match session.compile_expr(&module_src) {
             Ok(result) => {
+                // Warnings first, then the value they were about.
+                render_diagnostics(&result.warnings, &result.sources);
                 // Run the compiled expression via the REPL runner.
                 run_repl_expr(
                     &erl_path,

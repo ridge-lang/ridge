@@ -77,7 +77,7 @@ use ridge_manifest::{find_workspace_root, parse_project, parse_workspace, Projec
 use ridge_resolve::discover_workspace;
 
 use crate::error::CliError;
-use crate::render::render_diagnostics;
+use crate::render::report_diagnostics;
 
 // ── Argument structs ─────────────────────────────────────────────────────────
 
@@ -847,8 +847,7 @@ fn compile_and_locate_driver(
         message: format!("compile failed: {e}"),
     })?;
 
-    if !artefacts.diagnostics.is_empty() {
-        render_diagnostics(&artefacts.diagnostics, &artefacts.sources);
+    if report_diagnostics(&artefacts.diagnostics, &artefacts.sources, false).fatal() {
         return Err(CliError::MigrateCompileFailed);
     }
     if artefacts.beam_files.is_empty() {

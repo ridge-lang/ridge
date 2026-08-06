@@ -63,7 +63,7 @@ pub struct LowerCtx<'tw> {
     ///
     /// Pushed when entering an `Option`/`Result`-returning scope; popped on
     /// exit.  An empty stack when a `?` operator is encountered triggers a
-    /// defensive [`LowerError::PropagateOutsideScope`] (L003) (§4.2/§4.3).
+    /// defensive [`LowerError::PropagateOutsideScope`] (L103) (§4.2/§4.3).
     pub propagation_scope_stack: Vec<Type>,
     /// `true` when the lowerer is inside an actor handler or `init` body.
     ///
@@ -731,7 +731,7 @@ impl<'tw> LowerCtx<'tw> {
     ///
     /// Returns `Some(ty)` if a scope was active, or `None` if the stack was
     /// already empty.  The caller is responsible for emitting
-    /// [`LowerError::PropagateOutsideScope`] (L003) when `None` is returned.
+    /// [`LowerError::PropagateOutsideScope`] (L103) when `None` is returned.
     pub fn pop_propagation_scope(&mut self) -> Option<Type> {
         self.propagation_scope_stack.pop()
     }

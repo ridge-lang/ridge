@@ -15,7 +15,7 @@
 //! or `node_types` slot is `None`) `Type::Error` is pushed as the scope sentinel —
 //! any `?` inside will then fall through to its `InternalLoweringError` arm.
 //!
-//! An empty block body emits `L005` (`EmptyTryBlock`) and returns a `Unit` stub
+//! An empty block body emits `L105` (`EmptyTryBlock`) and returns a `Unit` stub
 //! without touching the scope stack.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -43,7 +43,7 @@ use crate::error::LowerError;
 /// Never panics on any input — all error paths push a diagnostic and return a
 /// structurally valid `IrExpr`.
 pub fn lower_try(ctx: &mut LowerCtx<'_>, block: &Block, span: Span) -> IrExpr {
-    // ── L005: empty block (defensive) ────────────────────────────────────────
+    // ── L105: empty block (defensive) ────────────────────────────────────────
     if block.stmts.is_empty() {
         ctx.errors.push(LowerError::EmptyTryBlock { span });
         let id = ctx.fresh_id(None);
@@ -145,7 +145,7 @@ mod tests {
 
         let ir = lower_try(&mut ctx, &block, span);
 
-        // No L005 error.
+        // No L105 error.
         assert!(
             ctx.errors.is_empty(),
             "expected no errors; got: {:?}",
@@ -172,7 +172,7 @@ mod tests {
     // Construct an Expr::Try whose block contains a Propagate.  We manually
     // pre-inject the propagation scope via push_propagation_scope before calling
     // lower_try (simulating what the node_id_map path would resolve).  We verify
-    // that the lowered IR is an IrExpr::Match (the ? output) and no L003 is emitted.
+    // that the lowered IR is an IrExpr::Match (the ? output) and no L103 is emitted.
 
     #[test]
     fn try_block_with_inner_propagate_sees_scope() {
@@ -192,7 +192,7 @@ mod tests {
         // Pop the scope manually (simulating try block exit).
         ctx.pop_propagation_scope();
 
-        // No L003 error — the ? saw the scope.
+        // No L103 error — the ? saw the scope.
         assert!(
             ctx.errors.is_empty(),
             "expected no errors; got: {:?}",
@@ -209,10 +209,10 @@ mod tests {
         assert!(ctx.current_propagation_scope().is_none());
     }
 
-    // ── T7-try-3: empty try {} → L005 + Unit stub ────────────────────────────
+    // ── T7-try-3: empty try {} → L105 + Unit stub ────────────────────────────
 
     #[test]
-    fn try_block_empty_emits_l005() {
+    fn try_block_empty_emits_l105() {
         let mut ctx = fresh_ctx();
         let span = sp();
         let block = Block {
@@ -228,7 +228,7 @@ mod tests {
             "expected exactly 1 error; got: {:?}",
             ctx.errors
         );
-        assert_eq!(ctx.errors[0].code(), "L005");
+        assert_eq!(ctx.errors[0].code(), "L105");
 
         match ir {
             IrExpr::Lit {
@@ -248,7 +248,7 @@ mod tests {
     //
     // lower_try pushes whatever resolve_block_type returns. When node_id_map is
     // absent it returns Type::Error. We verify the scope is still popped cleanly
-    // and no L005 is emitted for a non-empty block.
+    // and no L105 is emitted for a non-empty block.
 
     #[test]
     fn try_block_scope_always_popped_even_with_error_type() {
@@ -259,9 +259,9 @@ mod tests {
         // With no node_id_map, resolve_block_type → Type::Error.
         let _ir = lower_try(&mut ctx, &block, span);
 
-        // No L005 (non-empty block).
-        let l005_count = ctx.errors.iter().filter(|e| e.code() == "L005").count();
-        assert_eq!(l005_count, 0, "no L005 expected for non-empty block");
+        // No L105 (non-empty block).
+        let l105_count = ctx.errors.iter().filter(|e| e.code() == "L105").count();
+        assert_eq!(l105_count, 0, "no L105 expected for non-empty block");
 
         // Scope popped regardless of type.
         assert!(
@@ -270,15 +270,15 @@ mod tests {
         );
     }
 
-    // ── T7-try-5: lower_try with multi-stmt block — scope popped, no L005 ──────
+    // ── T7-try-5: lower_try with multi-stmt block — scope popped, no L105 ──────
     //
-    // Verify that a multi-statement try block lowers without L005 and the scope
+    // Verify that a multi-statement try block lowers without L105 and the scope
     // is correctly popped.  resolve_block_type currently returns Type::Error
     // (NodeKind::Block is not yet in the NodeKind enum), so any inner `?` would
     // hit L999 — but this test has no inner `?`, so no error is expected.
 
     #[test]
-    fn try_block_multi_stmt_no_l005_scope_popped() {
+    fn try_block_multi_stmt_no_l105_scope_popped() {
         let mut ctx = fresh_ctx();
         let span = sp_at(0, 20);
         let block = Block {
@@ -288,9 +288,9 @@ mod tests {
 
         let ir = lower_try(&mut ctx, &block, span);
 
-        // No L005 for non-empty block.
-        let l005_count = ctx.errors.iter().filter(|e| e.code() == "L005").count();
-        assert_eq!(l005_count, 0, "no L005 expected for multi-stmt block");
+        // No L105 for non-empty block.
+        let l105_count = ctx.errors.iter().filter(|e| e.code() == "L105").count();
+        assert_eq!(l105_count, 0, "no L105 expected for multi-stmt block");
 
         // Scope popped.
         assert!(

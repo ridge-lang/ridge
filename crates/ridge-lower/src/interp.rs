@@ -20,7 +20,7 @@
 //!
 //! The inner expression's type is looked up from `ctx.node_types` by `NodeId`.
 //! Because `node_types` is populated by Phase 4 which is deferred,
-//! type information may be absent.  When absent, `L007 ToTextLowering` is
+//! type information may be absent.  When absent, `L107 ToTextLowering` is
 //! emitted defensively and the raw `inner` is returned unwrapped.
 //!
 //! The closed `ToText` set maps `TyConId` to stdlib module:
@@ -36,7 +36,7 @@
 //! | 52      | `Uuid`        | `std.uuid.toText`    |
 //!
 //! `Type::Error` is absorbing — no wrapper, no diagnostic.
-//! Any other type → `L007`, inner returned unwrapped.
+//! Any other type → `L107`, inner returned unwrapped.
 //!
 //! # Spec §7.1 left-to-right evaluation
 //!
@@ -53,7 +53,7 @@
 //!   `[Text "", Expr a, Text "", Expr b, Text ""]`; the fold naturally
 //!   produces `((("" ++ a) ++ "") ++ b) ++ ""`.  Empty strings are NOT
 //!   elided — backends or Phase 7 may optimise.
-//! - **`Type::Error` hole:** absorbing — inner returned as-is, no L007.
+//! - **`Type::Error` hole:** absorbing — inner returned as-is, no L107.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![cfg_attr(
@@ -169,7 +169,7 @@ fn lower_part(ctx: &mut LowerCtx<'_>, part: &InterpPart, _span: Span) -> IrExpr 
             // Look up the type of this expression from the node_types side-table.
             // The lookup is by NodeId, which is stored in the node_types Vec
             // indexed by NodeId.0.  When node_types is empty (T17 deferred),
-            // the lookup returns None and we emit L007 defensively.
+            // the lookup returns None and we emit L107 defensively.
             // Clone the type before the mutable borrow by `wrap_to_text`.
             let ty = lookup_expr_type(ctx, expr);
             wrap_to_text(ctx, inner, ty, *expr_span)
@@ -195,7 +195,7 @@ fn lookup_expr_type(ctx: &LowerCtx<'_>, expr: &Expr) -> Option<Type> {
 /// Wrap `inner` in a `Call(stdlib::toText, [inner])` for the appropriate
 /// built-in type, or return `inner` unchanged for `Text` / `Error` / unknown.
 ///
-/// Emits `L007 ToTextLowering` when the type is non-`Error` and not in the
+/// Emits `L107 ToTextLowering` when the type is non-`Error` and not in the
 /// closed `ToText` set.
 ///
 /// `ty` is cloned from `ctx.node_types` before this call (required to release
@@ -272,7 +272,7 @@ fn wrap_to_text(ctx: &mut LowerCtx<'_>, inner: IrExpr, ty: Option<Type>, span: S
         // O(1) lookup replaces the old AST scan and fixes the three limitations
         // of that approach: it works for types without a `def_module_raw` (e.g.
         // stdlib/builtin types), in unit-test contexts where the workspace is
-        // absent (falls through to L007 gracefully), and at O(1) cost per site.
+        // absent (falls through to L107 gracefully), and at O(1) cost per site.
         Some(Type::Con(tycon_id, _)) => {
             if let Some(call) = try_instance_to_text(ctx, &inner, tycon_id, span) {
                 call
@@ -283,7 +283,7 @@ fn wrap_to_text(ctx: &mut LowerCtx<'_>, inner: IrExpr, ty: Option<Type>, span: S
         }
 
         // ── Type not available or not in closed set ───────────────────────────
-        // When None: node_types is empty; emit L007 defensively and pass
+        // When None: node_types is empty; emit L107 defensively and pass
         // inner through.  The type-checker guarantees this cannot fire on valid input.
         None | Some(_) => {
             ctx.errors.push(LowerError::ToTextLowering { span });
@@ -297,7 +297,7 @@ fn wrap_to_text(ctx: &mut LowerCtx<'_>, inner: IrExpr, ty: Option<Type>, span: S
 ///
 /// Returns `Some(Call)` when the registry has a `ToText` entry for `tycon_id`;
 /// `None` when the registry is unavailable (unit tests without the full
-/// pipeline) or no instance is registered. The caller emits `L007` on the
+/// pipeline) or no instance is registered. The caller emits `L107` on the
 /// `None` branch.
 ///
 /// Every instance — explicit, derived, or auto-promoted (`pub fn toText (x: T)
@@ -655,7 +655,7 @@ mod tests {
         let parts = vec![text_part("a"), text_part("b")];
         let ir = lower_interp_full(&mut ctx, &parts, sp());
 
-        // Errors: we get L007 for the Text part but wait — Text parts are
+        // Errors: we get L107 for the Text part but wait — Text parts are
         // *literals*, not expr holes, so no ToText dispatch is needed.
         // Both parts are Text — no errors expected.
         assert!(
@@ -979,14 +979,14 @@ mod tests {
         }
     }
 
-    // ── T9-i-8: Type::Error hole is absorbing — no wrapper, no L007 ──────────
+    // ── T9-i-8: Type::Error hole is absorbing — no wrapper, no L107 ──────────
     #[test]
     fn error_type_hole_is_absorbing() {
         let mut ctx = ctx_with_type_at(0, Type::Error);
         let parts = vec![expr_part(int_expr())];
         let ir = lower_interp_full(&mut ctx, &parts, sp());
 
-        // No L007 for Error type — absorbing semantics.
+        // No L107 for Error type — absorbing semantics.
         assert!(
             ctx.errors.is_empty(),
             "expected no errors for Type::Error; got: {:?}",
@@ -999,11 +999,11 @@ mod tests {
         }
     }
 
-    // ── T9-i-9: Unknown type emits L007 ──────────────────────────────────────
+    // ── T9-i-9: Unknown type emits L107 ──────────────────────────────────────
     //
     // Uses a TyConId not in the closed set (e.g. List = TyConId(6)).
     #[test]
-    fn unknown_type_emits_l007() {
+    fn unknown_type_emits_l107() {
         let list_tycon = TyConId(6);
         let mut ctx = ctx_with_type_at(0, Type::Con(list_tycon, vec![]));
         let parts = vec![expr_part(int_expr())];
@@ -1012,10 +1012,10 @@ mod tests {
         assert_eq!(
             ctx.errors.len(),
             1,
-            "expected 1 L007 error; got: {:?}",
+            "expected 1 L107 error; got: {:?}",
             ctx.errors
         );
-        assert_eq!(ctx.errors[0].code(), "L007");
+        assert_eq!(ctx.errors[0].code(), "L107");
     }
 
     // ── T9-i-10: R3 — left-fold side-effect order (§7.1) ─────────────────────
@@ -1075,10 +1075,10 @@ mod tests {
             text_part(""),
         ];
 
-        let mut ctx = fresh_ctx(); // no node_types — L007 will fire for expr holes
+        let mut ctx = fresh_ctx(); // no node_types — L107 will fire for expr holes
         let ir = lower_interp_full(&mut ctx, &parts, sp());
 
-        // There will be L007 errors for both expr holes (node_types is empty).
+        // There will be L107 errors for both expr holes (node_types is empty).
         // What we care about is the STRUCTURE: left-fold nesting.
         //
         // The outermost node must be concat(something, "").

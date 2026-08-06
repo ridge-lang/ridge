@@ -34,7 +34,7 @@
 //! ## Bare `Guard` outside block context
 //!
 //! When `lower_expr` encounters `Expr::Guard` directly (not via the block fold)
-//! it emits `L006 BareGuardExpr` and returns a `Unit` literal.
+//! it emits `L106 BareGuardExpr` and returns a `Unit` literal.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![cfg_attr(
@@ -121,7 +121,7 @@ pub fn lower_guard_final(
 /// Lower a bare `Guard` expression encountered outside any block context.
 ///
 /// This is a Phase 4 invariant violation: `guard` is a block-level statement
-/// and should never reach `lower_expr` directly.  Emits `L006 BareGuardExpr`
+/// and should never reach `lower_expr` directly.  Emits `L106 BareGuardExpr`
 /// and returns `IrExpr::Lit { Unit }` so the surrounding expression tree
 /// remains structurally valid.
 pub fn lower_guard_bare(ctx: &mut LowerCtx<'_>, span: Span) -> IrExpr {
@@ -432,22 +432,22 @@ mod tests {
         }
     }
 
-    // ── T8-g-5: bare guard outside block context emits L006 ──────────────────
+    // ── T8-g-5: bare guard outside block context emits L106 ──────────────────
     #[test]
-    fn bare_guard_emits_l006() {
+    fn bare_guard_emits_l106() {
         let mut ctx = fresh_ctx();
         let span = sp_at(5, 15);
 
         let ir = lower_guard_bare(&mut ctx, span);
 
-        // Must emit exactly one L006 error.
+        // Must emit exactly one L106 error.
         assert_eq!(
             ctx.errors.len(),
             1,
-            "expected 1 L006 error; got: {:?}",
+            "expected 1 L106 error; got: {:?}",
             ctx.errors
         );
-        assert_eq!(ctx.errors[0].code(), "L006");
+        assert_eq!(ctx.errors[0].code(), "L106");
         assert_eq!(ctx.errors[0].span(), span);
 
         // Must return Unit stub.

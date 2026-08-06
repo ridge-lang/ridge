@@ -434,14 +434,6 @@ impl fmt::Display for TypeError {
                 )
             }
 
-            // ── P029 ──────────────────────────────────────────────────────────
-            Self::InlineRecordTyVarField { var_name, .. } => {
-                write!(
-                    f,
-                    "P029: inline record type may not reference a type variable\n  type variable `{var_name}` used inside an inline record type\n  note: parametric inline record types are not supported in this version\n  help: give this record a name and use the named type as the field type"
-                )
-            }
-
             // ── T031 ──────────────────────────────────────────────────────────
             Self::OrphanInstance {
                 class,
@@ -756,7 +748,6 @@ impl HasErrorCode for TypeError {
             | Self::AskTimeoutNotInt { span, .. }
             | Self::MailboxPolicyDropOldestNotShipped { span, .. }
             | Self::IncompleteRecordPattern { span, .. }
-            | Self::InlineRecordTyVarField { span, .. }
             | Self::NoInstance { span, .. }
             | Self::AmbiguousConstraint { span, .. }
             | Self::OrphanInstance { span, .. }

@@ -292,8 +292,10 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
     // `BridgeTarget::RidgeStdlibLocal` callers (e.g. `call 'std.list':head(1)`)
     // can find their BEAM modules at runtime.
     //
-    // Idempotent: skipped when `std.list.beam` already exists in the beam dir,
-    // which covers incremental rebuilds and repeated `ridge test` runs.
+    // Idempotent: skipped when the emitted set is complete, written by this
+    // compiler version, and no older than the compiler binary — which covers
+    // incremental rebuilds and repeated `ridge test` runs without treating one
+    // file as proof of the whole standard library.
     //
     // Only runs when `invoke_erlc` is true — `.core`-only builds do not need
     // the stdlib on the BEAM code path.
@@ -550,7 +552,8 @@ fn describe_stdlib_bundle_failure(e: &ridge_codegen_erl::CodegenError) -> String
 /// per-build tempdir, not read from a compile-time path. Released binaries are
 /// therefore independent of the absolute layout of the machine that built them.
 ///
-/// Idempotent: returns early if `beam_dir/std.list.beam` already exists.
+/// Idempotent, but on the whole emitted set rather than on one file of it — see
+/// [`stdlib_beams_are_current`].
 ///
 /// The stdlib compilation lives in the user-facing build pipeline
 /// (`compile_workspace`), NOT in a test-only harness shim.
@@ -565,8 +568,7 @@ fn compile_stdlib_beams(
     out_root: &std::path::Path,
     profile: BuildProfile,
 ) -> Result<(), ridge_codegen_erl::CodegenError> {
-    // Idempotency check: if `std.list.beam` already exists, stdlib is compiled.
-    if beam_dir.join("std.list.beam").exists() {
+    if stdlib_beams_are_current(beam_dir, out_root) {
         return Ok(());
     }
 
@@ -675,6 +677,8 @@ fn compile_stdlib_beams(
     // Compile each stdlib module with its FQN as the BEAM atom.
     // Skip `.test.ridge` modules (FQN contains ".test") — test files are not
     // distributable stdlib modules.
+    let compiler_mtime = compiler_mtime();
+    let mut emitted: Vec<String> = Vec::new();
     for slot in &lowered.modules {
         let Some(m) = slot else { continue };
         let fqn = match fqn_map.get(&m.id) {
@@ -688,9 +692,11 @@ fn compile_stdlib_beams(
         if fqn.contains(".test") && fqn != "std.test" {
             continue;
         }
-        // Skip if this module's .beam already exists (idempotent at module level).
+        emitted.push(fqn.clone());
+        // Skip if this module's .beam is already there and not older than the
+        // compiler that would write it.
         let beam_path = beam_dir.join(format!("{fqn}.beam"));
-        if beam_path.exists() {
+        if beam_is_current(&beam_path, compiler_mtime) {
             continue;
         }
         // Compile the module with its FQN as the BEAM atom.
@@ -699,7 +705,106 @@ fn compile_stdlib_beams(
         // (No move needed — out_root/beam IS beam_dir per compile_workspace convention.)
     }
 
+    // Record what the set is, so the next build can tell a complete one from a
+    // partial one without recompiling to find out.
+    write_stdlib_manifest(out_root, &emitted);
+
     Ok(())
+}
+
+/// Name of the file recording which stdlib modules were emitted, and by which
+/// compiler.
+const STDLIB_MANIFEST: &str = ".stdlib-manifest";
+
+/// Where the manifest lives, next to `beam/` under the build root.
+fn stdlib_manifest_path(out_root: &std::path::Path) -> std::path::PathBuf {
+    out_root.join(STDLIB_MANIFEST)
+}
+
+/// Modification time of the running compiler, when it can be determined.
+///
+/// The stdlib sources are embedded in the binary rather than read from disk, so
+/// there is no source file to compare a `.beam` against. The executable holding
+/// those sources is the closest thing: a build that produced new embedded
+/// sources also produced a newer binary. `None` means the question cannot be
+/// answered, and every caller then treats the artefact as current rather than
+/// recompiling the standard library on every single build.
+fn compiler_mtime() -> Option<std::time::SystemTime> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .and_then(|m| m.modified().ok())
+}
+
+/// Whether one emitted `.beam` is present and not older than the compiler.
+fn beam_is_current(
+    beam_path: &std::path::Path,
+    compiler_mtime: Option<std::time::SystemTime>,
+) -> bool {
+    let Ok(meta) = std::fs::metadata(beam_path) else {
+        return false;
+    };
+    let (Some(compiler), Ok(beam)) = (compiler_mtime, meta.modified()) else {
+        // Either the compiler's own timestamp or the artefact's is unavailable.
+        // The file exists, which is as much as can be established here.
+        return true;
+    };
+    beam >= compiler
+}
+
+/// Whether the emitted standard library in `beam_dir` can be reused as it is.
+///
+/// The previous test was whether `std.list.beam` existed, which treated one file
+/// as proof of the whole set. A build directory holding an older or partial
+/// stdlib was then never repaired: `check` passed, `build` reported success, and
+/// the program died at run time on a stdlib function that was simply not there.
+///
+/// Reuse now requires all three of:
+///
+/// - a manifest, written by the emit pass that produced the set,
+/// - written by this same compiler version, and
+/// - every module it names present, and no older than the compiler binary.
+///
+/// The version line catches a stdlib that gained or lost a module between
+/// releases. The per-module timestamp catches a set that is complete but stale —
+/// rebuilding the compiler over edited stdlib sources leaves every `.beam` in
+/// place, and without this the edit never reaches an existing build directory.
+/// Anything short of all three falls through to the emit pass, which is itself
+/// per-module and so recompiles only what is actually out of date.
+fn stdlib_beams_are_current(beam_dir: &std::path::Path, out_root: &std::path::Path) -> bool {
+    let Ok(manifest) = std::fs::read_to_string(stdlib_manifest_path(out_root)) else {
+        return false;
+    };
+    let mut lines = manifest.lines();
+    if lines.next() != Some(env!("CARGO_PKG_VERSION")) {
+        return false;
+    }
+    let compiler = compiler_mtime();
+    let mut any = false;
+    for fqn in lines.filter(|l| !l.trim().is_empty()) {
+        any = true;
+        if !beam_is_current(&beam_dir.join(format!("{fqn}.beam")), compiler) {
+            return false;
+        }
+    }
+    // A manifest naming nothing is not evidence of a compiled stdlib.
+    any
+}
+
+/// Record the emitted module set beside `beam/`.
+///
+/// Best effort: a build directory that cannot hold the manifest still holds a
+/// correct standard library, and the only cost of losing it is that the next
+/// build recompiles. Failing the build over it would trade a real artefact for
+/// a bookkeeping file.
+fn write_stdlib_manifest(out_root: &std::path::Path, emitted: &[String]) {
+    let mut body = String::from(env!("CARGO_PKG_VERSION"));
+    for fqn in emitted {
+        body.push('\n');
+        body.push_str(fqn);
+    }
+    body.push('\n');
+    let _ = std::fs::write(stdlib_manifest_path(out_root), body);
 }
 
 /// Map a driver [`Profile`] to a codegen [`BuildProfile`].

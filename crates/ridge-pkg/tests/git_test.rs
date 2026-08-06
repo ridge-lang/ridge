@@ -139,7 +139,7 @@ fn git_happy_path_tag() {
     assert!(warnings.is_empty(), "tag dep should emit no warnings");
 }
 
-/// Test 2: branch clone emits the P004 floating-branch advisory.
+/// Test 2: branch clone emits the P204 floating-branch advisory.
 #[test]
 fn git_happy_path_branch_emits_floating_warning() {
     let src_tmp = TempDir::new().unwrap();
@@ -153,8 +153,8 @@ fn git_happy_path_branch_emits_floating_warning() {
         ridge_pkg::git::resolve_git_dep("branchlib", &url, &rev, cache_tmp.path())
             .expect("branch clone should succeed");
 
-    assert_eq!(warnings.len(), 1, "expected exactly one P004 warning");
-    assert_eq!(warnings[0].code(), "P004");
+    assert_eq!(warnings.len(), 1, "expected exactly one P204 warning");
+    assert_eq!(warnings[0].code(), "P204");
     assert!(
         matches!(
             &warnings[0],
@@ -168,9 +168,9 @@ fn git_happy_path_branch_emits_floating_warning() {
     );
 }
 
-/// Test 3: requesting a non-existent tag returns P007.
+/// Test 3: requesting a non-existent tag returns P207.
 #[test]
-fn git_missing_tag_returns_p007() {
+fn git_missing_tag_returns_p207() {
     let src_tmp = TempDir::new().unwrap();
     let bare = make_bare_repo_with_tag(&src_tmp, "somelib", "v1.0");
     let url = file_url(&bare);
@@ -180,11 +180,11 @@ fn git_missing_tag_returns_p007() {
 
     let err = ridge_pkg::git::resolve_git_dep("somelib", &url, &rev, cache_tmp.path()).unwrap_err();
 
-    assert_eq!(err.code(), "P007", "expected P007, got: {err}");
+    assert_eq!(err.code(), "P207", "expected P207, got: {err}");
 }
 
-/// Test 4: a URL that is syntactically valid but not a real repo returns P007
-/// or P001 (network-level failure against a file:// URL that does not exist).
+/// Test 4: a URL that is syntactically valid but not a real repo returns P207
+/// or P201 (network-level failure against a file:// URL that does not exist).
 #[test]
 fn git_malformed_url_returns_error() {
     let cache_tmp = TempDir::new().unwrap();
@@ -198,16 +198,16 @@ fn git_malformed_url_returns_error() {
     )
     .unwrap_err();
 
-    // P001 (network unreachable) or P007 (not found) — both are acceptable.
+    // P201 (network unreachable) or P207 (not found) — both are acceptable.
     assert!(
-        err.code() == "P001" || err.code() == "P007",
-        "expected P001 or P007, got: {err}"
+        err.code() == "P201" || err.code() == "P207",
+        "expected P201 or P207, got: {err}"
     );
 }
 
-/// Test 5: SSH URL is rejected immediately with P003.
+/// Test 5: SSH URL is rejected immediately with P203.
 #[test]
-fn git_ssh_url_returns_p003() {
+fn git_ssh_url_returns_p203() {
     let cache_tmp = TempDir::new().unwrap();
     let rev = ridge_manifest::GitRev::Tag("v1.0".to_owned());
 
@@ -219,7 +219,7 @@ fn git_ssh_url_returns_p003() {
     )
     .unwrap_err();
 
-    assert_eq!(err.code(), "P003", "expected P003, got: {err}");
+    assert_eq!(err.code(), "P203", "expected P203, got: {err}");
 }
 
 /// Test 6: dependency cycle detection via path-resolver (A → B → A).
@@ -229,7 +229,7 @@ fn git_ssh_url_returns_p003() {
 /// cycle-detection code is shared between path and git resolvers (same
 /// `visited` set in `resolver.rs`).
 #[test]
-fn git_dependency_cycle_returns_p006() {
+fn git_dependency_cycle_returns_p206() {
     let tmp = TempDir::new().unwrap();
 
     // Layout: <tmp>/a/  and  <tmp>/b/  — a depends on b, b depends on a.
@@ -307,7 +307,7 @@ members = ["a", "b"]
     let a_canonical = a_dir.canonicalize().unwrap();
     visited.insert(("a".to_owned(), a_canonical));
 
-    // Attempt to resolve a's dep on b — but b is already in visited → P006.
+    // Attempt to resolve a's dep on b — but b is already in visited → P206.
     // We call path::resolve_path_dep to get the actual dep dir, then check
     // visited manually (mirroring what resolver.rs does).
     let (b_resolved_root, _) =
@@ -320,13 +320,13 @@ members = ["a", "b"]
     );
 }
 
-/// Test 7: git version too old returns P008.
+/// Test 7: git version too old returns P208.
 ///
 /// We inject a fake `git` that prints `git version 2.10.0` by using a shim
 /// script prepended to PATH, then call the internal version-checker directly
 /// to avoid the full environment manipulation complexity.
 #[test]
-fn git_version_too_old_returns_p008() {
+fn git_version_too_old_returns_p208() {
     let err = ridge_pkg::git::parse_and_check_version("git version 2.10.0").unwrap_err();
-    assert_eq!(err.code(), "P008", "expected P008, got: {err}");
+    assert_eq!(err.code(), "P208", "expected P208, got: {err}");
 }

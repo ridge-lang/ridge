@@ -101,16 +101,16 @@ fn path_resolves_absolute_path() {
     assert_eq!(manifest.name, "abslib");
 }
 
-/// Test 6 (Issue #1): transitive cycle A → B → A returns P006.
+/// Test 6 (Issue #1): transitive cycle A → B → A returns P206.
 ///
 /// Two manifests in a tempdir:
 /// - A's `ridge.toml` lists a path dep on B.
 /// - B's `ridge.toml` lists a path dep on A.
 ///
 /// Calling `resolve_dependencies` on A must detect the transitive cycle and
-/// return `P006 PkgDependencyCycle`.
+/// return `P206 PkgDependencyCycle`.
 #[test]
-fn transitive_cycle_a_b_a_returns_p006() {
+fn transitive_cycle_a_b_a_returns_p206() {
     let tmp = TempDir::new().unwrap();
 
     let a_dir = tmp.path().join("a");
@@ -169,13 +169,13 @@ members = ["a", "b"]
 
     let result = ridge_pkg::resolve_dependencies(&workspace, &a_manifest, cache_tmp.path());
     let Err(err) = result else {
-        panic!("expected Err(P006) for transitive cycle A→B→A, got Ok")
+        panic!("expected Err(P206) for transitive cycle A→B→A, got Ok")
     };
 
     assert_eq!(
         err.code(),
-        "P006",
-        "expected P006 for transitive cycle A→B→A, got: {err}"
+        "P206",
+        "expected P206 for transitive cycle A→B→A, got: {err}"
     );
 }
 

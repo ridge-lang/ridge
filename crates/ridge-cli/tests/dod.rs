@@ -255,13 +255,16 @@ fn dod_hot_reload_doc_exists() {
 fn a_code_carrying_error_prints_its_code_first() {
     use ridge_cli::error::{CliError, CliWarning};
 
+    // Exhaustive coverage of `CliError` lives in the crate's own unit tests,
+    // where `#[non_exhaustive]` does not block a wildcard-free match. What is
+    // worth re-checking from outside is that the codes survive the public API.
     let cases: Vec<CliError> = vec![
-        CliError::NoWorkspaceRoot,
+        CliError::no_workspace_root(Path::new("ws")),
         CliError::UnknownMember { name: "x".into() },
         CliError::NoExecutableMember,
         CliError::WatchAmbiguousMember,
-        CliError::MigrateErlangNotFound,
         CliError::MigrateCompileFailed,
+        CliError::WatchStateCorrupted,
     ];
     for e in cases {
         let code = e.code().expect("these variants all carry a code");
@@ -290,4 +293,85 @@ fn a_code_carrying_error_prints_its_code_first() {
             "an advisory opens with `warning: <code>`, got: {text}"
         );
     }
+}
+
+// ── C001 means one thing ─────────────────────────────────────────────────────
+
+/// `C001` is reported only where a workspace root was actually looked for.
+///
+/// It used to be the enum's junk drawer: seventeen call sites returned it when
+/// the file watcher would not start, a child would not spawn, a lock was
+/// poisoned, or `erl` was missing. Most printed the real cause first, so
+/// `ridge repl` on a machine without OTP said `C004 ErlangNotFound` and then
+/// `C001 NoWorkspaceRoot` about a workspace that was sitting right there.
+///
+/// The failure was never that anyone wanted to report `C001`. It was that a
+/// closure needed *some* `CliError` and that variant took no fields. It now
+/// carries the directory it searched, so building one means saying what was
+/// looked for and where — but a constructor is still cheaper to call than to
+/// think about, and the type system has nothing to say about that.
+#[test]
+fn c001_is_only_constructed_where_a_workspace_root_was_sought() {
+    /// Every `.rs` file under `root`, recursively.
+    fn rust_sources(root: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        let Ok(entries) = fs::read_dir(root) else {
+            return out;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                out.extend(rust_sources(&path));
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                out.push(path);
+            }
+        }
+        out
+    }
+
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut offenders: Vec<String> = Vec::new();
+    let mut found = 0_usize;
+
+    for file in rust_sources(&src) {
+        // `error.rs` declares the enum and samples every variant in its own
+        // unit tests. Counting those as call sites is how a check like this
+        // reports its own fixtures as the problem.
+        if file.file_name().and_then(|n| n.to_str()) == Some("error.rs") {
+            continue;
+        }
+        let body = fs::read_to_string(&file).expect("read source");
+        let lines: Vec<&str> = body.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains("no_workspace_root") || line.trim_start().starts_with("//") {
+                continue;
+            }
+            found += 1;
+            // The construction and the search that justifies it are written
+            // together — `find_workspace_root(..).ok_or(..)` — but the call can
+            // wrap onto an earlier line, so look back a few.
+            let from = i.saturating_sub(3);
+            let window = lines[from..=i].join("\n");
+            if !window.contains("find_workspace_root") {
+                offenders.push(format!(
+                    "{}:{}: {}",
+                    file.file_name().unwrap_or_default().to_string_lossy(),
+                    i + 1,
+                    line.trim()
+                ));
+            }
+        }
+    }
+
+    assert!(
+        found > 0,
+        "no `CliError::no_workspace_root` sites found — this test stopped checking anything"
+    );
+    assert!(
+        offenders.is_empty(),
+        "`C001` says no workspace manifest was found. These sites return it for \
+         something else; give the real failure its own code, or return \
+         `CliError::AlreadyReported` if its cause is already on stderr:\n  {}",
+        offenders.join("\n  ")
+    );
 }

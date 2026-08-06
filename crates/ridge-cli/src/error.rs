@@ -1,10 +1,23 @@
-//! CLI-level error codes (`C005`–`C007a`) not covered by `ridge-driver`.
+//! CLI-level error codes not covered by `ridge-driver`.
 //!
 //! These errors are raised by `ridge-cli` before or after handing off to the
 //! driver, when the CLI detects a structural problem in the workspace or the
 //! user's invocation.
+//!
+//! The CLI owns `C005`–`C008`, `C011`, `C102`–`C105`, `C201`–`C205`,
+//! `C301`–`C304`, `C401`, `C403`–`C409` and `C501`–`C505`. It does not own
+//! `C001` or the runtime-launch codes: those are the driver's, and
+//! [`CliError`] forwards them rather than restating them, because a code
+//! restated in a second crate is a code with a second wording.
+//!
+//! `C402` is retired. It said "erl and erlc must be on PATH to run `ridge
+//! migrate add`", which is `C004` with a different number and without naming
+//! which of the two binaries was actually missing.
 
 use std::fmt;
+use std::path::{Path, PathBuf};
+
+use ridge_driver::{ToolchainError, WorkspaceError};
 
 // ── CLI error enum ────────────────────────────────────────────────────────────
 
@@ -14,8 +27,14 @@ use std::fmt;
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum CliError {
-    /// `C001` — no workspace root found at or above the current directory.
-    NoWorkspaceRoot,
+    /// The workspace could not be read — `C001`, `C002` or `C003`.
+    ///
+    /// Forwarded from the driver, which owns these codes. The CLI used to
+    /// declare its own field-free `C001`, which said "at or above the current
+    /// directory" where the driver's names the directory it searched. Two
+    /// wordings for one code, and a variant so cheap to build that seventeen
+    /// unrelated failures reached for it when they needed *some* error.
+    Workspace(WorkspaceError),
 
     /// `C005` — `--member` named a member that does not exist in the workspace.
     UnknownMember {
@@ -135,12 +154,6 @@ pub enum CliError {
         path: std::path::PathBuf,
     },
 
-    /// `C402` — `erl` or `erlc` is not on `PATH`.
-    ///
-    /// `ridge migrate add` needs a real BEAM runtime to run the diff/render
-    /// pipeline that produces the migration and snapshot files.
-    MigrateErlangNotFound,
-
     /// `C403` — the model failed to compile.
     ///
     /// The compile diagnostics have already been rendered to stderr before
@@ -192,6 +205,49 @@ pub enum CliError {
         message: String,
     },
 
+    /// The Erlang runtime is missing or would not start — `C004` or `C013`.
+    ///
+    /// `repl`, `reload`, `run --watch` and `run --observer` launch a node
+    /// themselves instead of going through `run_workspace`, so they hit the
+    /// driver's failures without being the driver. Forwarding its type keeps
+    /// one wording for a problem the reader meets on their first run.
+    Toolchain(ToolchainError),
+
+    /// `C501` — the file watcher could not be created.
+    WatcherStartFailed {
+        /// What the watcher reported.
+        message: String,
+    },
+
+    /// `C502` — the workspace directory could not be watched for changes.
+    WatchPathFailed {
+        /// The directory that could not be watched.
+        path: PathBuf,
+        /// What the watcher reported.
+        message: String,
+    },
+
+    /// `C503` — the REPL session could not be started.
+    ReplSessionFailed {
+        /// What the session reported.
+        message: String,
+    },
+
+    /// `C504` — the watch loop's shared state was left unusable by a thread
+    /// that panicked while holding it.
+    ///
+    /// Nothing the reader did causes this, which is exactly why it needs a code
+    /// of its own: it is the one failure here that should be reported rather
+    /// than worked around.
+    WatchStateCorrupted,
+
+    /// `C505` — a watched rebuild could not be restarted, and neither could the
+    /// placeholder that would have kept the loop alive.
+    WatchRestartFailed {
+        /// What the OS reported.
+        message: String,
+    },
+
     /// A failure whose specific cause has already been printed to stderr
     /// (rendered diagnostics, a `no .beam produced` line, an escript packaging
     /// error, …). Carries only the non-zero exit; the top-level handler prints
@@ -211,7 +267,6 @@ impl CliError {
     #[must_use]
     pub const fn code(&self) -> Option<&'static str> {
         Some(match self {
-            Self::NoWorkspaceRoot => "C001",
             Self::UnknownMember { .. } => "C005",
             Self::NoExecutableMember => "C006",
             Self::LibraryNotExecutable { .. } => "C007",
@@ -229,7 +284,6 @@ impl CliError {
             Self::TestArityInvalid { .. } => "C301",
             Self::TestCapabilityForbidden { .. } => "C302",
             Self::MigrateModelMissing { .. } => "C401",
-            Self::MigrateErlangNotFound => "C402",
             Self::MigrateCompileFailed => "C403",
             Self::MigrateInternal { .. } => "C404",
             Self::MigrateInvalidName { .. } => "C405",
@@ -237,8 +291,42 @@ impl CliError {
             Self::MigrateApplyFailed { .. } => "C407",
             Self::MigrateStatusFailed { .. } => "C408",
             Self::MigrateRollbackFailed { .. } => "C409",
+            Self::WatcherStartFailed { .. } => "C501",
+            Self::WatchPathFailed { .. } => "C502",
+            Self::ReplSessionFailed { .. } => "C503",
+            Self::WatchStateCorrupted => "C504",
+            Self::WatchRestartFailed { .. } => "C505",
+            Self::Toolchain(e) => e.code(),
+            Self::Workspace(e) => e.code(),
             Self::AlreadyReported | Self::MemberManifestInvalid { .. } => return None,
         })
+    }
+}
+
+impl CliError {
+    /// `C001` — no workspace manifest was found at or above `searched_from`.
+    ///
+    /// Takes the directory it searched, so the message can name it. The
+    /// variant it builds has a field for exactly that reason: an error nobody
+    /// can construct without saying what failed is one nobody reaches for as a
+    /// placeholder.
+    #[must_use]
+    pub fn no_workspace_root(searched_from: &Path) -> Self {
+        Self::Workspace(WorkspaceError::NoWorkspaceRoot {
+            path: searched_from.to_path_buf(),
+        })
+    }
+}
+
+impl From<ToolchainError> for CliError {
+    fn from(e: ToolchainError) -> Self {
+        Self::Toolchain(e)
+    }
+}
+
+impl From<WorkspaceError> for CliError {
+    fn from(e: WorkspaceError) -> Self {
+        Self::Workspace(e)
     }
 }
 
@@ -304,10 +392,8 @@ impl fmt::Display for CliError {
     )]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NoWorkspaceRoot => write!(
-                f,
-                "C001 NoWorkspaceRoot: no workspace manifest found at or above the current directory"
-            ),
+            // Forwarded verbatim: the driver owns the wording as well as the code.
+            Self::Workspace(e) => write!(f, "{e}"),
             // Never rendered through the top-level handler (main special-cases
             // it), but give it an honest message in case some other caller
             // prints it directly.
@@ -401,11 +487,6 @@ impl fmt::Display for CliError {
                  create it with `pub fn model () -> List (EntitySchema Unit) = ...`",
                 path.display()
             ),
-            Self::MigrateErlangNotFound => write!(
-                f,
-                "C402 MigrateErlangNotFound: erl and erlc must be on PATH \
-                 to run `ridge migrate add` (install OTP 26+)"
-            ),
             Self::MigrateCompileFailed => write!(
                 f,
                 "C403 MigrateCompileFailed: the model failed to compile; \
@@ -432,8 +513,200 @@ impl fmt::Display for CliError {
             Self::MigrateRollbackFailed { message } => {
                 write!(f, "C409 MigrateRollbackFailed: {message}")
             }
+            // Forwarded verbatim: the driver owns the wording as well as the code.
+            Self::Toolchain(e) => write!(f, "{e}"),
+            Self::WatcherStartFailed { message } => write!(
+                f,
+                "C501 WatcherStartFailed: could not start the file watcher: {message}"
+            ),
+            Self::WatchPathFailed { path, message } => write!(
+                f,
+                "C502 WatchPathFailed: could not watch '{}' for changes: {message}",
+                path.display()
+            ),
+            Self::ReplSessionFailed { message } => write!(
+                f,
+                "C503 ReplSessionFailed: could not start the REPL session: {message}"
+            ),
+            Self::WatchStateCorrupted => write!(
+                f,
+                "C504 WatchStateCorrupted: the watch loop's shared state was left \
+                 unusable by a panicking thread; restart the command"
+            ),
+            Self::WatchRestartFailed { message } => write!(
+                f,
+                "C505 WatchRestartFailed: could not restart after the change, and the \
+                 placeholder process would not start either: {message}"
+            ),
         }
     }
 }
 
 impl std::error::Error for CliError {}
+
+#[cfg(test)]
+#[allow(
+    clippy::panic,
+    reason = "a failed drift check should name the collision"
+)]
+mod tests {
+    use super::{CliError, ToolchainError, WorkspaceError};
+
+    /// Name every variant, so that adding one stops the crate from compiling
+    /// until someone comes back to this file.
+    ///
+    /// This is the whole reason the checks below are worth running: a test that
+    /// samples whatever variants happened to exist the day it was written stops
+    /// finding anything the day after. There is no wildcard arm on purpose.
+    fn assert_every_variant_is_named(e: &CliError) {
+        match e {
+            CliError::Workspace(_)
+            | CliError::UnknownMember { .. }
+            | CliError::NoExecutableMember
+            | CliError::MemberManifestInvalid { .. }
+            | CliError::WatchAmbiguousMember
+            | CliError::LibraryNotExecutable { .. }
+            | CliError::ObserverNoCookie
+            | CliError::InvalidProjectName { .. }
+            | CliError::DirectoryExists { .. }
+            | CliError::ReservedName { .. }
+            | CliError::DirectoryNotEmpty
+            | CliError::CwdUnreadable
+            | CliError::FmtPathNotFound { .. }
+            | CliError::FmtIoError { .. }
+            | CliError::FmtCheckFailed { .. }
+            | CliError::LegacyRgFile { .. }
+            | CliError::TestArityInvalid { .. }
+            | CliError::TestCapabilityForbidden { .. }
+            | CliError::MigrateModelMissing { .. }
+            | CliError::MigrateCompileFailed
+            | CliError::MigrateInternal { .. }
+            | CliError::MigrateInvalidName { .. }
+            | CliError::MigrateEnvMissing { .. }
+            | CliError::MigrateApplyFailed { .. }
+            | CliError::MigrateStatusFailed { .. }
+            | CliError::MigrateRollbackFailed { .. }
+            | CliError::Toolchain(_)
+            | CliError::WatcherStartFailed { .. }
+            | CliError::WatchPathFailed { .. }
+            | CliError::ReplSessionFailed { .. }
+            | CliError::WatchStateCorrupted
+            | CliError::WatchRestartFailed { .. }
+            | CliError::AlreadyReported => {}
+        }
+    }
+
+    /// One sample of every [`CliError`] variant.
+    fn one_of_each() -> Vec<CliError> {
+        let all = vec![
+            CliError::Workspace(WorkspaceError::NoWorkspaceRoot { path: "ws".into() }),
+            CliError::UnknownMember { name: "x".into() },
+            CliError::NoExecutableMember,
+            CliError::MemberManifestInvalid {
+                rendered: "M001 …".into(),
+            },
+            CliError::WatchAmbiguousMember,
+            CliError::LibraryNotExecutable { name: "x".into() },
+            CliError::ObserverNoCookie,
+            CliError::InvalidProjectName { name: "x/y".into() },
+            CliError::DirectoryExists { name: "x".into() },
+            CliError::ReservedName { name: "std".into() },
+            CliError::DirectoryNotEmpty,
+            CliError::CwdUnreadable,
+            CliError::FmtPathNotFound {
+                path: "a.ridge".into(),
+            },
+            CliError::FmtIoError {
+                path: "a.ridge".into(),
+                source: "denied".into(),
+            },
+            CliError::FmtCheckFailed { count: 2 },
+            CliError::LegacyRgFile {
+                path: "a.rg".into(),
+            },
+            CliError::TestArityInvalid {
+                qualified_name: "M.test_x".into(),
+            },
+            CliError::TestCapabilityForbidden {
+                qualified_name: "M.test_x".into(),
+            },
+            CliError::MigrateModelMissing {
+                path: "Model.ridge".into(),
+            },
+            CliError::MigrateCompileFailed,
+            CliError::MigrateInternal {
+                message: "x".into(),
+            },
+            CliError::MigrateInvalidName { name: "x!".into() },
+            CliError::MigrateEnvMissing {
+                vars: vec!["RIDGE_DB_USER".into()],
+            },
+            CliError::MigrateApplyFailed {
+                message: "x".into(),
+            },
+            CliError::MigrateStatusFailed {
+                message: "x".into(),
+            },
+            CliError::MigrateRollbackFailed {
+                message: "x".into(),
+            },
+            CliError::Toolchain(ToolchainError::erl_not_found()),
+            CliError::WatcherStartFailed {
+                message: "x".into(),
+            },
+            CliError::WatchPathFailed {
+                path: "ws".into(),
+                message: "x".into(),
+            },
+            CliError::ReplSessionFailed {
+                message: "x".into(),
+            },
+            CliError::WatchStateCorrupted,
+            CliError::WatchRestartFailed {
+                message: "x".into(),
+            },
+            CliError::AlreadyReported,
+        ];
+
+        for e in &all {
+            assert_every_variant_is_named(e);
+        }
+
+        all
+    }
+
+    /// A variant that claims a code opens its message with that code.
+    ///
+    /// `C004` had five different message texts across two crates for as long as
+    /// the code lived inside the format string, where nothing could compare it
+    /// against anything.
+    #[test]
+    fn every_code_carrying_variant_opens_with_its_code() {
+        for e in one_of_each() {
+            let text = e.to_string();
+            match e.code() {
+                Some(code) => assert!(
+                    text.starts_with(code),
+                    "`{code}` must open its own message, got: {text}"
+                ),
+                None => assert!(
+                    !text.starts_with('C'),
+                    "a variant with no code must not look like it has one: {text}"
+                ),
+            }
+        }
+    }
+
+    /// No two variants answer with the same code.
+    #[test]
+    fn no_two_variants_share_a_code() {
+        let mut seen: Vec<(&'static str, String)> = Vec::new();
+        for e in one_of_each() {
+            let Some(code) = e.code() else { continue };
+            if let Some((_, first)) = seen.iter().find(|(c, _)| *c == code) {
+                panic!("{code} is claimed twice: {first} — and — {e}");
+            }
+            seen.push((code, e.to_string()));
+        }
+    }
+}

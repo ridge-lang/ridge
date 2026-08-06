@@ -43,7 +43,8 @@ pub struct CheckArgs {
 /// and only fail the check under `--deny-warnings`.
 pub fn execute(args: &CheckArgs, cwd: &Path) -> Result<(), CliError> {
     // ── 1. Locate workspace root ──────────────────────────────────────────────
-    let workspace_root = find_workspace_root(cwd).ok_or(CliError::NoWorkspaceRoot)?;
+    let workspace_root =
+        find_workspace_root(cwd).ok_or_else(|| CliError::no_workspace_root(cwd))?;
 
     // ── 2. Check options ──────────────────────────────────────────────────────
     let mut opts = CheckOptions::new(workspace_root);

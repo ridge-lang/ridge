@@ -75,7 +75,7 @@ use std::time::Instant;
 
 use clap::Parser;
 use ridge_diagnostics::{Diagnostic, Severity};
-use ridge_driver::{compile_workspace, CompileOptions, WorkspaceSourceCache};
+use ridge_driver::{compile_workspace, CompileOptions, ToolchainError, WorkspaceSourceCache};
 
 use crate::error::CliError;
 use crate::render::render_diagnostics;
@@ -447,21 +447,12 @@ enum CompileError {
 /// directory cannot be initialised.
 pub fn execute(_args: &ReplArgs, _cwd: &Path) -> Result<(), CliError> {
     // ── Locate erl and erlc ───────────────────────────────────────────────────
-    let erl_path = which::which("erl").map_err(|_| {
-        eprintln!("error: C004 ErlangNotFound: erl not found on PATH (install OTP 26+)");
-        CliError::NoWorkspaceRoot
-    })?;
-
-    let erlc_path = which::which("erlc").map_err(|_| {
-        eprintln!("error: C004 ErlangNotFound: erlc not found on PATH (install OTP 26+)");
-        CliError::NoWorkspaceRoot
-    })?;
+    let erl_path = which::which("erl").map_err(|_| ToolchainError::erl_not_found())?;
+    let erlc_path = which::which("erlc").map_err(|_| ToolchainError::erlc_not_found())?;
 
     // ── Initialise session ────────────────────────────────────────────────────
-    let mut session = ReplSession::new(&erl_path, &erlc_path).map_err(|e| {
-        eprintln!("error: failed to initialise REPL session: {e}");
-        CliError::NoWorkspaceRoot
-    })?;
+    let mut session = ReplSession::new(&erl_path, &erlc_path)
+        .map_err(|message| CliError::ReplSessionFailed { message })?;
 
     // ── Print welcome header ──────────────────────────────────────────────────
     let stdout = io::stdout();

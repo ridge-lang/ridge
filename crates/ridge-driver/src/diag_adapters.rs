@@ -105,8 +105,7 @@ pub fn diag_from_codegen(e: &CodegenError, source_id: SourceId) -> Diagnostic {
     let primary_span = e.span().unwrap_or_else(|| Span::point(0));
     let severity = Severity::Error;
 
-    let message = describe_codegen_error(e);
-    let mut diag = Diagnostic::new(code, severity, primary_span, message, source_id);
+    let mut diag = Diagnostic::new(code, severity, primary_span, e.to_string(), source_id);
 
     // For E004/E102, surface erlc stderr as a note.
     match e {
@@ -134,53 +133,40 @@ pub fn diag_from_codegen(e: &CodegenError, source_id: SourceId) -> Diagnostic {
     diag
 }
 
-/// Produce a human-readable one-line message for a `CodegenError`.
-fn describe_codegen_error(e: &CodegenError) -> String {
-    match e {
-        CodegenError::IrShapeMalformed { detail, .. } => {
-            format!("E001: malformed IR: {detail}")
-        }
-        CodegenError::StdlibBridgeMissing { module, name, .. } => {
-            format!("E002: no stdlib bridge for `{module}.{name}`")
-        }
-        CodegenError::ErlcNotFound { .. } => {
-            "E003: erlc not found on PATH (install OTP 26+)".to_owned()
-        }
-        CodegenError::ErlcRejectedInput {
-            core_path,
-            exit_code,
-            ..
-        } => {
-            format!(
-                "E004: erlc rejected `{}` (exit {})",
-                core_path.display(),
-                exit_code
-            )
-        }
-        CodegenError::OutputDirNotWritable { path, io_err } => {
-            format!(
-                "E005: output directory `{}` not writable: {io_err}",
-                path.display()
-            )
-        }
-        CodegenError::BeamModuleNameCollision { mangled, .. } => {
-            format!("E006: two Ridge modules mangle to the same BEAM name `{mangled}`")
-        }
-        CodegenError::TypeErasureUnsupportedErrorSite { ir_variant, .. } => {
-            format!("E007: unexpected Type::Error at IR site `{ir_variant}`")
-        }
-        CodegenError::CapabilityLeakIntoCoreErl { leaked_token, .. } => {
-            format!("E008: capability token `{leaked_token}` leaked into Core Erlang")
-        }
-        CodegenError::ErlcVersionTooOld { found, minimum } => {
-            format!("E101: erlc version `{found}` is below minimum `{minimum}`")
-        }
-        CodegenError::ErlcUnexpectedOutput { core_path, .. } => {
-            format!(
-                "E102: erlc produced unexpected output for `{}`",
-                core_path.display()
-            )
-        }
-        _ => format!("{}: unknown codegen error", e.code()),
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The adapter used to re-write every `E###` message by hand, one arm per
+    /// variant, with the code typed into the format string.  Two declarations
+    /// of one code drift; this asserts the surviving one is the owner's.
+    #[test]
+    fn the_message_comes_from_the_error_itself() {
+        let e = CodegenError::StdlibBridgeMissing {
+            module: "std.io".into(),
+            name: "println".into(),
+            span: Span::point(0),
+        };
+        let diag = diag_from_codegen(&e, SourceId::new("std.io"));
+        assert_eq!(diag.code, e.code());
+        assert_eq!(diag.primary_message, e.to_string());
+    }
+
+    /// The renderer prints `[E002] <headline>`, so the code has to come out of
+    /// the headline.  It does that by stripping `"{code}: "` — which only
+    /// matches while the message opens with the code the diagnostic carries.
+    #[test]
+    fn the_headline_does_not_repeat_the_code() {
+        let e = CodegenError::ErlcVersionTooOld {
+            found: "OTP 24".into(),
+            minimum: "OTP 26".into(),
+        };
+        let diag = diag_from_codegen(&e, SourceId::new("<toolchain>"));
+        let headline = diag.message_parts().headline;
+        assert!(
+            !headline.contains("E101"),
+            "the code survived the strip: {headline}"
+        );
+        assert!(headline.starts_with("erlc version"), "{headline}");
     }
 }

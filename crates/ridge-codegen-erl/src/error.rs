@@ -114,7 +114,11 @@ pub fn audit_type_error_at(
 
 /// Codegen-emitted diagnostic.  Severity is encoded in the variant.
 ///
-/// All variants are covered by `#[non_exhaustive]`; match arms must include `_`.
+/// `#[non_exhaustive]` obliges a wildcard arm outside this crate, not inside
+/// it.  [`code`](Self::code) and the [`Display`](std::fmt::Display) impl both
+/// match every variant by name, so adding one stops the build here — at the
+/// two places that owe it a code and a message — rather than falling through
+/// to a wildcard that quietly answers for it.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -242,6 +246,63 @@ impl CodegenError {
     }
 }
 
+/// The message opens with `{code}: `, the prefix `Diagnostic::message_parts`
+/// strips before handing the headline to a renderer — the renderer prints the
+/// code itself, from `Diagnostic::code`.  Taking the prefix from
+/// [`CodegenError::code`] rather than typing it into each arm is what keeps
+/// those two in step: a hand-written prefix that drifts from `code()` fails the
+/// strip silently, and the user reads the code twice on one line.
+impl std::fmt::Display for CodegenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let c = self.code();
+        match self {
+            Self::IrShapeMalformed { detail, .. } => write!(f, "{c}: malformed IR: {detail}"),
+            Self::StdlibBridgeMissing { module, name, .. } => {
+                write!(f, "{c}: no stdlib bridge for `{module}.{name}`")
+            }
+            Self::ErlcNotFound { .. } => {
+                write!(f, "{c}: erlc not found on PATH (install OTP 26+)")
+            }
+            Self::ErlcRejectedInput {
+                core_path,
+                exit_code,
+                ..
+            } => write!(
+                f,
+                "{c}: erlc rejected `{}` (exit {exit_code})",
+                core_path.display()
+            ),
+            Self::OutputDirNotWritable { path, io_err } => write!(
+                f,
+                "{c}: output directory `{}` not writable: {io_err}",
+                path.display()
+            ),
+            Self::BeamModuleNameCollision { mangled, .. } => write!(
+                f,
+                "{c}: two Ridge modules mangle to the same BEAM name `{mangled}`"
+            ),
+            Self::TypeErasureUnsupportedErrorSite { ir_variant, .. } => {
+                write!(f, "{c}: unexpected Type::Error at IR site `{ir_variant}`")
+            }
+            Self::CapabilityLeakIntoCoreErl { leaked_token, .. } => write!(
+                f,
+                "{c}: capability token `{leaked_token}` leaked into Core Erlang"
+            ),
+            Self::ErlcVersionTooOld { found, minimum } => write!(
+                f,
+                "{c}: erlc version `{found}` is below minimum `{minimum}`"
+            ),
+            Self::ErlcUnexpectedOutput { core_path, .. } => write!(
+                f,
+                "{c}: erlc produced unexpected output for `{}`",
+                core_path.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CodegenError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,53 +412,106 @@ mod tests {
 
     // ── existing constructibility + audit tests ───────────────────────────────
 
+    /// One sample of every variant.
+    ///
+    /// The `Display` impl matches without a wildcard, so a new variant stops
+    /// the build there; this list is what the drift checks below iterate, and
+    /// it has to grow with the enum for them to keep covering it.
+    fn one_of_each() -> Vec<CodegenError> {
+        vec![
+            CodegenError::IrShapeMalformed {
+                variant: "IrExpr::Lit",
+                span: dummy_span(),
+                detail: "test".into(),
+            },
+            CodegenError::StdlibBridgeMissing {
+                module: "std.io".into(),
+                name: "println".into(),
+                span: dummy_span(),
+            },
+            CodegenError::ErlcNotFound {
+                searched_paths: vec![PathBuf::from("/usr/bin/erlc")],
+            },
+            CodegenError::ErlcRejectedInput {
+                core_path: PathBuf::from("out.core"),
+                stderr: "parse error".into(),
+                exit_code: 1,
+            },
+            CodegenError::OutputDirNotWritable {
+                path: PathBuf::from("/tmp/out"),
+                io_err: "permission denied".into(),
+            },
+            CodegenError::BeamModuleNameCollision {
+                left: ModuleId(0),
+                right: ModuleId(1),
+                mangled: "ridge_main".into(),
+            },
+            CodegenError::TypeErasureUnsupportedErrorSite {
+                span: dummy_span(),
+                node: IrNodeId(0),
+                ir_variant: "IrExpr::Call",
+            },
+            CodegenError::CapabilityLeakIntoCoreErl {
+                span: dummy_span(),
+                leaked_token: "io".into(),
+            },
+            CodegenError::ErlcVersionTooOld {
+                found: "OTP 24".into(),
+                minimum: "OTP 26".into(),
+            },
+            CodegenError::ErlcUnexpectedOutput {
+                core_path: PathBuf::from("out.core"),
+                stdout: String::new(),
+                stderr: "unexpected".into(),
+            },
+        ]
+    }
+
     #[test]
     fn all_variants_constructible() {
-        let _e001 = CodegenError::IrShapeMalformed {
-            variant: "IrExpr::Lit",
-            span: dummy_span(),
-            detail: "test".into(),
-        };
-        let _e002 = CodegenError::StdlibBridgeMissing {
-            module: "std.io".into(),
-            name: "println".into(),
-            span: dummy_span(),
-        };
-        let _e003 = CodegenError::ErlcNotFound {
-            searched_paths: vec![PathBuf::from("/usr/bin/erlc")],
-        };
-        let _e004 = CodegenError::ErlcRejectedInput {
-            core_path: PathBuf::from("out.core"),
-            stderr: "parse error".into(),
-            exit_code: 1,
-        };
-        let _e005 = CodegenError::OutputDirNotWritable {
-            path: PathBuf::from("/tmp/out"),
-            io_err: "permission denied".into(),
-        };
-        let _e006 = CodegenError::BeamModuleNameCollision {
-            left: ModuleId(0),
-            right: ModuleId(1),
-            mangled: "ridge_main".into(),
-        };
-        let _e007 = CodegenError::TypeErasureUnsupportedErrorSite {
-            span: dummy_span(),
-            node: IrNodeId(0),
-            ir_variant: "IrExpr::Call",
-        };
-        let _e008 = CodegenError::CapabilityLeakIntoCoreErl {
-            span: dummy_span(),
-            leaked_token: "io".into(),
-        };
-        let _e101 = CodegenError::ErlcVersionTooOld {
-            found: "OTP 24".into(),
-            minimum: "OTP 26".into(),
-        };
-        let _e102 = CodegenError::ErlcUnexpectedOutput {
-            core_path: PathBuf::from("out.core"),
-            stdout: String::new(),
-            stderr: "unexpected".into(),
-        };
+        assert_eq!(one_of_each().len(), 10);
+    }
+
+    // ── Display drift checks ──────────────────────────────────────────────────
+
+    /// `Diagnostic::message_parts` strips exactly `"{code}: "` from the first
+    /// line before a renderer prints the code itself.  A message whose prefix
+    /// does not match `code()` survives the strip and the user reads the code
+    /// twice on one line.
+    #[test]
+    fn every_message_opens_with_its_own_code() {
+        for e in one_of_each() {
+            let text = e.to_string();
+            let expected = format!("{}: ", e.code());
+            assert!(
+                text.starts_with(&expected),
+                "expected `{expected}` at the front of: {text}"
+            );
+        }
+    }
+
+    /// A message that is only its code says nothing the code did not already
+    /// say, and leaves the renderer with an empty headline.
+    #[test]
+    fn every_message_says_more_than_its_code() {
+        for e in one_of_each() {
+            let text = e.to_string();
+            let prose = text.trim_start_matches(&format!("{}: ", e.code()));
+            assert!(prose.len() > 10, "`{}` has no message: {text}", e.code());
+        }
+    }
+
+    #[test]
+    fn no_two_variants_share_a_code() {
+        let mut seen: Vec<&'static str> = Vec::new();
+        for e in one_of_each() {
+            let code = e.code();
+            assert!(
+                !seen.contains(&code),
+                "`{code}` is claimed by more than one variant"
+            );
+            seen.push(code);
+        }
     }
 
     // ── audit_type_error_at — allow-list tests ────────────────────────────────

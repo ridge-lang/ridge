@@ -510,9 +510,11 @@ pub fn write_stdlib_test_workspace(ws_root: &std::path::Path) -> std::io::Result
 
 /// Describe why the stdlib could not be bundled, in terms a user can act on.
 ///
-/// `CodegenError` has no `Display`, and its `Debug` form buries the useful part
-/// — which module failed and what the toolchain said — inside a struct dump
-/// with escaped newlines.
+/// The three arms below say less than `CodegenError`'s own `Display`, on
+/// purpose: this message is already introduced as a stdlib bundling failure
+/// (`C010`), so it names the module rather than the `.core` path and quotes the
+/// first line of what the toolchain said rather than all of it.  Anything else
+/// falls through to the error's own message.
 fn describe_stdlib_bundle_failure(e: &ridge_codegen_erl::CodegenError) -> String {
     use ridge_codegen_erl::CodegenError as E;
     match e {
@@ -535,7 +537,7 @@ fn describe_stdlib_bundle_failure(e: &ridge_codegen_erl::CodegenError) -> String
                 path.display()
             )
         }
-        other => format!("{other:?}"),
+        other => other.to_string(),
     }
 }
 
@@ -894,6 +896,22 @@ internal error in pass beam_ssa_codegen
         // The `Debug` form renders the captured stderr with its newlines
         // escaped, which is the tell that the struct dump leaked through.
         assert!(!text.contains(r"\n"), "escaped newlines leaked: {text}");
+    }
+
+    /// Everything the three arms do not special-case used to arrive as a
+    /// `Debug` dump of the struct.  It now arrives as the error's own message,
+    /// which names the code the user can look up.
+    #[test]
+    fn an_unhandled_failure_still_reads_as_prose() {
+        let e = ridge_codegen_erl::CodegenError::BeamModuleNameCollision {
+            left: ridge_resolve::ModuleId(0),
+            right: ridge_resolve::ModuleId(1),
+            mangled: "ridge_main".to_owned(),
+        };
+        let text = describe_stdlib_bundle_failure(&e);
+        assert!(text.starts_with("E006: "), "{text}");
+        assert!(text.contains("ridge_main"), "{text}");
+        assert!(!text.contains("BeamModuleNameCollision"), "{text}");
     }
 
     /// A missing toolchain says so plainly instead of listing probe paths.

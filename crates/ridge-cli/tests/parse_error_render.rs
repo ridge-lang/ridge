@@ -4,7 +4,8 @@
 //! structured diagnostic with an error code, the source line, and a caret /
 //! box-drawing underline — rather than the old context-free `eprintln!` fallback.
 //!
-//! This test closes deviation #1 from T3: "OQ-CLI-R01 — `render_with_ariadne` gap".
+//! The gap this closes was real: `ridge check` used to report a parse failure
+//! through a bare `eprintln!` that named neither the line nor the column.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -75,4 +76,38 @@ fn parse_error_renders_with_source_context() {
         has_underline,
         "expected underline character (^, -, ╰, ┬, ─, |) in stderr, got:\n{stderr}"
     );
+}
+
+/// A rendered batch ends by naming a command that reads the code back.
+///
+/// The code is only a handle if something can be asked about it, and the moment
+/// it is on screen is the moment to say so. The hint names a concrete code
+/// rather than a placeholder, and that code has to be one `ridge explain`
+/// resolves — so the test runs the command it suggests and checks it answers.
+#[test]
+fn a_rendered_batch_points_at_ridge_explain() {
+    let tw = make_workspace("Broken", "pub fn foo -> Text { 42 }\n");
+
+    let output = ridge_cmd()
+        .arg("check")
+        .env("RIDGE_COLOR", "never")
+        .current_dir(&tw.path)
+        .output()
+        .expect("ridge check spawn failed");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let hint = stderr
+        .lines()
+        .find(|l| l.contains("ridge explain"))
+        .unwrap_or_else(|| panic!("no explain hint in stderr:\n{stderr}"));
+
+    let code = hint
+        .split("ridge explain ")
+        .nth(1)
+        .and_then(|rest| rest.split('`').next())
+        .expect("the hint names a code")
+        .trim()
+        .to_owned();
+
+    ridge_cmd().arg("explain").arg(&code).assert().success();
 }

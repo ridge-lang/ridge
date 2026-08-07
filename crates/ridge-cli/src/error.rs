@@ -5,7 +5,7 @@
 //! user's invocation.
 //!
 //! The CLI owns `C005`–`C008`, `C011`, `C102`–`C105`, `C201`–`C205`,
-//! `C301`–`C304`, `C401`, `C403`–`C409` and `C501`–`C505`. It does not own
+//! `C301`–`C304`, `C401`, `C403`–`C409`, `C501`–`C505` and `C601`. It does not own
 //! `C001` or the runtime-launch codes: those are the driver's, and
 //! [`CliError`] forwards them rather than restating them, because a code
 //! restated in a second crate is a code with a second wording.
@@ -248,6 +248,14 @@ pub enum CliError {
         message: String,
     },
 
+    /// `C601` — `ridge explain` was handed something that is not a code the
+    /// compiler can emit.
+    ExplainUnknownCode {
+        /// What was asked about, already normalised: upper-cased, and with the
+        /// brackets a rendered diagnostic puts around a code taken off.
+        code: String,
+    },
+
     /// A failure whose specific cause has already been printed to stderr
     /// (rendered diagnostics, a `no .beam produced` line, an escript packaging
     /// error, …). Carries only the non-zero exit; the top-level handler prints
@@ -296,6 +304,7 @@ impl CliError {
             Self::ReplSessionFailed { .. } => "C503",
             Self::WatchStateCorrupted => "C504",
             Self::WatchRestartFailed { .. } => "C505",
+            Self::ExplainUnknownCode { .. } => "C601",
             Self::Toolchain(e) => e.code(),
             Self::Workspace(e) => e.code(),
             Self::AlreadyReported | Self::MemberManifestInvalid { .. } => return None,
@@ -538,6 +547,11 @@ impl fmt::Display for CliError {
                 "C505 WatchRestartFailed: could not restart after the change, and the \
                  placeholder process would not start either: {message}"
             ),
+            Self::ExplainUnknownCode { code } => write!(
+                f,
+                "C601 ExplainUnknownCode: '{code}' is not a code this compiler can \
+                 emit; `ridge explain --list` prints every code that exists"
+            ),
         }
     }
 }
@@ -592,6 +606,7 @@ mod tests {
             | CliError::ReplSessionFailed { .. }
             | CliError::WatchStateCorrupted
             | CliError::WatchRestartFailed { .. }
+            | CliError::ExplainUnknownCode { .. }
             | CliError::AlreadyReported => {}
         }
     }
@@ -664,6 +679,9 @@ mod tests {
             CliError::WatchStateCorrupted,
             CliError::WatchRestartFailed {
                 message: "x".into(),
+            },
+            CliError::ExplainUnknownCode {
+                code: "Q001".into(),
             },
             CliError::AlreadyReported,
         ];

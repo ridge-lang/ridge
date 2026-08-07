@@ -3,7 +3,9 @@
 //! Calls [`ridge_diagnostics::render_with_ariadne`] to emit structured,
 //! colourised, source-span-aware diagnostics to stderr.
 
-use ridge_diagnostics::{render_with_ariadne, Diagnostic, Severity, SourceCache};
+use std::io::Write;
+
+use ridge_diagnostics::{lookup_code, render_with_ariadne, Diagnostic, Severity, SourceCache};
 
 /// Render a slice of structured diagnostics to stderr.
 ///
@@ -12,7 +14,29 @@ use ridge_diagnostics::{render_with_ariadne, Diagnostic, Severity, SourceCache};
 /// nothing, which is preferable to a renderer crash masking the original error.
 pub fn render_diagnostics(diagnostics: &[Diagnostic], cache: &dyn SourceCache) -> usize {
     let mut stderr = std::io::stderr();
-    render_with_ariadne(diagnostics, cache, &mut stderr).unwrap_or(0)
+    let count = render_with_ariadne(diagnostics, cache, &mut stderr).unwrap_or(0);
+    write_explain_hint(diagnostics, &mut stderr);
+    count
+}
+
+/// Point at `ridge explain`, once per batch, naming a code that resolves.
+///
+/// Once per batch rather than once per diagnostic: the invitation is worth one
+/// line at the end of a wall of errors and nothing at all repeated under each
+/// one. The code it names is the first in the batch the registry actually
+/// knows, so the command it suggests is one that answers — a hint that sends
+/// someone to a command that fails is worse than no hint.
+fn write_explain_hint(diagnostics: &[Diagnostic], w: &mut dyn Write) {
+    let Some(code) = diagnostics
+        .iter()
+        .map(|d| d.code)
+        .find(|c| lookup_code(c).is_some())
+    else {
+        return;
+    };
+    // Same reasoning as the render above: a failed write here must not turn
+    // into a second error on top of the ones being reported.
+    let _ = writeln!(w, "\nFor more about a code, run `ridge explain {code}`.");
 }
 
 /// Whether warnings should stop the command.

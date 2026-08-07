@@ -280,6 +280,13 @@ fn test_attr_wins_over_prefix_no_c304() {
 ///
 /// Un-gated: the count holds with or without OTP, since the type-check pass
 /// that prints the warning runs before anything needs `erlc`.
+///
+/// What is counted is `[T017]`, the bracketed form a render puts in its title,
+/// not the bare code. The two are not the same thing to count: the batch also
+/// closes with a line naming a code for `ridge explain`, and that mention is
+/// not a second report of the warning. Counting the render is what this test
+/// always meant; counting the string was a proxy that has stopped standing in
+/// for it.
 #[test]
 fn a_warning_is_reported_once_and_does_not_stop_the_suite() {
     let source = "type Role = Admin | Guest\n\
@@ -305,7 +312,7 @@ fn a_warning_is_reported_once_and_does_not_stop_the_suite() {
     let both = format!("{stdout}{stderr}");
 
     assert_eq!(
-        both.matches("T017").count(),
+        both.matches("[T017]").count(),
         1,
         "the warning must be reported exactly once across both pipeline \
          passes.\nstdout: {stdout}\nstderr: {stderr}"

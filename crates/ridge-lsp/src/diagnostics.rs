@@ -2,17 +2,17 @@
 //!
 //! The LSP `Diagnostic` is assembled from the Ridge `Diagnostic` fields:
 //! - `severity` → `DiagnosticSeverity`
-//! - `code` → `NumberOrString`
+//! - `code` → `NumberOrString`, linked to its entry in the published index
 //! - `notes` → `DiagnosticRelatedInformation`
 //! - `primary_span` → `Range` (via `LineMap` byte-offset conversion)
 
 use std::path::Path;
 
-use ridge_diagnostics::{Diagnostic, NoteSeverity, Severity};
+use ridge_diagnostics::{lookup_code, Diagnostic, NoteSeverity, Severity, INDEX_URL};
 use ridge_lexer::Span;
 use tower_lsp::lsp_types::{
-    Diagnostic as LspDiagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location,
-    NumberOrString, Position, Range, Url,
+    CodeDescription, Diagnostic as LspDiagnostic, DiagnosticRelatedInformation, DiagnosticSeverity,
+    Location, NumberOrString, Position, Range, Url,
 };
 
 use crate::span_recovery::resolve_span_to_lsp;
@@ -160,6 +160,19 @@ fn lsp_message(diag: &Diagnostic) -> String {
     message
 }
 
+/// Where the editor should send someone who clicks the code.
+///
+/// An editor renders `code` as a link only when this is set, so filling it in
+/// is the difference between a code being a label and being something you can
+/// follow. A code the registry does not know gets no link rather than one that
+/// leads to an anchor that isn't there — the census makes that unreachable
+/// today, and this is not the place to find out that it stopped being true.
+fn code_description(code: &str) -> Option<CodeDescription> {
+    lookup_code(code)?;
+    let href = Url::parse(&format!("{INDEX_URL}#{}", code.to_lowercase())).ok()?;
+    Some(CodeDescription { href })
+}
+
 /// Convert a Ridge `Diagnostic` to an LSP `Diagnostic`.
 ///
 /// `file_uri`   — the document URI the diagnostic belongs to.
@@ -192,7 +205,7 @@ pub fn to_lsp_diagnostic(diag: &Diagnostic, file_uri: &Url, src: Option<&str>) -
         range,
         severity: Some(lsp_severity(diag.severity)),
         code: Some(NumberOrString::String(diag.code.to_owned())),
-        code_description: None,
+        code_description: code_description(diag.code),
         source: Some("ridge".to_owned()),
         message: lsp_message(diag),
         related_information: if related.is_empty() {
@@ -229,6 +242,29 @@ mod tests {
         let range = span_to_range(Span::new(3, 6), src);
         assert_eq!(range.start.character, 3);
         assert_eq!(range.end.character, 6);
+    }
+
+    /// A known code links to its own anchor on the published index.
+    ///
+    /// The anchor is lower-cased because that is what a Markdown heading
+    /// slugifies to; getting it wrong lands the reader at the top of a page
+    /// listing every code there is, which reads the same as a broken link.
+    #[test]
+    fn a_known_code_links_to_its_entry() {
+        let described = code_description("T001");
+        assert!(described.is_some(), "T001 is in the registry");
+        let Some(described) = described else { return };
+        assert!(
+            described.href.as_str().ends_with("/diagnostics.md#t001"),
+            "got {}",
+            described.href
+        );
+    }
+
+    /// A code with no entry gets no link, rather than one that goes nowhere.
+    #[test]
+    fn an_unknown_code_gets_no_link() {
+        assert!(code_description("Q001").is_none());
     }
 
     #[test]

@@ -40,6 +40,14 @@ pub struct CodeEntry {
     pub summary: &'static str,
 }
 
+/// Where the registry is published for a person to read.
+///
+/// Tracks `main` rather than a release tag. A tag URL would pin the link to the
+/// compiler that emitted the code, which is more precise and more fragile: docs
+/// move, tags do not, and a link that answers 404 teaches nothing. The anchor is
+/// the code in lower case — what the page's headings slugify to.
+pub const INDEX_URL: &str = "https://github.com/ridge-lang/ridge/blob/main/docs/diagnostics.md";
+
 /// Look up one code.
 ///
 /// Case-sensitive, and the codes are upper-case: a caller that wants to accept
@@ -302,6 +310,12 @@ pub const REGISTRY: &[CodeEntry] = &[
         variants: &["WatchRestartFailed"],
         owner: "ridge-cli",
         summary: "A watched rebuild could not be restarted, and neither could its placeholder.",
+    },
+    CodeEntry {
+        code: "C601",
+        variants: &["ExplainUnknownCode"],
+        owner: "ridge-cli",
+        summary: "`ridge explain` was given something that is not a code the compiler can emit.",
     },
     CodeEntry {
         code: "E001",

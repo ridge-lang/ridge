@@ -8,13 +8,13 @@
 //!
 //! # Error code namespace
 //!
-//! `L001`–`L099` — desugaring rule violations (pipe, try, with, guard, …).
+//! `L101`–`L099` — desugaring rule violations (pipe, try, with, guard, …).
 //! `L997`–`L999` — internal consistency / catch-all codes.
 //!
 //! # Display format
 //!
 //! Each variant's [`std::fmt::Display`] impl produces a human-readable message
-//! prefixed with its code, e.g. `"[L001] malformed pipe RHS: …"`.
+//! prefixed with its code, e.g. `"[L101] malformed pipe RHS: …"`.
 
 // TODO: impl HasErrorCode for LowerError once the diagnostics rendering
 // pipeline (ridge-diagnostics) is wired to Phase 5.
@@ -38,66 +38,66 @@ use std::fmt;
 ///
 /// | Variant                    | Code   | Rule  |
 /// |---------------------------|--------|-------|
-/// | `MalformedPipeRhs`        | `L001` | §4.1  |
-/// | `UnknownPipeRhsShape`     | `L002` | §4.1  |
-/// | `PropagateOutsideScope`   | `L003` | §4.2  |
-/// | `DoublePropagate`         | `L004` | §4.3  |
-/// | `EmptyTryBlock`           | `L005` | §4.4  |
-/// | `BareGuardExpr`           | `L006` | §4.5  |
-/// | `ToTextLowering`          | `L007` | §4.6  |
-/// | `WithOnNonRecord`         | `L008` | §4.7  |
-/// | `RefutableSliceElement`   | `L009` | §4.8  |
-/// | `IntLiteralOutOfRange`    | `L010` | §4.9  |
+/// | `MalformedPipeRhs`        | `L101` | §4.1  |
+/// | `UnknownPipeRhsShape`     | `L102` | §4.1  |
+/// | `PropagateOutsideScope`   | `L103` | §4.2  |
+/// | `DoublePropagate`         | `L104` | §4.3  |
+/// | `EmptyTryBlock`           | `L105` | §4.4  |
+/// | `BareGuardExpr`           | `L106` | §4.5  |
+/// | `ToTextLowering`          | `L107` | §4.6  |
+/// | `WithOnNonRecord`         | `L108` | §4.7  |
+/// | `RefutableSliceElement`   | `L109` | §4.8  |
+/// | `IntLiteralOutOfRange`    | `L110` | §4.9  |
 /// | `UnsolvedTypeInIR`        | `L997` | §5    |
 /// | `CapVarInIR`              | `L998` | §5    |
 /// | `InternalLoweringError`   | `L999` | §5    |
 #[derive(Debug, Clone)]
 pub enum LowerError {
-    /// `L001` — pipe RHS is not a valid call/section shape (§4.1).
+    /// `L101` — pipe RHS is not a valid call/section shape (§4.1).
     MalformedPipeRhs {
         /// The span of the offending RHS expression.
         span: Span,
     },
-    /// `L002` — pipe RHS shape could not be classified by the lowerer (§4.1).
+    /// `L102` — pipe RHS shape could not be classified by the lowerer (§4.1).
     UnknownPipeRhsShape {
         /// The span of the unrecognised RHS expression.
         span: Span,
     },
-    /// `L003` — `?`/`try` propagation used outside any `Option`/`Result`-typed
+    /// `L103` — `?`/`try` propagation used outside any `Option`/`Result`-typed
     /// scope (§4.2). The propagation-scope stack was empty.
     PropagateOutsideScope {
         /// The span of the propagation operator or `try` expression.
         span: Span,
     },
-    /// `L004` — two propagation operators nested in a way that is structurally
+    /// `L104` — two propagation operators nested in a way that is structurally
     /// ambiguous (§4.3).
     DoublePropagate {
         /// The span of the inner (duplicate) propagation operator.
         span: Span,
     },
-    /// `L005` — `try` block with an empty body encountered (§4.4).
+    /// `L105` — `try` block with an empty body encountered (§4.4).
     EmptyTryBlock {
         /// The span of the empty `try` block.
         span: Span,
     },
-    /// `L006` — guard expression (`when`) appears outside a `match` arm, where
+    /// `L106` — guard expression (`when`) appears outside a `match` arm, where
     /// it cannot be desugared (§4.5).
     BareGuardExpr {
         /// The span of the bare `when` guard.
         span: Span,
     },
-    /// `L007` — string-interpolation `ToText` lowering encountered a node for
+    /// `L107` — string-interpolation `ToText` lowering encountered a node for
     /// which no `Display` coercion could be synthesised (§4.6).
     ToTextLowering {
         /// The span of the interpolation segment that could not be lowered.
         span: Span,
     },
-    /// `L008` — `with` expression applied to a non-record type (§4.7).
+    /// `L108` — `with` expression applied to a non-record type (§4.7).
     WithOnNonRecord {
         /// The span of the `with` expression.
         span: Span,
     },
-    /// `L009` — a refutable sub-pattern appears in a suffix or middle position
+    /// `L109` — a refutable sub-pattern appears in a suffix or middle position
     /// of a variable-length list slice pattern (§4.8 P026).
     ///
     /// Suffix and middle positions must be irrefutable (a variable or `_`) in
@@ -108,7 +108,7 @@ pub enum LowerError {
         /// The span of the refutable sub-pattern.
         span: Span,
     },
-    /// `L010` — an integer literal does not fit in the `Int` range (`i64`).
+    /// `L110` — an integer literal does not fit in the `Int` range (`i64`).
     ///
     /// Unlike the other variants this one IS reachable from valid-typed user
     /// input: the lexer validates the literal's *form* but not its *value*, so
@@ -147,16 +147,16 @@ impl LowerError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::MalformedPipeRhs { .. } => "L001",
-            Self::UnknownPipeRhsShape { .. } => "L002",
-            Self::PropagateOutsideScope { .. } => "L003",
-            Self::DoublePropagate { .. } => "L004",
-            Self::EmptyTryBlock { .. } => "L005",
-            Self::BareGuardExpr { .. } => "L006",
-            Self::ToTextLowering { .. } => "L007",
-            Self::WithOnNonRecord { .. } => "L008",
-            Self::RefutableSliceElement { .. } => "L009",
-            Self::IntLiteralOutOfRange { .. } => "L010",
+            Self::MalformedPipeRhs { .. } => "L101",
+            Self::UnknownPipeRhsShape { .. } => "L102",
+            Self::PropagateOutsideScope { .. } => "L103",
+            Self::DoublePropagate { .. } => "L104",
+            Self::EmptyTryBlock { .. } => "L105",
+            Self::BareGuardExpr { .. } => "L106",
+            Self::ToTextLowering { .. } => "L107",
+            Self::WithOnNonRecord { .. } => "L108",
+            Self::RefutableSliceElement { .. } => "L109",
+            Self::IntLiteralOutOfRange { .. } => "L110",
             Self::UnsolvedTypeInIR { .. } => "L997",
             Self::CapVarInIR { .. } => "L998",
             Self::InternalLoweringError { .. } => "L999",
@@ -201,49 +201,49 @@ impl fmt::Display for LowerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MalformedPipeRhs { span } => {
-                write!(f, "[L001] malformed pipe RHS at {span:?}")
+                write!(f, "[L101] malformed pipe RHS at {span:?}")
             }
             Self::UnknownPipeRhsShape { span } => {
-                write!(f, "[L002] unknown pipe RHS shape at {span:?}")
+                write!(f, "[L102] unknown pipe RHS shape at {span:?}")
             }
             Self::PropagateOutsideScope { span } => {
                 write!(
                     f,
-                    "[L003] `?` propagation used outside any Option/Result scope at {span:?}"
+                    "[L103] `?` propagation used outside any Option/Result scope at {span:?}"
                 )
             }
             Self::DoublePropagate { span } => {
-                write!(f, "[L004] double propagation operator at {span:?}")
+                write!(f, "[L104] double propagation operator at {span:?}")
             }
             Self::EmptyTryBlock { span } => {
-                write!(f, "[L005] empty `try` block at {span:?}")
+                write!(f, "[L105] empty `try` block at {span:?}")
             }
             Self::BareGuardExpr { span } => {
                 write!(
                     f,
-                    "[L006] `when` guard expression outside match arm at {span:?}"
+                    "[L106] `when` guard expression outside match arm at {span:?}"
                 )
             }
             Self::ToTextLowering { span } => {
                 write!(
                     f,
-                    "[L007] could not synthesise `ToText` coercion for interpolation segment at {span:?}"
+                    "[L107] could not synthesise `ToText` coercion for interpolation segment at {span:?}"
                 )
             }
             Self::WithOnNonRecord { span } => {
-                write!(f, "[L008] `with` applied to non-record type at {span:?}")
+                write!(f, "[L108] `with` applied to non-record type at {span:?}")
             }
             Self::RefutableSliceElement { span } => {
                 write!(
                     f,
-                    "[L009] refutable pattern in suffix or middle position of a list slice pattern at {span:?}; \
+                    "[L109] refutable pattern in suffix or middle position of a list slice pattern at {span:?}; \
                      use a variable or `_` here (P026)"
                 )
             }
             Self::IntLiteralOutOfRange { span, raw } => {
                 write!(
                     f,
-                    "[L010] integer literal `{raw}` at {span:?} is out of range for Int \
+                    "[L110] integer literal `{raw}` at {span:?} is out of range for Int \
                      (min -9223372036854775808, max 9223372036854775807)"
                 )
             }
@@ -279,23 +279,23 @@ mod tests {
 
     #[test]
     fn error_codes_are_correct() {
-        assert_eq!(LowerError::MalformedPipeRhs { span: sp() }.code(), "L001");
+        assert_eq!(LowerError::MalformedPipeRhs { span: sp() }.code(), "L101");
         assert_eq!(
             LowerError::UnknownPipeRhsShape { span: sp() }.code(),
-            "L002"
+            "L102"
         );
         assert_eq!(
             LowerError::PropagateOutsideScope { span: sp() }.code(),
-            "L003"
+            "L103"
         );
-        assert_eq!(LowerError::DoublePropagate { span: sp() }.code(), "L004");
-        assert_eq!(LowerError::EmptyTryBlock { span: sp() }.code(), "L005");
-        assert_eq!(LowerError::BareGuardExpr { span: sp() }.code(), "L006");
-        assert_eq!(LowerError::ToTextLowering { span: sp() }.code(), "L007");
-        assert_eq!(LowerError::WithOnNonRecord { span: sp() }.code(), "L008");
+        assert_eq!(LowerError::DoublePropagate { span: sp() }.code(), "L104");
+        assert_eq!(LowerError::EmptyTryBlock { span: sp() }.code(), "L105");
+        assert_eq!(LowerError::BareGuardExpr { span: sp() }.code(), "L106");
+        assert_eq!(LowerError::ToTextLowering { span: sp() }.code(), "L107");
+        assert_eq!(LowerError::WithOnNonRecord { span: sp() }.code(), "L108");
         assert_eq!(
             LowerError::RefutableSliceElement { span: sp() }.code(),
-            "L009"
+            "L109"
         );
         assert_eq!(
             LowerError::IntLiteralOutOfRange {
@@ -303,7 +303,7 @@ mod tests {
                 raw: String::new()
             }
             .code(),
-            "L010"
+            "L110"
         );
         assert_eq!(LowerError::UnsolvedTypeInIR { span: sp() }.code(), "L997");
         assert_eq!(LowerError::CapVarInIR { span: sp() }.code(), "L998");
@@ -329,7 +329,7 @@ mod tests {
         let err = LowerError::PropagateOutsideScope { span: sp() };
         let msg = err.to_string();
         assert!(
-            msg.contains("[L003]"),
+            msg.contains("[L103]"),
             "display must contain code prefix; got: {msg}"
         );
     }

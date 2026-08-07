@@ -307,11 +307,11 @@ A `Verified OK` line confirms the archive was signed by the `release.yml` workfl
 | Erlang missing | Exit 1 with `apt` / `brew` / `choco` hint |
 | Erlang/OTP < 26 | Exit 1 with upgrade hint |
 | `git` missing | Exit 1 with `apt` / `brew` / `choco` hint |
-| `git` < 2.20 | Exit 1 with `P008 PkgGitTooOld` message + upgrade hint |
+| `git` < 2.20 | Exit 1 with `P208 PkgGitTooOld` message + upgrade hint |
 | `cargo install` fails | Relay `cargo` stderr; exit 1 |
 | `~/.cargo/bin` permission denied (Linux) | Print `chown -R $(whoami) ~/.cargo/bin` hint |
 | Windows execution policy blocks script | Print `Set-ExecutionPolicy -Scope Process Bypass` hint |
-| Exotic `git` version string (e.g. `Apple Git-143`) | Lenient parse: first `MAJOR.MINOR` match wins; parse failure emits `P009 PkgGitVersionUnparseable` |
+| Exotic `git` version string (e.g. `Apple Git-143`) | Lenient parse: first `MAJOR.MINOR` match wins; parse failure emits `P209 PkgGitVersionUnparseable` |
 | Exotic OTP package (e.g. `esl-erlang`) | If version detection fails, set `SKIP_ERLANG_CHECK=1` (see R10 in the plan) |
 
 ## Pipeline attestation (T16)

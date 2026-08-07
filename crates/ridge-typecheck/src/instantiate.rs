@@ -834,7 +834,7 @@ mod tests {
         ctx.env.pop_frame();
     }
 
-    // ── Record field generalisation (R3 dropped P029) ─────────────────────────
+    // ── Record field generalisation ───────────────────────────────────────────
 
     #[test]
     fn collect_free_vars_walks_record_fields() {

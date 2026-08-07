@@ -7,8 +7,8 @@
 //! # Propagation scope
 //!
 //! The enclosing scope type is read from `ctx.current_propagation_scope()`.
-//! An absent scope emits `L003` (`PropagateOutsideScope`) and returns a
-//! `Unit` stub.  A double-`?` on the inner expression emits `L004`
+//! An absent scope emits `L103` (`PropagateOutsideScope`) and returns a
+//! `Unit` stub.  A double-`?` on the inner expression emits `L104`
 //! (`DoublePropagate`) and then proceeds with lowering the inner.
 //!
 //! # Type-constructor dispatch
@@ -45,17 +45,17 @@ const RESULT_TYCON: TyConId = TyConId(10);
 
 /// Lower `Expr::Propagate { inner, span }` to `IrExpr::Match`.
 ///
-/// Reads the enclosing propagation scope from `ctx`; emits `L003` if absent.
-/// Emits `L004` if `inner` is itself a `Propagate` (double-`?`).
+/// Reads the enclosing propagation scope from `ctx`; emits `L103` if absent.
+/// Emits `L104` if `inner` is itself a `Propagate` (double-`?`).
 /// Never panics.
 pub fn lower_propagate(ctx: &mut LowerCtx<'_>, inner: &Expr, span: Span) -> IrExpr {
-    // ── L004: double-propagate check ─────────────────────────────────────────
+    // ── L104: double-propagate check ─────────────────────────────────────────
     if let Expr::Propagate { .. } = inner {
         ctx.errors.push(LowerError::DoublePropagate { span });
         // Continue — still lower the inner expression to keep the tree valid.
     }
 
-    // ── L003: scope check ─────────────────────────────────────────────────────
+    // ── L103: scope check ─────────────────────────────────────────────────────
     let scope_ty = if let Some(ty) = ctx.current_propagation_scope() {
         ty.clone()
     } else {
@@ -402,10 +402,10 @@ mod tests {
         }
     }
 
-    // ── T7-prop-3: no scope → L003 + Unit stub ───────────────────────────────
+    // ── T7-prop-3: no scope → L103 + Unit stub ───────────────────────────────
 
     #[test]
-    fn propagate_outside_scope_emits_l003() {
+    fn propagate_outside_scope_emits_l103() {
         let mut ctx = fresh_ctx();
         // No scope pushed.
 
@@ -418,7 +418,7 @@ mod tests {
             "expected exactly 1 error; got: {:?}",
             ctx.errors
         );
-        assert_eq!(ctx.errors[0].code(), "L003");
+        assert_eq!(ctx.errors[0].code(), "L103");
 
         match ir {
             IrExpr::Lit {

@@ -918,7 +918,7 @@ match xs
 
 Constraints:
 - At most one `..` per list pattern (`P024 MultipleRestInListPattern`).
-- The elements after the rest (`suffix` and `middle` positions) must be simple bindings or wildcards. A refutable element in a suffix or middle position is rejected at the lowering stage (`L009`).
+- The elements after the rest (`suffix` and `middle` positions) must be simple bindings or wildcards. A refutable element in a suffix or middle position is rejected at the lowering stage (`L109`).
 - Matching a trailing element or binding the middle requires traversing the full list, since lists are singly linked. This is ergonomically convenient, not cheap.
 
 **Record rest patterns** match a constructor carrying at least the named fields, ignoring any others:

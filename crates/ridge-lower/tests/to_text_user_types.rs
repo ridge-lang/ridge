@@ -42,7 +42,7 @@ pub fn greet (f: Foo) -> Text = $"Hi, ${f}"
 }
 
 #[test]
-fn user_type_without_to_text_falls_to_l007() {
+fn user_type_without_to_text_falls_to_l107() {
     let source = r#"
 type Bar = { id: Int }
 
@@ -52,10 +52,10 @@ pub fn show (b: Bar) -> Text = $"id=${b}"
     let tw = make_workspace("user_no_to_text", "Demo", source);
     let result = run_pipeline(&tw.path);
 
-    // The lowering walk should NOT panic; it should emit L007 internally.
+    // The lowering walk should NOT panic; it should emit L107 internally.
     // We do not assert specific behaviour beyond the pipeline finishing —
     // the module may or may not be `Some` depending on how the rest of the
-    // pipeline treats L007. The goal of this test is that the new dispatch
+    // pipeline treats L107. The goal of this test is that the new dispatch
     // path does not blow up when no user `toText` is present.
     let _maybe_module = result.lowered.modules.first().and_then(Option::as_ref);
 }

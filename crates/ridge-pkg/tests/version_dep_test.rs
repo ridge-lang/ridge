@@ -1,4 +1,4 @@
-//! Tests for `P010 PkgVersionDepUnsupported` — registry-based version deps
+//! Tests for `P210 PkgVersionDepUnsupported` — registry-based version deps
 //! are rejected in 0.1.0.
 
 // Test scaffolding legitimately uses unwrap/expect on infallible fixtures.
@@ -9,9 +9,9 @@ use std::fs;
 use tempfile::TempDir;
 
 /// A `workspace = true` dep that maps to a `version = "1.0"` shared dep must
-/// return `P010`, not a confusing `P101` path-resolution error.
+/// return `P210`, not a confusing `P101` path-resolution error.
 #[test]
-fn version_dep_via_workspace_returns_p010() {
+fn version_dep_via_workspace_returns_p210() {
     let tmp = TempDir::new().unwrap();
 
     // Workspace manifest with a shared version-only dep.
@@ -57,12 +57,12 @@ mylib = { workspace = true }
 
     let result = ridge_pkg::resolve_dependencies(&workspace, &app_manifest, cache_tmp.path());
     let Err(err) = result else {
-        panic!("expected Err(P010) for version-only workspace dep, got Ok")
+        panic!("expected Err(P210) for version-only workspace dep, got Ok")
     };
 
     assert_eq!(
         err.code(),
-        "P010",
-        "expected P010 for version-only workspace dep, got: {err}"
+        "P210",
+        "expected P210 for version-only workspace dep, got: {err}"
     );
 }

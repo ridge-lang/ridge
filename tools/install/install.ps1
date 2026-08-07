@@ -194,7 +194,7 @@ error: Erlang/OTP $otpVer is too old; Ridge requires OTP $MinOtp or newer.
 }
 
 # ── Step 5: Verify git >= 2.20 ────────────────────────────────────────────────
-# Uses same rejection message as ridge-pkg's P008 PkgGitTooOld.
+# Uses same rejection message as ridge-pkg's P208 PkgGitTooOld.
 $MinGit = '2.20'
 try {
     $gitOut = & git --version 2>&1
@@ -215,12 +215,12 @@ if ($gitOut -match '(\d+\.\d+)') {
     $gitVer = $Matches[1]
 }
 else {
-    throw "error: could not parse git version from: $gitOut  (P009 PkgGitVersionUnparseable)"
+    throw "error: could not parse git version from: $gitOut  (P209 PkgGitVersionUnparseable)"
 }
 
 if (-not (Compare-Version $gitVer $MinGit)) {
     throw @"
-error: git $gitVer is too old; Ridge requires git $MinGit or newer. (P008 PkgGitTooOld)
+error: git $gitVer is too old; Ridge requires git $MinGit or newer. (P208 PkgGitTooOld)
 
   Upgrade git via Chocolatey:
     choco upgrade git

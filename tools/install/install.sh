@@ -164,7 +164,7 @@ if [ "$otp_ver" -lt "$MIN_OTP" ]; then
 fi
 
 # ── Step 5: Verify git ≥ 2.20 ────────────────────────────────────────────────
-# Uses the same rejection message as ridge-pkg's P008 PkgGitTooOld.
+# Uses the same rejection message as ridge-pkg's P208 PkgGitTooOld.
 MIN_GIT="2.20"
 if ! git_out="$(git --version 2>&1)"; then
     echo "error: git not found — git is not installed." >&2
@@ -191,12 +191,12 @@ fi
 git_ver="$(echo "$git_out" | grep -oE '[0-9]+\.[0-9]+' | head -1)"
 if [ -z "$git_ver" ]; then
     echo "error: could not parse git version from: $git_out" >&2
-    echo "  (P009 PkgGitVersionUnparseable)" >&2
+    echo "  (P209 PkgGitVersionUnparseable)" >&2
     exit 1
 fi
 if ! version_ge "$git_ver" "$MIN_GIT"; then
-    # P008 PkgGitTooOld — same message as ridge-pkg
-    echo "error: git $git_ver is too old; Ridge requires git $MIN_GIT or newer. (P008 PkgGitTooOld)" >&2
+    # P208 PkgGitTooOld — same message as ridge-pkg
+    echo "error: git $git_ver is too old; Ridge requires git $MIN_GIT or newer. (P208 PkgGitTooOld)" >&2
     echo "" >&2
     case "$PLATFORM" in
         linux)

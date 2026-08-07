@@ -1351,7 +1351,7 @@ fn field_pattern_to_pair(ctx: &mut LowerCtx<'_>, fp: &FieldPattern) -> (String, 
 ///
 /// Numeric literals share the expression-site parsers from [`crate::core`], so
 /// base prefixes are case-insensitive and out-of-range values are reported as
-/// `L010` instead of silently collapsing to zero.
+/// `L110` instead of silently collapsing to zero.
 fn literal_to_ir_lit(ctx: &mut LowerCtx<'_>, lit: &Literal) -> ridge_ir::IrLit {
     let span = lit.span();
     match lit {
@@ -1504,10 +1504,10 @@ mod tests {
         }
     }
 
-    /// An out-of-range integer literal in a pattern reports `L010` instead of
+    /// An out-of-range integer literal in a pattern reports `L110` instead of
     /// silently matching zero.
     #[test]
-    fn literal_pattern_int_out_of_range_is_l010() {
+    fn literal_pattern_int_out_of_range_is_l110() {
         let mut ctx = fresh_ctx();
         let pat = Pattern::Literal {
             lit: Literal::IntDec {
@@ -1523,7 +1523,7 @@ mod tests {
             "expected IntLiteralOutOfRange, got {:?}",
             ctx.errors[0]
         );
-        assert_eq!(ctx.errors[0].code(), "L010");
+        assert_eq!(ctx.errors[0].code(), "L110");
         assert!(
             matches!(
                 ir,
@@ -1773,9 +1773,9 @@ mod tests {
     }
 
     // A refutable element in a slice suffix/middle position must be rejected
-    // with L009 (the 0.2.8 restriction): `[.., 0]` has a literal in the suffix.
+    // with L109 (the 0.2.8 restriction): `[.., 0]` has a literal in the suffix.
     #[test]
-    fn lower_match_refutable_slice_suffix_emits_l009() {
+    fn lower_match_refutable_slice_suffix_emits_l109() {
         use ridge_ast::ListPatElem;
 
         let mut ctx = fresh_ctx();
@@ -1816,7 +1816,7 @@ mod tests {
             ctx.errors
                 .iter()
                 .any(|e| matches!(e, LowerError::RefutableSliceElement { .. })),
-            "expected L009 RefutableSliceElement for a literal in suffix position, got: {:?}",
+            "expected L109 RefutableSliceElement for a literal in suffix position, got: {:?}",
             ctx.errors
         );
     }

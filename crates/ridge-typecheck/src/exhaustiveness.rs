@@ -549,7 +549,7 @@ fn recordify_witness(w: &WitnessPat, arena: &TyConArena) -> WitnessPat {
 /// exhaustiveness matrix.
 ///
 /// Suffix and middle-rest elements are required to be irrefutable (enforced at
-/// lowering by `L009`), so a pattern like `[a, .., b]` constrains only its first
+/// lowering by `L109`), so a pattern like `[a, .., b]` constrains only its first
 /// element and a minimum length — it is equivalent to `a :: _ :: _`. We replace
 /// each suffix element with a wildcard in prefix position and terminate with a
 /// wildcard tail (for `..`) or `[]` (for a fixed-length list). This keeps every

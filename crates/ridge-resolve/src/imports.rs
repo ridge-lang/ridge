@@ -420,6 +420,7 @@ fn check_project_export_visibility(
 
     // Check public globs first.
     let public_ok = target_project
+        .manifest
         .exports_public
         .iter()
         .any(|g| g.matches(target_fqn));
@@ -431,12 +432,13 @@ fn check_project_export_visibility(
     // Both projects share the same first dotted segment AND target's
     // exports_internal glob matches the target module FQN.
     let from_project = ws.projects.get(from_project_id.0 as usize)?;
-    let from_ns = first_segment(&from_project.name);
-    let target_ns = first_segment(&target_project.name);
+    let from_ns = first_segment(&from_project.manifest.name);
+    let target_ns = first_segment(&target_project.manifest.name);
 
     if from_ns == target_ns {
         // Same top-level namespace — check internal globs.
         let internal_ok = target_project
+            .manifest
             .exports_internal
             .iter()
             .any(|g| g.matches(target_fqn));
@@ -448,7 +450,7 @@ fn check_project_export_visibility(
     // Neither public nor internal — R007.
     Some(ResolveError::ProjectExportViolation {
         target: target_fqn.clone(),
-        target_project: target_project.name.clone(),
+        target_project: target_project.manifest.name.clone(),
         span,
     })
 }
@@ -735,15 +737,15 @@ fn validate_project_dependencies(
     all_projects: &[Project],
     errors: &mut Vec<ManifestError>,
 ) {
-    for dep in &project.dependencies {
+    for dep in &project.manifest.dependencies {
         match dep {
             ProjectDependency::WorkspaceMember { member, .. } => {
                 // M013: member name must match an existing project.
-                let exists = all_projects.iter().any(|p| &p.name == member);
+                let exists = all_projects.iter().any(|p| &p.manifest.name == member);
                 if !exists {
                     errors.push(ManifestError::UnknownWorkspaceMember {
                         name: member.clone(),
-                        path: project.manifest_path.clone(),
+                        path: project.manifest.manifest_path.clone(),
                     });
                 }
             }
@@ -756,7 +758,7 @@ fn validate_project_dependencies(
                 if !exists {
                     errors.push(ManifestError::WorkspaceDependencyAbsent {
                         name: local_name.clone(),
-                        path: project.manifest_path.clone(),
+                        path: project.manifest.manifest_path.clone(),
                     });
                 }
             }

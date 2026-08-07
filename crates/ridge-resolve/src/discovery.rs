@@ -124,15 +124,15 @@ pub fn discover_workspace(root: &Path) -> DiscoveryResult {
         };
 
         // M010 — duplicate project name.
-        if let Some(first_path) = project_name_seen.get(&project.name) {
+        if let Some(first_path) = project_name_seen.get(&project.manifest.name) {
             manifest_errors.push(ManifestError::DuplicateProjectName {
-                name: project.name.clone(),
+                name: project.manifest.name.clone(),
                 first: first_path.clone(),
                 second: proj_manifest_path.clone(),
             });
             continue;
         }
-        project_name_seen.insert(project.name.clone(), proj_manifest_path.clone());
+        project_name_seen.insert(project.manifest.name.clone(), proj_manifest_path.clone());
 
         // M017 — check path dependencies for workspace escapes.
         check_path_dependency_escapes(&project, &workspace_root, &mut manifest_errors);
@@ -145,7 +145,7 @@ pub fn discover_workspace(root: &Path) -> DiscoveryResult {
     let mut next_module_id: u32 = 0;
 
     for project in &projects {
-        let src_root = &project.src_root;
+        let src_root = &project.manifest.src_root;
         if !src_root.is_dir() {
             // Missing src_root is not a fatal error — the project simply has no modules.
             continue;
@@ -153,7 +153,7 @@ pub fn discover_workspace(root: &Path) -> DiscoveryResult {
         walk_src_root(
             src_root,
             src_root,
-            &project.name,
+            &project.manifest.name,
             project.id,
             &mut next_module_id,
             &mut modules,
@@ -248,24 +248,30 @@ pub fn discover_standalone(files: &[PathBuf]) -> WorkspaceGraph {
         let project_name = format!("standalone{i}");
         let src_root = file.parent().map_or_else(|| root.clone(), Path::to_owned);
 
+        // A loose file has no `ridge.toml`, so the manifest is synthesised
+        // rather than parsed. Everything a real one would carry still has to be
+        // decided here, which is why it is spelled out.
         projects.push(crate::manifest::Project {
             id: project_id,
-            name: project_name.clone(),
-            version: "0.0.0".to_owned(),
-            // Library imposes no entry-point requirement, the right default for
-            // a scratch file.
-            kind: crate::manifest::ProjectKind::Library,
-            manifest_path: src_root.join("ridge.toml"),
-            src_root,
-            // A loose file has no manifest, so nothing declares an entry.
-            entry: None,
-            exports_public: Vec::new(),
-            exports_internal: Vec::new(),
-            dependencies: Vec::new(),
-            // None = inherit (no project whitelist), so R016 never fires on a
-            // loose file — it may use any capability, like a minimal project.
-            capabilities_allow: None,
-            capabilities_deny: Vec::new(),
+            manifest: crate::manifest::ProjectManifest {
+                name: project_name.clone(),
+                version: "0.0.0".to_owned(),
+                // Library imposes no entry-point requirement, the right default
+                // for a scratch file.
+                kind: crate::manifest::ProjectKind::Library,
+                manifest_path: src_root.join("ridge.toml"),
+                src_root,
+                // Nothing declares an entry when there is no manifest.
+                entry: None,
+                exports_public: Vec::new(),
+                exports_internal: Vec::new(),
+                dependencies: Vec::new(),
+                // None = inherit (no project whitelist), so R016 never fires on
+                // a loose file — it may use any capability, like a minimal
+                // project.
+                capabilities_allow: None,
+                capabilities_deny: Vec::new(),
+            },
         });
 
         modules.push(ModuleMetadata {
@@ -446,16 +452,17 @@ fn check_path_dependency_escapes(
     errors: &mut Vec<ManifestError>,
 ) {
     let manifest_dir = project
+        .manifest
         .manifest_path
         .parent()
-        .unwrap_or(&project.manifest_path);
+        .unwrap_or(&project.manifest.manifest_path);
 
     // Canonicalize workspace_root once for comparison.
     let canonical_ws = workspace_root
         .canonicalize()
         .unwrap_or_else(|_| workspace_root.to_owned());
 
-    for dep in &project.dependencies {
+    for dep in &project.manifest.dependencies {
         if let ProjectDependency::Path {
             path,
             local_name: _,
@@ -468,7 +475,7 @@ fn check_path_dependency_escapes(
             if !canonical.starts_with(&canonical_ws) {
                 errors.push(ManifestError::RelativePathEscapesWorkspace {
                     path: path.to_string_lossy().into_owned(),
-                    manifest: project.manifest_path.clone(),
+                    manifest: project.manifest.manifest_path.clone(),
                 });
             }
         }
@@ -754,7 +761,7 @@ root = "{src_root}"
         assert!(graph
             .projects
             .iter()
-            .all(|p| p.capabilities_allow.is_none()));
+            .all(|p| p.manifest.capabilities_allow.is_none()));
     }
 
     #[test]

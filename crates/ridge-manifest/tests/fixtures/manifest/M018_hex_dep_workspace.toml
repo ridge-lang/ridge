@@ -1,0 +1,7 @@
+[workspace]
+name = "acme"
+version = "0.1.0"
+members = ["apps/*"]
+
+[workspace.dependencies]
+json = { hex = "1.0" }

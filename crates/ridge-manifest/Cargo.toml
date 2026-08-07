@@ -17,12 +17,6 @@ serde.workspace = true
 globset.workspace = true
 
 [dev-dependencies]
-# Parity guard-rail: while `ridge-resolve` retains its own copy of the manifest
-# parser (deferred wiring), the
-# parity_test integration test parses the same fixtures with both parsers and
-# asserts structural equivalence.  Removed once T2 lands and ridge-resolve
-# re-exports from ridge-manifest.
-ridge-resolve = { path = "../ridge-resolve" }
 
 [lints]
 workspace = true

@@ -380,7 +380,7 @@ pub fn resolve_workspace_with(ws: WorkspaceGraph, retain_indices: bool) -> Resol
         let project = &ws.projects[project_idx];
         symbol::apply_external_exports(
             &mut table,
-            &project.exports_public,
+            &project.manifest.exports_public,
             &ws.modules[pm.id.0 as usize].fully_qualified_name,
         );
 
@@ -512,14 +512,15 @@ fn unmatched_export_patterns(ws: &WorkspaceGraph, out: &mut Vec<ManifestError>) 
             .collect();
 
         for pat in project
+            .manifest
             .exports_public
             .iter()
-            .chain(project.exports_internal.iter())
+            .chain(project.manifest.exports_internal.iter())
         {
             if !fqns.iter().any(|fqn| pat.matches(fqn)) {
                 out.push(ManifestError::ExportNotFound {
                     name: pat.raw.clone(),
-                    manifest_path: project.manifest_path.clone(),
+                    manifest_path: project.manifest.manifest_path.clone(),
                 });
             }
         }
@@ -540,7 +541,7 @@ fn check_declared_entries(
     out: &mut Vec<ManifestError>,
 ) {
     for project in &ws.projects {
-        let Some(entry) = &project.entry else {
+        let Some(entry) = project.manifest.entry_path() else {
             continue;
         };
         let entry_display = entry.display().to_string();
@@ -551,17 +552,17 @@ fn check_declared_entries(
         let Some(module) = ws
             .modules
             .iter()
-            .find(|m| m.file_path == *entry || paths_agree(&m.file_path, entry))
+            .find(|m| m.file_path == entry || paths_agree(&m.file_path, &entry))
         else {
             out.push(ManifestError::EntryModuleNotFound {
                 entry: entry_display,
-                manifest_path: project.manifest_path.clone(),
+                manifest_path: project.manifest.manifest_path.clone(),
             });
             continue;
         };
 
         if !matches!(
-            project.kind,
+            project.manifest.kind,
             manifest::ProjectKind::App | manifest::ProjectKind::Service
         ) {
             continue;
@@ -591,7 +592,7 @@ fn check_declared_entries(
         if !declares_main {
             out.push(ManifestError::EntryHasNoMain {
                 entry: entry_display,
-                manifest_path: project.manifest_path.clone(),
+                manifest_path: project.manifest.manifest_path.clone(),
             });
         }
     }
@@ -718,7 +719,7 @@ pub fn resolve_module_incremental(
         // answered by the workspace pass, not on an incremental re-resolve.
         symbol::apply_external_exports(
             &mut edited_symbols,
-            &project.exports_public,
+            &project.manifest.exports_public,
             &cached.graph.modules[ei].fully_qualified_name,
         );
     }

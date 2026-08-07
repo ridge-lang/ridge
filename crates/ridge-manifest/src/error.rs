@@ -1,10 +1,10 @@
-//! Manifest error types — `M001`–`M020`.
+//! Manifest error types — `M001`–`M022`.
 //!
 //! Error codes are **stable across releases** — downstream tooling (LSP,
 //! `ariadne` renderer) keys on these strings.  Never renumber an assigned
 //! code; only append new ones at the end.
 //!
-//! ## `ManifestError` (M001..M020)
+//! ## `ManifestError` (M001..M022)
 //!
 //! Produced while parsing workspace / project manifest files (`ridge.toml`).
 //! Manifest errors do NOT carry a `Span` (manifests are not `.ridge` source);
@@ -30,7 +30,7 @@ use ridge_ast::Span;
 /// future versions (e.g. M021+).  Match arms outside this crate must include
 /// a wildcard (`_`) arm.
 #[non_exhaustive]
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum ManifestError {
     /// M001 — the manifest TOML could not be parsed.
     #[error("TOML parse error in `{path}`: {message}")]
@@ -215,6 +215,38 @@ pub enum ManifestError {
         /// Path of the project manifest.
         manifest_path: PathBuf,
     },
+
+    /// M021 — `entry` names a file that is not a module of the project.
+    ///
+    /// Either the path is wrong, or the file sits outside the project's source
+    /// root and so was never walked. A misnamed entry used to be silent: the
+    /// key was validated for presence and then dropped, so nothing ever
+    /// compared it against the modules that were found.
+    ///
+    /// Raised by the resolve pass, which is the first place the manifest and
+    /// the module list are both in hand — the parser cannot see the modules.
+    #[error("entry `{entry}` in `{manifest_path}` is not a module of this project")]
+    EntryModuleNotFound {
+        /// The entry path as resolved against the manifest's directory.
+        entry: String,
+        /// Path of the project manifest.
+        manifest_path: PathBuf,
+    },
+
+    /// M022 — the module named by `entry` declares no `main`.
+    ///
+    /// An `app` or a `service` is started by calling `main` on its entry
+    /// module. Without one there is nothing to call, and the failure used to
+    /// surface as a runtime crash at startup rather than a compile error.
+    ///
+    /// Raised by the resolve pass, for the same reason as `M021`.
+    #[error("entry module `{entry}` in `{manifest_path}` declares no `main`")]
+    EntryHasNoMain {
+        /// The entry path as resolved against the manifest's directory.
+        entry: String,
+        /// Path of the project manifest.
+        manifest_path: PathBuf,
+    },
 }
 
 impl ManifestError {
@@ -244,6 +276,8 @@ impl ManifestError {
             Self::HexDependencyUsedIn010 { .. } => "M018",
             Self::UnknownManifestKey { .. } => "M019",
             Self::ExportNotFound { .. } => "M020",
+            Self::EntryModuleNotFound { .. } => "M021",
+            Self::EntryHasNoMain { .. } => "M022",
         }
     }
 

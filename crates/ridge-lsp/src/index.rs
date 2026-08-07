@@ -918,9 +918,11 @@ impl WorkspaceIndex {
             module_fqns[i].clone_from(&module.fully_qualified_name);
             // `graph.projects` is indexed by `ProjectId.0`.
             if let Some(project) = resolved.graph.projects.get(module.project.0 as usize) {
-                module_project_names[i].clone_from(&project.name);
-                module_runnable[i] =
-                    matches!(project.kind, ProjectKind::App | ProjectKind::Service);
+                module_project_names[i].clone_from(&project.manifest.name);
+                module_runnable[i] = matches!(
+                    project.manifest.kind,
+                    ProjectKind::App | ProjectKind::Service
+                );
             }
             if let Some(text) = sources.text(source_id.as_str()) {
                 module_text[i] = Arc::from(text);

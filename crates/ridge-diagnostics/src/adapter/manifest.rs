@@ -1,7 +1,8 @@
 //! `Diagnostic::from_manifest` adapter for `ridge-resolve::ManifestError`.
 
 use ridge_ast::Span;
-use ridge_resolve::{ManifestError, Severity};
+use ridge_manifest::ManifestError;
+use ridge_resolve::Severity;
 
 use crate::diagnostic::{Diagnostic, SourceId};
 

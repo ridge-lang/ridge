@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Every test `ridge test` refuses to run now says which rule it broke. Three rejections reached the terminal as hand-written lines that bypassed the error type owning them, and one of the three carried no code at all — nothing to search for, nothing to hand to `ridge explain`. A test whose return type is not `Result Unit Text` reports `C305`, and one that declares no return type at all reports `C306`, which used to arrive as `C305`'s message telling a signature its return type was unsupported when it had not declared one. Neither message offers `Bool` as the alternative: it still works, but `C303` deprecates it in the same run, and one message should not push what another is retiring. The two test advisories also print as one line again — `C303` and `C304` had a run of source indentation baked into their text.
+
 ### Added
 
 - `ridge explain <CODE>` says what a diagnostic code means. Until now the code printed next to an error was a dead end: the meaning lived in the source of whichever crate declared it. All 242 codes the compiler can emit now carry a line saying what went wrong and which part of the compiler reports it, and this is the command that reads it back. `ridge explain T031` answers, and so do `t031` and the `[T031]` that a copy-paste off the terminal actually produces; `ridge explain --list` prints the whole table; and it needs no project around it, since the moment you most want to look a code up is while your workspace is the thing that is broken. Every code answers — there is no "no extended information available" case, because a code with no entry fails the build. A rendered batch of diagnostics now closes with one line naming the command and a code from that batch, rather than repeating an invitation under every error. The same table is published as `docs/diagnostics.md`, generated from it with a heading per code, and that is where an editor's diagnostic link now points: the code beside a squiggle became something you can click.

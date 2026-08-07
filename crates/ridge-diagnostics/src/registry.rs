@@ -234,6 +234,18 @@ pub const REGISTRY: &[CodeEntry] = &[
         summary: "A test was found by its `test_` prefix rather than `@test`.",
     },
     CodeEntry {
+        code: "C305",
+        variants: &["TestReturnTypeInvalid"],
+        owner: "ridge-cli",
+        summary: "A test declares a return type other than `Result Unit Text`.",
+    },
+    CodeEntry {
+        code: "C306",
+        variants: &["TestReturnTypeMissing"],
+        owner: "ridge-cli",
+        summary: "A test declares no return type, so the runner cannot check it.",
+    },
+    CodeEntry {
         code: "C401",
         variants: &["MigrateModelMissing"],
         owner: "ridge-cli",

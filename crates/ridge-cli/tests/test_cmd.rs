@@ -185,6 +185,81 @@ fn test_arity_invalid() {
         .stderr(contains("C301 TestArityInvalid"));
 }
 
+// ── Test 6b: the two return-type rejections — C305 / C306 (un-gated) ─────────
+
+/// A declared return type that is not the contract is `C305`.
+///
+/// The message deliberately does not offer `Bool` as an alternative: it is
+/// still accepted, but `C303` deprecates it in the same run, and one message
+/// should not push what another is retiring.
+#[test]
+fn a_wrong_return_type_reports_c305() {
+    let src = "pub fn test_returns_int -> Int = 1\n";
+    let tw = make_test_workspace("Demo", src);
+
+    ridge_cmd()
+        .arg("test")
+        .current_dir(&tw.path)
+        .assert()
+        .failure()
+        .stderr(contains("C305 TestReturnTypeInvalid"))
+        .stderr(contains("must return Result Unit Text"))
+        .stderr(contains("Bool").not());
+}
+
+/// No declared return type is `C306`, not `C305`.
+///
+/// The two used to share one message, which told this case its return type was
+/// unsupported — of a signature that declares none. Discovery reads the
+/// declared signature, not the inferred type, so the remedy is to write one.
+#[test]
+fn a_missing_return_type_reports_c306() {
+    let src = "pub fn test_unannotated = Ok ()\n";
+    let tw = make_test_workspace("Demo", src);
+
+    ridge_cmd()
+        .arg("test")
+        .current_dir(&tw.path)
+        .assert()
+        .failure()
+        .stderr(contains("C306 TestReturnTypeMissing"))
+        .stderr(contains("declares no return type"))
+        .stderr(contains("C305").not());
+}
+
+/// Every rejection carries a code a reader can look up.
+///
+/// The point of the check is the negative: `ridge test` used to report one of
+/// these three with no code at all, which leaves nothing to search for and
+/// nothing to hand to `ridge explain`.
+#[test]
+fn every_rejection_carries_a_code() {
+    let src = "pub fn test_takes_arg (x: Int) -> Result Unit Text = Ok ()\n\
+               pub fn test_returns_int -> Int = 1\n\
+               pub fn test_unannotated = Ok ()\n";
+    let tw = make_test_workspace("Demo", src);
+
+    let out = ridge_cmd()
+        .arg("test")
+        .current_dir(&tw.path)
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let stderr = String::from_utf8_lossy(&out);
+
+    for line in stderr.lines().filter(|l| l.starts_with("error: ")) {
+        let code = line.trim_start_matches("error: ").split(' ').next();
+        assert!(
+            matches!(code, Some(c) if c.len() == 4
+                && c.starts_with('C')
+                && c[1..].chars().all(|ch| ch.is_ascii_digit())),
+            "a rejection reached the terminal with no code: {line}"
+        );
+    }
+}
+
 // ── Test 7: test_no_tests_discovered — exit 0 + notice (un-gated) ─────────────
 
 /// `ridge test` exits 0 with a "no tests discovered" notice when no `test_*`

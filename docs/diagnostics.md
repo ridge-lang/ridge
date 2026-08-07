@@ -136,6 +136,14 @@ A discovered test returns `Bool` rather than `Result Unit Text`.
 
 A test was found by its `test_` prefix rather than `@test`.
 
+### C305
+
+A test declares a return type other than `Result Unit Text`.
+
+### C306
+
+A test declares no return type, so the runner cannot check it.
+
 ### C401
 
 `<src_root>/migrations/Model.ridge` is missing.

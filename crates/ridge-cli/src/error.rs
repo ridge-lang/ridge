@@ -5,7 +5,7 @@
 //! user's invocation.
 //!
 //! The CLI owns `C005`–`C008`, `C011`, `C102`–`C105`, `C201`–`C205`,
-//! `C301`–`C304`, `C401`, `C403`–`C409`, `C501`–`C505` and `C601`. It does not own
+//! `C301`–`C306`, `C401`, `C403`–`C409`, `C501`–`C505` and `C601`. It does not own
 //! `C001` or the runtime-launch codes: those are the driver's, and
 //! [`CliError`] forwards them rather than restating them, because a code
 //! restated in a second crate is a code with a second wording.
@@ -144,6 +144,26 @@ pub enum CliError {
     ///
     /// FFI tests are not permitted in `ridge test` 0.1.0 (per D017 / §1.3 #9).
     TestCapabilityForbidden {
+        /// The qualified name of the test function.
+        qualified_name: String,
+    },
+
+    /// `C305` — a test declares a return type the runner cannot use.
+    ///
+    /// Separate from [`Self::TestReturnTypeMissing`] because the remedy is: the
+    /// annotation is there and has to change, rather than not being there at
+    /// all. Both used to arrive as one untyped message that told the second
+    /// case its return type was unsupported when it had not declared one.
+    TestReturnTypeInvalid {
+        /// The qualified name of the test function.
+        qualified_name: String,
+    },
+
+    /// `C306` — a test declares no return type, so the runner cannot check it.
+    ///
+    /// `ridge test` reads the declared signature, not the inferred type, so an
+    /// unannotated test is rejected rather than accepted on inference.
+    TestReturnTypeMissing {
         /// The qualified name of the test function.
         qualified_name: String,
     },
@@ -291,6 +311,8 @@ impl CliError {
             Self::CwdUnreadable { .. } => "C205",
             Self::TestArityInvalid { .. } => "C301",
             Self::TestCapabilityForbidden { .. } => "C302",
+            Self::TestReturnTypeInvalid { .. } => "C305",
+            Self::TestReturnTypeMissing { .. } => "C306",
             Self::MigrateModelMissing { .. } => "C401",
             Self::MigrateCompileFailed => "C403",
             Self::MigrateInternal { .. } => "C404",
@@ -383,11 +405,14 @@ impl fmt::Display for CliWarning {
         match self {
             Self::BoolTestDeprecated { qualified_name } => write!(
                 f,
-                "warning: {c} BoolTestDeprecated: '{qualified_name}' returns Bool (deprecated);                  -- migrate: change return type to Result Unit Text;                  replace 'true' with 'Ok ()' and 'false' with 'Err \"<reason>\"'"
+                "warning: {c} BoolTestDeprecated: '{qualified_name}' returns Bool (deprecated); \
+                 migrate: change the return type to Result Unit Text, and replace \
+                 'true' with 'Ok ()' and 'false' with 'Err \"<reason>\"'"
             ),
             Self::PrefixTestDeprecated { module, name } => write!(
                 f,
-                "warning: {c} PrefixTestDeprecated: '{module}.{name}' uses the deprecated `test_`                  prefix; add `@test \"{stem}\"` above the function and remove the prefix in 0.3.0",
+                "warning: {c} PrefixTestDeprecated: '{module}.{name}' uses the deprecated `test_` \
+                 prefix; add `@test \"{stem}\"` above the function and remove the prefix in 0.3.0",
                 stem = name.strip_prefix("test_").unwrap_or(name)
             ),
         }
@@ -489,6 +514,19 @@ impl fmt::Display for CliError {
                 f,
                 "C302 TestCapabilityForbidden: '{qualified_name}' declares the 'ffi' capability; \
                  ffi tests are not permitted in ridge test 0.1.0"
+            ),
+            // Neither message offers `Bool` as an alternative. It is still
+            // accepted, but C303 deprecates it in the same run - pointing a
+            // reader at it here would be one message undoing another.
+            Self::TestReturnTypeInvalid { qualified_name } => write!(
+                f,
+                "C305 TestReturnTypeInvalid: '{qualified_name}' returns a type the test runner \
+                 cannot use; a test must return Result Unit Text"
+            ),
+            Self::TestReturnTypeMissing { qualified_name } => write!(
+                f,
+                "C306 TestReturnTypeMissing: '{qualified_name}' declares no return type; \
+                 add `-> Result Unit Text`"
             ),
             Self::MigrateModelMissing { path } => write!(
                 f,
@@ -592,6 +630,8 @@ mod tests {
             | CliError::LegacyRgFile { .. }
             | CliError::TestArityInvalid { .. }
             | CliError::TestCapabilityForbidden { .. }
+            | CliError::TestReturnTypeInvalid { .. }
+            | CliError::TestReturnTypeMissing { .. }
             | CliError::MigrateModelMissing { .. }
             | CliError::MigrateCompileFailed
             | CliError::MigrateInternal { .. }
@@ -643,6 +683,12 @@ mod tests {
                 qualified_name: "M.test_x".into(),
             },
             CliError::TestCapabilityForbidden {
+                qualified_name: "M.test_x".into(),
+            },
+            CliError::TestReturnTypeInvalid {
+                qualified_name: "M.test_x".into(),
+            },
+            CliError::TestReturnTypeMissing {
                 qualified_name: "M.test_x".into(),
             },
             CliError::MigrateModelMissing {

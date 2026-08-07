@@ -17,10 +17,11 @@
 //!    - `ffi` cap declared → `C302 TestCapabilityForbidden` (skip, count as failure).
 //!    - Return type `Bool` → `C303 BoolTestDeprecated` warning (still run).
 //!    - Return type `Result Unit Text` → run.
-//!    - Anything else      → failure (invalid test return type).
+//!    - Another return type → `C305 TestReturnTypeInvalid` (skip, count as failure).
+//!    - No return type     → `C306 TestReturnTypeMissing` (skip, count as failure).
 //! 4. Apply `--filter` glob matching against `Module.test_fn_name`.
 //! 5. If no tests survive filtering → print "no tests discovered" and exit 0.
-//! 6. If every surviving test is a validation failure (C301/C302/etc.) → report
+//! 6. If every surviving test is a validation failure (C301, C302, C305, C306) → report
 //!    them and exit 1 WITHOUT invoking erlc.  This is what lets the unit tests
 //!    `test_arity_invalid` / `test_ffi_rejection` run in environments where OTP
 //!    is not installed.
@@ -175,7 +176,7 @@ pub fn execute(args: &TestArgs, cwd: &Path) -> Result<(), CliError> {
     }
 
     // ── 5. Early-exit if no test can actually run ─────────────────────────────
-    // If every surviving test is a validation failure (C301/C302/InvalidReturn),
+    // If every surviving test is a validation failure (C301, C302, C305, C306),
     // there is nothing to spawn — report them and exit 1 WITHOUT invoking erlc.
     // This keeps `ridge test` usable on agents where OTP is not installed
     // (cf. test_cmd::test_arity_invalid / test_ffi_rejection).
@@ -271,8 +272,9 @@ enum Slot {
 /// appropriate code.
 ///
 /// Validation-failure classifications (`ArityInvalid`,
-/// `CapabilityForbidden`, `InvalidReturnType`) and the `BoolDeprecated`
-/// notice are emitted up front so the order matches the input slice.
+/// `CapabilityForbidden`, `ReturnTypeInvalid`, `ReturnTypeMissing`) and the
+/// `BoolDeprecated` notice are emitted up front so the order matches the
+/// input slice.
 /// Canonical / Bool tests are dispatched to a worker pool of up to `jobs`
 /// concurrent BEAM children.  Workers print their result live as soon as
 /// the head of the input-ordered queue is ready, so the per-test
@@ -296,35 +298,38 @@ fn run_tests_and_report(
     let slots: Vec<Slot> = tests
         .iter()
         .map(|test| match &test.classification {
-            TestClassification::ArityInvalid => {
-                eprintln!(
-                    "error: C301 TestArityInvalid: '{}' must have zero parameters",
-                    test.qualified_name
-                );
-                failed += 1;
-                skipped += 1;
-                Slot::Skip
-            }
-            TestClassification::CapabilityForbidden => {
-                eprintln!(
-                    "error: C302 TestCapabilityForbidden: '{}' declares the 'ffi' capability; \
-                     ffi tests are not permitted in ridge test 0.1.0",
-                    test.qualified_name
-                );
-                failed += 1;
-                skipped += 1;
-                Slot::Skip
-            }
-            TestClassification::InvalidReturnType => {
-                eprintln!(
-                    "error: '{}' has an unsupported return type; \
-                     test functions must return 'Result Unit Text' or 'Bool'",
-                    test.qualified_name
-                );
-                failed += 1;
-                skipped += 1;
-                Slot::Skip
-            }
+            // Each rejection is built, not spelled out: the message and its
+            // code live once, in `CliError`, where `code()` and `Display` take
+            // the prefix from the same place. The warning arms below already
+            // worked this way; these three were the last hand-written ones.
+            TestClassification::ArityInvalid => reject(
+                &CliError::TestArityInvalid {
+                    qualified_name: test.qualified_name.clone(),
+                },
+                &mut failed,
+                &mut skipped,
+            ),
+            TestClassification::CapabilityForbidden => reject(
+                &CliError::TestCapabilityForbidden {
+                    qualified_name: test.qualified_name.clone(),
+                },
+                &mut failed,
+                &mut skipped,
+            ),
+            TestClassification::ReturnTypeInvalid => reject(
+                &CliError::TestReturnTypeInvalid {
+                    qualified_name: test.qualified_name.clone(),
+                },
+                &mut failed,
+                &mut skipped,
+            ),
+            TestClassification::ReturnTypeMissing => reject(
+                &CliError::TestReturnTypeMissing {
+                    qualified_name: test.qualified_name.clone(),
+                },
+                &mut failed,
+                &mut skipped,
+            ),
             TestClassification::BoolDeprecated => {
                 eprintln!(
                     "{}",
@@ -549,8 +554,24 @@ enum TestClassification {
     ArityInvalid,
     /// `ffi` capability declared — C302 error (skip, count as failure).
     CapabilityForbidden,
-    /// Return type is neither `Result Unit Text` nor `Bool`.
-    InvalidReturnType,
+    /// A declared return type that is neither `Result Unit Text` nor `Bool` —
+    /// C305 error (skip, count as failure).
+    ReturnTypeInvalid,
+    /// No declared return type — C306 error (skip, count as failure).
+    ReturnTypeMissing,
+}
+
+/// Report a discovered test the runner will not run, and count it.
+///
+/// `err` renders itself, code included, so the four rejection arms differ only
+/// in which error they build. The counters keep the behaviour the hand-written
+/// arms had: a rejected test raises both, because it is a failure and it did
+/// not run.
+fn reject(err: &CliError, failed: &mut usize, skipped: &mut usize) -> Slot {
+    eprintln!("error: {err}");
+    *failed += 1;
+    *skipped += 1;
+    Slot::Skip
 }
 
 /// A test function discovered in the workspace.
@@ -626,7 +647,8 @@ fn discover_tests(typed: &TypedWorkspace, graph: &WorkspaceGraph) -> Vec<Discove
                 let classification = match return_type_classification(f.ret.as_ref()) {
                     ReturnTypeKind::ResultUnitText => TestClassification::Canonical,
                     ReturnTypeKind::Bool => TestClassification::BoolDeprecated,
-                    ReturnTypeKind::Other => TestClassification::InvalidReturnType,
+                    ReturnTypeKind::Unsupported => TestClassification::ReturnTypeInvalid,
+                    ReturnTypeKind::Undeclared => TestClassification::ReturnTypeMissing,
                 };
 
                 tests.push(DiscoveredTest {
@@ -681,7 +703,8 @@ fn discover_tests(typed: &TypedWorkspace, graph: &WorkspaceGraph) -> Vec<Discove
             let classification = match return_type_classification(f.ret.as_ref()) {
                 ReturnTypeKind::ResultUnitText => TestClassification::Canonical,
                 ReturnTypeKind::Bool => TestClassification::BoolDeprecated,
-                ReturnTypeKind::Other => TestClassification::InvalidReturnType,
+                ReturnTypeKind::Unsupported => TestClassification::ReturnTypeInvalid,
+                ReturnTypeKind::Undeclared => TestClassification::ReturnTypeMissing,
             };
 
             tests.push(DiscoveredTest {
@@ -702,15 +725,22 @@ enum ReturnTypeKind {
     ResultUnitText,
     /// `Bool` — transitional; accepted with C303 warning.
     Bool,
-    /// Anything else — rejected.
-    Other,
+    /// A declared type that is neither — rejected with C305.
+    Unsupported,
+    /// No declared return type at all — rejected with C306.
+    ///
+    /// Kept apart from [`Self::Unsupported`] because the two want different
+    /// advice: one signature has to change, the other has to be written. They
+    /// used to share an arm that told this case its return type was
+    /// unsupported, which is not true of a signature that declares none.
+    Undeclared,
 }
 
 /// Classify the return type of a test function.
 fn return_type_classification(ret: Option<&AstType>) -> ReturnTypeKind {
     let Some(ty) = ret else {
-        // No declared return type — treat as Other (cannot validate).
-        return ReturnTypeKind::Other;
+        // Discovery reads the declared signature, not the inferred type.
+        return ReturnTypeKind::Undeclared;
     };
 
     match ty {
@@ -723,10 +753,10 @@ fn return_type_classification(ret: Option<&AstType>) -> ReturnTypeKind {
             if head.text == "Result" && args.len() == 2 && is_unit(&args[0]) && is_text(&args[1]) {
                 ReturnTypeKind::ResultUnitText
             } else {
-                ReturnTypeKind::Other
+                ReturnTypeKind::Unsupported
             }
         }
-        _ => ReturnTypeKind::Other,
+        _ => ReturnTypeKind::Unsupported,
     }
 }
 

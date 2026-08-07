@@ -20,6 +20,7 @@ use ridge_ast::Span;
 
 pub mod adapter;
 pub mod diagnostic;
+pub mod registry;
 pub mod render;
 
 // ── Flat re-exports ───────────────────────────────────────────────────────────
@@ -27,6 +28,8 @@ pub mod render;
 pub use diagnostic::{
     Diagnostic, DiagnosticNote, MessageParts, NoteSeverity, RenderError, SourceCache, SourceId,
 };
+
+pub use registry::{lookup as lookup_code, CodeEntry, REGISTRY};
 
 /// Re-export `Severity` from `ridge_resolve` — one canonical type workspace-wide.
 ///

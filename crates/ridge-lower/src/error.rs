@@ -8,7 +8,7 @@
 //!
 //! # Error code namespace
 //!
-//! `L101`–`L099` — desugaring rule violations (pipe, try, with, guard, …).
+//! `L101`–`L199` — desugaring rule violations (pipe, try, with, guard, …).
 //! `L997`–`L999` — internal consistency / catch-all codes.
 //!
 //! # Display format

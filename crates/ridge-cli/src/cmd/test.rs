@@ -39,8 +39,8 @@ use std::time::Instant;
 use clap::Parser;
 use ridge_driver::{
     check_workspace_typed, compile_workspace, AstAttribute, AstCapability, AstItem, AstType,
-    CheckOptions, CompileOptions, ModuleMetadata, PrimitiveType, TypedModule, TypedWorkspace,
-    Visibility, WorkspaceGraph,
+    CheckOptions, CompileOptions, ModuleMetadata, PrimitiveType, ToolchainError, TypedModule,
+    TypedWorkspace, Visibility, WorkspaceGraph,
 };
 use ridge_manifest::find_workspace_root;
 
@@ -120,7 +120,7 @@ pub fn execute(args: &TestArgs, cwd: &Path) -> Result<(), CliError> {
     // ── 1. Locate workspace root ──────────────────────────────────────────────
     let workspace_root = match stdlib_ws {
         Some(ref td) => td.path().to_path_buf(),
-        None => find_workspace_root(cwd).ok_or(CliError::NoWorkspaceRoot)?,
+        None => find_workspace_root(cwd).ok_or_else(|| CliError::no_workspace_root(cwd))?,
     };
 
     // ── 2. Typecheck workspace (no erlc needed yet) ────────────────────────────
@@ -236,10 +236,7 @@ pub fn execute(args: &TestArgs, cwd: &Path) -> Result<(), CliError> {
     );
 
     // ── 8. Locate erl binary ───────────────────────────────────────────────────
-    let Ok(erl_path) = which::which("erl") else {
-        eprintln!("error: C004 ErlangNotFound: erl not found on PATH (install OTP 26+)");
-        process::exit(1);
-    };
+    let erl_path = which::which("erl").map_err(|_| ToolchainError::erl_not_found())?;
 
     // ── 9. Run tests and tally results ────────────────────────────────────────
     run_tests_and_report(&tests, &erl_path, &beam_dir, &runtime_dir, jobs);
@@ -330,10 +327,10 @@ fn run_tests_and_report(
             }
             TestClassification::BoolDeprecated => {
                 eprintln!(
-                    "warning: C303 BoolTestDeprecated: '{}' returns Bool (deprecated); \
-                     -- migrate: change return type to Result Unit Text; \
-                     replace 'true' with 'Ok ()' and 'false' with 'Err \"<reason>\"'",
-                    test.qualified_name
+                    "{}",
+                    crate::error::CliWarning::BoolTestDeprecated {
+                        qualified_name: test.qualified_name.clone(),
+                    }
                 );
                 bool_tests += 1;
                 Slot::Runnable
@@ -649,13 +646,13 @@ fn discover_tests(typed: &TypedWorkspace, graph: &WorkspaceGraph) -> Vec<Discove
                 continue;
             }
 
-            // C304: emit deprecation warning for every prefix-matched test.
+            // Every prefix-matched test earns the deprecation advisory.
             eprintln!(
-                "warning: C304 PrefixTestDeprecated: '{}.{}' uses the deprecated `test_` prefix; \
-                 add `@test \"{}\"` above the function and remove the prefix in 0.3.0",
-                module_name,
-                f.name.text,
-                f.name.text.strip_prefix("test_").unwrap_or(&f.name.text),
+                "{}",
+                crate::error::CliWarning::PrefixTestDeprecated {
+                    module: module_name.clone(),
+                    name: f.name.text.clone(),
+                }
             );
 
             let qualified_name = format!("{module_name}.{}", f.name.text);

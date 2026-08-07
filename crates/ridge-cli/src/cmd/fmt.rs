@@ -124,7 +124,7 @@ pub fn execute(args: &FmtArgs, cwd: &Path) -> Result<(), CliError> {
     // ── filesystem mode ───────────────────────────────────────────────────────
     let files: Vec<PathBuf> = if args.paths.is_empty() {
         // No paths supplied — walk the workspace root.
-        let root = find_workspace_root(cwd).ok_or(CliError::NoWorkspaceRoot)?;
+        let root = find_workspace_root(cwd).ok_or_else(|| CliError::no_workspace_root(cwd))?;
         let mut v = Vec::new();
         collect_ridge_files(&root, &mut v)?;
         v

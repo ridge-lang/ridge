@@ -99,7 +99,8 @@ impl From<EmitChoice> for EmitArtefacts {
 /// to stderr before returning.
 pub fn execute(args: &BuildArgs, cwd: &Path) -> Result<(), CliError> {
     // ── 1. Locate workspace root ──────────────────────────────────────────────
-    let workspace_root = find_workspace_root(cwd).ok_or(CliError::NoWorkspaceRoot)?;
+    let workspace_root =
+        find_workspace_root(cwd).ok_or_else(|| CliError::no_workspace_root(cwd))?;
 
     // ── 2. Build options ──────────────────────────────────────────────────────
     let profile = if args.release {

@@ -20,7 +20,7 @@ use clap::Args as ClapArgs;
 use ridge_driver::reload::{reload_check, snapshot_path_for, CheckReport, Verdict};
 use ridge_driver::{
     collect_bundle_beams, compile_workspace, manifest_path_for, plan_reload, snapshot_vsn,
-    CheckOptions, CompileOptions, EmitArtefacts, Profile, WorkspaceSnapshot,
+    CheckOptions, CompileOptions, EmitArtefacts, Profile, ToolchainError, WorkspaceSnapshot,
 };
 use ridge_manifest::find_workspace_root;
 
@@ -86,7 +86,7 @@ pub fn execute(args: &ReloadArgs, cwd: &Path) -> Result<(), CliError> {
         return Err(CliError::AlreadyReported);
     }
 
-    let root = find_workspace_root(cwd).ok_or(CliError::NoWorkspaceRoot)?;
+    let root = find_workspace_root(cwd).ok_or_else(|| CliError::no_workspace_root(cwd))?;
     let snapshot = args
         .snapshot
         .clone()
@@ -120,7 +120,7 @@ pub fn execute(args: &ReloadArgs, cwd: &Path) -> Result<(), CliError> {
 /// `ridge reload --node` would diff against a build the node never ran
 /// and refuse on a base-version mismatch forever.
 fn execute_apply(args: &ReloadArgs, cwd: &Path) -> Result<(), CliError> {
-    let root = find_workspace_root(cwd).ok_or(CliError::NoWorkspaceRoot)?;
+    let root = find_workspace_root(cwd).ok_or_else(|| CliError::no_workspace_root(cwd))?;
     let profile = if args.release {
         Profile::Release
     } else {
@@ -128,10 +128,7 @@ fn execute_apply(args: &ReloadArgs, cwd: &Path) -> Result<(), CliError> {
     };
     let profile_name = profile.dir_name();
 
-    let erl_path = which::which("erl").map_err(|_| {
-        eprintln!("error: C004 ErlangNotFound: erl not found on PATH");
-        CliError::NoWorkspaceRoot
-    })?;
+    let erl_path = which::which("erl").map_err(|_| ToolchainError::erl_not_found())?;
 
     let snap_path = snapshot_path_for(&root, profile_name);
     let (old_snapshot, base_vsn, raw_snapshot) = read_running_snapshot(&snap_path)?;

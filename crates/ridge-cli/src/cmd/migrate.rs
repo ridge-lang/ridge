@@ -72,7 +72,7 @@
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
-use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
+use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts, ToolchainError};
 use ridge_manifest::{find_workspace_root, parse_project, parse_workspace, Project, ProjectKind};
 use ridge_resolve::discover_workspace;
 
@@ -164,7 +164,8 @@ fn execute_add(args: &AddArgs, cwd: &Path) -> Result<(), CliError> {
     validate_migration_name(&args.name)?;
 
     // ── 1. Locate workspace root and target member ───────────────────────────
-    let workspace_root = find_workspace_root(cwd).ok_or(CliError::NoWorkspaceRoot)?;
+    let workspace_root =
+        find_workspace_root(cwd).ok_or_else(|| CliError::no_workspace_root(cwd))?;
     let project = resolve_target_project(&workspace_root)?;
 
     // ── 2. Require Model.ridge ────────────────────────────────────────────────
@@ -176,8 +177,8 @@ fn execute_add(args: &AddArgs, cwd: &Path) -> Result<(), CliError> {
     let has_snapshot = migrations_dir.join("Snapshot.ridge").is_file();
 
     // ── 3. Probe the BEAM toolchain up front (before writing anything) ───────
-    let erl_path = which::which("erl").map_err(|_| CliError::MigrateErlangNotFound)?;
-    which::which("erlc").map_err(|_| CliError::MigrateErlangNotFound)?;
+    let erl_path = which::which("erl").map_err(|_| ToolchainError::erl_not_found())?;
+    which::which("erlc").map_err(|_| ToolchainError::erlc_not_found())?;
 
     // ── 4. Write the temporary driver module ─────────────────────────────────
     let stamp = utc_timestamp_now();
@@ -247,7 +248,8 @@ fn run_diff_and_write(
 /// Execute `ridge migrate apply`.
 fn execute_apply(cwd: &Path) -> Result<(), CliError> {
     // ── 1. Locate workspace root and target member ───────────────────────────
-    let workspace_root = find_workspace_root(cwd).ok_or(CliError::NoWorkspaceRoot)?;
+    let workspace_root =
+        find_workspace_root(cwd).ok_or_else(|| CliError::no_workspace_root(cwd))?;
     let project = resolve_target_project(&workspace_root)?;
 
     // ── 2. Discover the migration modules ─────────────────────────────────────
@@ -262,8 +264,8 @@ fn execute_apply(cwd: &Path) -> Result<(), CliError> {
     validate_required_env_vars()?;
 
     // ── 4. Probe the BEAM toolchain ────────────────────────────────────────────
-    let erl_path = which::which("erl").map_err(|_| CliError::MigrateErlangNotFound)?;
-    which::which("erlc").map_err(|_| CliError::MigrateErlangNotFound)?;
+    let erl_path = which::which("erl").map_err(|_| ToolchainError::erl_not_found())?;
+    which::which("erlc").map_err(|_| ToolchainError::erlc_not_found())?;
 
     // ── 5. Write the temporary driver module ─────────────────────────────────
     let driver_path = migrations_dir.join("__migrate_driver.ridge");
@@ -305,7 +307,8 @@ fn run_apply(workspace_root: &Path, erl_path: &Path, project_name: &str) -> Resu
 /// Execute `ridge migrate status`.
 fn execute_status(cwd: &Path) -> Result<(), CliError> {
     // ── 1. Locate workspace root and target member ───────────────────────────
-    let workspace_root = find_workspace_root(cwd).ok_or(CliError::NoWorkspaceRoot)?;
+    let workspace_root =
+        find_workspace_root(cwd).ok_or_else(|| CliError::no_workspace_root(cwd))?;
     let project = resolve_target_project(&workspace_root)?;
 
     // ── 2. Discover the migration modules ─────────────────────────────────────
@@ -320,8 +323,8 @@ fn execute_status(cwd: &Path) -> Result<(), CliError> {
     validate_required_env_vars()?;
 
     // ── 4. Probe the BEAM toolchain ────────────────────────────────────────────
-    let erl_path = which::which("erl").map_err(|_| CliError::MigrateErlangNotFound)?;
-    which::which("erlc").map_err(|_| CliError::MigrateErlangNotFound)?;
+    let erl_path = which::which("erl").map_err(|_| ToolchainError::erl_not_found())?;
+    which::which("erlc").map_err(|_| ToolchainError::erlc_not_found())?;
 
     // ── 5. Write the temporary driver module ─────────────────────────────────
     let driver_path = migrations_dir.join("__migrate_driver.ridge");
@@ -368,7 +371,8 @@ fn run_status(
 /// Execute `ridge migrate rollback`.
 fn execute_rollback(args: &RollbackArgs, cwd: &Path) -> Result<(), CliError> {
     // ── 1. Locate workspace root and target member ───────────────────────────
-    let workspace_root = find_workspace_root(cwd).ok_or(CliError::NoWorkspaceRoot)?;
+    let workspace_root =
+        find_workspace_root(cwd).ok_or_else(|| CliError::no_workspace_root(cwd))?;
     let project = resolve_target_project(&workspace_root)?;
 
     // ── 2. Discover the migration modules ─────────────────────────────────────
@@ -383,8 +387,8 @@ fn execute_rollback(args: &RollbackArgs, cwd: &Path) -> Result<(), CliError> {
     validate_required_env_vars()?;
 
     // ── 4. Probe the BEAM toolchain ────────────────────────────────────────────
-    let erl_path = which::which("erl").map_err(|_| CliError::MigrateErlangNotFound)?;
-    which::which("erlc").map_err(|_| CliError::MigrateErlangNotFound)?;
+    let erl_path = which::which("erl").map_err(|_| ToolchainError::erl_not_found())?;
+    which::which("erlc").map_err(|_| ToolchainError::erlc_not_found())?;
 
     // ── 5. Write the temporary driver module ─────────────────────────────────
     let driver_path = migrations_dir.join("__migrate_driver.ridge");

@@ -869,9 +869,7 @@ fn compile_blocking(
         *guard = Some(seeded);
     }
     let Some(state) = guard.as_mut() else {
-        return Err(CheckError::NoWorkspaceRoot {
-            path: target.root_hint(),
-        });
+        return Err(CheckError::no_workspace_root(target.root_hint()));
     };
 
     for (uri, buffer) in edits {

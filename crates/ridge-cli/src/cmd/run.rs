@@ -22,7 +22,7 @@ use std::process;
 use clap::Parser;
 use ridge_driver::{
     compile_workspace, run_workspace, select_entry_beam, CompileOptions, Profile, RunError,
-    RunOptions,
+    RunOptions, ToolchainError,
 };
 use ridge_manifest::{find_workspace_root, parse_project, parse_workspace, ProjectKind};
 
@@ -117,7 +117,8 @@ pub fn execute(args: &RunArgs, cwd: &Path) -> Result<(), CliError> {
     }
 
     // ── 2. Locate workspace root ──────────────────────────────────────────────
-    let workspace_root = find_workspace_root(cwd).ok_or(CliError::NoWorkspaceRoot)?;
+    let workspace_root =
+        find_workspace_root(cwd).ok_or_else(|| CliError::no_workspace_root(cwd))?;
 
     // ── 3. Resolve executable member ─────────────────────────────────────────
     let member_name = resolve_executable_member(&workspace_root, args)?;
@@ -362,13 +363,7 @@ fn execute_observer(
     );
 
     // ── e. Spawn BEAM node ────────────────────────────────────────────────────
-    let erl_path = which::which("erl").map_err(|_| {
-        eprintln!("error: C004 ErlangNotFound: erl not found on PATH");
-        process::exit(1);
-        // unreachable but needed for type inference:
-        #[allow(unreachable_code)]
-        CliError::NoWorkspaceRoot
-    })?;
+    let erl_path = which::which("erl").map_err(|_| ToolchainError::erl_not_found())?;
 
     let mut cmd = process::Command::new(&erl_path);
     cmd.arg("-name")
@@ -389,12 +384,9 @@ fn execute_observer(
         cmd.arg(arg);
     }
 
-    let status = cmd.status().map_err(|e| {
-        eprintln!("error: failed to spawn erl: {e}");
-        process::exit(1);
-        #[allow(unreachable_code)]
-        CliError::NoWorkspaceRoot
-    })?;
+    let status = cmd
+        .status()
+        .map_err(|e| ToolchainError::erl_spawn_failed(&e))?;
 
     let code = status.code().unwrap_or(-1);
     if code != 0 {
@@ -454,10 +446,7 @@ fn execute_watch(
     let beam_dir = beam_dir_from_artefacts(&beam_files);
     let module_name = entry_module.unwrap_or_else(|| module_from_beam(&beam_files[0]));
 
-    let erl_path = which::which("erl").map_err(|_| {
-        eprintln!("error: C004 ErlangNotFound: erl not found on PATH");
-        CliError::NoWorkspaceRoot
-    })?;
+    let erl_path = which::which("erl").map_err(|_| ToolchainError::erl_not_found())?;
 
     // ── b. Spawn initial child ────────────────────────────────────────────────
     let mut child = spawn_beam_child(
@@ -494,16 +483,15 @@ fn execute_watch(
             // Signal the main loop (ignore send errors if receiver is gone).
             let _ = tx.send(());
         })
-        .map_err(|e| {
-            eprintln!("error: failed to create file watcher: {e}");
-            CliError::NoWorkspaceRoot
+        .map_err(|e| CliError::WatcherStartFailed {
+            message: e.to_string(),
         })?;
 
     watcher
         .watch(workspace_root, RecursiveMode::Recursive)
-        .map_err(|e| {
-            eprintln!("error: failed to watch workspace: {e}");
-            CliError::NoWorkspaceRoot
+        .map_err(|e| CliError::WatchPathFailed {
+            path: workspace_root.to_path_buf(),
+            message: e.to_string(),
         })?;
 
     eprintln!("Watching for changes. Press Ctrl-C to exit.");
@@ -522,7 +510,9 @@ fn execute_watch(
         // Debounce: wait until 500 ms after the last event.
         loop {
             let elapsed = {
-                let guard = last_event.lock().map_err(|_| CliError::NoWorkspaceRoot)?;
+                let guard = last_event
+                    .lock()
+                    .map_err(|_| CliError::WatchStateCorrupted)?;
                 guard
                     .as_ref()
                     .map_or(debounce + Duration::from_millis(1), Instant::elapsed)
@@ -567,10 +557,13 @@ fn execute_watch(
         ) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("error: failed to relaunch BEAM: {e}");
-                spawn_noop_child().map_err(|err| {
-                    eprintln!("error: cannot spawn sentinel child: {err}");
-                    CliError::NoWorkspaceRoot
+                // The relaunch failed; hold a no-op child so the loop keeps
+                // watching and the next save gets another try. If even that
+                // will not start, the OS is refusing new processes and there
+                // is nothing left to watch with.
+                eprintln!("error: failed to relaunch after the change: {e}");
+                spawn_noop_child().map_err(|err| CliError::WatchRestartFailed {
+                    message: err.to_string(),
                 })?
             }
         };
@@ -644,10 +637,8 @@ fn spawn_beam_child(
         cmd.arg(arg);
     }
 
-    cmd.spawn().map_err(|e| {
-        eprintln!("error: failed to spawn erl: {e}");
-        CliError::NoWorkspaceRoot
-    })
+    cmd.spawn()
+        .map_err(|e| ToolchainError::erl_spawn_failed(&e).into())
 }
 
 #[cfg(feature = "cli-watch")]
@@ -770,10 +761,7 @@ fn execute_reload(
     let grace = Duration::from_secs(2);
     let profile_name = profile.dir_name();
 
-    let erl_path = which::which("erl").map_err(|_| {
-        eprintln!("error: C004 ErlangNotFound: erl not found on PATH");
-        CliError::NoWorkspaceRoot
-    })?;
+    let erl_path = which::which("erl").map_err(|_| ToolchainError::erl_not_found())?;
 
     // Cookie for the probe<->node handshake: user-provided or generated.
     let cookie = args.cookie.clone().unwrap_or_else(|| {
@@ -845,15 +833,14 @@ fn execute_reload(
             }
             let _ = tx.send(());
         })
-        .map_err(|e| {
-            eprintln!("error: failed to create file watcher: {e}");
-            CliError::NoWorkspaceRoot
+        .map_err(|e| CliError::WatcherStartFailed {
+            message: e.to_string(),
         })?;
     watcher
         .watch(workspace_root, RecursiveMode::Recursive)
-        .map_err(|e| {
-            eprintln!("error: failed to watch workspace: {e}");
-            CliError::NoWorkspaceRoot
+        .map_err(|e| CliError::WatchPathFailed {
+            path: workspace_root.to_path_buf(),
+            message: e.to_string(),
         })?;
 
     let mut probe_seq: u64 = 0;
@@ -866,7 +853,9 @@ fn execute_reload(
         while rx.try_recv().is_ok() {}
         loop {
             let elapsed = {
-                let guard = last_event.lock().map_err(|_| CliError::NoWorkspaceRoot)?;
+                let guard = last_event
+                    .lock()
+                    .map_err(|_| CliError::WatchStateCorrupted)?;
                 guard
                     .as_ref()
                     .map_or(debounce + Duration::from_millis(1), Instant::elapsed)
@@ -1003,10 +992,8 @@ fn spawn_reload_node(
     for arg in extra_args {
         cmd.arg(arg);
     }
-    cmd.spawn().map_err(|e| {
-        eprintln!("error: failed to spawn dev node: {e}");
-        CliError::NoWorkspaceRoot
-    })
+    cmd.spawn()
+        .map_err(|e| ToolchainError::erl_spawn_failed(&e).into())
 }
 
 #[cfg(feature = "cli-watch")]

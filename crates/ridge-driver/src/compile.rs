@@ -140,11 +140,8 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
     // Verify the provided root actually contains a workspace manifest.
     // `find_workspace_root` walks up; if the caller passed an exact root we
     // start our search there.
-    let _manifest_dir = find_workspace_root(&options.workspace_root).ok_or_else(|| {
-        CompileError::NoWorkspaceRoot {
-            path: options.workspace_root.clone(),
-        }
-    })?;
+    let _manifest_dir = find_workspace_root(&options.workspace_root)
+        .ok_or_else(|| CompileError::no_workspace_root(options.workspace_root.clone()))?;
 
     // ── 2. Pipeline: discover → resolve → typecheck → lower ──────────────────
     let disc = discover_workspace(&options.workspace_root);
@@ -154,9 +151,9 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
     let disc_resolve_errors = disc.resolve_errors;
 
     // Surface R001 (no workspace manifest) as C001.
-    let mut ws_graph = disc.graph.ok_or_else(|| CompileError::NoWorkspaceRoot {
-        path: options.workspace_root.clone(),
-    })?;
+    let mut ws_graph = disc
+        .graph
+        .ok_or_else(|| CompileError::no_workspace_root(options.workspace_root.clone()))?;
     ws_graph.is_stdlib = options.is_stdlib;
 
     // ── 2.5. Resolve external dependencies (T8) ──────────────────────────────

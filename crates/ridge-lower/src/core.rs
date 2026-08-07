@@ -195,7 +195,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
         // ── Guard and InnerFn (bare, outside block context) ───────────────────
 
         // `guard cond else { ... }` appearing as a bare expression (not inside
-        // a block fold) is a Phase 4 invariant violation.  Emit L006.
+        // a block fold) is a Phase 4 invariant violation.  Emit L106.
         Expr::Guard { span, .. } => lower_guard_bare(ctx, *span),
 
         // `fn name params = body` appearing as a bare expression (not inside a
@@ -3803,7 +3803,7 @@ fn record_ctor_span(ctor: &RecordCtor) -> ridge_ast::Span {
 /// Lower an AST [`Literal`] to an [`IrExpr::Lit`].
 ///
 /// Integer variants (`IntDec`, `IntBin`, `IntOct`, `IntHex`) are parsed to
-/// `i64`.  A value that does not fit in `i64` is reported as `L010`
+/// `i64`.  A value that does not fit in `i64` is reported as `L110`
 /// (`IntLiteralOutOfRange`) and `IrLit::Int(0)` is returned so the
 /// surrounding expression tree is still structurally valid.
 fn lower_literal(ctx: &mut LowerCtx<'_>, lit: &Literal) -> IrExpr {
@@ -4387,7 +4387,7 @@ pub(crate) fn parse_int_hex(ctx: &mut LowerCtx<'_>, raw: &str, span: Span) -> Ir
 
 /// Shared integer-literal parser. The lexer has already validated the literal's
 /// form, so a failure here can only mean the value does not fit in `i64` —
-/// reported as `L010` (`IntLiteralOutOfRange`), a user error, not an internal
+/// reported as `L110` (`IntLiteralOutOfRange`), a user error, not an internal
 /// invariant violation. Base-prefixed literals strip the two-byte prefix
 /// (`0b`/`0B`, `0o`/`0O`, `0x`/`0X`): the prefix letter case is insignificant.
 fn parse_int_radix(ctx: &mut LowerCtx<'_>, raw: &str, span: Span, radix: u32) -> IrLit {
@@ -4610,9 +4610,9 @@ mod tests {
     }
 
     /// An integer literal that does not fit in `i64` is a user error with its
-    /// own code (`L010`), not an internal invariant violation (`L999`).
+    /// own code (`L110`), not an internal invariant violation (`L999`).
     #[test]
-    fn lower_expr_literal_int_out_of_range_is_l010() {
+    fn lower_expr_literal_int_out_of_range_is_l110() {
         for raw in ["99999999999999999999", "0xFFFFFFFFFFFFFFFFF"] {
             let mut ctx = fresh_ctx();
             let span = sp();
@@ -4633,7 +4633,7 @@ mod tests {
                 LowerError::IntLiteralOutOfRange { span: s, raw: r } => {
                     assert_eq!(*s, span);
                     assert_eq!(r, raw);
-                    assert_eq!(ctx.errors[0].code(), "L010");
+                    assert_eq!(ctx.errors[0].code(), "L110");
                 }
                 other => panic!("expected IntLiteralOutOfRange for {raw}, got {other:?}"),
             }
@@ -4896,7 +4896,7 @@ mod tests {
     // ── Pipe lowers to a Call ─────────────────────────────────────────────────
     //
     // `xs |> f` lowers to a `Call` node. `xs |> f` where `rhs` is `Unit`
-    // (an invalid pipe shape) emits L002 and returns a Unit stub — but what we
+    // (an invalid pipe shape) emits L102 and returns a Unit stub — but what we
     // really want to verify is that the *span* contract is still honoured.  Use
     // a bare-Ident RHS (which is a valid bare-callable shape) to get a proper
     // `Call` back and assert the outer pipe span is on the `Call` node.

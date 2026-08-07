@@ -333,25 +333,42 @@ fn diagnostic_p021_malformed_type() {
     let _ = result; // just verify no panic
 }
 
-/// P029: inline record field references a free type variable (after deep-resolve).
+/// An inline record type may name a type variable of the signature it appears
+/// in, and the field keeps that variable's type at the call site.
 ///
-/// When a `RecordLit` is inferred and a field is still a free var, P029 fires.
-/// This is hard to trigger from surface syntax without a parametric context, so
-/// we test indirectly via the tyvar-in-literal path.
-///
-/// For this cut (0.2.12), the canonical trigger is a type-position inline record
-/// with a type variable field — but that's rejected at the pre-scan level.
-/// The surface test below verifies the typecheck path doesn't panic.
+/// This replaces a test that asserted a diagnostic which could not fire. The
+/// restriction it guarded — "parametric inline record types are not supported"
+/// — no longer exists, so the thing worth pinning down is that the type works
+/// and is still checked.
 #[test]
-fn diagnostic_p029_no_panic() {
-    // A valid program to ensure P029 path doesn't crash when not triggered.
+fn an_inline_record_type_may_name_a_type_variable() {
     let src = r"
-fn f (x: { id: Int }) -> Int = x.id
+fn wrap (x: a) -> { value: a } = { value = x }
+
+fn useInt () -> Int = (wrap 5).value
 ";
     let result = typecheck_src(src);
     assert!(
-        !has_error(&result, "P029"),
-        "non-parametric inline record must not trigger P029"
+        error_codes(&result).is_empty(),
+        "a parametric inline record type must type-check: {:?}",
+        error_codes(&result)
+    );
+}
+
+/// The same type is still checked: reading the field at the wrong type is an
+/// ordinary mismatch, not a pass.
+#[test]
+fn a_parametric_inline_record_field_is_still_checked() {
+    let src = r"
+fn wrap (x: a) -> { value: a } = { value = x }
+
+fn wrongUse () -> Text = (wrap 5).value
+";
+    let result = typecheck_src(src);
+    assert!(
+        has_error(&result, "T001"),
+        "reading an Int field as Text must be a mismatch: {:?}",
+        error_codes(&result)
     );
 }
 

@@ -1697,6 +1697,7 @@ dependencies = [
  "is-terminal",
  "ridge-ast",
  "ridge-lexer",
+ "ridge-manifest",
  "ridge-parser",
  "ridge-resolve",
  "thiserror",
@@ -1805,7 +1806,6 @@ version = "0.3.0-rc4"
 dependencies = [
  "globset",
  "ridge-ast",
- "ridge-resolve",
  "serde",
  "thiserror",
  "toml",
@@ -1855,6 +1855,7 @@ dependencies = [
  "insta",
  "ridge-ast",
  "ridge-lexer",
+ "ridge-manifest",
  "ridge-parser",
  "rustc-hash",
  "serde",

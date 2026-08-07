@@ -12,6 +12,7 @@ rust-version.workspace = true
 [dependencies]
 ridge-ast     = { path = "../ridge-ast" }
 ridge-resolve = { path = "../ridge-resolve" }
+ridge-manifest = { path = "../ridge-manifest" }
 ridge-lexer   = { path = "../ridge-lexer" }
 ridge-parser  = { path = "../ridge-parser" }
 ariadne       = { workspace = true }

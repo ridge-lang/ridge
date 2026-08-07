@@ -108,10 +108,10 @@ fn is_declared_entry(graph: &ridge_resolve::WorkspaceGraph, module: ModuleId) ->
     let Some(project) = graph.projects.get(meta.project.0 as usize) else {
         return false;
     };
-    let Some(entry) = &project.entry else {
+    let Some(entry) = project.manifest.entry_path() else {
         return true;
     };
-    meta.file_path == *entry
+    meta.file_path == entry
         || match (meta.file_path.canonicalize(), entry.canonicalize()) {
             (Ok(a), Ok(b)) => a == b,
             _ => false,
@@ -189,7 +189,7 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
     // For each workspace member, resolve its package dependencies.
     // Projects with no declared deps are skipped to avoid pointless work.
     for project in &ws_graph.projects {
-        let proj_manifest_path = &project.manifest_path;
+        let proj_manifest_path = &project.manifest.manifest_path;
         let proj_toml_src =
             std::fs::read_to_string(proj_manifest_path).map_err(|e| CompileError::Io {
                 message: format!(
@@ -377,7 +377,7 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
                     .graph
                     .projects
                     .get(mm.project.0 as usize)
-                    .map(|p| p.name.clone())
+                    .map(|p| p.manifest.name.clone())
                     .unwrap_or_default();
                 (mm.fully_qualified_name.clone(), proj)
             })

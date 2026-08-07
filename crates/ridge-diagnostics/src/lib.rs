@@ -77,7 +77,7 @@ impl HasErrorCode for ridge_resolve::ResolveError {
 
 // ── HasErrorCode on ManifestError ─────────────────────────────────────────────
 
-impl HasErrorCode for ridge_resolve::ManifestError {
+impl HasErrorCode for ridge_manifest::ManifestError {
     fn code(&self) -> &'static str {
         self.code()
     }
@@ -99,7 +99,8 @@ impl HasErrorCode for ridge_resolve::ManifestError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ridge_resolve::{ManifestError, ResolveError};
+    use ridge_manifest::ManifestError;
+    use ridge_resolve::ResolveError;
 
     #[test]
     fn smoke() {

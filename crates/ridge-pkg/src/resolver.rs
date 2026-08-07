@@ -26,7 +26,7 @@ pub enum DepKind {
     Path,
     /// `git = "…", tag = "…"` — pinned tag clone (D152).
     GitTag,
-    /// `git = "…", branch = "…"` — floating-branch clone; advisory P004 is
+    /// `git = "…", branch = "…"` — floating-branch clone; advisory P204 is
     /// emitted (D160).
     GitBranch,
     /// `workspace-member = "…"` — named sibling in the same workspace.
@@ -326,7 +326,7 @@ fn shared_dep_name(dep: &ridge_manifest::SharedDependency) -> &str {
 /// Convert a [`ridge_manifest::SharedDependency`] to a synthetic
 /// [`ProjectDependency`] for recursive resolution.
 ///
-/// Returns `Err(P010)` for `Version` variants, which require a registry not
+/// Returns `Err(P210)` for `Version` variants, which require a registry not
 /// available until Ridge 0.2.0.
 fn shared_to_project_dep(
     local_name: &str,

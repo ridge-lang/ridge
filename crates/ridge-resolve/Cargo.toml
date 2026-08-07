@@ -13,6 +13,7 @@ rust-version.workspace = true
 ridge-lexer  = { path = "../ridge-lexer" }
 ridge-ast    = { path = "../ridge-ast" }
 ridge-parser = { path = "../ridge-parser" }
+ridge-manifest = { path = "../ridge-manifest" }
 thiserror.workspace = true
 toml.workspace = true
 serde.workspace = true

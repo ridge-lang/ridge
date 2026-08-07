@@ -1,0 +1,17 @@
+[project]
+name = "acme.domain"
+version = "0.1.0"
+kind = "library"
+
+[project.exports]
+public   = ["Models.*", "UseCases.*"]
+internal = []
+
+[dependencies]
+shared  = { workspace-member = "shared" }
+json    = { workspace = true }
+helpers = { path = "../helpers" }
+extra   = { git = "github.com/x/y", tag = "v1.0" }
+
+[capabilities]
+allow = ["io", "net"]

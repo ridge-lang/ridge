@@ -309,7 +309,7 @@ explicit semver guarantees from the 1.0 tag forward.
 | Surface | Reason |
 |---------|--------|
 | Internal Rust API of `ridge-*` crates | Crates remain `publish = false`; downstream tooling depends on the binaries, not the crates. |
-| Text of diagnostic messages | Error codes (`R013`, `T001`, `P008`, `M005`, ...) are stable; the human-readable strings around them are not. |
+| Text of diagnostic messages | Error codes (`R013`, `T001`, `P208`, `M005`, ...) are stable; the human-readable strings around them are not. |
 | Intermediate file formats | `.core`, internal AST snapshots, IR serialisation -- these are implementation artefacts. |
 | Experimental features | Features still marked experimental at the time of the 1.0 cut are opt-in and may change within 1.x. |
 | BEAM / OTP versions below the documented minimum | The minimum supported BEAM version is documented at release time and may advance in minor releases. |

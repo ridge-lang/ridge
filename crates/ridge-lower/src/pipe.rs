@@ -10,8 +10,8 @@
 //! | `Call { callee, args }` | `Call(lower(callee), lower(args) ++ [lhs'])` |
 //! | `Ident _ \| Qualified _ \| FieldAccess _ \| Lambda _ \| FieldAccessorFn _` | `Call(lower(rhs), [lhs'])` |
 //! | `Paren { inner }` | peel paren, re-dispatch on `inner` |
-//! | `Pipe { .. }` | L001 — parser is left-assoc, this should never fire |
-//! | any other | L002 — defensive; Phase 4 should have rejected |
+//! | `Pipe { .. }` | L101 — parser is left-assoc, this should never fire |
+//! | any other | L102 — defensive; Phase 4 should have rejected |
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![cfg_attr(
@@ -38,9 +38,9 @@ use crate::error::LowerError;
 /// - If `rhs` is a bare callable (`Ident`, `Qualified`, `FieldAccess`,
 ///   `Lambda`, `FieldAccessorFn`), emit `Call(rhs', [lhs'])`.
 /// - `Paren { inner }` is peeled first (paren erasure — §1.3, §4.1).
-/// - `Pipe` as RHS (should never occur — parser is left-assoc): emits `L001`
+/// - `Pipe` as RHS (should never occur — parser is left-assoc): emits `L101`
 ///   and returns a `Unit` stub preserving `span`.
-/// - Any other shape: emits `L002` and returns a `Unit` stub.
+/// - Any other shape: emits `L102` and returns a `Unit` stub.
 ///
 /// Never panics on any input — all error paths push a [`LowerError`] and
 /// return a structurally valid stub.
@@ -429,10 +429,10 @@ mod tests {
         }
     }
 
-    // ── T4-pipe-5: defensive — Pipe as RHS emits L001 ────────────────────────
+    // ── T4-pipe-5: defensive — Pipe as RHS emits L101 ────────────────────────
 
     #[test]
-    fn pipe_rhs_pipe_emits_l001() {
+    fn pipe_rhs_pipe_emits_l101() {
         let mut ctx = fresh_ctx();
         let span = sp_at(0, 20);
         let rhs_inner_span = sp_at(10, 20);
@@ -446,12 +446,12 @@ mod tests {
 
         let ir = lower_pipe(&mut ctx, &lhs, &rhs, span);
 
-        // Must emit exactly one L001 error.
+        // Must emit exactly one L101 error.
         assert_eq!(ctx.errors.len(), 1, "expected 1 error");
         assert_eq!(
             ctx.errors[0].code(),
-            "L001",
-            "expected L001 MalformedPipeRhs"
+            "L101",
+            "expected L101 MalformedPipeRhs"
         );
 
         // Must return a Unit stub with the outer pipe's span.
@@ -465,10 +465,10 @@ mod tests {
         }
     }
 
-    // ── T4-pipe-6: defensive — unknown RHS shape emits L002 ──────────────────
+    // ── T4-pipe-6: defensive — unknown RHS shape emits L102 ──────────────────
 
     #[test]
-    fn pipe_rhs_unknown_emits_l002() {
+    fn pipe_rhs_unknown_emits_l102() {
         let mut ctx = fresh_ctx();
         let span = sp_at(0, 25);
 
@@ -481,8 +481,8 @@ mod tests {
         assert_eq!(ctx.errors.len(), 1, "expected 1 error");
         assert_eq!(
             ctx.errors[0].code(),
-            "L002",
-            "expected L002 UnknownPipeRhsShape"
+            "L102",
+            "expected L102 UnknownPipeRhsShape"
         );
 
         match ir {

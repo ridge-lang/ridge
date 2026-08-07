@@ -90,6 +90,25 @@ pub enum ProjectDependency {
     },
 }
 
+impl Project {
+    /// The entry module's path, resolved against the manifest's directory.
+    ///
+    /// `entry` is stored the way the manifest spells it — relative to the
+    /// manifest — because that is what the file says. Every consumer compares it
+    /// against a path from the source walk, which is absolute, so the join
+    /// belongs here rather than at each call site: doing it in one place and
+    /// forgetting it in another is how a misnamed entry reads as a missing one.
+    #[must_use]
+    pub fn entry_path(&self) -> Option<PathBuf> {
+        self.entry.as_ref().map(|e| {
+            self.manifest_path
+                .parent()
+                .unwrap_or(&self.manifest_path)
+                .join(e)
+        })
+    }
+}
+
 // ── Public entry point ────────────────────────────────────────────────────────
 
 /// Parse a per-project `ridge.toml` from its raw TOML source.

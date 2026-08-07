@@ -6,14 +6,14 @@
 //!
 //! # Design decisions
 //!
-//! - **HTTPS-only**: SSH URLs rejected with `P003`.
+//! - **HTTPS-only**: SSH URLs rejected with `P203`.
 //! - **System `git` via `std::process::Command`**: pure-Rust `gitoxide`
 //!   deferred to a future release.
 //! - **XDG-compliant cache root**: provided via the `directories` crate.
-//! - **Floating-branch tracking**: emits `P004 FloatingBranchAdvisory`
+//! - **Floating-branch tracking**: emits `P204 FloatingBranchAdvisory`
 //!   warning, not an error.
 //! - **Lenient `git --version` parse**: first `\d+\.\d+` after the word
-//!   `version` wins; unparseable output → `P009`, not `P008`.
+//!   `version` wins; unparseable output → `P209`, not `P208`.
 //! - **`git.exe` on Windows**: discovered via `which::which("git")`.
 
 use std::path::{Path, PathBuf};
@@ -40,7 +40,7 @@ const MIN_GIT_MINOR: u32 = 20;
 ///
 /// # Errors
 ///
-/// See `P001`–`P009` in [`crate::error::PkgError`].
+/// See `P201`–`P209` in [`crate::error::PkgError`].
 pub fn resolve_git_dep(
     dep_name: &str,
     url: &str,
@@ -133,7 +133,7 @@ fn locate_git() -> Result<PathBuf, PkgError> {
 /// Parse `git --version` and enforce the 2.20 minimum.
 ///
 /// Lenient strategy: first `\d+\.\d+` token after the literal
-/// `version` keyword wins.  Unparseable → `P009`; too old → `P008`.
+/// `version` keyword wins.  Unparseable → `P209`; too old → `P208`.
 fn check_git_version(git_path: &Path) -> Result<(), PkgError> {
     let output = Command::new(git_path)
         .arg("--version")
@@ -300,7 +300,7 @@ fn fsck_ok(git_path: &Path, dest: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Platform-specific upgrade hint for `P008 PkgGitTooOld`.
+/// Platform-specific upgrade hint for `P208 PkgGitTooOld`.
 fn platform_upgrade_hint() -> String {
     #[cfg(target_os = "windows")]
     {
@@ -335,10 +335,10 @@ mod tests {
 
     #[test]
     fn version_parse_accepts_macos_git() {
-        // Apple Git suffix must not cause P009.
+        // Apple Git suffix must not cause P209.
         assert!(
             parse_and_check_version("git version 2.39.2 (Apple Git-143)").is_ok(),
-            "Apple Git suffix should not cause P009"
+            "Apple Git suffix should not cause P209"
         );
     }
 
@@ -347,7 +347,7 @@ mod tests {
         let result = parse_and_check_version("git version 2.10.0");
         assert!(result.is_err(), "expected Err but got Ok");
         if let Err(err) = result {
-            assert_eq!(err.code(), "P008");
+            assert_eq!(err.code(), "P208");
         }
     }
 
@@ -356,7 +356,7 @@ mod tests {
         let result = parse_and_check_version("git custom build ???");
         assert!(result.is_err(), "expected Err but got Ok");
         if let Err(err) = result {
-            assert_eq!(err.code(), "P009");
+            assert_eq!(err.code(), "P209");
         }
     }
 

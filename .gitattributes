@@ -17,6 +17,11 @@
 # not fail on a Windows checkout with core.autocrlf=true.
 tools/vscode-ridge/test/__snapshots__/*.txt text eol=lf
 
+# The diagnostics index is generated from the code registry and checked against
+# a freshly rendered copy. The check normalises line endings, but a generated
+# file whose endings depend on who committed it produces diffs nobody wrote.
+docs/diagnostics.md text eol=lf
+
 # Exception: this fixture deliberately holds CRLF line endings — it is the
 # input that exercises ridge-fmt's CRLF→LF normalisation. Marking it as
 # binary prevents Git from rewriting its line endings on checkout.

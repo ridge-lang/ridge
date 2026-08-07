@@ -5,6 +5,7 @@
 
 pub mod build;
 pub mod check;
+pub mod explain;
 pub mod fmt;
 pub mod init;
 pub mod migrate;

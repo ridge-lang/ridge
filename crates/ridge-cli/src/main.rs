@@ -36,6 +36,7 @@ fn main() {
         RidgeCommand::Reload(args) => cmd::reload::execute(args, &cwd),
         RidgeCommand::Repl(args) => cmd::repl::execute(args, &cwd),
         RidgeCommand::Migrate(args) => cmd::migrate::execute(args, &cwd),
+        RidgeCommand::Explain(args) => cmd::explain::execute(args, &cwd),
     };
 
     if let Err(e) = result {

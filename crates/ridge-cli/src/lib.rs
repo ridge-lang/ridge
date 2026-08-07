@@ -84,4 +84,10 @@ pub enum RidgeCommand {
     /// Capabilities allowed: `io`, `fs`, `net`, `time`, `random`, `env`,
     /// `proc`, `spawn` (all except `ffi`).
     Repl(cmd::repl::ReplArgs),
+    /// Say what a diagnostic code means.
+    ///
+    /// `ridge explain T031` prints the one-line meaning of a code and the crate
+    /// that reports it; `ridge explain --list` prints every code there is.
+    /// Needs no workspace — a code means the same thing everywhere.
+    Explain(cmd::explain::ExplainArgs),
 }

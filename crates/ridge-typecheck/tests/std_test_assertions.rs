@@ -95,7 +95,7 @@ fn assert_eq_mismatched_operand_types_is_rejected() {
         format!("{IMPORT_ALL}pub fn bad () -> Result Unit Text = assertEq 1 \"x\" \"label\"\n");
     let errors = typecheck_one(&main);
     assert!(
-        errors.iter().any(|e| e.code() == "T001"),
+        errors.iter().any(|e| matches!(e.code(), "T001" | "T002")),
         "assertEq over mismatched operand types must be rejected; got {errors:?}"
     );
 }

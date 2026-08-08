@@ -1,0 +1,6 @@
+-- expect: T002
+-- A recursive call at a type the declaration does not accept. `f` is
+-- monomorphic here, so this is an ordinary call-site mismatch — it was once
+-- filed under T013, which needs a polymorphic annotation to arise.
+fn f (x: Int) -> Int =
+    f "wrong"

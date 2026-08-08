@@ -60,7 +60,7 @@ extension is published to the Marketplace and Open VSX. See
 | ✅ | Type + capability checker | Inference, generalisation, capability tracking. See Language section above | (same evidence as Language rows) |
 | ✅ | Lowering to Ridge Core IR | Target-neutral contract between frontend and backends | `crates/ridge-lower/tests/snapshots.rs`, `lowering.rs`, `neutrality.rs` |
 | ✅ | Core Erlang codegen | Emits `.core`, invokes `erlc` to produce `.beam`. Records → maps, unions → tagged tuples, actors → gen_servers, sends/asks → BEAM messaging | `crates/ridge-codegen-erl/tests/beam_e2e.rs`, `core_text_snapshot.rs`, `core_ast_snapshot.rs`, `escript_test.rs` |
-| ✅ | Diagnostics with stable error codes | `P###` parser, `R###` resolver, `T###` type checker, `M###` manifest, `C###` formatter and CLI, `L8##` LSP-specific | `crates/ridge-diagnostics/` plus per-crate emission sites |
+| ✅ | Diagnostics with stable error codes | `L###` lexing and lowering, `P###` parsing and packages, `R###` resolution, `T###` types and the standard library, `E###` code generation, `M###` manifests, `C###` the CLI, driver and formatter. The letter says which phase a reader is in, not which crate to open, and the numbers within a letter are shared rather than split between owners | `crates/ridge-diagnostics/` plus per-crate emission sites; the full table is [docs/diagnostics.md](docs/diagnostics.md) |
 
 ### Tooling
 
@@ -309,7 +309,7 @@ explicit semver guarantees from the 1.0 tag forward.
 | Surface | Reason |
 |---------|--------|
 | Internal Rust API of `ridge-*` crates | Crates remain `publish = false`; downstream tooling depends on the binaries, not the crates. |
-| Text of diagnostic messages | Error codes (`R013`, `T001`, `P208`, `M005`, ...) are stable; the human-readable strings around them are not. |
+| Text of diagnostic messages | Error codes (`R013`, `T001`, `P208`, `M005`, ...) are stable; the human-readable strings around them are not. A code that stops being emitted is retired rather than deleted, its number is never reused, and `ridge explain` keeps answering for it. |
 | Intermediate file formats | `.core`, internal AST snapshots, IR serialisation -- these are implementation artefacts. |
 | Experimental features | Features still marked experimental at the time of the 1.0 cut are opt-in and may change within 1.x. |
 | BEAM / OTP versions below the documented minimum | The minimum supported BEAM version is documented at release time and may advance in minor releases. |

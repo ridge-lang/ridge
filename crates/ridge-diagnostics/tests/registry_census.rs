@@ -14,7 +14,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use ridge_diagnostics::REGISTRY;
+use ridge_diagnostics::{REGISTRY, RETIRED};
 
 /// Every `Self::Variant { .. } => "X001"` arm, or-patterns included.
 ///
@@ -192,6 +192,30 @@ fn every_registered_code_is_still_declared() {
         "registered but no longer declared by any `code()` — the variant went away, \
          so the entry should too:\n  {}",
         stale.join("\n  ")
+    );
+}
+
+/// A retired code is declared nowhere.
+///
+/// The mirror of the test above. That one catches an entry outliving its
+/// variant; this one catches a variant outliving its retirement — a `code()`
+/// arm returning a number the retired table says nothing emits. Between them
+/// each table has one rule: a registered code must be declared somewhere, a
+/// retired one nowhere.
+#[test]
+fn no_retired_code_is_still_declared() {
+    let found = declared();
+    let alive: Vec<&str> = RETIRED
+        .iter()
+        .filter(|r| found.contains_key(r.code))
+        .map(|r| r.code)
+        .collect();
+
+    assert!(
+        alive.is_empty(),
+        "retired, yet still returned by a `code()` — either the arm goes or the \
+         entry moves back to the registry:\n  {}",
+        alive.join("\n  ")
     );
 }
 

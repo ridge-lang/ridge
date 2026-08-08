@@ -1,8 +1,9 @@
 //! Resolve error types.
 //!
-//! Error codes are **stable across releases** — downstream tooling (LSP,
-//! `ariadne` renderer) keys on these strings.  Never renumber an assigned code;
-//! only append new ones at the end.
+//! Error codes are **stable from 1.0** — downstream tooling (LSP, `ariadne`
+//! renderer) keys on these strings, so from there an assigned code is never
+//! renumbered and a retired number is never reused.  Before 1.0 a wrong code may
+//! still be renumbered; otherwise, only append at the end.
 //!
 //! ## `ResolveError` (R001..R028, R999; R018 reserved)
 //!
@@ -19,7 +20,7 @@
 //! Produced while parsing workspace / project manifest files (`ridge.toml`).
 //! Manifest errors do NOT carry a `Span` (manifests are not `.ridge` source);
 //! [`ManifestError::span`] always returns `None`.  Only [`ManifestError::code`]
-//! is guaranteed stable.
+//! carries the stability promise above.
 
 use std::path::PathBuf;
 
@@ -434,7 +435,9 @@ pub enum ResolveError {
 impl ResolveError {
     /// Return the stable error code string for this variant.
     ///
-    /// Codes are **stable across releases** — never renumber an assigned code.
+    /// Codes are **stable from 1.0**: an assigned code is never renumbered and a
+    /// retired number is never reused. Before 1.0 a wrong code — a collision, or
+    /// one attributed to the wrong owner — may still be renumbered.
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {

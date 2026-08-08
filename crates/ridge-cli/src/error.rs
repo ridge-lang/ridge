@@ -268,8 +268,8 @@ pub enum CliError {
         message: String,
     },
 
-    /// `C601` — `ridge explain` was handed something that is not a code the
-    /// compiler can emit.
+    /// `C601` — `ridge explain` was handed something in neither table: not a
+    /// code the compiler emits, and not one it has retired.
     ExplainUnknownCode {
         /// What was asked about, already normalised: upper-cased, and with the
         /// brackets a rendered diagnostic puts around a code taken off.
@@ -587,8 +587,9 @@ impl fmt::Display for CliError {
             ),
             Self::ExplainUnknownCode { code } => write!(
                 f,
-                "C601 ExplainUnknownCode: '{code}' is not a code this compiler can \
-                 emit; `ridge explain --list` prints every code that exists"
+                "C601 ExplainUnknownCode: '{code}' is not a code this compiler emits, \
+                 and not one it has retired; `ridge explain --list` prints every code \
+                 it can emit"
             ),
         }
     }

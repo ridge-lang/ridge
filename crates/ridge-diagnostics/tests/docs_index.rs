@@ -20,7 +20,7 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use ridge_diagnostics::REGISTRY;
+use ridge_diagnostics::{REGISTRY, RETIRED};
 
 /// Set this to rewrite the page instead of checking it.
 const BLESS: &str = "RIDGE_BLESS";
@@ -111,6 +111,21 @@ fn render() -> String {
         let _ = write!(out, "\n### {}\n\n{}\n", entry.code, entry.summary);
     }
 
+    if !RETIRED.is_empty() {
+        out.push_str("\n## Retired codes\n\n");
+        out.push_str(
+            "These are no longer reported. They keep their page because the number outlives the\n\
+             compiler that emitted it — it is still in logs, in CI filters, and in answers written\n\
+             years ago — and a number is never reused, so what it meant then is what it means now.\n",
+        );
+        for retired in RETIRED {
+            let _ = write!(out, "\n### {}\n\n{}\n", retired.code, retired.summary);
+            if let Some(see) = retired.see {
+                let _ = write!(out, "\nSee [{see}](#{}) instead.\n", see.to_lowercase());
+            }
+        }
+    }
+
     out
 }
 
@@ -153,6 +168,18 @@ fn every_code_has_a_heading_of_its_own() {
             page.contains(&format!("\n### {}\n", entry.code)),
             "{} has no heading",
             entry.code
+        );
+    }
+    // Retired codes need theirs most of all. The link is built from the code
+    // alone, so an editor still emitting an older compiler's diagnostic points
+    // here whether or not the code is live — and a retired code with no anchor
+    // is the dead end the registry exists to remove, at the one moment the
+    // reader did not type the code themselves.
+    for retired in RETIRED {
+        assert!(
+            page.contains(&format!("\n### {}\n", retired.code)),
+            "{} has no heading",
+            retired.code
         );
     }
 }

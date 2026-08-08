@@ -209,7 +209,9 @@ pub enum CodegenError {
 impl CodegenError {
     /// Return the stable `E###` error code for this variant.
     ///
-    /// Codes are **stable across releases** — never renumber an assigned code.
+    /// Codes are **stable from 1.0**: an assigned code is never renumbered and a
+    /// retired number is never reused. Before 1.0 a wrong code — a collision, or
+    /// one attributed to the wrong owner — may still be renumbered.
     /// `E001`–`E099` are codegen errors; `E101`–`E199` are `erlc` toolchain errors.
     ///
     /// Approved as a frozen-crate additive exception per FROZEN-02 (2026-05-01).

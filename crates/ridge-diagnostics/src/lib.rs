@@ -29,7 +29,9 @@ pub use diagnostic::{
     Diagnostic, DiagnosticNote, MessageParts, NoteSeverity, RenderError, SourceCache, SourceId,
 };
 
-pub use registry::{lookup as lookup_code, CodeEntry, INDEX_URL, REGISTRY};
+pub use registry::{
+    lookup as lookup_code, lookup_retired, CodeEntry, RetiredCode, INDEX_URL, REGISTRY, RETIRED,
+};
 
 /// Re-export `Severity` from `ridge_resolve` — one canonical type workspace-wide.
 ///

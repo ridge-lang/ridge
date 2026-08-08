@@ -31,7 +31,7 @@ use ridge_driver::{
 
 /// Answer `run_workspace`'s reporting question with "nothing", for the tests
 /// that assert on the exit code rather than on what the compile said.
-fn ignore_diagnostics(_: &[Diagnostic], _: &WorkspaceSourceCache) {}
+const fn ignore_diagnostics(_: &[Diagnostic], _: &WorkspaceSourceCache) {}
 
 /// Serialises tests that depend on the value of `$PATH` at the moment `erl`
 /// is resolved.

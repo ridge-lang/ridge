@@ -1504,7 +1504,10 @@ pub fn g () -> Int = f 1 \"x\" 3 \"four\"
 ";
     let (callee, arg_index, expected, found) = first_call_mismatch("t002_position", src);
     assert_eq!(callee, "f");
-    assert_eq!(arg_index, 3, "the fourth argument is the one that does not fit");
+    assert_eq!(
+        arg_index, 3,
+        "the fourth argument is the one that does not fit"
+    );
     assert_eq!(expected, "Int");
     assert_eq!(found, "Text");
 }
@@ -1553,7 +1556,11 @@ pub fn g () -> Int = f \"x\" \"y\"
             _ => None,
         })
         .collect();
-    assert_eq!(indices, vec![0, 1], "both arguments are wrong; both must say so");
+    assert_eq!(
+        indices,
+        vec![0, 1],
+        "both arguments are wrong; both must say so"
+    );
 }
 
 /// A callee with no name the reader would recognise keeps the plain mismatch.

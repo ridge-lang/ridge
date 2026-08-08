@@ -1,6 +1,7 @@
--- expect: T001
--- T007 scenario (subsumed as T001): matching Int scrutinee against Text literal.
--- PatternTypeMismatch is emitted as TypeMismatch by unification in 0.1.0.
+-- expect: T007
+-- Matching an Int scrutinee against a Text literal. The scrutinee sets the
+-- expectation and the pattern is what claims to meet it, so the message names
+-- them in that order.
 fn f (x: Int) -> Int =
     match x
         "hello" -> 1

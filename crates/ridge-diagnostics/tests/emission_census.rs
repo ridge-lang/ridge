@@ -33,14 +33,11 @@ use ridge_diagnostics::REGISTRY;
 /// a fixture comment.
 const UNEMITTABLE: &[(&str, &str)] = &[
     // Subsumed: something else fires first, so this one never gets the chance.
-    // Each of these is a better message than the one that arrives — see #460;
-    // they stay listed here until they are wired, rather than retired.
-    ("T012", "a missing ToText instance arrives as T029"),
+    // T013 says more than the T001 that arrives in its place, so it is listed
+    // here rather than retired. Whether it is ever wired waits on #466: if a
+    // signature is allowed to carry polymorphic recursion, the failure T013
+    // reports stops existing and it is retired instead.
     ("T013", "unreachable from inferred code; reported as T001"),
-    (
-        "T008",
-        "the resolve phase rejects an unknown constructor first; arity errors are T009",
-    ),
     // Shadowed by a namesake. Each of these shares its variant name with a
     // variant in another crate that *is* constructed, so both read as live
     // until the two are told apart by owner. #444 holds that no code is

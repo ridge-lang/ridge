@@ -808,10 +808,6 @@ The `with` expression is applied to a non-record type.
 
 A pattern does not match the scrutinee's type.
 
-### T008
-
-A constructor name used in a pattern or expression is not defined on the expected union type.
-
 ### T009
 
 A constructor is applied to the wrong number of arguments.
@@ -823,10 +819,6 @@ Unification would create an infinite type.
 ### T011
 
 A chain of type aliases forms a cycle.
-
-### T012
-
-Interpolation hole type not in the closed `ToText` set (retired).
 
 ### T013
 
@@ -1039,3 +1031,15 @@ See [P206](#p206) instead.
 ### P018
 
 Rejected a record pattern written without a leading constructor name. Bare record patterns became legal in 0.2.12, so the failure it reported stopped being one.
+
+### T008
+
+Reported a constructor that is not defined on the expected union type, with a did-you-mean. A name nothing declares is rejected before types exist, carrying the same suggestion; a constructor that exists but belongs elsewhere is a plain mismatch, which names both types and does not call it unknown.
+
+See [R010](#r010) instead.
+
+### T012
+
+Reported that an interpolated value's type could not be converted to text, on the rule that only built-in types and records of built-in types were allowed. `ToText` became an open class in 0.2.13, so the rule it enforced stopped holding.
+
+See [T029](#t029) instead.

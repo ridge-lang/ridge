@@ -123,23 +123,6 @@ impl fmt::Display for TypeError {
                 )
             }
 
-            // ── T008 ──────────────────────────────────────────────────────────
-            Self::UnknownConstructor {
-                name,
-                expected_type,
-                suggestions,
-                ..
-            } => {
-                write!(
-                    f,
-                    "T008: unknown constructor `{name}` on type `{expected_type}`"
-                )?;
-                if let Some(s) = suggestions.first() {
-                    write!(f, "\n  did you mean: {s}?")?;
-                }
-                Ok(())
-            }
-
             // ── T009 ──────────────────────────────────────────────────────────
             Self::WrongConstructorArity {
                 ctor,
@@ -168,14 +151,6 @@ impl fmt::Display for TypeError {
                     f,
                     "T011: recursive type alias\n  cycle: {}",
                     cycle.join(" -> ")
-                )
-            }
-
-            // ── T012 ──────────────────────────────────────────────────────────
-            Self::ToTextNotDerivable { ty, .. } => {
-                write!(
-                    f,
-                    "T012: type `{ty}` cannot be converted to text\n  only built-in types and records of built-in types support string interpolation"
                 )
             }
 
@@ -728,11 +703,9 @@ impl HasErrorCode for TypeError {
             | Self::UnknownField { span, .. }
             | Self::WithOnNonRecord { span, .. }
             | Self::PatternTypeMismatch { span, .. }
-            | Self::UnknownConstructor { span, .. }
             | Self::WrongConstructorArity { span, .. }
             | Self::OccursCheck { span, .. }
             | Self::RecursiveTypeAlias { span, .. }
-            | Self::ToTextNotDerivable { span, .. }
             | Self::CapabilityNotDeclared { span, .. }
             | Self::UnknownActorHandler { span, .. }
             | Self::NonExhaustiveMatch { span, .. }

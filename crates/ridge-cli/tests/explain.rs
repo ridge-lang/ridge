@@ -82,16 +82,17 @@ fn list_prints_every_code() {
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
 
-    // The count is a floor, not an equality: the point is that the whole table
-    // is printed, and a test that pins the exact number fails on every new code
-    // for no reason anyone can act on.
-    let codes = stdout
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .collect::<Vec<_>>();
-    assert!(codes.len() >= 240, "only {} codes listed", codes.len());
-    assert!(stdout.contains("C001"), "the first code is missing");
-    assert!(stdout.contains("T999"), "the last code is missing");
+    // Checked against the registry rather than a number. A count has to be
+    // rewritten every time the table changes — as a floor it went stale the
+    // first time a code was retired — and it never said which code was missing
+    // when it did fail.
+    for entry in ridge_diagnostics::REGISTRY {
+        assert!(
+            stdout.contains(entry.code),
+            "{} is in the registry but not in `--list`",
+            entry.code
+        );
+    }
 }
 
 /// Asking what a code means works in a directory with no project in it.

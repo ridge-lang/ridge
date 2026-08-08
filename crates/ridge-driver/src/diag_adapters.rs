@@ -16,7 +16,7 @@ use ridge_typecheck::TypeError;
 
 /// Build a [`Diagnostic`] from a [`TypeError`].
 ///
-/// Suggestions on `T005 UnknownField` and `T008 UnknownConstructor` are
+/// Suggestions on `T005 UnknownField` and `T015 UnknownActorHandler` are
 /// surfaced as `Help`-level notes.
 #[must_use]
 pub fn diag_from_typecheck(e: &TypeError, source_id: SourceId) -> Diagnostic {
@@ -32,7 +32,6 @@ pub fn diag_from_typecheck(e: &TypeError, source_id: SourceId) -> Diagnostic {
     // Surface per-variant secondary notes.
     match e {
         TypeError::UnknownField { suggestions, .. }
-        | TypeError::UnknownConstructor { suggestions, .. }
         | TypeError::UnknownActorHandler { suggestions, .. } => {
             if let Some(message) = ridge_diagnostics::diagnostic::did_you_mean(suggestions) {
                 diag.notes.push(DiagnosticNote {

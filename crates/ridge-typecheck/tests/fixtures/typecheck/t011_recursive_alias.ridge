@@ -1,6 +1,8 @@
--- expect: T001
--- T011 scenario: recursive type aliases are prevented by the grammar.
--- This fixture instead verifies that a simple alias is well-typed (T001
--- would fire from a different mismatch, not from an alias cycle).
--- In 0.1.0, T011 (RecursiveTypeAlias) is unreachable from real Ridge code.
-fn f -> Int = "wrong"
+-- expect: T011
+-- An alias stands for something else, and this pair stands for nothing: each
+-- resolves to the other and neither reaches a real type. The parser accepts
+-- it, so the type checker is the only thing that can say so.
+type A = B
+type B = A
+
+fn f (x: A) -> Int = 0

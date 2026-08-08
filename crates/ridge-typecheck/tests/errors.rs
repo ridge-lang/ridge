@@ -1459,3 +1459,102 @@ pub fn measure (d: Duration) -> Int =\n\
         "the hint must say why the obvious fix is refused: {hint}"
     );
 }
+
+// ── T011 — an alias that stands for nothing ───────────────────────────────────
+
+/// The cycles reported for `src`, each rendered as `A -> B -> A`.
+fn alias_cycles(stem: &str, src: &str) -> Vec<String> {
+    run_typecheck_on_source(stem, src)
+        .into_iter()
+        .filter_map(|e| match e {
+            TypeError::RecursiveTypeAlias { cycle, .. } => Some(cycle.join(" -> ")),
+            _ => None,
+        })
+        .collect()
+}
+
+/// An alias that resolves to itself stands for nothing, and used to type-check
+/// clean — leaving the first real error to name a type no value can have.
+#[test]
+fn an_alias_that_resolves_to_itself_is_reported() {
+    let cycles = alias_cycles("t011_self", "type A = A\npub fn f (x: A) -> Int = 0\n");
+    assert_eq!(cycles, vec!["A -> A".to_string()]);
+}
+
+/// Two aliases that resolve to each other are one mistake, so they get one
+/// diagnostic — naming both, in the order they refer to one another.
+#[test]
+fn a_pair_of_aliases_that_close_on_each_other_is_one_diagnostic() {
+    let cycles = alias_cycles(
+        "t011_pair",
+        "type A = B\ntype B = A\npub fn f (x: A) -> Int = 0\n",
+    );
+    assert_eq!(cycles, vec!["A -> B -> A".to_string()]);
+}
+
+/// The path is what makes a longer cycle findable, so the whole ring is named.
+#[test]
+fn a_longer_cycle_names_every_alias_on_it() {
+    let cycles = alias_cycles(
+        "t011_three",
+        "type A = B\ntype B = C\ntype C = A\npub fn f (x: A) -> Int = 0\n",
+    );
+    assert_eq!(cycles, vec!["A -> B -> C -> A".to_string()]);
+}
+
+/// Reaching itself through another type is still reaching itself: `List A` has
+/// no size, because the `A` inside it is the same alias.
+#[test]
+fn an_alias_that_contains_itself_is_reported() {
+    let cycles = alias_cycles("t011_list", "type A = List A\npub fn f (x: A) -> Int = 0\n");
+    assert_eq!(cycles, vec!["A -> A".to_string()]);
+}
+
+/// Two independent cycles are two mistakes and get one diagnostic each.
+#[test]
+fn independent_cycles_are_reported_separately() {
+    let cycles = alias_cycles(
+        "t011_two_rings",
+        "type A = B\ntype B = A\ntype C = D\ntype D = C\npub fn f (x: A) -> Int = 0\n",
+    );
+    assert_eq!(
+        cycles,
+        vec!["A -> B -> A".to_string(), "C -> D -> C".to_string()]
+    );
+}
+
+/// A union may refer to itself — that is how a tree is declared — and must not
+/// be caught by the alias check.
+#[test]
+fn a_recursive_union_is_not_a_cycle() {
+    let src = "\
+type Tree a = Leaf | Node (Tree a) a (Tree a)
+pub fn f (t: Tree Int) -> Int = 0
+";
+    let errors = run_typecheck_on_source("t011_union", src);
+    assert!(errors.is_empty(), "got {errors:?}");
+}
+
+/// An alias chain that reaches a real type is what aliases are for.
+#[test]
+fn an_alias_chain_that_terminates_is_silent() {
+    let src = "\
+type IntList = List Int
+type Numbers = IntList
+pub fn f (x: Numbers) -> Int = 0
+";
+    let errors = run_typecheck_on_source("t011_chain", src);
+    assert!(errors.is_empty(), "got {errors:?}");
+}
+
+/// A parametric alias applied to a real type terminates too.
+#[test]
+fn a_parametric_alias_is_silent() {
+    let src = "\
+type Pair a = (a, a)
+type IntPair = Pair Int
+pub fn f (p: IntPair) -> Int = 0
+";
+    let errors = run_typecheck_on_source("t011_parametric", src);
+    assert!(errors.is_empty(), "got {errors:?}");
+}

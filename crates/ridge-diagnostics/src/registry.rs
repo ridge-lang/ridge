@@ -111,13 +111,28 @@ pub fn lookup_retired(code: &str) -> Option<&'static RetiredCode> {
 ///
 /// Sorted because [`lookup_retired`] binary-searches it, and a test holds the
 /// order.
-pub const RETIRED: &[RetiredCode] = &[RetiredCode {
-    code: "C402",
-    summary: "Reported that `erl` and `erlc` had to be on PATH before `ridge migrate add` \
-              could run. It was `C004` under a second number, and vaguer: it never said \
-              which of the two binaries was missing.",
-    see: Some("C004"),
-}];
+pub const RETIRED: &[RetiredCode] = &[
+    RetiredCode {
+        code: "C003",
+        summary: "Reported a dependency cycle among workspace members, as a debug-formatted list of the members involved. Cycle detection moved to the package layer, which names the path it found.",
+        see: Some("P206"),
+    },
+    RetiredCode {
+        code: "C402",
+    summary: "Reported that `erl` and `erlc` had to be on PATH before `ridge migrate add` could run. It was `C004` under a second number, and vaguer: it never said which of the two binaries was missing.",
+        see: Some("C004"),
+    },
+    RetiredCode {
+        code: "M012",
+        summary: "Reported a dependency cycle among workspace projects while reading manifests. A manifest is read on its own, so the cycle was never visible at that point; the package layer resolves the whole graph and reports it.",
+        see: Some("P206"),
+    },
+    RetiredCode {
+        code: "P018",
+        summary: "Rejected a record pattern written without a leading constructor name. Bare record patterns became legal in 0.2.12, so the failure it reported stopped being one.",
+        see: None,
+    },
+];
 
 /// Every declared diagnostic code, sorted by code.
 ///
@@ -134,12 +149,6 @@ pub const REGISTRY: &[CodeEntry] = &[
         variants: &["WorkspaceMemberMissing"],
         owner: "ridge-driver",
         summary: "A member listed in `[workspace] members` has no on-disk directory or no `ridge.toml`.",
-    },
-    CodeEntry {
-        code: "C003",
-        variants: &["WorkspaceCycle"],
-        owner: "ridge-driver",
-        summary: "Cyclic workspace dependency detected.",
     },
     CodeEntry {
         code: "C004",
@@ -730,12 +739,6 @@ pub const REGISTRY: &[CodeEntry] = &[
         summary: "An unrecognised capability name was used in a manifest.",
     },
     CodeEntry {
-        code: "M012",
-        variants: &["CycleInDependencies"],
-        owner: "ridge-manifest",
-        summary: "A dependency cycle was detected among workspace projects.",
-    },
-    CodeEntry {
         code: "M013",
         variants: &["UnknownWorkspaceMember"],
         owner: "ridge-manifest",
@@ -842,12 +845,6 @@ pub const REGISTRY: &[CodeEntry] = &[
         variants: &["EmptyBlock"],
         owner: "ridge-parser",
         summary: "An `INDENT`/`DEDENT` block contained no statements.",
-    },
-    CodeEntry {
-        code: "P018",
-        variants: &["BareRecordPattern"],
-        owner: "ridge-parser",
-        summary: "Retired in 0.2.12.",
     },
     CodeEntry {
         code: "P019",
@@ -1653,6 +1650,33 @@ mod tests {
                 lookup(r.code).is_none(),
                 "`{}` was retired and is live again",
                 r.code
+            );
+        }
+    }
+
+    /// No summary carries the indentation of the source that wrote it.
+    ///
+    /// A `\` continuation inside a string literal hides a run of spaces that is
+    /// one reformat away from becoming real, and what reaches the terminal is a
+    /// sentence with a hole in the middle of it. That has now happened twice in
+    /// this repository, both times found by running the binary and reading the
+    /// output rather than by a test. This is the test.
+    #[test]
+    fn no_summary_carries_the_indentation_of_its_source() {
+        for e in REGISTRY {
+            assert!(
+                !e.summary.contains("  "),
+                "`{}` has a run of spaces in it: {}",
+                e.code,
+                e.summary
+            );
+        }
+        for r in RETIRED {
+            assert!(
+                !r.summary.contains("  "),
+                "`{}` has a run of spaces in it: {}",
+                r.code,
+                r.summary
             );
         }
     }

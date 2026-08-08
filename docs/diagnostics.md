@@ -32,10 +32,6 @@ No `ridge.toml` with a `[workspace]` table was found at or above the search root
 
 A member listed in `[workspace] members` has no on-disk directory or no `ridge.toml`.
 
-### C003
-
-Cyclic workspace dependency detected.
-
 ### C004
 
 An OTP binary (`erl`, `erlc`) is not on `PATH`.
@@ -440,10 +436,6 @@ Two workspace members declared the same project name.
 
 An unrecognised capability name was used in a manifest.
 
-### M012
-
-A dependency cycle was detected among workspace projects.
-
 ### M013
 
 A dependency names a project not present in the workspace.
@@ -519,10 +511,6 @@ A language feature is reserved but deferred to a future version.
 ### P014
 
 An `INDENT`/`DEDENT` block contained no statements.
-
-### P018
-
-Retired in 0.2.12.
 
 ### P019
 
@@ -1030,8 +1018,24 @@ These are no longer reported. They keep their page because the number outlives t
 compiler that emitted it — it is still in logs, in CI filters, and in answers written
 years ago — and a number is never reused, so what it meant then is what it means now.
 
+### C003
+
+Reported a dependency cycle among workspace members, as a debug-formatted list of the members involved. Cycle detection moved to the package layer, which names the path it found.
+
+See [P206](#p206) instead.
+
 ### C402
 
 Reported that `erl` and `erlc` had to be on PATH before `ridge migrate add` could run. It was `C004` under a second number, and vaguer: it never said which of the two binaries was missing.
 
 See [C004](#c004) instead.
+
+### M012
+
+Reported a dependency cycle among workspace projects while reading manifests. A manifest is read on its own, so the cycle was never visible at that point; the package layer resolves the whole graph and reports it.
+
+See [P206](#p206) instead.
+
+### P018
+
+Rejected a record pattern written without a leading constructor name. Bare record patterns became legal in 0.2.12, so the failure it reported stopped being one.

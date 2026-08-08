@@ -11,9 +11,6 @@
 //! - `P006 LayoutMismatch`
 //! - `P999 InternalLayoutInvariantViolated`
 //!
-//! T5 adds:
-//! - `P018 BareRecordPattern`
-//!
 //! T6 adds:
 //! - `P009 NonAssociativeChain`
 //!
@@ -158,18 +155,6 @@ pub enum ParseError {
         feature: &'static str,
         /// Target version string (e.g. `"0.2.0"`).
         since: &'static str,
-    },
-
-    /// P018 — retired in 0.2.12.  Constructor-less record patterns are now
-    /// fully supported.  This code is reserved and will not be reused.
-    ///
-    /// Previously: a record-body pattern `{ … }` was rejected when it
-    /// appeared without a leading constructor name.
-    // P018 retired in 0.2.12 — code reserved, will not be reused.
-    #[error("P018 retired — bare record patterns are now supported")]
-    BareRecordPattern {
-        /// Source location of the bare `{` (kept for diagnostic-wire compat).
-        span: Span,
     },
 
     /// P019 — a doc comment appears at a position where it cannot be attached
@@ -500,7 +485,6 @@ impl ParseError {
             Self::TopLevelPatternParam { .. } => "P012",
             Self::DeferredFeature { .. } => "P013",
             Self::EmptyBlock { .. } => "P014",
-            Self::BareRecordPattern { .. } => "P018",
             Self::OrphanDocComment { .. } => "P019",
             Self::ReservedKeywordAsIdent { .. } => "P020",
             Self::MalformedInlineRecordType { .. }
@@ -539,7 +523,6 @@ impl ParseError {
             | Self::TopLevelPatternParam { span }
             | Self::DeferredFeature { span, .. }
             | Self::EmptyBlock { span }
-            | Self::BareRecordPattern { span }
             | Self::OrphanDocComment { span }
             | Self::ReservedKeywordAsIdent { span, .. }
             | Self::MalformedInlineRecordType { span, .. }

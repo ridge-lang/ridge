@@ -99,7 +99,8 @@ pub enum Pattern {
     ///
     /// Covers both positional form (`Some x`) and record-body form
     /// (`User { name }`).  A constructor name (`UPPER_IDENT`) is always
-    /// required; bare `{ … }` is rejected with `P018 BareRecordPattern`.
+    /// required here; a bare `{ … }` is a [`Pattern::Record`] instead, which
+    /// has been legal since 0.2.12.
     Constructor {
         /// Constructor name (upper-case identifier).
         name: Ident,

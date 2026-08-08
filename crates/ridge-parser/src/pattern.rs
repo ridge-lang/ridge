@@ -25,8 +25,8 @@
 //! # Inline record patterns
 //!
 //! A bare `{` in pattern position produces `Pattern::Record` (inline record
-//! pattern).  P018 (`BareRecordPattern`) was retired in 0.2.12 when bare
-//! record patterns became fully supported.
+//! pattern).  `P018` rejected that until 0.2.12; it is retired, and the number
+//! is recorded in `ridge-diagnostics` rather than reused.
 
 // These functions are called by tests in this file.  They will be called from
 // production code (match/let/lambda).  Suppress dead_code until then.

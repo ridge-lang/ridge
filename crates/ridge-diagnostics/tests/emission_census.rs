@@ -35,7 +35,6 @@ const UNEMITTABLE: &[(&str, &str)] = &[
     // Subsumed: something else fires first, so this one never gets the chance.
     // Each of these is a better message than the one that arrives — see #460;
     // they stay listed here until they are wired, rather than retired.
-    ("T007", "unification reports the pattern mismatch as T001"),
     ("T011", "the grammar prevents recursive aliases; a bad one is T001"),
     ("T012", "a missing ToText instance arrives as T029"),
     ("T013", "unreachable from inferred code; reported as T001"),

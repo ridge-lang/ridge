@@ -446,24 +446,15 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 // Partial application: fewer args than declared params.
                 if n_args < n_params {
                     // Unify each supplied arg with the corresponding param.
-                    let mut ok = true;
-                    for (i, (arg_ty, param_ty)) in
-                        arg_types.iter().zip(callee_params.iter()).enumerate()
-                    {
-                        if let Err(e) = unify(ctx, arg_ty, param_ty) {
-                            let mut e = attach_span(e, *span);
-                            // Trap A: the failing first argument is the
-                            // parenthesised comma-list.
-                            if i == 0 {
-                                if let Some(h) = &paren_call_hint {
-                                    set_type_mismatch_hint(&mut e, h.clone());
-                                }
-                            }
-                            ctx.errors.push(e);
-                            ok = false;
-                        }
-                    }
-                    if !ok {
+                    if !check_call_arguments(
+                        ctx,
+                        callee_name(callee).as_deref(),
+                        args,
+                        &arg_types,
+                        callee_params,
+                        *span,
+                        paren_call_hint.as_ref(),
+                    ) {
                         return Type::Error;
                     }
                     // Build partially-applied function type: remaining params + same ret.
@@ -476,6 +467,35 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                         ret: callee_ret.clone(),
                         caps: callee_caps.clone(),
                     };
+                }
+            }
+
+            // Unify argument by argument first, so a mismatch can say which
+            // argument it was. The whole-`Fn` unification below compares the two
+            // arrow types in one step and stops at the first bad parameter
+            // holding neither its position nor its span — which is why `add 1
+            // "two"` underlined the entire call and reported a bare
+            // expected/got. Only for a callee we can name at a matching arity;
+            // anything else falls through unchanged. Trap A also stays on the
+            // old path: its hint teaches the call syntax, which is worth more
+            // than an argument index to someone writing `f(x, y)`.
+            if paren_call_hint.is_none() {
+                if let (Some(name), Type::Fn { params, .. }) =
+                    (callee_name(callee), &resolved_for_partial)
+                {
+                    if params.len() == arg_types.len()
+                        && !check_call_arguments(
+                            ctx,
+                            Some(&name),
+                            args,
+                            &arg_types,
+                            params,
+                            *span,
+                            None,
+                        )
+                    {
+                        return Type::Error;
+                    }
                 }
             }
 
@@ -2056,6 +2076,90 @@ fn simple_call_arg_text(e: &Expr) -> Option<String> {
     }
 }
 
+/// The name to print for a callee, when there is one worth printing.
+///
+/// A plain identifier and a dotted path both read back to the user exactly as
+/// they wrote them. Anything else — a lambda applied in place, a function
+/// returned by another call — has no name the reader would recognise, and
+/// `T002` promises one, so those callers keep the unnamed `T001`.
+fn callee_name(callee: &Expr) -> Option<String> {
+    match peel_parens(callee) {
+        Expr::Ident(id) => Some(id.text.clone()),
+        Expr::Qualified(q) => Some(
+            q.segments
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>()
+                .join("."),
+        ),
+        _ => None,
+    }
+}
+
+/// Unifies each supplied argument against the parameter it lands on, reporting
+/// every mismatch it finds rather than stopping at the first.
+///
+/// `callee` is the name to print; without one there is no `T002` to report and
+/// each mismatch stays a plain `T001` at `fallback_span`. `paren_hint` is Trap
+/// A's teaching hint, which belongs to the first argument and outranks naming
+/// it — someone writing `f(x, y)` needs the call syntax, not an index.
+///
+/// Returns `false` when at least one argument did not fit.
+fn check_call_arguments(
+    ctx: &mut InferCtx,
+    callee: Option<&str>,
+    args: &[Expr],
+    arg_types: &[Type],
+    params: &[Type],
+    fallback_span: Span,
+    paren_hint: Option<&String>,
+) -> bool {
+    let mut ok = true;
+    for (i, (arg_ty, param_ty)) in arg_types.iter().zip(params.iter()).enumerate() {
+        // Parameter first: `unify` reads its arguments as expected then found,
+        // and the declaration is what the argument had to meet.
+        let Err(e) = unify(ctx, param_ty, arg_ty) else {
+            continue;
+        };
+        let mut e = match callee {
+            Some(name) if paren_hint.is_none() => {
+                let span = args.get(i).map_or(fallback_span, Expr::span);
+                name_the_argument(e, name, i, span)
+            }
+            _ => attach_span(e, fallback_span),
+        };
+        if i == 0 {
+            if let Some(h) = paren_hint {
+                set_type_mismatch_hint(&mut e, h.clone());
+            }
+        }
+        ctx.errors.push(e);
+        ok = false;
+    }
+    ok
+}
+
+/// Re-files a failed argument unification as `T002`, which carries the callee
+/// and the position the plain mismatch does not.
+///
+/// Anything the unifier reports that is not a mismatch — an occurs-check
+/// failure, say — keeps its own variant and only gains the argument's span,
+/// since `T002` has nothing to add to it.
+fn name_the_argument(e: TypeError, callee: &str, arg_index: usize, span: Span) -> TypeError {
+    match e {
+        TypeError::TypeMismatch {
+            expected, found, ..
+        } => TypeError::TypeMismatchInCall {
+            callee: callee.to_string(),
+            arg_index,
+            expected,
+            found,
+            span,
+        },
+        other => attach_span(other, span),
+    }
+}
+
 /// Sets the teaching hint on a `T001 TypeMismatch`; all other variants are
 /// left untouched.
 fn set_type_mismatch_hint(e: &mut TypeError, hint: String) {
@@ -2633,9 +2737,13 @@ mod tests {
 
     // ── Call: type mismatch ───────────────────────────────────────────────────
 
-    /// Test 15 — calling Int->Int with a Text arg fires T001
+    /// Test 15 — calling Int->Int with a Text arg names the callee and the
+    /// argument.
+    ///
+    /// This used to be a T001, which told the reader a type was wrong without
+    /// saying where among the arguments to look.
     #[test]
-    fn infer_call_param_type_mismatch_fires_t001() {
+    fn infer_call_param_type_mismatch_names_the_argument() {
         let b = make_builtins();
         let mut ctx = InferCtx::new();
         ctx.env.push_frame();
@@ -2658,8 +2766,59 @@ mod tests {
         };
 
         infer_expr(&mut ctx, &b, &call);
-        let has_t001 = ctx.errors.iter().any(|e| e.code() == "T001");
-        assert!(has_t001, "expected T001, errors: {:?}", ctx.errors);
+        let named = ctx.errors.iter().find_map(|e| match e {
+            TypeError::TypeMismatchInCall {
+                callee, arg_index, ..
+            } => Some((callee.clone(), *arg_index)),
+            _ => None,
+        });
+        assert_eq!(
+            named,
+            Some(("neg".to_string(), 0)),
+            "expected T002 naming `neg` at argument 0, errors: {:?}",
+            ctx.errors
+        );
+        ctx.env.pop_frame();
+    }
+
+    /// A partially-applied call names its argument too — it already knew the
+    /// position, and used to throw it away along with the argument's span.
+    #[test]
+    fn a_partial_application_also_names_the_argument() {
+        let b = make_builtins();
+        let mut ctx = InferCtx::new();
+        ctx.env.push_frame();
+
+        // `add : Int -> Int -> Int`, supplied one Text argument.
+        let add_ty = Type::Fn {
+            params: vec![Type::Con(b.int, vec![]), Type::Con(b.int, vec![])],
+            ret: Box::new(Type::Con(b.int, vec![])),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        ctx.env.bind("add".to_string(), Scheme::mono(add_ty));
+
+        let call = Expr::Call {
+            callee: Box::new(Expr::Ident(make_ident("add"))),
+            args: vec![Expr::Literal(Literal::Text {
+                raw: r#""hello""#.to_string(),
+                span: dummy_span(),
+            })],
+            span: dummy_span(),
+        };
+
+        infer_expr(&mut ctx, &b, &call);
+        let named = ctx.errors.iter().find_map(|e| match e {
+            TypeError::TypeMismatchInCall {
+                callee, arg_index, ..
+            } => Some((callee.clone(), *arg_index)),
+            _ => None,
+        });
+        assert_eq!(
+            named,
+            Some(("add".to_string(), 0)),
+            "expected T002 naming `add` at argument 0, errors: {:?}",
+            ctx.errors
+        );
         ctx.env.pop_frame();
     }
 

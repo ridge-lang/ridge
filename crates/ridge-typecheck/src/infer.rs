@@ -1111,8 +1111,8 @@ pub fn infer_pattern(ctx: &mut InferCtx, b: &BuiltinTyCons, pat: &Pattern, expec
         // ── Literal ───────────────────────────────────────────────────────────
         Pattern::Literal { lit, span } => {
             let lit_ty = type_of_literal(b, lit);
-            if let Err(e) = unify(ctx, &lit_ty, expected_ty) {
-                ctx.errors.push(attach_span(e, *span));
+            if let Err(e) = unify(ctx, expected_ty, &lit_ty) {
+                ctx.errors.push(state_as_pattern_mismatch(e, *span));
             }
         }
 
@@ -1122,8 +1122,8 @@ pub fn infer_pattern(ctx: &mut InferCtx, b: &BuiltinTyCons, pat: &Pattern, expec
             let fresh_vars: Vec<Type> =
                 elems.iter().map(|_| Type::Var(ctx.fresh_tyvid())).collect();
             let tuple_ty = Type::Tuple(fresh_vars.clone());
-            if let Err(e) = unify(ctx, &tuple_ty, expected_ty) {
-                ctx.errors.push(attach_span(e, *span));
+            if let Err(e) = unify(ctx, expected_ty, &tuple_ty) {
+                ctx.errors.push(state_as_pattern_mismatch(e, *span));
                 return;
             }
             // Resolve each element type after unification and recurse.
@@ -1138,8 +1138,8 @@ pub fn infer_pattern(ctx: &mut InferCtx, b: &BuiltinTyCons, pat: &Pattern, expec
             // expected must be List ?a
             let elem_var = Type::Var(ctx.fresh_tyvid());
             let list_ty = Type::Con(b.list, vec![elem_var.clone()]);
-            if let Err(e) = unify(ctx, &list_ty, expected_ty) {
-                ctx.errors.push(attach_span(e, *span));
+            if let Err(e) = unify(ctx, expected_ty, &list_ty) {
+                ctx.errors.push(state_as_pattern_mismatch(e, *span));
                 return;
             }
             let resolved_elem = ctx.shallow_resolve(&elem_var);
@@ -1179,8 +1179,8 @@ pub fn infer_pattern(ctx: &mut InferCtx, b: &BuiltinTyCons, pat: &Pattern, expec
         Pattern::List { elements, span } => {
             let elem_var = Type::Var(ctx.fresh_tyvid());
             let list_ty = Type::Con(b.list, vec![elem_var.clone()]);
-            if let Err(e) = unify(ctx, &list_ty, expected_ty) {
-                ctx.errors.push(attach_span(e, *span));
+            if let Err(e) = unify(ctx, expected_ty, &list_ty) {
+                ctx.errors.push(state_as_pattern_mismatch(e, *span));
                 return;
             }
             let resolved_elem = ctx.shallow_resolve(&elem_var);
@@ -2056,6 +2056,27 @@ fn simple_call_arg_text(e: &Expr) -> Option<String> {
     }
 }
 
+/// Re-files a failed pattern unification as `T007`, which says which side is
+/// which.
+///
+/// The scrutinee is what sets the expectation and the pattern is what claims
+/// to meet it. Reported as a plain mismatch the two arrive unlabelled, and
+/// matching an `Int` against `"text"` read as `expected Text, got Int` — the
+/// opposite of how the reader is holding it. Anything that is not a mismatch —
+/// a tuple pattern of the wrong length, say — keeps its own variant.
+fn state_as_pattern_mismatch(e: TypeError, span: Span) -> TypeError {
+    match e {
+        TypeError::TypeMismatch {
+            expected, found, ..
+        } => TypeError::PatternTypeMismatch {
+            expected,
+            pattern: found,
+            span,
+        },
+        other => attach_span(other, span),
+    }
+}
+
 /// Sets the teaching hint on a `T001 TypeMismatch`; all other variants are
 /// left untouched.
 fn set_type_mismatch_hint(e: &mut TypeError, hint: String) {
@@ -2775,9 +2796,10 @@ mod tests {
         ctx.env.pop_frame();
     }
 
-    /// Test 20b — literal pattern type mismatch fires T001
+    /// Test 20b — a literal pattern against the wrong scrutinee type is
+    /// reported as a pattern mismatch, which says which side is which.
     #[test]
-    fn infer_pattern_literal_mismatch_fires_t001() {
+    fn infer_pattern_literal_mismatch_names_both_sides() {
         let b = make_builtins();
         let mut ctx = InferCtx::new();
         ctx.env.push_frame();
@@ -2790,8 +2812,13 @@ mod tests {
             span: dummy_span(),
         };
         infer_pattern(&mut ctx, &b, &pat, &text_ty);
-        let has_t001 = ctx.errors.iter().any(|e| e.code() == "T001");
-        assert!(has_t001, "expected T001, errors: {:?}", ctx.errors);
+        assert!(
+            ctx.errors
+                .iter()
+                .any(|e| matches!(e, TypeError::PatternTypeMismatch { .. })),
+            "expected T007, errors: {:?}",
+            ctx.errors
+        );
         ctx.env.pop_frame();
     }
 

@@ -1459,3 +1459,108 @@ pub fn measure (d: Duration) -> Int =\n\
         "the hint must say why the obvious fix is refused: {hint}"
     );
 }
+
+// ── T007 — the scrutinee expects, the pattern claims ──────────────────────────
+
+/// Pull the `(expected, pattern)` strings of the first `T007`.
+fn first_pattern_mismatch(stem: &str, src: &str) -> (String, String) {
+    run_typecheck_on_source(stem, src)
+        .into_iter()
+        .find_map(|e| match e {
+            TypeError::PatternTypeMismatch {
+                expected, pattern, ..
+            } => Some((expected, pattern)),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no T007 produced for {stem}"))
+}
+
+/// The scrutinee sets the expectation; the pattern is what claims to meet it.
+///
+/// Reported as a plain mismatch the two arrive unlabelled and in the order the
+/// unifier happened to see them, which read as `expected Text, got Int` for an
+/// `Int` matched against `"text"` — the opposite of how the reader holds it.
+#[test]
+fn a_literal_pattern_mismatch_names_the_scrutinee_as_the_expectation() {
+    let src = "\
+pub fn f (x: Int) -> Int =
+    match x
+        \"text\" -> 1
+        _ -> 2
+";
+    let (expected, pattern) = first_pattern_mismatch("t007_literal", src);
+    assert_eq!(expected, "Int", "the scrutinee is what was expected");
+    assert_eq!(pattern, "Text", "the pattern is what claimed to meet it");
+}
+
+/// A list pattern against a non-list scrutinee reports the same way, and says
+/// what the pattern implies rather than leaving the reader to infer it.
+#[test]
+fn a_list_pattern_against_a_non_list_says_what_it_implies() {
+    let src = "\
+pub fn f (x: Int) -> Int =
+    match x
+        [a, b] -> a
+        _ -> 2
+";
+    let (expected, pattern) = first_pattern_mismatch("t007_list", src);
+    assert_eq!(expected, "Int");
+    assert!(
+        pattern.starts_with("List"),
+        "the pattern implies a list; got {pattern:?}"
+    );
+}
+
+/// A cons pattern is the same shape claim written differently.
+#[test]
+fn a_cons_pattern_against_a_non_list_reports_the_same_way() {
+    let src = "\
+pub fn f (x: Int) -> Int =
+    match x
+        h :: t -> h
+        _ -> 2
+";
+    let (expected, pattern) = first_pattern_mismatch("t007_cons", src);
+    assert_eq!(expected, "Int");
+    assert!(
+        pattern.starts_with("List"),
+        "the pattern implies a list; got {pattern:?}"
+    );
+}
+
+/// A tuple pattern of the wrong length is a length problem, not a type
+/// problem, so it keeps the variant that says so rather than being re-filed as
+/// a pattern type mismatch.
+#[test]
+fn a_tuple_pattern_of_the_wrong_length_is_not_a_type_mismatch() {
+    let src = "\
+pub fn f (p: (Int, Int)) -> Int =
+    match p
+        (a, b, c) -> a
+        _ -> 2
+";
+    let errors = run_typecheck_on_source("t007_tuple_len", src);
+    assert!(
+        errors
+            .iter()
+            .all(|e| !matches!(e, TypeError::PatternTypeMismatch { .. })),
+        "a length mismatch must not read as a type mismatch; got {errors:?}"
+    );
+    assert!(
+        errors.iter().any(|e| e.code() == "T003"),
+        "the length mismatch must still be reported; got {errors:?}"
+    );
+}
+
+/// A pattern that fits produces nothing at all.
+#[test]
+fn a_pattern_that_fits_is_silent() {
+    let src = "\
+pub fn f (x: Int) -> Int =
+    match x
+        0 -> 1
+        _ -> 2
+";
+    let errors = run_typecheck_on_source("t007_ok", src);
+    assert!(errors.is_empty(), "got {errors:?}");
+}

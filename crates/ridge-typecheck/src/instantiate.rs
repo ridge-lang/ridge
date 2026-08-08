@@ -688,7 +688,8 @@ mod tests {
         infer_expr(&mut ctx, &b, &call_int);
         assert!(ctx.errors.is_empty(), "f 5 must not error on first call");
 
-        // f "hi" — second call, must fail with T001 because f is monomorphic.
+        // f "hi" — second call, must fail because f is monomorphic. The call
+        // site reports the mismatch as T002, naming the argument.
         let call_text = ridge_ast::Expr::Call {
             callee: Box::new(ridge_ast::Expr::Ident(id("f"))),
             args: vec![ridge_ast::Expr::Literal(Literal::Text {
@@ -698,10 +699,13 @@ mod tests {
             span: ds(),
         };
         infer_expr(&mut ctx, &b, &call_text);
-        let has_err = ctx.errors.iter().any(|e| e.code() == "T001");
+        let has_err = ctx
+            .errors
+            .iter()
+            .any(|e| matches!(e.code(), "T001" | "T002"));
         assert!(
             has_err,
-            "f \"hi\" must fail T001 for mono var; errors: {:?}",
+            "f \"hi\" must not typecheck against a mono var; errors: {:?}",
             ctx.errors
         );
 

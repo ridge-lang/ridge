@@ -23,10 +23,15 @@ use common::{
     TempWorkspace,
 };
 
+use ridge_diagnostics::Diagnostic;
 use ridge_driver::{
     check_workspace, compile_workspace, run_workspace, CheckOptions, CompileOptions, EmitArtefacts,
-    RunError, RunOptions,
+    RunError, RunOptions, WorkspaceSourceCache,
 };
+
+/// Answer `run_workspace`'s reporting question with "nothing", for the tests
+/// that assert on the exit code rather than on what the compile said.
+fn ignore_diagnostics(_: &[Diagnostic], _: &WorkspaceSourceCache) {}
 
 /// Serialises tests that depend on the value of `$PATH` at the moment `erl`
 /// is resolved.
@@ -430,7 +435,10 @@ fn run_missing_erlang() {
     let original_path = std::env::var_os("PATH");
     std::env::set_var("PATH", empty_dir.path());
 
-    let result = run_workspace(RunOptions::new(tw.path.clone(), "demo".to_owned()));
+    let result = run_workspace(
+        RunOptions::new(tw.path.clone(), "demo".to_owned()),
+        ignore_diagnostics,
+    );
 
     // Restore PATH before any assertion so the process remains usable.
     match original_path {
@@ -595,7 +603,10 @@ fn run_err_main_returns_nonzero_with_stderr() {
     let source = "fn main () -> Result Unit Text =\n    Err \"boom\"\n";
     let tw = make_workspace("Main", source);
 
-    let result = run_workspace(RunOptions::new(tw.path.clone(), "demo".to_owned()));
+    let result = run_workspace(
+        RunOptions::new(tw.path.clone(), "demo".to_owned()),
+        ignore_diagnostics,
+    );
     assert!(
         result.is_err(),
         "expected non-zero exit for Err main, got Ok"
@@ -617,10 +628,44 @@ fn run_ok_main_returns_zero() {
     let source = "fn main () -> Result Unit Text =\n    Ok ()\n";
     let tw = make_workspace("Main", source);
 
-    let result = run_workspace(RunOptions::new(tw.path.clone(), "demo".to_owned()));
+    let result = run_workspace(
+        RunOptions::new(tw.path.clone(), "demo".to_owned()),
+        ignore_diagnostics,
+    );
     assert!(
         result.is_ok(),
         "expected exit 0 for Ok main, got: {result:?}"
+    );
+}
+
+/// A warning that does not stop the run still reaches the caller.
+///
+/// Compiling and launching happen inside one call, so a diagnostic the error
+/// gate let through has nowhere to go unless it is handed over here. It used
+/// to have nowhere to go: the success path dropped the batch along with the
+/// source cache, and a redundant arm that `check_workspace` reported on the
+/// same file went unmentioned all the way into the running program.
+#[test]
+#[cfg(feature = "beam-runtime")]
+fn run_reports_the_warnings_it_did_not_stop_on() {
+    let _guard = PATH_ENV_LOCK.lock().expect("PATH_ENV_LOCK not poisoned");
+
+    let source = "type Role = Admin | Guest\n\nfn main () -> Int =\n    match Guest\n        Admin -> 1\n        Guest -> 2\n        _ -> 3\n";
+    let tw = make_workspace("Main", source);
+
+    let mut reported: Vec<&str> = Vec::new();
+    let result = run_workspace(
+        RunOptions::new(tw.path.clone(), "demo".to_owned()),
+        |diagnostics, _sources| reported = diagnostics.iter().map(|d| d.code).collect(),
+    );
+
+    assert!(
+        result.is_ok(),
+        "a warning must not stop the run, got: {result:?}"
+    );
+    assert!(
+        reported.contains(&"T017"),
+        "expected the redundant-pattern warning to reach the caller, got: {reported:?}"
     );
 }
 
@@ -635,7 +680,10 @@ fn run_unit_main_returns_zero() {
     let source = "fn main () -> Unit =\n    ()\n";
     let tw = make_workspace("Main", source);
 
-    let result = run_workspace(RunOptions::new(tw.path.clone(), "demo".to_owned()));
+    let result = run_workspace(
+        RunOptions::new(tw.path.clone(), "demo".to_owned()),
+        ignore_diagnostics,
+    );
     assert!(
         result.is_ok(),
         "expected exit 0 for Unit main, got: {result:?}"
@@ -657,7 +705,10 @@ fn run_crashing_main_returns_nonzero_with_stderr() {
     let source = "fn main () -> Unit =\n    let d = 0\n    let _ = 10 / d\n    ()\n";
     let tw = make_workspace("Main", source);
 
-    let result = run_workspace(RunOptions::new(tw.path.clone(), "demo".to_owned()));
+    let result = run_workspace(
+        RunOptions::new(tw.path.clone(), "demo".to_owned()),
+        ignore_diagnostics,
+    );
     assert!(
         result.is_err(),
         "expected non-zero exit for a crashing main, got Ok"
@@ -683,7 +734,10 @@ fn run_crashing_main_returns_nonzero_with_stderr() {
 fn run_aborts_on_capability_diagnostic() {
     let tw = make_app_workspace_io_no_caps();
 
-    let result = run_workspace(RunOptions::new(tw.path.clone(), "demo".to_owned()));
+    let result = run_workspace(
+        RunOptions::new(tw.path.clone(), "demo".to_owned()),
+        ignore_diagnostics,
+    );
 
     let err = result.expect_err("expected CompileDiagnostics, got Ok");
     match err {

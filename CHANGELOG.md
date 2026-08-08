@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ridge run` shows the warnings the compile produced. The same source that `ridge check` reported `T017` on ran with no diagnostic at all: the compile stopped on errors and dropped everything else on its way to launching the program, so a lint stayed invisible for as long as someone developed with `run` and turned up as a surprise from CI. Warnings now print before the program starts, and still do not stop it — `run` is not a build gate and takes no `--deny-warnings`. `run --observer` and `run --watch` already printed what they found; plain `run` was the last of the three that compile to disagree.
 - Every test `ridge test` refuses to run now says which rule it broke. Three rejections reached the terminal as hand-written lines that bypassed the error type owning them, and one of the three carried no code at all — nothing to search for, nothing to hand to `ridge explain`. A test whose return type is not `Result Unit Text` reports `C305`, and one that declares no return type at all reports `C306`, which used to arrive as `C305`'s message telling a signature its return type was unsupported when it had not declared one. Neither message offers `Bool` as the alternative: it still works, but `C303` deprecates it in the same run, and one message should not push what another is retiring. The two test advisories also print as one line again — `C303` and `C304` had a run of source indentation baked into their text.
 
 ### Added

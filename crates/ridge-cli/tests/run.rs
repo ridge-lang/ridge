@@ -180,6 +180,31 @@ fn run_arg_passthrough() {
     );
 }
 
+/// `ridge run` shows a warning, and runs the program anyway.
+///
+/// The same source under `ridge check` reports `T017`; under `run` it used to
+/// report nothing at all, so a lint stayed invisible for as long as someone
+/// developed with `run` and arrived as a surprise from CI. Nothing about the
+/// warning changes the outcome: `run` is not a build gate and takes no
+/// `--deny-warnings`.
+///
+/// Requires OTP.
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn run_shows_a_warning_and_still_runs() {
+    let tw = make_app_workspace(
+        "Main",
+        "type Role = Admin | Guest\n\npub fn main () -> Int =\n    match Guest\n        Admin -> 1\n        Guest -> 2\n        _ -> 3\n",
+    );
+
+    ridge_cmd()
+        .arg("run")
+        .current_dir(&tw.path)
+        .assert()
+        .success()
+        .stderr(contains("T017").and(contains("redundant pattern")));
+}
+
 // ── Test 7: "No executable member" error — does not need OTP ─────────────────
 
 /// `ridge run` in a workspace with only `library` members exits non-zero with

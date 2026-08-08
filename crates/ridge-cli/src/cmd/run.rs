@@ -20,9 +20,10 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 use clap::Parser;
+use ridge_diagnostics::Diagnostic;
 use ridge_driver::{
     compile_workspace, run_workspace, select_entry_beam, CompileOptions, Profile, RunError,
-    RunOptions, ToolchainError,
+    RunOptions, ToolchainError, WorkspaceSourceCache,
 };
 use ridge_manifest::{find_workspace_root, parse_project, parse_workspace, ProjectKind};
 
@@ -302,7 +303,15 @@ fn execute_plain(args: &RunArgs, workspace_root: PathBuf, member_name: String, p
     opts.profile = profile;
     opts.extra_args.clone_from(&args.extra_args);
 
-    if let Err(e) = run_workspace(opts) {
+    // Warnings reach the terminal before the program does, the same as under
+    // `--observer` and `--watch`, which compile here rather than in the driver.
+    // They do not stop the run: `run` is not a build gate and takes no
+    // `--deny-warnings`, so there is nothing to decide from the count.
+    let report = |diagnostics: &[Diagnostic], sources: &WorkspaceSourceCache| {
+        render_diagnostics(diagnostics, sources);
+    };
+
+    if let Err(e) = run_workspace(opts, report) {
         match &e {
             RunError::CompileDiagnostics(payload) => {
                 // Render the inner diagnostics the same way `ridge build` and

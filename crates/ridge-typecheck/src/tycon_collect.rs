@@ -24,7 +24,7 @@
 //! `type IntStack = Stack Int` lands directly on `List Int`.
 
 use ridge_ast::visit::{walk_module, Visit};
-use ridge_ast::{ActorDecl, ActorMember, Constructor, Item, Module, TypeBody, TypeDecl};
+use ridge_ast::{ActorDecl, ActorMember, Constructor, Item, Module, Span, TypeBody, TypeDecl};
 use ridge_types::{
     shape_key, ActorSchema, AnonRecordTable, BuiltinTyCons, CapabilitySet, HandlerSchema,
     RecordField, RecordSchema, Scheme, TyConArena, TyConDecl, TyConId, TyConKind, TyVid, Type,
@@ -34,6 +34,7 @@ use rustc_hash::FxHashMap;
 
 use crate::caps_check::caps_from_ast_slice;
 use crate::ctx::InferCtx;
+use crate::error::TypeError;
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -196,10 +197,14 @@ pub fn collect_user_tycons(
     //
     // Pass 3 walks every alias body in arena order and substitutes any
     // embedded `Type::Con(alias_id, _)` with the alias's resolved body,
-    // following the chain to the terminal non-alias type.  A `visited` set
-    // breaks any cycle defensively (the grammar already forbids them, but a
-    // typo or future relaxation should not melt the typechecker).
-    resolve_alias_chains(arena);
+    // following the chain to the terminal non-alias type.  A `visited` stack
+    // stops a cycle from melting the typechecker, and — since nothing else
+    // looks — is also where a cycle gets reported.  `type A = B` with
+    // `type B = A` used to expand to a dead end and type-check clean, leaving
+    // the first real error to name a type that can never have a value.
+    for cycle in resolve_alias_chains(arena, module_id.0) {
+        report_alias_cycle(arena, &cycle, ctx);
+    }
 
     TyConCollectResult {
         user_tycon_names: name_to_id,
@@ -681,7 +686,9 @@ const fn log_prescan_miss() {
 /// arities line up.  The expanded body keeps the wrapping
 /// `TyConKind::Alias`, so use-sites still get a `Type::Alias { name, body }`
 /// view at the outer wrap done by `ast_type_to_ridge_type`.
-fn resolve_alias_chains(arena: &mut TyConArena) {
+/// Returns one entry per distinct alias cycle found, each listing the aliases
+/// in the order they refer to one another and closing back on the first.
+fn resolve_alias_chains(arena: &mut TyConArena, module_raw: u32) -> Vec<Vec<TyConId>> {
     #[expect(
         clippy::cast_possible_truncation,
         reason = "arena len fits u32 in practice"
@@ -691,7 +698,21 @@ fn resolve_alias_chains(arena: &mut TyConArena) {
         .filter(|&id| matches!(arena.get(id).kind, TyConKind::Alias { .. }))
         .collect();
 
+    // Detection runs first, over the bodies as declared, and only from the
+    // aliases this module owns. The arena spans the whole workspace and this
+    // pass runs once per module, so starting from every alias would report one
+    // module's cycle again for every later module that shares the arena.
+    let cycles = find_alias_cycles(arena, &alias_ids, module_raw);
+    let on_a_cycle: Vec<TyConId> = cycles.iter().flatten().copied().collect();
+
     for id in alias_ids {
+        // An alias on a cycle keeps the body it was written with. Expanding it
+        // ends where it began and rewrites `type A = B` into `type A = A`,
+        // which is not what the reader wrote and is a cycle the next module to
+        // share this arena would then report as one of its own.
+        if on_a_cycle.contains(&id) {
+            continue;
+        }
         let (original_params, original_body) = match &arena.get(id).kind {
             TyConKind::Alias { params, body } => (params.clone(), body.clone()),
             _ => continue,
@@ -706,6 +727,128 @@ fn resolve_alias_chains(arena: &mut TyConArena) {
             },
         );
     }
+    cycles
+}
+
+/// Find every cycle in the alias-reference graph.
+///
+/// An alias may only stand for something that eventually bottoms out in a real
+/// type; one that reaches itself stands for nothing, and `type A = A` is as
+/// legal to the parser as `type A = Int`. Unions and records are excluded on
+/// purpose — those recurse legitimately, which is how a list or a tree is
+/// declared.
+fn find_alias_cycles(
+    arena: &TyConArena,
+    alias_ids: &[TyConId],
+    module_raw: u32,
+) -> Vec<Vec<TyConId>> {
+    let mut cycles: Vec<Vec<TyConId>> = Vec::new();
+    for &start in alias_ids {
+        if arena.get(start).def_module_raw != Some(module_raw) {
+            continue;
+        }
+        let mut stack: Vec<TyConId> = vec![start];
+        walk_alias_refs(arena, start, &mut stack, &mut cycles);
+    }
+    dedupe_cycles(cycles)
+}
+
+/// Depth-first walk of the aliases `id`'s body refers to, recording the ring
+/// whenever the walk arrives back at an alias already on the stack.
+fn walk_alias_refs(
+    arena: &TyConArena,
+    id: TyConId,
+    stack: &mut Vec<TyConId>,
+    cycles: &mut Vec<Vec<TyConId>>,
+) {
+    let TyConKind::Alias { body, .. } = &arena.get(id).kind else {
+        return;
+    };
+    let mut referenced: Vec<TyConId> = Vec::new();
+    collect_alias_refs(arena, body, &mut referenced);
+    for next in referenced {
+        if let Some(pos) = stack.iter().position(|v| *v == next) {
+            let mut cycle: Vec<TyConId> = stack[pos..].to_vec();
+            cycle.push(next);
+            cycles.push(cycle);
+            continue;
+        }
+        stack.push(next);
+        walk_alias_refs(arena, next, stack, cycles);
+        stack.pop();
+    }
+}
+
+/// Collect every alias `ty` mentions, at any depth.
+fn collect_alias_refs(arena: &TyConArena, ty: &Type, out: &mut Vec<TyConId>) {
+    match ty {
+        Type::Con(id, args) => {
+            if matches!(arena.get(*id).kind, TyConKind::Alias { .. }) && !out.contains(id) {
+                out.push(*id);
+            }
+            for a in args {
+                collect_alias_refs(arena, a, out);
+            }
+        }
+        Type::Alias { body, .. } => collect_alias_refs(arena, body, out),
+        Type::Fn { params, ret, .. } => {
+            for p in params {
+                collect_alias_refs(arena, p, out);
+            }
+            collect_alias_refs(arena, ret, out);
+        }
+        Type::Tuple(elems) => {
+            for e in elems {
+                collect_alias_refs(arena, e, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// One cycle is met once from each alias on it — `type A = B` with
+/// `type B = A` is found expanding `A` and again expanding `B` — so the same
+/// ring arrives under as many rotations as it has members. Rotating each to
+/// start at its lowest id makes them comparable, and the reader gets one
+/// diagnostic for one mistake.
+fn dedupe_cycles(cycles: Vec<Vec<TyConId>>) -> Vec<Vec<TyConId>> {
+    let mut seen: Vec<Vec<TyConId>> = Vec::new();
+    let mut out: Vec<Vec<TyConId>> = Vec::new();
+    for cycle in cycles {
+        // Drop the repeated closing element before rotating; it is punctuation.
+        let ring = cycle.get(..cycle.len().saturating_sub(1)).unwrap_or(&[]);
+        let Some(start) = ring
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, id)| id.0)
+            .map(|(i, _)| i)
+        else {
+            continue;
+        };
+        let mut canonical: Vec<TyConId> = ring[start..].to_vec();
+        canonical.extend_from_slice(&ring[..start]);
+        if seen.contains(&canonical) {
+            continue;
+        }
+        seen.push(canonical.clone());
+        canonical.push(canonical[0]);
+        out.push(canonical);
+    }
+    out
+}
+
+/// Report one alias cycle as `T011`, naming every alias on it in the order
+/// they refer to one another.
+fn report_alias_cycle(arena: &TyConArena, cycle: &[TyConId], ctx: &mut InferCtx) {
+    let names: Vec<String> = cycle.iter().map(|&id| arena.get(id).name.clone()).collect();
+    // The declaration to point at is the one the cycle is named from; a
+    // built-in has no span, and nothing built-in can be on this list.
+    let span = cycle
+        .iter()
+        .find_map(|&id| arena.get(id).def_span)
+        .unwrap_or_else(|| Span::point(0));
+    ctx.errors
+        .push(TypeError::RecursiveTypeAlias { cycle: names, span });
 }
 
 /// Recursively expand any `Type::Con(alias_id, args)` reference inside
@@ -724,6 +867,8 @@ fn chase_alias_chain(arena: &TyConArena, ty: &Type, visited: &mut Vec<TyConId>) 
                 .iter()
                 .map(|a| chase_alias_chain(arena, a, visited))
                 .collect();
+            // An alias already on the stack would not terminate; leave the
+            // reference unexpanded. `find_alias_cycles` has already reported it.
             if !visited.contains(id) {
                 if let TyConKind::Alias {
                     params: inner_params,

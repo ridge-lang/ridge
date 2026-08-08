@@ -1023,3 +1023,15 @@ The BEAM `module:name/arity` triplet is not in the audit table.
 ### T999
 
 Internal type-checker invariant violation — should never reach users.
+
+## Retired codes
+
+These are no longer reported. They keep their page because the number outlives the
+compiler that emitted it — it is still in logs, in CI filters, and in answers written
+years ago — and a number is never reused, so what it meant then is what it means now.
+
+### C402
+
+Reported that `erl` and `erlc` had to be on PATH before `ridge migrate add` could run. It was `C004` under a second number, and vaguer: it never said which of the two binaries was missing.
+
+See [C004](#c004) instead.

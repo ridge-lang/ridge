@@ -1,8 +1,9 @@
 //! Parse error types.
 //!
-//! `ParseError` codes are **stable across releases** — downstream tooling
-//! (LSP, `ariadne` renderer) keys on these strings.  Never renumber an
-//! assigned code; only append new ones.
+//! `ParseError` codes are **stable from 1.0** — downstream tooling (LSP,
+//! `ariadne` renderer) keys on these strings, so from there an assigned code is
+//! never renumbered and a retired number is never reused.  Before 1.0 a wrong
+//! code may still be renumbered; otherwise, only append.
 //!
 //! T2 implements the four variants required by §6 T2 and §4.7:
 //! - `P001 Expected`
@@ -485,7 +486,9 @@ pub enum ParseError {
 impl ParseError {
     /// Return the stable error code string for this variant.
     ///
-    /// Codes are **stable across releases** — never renumber an assigned code.
+    /// Codes are **stable from 1.0**: an assigned code is never renumbered and a
+    /// retired number is never reused. Before 1.0 a wrong code — a collision, or
+    /// one attributed to the wrong owner — may still be renumbered.
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {

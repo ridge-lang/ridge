@@ -18,8 +18,8 @@
 //! # Error codes
 //!
 //! All errors are `M001`–`M020`; see [`error::ManifestError`] for the full
-//! table.  Codes are **stable across releases** — never renumber an assigned
-//! code.
+//! table.  Codes are **stable from 1.0** — from there an assigned code is never
+//! renumbered and a retired number is never reused.
 
 pub mod error;
 pub mod find;

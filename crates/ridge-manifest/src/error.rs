@@ -1,15 +1,16 @@
 //! Manifest error types — `M001`–`M022`.
 //!
-//! Error codes are **stable across releases** — downstream tooling (LSP,
-//! `ariadne` renderer) keys on these strings.  Never renumber an assigned
-//! code; only append new ones at the end.
+//! Error codes are **stable from 1.0** — downstream tooling (LSP, `ariadne`
+//! renderer) keys on these strings, so from there an assigned code is never
+//! renumbered and a retired number is never reused.  Before 1.0 a wrong code may
+//! still be renumbered; otherwise, only append at the end.
 //!
 //! ## `ManifestError` (M001..M022)
 //!
 //! Produced while parsing workspace / project manifest files (`ridge.toml`).
 //! Manifest errors do NOT carry a `Span` (manifests are not `.ridge` source);
 //! [`ManifestError::span`] always returns `None`.  Only
-//! [`ManifestError::code`] is guaranteed stable.
+//! [`ManifestError::code`] carries the stability promise above.
 
 use std::path::PathBuf;
 
@@ -22,7 +23,8 @@ use ridge_ast::Span;
 ///
 /// Manifest errors do **not** carry a [`Span`] (manifests are not `.ridge` source
 /// files).  [`ManifestError::span`] always returns `None`.  Only
-/// [`ManifestError::code`] is guaranteed stable across releases.
+/// [`ManifestError::code`] carries the stability promise, which takes effect
+/// at 1.0.
 ///
 /// # Stability
 ///
@@ -252,7 +254,9 @@ pub enum ManifestError {
 impl ManifestError {
     /// Return the stable error code string for this variant.
     ///
-    /// Codes are **stable across releases** — never renumber an assigned code.
+    /// Codes are **stable from 1.0**: an assigned code is never renumbered and a
+    /// retired number is never reused. Before 1.0 a wrong code — a collision, or
+    /// one attributed to the wrong owner — may still be renumbered.
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {

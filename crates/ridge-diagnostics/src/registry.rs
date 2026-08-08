@@ -10,14 +10,26 @@
 //! the two in both directions, so a code cannot be added without landing here,
 //! and an entry cannot outlive the variant it describes.
 //!
-//! # Deliberately absent: a status field
+//! # Retired codes
 //!
-//! Retired codes need a policy before they need a column: what retirement
-//! means, whether the number is reusable, what someone searching a retired code
-//! should read. Seeding the field by keyword got eleven codes wrong - `C203`
-//! `ReservedName` and `P020` `ReservedKeywordAsIdent` are about names the
-//! *program* may not use, not about codes the compiler withdrew. A field that
-//! wrong is worse than no field.
+//! A code outlives the variant that produced it. It is in someone's log, in a
+//! CI filter, in an answer they found years ago, and from 1.0 it is part of the
+//! compatibility surface. So a number is never freed and never reused, and a
+//! reader who looks one up gets an answer rather than a shrug.
+//!
+//! [`RETIRED`] holds those answers, as a second table rather than a status
+//! column on this one, because the two states do not carry the same data: a
+//! retired code has no variant left to name and no crate still declaring it.
+//! Flagging it in place would leave `variants` and `owner` empty or wrong on
+//! every retired row. Two tables also give the census two clean rules instead
+//! of one conditional one — a code here must be declared somewhere, a code
+//! there must be declared nowhere.
+//!
+//! An earlier attempt at a status column seeded it by keyword and got eleven
+//! codes wrong: `C203` `ReservedName` and `P020` `ReservedKeywordAsIdent` are
+//! about names the *program* may not use, not about codes the compiler
+//! withdrew. A field that wrong is worse than no field, and the reason the
+//! entries below are written by hand.
 
 /// One diagnostic code, and what it means.
 ///
@@ -60,6 +72,52 @@ pub fn lookup(code: &str) -> Option<&'static CodeEntry> {
         .ok()
         .and_then(|i| REGISTRY.get(i))
 }
+
+/// A code the compiler no longer emits.
+///
+/// Carries neither `variants` nor `owner`: there is no variant left to name and
+/// no crate still declaring it. That absence is the invariant the census
+/// checks — a code listed here must not be returned by any `code()` in the
+/// workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RetiredCode {
+    /// The code itself, e.g. `"C402"`.
+    pub code: &'static str,
+    /// What it reported and why it went, for a reader who found the number
+    /// somewhere it still exists.
+    pub summary: &'static str,
+    /// The code that arrives instead, when one does.
+    ///
+    /// `None` when nothing replaced it — the failure it reported stopped being
+    /// one, rather than moving to another number.
+    pub see: Option<&'static str>,
+}
+
+/// Look up one retired code.
+///
+/// Same exact-match contract as [`lookup`]. A caller that answers for both
+/// tables should try this one second: a live code is the common case, and
+/// nothing is ever in both.
+#[must_use]
+pub fn lookup_retired(code: &str) -> Option<&'static RetiredCode> {
+    RETIRED
+        .binary_search_by(|e| e.code.cmp(code))
+        .ok()
+        .and_then(|i| RETIRED.get(i))
+}
+
+/// Every retired code, sorted by code.
+///
+/// Sorted because [`lookup_retired`] binary-searches it, and a test holds the
+/// order.
+pub const RETIRED: &[RetiredCode] = &[RetiredCode {
+    code: "C402",
+    summary: "Reported that `erl` and `erlc` had to be on PATH before `ridge migrate add` \
+              could run. It was `C004` under a second number, and vaguer: it never said \
+              which of the two binaries was missing.",
+    see: Some("C004"),
+}];
 
 /// Every declared diagnostic code, sorted by code.
 ///
@@ -1543,6 +1601,58 @@ mod tests {
                 "`{}` does not precede `{}`",
                 pair[0].code,
                 pair[1].code
+            );
+        }
+    }
+
+    #[test]
+    fn the_retired_table_is_sorted_so_lookup_can_binary_search() {
+        for pair in RETIRED.windows(2) {
+            assert!(
+                pair[0].code < pair[1].code,
+                "`{}` does not precede `{}`",
+                pair[0].code,
+                pair[1].code
+            );
+        }
+    }
+
+    /// A retired code says what it was and where to go, and never points at
+    /// itself or at a number nothing answers for.
+    ///
+    /// A pointer is the whole value of keeping the entry. One that lands on a
+    /// code with no entry would send a reader from a dead end to a second one.
+    #[test]
+    fn every_retired_entry_answers_and_points_somewhere_real() {
+        for r in RETIRED {
+            assert!(!r.summary.is_empty(), "`{}` has no summary", r.code);
+            assert!(
+                r.summary.ends_with('.'),
+                "`{}` is not a sentence: {}",
+                r.code,
+                r.summary
+            );
+            if let Some(see) = r.see {
+                assert_ne!(see, r.code, "`{}` points at itself", r.code);
+                assert!(
+                    lookup(see).is_some(),
+                    "`{}` points at `{see}`, which is not in the registry",
+                    r.code
+                );
+            }
+        }
+    }
+
+    /// A number is never freed. Reusing one would make an old log line, an old
+    /// CI filter, or an answer someone found years ago quietly mean something
+    /// new — which is the single failure this whole table exists to prevent.
+    #[test]
+    fn a_retired_number_is_never_reissued() {
+        for r in RETIRED {
+            assert!(
+                lookup(r.code).is_none(),
+                "`{}` was retired and is live again",
+                r.code
             );
         }
     }

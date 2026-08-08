@@ -12,16 +12,20 @@
 //! declared it. The registry in `ridge-diagnostics` holds a sentence for every
 //! code the compiler can emit, and this is the command that reads it.
 //!
-//! Every code answers. `rustc --explain` is the shape this follows, minus its
-//! one sharp edge: most `rustc` codes have no extended text, so the command
-//! that promises an explanation often has none to give. A code with no entry
-//! cannot exist here — the registry census fails the build first.
+//! Every code answers, including the ones the compiler stopped emitting. A
+//! retired code is answered from the retired table, with the code that arrives
+//! in its place — the number in an old log is the only handle its reader has,
+//! and that is the moment a dead end costs the most. `rustc --explain` is the
+//! shape this follows, minus its one sharp edge: most `rustc` codes have no
+//! extended text, so the command that promises an explanation often has none to
+//! give. A code with no entry in either table cannot exist here — the registry
+//! census fails the build first.
 
 use std::io::{self, Write};
 use std::path::Path;
 
 use clap::Parser;
-use ridge_diagnostics::{lookup_code, CodeEntry, REGISTRY};
+use ridge_diagnostics::{lookup_code, lookup_retired, CodeEntry, RetiredCode, REGISTRY};
 
 use crate::error::CliError;
 
@@ -66,6 +70,30 @@ fn write_entry(w: &mut dyn Write, entry: &CodeEntry) -> io::Result<()> {
     writeln!(w, "{} — reported by {}", entry.code, entry.owner)?;
     writeln!(w)?;
     writeln!(w, "{}", entry.summary)
+}
+
+/// Write one retired code as the command's whole output.
+///
+/// Opens by saying the compiler no longer reports it, because that is the fact
+/// that resolves what the reader is looking at — a number in a log that their
+/// current build will never produce. The pointer comes last, and only when
+/// there is one: a code whose failure simply stopped being a failure has
+/// nothing to send anyone to, and inventing a destination would be worse than
+/// the silence.
+fn write_retired(w: &mut dyn Write, retired: &RetiredCode) -> io::Result<()> {
+    writeln!(w, "{} — retired, no longer reported", retired.code)?;
+    writeln!(w)?;
+    writeln!(w, "{}", retired.summary)?;
+    match retired.see {
+        Some(see) => {
+            writeln!(w)?;
+            writeln!(
+                w,
+                "You are probably looking for {see}. Run `ridge explain {see}`."
+            )
+        }
+        None => Ok(()),
+    }
 }
 
 /// Write every code and its summary, one per line, grouped by leading letter.
@@ -114,18 +142,30 @@ pub fn execute(args: &ExplainArgs, _cwd: &Path) -> Result<(), CliError> {
     // contract in one place instead of restating it as a second error.
     let code = normalise(args.code.as_deref().unwrap_or_default());
 
-    let Some(entry) = lookup_code(&code) else {
-        return Err(CliError::ExplainUnknownCode { code });
-    };
+    if let Some(entry) = lookup_code(&code) {
+        let _ = write_entry(&mut out, entry);
+        return Ok(());
+    }
 
-    let _ = write_entry(&mut out, entry);
-    Ok(())
+    // A retired code is the case this command exists for. Someone reading a log
+    // from an older compiler, or a CI filter nobody has revisited, types a
+    // number the compiler no longer emits — and the number is the only handle
+    // they have. Answering "unknown code" there would be the dead end the
+    // registry was built to remove, at the one moment it costs the most.
+    if let Some(retired) = lookup_retired(&code) {
+        let _ = write_retired(&mut out, retired);
+        return Ok(());
+    }
+
+    Err(CliError::ExplainUnknownCode { code })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
+    use ridge_diagnostics::RETIRED;
+
     use super::*;
 
     #[test]
@@ -167,6 +207,57 @@ mod tests {
                 lookup_code(&normalise(entry.code)).is_some(),
                 "{} did not resolve",
                 entry.code
+            );
+        }
+    }
+
+    /// A retired code answers, and sends the reader on.
+    ///
+    /// The number in a two-year-old log is the only handle its reader has. This
+    /// is the case the retired table exists for, so it is pinned by output and
+    /// not just by the lookup returning something.
+    #[test]
+    fn a_retired_code_says_so_and_names_its_replacement() {
+        let found = lookup_retired("C402");
+        assert!(found.is_some(), "C402 is in the retired table");
+        let Some(retired) = found else { return };
+
+        let mut out = Vec::new();
+        write_retired(&mut out, retired).unwrap_or_default();
+        let text = String::from_utf8(out).unwrap_or_default();
+
+        assert!(
+            text.starts_with("C402 — retired, no longer reported\n"),
+            "{text}"
+        );
+        assert!(text.contains("ridge explain C004"), "{text}");
+    }
+
+    /// Every retired code is reachable through the command, the same as a live
+    /// one — the whole table, not some prefix of it.
+    #[test]
+    fn every_retired_code_can_be_explained() {
+        for retired in RETIRED {
+            assert!(
+                lookup_retired(&normalise(retired.code)).is_some(),
+                "{} did not resolve",
+                retired.code
+            );
+        }
+    }
+
+    /// A code is live or retired, never both.
+    ///
+    /// `execute` tries the registry first, so a code in both tables would
+    /// answer as live and its retirement would be unreachable — the failure
+    /// would be silence, which is the hardest kind to notice.
+    #[test]
+    fn no_code_is_both_live_and_retired() {
+        for retired in RETIRED {
+            assert!(
+                lookup_code(retired.code).is_none(),
+                "{} is in both tables",
+                retired.code
             );
         }
     }

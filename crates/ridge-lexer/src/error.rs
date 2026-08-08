@@ -130,9 +130,12 @@ pub enum LexError {
 impl LexError {
     /// Return the stable `L###` error code for this variant.
     ///
-    /// Codes are **stable across releases** — never renumber an assigned code.
-    /// `L001` upward is the lexer sub-namespace, one code per `LexError`
-    /// variant; it does not collide with the `L800`–`L899` LSP reservation.
+    /// Codes are **stable from 1.0**: an assigned code is never renumbered and a
+    /// retired number is never reused. Before 1.0 a wrong code — a collision, or
+    /// one attributed to the wrong owner — may still be renumbered.
+    /// `L001` upward is the lexer's range, one code per `LexError` variant.
+    /// The letter is not a namespace: `L` also covers lowering, and the two
+    /// share the range rather than splitting it.
     ///
     /// Approved as a frozen-crate additive exception per FROZEN-01 (2026-05-01).
     #[must_use]

@@ -132,6 +132,16 @@ pub const RETIRED: &[RetiredCode] = &[
         summary: "Rejected a record pattern written without a leading constructor name. Bare record patterns became legal in 0.2.12, so the failure it reported stopped being one.",
         see: None,
     },
+    RetiredCode {
+        code: "T008",
+        summary: "Reported a constructor that is not defined on the expected union type, with a did-you-mean. A name nothing declares is rejected before types exist, carrying the same suggestion; a constructor that exists but belongs elsewhere is a plain mismatch, which names both types and does not call it unknown.",
+        see: Some("R010"),
+    },
+    RetiredCode {
+        code: "T012",
+        summary: "Reported that an interpolated value's type could not be converted to text, on the rule that only built-in types and records of built-in types were allowed. `ToText` became an open class in 0.2.13, so the rule it enforced stopped holding.",
+        see: Some("T029"),
+    },
 ];
 
 /// Every declared diagnostic code, sorted by code.
@@ -1279,12 +1289,6 @@ pub const REGISTRY: &[CodeEntry] = &[
         summary: "A pattern does not match the scrutinee's type.",
     },
     CodeEntry {
-        code: "T008",
-        variants: &["UnknownConstructor"],
-        owner: "ridge-typecheck",
-        summary: "A constructor name used in a pattern or expression is not defined on the expected union type.",
-    },
-    CodeEntry {
         code: "T009",
         variants: &["WrongConstructorArity"],
         owner: "ridge-typecheck",
@@ -1301,12 +1305,6 @@ pub const REGISTRY: &[CodeEntry] = &[
         variants: &["RecursiveTypeAlias"],
         owner: "ridge-typecheck",
         summary: "A chain of type aliases forms a cycle.",
-    },
-    CodeEntry {
-        code: "T012",
-        variants: &["ToTextNotDerivable"],
-        owner: "ridge-typecheck",
-        summary: "Interpolation hole type not in the closed `ToText` set (retired).",
     },
     CodeEntry {
         code: "T013",

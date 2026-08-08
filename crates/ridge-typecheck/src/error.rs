@@ -141,20 +141,6 @@ pub enum TypeError {
         span: Span,
     },
 
-    // ── T008 ─────────────────────────────────────────────────────────────────
-    /// A constructor name used in a pattern or expression is not defined on the
-    /// expected union type.
-    UnknownConstructor {
-        /// The unrecognised constructor name.
-        name: String,
-        /// The expected union type.
-        expected_type: String,
-        /// Did-you-mean suggestions.
-        suggestions: Vec<String>,
-        /// Source span of the constructor reference.
-        span: Span,
-    },
-
     // ── T009 ─────────────────────────────────────────────────────────────────
     /// A constructor is applied to the wrong number of arguments.
     WrongConstructorArity {
@@ -185,22 +171,6 @@ pub enum TypeError {
         /// Ordered list of alias names forming the cycle.
         cycle: Vec<String>,
         /// Source span of the first declaration in the cycle.
-        span: Span,
-    },
-
-    // ── T012 — RESERVED, must not be re-emitted ───────────────────────────────
-    // Retired in 0.2.13: the closed-set interpolation restriction is replaced by
-    // open typeclass dispatch. Missing `ToText` instances now surface as T029
-    // `NoInstance`. The variant is kept so that the diagnostic code slot T012 is
-    // never reused and old serialised diagnostics remain decodable.
-    /// Interpolation hole type not in the closed `ToText` set (retired).
-    ///
-    /// Do not emit this variant from new code. It exists solely to reserve the
-    /// T012 code slot. Use [`TypeError::NoInstance`] (T029) instead.
-    ToTextNotDerivable {
-        /// The type that was not in the closed set.
-        ty: String,
-        /// Source span of the interpolation hole.
         span: Span,
     },
 
@@ -864,11 +834,9 @@ impl TypeError {
             Self::UnknownField { .. } => "T005",
             Self::WithOnNonRecord { .. } => "T006",
             Self::PatternTypeMismatch { .. } => "T007",
-            Self::UnknownConstructor { .. } => "T008",
             Self::WrongConstructorArity { .. } => "T009",
             Self::OccursCheck { .. } => "T010",
             Self::RecursiveTypeAlias { .. } => "T011",
-            Self::ToTextNotDerivable { .. } => "T012",
             Self::PolymorphicRecursion { .. } => "T013",
             Self::CapabilityNotDeclared { .. } => "T014",
             Self::UnknownActorHandler { .. } => "T015",
@@ -988,15 +956,6 @@ mod tests {
         }
     }
 
-    fn t008() -> TypeError {
-        TypeError::UnknownConstructor {
-            name: "Bogus".into(),
-            expected_type: "Shape".into(),
-            suggestions: vec![],
-            span: dummy_span(),
-        }
-    }
-
     fn t009() -> TypeError {
         TypeError::WrongConstructorArity {
             ctor: "Some".into(),
@@ -1017,13 +976,6 @@ mod tests {
     fn t011() -> TypeError {
         TypeError::RecursiveTypeAlias {
             cycle: vec!["A".into(), "B".into()],
-            span: dummy_span(),
-        }
-    }
-
-    fn t012() -> TypeError {
-        TypeError::ToTextNotDerivable {
-            ty: "User".into(),
             span: dummy_span(),
         }
     }
@@ -1213,11 +1165,6 @@ mod tests {
     }
 
     #[test]
-    fn code_t008() {
-        assert_eq!(t008().code(), "T008");
-    }
-
-    #[test]
     fn code_t009() {
         assert_eq!(t009().code(), "T009");
     }
@@ -1230,11 +1177,6 @@ mod tests {
     #[test]
     fn code_t011() {
         assert_eq!(t011().code(), "T011");
-    }
-
-    #[test]
-    fn code_t012() {
-        assert_eq!(t012().code(), "T012");
     }
 
     #[test]

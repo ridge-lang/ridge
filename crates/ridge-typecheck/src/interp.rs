@@ -10,7 +10,8 @@
 //! Text` (auto-promoted during the collect pass).
 //!
 //! When no `ToText` instance exists for the hole's type, the diagnostic is
-//! **T029 `NoInstance`** (not T012, which is retired in this cut).
+//! **T029 `NoInstance`**, which names the type and the way to give it an
+//! instance. `T012` covered this before `ToText` opened up and is retired.
 //!
 //! # Absorbing rule
 //!
@@ -493,7 +494,7 @@ mod tests {
     // ─── T7: List without instance → T029 ────────────────────────────────────
 
     /// Test 7 — `"l = ${l}"` where l : List Int and no `ToText` List instance
-    /// is registered → T029 (not T012).
+    /// is registered → T029.
     #[test]
     fn interp_list_no_instance_t029() {
         let b = make_builtins();
@@ -705,7 +706,7 @@ mod tests {
     // ─── T13: missing ToText instance with full set → T029 ───────────────────
 
     /// Test 13 — with a full prelude `ToText` set, a user type that has no
-    /// registered `ToText` instance yields T029 (not T012).
+    /// registered `ToText` instance yields T029.
     #[test]
     fn interp_missing_instance_with_registry_t029() {
         use crate::class_env::{register_prelude_instances, InstanceEnv};

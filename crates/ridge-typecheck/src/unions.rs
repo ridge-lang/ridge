@@ -12,12 +12,8 @@
 //! pipeline wiring in `infer.rs` does the `BindingMap` lookup (or prelude lookup
 //! for `Some`/`None`/`Ok`/`Err`); these functions are the pure algorithmic core.
 //!
-//! # T008 / T009 codes
+//! # T009
 //!
-//! - `T008 UnknownConstructor` — fired when the resolved binding's `TyCon` is not
-//!   a Union (or Record, which belongs to T8).  In practice Phase 3 R-codes catch
-//!   most unknown-ctor cases before T9; see the `#[ignore]` notes on the T008
-//!   tests for details.
 //! - `T009 WrongConstructorArity` — fired when the argument count at a
 //!   construction site or pattern site does not match the variant's declared
 //!   payload arity.
@@ -638,28 +634,6 @@ mod tests {
         ctx.env.pop_frame();
     }
 
-    // ── Test 7: T008 — binding kind mismatch ─────────────────────────────────
-    // In Phase 3, unknown/misspelled constructors are caught as R### errors and
-    // the BindingMap will not contain a Constructor entry for them.  T9's T008
-    // path fires only when the resolved binding's TyCon kind is unexpectedly not
-    // Union (or Record).  This is a defensive path not reachable from real Ridge
-    // code (Phase 3 R-codes catch it first).
-    //
-    // The test demonstrates the error-construction shape for T008; the actual
-    // wiring that triggers T008 from live code is part of T17 (full pipeline).
-    #[test]
-    #[ignore = "T008 path is defensive: unreachable from real Ridge code because resolve-phase R-codes catch unknown constructors before reaching T9; verified manually"]
-    fn infer_unknown_constructor_t008() {
-        // Direct construction of the T008 variant to confirm shape.
-        let err = TypeError::UnknownConstructor {
-            name: "Bogus".to_string(),
-            expected_type: "Shape".to_string(),
-            suggestions: vec![],
-            span: ds(),
-        };
-        assert_eq!(err.code(), "T008");
-    }
-
     // ── Test 8: pattern_some_bound_var ────────────────────────────────────────
     // `match Some 1 { Some x -> x }` — after pattern bind, `x` has type Int.
 
@@ -781,21 +755,6 @@ mod tests {
             ctx.errors
         );
         ctx.env.pop_frame();
-    }
-
-    // ── Test 11: pattern_unknown_ctor_T008 ───────────────────────────────────
-    // Same as test 7: the resolve phase catches unknown ctors as R-codes; T9's T008 is
-    // a defensive path that is not reachable from real Ridge code.
-    #[test]
-    #[ignore = "T008 defensive path — unreachable from real Ridge code; resolve-phase R-codes catch unknown constructors before T9; verified manually"]
-    fn pattern_unknown_ctor_t008() {
-        let err = TypeError::UnknownConstructor {
-            name: "Bogus".to_string(),
-            expected_type: "MyUnion".to_string(),
-            suggestions: vec!["Bingo".to_string()],
-            span: ds(),
-        };
-        assert_eq!(err.code(), "T008");
     }
 
     // ── Test 12: union_user_defined_2_variants ────────────────────────────────

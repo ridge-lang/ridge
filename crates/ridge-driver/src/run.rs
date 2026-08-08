@@ -12,11 +12,13 @@ use std::io::Read;
 use std::path::Path;
 use std::process::Command;
 
+use ridge_diagnostics::Diagnostic;
 use ridge_resolve::Severity;
 
 use crate::compile::compile_workspace;
 use crate::error::{ProcessExitCode, RunError, ToolchainError};
 use crate::options::{CompileOptions, EmitArtefacts, RunOptions};
+use crate::sources::WorkspaceSourceCache;
 
 /// Timeout in seconds for the `erl` child process (60 s per plan §9).
 const ERL_TIMEOUT_SECS: u64 = 60;
@@ -27,12 +29,25 @@ const ERL_TIMEOUT_SECS: u64 = 60;
 ///
 /// 1. Call [`compile_workspace`] with a [`CompileOptions`] derived from
 ///    `options`.
-/// 2. Probe `erl` via `PATH`; surface `C004` if not found.
-/// 3. Resolve the BEAM module name from `options.main_module` or the first
+/// 2. Hand the diagnostics that did not stop the run to `report`.
+/// 3. Probe `erl` via `PATH`; surface `C004` if not found.
+/// 4. Resolve the BEAM module name from `options.main_module` or the first
 ///    `.beam` file produced.
-/// 4. Invoke `erl -noshell -pa <beam_dir> -s <module> start -s init stop`.
-/// 5. Return `Ok(ProcessExitCode(0))` on exit-0 or `RunError::ErlExitNonZero`
+/// 5. Invoke `erl -noshell -pa <beam_dir> -s <module> start -s init stop`.
+/// 6. Return `Ok(ProcessExitCode(0))` on exit-0 or `RunError::ErlExitNonZero`
 ///    on non-zero.
+///
+/// ## Reporting
+///
+/// `report` is called exactly once, before the BEAM starts, with the batch
+/// that survived the error gate — warnings, or nothing at all. It is a
+/// parameter and not a choice the driver makes because compiling and launching
+/// happen in the same call: once the program is running its own output buries
+/// anything printed after it, and once it has exited the warning is too late
+/// to act on. Rendering stays with the caller, which owns the terminal.
+///
+/// A caller that wants silence passes a closure that discards the batch — a
+/// visible choice at the call site rather than a default anyone falls into.
 ///
 /// ## Errors
 ///
@@ -44,7 +59,10 @@ const ERL_TIMEOUT_SECS: u64 = 60;
 /// - [`RunError::ErlExitNonZero`] — BEAM node exited non-zero.
 /// - [`RunError::Toolchain`] — OS could not spawn `erl` (`C013`).
 #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
-pub fn run_workspace(options: RunOptions) -> Result<ProcessExitCode, RunError> {
+pub fn run_workspace<R>(options: RunOptions, report: R) -> Result<ProcessExitCode, RunError>
+where
+    R: FnOnce(&[Diagnostic], &WorkspaceSourceCache),
+{
     // ── 1. Compile ────────────────────────────────────────────────────────────
     let compile_opts = CompileOptions {
         workspace_root: options.workspace_root.clone(),
@@ -77,6 +95,15 @@ pub fn run_workspace(options: RunOptions) -> Result<ProcessExitCode, RunError> {
             },
         )));
     }
+
+    // ── 1b. Hand over what survived ──────────────────────────────────────────
+    // Warnings do not gate the run, and this is the last moment they can be
+    // read: the BEAM starts a few lines down and the program's own output
+    // follows immediately. Until this hand-off existed, the success path
+    // dropped the batch on the floor and `ridge run` was the one compiling
+    // command that stayed silent about a warning `ridge check` reported on the
+    // same source.
+    report(&artefacts.diagnostics, &artefacts.sources);
 
     // ── 2. Probe erl ─────────────────────────────────────────────────────────
     // C004 ErlangNotFound is probed once here, not in compile_workspace

@@ -131,13 +131,6 @@ pub enum ManifestError {
         path: PathBuf,
     },
 
-    /// M012 — a dependency cycle was detected among workspace projects.
-    #[error("dependency cycle: {}", chain.join(" -> "))]
-    CycleInDependencies {
-        /// The ordered chain of project names forming the cycle.
-        chain: Vec<String>,
-    },
-
     /// M013 — a dependency names a project not present in the workspace.
     #[error("unknown workspace member `{name}` referenced from `{path}`")]
     UnknownWorkspaceMember {
@@ -271,7 +264,6 @@ impl ManifestError {
             Self::InvalidDependencyKind { .. } => "M009",
             Self::DuplicateProjectName { .. } => "M010",
             Self::InvalidCapabilityName { .. } => "M011",
-            Self::CycleInDependencies { .. } => "M012",
             Self::UnknownWorkspaceMember { .. } => "M013",
             Self::ProjectExportPatternInvalid { .. } => "M014",
             Self::WorkspaceDependencyAbsent { .. } => "M015",

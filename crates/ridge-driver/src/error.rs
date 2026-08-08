@@ -49,17 +49,6 @@ pub enum WorkspaceError {
         /// The expected on-disk path.
         path: PathBuf,
     },
-
-    /// `C003` — cyclic workspace dependency detected.
-    ///
-    /// Already detected by `ridge-resolve`; the driver surfaces it here.
-    #[error(
-        "C003 WorkspaceCycle: cyclic dependency detected among workspace members: {members:?}"
-    )]
-    WorkspaceCycle {
-        /// Members involved in the cycle.
-        members: Vec<String>,
-    },
 }
 
 impl WorkspaceError {
@@ -69,7 +58,6 @@ impl WorkspaceError {
         match self {
             Self::NoWorkspaceRoot { .. } => "C001",
             Self::WorkspaceMemberMissing { .. } => "C002",
-            Self::WorkspaceCycle { .. } => "C003",
         }
     }
 }

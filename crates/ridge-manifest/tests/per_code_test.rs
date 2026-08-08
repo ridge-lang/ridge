@@ -232,17 +232,22 @@ deny = [\"db\"]
     );
 }
 
-// ── M012 CycleInDependencies — deferred to import resolution ─────────────
+// ── A dependency cycle is not a manifest error ───────────────────────────
 
+/// Reading one manifest cannot see a cycle, and must not guess at one.
+///
+/// `M012` used to be reserved for this and was never reachable: a cycle only
+/// exists across the whole dependency graph, which the package layer resolves
+/// and reports as `P206`. The code is retired; the fixture stays, because the
+/// thing worth pinning is that a project whose dependencies close a loop still
+/// parses.
 #[test]
-fn m012_deferred_to_t7() {
-    // M012 requires the full workspace dependency graph to detect cycles.
-    // Manifest parsing only handles individual manifests and cannot detect cycles.
+fn a_dependency_cycle_still_parses_as_a_manifest() {
     let toml = include_str!("fixtures/manifest/M012_deferred_dep_cycle.toml");
     let result = rm::parse_project(toml, pp());
     assert!(
         result.is_ok(),
-        "manifest parsing must not emit M012; cycle detection is deferred to import resolution"
+        "a manifest whose dependencies form a cycle must still parse; the cycle          is the package layer's to find"
     );
 }
 

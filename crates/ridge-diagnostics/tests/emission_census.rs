@@ -32,20 +32,9 @@ use ridge_diagnostics::REGISTRY;
 /// reader needs before deciding: several of these are recorded nowhere else but
 /// a fixture comment.
 const UNEMITTABLE: &[(&str, &str)] = &[
-    // Retired. Its own fixture says so, and now reports another code.
-    (
-        "P018",
-        "retired in 0.2.12 — bare record patterns are supported; the fixture reports P021",
-    ),
     // Subsumed: something else fires first, so this one never gets the chance.
-    (
-        "C003",
-        "dependency cycles are detected in ridge-pkg and reported as P206",
-    ),
-    (
-        "M012",
-        "dependency cycles are detected in ridge-pkg and reported as P206",
-    ),
+    // Each of these is a better message than the one that arrives — see #460;
+    // they stay listed here until they are wired, rather than retired.
     ("T002", "unification reports the call-site mismatch as T001"),
     ("T007", "unification reports the pattern mismatch as T001"),
     ("T011", "the grammar prevents recursive aliases; a bad one is T001"),

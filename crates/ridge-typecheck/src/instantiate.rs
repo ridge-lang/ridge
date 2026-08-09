@@ -168,7 +168,13 @@ pub fn generalise_with_env(
     // 1. Deep-resolve (follows union-find roots recursively). For records this
     //    peels bound row vars off every tail, so a surviving open tail names a
     //    genuinely free row var.
-    let ty_resolved = ctx.deep_resolve(ty);
+    //
+    //    Exported rather than merely resolved: generalisation is the moment a
+    //    signature's constants become the variables the scheme quantifies, so
+    //    this is where that conversion belongs. An unannotated position that
+    //    unified with one during checking resolves to it here, and quantifying
+    //    the variable it stands for is the whole point of the step.
+    let ty_resolved = ctx.resolve_for_export(ty);
 
     // 2. Free vars in the resolved type.
     let (free_ty, free_cap) = collect_free_vars(&ty_resolved);

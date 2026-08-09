@@ -808,6 +808,32 @@ pub enum TypeError {
         span: Span,
     },
 
+    // ── T055 ─────────────────────────────────────────────────────────────────
+    /// The body of a fully-annotated declaration needs a class the signature
+    /// does not promise.
+    ///
+    /// `fn mySort (xs: List a) -> List a = List.sort xs` needs `Ord a`, and a
+    /// reader of that signature is told it works for every `a`. Writing the
+    /// signature is a claim about every type the caller may choose, so the
+    /// requirements come with it; the alternative is that the claim is only
+    /// discovered by the caller who breaks it.
+    ///
+    /// Only fires when every parameter and the return type are annotated. A
+    /// declaration that leaves any of them off is asking to be inferred, and
+    /// inference still supplies the constraints.
+    MissingConstraint {
+        /// The declaration whose signature is short a promise.
+        decl: String,
+        /// The class the body needs, e.g. `Ord`.
+        class: String,
+        /// The signature's own name for the variable, e.g. `a`.
+        ty_var: String,
+        /// The `where` clause that would satisfy it, ready to paste.
+        fix_hint: String,
+        /// Source span of the declaration's signature.
+        span: Span,
+    },
+
     // ── T999 ─────────────────────────────────────────────────────────────────
     /// Internal type-checker invariant violation — should never reach users.
     ///
@@ -825,7 +851,7 @@ pub enum TypeError {
 impl TypeError {
     /// Returns the stable `T###` error code for this variant.
     ///
-    /// The codes are allocated in `T001..T054` and `T999` is the catch-all
+    /// The codes are allocated in `T001..T055` and `T999` is the catch-all
     /// internal error. No overlap with `R###`/`M###`.
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -882,6 +908,7 @@ impl TypeError {
             Self::ArithmeticOnNonNumeric { .. } => "T052",
             Self::MainHasParams { .. } => "T053",
             Self::FieldAccessOnNonRecord { .. } => "T054",
+            Self::MissingConstraint { .. } => "T055",
             Self::InternalTypeError { .. } => "T999",
         }
     }

@@ -1559,6 +1559,12 @@ pub const REGISTRY: &[CodeEntry] = &[
         summary: "A field access `base.field` is applied to a non-record type.",
     },
     CodeEntry {
+        code: "T055",
+        variants: &["MissingConstraint"],
+        owner: "ridge-typecheck",
+        summary: "A fully-annotated signature does not promise a class its body needs.",
+    },
+    CodeEntry {
         code: "T101",
         variants: &["FfiArityMismatch"],
         owner: "ridge-stdlib",

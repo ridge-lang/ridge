@@ -39,13 +39,14 @@
 use ridge_ast::{Body, Expr, FnDecl, Item, Param, Span};
 use ridge_resolve::NodeKind;
 use ridge_types::{
-    BuiltinTyCons, CapRow, CapVid, CapabilitySet, Constraint, RowVid, Scheme, TyVid, Type,
+    BuiltinTyCons, CapRow, CapVid, CapabilitySet, Constraint, RigidId, RowVid, Scheme, Subst,
+    TyVid, Type,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::caps_check::caps_from_ast_slice;
 use crate::class_env::{ClassTable, InstanceEnv};
-use crate::ctx::InferCtx;
+use crate::ctx::{InferCtx, RigidInfo};
 use crate::error::TypeError;
 use crate::infer::{infer_expr, infer_pattern};
 use crate::instantiate::{collect_free_vars, generalise_with_env, monoscheme};
@@ -314,6 +315,85 @@ pub fn tarjan_sccs(graph: &CallGraph) -> Vec<Vec<DeclId>> {
 /// by which `fn describe (x: a) -> Text where ToText a` keeps its constraint
 /// in its generalised scheme.
 ///
+/// Make the type variables a declaration wrote into constants for the duration
+/// of its body, and return the substitution that applies them to its signature.
+///
+/// The variables were already allocated as ordinary unification variables so
+/// that one name means one thing across the signature and its `where` clause.
+/// Each becomes a rigid paired with the variable it will abstract back to, so
+/// the constraint a body forwards and the dictionary parameter lowering
+/// declares for it end up spelling the same name.
+///
+/// Substituting after the signature is built, rather than seeding rigids into
+/// the name map, keeps `ast_type_to_ridge_type` unchanged — instance heads and
+/// class-method signatures share it, and their variables are not promises of
+/// this kind.
+fn mint_rigids(ctx: &mut InferCtx, decl: &FnDecl, tyvar_map: &FxHashMap<&str, TyVid>) -> Subst {
+    // Only a signature that claims to be the whole story is held to telling it.
+    // Leaving a parameter or the return type off is asking to be inferred.
+    let complete = decl.ret.is_some() && !decl.params.iter().any(|p| matches!(p, Param::Bare(_)));
+    let mut subst = Subst::empty();
+    for (name, vid) in tyvar_map {
+        let id = RigidId(vid.0);
+        ctx.rigids.insert(
+            id,
+            RigidInfo {
+                decl: decl.name.text.clone(),
+                span: decl.span,
+                givens: Vec::new(),
+                complete,
+            },
+        );
+        subst = subst.compose(Subst::singleton(
+            *vid,
+            Type::Rigid {
+                id,
+                name: (*name).into(),
+            },
+        ));
+    }
+    subst
+}
+
+/// Turn the signature's constants back into the variables a scheme quantifies.
+///
+/// A rigid is a checking-time device: it exists so the body cannot choose a
+/// type on the author's behalf, and once the body has been checked there is
+/// nothing left for it to prevent. Every rigid was minted paired with the
+/// variable it abstracts to, so this is a rename rather than a fresh
+/// allocation — which is what keeps the constraint the solver forwarded and
+/// the dictionary parameter lowering declares pointing at each other.
+///
+/// Applied to everything that outlives the pass, so no rigid is observable
+/// from outside it. The wildcard match arms downstream — in lowering, in the
+/// language server, in the snapshot renderer — hold because of this, not by
+/// luck. Reached from outside through [`InferCtx::resolve_for_export`].
+pub(crate) fn abstract_rigids(ty: &Type) -> Type {
+    match ty {
+        Type::Rigid { id, .. } => Type::Var(TyVid(id.0)),
+        Type::Con(id, args) => Type::Con(*id, args.iter().map(abstract_rigids).collect()),
+        Type::Fn { params, ret, caps } => Type::Fn {
+            params: params.iter().map(abstract_rigids).collect(),
+            ret: Box::new(abstract_rigids(ret)),
+            caps: caps.clone(),
+        },
+        Type::Tuple(ts) => Type::Tuple(ts.iter().map(abstract_rigids).collect()),
+        Type::Record { fields, tail } => Type::Record {
+            fields: fields
+                .iter()
+                .map(|(l, t)| (l.clone(), abstract_rigids(t)))
+                .collect(),
+            tail: tail.clone(),
+        },
+        Type::Alias { name, body } => Type::Alias {
+            name: *name,
+            body: Box::new(abstract_rigids(body)),
+        },
+        // A variable, an error, and any future variant hold no rigid.
+        _ => ty.clone(),
+    }
+}
+
 /// A genuinely auto-promoted `pub fn toText` (§5.6.6) is the exception to the
 /// "bind the name" rule: its scheme is still generalised and, for a
 /// `Body::Expr`, still written to `ctx.schemes_accum` keyed by the body's
@@ -518,11 +598,12 @@ pub fn typecheck_module_decls(
                 let cap_set = caps_from_ast_slice(&decl.caps);
                 CapRow::Concrete(cap_set)
             };
-            let fn_ty = Type::Fn {
+            let to_rigid = mint_rigids(ctx, decl, &tyvar_map);
+            let fn_ty = to_rigid.apply_to_ty(&Type::Fn {
                 params: param_types,
                 ret: Box::new(ret_ty),
                 caps,
-            };
+            });
             scc_fn_types.insert(did, fn_ty.clone());
             scc_spans.insert(did, decl.span);
             // A genuinely auto-promoted `pub fn toText` must not bind the
@@ -556,6 +637,19 @@ pub fn typecheck_module_decls(
                 if tys.len() != c.ty_vars.len() {
                     continue; // a constraint variable did not resolve — skip
                 }
+                // Record the promise, so a requirement the body raises on this
+                // variable is met by the caller's dictionary instead of being
+                // hunted for among the instances of a type nobody has picked.
+                for tv in &tys {
+                    if let Some(info) = ctx.rigids.get_mut(&RigidId(tv.0)) {
+                        info.givens.push(class_id);
+                    }
+                }
+                // Still deferred, and on the same variables as before. A
+                // declared constraint belongs on the published scheme whether
+                // or not the body ever exercises it, and these variables are
+                // untouched by unification, so this travels the existing
+                // free-variable path and is retained exactly as it was.
                 ctx.deferred_constraints
                     .push(Constraint::new(class_id, tys));
             }
@@ -678,6 +772,16 @@ pub fn typecheck_module_decls(
         // lowering pass can read the full map from ctx.dict_resolution_accum.
         ctx.dict_resolution_accum.extend(scc_dict_resolution);
 
+        // The body has been checked, so the constants have done their job:
+        // turn them back into the variables the scheme quantifies. The target
+        // is the one reserved when each was minted, which is what lets the
+        // dictionary a constraint forwards and the parameter lowering declares
+        // for it spell the same name.
+        let scc_fn_types: FxHashMap<DeclId, Type> = scc_fn_types
+            .into_iter()
+            .map(|(did, ty)| (did, abstract_rigids(&ty)))
+            .collect();
+
         // ── Steps c+d: generalise and write back schemes ──────────────────────
         // OQ-PHASE45-003: top-level decl schemes only (no let-bound locals).
         // OQ-PHASE45-005: span-keyed via body span (same as T5 inferred_caps).
@@ -694,6 +798,13 @@ pub fn typecheck_module_decls(
             instance_env,
         );
     }
+
+    // The signature variables have done their job. Note that clearing this is
+    // not what stops a rigid escaping: the union-find still binds every
+    // variable that met one during checking, so anything deep-resolved from
+    // here on can still produce one. Types leave through
+    // `InferCtx::resolve_for_export`, which is where that is undone.
+    ctx.rigids.clear();
 
     // 3. Detect T023 — unsolved type variables.
     //    Walk every binding in the current (outermost) frame, deep-resolve the

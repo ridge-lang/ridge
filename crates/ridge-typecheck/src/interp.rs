@@ -29,7 +29,7 @@
 //! produce a T023 or T029 from the constraint solver.
 
 use ridge_ast::{InterpPart, Span};
-use ridge_types::{BuiltinTyCons, TyConId, Type};
+use ridge_types::{BuiltinTyCons, TyConId, Type, TOTEXT_CLASS};
 use rustc_hash::FxHashSet;
 
 use crate::ctx::InferCtx;
@@ -99,6 +99,27 @@ fn check_hole_to_text(
         // deferred to the constraint solver which verifies the instance at every
         // concrete call site.
         Type::Error | Type::Var(_) => {}
+
+        // The signature's own type variable. Whether this is an error is not a
+        // question about instances — none exists for a type the caller has not
+        // chosen — but about whether the author promised `ToText` for it. A
+        // promise means the caller hands the dictionary in, which is what
+        // `fn describeColor (x: a) -> Text where Show a = $"${x}"` is doing.
+        Type::Rigid { id, name } => {
+            let info = ctx.rigids.get(id);
+            if info.is_some_and(|i| i.givens.contains(&TOTEXT_CLASS) || !i.complete) {
+                return;
+            }
+            let (decl, decl_span) =
+                info.map_or_else(|| (String::new(), span), |i| (i.decl.clone(), i.span));
+            ctx.errors.push(TypeError::MissingConstraint {
+                decl,
+                class: "ToText".to_owned(),
+                fix_hint: format!("add `where ToText {name}` to the signature"),
+                ty_var: name.to_string(),
+                span: decl_span,
+            });
+        }
 
         // Concrete type constructor: consult the instance set.
         Type::Con(tycon_id, _) => {

@@ -225,6 +225,31 @@ impl Env {
 
 // ── InferCtx ──────────────────────────────────────────────────────────────────
 
+/// What is known about one signature variable while its body is checked.
+///
+/// A `where Ord a` clause is a *given*: the author has granted `Ord` for this
+/// variable, and the caller will hand the dictionary in. That is the only way
+/// a class requirement on a signature variable can be met — no instance
+/// exists for a type the caller has not chosen yet — so a requirement with no
+/// matching given is `T055` rather than a lookup failure.
+pub struct RigidInfo {
+    /// The declaration that wrote the variable, for the diagnostic.
+    pub decl: String,
+    /// The declaration's own span, so the report lands on the signature that
+    /// is short a promise rather than on the first declaration of its SCC.
+    pub span: ridge_ast::Span,
+    /// The classes the signature promises for this variable.
+    pub givens: Vec<ridge_types::ClassId>,
+    /// Whether every parameter and the return type carry an annotation.
+    ///
+    /// Only a complete signature is held to `T055`. Leaving a parameter or the
+    /// return type off is asking to be inferred, and inference still supplies
+    /// the constraints — that is ordinary Hindley-Milner and it does not
+    /// change. What does not depend on completeness is the variable itself:
+    /// the author wrote `a`, so `a` is a constant either way.
+    pub complete: bool,
+}
+
 /// Per-module mutable inference state.
 ///
 /// Owns the two `ena` union-find tables plus the higher-level Algorithm-W
@@ -338,6 +363,15 @@ pub struct InferCtx {
     /// Pre-typeclass code never adds to this list; the solver is a no-op when
     /// it is empty, so unconstrained modules are completely unaffected.
     pub deferred_constraints: Vec<ridge_types::Constraint>,
+
+    /// The signature variables under check, by the identity they were minted
+    /// with.
+    ///
+    /// A [`ridge_types::RigidId`] is unique to the declaration that wrote it,
+    /// so one map serves a whole SCC without per-declaration scoping — and by
+    /// the time constraints are solved there is no "current declaration" left
+    /// to ask, which is exactly why the variable has to carry its own origin.
+    pub rigids: FxHashMap<ridge_types::RigidId, RigidInfo>,
 
     /// Per-constraint dictionary resolution plan accumulated across all SCCs.
     ///
@@ -503,6 +537,7 @@ impl InferCtx {
             anon_records: AnonRecordTable::default(),
             demanded_rows: FxHashSet::default(),
             deferred_constraints: Vec::new(),
+            rigids: FxHashMap::default(),
             dict_resolution_accum: rustc_hash::FxHashMap::default(),
             to_text_tycons: None,
             current_module_raw: None,
@@ -1008,6 +1043,23 @@ impl InferCtx {
             return Some(Type::Con(full_joined, vec![q.clone(), f.clone(), a]));
         }
         None
+    }
+
+    /// Deep-resolve a type on its way out of the type checker.
+    ///
+    /// [`Self::deep_resolve`] walks the union-find, and the union-find keeps
+    /// binding variables to the signature constants they met while a body was
+    /// checked — so resolving after the fact hands a `Type::Rigid` to whoever
+    /// asked, however carefully those were swept out beforehand. Everything
+    /// that leaves the pass goes through here instead, which resolves and then
+    /// turns the constants back into the variables a scheme quantifies.
+    ///
+    /// Nothing outside the type checker is prepared to meet a rigid, and
+    /// nothing has to be.
+    #[must_use]
+    pub fn resolve_for_export(&mut self, t: &Type) -> Type {
+        let resolved = self.deep_resolve(t);
+        crate::scc::abstract_rigids(&resolved)
     }
 
     /// Deep-resolves a type: like [`Self::shallow_resolve`] but walks recursively into

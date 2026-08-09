@@ -296,6 +296,22 @@ fn dispatch_constraint(
             }
         }
 
+        // ── Case (b'): the signature's own type variable ─────────────────────
+        // No instance can discharge this. A rigid stands for a type the caller
+        // has not chosen yet, so there is nothing to look up; the only thing
+        // that can satisfy the requirement is a promise in the signature, and
+        // the caller hands the dictionary in.
+        Type::Rigid { id, name } => discharge_promised(
+            ctx,
+            class_table,
+            scc_span,
+            c.class,
+            *id,
+            name,
+            retained,
+            dict_resolution,
+        ),
+
         // ── Case (a'): function type — key on the synthetic Fn/arity ─────────
         // A bare function satisfies a class with a function-type instance head
         // (`instance Handler (fn a -> R)`). Dispatch keys on `Fn/params.len()`
@@ -408,6 +424,9 @@ fn dispatch_multi_constraint(
 
     let mut head_tycons: SmallVec<[TyConId; 1]> = SmallVec::new();
     let mut head_vars: SmallVec<[TyVid; 1]> = SmallVec::new();
+    // Signature variables in head positions whose class the signature does
+    // not promise, as `(identity, the author's name)`.
+    let mut unpromised: Vec<(ridge_types::RigidId, String)> = Vec::new();
     for r in &resolved {
         match r {
             Type::Con(id, _) => head_tycons.push(*id),
@@ -422,6 +441,26 @@ fn dispatch_multi_constraint(
                 }
             }
             Type::Var(v) => head_vars.push(*v),
+            // A signature variable in a head position. Promised, it behaves
+            // exactly like a variable that will be generalised — the caller
+            // supplies the dictionary — so it joins `head_vars` under the
+            // abstraction target reserved when it was minted. Unpromised it is
+            // `T055`, collected below so one report names every position at
+            // once. Falling through to the wildcard instead would leave the
+            // position uncounted and the constraint would be reported as
+            // ambiguous, which it is not: nothing here is undetermined, the
+            // signature is simply short a promise.
+            Type::Rigid { id, name } => {
+                if ctx
+                    .rigids
+                    .get(id)
+                    .is_some_and(|i| i.givens.contains(&c.class) || !i.complete)
+                {
+                    head_vars.push(TyVid(id.0));
+                } else {
+                    unpromised.push((*id, name.to_string()));
+                }
+            }
             _ => {}
         }
     }
@@ -429,6 +468,28 @@ fn dispatch_multi_constraint(
     let class_name = class_table
         .get(c.class)
         .map_or("?", |info| info.name.as_str());
+
+    // A promise the signature does not make cannot be repaired further down:
+    // no instance lookup and no fundep can supply a dictionary for a type the
+    // caller has not chosen. Report and stop, before the head-tuple lookup
+    // reads the shortfall as an ambiguity.
+    if !unpromised.is_empty() {
+        let class_name = class_name.to_owned();
+        for (id, name) in unpromised {
+            let (decl, span) = ctx
+                .rigids
+                .get(&id)
+                .map_or_else(|| (String::new(), scc_span), |i| (i.decl.clone(), i.span));
+            ctx.errors.push(TypeError::MissingConstraint {
+                decl,
+                class: class_name.clone(),
+                fix_hint: format!("add `where {class_name} {name}` to the signature"),
+                ty_var: name,
+                span,
+            });
+        }
+        return;
+    }
 
     // ── Transparent alias expansion ──────────────────────────────────────────
     // If the receiver (position 0) is a transparent alias, expand it before
@@ -1223,6 +1284,67 @@ fn resolve_dict_plan(
     }
 }
 
+/// Satisfy a class requirement on a signature variable, or report `T055`.
+///
+/// The counterpart of [`discharge_concrete`] for the one head shape no
+/// instance lookup can serve. A rigid stands for a type the caller has not
+/// chosen, so there is nothing to look up; what settles it is whether the
+/// author promised the class in a `where` clause, in which case the caller
+/// hands the dictionary in and this forwards it.
+#[allow(clippy::too_many_arguments)]
+fn discharge_promised(
+    ctx: &mut InferCtx,
+    class_table: &ClassTable,
+    scc_span: Span,
+    class: ClassId,
+    id: ridge_types::RigidId,
+    name: &str,
+    retained: &mut Vec<Constraint>,
+    dict_resolution: &mut DictResolution,
+) {
+    let info = ctx.rigids.get(&id);
+    // An incomplete signature is asking to be inferred, so its requirements
+    // are acquired the way they always were. Only a signature that claims to
+    // be the whole story is held to telling it.
+    if info.is_some_and(|i| i.givens.contains(&class) || !i.complete) {
+        // The abstraction target reserved when the rigid was minted.
+        // Generalisation quantifies this variable and lowering names the
+        // incoming dict parameter after it, so forwarding it here and
+        // declaring it there spell the same `$dict_…` identifier. What
+        // follows is exactly what case (b) does for a variable; the promise
+        // is the only difference.
+        let v = TyVid(id.0);
+        let resolved_c = Constraint::single(class, v);
+        if !retained.iter().any(|r| r == &resolved_c) {
+            retained.push(resolved_c.clone());
+        }
+        dict_resolution
+            .entry((class, v))
+            .or_insert(DictPlan::Forward(resolved_c));
+        return;
+    }
+
+    // The signature claims to work for every `a` and the body does not.
+    // Reported rather than inferred onto the scheme: a requirement the author
+    // did not write is one the reader of the signature never learns, and the
+    // first person to find out is whoever calls it with the wrong type.
+    let class_name = class_table
+        .get(class)
+        .map_or("?", |i| i.name.as_str())
+        .to_owned();
+    // The variable carries its own origin, so the caret lands on the
+    // declaration that is short a promise rather than on whichever one
+    // happens to head the SCC.
+    let (decl, span) = info.map_or_else(|| (String::new(), scc_span), |i| (i.decl.clone(), i.span));
+    ctx.errors.push(TypeError::MissingConstraint {
+        decl,
+        class: class_name.clone(),
+        fix_hint: format!("add `where {class_name} {name}` to the signature"),
+        ty_var: name.to_owned(),
+        span,
+    });
+}
+
 /// Report `T030` for any parametric-instance element dictionary that resolved
 /// to a free type variable the caller never pinned.
 ///
@@ -1377,6 +1499,273 @@ mod tests {
         env.insert((class, tycon), make_instance_info(), "ToText", "Color")
             .expect("single insert must succeed");
         env
+    }
+
+    // ── Case (b'): the signature's own type variable ─────────────────────────
+    //
+    // A rigid cannot be discharged by an instance lookup — the caller has not
+    // chosen a type yet — so the only thing that satisfies a requirement on it
+    // is a `where` clause the author wrote.
+
+    /// Registers `!name#id` as a signature variable of `decl`, promising
+    /// `givens`, and returns a fresh unification variable already unified with
+    /// it — which is how a wanted reaches the solver: the callee's scheme is
+    /// instantiated at a fresh variable, and that variable meets the rigid.
+    fn rigid_wanted(
+        ctx: &mut InferCtx,
+        id: u32,
+        name: &str,
+        decl: &str,
+        givens: Vec<ridge_types::ClassId>,
+    ) -> TyVid {
+        ctx.rigids.insert(
+            ridge_types::RigidId(id),
+            crate::ctx::RigidInfo {
+                decl: decl.to_owned(),
+                span: dummy_span(),
+                givens,
+                complete: true,
+            },
+        );
+        let v = ctx.fresh_tyvid();
+        ctx.tyvids.union_value(
+            TyVidKey(v.0),
+            TyValue(Some(Type::Rigid {
+                id: ridge_types::RigidId(id),
+                name: name.into(),
+            })),
+        );
+        v
+    }
+
+    #[test]
+    fn a_promised_class_is_forwarded_to_the_caller() {
+        let mut ctx = InferCtx::new();
+        // `fn mySort (xs: List a) -> List a where Ord a` — the body needs
+        // `Ord a` and the signature promises it.
+        let v = rigid_wanted(&mut ctx, 7, "a", "mySort", vec![ORD_CLASS]);
+        ctx.deferred_constraints
+            .push(Constraint::single(ORD_CLASS, v));
+
+        let ct = make_class_table();
+        let env = InstanceEnv::new();
+        let (retained, dict_res) = solve_constraints(
+            &mut ctx,
+            &env,
+            &ct,
+            &FxHashSet::default(),
+            dummy_span(),
+            None,
+        );
+
+        assert!(ctx.errors.is_empty(), "promised: got {:?}", ctx.errors);
+        // Keyed by the abstraction target reserved when the rigid was minted,
+        // not by the fresh variable that carried the wanted in. Generalisation
+        // quantifies that same variable and lowering names the incoming dict
+        // parameter after it, so the two spell one identifier.
+        let target = TyVid(7);
+        assert_eq!(
+            retained,
+            vec![Constraint::single(ORD_CLASS, target)],
+            "the promise is re-attached to the published scheme"
+        );
+        assert!(
+            matches!(
+                dict_res.get(&(ORD_CLASS, target)),
+                Some(DictPlan::Forward(_))
+            ),
+            "expected a Forward plan, got {:?}",
+            dict_res.get(&(ORD_CLASS, target))
+        );
+    }
+
+    #[test]
+    fn an_unpromised_class_is_t055_not_an_instance_lookup() {
+        let mut ctx = InferCtx::new();
+        // The same function without the `where` clause. Reporting it here is
+        // the point: inferring it instead would publish a requirement the
+        // author never wrote and the reader never sees.
+        let v = rigid_wanted(&mut ctx, 7, "a", "mySort", vec![]);
+        ctx.deferred_constraints
+            .push(Constraint::single(ORD_CLASS, v));
+
+        let ct = make_class_table();
+        let env = InstanceEnv::new();
+        let (retained, dict_res) = solve_constraints(
+            &mut ctx,
+            &env,
+            &ct,
+            &FxHashSet::default(),
+            dummy_span(),
+            None,
+        );
+
+        let codes: Vec<&str> = ctx.errors.iter().map(TypeError::code).collect();
+        assert_eq!(codes, vec!["T055"], "got {:?}", ctx.errors);
+        match &ctx.errors[0] {
+            TypeError::MissingConstraint {
+                decl,
+                class,
+                ty_var,
+                fix_hint,
+                ..
+            } => {
+                assert_eq!(decl, "mySort");
+                assert_eq!(class, "Ord");
+                assert_eq!(ty_var, "a", "the author's own name, not a letter");
+                assert_eq!(fix_hint, "add `where Ord a` to the signature");
+            }
+            other => panic!("expected MissingConstraint, got {other:?}"),
+        }
+        assert!(
+            retained.is_empty() && dict_res.is_empty(),
+            "nothing is published for a promise that was not made"
+        );
+    }
+
+    #[test]
+    fn a_promise_of_one_class_does_not_cover_another() {
+        let mut ctx = InferCtx::new();
+        // `where Ord a` does not grant `ToText a`.
+        let v = rigid_wanted(&mut ctx, 3, "a", "f", vec![ORD_CLASS]);
+        ctx.deferred_constraints
+            .push(Constraint::single(TOTEXT_CLASS, v));
+
+        let ct = make_class_table();
+        let env = InstanceEnv::new();
+        let (retained, _) = solve_constraints(
+            &mut ctx,
+            &env,
+            &ct,
+            &FxHashSet::default(),
+            dummy_span(),
+            None,
+        );
+
+        let codes: Vec<&str> = ctx.errors.iter().map(TypeError::code).collect();
+        assert_eq!(codes, vec!["T055"]);
+        assert!(retained.is_empty());
+    }
+
+    #[test]
+    fn two_signature_variables_are_promised_separately() {
+        let mut ctx = InferCtx::new();
+        // `fn f (x: a) (y: b) -> Text where ToText a` — the promise covers `a`
+        // and says nothing about `b`, so keying on the class alone would let
+        // `b` borrow `a`'s dictionary.
+        let va = rigid_wanted(&mut ctx, 1, "a", "f", vec![TOTEXT_CLASS]);
+        let vb = rigid_wanted(&mut ctx, 2, "b", "f", vec![]);
+        ctx.deferred_constraints
+            .push(Constraint::single(TOTEXT_CLASS, va));
+        ctx.deferred_constraints
+            .push(Constraint::single(TOTEXT_CLASS, vb));
+
+        let ct = make_class_table();
+        let env = InstanceEnv::new();
+        let (retained, _) = solve_constraints(
+            &mut ctx,
+            &env,
+            &ct,
+            &FxHashSet::default(),
+            dummy_span(),
+            None,
+        );
+
+        let codes: Vec<&str> = ctx.errors.iter().map(TypeError::code).collect();
+        assert_eq!(codes, vec!["T055"], "only `b` is unpromised");
+        match &ctx.errors[0] {
+            TypeError::MissingConstraint { ty_var, .. } => assert_eq!(ty_var, "b"),
+            other => panic!("expected MissingConstraint, got {other:?}"),
+        }
+        assert_eq!(retained, vec![Constraint::single(TOTEXT_CLASS, TyVid(1))]);
+    }
+
+    /// A two-parameter class, for the multi-parameter dispatch path.
+    fn two_param_class(ct: &mut ClassTable, name: &str) -> ridge_types::ClassId {
+        let id = ct.intern(name);
+        ct.insert_with_id(
+            id,
+            crate::class_env::ClassInfo {
+                name: name.to_string(),
+                arity: 2,
+                method_sigs: vec![],
+                superclasses: vec![],
+                def_module: None,
+            },
+        );
+        id
+    }
+
+    #[test]
+    fn a_multi_param_head_of_promised_rigids_is_forwarded() {
+        let mut ctx = InferCtx::new();
+        let mut ct = make_class_table();
+        let demo = two_param_class(&mut ct, "Demo");
+
+        let vq = rigid_wanted(&mut ctx, 4, "q", "f", vec![demo]);
+        let vp = rigid_wanted(&mut ctx, 5, "p", "f", vec![demo]);
+        ctx.deferred_constraints
+            .push(Constraint::new(demo, [vq, vp].into_iter().collect()));
+
+        let env = InstanceEnv::new();
+        let (retained, dict_res) = solve_constraints(
+            &mut ctx,
+            &env,
+            &ct,
+            &FxHashSet::default(),
+            dummy_span(),
+            None,
+        );
+
+        assert!(ctx.errors.is_empty(), "got {:?}", ctx.errors);
+        assert_eq!(
+            retained,
+            vec![Constraint::new(
+                demo,
+                [TyVid(4), TyVid(5)].into_iter().collect()
+            )],
+            "both positions carry their reserved abstraction targets"
+        );
+        assert!(matches!(
+            dict_res.get(&(demo, TyVid(4))),
+            Some(DictPlan::Forward(_))
+        ));
+    }
+
+    #[test]
+    fn an_unpromised_multi_param_head_is_t055_not_ambiguity() {
+        let mut ctx = InferCtx::new();
+        let mut ct = make_class_table();
+        let demo = two_param_class(&mut ct, "Demo");
+
+        // `p` is promised, `q` is not. Reporting this as ambiguous would be
+        // wrong twice over: nothing is undetermined, and the reader would be
+        // sent looking for a missing annotation instead of a missing promise.
+        let vq = rigid_wanted(&mut ctx, 4, "q", "f", vec![]);
+        let vp = rigid_wanted(&mut ctx, 5, "p", "f", vec![demo]);
+        ctx.deferred_constraints
+            .push(Constraint::new(demo, [vq, vp].into_iter().collect()));
+
+        let env = InstanceEnv::new();
+        let (retained, _) = solve_constraints(
+            &mut ctx,
+            &env,
+            &ct,
+            &FxHashSet::default(),
+            dummy_span(),
+            None,
+        );
+
+        let codes: Vec<&str> = ctx.errors.iter().map(TypeError::code).collect();
+        assert_eq!(codes, vec!["T055"], "got {:?}", ctx.errors);
+        match &ctx.errors[0] {
+            TypeError::MissingConstraint { ty_var, class, .. } => {
+                assert_eq!(ty_var, "q");
+                assert_eq!(class, "Demo");
+            }
+            other => panic!("expected MissingConstraint, got {other:?}"),
+        }
+        assert!(retained.is_empty());
     }
 
     // ── Case (a): concrete type with existing instance → no error, Static plan ─

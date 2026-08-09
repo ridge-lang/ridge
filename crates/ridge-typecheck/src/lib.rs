@@ -1460,10 +1460,17 @@ fn typecheck_module_inner(
     // a concrete type. The lowering pass reads these types to pick instance
     // dictionaries for parametric instances, where the element type — not just
     // the head constructor — selects the dictionary, so it must be fully ground.
+    //
+    // Exported rather than merely resolved: the union-find still binds every
+    // variable that met a signature constant while a body was checked, so a
+    // plain resolve here would hand the lowering pass a rigid — and the arm
+    // that picks which incoming dictionary to forward reads a bare `Type::Var`,
+    // so it would silently fall back to the first one and thread the same
+    // dictionary into both halves of a join.
     let mut node_types = std::mem::take(&mut ctx.node_types_accum);
     for slot in &mut node_types {
         if let Some(ty) = slot {
-            *slot = Some(ctx.deep_resolve(ty));
+            *slot = Some(ctx.resolve_for_export(ty));
         }
     }
 
@@ -3017,11 +3024,66 @@ pub fn test_call () -> Text =
         );
     }
 
-    /// `fn announce (x: a) -> Text = describe x` (NO explicit `where` clause)
-    /// must typecheck and the inferred scheme must carry the implicit constraint.
+    /// Does a rigid survive anywhere in this type?
+    fn holds_a_rigid(ty: &Type) -> bool {
+        match ty {
+            Type::Rigid { .. } => true,
+            Type::Con(_, args) | Type::Tuple(args) => args.iter().any(holds_a_rigid),
+            Type::Fn { params, ret, .. } => params.iter().any(holds_a_rigid) || holds_a_rigid(ret),
+            Type::Record { fields, .. } => fields.iter().any(|(_, t)| holds_a_rigid(t)),
+            Type::Alias { body, .. } => holds_a_rigid(body),
+            _ => false,
+        }
+    }
+
+    /// Nothing the type checker hands on may mention a signature constant.
+    ///
+    /// The first cut of this swept the recorded types at the end of the pass,
+    /// which was correct and was undone one function later: the union-find
+    /// still binds every variable that met a rigid while a body was checked, so
+    /// re-resolving on the way out put them all back. A rigid then reached the
+    /// lowering pass, where the arm that picks which dictionary to forward
+    /// reads a bare `Type::Var` — it fell through to the first one and threaded
+    /// the same dictionary into both halves of a join, so right joins failed at
+    /// runtime with nothing wrong at compile time.
+    ///
+    /// Every local gate passed. This is the one that would not have.
     #[test]
-    fn class_method_implicit_constraint_acquisition() {
-        let src = r#"
+    fn no_signature_constant_leaves_the_type_checker() {
+        let src = "\
+pub fn ident (x: a) -> a = x
+
+pub fn pair (x: a) (y: b) -> (a, b) = (x, y)
+
+pub fn wrap (x: a) -> List a = [x]
+
+pub fn partly (x: a) y = pair x y
+
+pub fn sorted (xs: List a) -> List a where Ord a = List.sort xs
+";
+        let result = typecheck_snippet(src);
+        for module in &result.typed.modules {
+            for (i, slot) in module.node_types.iter().enumerate() {
+                if let Some(ty) = slot {
+                    assert!(
+                        !holds_a_rigid(ty),
+                        "node type {i} still mentions a signature constant: {ty:?}"
+                    );
+                }
+            }
+            for (name, scheme) in &module.schemes {
+                assert!(
+                    !holds_a_rigid(&scheme.ty),
+                    "the published scheme for {name:?} still mentions one: {:?}",
+                    scheme.ty
+                );
+            }
+        }
+    }
+
+    /// The shared preamble: a class, a type, and an instance for it.
+    fn describe_preamble() -> &'static str {
+        r#"
 class Describe a =
     describe (x: a) -> Text
 
@@ -3035,40 +3097,108 @@ fn colorDesc (c: Color) -> Text =
 
 instance Describe Color =
     describe (x: Color) -> Text = colorDesc x
+"#
+    }
 
+    /// `fn announce (x: a) -> Text = describe x` is a complete signature that
+    /// claims to work for every `a` and does not. It used to acquire
+    /// `Describe a` implicitly and publish it, so the claim stayed wrong on the
+    /// page every reader sees.
+    #[test]
+    fn a_complete_signature_must_write_the_class_it_needs() {
+        let src = format!(
+            "{}
 fn announce (x: a) -> Text =
     describe x
 
 pub fn test_call () -> Text =
     announce Red
-"#;
-        let result = typecheck_snippet(src);
-        // No T030 and no other fatal errors (implicit constraint should be retained).
-        let t030_count = result
+",
+            describe_preamble()
+        );
+        let result = typecheck_snippet(&src);
+        let t055: Vec<_> = result
             .errors
             .iter()
-            .filter(|e| e.1.code() == "T030")
-            .count();
+            .filter(|e| e.1.code() == "T055")
+            .collect();
         assert_eq!(
-            t030_count, 0,
-            "T030 must not fire for implicit constraint acquisition; errors: {:?}",
+            t055.len(),
+            1,
+            "expected one T055 for `announce`; errors: {:?}",
             result.errors
         );
-        // The announce fn's scheme should carry a Describe constraint.
-        let has_constrained_announce = result
-            .typed
-            .modules
-            .iter()
-            .any(|m| m.schemes.values().any(|s| !s.constraints.is_empty()));
+        let rendered = t055[0].1.to_string();
         assert!(
-            has_constrained_announce,
-            "expected `announce` to have a constraint in its scheme; modules: {:?}",
+            rendered.contains("`announce`") && rendered.contains("`Describe a`"),
+            "the report must name the declaration and the class it needs: {rendered}"
+        );
+        assert!(
+            rendered.contains("add `where Describe a` to the signature"),
+            "the fix is the clause itself, ready to paste: {rendered}"
+        );
+    }
+
+    /// Writing the clause is all it takes, and it goes on the scheme so callers
+    /// are held to it.
+    #[test]
+    fn writing_the_clause_satisfies_it() {
+        let src = format!(
+            "{}
+fn announce (x: a) -> Text where Describe a =
+    describe x
+
+pub fn test_call () -> Text =
+    announce Red
+",
+            describe_preamble()
+        );
+        let result = typecheck_snippet(&src);
+        let errors: Vec<_> = result
+            .errors
+            .iter()
+            .filter(|e| e.1.code() != "T023")
+            .collect();
+        assert!(errors.is_empty(), "expected none; got {errors:?}");
+        assert!(
             result
                 .typed
                 .modules
                 .iter()
-                .map(|m| &m.schemes)
-                .collect::<Vec<_>>()
+                .any(|m| m.schemes.values().any(|s| !s.constraints.is_empty())),
+            "the promise belongs on the published scheme"
+        );
+    }
+
+    /// The half that does not change. A declaration that leaves the return type
+    /// off is asking to be inferred, and inference still acquires the
+    /// constraint and retains it — that is ordinary Hindley-Milner, and `T055`
+    /// is about signatures that claim to be complete.
+    #[test]
+    fn an_incomplete_signature_still_acquires_its_constraint() {
+        let src = format!(
+            "{}
+fn announce (x: a) =
+    describe x
+
+pub fn test_call () -> Text =
+    announce Red
+",
+            describe_preamble()
+        );
+        let result = typecheck_snippet(&src);
+        assert!(
+            !result.errors.iter().any(|e| e.1.code() == "T055"),
+            "an unannotated return is not a claim; errors: {:?}",
+            result.errors
+        );
+        assert!(
+            result
+                .typed
+                .modules
+                .iter()
+                .any(|m| m.schemes.values().any(|s| !s.constraints.is_empty())),
+            "the constraint is still inferred onto the scheme"
         );
     }
 }

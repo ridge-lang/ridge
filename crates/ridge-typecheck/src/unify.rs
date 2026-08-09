@@ -295,9 +295,13 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         (Type::Var(x), other) => {
             let x = *x;
             if occurs(ctx, x, other) {
+                let named = ctx.deep_resolve(&Type::Var(x));
+                let inside = ctx.deep_resolve(other);
+                let (var, ty) =
+                    crate::render::render_occurs_pair(&named, &inside, &ctx.tycon_decls);
                 return Err(TypeError::OccursCheck {
-                    var: format!("?{}", x.0),
-                    ty: format!("{other}"),
+                    var: format!("`{var}`"),
+                    ty,
                     span: dummy_span(),
                 });
             }
@@ -310,9 +314,13 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         (other, Type::Var(y)) => {
             let y = *y;
             if occurs(ctx, y, other) {
+                let named = ctx.deep_resolve(&Type::Var(y));
+                let inside = ctx.deep_resolve(other);
+                let (var, ty) =
+                    crate::render::render_occurs_pair(&named, &inside, &ctx.tycon_decls);
                 return Err(TypeError::OccursCheck {
-                    var: format!("?{}", y.0),
-                    ty: format!("{other}"),
+                    var: format!("`{var}`"),
+                    ty,
                     span: dummy_span(),
                 });
             }
@@ -613,9 +621,12 @@ fn bind_row(
     tail: RowTail,
 ) -> Result<(), TypeError> {
     if row_occurs(ctx, rv, &fields, &tail) {
+        // A row variable has no letter of its own: the record renders its open
+        // tail as `..`, so naming it would put a letter in the message that
+        // does not appear in the type beside it.
         return Err(TypeError::OccursCheck {
-            var: format!("?r{}", rv.0),
-            ty: format!("{}", Type::record(fields, tail)),
+            var: "this record".to_string(),
+            ty: crate::render::render_type_with(&Type::record(fields, tail), &ctx.tycon_decls),
             span: dummy_span(),
         });
     }

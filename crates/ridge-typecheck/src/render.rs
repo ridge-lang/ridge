@@ -141,7 +141,7 @@ impl fmt::Display for TypeError {
             Self::OccursCheck { var, ty, .. } => {
                 write!(
                     f,
-                    "T010: occurs check failure (infinite type)\n  cannot unify `{var}` with `{ty}` — would create an infinite type"
+                    "T010: infinite type\n  {var} would have to contain itself: `{ty}`"
                 )
             }
 
@@ -848,6 +848,31 @@ pub fn emit_internal_strict(
 pub fn render_type_with(ty: &ridge_types::Type, tycons: &[ridge_types::TyConDecl]) -> String {
     let mut namer = VarNamer::default();
     render_at_depth(ty, tycons, 0, &mut namer)
+}
+
+/// Render a type variable and the type it would have to occur inside, naming
+/// both in one pass.
+///
+/// The pair only means anything if the variable reads as the same letter on
+/// both sides — `a` occurring inside `List a` is the whole message, and two
+/// separate renders would each start their lettering from `a` and could hand
+/// the same name to different variables.
+///
+/// Both arguments must already be resolved through the union-find. Lettering
+/// keys on the raw variable id, so a variable that has been unified with the
+/// one being named still reads as a different letter until it is resolved to
+/// the same representative — which produced `` `a` would have to contain
+/// itself: `List b` ``, a sentence disproved by the type printed beside it.
+#[must_use]
+pub fn render_occurs_pair(
+    var: &ridge_types::Type,
+    ty: &ridge_types::Type,
+    tycons: &[ridge_types::TyConDecl],
+) -> (String, String) {
+    let mut namer = VarNamer::default();
+    let letter = render_at_depth(var, tycons, 0, &mut namer);
+    let inside = render_at_depth(ty, tycons, 0, &mut namer);
+    (letter, inside)
 }
 
 /// Whether the reader can attach an instance to this type at all.

@@ -157,9 +157,12 @@ pub enum TypeError {
     // ── T010 ─────────────────────────────────────────────────────────────────
     /// Unification would create an infinite type.
     OccursCheck {
-        /// String representation of the unification variable.
+        /// What cannot contain itself, as the reader should see it named — a
+        /// single-letter type variable in backticks, or a phrase such as
+        /// `this record` where the thing has no name to give.
         var: String,
-        /// String representation of the type that would contain `var`.
+        /// The type it would have to occur inside, rendered with the same
+        /// variable letters as `var`.
         ty: String,
         /// Source span of the unification site.
         span: Span,

@@ -1802,3 +1802,93 @@ pub fn f () -> Int = add(1, 2)
         "the trap hint must survive; got:\n{t001}"
     );
 }
+
+// ── T010 — a type that would contain itself ───────────────────────────────────
+
+/// The `(var, ty)` of the first `T010`.
+fn first_occurs(stem: &str, src: &str) -> (String, String) {
+    run_typecheck_on_source(stem, src)
+        .into_iter()
+        .find_map(|e| match e {
+            TypeError::OccursCheck { var, ty, .. } => Some((var, ty)),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no T010 produced for {stem}"))
+}
+
+/// Both sides are types the reader can read.
+///
+/// This used to print `cannot unify ?65 with #6 (?63)` — two unification
+/// counters and an index into the type-constructor arena. `T001` has a test of
+/// its own forbidding exactly that; `T010` is built two cases away in the same
+/// file and was never held to it.
+#[test]
+fn an_infinite_type_names_types_not_counters() {
+    let src = "\
+pub fn f (xs: List a) -> Int =
+    match xs
+        x :: rest -> f x
+        _ -> 0
+";
+    let (var, ty) = first_occurs("t010_names", src);
+    for side in [&var, &ty] {
+        assert!(
+            !side.contains('#') && !side.contains('?') && !side.contains("TyConId"),
+            "T010 must not print internals; got {side:?}"
+        );
+    }
+    assert!(
+        ty.contains("List"),
+        "the containing type is named; got {ty:?}"
+    );
+}
+
+/// The message claims a variable occurs inside a type, so it has to. Lettering
+/// keys on the raw variable id, and a variable already unified with the one
+/// being named reads as a different letter until both are resolved to the same
+/// representative — which produced `a` would have to contain itself: `List b`,
+/// a sentence the type beside it disproves.
+#[test]
+fn the_named_variable_appears_in_the_type_it_occurs_inside() {
+    for (stem, src) in [
+        (
+            "t010_consistent_list",
+            "\
+pub fn f (xs: List a) -> Int =
+    match xs
+        x :: rest -> f x
+        _ -> 0
+",
+        ),
+        (
+            "t010_consistent_nested",
+            "\
+type Nested a = Flat a | Deep (Nested (List a))
+pub fn depth (n: Nested a) -> Int =
+    match n
+        Flat _ -> 0
+        Deep inner -> 1 + depth inner
+",
+        ),
+    ] {
+        let (var, ty) = first_occurs(stem, src);
+        let bare = var.trim_matches('`');
+        assert!(
+            ty.split(|c: char| !c.is_alphanumeric()).any(|w| w == bare),
+            "{stem}: `{bare}` is said to occur inside `{ty}`, and does not"
+        );
+    }
+}
+
+/// A well-typed recursion produces nothing.
+#[test]
+fn a_recursion_that_terminates_is_silent() {
+    let src = "\
+pub fn len (xs: List a) -> Int =
+    match xs
+        _ :: rest -> 1 + len rest
+        _ -> 0
+";
+    let errors = run_typecheck_on_source("t010_ok", src);
+    assert!(errors.is_empty(), "got {errors:?}");
+}

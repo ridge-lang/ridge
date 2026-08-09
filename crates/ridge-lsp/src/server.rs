@@ -62,7 +62,7 @@ use ridge_resolve::ModuleId;
 use crate::cancel::{Cancel, CancelOnDrop};
 use crate::diagnostics::{source_id_to_uri, to_lsp_diagnostic, uri_key};
 use crate::index::{
-    collect_capability_fixes, collect_lex_fixes, collect_nesting_hints, collect_staircase_fixes,
+    collect_lex_fixes, collect_nesting_hints, collect_signature_fixes, collect_staircase_fixes,
     collect_syntax_fixes, collect_uncurry_fixes, diff_tokens, CodeLensConfig, WorkspaceIndex,
 };
 
@@ -890,7 +890,7 @@ fn compile_blocking(
         &sources,
     );
     let mut index = WorkspaceIndex::build(generation, &state.typed, &state.resolved, &sources);
-    index.capability_fixes = collect_capability_fixes(
+    index.signature_fixes = collect_signature_fixes(
         &index.line_indices,
         &index.module_uris,
         &index.module_text,
@@ -2238,7 +2238,7 @@ impl LanguageServer for RidgeLanguageServer {
         };
 
         let mut actions: Vec<CodeActionOrCommand> = index
-            .capability_fixes
+            .signature_fixes
             .iter()
             .filter(|fix| uri_key(&fix.uri) == target_key && ranges_overlap(fix.decl_range, range))
             .map(|fix| {

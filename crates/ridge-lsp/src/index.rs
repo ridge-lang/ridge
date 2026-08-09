@@ -198,11 +198,12 @@ pub struct WorkspaceIndex {
     /// Per-module flag: is the module part of a runnable project (`app`/`service`)?
     /// Indexed by `ModuleId.0`. Drives the "Run" code lens on a `fn main`.
     module_runnable: Vec<bool>,
-    /// Quick-fixes for `T014 CapabilityNotDeclared` on capability-free
-    /// functions: each carries the edit that adds the inferred capabilities to
-    /// the signature. Populated after the compile (which holds the structured
-    /// type errors); empty otherwise.
-    pub capability_fixes: Vec<CapabilityFix>,
+    /// Quick-fixes for the diagnostics whose remedy is an edit to a
+    /// declaration's signature — the missing capabilities of `T014`/`T018`,
+    /// the over-broad ones of `T019`, and the class a `T055` signature does not
+    /// promise. Populated after the compile (which holds the structured type
+    /// errors); empty otherwise.
+    pub signature_fixes: Vec<SignatureFix>,
     /// Quick-fixes for the "did you mean" syntax diagnostics (`P034` guard-`if`,
     /// `P035` record-update braces): each carries a ready-to-apply edit that
     /// rewrites the form into its Ridge spelling. Populated from the structured
@@ -210,14 +211,15 @@ pub struct WorkspaceIndex {
     pub syntax_fixes: Vec<SyntaxFix>,
 }
 
-/// A ready-to-apply quick-fix that adjusts a capability annotation.
+/// A ready-to-apply quick-fix that edits a declaration's signature.
 ///
 /// For `T014`/`T018` the edit inserts the missing capabilities before the
 /// declaration's name (or after the `init` keyword); for `T019` it replaces
 /// the `init` block's capability tokens with the subset that stays within the
-/// actor's boundary. Spans are already resolved to LSP ranges.
+/// actor's boundary; for `T055` it writes the `where` clause the signature is
+/// short. Spans are already resolved to LSP ranges.
 #[derive(Debug, Clone)]
-pub struct CapabilityFix {
+pub struct SignatureFix {
     /// The document the function lives in.
     pub uri: Url,
     /// The flagged declaration (or the whole actor, for `T019`), used to
@@ -225,12 +227,11 @@ pub struct CapabilityFix {
     /// lands on this fix.
     pub decl_range: Range,
     /// The range the edit applies to — an empty insertion point for
-    /// `T014`/`T018`, the capability-token region for `T019`.
+    /// `T014`/`T018`/`T055`, the capability-token region for `T019`.
     pub edit_range: Range,
-    /// The text to insert (the capabilities plus a trailing space) or the
-    /// replacement text.
+    /// The text to insert or the replacement text.
     pub new_text: String,
-    /// The diagnostic code this fix answers (`T014`, `T018`, or `T019`).
+    /// The diagnostic code this fix answers.
     pub code: &'static str,
     /// The code-action title shown in the editor.
     pub title: String,
@@ -975,7 +976,7 @@ impl WorkspaceIndex {
             module_fqns,
             module_project_names,
             module_runnable,
-            capability_fixes: Vec::new(),
+            signature_fixes: Vec::new(),
             syntax_fixes: Vec::new(),
         }
     }
@@ -5949,14 +5950,14 @@ fn referent_key(binding: &Binding, module: ModuleId) -> Option<ReferentKey> {
     clippy::too_many_lines,
     reason = "one match arm per capability error kind; splitting would scatter a single pipeline"
 )]
-pub fn collect_capability_fixes(
+pub fn collect_signature_fixes(
     line_indices: &[LineIndex],
     module_uris: &[Option<Url>],
     module_text: &[Arc<str>],
     typed: &TypedWorkspace,
     type_errors: &[(ModuleId, TypeError)],
-) -> Vec<CapabilityFix> {
-    let mut out: Vec<CapabilityFix> = Vec::new();
+) -> Vec<SignatureFix> {
+    let mut out: Vec<SignatureFix> = Vec::new();
     for (mid, err) in type_errors {
         let mi = mid.0 as usize;
         let (Some(module), Some(Some(uri)), Some(li)) = (
@@ -6161,6 +6162,17 @@ pub fn collect_capability_fixes(
                     out.push(fix);
                 }
             }
+            TypeError::MissingConstraint {
+                decl,
+                class,
+                ty_var,
+                span,
+                ..
+            } => {
+                if let Some(f) = find_fn(module, *span) {
+                    push_constraint_fix(&mut out, uri, li, f, decl, class, ty_var);
+                }
+            }
             _ => {}
         }
     }
@@ -6259,7 +6271,7 @@ fn find_on_down(
     reason = "one ready-to-apply fix needs all of these"
 )]
 fn push_insert_fix(
-    out: &mut Vec<CapabilityFix>,
+    out: &mut Vec<SignatureFix>,
     uri: &Url,
     li: &LineIndex,
     decl_span: ridge_ast::Span,
@@ -6277,7 +6289,7 @@ fn push_insert_fix(
     } else {
         "capability"
     };
-    out.push(CapabilityFix {
+    out.push(SignatureFix {
         uri: uri.clone(),
         decl_range: span_to_range(li, decl_span),
         edit_range: point_range(li, insert_byte),
@@ -6287,11 +6299,45 @@ fn push_insert_fix(
     });
 }
 
+/// Push the `T055` fix: write the class the signature does not promise.
+///
+/// Two shapes, and which one applies is decided by the declaration rather than
+/// by reading the source. With no `where` clause the whole thing goes in after
+/// the return type — `T055` only fires on a fully-annotated signature, so the
+/// return type is always there to anchor to. With a clause already present the
+/// class joins it, because a body can need a second one and a second `where`
+/// does not parse.
+fn push_constraint_fix(
+    out: &mut Vec<SignatureFix>,
+    uri: &Url,
+    li: &LineIndex,
+    decl: &ridge_ast::FnDecl,
+    decl_name: &str,
+    class: &str,
+    ty_var: &str,
+) {
+    let (insert_byte, new_text) = match (decl.constraints.last(), decl.ret.as_ref()) {
+        (Some(last), _) => (last.span.end, format!(", {class} {ty_var}")),
+        (None, Some(ret)) => (ret.span().end, format!(" where {class} {ty_var}")),
+        // Unreachable while `T055` is gated on a complete signature; offering
+        // no action beats guessing where the clause goes.
+        (None, None) => return,
+    };
+    out.push(SignatureFix {
+        uri: uri.clone(),
+        decl_range: span_to_range(li, decl.span),
+        edit_range: point_range(li, insert_byte),
+        new_text,
+        code: "T055",
+        title: format!("Add `{class} {ty_var}` to `{decl_name}`"),
+    });
+}
+
 /// Push the actor-member form of the insert fix: capabilities go right after
 /// the member keyword (`init`, `terminate`), so the inserted text carries a
 /// leading space.
 fn push_member_insert_fix(
-    out: &mut Vec<CapabilityFix>,
+    out: &mut Vec<SignatureFix>,
     uri: &Url,
     li: &LineIndex,
     member_span: ridge_ast::Span,
@@ -6310,7 +6356,7 @@ fn push_member_insert_fix(
     };
     #[expect(clippy::cast_possible_truncation, reason = "keyword is ascii")]
     let insert_byte = member_span.start + keyword.len() as u32;
-    out.push(CapabilityFix {
+    out.push(SignatureFix {
         uri: uri.clone(),
         decl_range: span_to_range(li, member_span),
         edit_range: point_range(li, insert_byte),
@@ -6338,7 +6384,7 @@ fn build_member_leak_fix(
     actor: &str,
     member_keyword: &str,
     leaking: CapabilitySet,
-) -> Option<CapabilityFix> {
+) -> Option<SignatureFix> {
     let (member_span, member_caps) = module.ast.items.iter().find_map(|item| match item {
         ridge_ast::Item::Actor(ad) if ad.span == actor_span => {
             ad.members.iter().find_map(|m| match (m, member_keyword) {
@@ -6407,7 +6453,7 @@ fn build_member_leak_fix(
     };
     let (sl, sc) = li.byte_to_utf16(u32::try_from(edit_start).ok()?);
     let (el, ec) = li.byte_to_utf16(u32::try_from(edit_end).ok()?);
-    Some(CapabilityFix {
+    Some(SignatureFix {
         uri: uri.clone(),
         decl_range: span_to_range(li, actor_span),
         edit_range: Range {
@@ -7155,6 +7201,74 @@ mod tests {
         assert_eq!(fix.edit_range.start.line, 1);
         assert_eq!(fix.edit_range.start.character, 3);
         assert_eq!(fix.edit_range.end.character, 4);
+    }
+
+    // ── T055 — write the class the signature does not promise ────────────────
+
+    /// The fix for the first `fn` in `src`, plus the source with it applied.
+    fn constraint_fix(src: &str, class: &str, ty_var: &str) -> (SignatureFix, String) {
+        let parsed = ridge_parser::parse_source(src);
+        let decl = parsed
+            .module
+            .items
+            .iter()
+            .find_map(|i| match i {
+                ridge_ast::Item::Fn(f) => Some(f),
+                _ => None,
+            })
+            .expect("a fn to fix");
+        let uri = Url::parse("file:///t.ridge").expect("valid url");
+        let li = LineIndex::new(src);
+        let mut out = Vec::new();
+        push_constraint_fix(&mut out, &uri, &li, decl, &decl.name.text, class, ty_var);
+        assert_eq!(out.len(), 1, "{out:?}");
+        let fix = out.remove(0);
+        // Reconstruct from the range the editor is handed, so the assertion
+        // covers the byte-to-position conversion rather than trusting it.
+        let at =
+            li.utf16_to_byte(fix.edit_range.start.line, fix.edit_range.start.character) as usize;
+        let mut applied = String::from(&src[..at]);
+        applied.push_str(&fix.new_text);
+        applied.push_str(&src[at..]);
+        (fix, applied)
+    }
+
+    /// With no clause, it goes in after the return type.
+    #[test]
+    fn the_clause_is_written_after_the_return_type() {
+        let src = "pub fn mySort (xs: List a) -> List a = List.sort xs\n";
+        let (fix, applied) = constraint_fix(src, "Ord", "a");
+        assert_eq!(fix.code, "T055");
+        assert_eq!(fix.title, "Add `Ord a` to `mySort`");
+        assert_eq!(
+            applied,
+            "pub fn mySort (xs: List a) -> List a where Ord a = List.sort xs\n"
+        );
+    }
+
+    /// With a clause already there, the class joins it. A second `where` does
+    /// not parse, so anchoring on the return type here would produce a fix that
+    /// replaces one error with another.
+    #[test]
+    fn a_second_class_joins_the_clause_that_is_there() {
+        let src = "pub fn f (x: a) -> Text where Ord a = describe x\n";
+        let (_, applied) = constraint_fix(src, "ToText", "a");
+        assert_eq!(
+            applied,
+            "pub fn f (x: a) -> Text where Ord a, ToText a = describe x\n"
+        );
+    }
+
+    /// The variable is the author's own name, not a canonical letter.
+    #[test]
+    fn the_clause_uses_the_name_the_author_wrote() {
+        let src = "pub fn f (xs: List elem) -> List elem = List.sort xs\n";
+        let (fix, applied) = constraint_fix(src, "Ord", "elem");
+        assert_eq!(fix.new_text, " where Ord elem");
+        assert!(
+            applied.contains("-> List elem where Ord elem ="),
+            "{applied}"
+        );
     }
 
     /// Other lexical errors carry no fix — nothing mechanical to apply.

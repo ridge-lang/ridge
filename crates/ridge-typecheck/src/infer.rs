@@ -633,11 +633,14 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
         } => {
             let val_ty = infer_expr(ctx, b, value);
 
-            // If annotated, unify the inferred type with the annotation.
+            // Annotation first: `unify` reads its arguments as expected then
+            // found, and the annotation is what the value had to meet. The span
+            // is the value's, so the caret lands on the thing that failed rather
+            // than on the enclosing declaration.
             if let Some(ann_ty) = ann {
                 let ann_converted = ast_type_to_type(ctx, b, ann_ty);
-                if let Err(e) = unify(ctx, &val_ty, &ann_converted) {
-                    ctx.errors.push(e);
+                if let Err(e) = unify(ctx, &ann_converted, &val_ty) {
+                    ctx.errors.push(attach_span(e, value.span()));
                 }
             }
 
@@ -658,10 +661,12 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             span: _,
         } => {
             let val_ty = infer_expr(ctx, b, value);
+            // Same as the `let` above: annotation is the expectation, and the
+            // caret belongs on the value.
             if let Some(ann_ty) = ann {
                 let ann_converted = ast_type_to_type(ctx, b, ann_ty);
-                if let Err(e) = unify(ctx, &val_ty, &ann_converted) {
-                    ctx.errors.push(e);
+                if let Err(e) = unify(ctx, &ann_converted, &val_ty) {
+                    ctx.errors.push(attach_span(e, value.span()));
                 }
             }
             // Bind name to a mono-scheme.

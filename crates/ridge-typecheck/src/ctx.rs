@@ -225,6 +225,23 @@ impl Env {
 
 // ── InferCtx ──────────────────────────────────────────────────────────────────
 
+/// What is known about one signature variable while its body is checked.
+///
+/// A `where Ord a` clause is a *given*: the author has granted `Ord` for this
+/// variable, and the caller will hand the dictionary in. That is the only way
+/// a class requirement on a signature variable can be met — no instance
+/// exists for a type the caller has not chosen yet — so a requirement with no
+/// matching given is `T055` rather than a lookup failure.
+pub struct RigidInfo {
+    /// The declaration that wrote the variable, for the diagnostic.
+    pub decl: String,
+    /// The declaration's own span, so the report lands on the signature that
+    /// is short a promise rather than on the first declaration of its SCC.
+    pub span: ridge_ast::Span,
+    /// The classes the signature promises for this variable.
+    pub givens: Vec<ridge_types::ClassId>,
+}
+
 /// Per-module mutable inference state.
 ///
 /// Owns the two `ena` union-find tables plus the higher-level Algorithm-W
@@ -338,6 +355,15 @@ pub struct InferCtx {
     /// Pre-typeclass code never adds to this list; the solver is a no-op when
     /// it is empty, so unconstrained modules are completely unaffected.
     pub deferred_constraints: Vec<ridge_types::Constraint>,
+
+    /// The signature variables under check, by the identity they were minted
+    /// with.
+    ///
+    /// A [`ridge_types::RigidId`] is unique to the declaration that wrote it,
+    /// so one map serves a whole SCC without per-declaration scoping — and by
+    /// the time constraints are solved there is no "current declaration" left
+    /// to ask, which is exactly why the variable has to carry its own origin.
+    pub rigids: FxHashMap<ridge_types::RigidId, RigidInfo>,
 
     /// Per-constraint dictionary resolution plan accumulated across all SCCs.
     ///
@@ -503,6 +529,7 @@ impl InferCtx {
             anon_records: AnonRecordTable::default(),
             demanded_rows: FxHashSet::default(),
             deferred_constraints: Vec::new(),
+            rigids: FxHashMap::default(),
             dict_resolution_accum: rustc_hash::FxHashMap::default(),
             to_text_tycons: None,
             current_module_raw: None,

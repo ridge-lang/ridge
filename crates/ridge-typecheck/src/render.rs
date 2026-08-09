@@ -675,6 +675,20 @@ impl fmt::Display for TypeError {
                 Ok(())
             }
 
+            // ── T055 ──────────────────────────────────────────────────────────
+            Self::MissingConstraint {
+                decl,
+                class,
+                ty_var,
+                fix_hint,
+                ..
+            } => {
+                write!(
+                    f,
+                    "T055: missing constraint\n  `{decl}` promises to work for every `{ty_var}`, but its body needs `{class} {ty_var}`\n  fix: {fix_hint}"
+                )
+            }
+
             // ── T999 ──────────────────────────────────────────────────────────
             Self::InternalTypeError { detail, .. } => {
                 write!(f, "T999: internal type error\n  {detail}\n  This is a compiler bug. Please report it.")
@@ -750,6 +764,7 @@ impl HasErrorCode for TypeError {
             | Self::ArithmeticOnNonNumeric { span, .. }
             | Self::MainHasParams { span, .. }
             | Self::FieldAccessOnNonRecord { span, .. }
+            | Self::MissingConstraint { span, .. }
             | Self::InternalTypeError { span, .. } => *span,
 
             // T034: uses `totext_span` (the explicit instance) as the primary span.

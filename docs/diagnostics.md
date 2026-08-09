@@ -988,6 +988,10 @@ A top-level `fn main` declares parameters.
 
 A field access `base.field` is applied to a non-record type.
 
+### T055
+
+A fully-annotated signature does not promise a class its body needs.
+
 ### T101
 
 The `@ffi` arity doesn't match the Ridge parameter count.

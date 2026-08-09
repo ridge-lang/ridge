@@ -846,8 +846,31 @@ pub fn emit_internal_strict(
 /// is what the language server shows on hover.
 #[must_use]
 pub fn render_type_with(ty: &ridge_types::Type, tycons: &[ridge_types::TyConDecl]) -> String {
+    render_reserving(|namer| render_at_depth(ty, tycons, 0, namer))
+}
+
+/// Render under one shared namer, and render again with the author's own type
+/// names reserved if the first pass met any.
+///
+/// A signature variable prints what the author wrote, and the generated letters
+/// start at `a`, so the two can collide: a mismatch between the `a` of a
+/// signature and a variable the body left open would read `expected a, found a`.
+/// The author's spelling is the fixed one, so the letters are what has to move.
+///
+/// Knowing which names to avoid means knowing which ones get printed, and that
+/// is what [`render_at_depth`] decides — it skips an alias body, truncates below
+/// a depth bound, and flattens a join spine. A second traversal that tried to
+/// predict all of it would drift from it, so the first render reports what it
+/// printed and the second renders again knowing. When the type carries no
+/// signature variable — every program that never writes one — the first render
+/// is already the answer and the second never runs.
+fn render_reserving<T>(mut render: impl FnMut(&mut VarNamer) -> T) -> T {
     let mut namer = VarNamer::default();
-    render_at_depth(ty, tycons, 0, &mut namer)
+    let first = render(&mut namer);
+    if namer.rigids.is_empty() {
+        return first;
+    }
+    render(&mut VarNamer::reserving(namer.rigids))
 }
 
 /// Render a type variable and the type it would have to occur inside, naming
@@ -869,10 +892,11 @@ pub fn render_occurs_pair(
     ty: &ridge_types::Type,
     tycons: &[ridge_types::TyConDecl],
 ) -> (String, String) {
-    let mut namer = VarNamer::default();
-    let letter = render_at_depth(var, tycons, 0, &mut namer);
-    let inside = render_at_depth(ty, tycons, 0, &mut namer);
-    (letter, inside)
+    render_reserving(|namer| {
+        let letter = render_at_depth(var, tycons, 0, namer);
+        let inside = render_at_depth(ty, tycons, 0, namer);
+        (letter, inside)
+    })
 }
 
 /// Whether the reader can attach an instance to this type at all.
@@ -939,10 +963,11 @@ pub fn render_type_pair_with(
     found: &ridge_types::Type,
     tycons: &[ridge_types::TyConDecl],
 ) -> (String, String) {
-    let mut namer = VarNamer::default();
-    let e = render_at_depth(expected, tycons, 0, &mut namer);
-    let f = render_at_depth(found, tycons, 0, &mut namer);
-    (e, f)
+    render_reserving(|namer| {
+        let e = render_at_depth(expected, tycons, 0, namer);
+        let f = render_at_depth(found, tycons, 0, namer);
+        (e, f)
+    })
 }
 
 /// Assigns readable letters to type variables in first-appearance order.
@@ -957,19 +982,44 @@ struct VarNamer {
     /// `(raw union-find id, canonical index)` in first-appearance order.
     seen: Vec<(u32, u32)>,
     next: u32,
+    /// Signature variables printed so far, in the author's own spelling.
+    rigids: Vec<String>,
+    /// Spellings a generated letter may not take. Empty on a first pass; see
+    /// [`render_reserving`].
+    reserved: Vec<String>,
 }
 
 impl VarNamer {
+    /// A namer whose generated letters step over the names in `reserved`.
+    fn reserving(reserved: Vec<String>) -> Self {
+        Self {
+            reserved,
+            ..Self::default()
+        }
+    }
+
     fn name(&mut self, v: u32) -> String {
-        let idx = if let Some(&(_, i)) = self.seen.iter().find(|&&(raw, _)| raw == v) {
-            i
-        } else {
-            let i = self.next;
-            self.next += 1;
-            self.seen.push((v, i));
-            i
-        };
-        render_var(idx)
+        if let Some(&(_, i)) = self.seen.iter().find(|&&(raw, _)| raw == v) {
+            return render_var(i);
+        }
+        // Step over any letter the author already spent on a signature
+        // variable, so the two never print the same name.
+        let mut i = self.next;
+        while self.reserved.iter().any(|r| *r == render_var(i)) {
+            i += 1;
+        }
+        self.next = i + 1;
+        self.seen.push((v, i));
+        render_var(i)
+    }
+
+    /// The author's own name for a signature variable, recorded so a second
+    /// pass can keep the generated letters clear of it.
+    fn rigid(&mut self, name: &str) -> String {
+        if !self.rigids.iter().any(|r| r == name) {
+            self.rigids.push(name.to_owned());
+        }
+        name.to_owned()
     }
 }
 
@@ -1163,6 +1213,11 @@ fn render_at_depth(
             }
         }
         Type::Var(v) => namer.name(v.0),
+        // The author's own name for it. Falling through to the opaque arm
+        // below would print `_`, turning "you promised `a`" into a sentence
+        // about nothing. It goes through the namer so the generated letters can
+        // be kept clear of it — see `render_reserving`.
+        Type::Rigid { name, .. } => namer.rigid(name),
         Type::Alias { name, .. } => tycons
             .get(name.0 as usize)
             .map_or_else(|| format!("?{}", name.0), |d| d.name.clone()),
@@ -1217,6 +1272,62 @@ mod tests {
             Type::Var(TyVid(7)),
         ]);
         assert_eq!(render_type_with(&tup, &[]), "(a, a, b)");
+    }
+
+    fn rigid(name: &str) -> ridge_types::Type {
+        ridge_types::Type::Rigid {
+            id: ridge_types::RigidId(0),
+            name: name.into(),
+        }
+    }
+
+    #[test]
+    fn render_rigid_uses_the_authors_name() {
+        // The opaque trailing arm would print `_`, and "you promised `a`" would
+        // have become a sentence about nothing.
+        assert_eq!(render_type_with(&rigid("a"), &[]), "a");
+        assert_eq!(render_type_with(&rigid("elem"), &[]), "elem");
+    }
+
+    #[test]
+    fn generated_letters_step_over_the_authors_names() {
+        use ridge_types::{TyVid, Type};
+        // Without this the mismatch between a signature's `a` and a variable
+        // the body left open reads `expected a, found a`.
+        let (e, f) = render_type_pair_with(&rigid("a"), &Type::Var(TyVid(0)), &[]);
+        assert_eq!(e, "a");
+        assert_eq!(f, "b");
+    }
+
+    #[test]
+    fn a_variable_rendered_first_still_yields_the_authors_name() {
+        use ridge_types::{TyVid, Type};
+        // The reserving pass runs over the whole render rather than reserving
+        // names as they are met: here the variable is named before the rigid is
+        // ever seen, and it still has to give way.
+        let (e, f) = render_type_pair_with(&Type::Var(TyVid(0)), &rigid("a"), &[]);
+        assert_eq!(e, "b");
+        assert_eq!(f, "a");
+    }
+
+    #[test]
+    fn letters_skip_every_name_the_author_used() {
+        use ridge_types::{RigidId, TyVid, Type};
+        // Two signature variables spelled `a` and `b` push the generated letter
+        // to `c`, not to `b`.
+        let signature = Type::Tuple(vec![
+            Type::Rigid {
+                id: RigidId(0),
+                name: "a".into(),
+            },
+            Type::Rigid {
+                id: RigidId(1),
+                name: "b".into(),
+            },
+        ]);
+        let (e, f) = render_type_pair_with(&signature, &Type::Var(TyVid(9)), &[]);
+        assert_eq!(e, "(a, b)");
+        assert_eq!(f, "c");
     }
 
     #[test]

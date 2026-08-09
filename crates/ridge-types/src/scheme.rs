@@ -129,6 +129,11 @@ fn collect_free_ty(
                 free_ty.insert(*v);
             }
         }
+        // Neither holds a variable to quantify. A rigid is a constant on
+        // purpose: abstracting it back into a quantified variable is a
+        // deliberate step once the body has checked, not something
+        // generalisation stumbles into.
+        Type::Rigid { .. } | Type::Error => {}
         Type::Con(_, args) => {
             for a in args {
                 collect_free_ty(a, bound_ty, bound_cap, free_ty, free_cap);
@@ -164,7 +169,6 @@ fn collect_free_ty(
             // Alias is transparent — walk the body.
             collect_free_ty(body, bound_ty, bound_cap, free_ty, free_cap);
         }
-        Type::Error => {}
     }
 }
 
@@ -178,6 +182,7 @@ fn subst_type(
 ) -> Type {
     match ty {
         Type::Var(v) => ty_subst.get(v).cloned().unwrap_or(Type::Var(*v)),
+        Type::Rigid { .. } => ty.clone(),
         Type::Con(id, args) => Type::Con(
             *id,
             args.iter()
@@ -264,7 +269,7 @@ fn collect_row_vars(ty: &Type, out: &mut FxHashSet<RowVid>) {
             }
         }
         Type::Alias { body, .. } => collect_row_vars(body, out),
-        Type::Var(_) | Type::Error => {}
+        Type::Var(_) | Type::Rigid { .. } | Type::Error => {}
     }
 }
 
@@ -275,7 +280,7 @@ mod tests {
     use super::*;
     use crate::{
         capability_set::CapabilitySet,
-        ty::{CapRow, CapVid, RowVid, TyVid, Type},
+        ty::{CapRow, CapVid, RigidId, RowVid, TyVid, Type},
         tycon::TyConId,
     };
 
@@ -308,6 +313,36 @@ mod tests {
         let (fty, fcap) = scheme.free_vars();
         assert!(fty.is_empty(), "expected no free ty vars, got {fty:?}");
         assert!(fcap.is_empty(), "expected no free cap vars, got {fcap:?}");
+    }
+
+    #[test]
+    fn free_vars_ignores_a_rigid() {
+        // `a -> a` where `a` is the signature's own variable. A rigid is not
+        // free: generalisation would quantify it and instantiation would then
+        // hand out a fresh copy at every use, which is the whole failure this
+        // variant exists to stop.
+        let a = || Type::Rigid {
+            id: RigidId(0),
+            name: "a".into(),
+        };
+        let scheme = Scheme::mono(Type::Fn {
+            params: vec![a()],
+            ret: Box::new(a()),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        });
+        let (fty, fcap) = scheme.free_vars();
+        assert!(fty.is_empty(), "a rigid is not a free ty var, got {fty:?}");
+        assert!(fcap.is_empty(), "got {fcap:?}");
+    }
+
+    #[test]
+    fn free_row_vars_ignores_a_rigid() {
+        // A rigid carries no open record tail, so it contributes no row var.
+        let scheme = Scheme::mono(Type::Rigid {
+            id: RigidId(0),
+            name: "a".into(),
+        });
+        assert!(scheme.free_row_vars().is_empty());
     }
 
     // ── free_vars on `forall a. a -> a` ──────────────────────────────────────

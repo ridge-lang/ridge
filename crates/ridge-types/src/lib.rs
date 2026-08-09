@@ -36,7 +36,7 @@ pub use history::{VersionEntry, VersionHistory};
 pub use scheme::Scheme;
 pub use shape_key::{shape_key, type_to_key, AnonRecordTable, CapKey, ShapeKey, TyKey};
 pub use subst::Subst;
-pub use ty::{CapRow, CapVid, Row, RowTail, RowVid, TyVid, Type};
+pub use ty::{CapRow, CapVid, RigidId, Row, RowTail, RowVid, TyVid, Type};
 pub use tycon::{
     ActorSchema, HandlerSchema, RecordField, RecordSchema, TyConArena, TyConDecl, TyConId,
     TyConKind, UnionSchema, UnionVariant, VariantPayload,

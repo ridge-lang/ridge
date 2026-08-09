@@ -364,11 +364,11 @@ fn mint_rigids(ctx: &mut InferCtx, decl: &FnDecl, tyvar_map: &FxHashMap<&str, Ty
 /// allocation — which is what keeps the constraint the solver forwarded and
 /// the dictionary parameter lowering declares pointing at each other.
 ///
-/// Applied to everything that outlives the SCC, so no rigid is observable from
-/// outside `check_sccs`. The wildcard match arms downstream — in lowering, in
-/// the language server, in the snapshot renderer — hold because of this, not
-/// by luck.
-fn abstract_rigids(ty: &Type) -> Type {
+/// Applied to everything that outlives the pass, so no rigid is observable
+/// from outside it. The wildcard match arms downstream — in lowering, in the
+/// language server, in the snapshot renderer — hold because of this, not by
+/// luck. Reached from outside through [`InferCtx::resolve_for_export`].
+pub(crate) fn abstract_rigids(ty: &Type) -> Type {
     match ty {
         Type::Rigid { id, .. } => Type::Var(TyVid(id.0)),
         Type::Con(id, args) => Type::Con(*id, args.iter().map(abstract_rigids).collect()),
@@ -799,15 +799,11 @@ pub fn typecheck_module_decls(
         );
     }
 
-    // Expression types recorded while the bodies were checked mention the
-    // rigids those bodies were checked against — the type of `x` inside
-    // `fn f (x: a) -> a` is one. They outlive this pass, feeding hover and the
-    // lowering pass, so abstract them here too. The mapping is global (a rigid
-    // is numbered by the variable it abstracts to), so one sweep serves every
-    // SCC and rigids stop existing at this line.
-    for ty in ctx.node_types_accum.iter_mut().flatten() {
-        *ty = abstract_rigids(ty);
-    }
+    // The signature variables have done their job. Note that clearing this is
+    // not what stops a rigid escaping: the union-find still binds every
+    // variable that met one during checking, so anything deep-resolved from
+    // here on can still produce one. Types leave through
+    // `InferCtx::resolve_for_export`, which is where that is undone.
     ctx.rigids.clear();
 
     // 3. Detect T023 — unsolved type variables.

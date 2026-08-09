@@ -1460,10 +1460,17 @@ fn typecheck_module_inner(
     // a concrete type. The lowering pass reads these types to pick instance
     // dictionaries for parametric instances, where the element type — not just
     // the head constructor — selects the dictionary, so it must be fully ground.
+    //
+    // Exported rather than merely resolved: the union-find still binds every
+    // variable that met a signature constant while a body was checked, so a
+    // plain resolve here would hand the lowering pass a rigid — and the arm
+    // that picks which incoming dictionary to forward reads a bare `Type::Var`,
+    // so it would silently fall back to the first one and thread the same
+    // dictionary into both halves of a join.
     let mut node_types = std::mem::take(&mut ctx.node_types_accum);
     for slot in &mut node_types {
         if let Some(ty) = slot {
-            *slot = Some(ctx.deep_resolve(ty));
+            *slot = Some(ctx.resolve_for_export(ty));
         }
     }
 
@@ -3015,6 +3022,63 @@ pub fn test_call () -> Text =
             all_errors.is_empty(),
             "no typecheck errors expected for concrete method call; errors: {all_errors:?}"
         );
+    }
+
+    /// Does a rigid survive anywhere in this type?
+    fn holds_a_rigid(ty: &Type) -> bool {
+        match ty {
+            Type::Rigid { .. } => true,
+            Type::Con(_, args) | Type::Tuple(args) => args.iter().any(holds_a_rigid),
+            Type::Fn { params, ret, .. } => params.iter().any(holds_a_rigid) || holds_a_rigid(ret),
+            Type::Record { fields, .. } => fields.iter().any(|(_, t)| holds_a_rigid(t)),
+            Type::Alias { body, .. } => holds_a_rigid(body),
+            _ => false,
+        }
+    }
+
+    /// Nothing the type checker hands on may mention a signature constant.
+    ///
+    /// The first cut of this swept the recorded types at the end of the pass,
+    /// which was correct and was undone one function later: the union-find
+    /// still binds every variable that met a rigid while a body was checked, so
+    /// re-resolving on the way out put them all back. A rigid then reached the
+    /// lowering pass, where the arm that picks which dictionary to forward
+    /// reads a bare `Type::Var` — it fell through to the first one and threaded
+    /// the same dictionary into both halves of a join, so right joins failed at
+    /// runtime with nothing wrong at compile time.
+    ///
+    /// Every local gate passed. This is the one that would not have.
+    #[test]
+    fn no_signature_constant_leaves_the_type_checker() {
+        let src = "\
+pub fn ident (x: a) -> a = x
+
+pub fn pair (x: a) (y: b) -> (a, b) = (x, y)
+
+pub fn wrap (x: a) -> List a = [x]
+
+pub fn partly (x: a) y = pair x y
+
+pub fn sorted (xs: List a) -> List a where Ord a = List.sort xs
+";
+        let result = typecheck_snippet(src);
+        for module in &result.typed.modules {
+            for (i, slot) in module.node_types.iter().enumerate() {
+                if let Some(ty) = slot {
+                    assert!(
+                        !holds_a_rigid(ty),
+                        "node type {i} still mentions a signature constant: {ty:?}"
+                    );
+                }
+            }
+            for (name, scheme) in &module.schemes {
+                assert!(
+                    !holds_a_rigid(&scheme.ty),
+                    "the published scheme for {name:?} still mentions one: {:?}",
+                    scheme.ty
+                );
+            }
+        }
     }
 
     /// The shared preamble: a class, a type, and an instance for it.

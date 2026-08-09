@@ -1045,6 +1045,23 @@ impl InferCtx {
         None
     }
 
+    /// Deep-resolve a type on its way out of the type checker.
+    ///
+    /// [`Self::deep_resolve`] walks the union-find, and the union-find keeps
+    /// binding variables to the signature constants they met while a body was
+    /// checked — so resolving after the fact hands a `Type::Rigid` to whoever
+    /// asked, however carefully those were swept out beforehand. Everything
+    /// that leaves the pass goes through here instead, which resolves and then
+    /// turns the constants back into the variables a scheme quantifies.
+    ///
+    /// Nothing outside the type checker is prepared to meet a rigid, and
+    /// nothing has to be.
+    #[must_use]
+    pub fn resolve_for_export(&mut self, t: &Type) -> Type {
+        let resolved = self.deep_resolve(t);
+        crate::scc::abstract_rigids(&resolved)
+    }
+
     /// Deep-resolves a type: like [`Self::shallow_resolve`] but walks recursively into
     /// all sub-terms.  Every [`Type::Var`] encountered is replaced by its
     /// shallow-resolved representative (or left as a free var if unbound).

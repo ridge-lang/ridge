@@ -240,6 +240,14 @@ pub struct RigidInfo {
     pub span: ridge_ast::Span,
     /// The classes the signature promises for this variable.
     pub givens: Vec<ridge_types::ClassId>,
+    /// Whether every parameter and the return type carry an annotation.
+    ///
+    /// Only a complete signature is held to `T055`. Leaving a parameter or the
+    /// return type off is asking to be inferred, and inference still supplies
+    /// the constraints — that is ordinary Hindley-Milner and it does not
+    /// change. What does not depend on completeness is the variable itself:
+    /// the author wrote `a`, so `a` is a constant either way.
+    pub complete: bool,
 }
 
 /// Per-module mutable inference state.

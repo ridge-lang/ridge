@@ -179,9 +179,12 @@ fn typeclass_dict_passing_computes_correct_values() {
 ///   stamps `Binding::ClassMethod`, the env scheme seeds the constraint, the
 ///   solver produces `DictPlan::Static`, and the lowering emits a field
 ///   projection `maps:get('describe', $inst_Describe_Color)`.
-/// - Implicit constraint: `forward_call` calls `announce Red` where `announce`
-///   calls `describe` WITHOUT an explicit `where` clause. The constraint is
-///   acquired implicitly and retained on `announce`'s scheme.
+/// - Forwarded dictionary: `forward_call` calls `announce Green`, and
+///   `announce` promises `Describe a` and forwards the dictionary it is handed
+///   to `describe`. The clause is written rather than acquired implicitly: a
+///   complete signature states the classes its body needs (`T055`), so a
+///   promise reaching the callee is the only path left, which is the one this
+///   test is here to run end to end.
 const METHOD_CALL_SOURCE: &str = r#"
 class Describe a =
     describe (x: a) -> Text
@@ -200,7 +203,7 @@ instance Describe Color =
 pub fn direct_call () -> Text =
     describe Red
 
-fn announce (x: a) -> Text =
+fn announce (x: a) -> Text where Describe a =
     describe x
 
 pub fn forward_call () -> Text =

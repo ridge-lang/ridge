@@ -3017,11 +3017,9 @@ pub fn test_call () -> Text =
         );
     }
 
-    /// `fn announce (x: a) -> Text = describe x` (NO explicit `where` clause)
-    /// must typecheck and the inferred scheme must carry the implicit constraint.
-    #[test]
-    fn class_method_implicit_constraint_acquisition() {
-        let src = r#"
+    /// The shared preamble: a class, a type, and an instance for it.
+    fn describe_preamble() -> &'static str {
+        r#"
 class Describe a =
     describe (x: a) -> Text
 
@@ -3035,40 +3033,108 @@ fn colorDesc (c: Color) -> Text =
 
 instance Describe Color =
     describe (x: Color) -> Text = colorDesc x
+"#
+    }
 
+    /// `fn announce (x: a) -> Text = describe x` is a complete signature that
+    /// claims to work for every `a` and does not. It used to acquire
+    /// `Describe a` implicitly and publish it, so the claim stayed wrong on the
+    /// page every reader sees.
+    #[test]
+    fn a_complete_signature_must_write_the_class_it_needs() {
+        let src = format!(
+            "{}
 fn announce (x: a) -> Text =
     describe x
 
 pub fn test_call () -> Text =
     announce Red
-"#;
-        let result = typecheck_snippet(src);
-        // No T030 and no other fatal errors (implicit constraint should be retained).
-        let t030_count = result
+",
+            describe_preamble()
+        );
+        let result = typecheck_snippet(&src);
+        let t055: Vec<_> = result
             .errors
             .iter()
-            .filter(|e| e.1.code() == "T030")
-            .count();
+            .filter(|e| e.1.code() == "T055")
+            .collect();
         assert_eq!(
-            t030_count, 0,
-            "T030 must not fire for implicit constraint acquisition; errors: {:?}",
+            t055.len(),
+            1,
+            "expected one T055 for `announce`; errors: {:?}",
             result.errors
         );
-        // The announce fn's scheme should carry a Describe constraint.
-        let has_constrained_announce = result
-            .typed
-            .modules
-            .iter()
-            .any(|m| m.schemes.values().any(|s| !s.constraints.is_empty()));
+        let rendered = t055[0].1.to_string();
         assert!(
-            has_constrained_announce,
-            "expected `announce` to have a constraint in its scheme; modules: {:?}",
+            rendered.contains("`announce`") && rendered.contains("`Describe a`"),
+            "the report must name the declaration and the class it needs: {rendered}"
+        );
+        assert!(
+            rendered.contains("add `where Describe a` to the signature"),
+            "the fix is the clause itself, ready to paste: {rendered}"
+        );
+    }
+
+    /// Writing the clause is all it takes, and it goes on the scheme so callers
+    /// are held to it.
+    #[test]
+    fn writing_the_clause_satisfies_it() {
+        let src = format!(
+            "{}
+fn announce (x: a) -> Text where Describe a =
+    describe x
+
+pub fn test_call () -> Text =
+    announce Red
+",
+            describe_preamble()
+        );
+        let result = typecheck_snippet(&src);
+        let errors: Vec<_> = result
+            .errors
+            .iter()
+            .filter(|e| e.1.code() != "T023")
+            .collect();
+        assert!(errors.is_empty(), "expected none; got {errors:?}");
+        assert!(
             result
                 .typed
                 .modules
                 .iter()
-                .map(|m| &m.schemes)
-                .collect::<Vec<_>>()
+                .any(|m| m.schemes.values().any(|s| !s.constraints.is_empty())),
+            "the promise belongs on the published scheme"
+        );
+    }
+
+    /// The half that does not change. A declaration that leaves the return type
+    /// off is asking to be inferred, and inference still acquires the
+    /// constraint and retains it — that is ordinary Hindley-Milner, and `T055`
+    /// is about signatures that claim to be complete.
+    #[test]
+    fn an_incomplete_signature_still_acquires_its_constraint() {
+        let src = format!(
+            "{}
+fn announce (x: a) =
+    describe x
+
+pub fn test_call () -> Text =
+    announce Red
+",
+            describe_preamble()
+        );
+        let result = typecheck_snippet(&src);
+        assert!(
+            !result.errors.iter().any(|e| e.1.code() == "T055"),
+            "an unannotated return is not a claim; errors: {:?}",
+            result.errors
+        );
+        assert!(
+            result
+                .typed
+                .modules
+                .iter()
+                .any(|m| m.schemes.values().any(|s| !s.constraints.is_empty())),
+            "the constraint is still inferred onto the scheme"
         );
     }
 }

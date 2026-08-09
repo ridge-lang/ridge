@@ -454,7 +454,7 @@ fn dispatch_multi_constraint(
                 if ctx
                     .rigids
                     .get(id)
-                    .is_some_and(|i| i.givens.contains(&c.class))
+                    .is_some_and(|i| i.givens.contains(&c.class) || !i.complete)
                 {
                     head_vars.push(TyVid(id.0));
                 } else {
@@ -1303,7 +1303,10 @@ fn discharge_promised(
     dict_resolution: &mut DictResolution,
 ) {
     let info = ctx.rigids.get(&id);
-    if info.is_some_and(|i| i.givens.contains(&class)) {
+    // An incomplete signature is asking to be inferred, so its requirements
+    // are acquired the way they always were. Only a signature that claims to
+    // be the whole story is held to telling it.
+    if info.is_some_and(|i| i.givens.contains(&class) || !i.complete) {
         // The abstraction target reserved when the rigid was minted.
         // Generalisation quantifies this variable and lowering names the
         // incoming dict parameter after it, so forwarding it here and
@@ -1521,6 +1524,7 @@ mod tests {
                 decl: decl.to_owned(),
                 span: dummy_span(),
                 givens,
+                complete: true,
             },
         );
         let v = ctx.fresh_tyvid();

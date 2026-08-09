@@ -1884,8 +1884,13 @@ fn first_occurs(stem: &str, src: &str) -> (String, String) {
 /// file and was never held to it.
 #[test]
 fn an_infinite_type_names_types_not_counters() {
+    // Unannotated on purpose. Without a signature the parameter's type really
+    // is a hole, and "would have to contain itself" is the honest description
+    // of what the body asks for. Write the signature and the same program is a
+    // plain mismatch instead — see
+    // `an_annotated_self_application_is_a_mismatch_not_an_infinite_type`.
     let src = "\
-pub fn f (xs: List a) -> Int =
+pub fn f xs =
     match xs
         x :: rest -> f x
         _ -> 0
@@ -1914,7 +1919,7 @@ fn the_named_variable_appears_in_the_type_it_occurs_inside() {
         (
             "t010_consistent_list",
             "\
-pub fn f (xs: List a) -> Int =
+pub fn f xs =
     match xs
         x :: rest -> f x
         _ -> 0
@@ -1924,7 +1929,7 @@ pub fn f (xs: List a) -> Int =
             "t010_consistent_nested",
             "\
 type Nested a = Flat a | Deep (Nested (List a))
-pub fn depth (n: Nested a) -> Int =
+pub fn depth n =
     match n
         Flat _ -> 0
         Deep inner -> 1 + depth inner
@@ -1938,6 +1943,69 @@ pub fn depth (n: Nested a) -> Int =
             "{stem}: `{bare}` is said to occur inside `{ty}`, and does not"
         );
     }
+}
+
+/// With a signature, the same recursion is a mismatch and says so.
+///
+/// A written type variable is a constant while the body is checked, so nothing
+/// can be solved to contain itself and there is no infinite type to report.
+/// What is left is the plain truth: the parameter is `List a` and the call
+/// passes `a`. The old report accused the reader of an infinite type they had
+/// not written, and the fix — call it with the list, not the element — was
+/// nowhere in the sentence.
+#[test]
+fn an_annotated_self_application_is_a_mismatch_not_an_infinite_type() {
+    let src = "\
+pub fn f (xs: List a) -> Int =
+    match xs
+        x :: rest -> f x
+        _ -> 0
+";
+    let errors = run_typecheck_on_source("t010_annotated", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        !codes.contains(&"T010"),
+        "nothing here is infinite; got {codes:?}"
+    );
+    let mismatch = errors
+        .iter()
+        .find_map(|e| match e {
+            TypeError::TypeMismatchInCall {
+                expected, found, ..
+            } => Some((expected.clone(), found.clone())),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("expected a call mismatch; got {errors:?}"));
+    assert_eq!(mismatch, ("List a".to_owned(), "a".to_owned()));
+}
+
+/// Polymorphic recursion reports as what it is.
+///
+/// `depth` is declared over `Nested a` and calls itself at `Nested (List a)`.
+/// That is the case #466 is about, and it used to arrive as an infinite type.
+/// It is still rejected — a signature is not yet checkable at a second type —
+/// but the report now names the two types instead of blaming the author for a
+/// cycle they did not write.
+#[test]
+fn polymorphic_recursion_names_both_types() {
+    let src = "\
+type Nested a = Flat a | Deep (Nested (List a))
+pub fn depth (n: Nested a) -> Int =
+    match n
+        Flat _ -> 0
+        Deep inner -> 1 + depth inner
+";
+    let errors = run_typecheck_on_source("t010_polyrec", src);
+    let mismatch = errors
+        .iter()
+        .find_map(|e| match e {
+            TypeError::TypeMismatchInCall {
+                expected, found, ..
+            } => Some((expected.clone(), found.clone())),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("expected a call mismatch; got {errors:?}"));
+    assert_eq!(mismatch, ("a".to_owned(), "List a".to_owned()));
 }
 
 /// A well-typed recursion produces nothing.

@@ -923,10 +923,17 @@ fn curry_hint(expected_arity: usize, found_arity: usize, found_ret: &Type) -> Op
 mod tests {
     use super::*;
     use ridge_ast::Capability;
-    use ridge_types::{CapVid, CapabilitySet, TyConId};
+    use ridge_types::{CapVid, CapabilitySet, RigidId, TyConId};
 
     fn cid(n: u32) -> TyConId {
         TyConId(n)
+    }
+
+    fn rigid(id: u32, name: &str) -> Type {
+        Type::Rigid {
+            id: RigidId(id),
+            name: name.into(),
+        }
     }
 
     fn make_ctx() -> InferCtx {
@@ -969,6 +976,61 @@ mod tests {
         let err = unify(&mut ctx, &a, &b).unwrap_err();
         // xs.len() != ys.len() → T001 (wrapped through mismatch)
         assert_eq!(err.code(), "T001");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Rigids — a type variable written in a signature is a constant while the
+    // body is checked, so it equals itself and nothing else.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn rigid_unifies_with_itself() {
+        let mut ctx = make_ctx();
+        assert!(unify(&mut ctx, &rigid(0, "a"), &rigid(0, "a")).is_ok());
+    }
+
+    #[test]
+    fn distinct_rigids_do_not_unify() {
+        // Two variables in one signature are two types: `fn f (x: a, y: b) -> a`
+        // may not return `y`.
+        let mut ctx = make_ctx();
+        let err = unify(&mut ctx, &rigid(0, "a"), &rigid(1, "b")).unwrap_err();
+        assert_eq!(err.code(), "T001");
+    }
+
+    #[test]
+    fn a_rigid_does_not_unify_with_a_concrete_type() {
+        // The refusal that makes a written signature a claim rather than a
+        // guess: the author promised `a` and the body produced a `Con`.
+        let mut ctx = make_ctx();
+        let err = unify(&mut ctx, &rigid(0, "a"), &Type::Con(cid(0), vec![])).unwrap_err();
+        assert_eq!(err.code(), "T001");
+
+        // Both ways round — the body is not allowed to win by being second.
+        let err = unify(&mut ctx, &Type::Con(cid(0), vec![]), &rigid(0, "a")).unwrap_err();
+        assert_eq!(err.code(), "T001");
+    }
+
+    #[test]
+    fn a_variable_binds_to_a_rigid() {
+        // A hole may be filled with a constant. This is how a caller's fresh
+        // variable learns it is the `a` the signature named, and it has to work
+        // whichever side the variable arrives on.
+        for swapped in [false, true] {
+            let mut ctx = make_ctx();
+            let v = Type::Var(ctx.fresh_tyvid());
+            let r = rigid(0, "a");
+            let res = if swapped {
+                unify(&mut ctx, &r, &v)
+            } else {
+                unify(&mut ctx, &v, &r)
+            };
+            assert!(res.is_ok(), "swapped={swapped}");
+            assert!(
+                matches!(ctx.deep_resolve(&v), Type::Rigid { id, .. } if id == RigidId(0)),
+                "the variable must resolve to the rigid, swapped={swapped}"
+            );
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────

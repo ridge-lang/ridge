@@ -425,6 +425,28 @@ mod tests {
     }
 
     #[test]
+    fn rigid_display_is_marked_apart_from_a_var() {
+        // A dump that printed both as `?0` would hide exactly the confusion the
+        // variant exists to prevent. User-facing messages do say `a` for a
+        // rigid, but they go through the diagnostic renderer, not this.
+        let rigid = Type::Rigid {
+            id: RigidId(0),
+            name: "a".into(),
+        };
+        assert_eq!(format!("{rigid}"), "!a#0");
+        assert_eq!(format!("{}", Type::Var(TyVid(0))), "?0");
+    }
+
+    #[test]
+    fn rigid_display_carries_the_authors_name() {
+        let rigid = Type::Rigid {
+            id: RigidId(4),
+            name: "elem".into(),
+        };
+        assert_eq!(format!("{rigid}"), "!elem#4");
+    }
+
+    #[test]
     fn tuple_construction() {
         let t = Type::Tuple(vec![Type::Con(cid(0), vec![]), Type::Con(cid(1), vec![])]);
         assert!(matches!(t, Type::Tuple(ref v) if v.len() == 2));

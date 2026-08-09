@@ -1539,6 +1539,9 @@ fn render_type(ty: &Type, arena: &TyConArena) -> String {
             format!("({})", parts.join(", "))
         }
         Type::Var(v) => format!("?a{}", v.0),
+        // The author's own name. `_` here would tell someone matching on a
+        // value of their own type variable that the scrutinee has no name.
+        Type::Rigid { name, .. } => name.to_string(),
         Type::Error => "Error".to_string(),
         Type::Fn { .. } => "Fn".to_string(),
         Type::Alias { name, body: _ } => {
@@ -1558,9 +1561,21 @@ mod tests {
     use super::*;
     use ridge_ast::{Ident, MatchArm, Pattern, Span};
     use ridge_types::{
-        BuiltinTyCons, RecordField, RecordSchema, TyConArena, TyConDecl, TyConId, TyConKind, Type,
-        UnionSchema, UnionVariant, VariantPayload,
+        BuiltinTyCons, RecordField, RecordSchema, RigidId, TyConArena, TyConDecl, TyConId,
+        TyConKind, Type, UnionSchema, UnionVariant, VariantPayload,
     };
+
+    #[test]
+    fn render_type_names_a_rigid_after_its_author() {
+        // `_` here would tell someone matching on a value of their own type
+        // variable that the scrutinee has no name.
+        let (arena, _b) = make_builtins();
+        let rigid = Type::Rigid {
+            id: RigidId(0),
+            name: "a".into(),
+        };
+        assert_eq!(render_type(&rigid, &arena), "a");
+    }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 

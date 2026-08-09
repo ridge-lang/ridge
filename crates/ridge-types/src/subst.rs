@@ -235,7 +235,7 @@ mod tests {
     use crate::{
         capability_set::CapabilitySet,
         scheme::Scheme,
-        ty::{CapRow, Row, RowTail, RowVid, TyVid, Type},
+        ty::{CapRow, RigidId, Row, RowTail, RowVid, TyVid, Type},
         tycon::TyConId,
     };
 
@@ -278,6 +278,57 @@ mod tests {
         let s = Subst::singleton(vid(0), Type::Con(cid(1), vec![]));
         let result = s.apply_to_ty(&Type::Var(vid(1)));
         assert!(matches!(result, Type::Var(TyVid(1))));
+    }
+
+    // ── rigids ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn subst_leaves_a_rigid_alone() {
+        // A substitution maps unification variables. A rigid is a constant, so
+        // there is nothing to map — not even when a `TyVid` in the map carries
+        // the same number, which is a separate index space.
+        let s = Subst::singleton(vid(7), Type::Con(cid(1), vec![]));
+        let rigid = Type::Rigid {
+            id: RigidId(7),
+            name: "a".into(),
+        };
+        match s.apply_to_ty(&rigid) {
+            Type::Rigid { id, name } => {
+                assert_eq!(id, RigidId(7));
+                assert_eq!(&*name, "a");
+            }
+            other => panic!("expected the rigid back, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn subst_rewrites_around_a_rigid_without_touching_it() {
+        // The walk reaches the rigid rather than stopping short of it: the
+        // variable beside it is mapped in the same pass.
+        let s = Subst::singleton(vid(0), Type::Con(cid(1), vec![]));
+        let ty = Type::Con(
+            cid(5),
+            vec![
+                Type::Var(vid(0)),
+                Type::Rigid {
+                    id: RigidId(0),
+                    name: "a".into(),
+                },
+            ],
+        );
+        match s.apply_to_ty(&ty) {
+            Type::Con(_, args) => {
+                assert!(
+                    matches!(args[0], Type::Con(TyConId(1), _)),
+                    "the variable is mapped"
+                );
+                assert!(
+                    matches!(&args[1], Type::Rigid { id, .. } if *id == RigidId(0)),
+                    "the rigid is not"
+                );
+            }
+            other => panic!("expected Con, got {other:?}"),
+        }
     }
 
     // ── apply_to_ty: all variants ─────────────────────────────────────────────

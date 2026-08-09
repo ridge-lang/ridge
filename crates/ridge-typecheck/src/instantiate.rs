@@ -250,7 +250,11 @@ fn collect_free_vars_rec(
         Type::Alias { body, .. } => {
             collect_free_vars_rec(body, free_ty, free_cap);
         }
-        // Non-exhaustive wildcard: future Type variants (including Error) have no free vars.
+        // Non-exhaustive wildcard: Error, a signature variable, and future
+        // `Type` variants have no free vars. A signature variable is the one
+        // that matters: it is a constant while its body is checked, so
+        // instantiation must not hand out a fresh copy of it. Pinned by
+        // `instantiate_does_not_freshen_a_rigid`.
         _ => {}
     }
 }
@@ -305,10 +309,36 @@ fn collect_free_row_vars_rec(ty: &Type, free_row: &mut FxHashSet<RowVid>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ridge_types::{CapRow, CapVid, CapabilitySet, TyConId, TyVid};
+    use ridge_types::{CapRow, CapVid, CapabilitySet, RigidId, TyConId, TyVid};
 
     fn cid(n: u32) -> TyConId {
         TyConId(n)
+    }
+
+    #[test]
+    fn instantiate_does_not_freshen_a_rigid() {
+        // A rigid is a constant, so it comes back as itself. Freshening it
+        // would give each use of the signature's `a` its own variable, and the
+        // body would be free to satisfy them one at a time.
+        let mut ctx = InferCtx::new();
+        let scheme = Scheme::mono(Type::Fn {
+            params: vec![Type::Rigid {
+                id: RigidId(0),
+                name: "a".into(),
+            }],
+            ret: Box::new(Type::Rigid {
+                id: RigidId(0),
+                name: "a".into(),
+            }),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        });
+        match instantiate(&mut ctx, &scheme) {
+            Type::Fn { params, ret, .. } => {
+                assert!(matches!(&params[0], Type::Rigid { id, .. } if *id == RigidId(0)));
+                assert!(matches!(&*ret, Type::Rigid { id, .. } if *id == RigidId(0)));
+            }
+            other => panic!("expected Fn, got {other:?}"),
+        }
     }
 
     // ── Test 1 ────────────────────────────────────────────────────────────────

@@ -184,6 +184,13 @@ mod tests {
         Type::Con(TyConId(2), vec![])
     }
 
+    fn rigid(id: u32, name: &str) -> Type {
+        Type::Rigid {
+            id: RigidId(id),
+            name: name.into(),
+        }
+    }
+
     fn fields(pairs: &[(&str, Type)]) -> Vec<(String, Type)> {
         pairs
             .iter()
@@ -239,6 +246,33 @@ mod tests {
             int_direct, int_via_alias,
             "alias-typed field must key identically to its resolved body"
         );
+    }
+
+    // Two signature variables are two types. Keying them alike would let the
+    // instance chosen for the `a` of `fn f (x: a, y: b)` answer for its `b`.
+    #[test]
+    fn rigid_distinctness() {
+        let k1 = shape_key(&fields(&[("f", rigid(0, "a"))]));
+        let k2 = shape_key(&fields(&[("f", rigid(1, "b"))]));
+        assert_ne!(k1, k2);
+    }
+
+    // Identity is the id, not the spelling. Two renderings of the same variable
+    // key alike however the name was cloned along the way.
+    #[test]
+    fn rigid_keys_on_id_not_name() {
+        let k1 = shape_key(&fields(&[("f", rigid(3, "a"))]));
+        let k2 = shape_key(&fields(&[("f", rigid(3, "elem"))]));
+        assert_eq!(k1, k2);
+    }
+
+    // A rigid and an inference variable numbered alike are still different
+    // types: the two indexes are separate spaces.
+    #[test]
+    fn rigid_not_confused_with_a_var_of_the_same_index() {
+        let k1 = shape_key(&fields(&[("f", rigid(0, "a"))]));
+        let k2 = shape_key(&fields(&[("f", Type::Var(TyVid(0)))]));
+        assert_ne!(k1, k2);
     }
 
     // Var type is preserved (not confused with other vars)

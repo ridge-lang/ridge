@@ -129,6 +129,10 @@ fn collect_free_ty(
                 free_ty.insert(*v);
             }
         }
+        // A rigid is a constant, never a free variable to quantify over.
+        // Abstracting it back into a quantified variable is a deliberate step
+        // once the body has checked, not something generalisation stumbles into.
+        Type::Rigid { .. } => {}
         Type::Con(_, args) => {
             for a in args {
                 collect_free_ty(a, bound_ty, bound_cap, free_ty, free_cap);
@@ -178,6 +182,7 @@ fn subst_type(
 ) -> Type {
     match ty {
         Type::Var(v) => ty_subst.get(v).cloned().unwrap_or(Type::Var(*v)),
+        Type::Rigid { .. } => ty.clone(),
         Type::Con(id, args) => Type::Con(
             *id,
             args.iter()
@@ -264,7 +269,7 @@ fn collect_row_vars(ty: &Type, out: &mut FxHashSet<RowVid>) {
             }
         }
         Type::Alias { body, .. } => collect_row_vars(body, out),
-        Type::Var(_) | Type::Error => {}
+        Type::Var(_) | Type::Rigid { .. } | Type::Error => {}
     }
 }
 

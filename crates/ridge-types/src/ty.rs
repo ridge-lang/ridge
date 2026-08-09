@@ -3,6 +3,7 @@
 //! Defines [`TyVid`], [`CapVid`], [`TyConId`], [`CapRow`], and [`Type`].
 
 use std::fmt;
+use std::sync::Arc;
 
 use crate::{capability_set::CapabilitySet, tycon::TyConId};
 
@@ -11,6 +12,22 @@ use crate::{capability_set::CapabilitySet, tycon::TyConId};
 /// Unification variable index (assigned by the inference table).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TyVid(pub u32);
+
+/// A type variable written in a signature, for as long as its body is being
+/// checked.
+///
+/// Distinct from [`TyVid`] on purpose. A `TyVid` is a hole the checker is
+/// allowed to fill; the `a` in `fn h (x: a) -> a` is not a hole. The author
+/// promised to work for every `a`, so while the body is checked that `a` is an
+/// opaque constant that equals itself and nothing else — the body has to hold
+/// for it without learning what it is. Once the body checks, the constants are
+/// abstracted back into the published scheme's quantified variables.
+///
+/// Treating it as an ordinary `TyVid` is what let `fn h (x: a) -> a = 1` pass:
+/// unification simply solved `a := Int`, published `h` as `Int -> Int`, and the
+/// blame landed on the first caller who believed the signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RigidId(pub u32);
 
 /// Capability-row variable index — used only for stdlib HOF signatures (D041,
 /// D057). Users cannot introduce these.
@@ -118,6 +135,22 @@ pub enum CapRow {
 pub enum Type {
     /// An unification variable (resolved lazily via the inference table).
     Var(TyVid),
+    /// A type variable from the signature under check — a constant, not a hole.
+    ///
+    /// Equal only to itself (by `id`). See [`RigidId`] for why a signature
+    /// variable is not a [`Var`](Self::Var).
+    ///
+    /// `name` is what the author wrote, carried along so a diagnostic can say
+    /// `a` rather than inventing a letter. It rides in the type instead of a
+    /// side table because every renderer already has the type in hand, and a
+    /// name that has to be looked up is a name some caller will fail to look
+    /// up.
+    Rigid {
+        /// Identity. Two rigids are the same type when these match.
+        id: RigidId,
+        /// The name in the signature, for diagnostics only.
+        name: Arc<str>,
+    },
     /// A type-constructor application: `C arg₁ arg₂ …`.
     Con(TyConId, Vec<Self>),
     /// A function type: parameters, return type, and capability row.
@@ -190,6 +223,10 @@ impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Var(v) => write!(f, "?{}", v.0),
+            // Marked apart from `?N`: a rigid is a constant, and confusing the
+            // two in a debug dump hides exactly the bug this type exists to
+            // catch. User-facing rendering goes through `render`, not here.
+            Self::Rigid { id, name } => write!(f, "!{name}#{}", id.0),
             Self::Con(id, args) if args.is_empty() => write!(f, "#{}", id.0),
             Self::Con(id, args) => {
                 write!(f, "#{}", id.0)?;

@@ -329,6 +329,18 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
             Ok(())
         }
 
+        // ── The signature's own type variable ─────────────────────────────────
+        // A rigid stands for whatever type the caller will pick, so it equals
+        // itself and nothing else. Every other pairing falls through to the
+        // structural mismatch at the bottom, and that refusal is the whole
+        // point: it is what makes a written signature a claim the body has to
+        // meet rather than a guess unification is free to overwrite.
+        //
+        // `(Var, Rigid)` is deliberately NOT here — the `Var` arms above bind
+        // the variable to the rigid, which is correct. A hole may be filled
+        // with a constant; a constant may not be replaced by anything.
+        (Type::Rigid { id: x, .. }, Type::Rigid { id: y, .. }) if x == y => Ok(()),
+
         // ── Two type-constructor applications ─────────────────────────────────
         (Type::Con(c, xs), Type::Con(d, ys)) => {
             if c != d || xs.len() != ys.len() {

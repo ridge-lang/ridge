@@ -22,7 +22,7 @@
 use rustc_hash::FxHashMap;
 
 use crate::{
-    ty::{CapRow, RowTail, RowVid, TyVid},
+    ty::{CapRow, RigidId, RowTail, RowVid, TyVid},
     tycon::TyConId,
     Type,
 };
@@ -61,6 +61,12 @@ pub enum TyKey {
     },
     /// An unresolved unification variable.
     Var(TyVid),
+    /// A signature's own type variable, while its body is under check.
+    ///
+    /// Separate from [`Var`](Self::Var): two distinct rigids are distinct
+    /// types, so keying them alike would let instance dispatch conflate the
+    /// `a` and `b` of `fn f (x: a, y: b)`.
+    Rigid(RigidId),
     /// The absorbing error type.
     Error,
 }
@@ -124,6 +130,7 @@ pub fn type_to_key(ty: &Type) -> TyKey {
             },
         },
         Type::Var(v) => TyKey::Var(*v),
+        Type::Rigid { id, .. } => TyKey::Rigid(*id),
         Type::Error => TyKey::Error,
     }
 }

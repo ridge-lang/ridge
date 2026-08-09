@@ -107,6 +107,9 @@ impl Subst {
                 .ty
                 .get(v)
                 .map_or(Type::Var(*v), |t| self.apply_to_ty(t)),
+            // A substitution maps unification variables. A rigid is a constant,
+            // so there is nothing to map.
+            Type::Rigid { .. } => ty.clone(),
             Type::Con(id, args) => {
                 Type::Con(*id, args.iter().map(|a| self.apply_to_ty(a)).collect())
             }

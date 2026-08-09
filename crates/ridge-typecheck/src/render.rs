@@ -1163,6 +1163,10 @@ fn render_at_depth(
             }
         }
         Type::Var(v) => namer.name(v.0),
+        // The author's own name for it. Falling through to the opaque arm
+        // below would print `_`, turning "you promised `a`" into a sentence
+        // about nothing.
+        Type::Rigid { name, .. } => name.to_string(),
         Type::Alias { name, .. } => tycons
             .get(name.0 as usize)
             .map_or_else(|| format!("?{}", name.0), |d| d.name.clone()),

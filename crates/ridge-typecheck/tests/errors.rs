@@ -1013,10 +1013,70 @@ fn type_mismatch_renders_real_type_names() {
             "type names must be readable, not `#N`/Debug; got {side:?}"
         );
     }
-    assert!(
-        expected == "Text" || found == "Text",
-        "one side must name `Text`; got expected={expected:?} found={found:?}"
-    );
+    // Which side is which is the subject of `annotated_binding_expects_the
+    // _annotation` below; here only that both render as names.
+    assert_eq!(expected, "Text", "expected side; got {expected:?}");
+    assert_eq!(found, "Int", "found side; got {found:?}");
+}
+
+/// `(expected, found, span)` of the first `T001 TypeMismatch`, span as the
+/// byte range it points at.
+fn first_mismatch_at(stem: &str, src: &str) -> (String, String, (u32, u32)) {
+    run_typecheck_on_source(stem, src)
+        .into_iter()
+        .find_map(|e| match e {
+            TypeError::TypeMismatch {
+                expected,
+                found,
+                span,
+                ..
+            } => Some((expected, found, (span.start, span.end))),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no T001 produced for {stem}"))
+}
+
+/// An annotated binding reports the annotation as what was expected and the
+/// value as what was found, and points at the value.
+///
+/// It used to report the pair the other way round, which reads as a coherent
+/// sentence about a different mistake: `let x: Text = 42` said `expected Int,
+/// got Text`, sending the reader to look for a `Text` where they wrote an
+/// `Int`. `T001`'s headline is `type mismatch` and nothing else, so the note is
+/// the whole message. The caret sat on the enclosing declaration, which on a
+/// longer function is the wrong line entirely.
+#[test]
+fn annotated_binding_expects_the_annotation() {
+    for (kind, ann, value, want_expected, want_found) in [
+        ("let", "Text", "42", "Text", "Int"),
+        ("let", "Int", "\"hello\"", "Int", "Text"),
+        // `var` reads the same annotation through its own arm of `infer_expr`
+        // and had the same inversion.
+        ("var", "Int", "\"hello\"", "Int", "Text"),
+        ("var", "Text", "42", "Text", "Int"),
+    ] {
+        let src = format!("pub fn g () -> Int =\n    {kind} x: {ann} = {value}\n    0\n");
+        let (expected, found, span) = first_mismatch_at("annotated_binding", &src);
+        assert_eq!(
+            (expected.as_str(), found.as_str()),
+            (want_expected, want_found),
+            "`{kind} x: {ann} = {value}` must expect the annotation"
+        );
+        assert_eq!(
+            &src[span.0 as usize..span.1 as usize],
+            value,
+            "the caret belongs on the value, not the declaration around it"
+        );
+    }
+}
+
+/// The caret used to land on line 1 whatever line the binding was on.
+#[test]
+fn annotated_binding_points_at_its_own_line() {
+    let src = "pub fn g () -> Int =\n    let a = 1\n    let b = 2\n    let x: Text = 42\n    0\n";
+    let (_, _, span) = first_mismatch_at("annotated_binding_line", src);
+    let line = src[..span.0 as usize].lines().count();
+    assert_eq!(line, 4, "the mismatch is on line 4; got line {line}");
 }
 
 // ── Issue #377 — syntax-trap teaching hints on T001 ───────────────────────────

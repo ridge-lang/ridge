@@ -16,7 +16,14 @@ services:
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      # Probe over TCP, which is how the examples connect. On first start the
+      # image runs initdb behind a temporary socket-only server; a plain
+      # `pg_isready` answers for that one and reports healthy a few seconds
+      # before the real server exists, so the first query gets "the database
+      # system is shutting down". start_period covers initdb without spending
+      # retries on it.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U app -d app"]
       interval: 5s
       timeout: 5s
       retries: 5
+      start_period: 10s

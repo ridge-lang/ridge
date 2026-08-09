@@ -243,12 +243,28 @@ jobs:
             -c ssl_cert_file=/certs/server.crt \
             -c ssl_key_file=/certs/server.key \
             -c max_connections=200
+          # Probe over TCP, not the unix socket. On an empty data directory the
+          # image runs initdb and then starts a temporary server to apply it,
+          # and that server is socket-only (the entrypoint passes
+          # `listen_addresses=''`). A socket probe accepts it as the real thing
+          # and the next psql lands in the shutdown that follows it, reporting
+          # "the database system is shutting down". Nothing answers on TCP until
+          # the real server is up, so this cannot see the bootstrap one.
+          ready=
           for i in $(seq 1 30); do
-            if docker exec ridge-pg pg_isready -U postgres >/dev/null 2>&1; then
-              echo "postgres ready"; break
+            if docker exec ridge-pg pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1; then
+              ready=yes; echo "postgres ready"; break
             fi
             echo "waiting for postgres ($i)"; sleep 2
           done
+          # Without this the loop falls through on timeout and the step fails on
+          # the first psql instead, blaming the query for a server that never
+          # came up.
+          if [ -z "$ready" ]; then
+            echo "postgres did not accept a TCP connection within 60s; container log follows" >&2
+            docker logs ridge-pg
+            exit 1
+          fi
           docker exec ridge-pg psql -U postgres -d ridge_test -c \
             'CREATE TABLE IF NOT EXISTS ridge_pg_users (id integer, name text, age integer);'
           docker exec ridge-pg psql -U postgres -d ridge_test -c \

@@ -1913,29 +1913,23 @@ pub fn f xs =
 /// being named reads as a different letter until both are resolved to the same
 /// representative — which produced `a` would have to contain itself: `List b`,
 /// a sentence the type beside it disproves.
+///
+/// This used to run over two programs. The second, an unannotated `depth` over
+/// a non-regular `Nested`, no longer reaches `T010`: an unannotated recursive
+/// call at a second type now reports `T013` naming the annotations that would
+/// accept it, which is the same failure said usefully. It is covered by
+/// [`an_unannotated_signature_is_told_to_annotate_all_of_it`].
 #[test]
 fn the_named_variable_appears_in_the_type_it_occurs_inside() {
-    for (stem, src) in [
-        (
-            "t010_consistent_list",
-            "\
+    for (stem, src) in [(
+        "t010_consistent_list",
+        "\
 pub fn f xs =
     match xs
         x :: rest -> f x
         _ -> 0
 ",
-        ),
-        (
-            "t010_consistent_nested",
-            "\
-type Nested a = Flat a | Deep (Nested (List a))
-pub fn depth n =
-    match n
-        Flat _ -> 0
-        Deep inner -> 1 + depth inner
-",
-        ),
-    ] {
+    )] {
         let (var, ty) = first_occurs(stem, src);
         let bare = var.trim_matches('`');
         assert!(
@@ -1949,10 +1943,17 @@ pub fn depth n =
 ///
 /// A written type variable is a constant while the body is checked, so nothing
 /// can be solved to contain itself and there is no infinite type to report.
-/// What is left is the plain truth: the parameter is `List a` and the call
-/// passes `a`. The old report accused the reader of an infinite type they had
+/// What is left is the plain truth: the call passes an element where a list is
+/// expected. The old report accused the reader of an infinite type they had
 /// not written, and the fix — call it with the list, not the element — was
 /// nowhere in the sentence.
+///
+/// The two sides carry different letters because they are different things.
+/// `f`'s signature is complete, so the recursive occurrence instantiates it
+/// afresh and its parameter is a list of *anything* — `List b` — while `x` is
+/// the `a` this body was handed. Printing `List a` on the left would say the
+/// element has to be the author's own `a`, which stopped being true when a
+/// complete signature became callable at a second type.
 #[test]
 fn an_annotated_self_application_is_a_mismatch_not_an_infinite_type() {
     let src = "\
@@ -1976,7 +1977,7 @@ pub fn f (xs: List a) -> Int =
             _ => None,
         })
         .unwrap_or_else(|| panic!("expected a call mismatch; got {errors:?}"));
-    assert_eq!(mismatch, ("List a".to_owned(), "a".to_owned()));
+    assert_eq!(mismatch, ("List b".to_owned(), "a".to_owned()));
 }
 
 /// The traversal a non-regular datatype needs.

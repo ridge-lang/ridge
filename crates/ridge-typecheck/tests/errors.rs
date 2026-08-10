@@ -1979,15 +1979,13 @@ pub fn f (xs: List a) -> Int =
     assert_eq!(mismatch, ("List a".to_owned(), "a".to_owned()));
 }
 
-/// Polymorphic recursion reports as what it is.
+/// The traversal a non-regular datatype needs.
 ///
-/// `depth` is declared over `Nested a` and calls itself at `Nested (List a)`.
-/// That is the case #466 is about, and it used to arrive as an infinite type.
-/// It is still rejected — a signature is not yet checkable at a second type —
-/// but the report now names the two types instead of blaming the author for a
-/// cycle they did not write.
+/// `depth` is declared over `Nested a` and calls itself at `Nested (List a)`,
+/// which its own signature accepts. There is no way to write it at any
+/// verbosity once the type stops being regular, so this is the whole of #466.
 #[test]
-fn polymorphic_recursion_names_both_types() {
+fn a_complete_signature_may_recurse_at_another_type() {
     let src = "\
 type Nested a = Flat a | Deep (Nested (List a))
 pub fn depth (n: Nested a) -> Int =
@@ -1995,17 +1993,123 @@ pub fn depth (n: Nested a) -> Int =
         Flat _ -> 0
         Deep inner -> 1 + depth inner
 ";
-    let errors = run_typecheck_on_source("t010_polyrec", src);
+    let errors = run_typecheck_on_source("polyrec_ok", src);
+    assert!(errors.is_empty(), "got {errors:?}");
+}
+
+/// Two declarations reaching each other at a second type, checked together.
+///
+/// Both are complete, so both are bound to their declared scheme for the whole
+/// of the SCC — the property has to hold across the component, not just for a
+/// declaration calling itself.
+#[test]
+fn mutual_recursion_at_another_type_is_accepted() {
+    let src = "\
+type Nested a = Flat a | Deep (Nested (List a))
+pub fn depth (n: Nested a) -> Int =
+    match n
+        Flat _ -> 0
+        Deep inner -> 1 + peel inner
+pub fn peel (n: Nested a) -> Int = depth n
+";
+    let errors = run_typecheck_on_source("polyrec_mutual", src);
+    assert!(errors.is_empty(), "got {errors:?}");
+}
+
+/// Instantiating a signature does not stop the body having to meet it.
+///
+/// The safety argument for the whole feature. `g` instantiates to `Int -> Int`
+/// at the recursive call, so the body has type `Int` where the signature
+/// promised `a` — reported here, at the declaration, rather than at the first
+/// caller who passes something that is not an `Int`.
+#[test]
+fn instantiating_the_call_does_not_release_the_body() {
+    let src = "pub fn g (x: a) -> a = g 1\n";
+    let errors = run_typecheck_on_source("polyrec_body_still_checked", src);
     let mismatch = errors
         .iter()
         .find_map(|e| match e {
-            TypeError::TypeMismatchInCall {
+            TypeError::TypeMismatch {
                 expected, found, ..
             } => Some((expected.clone(), found.clone())),
             _ => None,
         })
-        .unwrap_or_else(|| panic!("expected a call mismatch; got {errors:?}"));
-    assert_eq!(mismatch, ("a".to_owned(), "List a".to_owned()));
+        .unwrap_or_else(|| panic!("expected a mismatch at the declaration; got {errors:?}"));
+    assert_eq!(mismatch, ("a".to_owned(), "Int".to_owned()));
+}
+
+/// A signature short of one annotation is told which one.
+///
+/// `depth` here is missing only its return type. The call that fails is the
+/// same one, and without this the author is shown an argument mismatch with no
+/// way to learn that finishing the signature is what makes it legal.
+#[test]
+fn an_incomplete_signature_is_told_what_to_annotate() {
+    let src = "\
+type Nested a = Flat a | Deep (Nested (List a))
+pub fn depth (n: Nested a) =
+    match n
+        Flat _ -> 0
+        Deep inner -> 1 + depth inner
+";
+    let errors = run_typecheck_on_source("polyrec_partial", src);
+    let hint = errors
+        .iter()
+        .find_map(|e| match e {
+            TypeError::PolymorphicRecursion { fix_hint, .. } => Some(fix_hint.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("expected T013; got {errors:?}"));
+    assert_eq!(hint, "annotate the return type of `depth`");
+}
+
+/// With nothing annotated the advice covers everything, and replaces the
+/// occurs check that used to arrive here — true, and no help at all.
+#[test]
+fn an_unannotated_signature_is_told_to_annotate_all_of_it() {
+    let src = "\
+type Nested a = Flat a | Deep (Nested (List a))
+pub fn depth n =
+    match n
+        Flat _ -> 0
+        Deep inner -> 1 + depth inner
+";
+    let errors = run_typecheck_on_source("polyrec_bare", src);
+    let hint = errors
+        .iter()
+        .find_map(|e| match e {
+            TypeError::PolymorphicRecursion { fix_hint, .. } => Some(fix_hint.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("expected T013; got {errors:?}"));
+    assert_eq!(
+        hint,
+        "annotate every parameter and the return type of `depth`"
+    );
+}
+
+/// The negative control for `T013`: a recursive call that finishing the
+/// signature would not fix.
+///
+/// `depth 5` is wrong whatever the return type says — instantiating `Nested a`
+/// cannot make it an `Int`. Offering the annotation here would send the author
+/// to edit the one part of the declaration that is already right.
+#[test]
+fn a_call_annotation_cannot_fix_is_not_reported_as_t013() {
+    let src = "\
+type Nested a = Flat a | Deep (Nested (List a))
+pub fn depth (n: Nested a) =
+    match n
+        Flat _ -> 0
+        Deep _ -> 1 + depth 5
+";
+    let errors = run_typecheck_on_source("polyrec_control", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        !codes.contains(&"T013"),
+        "annotating the return type would not accept `depth 5`; got {codes:?}"
+    );
+    assert!(codes.contains(&"T002"), "got {codes:?}");
 }
 
 /// A well-typed recursion produces nothing.

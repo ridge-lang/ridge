@@ -1310,7 +1310,7 @@ pub const REGISTRY: &[CodeEntry] = &[
         code: "T013",
         variants: &["PolymorphicRecursion"],
         owner: "ridge-typecheck",
-        summary: "A recursive function is used at a different type inside its own body.",
+        summary: "A declaration is used at a second type inside its own definition, and its signature does not annotate every parameter and the return type.",
     },
     CodeEntry {
         code: "T014",

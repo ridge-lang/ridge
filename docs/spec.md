@@ -942,6 +942,8 @@ Ridge's type system is based on **Hindley-Milner with extensions**:
 - Full type inference (no annotation required anywhere).
 - Algebraic data types (sum and product).
 - Parametric polymorphism with let-generalization.
+- Polymorphic recursion, for a declaration whose signature annotates every
+  parameter and the return type (see §5.3).
 - Type classes with constraints (see §5.6).
 - **Capability inference** alongside type inference (see §5.3).
 
@@ -972,6 +974,29 @@ Timestamp  -- opaque; no literal syntax; see §9.2 std.time for construction
 ### 5.3. Type inference algorithm
 
 Algorithm W (Damas-Hindley-Milner) with union-find, generalization at `let`, instantiation at use sites, and the occurs check. Capability sets are inferred in a second pass: the set of a function is the union of capabilities used in its body. If a declared signature is present, the inferred set must be a subset; otherwise, a compile error.
+
+#### Complete signatures
+
+A signature is **complete** when every parameter and the return type carry an annotation. A complete signature is a contract: the type variables it names are constants for the duration of the body, so the body cannot narrow one to a concrete type on the author's behalf. `fn h (x: a) -> a = 1` is rejected at the declaration, not at the first caller who passes a `Text`. A class requirement the body raises on one of those variables must be promised in the `where` clause, or it is `T055`.
+
+Two things follow from writing the whole type down.
+
+A complete signature may **recurse at a different type**. Each recursive occurrence instantiates the declared type afresh, so a non-regular datatype can be traversed:
+
+```ridge
+type Nested a = Flat a | Deep (Nested (List a))
+
+fn depth (n: Nested a) -> Int =
+    match n
+        Flat _ -> 0
+        Deep inner -> 1 + depth inner        -- `inner` is a `Nested (List a)`
+```
+
+The body is still held to the signature, so this only ever accepts programs that meet what the author wrote: in `fn g (x: a) -> a = g 1` the recursive call returns an `Int` where `a` was promised, and that is a mismatch at the declaration.
+
+Inferring such a type is undecidable, which is why a signature that leaves a position off keeps the ordinary rule — one type for the whole body — and a recursive call at a second type under one is `T013`, naming the annotations that would lift it.
+
+Both properties are of top-level `fn` declarations.
 
 ```
 Error: function 'f' declared as `fn io` uses capability `fs`

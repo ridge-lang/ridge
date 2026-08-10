@@ -250,6 +250,32 @@ pub struct RigidInfo {
     pub complete: bool,
 }
 
+/// A declaration of the SCC being checked that cannot be called at a second
+/// type inside it, and what its author would have to write to lift that.
+///
+/// A complete signature is bound polymorphically for the duration of its SCC,
+/// so a recursive occurrence instantiates it afresh. An incomplete one is still
+/// bound monomorphically — there is no declared scheme to instantiate, and
+/// inferring one is undecidable. The difference is invisible from the call
+/// site, where the failure reads as an ordinary argument mismatch, so the
+/// declaration records here what it would take to make the call legal.
+pub struct MonomorphicInScc {
+    /// The declaration's own signature variables: one per name it wrote, plus
+    /// one per parameter it left bare. These are the positions a declared
+    /// scheme would have quantified, so they are the positions instantiation
+    /// would have been free to fill differently at each occurrence.
+    pub vars: rustc_hash::FxHashSet<ridge_types::TyVid>,
+    /// Which parameters were left bare, by position.
+    ///
+    /// A bare parameter's whole type came from inference, so every variable
+    /// still in it is a position the author never wrote — not just the one
+    /// allocated for it, which unification has usually replaced by the time the
+    /// recursive call is reached.
+    pub bare_params: Vec<bool>,
+    /// The annotations the signature is missing, phrased as the edit to make.
+    pub fix_hint: String,
+}
+
 /// Per-module mutable inference state.
 ///
 /// Owns the two `ena` union-find tables plus the higher-level Algorithm-W
@@ -372,6 +398,14 @@ pub struct InferCtx {
     /// the time constraints are solved there is no "current declaration" left
     /// to ask, which is exactly why the variable has to carry its own origin.
     pub rigids: FxHashMap<ridge_types::RigidId, RigidInfo>,
+
+    /// The declarations of the SCC under check whose signature is too thin to
+    /// be called at a second type, keyed by name.
+    ///
+    /// Live only while that SCC's bodies are inferred: once its names are
+    /// rebound to their generalised schemes, calling them at a second type is
+    /// ordinary polymorphism and a mismatch there is an ordinary mismatch.
+    pub monomorphic_in_scc: FxHashMap<String, MonomorphicInScc>,
 
     /// Per-constraint dictionary resolution plan accumulated across all SCCs.
     ///
@@ -538,6 +572,7 @@ impl InferCtx {
             demanded_rows: FxHashSet::default(),
             deferred_constraints: Vec::new(),
             rigids: FxHashMap::default(),
+            monomorphic_in_scc: FxHashMap::default(),
             dict_resolution_accum: rustc_hash::FxHashMap::default(),
             to_text_tycons: None,
             current_module_raw: None,

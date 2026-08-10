@@ -1986,11 +1986,17 @@ pub(crate) fn build_dict_args(
         let constraint_ty =
             constraint_arg_type(&pin_params, &pin_args, c.sole_ty()).map(|ty| deep_peel_alias(&ty));
 
+        // `constraint_arg_type` walks the scheme in lockstep with the call and
+        // only answers from a position `c.sole_ty()` occupies, so whatever it
+        // returns is the constraint's own type.
         let dict_expr = resolve_dict_arg(
             ctx,
             c.class,
             &class_name,
-            constraint_ty.as_ref(),
+            ConstraintPin {
+                ty: constraint_ty.as_ref(),
+                located: true,
+            },
             occurrence,
             call_needs_multiple,
             span,
@@ -2137,6 +2143,27 @@ fn align_var(param: &Type, arg: &Type, var: ridge_types::TyVid) -> Option<Type> 
     }
 }
 
+/// What a call site says about the type its constraint ranges over.
+///
+/// The type alone is not enough to act on, because one of the ways it is
+/// derived cannot tell whether it found the right thing. `classmethod_pin_from_return`
+/// reads the head of the call's result and keeps it if some instance is
+/// registered for it — which is the answer for a return-directed method like
+/// `decode`, and a coincidence for `compare (x: a) (y: a) -> Ordering`, whose
+/// class variable is nowhere near its return and whose result type happens to
+/// have an `Ord` instance of its own.
+///
+/// So a pin carries whether it came from a position the class variable actually
+/// occupies. Only that kind may outrank the caller's own dictionary.
+#[derive(Clone, Copy)]
+struct ConstraintPin<'a> {
+    /// The type the constraint was pinned to, when one was found.
+    ty: Option<&'a Type>,
+    /// Whether the class variable was located, rather than the type guessed
+    /// from the shape of the result.
+    located: bool,
+}
+
 /// Resolve the dictionary value for one constraint at a call site.
 ///
 /// Forwards the caller's own incoming dict param when the caller is constrained
@@ -2148,11 +2175,12 @@ fn resolve_dict_arg(
     ctx: &mut LowerCtx<'_>,
     class: ridge_types::ClassId,
     class_name: &str,
-    constraint_ty: Option<&Type>,
+    pin: ConstraintPin<'_>,
     occurrence: usize,
     call_needs_multiple: bool,
     span: Span,
 ) -> IrExpr {
+    let constraint_ty = pin.ty;
     // Determine whether the CALLER is itself constrained for this class.
     // If so, use the Forward path (forward the caller's own incoming dict param).
     // This is the correct dispatch for polymorphic call sites:
@@ -2174,10 +2202,22 @@ fn resolve_dict_arg(
     //     variable match would either miss or, worse, hit the wrong sentinel by
     //     coincidence. By order, a join's `toList` threads `$dict_Row_e` to the
     //     left decode and `$dict_Row_f` to the right rather than the same twice.
+    //
+    // None of that applies when the call named the type its constraint ranges
+    // over. A caller's dictionary stands for whatever type its own caller
+    // chose, so it answers a different question, and the block below builds the
+    // right one. Consulting the caller first would hand `describe MkTag`,
+    // inside a `where Show a` function, the `Show a` it was handed — which
+    // type-checks, compiles, and reaches the wrong instance method at run time.
+    //
+    // A pin the class variable was not located in does not count: it may be the
+    // result type of a method that dispatches on its arguments, in which case
+    // the caller's dictionary is exactly what this call needs.
     let want_var = match constraint_ty {
         Some(Type::Var(v)) => Some(*v),
         _ => None,
     };
+    let named_its_type = pin.located && constraint_ty.is_some_and(pins_an_instance);
     let caller_constraint = want_var
         .and_then(|v| {
             ctx.current_fn_constraints
@@ -2185,7 +2225,10 @@ fn resolve_dict_arg(
                 .find(|c| c.class == class && c.sole_ty() == v)
         })
         .or_else(|| {
-            if call_needs_multiple {
+            if named_its_type {
+                // Nothing to disambiguate: the call said which type it meant.
+                None
+            } else if call_needs_multiple {
                 // The exact variable did not match a caller constraint — which is
                 // the instance-method case, where the incoming dicts carry
                 // positional sentinels. Forward the `occurrence`-th same-class dict
@@ -2765,6 +2808,11 @@ pub(crate) fn try_lower_classmethod_call(
     // stdlib-registered classes the AST is absent, so the function returns None
     // when the class variable cannot be found by AST scan.
     let mut pin_ty = classmethod_pin_type(ctx, cid, &method, args);
+    // Where the pin came from, decided here while both paths are still in view.
+    // The argument scan locates the class variable; the return-type recovery
+    // below does not, and a method that dispatches on its arguments must not be
+    // resolved from whatever head its result happens to have.
+    let located = pin_ty.is_some();
 
     let is_stdlib_class = stdlib_class_home_module(&class_name).is_some();
     // The prelude classes carry registered instances (like stdlib classes) but
@@ -2819,7 +2867,18 @@ pub(crate) fn try_lower_classmethod_call(
     };
     // A class-method call resolves one dictionary for its own class; there is no
     // sibling same-class constraint to order against (occurrence 0, single).
-    let dict_expr = resolve_dict_arg(ctx, cid, &class_name, dict_ty.as_ref(), 0, false, span);
+    let dict_expr = resolve_dict_arg(
+        ctx,
+        cid,
+        &class_name,
+        ConstraintPin {
+            ty: dict_ty.as_ref(),
+            located,
+        },
+        0,
+        false,
+        span,
+    );
     let field_id = ctx.fresh_id(None);
     let field = IrExpr::Field {
         id: field_id,
@@ -2965,6 +3024,19 @@ fn projected_elem_type(ctx: &LowerCtx<'_>, call_span: Span) -> Option<Type> {
         return None;
     };
     inner.into_iter().next()
+}
+
+/// Whether the constraint type names a type an instance can be looked up for.
+///
+/// The question [`resolve_dict_arg`] asks before reaching for the caller's
+/// dictionary: a head an instance is keyed by — a constructor, or a function
+/// type, which `instance Run (Int -> Int)` is keyed by — settles the call on
+/// its own. A type variable does not, so those keep the forwarding path.
+///
+/// An alias is peeled first, since [`build_dict_plan_from_type`] dispatches
+/// through the expansion and these two must agree about what counts as pinned.
+fn pins_an_instance(ty: &Type) -> bool {
+    matches!(deep_peel_alias(ty), Type::Con(..) | Type::Fn { .. })
 }
 
 /// Build a [`ridge_typecheck::DictPlan`] for `(class, ty)` directly from a
@@ -4127,7 +4199,21 @@ fn lower_ident(ctx: &mut LowerCtx<'_>, ident: &Ident) -> IrExpr {
                     .and_then(|m| m.get(span, NodeKind::Expr))
                     .and_then(|nid| ctx.node_type(nid).cloned())
                     .and_then(|t| pin_method_dict_var(ctx, cid, &t));
-                resolve_dict_arg(ctx, cid, class_name, pin.as_ref(), 0, false, span)
+                // A bare reference has no argument to pin anything: the pin here
+                // is a constraint variable, read to pick which incoming dict to
+                // forward, never a type that settles the call on its own.
+                resolve_dict_arg(
+                    ctx,
+                    cid,
+                    class_name,
+                    ConstraintPin {
+                        ty: pin.as_ref(),
+                        located: false,
+                    },
+                    0,
+                    false,
+                    span,
+                )
             } else {
                 // No workspace or unknown class — fall back to a unit literal.
                 let id = ctx.fresh_id(None);

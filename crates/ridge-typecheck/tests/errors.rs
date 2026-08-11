@@ -1921,22 +1921,18 @@ pub fn f xs =
 /// [`an_unannotated_signature_is_told_to_annotate_all_of_it`].
 #[test]
 fn the_named_variable_appears_in_the_type_it_occurs_inside() {
-    for (stem, src) in [(
-        "t010_consistent_list",
-        "\
+    let src = "\
 pub fn f xs =
     match xs
         x :: rest -> f x
         _ -> 0
-",
-    )] {
-        let (var, ty) = first_occurs(stem, src);
-        let bare = var.trim_matches('`');
-        assert!(
-            ty.split(|c: char| !c.is_alphanumeric()).any(|w| w == bare),
-            "{stem}: `{bare}` is said to occur inside `{ty}`, and does not"
-        );
-    }
+";
+    let (var, ty) = first_occurs("t010_consistent_list", src);
+    let bare = var.trim_matches('`');
+    assert!(
+        ty.split(|c: char| !c.is_alphanumeric()).any(|w| w == bare),
+        "`{bare}` is said to occur inside `{ty}`, and does not"
+    );
 }
 
 /// With a signature, the same recursion is a mismatch and says so.

@@ -155,9 +155,7 @@ impl fmt::Display for TypeError {
             }
 
             // ── T013 ──────────────────────────────────────────────────────────
-            Self::PolymorphicRecursion {
-                decl, fix_hint, ..
-            } => {
+            Self::PolymorphicRecursion { decl, fix_hint, .. } => {
                 write!(
                     f,
                     "T013: `{decl}` is used at a second type inside its own definition\n  that is checked only against a signature that annotates every parameter and the return type\n  fix: {fix_hint}"

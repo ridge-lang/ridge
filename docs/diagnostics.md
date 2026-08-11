@@ -822,7 +822,7 @@ A chain of type aliases forms a cycle.
 
 ### T013
 
-A recursive function is used at a different type inside its own body.
+A declaration is used at a second type inside its own definition, and its signature does not annotate every parameter and the return type.
 
 ### T014
 

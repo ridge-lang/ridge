@@ -58,6 +58,12 @@ pub fn main_static () -> Text =
 
 pub fn main_forward () -> Text =
     announce Green
+
+fn label (x: a) (n: Int) -> Text where Show a =
+    if n == 0 then $"${x}" else label 7 (n - 1)
+
+pub fn main_polyrec () -> Text =
+    label Red 2
 "#;
 
 // ── Workspace setup ───────────────────────────────────────────────────────────
@@ -140,7 +146,7 @@ fn typeclass_dict_passing_computes_correct_values() {
     // Drive both cases in one BEAM boot; each prints `name=value`.
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['main_static','main_forward']), halt()."
+         lists:foreach(F,['main_static','main_forward','main_polyrec']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -166,6 +172,16 @@ fn typeclass_dict_passing_computes_correct_values() {
     assert!(
         stdout.contains("main_forward=color:green"),
         "expected `main_forward=color:green`\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    // Recursion at a second type. `label Red 2` enters with the `Show Color`
+    // dictionary and recurses as `label 7`, which needs `Show Int` — so the
+    // dictionary the recursive call threads is not the one it was handed.
+    // A `7` here is the whole point: `color:red` would mean the incoming
+    // dictionary was reused, and a crash would mean none was threaded at all.
+    assert!(
+        stdout.contains("main_polyrec=7"),
+        "expected `main_polyrec=7`\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }
 

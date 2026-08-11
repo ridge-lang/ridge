@@ -14,7 +14,7 @@
 //!
 //! # Reading the list is not the same as fixing it
 //!
-//! The entries are four different problems and want four different answers.
+//! The entries are three different problems and want three different answers.
 //! Nothing here decides which; the list exists so the count is known and does
 //! not grow quietly.
 
@@ -32,12 +32,6 @@ use ridge_diagnostics::REGISTRY;
 /// reader needs before deciding: several of these are recorded nowhere else but
 /// a fixture comment.
 const UNEMITTABLE: &[(&str, &str)] = &[
-    // Subsumed: something else fires first, so this one never gets the chance.
-    // T013 says more than the T001 that arrives in its place, so it is listed
-    // here rather than retired. Whether it is ever wired waits on #466: if a
-    // signature is allowed to carry polymorphic recursion, the failure T013
-    // reports stops existing and it is retired instead.
-    ("T013", "unreachable from inferred code; reported as T001"),
     // Shadowed by a namesake. Each of these shares its variant name with a
     // variant in another crate that *is* constructed, so both read as live
     // until the two are told apart by owner. #444 holds that no code is

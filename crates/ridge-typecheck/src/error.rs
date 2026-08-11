@@ -178,11 +178,18 @@ pub enum TypeError {
     },
 
     // ── T013 ─────────────────────────────────────────────────────────────────
-    /// A recursive function is used at a different polymorphic type inside its
-    /// own body (polymorphic recursion — banned under Hindley-Milner).
+    /// A declaration is used at a second type inside its own definition, and
+    /// its signature is too thin for that to be checked.
+    ///
+    /// Legal under a complete signature: the declared type is instantiated at
+    /// each occurrence and the body is still held to it. With a position left
+    /// off there is nothing to instantiate, and inferring one is undecidable —
+    /// so this reports what the signature is missing rather than the rule.
     PolymorphicRecursion {
-        /// Name of the recursive declaration.
+        /// Name of the declaration being called.
         decl: String,
+        /// The annotations that would make the call legal, phrased as an edit.
+        fix_hint: String,
         /// Source span of the problematic recursive call.
         recursive_call_span: Span,
     },
@@ -1013,6 +1020,7 @@ mod tests {
     fn t013() -> TypeError {
         TypeError::PolymorphicRecursion {
             decl: "f".into(),
+            fix_hint: "annotate the return type of `f`".into(),
             recursive_call_span: dummy_span(),
         }
     }

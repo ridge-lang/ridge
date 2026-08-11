@@ -155,10 +155,10 @@ impl fmt::Display for TypeError {
             }
 
             // ── T013 ──────────────────────────────────────────────────────────
-            Self::PolymorphicRecursion { decl, .. } => {
+            Self::PolymorphicRecursion { decl, fix_hint, .. } => {
                 write!(
                     f,
-                    "T013: polymorphic recursion in `{decl}`\n  Hindley-Milner does not support recursive calls at a different type"
+                    "T013: `{decl}` is used at a second type inside its own definition\n  that is checked only against a signature that annotates every parameter and the return type\n  fix: {fix_hint}"
                 )
             }
 

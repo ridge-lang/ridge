@@ -8,25 +8,30 @@
 //! 2. Compute the strongly-connected components (SCCs) in topological order
 //!    using an in-house Tarjan's algorithm (no external dep added).
 //! 3. For each SCC `[d1..dk]`:
-//!    a. Allocate fresh `TyVid`s for each `di`'s monomorphic type and bind
-//!    them as monoschemes in the environment.
+//!    a. Build each `di`'s type from its signature and bind the name — as the
+//!    declared scheme if the signature is complete, otherwise as a monoscheme
+//!    (see note below).
 //!    b. Infer each `di.body` against this env.
 //!    c. Deep-resolve and batch-generalise all `di` types.
-//!    d. Replace the monomorphic env bindings with the polymorphic schemes.
-//! 4. Detect polymorphic recursion via T013 (see note below).
-//! 5. After all decls, detect unsolved type variables via T023.
+//!    d. Replace the step-(a) env bindings with the generalised schemes.
+//! 4. After all decls, detect unsolved type variables via T023.
 //!
-//! # Polymorphic-recursion (T013) note
+//! # Recursion at a second type (T013) note
 //!
-//! Under pure HM with type *inference* (no user annotations on recursive fns),
-//! T013 is essentially unreachable: during step (b) all recursive calls use the
-//! monomorphic binding, so unification will catch any attempt to use the fn at
-//! two incompatible types with a T001 `TypeMismatch`, not T013.
+//! Plain HM binds a recursive name monomorphically, so an occurrence at a
+//! second type is caught by unification. That is the right answer while the
+//! type is being inferred — inferring a polymorphic-recursive one is
+//! undecidable — but not once the author has written the type down. A
+//! declaration whose parameters and return type are all annotated is bound in
+//! step (a) to that declared scheme, so each occurrence instantiates it, and
+//! the body is still held to the signature because it is checked against the
+//! rigids minted from the same declaration.
 //!
-//! T013 is a *defensive guard* for the case where a future extension (e.g.,
-//! type annotations on recursive fns) would allow polymorphic recursion to
-//! slip through.  For 0.1.0 it fires only when we can construct a synthetic
-//! scenario via direct `InferCtx` manipulation (see the test below).
+//! A signature with a position left off keeps the monomorphic binding, and the
+//! declaration is recorded in [`InferCtx::monomorphic_in_scc`] so the call that
+//! fails is reported as T013 — naming the annotations that would let it
+//! through — rather than as an argument mismatch that looks like the author's
+//! fault.
 //!
 //! # T023 note
 //!
@@ -329,9 +334,7 @@ pub fn tarjan_sccs(graph: &CallGraph) -> Vec<Vec<DeclId>> {
 /// class-method signatures share it, and their variables are not promises of
 /// this kind.
 fn mint_rigids(ctx: &mut InferCtx, decl: &FnDecl, tyvar_map: &FxHashMap<&str, TyVid>) -> Subst {
-    // Only a signature that claims to be the whole story is held to telling it.
-    // Leaving a parameter or the return type off is asking to be inferred.
-    let complete = decl.ret.is_some() && !decl.params.iter().any(|p| matches!(p, Param::Bare(_)));
+    let complete = signature_is_complete(decl);
     let mut subst = Subst::empty();
     for (name, vid) in tyvar_map {
         let id = RigidId(vid.0);
@@ -353,6 +356,71 @@ fn mint_rigids(ctx: &mut InferCtx, decl: &FnDecl, tyvar_map: &FxHashMap<&str, Ty
         ));
     }
     subst
+}
+
+/// The scheme a complete signature binds its own name to while its body is
+/// checked, so a recursive occurrence is instantiated rather than shared.
+///
+/// Inferring a polymorphic-recursive type is undecidable, which is why plain
+/// Hindley-Milner binds a recursive name monomorphically. Checking a recursive
+/// call against a type the author wrote down is not, and this is the scheme it
+/// is checked against — the declared one, not the one the body turns out to
+/// have. That distinction is the whole safety argument: the body is still held
+/// to the signature, because the parameters and the return type it is checked
+/// against are the rigids [`mint_rigids`] minted from the same declaration.
+/// `fn g (x: a) -> a = g 1` instantiates to `Int -> Int` and is then a body of
+/// type `Int` where the signature promised `a`, which is a mismatch at the
+/// declaration rather than a surprise at the first honest caller.
+///
+/// Quantifies the signature's type variables only. A capability row is
+/// concrete by the time it gets here, and a record row variable stays shared —
+/// which is exactly what a monomorphic binding did, so nothing that used to
+/// check stops.
+fn self_binding_from_signature(
+    declared_ty: &Type,
+    tyvar_map: &FxHashMap<&str, TyVid>,
+    constraints: Vec<Constraint>,
+) -> Scheme {
+    // Sorted so the fresh variables an occurrence instantiates are allocated in
+    // the same order on every run; the map's own order is a hash order.
+    let mut vars: Vec<TyVid> = tyvar_map.values().copied().collect();
+    vars.sort_unstable_by_key(|v| v.0);
+    Scheme {
+        vars,
+        cap_vars: Vec::new(),
+        row_vars: Vec::new(),
+        ty: declared_ty.clone(),
+        constraints,
+    }
+}
+
+/// Whether every parameter and the return type carry an annotation.
+///
+/// The line between a signature that is checked and one that is inferred. A
+/// declaration on this side of it has written its whole type down, which is
+/// what lets the checker hold the body to it and lets a recursive occurrence
+/// instantiate it. Leaving a position off is asking for it to be worked out,
+/// and inference has nothing to instantiate.
+fn signature_is_complete(decl: &FnDecl) -> bool {
+    decl.ret.is_some() && !decl.params.iter().any(|p| matches!(p, Param::Bare(_)))
+}
+
+/// What a declaration would have to annotate to be called at a second type.
+///
+/// Phrased as the edit rather than the rule, because the author is looking at a
+/// call the compiler rejected and needs to know which end to change.
+fn annotations_missing_from(decl: &FnDecl) -> String {
+    let bare = decl
+        .params
+        .iter()
+        .filter(|p| matches!(p, Param::Bare(_)))
+        .count();
+    let name = &decl.name.text;
+    match (bare, decl.ret.is_none()) {
+        (0, _) => format!("annotate the return type of `{name}`"),
+        (_, false) => format!("annotate every parameter of `{name}`"),
+        (_, true) => format!("annotate every parameter and the return type of `{name}`"),
+    }
 }
 
 /// Turn the signature's constants back into the variables a scheme quantifies.
@@ -599,32 +667,21 @@ pub fn typecheck_module_decls(
                 CapRow::Concrete(cap_set)
             };
             let to_rigid = mint_rigids(ctx, decl, &tyvar_map);
-            let fn_ty = to_rigid.apply_to_ty(&Type::Fn {
-                params: param_types,
+            let declared_ty = Type::Fn {
+                params: param_types.clone(),
                 ret: Box::new(ret_ty),
                 caps,
-            });
+            };
+            let fn_ty = to_rigid.apply_to_ty(&declared_ty);
             scc_fn_types.insert(did, fn_ty.clone());
             scc_spans.insert(did, decl.span);
-            // A genuinely auto-promoted `pub fn toText` must not bind the
-            // top-level name `toText` — that would shadow the polymorphic
-            // `ToText` class-method scheme for every other type in the module
-            // (§5.6.6). Its body is still inferred below against `fn_ty` via
-            // `scc_fn_types`; only this monomorphic self-binding is skipped.
-            if !crate::collect::is_auto_promoted_totext(
-                decl,
-                class_table,
-                &ctx.user_tycon_names,
-                instance_env,
-            ) {
-                ctx.env.bind(decl.name.text.clone(), monoscheme(fn_ty));
-            }
 
             // Seed deferred constraints from the `where` clause.
             // For each `where ClassName TyVar`, look up the TyVid allocated
             // for `TyVar` in `tyvar_map` and push a deferred constraint.
             // This allows the constraint solver to track the requirement on
             // the fn's own type variable through body inference.
+            let mut declared_constraints: Vec<Constraint> = Vec::new();
             for c in &decl.constraints {
                 let Some(class_id) = class_table.id_by_name(&c.class.text) else {
                     continue; // Unknown class — a typecheck error will fire elsewhere.
@@ -650,8 +707,40 @@ pub fn typecheck_module_decls(
                 // or not the body ever exercises it, and these variables are
                 // untouched by unification, so this travels the existing
                 // free-variable path and is retained exactly as it was.
-                ctx.deferred_constraints
-                    .push(Constraint::new(class_id, tys));
+                let constraint = Constraint::new(class_id, tys);
+                declared_constraints.push(constraint.clone());
+                ctx.deferred_constraints.push(constraint);
+            }
+
+            // A genuinely auto-promoted `pub fn toText` must not bind the
+            // top-level name `toText` — that would shadow the polymorphic
+            // `ToText` class-method scheme for every other type in the module
+            // (§5.6.6). Its body is still inferred below against `fn_ty` via
+            // `scc_fn_types`; only this self-binding is skipped.
+            if !crate::collect::is_auto_promoted_totext(
+                decl,
+                class_table,
+                &ctx.user_tycon_names,
+                instance_env,
+            ) {
+                let scheme = if signature_is_complete(decl) {
+                    self_binding_from_signature(&declared_ty, &tyvar_map, declared_constraints)
+                } else {
+                    ctx.monomorphic_in_scc.insert(
+                        decl.name.text.clone(),
+                        crate::ctx::MonomorphicInScc {
+                            vars: tyvar_map.values().copied().collect(),
+                            bare_params: decl
+                                .params
+                                .iter()
+                                .map(|p| matches!(p, Param::Bare(_)))
+                                .collect(),
+                            fix_hint: annotations_missing_from(decl),
+                        },
+                    );
+                    monoscheme(fn_ty)
+                };
+                ctx.env.bind(decl.name.text.clone(), scheme);
             }
         }
 
@@ -724,6 +813,10 @@ pub fn typecheck_module_decls(
             }
             ctx.env.pop_frame();
         }
+
+        // Past this point the SCC's names are rebound to generalised schemes,
+        // and calling one at a second type is ordinary polymorphism.
+        ctx.monomorphic_in_scc.clear();
 
         // ── Constraint solving — between step b and generalisation ───────────
         // Drain deferred constraints accumulated during body inference. For
@@ -1429,38 +1522,6 @@ mod tests {
             }
             other => panic!("expected Fn type for const_42, got {other:?}"),
         }
-
-        ctx.env.pop_frame();
-    }
-
-    // ── Test SCC-7 ─────────────────────────────────────────────────────────
-    // T013 PolymorphicRecursion — synthetic test via direct InferCtx manipulation.
-    //
-    // True polymorphic recursion requires type annotations (not yet supported),
-    // so for 0.1.0 it is essentially unreachable from inferred code.
-    // We construct the scenario directly: bind a recursive fn to a *polymorphic*
-    // scheme (as if it had an annotation), then detect when inference unifies
-    // the bound var at two different concrete types.
-    //
-    // This test documents the gap and verifies that T013 can be constructed
-    // and has the correct error code.
-    #[test]
-    #[ignore = "polymorphic recursion requires type annotations on recursive fns; \
-                not yet supported in 0.1.0 (HM with inference only). \
-                T013 fires only as a defensive guard for annotated recursive fns; \
-                inferred-only code gets T001 TypeMismatch instead."]
-    fn polymorphic_recursion_detection_t013() {
-        let mut ctx = InferCtx::new();
-        ctx.env.push_frame();
-
-        // Manually push a T013 to verify the code is correct.
-        ctx.errors.push(TypeError::PolymorphicRecursion {
-            decl: "f".to_string(),
-            recursive_call_span: Span::point(0),
-        });
-
-        let has_t013 = ctx.errors.iter().any(|e| e.code() == "T013");
-        assert!(has_t013, "T013 must be constructable");
 
         ctx.env.pop_frame();
     }

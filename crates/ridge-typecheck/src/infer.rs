@@ -39,6 +39,7 @@ use ridge_ast::{
 };
 use ridge_resolve::NodeKind;
 use ridge_types::{BuiltinTyCons, CapRow, CapabilitySet, Scheme, TyConId, TyConKind, Type};
+use rustc_hash::FxHashSet;
 
 use crate::ctx::InferCtx;
 use crate::error::TypeError;
@@ -821,10 +822,12 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             // T7: generalise the inner-fn's type and update the binding in the
             // outer scope.  The initial monomorphic binding (set above for
             // recursive calls) is replaced with the polymorphic scheme.
-            // Polymorphic recursion is prevented by HM monomorphic binding
-            // during body inference — any poly-rec attempt causes a T001 via
-            // unification, not T013 (T013 is only reachable with explicit
-            // type annotations on recursive fns, which are not yet supported).
+            // An inner fn keeps the monomorphic binding for the whole of its
+            // body, so a recursive occurrence at a second type is a mismatch
+            // here even with a complete signature. A top-level declaration is
+            // not, but it gets there by binding the *declared* scheme, which
+            // only holds because its annotated variables are rigid — and this
+            // path builds its types without them.
             let generalised = generalise(ctx, &fn_ty_for_generalise);
             ctx.env.bind(name, generalised);
 
@@ -2140,18 +2143,41 @@ fn check_call_arguments(
     fallback_span: Span,
     paren_hint: Option<&String>,
 ) -> bool {
+    // A declaration of the SCC under check that is too thinly annotated to be
+    // called at a second type. Read before unifying: a failed unification can
+    // leave the parameter's variables bound, and the question is what the
+    // argument had to meet, not what is left of it afterwards.
+    let blocked = callee
+        .and_then(|name| ctx.monomorphic_in_scc.get(name))
+        .map(|b| (b.vars.clone(), b.bare_params.clone(), b.fix_hint.clone()));
+
     let mut ok = true;
     for (i, (arg_ty, param_ty)) in arg_types.iter().zip(params.iter()).enumerate() {
+        let would_fit = blocked.as_ref().is_some_and(|(vars, bare, _)| {
+            let holes = if bare.get(i).copied().unwrap_or(false) {
+                Holes::Inferred
+            } else {
+                Holes::Declared(vars)
+            };
+            accepted_once_instantiated(ctx, holes, param_ty, arg_ty)
+        });
         // Parameter first: `unify` reads its arguments as expected then found,
         // and the declaration is what the argument had to meet.
         let Err(e) = unify(ctx, param_ty, arg_ty) else {
             continue;
         };
+        let arg_span = args.get(i).map_or(fallback_span, Expr::span);
+        if let (true, Some((_, _, fix_hint)), Some(name)) = (would_fit, blocked.as_ref(), callee) {
+            ctx.errors.push(TypeError::PolymorphicRecursion {
+                decl: name.to_owned(),
+                fix_hint: fix_hint.clone(),
+                recursive_call_span: arg_span,
+            });
+            ok = false;
+            continue;
+        }
         let mut e = match callee {
-            Some(name) if paren_hint.is_none() => {
-                let span = args.get(i).map_or(fallback_span, Expr::span);
-                name_the_argument(e, name, i, span)
-            }
+            Some(name) if paren_hint.is_none() => name_the_argument(e, name, i, arg_span),
             _ => attach_span(e, fallback_span),
         };
         if i == 0 {
@@ -2163,6 +2189,98 @@ fn check_call_arguments(
         ok = false;
     }
     ok
+}
+
+/// Whether a complete signature would have accepted this argument.
+///
+/// A declaration bound to its declared scheme has each occurrence instantiated,
+/// so its own signature variables are free to stand for a different type at
+/// every call. This asks the same question one-way: does the argument fit the
+/// parameter once those variables are read as holes? A `Nested (List a)` fits
+/// `Nested a` and an `Int` does not, which is the difference between a
+/// declaration that only needs finishing and a call that is simply wrong.
+///
+/// One-way matching, not unification: the argument is taken as given and
+/// nothing is bound. The approximation is that a name repeated across two
+/// positions is matched at each independently, so `(a, a)` accepts
+/// `(Int, Text)` here. Following the fix in that case surfaces the real
+/// mismatch rather than compiling; being exact about it needs structural
+/// equality on `Type`, which this crate deliberately does not have — an `==`
+/// on a type that may or may not be resolved answers the wrong question far
+/// more often than it would answer this one.
+fn accepted_once_instantiated(
+    ctx: &mut InferCtx,
+    holes: Holes<'_>,
+    param: &Type,
+    arg: &Type,
+) -> bool {
+    let param = ctx.deep_resolve(param);
+    let arg = ctx.deep_resolve(arg);
+    fits(&param, &arg, holes)
+}
+
+/// Which variables in a parameter a complete signature would have quantified.
+#[derive(Clone, Copy)]
+enum Holes<'a> {
+    /// The parameter was annotated: only the names the signature itself wrote.
+    Declared(&'a FxHashSet<ridge_types::TyVid>),
+    /// The parameter was left bare, so its whole type was inferred and every
+    /// variable left in it is a position the author never committed to.
+    Inferred,
+}
+
+/// The recursive half of [`accepted_once_instantiated`], over resolved types.
+fn fits(param: &Type, arg: &Type, holes: Holes<'_>) -> bool {
+    // A signature variable is a hole a fresh instantiation would have filled.
+    match (param, holes) {
+        (Type::Var(_), Holes::Inferred) => return true,
+        (Type::Rigid { id, .. }, Holes::Declared(vars))
+            if vars.contains(&ridge_types::TyVid(id.0)) =>
+        {
+            return true;
+        }
+        (Type::Var(v), Holes::Declared(vars)) if vars.contains(v) => return true,
+        _ => {}
+    }
+    match (param, arg) {
+        (Type::Con(c1, a1), Type::Con(c2, a2)) => {
+            c1 == c2 && a1.len() == a2.len() && a1.iter().zip(a2).all(|(p, a)| fits(p, a, holes))
+        }
+        (Type::Tuple(a1), Type::Tuple(a2)) => {
+            a1.len() == a2.len() && a1.iter().zip(a2).all(|(p, a)| fits(p, a, holes))
+        }
+        (
+            Type::Fn {
+                params: p1,
+                ret: r1,
+                ..
+            },
+            Type::Fn {
+                params: p2,
+                ret: r2,
+                ..
+            },
+        ) => {
+            p1.len() == p2.len()
+                && p1.iter().zip(p2).all(|(p, a)| fits(p, a, holes))
+                && fits(r1, r2, holes)
+        }
+        (Type::Record { fields: f1, .. }, Type::Record { fields: f2, .. }) => {
+            f1.len() == f2.len()
+                && f1
+                    .iter()
+                    .zip(f2)
+                    .all(|((l1, t1), (l2, t2))| l1 == l2 && fits(t1, t2, holes))
+        }
+        // Unwrapped one side at a time: matching is directional, so the
+        // parameter's body must stay on the parameter's side.
+        (Type::Alias { body, .. }, a) => fits(body, a, holes),
+        (p, Type::Alias { body, .. }) => fits(p, body, holes),
+        // Anything else — an error type, a variable from somewhere other than
+        // this signature, a shape that does not line up — is not something
+        // finishing the signature would fix. Offer nothing rather than a guess.
+        _ => false,
+    }
 }
 
 /// Re-files a failed argument unification as `T002`, which carries the callee

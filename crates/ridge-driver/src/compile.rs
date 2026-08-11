@@ -571,47 +571,218 @@ fn compile_stdlib_beams(
         return Ok(());
     }
 
-    // Build a temporary workspace and unpack the embedded stdlib sources into
-    // it. Released binaries cannot rely on a compile-time absolute path to the
-    // stdlib sources because that path only resolves on the build machine —
-    // so we unpack from the `STDLIB_SOURCES` slice embedded by ridge-stdlib's
-    // build script.
-    let td = tempfile::TempDir::new().map_err(|e| {
+    // The standard library belongs to the compiler, not to the build directory
+    // that happens to need it: every workspace compiles the same sources with
+    // the same binary and gets the same `.beam` files. Build it once per
+    // compiler into a shared location and copy from there, so the second
+    // project on a machine — and the two hundred and fifty-second test — does
+    // not repeat twenty-three seconds of work that is already done.
+    if let Some(shared) = shared_stdlib_root(profile) {
+        if !stdlib_beams_are_current(&shared.join("beam"), &shared)
+            && !publish_shared(&shared, profile)?
+        {
+            // Declined and already said why. Falling through would reach the
+            // same refusal and say it twice.
+            return Ok(());
+        }
+        if stdlib_beams_are_current(&shared.join("beam"), &shared) {
+            return install_stdlib_from(&shared, beam_dir, out_root);
+        }
+    }
+
+    // No shared copy to be had — an unreadable cache directory, or a compiler
+    // whose own timestamp cannot be read, so no key identifies its output.
+    // Build into this workspace exactly as before: slower, and correct.
+    build_stdlib_into(out_root, profile).map(|_| ())
+}
+
+/// Where this compiler's standard library lives, shared across every workspace
+/// it builds.
+///
+/// Keyed by version *and* by the compiler binary's own timestamp, so a rebuilt
+/// compiler — the case that matters while the stdlib sources are being edited —
+/// writes to a different directory rather than over the old one. Two
+/// consequences, and both are the point: a published directory is never
+/// mutated, so no reader can see a half-written set; and staleness cannot
+/// arise, because a stale answer would have to live at a key nothing asks for.
+///
+/// `None` when no key can be formed — the compiler's timestamp is unavailable,
+/// or there is no per-user cache directory. The caller then builds into the
+/// workspace, which is what every build did before this existed.
+fn shared_stdlib_root(profile: BuildProfile) -> Option<std::path::PathBuf> {
+    let stamp = compiler_mtime()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    let root = ridge_pkg::cache_root().ok()?;
+    // `erlc` is invoked with different flags per profile, so the two sets are
+    // not interchangeable and do not share a directory. `BuildProfile` is
+    // `#[non_exhaustive]`: a profile added later has no name here and gets no
+    // shared bundle rather than quietly sharing one built for another set of
+    // flags. It falls back to the per-workspace build, which is slower and
+    // right — the wildcard that would have been "fine" is how a future variant
+    // ends up reading someone else's artefacts.
+    let profile_dir = match profile {
+        BuildProfile::Release => "release",
+        BuildProfile::Debug => "debug",
+        _ => return None,
+    };
+    Some(
+        root.join("stdlib")
+            .join(format!("{}-{stamp}", env!("CARGO_PKG_VERSION")))
+            .join(profile_dir),
+    )
+}
+
+/// Build the standard library somewhere private, then move it into place under
+/// `shared` in one step.
+///
+/// The move is the publication: until it happens there is nothing at `shared`
+/// for another process to find, and once it happens the whole set is there.
+/// Two processes building the same key at once both succeed — the second finds
+/// the destination taken, discards its own copy, and uses the one already
+/// published, which is byte-for-byte what it just built.
+///
+/// Returns whether a bundle is now published; `false` means the build declined
+/// and has already explained itself.
+fn publish_shared(
+    shared: &std::path::Path,
+    profile: BuildProfile,
+) -> Result<bool, ridge_codegen_erl::CodegenError> {
+    let parent = shared.parent().unwrap_or(shared);
+    std::fs::create_dir_all(parent).map_err(|e| {
         ridge_codegen_erl::CodegenError::OutputDirNotWritable {
-            path: out_root.to_path_buf(),
+            path: parent.to_path_buf(),
             io_err: e.to_string(),
         }
     })?;
+    let staging = tempfile::Builder::new()
+        .prefix(".staging-")
+        .tempdir_in(parent)
+        .map_err(|e| ridge_codegen_erl::CodegenError::OutputDirNotWritable {
+            path: parent.to_path_buf(),
+            io_err: e.to_string(),
+        })?;
+
+    if !build_stdlib_into(staging.path(), profile)? {
+        return Ok(false);
+    }
+
+    let staged = staging.keep();
+    if std::fs::rename(&staged, shared).is_err() {
+        // Either another process published first, or the move itself failed.
+        // Both are answered the same way: the caller re-reads `shared`, and
+        // finds either their bundle or nothing.
+        let _ = std::fs::remove_dir_all(&staged);
+    }
+    Ok(true)
+}
+
+/// Copy a published standard library into a workspace's build directory.
+///
+/// Only the modules the shared manifest names, so a `.beam` the workspace's own
+/// codegen wrote is never mistaken for one of ours. The workspace then gets its
+/// own manifest, which is what makes the *next* build of this workspace skip
+/// even the copy.
+fn install_stdlib_from(
+    shared: &std::path::Path,
+    beam_dir: &std::path::Path,
+    out_root: &std::path::Path,
+) -> Result<(), ridge_codegen_erl::CodegenError> {
+    let manifest = std::fs::read_to_string(stdlib_manifest_path(shared)).map_err(|e| {
+        ridge_codegen_erl::CodegenError::OutputDirNotWritable {
+            path: stdlib_manifest_path(shared),
+            io_err: e.to_string(),
+        }
+    })?;
+    std::fs::create_dir_all(beam_dir).map_err(|e| {
+        ridge_codegen_erl::CodegenError::OutputDirNotWritable {
+            path: beam_dir.to_path_buf(),
+            io_err: e.to_string(),
+        }
+    })?;
+
+    let mut emitted: Vec<String> = Vec::new();
+    for fqn in manifest.lines().skip(1).filter(|l| !l.trim().is_empty()) {
+        let file = format!("{fqn}.beam");
+        std::fs::copy(shared.join("beam").join(&file), beam_dir.join(&file)).map_err(|e| {
+            ridge_codegen_erl::CodegenError::OutputDirNotWritable {
+                path: beam_dir.join(&file),
+                io_err: e.to_string(),
+            }
+        })?;
+        emitted.push(fqn.to_owned());
+    }
+    write_stdlib_manifest(out_root, &emitted);
+    Ok(())
+}
+
+/// Compile the embedded standard library sources into `out_root`.
+///
+/// Returns `false` when it declined — no `erlc`, or the stdlib itself did not
+/// get through the pipeline — having already printed why. The caller must not
+/// repeat the explanation.
+/// Unpack the embedded standard-library sources into a throwaway workspace.
+///
+/// A released binary cannot reach the stdlib sources by a compile-time path —
+/// that path only resolves on the machine that built it — so the sources ride
+/// along inside the executable and are written out here to be compiled like any
+/// other workspace.
+///
+/// The returned directory owns the unpacked tree and removes it when dropped,
+/// so the caller must hold it for as long as it reads from it.
+fn unpack_stdlib_workspace(
+    context: &std::path::Path,
+) -> Result<tempfile::TempDir, ridge_codegen_erl::CodegenError> {
+    let unwritable = |path: std::path::PathBuf, e: std::io::Error| {
+        ridge_codegen_erl::CodegenError::OutputDirNotWritable {
+            path,
+            io_err: e.to_string(),
+        }
+    };
+
+    let td = tempfile::TempDir::new().map_err(|e| unwritable(context.to_path_buf(), e))?;
     let ws_root = td.path();
 
-    // Write workspace manifest.
     std::fs::write(
         ws_root.join("ridge.toml"),
-        "[workspace]\nname = \"stdlib-build\"\nversion = \"0.1.0\"\nmembers = [\"std\"]\n",
+        "[workspace]
+name = \"stdlib-build\"
+version = \"0.1.0\"
+members = [\"std\"]
+",
     )
-    .map_err(|e| ridge_codegen_erl::CodegenError::OutputDirNotWritable {
-        path: ws_root.join("ridge.toml"),
-        io_err: e.to_string(),
-    })?;
+    .map_err(|e| unwritable(ws_root.join("ridge.toml"), e))?;
 
-    // Unpack embedded sources into `<ws_root>/std/src/`.
     let std_dir = ws_root.join("std");
     let std_src_dir = std_dir.join("src");
-    ridge_stdlib::write_stdlib_sources_to(&std_src_dir).map_err(|e| {
-        ridge_codegen_erl::CodegenError::OutputDirNotWritable {
-            path: std_src_dir.clone(),
-            io_err: e.to_string(),
-        }
-    })?;
+    ridge_stdlib::write_stdlib_sources_to(&std_src_dir)
+        .map_err(|e| unwritable(std_src_dir.clone(), e))?;
 
-    // Write project manifest with src_root pointing at the unpacked sources.
-    let proj_toml = "[project]\nname = \"std\"\nversion = \"0.1.0\"\nkind = \"library\"\n\n[project.src]\nroot = \"src\"\n\n[project.exports]\npublic = [\"std.**\"]\n";
-    std::fs::write(std_dir.join("ridge.toml"), proj_toml).map_err(|e| {
-        ridge_codegen_erl::CodegenError::OutputDirNotWritable {
-            path: std_dir.join("ridge.toml"),
-            io_err: e.to_string(),
-        }
-    })?;
+    let proj_toml = "[project]
+name = \"std\"
+version = \"0.1.0\"
+kind = \"library\"
+
+[project.src]
+root = \"src\"
+
+[project.exports]
+public = [\"std.**\"]
+";
+    std::fs::write(std_dir.join("ridge.toml"), proj_toml)
+        .map_err(|e| unwritable(std_dir.join("ridge.toml"), e))?;
+
+    Ok(td)
+}
+
+fn build_stdlib_into(
+    out_root: &std::path::Path,
+    profile: BuildProfile,
+) -> Result<bool, ridge_codegen_erl::CodegenError> {
+    let beam_dir = out_root.join("beam");
+    let td = unpack_stdlib_workspace(out_root)?;
+    let ws_root = td.path();
 
     // Run the Ridge pipeline over the stdlib workspace.
     let disc = discover_workspace(ws_root);
@@ -620,7 +791,7 @@ fn compile_stdlib_beams(
             "warning: stdlib BEAM bundling: workspace discovery failed at {}",
             ws_root.display()
         );
-        return Ok(());
+        return Ok(false);
     };
     ws_graph.is_stdlib = true; // these are stdlib sources; R022 permits @ffi
     let resolved = resolve_workspace(ws_graph);
@@ -633,7 +804,7 @@ fn compile_stdlib_beams(
             "warning: stdlib BEAM bundling: resolve produced {} error(s)",
             resolved.errors.len()
         );
-        return Ok(());
+        return Ok(false);
     }
     let typecheck_result = typecheck_workspace(&resolved);
     if !typecheck_result.errors.is_empty() {
@@ -641,7 +812,7 @@ fn compile_stdlib_beams(
             "warning: stdlib BEAM bundling: typecheck produced {} error(s)",
             typecheck_result.errors.len()
         );
-        return Ok(());
+        return Ok(false);
     }
     let lowered = lower_workspace(&typecheck_result.typed, &resolved);
 
@@ -654,9 +825,9 @@ fn compile_stdlib_beams(
         .collect();
 
     // Ensure output dirs exist.
-    std::fs::create_dir_all(beam_dir).map_err(|e| {
+    std::fs::create_dir_all(&beam_dir).map_err(|e| {
         ridge_codegen_erl::CodegenError::OutputDirNotWritable {
-            path: beam_dir.to_path_buf(),
+            path: beam_dir.clone(),
             io_err: e.to_string(),
         }
     })?;
@@ -670,7 +841,7 @@ fn compile_stdlib_beams(
     // Probe erlc.
     let Ok(erlc_info) = erlc::probe(None) else {
         eprintln!("warning: stdlib BEAM bundling: erlc not found on PATH; install Erlang/OTP");
-        return Ok(());
+        return Ok(false);
     };
 
     // Compile each stdlib module with its FQN as the BEAM atom.
@@ -708,7 +879,7 @@ fn compile_stdlib_beams(
     // partial one without recompiling to find out.
     write_stdlib_manifest(out_root, &emitted);
 
-    Ok(())
+    Ok(true)
 }
 
 /// Name of the file recording which stdlib modules were emitted, and by which
@@ -938,5 +1109,133 @@ internal error in pass beam_ssa_codegen
     #[test]
     fn returns_none_when_there_is_no_entry_module() {
         assert_eq!(select_entry_beam(&[], "anything"), None);
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "a failed setup step in these tests is a broken test, and the message names which step"
+)]
+mod shared_stdlib_tests {
+    use super::{
+        beam_is_current, shared_stdlib_root, stdlib_beams_are_current, write_stdlib_manifest,
+        BuildProfile,
+    };
+
+    /// The two profiles compile with different `erlc` flags, so their bundles
+    /// must not land in one directory.
+    #[test]
+    fn each_profile_gets_its_own_bundle() {
+        let (Some(debug), Some(release)) = (
+            shared_stdlib_root(BuildProfile::Debug),
+            shared_stdlib_root(BuildProfile::Release),
+        ) else {
+            // No per-user cache directory on this machine; nothing to share and
+            // nothing to assert. The build falls back to the workspace copy.
+            return;
+        };
+        assert_ne!(debug, release);
+        // Same compiler, so everything above the profile is shared.
+        assert_eq!(debug.parent(), release.parent());
+    }
+
+    /// The key changes when the compiler does, which is what makes a published
+    /// directory safe to treat as immutable: a rebuilt compiler asks a
+    /// different question rather than overwriting the previous answer.
+    #[test]
+    fn the_key_names_this_compiler() {
+        let Some(root) = shared_stdlib_root(BuildProfile::Debug) else {
+            return;
+        };
+        let key = root
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|s| s.to_str())
+            .expect("a key component");
+        assert!(
+            key.starts_with(env!("CARGO_PKG_VERSION")),
+            "the version belongs in the key; got {key:?}"
+        );
+        let stamp = key
+            .strip_prefix(env!("CARGO_PKG_VERSION"))
+            .and_then(|s| s.strip_prefix('-'))
+            .expect("a stamp after the version");
+        assert!(
+            stamp.parse::<u64>().is_ok_and(|n| n > 0),
+            "the compiler's own timestamp belongs in the key; got {stamp:?}"
+        );
+    }
+
+    /// The negative control for the whole scheme: a `.beam` older than the
+    /// compiler that would write it is **not** reusable.
+    ///
+    /// Without this the cache is only ever observed saying yes, and a check
+    /// that cannot say no is not evidence — the failure mode of a cache is
+    /// silently handing back something stale.
+    ///
+    /// `beam_is_current` is the part that can be asked the question:
+    /// `stdlib_beams_are_current` reads the running compiler's own timestamp,
+    /// so a test cannot hand it one. The version axis below is where the whole
+    /// check is exercised end to end.
+    #[test]
+    fn a_beam_older_than_the_compiler_is_not_current() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let beam = dir.path().join("beam");
+        std::fs::create_dir_all(&beam).expect("beam dir");
+        let path = beam.join("std.list.beam");
+        std::fs::write(&path, b"stale").expect("write beam");
+
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        assert!(
+            !beam_is_current(&path, Some(later)),
+            "a beam older than the compiler must be rebuilt"
+        );
+        assert!(
+            beam_is_current(&path, Some(std::time::UNIX_EPOCH)),
+            "and one newer than it is fine, or the check always says no"
+        );
+    }
+
+    /// A bundle another compiler version wrote is not this one's to reuse.
+    ///
+    /// The axis a test *can* drive all the way through
+    /// `stdlib_beams_are_current`, and the one that matters most for a shared
+    /// directory: two compilers, one cache.
+    #[test]
+    fn a_bundle_from_another_compiler_version_is_not_current() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let beam = dir.path().join("beam");
+        std::fs::create_dir_all(&beam).expect("beam dir");
+        std::fs::write(beam.join("std.list.beam"), b"beam").expect("write beam");
+
+        // What this compiler writes is reusable by it.
+        write_stdlib_manifest(dir.path(), &["std.list".to_owned()]);
+        assert!(
+            stdlib_beams_are_current(&beam, dir.path()),
+            "a set this compiler just wrote must be reusable, or nothing is"
+        );
+
+        // The same set, claimed by a different version, is not.
+        std::fs::write(
+            dir.path().join(super::STDLIB_MANIFEST),
+            "0.0.0-not-this-one\nstd.list\n",
+        )
+        .expect("rewrite manifest");
+        assert!(
+            !stdlib_beams_are_current(&beam, dir.path()),
+            "another compiler's bundle must not be reused"
+        );
+    }
+
+    /// A manifest naming modules that are not there is not a bundle, however
+    /// well-formed it looks.
+    #[test]
+    fn a_manifest_without_its_modules_is_not_current() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let beam = dir.path().join("beam");
+        std::fs::create_dir_all(&beam).expect("beam dir");
+        write_stdlib_manifest(dir.path(), &["std.list".to_owned()]);
+        assert!(!stdlib_beams_are_current(&beam, dir.path()));
     }
 }

@@ -1278,6 +1278,42 @@ fn resolve_dict_plan(
             }
         }
         Type::Var(v) => DictPlan::Forward(Constraint::single(class, *v)),
+        // A signature variable in an element position. Promised, it behaves
+        // exactly like a variable the caller will pin: the dictionary comes in
+        // as a parameter, so this forwards the abstraction target reserved when
+        // the rigid was minted — the same name `discharge_promised` declares,
+        // which is what makes the forwarded constraint and the incoming
+        // `$dict_…` parameter spell alike. Unpromised it is `T055`, not an
+        // ambiguity: nothing here is undetermined, the signature is short a
+        // promise, and "add a type annotation" sends the reader after a fix
+        // that does not exist. Falling through to the placeholder below instead
+        // forwards the sentinel `TyVid(0)`, which the ambiguity walk then reads
+        // as an element nobody can supply.
+        Type::Rigid { id, name } => {
+            let info = ctx.rigids.get(id);
+            let promised = info.is_some_and(|i| i.givens.contains(&class) || !i.complete);
+            if !promised {
+                let class_name = class_table
+                    .get(class)
+                    .map_or("?", |i| i.name.as_str())
+                    .to_owned();
+                // The variable carries its own origin, so the caret lands on
+                // the declaration that is short a promise.
+                let (decl, span) =
+                    info.map_or_else(|| (String::new(), scc_span), |i| (i.decl.clone(), i.span));
+                ctx.errors.push(TypeError::MissingConstraint {
+                    decl,
+                    class: class_name.clone(),
+                    fix_hint: format!("add `where {class_name} {name}` to the signature"),
+                    ty_var: name.to_string(),
+                    span,
+                });
+            }
+            // Forward the target either way. With the diagnostic already
+            // recorded, a plan that spells the right name keeps the ambiguity
+            // walk from adding a second, wrong explanation of the same mistake.
+            DictPlan::Forward(Constraint::single(class, TyVid(id.0)))
+        }
         // Other shapes are ill-typed for a class head; a diagnostic fires on
         // the normal path. Use a Forward placeholder so the plan is total.
         _ => forward_placeholder(),

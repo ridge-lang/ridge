@@ -333,6 +333,42 @@ pub fn tarjan_sccs(graph: &CallGraph) -> Vec<Vec<DeclId>> {
 /// the name map, keeps `ast_type_to_ridge_type` unchanged — instance heads and
 /// class-method signatures share it, and their variables are not promises of
 /// this kind.
+/// Collect the abstraction target of every signature variable in a type.
+///
+/// The counterpart of [`collect_free_vars`] for the one shape it refuses: a
+/// rigid is a constant while its body is checked, so instantiation must not
+/// freshen it and it is not a "free variable" in that sense. It is still a
+/// variable the declaration generalises over, and [`mint_rigids`] pairs each
+/// one with the unification variable it abstracts back to — `RigidId(vid.0)` —
+/// so `TyVid(id.0)` recovers it.
+fn collect_rigid_targets(ty: &Type, out: &mut FxHashSet<TyVid>) {
+    match ty {
+        Type::Rigid { id, .. } => {
+            out.insert(TyVid(id.0));
+        }
+        Type::Con(_, args) | Type::Tuple(args) => {
+            for a in args {
+                collect_rigid_targets(a, out);
+            }
+        }
+        Type::Fn { params, ret, .. } => {
+            for p in params {
+                collect_rigid_targets(p, out);
+            }
+            collect_rigid_targets(ret, out);
+        }
+        Type::Record { fields, .. } => {
+            for (_, t) in fields {
+                collect_rigid_targets(t, out);
+            }
+        }
+        Type::Alias { body, .. } => collect_rigid_targets(body, out),
+        // `Type` is `#[non_exhaustive]`; the remaining shapes hold no nested
+        // types, so there is nothing to walk.
+        _ => {}
+    }
+}
+
 fn mint_rigids(ctx: &mut InferCtx, decl: &FnDecl, tyvar_map: &FxHashMap<&str, TyVid>) -> Subst {
     let complete = signature_is_complete(decl);
     let mut subst = Subst::empty();
@@ -846,11 +882,20 @@ pub fn typecheck_module_decls(
         // of these (e.g. `Encode a` inside a `where Encode a` body); any element
         // variable that is neither here nor in an enclosing scope was never
         // pinned by the caller, so its dictionary is unsatisfiable (T030).
+        //
+        // A signature variable counts here too. It is a variable this SCC
+        // generalises; it just does not travel as one, and `collect_free_vars`
+        // skips it deliberately so instantiation never hands out a fresh copy.
+        // For the question this set answers — can anyone supply the element
+        // dictionary? — a rigid answers yes, under the abstraction target it
+        // was minted from, which is the name the caller's dictionary parameter
+        // is declared with.
         let mut generalizable: FxHashSet<TyVid> = FxHashSet::default();
         for fn_ty in scc_fn_types.values() {
             let resolved = ctx.deep_resolve(fn_ty);
             let (vars, _) = collect_free_vars(&resolved);
             generalizable.extend(vars);
+            collect_rigid_targets(&resolved, &mut generalizable);
         }
         crate::solve::report_ambiguous_element_dicts(
             ctx,

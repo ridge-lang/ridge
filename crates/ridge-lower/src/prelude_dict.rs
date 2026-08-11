@@ -31,7 +31,7 @@
 
 use ridge_ast::Span;
 use ridge_ir::{IrExpr, IrLit, IrParam, SymbolRef};
-use ridge_types::{ClassId, TyConId, Type, DECODE_CLASS, ENCODE_CLASS, ORD_CLASS};
+use ridge_types::{ClassId, TyConId, Type, DECODE_CLASS, ENCODE_CLASS, ORD_CLASS, TOTEXT_CLASS};
 
 use crate::ctx::LowerCtx;
 
@@ -40,6 +40,7 @@ const TYCON_INT: u32 = 0;
 const TYCON_FLOAT: u32 = 1;
 const TYCON_BOOL: u32 = 2;
 const TYCON_TEXT: u32 = 3;
+const TYCON_TIMESTAMP: u32 = 5;
 const TYCON_LIST: u32 = 6;
 const TYCON_MAP: u32 = 7;
 const TYCON_OPTION: u32 = 9;
@@ -171,6 +172,75 @@ pub fn is_prelude_ord_instance(class: ClassId, tycon: TyConId) -> bool {
             tycon.0,
             TYCON_INT | TYCON_FLOAT | TYCON_BOOL | TYCON_TEXT | TYCON_ORDERING
         )
+}
+
+/// True if `(class, tycon)` is a built-in `ToText` instance whose dictionary
+/// must be synthesised.
+///
+/// The same gap as the codec primitives and built-in `Ord`, reached from a
+/// different direction: interpolating a built-in lowers to a direct
+/// `std.<x>.toText` call and never asks for a dictionary, so none is emitted.
+/// A call that resolves `ToText` to one of these at a concrete type — a
+/// `where ToText a` function calling something at `Int` — needs the dictionary
+/// as a value, and referencing `$inst_ToText_Int` names a constant that was
+/// never generated.
+///
+/// The set is the one interpolation itself converts (`crate::interp`), minus
+/// the types that carry a real instance of their own.
+#[must_use]
+pub fn is_prelude_totext_instance(class: ClassId, tycon: TyConId) -> bool {
+    class == TOTEXT_CLASS
+        && matches!(
+            tycon.0,
+            TYCON_INT | TYCON_FLOAT | TYCON_BOOL | TYCON_TEXT | TYCON_TIMESTAMP | TYCON_ORDERING
+        )
+}
+
+/// Synthesise the runtime dictionary for a built-in `ToText` instance.
+///
+/// Emits `#{ toText => fun(X) -> std.<x>:toText(X) end }` over the same
+/// per-type conversion interpolation uses, so a value rendered through a
+/// dictionary and one rendered inline read identically. `Text` is its own
+/// conversion and gets the identity; `Ordering` has no stdlib module and goes
+/// through the runtime helper that names its three constructors.
+///
+/// Returns `None` when `(class, tycon)` is not one of these, so the caller
+/// falls back to the `$inst_` symbol path.
+#[must_use]
+pub fn synth_totext_dict(
+    ctx: &mut LowerCtx<'_>,
+    class: ClassId,
+    tycon: TyConId,
+    span: Span,
+) -> Option<IrExpr> {
+    if !is_prelude_totext_instance(class, tycon) {
+        return None;
+    }
+    let arg = || param("__totext_x".to_string(), span);
+    let body = match tycon.0 {
+        // Already text: the conversion is the value.
+        TYCON_TEXT => local(ctx, "__totext_x", span),
+        TYCON_ORDERING => {
+            let x = local(ctx, "__totext_x", span);
+            stdlib_call(ctx, "std.list", "_orderingToText", vec![x], span)
+        }
+        other => {
+            let module = match other {
+                TYCON_INT => "std.int",
+                TYCON_FLOAT => "std.float",
+                TYCON_BOOL => "std.bool",
+                TYCON_TIMESTAMP => "std.time",
+                // Admitted by the predicate above and handled by neither arm:
+                // decline rather than guess, and the caller keeps the `$inst_`
+                // path it would have taken.
+                _ => return None,
+            };
+            let x = local(ctx, "__totext_x", span);
+            stdlib_call(ctx, module, "toText", vec![x], span)
+        }
+    };
+    let to_text_fn = lambda(ctx, vec![arg()], body, span);
+    Some(dict_map(ctx, "toText", to_text_fn, span))
 }
 
 /// Synthesise the runtime dictionary for a built-in `Ord` instance.

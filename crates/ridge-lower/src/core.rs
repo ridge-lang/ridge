@@ -3280,6 +3280,14 @@ pub(crate) fn dict_plan_to_expr(
                 return crate::prelude_dict::synth_ord_dict(ctx, span);
             }
 
+            // The built-in `ToText` instances are the same gap once more.
+            // Interpolating a built-in lowers to a direct `std.<x>.toText` call
+            // and never asks for a dictionary, so none is emitted — and a call
+            // that resolves `ToText` at one of these types needs it as a value.
+            if let Some(dict) = crate::prelude_dict::synth_totext_dict(ctx, class, tycon, span) {
+                return dict;
+            }
+
             // A user-defined instance — including an auto-promoted `pub fn
             // toText` (spec §5.6.6), which lowers exactly like an explicit
             // instance — references its module-level `$inst_` constant. For a

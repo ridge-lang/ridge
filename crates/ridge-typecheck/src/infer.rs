@@ -43,7 +43,7 @@ use rustc_hash::FxHashSet;
 
 use crate::ctx::InferCtx;
 use crate::error::TypeError;
-use crate::instantiate::{generalise, instantiate, monoscheme};
+use crate::instantiate::{generalise, generalise_with_env, instantiate, monoscheme};
 use crate::prelude::lookup_prelude;
 use crate::render::emit_internal;
 use crate::unify::unify;
@@ -757,36 +757,157 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             // recurse), but the params are in an inner scope.
             let name = decl.name.text.clone();
 
-            // Build a fresh Fn type for the inner fn.
+            // The environment before this fn's own variables are in it.
+            // Generalisation subtracts what the environment holds, and the
+            // binding made below puts the fn's variables there — so read
+            // without a snapshot, the difference is empty and nothing is
+            // quantified. That is why an inner fn used to be monomorphic. The
+            // top-level path snapshots for exactly this reason.
+            let env_snap_ty = ctx.env_free_tyvids();
+            let env_snap_cap = ctx.env_free_capvids();
+            let env_snap_row = ctx.env_free_rowvids();
+
+            // One variable per type-variable *name*, shared by every position
+            // in the signature. Converting each annotation on its own gives
+            // the two `a`s of `fn pair (x: a) (y: a) -> a` a variable each,
+            // and then nothing relates them.
+            let mut tyvar_map: rustc_hash::FxHashMap<&str, ridge_types::TyVid> =
+                rustc_hash::FxHashMap::default();
+            for c in &decl.constraints {
+                for tv in &c.ty_vars {
+                    tyvar_map
+                        .entry(tv.text.as_str())
+                        .or_insert_with(|| ctx.fresh_tyvid());
+                }
+            }
+            for p in &decl.params {
+                if let ridge_ast::Param::Annotated { ty, .. }
+                | ridge_ast::Param::PatternAnnotated { ty, .. } = p
+                {
+                    crate::scc::collect_tyvars_from_ast_type(ty, &mut tyvar_map, ctx);
+                }
+            }
+            if let Some(ret_ast) = &decl.ret {
+                crate::scc::collect_tyvars_from_ast_type(ret_ast, &mut tyvar_map, ctx);
+            }
+
+            let user_tycon_names = ctx.user_tycon_names.clone();
             let param_types: Vec<Type> = decl
                 .params
                 .iter()
                 .map(|p| match p {
                     ridge_ast::Param::Bare(_) => Type::Var(ctx.fresh_tyvid()),
                     ridge_ast::Param::Annotated { ty, .. }
-                    | ridge_ast::Param::PatternAnnotated { ty, .. } => ast_type_to_type(ctx, b, ty),
+                    | ridge_ast::Param::PatternAnnotated { ty, .. } => {
+                        crate::tycon_collect::ast_type_to_ridge_type(
+                            b,
+                            ctx,
+                            ty,
+                            &user_tycon_names,
+                            &tyvar_map,
+                        )
+                    }
                 })
                 .collect();
-            #[expect(
-                clippy::map_unwrap_or,
-                reason = "map_or_else borrows ctx mutably twice"
-            )]
-            let ret_ty_declared = decl
-                .ret
-                .as_ref()
-                .map(|t| ast_type_to_type(ctx, b, t))
-                .unwrap_or_else(|| Type::Var(ctx.fresh_tyvid()));
+            let ret_ty_annotated = match &decl.ret {
+                Some(ret_ast) => crate::tycon_collect::ast_type_to_ridge_type(
+                    b,
+                    ctx,
+                    ret_ast,
+                    &user_tycon_names,
+                    &tyvar_map,
+                ),
+                None => Type::Var(ctx.fresh_tyvid()),
+            };
 
-            // Bind the inner fn name to its monomorphic scheme in the outer scope
-            // so recursive calls within the body can find it.
-            // We keep the Fn type around so T7 can generalise it after body inference.
-            let fn_ty_for_bind = Type::Fn {
-                params: param_types.clone(),
-                ret: Box::new(ret_ty_declared.clone()),
+            // A written variable is a promise, here as at the top level: the
+            // body has to meet it rather than choose it. Minting is
+            // unconditional — an incomplete signature records that fact and
+            // the solver reads it, so those declarations keep inferring.
+            let declared_ty = Type::Fn {
+                params: param_types,
+                ret: Box::new(ret_ty_annotated),
                 caps: CapRow::Concrete(CapabilitySet::PURE),
             };
-            let fn_ty_for_generalise = fn_ty_for_bind.clone();
-            ctx.env.bind(name.clone(), monoscheme(fn_ty_for_bind));
+            let to_rigid = crate::scc::mint_rigids(ctx, decl, &tyvar_map);
+            let complete = crate::scc::signature_is_complete(decl);
+
+            // Record what the `where` clause promises, so a class requirement
+            // the body raises on one of these variables is met by the caller's
+            // dictionary instead of hunted for among the instances of a type
+            // nobody has chosen.
+            let mut declared_constraints: Vec<ridge_types::Constraint> = Vec::new();
+            for c in &decl.constraints {
+                let Some(class_id) = ctx.class_ids.get(c.class.text.as_str()).copied() else {
+                    continue;
+                };
+                let tys: smallvec::SmallVec<[ridge_types::TyVid; 1]> = c
+                    .ty_vars
+                    .iter()
+                    .filter_map(|tv| tyvar_map.get(tv.text.as_str()).copied())
+                    .collect();
+                if tys.len() != c.ty_vars.len() {
+                    continue;
+                }
+                for tv in &tys {
+                    if let Some(info) = ctx.rigids.get_mut(&ridge_types::RigidId(tv.0)) {
+                        info.givens.push(class_id);
+                    }
+                }
+                declared_constraints.push(ridge_types::Constraint::new(class_id, tys));
+            }
+
+            let fn_ty = to_rigid.apply_to_ty(&declared_ty);
+            let Type::Fn {
+                params: param_types,
+                ret: ret_boxed,
+                ..
+            } = fn_ty.clone()
+            else {
+                unreachable!("just built as Type::Fn")
+            };
+            let ret_ty_declared = *ret_boxed;
+
+            // A complete signature binds its declared scheme, so an occurrence
+            // inside the body instantiates it rather than sharing one type
+            // with it — which is what lets the body call it at a second type,
+            // and is safe only because the variables above are rigid. An
+            // incomplete one keeps the monomorphic binding it always had.
+            let scheme = if complete {
+                crate::scc::self_binding_from_signature(
+                    &declared_ty,
+                    &tyvar_map,
+                    declared_constraints,
+                )
+            } else {
+                monoscheme(fn_ty.clone())
+            };
+            // A helper that promises a class takes a dictionary, and the code
+            // that calls it has to hand one over. Lowering finds a callee's
+            // constraints by looking its scheme up under the body's `NodeId`,
+            // so record this one there under the same key a top-level
+            // declaration uses. Only constrained helpers are recorded: an
+            // unconstrained one needs no dictionary, and the table is
+            // documented as holding declarations rather than locals.
+            if !scheme.constraints.is_empty() {
+                if let Body::Expr(body_expr) = &decl.body {
+                    let (body_span, body_kind) = match body_expr {
+                        Expr::Block(bl) => (bl.span, NodeKind::Block),
+                        Expr::Try { span, .. } => (*span, NodeKind::Try),
+                        other => (other.span(), NodeKind::Expr),
+                    };
+                    if let Some(nid) = ctx
+                        .node_id_map
+                        .as_ref()
+                        .and_then(|m| m.get(body_span, body_kind))
+                    {
+                        ctx.schemes_accum.insert(nid, scheme.clone());
+                    }
+                }
+            }
+
+            let fn_ty_for_generalise = fn_ty;
+            ctx.env.bind(name.clone(), scheme);
 
             // Infer the body in a new scope.
             ctx.env.push_frame();
@@ -812,23 +933,39 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 // Body::Ffi carries a fully-declared signature; skip inference.
                 Body::Ffi { .. } => ret_ty_declared.clone(),
             };
-            if let Err(e) = unify(ctx, &body_ty, &ret_ty_declared) {
-                ctx.errors.push(attach_span(e, *span));
+            if unify(ctx, &body_ty, &ret_ty_declared).is_err() {
+                // Built here rather than forwarded from `unify`, whose pair is
+                // in argument order: the signature is what was expected and
+                // the body is what arrived, and the raw error says it the
+                // other way round. The top-level path re-states it for the
+                // same reason, and the two now read alike.
+                let expected_ty = ctx.deep_resolve(&ret_ty_declared);
+                let found_ty = ctx.deep_resolve(&body_ty);
+                let hint =
+                    crate::unify::record_ctor_hint(&ctx.tycon_decls, &expected_ty, &found_ty);
+                let (expected, found) =
+                    crate::render::render_type_pair_with(&expected_ty, &found_ty, &ctx.tycon_decls);
+                ctx.errors.push(TypeError::TypeMismatch {
+                    expected,
+                    found,
+                    span: *span,
+                    hint,
+                });
             }
 
             ctx.current_fn_ret = saved_ret;
             ctx.env.pop_frame();
 
-            // T7: generalise the inner-fn's type and update the binding in the
-            // outer scope.  The initial monomorphic binding (set above for
-            // recursive calls) is replaced with the polymorphic scheme.
-            // An inner fn keeps the monomorphic binding for the whole of its
-            // body, so a recursive occurrence at a second type is a mismatch
-            // here even with a complete signature. A top-level declaration is
-            // not, but it gets there by binding the *declared* scheme, which
-            // only holds because its annotated variables are rigid — and this
-            // path builds its types without them.
-            let generalised = generalise(ctx, &fn_ty_for_generalise);
+            // Generalise against the environment as it was before this fn
+            // entered it, and rebind. Reading the environment here instead
+            // would find the fn's own variables in it and quantify nothing.
+            let generalised = generalise_with_env(
+                ctx,
+                &fn_ty_for_generalise,
+                &env_snap_ty,
+                &env_snap_cap,
+                &env_snap_row,
+            );
             ctx.env.bind(name, generalised);
 
             // Cap-subset check is T14; T6/T7 just return Unit (the inner-fn

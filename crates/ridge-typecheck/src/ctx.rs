@@ -323,6 +323,16 @@ pub struct InferCtx {
     /// types like `Level`, `LogEntry`, etc.
     pub user_tycon_names: FxHashMap<String, TyConId>,
 
+    /// Class name → [`ridge_types::ClassId`], for the paths that meet a `where`
+    /// clause without holding the class table.
+    ///
+    /// The table itself is threaded to the declaration checker as a parameter;
+    /// an inner `fn` is reached through expression inference, which is not,
+    /// and it needs the same lookup to record what its signature promises.
+    /// Populated alongside [`Self::user_tycon_names`], and empty when the
+    /// module is checked without a class registry.
+    pub class_ids: FxHashMap<String, ridge_types::ClassId>,
+
     /// Snapshot of all `TyConDecls` in the arena at the start of module inference
     /// (T17 pipeline wiring).
     ///
@@ -564,6 +574,7 @@ impl InferCtx {
             current_fn_ret: None,
             current_propagate_target: None,
             user_tycon_names: FxHashMap::default(),
+            class_ids: FxHashMap::default(),
             tycon_decls: Vec::new(),
             node_id_map: None,
             node_types_accum: Vec::new(),

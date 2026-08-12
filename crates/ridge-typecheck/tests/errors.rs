@@ -2121,3 +2121,99 @@ pub fn len (xs: List a) -> Int =
     let errors = run_typecheck_on_source("t010_ok", src);
     assert!(errors.is_empty(), "got {errors:?}");
 }
+
+// ── The signature contract inside a function (#480) ───────────────────────────
+//
+// An inner `fn` and a top-level `fn` are written the same way. Every test in
+// this block has a top-level twin above that already behaves, so what they
+// pin is that the form means one thing in both places.
+
+/// An inner `fn` is polymorphic, like the top-level one it is spelled as.
+///
+/// A helper defined next to its use is a helper used more than once; used at
+/// a second type the whole point of writing it goes away.
+#[test]
+fn an_inner_fn_is_polymorphic() {
+    let src = "\
+pub fn main () -> Int =
+    fn k (x: a) -> a = x
+    let s: Text = k \"hello\"
+    let n: Int = k 1
+    n
+";
+    let errors = run_typecheck_on_source("inner_fn_polymorphic", src);
+    assert!(errors.is_empty(), "got {errors:?}");
+}
+
+/// One name means one type across an inner signature, as it does across a
+/// top-level one.
+///
+/// `pair` takes two `a`s. Handed a `Text` and an `Int` it must complain; if
+/// each `a` is a variable of its own, nothing here is wrong and the mistake
+/// travels to whoever reads the result.
+#[test]
+fn an_inner_signature_shares_one_variable_per_name() {
+    let src = "\
+pub fn main () -> Text =
+    fn pair (x: a) (y: a) -> a = x
+    pair \"a\" 1
+";
+    let errors = run_typecheck_on_source("inner_fn_shared_var", src);
+    let call = errors
+        .iter()
+        .find_map(|e| match e {
+            TypeError::TypeMismatchInCall {
+                callee,
+                expected,
+                found,
+                ..
+            } => Some((callee.clone(), expected.clone(), found.clone())),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("expected a mismatch between the two `a`s; got {errors:?}"));
+    // The second argument is the one that disagrees: the first fixed `a` to
+    // `Text`, which is the whole point of the two positions sharing a name.
+    assert_eq!(
+        call,
+        ("pair".to_owned(), "Text".to_owned(), "Int".to_owned())
+    );
+}
+
+/// An inner signature is checked against its body — the whole of #474, one
+/// scope down.
+#[test]
+fn an_inner_signature_binds_its_body() {
+    let src = "\
+pub fn main () -> Int =
+    fn liar (x: a) -> a = 1
+    liar 2
+";
+    let errors = run_typecheck_on_source("inner_fn_body_bound", src);
+    let mismatch = errors
+        .iter()
+        .find_map(|e| match e {
+            TypeError::TypeMismatch {
+                expected, found, ..
+            } => Some((expected.clone(), found.clone())),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("expected a mismatch at the inner declaration; got {errors:?}"));
+    assert_eq!(mismatch, ("a".to_owned(), "Int".to_owned()));
+}
+
+/// And it is short a promise in the same way, with the same `T055`.
+#[test]
+fn an_inner_signature_short_a_promise_is_t055() {
+    let src = "\
+pub fn main () -> Text =
+    fn describe (x: a) -> Text = $\"${x}\"
+    describe 1
+";
+    let errors = run_typecheck_on_source("inner_fn_missing_constraint", src);
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e, TypeError::MissingConstraint { .. })),
+        "expected T055 on the inner declaration; got {errors:?}"
+    );
+}

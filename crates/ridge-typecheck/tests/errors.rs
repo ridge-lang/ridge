@@ -2217,3 +2217,62 @@ pub fn main () -> Text =
         "expected T055 on the inner declaration; got {errors:?}"
     );
 }
+
+/// A promised subclass carries its superclass with it. `class Describable a
+/// where Named a` says every `Describable` is a `Named`, so a body calling
+/// `name` under `where Describable a` is relying on the class declaration
+/// rather than on a constraint nobody wrote.
+#[test]
+fn a_promised_subclass_supplies_its_superclass() {
+    let src = "\
+class Named a =
+    name (x: a) -> Text
+
+class Describable a where Named a =
+    describe (x: a) -> Text
+
+type Animal = Cat | Dog
+
+instance Named Animal =
+    name (a: Animal) -> Text = match a
+        Cat -> \"cat\"
+        Dog -> \"dog\"
+
+instance Describable Animal =
+    describe (a: Animal) -> Text = match a
+        Cat -> \"a curious cat\"
+        Dog -> \"a loyal dog\"
+
+pub fn report (x: a) -> Text where Describable a = $\"${name x}: ${describe x}\"
+";
+    let errors = run_typecheck_on_source("superclass_given", src);
+    assert!(
+        errors.is_empty(),
+        "`where Describable a` should provide `Named a`; got {errors:?}"
+    );
+}
+
+/// The closure covers what the class declares and nothing else: a class the
+/// signature neither promises nor inherits is still `T055`.
+#[test]
+fn an_unrelated_class_is_still_missing() {
+    let src = "\
+class Named a =
+    name (x: a) -> Text
+
+class Weigh a =
+    grams (x: a) -> Int
+
+class Describable a where Named a =
+    describe (x: a) -> Text
+
+pub fn report (x: a) -> Text where Describable a = $\"${name x}${grams x}\"
+";
+    let errors = run_typecheck_on_source("superclass_unrelated", src);
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e, TypeError::MissingConstraint { class, .. } if class == "Weigh")),
+        "expected T055 naming `Weigh`; got {errors:?}"
+    );
+}

@@ -222,6 +222,34 @@ pub fn solve_constraints(
 
 // ── Internal dispatch ─────────────────────────────────────────────────────────
 
+/// Whether a signature variable's promises cover `class`, directly or through
+/// a superclass of something it does promise.
+///
+/// `class Describable a where Named a` states that every `Describable` is a
+/// `Named`, and instance declarations are checked against that. A body relying
+/// on it is relying on the class declaration, not on an unwritten constraint,
+/// so testing membership of the written list alone asks the author to repeat
+/// what the class already says.
+fn givens_cover(givens: &[ClassId], class: ClassId, class_table: &ClassTable) -> bool {
+    // Breadth-first over the superclass edges. `seen` is not an optimisation:
+    // a class declared as its own ancestor would otherwise spin here instead
+    // of being reported by whoever validates the declaration.
+    let mut seen: FxHashSet<ClassId> = FxHashSet::default();
+    let mut queue: Vec<ClassId> = givens.to_vec();
+    while let Some(given) = queue.pop() {
+        if given == class {
+            return true;
+        }
+        if !seen.insert(given) {
+            continue;
+        }
+        if let Some(info) = class_table.get(given) {
+            queue.extend(info.superclasses.iter().copied());
+        }
+    }
+    false
+}
+
 /// Dispatch one constraint to case (a), (b), or (c) and update the work
 /// queue / retained list / `dict_resolution` accordingly.
 #[allow(clippy::too_many_arguments)]
@@ -454,7 +482,7 @@ fn dispatch_multi_constraint(
                 if ctx
                     .rigids
                     .get(id)
-                    .is_some_and(|i| i.givens.contains(&c.class) || !i.complete)
+                    .is_some_and(|i| givens_cover(&i.givens, c.class, class_table) || !i.complete)
                 {
                     head_vars.push(TyVid(id.0));
                 } else {
@@ -1291,7 +1319,8 @@ fn resolve_dict_plan(
         // as an element nobody can supply.
         Type::Rigid { id, name } => {
             let info = ctx.rigids.get(id);
-            let promised = info.is_some_and(|i| i.givens.contains(&class) || !i.complete);
+            let promised =
+                info.is_some_and(|i| givens_cover(&i.givens, class, class_table) || !i.complete);
             if !promised {
                 let class_name = class_table
                     .get(class)
@@ -1342,7 +1371,7 @@ fn discharge_promised(
     // An incomplete signature is asking to be inferred, so its requirements
     // are acquired the way they always were. Only a signature that claims to
     // be the whole story is held to telling it.
-    if info.is_some_and(|i| i.givens.contains(&class) || !i.complete) {
+    if info.is_some_and(|i| givens_cover(&i.givens, class, class_table) || !i.complete) {
         // The abstraction target reserved when the rigid was minted.
         // Generalisation quantifies this variable and lowering names the
         // incoming dict parameter after it, so forwarding it here and

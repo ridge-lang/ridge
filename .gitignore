@@ -62,3 +62,8 @@ dogfood/*/target/
 # Examples — per-example ridge target/ caches (nested under examples/).
 examples/**/target/
 **/target-test/*
+
+# Local Postgres TLS fixture: a self-signed pair used only by the local
+# integration harness. The private key is already covered by *.key above, so
+# the certificate on its own would be useless to anyone cloning this.
+scripts/.pgcerts/

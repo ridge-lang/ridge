@@ -665,6 +665,12 @@ pub const REGISTRY: &[CodeEntry] = &[
         summary: "An integer literal does not fit in the `Int` range (`i64`).",
     },
     CodeEntry {
+        code: "L111",
+        variants: &["FloatLiteralNotFinite"],
+        owner: "ridge-lower",
+        summary: "A float literal is not a finite number.",
+    },
+    CodeEntry {
         code: "L997",
         variants: &["UnsolvedTypeInIR"],
         owner: "ridge-lower",

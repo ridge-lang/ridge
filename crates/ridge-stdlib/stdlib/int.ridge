@@ -90,8 +90,12 @@ pub fn pow (base: Int) (exp: Int) -> Int =
 pub fn wrappingAdd (a: Int) (b: Int) -> Int =
     let s = a + b
     let maxVal = 9223372036854775807
-    let minVal = -9223372036854775808
-    let modulus = 18446744073709551616
+    -- Written as arithmetic rather than as literals: `Int` holds the 64-bit
+    -- signed range, so neither `-9223372036854775808` (whose positive half is
+    -- one past the maximum) nor 2^64 can be spelled directly. The values are
+    -- built at runtime, where integers are arbitrary-precision.
+    let minVal = 0 - maxVal - 1
+    let modulus = (maxVal + 1) * 2
     if s > maxVal then s - modulus
     else if s < minVal then s + modulus
     else s
@@ -101,7 +105,7 @@ pub fn wrappingAdd (a: Int) (b: Int) -> Int =
 pub fn saturatingAdd (a: Int) (b: Int) -> Int =
     let s = a + b
     let maxVal = 9223372036854775807
-    let minVal = -9223372036854775808
+    let minVal = 0 - maxVal - 1
     if s > maxVal then maxVal
     else if s < minVal then minVal
     else s

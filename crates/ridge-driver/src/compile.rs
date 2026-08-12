@@ -18,7 +18,7 @@ use ridge_manifest::find_workspace_root;
 use ridge_resolve::{discover_workspace, resolve_workspace, ModuleId, NodeId, Severity};
 use ridge_typecheck::{typecheck_workspace, typecheck_workspace_with_history};
 
-use crate::diag_adapters::{diag_from_codegen, diag_from_typecheck};
+use crate::diag_adapters::{diag_from_codegen, diag_from_lower, diag_from_typecheck};
 use crate::error::CompileError;
 use crate::options::{CompileOptions, Profile};
 use crate::sources::WorkspaceSourceCache;
@@ -233,7 +233,9 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
         ridge_reload::snapshot::history_of,
     );
     let typecheck_result = typecheck_workspace_with_history(&resolved, &version_history);
-    let mut lowered = lower_workspace(&typecheck_result.typed, &resolved);
+    let lowering = lower_workspace(&typecheck_result.typed, &resolved);
+    let lower_errors = lowering.errors;
+    let mut lowered = lowering.workspace;
 
     // Seed stable FQN-derived target module names so codegen never derives
     // names from ModuleId ordering. Mangling cannot fail here: user module
@@ -431,6 +433,13 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
     for (mid, e) in &typecheck_result.errors {
         let sid = sources.id_for_module(*mid);
         diagnostics.push(diag_from_typecheck(e, sid));
+    }
+
+    // Surface lowering errors. Phase 5 runs between the two above, and until
+    // now was the one phase whose diagnostics nobody collected.
+    for (mid, e) in &lower_errors {
+        let sid = sources.id_for_module(*mid);
+        diagnostics.push(diag_from_lower(e, sid));
     }
 
     // Surface codegen errors (non-fatal; best-effort).
@@ -814,7 +823,7 @@ fn build_stdlib_into(
         );
         return Ok(false);
     }
-    let lowered = lower_workspace(&typecheck_result.typed, &resolved);
+    let lowered = lower_workspace(&typecheck_result.typed, &resolved).workspace;
 
     // Build a FQN map: ModuleId -> fully_qualified_name.
     let fqn_map: std::collections::HashMap<ModuleId, String> = resolved

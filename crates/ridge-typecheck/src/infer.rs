@@ -825,7 +825,7 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             // unconditional — an incomplete signature records that fact and
             // the solver reads it, so those declarations keep inferring.
             let declared_ty = Type::Fn {
-                params: param_types.clone(),
+                params: param_types,
                 ret: Box::new(ret_ty_annotated),
                 caps: CapRow::Concrete(CapabilitySet::PURE),
             };
@@ -882,6 +882,30 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             } else {
                 monoscheme(fn_ty.clone())
             };
+            // A helper that promises a class takes a dictionary, and the code
+            // that calls it has to hand one over. Lowering finds a callee's
+            // constraints by looking its scheme up under the body's `NodeId`,
+            // so record this one there under the same key a top-level
+            // declaration uses. Only constrained helpers are recorded: an
+            // unconstrained one needs no dictionary, and the table is
+            // documented as holding declarations rather than locals.
+            if !scheme.constraints.is_empty() {
+                if let Body::Expr(body_expr) = &decl.body {
+                    let (body_span, body_kind) = match body_expr {
+                        Expr::Block(bl) => (bl.span, NodeKind::Block),
+                        Expr::Try { span, .. } => (*span, NodeKind::Try),
+                        other => (other.span(), NodeKind::Expr),
+                    };
+                    if let Some(nid) = ctx
+                        .node_id_map
+                        .as_ref()
+                        .and_then(|m| m.get(body_span, body_kind))
+                    {
+                        ctx.schemes_accum.insert(nid, scheme.clone());
+                    }
+                }
+            }
+
             let fn_ty_for_generalise = fn_ty;
             ctx.env.bind(name.clone(), scheme);
 
@@ -919,11 +943,8 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 let found_ty = ctx.deep_resolve(&body_ty);
                 let hint =
                     crate::unify::record_ctor_hint(&ctx.tycon_decls, &expected_ty, &found_ty);
-                let (expected, found) = crate::render::render_type_pair_with(
-                    &expected_ty,
-                    &found_ty,
-                    &ctx.tycon_decls,
-                );
+                let (expected, found) =
+                    crate::render::render_type_pair_with(&expected_ty, &found_ty, &ctx.tycon_decls);
                 ctx.errors.push(TypeError::TypeMismatch {
                     expected,
                     found,

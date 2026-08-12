@@ -1933,6 +1933,14 @@ pub(crate) fn build_dict_args(
             }
             _ => return vec![],
         },
+        // An inner `fn` is a local binding, not a symbol, so its constraints
+        // come from the lexical scope stack rather than a module-wide table.
+        // Everything after this point is shared with the two cases above: a
+        // constrained helper is called the same way wherever it was declared.
+        IrExpr::Local { name, .. } => match ctx.lookup_inner_fn_dict_sig(name) {
+            Some((constraints, param_types, ret)) => (constraints, param_types, Some(ret)),
+            None => return vec![],
+        },
         _ => return vec![],
     };
 

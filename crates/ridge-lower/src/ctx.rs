@@ -183,6 +183,22 @@ pub struct LowerCtx<'tw> {
     /// dict param (`DictPlan::Forward`).
     pub current_fn_constraints: Vec<Constraint>,
 
+    /// Constrained inner `fn`s in lexical scope, innermost last.
+    ///
+    /// A call to a constrained helper takes dictionary arguments exactly as a
+    /// call to a constrained top-level fn does, but the callee lowers to an
+    /// [`IrExpr::Local`](ridge_ir::IrExpr::Local) rather than a symbol, so
+    /// there is no module-wide name table to consult. An entry is pushed while
+    /// the helper's own body and the statements following it are lowered —
+    /// precisely the region the helper can be called from — and popped after,
+    /// so a name declared in an inner block shadows an outer one of the same
+    /// name rather than colliding with it.
+    ///
+    /// Each entry holds what [`LowerCtx::lookup_fn_constraints`] and its two
+    /// companions return for a top-level fn: the constraints, the parameter
+    /// types the constraint variables appear in, and the return type.
+    pub inner_fn_dict_sigs: Vec<(String, Vec<Constraint>, Vec<Type>, Type)>,
+
     /// Cached mapping from top-level fn name to its scheme constraints and the
     /// scheme's parameter types.
     ///
@@ -245,6 +261,7 @@ impl<'tw> LowerCtx<'tw> {
             class_table: None,
             instance_env: None,
             current_fn_constraints: Vec::new(),
+            inner_fn_dict_sigs: Vec::new(),
             fn_constraint_cache: None,
             actor_module_cache: None,
             symbol_table: None,
@@ -545,6 +562,23 @@ impl<'tw> LowerCtx<'tw> {
             .as_ref()
             .and_then(|c| c.get(fn_name))
             .map(|(_, _, ret)| ret.clone())
+    }
+
+    /// Constraint signature of a constrained inner `fn` visible at this point,
+    /// or `None` when the name is not one.
+    ///
+    /// Scanned innermost-first so a helper declared in a nested block wins over
+    /// an outer one sharing its name.
+    #[must_use]
+    pub fn lookup_inner_fn_dict_sig(
+        &self,
+        name: &str,
+    ) -> Option<(Vec<Constraint>, Vec<Type>, Type)> {
+        self.inner_fn_dict_sigs
+            .iter()
+            .rev()
+            .find(|(n, ..)| n == name)
+            .map(|(_, constraints, params, ret)| (constraints.clone(), params.clone(), ret.clone()))
     }
 
     /// Constraint signature of a constrained stdlib function reached through a

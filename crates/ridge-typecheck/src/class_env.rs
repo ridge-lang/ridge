@@ -159,7 +159,7 @@ impl ClassTable {
     /// The whole name → id index, for a consumer that needs the lookup where
     /// the table itself is not threaded (see `InferCtx::class_ids`).
     #[must_use]
-    pub fn names_to_ids(&self) -> &FxHashMap<String, ClassId> {
+    pub const fn names_to_ids(&self) -> &FxHashMap<String, ClassId> {
         &self.by_name
     }
 

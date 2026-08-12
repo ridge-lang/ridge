@@ -1105,7 +1105,7 @@ fn typecheck_module_inner(
     // The same for class names, which an inner `fn`'s `where` clause needs and
     // which expression inference cannot reach through a parameter.
     if let Some((class_table, _)) = registries {
-        ctx.class_ids = class_table.names_to_ids().clone();
+        ctx.class_ids.clone_from(class_table.names_to_ids());
     }
     // Seed imported type names (cross-module): a local declaration of the same
     // name always wins, so only insert imports that don't shadow a local type.

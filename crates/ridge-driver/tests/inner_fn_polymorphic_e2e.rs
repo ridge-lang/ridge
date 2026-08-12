@@ -44,6 +44,27 @@ pub fn main_recursive () -> Int =
     fn countDown (n: Int) -> Int =
         if n <= 0 then 0 else 1 + countDown (n - 1)
     countDown 4
+
+pub fn main_constrained_recursive () -> Int =
+    fn tally (xs: List a) -> Int where Weigh a =
+        match xs
+            [] -> 0
+            x :: rest -> weigh x + tally rest
+    tally [ 1, 2 ] + tally [ "a" ]
+
+fn viaOuter (x: a) -> Int where Weigh a =
+    fn twice (y: b) -> Int where Weigh b = weigh y * 2
+    twice x + weigh x
+
+pub fn main_nested_dicts () -> Int =
+    viaOuter 4 + viaOuter "z"
+
+pub fn main_shadowed () -> Int =
+    fn scale (x: a) -> Int where Weigh a = weigh x
+    fn nested (k: Int) -> Int =
+        fn scale (x: a) -> Int where Weigh a = weigh x * 10
+        scale k
+    scale 5 + nested 5
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -122,7 +143,8 @@ fn an_inner_fn_runs_at_two_types_and_carries_its_dictionary() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~p~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['main_two_types','main_constrained','main_recursive']), halt()."
+         lists:foreach(F,['main_two_types','main_constrained','main_recursive',\
+         'main_constrained_recursive','main_nested_dicts','main_shadowed']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -154,5 +176,30 @@ fn an_inner_fn_runs_at_two_types_and_carries_its_dictionary() {
     assert!(
         stdout.contains("main_recursive=4"),
         "expected `main_recursive=4`\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    // A helper that both promises a class and calls itself: the dictionary has
+    // to be in scope inside its own body, not only after the declaration.
+    // 1+2 then 100.
+    assert!(
+        stdout.contains("main_constrained_recursive=103"),
+        "expected `main_constrained_recursive=103`\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    // A promising helper inside a promising function. The inner call is met
+    // from the outer function's own incoming dictionary, so the two sets have
+    // to coexist rather than one replacing the other.
+    // (4*2 + 4) then (100*2 + 100).
+    assert!(
+        stdout.contains("main_nested_dicts=312"),
+        "expected `main_nested_dicts=312`\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    // Two helpers of one name, the inner one declared in a nested body. The
+    // nested call must reach the nested helper; had the lookup taken the first
+    // match rather than the innermost, this would read 10.
+    assert!(
+        stdout.contains("main_shadowed=55"),
+        "expected `main_shadowed=55`\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

@@ -58,10 +58,10 @@
     allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::todo)
 )]
 
-use ridge_ast::{decl::FnDecl, Body, Param, Pattern, Span};
+use ridge_ast::{decl::FnDecl, Body, Expr, Param, Pattern, Span};
 use ridge_ir::{IrExpr, IrLit, IrParam, IrPat};
 use ridge_resolve::NodeKind;
-use ridge_types::Type;
+use ridge_types::{Constraint, Type};
 
 use crate::ast_type::lower_ast_type;
 use crate::block::fold_block_to_continuation;
@@ -85,6 +85,10 @@ pub fn lower_inner_fn_with_continuation(
 ) -> IrExpr {
     let let_id = ctx.fresh_id(None);
 
+    // In scope for the helper's own body (so it can recurse) and for every
+    // statement after it (so those calls pass a dictionary), and out of scope
+    // again once the block ends.
+    let scoped = push_dict_scope(ctx, decl);
     let lambda = build_lambda(ctx, decl);
 
     let pat = IrPat::Bind {
@@ -94,6 +98,9 @@ pub fn lower_inner_fn_with_continuation(
     };
 
     let body = fold_block_to_continuation(ctx, rest, block_span);
+    if scoped {
+        ctx.inner_fn_dict_sigs.pop();
+    }
 
     IrExpr::LetIn {
         id: let_id,
@@ -110,7 +117,11 @@ pub fn lower_inner_fn_with_continuation(
 pub fn lower_inner_fn_final(ctx: &mut LowerCtx<'_>, decl: &FnDecl, ifspan: Span) -> IrExpr {
     let let_id = ctx.fresh_id(None);
 
+    let scoped = push_dict_scope(ctx, decl);
     let lambda = build_lambda(ctx, decl);
+    if scoped {
+        ctx.inner_fn_dict_sigs.pop();
+    }
 
     let pat = IrPat::Bind {
         name: decl.name.text.clone(),
@@ -158,6 +169,51 @@ pub fn lower_inner_fn_bare(ctx: &mut LowerCtx<'_>, decl: &FnDecl, ifspan: Span) 
 
 // ── Private helpers ───────────────────────────────────────────────────────────
 
+/// The dictionary signature of a constrained inner `fn`, or `None` when the
+/// helper promises no class.
+///
+/// Type-checking files a constrained helper's scheme under its body's `NodeId`,
+/// the key a top-level declaration's scheme is filed under, so the three pieces
+/// the dictionary resolver wants are read back the way
+/// [`LowerCtx::lookup_fn_constraints`] and its companions read them for a
+/// module-level fn.
+fn dict_sig(ctx: &LowerCtx<'_>, decl: &FnDecl) -> Option<(Vec<Constraint>, Vec<Type>, Type)> {
+    let Body::Expr(body) = &decl.body else {
+        return None;
+    };
+    let (body_span, body_kind) = match body {
+        Expr::Block(b) => (b.span, NodeKind::Block),
+        Expr::Try { span, .. } => (*span, NodeKind::Try),
+        other => (other.span(), NodeKind::Expr),
+    };
+    let nid = ctx.node_id_map.as_ref()?.get(body_span, body_kind)?;
+    let scheme = ctx
+        .workspace?
+        .modules
+        .get(ctx.module_id.0 as usize)?
+        .schemes
+        .get(&nid)?;
+    if scheme.constraints.is_empty() {
+        return None;
+    }
+    let (params, ret) = match &scheme.ty {
+        Type::Fn { params, ret, .. } => (params.clone(), (**ret).clone()),
+        _ => (Vec::new(), Type::Error),
+    };
+    Some((scheme.constraints.clone(), params, ret))
+}
+
+/// Bring a constrained helper into dictionary scope, reporting whether an entry
+/// was pushed. An unconstrained helper pushes nothing and needs no matching pop.
+fn push_dict_scope(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> bool {
+    let Some((constraints, params, ret)) = dict_sig(ctx, decl) else {
+        return false;
+    };
+    ctx.inner_fn_dict_sigs
+        .push((decl.name.text.clone(), constraints, params, ret));
+    true
+}
+
 /// Build the `IrExpr::Lambda` for the inner function's body.
 ///
 /// # Capability set
@@ -197,14 +253,38 @@ fn build_lambda(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrExpr {
             unreachable!("Body::Ffi in inner-fn position — T3 must reject this before lowering")
         }
     };
+    // A promised class reaches the body as an incoming dictionary, the same way
+    // it does in a top-level fn: the parameter is declared here and named after
+    // the constraint's variable, and a class-method call inside the body
+    // forwards it by that name. The enclosing fn's own constraints stay in the
+    // list — the lambda closes over its dict parameters, so a body needing one
+    // of those can still reach it.
+    let sig = dict_sig(ctx, decl);
+    let saved_constraints = ctx.current_fn_constraints.clone();
+    let mut dict_params: Vec<IrParam> = Vec::new();
+    if let Some((constraints, _, _)) = &sig {
+        for c in constraints {
+            let class_name = ctx.class_name(c.class).unwrap_or("Unknown").to_owned();
+            dict_params.push(IrParam {
+                name: format!("$dict_{class_name}_{}", c.sole_ty().0),
+                ty: Type::Error, // untyped in IR — dicts are plain BEAM maps
+                span: decl.span,
+            });
+        }
+        ctx.current_fn_constraints
+            .extend(constraints.iter().cloned());
+    }
+
     let body = lower_expr(ctx, body_expr);
     let body = Box::new(wrap_pattern_params(ctx, body, pattern_entries));
+
+    ctx.current_fn_constraints = saved_constraints;
 
     let caps = ctx.lookup_inferred_caps(decl.span);
 
     IrExpr::Lambda {
         id: lambda_id,
-        params,
+        params: dict_params.into_iter().chain(params).collect(),
         body,
         caps,
         span: decl.span,

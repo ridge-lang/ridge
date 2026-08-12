@@ -369,7 +369,11 @@ fn collect_rigid_targets(ty: &Type, out: &mut FxHashSet<TyVid>) {
     }
 }
 
-pub(crate) fn mint_rigids(ctx: &mut InferCtx, decl: &FnDecl, tyvar_map: &FxHashMap<&str, TyVid>) -> Subst {
+pub(crate) fn mint_rigids(
+    ctx: &mut InferCtx,
+    decl: &FnDecl,
+    tyvar_map: &FxHashMap<&str, TyVid>,
+) -> Subst {
     let complete = signature_is_complete(decl);
     let mut subst = Subst::empty();
     for (name, vid) in tyvar_map {

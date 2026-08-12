@@ -369,7 +369,7 @@ fn collect_rigid_targets(ty: &Type, out: &mut FxHashSet<TyVid>) {
     }
 }
 
-fn mint_rigids(ctx: &mut InferCtx, decl: &FnDecl, tyvar_map: &FxHashMap<&str, TyVid>) -> Subst {
+pub(crate) fn mint_rigids(ctx: &mut InferCtx, decl: &FnDecl, tyvar_map: &FxHashMap<&str, TyVid>) -> Subst {
     let complete = signature_is_complete(decl);
     let mut subst = Subst::empty();
     for (name, vid) in tyvar_map {
@@ -412,7 +412,7 @@ fn mint_rigids(ctx: &mut InferCtx, decl: &FnDecl, tyvar_map: &FxHashMap<&str, Ty
 /// concrete by the time it gets here, and a record row variable stays shared —
 /// which is exactly what a monomorphic binding did, so nothing that used to
 /// check stops.
-fn self_binding_from_signature(
+pub(crate) fn self_binding_from_signature(
     declared_ty: &Type,
     tyvar_map: &FxHashMap<&str, TyVid>,
     constraints: Vec<Constraint>,
@@ -437,7 +437,7 @@ fn self_binding_from_signature(
 /// what lets the checker hold the body to it and lets a recursive occurrence
 /// instantiate it. Leaving a position off is asking for it to be worked out,
 /// and inference has nothing to instantiate.
-fn signature_is_complete(decl: &FnDecl) -> bool {
+pub(crate) fn signature_is_complete(decl: &FnDecl) -> bool {
     decl.ret.is_some() && !decl.params.iter().any(|p| matches!(p, Param::Bare(_)))
 }
 
@@ -1157,7 +1157,7 @@ pub fn infer_instance_methods(
 ///
 /// Lower-case single-letter identifiers are treated as type variables; all
 /// others (upper-case or multi-character) are treated as type constructors.
-fn collect_tyvars_from_ast_type<'a>(
+pub(crate) fn collect_tyvars_from_ast_type<'a>(
     ty: &'a ridge_ast::Type,
     map: &mut rustc_hash::FxHashMap<&'a str, TyVid>,
     ctx: &mut crate::ctx::InferCtx,

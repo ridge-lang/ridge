@@ -156,6 +156,13 @@ impl ClassTable {
         self.by_name.get(name).copied()
     }
 
+    /// The whole name → id index, for a consumer that needs the lookup where
+    /// the table itself is not threaded (see `InferCtx::class_ids`).
+    #[must_use]
+    pub fn names_to_ids(&self) -> &FxHashMap<String, ClassId> {
+        &self.by_name
+    }
+
     /// Looks up [`ClassInfo`] by [`ClassId`].
     #[must_use]
     pub fn get(&self, id: ClassId) -> Option<&ClassInfo> {

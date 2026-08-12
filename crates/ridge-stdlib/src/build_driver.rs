@@ -342,7 +342,7 @@ fn compile_tier(
     }
 
     // Lower.
-    let _lowered = lower_workspace(&typecheck_result.typed, &resolved);
+    let _lowered = lower_workspace(&typecheck_result.typed, &resolved).workspace;
 
     // `tmp_dir` Drop runs at scope exit and removes the workspace directory.
     Ok(())

@@ -28,7 +28,7 @@ fn lower_with_history(id: &str, src: &str, history: &VersionHistory) -> ridge_ir
         "source must typecheck: {:?}",
         checked.errors
     );
-    ridge_lower::lower_workspace(&checked.typed, &resolved)
+    ridge_lower::lower_workspace(&checked.typed, &resolved).workspace
 }
 
 fn history_with_record(name: &str, ordinal: u32, hash: u64) -> VersionHistory {
@@ -92,7 +92,7 @@ fn actor_migrate_without_history_lowers_with_none_hash() {
     let resolved = resolve_workspace(ws_graph);
     let checked =
         ridge_typecheck::typecheck_workspace_with_history(&resolved, &VersionHistory::default());
-    let lowered = ridge_lower::lower_workspace(&checked.typed, &resolved);
+    let lowered = ridge_lower::lower_workspace(&checked.typed, &resolved).workspace;
     let module = lowered.modules[0].as_ref().expect("one module");
     let actor = module
         .items

@@ -376,6 +376,10 @@ A refutable sub-pattern appears after the variable-length part of a slice patter
 
 An integer literal does not fit in the `Int` range (`i64`).
 
+### L111
+
+A float literal is not a finite number.
+
 ### L997
 
 An unsolved type variable reached the IR, indicating incomplete typecheck output was passed to the lowerer.

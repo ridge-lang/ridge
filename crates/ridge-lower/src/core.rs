@@ -4517,6 +4517,17 @@ fn parse_int_radix(ctx: &mut LowerCtx<'_>, raw: &str, span: Span, radix: u32) ->
 fn parse_float(ctx: &mut LowerCtx<'_>, raw: &str, span: Span) -> IrLit {
     let cleaned = raw.replace('_', "");
     match cleaned.parse::<f64>() {
+        // Overflow is not a parse failure: `"1.0e400".parse::<f64>()` answers
+        // `Ok(inf)`. Nothing here failed, so the infinity used to travel to
+        // codegen, which cannot write it as a Core Erlang literal and rejected
+        // it in its own terms — an internal message for a plain input mistake.
+        Ok(f) if !f.is_finite() => {
+            ctx.errors.push(LowerError::FloatLiteralNotFinite {
+                span,
+                raw: raw.to_owned(),
+            });
+            IrLit::Float(0.0)
+        }
         Ok(f) => IrLit::Float(f),
         Err(e) => {
             ctx.errors.push(LowerError::InternalLoweringError {

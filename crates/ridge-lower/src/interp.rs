@@ -195,13 +195,20 @@ fn lookup_expr_type(ctx: &LowerCtx<'_>, expr: &Expr) -> Option<Type> {
 /// Wrap `inner` in a `Call(stdlib::toText, [inner])` for the appropriate
 /// built-in type, or return `inner` unchanged for `Text` / `Error` / unknown.
 ///
-/// Emits `L107 ToTextLowering` when the type is non-`Error` and not in the
-/// closed `ToText` set.
+/// Emits `L107 ToTextLowering` when the type is known, is not `Error`, and is
+/// not in the closed `ToText` set. A type that is not known at all reports
+/// nothing — see the `None` arm.
 ///
 /// `ty` is cloned from `ctx.node_types` before this call (required to release
 /// the immutable borrow on `ctx` so this function can mutably borrow it for
 /// error reporting).
 #[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::match_same_arms,
+    reason = "`Some(Type::Error)` and `None` share a body and cannot be folded \
+              together: the first has to sit above the catch-all and the second \
+              below it, and they pass through for unrelated reasons"
+)]
 fn wrap_to_text(ctx: &mut LowerCtx<'_>, inner: IrExpr, ty: Option<Type>, span: Span) -> IrExpr {
     match ty {
         // ── Type::Text — identity; no wrapper ────────────────────────────────
@@ -243,9 +250,6 @@ fn wrap_to_text(ctx: &mut LowerCtx<'_>, inner: IrExpr, ty: Option<Type>, span: S
             make_ordering_to_text_call(ctx, inner, span)
         }
 
-        // ── Type::Error — absorbing; pass through without wrapping ────────────
-        Some(Type::Error) => inner,
-
         // ── Type::Var — polymorphic hole in a constrained fn ─────────────────
         // When the hole type is a free variable AND the enclosing fn is
         // constrained for `ToText a`, dispatch through the in-scope dict param:
@@ -282,13 +286,35 @@ fn wrap_to_text(ctx: &mut LowerCtx<'_>, inner: IrExpr, ty: Option<Type>, span: S
             }
         }
 
-        // ── Type not available or not in closed set ───────────────────────────
-        // When None: node_types is empty; emit L107 defensively and pass
-        // inner through.  The type-checker guarantees this cannot fire on valid input.
-        None | Some(_) => {
+        // ── Type::Error — absorbing; pass through without wrapping ────────────
+        // Type-checking already reported whatever went wrong here, and a second
+        // complaint about the same expression helps nobody. Must stay above the
+        // catch-all below, which is why it cannot be folded into the `None` arm
+        // it shares a body with.
+        Some(Type::Error) => inner,
+
+        // ── A known type with no way to render it ─────────────────────────────
+        // The type is in hand and nothing can turn it into text. That is the
+        // author's program to fix, so it is reported.
+        Some(_) => {
             ctx.errors.push(LowerError::ToTextLowering { span });
             inner
         }
+
+        // ── The type is not available ─────────────────────────────────────────
+        // This arm used to report `L107` too, on the strength of a comment
+        // saying the type-checker guaranteed it could not fire on valid input.
+        // It can: an interpolation written directly in a record-literal field
+        // whose record type is imported from another module arrives here with
+        // no type, while the same interpolation bound to a `let` first does not
+        // (#497). `examples/url_shortener.ridge` is one, and it has been
+        // shipping and running.
+        //
+        // Not knowing a type is the compiler falling short, not the program
+        // being wrong, and telling an author their plain `Text` "has no ToText"
+        // sends them to fix what is not broken. Passing `inner` through
+        // unwrapped is what this path has always done.
+        None => inner,
     }
 }
 

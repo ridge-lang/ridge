@@ -1,10 +1,9 @@
 //! Lowering-phase diagnostic types (`L###` namespace).
 //!
-//! All variants in [`LowerError`] are **defensive** — they can only be reached
-//! when the input is structurally well-typed but an invariant assumed by a
-//! specific lowering rule is violated.  On valid programs none of these are
-//! emitted; they surface only when upstream passes produce partial/erroneous
-//! output that the lowerer cannot safely handle.
+//! Most variants in [`LowerError`] are **defensive** — reachable only when the
+//! input is structurally well-typed and an invariant a lowering rule assumed is
+//! violated. Two are not: `L110` and `L111` are ordinary user errors, because
+//! the lexer validates a numeric literal's *form* and never its *value*.
 //!
 //! # Error code namespace
 //!
@@ -13,11 +12,9 @@
 //!
 //! # Display format
 //!
-//! Each variant's [`std::fmt::Display`] impl produces a human-readable message
-//! prefixed with its code, e.g. `"[L101] malformed pipe RHS: …"`.
-
-// TODO: impl HasErrorCode for LowerError once the diagnostics rendering
-// pipeline (ridge-diagnostics) is wired to Phase 5.
+//! Each variant's [`std::fmt::Display`] impl produces the message alone. The
+//! renderer prints the code and underlines the span, so a message doing either
+//! of those says it twice.
 
 use ridge_ast::Span;
 use ridge_resolve::Severity;
@@ -31,8 +28,7 @@ use std::fmt;
 /// Every variant carries a [`Span`] pointing to the offending AST node so that
 /// the renderer can highlight the relevant source location.
 ///
-/// All variants are emitted with [`Severity::Error`] severity — they indicate a
-/// lowering invariant violation and are never surfaced to end-users on valid programs.
+/// All variants are emitted with [`Severity::Error`] severity.
 ///
 /// # Error codes
 ///
@@ -48,6 +44,7 @@ use std::fmt;
 /// | `WithOnNonRecord`         | `L108` | §4.7  |
 /// | `RefutableSliceElement`   | `L109` | §4.8  |
 /// | `IntLiteralOutOfRange`    | `L110` | §4.9  |
+/// | `FloatLiteralNotFinite`   | `L111` | §4.9  |
 /// | `UnsolvedTypeInIR`        | `L997` | §5    |
 /// | `CapVarInIR`              | `L998` | §5    |
 /// | `InternalLoweringError`   | `L999` | §5    |
@@ -121,6 +118,20 @@ pub enum LowerError {
         /// The raw lexeme as written in the source.
         raw: String,
     },
+    /// `L111` — a float literal is not a finite number.
+    ///
+    /// Reachable from user input the same way `L110` is, and for the same
+    /// reason: the lexer validates the literal's form, not its value. What
+    /// makes it easy to miss is that Rust's `f64` parser does not consider
+    /// overflow an error — `"1.0e400".parse::<f64>()` returns `Ok(inf)` — so
+    /// nothing failed and the infinity travelled all the way to codegen, which
+    /// cannot render it as a Core Erlang literal and said so in its own terms.
+    FloatLiteralNotFinite {
+        /// The span of the offending literal.
+        span: Span,
+        /// The raw lexeme as written in the source.
+        raw: String,
+    },
     /// `L997` — an unsolved type variable reached the IR, indicating incomplete
     /// typecheck output was passed to the lowerer.
     UnsolvedTypeInIR {
@@ -157,6 +168,7 @@ impl LowerError {
             Self::WithOnNonRecord { .. } => "L108",
             Self::RefutableSliceElement { .. } => "L109",
             Self::IntLiteralOutOfRange { .. } => "L110",
+            Self::FloatLiteralNotFinite { .. } => "L111",
             Self::UnsolvedTypeInIR { .. } => "L997",
             Self::CapVarInIR { .. } => "L998",
             Self::InternalLoweringError { .. } => "L999",
@@ -177,6 +189,7 @@ impl LowerError {
             | Self::WithOnNonRecord { span }
             | Self::RefutableSliceElement { span }
             | Self::IntLiteralOutOfRange { span, .. }
+            | Self::FloatLiteralNotFinite { span, .. }
             | Self::UnsolvedTypeInIR { span }
             | Self::CapVarInIR { span }
             | Self::InternalLoweringError { span, .. } => *span,
@@ -198,72 +211,73 @@ impl LowerError {
 }
 
 impl fmt::Display for LowerError {
+    // The message says what went wrong and nothing else. The renderer prints
+    // the code and underlines the span itself, so a message that repeats the
+    // code and appends `at Span { start: 94, end: 120 }` says everything twice
+    // and leaks the compiler's own bookkeeping on the second pass. These read
+    // as debug output because for years nothing rendered them.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MalformedPipeRhs { span } => {
-                write!(f, "[L101] malformed pipe RHS at {span:?}")
+            Self::MalformedPipeRhs { .. } => {
+                write!(f, "the right-hand side of `|>` is not a call or a section")
             }
-            Self::UnknownPipeRhsShape { span } => {
-                write!(f, "[L102] unknown pipe RHS shape at {span:?}")
+            Self::UnknownPipeRhsShape { .. } => {
+                write!(f, "this shape cannot appear on the right-hand side of `|>`")
             }
-            Self::PropagateOutsideScope { span } => {
+            Self::PropagateOutsideScope { .. } => {
                 write!(
                     f,
-                    "[L103] `?` propagation used outside any Option/Result scope at {span:?}"
+                    "`?` needs a function returning `Option` or `Result` to propagate out of"
                 )
             }
-            Self::DoublePropagate { span } => {
-                write!(f, "[L104] double propagation operator at {span:?}")
+            Self::DoublePropagate { .. } => {
+                write!(f, "`?` is applied twice to the same expression")
             }
-            Self::EmptyTryBlock { span } => {
-                write!(f, "[L105] empty `try` block at {span:?}")
+            Self::EmptyTryBlock { .. } => write!(f, "this `try` block has no body"),
+            Self::BareGuardExpr { .. } => {
+                write!(f, "a `when` guard belongs to a match arm, not here")
             }
-            Self::BareGuardExpr { span } => {
+            Self::ToTextLowering { .. } => {
                 write!(
                     f,
-                    "[L106] `when` guard expression outside match arm at {span:?}"
+                    "this interpolated value has no `ToText`, so it cannot be rendered"
                 )
             }
-            Self::ToTextLowering { span } => {
+            Self::WithOnNonRecord { .. } => {
+                write!(f, "`with` updates a record, and this value is not one")
+            }
+            Self::RefutableSliceElement { .. } => {
                 write!(
                     f,
-                    "[L107] could not synthesise `ToText` coercion for interpolation segment at {span:?}"
+                    "a pattern after a list slice's variable-length part must be a name or `_`"
                 )
             }
-            Self::WithOnNonRecord { span } => {
-                write!(f, "[L108] `with` applied to non-record type at {span:?}")
-            }
-            Self::RefutableSliceElement { span } => {
+            Self::IntLiteralOutOfRange { raw, .. } => {
                 write!(
                     f,
-                    "[L109] refutable pattern in suffix or middle position of a list slice pattern at {span:?}; \
-                     use a variable or `_` here (P026)"
+                    "the integer literal `{raw}` does not fit in `Int` (-9223372036854775808 to 9223372036854775807)"
                 )
             }
-            Self::IntLiteralOutOfRange { span, raw } => {
+            Self::FloatLiteralNotFinite { raw, .. } => {
+                write!(f, "the float literal `{raw}` is not a finite number")
+            }
+            // The last three are the compiler admitting a bug in itself. They
+            // name the phase that broke rather than the user's code, because
+            // there is nothing the reader can change to avoid them.
+            Self::UnsolvedTypeInIR { .. } => {
                 write!(
                     f,
-                    "[L110] integer literal `{raw}` at {span:?} is out of range for Int \
-                     (min -9223372036854775808, max 9223372036854775807)"
+                    "internal: a type variable was still unsolved when lowering ran"
                 )
             }
-            Self::UnsolvedTypeInIR { span } => {
+            Self::CapVarInIR { .. } => {
                 write!(
                     f,
-                    "[L997] unsolved type variable reached the IR at {span:?}; pass typecheck output is incomplete"
+                    "internal: a capability variable was still unresolved when lowering ran"
                 )
             }
-            Self::CapVarInIR { span } => {
-                write!(
-                    f,
-                    "[L998] capability variable reached the IR at {span:?}; capability polymorphism must be resolved before lowering"
-                )
-            }
-            Self::InternalLoweringError { span, message } => {
-                write!(
-                    f,
-                    "[L999] internal lowering invariant violated at {span:?}: {message}"
-                )
+            Self::InternalLoweringError { message, .. } => {
+                write!(f, "internal: {message}")
             }
         }
     }
@@ -325,13 +339,34 @@ mod tests {
     }
 
     #[test]
-    fn display_contains_code_prefix() {
-        let err = LowerError::PropagateOutsideScope { span: sp() };
-        let msg = err.to_string();
-        assert!(
-            msg.contains("[L103]"),
-            "display must contain code prefix; got: {msg}"
-        );
+    /// The message is the message and nothing else.
+    ///
+    /// This test used to require the opposite — that `to_string` begin with
+    /// `[L103]` — which was reasonable while nothing rendered these and a bare
+    /// string in a log had to identify itself. Now that they reach a renderer
+    /// that prints the code and underlines the span, a message carrying either
+    /// one says it twice.
+    fn display_carries_neither_the_code_nor_the_span() {
+        for err in [
+            LowerError::PropagateOutsideScope { span: sp() },
+            LowerError::IntLiteralOutOfRange {
+                span: sp(),
+                raw: "99999999999999999999999999".into(),
+            },
+            LowerError::FloatLiteralNotFinite {
+                span: sp(),
+                raw: "1.0e400".into(),
+            },
+        ] {
+            let msg = err.to_string();
+            let code = err.code();
+            assert!(!msg.contains(code), "message repeats its code: {msg}");
+            assert!(!msg.contains("Span {"), "message leaks a span: {msg}");
+            assert!(
+                !msg.contains("  "),
+                "a run of spaces means source indentation was baked in: {msg}"
+            );
+        }
     }
 
     #[test]

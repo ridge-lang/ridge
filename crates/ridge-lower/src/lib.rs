@@ -61,7 +61,7 @@ use rustc_hash::FxHashMap;
 /// this returns an empty [`LoweredWorkspace`] with `tycon_count == 0`, satisfying
 /// the definition-of-done literal.
 #[must_use]
-pub fn lower_workspace(twork: &TypedWorkspace, rwork: &ResolvedWorkspace) -> LoweredWorkspace {
+pub fn lower_workspace(twork: &TypedWorkspace, rwork: &ResolvedWorkspace) -> LoweringResult {
     // Per-ModuleId FQN for stdlib modules only (FQN starts with `std.`). A
     // cross-stdlib-module call (e.g. `std.query` → `std.sql`) routes through the
     // stdlib bridge so its BEAM atom is the dotted FQN, not the user-module
@@ -73,6 +73,7 @@ pub fn lower_workspace(twork: &TypedWorkspace, rwork: &ResolvedWorkspace) -> Low
         .filter(|m| m.fully_qualified_name.starts_with("std."))
         .map(|m| (m.id, m.fully_qualified_name.clone()))
         .collect();
+    let mut errors: Vec<(ModuleId, error::LowerError)> = Vec::new();
     let modules = twork
         .modules
         .iter()
@@ -84,7 +85,10 @@ pub fn lower_workspace(twork: &TypedWorkspace, rwork: &ResolvedWorkspace) -> Low
                 .modules
                 .get(i)
                 .map_or("", |m| m.fully_qualified_name.as_str());
-            Some(lower_module(typed, twork, rmod, &stdlib_fqns, module_fqn))
+            let (module, module_errors) =
+                lower_module(typed, twork, rmod, &stdlib_fqns, module_fqn);
+            errors.extend(module_errors.into_iter().map(|e| (typed.id, e)));
+            Some(module)
         })
         .collect();
     // Safety: a workspace with more than 2^32 TyCons is not a valid Ridge
@@ -97,7 +101,26 @@ pub fn lower_workspace(twork: &TypedWorkspace, rwork: &ResolvedWorkspace) -> Low
     // Thread the injected version history: codegen keys migration chains by
     // hash and derives structural migrations from it.
     ws.version_history = twork.version_history.clone();
-    ws
+    LoweringResult {
+        workspace: ws,
+        errors,
+    }
+}
+
+/// What lowering produced: the IR, and what it could not lower.
+///
+/// The errors travel beside the artefact rather than inside it, the way
+/// [`ridge_typecheck::TypecheckResult`] carries its own. They used to live on
+/// the per-module context and be dropped when it was consumed, so every
+/// diagnostic Phase 5 raised — including the channel it reports its own
+/// invariant violations on — was built and thrown away. Returning them here
+/// makes ignoring them a decision a caller has to write down.
+#[derive(Debug)]
+pub struct LoweringResult {
+    /// The lowered workspace.
+    pub workspace: LoweredWorkspace,
+    /// Every error raised while lowering, paired with the module it came from.
+    pub errors: Vec<(ModuleId, error::LowerError)>,
 }
 
 /// Lower a single typed module to Core IR.
@@ -126,7 +149,7 @@ pub fn lower_module(
     rmod: Option<&ridge_resolve::ResolvedModule>,
     stdlib_fqns: &FxHashMap<ModuleId, String>,
     module_fqn: &str,
-) -> LoweredModule {
+) -> (LoweredModule, Vec<error::LowerError>) {
     let mut ctx = LowerCtx::new(typed.id, &typed.node_types);
     // The module FQN keys version-history lookups for `migrate` hooks.
     module_fqn.clone_into(&mut ctx.module_fqn);
@@ -206,7 +229,8 @@ pub fn lower_module(
         ));
     }
 
-    ctx.finish_with_items(items)
+    let errors = std::mem::take(&mut ctx.errors);
+    (ctx.finish_with_items(items), errors)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

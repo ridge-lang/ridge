@@ -9,6 +9,7 @@
 use ridge_codegen_erl::CodegenError;
 use ridge_diagnostics::{Diagnostic, DiagnosticNote, NoteSeverity, SourceId};
 use ridge_ir::Span;
+use ridge_lower::error::LowerError;
 use ridge_resolve::Severity;
 use ridge_typecheck::TypeError;
 
@@ -89,6 +90,24 @@ pub fn diag_from_typecheck(e: &TypeError, source_id: SourceId) -> Diagnostic {
     }
 
     diag
+}
+
+// ── LowerError → Diagnostic ───────────────────────────────────────────────────
+
+/// Build a [`Diagnostic`] from a [`LowerError`].
+///
+/// The seventh adapter, and the one that was missing. Phase 5 has always built
+/// diagnostics and nothing ever read them, so an integer literal too large for
+/// `Int` became a silent zero, and the channel the lowering reports its own
+/// invariant violations on reached nobody.
+///
+/// It lives here rather than in `ridge-diagnostics` for the same reason the
+/// typecheck and codegen adapters do: `ridge-lower` would otherwise have to
+/// depend on `ridge-diagnostics` for the `HasErrorCode` trait, and
+/// `ridge-driver` is the crate that already depends on both.
+#[must_use]
+pub fn diag_from_lower(e: &LowerError, source_id: SourceId) -> Diagnostic {
+    Diagnostic::new(e.code(), e.severity(), e.span(), e.to_string(), source_id)
 }
 
 // ── CodegenError → Diagnostic ─────────────────────────────────────────────────

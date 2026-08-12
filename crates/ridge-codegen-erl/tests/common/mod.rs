@@ -73,6 +73,6 @@ pub fn run_pipeline(workspace_path: &Path) -> PipelineResult {
     let ws_graph = disc.graph.expect("workspace graph must be present");
     let resolved = resolve_workspace(ws_graph);
     let typecheck_result = typecheck_workspace(&resolved);
-    let lowered = lower_workspace(&typecheck_result.typed, &resolved);
+    let lowered = lower_workspace(&typecheck_result.typed, &resolved).workspace;
     PipelineResult { lowered }
 }

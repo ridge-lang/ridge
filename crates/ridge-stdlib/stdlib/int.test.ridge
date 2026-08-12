@@ -27,8 +27,8 @@ fn _max (a: Int) (b: Int) -> Int = if a >= b then a else b
 fn _wrappingAdd (a: Int) (b: Int) -> Int =
     let s = a + b
     let maxVal = 9223372036854775807
-    let minVal = -9223372036854775808
-    let modulus = 18446744073709551616
+    let minVal = 0 - maxVal - 1
+    let modulus = (maxVal + 1) * 2
     if s > maxVal then s - modulus
     else if s < minVal then s + modulus
     else s
@@ -36,7 +36,7 @@ fn _wrappingAdd (a: Int) (b: Int) -> Int =
 fn _saturatingAdd (a: Int) (b: Int) -> Int =
     let s = a + b
     let maxVal = 9223372036854775807
-    let minVal = -9223372036854775808
+    let minVal = 0 - maxVal - 1
     if s > maxVal then maxVal
     else if s < minVal then minVal
     else s
@@ -115,7 +115,7 @@ pub fn test_saturatingAdd_clamps_high () -> Result Unit Text =
 
 @test "saturatingAdd_clamps_low"
 pub fn test_saturatingAdd_clamps_low () -> Result Unit Text =
-    let minVal = -9223372036854775808
+    let minVal = 0 - 9223372036854775807 - 1
     if _saturatingAdd minVal (_neg 1) == minVal then Ok ()
     else Err "saturatingAdd minVal (-1) should clamp to minVal"
 

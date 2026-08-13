@@ -78,13 +78,18 @@ pub(crate) fn parse_lambda(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
     // Handles `fn (param: Type) -> RetType = body` (anonymous function with
     // declared return type, e.g. in url_shortener).  We detect this by
     // scanning for `=` at bracket depth 0 before any statement keyword,
-    // layout token, or scope exit.  If found, parse and discard the type,
-    // then consume `=`.  The return type is not stored in `Lambda`'s AST
-    // (use `InnerFn` via `parse_fn_decl` if you need it in the AST).
-    if lambda_has_return_type_eq(cur) {
-        crate::ty::parse_type(cur)?; // consume return type (annotation; discarded)
+    // layout token, or scope exit.
+    //
+    // The type used to be parsed and dropped here, which made the annotation
+    // a no-op — nothing downstream could compare a body against a type the
+    // AST did not carry.
+    let ret_ty = if lambda_has_return_type_eq(cur) {
+        let ty = crate::ty::parse_type(cur)?;
         cur.expect(&Token::Assign)?; // consume `=`
-    }
+        Some(ty)
+    } else {
+        None
+    };
 
     // Use parse_branch_body_flat so that both inline, INDENT-delimited block,
     // and flat-NEWLINE-block (inside brackets, R014) forms are handled:
@@ -100,6 +105,7 @@ pub(crate) fn parse_lambda(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
 
     Ok(Expr::Lambda {
         params,
+        ret_ty,
         body: Box::new(body),
         span,
     })

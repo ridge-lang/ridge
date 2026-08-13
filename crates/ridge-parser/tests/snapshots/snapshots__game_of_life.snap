@@ -1382,6 +1382,7 @@ Module {
                                                                 },
                                                             ),
                                                         ],
+                                                        ret_ty: None,
                                                         body: If {
                                                             cond: Call {
                                                                 callee: Ident(
@@ -1577,6 +1578,7 @@ Module {
                                                             },
                                                         ),
                                                     ],
+                                                    ret_ty: None,
                                                     body: Binary {
                                                         op: Add,
                                                         lhs: Ident(
@@ -2270,6 +2272,7 @@ Module {
                                                                             },
                                                                         ),
                                                                     ],
+                                                                    ret_ty: None,
                                                                     body: Pipe {
                                                                         lhs: Call {
                                                                             callee: Qualified(
@@ -2401,6 +2404,7 @@ Module {
                                                                                                 },
                                                                                             ),
                                                                                         ],
+                                                                                        ret_ty: None,
                                                                                         body: Call {
                                                                                             callee: Ident(
                                                                                                 Ident {
@@ -2751,6 +2755,7 @@ Module {
                                                                     },
                                                                 ),
                                                             ],
+                                                            ret_ty: None,
                                                             body: Literal(
                                                                 Text {
                                                                     raw: "-",
@@ -2841,6 +2846,7 @@ Module {
                                                                 },
                                                             ),
                                                         ],
+                                                        ret_ty: None,
                                                         body: Interp {
                                                             parts: [
                                                                 Expr {
@@ -3051,6 +3057,7 @@ Module {
                                                             },
                                                         ),
                                                     ],
+                                                    ret_ty: None,
                                                     body: Block(
                                                         Block {
                                                             stmts: [
@@ -3125,6 +3132,7 @@ Module {
                                                                                                     },
                                                                                                 ),
                                                                                             ],
+                                                                                            ret_ty: None,
                                                                                             body: If {
                                                                                                 cond: Ident(
                                                                                                     Ident {
@@ -3241,6 +3249,7 @@ Module {
                                                                                                 },
                                                                                             ),
                                                                                         ],
+                                                                                        ret_ty: None,
                                                                                         body: Interp {
                                                                                             parts: [
                                                                                                 Expr {
@@ -3673,6 +3682,7 @@ Module {
                                                                 },
                                                             ),
                                                         ],
+                                                        ret_ty: None,
                                                         body: Literal(
                                                             Bool {
                                                                 value: false,
@@ -3865,6 +3875,7 @@ Module {
                                                                             },
                                                                         ),
                                                                     ],
+                                                                    ret_ty: None,
                                                                     body: Ident(
                                                                         Ident {
                                                                             text: "emptyRow",
@@ -4252,6 +4263,7 @@ Module {
                                                                             },
                                                                         ),
                                                                     ],
+                                                                    ret_ty: None,
                                                                     body: If {
                                                                         cond: Binary {
                                                                             op: Eq,
@@ -4477,6 +4489,7 @@ Module {
                                                                                                     },
                                                                                                 ),
                                                                                             ],
+                                                                                            ret_ty: None,
                                                                                             body: If {
                                                                                                 cond: Binary {
                                                                                                     op: Eq,

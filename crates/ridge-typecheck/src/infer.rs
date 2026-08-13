@@ -207,7 +207,12 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
         }
 
         // ── Lambda ────────────────────────────────────────────────────────────
-        Expr::Lambda { params, body, .. } => {
+        Expr::Lambda {
+            params,
+            ret_ty,
+            body,
+            ..
+        } => {
             ctx.env.push_frame();
 
             let mut param_types: Vec<Type> = Vec::with_capacity(params.len());
@@ -228,14 +233,41 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 param_types.push(ty);
             }
 
-            let ret_ty = infer_expr(ctx, b, body);
+            // A lambda is its own return boundary. Code generation gives each
+            // one a catch frame of its own, so `return e` inside a lambda —
+            // and `e?`, which lowers to `return Err e` — leave the lambda
+            // rather than the function around it. With no context of its own
+            // here, both were checked against the enclosing named function's
+            // return type, which only agreed when the two coincided (#502).
+            let declared = ret_ty.as_ref().map(|t| ast_type_to_type(ctx, b, t));
+            let ret_slot = declared.unwrap_or_else(|| Type::Var(ctx.fresh_tyvid()));
+            let saved_ret = ctx.current_fn_ret.replace(ret_slot.clone());
+            // An enclosing `try` block's target does not reach in here for the
+            // same reason: the throw is caught at the lambda.
+            let saved_propagate = ctx.current_propagate_target.take();
+
+            let body_ty = infer_expr(ctx, b, body);
+            if let Err(e) = unify(ctx, &ret_slot, &body_ty) {
+                ctx.errors.push(attach_span(e, body.span()));
+            }
+
+            ctx.current_propagate_target = saved_propagate;
+            ctx.current_fn_ret = saved_ret;
             ctx.env.pop_frame();
+
+            // Resolve the slot before handing it back. Returning the bare
+            // variable hides the shape from anything that reads the function
+            // type without resolving first — the curried-lambda arity check
+            // stopped seeing `Fn { ret: Fn { .. } }`, so `fn x -> fn y -> …`
+            // in an uncurried callback slot no longer reported `T003` and the
+            // editor's uncurrying quick-fix disappeared with it.
+            let ret_resolved = ctx.shallow_resolve(&ret_slot);
 
             // Caps placeholder: use PURE as stated in plan.
             // T13 owns real capability inference; T6 sets the concrete empty set.
             Type::Fn {
                 params: param_types,
-                ret: Box::new(ret_ty),
+                ret: Box::new(ret_resolved),
                 caps: CapRow::Concrete(CapabilitySet::PURE),
             }
         }
@@ -2763,6 +2795,7 @@ mod tests {
         };
         let body = Expr::Ident(make_ident("x"));
         let lambda = Expr::Lambda {
+            ret_ty: None,
             params: vec![LambdaParam::Pattern(x_pat)],
             body: Box::new(body),
             span: dummy_span(),
@@ -2804,6 +2837,7 @@ mod tests {
             span: dummy_span(),
         };
         let lambda = Expr::Lambda {
+            ret_ty: None,
             params: vec![LambdaParam::Pattern(x_pat)],
             body: Box::new(Expr::Ident(make_ident("x"))),
             span: dummy_span(),
@@ -2845,6 +2879,7 @@ mod tests {
             span: dummy_span(),
         };
         let lambda = Expr::Lambda {
+            ret_ty: None,
             params: vec![LambdaParam::Pattern(x_pat)],
             body: Box::new(Expr::Ident(make_ident("x"))),
             span: dummy_span(),
@@ -2990,6 +3025,7 @@ mod tests {
             span: dummy_span(),
         };
         let lambda = Expr::Lambda {
+            ret_ty: None,
             params: vec![LambdaParam::Pattern(x_pat)],
             body: Box::new(Expr::Ident(make_ident("x"))),
             span: dummy_span(),
@@ -3777,6 +3813,7 @@ mod tests {
 
         ctx.env.push_frame();
         let lambda = Expr::Lambda {
+            ret_ty: None,
             params: vec![LambdaParam::Pattern(Pattern::Var {
                 name: Ident {
                     text: "x".to_string(),

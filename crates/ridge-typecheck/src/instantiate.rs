@@ -599,6 +599,7 @@ mod tests {
 
         // let id_fn = fn x -> x
         let lambda = ridge_ast::Expr::Lambda {
+            ret_ty: None,
             params: vec![LambdaParam::Pattern(Pattern::Var {
                 name: id("x"),
                 span: ds(),
@@ -700,6 +701,7 @@ mod tests {
             name: id("f"),
             ty: None,
             value: Box::new(ridge_ast::Expr::Lambda {
+                ret_ty: None,
                 params: vec![LambdaParam::Pattern(Pattern::Var {
                     name: id("x"),
                     span: ds(),

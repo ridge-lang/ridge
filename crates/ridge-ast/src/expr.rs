@@ -386,6 +386,12 @@ pub enum Expr {
     Lambda {
         /// The parameter list.
         params: Vec<LambdaParam>,
+        /// The declared return type, from the `fn params -> Type = body` form.
+        ///
+        /// `None` for the bare `fn params -> body` form. The parser used to
+        /// parse this type and throw it away, which made the annotation a
+        /// no-op: `fn (s: Text) -> Int = "text"` type-checked clean.
+        ret_ty: Option<Type>,
         /// The body expression.
         body: Box<Self>,
         /// Span covering the full lambda expression.

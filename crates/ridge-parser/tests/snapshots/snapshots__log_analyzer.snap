@@ -1918,6 +1918,7 @@ Module {
                                                                                     },
                                                                                 ),
                                                                             ],
+                                                                            ret_ty: None,
                                                                             body: Interp {
                                                                                 parts: [
                                                                                     Expr {
@@ -2678,6 +2679,7 @@ Module {
                                                         },
                                                     ),
                                                 ],
+                                                ret_ty: None,
                                                 body: Call {
                                                     callee: Ident(
                                                         Ident {
@@ -3080,6 +3082,7 @@ Module {
                                                                     },
                                                                 ),
                                                             ],
+                                                            ret_ty: None,
                                                             body: Literal(
                                                                 Text {
                                                                     raw: "#",
@@ -3170,6 +3173,7 @@ Module {
                                                                 },
                                                             ),
                                                         ],
+                                                        ret_ty: None,
                                                         body: Interp {
                                                             parts: [
                                                                 Expr {
@@ -3527,6 +3531,7 @@ Module {
                                                                 },
                                                             ),
                                                         ],
+                                                        ret_ty: None,
                                                         body: Ident(
                                                             Ident {
                                                                 text: "k",
@@ -3720,6 +3725,7 @@ Module {
                                                             },
                                                         ),
                                                     ],
+                                                    ret_ty: None,
                                                     body: Call {
                                                         callee: Qualified(
                                                             QualifiedName {

@@ -271,7 +271,9 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
         // Params lower via `lower_lambda_params`: plain `Var`/`_` bind directly;
         // any destructuring pattern feeds a `match` wrapped around the body so
         // its bindings survive lowering.
-        Expr::Lambda { params, body, span } => {
+        Expr::Lambda {
+            params, body, span, ..
+        } => {
             // Quotation: a lambda captured as a quote during type-checking is
             // reified into a `QExpr` tree rather than lowered to a closure. A
             // grouped-aggregate quote (`having`/`summarize`) reifies over the
@@ -5225,6 +5227,7 @@ mod tests {
         let mut ctx = fresh_ctx();
         let span = sp_at(0, 20);
         let expr = Expr::Lambda {
+            ret_ty: None,
             params: vec![LambdaParam::Pattern(Pattern::Var {
                 name: Ident {
                     text: "x".into(),
@@ -6318,6 +6321,7 @@ mod tests {
         let tup_span = sp_at(3, 8);
 
         let expr = Expr::Lambda {
+            ret_ty: None,
             params: vec![LambdaParam::Pattern(Pattern::Tuple {
                 elems: vec![
                     Pattern::Var {
@@ -6403,6 +6407,7 @@ mod tests {
         let mut ctx = fresh_ctx();
         let lambda_span = sp_at(0, 10);
         let expr = Expr::Lambda {
+            ret_ty: None,
             params: vec![LambdaParam::Pattern(Pattern::Var {
                 name: Ident {
                     text: "x".into(),
@@ -6443,6 +6448,7 @@ mod tests {
         let lambda_span = sp_at(0, 25);
         let tup_span = sp_at(5, 12);
         let expr = Expr::Lambda {
+            ret_ty: None,
             params: vec![
                 LambdaParam::Pattern(Pattern::Var {
                     name: Ident {
@@ -6511,6 +6517,7 @@ mod tests {
 
         // Pattern: ((a, b), c)
         let expr = Expr::Lambda {
+            ret_ty: None,
             params: vec![LambdaParam::Pattern(Pattern::Tuple {
                 elems: vec![
                     Pattern::Tuple {

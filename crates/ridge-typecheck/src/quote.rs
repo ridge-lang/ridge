@@ -194,7 +194,10 @@ pub(crate) fn check_quote(
     entities: &[(TyConId, bool)],
     expected_ret: Option<&Type>,
 ) -> bool {
-    let Expr::Lambda { params, body, span } = lambda else {
+    let Expr::Lambda {
+        params, body, span, ..
+    } = lambda
+    else {
         return false;
     };
 
@@ -1524,7 +1527,10 @@ pub(crate) fn check_group_quote(
     k_ty: &Type,
     expected_ret: Option<&Type>,
 ) -> bool {
-    let Expr::Lambda { params, body, span } = lambda else {
+    let Expr::Lambda {
+        params, body, span, ..
+    } = lambda
+    else {
         return false;
     };
     if params.len() != 1 {
@@ -1919,7 +1925,10 @@ fn group_agg_col_type(
     while let Expr::Paren { inner: i, .. } = inner {
         inner = i;
     }
-    let Expr::Lambda { params, body, span } = inner else {
+    let Expr::Lambda {
+        params, body, span, ..
+    } = inner
+    else {
         ctx.errors.push(TypeError::QuoteUnsupportedExpr {
             detail: "a group aggregate takes a column accessor, like `(fn u -> u.col)`".to_string(),
             span: arg.span(),

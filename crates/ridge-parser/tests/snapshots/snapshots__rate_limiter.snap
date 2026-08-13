@@ -1,6 +1,5 @@
 ---
 source: crates/ridge-parser/tests/snapshots.rs
-assertion_line: 34
 expression: result.module
 ---
 Module {
@@ -3066,6 +3065,7 @@ Module {
                                                                             },
                                                                         ),
                                                                     ],
+                                                                    ret_ty: None,
                                                                     body: Spawn {
                                                                         actor: Ident {
                                                                             text: "Worker",
@@ -3196,6 +3196,7 @@ Module {
                                                             },
                                                         ),
                                                     ],
+                                                    ret_ty: None,
                                                     body: Send {
                                                         handle: Ident(
                                                             Ident {

@@ -161,9 +161,6 @@ fn dod_ridge_new_smoke() {
 /// run `ridge fmt` once, then run `ridge fmt --check` and assert success.
 /// Repeating `fmt` a third time and diffing the output against the second
 /// pass is also asserted to give a stronger guarantee than `--check` alone.
-///
-/// Engram memory: `phase-8/t15/fix-fmt-non-idempotency` for the bug history
-/// (memory ID 882 captures the pre-fix repro).
 #[test]
 fn dod_fmt_idempotent() {
     for name in CANONICAL_EXAMPLES {

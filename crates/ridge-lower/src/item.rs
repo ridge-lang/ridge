@@ -550,7 +550,7 @@ pub fn lower_fn(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrFn {
         .map(|c| {
             let class_name = ctx.class_name(c.class).unwrap_or("Unknown");
             IrParam {
-                name: format!("$dict_{class_name}_{}", c.sole_ty().0),
+                name: c.dict_param_name(class_name),
                 ty: Type::Error, // untyped in IR
                 span: decl.span,
             }
@@ -6922,7 +6922,7 @@ mod tests {
             .map(|c| {
                 let cn = ctx.class_name(c.class).unwrap_or("Unknown");
                 IrParam {
-                    name: format!("$dict_{cn}_{}", c.sole_ty().0),
+                    name: c.dict_param_name(cn),
                     ty: ridge_types::Type::Error,
                     span: sp(),
                 }

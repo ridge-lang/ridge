@@ -80,6 +80,11 @@ impl Constraint {
     ///
     /// Debug builds assert the constraint really is single-parameter; this is
     /// the seam multi-parameter dispatch widens to walk every variable.
+    ///
+    /// Prefer [`Self::mentions`] to test membership and
+    /// [`Self::dict_param_name`] to name a dictionary — both are correct for
+    /// any arity. Reach for this only where the constraint is known to be
+    /// single-parameter by construction.
     #[must_use]
     pub fn sole_ty(&self) -> TyVid {
         debug_assert_eq!(
@@ -88,6 +93,36 @@ impl Constraint {
             "sole_ty called on a multi-parameter constraint"
         );
         self.tys[0]
+    }
+
+    /// Does this constraint range over `v`?
+    ///
+    /// The membership test `sole_ty() == v` is really asking, and it asserts on
+    /// anything with more than one variable. `Pairable a b` is reached through
+    /// either of its variables.
+    #[must_use]
+    pub fn mentions(&self, v: TyVid) -> bool {
+        self.tys.contains(&v)
+    }
+
+    /// The name of the dictionary parameter that carries this constraint.
+    ///
+    /// A single-parameter constraint keeps the historical spelling exactly —
+    /// `$dict_ToText_3` — so nothing that already resolves moves. Beyond one
+    /// variable the rest are appended, because the first does not identify the
+    /// dictionary on its own: `Pairable a b` and `Pairable a c` are two
+    /// different ones and would otherwise share a name.
+    ///
+    /// Every site that declares such a parameter and every site that
+    /// references one goes through here, so the two cannot drift apart.
+    #[must_use]
+    pub fn dict_param_name(&self, class_name: &str) -> String {
+        use std::fmt::Write as _;
+        let mut out = format!("$dict_{class_name}");
+        for v in &self.tys {
+            let _ = write!(out, "_{}", v.0);
+        }
+        out
     }
 }
 
@@ -145,6 +180,36 @@ mod tests {
     fn multi_param_constraint_holds_every_var() {
         let c = Constraint::new(EQ_CLASS, smallvec![TyVid(1), TyVid(2)]);
         assert_eq!(c.tys.as_slice(), &[TyVid(1), TyVid(2)]);
+    }
+
+    #[test]
+    fn mentions_finds_any_variable_not_just_the_first() {
+        let c = Constraint::new(EQ_CLASS, smallvec![TyVid(1), TyVid(2)]);
+        assert!(c.mentions(TyVid(1)));
+        assert!(c.mentions(TyVid(2)), "the second variable reaches it too");
+        assert!(!c.mentions(TyVid(3)));
+    }
+
+    /// A single-parameter dictionary name is byte-identical to the one this
+    /// replaced, so nothing that already resolves moves.
+    #[test]
+    fn single_param_dict_name_is_unchanged() {
+        let c = Constraint::single(TOTEXT_CLASS, TyVid(3));
+        assert_eq!(c.dict_param_name("ToText"), "$dict_ToText_3");
+    }
+
+    /// Two constraints of the same class that share their first variable are
+    /// different dictionaries and must not share a name. Naming from the first
+    /// variable alone gave both `$dict_Pairable_1`.
+    #[test]
+    fn multi_param_dict_names_distinguish_the_rest_of_the_variables() {
+        let ab = Constraint::new(EQ_CLASS, smallvec![TyVid(1), TyVid(2)]);
+        let ac = Constraint::new(EQ_CLASS, smallvec![TyVid(1), TyVid(3)]);
+        assert_eq!(ab.dict_param_name("Pairable"), "$dict_Pairable_1_2");
+        assert_ne!(
+            ab.dict_param_name("Pairable"),
+            ac.dict_param_name("Pairable")
+        );
     }
 
     #[test]

@@ -1993,11 +1993,20 @@ pub(crate) fn build_dict_args(
         // the resolved argument (and result) types, find where `c.ty` appears,
         // and read off the matching sub-type. `None` when the variable cannot be
         // located (no type info).
-        let constraint_ty =
-            constraint_arg_type(&pin_params, &pin_args, c.sole_ty()).map(|ty| deep_peel_alias(&ty));
+        // A multi-parameter constraint has no single variable to read off, so
+        // take the first one this call actually pins. Constraint variables are
+        // in class-parameter order, so for a class with a functional dependency
+        // the determining variable is tried first; where none is pinned the
+        // answer is `None`, exactly as for one variable that could not be
+        // located.
+        let constraint_ty = c
+            .tys
+            .iter()
+            .find_map(|v| constraint_arg_type(&pin_params, &pin_args, *v))
+            .map(|ty| deep_peel_alias(&ty));
 
         // `constraint_arg_type` walks the scheme in lockstep with the call and
-        // only answers from a position `c.sole_ty()` occupies, so whatever it
+        // only answers from a position that variable occupies, so whatever it
         // returns is the constraint's own type.
         let dict_expr = resolve_dict_arg(
             ctx,
@@ -2232,7 +2241,7 @@ fn resolve_dict_arg(
         .and_then(|v| {
             ctx.current_fn_constraints
                 .iter()
-                .find(|c| c.class == class && c.sole_ty() == v)
+                .find(|c| c.class == class && c.mentions(v))
         })
         .or_else(|| {
             if named_its_type {
@@ -2258,7 +2267,7 @@ fn resolve_dict_arg(
         let id = ctx.fresh_id(None);
         return IrExpr::Local {
             id,
-            name: format!("$dict_{class_name}_{}", c.sole_ty().0),
+            name: c.dict_param_name(class_name),
             span,
         };
     }
@@ -3383,7 +3392,7 @@ pub(crate) fn dict_plan_to_expr(
             let id = ctx.fresh_id(None);
             IrExpr::Local {
                 id,
-                name: format!("$dict_{class_name}_{}", c.sole_ty().0),
+                name: c.dict_param_name(class_name),
                 span,
             }
         }

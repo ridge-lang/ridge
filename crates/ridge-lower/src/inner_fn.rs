@@ -266,7 +266,7 @@ fn build_lambda(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrExpr {
         for c in constraints {
             let class_name = ctx.class_name(c.class).unwrap_or("Unknown").to_owned();
             dict_params.push(IrParam {
-                name: format!("$dict_{class_name}_{}", c.sole_ty().0),
+                name: c.dict_param_name(&class_name),
                 ty: Type::Error, // untyped in IR — dicts are plain BEAM maps
                 span: decl.span,
             });

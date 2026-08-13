@@ -321,6 +321,11 @@ pub fn typecheck_workspace_with_history(
         crate::stdlib_types::intern_stdlib_types(&mut arena, &b)
     };
 
+    // Every type the compiler declares itself, indexed by name. Taken here, with
+    // the built-ins and the reconciled block interned and no user type yet, so an
+    // imported stdlib type name resolves to its real id instead of being dropped.
+    let compiler_tycons = crate::cross_module::compiler_tycon_names(arena.all());
+
     // Type-check producers before consumers so a module's imported types and
     // schemes are already available when it is checked.
     let check_order = crate::cross_module::topo_order(&ws.graph.deps);
@@ -438,7 +443,7 @@ pub fn typecheck_workspace_with_history(
             &actual_module_tycon_names,
             &per_module_tycon_names,
             &stdlib_tycon_names,
-            &b,
+            &compiler_tycons,
         );
         let imported_schemes = crate::cross_module::imported_value_schemes(
             &rm.imports,
@@ -636,7 +641,9 @@ pub fn typecheck_module_incremental(
         &module_tycon_names,
         &module_tycon_names,
         &typed_ws.stdlib_tycons,
-        b,
+        // The prior check's arena still carries the compiler-declared block at
+        // the head, and a user type is filtered out by its owning module.
+        &crate::cross_module::compiler_tycon_names(&typed_ws.tycons),
     );
     // (2) This module's own types keep the ids the prior check assigned them,
     // so `collect_user_tycons` refreshes them in place instead of appending

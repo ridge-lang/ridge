@@ -1153,11 +1153,22 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                     }
                 }
             } else {
-                // Not a user-defined TyCon. A stdlib stub bound in the env
-                // (e.g. Response, Request from std.net.http) instantiates, which
-                // absorbs a stub's Type::Error silently. A genuinely unknown name
-                // is the resolver's job (R010), so absorb it silently here rather
+                // Not a TyCon this module can see. A genuinely unknown name is
+                // the resolver's job (R010), so absorb it silently here rather
                 // than leaking T999.
+                //
+                // The field expressions are still inferred. They are ordinary
+                // expressions whose own errors deserve reporting, and inference
+                // is what stamps each one's type into the node-type side-table
+                // that lowering reads — an interpolation reaching lowering with
+                // no type for its hole renders the value unconverted (#497).
+                // Nothing here can check them *against* the record, because
+                // without a schema there is nothing to check against.
+                for f in fields {
+                    if let Some(value) = &f.value {
+                        infer_expr(ctx, b, value);
+                    }
+                }
                 ctx.env
                     .lookup(ctor_name)
                     .cloned()

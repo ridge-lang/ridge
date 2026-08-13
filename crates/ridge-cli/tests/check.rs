@@ -381,3 +381,61 @@ pub fn outer -> Text =
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("T001"), "expected T001, got: {stderr}");
 }
+
+// ── Test 8: stdlib record types are checked like any other ───────────────────
+
+/// A record literal built from a standard-library record type has its fields
+/// checked.
+///
+/// `Response` is `{ status: Int, body: Text }`. Supplying a `Text` status and
+/// an `Int` body used to type-check clean: the importing module resolved the
+/// name to a stub scheme with no schema behind it, so the whole field list was
+/// dropped without being looked at. Wrong types, unknown field names and
+/// missing fields were all accepted (#497).
+#[test]
+fn check_stdlib_record_literal_fields() {
+    let bad_source = "\
+import std.net.http as Http (Response)
+
+pub fn bad -> Response = Response { status = \"not an int\", body = 42 }
+";
+    let tw = make_workspace("Broken", bad_source);
+
+    let output = ridge_cmd()
+        .arg("check")
+        .current_dir(&tw.path)
+        .output()
+        .expect("ridge check spawn failed");
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit for a stdlib record literal with wrong field types"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("T001"),
+        "expected T001 on both fields, got: {stderr}"
+    );
+}
+
+/// The same shape with the right types still passes.
+///
+/// The interpolation is the case that made #497 visible: with no type for its
+/// hole the lowering passed the value through unconverted, so an `Int` hole in
+/// this position emitted no conversion at all.
+#[test]
+fn check_stdlib_record_literal_accepts_correct_fields() {
+    let good_source = "\
+import std.net.http as Http (Response)
+
+pub fn ok (url: Text) (n: Int) -> Response =
+    Response { status = 302, body = $\"to ${url} after ${n}\" }
+";
+    let tw = make_workspace("Fine", good_source);
+
+    ridge_cmd()
+        .arg("check")
+        .current_dir(&tw.path)
+        .assert()
+        .success();
+}

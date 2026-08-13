@@ -2233,6 +2233,92 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: false,
             is_anon: false,
         },
+        // `std.net.http` — the inbound half of a handler. A plain record
+        // declared in Ridge (stdlib/net/http.ridge). Without an entry here the
+        // importing module has no schema for the name, and a record literal
+        // built from it goes unchecked (#497). Appended last so it disturbs no
+        // earlier reconciled id.
+        TyConDecl {
+            id: TyConId(base + 43),
+            name: "Request".to_string(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![
+                    RecordField {
+                        name: "method".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "path".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "body".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
+        // `std.net.http` — the outbound half. `respond` builds one, and handler
+        // code builds them directly.
+        TyConDecl {
+            id: TyConId(base + 44),
+            name: "Response".to_string(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![
+                    RecordField {
+                        name: "status".to_string(),
+                        ty: Type::Con(b.int, vec![]),
+                    },
+                    RecordField {
+                        name: "body".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
+        // `std.cli` — the result of parsing argv: long flags with values, bare
+        // switches, and everything left over.
+        TyConDecl {
+            id: TyConId(base + 45),
+            name: "Parsed".to_string(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![
+                    RecordField {
+                        name: "flags".to_string(),
+                        ty: Type::Con(
+                            b.map,
+                            vec![Type::Con(b.text, vec![]), Type::Con(b.text, vec![])],
+                        ),
+                    },
+                    RecordField {
+                        name: "switches".to_string(),
+                        ty: Type::Con(b.list, vec![Type::Con(b.text, vec![])]),
+                    },
+                    RecordField {
+                        name: "positionals".to_string(),
+                        ty: Type::Con(b.list, vec![Type::Con(b.text, vec![])]),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
     ]
 }
 
@@ -4701,5 +4787,128 @@ mod tests {
             reconciled_ctor_scheme(&decls, &names, "Nope").is_none(),
             "unknown ctor yields no scheme"
         );
+    }
+
+    /// Collect `pub type X = { … }` declarations from the standard library
+    /// sources on disk, as `(module path, type name)`.
+    ///
+    /// Reads the sources rather than the embedded table because `ridge-stdlib`
+    /// depends on this crate, so it cannot be a dev-dependency here.
+    fn stdlib_public_record_types() -> Vec<(String, String)> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "ridge") {
+                    out.push(path);
+                }
+            }
+        }
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ridge-stdlib/stdlib");
+        let mut files = Vec::new();
+        walk(&root, &mut files);
+        files.sort();
+        assert!(
+            !files.is_empty(),
+            "no stdlib sources under {}",
+            root.display()
+        );
+
+        let mut out = Vec::new();
+        for file in files {
+            let module = file
+                .strip_prefix(&root)
+                .unwrap_or(&file)
+                .with_extension("")
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(".");
+            let Ok(src) = std::fs::read_to_string(&file) else {
+                continue;
+            };
+            for line in src.lines() {
+                let Some(rest) = line.strip_prefix("pub type ") else {
+                    continue;
+                };
+                // `pub type Name = {` — a record. Aliases and unions are not
+                // constructed with record-literal syntax and are out of scope.
+                let Some((name, body)) = rest.split_once(" = ") else {
+                    continue;
+                };
+                if body.trim_start().starts_with('{') && !name.contains(' ') {
+                    out.push((format!("std.{module}"), name.to_string()));
+                }
+            }
+        }
+        out
+    }
+
+    /// Every public record type in the standard library is declared to the
+    /// compiler, either as a built-in or in the reconciled block.
+    ///
+    /// A name in neither place is invisible to an importing module: the
+    /// record-literal path finds no schema, falls back to a stub, and stops
+    /// checking the fields — so `Response { status = "not an int" }` compiled
+    /// clean (#497). Five of the eleven were in that state.
+    ///
+    /// This is the guard, not the fix: it fails the moment a new
+    /// `pub type X = { … }` is added to the standard library without one.
+    #[test]
+    fn every_public_stdlib_record_type_is_declared_to_the_compiler() {
+        let (mut arena, b) = builtins();
+        let builtin_names: Vec<String> = arena.all().iter().map(|d| d.name.clone()).collect();
+        let reconciled = intern_stdlib_types(&mut arena, &b);
+
+        let mut missing = Vec::new();
+        let found = stdlib_public_record_types();
+        for (module, name) in &found {
+            let declared = reconciled.contains_key(name) || builtin_names.contains(name);
+            if !declared {
+                missing.push(format!("{module}.{name}"));
+            }
+        }
+
+        assert!(
+            !found.is_empty(),
+            "the scan found no `pub type X = {{ … }}` at all — it has stopped \
+             matching the source, which would make this test pass vacuously"
+        );
+        assert!(
+            missing.is_empty(),
+            "these public stdlib record types are unknown to the compiler, so a \
+             record literal built from one goes unchecked: {missing:?}"
+        );
+    }
+
+    /// The five that were missing, named individually.
+    ///
+    /// The scan above would keep passing if it silently stopped matching a
+    /// file; these do not depend on the scan.
+    #[test]
+    fn the_record_types_that_were_unchecked_now_carry_a_schema() {
+        let (mut arena, b) = builtins();
+        let reconciled = intern_stdlib_types(&mut arena, &b);
+
+        for name in ["Request", "Response", "Parsed"] {
+            let id = reconciled
+                .get(name)
+                .copied()
+                .unwrap_or_else(|| panic!("{name} is interned in the reconciled block"));
+            assert!(
+                matches!(arena.get(id).kind, TyConKind::Record(_)),
+                "{name} carries a record schema"
+            );
+        }
+        // `Duration` and `Output` were already built in; what was missing was
+        // the import resolving to them (see `cross_module::compiler_tycon_names`).
+        for id in [b.duration, b.proc_output] {
+            assert!(matches!(arena.get(id).kind, TyConKind::Record(_)));
+        }
     }
 }

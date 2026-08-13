@@ -15,21 +15,25 @@ use std::sync::Arc;
 
 use ridge_ast::{Item, Module};
 use ridge_resolve::{Binding, ImportResolution, ImportTarget, ModuleId, SymbolKind, SymbolTable};
-use ridge_types::{BuiltinTyCons, Scheme, TyConId};
+use ridge_types::{Scheme, TyConDecl, TyConId};
 
-/// Map a stdlib opaque type name to its pre-registered builtin `TyConId`.
+/// Index every compiler-provided type declaration by name.
 ///
-/// Stdlib taint wrappers are interned as builtins (see `BuiltinTyCons`) rather
-/// than collected from source, so an importing module resolves the bare name to
-/// these ids. Returns `None` for any name that is not a known stdlib opaque type.
-fn stdlib_opaque_tycon(b: &BuiltinTyCons, name: &str) -> Option<TyConId> {
-    match name {
-        "Sql" => Some(b.sql),
-        "Html" => Some(b.html),
-        "SecureCookie" => Some(b.secure_cookie),
-        "SqlValue" => Some(b.sql_value),
-        _ => None,
-    }
+/// "Compiler-provided" means everything the arena holds before a module's own
+/// `type` declarations are collected: the built-ins (`Int`, `Error`, `Duration`,
+/// `Output`, the taint wrappers) and the reconciled stdlib block. Both leave
+/// `def_module_raw` unset, which is what distinguishes them from a user type;
+/// anonymous record tycons share that trait and are excluded by name anyway.
+///
+/// Built by scanning the arena rather than from a hand-written table. The table
+/// this replaced listed four names and silently dropped every other stdlib type
+/// an importing module named, so `Duration { ms = "x" }` type-checked (#497).
+pub(crate) fn compiler_tycon_names(decls: &[TyConDecl]) -> FxHashMap<String, TyConId> {
+    decls
+        .iter()
+        .filter(|d| d.def_module_raw.is_none() && !d.is_anon)
+        .map(|d| (d.name.clone(), d.id))
+        .collect()
 }
 
 /// Order modules so every producer is type-checked before its consumers.
@@ -139,7 +143,7 @@ pub(crate) fn imported_tycon_names(
     actual_tycon_names: &[FxHashMap<String, TyConId>],
     per_module_tycon_names: &[FxHashMap<String, TyConId>],
     stdlib_tycon_names: &FxHashMap<String, TyConId>,
-    b: &BuiltinTyCons,
+    compiler_tycons: &FxHashMap<String, TyConId>,
 ) -> FxHashMap<String, TyConId> {
     let mut out: FxHashMap<String, TyConId> = FxHashMap::default();
     for ir in imports {
@@ -178,21 +182,21 @@ pub(crate) fn imported_tycon_names(
                     }
                 }
                 // A type imported from a stdlib module. Reconciled stdlib types
-                // resolve by name to their reserved-block id; the older opaque
-                // taint wrappers (`Sql`, `Html`) fall back to their built-in id so
-                // annotations type-check and field access is gated (T036).
-                Binding::StdlibSymbol { module, name } => {
-                    if let Some(&tid) = stdlib_tycon_names.get(name) {
+                // resolve by name to their reserved-block id; everything else the
+                // compiler declares itself — the taint wrappers (`Sql`, `Html`)
+                // whose field access is gated (T036), and the nominal records
+                // (`Error`, `Duration`, `Output`) — resolves to its built-in id.
+                //
+                // A name that resolves to neither is dropped, and dropping it is
+                // what made the type invisible: the record-literal path in
+                // `infer` falls back to a stub scheme and stops checking the
+                // fields entirely.
+                Binding::StdlibSymbol { name, .. } => {
+                    if let Some(&tid) = stdlib_tycon_names
+                        .get(name)
+                        .or_else(|| compiler_tycons.get(name))
+                    {
                         out.insert(eb.local_name.clone(), tid);
-                    } else {
-                        let is_opaque = ridge_resolve::BUILTINS
-                            .get(module.0 as usize)
-                            .is_some_and(|m| m.opaque_types.contains(&name.as_str()));
-                        if is_opaque {
-                            if let Some(tid) = stdlib_opaque_tycon(b, name) {
-                                out.insert(eb.local_name.clone(), tid);
-                            }
-                        }
                     }
                 }
                 _ => {}

@@ -981,7 +981,7 @@ QualifiedName ::= UPPER_IDENT "." LOWER_IDENT { "." LOWER_IDENT }
 (* D052: Lambda params allow full Pattern (unlike top-level FnDecl Param
    which is restricted to bare names/annotated names per D037).
    LambdaParam encompasses the full Pattern production.                     *)
-LambdaExpr    ::= "fn" { LambdaParam } "->" Body ;
+LambdaExpr    ::= "fn" { LambdaParam } "->" [ Type "=" ] Body ;
 
 LambdaParam   ::= Pattern
                |  "(" Pattern ":" Type ")" ;   (* annotated lambda pattern *)
@@ -992,6 +992,10 @@ LambdaParam   ::= Pattern
      fn (x: Int) (y: Int) -> x + y
      fn (x, y) -> x + y                  (* tuple destructure in lambda *)
      fn Ok v -> v                         (* constructor pattern in lambda *) *)
+
+(* A declared return type is optional and, when present, is followed by
+   `=` before the body. The type is checked against the body.
+     fn (req: Request) -> Response = respond 200 "ok"                    *)
 
 
 (* === 6.17  Inner function expression (D058) === *)

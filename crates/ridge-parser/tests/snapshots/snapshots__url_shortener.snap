@@ -593,6 +593,7 @@ Module {
                                                                 },
                                                             ),
                                                         ],
+                                                        ret_ty: None,
                                                         body: Pipe {
                                                             lhs: Call {
                                                                 callee: Qualified(
@@ -762,6 +763,7 @@ Module {
                                                             },
                                                         ),
                                                     ],
+                                                    ret_ty: None,
                                                     body: Interp {
                                                         parts: [
                                                             Expr {
@@ -1092,6 +1094,7 @@ Module {
                                                                                     },
                                                                                 ),
                                                                             ],
+                                                                            ret_ty: None,
                                                                             body: Binary {
                                                                                 op: Eq,
                                                                                 lhs: Ident(
@@ -2513,6 +2516,21 @@ Module {
                                                         },
                                                     },
                                                 ],
+                                                ret_ty: Some(
+                                                    Named {
+                                                        name: Ident {
+                                                            text: "Response",
+                                                            span: Span {
+                                                                start: 4246,
+                                                                end: 4254,
+                                                            },
+                                                        },
+                                                        span: Span {
+                                                            start: 4246,
+                                                            end: 4254,
+                                                        },
+                                                    },
+                                                ),
                                                 body: Match {
                                                     scrutinee: Tuple {
                                                         elems: [

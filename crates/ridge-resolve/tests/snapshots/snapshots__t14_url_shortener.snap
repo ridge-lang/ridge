@@ -4,7 +4,7 @@ expression: snap
 ---
 ResolvedSnapshot {
     errors: [],
-    nid_count: 422,
+    nid_count: 424,
     stamped_bindings: 104,
     binding_kind_counts: {
         "ActorName": 1,

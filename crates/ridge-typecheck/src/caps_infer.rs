@@ -753,6 +753,7 @@ mod tests {
         // body: let f = fn x -> Io.println x; 1
         // The lambda value should not propagate {io} into the outer caps.
         let lambda = Expr::Lambda {
+            ret_ty: None,
             params: vec![LambdaParam::Pattern(Pattern::Var {
                 name: id("x"),
                 span: ds(),

@@ -267,3 +267,117 @@ fn check_member_filter() {
         .assert()
         .success();
 }
+
+// ── Test 7: a lambda is its own return boundary ──────────────────────────────
+
+/// `return` inside a lambda is checked against the lambda's return type.
+///
+/// It used to be checked against the enclosing named function's, so this
+/// rejected valid code whenever the two differed — `expected Int, got Text`,
+/// where the `Text` is `outer`'s return type and has nothing to do with the
+/// lambda (#502).
+#[test]
+fn check_return_inside_lambda_targets_the_lambda() {
+    let source = "\
+fn pick (f: fn Text -> Int) -> Int = f \"x\"
+
+pub fn outer -> Text =
+    let n = pick (fn (s: Text) -> Int =
+        guard (s != \"\") else return 0
+        1)
+    \"done\"
+";
+    let tw = make_workspace("Lam", source);
+
+    ridge_cmd()
+        .arg("check")
+        .current_dir(&tw.path)
+        .assert()
+        .success();
+}
+
+/// `?` inside a lambda targets the lambda too.
+///
+/// Same root cause: `?` lowers to `return Err e`, and the lambda has its own
+/// catch frame, so the enclosing function's return type is the wrong context.
+#[test]
+fn check_propagate_inside_lambda_targets_the_lambda() {
+    let source = "\
+fn pick (f: fn Text -> Result Int Error) -> Result Int Error = f \"x\"
+fn mk (s: Text) -> Result Int Error = Ok 1
+
+pub fn outer -> Text =
+    let r = pick (fn (s: Text) -> Result Int Error =
+        let v = mk s ?
+        Ok v)
+    \"done\"
+";
+    let tw = make_workspace("Prop", source);
+
+    ridge_cmd()
+        .arg("check")
+        .current_dir(&tw.path)
+        .assert()
+        .success();
+}
+
+/// A lambda's declared return type is checked against its body.
+///
+/// The parser used to consume the annotation and throw it away, so
+/// `fn (s: Text) -> Int = "clearly text"` compiled clean — a declaration the
+/// author wrote had no effect at all.
+#[test]
+fn check_lambda_return_annotation_is_enforced() {
+    let source = "\
+fn pick (f: fn Text -> Text) -> Text = f \"x\"
+
+pub fn outer -> Text = pick (fn (s: Text) -> Int = \"clearly text\")
+";
+    let tw = make_workspace("Ann", source);
+
+    let output = ridge_cmd()
+        .arg("check")
+        .current_dir(&tw.path)
+        .output()
+        .expect("ridge check spawn failed");
+
+    assert!(
+        !output.status.success(),
+        "a lambda body that contradicts its declared return type must be reported"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("T001"),
+        "expected T001 for the annotation mismatch, got: {stderr}"
+    );
+}
+
+/// A `return` of the wrong type inside a lambda is still reported.
+///
+/// The boundary moved; it did not disappear.
+#[test]
+fn check_wrong_return_type_inside_lambda_is_reported() {
+    let source = "\
+fn pick (f: fn Text -> Int) -> Int = f \"x\"
+
+pub fn outer -> Text =
+    let n = pick (fn (s: Text) -> Int =
+        guard (s != \"\") else return \"not an int\"
+        1)
+    \"done\"
+";
+    let tw = make_workspace("BadRet", source);
+
+    let output = ridge_cmd()
+        .arg("check")
+        .current_dir(&tw.path)
+        .output()
+        .expect("ridge check spawn failed");
+
+    assert!(
+        !output.status.success(),
+        "returning a Text where the lambda returns Int must be reported"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("T001"), "expected T001, got: {stderr}");
+}

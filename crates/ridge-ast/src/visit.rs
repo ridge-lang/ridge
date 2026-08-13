@@ -295,9 +295,20 @@ pub fn walk_expr<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, e: &'ast Expr) {
             v.visit_expr(base);
             v.visit_ident(field);
         }
-        Expr::Lambda { params, body, .. } => {
+        Expr::Lambda {
+            params,
+            ret_ty,
+            body,
+            ..
+        } => {
             for param in params {
                 v.visit_lambda_param(param);
+            }
+            // The declared return type is a type reference like any other: the
+            // resolver has to see it to report an unknown name, and the editor
+            // index has to see it for go-to-definition to land on it.
+            if let Some(t) = ret_ty {
+                v.visit_type(t);
             }
             v.visit_expr(body);
         }

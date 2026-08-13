@@ -142,6 +142,37 @@ pub fn infer_propagate(ctx: &mut InferCtx, b: &BuiltinTyCons, inner: &Expr, span
         .or_else(|| ctx.current_fn_ret.clone());
 
     if let Some(target_ty) = target {
+        // A lambda's return type is a variable until something pins it, and
+        // `?` is one of the things that pins it: the operator only means
+        // anything if this scope returns a `Result` or an `Option`, so take
+        // the shape from the operand and unify rather than insisting the
+        // target already be one. Before lambdas carried a return context this
+        // could not arise — the target was always a named fn's declared
+        // return type (#502).
+        if matches!(ctx.shallow_resolve(&target_ty), Type::Var(_)) {
+            let resolved_inner = ctx.shallow_resolve(&inner_ty);
+            let forced = match &resolved_inner {
+                Type::Con(id, args) if *id == b.result => {
+                    let err_ty = args.get(1).cloned().unwrap_or(Type::Error);
+                    Some(Type::Con(
+                        b.result,
+                        vec![Type::Var(ctx.fresh_tyvid()), err_ty],
+                    ))
+                }
+                Type::Con(id, _) if *id == b.option => {
+                    Some(Type::Con(b.option, vec![Type::Var(ctx.fresh_tyvid())]))
+                }
+                // Both sides unknown: nothing to infer from, and guessing
+                // `Result` here would silently pick one of two answers.
+                _ => None,
+            };
+            if let Some(forced) = forced {
+                if let Err(e) = unify(ctx, &target_ty, &forced) {
+                    ctx.errors.push(attach_span(e, span));
+                    return Type::Error;
+                }
+            }
+        }
         let resolved_target = ctx.shallow_resolve(&target_ty);
         match &resolved_target {
             Type::Con(id, args) if *id == b.result => {

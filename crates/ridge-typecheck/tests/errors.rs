@@ -2276,3 +2276,86 @@ pub fn report (x: a) -> Text where Describable a = $\"${name x}${grams x}\"
         "expected T055 naming `Weigh`; got {errors:?}"
     );
 }
+
+// ── Orientation of `expected` / `got` ─────────────────────────────────────────
+
+/// Pull the `(expected, found)` pair out of the first mismatch in `errors`.
+fn first_mismatch_pair(errors: &[TypeError]) -> Option<(&str, &str)> {
+    errors.iter().find_map(|e| match e {
+        TypeError::TypeMismatch {
+            expected, found, ..
+        }
+        | TypeError::TypeMismatchInCall {
+            expected, found, ..
+        } => Some((expected.as_str(), found.as_str())),
+        _ => None,
+    })
+}
+
+/// Every position that can report a type mismatch names the two types the same
+/// way round: `expected` is what the position requires, `found` is what turned
+/// up.
+///
+/// Each case below is the same defect — an `Int` position handed a `Text` — so
+/// all nine must read `expected Int, got Text`. Five of them used to read it
+/// backwards, which told the reader to change the declaration rather than the
+/// value.
+///
+/// The orientation is what this asserts, not the presence of a code: a reversed
+/// pair still produces a `T001`, so every test that checks only for the code
+/// keeps passing while the message is wrong. That is how the reversal survived
+/// in five positions after being fixed in a sixth.
+#[test]
+fn expected_and_found_are_never_reversed() {
+    let cases: &[(&str, &str)] = &[
+        (
+            "annotated_let",
+            "pub fn f -> Int =\n    let n: Int = \"text\"\n    1\n",
+        ),
+        (
+            "call_argument",
+            "fn g (n: Int) -> Int = n\npub fn f -> Int = g \"text\"\n",
+        ),
+        ("fn_return", "pub fn f -> Int = \"text\"\n"),
+        (
+            "if_branches",
+            "pub fn f (c: Bool) -> Int = if c then 1 else \"text\"\n",
+        ),
+        (
+            "record_construction",
+            "type One = { n: Int }\npub fn f -> One = One { n = \"text\" }\n",
+        ),
+        (
+            "with_update",
+            "type One = { n: Int }\npub fn f (o: One) -> One = o with { n = \"text\" }\n",
+        ),
+        (
+            "return_stmt",
+            "pub fn f (s: Text) -> Int =\n    guard (s != \"\") else return \"text\"\n    1\n",
+        ),
+        ("list_element", "pub fn f -> List Int = [1, \"text\"]\n"),
+        (
+            "match_arms",
+            "pub fn f (n: Int) -> Int =\n    match n\n        0 -> 1\n        _ -> \"text\"\n",
+        ),
+    ];
+
+    let mut wrong = Vec::new();
+    for (name, src) in cases {
+        let errors = run_typecheck_on_source(name, src);
+        match first_mismatch_pair(&errors) {
+            Some(("Int", "Text")) => {}
+            Some((expected, found)) => {
+                wrong.push(format!("{name}: expected {expected}, got {found}"));
+            }
+            None => wrong.push(format!("{name}: reported no mismatch at all")),
+        }
+    }
+
+    assert!(
+        wrong.is_empty(),
+        "every case is an Int position handed a Text, so all should read \
+         `expected Int, got Text`:\n  {}",
+        wrong.join("\n  ")
+    );
+}

@@ -168,7 +168,11 @@ pub fn infer_record_construction(
                         }
                     }
                 };
-                if let Err(e) = unify(ctx, &value_ty, &field_ty_subst) {
+                // Declared type first: `unify` reports its first argument as
+                // *expected*, and the field's declaration is what the value
+                // had to meet. The other order reads as an instruction to
+                // change the declaration.
+                if let Err(e) = unify(ctx, &field_ty_subst, &value_ty) {
                     // Attach the field init span to the unification error.
                     ctx.errors.push(attach_span(e, fi.span));
                     had_error = true;
@@ -431,7 +435,7 @@ pub fn infer_record_with(
                     }
                 }
             };
-            if let Err(e) = unify(ctx, &value_ty, &field_ty_subst) {
+            if let Err(e) = unify(ctx, &field_ty_subst, &value_ty) {
                 ctx.errors.push(attach_span(e, fi.span));
             }
         }
@@ -485,7 +489,7 @@ fn infer_structural_with(
                 }
             }
         };
-        if let Err(e) = unify(ctx, &value_ty, &field_ty) {
+        if let Err(e) = unify(ctx, &field_ty, &value_ty) {
             ctx.errors.push(attach_span(e, fi.span));
         }
     }
@@ -682,7 +686,7 @@ pub fn infer_record_variant_construction(
                         }
                     }
                 };
-                if let Err(e) = unify(ctx, &value_ty, &field_ty) {
+                if let Err(e) = unify(ctx, &field_ty, &value_ty) {
                     ctx.errors.push(attach_span(e, fi.span));
                 }
             }

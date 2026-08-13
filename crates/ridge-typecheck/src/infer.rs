@@ -609,7 +609,11 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 }
 
                 let arm_ty = infer_expr(ctx, b, &arm.body);
-                if let Err(e) = unify(ctx, &arm_ty, &result_var) {
+                // `unify` reports its first argument as *expected*. The type
+                // the earlier arms settled on is what this arm had to meet,
+                // so it goes first; passing the arm first said the two the
+                // other way round.
+                if let Err(e) = unify(ctx, &result_var, &arm_ty) {
                     ctx.errors.push(attach_span(e, arm.span));
                 }
                 ctx.env.pop_frame();
@@ -649,7 +653,9 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
         Expr::Return { value, span } => {
             let val_ty = infer_expr(ctx, b, value);
             if let Some(fn_ret) = ctx.current_fn_ret.clone() {
-                if let Err(e) = unify(ctx, &val_ty, &fn_ret) {
+                // The return type is what the value had to meet, so it is the
+                // expected side and goes first.
+                if let Err(e) = unify(ctx, &fn_ret, &val_ty) {
                     ctx.errors.push(attach_span(e, *span));
                 }
             }
@@ -767,7 +773,9 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             let elem_var = Type::Var(ctx.fresh_tyvid());
             for elem in elems {
                 let et = infer_expr(ctx, b, elem);
-                if let Err(e) = unify(ctx, &et, &elem_var) {
+                // The element type the list has settled on is the expected
+                // side; this element is what arrived.
+                if let Err(e) = unify(ctx, &elem_var, &et) {
                     ctx.errors.push(attach_span(e, *span));
                 }
             }

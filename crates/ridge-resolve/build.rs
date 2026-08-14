@@ -65,15 +65,16 @@ const MODULE_ORDER: &[&str] = &[
     "std.raw",
     "std.test",
     // Appended last so they take the highest ids without renumbering any module
-    // ahead of them. `std.decimal`, `std.uuid`, `std.bytes`, `std.date` and
-    // `std.timeofday` are Tier-1 primitive companions (they import nothing); the
-    // ordering here only fixes ids, and the build tier is set separately in the
-    // stdlib build driver.
+    // ahead of them. `std.decimal`, `std.uuid`, `std.bytes`, `std.date`,
+    // `std.timeofday` and `std.error` are Tier-1 primitive companions (they
+    // import nothing); the ordering here only fixes ids, and the build tier is
+    // set separately in the stdlib build driver.
     "std.decimal",
     "std.uuid",
     "std.bytes",
     "std.date",
     "std.timeofday",
+    "std.error",
 ];
 
 // ── Baseline export table (T10: preserves original API) ───────────────────────
@@ -632,6 +633,15 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "lte",
             "gt",
             "gte",
+        ],
+    ),
+    (
+        "std.error",
+        &[
+            // The standard-library error value. `Error` itself is a prelude
+            // builtin, not an export of this module; the module carries the
+            // rendering that makes an interpolated error readable.
+            "toText",
         ],
     ),
     (

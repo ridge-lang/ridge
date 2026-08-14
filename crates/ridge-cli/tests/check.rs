@@ -439,3 +439,57 @@ pub fn ok (url: Text) (n: Int) -> Response =
         .assert()
         .success();
 }
+
+// ── Test 9: the standard-library `Error` is printable ────────────────────────
+
+/// Interpolating an `Error` type-checks.
+///
+/// `Error` is the failure half of every capability-bearing standard-library
+/// `Result`, and the shape below is the most ordinary thing anyone writes with
+/// one. It used to be `T029 no instance ToText Error`, with no fix available
+/// from the reader's own workspace: `Error` is declared outside it, so it takes
+/// no `deriving` clause of theirs, and an instance of their own would be an
+/// orphan (T031). The only way through was to know a field name (#422).
+#[test]
+fn check_interpolated_error_has_an_instance() {
+    let source = "\
+import std.fs as Fs
+
+pub fn fs describe (path: Text) -> Text =
+    match Fs.readFile path
+        Ok text -> text
+        Err e -> $\"failed: ${e}\"
+";
+    let tw = make_workspace("Printable", source);
+
+    ridge_cmd()
+        .arg("check")
+        .current_dir(&tw.path)
+        .assert()
+        .success();
+}
+
+/// The same instance reached as a value, through a `where ToText a` constraint,
+/// and by naming the rendering directly.
+///
+/// Three different routes to the same instance: the interpolation above lowers
+/// to a direct `std.error.toText` call, the constraint needs the dictionary
+/// synthesised, and the qualified call needs the module to be in scope with no
+/// import — the prelude alias every other pure-data module already has.
+#[test]
+fn check_error_renders_through_a_constraint_and_by_name() {
+    let source = "\
+pub fn show (x: a) -> Text where ToText a = $\"rendered: ${x}\"
+
+pub fn viaDict (e: Error) -> Text = show e
+
+pub fn viaName (e: Error) -> Text = Error.toText e
+";
+    let tw = make_workspace("Routes", source);
+
+    ridge_cmd()
+        .arg("check")
+        .current_dir(&tw.path)
+        .assert()
+        .success();
+}

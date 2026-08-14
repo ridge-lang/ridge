@@ -46,6 +46,7 @@ pub const TIERS: &[TierPlan] = &[
             "std.bytes",
             "std.date",
             "std.timeofday",
+            "std.error",
             "std.bool",
             "std.option",
             "std.result",

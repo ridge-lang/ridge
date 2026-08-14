@@ -876,6 +876,7 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
         ("std.bytes", "Bytes"),
         ("std.date", "Date"),
         ("std.timeofday", "Time"),
+        ("std.error", "Error"),
         ("std.bool", "Bool"),
         ("std.text", "Text"),
         ("std.list", "List"),
@@ -2150,7 +2151,7 @@ mod tests {
     // 51 from quotation prelude + 4 from the Ordering prelude + 13 module aliases).
     #[test]
     fn prelude_injected_when_no_user_imports() {
-        // An empty module has no imports → all 82 prelude bindings should appear.
+        // An empty module has no imports → all 83 prelude bindings should appear.
         let (_td, result) = resolve_single("");
         let module_imports = result.imports.first().expect("module 0");
         // Exactly 6 prelude IRs (option + result + json + quotation constructors,
@@ -2166,8 +2167,8 @@ mod tests {
             .map(|ir| ir.effective_bindings.len())
             .sum();
         assert_eq!(
-            total_bindings, 82,
-            "expected 82 total prelude bindings (6 option/result + 8 json + 51 quotation + 4 ordering + 13 module aliases); got {total_bindings}"
+            total_bindings, 83,
+            "expected 83 total prelude bindings (6 option/result + 8 json + 51 quotation + 4 ordering + 14 module aliases); got {total_bindings}"
         );
     }
 
@@ -2257,16 +2258,16 @@ mod tests {
 
     // ── Module-alias prelude tests ────────────────────────────────────────────
 
-    // Prelude test 8: IR[5] has exactly 13 ModuleAlias bindings for
-    // Int, Float, Decimal, Uuid, Bytes, Date, Time, Bool, Text, List, Map, Set, Json.
+    // Prelude test 8: IR[5] has exactly 14 ModuleAlias bindings for
+    // Int, Float, Decimal, Uuid, Bytes, Date, Time, Error, Bool, Text, List, Map, Set, Json.
     #[test]
-    fn prelude_r015_ir_has_thirteen_module_aliases() {
+    fn prelude_r015_ir_has_fourteen_module_aliases() {
         let resolutions = super::prelude_resolutions();
         let aliases_ir = &resolutions[5];
         assert_eq!(
             aliases_ir.effective_bindings.len(),
-            13,
-            "expected 13 module-alias prelude bindings; got {:?}",
+            14,
+            "expected 14 module-alias prelude bindings; got {:?}",
             aliases_ir
                 .effective_bindings
                 .iter()
@@ -2280,7 +2281,7 @@ mod tests {
             .collect();
         for expected in &[
             "Int", "Float", "Decimal", "Uuid", "Bytes", "Date", "Bool", "Text", "List", "Map",
-            "Set", "Json",
+            "Set", "Json", "Error",
         ] {
             assert!(names.contains(expected), "missing alias '{expected}'");
         }
@@ -2307,6 +2308,7 @@ mod tests {
             ("Bytes", 30),
             ("Date", 31),
             ("Time", 32),
+            ("Error", 33),
         ];
         for (alias, expected_id) in expected {
             let eb = aliases_ir
@@ -2390,11 +2392,11 @@ mod tests {
             .iter()
             .map(|eb| eb.local_name.as_str())
             .collect();
-        // All 13 aliases must survive: 'MyList' is not a prelude name.
+        // All 14 aliases must survive: 'MyList' is not a prelude name.
         assert_eq!(
             names.len(),
-            13,
-            "all 13 aliases must survive; got: {names:?}"
+            14,
+            "all 14 aliases must survive; got: {names:?}"
         );
         assert!(
             names.contains(&"List"),

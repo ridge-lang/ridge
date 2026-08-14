@@ -151,6 +151,7 @@ const STDLIB_MODULES: &[&str] = &[
     "std.bytes",
     "std.date",
     "std.timeofday",
+    "std.error",
     "std.bool",
     "std.option",
     "std.result",

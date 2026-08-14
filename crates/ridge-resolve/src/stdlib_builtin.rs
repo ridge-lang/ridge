@@ -70,8 +70,8 @@ mod tests {
 
     // Test 1: table length
     #[test]
-    fn builtins_len_is_33() {
-        assert_eq!(BUILTINS.len(), 33, "expected exactly 33 builtin modules");
+    fn builtins_len_is_34() {
+        assert_eq!(BUILTINS.len(), 34, "expected exactly 34 builtin modules");
     }
 
     // Test 2: each entry's id.0 == its index

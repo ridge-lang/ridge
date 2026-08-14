@@ -74,6 +74,8 @@ const STD_BYTES: StdlibModuleId = StdlibModuleId(30);
 const STD_DATE: StdlibModuleId = StdlibModuleId(31);
 // std.timeofday follows, taking the next id the same way (32).
 const STD_TIMEOFDAY: StdlibModuleId = StdlibModuleId(32);
+// std.error follows, taking the next id the same way (33).
+const STD_ERROR: StdlibModuleId = StdlibModuleId(33);
 
 // ── Type-building helpers ─────────────────────────────────────────────────────
 //
@@ -487,6 +489,11 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         (STD_TIMEOFDAY, "eq" | "lt" | "lte" | "gt" | "gte") => {
             Some(mono(ty_fn_pure(vec![ty_time(b), ty_time(b)], ty_bool(b))))
         }
+
+        // ── std.error ─────────────────────────────────────────────────────────
+        // The rendering behind `instance ToText Error`, and the explicit call
+        // for anyone who wants the text without interpolating.
+        (STD_ERROR, "toText") => Some(mono(ty_fn_pure(vec![ty_error(b)], ty_text(b)))),
 
         // ── std.bool ──────────────────────────────────────────────────────────
         (STD_BOOL, "not") => Some(mono(ty_fn_pure(vec![ty_bool(b)], ty_bool(b)))),

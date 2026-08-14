@@ -47,6 +47,9 @@ const TYCON_OPTION: u32 = 9;
 const TYCON_RESULT: u32 = 10;
 const TYCON_ERROR: u32 = 12;
 const TYCON_ORDERING: u32 = 15;
+// Interned after the 0–16 builtins, so their ids sit above the block.
+const TYCON_DECIMAL: u32 = 51;
+const TYCON_UUID: u32 = 52;
 
 /// True if `(class, tycon)` is a prelude-reserved `Encode`/`Decode` instance
 /// whose dictionary has no module-level constant and must be synthesised.
@@ -185,15 +188,55 @@ pub fn is_prelude_ord_instance(class: ClassId, tycon: TyConId) -> bool {
 /// as a value, and referencing `$inst_ToText_Int` names a constant that was
 /// never generated.
 ///
-/// The set is the one interpolation itself converts (`crate::interp`), minus
-/// the types that carry a real instance of their own.
+/// The set is the one interpolation itself converts (`crate::interp`), and it
+/// is the whole of it. `Decimal` and `Uuid` used to be excluded on the theory
+/// that they carry a real instance of their own; they do not. Both are seeded
+/// as prelude instances in `class_env.rs` exactly like the rest, which is what
+/// stops the auto-promotion pass from generating an `$inst_` constant for the
+/// stdlib's own `pub fn toText` — so declining to synthesise left the `$inst_`
+/// fallback naming a constant nobody emits, and any `where ToText a` call at
+/// either failed to build with `E001` (#511). `Error` arrived with the same
+/// shape and joins them (#422).
+///
+/// Membership is read off [`prelude_totext_target`] rather than restated, so
+/// the set and the per-type conversion cannot drift apart: that drift is
+/// exactly what left two admitted types with no arm to render them.
 #[must_use]
 pub fn is_prelude_totext_instance(class: ClassId, tycon: TyConId) -> bool {
-    class == TOTEXT_CLASS
-        && matches!(
-            tycon.0,
-            TYCON_INT | TYCON_FLOAT | TYCON_BOOL | TYCON_TEXT | TYCON_TIMESTAMP | TYCON_ORDERING
-        )
+    class == TOTEXT_CLASS && prelude_totext_target(tycon).is_some()
+}
+
+/// How a built-in `ToText` value is turned into text.
+enum ToTextTarget {
+    /// The value is already text; the conversion is the identity.
+    Identity,
+    /// `Ordering` has no stdlib module — its three constructors are named by a
+    /// runtime helper reached through `std.list`.
+    Ordering,
+    /// `std.<module>.toText`.
+    Module(&'static str),
+}
+
+/// The conversion for a built-in the prelude registers a `ToText` instance for,
+/// or `None` for any other type.
+///
+/// The single source for both the membership test and the dispatch. Adding a
+/// built-in `ToText` instance means adding one arm here and the matching arm in
+/// [`crate::interp::wrap_to_text`], which is what keeps a value rendered through
+/// a dictionary reading the same as one interpolated inline.
+const fn prelude_totext_target(tycon: TyConId) -> Option<ToTextTarget> {
+    Some(match tycon.0 {
+        TYCON_TEXT => ToTextTarget::Identity,
+        TYCON_ORDERING => ToTextTarget::Ordering,
+        TYCON_INT => ToTextTarget::Module("std.int"),
+        TYCON_FLOAT => ToTextTarget::Module("std.float"),
+        TYCON_BOOL => ToTextTarget::Module("std.bool"),
+        TYCON_TIMESTAMP => ToTextTarget::Module("std.time"),
+        TYCON_ERROR => ToTextTarget::Module("std.error"),
+        TYCON_DECIMAL => ToTextTarget::Module("std.decimal"),
+        TYCON_UUID => ToTextTarget::Module("std.uuid"),
+        _ => return None,
+    })
 }
 
 /// Synthesise the runtime dictionary for a built-in `ToText` instance.
@@ -204,8 +247,9 @@ pub fn is_prelude_totext_instance(class: ClassId, tycon: TyConId) -> bool {
 /// conversion and gets the identity; `Ordering` has no stdlib module and goes
 /// through the runtime helper that names its three constructors.
 ///
-/// Returns `None` when `(class, tycon)` is not one of these, so the caller
-/// falls back to the `$inst_` symbol path.
+/// Returns `None` when `class` is not `ToText` or `tycon` is not one of the
+/// built-ins it is registered for, so the caller falls back to the `$inst_`
+/// symbol path.
 #[must_use]
 pub fn synth_totext_dict(
     ctx: &mut LowerCtx<'_>,
@@ -213,31 +257,18 @@ pub fn synth_totext_dict(
     tycon: TyConId,
     span: Span,
 ) -> Option<IrExpr> {
-    if !is_prelude_totext_instance(class, tycon) {
+    if class != TOTEXT_CLASS {
         return None;
     }
+    // Resolve before touching `ctx`: declining after minting an id would leave a
+    // gap in the id sequence for a dictionary that was never emitted.
+    let target = prelude_totext_target(tycon)?;
     let arg = || param("__totext_x".to_string(), span);
-    let body = match tycon.0 {
-        // Already text: the conversion is the value.
-        TYCON_TEXT => local(ctx, "__totext_x", span),
-        TYCON_ORDERING => {
-            let x = local(ctx, "__totext_x", span);
-            stdlib_call(ctx, "std.list", "_orderingToText", vec![x], span)
-        }
-        other => {
-            let module = match other {
-                TYCON_INT => "std.int",
-                TYCON_FLOAT => "std.float",
-                TYCON_BOOL => "std.bool",
-                TYCON_TIMESTAMP => "std.time",
-                // Admitted by the predicate above and handled by neither arm:
-                // decline rather than guess, and the caller keeps the `$inst_`
-                // path it would have taken.
-                _ => return None,
-            };
-            let x = local(ctx, "__totext_x", span);
-            stdlib_call(ctx, module, "toText", vec![x], span)
-        }
+    let x = local(ctx, "__totext_x", span);
+    let body = match target {
+        ToTextTarget::Identity => x,
+        ToTextTarget::Ordering => stdlib_call(ctx, "std.list", "_orderingToText", vec![x], span),
+        ToTextTarget::Module(module) => stdlib_call(ctx, module, "toText", vec![x], span),
     };
     let to_text_fn = lambda(ctx, vec![arg()], body, span);
     Some(dict_map(ctx, "toText", to_text_fn, span))

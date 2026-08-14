@@ -1,0 +1,33 @@
+-- std.error — the standard-library error value (Tier 1, no stdlib imports).
+--
+-- `Error { code: Text, message: Text }` is the error half of every
+-- capability-bearing standard-library `Result` — the file verbs, the net verbs,
+-- the process and data layers all fail with one. The `code` is the machine
+-- channel (`enoent`, `db.error.23505`) that callers match on; the `message` is
+-- the human sentence describing what happened.
+--
+-- An Error is produced by the runtime, never built in Ridge: it has no
+-- constructor, so a value of this type always comes back from a verb that
+-- failed. Its fields are read the usual way (`e.code`, `e.message`).
+--
+-- This module exists so an error can be rendered, which is what most programs
+-- do with one the moment they catch it.
+
+-- Render an error as `code: message` — the classifier first, then the sentence.
+--
+-- The code leads because an interpolated error almost always ends up in a log
+-- line, and the code is what identifies the failure there: it is the same
+-- channel the standard library itself sorts on. Rust (`No such file or
+-- directory (os error 2)`), Python (`[Errno 2] No such file …`) and Java
+-- (`java.io.FileNotFoundException: x.txt`) all keep the classifier alongside
+-- the human text for the same reason.
+--
+-- Either half may be absent, and an empty one is dropped along with its
+-- separator rather than rendered as a dangling `code: ` or `: message`. No
+-- producer leaves one empty today — every error the runtime builds goes through
+-- one constructor that fills both — so those two branches are a guard against a
+-- future one, not a case anyone can reach from here.
+pub fn toText (e: Error) -> Text =
+    if e.code == "" then e.message
+    else if e.message == "" then e.code
+    else $"${e.code}: ${e.message}"

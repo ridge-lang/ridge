@@ -1459,18 +1459,21 @@ pub fn describe () -> Text =\n\
 /// declaration of the reader's to carry a `deriving` clause, and an instance
 /// written here is an orphan. Offering them anyway sends the reader to a second
 /// error, so the hint has to say something they can act on instead.
+///
+/// The witness is `Bytes`, whose missing instance is a decision rather than a
+/// gap — `toHex` and `toUtf8` are both canonical and disagree, so there is no
+/// one rendering to ship. This test used to use `Error`, which read the same way
+/// and was in fact the gap: it now has an instance, and the test went red the
+/// moment that shipped. A test for "the fix the orphan rule refuses" wants a
+/// type that will still be missing an instance next year.
 #[test]
 fn t029_hint_does_not_offer_a_fix_the_orphan_rule_refuses() {
     let src = "\
-import std.fs as Fs\n\
-\n\
-pub fn fs report () -> Result Text Text =\n\
-\x20   match Fs.readFile \"x.txt\"\n\
-\x20       Err e -> Err $\"failed: ${e}\"\n\
-\x20       Ok raw -> Ok raw\n\
+pub fn report (b: Bytes) -> Text =\n\
+\x20   $\"raw: ${b}\"\n\
 ";
     let (ty, hint) = only_no_instance(&run_typecheck_on_source("t029_orphan", src));
-    assert_eq!(ty, "Error");
+    assert_eq!(ty, "Bytes");
     assert!(
         !hint.contains("deriving (ToText)"),
         "`deriving` is not available on a type the reader does not declare: {hint}"

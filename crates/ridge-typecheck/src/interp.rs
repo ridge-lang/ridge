@@ -190,6 +190,7 @@ fn builtin_has_to_text(b: &BuiltinTyCons, tycon_id: TyConId) -> bool {
         || tycon_id == b.timestamp
         || tycon_id == b.decimal
         || tycon_id == b.uuid
+        || tycon_id == b.error
         || tycon_id == TyConId(15) // Ordering
 }
 

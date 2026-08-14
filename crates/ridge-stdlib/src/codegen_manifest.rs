@@ -86,8 +86,8 @@ pub const STDLIB_MODULE_ORDER: &[&str] = &[
     // Tier 6 — testing
     "std.test",
     // Appended last to keep the stable `StdlibModuleId` layout intact. `std.decimal`,
-    // `std.uuid`, `std.bytes`, `std.date` and `std.timeofday` are Tier-1 primitive
-    // companions (they import nothing and build early), but inserting them in tier
+    // `std.uuid`, `std.bytes`, `std.date`, `std.timeofday` and `std.error` are Tier-1
+    // primitive companions (they import nothing and build early), but inserting them in tier
     // order would renumber every module after them; giving them the highest ids avoids that churn and
     // changes no behaviour.
     "std.decimal",
@@ -95,6 +95,7 @@ pub const STDLIB_MODULE_ORDER: &[&str] = &[
     "std.bytes",
     "std.date",
     "std.timeofday",
+    "std.error",
 ];
 
 // ── Core extraction ───────────────────────────────────────────────────────────

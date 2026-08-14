@@ -32,8 +32,13 @@
 //! | 2       | `Bool`        | `std.bool.toText`    |
 //! | 3       | `Text`        | identity (no wrap)   |
 //! | 5       | `Timestamp`   | `std.time.toText`    |
+//! | 12      | `Error`       | `std.error.toText`   |
 //! | 51      | `Decimal`     | `std.decimal.toText` |
 //! | 52      | `Uuid`        | `std.uuid.toText`    |
+//!
+//! Row 12 is the standard-library `Error` value, which is not the same thing as
+//! the `Type::Error` two paragraphs down: one is a type a program can hold, the
+//! other is the type-checker's marker for an expression it could not type.
 //!
 //! `Type::Error` is absorbing — no wrapper, no diagnostic.
 //! Any other type → `L107`, inner returned unwrapped.
@@ -87,6 +92,8 @@ const TIMESTAMP_TYCON: TyConId = TyConId(5);
 const DECIMAL_TYCON: TyConId = TyConId(51);
 /// `Uuid` — `TyConId(52)` (interned after the 0–16 builtins).
 const UUID_TYCON: TyConId = TyConId(52);
+/// `Error` — `TyConId(12)`. The failure half of every stdlib `Result`.
+const ERROR_TYCON: TyConId = TyConId(12);
 /// `Ordering` — `TyConId(15)`. The built-in result of `compare`.
 const ORDERING_TYCON: TyConId = TyConId(15);
 
@@ -240,6 +247,14 @@ fn wrap_to_text(ctx: &mut LowerCtx<'_>, inner: IrExpr, ty: Option<Type>, span: S
         // ── Type::Uuid — std.uuid.toText ─────────────────────────────────────
         Some(Type::Con(id, _)) if id == UUID_TYCON => {
             make_to_text_call(ctx, inner, "std.uuid", span)
+        }
+
+        // ── Type::Error — std.error.toText ───────────────────────────────────
+        // Must sit above the `Some(Type::Con(tycon_id, _))` catch-all, which
+        // would otherwise route it through the instance registry; the direct
+        // call is what every other built-in with a stdlib module gets.
+        Some(Type::Con(id, _)) if id == ERROR_TYCON => {
+            make_to_text_call(ctx, inner, "std.error", span)
         }
 
         // ── Type::Ordering — the built-in `compare` result ───────────────────
@@ -438,6 +453,7 @@ fn try_dict_to_text(ctx: &mut LowerCtx<'_>, inner: &IrExpr, span: Span) -> Optio
 /// | 5 (Timestamp) | `std.time.toText`    |
 /// | 51 (Decimal)  | `std.decimal.toText` |
 /// | 52 (Uuid)     | `std.uuid.toText`    |
+/// | 12 (Error)    | `std.error.toText`   |
 /// | 15 (Ordering) | `std.list._orderingToText` |
 /// | other     | identity — no known stdlib dispatch; field rendered as-is |
 ///
@@ -462,6 +478,8 @@ pub(crate) fn wrap_to_text_by_tycon(
         make_to_text_call(ctx, arg, "std.decimal", span)
     } else if tycon_id == UUID_TYCON {
         make_to_text_call(ctx, arg, "std.uuid", span)
+    } else if tycon_id == ERROR_TYCON {
+        make_to_text_call(ctx, arg, "std.error", span)
     } else if tycon_id == ORDERING_TYCON {
         make_ordering_to_text_call(ctx, arg, span)
     } else {

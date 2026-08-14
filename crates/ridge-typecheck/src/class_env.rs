@@ -718,6 +718,18 @@ pub fn register_prelude_instances_gated(env: &mut InstanceEnv, is_stdlib: bool) 
         "ToText",
         "Uuid",
     );
+    // Error (TyConId 12) renders through `std.error.toText` the same way, and it
+    // is the one that matters most: `Error` is the failure half of every
+    // capability-bearing stdlib `Result`, so `$"failed: ${e}"` is the most
+    // ordinary line anyone writes with one. Without this seed it is a T029 the
+    // reader cannot fix from their own workspace — `Error` takes no `deriving`
+    // clause of theirs and an instance of their own would be an orphan (#422).
+    let _ = env.insert(
+        (TOTEXT_CLASS, TyConId(12)),
+        prelude_inst("toText"),
+        "ToText",
+        "Error",
+    );
 
     // ── Eq instances ─────────────────────────────────────────────────────────
     // Eq Float is intentionally absent — floating-point equality is a footgun.

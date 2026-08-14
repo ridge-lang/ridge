@@ -356,6 +356,7 @@ Every Ridge module has a set of names in scope without any `import` declaration.
 | `Decimal` | `std.decimal` | `ModuleAlias` | Enables `Decimal.fromText`, `Decimal.round`, … |
 | `Uuid` | `std.uuid` | `ModuleAlias` | Enables `Uuid.generate`, `Uuid.fromText`, … |
 | `Bytes` | `std.bytes` | `ModuleAlias` | Enables `Bytes.fromHex`, `Bytes.generate`, … |
+| `Error` | `std.error` | `ModuleAlias` | Enables `Error.toText` |
 | `Bool` | `std.bool` | `ModuleAlias` | Enables `Bool.not`, … |
 | `Text` | `std.text` | `ModuleAlias` | Enables `Text.padLeft`, `Text.split`, … |
 | `List` | `std.list` | `ModuleAlias` | Enables `List.map`, `List.fold`, … |
@@ -636,7 +637,7 @@ Io.println $"User ${user.name} has ${user.age} years"
 Io.println $"Total: ${items |> List.map (.price) |> List.sum}"
 ```
 
-String interpolation dispatches through the `ToText` class (§5.6). Built-in types (`Int`, `Float`, `Bool`, `Text`, `Timestamp`, `Decimal`, `Uuid`) have prelude instances. `Bytes` has none — it has no single canonical text form, since `toHex` and `toUtf8` disagree — so a `Bytes` hole is a type error until you supply an instance. User-defined types become interpolatable by adding `deriving (ToText)` to the type declaration or by writing an explicit `instance ToText T`. See §5.6. Interpolation also has a multi-line block form, `$"""..."""` (§4.1.1).
+String interpolation dispatches through the `ToText` class (§5.6). Built-in types (`Int`, `Float`, `Bool`, `Text`, `Timestamp`, `Decimal`, `Uuid`, `Error`) have prelude instances. `Bytes` has none — it has no single canonical text form, since `toHex` and `toUtf8` disagree — so a `Bytes` hole is a type error until you supply an instance. User-defined types become interpolatable by adding `deriving (ToText)` to the type declaration or by writing an explicit `instance ToText T`. See §5.6. Interpolation also has a multi-line block form, `$"""..."""` (§4.1.1).
 
 ### 3.11. Modules and imports
 
@@ -2031,6 +2032,7 @@ Rules:
 | `std.uuid` | RFC 4122 identifiers | `generate`, `fromText`, `toText`, `nil`, `compare`, `eq` |
 | `std.bytes` | Raw byte strings | `fromHex`, `toHex`, `fromUtf8`, `toUtf8`, `empty`, `generate`, `length`, `concat`, `compare` |
 | `std.bool` | Boolean helpers | `not`, `and`, `or` |
+| `std.error` | The standard-library error value | `toText` |
 | `std.text` | Text ops | `byteSize`, `concat`, `split`, `splitN`, `splitAny`, `lines`, `trim`, `toUpper`, `toLower`, `startsWith`, `endsWith`, `contains`, `replace`, `padLeft`, `padRight`, `isEmpty` |
 | `std.list` | List ops | `empty`, `length`, `isEmpty`, `head`, `tail`, `map`, `filter`, `filterMap`, `fold`, `foldRight`, `reverse`, `sort`, `sortBy`, `take`, `drop`, `groupBy`, `flatMap`, `zip`, `zipWith`, `contains`, `find`, `any`, `all`, `range`, `rangeExclusive`, `forEach` |
 | `std.map` | Persistent map | `empty`, `fromList`, `toList`, `insert`, `remove`, `get`, `contains`, `keys`, `values`, `map`, `filter`, `length`, `merge`, `update` |

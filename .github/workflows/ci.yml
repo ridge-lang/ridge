@@ -1,10 +1,20 @@
 name: CI
 
+# No branch filter on pull_request. Filtering it to main means a pull request
+# whose base is another feature branch runs nothing at all, and a pull request
+# with no checks on it looks exactly like one where everything passed. The push
+# trigger stays pinned to main so a branch push does not duplicate the run its
+# own pull request already does.
 on:
   pull_request:
-    branches: [main]
   push:
     branches: [main]
+
+# A newer commit on the same ref makes an in-flight run obsolete, so cancel it —
+# except on main, where each run is the record for one merged commit.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   build-and-test:

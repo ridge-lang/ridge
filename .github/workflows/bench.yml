@@ -1,8 +1,9 @@
 name: Bench
 
+# Same reasoning as CI: a pull request based on another feature branch has to
+# run, or the numbers go unmeasured on exactly the changes that stack up.
 on:
   pull_request:
-    branches: [main]
   push:
     branches: [main]
 

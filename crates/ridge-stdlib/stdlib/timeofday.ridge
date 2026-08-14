@@ -56,8 +56,8 @@ pub fn second (t: Time) -> Int
 -- the system clock. Pairs with `now` for a non-UTC clock: near midnight the UTC
 -- time of day and a local one fall on different days, so the zone is never assumed
 -- silently — pick this or pass an offset.
-@ffi("ridge_rt", "tod_now_utc", 1)
-pub fn time nowUtc (_unit: Unit) -> Time
+@ffi("ridge_rt", "tod_now_utc", 0)
+pub fn time nowUtc () -> Time
 
 -- The current time of day at a fixed offset from UTC, in minutes east (so UTC-3 is
 -- `-180`, UTC+5:30 is `330`, UTC is `0`). Returns the time a clock at that offset

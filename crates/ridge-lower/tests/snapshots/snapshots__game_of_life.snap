@@ -954,40 +954,38 @@ items:
           Call(n330):
             callee:
               Symbol(n331): Stdlib(std.cli.args)
-            args:
-              -
-                Lit(n332): Unit
+            args: []
         body:
-          LetIn(n333):
+          LetIn(n332):
             pat:
               Bind: generations
             value:
-              Call(n334):
+              Call(n333):
                 callee:
-                  Symbol(n335): Stdlib(std.option.withDefault)
+                  Symbol(n334): Stdlib(std.option.withDefault)
                 args:
                   -
-                    Symbol(n336): Local(defaultGenerations @ m0)
+                    Symbol(n335): Local(defaultGenerations @ m0)
                   -
-                    Call(n337):
+                    Call(n336):
                       callee:
-                        Symbol(n338): Stdlib(std.option.flatMap)
+                        Symbol(n337): Stdlib(std.option.flatMap)
                       args:
                         -
-                          Symbol(n339): Stdlib(std.int.parse)
+                          Symbol(n338): Stdlib(std.int.parse)
                         -
-                          Call(n340):
+                          Call(n339):
                             callee:
-                              Symbol(n341): Stdlib(std.list.head)
+                              Symbol(n340): Stdlib(std.list.head)
                             args:
                               -
-                                Local(n342): args
+                                Local(n341): args
             body:
-              LetIn(n343):
+              LetIn(n342):
                 pat:
                   Bind: loop
                 value:
-                  Lambda(n344):
+                  Lambda(n343):
                     caps: CapabilitySet(0)
                     params:
                       - name: gen
@@ -995,140 +993,140 @@ items:
                       - name: grid
                         ty: Con(107)
                     body:
-                      Match(n345):
+                      Match(n344):
                         scrutinee:
-                          Call(n346):
+                          Call(n345):
                             callee:
-                              Symbol(n347): Stdlib(std.op.gt)
+                              Symbol(n346): Stdlib(std.op.gt)
                             args:
                               -
-                                Local(n348): gen
+                                Local(n347): gen
                               -
-                                Lit(n349): Int(0)
+                                Lit(n348): Int(0)
                         arms:
                           -
                             pat:
                               Lit: Bool(true)
                             body:
-                              Block(n350):
-                                Call(n351):
+                              Block(n349):
+                                Call(n350):
                                   callee:
-                                    Symbol(n352): Stdlib(std.io.print)
+                                    Symbol(n351): Stdlib(std.io.print)
                                   args:
                                     -
-                                      Lit(n353): Text("\u{1b}[2J\u{1b}[H")
-                                Block(n354):
-                                  Call(n355):
+                                      Lit(n352): Text("\u{1b}[2J\u{1b}[H")
+                                Block(n353):
+                                  Call(n354):
                                     callee:
-                                      Symbol(n356): Stdlib(std.io.println)
+                                      Symbol(n355): Stdlib(std.io.println)
                                     args:
                                       -
-                                        Call(n357):
+                                        Call(n356):
                                           callee:
-                                            Symbol(n358): Stdlib(std.text.concat)
+                                            Symbol(n357): Stdlib(std.text.concat)
                                           args:
                                             -
-                                              Call(n359):
+                                              Call(n358):
                                                 callee:
-                                                  Symbol(n360): Stdlib(std.text.concat)
+                                                  Symbol(n359): Stdlib(std.text.concat)
                                                 args:
                                                   -
-                                                    Call(n361):
+                                                    Call(n360):
                                                       callee:
-                                                        Symbol(n362): Stdlib(std.text.concat)
+                                                        Symbol(n361): Stdlib(std.text.concat)
                                                       args:
                                                         -
-                                                          Lit(n363): Text("Generation ")
+                                                          Lit(n362): Text("Generation ")
                                                         -
-                                                          Call(n364):
+                                                          Call(n363):
                                                             callee:
-                                                              Symbol(n365): Stdlib(std.int.toText)
+                                                              Symbol(n364): Stdlib(std.int.toText)
                                                             args:
                                                               -
-                                                                Call(n366):
+                                                                Call(n365):
                                                                   callee:
-                                                                    Symbol(n367): Stdlib(std.int.add)
+                                                                    Symbol(n366): Stdlib(std.int.add)
                                                                   args:
                                                                     -
-                                                                      Call(n368):
+                                                                      Call(n367):
                                                                         callee:
-                                                                          Symbol(n369): Stdlib(std.int.sub)
+                                                                          Symbol(n368): Stdlib(std.int.sub)
                                                                         args:
                                                                           -
-                                                                            Local(n370): generations
+                                                                            Local(n369): generations
                                                                           -
-                                                                            Local(n371): gen
+                                                                            Local(n370): gen
                                                                     -
-                                                                      Lit(n372): Int(1)
+                                                                      Lit(n371): Int(1)
                                                   -
-                                                    Lit(n373): Text(" / ")
+                                                    Lit(n372): Text(" / ")
                                             -
-                                              Call(n374):
+                                              Call(n373):
                                                 callee:
-                                                  Symbol(n375): Stdlib(std.int.toText)
+                                                  Symbol(n374): Stdlib(std.int.toText)
                                                 args:
                                                   -
-                                                    Local(n376): generations
-                                  Block(n377):
-                                    Call(n378):
+                                                    Local(n375): generations
+                                  Block(n376):
+                                    Call(n377):
                                       callee:
-                                        Symbol(n379): Local(renderGrid @ m0)
+                                        Symbol(n378): Local(renderGrid @ m0)
                                       args:
                                         -
-                                          Local(n380): grid
-                                    Block(n381):
-                                      Call(n382):
+                                          Local(n379): grid
+                                    Block(n380):
+                                      Call(n381):
                                         callee:
-                                          Symbol(n383): Stdlib(std.time.sleep)
+                                          Symbol(n382): Stdlib(std.time.sleep)
                                         args:
                                           -
-                                            Lit(n384): Int(200)
-                                      Call(n385):
+                                            Lit(n383): Int(200)
+                                      Call(n384):
                                         callee:
-                                          Local(n386): loop
+                                          Local(n385): loop
                                         args:
                                           -
-                                            Call(n387):
+                                            Call(n386):
                                               callee:
-                                                Symbol(n388): Stdlib(std.int.sub)
+                                                Symbol(n387): Stdlib(std.int.sub)
                                               args:
                                                 -
-                                                  Local(n389): gen
+                                                  Local(n388): gen
                                                 -
-                                                  Lit(n390): Int(1)
+                                                  Lit(n389): Int(1)
                                           -
-                                            Call(n391):
+                                            Call(n390):
                                               callee:
-                                                Symbol(n392): Local(step @ m0)
+                                                Symbol(n391): Local(step @ m0)
                                               args:
                                                 -
-                                                  Local(n393): grid
+                                                  Local(n392): grid
                           -
                             pat:
                               Lit: Bool(false)
                             body:
-                              Return(n394):
-                                Lit(n395): Unit
+                              Return(n393):
+                                Lit(n394): Unit
                 body:
-                  Block(n396):
-                    Call(n397):
+                  Block(n395):
+                    Call(n396):
                       callee:
-                        Local(n398): loop
+                        Local(n397): loop
                       args:
                         -
-                          Local(n399): generations
+                          Local(n398): generations
                         -
-                          Call(n400):
+                          Call(n399):
                             callee:
-                              Symbol(n401): Local(gliderGrid @ m0)
+                              Symbol(n400): Local(gliderGrid @ m0)
                             args:
                               -
-                                Lit(n402): Int(20)
+                                Lit(n401): Int(20)
                               -
-                                Lit(n403): Int(40)
-                    Call(n404):
+                                Lit(n402): Int(40)
+                    Call(n403):
                       callee:
-                        Symbol(n405): Prelude(Ok)
+                        Symbol(n404): Prelude(Ok)
                       args:
                         -
-                          Lit(n406): Unit
+                          Lit(n405): Unit

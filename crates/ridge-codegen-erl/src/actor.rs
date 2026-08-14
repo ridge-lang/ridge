@@ -65,6 +65,7 @@ use crate::handler::{
     call_params, cast_params, lower_handler_call_clause, lower_handler_cast_clause,
 };
 use crate::init::{lower_handler_body_for_cast, lower_init_body, lower_terminate_body, state_var};
+use crate::scope::LocalShape;
 use crate::scope::{CodegenTables, LocalScope};
 use ridge_ir::{IrActor, MailboxConfig, MailboxPolicy};
 use rustc_hash::{FxHashMap, FxHasher};
@@ -90,7 +91,7 @@ use std::hash::Hasher;
 pub(crate) fn lower_actor(
     actor: &IrActor,
     parent_beam_name: &str,
-    fn_arity: &FxHashMap<String, u32>,
+    fn_arity: &FxHashMap<String, LocalShape>,
     tables: &CodegenTables,
 ) -> Result<CErlModule, CodegenError> {
     // Derive actor BEAM module name: parent + "_" + actor_name_lowercase.
@@ -339,7 +340,7 @@ fn emit_init(actor: &IrActor, tables: &CodegenTables) -> Result<CErlFn, CodegenE
 // OQ-E005: emit all handlers in handle_call (plan §4.30 + §8.2).
 fn emit_handle_call(
     actor: &IrActor,
-    fn_arity: &FxHashMap<String, u32>,
+    fn_arity: &FxHashMap<String, LocalShape>,
     parent_beam_name: &str,
     tables: &CodegenTables,
 ) -> Result<CErlFn, CodegenError> {
@@ -393,7 +394,7 @@ fn emit_handle_call(
 // OQ-E005: emit all handlers in handle_cast (plan §4.30 + §8.2).
 fn emit_handle_cast(
     actor: &IrActor,
-    fn_arity: &FxHashMap<String, u32>,
+    fn_arity: &FxHashMap<String, LocalShape>,
     parent_beam_name: &str,
     tables: &CodegenTables,
 ) -> Result<CErlFn, CodegenError> {
@@ -484,7 +485,7 @@ fn emit_handle_info_stub() -> CErlFn {
 /// OTP counterpart.
 fn emit_handle_info(
     actor: &IrActor,
-    fn_arity: &FxHashMap<String, u32>,
+    fn_arity: &FxHashMap<String, LocalShape>,
     parent_beam_name: &str,
     tables: &CodegenTables,
 ) -> Result<CErlFn, CodegenError> {
@@ -619,7 +620,7 @@ fn emit_terminate_stub() -> CErlFn {
 /// OTP counterpart.
 fn emit_terminate(
     actor: &IrActor,
-    fn_arity: &FxHashMap<String, u32>,
+    fn_arity: &FxHashMap<String, LocalShape>,
     parent_beam_name: &str,
     tables: &CodegenTables,
 ) -> Result<CErlFn, CodegenError> {
@@ -759,7 +760,7 @@ fn emit_code_change(actor: &IrActor) -> CErlFn {
 /// its old state with a loud error (current failure semantics).
 fn emit_migrate_hook_fn(
     actor: &IrActor,
-    fn_arity: &FxHashMap<String, u32>,
+    fn_arity: &FxHashMap<String, LocalShape>,
     parent_beam_name: &str,
     tables: &CodegenTables,
 ) -> Result<CErlFn, CodegenError> {

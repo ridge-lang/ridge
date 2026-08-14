@@ -49,6 +49,7 @@ use crate::core_ast::{CErlAtom, CErlClause, CErlExpr, CErlLit, CErlPat, CErlVar}
 use crate::error::CodegenError;
 use crate::expr::{lower_expr_in_scope, name_to_erl_var};
 use crate::letrec_detect::body_references_local;
+use crate::scope::LocalShape;
 use crate::scope::{ssa_var, LocalScope};
 use ridge_ast::Span;
 use ridge_ir::{AssignTarget, IrExpr, IrInit, IrParam, IrStateField};
@@ -433,7 +434,7 @@ fn lower_actor_block_w(
                             #[allow(clippy::cast_possible_truncation)]
                             let arity = lambda_params.len() as u32;
                             std::sync::Arc::make_mut(&mut scope.fn_arity)
-                                .insert(name.clone(), arity);
+                                .insert(name.clone(), LocalShape::func(arity));
                             // Mark as letrec-local so B-6 does not route calls
                             // to it through the parent-module qualified call path.
                             std::sync::Arc::make_mut(&mut scope.letrec_locals).insert(name.clone());
@@ -526,7 +527,8 @@ fn lower_expr_in_actor_context_w(
                     if body_references_local(lambda_body, name) {
                         #[allow(clippy::cast_possible_truncation)]
                         let arity = lambda_params.len() as u32;
-                        std::sync::Arc::make_mut(&mut scope.fn_arity).insert(name.clone(), arity);
+                        std::sync::Arc::make_mut(&mut scope.fn_arity)
+                            .insert(name.clone(), LocalShape::func(arity));
                         // Mark as letrec-local so B-6 does not route calls to it
                         // through the parent-module qualified call path.
                         std::sync::Arc::make_mut(&mut scope.letrec_locals).insert(name.clone());
@@ -588,7 +590,8 @@ fn lower_expr_in_actor_context_w(
                     // emits `LocalFnRef` for self-references, then emit LetRec.
                     #[allow(clippy::cast_possible_truncation)]
                     let arity = lambda_params.len() as u32;
-                    std::sync::Arc::make_mut(&mut scope.fn_arity).insert(name.clone(), arity);
+                    std::sync::Arc::make_mut(&mut scope.fn_arity)
+                        .insert(name.clone(), LocalShape::func(arity));
                     // Mark as letrec-local so B-6 does not route calls to it
                     // through the parent-module qualified call path.
                     std::sync::Arc::make_mut(&mut scope.letrec_locals).insert(name.clone());

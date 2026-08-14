@@ -9,8 +9,8 @@
 pub fn random int (low: Int) (high: Int) -> Int
 
 -- Return a uniformly-distributed random float in [0.0, 1.0).
-@ffi("ridge_rt", "random_float", 1)
-pub fn random float (_unit: Unit) -> Float
+@ffi("ridge_rt", "random_float", 0)
+pub fn random float () -> Float
 
 -- Return a random alphanumeric Text of exactly n characters.
 -- Bridge delegates to ridge_rt:random_alphanumeric/1.

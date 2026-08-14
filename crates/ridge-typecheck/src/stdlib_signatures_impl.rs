@@ -370,12 +370,12 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             ty_result(b, ty_uuid(b), ty_error(b)),
         ))),
         (STD_UUID, "toText") => Some(mono(ty_fn_pure(vec![ty_uuid(b)], ty_text(b)))),
-        (STD_UUID, "nil") => Some(mono(ty_fn_pure(vec![ty_unit(b)], ty_uuid(b)))),
+        (STD_UUID, "nil") => Some(mono(ty_fn_pure(vec![], ty_uuid(b)))),
         // `generate` mints a fresh value, so it carries the `random` capability.
         (STD_UUID, "generate") => {
             use ridge_ast::Capability;
             let rnd_caps = CapabilitySet::singleton(Capability::Random);
-            Some(mono(ty_fn_caps(vec![ty_unit(b)], ty_uuid(b), rnd_caps)))
+            Some(mono(ty_fn_caps(vec![], ty_uuid(b), rnd_caps)))
         }
         (STD_UUID, "compare") => {
             Some(mono(ty_fn_pure(vec![ty_uuid(b), ty_uuid(b)], ty_int(b))))
@@ -395,7 +395,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             vec![ty_bytes(b)],
             ty_result(b, ty_text(b), ty_error(b)),
         ))),
-        (STD_BYTES, "empty") => Some(mono(ty_fn_pure(vec![ty_unit(b)], ty_bytes(b)))),
+        (STD_BYTES, "empty") => Some(mono(ty_fn_pure(vec![], ty_bytes(b)))),
         // `generate` draws fresh random bytes, so it carries the `random` capability.
         (STD_BYTES, "generate") => {
             use ridge_ast::Capability;
@@ -437,7 +437,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         (STD_DATE, "todayUtc") => {
             use ridge_ast::Capability;
             let time_caps = CapabilitySet::singleton(Capability::Time);
-            Some(mono(ty_fn_caps(vec![ty_unit(b)], ty_date(b), time_caps)))
+            Some(mono(ty_fn_caps(vec![], ty_date(b), time_caps)))
         }
         (STD_DATE, "addDays") => Some(mono(ty_fn_pure(
             vec![ty_int(b), ty_date(b)],
@@ -474,7 +474,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         (STD_TIMEOFDAY, "nowUtc") => {
             use ridge_ast::Capability;
             let time_caps = CapabilitySet::singleton(Capability::Time);
-            Some(mono(ty_fn_caps(vec![ty_unit(b)], ty_time(b), time_caps)))
+            Some(mono(ty_fn_caps(vec![], ty_time(b), time_caps)))
         }
         (STD_TIMEOFDAY, "addSeconds") => Some(mono(ty_fn_pure(
             vec![ty_int(b), ty_time(b)],
@@ -1424,7 +1424,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             // (_: Unit) -> Result Text Error [io]  (§3.10 / plan line 322)
             // T12: .ridge declares `(_ : Unit)` thunk param; signature updated to match.
             Some(mono(ty_fn_caps(
-                vec![ty_unit(b)],
+                vec![],
                 ty_result(b, ty_text(b), ty_error(b)),
                 io_caps,
             )))
@@ -1483,12 +1483,12 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             use ridge_ast::Capability;
             let time_caps = CapabilitySet::singleton(Capability::Time);
             // T12: .ridge declares `(_ : Unit)` thunk param; signature updated to match.
-            Some(mono(ty_fn_caps(vec![ty_unit(b)], ty_timestamp(b), time_caps)))
+            Some(mono(ty_fn_caps(vec![], ty_timestamp(b), time_caps)))
         }
         (STD_TIME, "epoch") => {
             // T12: .ridge declares `(_ : Unit)` thunk param; signature updated to match.
             // (_: Unit) -> Timestamp  (the Unix epoch)
-            Some(mono(ty_fn_pure(vec![ty_unit(b)], ty_timestamp(b))))
+            Some(mono(ty_fn_pure(vec![], ty_timestamp(b))))
         }
         (STD_TIME, "fromIso") => {
             // Text -> Result Timestamp Error  (pure parsing — §3.12 line 348)
@@ -1512,7 +1512,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             use ridge_ast::Capability;
             // (_: Unit) -> Instant — read the monotonic clock (requires `time`).
             let time_caps = CapabilitySet::singleton(Capability::Time);
-            Some(mono(ty_fn_caps(vec![ty_unit(b)], ty_instant(b), time_caps)))
+            Some(mono(ty_fn_caps(vec![], ty_instant(b), time_caps)))
         }
         (STD_TIME, "elapsed") => {
             use ridge_ast::Capability;
@@ -1578,7 +1578,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             let rnd_caps = CapabilitySet::singleton(Capability::Random);
             // T12: .ridge declares `(_ : Unit)` thunk param; signature updated to match.
             // (_: Unit) -> Float  (uniform 0..1)
-            Some(mono(ty_fn_caps(vec![ty_unit(b)], ty_float(b), rnd_caps)))
+            Some(mono(ty_fn_caps(vec![], ty_float(b), rnd_caps)))
         }
         (STD_RANDOM, "alphanumeric") => {
             use ridge_ast::Capability;
@@ -1636,7 +1636,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             // T12: .ridge declares `(_ : Unit)` thunk param; signature updated to match.
             // (_: Unit) -> Map Text Text
             Some(mono(ty_fn_caps(
-                vec![ty_unit(b)],
+                vec![],
                 ty_map(b, ty_text(b), ty_text(b)),
                 env_caps,
             )))
@@ -1647,7 +1647,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             // T12: .ridge declares `(_ : Unit)` thunk param; signature updated to match.
             // (_: Unit) -> List Text
             Some(mono(ty_fn_caps(
-                vec![ty_unit(b)],
+                vec![],
                 ty_list(b, ty_text(b)),
                 env_caps,
             )))

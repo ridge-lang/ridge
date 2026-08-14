@@ -91,17 +91,15 @@ pub fn lower_item_multi(ctx: &mut LowerCtx<'_>, item: &Item) -> Vec<IrItem> {
             {
                 // Synthesise parameter names p0, p1, … for the wrapper arity.
                 //
-                // Ridge call convention for 0-arity foreign functions: callers
-                // always pass one extra unit argument (e.g. `_mapsNew ()`).
-                // So when ffi_arity == 0, the wrapper must accept 1 param
-                // (the dummy unit) but not forward it to the foreign call.
-                // When ffi_arity > 0, the wrapper takes exactly ffi_arity
-                // params and forwards all of them.
-                let wrapper_arity = if *ffi_arity == 0 {
-                    1usize
-                } else {
-                    *ffi_arity as usize
-                };
+                // The wrapper takes exactly what the foreign function takes and
+                // forwards all of it. A zero-arity stub used to get one extra
+                // parameter here, to swallow the unit that `_mapsNew ()` passed:
+                // a call on a callee taking nothing sent one anyway, so the
+                // wrapper had to absorb it. That unit is gone now — `f ()` on a
+                // callee that takes nothing lowers to no arguments — and the
+                // compensation would leave the wrapper one parameter wider than
+                // its callers, which erlc reports as an undefined `name/0`.
+                let wrapper_arity = *ffi_arity as usize;
                 let params: Vec<String> = (0..wrapper_arity).map(|i| format!("p{i}")).collect();
                 return vec![IrItem::Ffi(IrFfiFn {
                     name: decl.name.text.clone(),

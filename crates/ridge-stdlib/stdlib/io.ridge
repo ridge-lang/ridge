@@ -23,5 +23,5 @@ pub fn io eprintln (s: Text) -> Unit
 -- Read one line from stdin.
 -- Returns Ok(line) on success or Err(Error { code, message }) on EOF / read error.
 -- Bridge: ridge_rt:read_line/1 returns {ok, Line} | {error, #{code, message}}.
-@ffi("ridge_rt", "read_line", 1)
-pub fn io readLine (_unit: Unit) -> Result Text Error
+@ffi("ridge_rt", "read_line", 0)
+pub fn io readLine () -> Result Text Error

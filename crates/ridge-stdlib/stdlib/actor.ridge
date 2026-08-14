@@ -179,7 +179,10 @@ pub fn time await (m: Monitor) (timeoutMs: Int) -> Option ExitReason
 -- mailbox and a dead target answer `Ok ()` — the message is silently
 -- dropped, exactly as with `!`.
 --
---     import std.actor as Actor
+-- `MailboxFull` is a constructor, so it has to be named in the import list
+-- to be in scope; the module alias alone does not bring it in.
+--
+--     import std.actor as Actor (MailboxFull)
 --     match Actor.send counter (increment 3)
 --         Ok _             -> ...
 --         Err MailboxFull  -> ...
@@ -195,7 +198,7 @@ pub fn time await (m: Monitor) (timeoutMs: Int) -> Option ExitReason
 -- (`ridge_rt:try_ask/3`) returns `{ok, reply} | {error, 'Noproc' | 'Timeout'}`
 -- instead of raising. The call absorbs the `time` capability like any ask.
 --
---     import std.actor as Actor
+--     import std.actor as Actor (Noproc, Timeout)
 --     match Actor.tryAsk counter getCount 1000
 --         Ok count    -> ...
 --         Err Noproc  -> ...

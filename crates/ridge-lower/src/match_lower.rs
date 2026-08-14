@@ -1293,6 +1293,14 @@ fn lower_constructor_pattern(
             return IrPat::Wild { span };
         }
 
+        // Resolve could not find the name, emitted its own R### diagnostic and
+        // stamped `Binding::Error`. Lower to a wildcard and say nothing: the arm
+        // below asserts something about a program that resolved clean, and every
+        // pass runs even when an earlier one failed, so without this a misspelled
+        // constructor in a match arm answers with an internal message on top of
+        // the real one. Same treatment the expression side already gives it.
+        Some(Binding::Error) => return IrPat::Wild { span },
+
         Some(_) => {
             ctx.errors.push(LowerError::InternalLoweringError {
                 span,

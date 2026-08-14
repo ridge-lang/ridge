@@ -1000,6 +1000,10 @@ A fully-annotated signature does not promise a class its body needs.
 
 A type annotation names a type that does not exist.
 
+### T057
+
+A tuple meets a position expecting a different number of components.
+
 ### T101
 
 The `@ffi` arity doesn't match the Ridge parameter count.

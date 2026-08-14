@@ -345,6 +345,13 @@ fn attach_span(err: TypeError, span: Span) -> TypeError {
             span,
             hint,
         },
+        TypeError::TupleWidthMismatch {
+            expected, found, ..
+        } => TypeError::TupleWidthMismatch {
+            expected,
+            found,
+            span,
+        },
         TypeError::OccursCheck { var, ty, .. } => TypeError::OccursCheck { var, ty, span },
         TypeError::InsertShapeFullEntity {
             entity,

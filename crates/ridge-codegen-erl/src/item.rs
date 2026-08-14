@@ -17,6 +17,7 @@ use crate::error::CodegenError;
 use crate::expr::{lower_expr_in_scope, name_to_erl_var};
 use crate::return_::{elide_tail_returns, has_non_tail_return, wrap_with_return_catch};
 use crate::scope::LocalScope;
+use crate::scope::LocalShape;
 use ridge_ir::{IrConst, IrFn, LoweredWorkspace};
 use rustc_hash::FxHashMap;
 
@@ -51,7 +52,7 @@ use rustc_hash::FxHashMap;
 pub(crate) fn lower_fn(
     fn_: &IrFn,
     ws: &LoweredWorkspace,
-    fn_arity: &FxHashMap<String, u32>,
+    fn_arity: &FxHashMap<String, LocalShape>,
 ) -> Result<CErlFn, CodegenError> {
     lower_fn_with_module_name(fn_, ws, fn_arity, None)
 }
@@ -61,7 +62,7 @@ pub(crate) fn lower_fn(
 pub(crate) fn lower_fn_with_module_name(
     fn_: &IrFn,
     ws: &LoweredWorkspace,
-    fn_arity: &FxHashMap<String, u32>,
+    fn_arity: &FxHashMap<String, LocalShape>,
     module_beam_name: Option<&str>,
 ) -> Result<CErlFn, CodegenError> {
     // Build the parameter variable list.
@@ -173,7 +174,7 @@ pub(crate) fn lower_fn_with_module_name(
 pub(crate) fn lower_const(
     c: &IrConst,
     ws: &LoweredWorkspace,
-    fn_arity: &FxHashMap<String, u32>,
+    fn_arity: &FxHashMap<String, LocalShape>,
 ) -> Result<CErlFn, CodegenError> {
     let mut scope = LocalScope::with_arity(fn_arity.clone());
     scope.external_arity = std::sync::Arc::new(crate::module::build_external_arity(ws));
@@ -215,7 +216,7 @@ mod tests {
         Span::point(0)
     }
 
-    fn empty_arity() -> FxHashMap<String, u32> {
+    fn empty_arity() -> FxHashMap<String, LocalShape> {
         FxHashMap::default()
     }
 

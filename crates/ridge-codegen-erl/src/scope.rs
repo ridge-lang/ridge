@@ -55,13 +55,47 @@ use std::sync::Arc;
 /// for a handler-local recursive lambda (emitted as `letrec`).  These must NOT
 /// be routed through the parent-module qualified call path in B-6 — they are
 /// resolved by the Core Erlang letrec scope, not by a cross-module call.
+/// What a module-level name is, for the two questions emission asks of it.
+///
+/// The arity answers "how many arguments does a call pass". `is_const` answers
+/// the one arity used to answer on its own: whether writing the name *is* its
+/// value. A `const` is evaluated at every use-site; a `fn` is a reference until
+/// something calls it. That was the same question while only a `const` could
+/// have arity 0 — a zero-parameter function makes the two different, and the
+/// number alone can no longer tell them apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LocalShape {
+    /// Parameters the name takes; `0` for a `const`.
+    pub(crate) arity: u32,
+    /// `true` for `const`, `false` for `fn` and `@ffi`.
+    pub(crate) is_const: bool,
+}
+
+impl LocalShape {
+    /// A function or `@ffi` stub of the given arity.
+    pub(crate) const fn func(arity: u32) -> Self {
+        Self {
+            arity,
+            is_const: false,
+        }
+    }
+
+    /// A module-level `const`, which is always arity 0 and always evaluated.
+    pub(crate) const fn constant() -> Self {
+        Self {
+            arity: 0,
+            is_const: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct LocalScope {
     /// `base_mangled_name → current_ssa_index`.
     table: FxHashMap<String, u32>,
-    /// Module-level fn/const arity table: `name → arity`.
+    /// Module-level fn/const table: `name → what it is`.
     /// Shared (Arc) so that clone (e.g. for match arms, lambda scopes) is cheap.
-    pub(crate) fn_arity: Arc<FxHashMap<String, u32>>,
+    pub(crate) fn_arity: Arc<FxHashMap<String, LocalShape>>,
     /// Workspace-wide arity table for symbols in *other* modules:
     /// `module_id → (name → arity)`.
     ///
@@ -186,7 +220,7 @@ impl LocalScope {
     ///
     /// Used by item-level lowering (T8) so that `SymbolRef::Local` can resolve
     /// arity when a local fn or const is used as a value expression.
-    pub(crate) fn with_arity(fn_arity: FxHashMap<String, u32>) -> Self {
+    pub(crate) fn with_arity(fn_arity: FxHashMap<String, LocalShape>) -> Self {
         Self {
             table: FxHashMap::default(),
             fn_arity: Arc::new(fn_arity),
@@ -205,7 +239,7 @@ impl LocalScope {
     /// `lower_spawn` can derive actor BEAM module names via the same convention
     /// as `actor.rs` (appending `"_<actor_name_lc>"` to the parent beam name).
     pub(crate) fn with_arity_and_module(
-        fn_arity: FxHashMap<String, u32>,
+        fn_arity: FxHashMap<String, LocalShape>,
         module_beam_name: &str,
     ) -> Self {
         Self {
@@ -224,7 +258,7 @@ impl LocalScope {
     ///
     /// Used by lambda lowering to inherit the parent scope's arity table
     /// without cloning the underlying map.
-    pub(crate) fn with_arity_arc(fn_arity: Arc<FxHashMap<String, u32>>) -> Self {
+    pub(crate) fn with_arity_arc(fn_arity: Arc<FxHashMap<String, LocalShape>>) -> Self {
         Self {
             table: FxHashMap::default(),
             fn_arity,
@@ -244,7 +278,7 @@ impl LocalScope {
     /// and emit qualified `call 'parent':'fn' (args…)` instead of the unqualified
     /// `apply 'fn'/arity (args…)` form which would fail at BEAM load time.
     pub(crate) fn with_actor_parent(
-        fn_arity: FxHashMap<String, u32>,
+        fn_arity: FxHashMap<String, LocalShape>,
         parent_module_id: ModuleId,
         parent_beam_name: &str,
     ) -> Self {

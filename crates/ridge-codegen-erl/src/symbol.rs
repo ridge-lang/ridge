@@ -28,6 +28,7 @@
 
 use crate::core_ast::{CErlAtom, CErlExpr, CErlLit, CErlVar};
 use crate::error::CodegenError;
+use crate::scope::LocalShape;
 use crate::stdlib_map::{self, BridgeTarget};
 use ridge_ast::Span;
 use ridge_ir::SymbolRef;
@@ -93,7 +94,7 @@ fn stdlib_value_fn_ref(module: CErlAtom, fn_name: CErlAtom, arity: u32) -> CErlE
 pub(crate) fn lower_symbol(
     sym: &SymbolRef,
     span: Span,
-    fn_arity: &FxHashMap<String, u32>,
+    fn_arity: &FxHashMap<String, LocalShape>,
     actor_parent: Option<(ModuleId, &str)>,
 ) -> Result<CErlExpr, CodegenError> {
     match sym {
@@ -104,7 +105,7 @@ pub(crate) fn lower_symbol(
         // `module` matches the parent's id, emit a qualified 0-arg `call` so that
         // the value expression works in the actor's separate BEAM module.
         SymbolRef::Local { name, module } => match fn_arity.get(name.as_str()) {
-            Some(&arity) => {
+            Some(&LocalShape { arity, is_const }) => {
                 // Check for cross-module reference from an actor body.
                 if let Some((parent_id, parent_beam)) = actor_parent {
                     if *module == parent_id {
@@ -117,12 +118,18 @@ pub(crate) fn lower_symbol(
                         });
                     }
                 }
-                if arity == 0 {
-                    // Zero-arity constants must be *called* (not referenced) when
-                    // used as a value.  In Core Erlang `'name'/0` is a function
-                    // reference; `apply 'name'/0 ()` is the actual value.
-                    // Ridge constants (`const foo: Int = 30`) are always evaluated
-                    // at the use-site — they are never passed as thunks.
+                if is_const {
+                    // A constant used as a value must be *called*, not referenced.
+                    // In Core Erlang `'name'/0` is a function reference; the value
+                    // is `apply 'name'/0 ()`. Ridge constants (`const foo: Int = 30`)
+                    // are evaluated at the use-site and are never passed as thunks.
+                    //
+                    // This used to key off `arity == 0`, which held while a constant
+                    // was the only thing that could have it. A zero-parameter
+                    // function has the same arity and the opposite answer: naming it
+                    // is a reference, and evaluating it here made `apply answer`
+                    // pass `42` where a function was wanted, which the runtime
+                    // reported as `badfun`.
                     Ok(CErlExpr::Apply {
                         callee: Box::new(CErlExpr::LocalFnRef {
                             name: CErlAtom(name.clone()),
@@ -281,7 +288,7 @@ mod tests {
         Span::point(0)
     }
 
-    fn empty_arity() -> FxHashMap<String, u32> {
+    fn empty_arity() -> FxHashMap<String, LocalShape> {
         FxHashMap::default()
     }
 
@@ -310,7 +317,7 @@ mod tests {
             module: ModuleId(0),
         };
         let mut table = FxHashMap::default();
-        table.insert("myFn".to_owned(), 2u32);
+        table.insert("myFn".to_owned(), LocalShape::func(2));
         let result = lower_symbol(&sym, sp(), &table, None);
         assert!(
             matches!(result, Ok(CErlExpr::LocalFnRef { ref name, arity: 2 }) if name.0 == "myFn"),
@@ -328,7 +335,7 @@ mod tests {
             module: ModuleId(0),
         };
         let mut table = FxHashMap::default();
-        table.insert("myConst".to_owned(), 0u32);
+        table.insert("myConst".to_owned(), LocalShape::constant());
         let result = lower_symbol(&sym, sp(), &table, None);
         match result {
             Ok(CErlExpr::Apply {
@@ -532,5 +539,53 @@ mod tests {
                 ..
             })
         ));
+    }
+}
+
+#[cfg(test)]
+mod nullary_fn_value_tests {
+    use super::*;
+    use crate::scope::LocalShape;
+
+    /// A zero-parameter function used as a value is a reference, not a call.
+    ///
+    /// It shares an arity with a `const`, which is the opposite case — naming a
+    /// constant *is* its value — and keying the decision on the number alone
+    /// evaluated the function here. The caller then received what it returned
+    /// instead of the function, which the runtime reported as `badfun`.
+    #[test]
+    fn a_zero_parameter_function_is_referenced_not_called() {
+        let sym = SymbolRef::Local {
+            name: "answer".into(),
+            module: ModuleId(0),
+        };
+        let mut table = FxHashMap::default();
+        table.insert("answer".to_owned(), LocalShape::func(0));
+
+        let result = lower_symbol(&sym, Span::point(0), &table, None);
+
+        assert!(
+            matches!(result, Ok(CErlExpr::LocalFnRef { ref name, arity: 0 }) if name.0 == "answer"),
+            "a nullary fn must lower to a fun reference, got {result:?}"
+        );
+    }
+
+    /// The counterpart, so the test above cannot pass by referencing everything:
+    /// a constant of the same arity still has to be evaluated.
+    #[test]
+    fn a_constant_of_the_same_arity_is_still_called() {
+        let sym = SymbolRef::Local {
+            name: "thirty".into(),
+            module: ModuleId(0),
+        };
+        let mut table = FxHashMap::default();
+        table.insert("thirty".to_owned(), LocalShape::constant());
+
+        let result = lower_symbol(&sym, Span::point(0), &table, None);
+
+        assert!(
+            matches!(result, Ok(CErlExpr::Apply { ref args, .. }) if args.is_empty()),
+            "a constant must lower to a zero-argument apply, got {result:?}"
+        );
     }
 }

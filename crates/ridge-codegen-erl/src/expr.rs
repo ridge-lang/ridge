@@ -45,6 +45,7 @@ use crate::messaging::{
 };
 use crate::pat::lower_pat;
 use crate::return_::lower_return;
+use crate::scope::LocalShape;
 use crate::scope::{ssa_var, LocalScope};
 use crate::stdlib_map::{self, BridgeTarget};
 use crate::symbol::lower_symbol;
@@ -415,7 +416,7 @@ pub(crate) fn lower_expr_in_scope(
         // to its current SSA-suffixed variable; else use the bare mangled name.
         IrExpr::Local { name, span, .. } => {
             if scope.letrec_locals.contains(name.as_str()) {
-                if let Some(&arity) = scope.fn_arity.get(name.as_str()) {
+                if let Some(&LocalShape { arity, .. }) = scope.fn_arity.get(name.as_str()) {
                     return Ok(CErlExpr::LocalFnRef {
                         name: CErlAtom(name.clone()),
                         arity,
@@ -513,7 +514,8 @@ pub(crate) fn lower_expr_in_scope(
                         //    inside the lambda body and in the letrec body emit
                         //    LocalFnRef (not Var). Both are Arc-shared; make_mut
                         //    clones if needed.
-                        std::sync::Arc::make_mut(&mut scope.fn_arity).insert(name.clone(), arity);
+                        std::sync::Arc::make_mut(&mut scope.fn_arity)
+                            .insert(name.clone(), LocalShape::func(arity));
                         std::sync::Arc::make_mut(&mut scope.letrec_locals).insert(name.clone());
                         let lowered_lambda = lower_expr_in_scope(value, scope)?;
                         let lowered_body = lower_expr_in_scope(body, scope)?;
@@ -1338,7 +1340,7 @@ fn lower_static_call(
                         ..
                     }
                 )
-                && scope.fn_arity.get(name).copied() == Some(0)
+                && scope.fn_arity.get(name).map(|s| s.arity) == Some(0)
             {
                 &[]
             } else {

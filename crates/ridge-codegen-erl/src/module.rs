@@ -22,6 +22,7 @@ use crate::core_ast::{
 };
 use crate::error::CodegenError;
 use crate::item::{lower_const, lower_fn_with_module_name};
+use crate::scope::LocalShape;
 use ridge_ir::{IrFfiFn, IrItem, LoweredModule, LoweredWorkspace};
 use ridge_resolve::ModuleId;
 use rustc_hash::FxHashMap;
@@ -177,21 +178,21 @@ pub(crate) fn lower_module_with_name(
     // Fns use params.len(); consts are always arity 0.
     // @ffi stubs (IrItem::Ffi) are included so that SymbolRef::Local calls
     // to them can be resolved as LocalFnRef — their wrapper is emitted below.
-    let mut fn_arity: FxHashMap<String, u32> = FxHashMap::default();
+    let mut fn_arity: FxHashMap<String, LocalShape> = FxHashMap::default();
     for item in &m.items {
         match item {
             IrItem::Fn(fn_) => {
                 #[allow(clippy::cast_possible_truncation)]
                 let arity = fn_.params.len() as u32;
-                fn_arity.insert(fn_.name.clone(), arity);
+                fn_arity.insert(fn_.name.clone(), LocalShape::func(arity));
             }
             IrItem::Const(c) => {
-                fn_arity.insert(c.name.clone(), 0);
+                fn_arity.insert(c.name.clone(), LocalShape::constant());
             }
             IrItem::Ffi(ffi) => {
                 #[allow(clippy::cast_possible_truncation)]
                 let arity = ffi.params.len() as u32;
-                fn_arity.insert(ffi.name.clone(), arity);
+                fn_arity.insert(ffi.name.clone(), LocalShape::func(arity));
             }
             _ => {}
         }
@@ -436,7 +437,7 @@ fn emit_record_migrations_fn(
     m: &LoweredModule,
     ws: &LoweredWorkspace,
     metas: &[crate::record_meta::RecordMeta],
-    fn_arity: &FxHashMap<String, u32>,
+    fn_arity: &FxHashMap<String, LocalShape>,
     beam_name: &str,
 ) -> Result<CErlFn, CodegenError> {
     let mut entries: Vec<CErlExpr> = Vec::new();
@@ -516,7 +517,7 @@ fn migration_entry(from_hash: u64, fun: CErlExpr) -> CErlExpr {
 /// record value the body builds gets its `__ridge_v` tag).
 fn user_migration_fun(
     mig: &ridge_ir::item::IrMigration,
-    fn_arity: &FxHashMap<String, u32>,
+    fn_arity: &FxHashMap<String, LocalShape>,
     beam_name: &str,
     ws: &LoweredWorkspace,
 ) -> Result<CErlExpr, CodegenError> {
@@ -653,21 +654,21 @@ pub(crate) fn lower_module_all_named(
     // Rebuild fn_arity to pass to lower_actor so handlers can reference
     // module-level fns and constants via SymbolRef::Local.
     // Include @ffi stubs (IrItem::Ffi) so actors can reference them too.
-    let mut fn_arity_for_actors: FxHashMap<String, u32> = FxHashMap::default();
+    let mut fn_arity_for_actors: FxHashMap<String, LocalShape> = FxHashMap::default();
     for item in &m.items {
         match item {
             IrItem::Fn(fn_) => {
                 #[allow(clippy::cast_possible_truncation)]
                 let arity = fn_.params.len() as u32;
-                fn_arity_for_actors.insert(fn_.name.clone(), arity);
+                fn_arity_for_actors.insert(fn_.name.clone(), LocalShape::func(arity));
             }
             IrItem::Const(c) => {
-                fn_arity_for_actors.insert(c.name.clone(), 0);
+                fn_arity_for_actors.insert(c.name.clone(), LocalShape::constant());
             }
             IrItem::Ffi(ffi) => {
                 #[allow(clippy::cast_possible_truncation)]
                 let arity = ffi.params.len() as u32;
-                fn_arity_for_actors.insert(ffi.name.clone(), arity);
+                fn_arity_for_actors.insert(ffi.name.clone(), LocalShape::func(arity));
             }
             _ => {}
         }

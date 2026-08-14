@@ -49,6 +49,7 @@ use crate::core_ast::{CErlAtom, CErlClause, CErlExpr, CErlLit, CErlPat, CErlVar}
 use crate::error::CodegenError;
 use crate::expr::name_to_erl_var;
 use crate::init::{lower_handler_body_for_call, lower_handler_body_for_cast, state_var};
+use crate::scope::LocalShape;
 use crate::scope::{CodegenTables, LocalScope};
 use ridge_ir::IrHandler;
 use ridge_resolve::ModuleId;
@@ -81,7 +82,7 @@ const STATE_ARG_VAR: &str = "V_StateArg";
 // OQ-E005: emit in both handle_call and handle_cast (plan §4.30 + §8.2).
 pub(crate) fn lower_handler_call_clause(
     handler: &IrHandler,
-    fn_arity: &FxHashMap<String, u32>,
+    fn_arity: &FxHashMap<String, LocalShape>,
     parent_module_id: ModuleId,
     parent_beam_name: &str,
     tables: &CodegenTables,
@@ -127,7 +128,7 @@ pub(crate) fn lower_handler_call_clause(
 // OQ-E005: emit in both handle_call and handle_cast (plan §4.30 + §8.2).
 pub(crate) fn lower_handler_cast_clause(
     handler: &IrHandler,
-    fn_arity: &FxHashMap<String, u32>,
+    fn_arity: &FxHashMap<String, LocalShape>,
     parent_module_id: ModuleId,
     parent_beam_name: &str,
     tables: &CodegenTables,

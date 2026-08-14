@@ -77,6 +77,26 @@ use crate::propagate::lower_propagate;
 use crate::try_block::lower_try;
 use crate::with_update::lower_with;
 
+/// Drop the `()` from `f ()` when the callee takes nothing.
+///
+/// A call's `()` is punctuation, not an argument. The backend already reads that
+/// off its own arity table for a call to a named module function, which is why
+/// `answer ()` worked and `f ()` through a parameter did not: nothing there knows
+/// the arity of a value. The type does, it is the same fact, and taking the unit
+/// off here means every backend sees one shape.
+///
+/// A callee that really takes a `Unit` keeps it — `takesUnit ()` passes the
+/// value, because that callee's type has one parameter. The two are different
+/// functions, and this is where they stay different.
+fn call_args_without_nullary_unit<'a>(args: &'a [Expr], callee: Option<&Type>) -> &'a [Expr] {
+    let callee_takes_nothing = matches!(callee, Some(Type::Fn { params, .. }) if params.is_empty());
+    if args.len() == 1 && matches!(&args[0], Expr::Unit(_)) && callee_takes_nothing {
+        &[]
+    } else {
+        args
+    }
+}
+
 // ── Public dispatcher — expressions ──────────────────────────────────────────
 
 /// Lower a single [`Expr`] node to its [`IrExpr`] equivalent.
@@ -561,6 +581,8 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             // Look up callee type before lowering, while we still have the AST.
             let callee_node_type = lookup_callee_type(ctx, callee);
             let ir_callee = lower_expr(ctx, callee);
+
+            let args = call_args_without_nullary_unit(args, callee_node_type.as_ref());
             let ir_args: Vec<IrExpr> = args.iter().map(|a| lower_expr(ctx, a)).collect();
 
             // Union-variant constructor application: `Circle 5` arrives as

@@ -46,7 +46,19 @@ pub(crate) fn parse_lambda(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
     // Collect one or more parameters until we see `->`.
     let mut params: Vec<LambdaParam> = Vec::new();
 
-    while cur.peek() != &Token::Arrow {
+    // `fn () -> e` takes nothing, the same way `fn f () -> T = e` declares a
+    // function that takes nothing. The `()` is the empty parameter list, not a
+    // pattern matching unit, so it is consumed here rather than handed to
+    // `parse_lambda_param` — which is what used to report `P002 unexpected
+    // token )` and leave the specification's own dependency-injection example
+    // unwritable (#404).
+    let nullary = cur.peek() == &Token::LParen && cur.peek_n(1) == Some(&Token::RParen);
+    if nullary {
+        cur.bump(); // `(`
+        cur.bump(); // `)`
+    }
+
+    while !nullary && cur.peek() != &Token::Arrow {
         // Guard against EOF / layout tokens.
         match cur.peek() {
             Token::Eof | Token::Newline | Token::Indent | Token::Dedent => {
@@ -63,7 +75,9 @@ pub(crate) fn parse_lambda(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
         params.push(param);
     }
 
-    if params.is_empty() {
+    // A bare `fn -> e` still has to say what it takes: `()` is the marker for
+    // nothing, and leaving it out reads as an unfinished parameter list.
+    if params.is_empty() && !nullary {
         return Err(ParseError::Expected {
             span: cur.span(),
             expected: "lambda parameter",

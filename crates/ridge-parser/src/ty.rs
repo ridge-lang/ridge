@@ -289,6 +289,31 @@ fn parse_fn_type(cur: &mut Cursor<'_>) -> Result<Type, ParseError> {
         cur.bump();
     }
 
+    // `fn () -> T` is the type of a function that takes nothing — the empty
+    // parameter list, not a single `Unit`. That is the declaration form
+    // `fn f () -> T` produces, and until this arm existed the type language had
+    // no way to name it: `()` parsed as the Unit atom, so the type described a
+    // one-argument function and `apply clockNow` was an arity mismatch against
+    // a function declared exactly the way the type asks for (#404). `Unit`
+    // written out still means a real unit argument, and the two are different
+    // functions.
+    if cur.peek() == &Token::LParen && cur.peek_n(1) == Some(&Token::RParen) {
+        cur.bump(); // `(`
+        cur.bump(); // `)`
+        cur.expect(&Token::Arrow)?;
+        let ret = parse_type(cur)?;
+        let full_span = start_span.merge(ret.span());
+        return Ok(Type::Fn {
+            fn_ty: FnType {
+                caps,
+                params: Vec::new(),
+                ret: Box::new(ret),
+                span: full_span,
+            },
+            span: full_span,
+        });
+    }
+
     // Collect one or more TypeAtom params (required before `->` per grammar).
     if !is_type_atom_start(cur) {
         return Err(ParseError::Expected {

@@ -842,6 +842,25 @@ pub enum TypeError {
     },
 
     // ── T999 ─────────────────────────────────────────────────────────────────
+    // ── T056 ─────────────────────────────────────────────────────────────────
+    /// A type annotation names a type that does not exist.
+    ///
+    /// Nothing in the arena carries the name — not a builtin, not the prelude,
+    /// not a reconciled standard-library type, not a declaration in the
+    /// workspace, and not a parameter of the enclosing declaration. It used to
+    /// become a fresh type variable, which unifies with anything, so the
+    /// annotation quietly stopped constraining its position and `f "text"`,
+    /// `f 42` and `f true` all type-checked against `fn f (x: Bogus)`.
+    UnknownTypeName {
+        /// The name as written.
+        name: String,
+        /// Source span of the annotation.
+        span: Span,
+        /// Up to three near-miss type names, closest first. Empty when nothing
+        /// in scope is within edit distance.
+        suggestions: Vec<String>,
+    },
+
     /// Internal type-checker invariant violation — should never reach users.
     ///
     /// In debug builds this is accompanied by a `debug_assert!` panic (see
@@ -916,6 +935,7 @@ impl TypeError {
             Self::MainHasParams { .. } => "T053",
             Self::FieldAccessOnNonRecord { .. } => "T054",
             Self::MissingConstraint { .. } => "T055",
+            Self::UnknownTypeName { .. } => "T056",
             Self::InternalTypeError { .. } => "T999",
         }
     }

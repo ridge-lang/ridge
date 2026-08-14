@@ -65,7 +65,7 @@ pub type AskError = Noproc | Timeout
 -- Why an `Actor.send` failed: the target's bounded `error`-policy mailbox
 -- was full (`MailboxFull`). A full drop-policy mailbox and a dead target
 -- are not errors — the message is silently dropped, as with `!`.
-pub type SendError = MailboxFull
+pub type SendError = | MailboxFull
 
 -- Why an actor stopped. Delivered to its `terminate` callback and to
 -- monitor consumers (`await`, `onDown`): the process stopped normally

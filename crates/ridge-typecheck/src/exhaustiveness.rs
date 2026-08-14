@@ -1205,6 +1205,18 @@ pub fn render_witness(w: &WitnessPat) -> String {
     match w {
         WitnessPat::Wild => "_".to_string(),
         WitnessPat::Lit(s) => s.clone(),
+        // `::` is written between its two arguments, not in front of them.
+        // Rendered like every other constructor it came out as `:: _ _`, which
+        // is what the reader was told to add to the match — and it does not
+        // parse: the arm starts with an operator and the `_` after it is read
+        // as an expression.
+        WitnessPat::Ctor { name, args } if name == "::" && args.len() == 2 => {
+            format!(
+                "{} :: {}",
+                render_witness_arg(&args[0]),
+                render_witness_arg(&args[1])
+            )
+        }
         WitnessPat::Ctor { name, args } => {
             if args.is_empty() {
                 name.clone()
@@ -1239,6 +1251,31 @@ fn render_witness_arg(w: &WitnessPat) -> String {
         WitnessPat::Ctor { args, .. } if !args.is_empty() => format!("({rendered})"),
         WitnessPat::Record { .. } => format!("({rendered})"),
         _ => rendered,
+    }
+}
+
+#[cfg(test)]
+mod cons_witness_tests {
+    use super::{render_witness, WitnessPat};
+
+    /// The witness for a missing cons case has to be an arm someone can type.
+    #[test]
+    fn a_missing_cons_case_renders_the_way_it_is_written() {
+        let w = WitnessPat::Ctor {
+            name: "::".to_string(),
+            args: vec![WitnessPat::Wild, WitnessPat::Wild],
+        };
+        assert_eq!(render_witness(&w), "_ :: _");
+    }
+
+    /// The infix arm must not swallow ordinary constructors, which stay prefix.
+    #[test]
+    fn an_ordinary_constructor_is_still_prefix() {
+        let w = WitnessPat::Ctor {
+            name: "Crashed".to_string(),
+            args: vec![WitnessPat::Wild],
+        };
+        assert_eq!(render_witness(&w), "Crashed _");
     }
 }
 

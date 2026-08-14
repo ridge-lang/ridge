@@ -996,6 +996,10 @@ A field access `base.field` is applied to a non-record type.
 
 A fully-annotated signature does not promise a class its body needs.
 
+### T056
+
+A type annotation names a type that does not exist.
+
 ### T101
 
 The `@ffi` arity doesn't match the Ridge parameter count.

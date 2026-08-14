@@ -69,6 +69,87 @@ pub fn well_known_shorthand(name: &str) -> Option<&'static str> {
     }
 }
 
+/// The same idea for type names: what a newcomer writes → what Ridge calls it.
+///
+/// Edit distance is no help here. The names people arrive with are not typos of
+/// the Ridge ones, so the bare suggester either finds nothing or reaches for
+/// whatever happens to be close — `Function` came back as `FkAction`, `Void` as
+/// `Join`, `Vec` as `Seq`. Every entry below was checked against what the
+/// suggester answered without it.
+///
+/// `Fn` is the one that returns syntax rather than a name, because there is no
+/// type called `Fn`: a function type is written with the keyword. The
+/// specification itself taught the wrong spelling, which is how this was found.
+pub const TYPE_SHORTHANDS: &[(&str, &str)] = &[
+    ("String", "Text"),
+    ("Str", "Text"),
+    ("Char", "Text"),
+    ("Integer", "Int"),
+    ("Int64", "Int"),
+    ("Long", "Int"),
+    ("Number", "Int"),
+    ("Num", "Int"),
+    ("Double", "Float"),
+    ("Real", "Float"),
+    ("Boolean", "Bool"),
+    ("Array", "List"),
+    ("Vec", "List"),
+    ("Vector", "List"),
+    ("Seq", "List"),
+    ("Dict", "Map"),
+    ("HashMap", "Map"),
+    ("Object", "Map"),
+    ("Record", "Map"),
+    ("HashSet", "Set"),
+    ("Void", "Unit"),
+    ("Null", "Unit"),
+    ("Nothing", "Unit"),
+    ("Nil", "Unit"),
+    ("Maybe", "Option"),
+    ("Optional", "Option"),
+    ("Either", "Result"),
+    ("Instant", "Timestamp"),
+    ("DateTime", "Timestamp"),
+    ("Fn", "fn a -> b"),
+    ("Function", "fn a -> b"),
+    ("Func", "fn a -> b"),
+    ("Closure", "fn a -> b"),
+    ("Lambda", "fn a -> b"),
+];
+
+/// Translate a type name a newcomer wrote into what Ridge calls it.
+///
+/// Exact match only. A hit here is certain enough to be the whole answer, so
+/// the caller drops its near-misses: `Function` cannot also have been a typo of
+/// something real.
+#[must_use]
+pub fn well_known_type_shorthand(name: &str) -> Option<&'static str> {
+    TYPE_SHORTHANDS
+        .iter()
+        .find(|(alias, _)| *alias == name)
+        .map(|(_, ridge)| *ridge)
+}
+
+/// The same table, reached by edit distance against the *foreign* name.
+///
+/// `Strng` is one edit from `String`, which is `Text` — and five edits from
+/// `Text`, so neither step finds it alone. Someone reaching for a type from
+/// another language and mistyping it is the realistic case, and it is the
+/// example the report was filed with.
+///
+/// This is a guess about a guess, so the caller only falls back to it when the
+/// real types offered nothing: a near-miss of a declared type is always the
+/// better answer than a near-miss of a name that was never Ridge's.
+#[must_use]
+pub fn nearest_type_shorthand(name: &str) -> Option<&'static str> {
+    let near = suggest(name, TYPE_SHORTHANDS.iter().map(|(a, _)| (*a).to_owned()));
+    let alias = near.first()?;
+    TYPE_SHORTHANDS
+        .iter()
+        .find(|(a, _)| a == alias)
+        .map(|(_, ridge)| *ridge)
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Compute up to [`MAX_RESULTS`] "did you mean?" suggestions for `target`.

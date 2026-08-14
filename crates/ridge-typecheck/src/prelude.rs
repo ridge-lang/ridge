@@ -187,6 +187,15 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     tycons.insert("Duration".to_string(), b.duration);
     tycons.insert("Instant".to_string(), b.instant);
     tycons.insert("Output".to_string(), b.proc_output);
+    // The opaque actor builtins, for the same reason. They have no Ridge
+    // declaration to alias — a `Monitor` is a runtime reference — so nothing
+    // else in an actor member's signature can resolve them: that pass runs
+    // before the arena the plain-function path falls back on, which is why
+    // `onDown (m: Monitor)` failed to name a type its own callback contract
+    // requires.
+    tycons.insert("Monitor".to_string(), b.monitor);
+    tycons.insert("ChildSpec".to_string(), b.child_spec);
+    tycons.insert("Supervisor".to_string(), b.supervisor);
     // Ordering = Less | Equal | Greater — prelude union type required by Ord (0.2.13).
     tycons.insert("Ordering".to_string(), b.ordering);
 

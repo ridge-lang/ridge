@@ -1258,6 +1258,58 @@ pub fn ast_type_to_ridge_type(
     /// an annotation such as `Repo User MemAdapter` resolves the head to a fresh
     /// variable and silently drops its type arguments — including a phantom entity
     /// the annotation was meant to pin, leaving it free to over-generalise.
+    /// Report `T056` for a type name nothing declares, with the nearest names
+    /// the reader could have meant.
+    ///
+    /// The candidate set is every type the annotation could legally have named
+    /// — the arena, minus the anonymous records the compiler mints for inline
+    /// record types, which have no spelling anyone could write, and minus the
+    /// names no user types. The suggestion carries most of the value here:
+    /// without it the message says a name is unknown to someone looking
+    /// straight at it.
+    ///
+    /// Two different mistakes reach this point. A typo (`Txt`) is close enough
+    /// for edit distance to find. A name brought from another language
+    /// (`String`, `Void`, `Function`) is not close to anything, and the
+    /// suggester answered those with whatever happened to be nearby, so those
+    /// are translated from a table instead.
+    fn unknown_type_name(ctx: &mut InferCtx, n: &str, span: ridge_ast::Span) {
+        // The arena also holds names no user writes: the query-builder shapes and
+        // the synthetic `Fn0`…`Fn15` behind every function type. Suggesting one
+        // answers a typo with a name that cannot be typed, so they come out here
+        // through the same predicate the resolve-side suggesters use.
+        let candidates: Vec<String> = ctx
+            .tycon_decls
+            .iter()
+            .filter(|d| !d.is_anon && !ridge_resolve::is_internal_prelude_name(&d.name))
+            .map(|d| d.name.clone())
+            .collect();
+        // Three answers, most confident first. A name straight out of the table
+        // is the whole answer and the near-misses are dropped: `Function` cannot
+        // also have been a typo of `FkAction`, which is what the suggester used
+        // to offer. Otherwise a near-miss of a type that really exists wins.
+        // Only when nothing real is close does the table get a second, fuzzy
+        // pass, for the misspelled-foreign-name case (`Strng` → `String` → `Text`).
+        let suggestions = ridge_resolve::suggest::well_known_type_shorthand(n).map_or_else(
+            || {
+                let near = ridge_resolve::suggest::suggest(n, candidates);
+                if near.is_empty() {
+                    ridge_resolve::suggest::nearest_type_shorthand(n)
+                        .map(|s| vec![s.to_owned()])
+                        .unwrap_or_default()
+                } else {
+                    near
+                }
+            },
+            |shorthand| vec![shorthand.to_owned()],
+        );
+        ctx.errors.push(crate::error::TypeError::UnknownTypeName {
+            name: n.to_string(),
+            span,
+            suggestions,
+        });
+    }
+
     fn arena_tycon_by_name(ctx: &InferCtx, n: &str) -> Option<TyConId> {
         ctx.tycon_decls
             .iter()
@@ -1338,8 +1390,20 @@ pub fn ast_type_to_ridge_type(
             if let Some(id) = arena_tycon_by_name(ctx, n) {
                 return Type::Con(id, vec![]);
             }
-            // Unknown — allocate fresh var as fallback.
-            Type::Var(ctx.fresh_tyvid())
+            // Nothing in the arena carries the name, and the arena is every
+            // type constructor the compiler knows — builtins, prelude,
+            // reconciled stdlib, and every declaration in the workspace. So the
+            // name does not exist, rather than merely being absent from the
+            // per-module map the lookups above consult.
+            //
+            // This used to return a fresh variable, which unifies with
+            // anything: the annotation stopped constraining its position and
+            // `f "text"`, `f 42` and `f true` all passed against
+            // `fn f (x: Bogus)`. `Type::Error` is absorbing instead, so the
+            // position is poisoned rather than opened, and the one diagnostic
+            // reported here does not turn into a cascade downstream (#504).
+            unknown_type_name(ctx, n, name.span);
+            Type::Error
         }
 
         ridge_ast::Type::App { head, args, .. } => {
@@ -1379,7 +1443,11 @@ pub fn ast_type_to_ridge_type(
                 }
                 return Type::Con(id, arg_tys);
             }
-            Type::Var(ctx.fresh_tyvid())
+            // Same reasoning as the bare-name branch above: an applied head
+            // nothing declares is a name that does not exist, and a fresh
+            // variable here swallowed both the head and its arguments.
+            unknown_type_name(ctx, n, head.span);
+            Type::Error
         }
 
         ridge_ast::Type::Tuple { elems, .. } => {

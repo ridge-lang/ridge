@@ -401,6 +401,23 @@ impl fmt::Display for TypeError {
                 write!(f, "T029: no instance `{class} {ty}`\n  {fix_hint}")
             }
 
+            // ── T056 ──────────────────────────────────────────────────────────
+            Self::UnknownTypeName {
+                name, suggestions, ..
+            } => {
+                let hint = if suggestions.is_empty() {
+                    "declare it, or import the module that does".to_string()
+                } else {
+                    let names = suggestions
+                        .iter()
+                        .map(|s| format!("`{s}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("did you mean {names}?")
+                };
+                write!(f, "T056: unknown type `{name}`\n  {hint}")
+            }
+
             // ── T030 ──────────────────────────────────────────────────────────
             Self::AmbiguousConstraint { class, ty_var, .. } => {
                 write!(
@@ -736,6 +753,7 @@ impl HasErrorCode for TypeError {
             | Self::MailboxPolicyDropOldestNotShipped { span, .. }
             | Self::IncompleteRecordPattern { span, .. }
             | Self::NoInstance { span, .. }
+            | Self::UnknownTypeName { span, .. }
             | Self::AmbiguousConstraint { span, .. }
             | Self::OrphanInstance { span, .. }
             | Self::OverlappingInstance {

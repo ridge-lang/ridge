@@ -1108,6 +1108,36 @@ pub fn is_internal_prelude_name(name: &str) -> bool {
             | "RightJoinResult"
             | "FullJoinResult"
             | "InsertShape"
+    ) || is_synthetic_fn_tycon(name)
+}
+
+/// `Fn0` … `Fn15` — the synthetic constructors for a function type of each
+/// arity.
+///
+/// They are real entries in the type arena, because the dictionary machinery
+/// derives `$inst_{Class}_Fn{arity}` from their names, but no user writes one:
+/// a function type is spelled `fn a -> b`. Offering one as a did-you-mean sends
+/// the reader after a name they cannot use — the same reason the query
+/// constructors above are excluded.
+fn is_synthetic_fn_tycon(name: &str) -> bool {
+    matches!(
+        name,
+        "Fn0"
+            | "Fn1"
+            | "Fn2"
+            | "Fn3"
+            | "Fn4"
+            | "Fn5"
+            | "Fn6"
+            | "Fn7"
+            | "Fn8"
+            | "Fn9"
+            | "Fn10"
+            | "Fn11"
+            | "Fn12"
+            | "Fn13"
+            | "Fn14"
+            | "Fn15"
     )
 }
 

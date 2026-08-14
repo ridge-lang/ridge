@@ -182,26 +182,32 @@ impl fmt::Display for TypeError {
                 inferred,
                 ..
             } => {
+                // The `Options:` lines are meant to be pasted back into the
+                // source, so the capability set is written the way a
+                // declaration writes it. `Display` gives `{io}`, which reads
+                // correctly in the prose above but starts a record type in the
+                // language — `fn {io} main` does not parse.
+                let inferred_src = inferred.as_source_caps();
                 match kind {
                     CapDeclKind::Fn => write!(
                         f,
-                        "T014: capability not declared\n  function `{decl}` declared as `fn {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `fn {inferred} {decl}`\n    - Remove the call requiring `{missing}`"
+                        "T014: capability not declared\n  function `{decl}` declared as `fn {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `fn {inferred_src} {decl}`\n    - Remove the call requiring `{missing}`"
                     ),
                     CapDeclKind::Handler => write!(
                         f,
-                        "T014: capability not declared\n  handler `{decl}` declared as `on {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `on {inferred} {decl}`\n    - Remove the call requiring `{missing}`"
+                        "T014: capability not declared\n  handler `{decl}` declared as `on {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `on {inferred_src} {decl}`\n    - Remove the call requiring `{missing}`"
                     ),
                     CapDeclKind::Init => write!(
                         f,
-                        "T014: capability not declared\n  the init block declared as `init {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `init {inferred}`\n    - Remove the call requiring `{missing}`"
+                        "T014: capability not declared\n  the init block declared as `init {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `init {inferred_src}`\n    - Remove the call requiring `{missing}`"
                     ),
                     CapDeclKind::Terminate => write!(
                         f,
-                        "T014: capability not declared\n  the terminate callback declared as `terminate {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `terminate {inferred}`\n    - Remove the call requiring `{missing}`"
+                        "T014: capability not declared\n  the terminate callback declared as `terminate {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `terminate {inferred_src}`\n    - Remove the call requiring `{missing}`"
                     ),
                     CapDeclKind::OnDown => write!(
                         f,
-                        "T014: capability not declared\n  the onDown handler declared as `onDown {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `onDown {inferred}`\n    - Remove the call requiring `{missing}`"
+                        "T014: capability not declared\n  the onDown handler declared as `onDown {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `onDown {inferred_src}`\n    - Remove the call requiring `{missing}`"
                     ),
                     // Rule 4 compares the inner fn's own annotation against the
                     // *enclosing* effective set, so the resolution lives on the
@@ -1561,6 +1567,13 @@ mod tests {
         assert!(s.contains("procesarConfig"), "decl name: {s}");
         assert!(s.contains("fn {io}"), "declared caps: {s}");
         assert!(s.contains("{fs}"), "missing caps: {s}");
+        // The specification writes this very suggestion as
+        // `fn io fs procesarConfig` — bare names, no braces, because that is
+        // what a declaration accepts.
+        assert!(
+            s.contains("`fn io fs procesarConfig`"),
+            "suggestion must be written as a declaration: {s}"
+        );
         assert!(s.contains("Options:"), "options header: {s}");
         assert!(s.contains("Add"), "add option: {s}");
         assert!(s.contains("Remove"), "remove option: {s}");
@@ -1584,11 +1597,27 @@ mod tests {
             handler.contains("handler `increment`"),
             "handler: {handler}"
         );
-        assert!(handler.contains("on {io} increment"), "handler: {handler}");
+        // The suggestion is written the way a declaration is written. It used
+        // to carry the set braces — `on {io} increment` — which is a record
+        // type where a capability was meant, so the fix offered did not parse.
+        assert!(handler.contains("on io increment"), "handler: {handler}");
+        assert!(
+            !handler.contains("on {io}"),
+            "the suggestion must not carry set braces: {handler}"
+        );
+        // The prose above it keeps set notation, which reads correctly there.
+        assert!(
+            handler.contains("uses capability `{io}`"),
+            "handler: {handler}"
+        );
 
         let init = base(CapDeclKind::Init, "init").to_string();
         assert!(init.contains("init block"), "init: {init}");
-        assert!(init.contains("`init {io}`"), "init: {init}");
+        assert!(init.contains("`init io`"), "init: {init}");
+        assert!(
+            !init.contains("`init {io}`"),
+            "the suggestion must not carry set braces: {init}"
+        );
 
         let inner = base(CapDeclKind::InnerFn, "helper").to_string();
         assert!(inner.contains("inner function `helper`"), "inner: {inner}");

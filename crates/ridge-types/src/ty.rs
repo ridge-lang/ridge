@@ -282,6 +282,36 @@ impl fmt::Display for Type {
     }
 }
 
+impl CapabilitySet {
+    /// The set as it is written in a declaration: bare names, space separated.
+    ///
+    /// [`Display`](fmt::Display) renders `{io fs}`, which reads correctly in
+    /// prose — "uses capability `{io}`" — and is not what the language accepts.
+    /// A brace is the start of a record type there, so a diagnostic that offers
+    /// `fn {io} main` as the fix hands the reader a line that does not parse.
+    /// Use this wherever the text is meant to be pasted back into the source.
+    #[must_use]
+    pub fn as_source_caps(&self) -> String {
+        use ridge_ast::Capability;
+        [
+            (Capability::Io, "io"),
+            (Capability::Fs, "fs"),
+            (Capability::Net, "net"),
+            (Capability::Time, "time"),
+            (Capability::Random, "random"),
+            (Capability::Env, "env"),
+            (Capability::Proc, "proc"),
+            (Capability::Spawn, "spawn"),
+            (Capability::Ffi, "ffi"),
+            (Capability::Db, "db"),
+        ]
+        .iter()
+        .filter_map(|(cap, name)| self.contains(*cap).then_some(*name))
+        .collect::<Vec<_>>()
+        .join(" ")
+    }
+}
+
 impl fmt::Display for CapabilitySet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use ridge_ast::Capability;

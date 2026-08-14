@@ -1571,6 +1571,12 @@ pub const REGISTRY: &[CodeEntry] = &[
         summary: "A fully-annotated signature does not promise a class its body needs.",
     },
     CodeEntry {
+        code: "T056",
+        variants: &["UnknownTypeName"],
+        owner: "ridge-typecheck",
+        summary: "A type annotation names a type that does not exist.",
+    },
+    CodeEntry {
         code: "T101",
         variants: &["FfiArityMismatch"],
         owner: "ridge-stdlib",

@@ -88,8 +88,9 @@ pub use error::{ManifestError, ResolveError, Severity};
 pub use forbid::check_forbid_rules;
 pub use globs::GlobPattern;
 pub use imports::{
-    detect_cycles_authoritative, prelude_resolutions, resolve_imports, Binding, EffectiveBinding,
-    ImportResolution, ImportResolutionResult, ImportTarget, ImportedItem,
+    detect_cycles_authoritative, is_internal_prelude_name, prelude_resolutions, resolve_imports,
+    Binding, EffectiveBinding, ImportResolution, ImportResolutionResult, ImportTarget,
+    ImportedItem,
 };
 pub use manifest::{
     parse_project_manifest, parse_workspace_manifest, ForbidRule, GitRev, Project,

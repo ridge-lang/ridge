@@ -356,3 +356,42 @@ fn make_cell = Cell { x = 1, y = 2 }
         "Cell record ctor must appear in rendered output; rendered:\n{rendered}"
     );
 }
+
+// A misspelled constructor in a match arm is an ordinary mistake, and resolve
+// already reports it as R010. Lowering runs anyway — every pass does, so one run
+// reports everything — and used to answer with an internal note about a binding
+// variant on top of the real error. Nothing the reader can act on, and the arm
+// it came from is an assertion about a program that resolved clean.
+#[test]
+fn an_unresolved_constructor_pattern_adds_no_lowering_error() {
+    let source = r#"
+type Colour = Red | Green
+
+fn describe (c: Colour) -> Text =
+    match c
+        Red    -> "red"
+        Purple -> "purple"
+"#;
+    let tw = common::make_workspace("b_unresolved_ctor_pat", "main", source);
+
+    let disc = ridge_resolve::discover_workspace(&tw.path);
+    let ws_graph = disc.graph.expect("workspace graph must be present");
+    let resolved = ridge_resolve::resolve_workspace(ws_graph);
+
+    // The premise: resolve does report the misspelling. Without this the test
+    // would pass on a build that silently accepted `Purple`.
+    assert!(
+        resolved.errors.iter().any(|(_, e)| e.code() == "R010"),
+        "expected resolve to report R010 for `Purple`; got {:?}",
+        resolved.errors
+    );
+
+    let typed = ridge_typecheck::typecheck_workspace(&resolved);
+    let lowering = ridge_lower::lower_workspace(&typed.typed, &resolved);
+
+    assert!(
+        lowering.errors.is_empty(),
+        "lowering must stay quiet once resolve has already spoken; got {:?}",
+        lowering.errors
+    );
+}

@@ -35,8 +35,8 @@ pub type Parsed = { flags: Map Text Text, switches: List Text, positionals: List
 
 -- Return the command-line arguments as a list of Text values.
 -- Capability: env (arguments are part of the process environment).
-@ffi("ridge_rt", "cli_args", 1)
-pub fn env args (_unit: Unit) -> List Text
+@ffi("ridge_rt", "cli_args", 0)
+pub fn env args () -> List Text
 
 -- Terminate the current process with the given exit code.
 -- Capability: proc (controls the process lifecycle).

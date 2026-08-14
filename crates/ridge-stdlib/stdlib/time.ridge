@@ -25,8 +25,8 @@ pub fn ofMillis (ms: Int) -> Duration
 -- against it.
 
 -- Read the current monotonic clock. Requires `time`.
-@ffi("ridge_rt", "mono_now", 1)
-pub fn time monotonic (_unit: Unit) -> Instant
+@ffi("ridge_rt", "mono_now", 0)
+pub fn time monotonic () -> Instant
 
 -- The Duration elapsed since a monotonic reading, measured against the monotonic
 -- clock now. Never negative. Requires `time`.
@@ -39,12 +39,12 @@ pub fn time elapsed (start: Instant) -> Duration
 pub fn since (start: Instant) (end: Instant) -> Duration
 
 -- Return the current system time as a Timestamp.
-@ffi("ridge_rt", "time_now", 1)
-pub fn time now (_unit: Unit) -> Timestamp
+@ffi("ridge_rt", "time_now", 0)
+pub fn time now () -> Timestamp
 
 -- Return the Unix epoch (1970-01-01T00:00:00Z) as a Timestamp.
-@ffi("ridge_rt", "time_epoch", 1)
-pub fn epoch (_unit: Unit) -> Timestamp
+@ffi("ridge_rt", "time_epoch", 0)
+pub fn epoch () -> Timestamp
 
 -- Parse an ISO-8601 text into a Timestamp.
 -- Returns Ok(Timestamp) on success, Err(Error) on invalid input.

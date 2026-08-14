@@ -608,8 +608,20 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
     },
     FfiAuditEntry {
         beam_module: "ridge_rt",
+        fn_name: "read_line",
+        arity: 0,
+        requires_caps: &[Capability::Io],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
         fn_name: "time_now",
         arity: 1,
+        requires_caps: &[Capability::Time],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "time_now",
+        arity: 0,
         requires_caps: &[Capability::Time],
     },
     FfiAuditEntry {
@@ -634,6 +646,12 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         beam_module: "ridge_rt",
         fn_name: "mono_now",
         arity: 1,
+        requires_caps: &[Capability::Time],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "mono_now",
+        arity: 0,
         requires_caps: &[Capability::Time],
     },
     FfiAuditEntry {
@@ -782,11 +800,23 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         arity: 1,
         requires_caps: &[],
     },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "uuid_nil",
+        arity: 0,
+        requires_caps: &[],
+    },
     // `generate` draws fresh random bytes, so it carries the `random` capability.
     FfiAuditEntry {
         beam_module: "ridge_rt",
         fn_name: "uuid_gen",
         arity: 1,
+        requires_caps: &[Capability::Random],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "uuid_gen",
+        arity: 0,
         requires_caps: &[Capability::Random],
     },
     FfiAuditEntry {
@@ -824,6 +854,12 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         beam_module: "ridge_rt",
         fn_name: "bytes_empty",
         arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "bytes_empty",
+        arity: 0,
         requires_caps: &[],
     },
     // `generate` draws fresh random bytes, so it carries the `random` capability.
@@ -903,6 +939,12 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
     },
     FfiAuditEntry {
         beam_module: "ridge_rt",
+        fn_name: "date_today_utc",
+        arity: 0,
+        requires_caps: &[Capability::Time],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
         fn_name: "date_add_days",
         arity: 2,
         requires_caps: &[],
@@ -971,6 +1013,12 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
     },
     FfiAuditEntry {
         beam_module: "ridge_rt",
+        fn_name: "tod_now_utc",
+        arity: 0,
+        requires_caps: &[Capability::Time],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
         fn_name: "tod_add_seconds",
         arity: 2,
         requires_caps: &[],
@@ -1001,6 +1049,12 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
     },
     FfiAuditEntry {
         beam_module: "ridge_rt",
+        fn_name: "random_float",
+        arity: 0,
+        requires_caps: &[Capability::Random],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
         fn_name: "random_alphanumeric",
         arity: 1,
         requires_caps: &[Capability::Random],
@@ -1025,6 +1079,12 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
     },
     FfiAuditEntry {
         beam_module: "ridge_rt",
+        fn_name: "cli_args",
+        arity: 0,
+        requires_caps: &[Capability::Env],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
         fn_name: "env_get",
         arity: 1,
         requires_caps: &[Capability::Env],
@@ -1039,6 +1099,12 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         beam_module: "ridge_rt",
         fn_name: "env_all",
         arity: 1,
+        requires_caps: &[Capability::Env],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "env_all",
+        arity: 0,
         requires_caps: &[Capability::Env],
     },
     FfiAuditEntry {

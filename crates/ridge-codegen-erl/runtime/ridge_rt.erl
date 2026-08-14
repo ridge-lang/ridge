@@ -5,38 +5,38 @@
 -module(ridge_rt).
 -export([
     println/1, print/1, eprintln/1,
-    read_line/1,
+    read_line/0, read_line/1,
     fs_lines/1, fs_read/1, fs_write/2, fs_append/2,
     fs_mkdir/1, fs_remove/1, fs_remove_dir/1,
     fs_read_dir/1,
     cli_args/0, cli_args/1,
     time_now/0, time_now/1, time_epoch/0, time_epoch/1,
     time_diff_ms/2, time_diff/2, duration_from_millis/1,
-    mono_now/1, mono_elapsed/1, mono_since/2,
+    mono_now/0, mono_now/1, mono_elapsed/1, mono_since/2,
     time_from_iso/1, time_since_ms/1, time_iso/1,
     time_to_micros/1, time_from_micros/1,
     decimal_from_text/1, decimal_to_text/1, decimal_from_int/1, decimal_parse_raw/1,
     decimal_to_float/1, decimal_cmp/2,
     decimal_add/2, decimal_sub/2, decimal_mul/2, decimal_neg/1, decimal_abs/1,
     decimal_round/3, decimal_div/4,
-    uuid_from_text/1, uuid_to_text/1, uuid_nil/1, uuid_gen/1, uuid_cmp/2,
+    uuid_from_text/1, uuid_to_text/1, uuid_nil/0, uuid_nil/1, uuid_gen/0, uuid_gen/1, uuid_cmp/2,
     bytes_from_hex/1, bytes_to_hex/1, bytes_from_utf8/1, bytes_to_utf8/1,
     crypto_sha256/1, crypto_hmac_sha256/2, base64_encode/1, base64_decode/1,
     map_filter_map/2,
-    bytes_empty/1, bytes_gen/1, bytes_length/1, bytes_concat/2, bytes_cmp/2,
+    bytes_empty/0, bytes_empty/1, bytes_gen/1, bytes_length/1, bytes_concat/2, bytes_cmp/2,
     date_from_ymd/3, date_to_iso/1, date_from_iso/1,
-    date_year/1, date_month/1, date_day/1, date_today/1, date_today_utc/1,
+    date_year/1, date_month/1, date_day/1, date_today/1, date_today_utc/0, date_today_utc/1,
     date_add_days/2, date_diff_days/2, date_cmp/2,
     tod_from_hms/3, tod_to_iso/1, tod_from_iso/1,
-    tod_hour/1, tod_minute/1, tod_second/1, tod_now/1, tod_now_utc/1,
+    tod_hour/1, tod_minute/1, tod_second/1, tod_now/1, tod_now_utc/0, tod_now_utc/1,
     tod_add_seconds/2, tod_diff_seconds/2, tod_cmp/2,
     int_parse/0, int_parse/1, float_parse/1, float_to_text/1, bool_to_text/1,
     sql_literal/1, sql_value_source/1,
     text_split_all/2, text_replace_all/3, text_join/2, text_slice/3,
     text_like/2, like_prefix/1, like_suffix/1, like_contains/1,
     list_fold/3, list_sort_by/2, list_sort_cmp/2, ord_compare_native/2, ordering_to_text/1,
-    random_int/2, random_choice/1, random_float/1, random_alphanumeric/1, random_seed/1,
-    env_get/1, env_all/1, env_set/2,
+    random_int/2, random_choice/1, random_float/0, random_float/1, random_alphanumeric/1, random_seed/1,
+    env_get/1, env_all/0, env_all/1, env_set/2,
     proc_run/2,
     json_encode/1, json_decode/1,
     json_null/0, json_null/1,
@@ -82,6 +82,7 @@ eprintln(B) -> io:format(standard_error, "~ts~n", [B]).
 %% Returns {ok, Line} on success or {error, #{code, message}} (the standard
 %% Error map) on EOF / read error.  Ridge type: Result Text Error.
 %% Ridge calling convention: zero-param fns receive the Unit `ok` arg.
+read_line() -> read_line(ok).
 read_line(_Unit) ->
     case io:get_line("") of
         eof        -> {error, mk_error(<<"eof">>, <<"end of input">>)};
@@ -207,6 +208,7 @@ duration_from_millis(Ms) -> #{ms => Ms}.
 %% mono_now/1 — std.time.monotonic. An opaque monotonic reading, tagged `{instant, _}`
 %% so it cannot be confused with a wall-clock `{timestamp, _}`. erlang:monotonic_time
 %% only moves forward within a runtime, so spans measured from it are never negative.
+mono_now() -> mono_now(ok).
 mono_now(_) -> {instant, erlang:monotonic_time(nanosecond)}.
 
 %% mono_elapsed/1 — std.time.elapsed. The Duration from a monotonic reading to now,
@@ -468,10 +470,12 @@ uuid_from_text(Bin) ->
 uuid_to_text({uuid, Bin}) -> Bin.
 
 %% uuid_nil/1 — std.uuid.nil. The all-zero uuid.
+uuid_nil() -> uuid_nil(ok).
 uuid_nil(_Unit) -> {uuid, <<"00000000-0000-0000-0000-000000000000">>}.
 
 %% uuid_gen/1 — std.uuid.generate. A random version-4 uuid from a cryptographic source.
 %% The version nibble is pinned to 4 and the variant bits to the RFC 4122 form.
+uuid_gen() -> uuid_gen(ok).
 uuid_gen(_Unit) ->
     <<A:48, _:4, B:12, _:2, C:62>> = crypto:strong_rand_bytes(16),
     {uuid, uuid_format(<<A:48, 4:4, B:12, 2:2, C:62>>)}.
@@ -541,6 +545,7 @@ bytes_to_utf8(Raw) ->
     end.
 
 %% bytes_empty/1 — std.bytes.empty. The empty byte string.
+bytes_empty() -> bytes_empty(ok).
 bytes_empty(_Unit) -> <<>>.
 
 %% bytes_gen/1 — std.bytes.generate. n cryptographically-random bytes; a non-positive n
@@ -646,6 +651,7 @@ date_today(OffsetMinutes) when is_integer(OffsetMinutes) ->
     {date, calendar:date_to_gregorian_days(Y, M, D) - date_epoch_gd()}.
 
 %% date_today_utc/1 — std.date.todayUtc. Today's date in UTC (offset 0).
+date_today_utc() -> date_today_utc(ok).
 date_today_utc(_Unit) -> date_today(0).
 
 %% date_add_days/2 — std.date.addDays. The date N days after D (N may be negative).
@@ -765,6 +771,7 @@ tod_now(OffsetMinutes) when is_integer(OffsetMinutes) ->
     {time, ((Micros rem Day) + Day) rem Day}.
 
 %% tod_now_utc/1 — std.timeofday.nowUtc. The current time of day in UTC (offset 0).
+tod_now_utc() -> tod_now_utc(ok).
 tod_now_utc(_Unit) -> tod_now(0).
 
 %% tod_add_seconds/2 — std.timeofday.addSeconds. The time N seconds after T, wrapping at
@@ -1107,6 +1114,7 @@ random_choice(L)   -> {some, lists:nth(rand:uniform(length(L)), L)}.
 
 %% random_float/1 — std.random.float
 %% Returns a uniform float in [0.0, 1.0).
+random_float() -> random_float(ok).
 random_float(_Unit) -> rand:uniform().
 
 %% random_alphanumeric/1 — std.random.alphanumeric
@@ -1142,6 +1150,7 @@ env_get(Name) ->
 %% non-Latin-1 code points (e.g. em-dashes in Windows PATHEXT) are encoded
 %% to valid UTF-8 rather than crashing with badarg in list_to_binary/1.
 %% Entries that fail conversion (malformed sequences) are silently skipped.
+env_all() -> env_all(ok).
 env_all(_Unit) ->
     Pairs = os:env(),
     maps:from_list(

@@ -647,6 +647,7 @@ String interpolation dispatches through the `ToText` class (§5.6). Built-in typ
 import std.list as List
 import std.map (get, insert)
 import std.text (trim, split, lines)
+import std.actor as Actor (Noproc, Timeout)
 
 import acme.shared.Text
 import acme.infra.Postgres as Pg
@@ -658,6 +659,11 @@ pub type User = { name: Text, email: Text }
 pub(internal) fn normalizeEmail (e: Text) -> Text = ...
 fn _helper x = ...
 ```
+
+An import item is any exported name, constructors included. The module
+alias binds the module and nothing inside it, so a union's constructors
+have to be listed to be written unqualified — `Noproc` and `Timeout`
+above are the variants of `std.actor`'s `AskError`.
 
 See [§8](#8-project--workspace-model) for the full visibility model.
 

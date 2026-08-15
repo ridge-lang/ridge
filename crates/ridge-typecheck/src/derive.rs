@@ -42,7 +42,7 @@ use ridge_types::{
 use rustc_hash::FxHashMap;
 
 use crate::class_env::{ClassTable, InstanceEnv, InstanceInfo, InstanceOrigin};
-use crate::error::TypeError;
+use crate::error::{TypeDesc, TypeError};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -413,7 +413,7 @@ pub fn derive_instances(
                 // wiring fault, surfaced as an unknown-class diagnostic.
                 errors.push(TypeError::NoInstance {
                     class: ridge_ast::column_mirror::SCHEMA_CLASS.to_string(),
-                    ty: type_decl.name.text.clone(),
+                    ty: TypeDesc::Text(type_decl.name.text.clone()),
                     span,
                     fix_hint: "the `HasSchema` class is unavailable; `deriving \
                                (Schema)` needs `std.schema` in scope"
@@ -459,7 +459,7 @@ pub fn derive_instances(
         let Some(class_id) = class_table.id_by_name(class_name) else {
             errors.push(TypeError::NoInstance {
                 class: class_name.clone(),
-                ty: type_decl.name.text.clone(),
+                ty: TypeDesc::Text(type_decl.name.text.clone()),
                 span,
                 fix_hint: format!("class `{class_name}` is not defined; check the class name"),
             });
@@ -478,7 +478,7 @@ pub fn derive_instances(
                 if instance_env.get((class_id, nt.inner_tycon)).is_none() {
                     errors.push(TypeError::NoInstance {
                         class: class_name.clone(),
-                        ty: type_decl.name.text.clone(),
+                        ty: TypeDesc::Text(type_decl.name.text.clone()),
                         span,
                         fix_hint: format!(
                             "`deriving {class_name}` on `{}` forwards to its inner type \
@@ -564,7 +564,7 @@ pub fn derive_instances(
         if !is_derivable(class_id) {
             errors.push(TypeError::NoInstance {
                 class: class_name.clone(),
-                ty: type_decl.name.text.clone(),
+                ty: TypeDesc::Text(type_decl.name.text.clone()),
                 span,
                 fix_hint: format!(
                     "class `{class_name}` is not derivable; \
@@ -856,7 +856,7 @@ fn generate_eq(
     if let Some(float_field) = find_float_field(body, user_tycon_names) {
         return Err(TypeError::NoInstance {
             class: "Eq".to_string(),
-            ty: type_name.text.clone(),
+            ty: TypeDesc::Text(type_name.text.clone()),
             span,
             fix_hint: format!(
                 "floating-point equality is a footgun; `Eq Float` is intentionally \
@@ -1104,7 +1104,7 @@ fn generate_encode(
 ) -> Result<(DerivedMethodBody, Vec<Constraint>, Vec<usize>), TypeError> {
     let var_hint = |field: &str, ty: &AstType| TypeError::NoInstance {
         class: "Encode".to_string(),
-        ty: type_name.text.clone(),
+        ty: TypeDesc::Text(type_name.text.clone()),
         span,
         fix_hint: format!(
             "field `{field}` of type `{}` mentions a type variable that is not a \
@@ -1213,7 +1213,7 @@ fn generate_decode(
 ) -> Result<(DerivedMethodBody, Vec<Constraint>, Vec<usize>), TypeError> {
     let var_hint = |field: &str, ty: &AstType| TypeError::NoInstance {
         class: "Decode".to_string(),
-        ty: type_name.text.clone(),
+        ty: TypeDesc::Text(type_name.text.clone()),
         span,
         fix_hint: format!(
             "field `{field}` of type `{}` mentions a type variable that is not a \
@@ -1318,7 +1318,7 @@ fn generate_row(
     let TypeBody::Record(r) = body else {
         return Err(TypeError::NoInstance {
             class: "Row".to_string(),
-            ty: type_name.text.clone(),
+            ty: TypeDesc::Text(type_name.text.clone()),
             span,
             fix_hint: "`deriving (Row)` is supported on record types only; a row \
                        maps named columns to record fields"
@@ -1333,7 +1333,7 @@ fn generate_row(
         let Some((optional, type_tag)) = sql_row_field(&field.ty) else {
             return Err(TypeError::NoInstance {
                 class: "Row".to_string(),
-                ty: type_name.text.clone(),
+                ty: TypeDesc::Text(type_name.text.clone()),
                 span,
                 fix_hint: format!(
                     "field `{}` of type `{}` has no `SqlType` instance; \
@@ -1379,7 +1379,7 @@ fn generate_schema(
     let TypeBody::Record(r) = body else {
         return Err(TypeError::NoInstance {
             class: cm::SCHEMA_CLASS.to_string(),
-            ty: type_name.text.clone(),
+            ty: TypeDesc::Text(type_name.text.clone()),
             span,
             fix_hint: "`deriving (Schema)` is supported on record types only; a \
                        schema maps record fields to table columns"

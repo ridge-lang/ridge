@@ -64,7 +64,7 @@ pub fn infer_send(
 
     let Ok((actor_id, actor_schema)) = resolve_actor_type(ctx, arena, &handle_ty) else {
         // Not an actor handle.
-        let found_ty = ctx.render_ty(&handle_ty);
+        let found_ty = ctx.ty_desc(&handle_ty);
         ctx.errors
             .push(TypeError::SendOnNonActor { found_ty, span });
         return Type::Error;
@@ -147,7 +147,7 @@ pub fn infer_ask(
     }
 
     let Ok((actor_id, actor_schema)) = resolve_actor_type(ctx, arena, &handle_ty) else {
-        let found_ty = ctx.render_ty(&handle_ty);
+        let found_ty = ctx.ty_desc(&handle_ty);
         ctx.errors.push(TypeError::AskOnNonActor { found_ty, span });
         return Type::Error;
     };
@@ -201,7 +201,7 @@ pub fn infer_ask(
         // `unify` returns `Err(TypeError)` on failure; we push T026 in that case.
         // Code T026 is allocated here (see crate::error — T001..T025 were prior).
         if unify(ctx, &ms_ty, &int_ty).is_err() {
-            let found_ty = ctx.render_ty(&ms_ty);
+            let found_ty = ctx.ty_desc(&ms_ty);
             ctx.errors.push(TypeError::AskTimeoutNotInt {
                 found: found_ty,
                 span: ms_expr.span(),
@@ -437,7 +437,7 @@ pub fn infer_tryask(
     }
 
     let Ok((actor_id, actor_schema)) = resolve_actor_type(ctx, arena, &handle_ty) else {
-        let found_ty = ctx.render_ty(&handle_ty);
+        let found_ty = ctx.ty_desc(&handle_ty);
         ctx.errors.push(TypeError::AskOnNonActor { found_ty, span });
         return Type::Error;
     };
@@ -489,7 +489,7 @@ pub fn infer_tryask(
     let timeout_ty = infer_expr(ctx, b, timeout_expr);
     let int_ty = Type::Con(b.int, vec![]);
     if unify(ctx, &timeout_ty, &int_ty).is_err() {
-        let found_ty = ctx.render_ty(&timeout_ty);
+        let found_ty = ctx.ty_desc(&timeout_ty);
         ctx.errors.push(TypeError::AskTimeoutNotInt {
             found: found_ty,
             span: timeout_expr.span(),
@@ -587,7 +587,7 @@ pub fn infer_actor_send(
     }
 
     let Ok((actor_id, actor_schema)) = resolve_actor_type(ctx, arena, &handle_ty) else {
-        let found_ty = ctx.render_ty(&handle_ty);
+        let found_ty = ctx.ty_desc(&handle_ty);
         ctx.errors
             .push(TypeError::SendOnNonActor { found_ty, span });
         return Type::Error;

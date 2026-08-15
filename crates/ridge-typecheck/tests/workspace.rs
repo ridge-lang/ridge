@@ -49,8 +49,8 @@ struct WorkspaceSnapshot {
     tycon_count: usize,
 }
 
-fn format_terror(e: &TypeError) -> String {
-    format!("{}: {}", e.code(), e)
+fn format_terror(e: &TypeError, tycons: &[ridge_typecheck::DiagTyCon]) -> String {
+    format!("{}: {}", e.code(), e.render(tycons))
 }
 
 fn snapshot_workspace(name: &str) -> WorkspaceSnapshot {
@@ -85,7 +85,7 @@ fn snapshot_workspace(name: &str) -> WorkspaceSnapshot {
     let mut formatted: Vec<String> = result
         .errors
         .iter()
-        .map(|(_, e)| format_terror(e))
+        .map(|(_, e)| format_terror(e, &result.typed.tycons))
         .collect();
     formatted.sort();
 

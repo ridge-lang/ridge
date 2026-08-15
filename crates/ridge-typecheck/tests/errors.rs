@@ -12,7 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use ridge_resolve::{discover_workspace, resolve_workspace};
-use ridge_typecheck::{typecheck_workspace, TypeError};
+use ridge_typecheck::{typecheck_workspace, DiagTyCon, TypeError};
 use tempfile::TempDir;
 
 const FIXTURE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/typecheck");
@@ -55,19 +55,34 @@ fn build_single_module_workspace(stem: &str, src: &str) -> TempDir {
 /// Returns the combined vector of T### errors (module attribution stripped —
 /// tests care about the error code, not the source module).
 fn run_typecheck_pipeline(td: &TempDir) -> Vec<TypeError> {
+    run_typecheck_pipeline_with_tycons(td).0
+}
+
+/// The errors, and the table their types render against.
+///
+/// A `TypeError` carries types rather than pre-rendered strings, so a test that
+/// asserts on the words a reader sees needs the table too — the same table the
+/// driver hands to `render`.
+fn run_typecheck_pipeline_with_tycons(td: &TempDir) -> (Vec<TypeError>, Vec<DiagTyCon>) {
     let disc = discover_workspace(td.path());
     let Some(ws_graph) = disc.graph else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let resolved = resolve_workspace(ws_graph);
     // We deliberately ignore R-errors here — we're testing T-errors only.
     let result = typecheck_workspace(&resolved);
-    result.errors.into_iter().map(|(_, e)| e).collect()
+    let tycons = result.typed.tycons.clone();
+    (result.errors.into_iter().map(|(_, e)| e).collect(), tycons)
 }
 
 fn run_typecheck_on_source(stem: &str, src: &str) -> Vec<TypeError> {
     let td = build_single_module_workspace(stem, src);
     run_typecheck_pipeline(&td)
+}
+
+fn run_typecheck_rendered(stem: &str, src: &str) -> (Vec<TypeError>, Vec<DiagTyCon>) {
+    let td = build_single_module_workspace(stem, src);
+    run_typecheck_pipeline_with_tycons(&td)
 }
 
 // ── `-- expect:` directive parser ─────────────────────────────────────────────
@@ -883,11 +898,11 @@ fn quoted_captured_in_list_type_mismatch_is_rejected() {
 #[test]
 fn discarded_result_renders_user_facing_type() {
     let src = "import std.list as List\n\npub fn f () -> Int =\n    List.empty\n    0\n";
-    let errors = run_typecheck_on_source("discard_list_empty", src);
+    let (errors, tycons) = run_typecheck_rendered("discard_list_empty", src);
     let t022 = errors
         .iter()
         .find_map(|e| match e {
-            TypeError::DiscardedResult { ty, .. } => Some(ty.clone()),
+            TypeError::DiscardedResult { ty, .. } => Some(ty.render(&tycons)),
             _ => None,
         })
         .unwrap_or_else(|| panic!("expected a T022 DiscardedResult; got: {errors:?}"));
@@ -909,7 +924,7 @@ fn discarded_result_renders_user_facing_type() {
 #[test]
 fn field_access_on_non_record_is_t054_with_module_suggestion() {
     let src = "pub fn f (xs: List Int) -> Int = xs.length\n";
-    let errors = run_typecheck_on_source("list_dot_length", src);
+    let (errors, tycons) = run_typecheck_rendered("list_dot_length", src);
     let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
     assert!(
         codes.contains(&"T054"),
@@ -927,7 +942,7 @@ fn field_access_on_non_record_is_t054_with_module_suggestion() {
                 field,
                 suggestion,
                 ..
-            } => Some((ty.clone(), field.clone(), suggestion.clone())),
+            } => Some((ty.render(&tycons), field.clone(), suggestion.clone())),
             _ => None,
         })
         .unwrap_or_else(|| panic!("no T054 produced; got: {errors:?}"));
@@ -945,12 +960,12 @@ fn field_access_on_non_record_is_t054_with_module_suggestion() {
 #[test]
 fn field_access_on_int_is_t054_without_suggestion() {
     let src = "pub fn f (x: Int) -> Int = x.length\n";
-    let errors = run_typecheck_on_source("int_dot_length", src);
+    let (errors, tycons) = run_typecheck_rendered("int_dot_length", src);
     let t054 = errors
         .iter()
         .find_map(|e| match e {
             TypeError::FieldAccessOnNonRecord { ty, suggestion, .. } => {
-                Some((ty.clone(), suggestion.clone()))
+                Some((ty.render(&tycons), suggestion.clone()))
             }
             _ => None,
         })
@@ -964,11 +979,11 @@ fn field_access_on_int_is_t054_without_suggestion() {
 #[test]
 fn with_on_non_record_renders_user_facing_type() {
     let src = "pub fn f (xs: List Int) -> List Int = xs with { length = 3 }\n";
-    let errors = run_typecheck_on_source("with_on_list", src);
+    let (errors, tycons) = run_typecheck_rendered("with_on_list", src);
     let t006 = errors
         .iter()
         .find_map(|e| match e {
-            TypeError::WithOnNonRecord { ty, .. } => Some(ty.clone()),
+            TypeError::WithOnNonRecord { ty, .. } => Some(ty.render(&tycons)),
             _ => None,
         })
         .unwrap_or_else(|| panic!("expected a T006 WithOnNonRecord; got: {errors:?}"));
@@ -980,12 +995,13 @@ fn with_on_non_record_renders_user_facing_type() {
 
 /// Pull the `(expected, found)` strings of the first `T001 TypeMismatch`.
 fn first_mismatch(stem: &str, src: &str) -> (String, String) {
-    run_typecheck_on_source(stem, src)
+    let (errors, tycons) = run_typecheck_rendered(stem, src);
+    errors
         .into_iter()
         .find_map(|e| match e {
             TypeError::TypeMismatch {
                 expected, found, ..
-            } => Some((expected, found)),
+            } => Some(expected.render_pair(&found, &tycons)),
             _ => None,
         })
         .unwrap_or_else(|| panic!("no T001 produced for {stem}"))
@@ -1022,7 +1038,8 @@ fn type_mismatch_renders_real_type_names() {
 /// `(expected, found, span)` of the first `T001 TypeMismatch`, span as the
 /// byte range it points at.
 fn first_mismatch_at(stem: &str, src: &str) -> (String, String, (u32, u32)) {
-    run_typecheck_on_source(stem, src)
+    let (errors, tycons) = run_typecheck_rendered(stem, src);
+    errors
         .into_iter()
         .find_map(|e| match e {
             TypeError::TypeMismatch {
@@ -1030,7 +1047,10 @@ fn first_mismatch_at(stem: &str, src: &str) -> (String, String, (u32, u32)) {
                 found,
                 span,
                 ..
-            } => Some((expected, found, (span.start, span.end))),
+            } => {
+                let (expected, found) = expected.render_pair(&found, &tycons);
+                Some((expected, found, (span.start, span.end)))
+            }
             _ => None,
         })
         .unwrap_or_else(|| panic!("no T001 produced for {stem}"))
@@ -1086,7 +1106,7 @@ fn first_t001_display(stem: &str, src: &str) -> String {
     run_typecheck_on_source(stem, src)
         .into_iter()
         .find(|e| e.code() == "T001")
-        .map_or_else(|| panic!("no T001 produced for {stem}"), |e| e.to_string())
+        .map_or_else(|| panic!("no T001 produced for {stem}"), |e| e.render(&[]))
 }
 
 /// Render the first mismatch of either kind. A call-site argument reports as
@@ -1098,7 +1118,7 @@ fn first_mismatch_display(stem: &str, src: &str) -> String {
         .find(|e| matches!(e.code(), "T001" | "T002"))
         .map_or_else(
             || panic!("no mismatch produced for {stem}"),
-            |e| e.to_string(),
+            |e| e.render(&[]),
         )
 }
 
@@ -1203,11 +1223,11 @@ pub fn f () -> { name: Int } = { name = \"a\" }
 /// path that does not compile.
 #[test]
 fn main_with_params_hint_names_the_capability() {
-    let errors = run_typecheck_on_source("entry", "pub fn main (x: Int) -> Int =\n  x\n");
+    let (errors, tycons) = run_typecheck_rendered("entry", "pub fn main (x: Int) -> Int =\n  x\n");
     let rendered = errors
         .iter()
         .find(|e| matches!(e, TypeError::MainHasParams { .. }))
-        .map(ToString::to_string)
+        .map(|e| e.render(&tycons))
         .expect("T053 reported");
 
     assert!(rendered.contains("Cli.args"), "{rendered}");
@@ -1390,10 +1410,11 @@ fn record_witness_renders_as_a_constructible_pattern() {
                \x20   match w\n\
                \x20       W (User { role = Admin }) -> \"admin\"\n\
                \x20       Z -> \"z\"\n";
-    let rendered = run_typecheck_on_source("record_witness", src)
+    let (errors, tycons) = run_typecheck_rendered("record_witness", src);
+    let rendered = errors
         .iter()
         .find(|e| matches!(e, TypeError::NonExhaustiveMatch { .. }))
-        .map(ToString::to_string)
+        .map(|e| e.render(&tycons))
         .expect("T016 reported");
     assert!(
         rendered.contains("W (User { role = Guest })"),
@@ -1404,9 +1425,9 @@ fn record_witness_renders_as_a_constructible_pattern() {
 // ── T029 names the reader's type ──────────────────────────────────────────────
 
 /// Pull the `(ty, fix_hint)` of the single `NoInstance` in `errors`.
-fn only_no_instance(errors: &[TypeError]) -> (String, String) {
+fn only_no_instance(errors: &[TypeError], tycons: &[DiagTyCon]) -> (String, String) {
     let mut found = errors.iter().filter_map(|e| match e {
-        TypeError::NoInstance { ty, fix_hint, .. } => Some((ty.clone(), fix_hint.clone())),
+        TypeError::NoInstance { ty, fix_hint, .. } => Some((ty.render(tycons), fix_hint.clone())),
         _ => None,
     });
     let first = found.next().expect("expected one T029");
@@ -1427,7 +1448,8 @@ pub fn describe () -> Text =\n\
 \x20   let c = Red\n\
 \x20   $\"colour: ${c}\"\n\
 ";
-    let (ty, hint) = only_no_instance(&run_typecheck_on_source("t029_name", src));
+    let (errors, tycons) = run_typecheck_rendered("t029_name", src);
+    let (ty, hint) = only_no_instance(&errors, &tycons);
     assert_eq!(ty, "Colour");
     assert!(
         !ty.contains('#') && !hint.contains('#'),
@@ -1447,7 +1469,8 @@ pub fn describe () -> Text =\n\
 \x20   let c = Red\n\
 \x20   $\"colour: ${c}\"\n\
 ";
-    let (_, hint) = only_no_instance(&run_typecheck_on_source("t029_hint", src));
+    let (errors, tycons) = run_typecheck_rendered("t029_hint", src);
+    let (_, hint) = only_no_instance(&errors, &tycons);
     assert!(hint.contains("Colour"), "hint must name the type: {hint}");
     assert!(
         hint.contains("deriving (ToText)") && hint.contains("instance ToText Colour"),
@@ -1472,7 +1495,8 @@ fn t029_hint_does_not_offer_a_fix_the_orphan_rule_refuses() {
 pub fn report (b: Bytes) -> Text =\n\
 \x20   $\"raw: ${b}\"\n\
 ";
-    let (ty, hint) = only_no_instance(&run_typecheck_on_source("t029_orphan", src));
+    let (errors, tycons) = run_typecheck_rendered("t029_orphan", src);
+    let (ty, hint) = only_no_instance(&errors, &tycons);
     assert_eq!(ty, "Bytes");
     assert!(
         !hint.contains("deriving (ToText)"),
@@ -1499,7 +1523,8 @@ class Sizeable a =\n\
 pub fn measure () -> Int =\n\
 \x20   size Red\n\
 ";
-    let (ty, hint) = only_no_instance(&run_typecheck_on_source("t029_solver", src));
+    let (errors, tycons) = run_typecheck_rendered("t029_solver", src);
+    let (ty, hint) = only_no_instance(&errors, &tycons);
     assert_eq!(ty, "Colour");
     assert!(
         !ty.contains('#') && !ty.contains("TyConId"),
@@ -1523,8 +1548,8 @@ class Sizeable a =\n\
 pub fn measure (d: Duration) -> Int =\n\
 \x20   size d\n\
 ";
-    let errors = run_typecheck_on_source("t029_solver_orphan", src);
-    let (ty, hint) = only_no_instance(&errors);
+    let (errors, tycons) = run_typecheck_rendered("t029_solver_orphan", src);
+    let (ty, hint) = only_no_instance(&errors, &tycons);
     assert_eq!(ty, "Duration");
     assert!(
         !hint.contains("deriving (Sizeable)"),
@@ -1639,12 +1664,13 @@ pub fn f (p: IntPair) -> Int = 0
 
 /// Pull the `(expected, pattern)` strings of the first `T007`.
 fn first_pattern_mismatch(stem: &str, src: &str) -> (String, String) {
-    run_typecheck_on_source(stem, src)
+    let (errors, tycons) = run_typecheck_rendered(stem, src);
+    errors
         .into_iter()
         .find_map(|e| match e {
             TypeError::PatternTypeMismatch {
                 expected, pattern, ..
-            } => Some((expected, pattern)),
+            } => Some(expected.render_pair(&pattern, &tycons)),
             _ => None,
         })
         .unwrap_or_else(|| panic!("no T007 produced for {stem}"))
@@ -1758,7 +1784,8 @@ pub fn f (x: Int) -> Int =
 
 /// Pull the fields of the first `T002 TypeMismatchInCall`.
 fn first_call_mismatch(stem: &str, src: &str) -> (String, usize, String, String) {
-    run_typecheck_on_source(stem, src)
+    let (errors, tycons) = run_typecheck_rendered(stem, src);
+    errors
         .into_iter()
         .find_map(|e| match e {
             TypeError::TypeMismatchInCall {
@@ -1767,7 +1794,10 @@ fn first_call_mismatch(stem: &str, src: &str) -> (String, usize, String, String)
                 expected,
                 found,
                 ..
-            } => Some((callee, arg_index, expected, found)),
+            } => {
+                let (expected, found) = expected.render_pair(&found, &tycons);
+                Some((callee, arg_index, expected, found))
+            }
             _ => None,
         })
         .unwrap_or_else(|| panic!("no T002 produced for {stem}"))
@@ -1884,10 +1914,11 @@ pub fn f () -> Int = add(1, 2)
 
 /// The `(var, ty)` of the first `T010`.
 fn first_occurs(stem: &str, src: &str) -> (String, String) {
-    run_typecheck_on_source(stem, src)
+    let (errors, tycons) = run_typecheck_rendered(stem, src);
+    errors
         .into_iter()
         .find_map(|e| match e {
-            TypeError::OccursCheck { var, ty, .. } => Some((var, ty)),
+            TypeError::OccursCheck { var, ty, .. } => Some(var.render_pair(&ty, &tycons)),
             _ => None,
         })
         .unwrap_or_else(|| panic!("no T010 produced for {stem}"))
@@ -1975,7 +2006,7 @@ pub fn f (xs: List a) -> Int =
         x :: rest -> f x
         _ -> 0
 ";
-    let errors = run_typecheck_on_source("t010_annotated", src);
+    let (errors, tycons) = run_typecheck_rendered("t010_annotated", src);
     let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
     assert!(
         !codes.contains(&"T010"),
@@ -1986,7 +2017,7 @@ pub fn f (xs: List a) -> Int =
         .find_map(|e| match e {
             TypeError::TypeMismatchInCall {
                 expected, found, ..
-            } => Some((expected.clone(), found.clone())),
+            } => Some(expected.render_pair(found, &tycons)),
             _ => None,
         })
         .unwrap_or_else(|| panic!("expected a call mismatch; got {errors:?}"));
@@ -2039,13 +2070,13 @@ pub fn peel (n: Nested a) -> Int = depth n
 #[test]
 fn instantiating_the_call_does_not_release_the_body() {
     let src = "pub fn g (x: a) -> a = g 1\n";
-    let errors = run_typecheck_on_source("polyrec_body_still_checked", src);
+    let (errors, tycons) = run_typecheck_rendered("polyrec_body_still_checked", src);
     let mismatch = errors
         .iter()
         .find_map(|e| match e {
             TypeError::TypeMismatch {
                 expected, found, ..
-            } => Some((expected.clone(), found.clone())),
+            } => Some(expected.render_pair(found, &tycons)),
             _ => None,
         })
         .unwrap_or_else(|| panic!("expected a mismatch at the declaration; got {errors:?}"));
@@ -2175,7 +2206,7 @@ pub fn main () -> Text =
     fn pair (x: a) (y: a) -> a = x
     pair \"a\" 1
 ";
-    let errors = run_typecheck_on_source("inner_fn_shared_var", src);
+    let (errors, tycons) = run_typecheck_rendered("inner_fn_shared_var", src);
     let call = errors
         .iter()
         .find_map(|e| match e {
@@ -2184,7 +2215,10 @@ pub fn main () -> Text =
                 expected,
                 found,
                 ..
-            } => Some((callee.clone(), expected.clone(), found.clone())),
+            } => {
+                let (expected, found) = expected.render_pair(found, &tycons);
+                Some((callee.clone(), expected, found))
+            }
             _ => None,
         })
         .unwrap_or_else(|| panic!("expected a mismatch between the two `a`s; got {errors:?}"));
@@ -2205,13 +2239,13 @@ pub fn main () -> Int =
     fn liar (x: a) -> a = 1
     liar 2
 ";
-    let errors = run_typecheck_on_source("inner_fn_body_bound", src);
+    let (errors, tycons) = run_typecheck_rendered("inner_fn_body_bound", src);
     let mismatch = errors
         .iter()
         .find_map(|e| match e {
             TypeError::TypeMismatch {
                 expected, found, ..
-            } => Some((expected.clone(), found.clone())),
+            } => Some(expected.render_pair(found, &tycons)),
             _ => None,
         })
         .unwrap_or_else(|| panic!("expected a mismatch at the inner declaration; got {errors:?}"));
@@ -2297,14 +2331,14 @@ pub fn report (x: a) -> Text where Describable a = $\"${name x}${grams x}\"
 // ── Orientation of `expected` / `got` ─────────────────────────────────────────
 
 /// Pull the `(expected, found)` pair out of the first mismatch in `errors`.
-fn first_mismatch_pair(errors: &[TypeError]) -> Option<(&str, &str)> {
+fn first_mismatch_pair(errors: &[TypeError], tycons: &[DiagTyCon]) -> Option<(String, String)> {
     errors.iter().find_map(|e| match e {
         TypeError::TypeMismatch {
             expected, found, ..
         }
         | TypeError::TypeMismatchInCall {
             expected, found, ..
-        } => Some((expected.as_str(), found.as_str())),
+        } => Some(expected.render_pair(found, tycons)),
         _ => None,
     })
 }
@@ -2359,8 +2393,11 @@ fn expected_and_found_are_never_reversed() {
 
     let mut wrong = Vec::new();
     for (name, src) in cases {
-        let errors = run_typecheck_on_source(name, src);
-        match first_mismatch_pair(&errors) {
+        let (errors, tycons) = run_typecheck_rendered(name, src);
+        match first_mismatch_pair(&errors, &tycons)
+            .as_ref()
+            .map(|(e, f)| (e.as_str(), f.as_str()))
+        {
             Some(("Int", "Text")) => {}
             Some((expected, found)) => {
                 wrong.push(format!("{name}: expected {expected}, got {found}"));

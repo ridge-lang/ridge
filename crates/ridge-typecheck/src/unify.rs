@@ -26,7 +26,7 @@ use ridge_ast::Span;
 use ridge_types::{CapRow, Row, RowTail, RowVid, TyConDecl, TyConId, TyConKind, TyVid, Type};
 
 use crate::ctx::{CapValue, CapVidKey, InferCtx, RowValue, RowVidKey, TyValue, TyVidKey};
-use crate::error::TypeError;
+use crate::error::{TypeDesc, TypeError};
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -297,11 +297,9 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
             if occurs(ctx, x, other) {
                 let named = ctx.deep_resolve(&Type::Var(x));
                 let inside = ctx.deep_resolve(other);
-                let (var, ty) =
-                    crate::render::render_occurs_pair(&named, &inside, &ctx.tycon_decls);
                 return Err(TypeError::OccursCheck {
-                    var: format!("`{var}`"),
-                    ty,
+                    var: TypeDesc::ty(named),
+                    ty: TypeDesc::ty(inside),
                     span: dummy_span(),
                 });
             }
@@ -316,11 +314,9 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
             if occurs(ctx, y, other) {
                 let named = ctx.deep_resolve(&Type::Var(y));
                 let inside = ctx.deep_resolve(other);
-                let (var, ty) =
-                    crate::render::render_occurs_pair(&named, &inside, &ctx.tycon_decls);
                 return Err(TypeError::OccursCheck {
-                    var: format!("`{var}`"),
-                    ty,
+                    var: TypeDesc::ty(named),
+                    ty: TypeDesc::ty(inside),
                     span: dummy_span(),
                 });
             }
@@ -460,8 +456,8 @@ pub fn unify_caps(ctx: &mut InferCtx, a: &CapRow, b: &CapRow) -> Result<(), Type
                 Ok(())
             } else {
                 Err(TypeError::TypeMismatch {
-                    expected: format!("{s1}"),
-                    found: format!("{s2}"),
+                    expected: TypeDesc::Text(format!("{s1}")),
+                    found: TypeDesc::Text(format!("{s2}")),
                     span: dummy_span(),
                     hint: None,
                 })
@@ -638,8 +634,8 @@ fn bind_row(
         // tail as `..`, so naming it would put a letter in the message that
         // does not appear in the type beside it.
         return Err(TypeError::OccursCheck {
-            var: "this record".to_string(),
-            ty: crate::render::render_type_with(&Type::record(fields, tail), &ctx.tycon_decls),
+            var: TypeDesc::Phrase("this record"),
+            ty: TypeDesc::ty(ctx.deep_resolve(&Type::record(fields, tail))),
             span: dummy_span(),
         });
     }
@@ -706,11 +702,9 @@ fn row_mismatch(
 ) -> TypeError {
     let expected = ctx.deep_resolve(&Type::record(f1.to_vec(), t1.clone()));
     let found = ctx.deep_resolve(&Type::record(f2.to_vec(), t2.clone()));
-    let (expected, found) =
-        crate::render::render_type_pair_with(&expected, &found, &ctx.tycon_decls);
     TypeError::RowMismatch {
-        expected,
-        found,
+        expected: TypeDesc::ty(expected),
+        found: TypeDesc::ty(found),
         missing_fields: only1.iter().map(|(label, _)| label.clone()).collect(),
         extra_fields: only2.iter().map(|(label, _)| label.clone()).collect(),
         span: dummy_span(),
@@ -745,11 +739,9 @@ fn mismatch(ctx: &mut InferCtx, expected: &Type, found: &Type) -> TypeError {
     // both sides are still types — after rendering only strings remain.
     let hint = record_ctor_hint(&ctx.tycon_decls, &expected, &found);
 
-    let (expected, found) =
-        crate::render::render_type_pair_with(&expected, &found, &ctx.tycon_decls);
     TypeError::TypeMismatch {
-        expected,
-        found,
+        expected: TypeDesc::ty(expected),
+        found: TypeDesc::ty(found),
         span: dummy_span(),
         hint,
     }

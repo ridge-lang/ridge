@@ -21,7 +21,7 @@ use smallvec::{smallvec, SmallVec};
 /// to. Length one for an ordinary class, several for a multi-parameter class.
 pub type InstanceHead = SmallVec<[TyConId; 1]>;
 
-use crate::error::TypeError;
+use crate::error::{TypeDesc, TypeError};
 
 // ── MethodSig (registry-level) ────────────────────────────────────────────────
 
@@ -329,7 +329,7 @@ impl CoherenceError {
                 second_span,
             } => TypeError::OverlappingInstance {
                 class: class_name,
-                ty: type_name,
+                ty: TypeDesc::Text(type_name),
                 first_span,
                 second_span,
             },
@@ -338,7 +338,7 @@ impl CoherenceError {
                 totext_span,
                 auto_promote_span,
             } => TypeError::ToTextConflict {
-                ty: type_name,
+                ty: TypeDesc::Text(type_name),
                 totext_span,
                 auto_promote_span,
             },

@@ -110,8 +110,8 @@ struct TypecheckSnapshot {
     inferred_caps_real_keys: usize,
 }
 
-fn format_terror(e: &TypeError) -> String {
-    format!("{}: {}", e.code(), e)
+fn format_terror(e: &TypeError, tycons: &[ridge_typecheck::DiagTyCon]) -> String {
+    format!("{}: {}", e.code(), e.render(tycons))
 }
 
 /// Compute the three Phase 4.5 T6 aggregate totals for a typecheck result.
@@ -196,7 +196,7 @@ fn snapshot_example(example_name: &str) -> TypecheckSnapshot {
     let mut formatted: Vec<String> = result
         .errors
         .iter()
-        .map(|(_, e)| format_terror(e))
+        .map(|(_, e)| format_terror(e, &result.typed.tycons))
         .collect();
     formatted.sort();
 

@@ -45,7 +45,7 @@ use ridge_ast::{Block, Expr, Span};
 use ridge_types::{BuiltinTyCons, Type};
 
 use crate::ctx::InferCtx;
-use crate::error::TypeError;
+use crate::error::{TypeDesc, TypeError};
 use crate::unify::unify;
 
 // ── Pipe `|>` ─────────────────────────────────────────────────────────────────
@@ -218,8 +218,8 @@ pub fn infer_propagate(ctx: &mut InferCtx, b: &BuiltinTyCons, inner: &Expr, span
             other => {
                 // Target is neither Result nor Option — T021.
                 let other = other.clone();
-                let found_ty = ctx.render_ty(&inner_ty);
-                let expected = ctx.render_ty(&other);
+                let found_ty = ctx.ty_desc(&inner_ty);
+                let expected = ctx.ty_desc(&other);
                 ctx.errors.push(TypeError::PropagateOutsideResultOrOption {
                     found_ty,
                     expected,
@@ -230,10 +230,10 @@ pub fn infer_propagate(ctx: &mut InferCtx, b: &BuiltinTyCons, inner: &Expr, span
         }
     } else {
         // No enclosing fn return type or try block — T021.
-        let found_ty = ctx.render_ty(&inner_ty);
+        let found_ty = ctx.ty_desc(&inner_ty);
         ctx.errors.push(TypeError::PropagateOutsideResultOrOption {
             found_ty,
-            expected: "no enclosing Result/Option context".to_string(),
+            expected: TypeDesc::Phrase("no enclosing Result/Option context"),
             span,
         });
         Type::Error
@@ -315,7 +315,7 @@ pub fn check_discarded_result(ctx: &mut InferCtx, b: &BuiltinTyCons, stmt: &Expr
     ctx.errors.push(TypeError::DiscardedResult {
         // Render with the user-facing renderer — a `Debug` dump would leak
         // internal shapes (`Con(TyConId(6), …)`, `Var(TyVid(103))`).
-        ty: crate::render::render_type_with(&resolved, &ctx.tycon_decls),
+        ty: TypeDesc::ty(resolved),
         span: stmt.span(),
     });
 }

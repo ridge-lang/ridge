@@ -359,6 +359,7 @@ fn check_workspace_incremental_tracks_buffer_text_and_diagnostics() {
         &state.resolved,
         &state.type_errors,
         &sources,
+        &state.typed.tycons,
     );
     assert!(diags.is_empty(), "clean workspace, got: {diags:?}");
 
@@ -380,6 +381,7 @@ fn check_workspace_incremental_tracks_buffer_text_and_diagnostics() {
         &state.resolved,
         &state.type_errors,
         &sources,
+        &state.typed.tycons,
     );
     assert!(
         !diags.is_empty(),

@@ -60,7 +60,7 @@ use smallvec::SmallVec;
 
 use crate::class_env::{ClassTable, InstanceEnv, InstanceInfo};
 use crate::ctx::InferCtx;
-use crate::error::TypeError;
+use crate::error::{TypeDesc, TypeError};
 use crate::tycon_collect::ast_type_to_ridge_type;
 use crate::unify::unify;
 
@@ -300,7 +300,7 @@ fn dispatch_constraint(
                     .map_or("?", |info| info.name.as_str());
                 ctx.errors.push(TypeError::AmbiguousConstraint {
                     class: class_name.to_string(),
-                    ty_var: format!("?{}", v.0),
+                    ty_var: TypeDesc::Text(format!("?{}", v.0)),
                     span: scc_span,
                 });
             } else {
@@ -369,7 +369,7 @@ fn dispatch_constraint(
                     .map_or("?", |info| info.name.as_str());
                 ctx.errors.push(TypeError::NoInstance {
                     class: class_name.to_string(),
-                    ty: format!("a function of arity {}", params.len()),
+                    ty: TypeDesc::Text(format!("a function of arity {}", params.len())),
                     span: scc_span,
                     fix_hint: format!(
                         "functions of arity {} cannot be class instances (max {})",
@@ -398,7 +398,7 @@ fn dispatch_constraint(
             );
             ctx.errors.push(TypeError::NoInstance {
                 class: class_name.to_string(),
-                ty: ty_name,
+                ty: TypeDesc::Text(ty_name),
                 span: scc_span,
                 fix_hint,
             });
@@ -512,7 +512,7 @@ fn dispatch_multi_constraint(
                 decl,
                 class: class_name.clone(),
                 fix_hint: format!("add `where {class_name} {name}` to the signature"),
-                ty_var: name,
+                ty_var: TypeDesc::Text(name),
                 span,
             });
         }
@@ -589,7 +589,7 @@ fn dispatch_multi_constraint(
             let fix_hint = crate::render::no_instance_hint(class_name, &head_disp, extendable);
             ctx.errors.push(TypeError::NoInstance {
                 class: class_name.to_string(),
-                ty: head_disp,
+                ty: TypeDesc::Text(head_disp),
                 span: scc_span,
                 fix_hint,
             });
@@ -628,7 +628,7 @@ fn dispatch_multi_constraint(
         if let Some(&escaping) = head_vars.iter().find(|v| env_snap_ty.contains(v)) {
             ctx.errors.push(TypeError::AmbiguousConstraint {
                 class: class_name.to_string(),
-                ty_var: format!("?{}", escaping.0),
+                ty_var: TypeDesc::Text(format!("?{}", escaping.0)),
                 span: scc_span,
             });
         } else {
@@ -649,7 +649,7 @@ fn dispatch_multi_constraint(
         .map_or_else(|| format!("?{}", c.tys[0].0), |v| format!("?{}", v.0));
     ctx.errors.push(TypeError::AmbiguousConstraint {
         class: class_name.to_string(),
-        ty_var: var,
+        ty_var: TypeDesc::Text(var),
         span: scc_span,
     });
 }
@@ -995,7 +995,7 @@ fn discharge_concrete(
             let fix_hint = build_fix_hint(class_name, tyconid, &ty_name, &ctx.tycon_decls);
             ctx.errors.push(TypeError::NoInstance {
                 class: class_name.to_string(),
-                ty: ty_name,
+                ty: TypeDesc::Text(ty_name),
                 span: scc_span,
                 fix_hint,
             });
@@ -1272,7 +1272,7 @@ fn resolve_dict_plan(
                 let fix_hint = build_fix_hint(class_name, tyconid, &ty_name, &ctx.tycon_decls);
                 ctx.errors.push(TypeError::NoInstance {
                     class: class_name.to_string(),
-                    ty: ty_name,
+                    ty: TypeDesc::Text(ty_name),
                     span: scc_span,
                     fix_hint,
                 });
@@ -1334,7 +1334,7 @@ fn resolve_dict_plan(
                     decl,
                     class: class_name.clone(),
                     fix_hint: format!("add `where {class_name} {name}` to the signature"),
-                    ty_var: name.to_string(),
+                    ty_var: TypeDesc::Text(name.to_string()),
                     span,
                 });
             }
@@ -1405,7 +1405,7 @@ fn discharge_promised(
         decl,
         class: class_name.clone(),
         fix_hint: format!("add `where {class_name} {name}` to the signature"),
-        ty_var: name.to_owned(),
+        ty_var: TypeDesc::Text(name.to_owned()),
         span,
     });
 }
@@ -1451,7 +1451,7 @@ pub fn report_ambiguous_element_dicts(
             .map_or("?", |info| info.name.as_str());
         ctx.errors.push(TypeError::AmbiguousConstraint {
             class: class_name.to_string(),
-            ty_var: "the element type".to_string(),
+            ty_var: TypeDesc::Phrase("the element type"),
             span,
         });
     }
@@ -1677,7 +1677,11 @@ mod tests {
             } => {
                 assert_eq!(decl, "mySort");
                 assert_eq!(class, "Ord");
-                assert_eq!(ty_var, "a", "the author's own name, not a letter");
+                assert_eq!(
+                    ty_var.render(&[]),
+                    "a",
+                    "the author's own name, not a letter"
+                );
                 assert_eq!(fix_hint, "add `where Ord a` to the signature");
             }
             other => panic!("expected MissingConstraint, got {other:?}"),
@@ -1739,7 +1743,7 @@ mod tests {
         let codes: Vec<&str> = ctx.errors.iter().map(TypeError::code).collect();
         assert_eq!(codes, vec!["T055"], "only `b` is unpromised");
         match &ctx.errors[0] {
-            TypeError::MissingConstraint { ty_var, .. } => assert_eq!(ty_var, "b"),
+            TypeError::MissingConstraint { ty_var, .. } => assert_eq!(ty_var.render(&[]), "b"),
             other => panic!("expected MissingConstraint, got {other:?}"),
         }
         assert_eq!(retained, vec![Constraint::single(TOTEXT_CLASS, TyVid(1))]);
@@ -1825,7 +1829,7 @@ mod tests {
         assert_eq!(codes, vec!["T055"], "got {:?}", ctx.errors);
         match &ctx.errors[0] {
             TypeError::MissingConstraint { ty_var, class, .. } => {
-                assert_eq!(ty_var, "q");
+                assert_eq!(ty_var.render(&[]), "q");
                 assert_eq!(class, "Demo");
             }
             other => panic!("expected MissingConstraint, got {other:?}"),

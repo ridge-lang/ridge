@@ -52,7 +52,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::caps_check::caps_from_ast_slice;
 use crate::class_env::{ClassTable, InstanceEnv};
 use crate::ctx::{InferCtx, RigidInfo};
-use crate::error::TypeError;
+use crate::error::{TypeDesc, TypeError};
 use crate::infer::{infer_expr, infer_pattern};
 use crate::instantiate::{collect_free_vars, generalise_with_env, monoscheme};
 use crate::solve::solve_constraints;
@@ -836,14 +836,9 @@ pub fn typecheck_module_decls(
                     // named record type is expected gets the constructor hint.
                     let hint =
                         crate::unify::record_ctor_hint(&ctx.tycon_decls, &expected_ty, &found_ty);
-                    let (expected, found) = crate::render::render_type_pair_with(
-                        &expected_ty,
-                        &found_ty,
-                        &ctx.tycon_decls,
-                    );
                     ctx.errors.push(TypeError::TypeMismatch {
-                        expected,
-                        found,
+                        expected: TypeDesc::ty(expected_ty),
+                        found: TypeDesc::ty(found_ty),
                         span,
                         hint,
                     });
@@ -1093,11 +1088,9 @@ pub fn infer_instance_methods(
                 let found_ty = ctx.deep_resolve(&body_ty);
                 let hint =
                     crate::unify::record_ctor_hint(&ctx.tycon_decls, &expected_ty, &found_ty);
-                let (expected, found) =
-                    crate::render::render_type_pair_with(&expected_ty, &found_ty, &ctx.tycon_decls);
                 ctx.errors.push(TypeError::TypeMismatch {
-                    expected,
-                    found,
+                    expected: TypeDesc::ty(expected_ty),
+                    found: TypeDesc::ty(found_ty),
                     span: method.span,
                     hint,
                 });

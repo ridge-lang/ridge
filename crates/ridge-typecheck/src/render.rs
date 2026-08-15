@@ -30,7 +30,7 @@ use ridge_diagnostics::HasErrorCode;
 use ridge_resolve::Severity;
 
 use crate::ctx::InferCtx;
-use crate::error::{CapDeclKind, TypeError};
+use crate::error::{CapDeclKind, TypeDesc, TypeError};
 
 // ── Display helpers ───────────────────────────────────────────────────────────
 
@@ -63,9 +63,63 @@ fn tuple_width_sentence(expected: usize, found: usize) -> String {
 
 // ── Display impl ──────────────────────────────────────────────────────────────
 
-impl fmt::Display for TypeError {
+impl TypeDesc {
+    /// Render under a namer shared with the rest of this diagnostic.
+    ///
+    /// The sharing is the point. Two types printed by two `VarNamer`s each
+    /// start their letters at `a`, so `expected a, found a` can name two
+    /// different variables and `expected a, found b` can name one. The pair
+    /// helpers this replaced existed for exactly that reason, and only the
+    /// sites that remembered to call them were safe.
+    pub(crate) fn render_in(
+        &self,
+        tycons: &[ridge_types::TyConDecl],
+        namer: &mut VarNamer,
+    ) -> String {
+        match self {
+            Self::Ty(t) => render_at_depth(t, tycons, 0, namer),
+            Self::Text(s) => s.clone(),
+            Self::Phrase(p) => (*p).to_owned(),
+        }
+    }
+}
+
+/// Render several descriptions of one diagnostic under a single namer.
+///
+/// The namer is what makes the letters mean something: within one message,
+/// the same type variable prints the same letter and two different ones do
+/// not collide. Every entry point that renders a `TypeDesc` goes through here
+/// so that property does not depend on the caller remembering it.
+pub(crate) fn render_descs(descs: &[&TypeDesc], tycons: &[ridge_types::TyConDecl]) -> Vec<String> {
+    render_reserving(|namer| descs.iter().map(|d| d.render_in(tycons, namer)).collect())
+}
+
+impl TypeError {
+    /// The reader's message.
+    ///
+    /// Takes the type-constructor table because that is what turns a
+    /// [`TypeDesc::Ty`] into a name. `Display` could not take it, which is why
+    /// these fields used to arrive pre-rendered as `String` — and why nothing
+    /// stopped a construction site from rendering them with `Debug`.
+    #[must_use]
+    pub fn render(&self, tycons: &[ridge_types::TyConDecl]) -> String {
+        render_reserving(|namer| {
+            let mut out = String::new();
+            // Writing to a `String` is infallible.
+            let _ = self.write_message(&mut out, tycons, namer);
+            out
+        })
+    }
+
     #[expect(clippy::too_many_lines, reason = "one match arm per T### error code")]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn write_message(
+        &self,
+        f: &mut String,
+        tycons: &[ridge_types::TyConDecl],
+        namer: &mut VarNamer,
+    ) -> fmt::Result {
+        use fmt::Write as _;
+
         // The code is written here and nowhere else. Every arm below used to
         // repeat it inside its own format string, in a different file from the
         // `code()` that decides it, with nothing comparing the two. A prefix
@@ -80,6 +134,8 @@ impl fmt::Display for TypeError {
                 hint,
                 ..
             } => {
+                let expected = expected.render_in(tycons, namer);
+                let found = found.render_in(tycons, namer);
                 write!(f, "type mismatch\n  expected {expected}, got {found}")?;
                 if let Some(h) = hint {
                     write!(f, "\n  hint: {h}")?;
@@ -95,6 +151,8 @@ impl fmt::Display for TypeError {
                 found,
                 ..
             } => {
+                let expected = expected.render_in(tycons, namer);
+                let found = found.render_in(tycons, namer);
                 write!(
                     f,
                     "type mismatch in call to `{callee}`\n  argument {n}: expected {expected}, got {found}",
@@ -146,6 +204,7 @@ impl fmt::Display for TypeError {
 
             // ── T006 ──────────────────────────────────────────────────────────
             Self::WithOnNonRecord { ty, .. } => {
+                let ty = ty.render_in(tycons, namer);
                 write!(f, "`with` on non-record\n  found type `{ty}`")
             }
 
@@ -153,6 +212,8 @@ impl fmt::Display for TypeError {
             Self::PatternTypeMismatch {
                 expected, pattern, ..
             } => {
+                let expected = expected.render_in(tycons, namer);
+                let pattern = pattern.render_in(tycons, namer);
                 write!(
                     f,
                     "pattern type mismatch\n  expected `{expected}`, but pattern implies `{pattern}`"
@@ -175,6 +236,8 @@ impl fmt::Display for TypeError {
 
             // ── T010 ──────────────────────────────────────────────────────────
             Self::OccursCheck { var, ty, .. } => {
+                let var = var.render_in(tycons, namer);
+                let ty = ty.render_in(tycons, namer);
                 write!(
                     f,
                     "infinite type\n  {var} would have to contain itself: `{ty}`"
@@ -281,6 +344,7 @@ impl fmt::Display for TypeError {
                 total_missing,
                 ..
             } => {
+                let scrutinee_ty = scrutinee_ty.render_in(tycons, namer);
                 write!(
                     f,
                     "non-exhaustive match on `{scrutinee_ty}`\n  Missing cases:"
@@ -332,6 +396,7 @@ impl fmt::Display for TypeError {
 
             // ── T020 ──────────────────────────────────────────────────────────
             Self::SendOnNonActor { found_ty, .. } => {
+                let found_ty = found_ty.render_in(tycons, namer);
                 write!(
                     f,
                     "send (`!`) on non-actor\n  found type `{found_ty}`, expected an actor Handle"
@@ -340,6 +405,7 @@ impl fmt::Display for TypeError {
 
             // ── T021a ─────────────────────────────────────────────────────────
             Self::AskOnNonActor { found_ty, .. } => {
+                let found_ty = found_ty.render_in(tycons, namer);
                 write!(
                     f,
                     "ask (`?>`) on non-actor\n  found type `{found_ty}`, expected an actor Handle"
@@ -350,6 +416,8 @@ impl fmt::Display for TypeError {
             Self::PropagateOutsideResultOrOption {
                 found_ty, expected, ..
             } => {
+                let found_ty = found_ty.render_in(tycons, namer);
+                let expected = expected.render_in(tycons, namer);
                 write!(
                     f,
                     "`?` used outside Result/Option context\n  found `{found_ty}`, enclosing function returns `{expected}`"
@@ -358,6 +426,7 @@ impl fmt::Display for TypeError {
 
             // ── T022 ──────────────────────────────────────────────────────────
             Self::DiscardedResult { ty, .. } => {
+                let ty = ty.render_in(tycons, namer);
                 write!(
                     f,
                     "discarded result\n  expression of type `{ty}` is not bound — use `let _ =` to explicitly discard"
@@ -396,6 +465,7 @@ impl fmt::Display for TypeError {
 
             // ── T026 ──────────────────────────────────────────────────────────
             Self::AskTimeoutNotInt { found, .. } => {
+                let found = found.render_in(tycons, namer);
                 write!(
                     f,
                     "ask timeout must be Int\n  expected `Int`, found `{found}`\n  hint: use `?> handler() timeout 1000` (milliseconds) or `timeout never`"
@@ -436,6 +506,7 @@ impl fmt::Display for TypeError {
                 fix_hint,
                 ..
             } => {
+                let ty = ty.render_in(tycons, namer);
                 write!(f, "no instance `{class} {ty}`\n  {fix_hint}")
             }
 
@@ -446,12 +517,12 @@ impl fmt::Display for TypeError {
                 let hint = if suggestions.is_empty() {
                     "declare it, or import the module that does".to_string()
                 } else {
-                    let names = suggestions
+                    let quoted = suggestions
                         .iter()
                         .map(|s| format!("`{s}`"))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    format!("did you mean {names}?")
+                    format!("did you mean {quoted}?")
                 };
                 write!(f, "unknown type `{name}`\n  {hint}")
             }
@@ -469,6 +540,7 @@ impl fmt::Display for TypeError {
 
             // ── T030 ──────────────────────────────────────────────────────────
             Self::AmbiguousConstraint { class, ty_var, .. } => {
+                let ty_var = ty_var.render_in(tycons, namer);
                 write!(
                     f,
                     "ambiguous constraint\n  cannot determine which instance of `{class}` to use for the type variable `{ty_var}` here\n  hint: add a type annotation to fix the type variable"
@@ -482,6 +554,7 @@ impl fmt::Display for TypeError {
                 instance_module,
                 ..
             } => {
+                let ty = ty.render_in(tycons, namer);
                 write!(
                     f,
                     "orphan instance\n  `instance {class} {ty}` must be defined in the module that declares `{class}` or the module that declares `{ty}`; found in `{instance_module}`\n  hint: move the instance to the class's module or the type's module"
@@ -490,6 +563,7 @@ impl fmt::Display for TypeError {
 
             // ── T032 ──────────────────────────────────────────────────────────
             Self::OverlappingInstance { class, ty, .. } => {
+                let ty = ty.render_in(tycons, namer);
                 write!(
                     f,
                     "overlapping instance\n  `instance {class} {ty}` is already defined; only one instance per class/type pair is allowed\n  hint: remove the duplicate instance"
@@ -503,6 +577,7 @@ impl fmt::Display for TypeError {
                 superclass,
                 ..
             } => {
+                let ty = ty.render_in(tycons, namer);
                 write!(
                     f,
                     "missing superclass instance\n  `{class} {ty}` requires `{superclass} {ty}` but no such instance exists\n  hint: add `instance {superclass} {ty}` or add `{superclass}` to the `deriving` list"
@@ -511,6 +586,7 @@ impl fmt::Display for TypeError {
 
             // ── T034 ──────────────────────────────────────────────────────────
             Self::ToTextConflict { ty, .. } => {
+                let ty = ty.render_in(tycons, namer);
                 write!(
                     f,
                     "conflicting ToText instances\n  `{ty}` already has a ToText instance auto-derived from its `pub fn toText`; remove one (either the `pub fn toText` function or the explicit `instance ToText {ty}`)"
@@ -542,6 +618,8 @@ impl fmt::Display for TypeError {
                 extra_fields,
                 ..
             } => {
+                let expected = expected.render_in(tycons, namer);
+                let found = found.render_in(tycons, namer);
                 write!(
                     f,
                     "record shape mismatch\n  expected `{expected}`, got `{found}`"
@@ -595,6 +673,8 @@ impl fmt::Display for TypeError {
 
             // ── T041 ──────────────────────────────────────────────────────────
             Self::QuoteComparisonMismatch { left, right, .. } => {
+                let left = left.render_in(tycons, namer);
+                let right = right.render_in(tycons, namer);
                 write!(
                     f,
                     "the two sides of this comparison have different types\n  left is `{left}`, right is `{right}`"
@@ -611,6 +691,7 @@ impl fmt::Display for TypeError {
 
             // ── T043 ──────────────────────────────────────────────────────────
             Self::RefutablePatternParam { witness, ty, .. } => {
+                let ty = ty.render_in(tycons, namer);
                 write!(
                     f,
                     "this parameter pattern does not match every value of `{ty}`\n  it would fail on `{witness}`\n  hint: a function parameter must be irrefutable; destructure in the body with `match`/`let`, or use a single-constructor pattern"
@@ -699,6 +780,7 @@ impl fmt::Display for TypeError {
 
             // ── T052 ──────────────────────────────────────────────────────────
             Self::ArithmeticOnNonNumeric { op, found, .. } => {
+                let found = found.render_in(tycons, namer);
                 if found == "Text" {
                     write!(
                         f,
@@ -728,6 +810,7 @@ impl fmt::Display for TypeError {
                 suggestion,
                 ..
             } => {
+                let ty = ty.render_in(tycons, namer);
                 write!(
                     f,
                     "field access on non-record\n  `{ty}` has no field `{field}` — it is not a record"
@@ -746,6 +829,7 @@ impl fmt::Display for TypeError {
                 fix_hint,
                 ..
             } => {
+                let ty_var = ty_var.render_in(tycons, namer);
                 write!(
                     f,
                     "missing constraint\n  `{decl}` promises to work for every `{ty_var}`, but its body needs `{class} {ty_var}`\n  fix: {fix_hint}"
@@ -762,9 +846,9 @@ impl fmt::Display for TypeError {
         }
     }
 }
-// ── std::error::Error impl ────────────────────────────────────────────────────
-
-impl std::error::Error for TypeError {}
+// No `Display` / `std::error::Error` for `TypeError`: rendering needs the
+// type-constructor table, which a `Display` cannot be handed. Nothing in the
+// workspace used it as a `dyn Error`.
 
 // ── HasErrorCode impl ─────────────────────────────────────────────────────────
 
@@ -1061,7 +1145,7 @@ pub fn render_type_pair_with(
 /// would show as `w16`. One namer is shared across every variable in a single
 /// rendered type, and via [`render_type_pair_with`] across a related pair.
 #[derive(Default)]
-struct VarNamer {
+pub(crate) struct VarNamer {
     /// `(raw union-find id, canonical index)` in first-appearance order.
     seen: Vec<(u32, u32)>,
     next: u32,
@@ -1570,7 +1654,7 @@ mod tests {
             span: sp(),
             hint: None,
         };
-        let s = err.to_string();
+        let s = err.render(&[]);
         assert!(s.contains("T001"), "should contain code: {s}");
         assert!(s.contains("Int"), "should contain expected type: {s}");
         assert!(s.contains("Text"), "should contain found type: {s}");
@@ -1589,7 +1673,7 @@ mod tests {
             span: sp(),
             hint: None,
         };
-        let s = err.to_string();
+        let s = err.render(&[]);
         assert!(s.contains("`add` expects 2 arguments, got 3"), "{s}");
     }
 
@@ -1605,7 +1689,7 @@ mod tests {
             span: sp(),
             hint: None,
         };
-        let s = err.to_string();
+        let s = err.render(&[]);
         assert!(s.contains("expects 1 argument, got 2"), "{s}");
         assert!(!s.contains("``"), "empty backticks must not survive: {s}");
     }
@@ -1622,7 +1706,7 @@ mod tests {
             found: 3,
             span: sp(),
         };
-        let s = err.to_string();
+        let s = err.render(&[]);
         assert!(s.contains("T057"), "{s}");
         assert!(
             s.contains("this tuple has 3 components, but 2 are expected"),
@@ -1639,7 +1723,7 @@ mod tests {
             found: 1,
             span: sp(),
         }
-        .to_string();
+        .render(&[]);
         assert!(one.contains("has 1 component, but 1 is expected"), "{one}");
     }
 
@@ -1671,7 +1755,7 @@ mod tests {
             missing,
             span: sp(),
         };
-        let s = err.to_string();
+        let s = err.render(&[]);
         assert!(s.contains("T014"), "code: {s}");
         assert!(s.contains("procesarConfig"), "decl name: {s}");
         assert!(s.contains("fn {io}"), "declared caps: {s}");
@@ -1701,7 +1785,7 @@ mod tests {
             span: sp(),
         };
 
-        let handler = base(CapDeclKind::Handler, "increment").to_string();
+        let handler = base(CapDeclKind::Handler, "increment").render(&[]);
         assert!(
             handler.contains("handler `increment`"),
             "handler: {handler}"
@@ -1720,7 +1804,7 @@ mod tests {
             "handler: {handler}"
         );
 
-        let init = base(CapDeclKind::Init, "init").to_string();
+        let init = base(CapDeclKind::Init, "init").render(&[]);
         assert!(init.contains("init block"), "init: {init}");
         assert!(init.contains("`init io`"), "init: {init}");
         assert!(
@@ -1728,7 +1812,7 @@ mod tests {
             "the suggestion must not carry set braces: {init}"
         );
 
-        let inner = base(CapDeclKind::InnerFn, "helper").to_string();
+        let inner = base(CapDeclKind::InnerFn, "helper").render(&[]);
         assert!(inner.contains("inner function `helper`"), "inner: {inner}");
         assert!(
             inner.contains("enclosing signature"),
@@ -1750,7 +1834,7 @@ mod tests {
             total_missing: 3,
             span: sp(),
         };
-        let s = err.to_string();
+        let s = err.render(&[]);
         assert!(s.contains("T016"), "code: {s}");
         assert!(s.contains("Shape"), "scrutinee type: {s}");
         assert!(s.contains("Missing cases:"), "header: {s}");
@@ -1772,7 +1856,7 @@ mod tests {
             total_missing: 8,
             span: sp(),
         };
-        let s = err.to_string();
+        let s = err.render(&[]);
         assert!(s.contains("T016"), "code: {s}");
         assert!(s.contains("Missing cases:"), "header: {s}");
         assert!(s.contains("Red"), "first witness: {s}");
@@ -1789,7 +1873,7 @@ mod tests {
             suggestions: vec!["increment".into()],
             span: sp(),
         };
-        let s = err.to_string();
+        let s = err.render(&[]);
         assert!(s.contains("T015"), "code: {s}");
         assert!(s.contains("incremento"), "handler name: {s}");
         assert!(s.contains("Counter"), "actor name: {s}");
@@ -1806,7 +1890,7 @@ mod tests {
             suggestions: vec!["name".into()],
             span: sp(),
         };
-        let s = err.to_string();
+        let s = err.render(&[]);
         assert!(s.contains("T005"), "code: {s}");
         assert!(s.contains("nme"), "field name: {s}");
         assert!(s.contains("User"), "record name: {s}");
@@ -1940,26 +2024,27 @@ mod tests {
     #[expect(clippy::too_many_lines, reason = "one entry per variant, on purpose")]
     fn one_of_each() -> Vec<TypeError> {
         let s = || "x".to_owned();
+        let td = || TypeDesc::Text("x".to_owned());
         let caps = || CapabilitySet::singleton(Capability::Io);
 
         let mut all = vec![
             TypeError::TypeMismatch {
-                expected: s(),
-                found: s(),
+                expected: td(),
+                found: td(),
                 span: sp(),
                 hint: None,
             },
             TypeError::TypeMismatch {
-                expected: s(),
-                found: s(),
+                expected: td(),
+                found: td(),
                 span: sp(),
                 hint: Some(s()),
             },
             TypeError::TypeMismatchInCall {
                 callee: s(),
                 arg_index: 0,
-                expected: s(),
-                found: s(),
+                expected: td(),
+                found: td(),
                 span: sp(),
             },
             TypeError::ArityMismatch {
@@ -1994,12 +2079,12 @@ mod tests {
                 span: sp(),
             },
             TypeError::WithOnNonRecord {
-                ty: s(),
+                ty: td(),
                 span: sp(),
             },
             TypeError::PatternTypeMismatch {
-                expected: s(),
-                pattern: s(),
+                expected: td(),
+                pattern: td(),
                 span: sp(),
             },
             TypeError::WrongConstructorArity {
@@ -2009,8 +2094,8 @@ mod tests {
                 span: sp(),
             },
             TypeError::OccursCheck {
-                var: s(),
-                ty: s(),
+                var: td(),
+                ty: td(),
                 span: sp(),
             },
             TypeError::RecursiveTypeAlias {
@@ -2035,13 +2120,13 @@ mod tests {
                 span: sp(),
             },
             TypeError::NonExhaustiveMatch {
-                scrutinee_ty: s(),
+                scrutinee_ty: td(),
                 witnesses: vec![s()],
                 total_missing: 1,
                 span: sp(),
             },
             TypeError::NonExhaustiveMatch {
-                scrutinee_ty: s(),
+                scrutinee_ty: td(),
                 witnesses: vec![s(), s(), s()],
                 total_missing: 9,
                 span: sp(),
@@ -2063,20 +2148,20 @@ mod tests {
                 span: sp(),
             },
             TypeError::SendOnNonActor {
-                found_ty: s(),
+                found_ty: td(),
                 span: sp(),
             },
             TypeError::AskOnNonActor {
-                found_ty: s(),
+                found_ty: td(),
                 span: sp(),
             },
             TypeError::PropagateOutsideResultOrOption {
-                found_ty: s(),
-                expected: s(),
+                found_ty: td(),
+                expected: td(),
                 span: sp(),
             },
             TypeError::DiscardedResult {
-                ty: s(),
+                ty: td(),
                 span: sp(),
             },
             TypeError::UnsolvedTypeVariable {
@@ -2094,7 +2179,7 @@ mod tests {
                 span: sp(),
             },
             TypeError::AskTimeoutNotInt {
-                found: s(),
+                found: td(),
                 span: sp(),
             },
             TypeError::MailboxPolicyDropOldestNotShipped {
@@ -2108,35 +2193,35 @@ mod tests {
             },
             TypeError::NoInstance {
                 class: s(),
-                ty: s(),
+                ty: td(),
                 span: sp(),
                 fix_hint: s(),
             },
             TypeError::AmbiguousConstraint {
                 class: s(),
-                ty_var: s(),
+                ty_var: td(),
                 span: sp(),
             },
             TypeError::OrphanInstance {
                 class: s(),
-                ty: s(),
+                ty: td(),
                 instance_module: s(),
                 span: sp(),
             },
             TypeError::OverlappingInstance {
                 class: s(),
-                ty: s(),
+                ty: td(),
                 first_span: sp(),
                 second_span: sp(),
             },
             TypeError::MissingSuperclassInstance {
                 class: s(),
-                ty: s(),
+                ty: td(),
                 superclass: s(),
                 span: sp(),
             },
             TypeError::ToTextConflict {
-                ty: s(),
+                ty: td(),
                 totext_span: sp(),
                 auto_promote_span: sp(),
             },
@@ -2150,15 +2235,15 @@ mod tests {
                 span: sp(),
             },
             TypeError::RowMismatch {
-                expected: s(),
-                found: s(),
+                expected: td(),
+                found: td(),
                 missing_fields: vec![s()],
                 extra_fields: vec![s()],
                 span: sp(),
             },
             TypeError::RowMismatch {
-                expected: s(),
-                found: s(),
+                expected: td(),
+                found: td(),
                 missing_fields: Vec::new(),
                 extra_fields: Vec::new(),
                 span: sp(),
@@ -2186,14 +2271,14 @@ mod tests {
                 span: sp(),
             },
             TypeError::QuoteComparisonMismatch {
-                left: s(),
-                right: s(),
+                left: td(),
+                right: td(),
                 span: sp(),
             },
             TypeError::QuoteEntityUnknown { span: sp() },
             TypeError::RefutablePatternParam {
                 witness: s(),
-                ty: s(),
+                ty: td(),
                 span: sp(),
             },
             TypeError::NotAConstructor {
@@ -2242,12 +2327,12 @@ mod tests {
             // `Text` gets advice of its own: `++`, not `+`.
             TypeError::ArithmeticOnNonNumeric {
                 op: "+",
-                found: "Text".to_owned(),
+                found: TypeDesc::Text("Text".to_owned()),
                 span: sp(),
             },
             TypeError::ArithmeticOnNonNumeric {
                 op: "+",
-                found: "Bool".to_owned(),
+                found: TypeDesc::Text("Bool".to_owned()),
                 span: sp(),
             },
             TypeError::MainHasParams {
@@ -2255,13 +2340,13 @@ mod tests {
                 span: sp(),
             },
             TypeError::FieldAccessOnNonRecord {
-                ty: s(),
+                ty: td(),
                 field: s(),
                 suggestion: Some(s()),
                 span: sp(),
             },
             TypeError::FieldAccessOnNonRecord {
-                ty: s(),
+                ty: td(),
                 field: s(),
                 suggestion: None,
                 span: sp(),
@@ -2269,7 +2354,7 @@ mod tests {
             TypeError::MissingConstraint {
                 decl: s(),
                 class: s(),
-                ty_var: s(),
+                ty_var: td(),
                 fix_hint: s(),
                 span: sp(),
             },
@@ -2338,7 +2423,7 @@ mod tests {
     #[test]
     fn every_message_opens_with_the_code_its_variant_declares() {
         for e in one_of_each() {
-            let text = e.to_string();
+            let text = e.render(&[]);
             let want = format!("{}: ", e.code());
             assert!(text.starts_with(&want), "expected `{want}`, got: {text}");
         }
@@ -2353,7 +2438,7 @@ mod tests {
     #[test]
     fn no_message_repeats_the_code_the_frame_already_wrote() {
         for e in one_of_each() {
-            let text = e.to_string();
+            let text = e.render(&[]);
             // `strip_prefix`, not `trim_start_matches`: the latter removes
             // every repetition, so `T001: T001: …` came back clean and this
             // test passed against the exact defect it exists to catch.

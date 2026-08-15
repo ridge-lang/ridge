@@ -20,13 +20,17 @@ use ridge_typecheck::TypeError;
 /// Suggestions on `T005 UnknownField` and `T015 UnknownActorHandler` are
 /// surfaced as `Help`-level notes.
 #[must_use]
-pub fn diag_from_typecheck(e: &TypeError, source_id: SourceId) -> Diagnostic {
+pub fn diag_from_typecheck(
+    e: &TypeError,
+    source_id: SourceId,
+    tycons: &[ridge_typecheck::DiagTyCon],
+) -> Diagnostic {
     use ridge_diagnostics::HasErrorCode;
 
     let code = e.code();
     let severity = e.severity();
     let primary_span = e.span();
-    let message = e.to_string();
+    let message = e.render(tycons);
 
     let mut diag = Diagnostic::new(code, severity, primary_span, message, source_id);
 

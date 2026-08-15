@@ -22,7 +22,7 @@ use ridge_ast::{FieldInit, FieldPattern, Ident, Span};
 use ridge_types::{BuiltinTyCons, RecordSchema, TyConId, TyVid, Type};
 
 use crate::ctx::InferCtx;
-use crate::error::TypeError;
+use crate::error::{TypeDesc, TypeError};
 use crate::render::emit_internal;
 use crate::unify::unify;
 
@@ -305,7 +305,7 @@ pub fn infer_field_access(
         None
     };
     ctx.errors.push(TypeError::FieldAccessOnNonRecord {
-        ty: crate::render::render_type_with(&base_resolved, tycons),
+        ty: TypeDesc::ty(base_resolved),
         field: field_name.text.clone(),
         suggestion,
         span: field_span,
@@ -359,7 +359,7 @@ pub fn infer_record_with(
         (*id, args.clone())
     } else {
         ctx.errors.push(TypeError::WithOnNonRecord {
-            ty: crate::render::render_type_with(&base_resolved, tycons),
+            ty: TypeDesc::ty(base_resolved.clone()),
             span,
         });
         return Type::Error;
@@ -368,7 +368,7 @@ pub fn infer_record_with(
     let decl = tycons.get(tycon_id.0 as usize);
     let Some(ridge_types::TyConKind::Record(schema)) = decl.map(|d| &d.kind) else {
         ctx.errors.push(TypeError::WithOnNonRecord {
-            ty: crate::render::render_type_with(&base_resolved, tycons),
+            ty: TypeDesc::ty(base_resolved),
             span,
         });
         return Type::Error;

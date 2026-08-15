@@ -35,7 +35,7 @@ use crate::class_env::{
     InstanceInfo, InstanceOrigin, MethodSig,
 };
 use crate::derive::derive_instances;
-use crate::error::TypeError;
+use crate::error::{TypeDesc, TypeError};
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -800,7 +800,7 @@ fn check_orphan_rule(env: &InstanceEnv, ct: &ClassTable, errors: &mut Vec<TypeEr
             .join(" ");
         errors.push(TypeError::OrphanInstance {
             class: class_name,
-            ty: type_name,
+            ty: TypeDesc::Text(type_name),
             instance_module: format!("module#{inst_module}"),
             span: info.span,
         });
@@ -925,7 +925,7 @@ fn check_missing_superclass_instances(
                     .map_or_else(|| format!("#{}", super_id.0), |ci| ci.name.clone());
                 errors.push(TypeError::MissingSuperclassInstance {
                     class: class_name,
-                    ty: type_name,
+                    ty: TypeDesc::Text(type_name),
                     superclass: super_name,
                     span: info.span,
                 });

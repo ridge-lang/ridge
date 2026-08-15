@@ -33,7 +33,7 @@ use ridge_types::{BuiltinTyCons, TyConId, Type, TOTEXT_CLASS};
 use rustc_hash::FxHashSet;
 
 use crate::ctx::InferCtx;
-use crate::error::TypeError;
+use crate::error::{TypeDesc, TypeError};
 use crate::infer::infer_expr;
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -116,7 +116,7 @@ fn check_hole_to_text(
                 decl,
                 class: "ToText".to_owned(),
                 fix_hint: format!("add `where ToText {name}` to the signature"),
-                ty_var: name.to_string(),
+                ty_var: TypeDesc::Text(name.to_string()),
                 span: decl_span,
             });
         }
@@ -136,7 +136,7 @@ fn check_hole_to_text(
                 );
                 ctx.errors.push(TypeError::NoInstance {
                     class: "ToText".to_string(),
-                    ty: ty_name,
+                    ty: TypeDesc::ty(tr.clone()),
                     span,
                     fix_hint: hint,
                 });
@@ -152,7 +152,7 @@ fn check_hole_to_text(
             );
             ctx.errors.push(TypeError::NoInstance {
                 class: "ToText".to_string(),
-                ty: ty_name,
+                ty: TypeDesc::ty(other.clone()),
                 span,
                 fix_hint: hint,
             });

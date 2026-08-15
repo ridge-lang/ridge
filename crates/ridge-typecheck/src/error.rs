@@ -7,11 +7,102 @@
 //! where the full multi-line output matching spec §5.3 / §5.4 / §6.4 lives.
 
 use ridge_ast::Span;
-use ridge_types::CapabilitySet;
+use ridge_types::{CapabilitySet, TyConDecl, Type};
 
 // ---------------------------------------------------------------------------
 // Supporting types
 // ---------------------------------------------------------------------------
+
+/// How a diagnostic names a type to the reader.
+///
+/// These fields used to be `String`, and the construction site chose the
+/// rendering. A `String` accepts anything, the renderer that names types needs
+/// the type-constructor table, and so the correct call was three parts long
+/// while `format!("{ty:?}")` was one. The short one kept winning: four separate
+/// sweeps have removed `Con(TyConId(6), [...])` from messages it had reached.
+///
+/// The three arms are the three provenances that a census of every construction
+/// site actually found — not a type and an escape hatch, which is where the
+/// defect would come back, but the three distinct things these fields hold:
+///
+/// * [`Self::Ty`] leaves nothing for the call site to stringify. There is no
+///   `String` to build, so there is no `Debug` dump to write.
+/// * [`Self::Text`] is text this site built: a name the author wrote, carried
+///   through as they spelled it at sites like `derive.rs` where no `Type` is
+///   in scope at all, or a rendering of something that is not a type — the
+///   capability rows `unify.rs` compares, for one.
+/// * [`Self::Phrase`] is a fixed description for the cases where no single type
+///   is the answer: `solve.rs` reports a missing instance for "a function of
+///   arity 2".
+#[derive(Debug, Clone)]
+pub enum TypeDesc {
+    /// A type, rendered where the type-constructor table is in hand.
+    ///
+    /// Must already be resolved: the substitution lives on the inference
+    /// context and is gone by the time a diagnostic is rendered. Build one with
+    /// `InferCtx::ty_desc`, which resolves first, or [`TypeDesc::ty`].
+    ///
+    /// Boxed because `TypeError` travels as the `Err` of every `unify`, and a
+    /// `Type` inline made the largest variant 136 bytes — every result in the
+    /// hot path paying for a value only a failure ever reads.
+    Ty(Box<Type>),
+    /// Text this site built for the reader: a name the author wrote, or a
+    /// rendering of something that is not a `Type` at all.
+    Text(String),
+    /// A description of a shape, where no one type is what the reader needs.
+    Phrase(&'static str),
+}
+
+impl TypeDesc {
+    /// A resolved type, ready to be named.
+    #[must_use]
+    pub fn ty(t: Type) -> Self {
+        Self::Ty(Box::new(t))
+    }
+
+    /// The reader's text, for one description on its own.
+    ///
+    /// Two descriptions from the same diagnostic must not go through here
+    /// separately. Each call starts its type-variable letters at `a`, so two
+    /// different variables both come out `a` and one variable used twice can
+    /// come out as two letters. Use [`Self::render_pair`], or render the whole
+    /// message with [`TypeError::render`], which shares one namer across it.
+    #[must_use]
+    pub fn render(&self, tycons: &[TyConDecl]) -> String {
+        crate::render::render_descs(&[self], tycons).swap_remove(0)
+    }
+
+    /// Two descriptions of the same diagnostic, rendered together.
+    ///
+    /// `expected List b, found a` says the two are different variables;
+    /// `expected List a, found a` says the element has to be the caller's own
+    /// `a`. Which sentence the reader gets depends entirely on the two sharing
+    /// a namer, so the pair has to be rendered in one go.
+    #[must_use]
+    pub fn render_pair(&self, other: &Self, tycons: &[TyConDecl]) -> (String, String) {
+        let mut out = crate::render::render_descs(&[self, other], tycons);
+        let second = out.swap_remove(1);
+        (out.swap_remove(0), second)
+    }
+}
+
+/// Test-only shorthand so a fixture can write `"Int".into()`.
+///
+/// Deliberately `cfg(test)`: the point of the enum is that production code has
+/// to say where a string came from, and a blanket `From` would let it say
+/// nothing.
+#[cfg(test)]
+impl From<&str> for TypeDesc {
+    fn from(s: &str) -> Self {
+        Self::Text(s.to_owned())
+    }
+}
+
+// Deliberately no `From<String>`: `found_ty: format!("{ty:?}").into()` would
+// compile, and that is the whole defect back with an `.into()` in front of it.
+// `Text` can still be handed a debug dump, but it has to be spelled out in
+// full, which is longer than `ctx.ty_desc(&ty)` rather than shorter — the
+// incentive a bare `String` had backwards.
 
 /// What kind of declaration a `T014 CapabilityNotDeclared` was raised against.
 ///
@@ -52,9 +143,9 @@ pub enum TypeError {
     /// Type mismatch at an annotation or binding site.
     TypeMismatch {
         /// The expected type.
-        expected: String,
+        expected: TypeDesc,
         /// The found type.
-        found: String,
+        found: TypeDesc,
         /// Source span of the sub-expression.
         span: Span,
         /// Optional diagnostic hint shown below the main message — for example
@@ -73,9 +164,9 @@ pub enum TypeError {
         /// Zero-based index of the mismatched argument.
         arg_index: usize,
         /// Expected argument type.
-        expected: String,
+        expected: TypeDesc,
         /// Found argument type.
-        found: String,
+        found: TypeDesc,
         /// Source span of the argument expression.
         span: Span,
     },
@@ -125,7 +216,7 @@ pub enum TypeError {
     /// The `with` expression is applied to a non-record type.
     WithOnNonRecord {
         /// The actual type found on the LHS.
-        ty: String,
+        ty: TypeDesc,
         /// Source span of the LHS expression.
         span: Span,
     },
@@ -134,9 +225,9 @@ pub enum TypeError {
     /// A pattern does not match the scrutinee's type.
     PatternTypeMismatch {
         /// The scrutinee's expected type.
-        expected: String,
+        expected: TypeDesc,
         /// The type implied by the pattern.
-        pattern: String,
+        pattern: TypeDesc,
         /// Source span of the pattern.
         span: Span,
     },
@@ -160,10 +251,10 @@ pub enum TypeError {
         /// What cannot contain itself, as the reader should see it named — a
         /// single-letter type variable in backticks, or a phrase such as
         /// `this record` where the thing has no name to give.
-        var: String,
+        var: TypeDesc,
         /// The type it would have to occur inside, rendered with the same
         /// variable letters as `var`.
-        ty: String,
+        ty: TypeDesc,
         /// Source span of the unification site.
         span: Span,
     },
@@ -230,7 +321,7 @@ pub enum TypeError {
     /// A `match` expression does not cover all constructors / patterns.
     NonExhaustiveMatch {
         /// String representation of the scrutinee type.
-        scrutinee_ty: String,
+        scrutinee_ty: TypeDesc,
         /// Example missing patterns (capped at 3).
         witnesses: Vec<String>,
         /// Total number of missing patterns (may exceed `witnesses.len()`).
@@ -279,7 +370,7 @@ pub enum TypeError {
     /// The `!` send operator is applied to a non-`Handle` value.
     SendOnNonActor {
         /// The actual type found on the LHS of `!`.
-        found_ty: String,
+        found_ty: TypeDesc,
         /// Source span of the LHS expression.
         span: Span,
     },
@@ -288,7 +379,7 @@ pub enum TypeError {
     /// The `?>` ask operator is applied to a non-`Handle` value.
     AskOnNonActor {
         /// The actual type found on the LHS of `?>`.
-        found_ty: String,
+        found_ty: TypeDesc,
         /// Source span of the LHS expression.
         span: Span,
     },
@@ -297,9 +388,9 @@ pub enum TypeError {
     /// The `?` propagate operator is used outside a `Result`/`Option` context.
     PropagateOutsideResultOrOption {
         /// The actual type of the expression `?` is applied to.
-        found_ty: String,
+        found_ty: TypeDesc,
         /// The type expected by the enclosing context.
-        expected: String,
+        expected: TypeDesc,
         /// Source span of the `?` operator.
         span: Span,
     },
@@ -308,7 +399,7 @@ pub enum TypeError {
     /// A non-`Unit` value is silently discarded at statement level.
     DiscardedResult {
         /// The type of the discarded expression.
-        ty: String,
+        ty: TypeDesc,
         /// Source span of the discarded expression.
         span: Span,
     },
@@ -352,7 +443,7 @@ pub enum TypeError {
     /// explicit opt-in for an unlimited wait.
     AskTimeoutNotInt {
         /// The actual type found on the timeout expression.
-        found: String,
+        found: TypeDesc,
         /// Source span of the timeout expression.
         span: Span,
     },
@@ -397,7 +488,7 @@ pub enum TypeError {
         /// Display name of the class (e.g. `"ToText"`).
         class: String,
         /// Display name of the concrete type (e.g. `"Color"`).
-        ty: String,
+        ty: TypeDesc,
         /// Source span of the call or use site.
         span: Span,
         /// Context-specific fix suggestion shown below the main message.
@@ -415,7 +506,7 @@ pub enum TypeError {
         /// Display name of the class (e.g. `"ToText"`).
         class: String,
         /// Display name of the ambiguous type variable.
-        ty_var: String,
+        ty_var: TypeDesc,
         /// Source span of the ambiguous use site.
         span: Span,
     },
@@ -430,7 +521,7 @@ pub enum TypeError {
         /// Display name of the class.
         class: String,
         /// Display name of the type.
-        ty: String,
+        ty: TypeDesc,
         /// Module that contains the violating instance declaration.
         instance_module: String,
         /// Source span of the `instance` keyword.
@@ -447,7 +538,7 @@ pub enum TypeError {
         /// Display name of the class.
         class: String,
         /// Display name of the type.
-        ty: String,
+        ty: TypeDesc,
         /// Span of the first (existing) instance declaration.
         first_span: Span,
         /// Span of the second (conflicting) instance declaration.
@@ -465,7 +556,7 @@ pub enum TypeError {
         /// Display name of the class being instantiated.
         class: String,
         /// Display name of the type.
-        ty: String,
+        ty: TypeDesc,
         /// Display name of the missing superclass.
         superclass: String,
         /// Source span of the `instance` declaration that triggered the check.
@@ -483,7 +574,7 @@ pub enum TypeError {
     // T034 as RESERVED in this file so the number is not reused.
     ToTextConflict {
         /// Display name of the type.
-        ty: String,
+        ty: TypeDesc,
         /// Span of the explicit `instance ToText T` declaration.
         totext_span: Span,
         /// Span of the `pub fn toText` declaration that was auto-promoted.
@@ -525,9 +616,9 @@ pub enum TypeError {
     /// than as a flat "type mismatch".
     RowMismatch {
         /// The expected record row, rendered (e.g. `{ x: Int }`).
-        expected: String,
+        expected: TypeDesc,
         /// The found record row, rendered (e.g. `{ x: Int, y: Int }`).
-        found: String,
+        found: TypeDesc,
         /// Labels the expected row requires that the found row lacks.
         missing_fields: Vec<String>,
         /// Labels the found row carries that the expected row does not allow.
@@ -592,9 +683,9 @@ pub enum TypeError {
     /// operands must share a type so the generated SQL is well-typed.
     QuoteComparisonMismatch {
         /// Rendered type of the left operand.
-        left: String,
+        left: TypeDesc,
         /// Rendered type of the right operand.
-        right: String,
+        right: TypeDesc,
         /// Source span of the comparison.
         span: Span,
     },
@@ -623,7 +714,7 @@ pub enum TypeError {
         /// Rendered example value the pattern fails to match (a witness).
         witness: String,
         /// Rendered type of the parameter.
-        ty: String,
+        ty: TypeDesc,
         /// Source span of the parameter pattern.
         span: Span,
     },
@@ -774,7 +865,7 @@ pub enum TypeError {
         /// The operator as written in source (e.g. `"+"`).
         op: &'static str,
         /// The concrete non-numeric operand type, rendered for display.
-        found: String,
+        found: TypeDesc,
         /// Source span of the binary expression.
         span: Span,
     },
@@ -806,7 +897,7 @@ pub enum TypeError {
     /// on `List Int` ↔ `List.length`), `suggestion` carries that qualified name.
     FieldAccessOnNonRecord {
         /// The actual type of the base expression, rendered user-facing.
-        ty: String,
+        ty: TypeDesc,
         /// The field name the user wrote.
         field: String,
         /// Qualified module function to suggest (e.g. `List.length`), if any.
@@ -834,7 +925,7 @@ pub enum TypeError {
         /// The class the body needs, e.g. `Ord`.
         class: String,
         /// The signature's own name for the variable, e.g. `a`.
-        ty_var: String,
+        ty_var: TypeDesc,
         /// The `where` clause that would satisfy it, ready to paste.
         fix_hint: String,
         /// Source span of the declaration's signature.
@@ -1332,7 +1423,7 @@ mod tests {
 
     #[test]
     fn t047_message_names_companion_entity_and_omitted_column() {
-        let msg = t047().to_string();
+        let msg = t047().render(&[]);
         assert!(msg.contains("T047"), "{msg}");
         assert!(msg.contains("`UserInsert`"), "{msg}");
         assert!(msg.contains("`User`"), "{msg}");
@@ -1346,7 +1437,7 @@ mod tests {
 
     #[test]
     fn t048_message_names_member_and_signatures() {
-        let msg = t048().to_string();
+        let msg = t048().render(&[]);
         assert!(msg.contains("T048"), "{msg}");
         assert!(msg.contains("onDown"), "{msg}");
         assert!(msg.contains("Monitor, ExitReason"), "{msg}");
@@ -1490,7 +1581,7 @@ mod tests {
 
     #[test]
     fn t037_message_names_the_unexpected_field() {
-        let msg = format!("{}", t037());
+        let msg = t037().render(&[]);
         assert!(msg.contains("T037"), "message should carry the code: {msg}");
         assert!(
             msg.contains("unexpected field(s): y"),
@@ -1514,7 +1605,7 @@ mod tests {
 
     #[test]
     fn t038_message_names_the_counts() {
-        let msg = format!("{}", t038());
+        let msg = t038().render(&[]);
         assert!(msg.contains("T038"), "message should carry the code: {msg}");
         assert!(
             msg.contains('2') && msg.contains('1'),

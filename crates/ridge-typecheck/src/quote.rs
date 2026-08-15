@@ -20,7 +20,7 @@ use ridge_ast::{BinOp, Expr, LambdaParam, Literal, Pattern, Span};
 use ridge_types::{BuiltinTyCons, TyConId, TyConKind, Type};
 
 use crate::ctx::InferCtx;
-use crate::error::TypeError;
+use crate::error::{TypeDesc, TypeError};
 use crate::instantiate::instantiate;
 
 /// What the lowering pass needs to reify a quoted lambda body.
@@ -815,8 +815,8 @@ fn check_binary(
             let lt = ctx.deep_resolve(lt);
             let rt = ctx.deep_resolve(rt);
             if !same_value_type(&lt, &rt) {
-                let left = crate::render::render_type_with(&lt, &ctx.tycon_decls);
-                let right = crate::render::render_type_with(&rt, &ctx.tycon_decls);
+                let left = TypeDesc::ty(lt);
+                let right = TypeDesc::ty(rt);
                 ctx.errors
                     .push(TypeError::QuoteComparisonMismatch { left, right, span });
                 return None;
@@ -853,8 +853,9 @@ fn check_binary(
             let lt = ctx.deep_resolve(lt);
             let rt = ctx.deep_resolve(rt);
             if !is_numeric(b, &lt) || !is_numeric(b, &rt) || !same_value_type(&lt, &rt) {
-                let left = crate::render::render_type_with(&lt, &ctx.tycon_decls);
-                let right = crate::render::render_type_with(&rt, &ctx.tycon_decls);
+                // `detail` is prose, so this one wants the text, not the type.
+                let left = ctx.render_ty(&lt);
+                let right = ctx.render_ty(&rt);
                 ctx.errors.push(TypeError::QuoteUnsupportedExpr {
                     detail: format!(
                         "arithmetic (`+ - * / %`) takes two operands of the same numeric type \
@@ -1115,8 +1116,8 @@ fn check_captured_in_list(
         return InListCheck::Invalid;
     }
     if !same_value_type(elem, col_ty) {
-        let left = crate::render::render_type_with(col_ty, &ctx.tycon_decls);
-        let right = crate::render::render_type_with(elem, &ctx.tycon_decls);
+        let left = TypeDesc::ty(ctx.deep_resolve(col_ty));
+        let right = TypeDesc::ty(ctx.deep_resolve(elem));
         ctx.errors
             .push(TypeError::QuoteComparisonMismatch { left, right, span });
         return InListCheck::Invalid;
@@ -1205,8 +1206,8 @@ fn check_predicate_call(
                 };
                 let elt = literal_type(b, lit);
                 if !same_value_type(&elt, &col_ty) {
-                    let left = crate::render::render_type_with(&col_ty, &ctx.tycon_decls);
-                    let right = crate::render::render_type_with(&elt, &ctx.tycon_decls);
+                    let left = TypeDesc::ty(ctx.deep_resolve(&col_ty));
+                    let right = TypeDesc::ty(ctx.deep_resolve(&elt));
                     ctx.errors.push(TypeError::QuoteComparisonMismatch {
                         left,
                         right,
@@ -2063,8 +2064,8 @@ fn check_group_binary(
             if matches!(lt, Type::Var(_)) || matches!(rt, Type::Var(_)) {
                 let _ = crate::unify::unify(ctx, &lt, &rt);
             } else if !same_value_type(&lt, &rt) {
-                let left = crate::render::render_type_with(&lt, &ctx.tycon_decls);
-                let right = crate::render::render_type_with(&rt, &ctx.tycon_decls);
+                let left = TypeDesc::ty(lt.clone());
+                let right = TypeDesc::ty(rt.clone());
                 ctx.errors
                     .push(TypeError::QuoteComparisonMismatch { left, right, span });
                 return None;

@@ -1371,7 +1371,7 @@ pub const REGISTRY: &[CodeEntry] = &[
     },
     CodeEntry {
         code: "T021",
-        variants: &["AskOnNonActor", "PropagateOutsideResultOrOption"],
+        variants: &["AskOnNonActor"],
         owner: "ridge-typecheck",
         summary: "The `?>` ask operator is applied to a non-`Handle` value.",
     },
@@ -1590,6 +1590,12 @@ pub const REGISTRY: &[CodeEntry] = &[
         variants: &["TupleWidthMismatch"],
         owner: "ridge-typecheck",
         summary: "A tuple meets a position expecting a different number of components.",
+    },
+    CodeEntry {
+        code: "T058",
+        variants: &["PropagateOutsideResultOrOption"],
+        owner: "ridge-typecheck",
+        summary: "`?` is applied where the enclosing return type is neither `Result` nor `Option`.",
     },
     CodeEntry {
         code: "T101",

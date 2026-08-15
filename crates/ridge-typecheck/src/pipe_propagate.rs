@@ -17,7 +17,7 @@
 //! `Result alpha beta`, and the beta (error type) must unify with the enclosing
 //! context's error type.  The `?` expression's own type is `alpha` (the Ok
 //! payload).  Inside an `Option a` context, the inner expression must unify with
-//! `Option alpha`.  Outside either context → `T021`.
+//! `Option alpha`.  Outside either context → `T058`.
 //!
 //! The propagation context is `ctx.current_propagate_target` (set by `try` blocks)
 //! falling back to `ctx.current_fn_ret` (set by function-body entry in T6).
@@ -128,7 +128,7 @@ pub fn infer_pipe(
 /// `beta` with the context's error type, and return `alpha`.
 /// If the target is `Option a`: unify `inner` with `Option alpha` and return
 /// `alpha`.
-/// Otherwise: emit `T021 PropagateOutsideResultOrOption` and return
+/// Otherwise: emit `T058 PropagateOutsideResultOrOption` and return
 /// `Type::Error`.
 pub fn infer_propagate(ctx: &mut InferCtx, b: &BuiltinTyCons, inner: &Expr, span: Span) -> Type {
     use crate::infer::infer_expr;
@@ -195,7 +195,7 @@ pub fn infer_propagate(ctx: &mut InferCtx, b: &BuiltinTyCons, inner: &Expr, span
                     }
                     Err(e) => {
                         // Inner does not unify with Result _ _ — regular
-                        // T001 type mismatch (not T021; the context IS a
+                        // T001 type mismatch (not T058; the context IS a
                         // Result but the inner type is wrong).
                         ctx.errors.push(attach_span(e, span));
                         Type::Error
@@ -216,7 +216,7 @@ pub fn infer_propagate(ctx: &mut InferCtx, b: &BuiltinTyCons, inner: &Expr, span
                 }
             }
             other => {
-                // Target is neither Result nor Option — T021.
+                // Target is neither Result nor Option — T058.
                 let other = other.clone();
                 let found_ty = ctx.ty_desc(&inner_ty);
                 let expected = ctx.ty_desc(&other);
@@ -229,7 +229,7 @@ pub fn infer_propagate(ctx: &mut InferCtx, b: &BuiltinTyCons, inner: &Expr, span
             }
         }
     } else {
-        // No enclosing fn return type or try block — T021.
+        // No enclosing fn return type or try block — T058.
         let found_ty = ctx.ty_desc(&inner_ty);
         ctx.errors.push(TypeError::PropagateOutsideResultOrOption {
             found_ty,
@@ -629,11 +629,11 @@ mod tests {
         assert!(ctx.errors.is_empty(), "unexpected errors: {:?}", ctx.errors);
     }
 
-    // ── Test 5: propagate_outside_result_or_option_T021 ──────────────────────
+    // ── Test 5: propagate_outside_result_or_option_T058 ──────────────────────
 
-    /// A fn returning `Int`, body contains `something ?` → T021 fires.
+    /// A fn returning `Int`, body contains `something ?` → T058 fires.
     #[test]
-    fn propagate_outside_result_or_option_t021() {
+    fn propagate_outside_result_or_option_t058() {
         let b = make_builtins();
         let mut ctx = InferCtx::new();
 
@@ -652,8 +652,8 @@ mod tests {
 
         let ty = infer_propagate(&mut ctx, &b, &inner, dummy_span());
         assert!(matches!(ty, Type::Error), "expected Error, got {ty:?}");
-        let has_t021 = ctx.errors.iter().any(|e| e.code() == "T021");
-        assert!(has_t021, "expected T021, got: {:?}", ctx.errors);
+        let has_t058 = ctx.errors.iter().any(|e| e.code() == "T058");
+        assert!(has_t058, "expected T058, got: {:?}", ctx.errors);
     }
 
     // ── Test 6: propagate_inner_type_mismatch_T001 ────────────────────────────

@@ -1108,6 +1108,24 @@ impl InferCtx {
         crate::scc::abstract_rigids(&resolved)
     }
 
+    /// A type as the reader should see it: resolved, then named.
+    ///
+    /// This is the only thing a diagnostic should put in a `String` field. The
+    /// alternative that keeps reappearing is `format!("{ty:?}")`, which prints
+    /// the checker's own value — `Con(TyConId(6), [Con(TyConId(0), [])])` where
+    /// the reader wrote `List Int`. Three sweeps have removed those one call
+    /// site at a time; spelling the right thing as one short method is what
+    /// makes it shorter than the wrong one.
+    ///
+    /// Resolving first matters as much as rendering: a type still carrying
+    /// unification variables prints them as the letters a signature would use,
+    /// and an unresolved one prints an internal id.
+    #[must_use]
+    pub fn render_ty(&mut self, t: &Type) -> String {
+        let resolved = self.deep_resolve(t);
+        crate::render::render_type_with(&resolved, &self.tycon_decls)
+    }
+
     /// Deep-resolves a type: like [`Self::shallow_resolve`] but walks recursively into
     /// all sub-terms.  Every [`Type::Var`] encountered is replaced by its
     /// shallow-resolved representative (or left as a free var if unbound).

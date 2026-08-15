@@ -22,7 +22,7 @@ impl Diagnostic {
         match e {
             ResolveError::DuplicateModule { first, second, .. } => {
                 // primary is at `second`; note is at `first`
-                diag.notes.push(DiagnosticNote {
+                diag.push_note(DiagnosticNote {
                     span: *first,
                     message: "first declared here".to_owned(),
                     severity: NoteSeverity::Note,
@@ -34,7 +34,7 @@ impl Diagnostic {
                 second_span,
                 ..
             } => {
-                diag.notes.push(DiagnosticNote {
+                diag.push_note(DiagnosticNote {
                     span: *first_span,
                     message: "first declaration".to_owned(),
                     severity: NoteSeverity::Note,
@@ -46,7 +46,7 @@ impl Diagnostic {
                 second_span,
                 ..
             } => {
-                diag.notes.push(DiagnosticNote {
+                diag.push_note(DiagnosticNote {
                     span: *first_span,
                     message: "first binding".to_owned(),
                     severity: NoteSeverity::Note,
@@ -54,7 +54,7 @@ impl Diagnostic {
                 let _ = second_span;
             }
             ResolveError::VisibilityViolation { defined_at, .. } => {
-                diag.notes.push(DiagnosticNote {
+                diag.push_note(DiagnosticNote {
                     span: *defined_at,
                     message: "defined here (with restricted visibility)".to_owned(),
                     severity: NoteSeverity::Note,
@@ -65,7 +65,7 @@ impl Diagnostic {
             | ResolveError::UnresolvedQualifiedName { suggestions, .. }
             | ResolveError::UnknownStdlibSymbol { suggestions, .. } => {
                 if let Some(message) = crate::diagnostic::did_you_mean(suggestions) {
-                    diag.notes.push(DiagnosticNote {
+                    diag.push_note(DiagnosticNote {
                         span: primary_span,
                         message,
                         severity: NoteSeverity::Help,
@@ -76,14 +76,14 @@ impl Diagnostic {
                 manifest_span: Some(mspan),
                 ..
             } => {
-                diag.notes.push(DiagnosticNote {
+                diag.push_note(DiagnosticNote {
                     span: *mspan,
                     message: "rule defined here".to_owned(),
                     severity: NoteSeverity::Note,
                 });
             }
             ResolveError::StateFieldShadowedByLocal { field_span, .. } => {
-                diag.notes.push(DiagnosticNote {
+                diag.push_note(DiagnosticNote {
                     span: *field_span,
                     message: "state field declared here".to_owned(),
                     severity: NoteSeverity::Note,

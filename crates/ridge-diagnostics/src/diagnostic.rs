@@ -166,6 +166,48 @@ fn strip_help_marker(line: &str) -> Option<&str> {
     None
 }
 
+// ── The compiler's own vocabulary ─────────────────────────────────────────────
+
+/// Fragments that only ever appear when a Rust value was printed with `Debug`
+/// where a rendered name belonged.
+///
+/// Each is the name of an internal id type followed by its opening paren, so
+/// none of them can come out of a renderer: Ridge writes `List Int`, never
+/// `List(Int)`, and a program that declares `type TyConId = Int` still prints
+/// `TyConId` with nothing after it.
+const INTERNAL_SHAPES: [&str; 6] = [
+    "TyConId(",
+    "TyVid(",
+    "RowVid(",
+    "CapVid(",
+    "ClassId(",
+    "ModuleId(",
+];
+
+/// Stop a debug build the moment a diagnostic carries the checker's own value.
+///
+/// Every message reaches the reader through [`Diagnostic`], so one check here
+/// covers every crate, every code, and every code not written yet. It exists
+/// because the alternative has been tried three times: sweeping the call sites
+/// that were known at the time, each pass leaving behind the ones nobody had
+/// looked at. Nothing failed in between.
+///
+/// Debug only. A release compiler still has to print *something*, and a
+/// mangled type name is a worse day for the reader than a panic is a better one.
+#[cfg_attr(not(debug_assertions), inline(always))]
+fn assert_reader_facing(code: &str, text: &str) {
+    if cfg!(debug_assertions) {
+        if let Some(shape) = INTERNAL_SHAPES.iter().find(|s| text.contains(**s)) {
+            debug_assert!(
+                false,
+                "{code} shows the reader `{shape}…`, which is a Rust value printed with \
+                 `Debug` where a rendered name belongs. Build the string through the \
+                 renderer that names types instead.\n  full message: {text}"
+            );
+        }
+    }
+}
+
 // ── Diagnostic ────────────────────────────────────────────────────────────────
 
 /// A structured diagnostic suitable for human or machine rendering.
@@ -215,14 +257,26 @@ impl Diagnostic {
         primary_message: impl Into<String>,
         source_id: SourceId,
     ) -> Self {
+        let primary_message = primary_message.into();
+        assert_reader_facing(code, &primary_message);
         Self {
             code,
             severity,
             primary_span,
-            primary_message: primary_message.into(),
+            primary_message,
             source_id,
             notes: Vec::new(),
         }
+    }
+
+    /// Attach a secondary note.
+    ///
+    /// Pushing onto [`Self::notes`] directly still works and still compiles;
+    /// what it skips is [`assert_reader_facing`], which is the whole reason
+    /// this exists. A note is as much the reader's text as the headline is.
+    pub fn push_note(&mut self, note: DiagnosticNote) {
+        assert_reader_facing(self.code, &note.message);
+        self.notes.push(note);
     }
 
     /// Split [`Self::primary_message`] into the parts a renderer places
@@ -287,7 +341,7 @@ impl Diagnostic {
     /// Add a secondary note to this diagnostic.
     #[must_use]
     pub fn with_note(mut self, span: Span, message: impl Into<String>, sev: NoteSeverity) -> Self {
-        self.notes.push(DiagnosticNote {
+        self.push_note(DiagnosticNote {
             span,
             message: message.into(),
             severity: sev,

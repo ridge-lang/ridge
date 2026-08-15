@@ -217,9 +217,12 @@ pub fn infer_propagate(ctx: &mut InferCtx, b: &BuiltinTyCons, inner: &Expr, span
             }
             other => {
                 // Target is neither Result nor Option — T021.
+                let other = other.clone();
+                let found_ty = ctx.render_ty(&inner_ty);
+                let expected = ctx.render_ty(&other);
                 ctx.errors.push(TypeError::PropagateOutsideResultOrOption {
-                    found_ty: format!("{inner_ty:?}"),
-                    expected: format!("{other:?}"),
+                    found_ty,
+                    expected,
                     span,
                 });
                 Type::Error
@@ -227,8 +230,9 @@ pub fn infer_propagate(ctx: &mut InferCtx, b: &BuiltinTyCons, inner: &Expr, span
         }
     } else {
         // No enclosing fn return type or try block — T021.
+        let found_ty = ctx.render_ty(&inner_ty);
         ctx.errors.push(TypeError::PropagateOutsideResultOrOption {
-            found_ty: format!("{inner_ty:?}"),
+            found_ty,
             expected: "no enclosing Result/Option context".to_string(),
             span,
         });

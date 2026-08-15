@@ -35,7 +35,7 @@ pub fn diag_from_typecheck(e: &TypeError, source_id: SourceId) -> Diagnostic {
         TypeError::UnknownField { suggestions, .. }
         | TypeError::UnknownActorHandler { suggestions, .. } => {
             if let Some(message) = ridge_diagnostics::diagnostic::did_you_mean(suggestions) {
-                diag.notes.push(DiagnosticNote {
+                diag.push_note(DiagnosticNote {
                     span: primary_span,
                     message,
                     severity: NoteSeverity::Help,
@@ -48,14 +48,14 @@ pub fn diag_from_typecheck(e: &TypeError, source_id: SourceId) -> Diagnostic {
             ..
         } => {
             for w in witnesses {
-                diag.notes.push(DiagnosticNote {
+                diag.push_note(DiagnosticNote {
                     span: primary_span,
                     message: format!("missing pattern: {w}"),
                     severity: NoteSeverity::Help,
                 });
             }
             if *total_missing > witnesses.len() {
-                diag.notes.push(DiagnosticNote {
+                diag.push_note(DiagnosticNote {
                     span: primary_span,
                     message: format!(
                         "... and {} more missing pattern(s)",
@@ -78,7 +78,7 @@ pub fn diag_from_typecheck(e: &TypeError, source_id: SourceId) -> Diagnostic {
             } else {
                 ("s", "them")
             };
-            diag.notes.push(DiagnosticNote {
+            diag.push_note(DiagnosticNote {
                 span: primary_span,
                 message: format!(
                     "`{companion}` drops the database-generated column{plural} {cols}; build a `{companion}` and leave {them} to the database"
@@ -129,7 +129,7 @@ pub fn diag_from_codegen(e: &CodegenError, source_id: SourceId) -> Diagnostic {
     match e {
         CodegenError::ErlcRejectedInput { stderr, .. } => {
             if !stderr.is_empty() {
-                diag.notes.push(DiagnosticNote {
+                diag.push_note(DiagnosticNote {
                     span: primary_span,
                     message: format!("erlc output:\n{stderr}"),
                     severity: NoteSeverity::Note,
@@ -138,7 +138,7 @@ pub fn diag_from_codegen(e: &CodegenError, source_id: SourceId) -> Diagnostic {
         }
         CodegenError::ErlcUnexpectedOutput { stderr, .. } => {
             if !stderr.is_empty() {
-                diag.notes.push(DiagnosticNote {
+                diag.push_note(DiagnosticNote {
                     span: primary_span,
                     message: format!("erlc stderr:\n{stderr}"),
                     severity: NoteSeverity::Note,

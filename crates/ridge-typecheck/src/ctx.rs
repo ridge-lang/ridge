@@ -1108,18 +1108,25 @@ impl InferCtx {
         crate::scc::abstract_rigids(&resolved)
     }
 
-    /// A type as the reader should see it: resolved, then named.
+    /// A type, ready for a diagnostic to carry.
     ///
-    /// This is the only thing a diagnostic should put in a `String` field. The
-    /// alternative that keeps reappearing is `format!("{ty:?}")`, which prints
-    /// the checker's own value — `Con(TyConId(6), [Con(TyConId(0), [])])` where
-    /// the reader wrote `List Int`. Three sweeps have removed those one call
-    /// site at a time; spelling the right thing as one short method is what
-    /// makes it shorter than the wrong one.
+    /// The resolving is the part that has to happen here: the substitution
+    /// lives on this context, and a diagnostic is rendered much later, at the
+    /// driver boundary, where it is gone. An unresolved type would print the
+    /// letters of a signature variable rather than what it was pinned to.
     ///
-    /// Resolving first matters as much as rendering: a type still carrying
-    /// unification variables prints them as the letters a signature would use,
-    /// and an unresolved one prints an internal id.
+    /// Rendering deliberately does *not* happen here. Handing the type on as a
+    /// value is what keeps `format!("{ty:?}")` from being expressible at the
+    /// call site — see [`crate::error::TypeDesc`].
+    #[must_use]
+    pub fn ty_desc(&mut self, t: &Type) -> crate::error::TypeDesc {
+        crate::error::TypeDesc::ty(self.deep_resolve(t))
+    }
+
+    /// A type rendered to text, for the fields that are still `String`.
+    ///
+    /// Prefer [`Self::ty_desc`]. This exists for the message parts that are
+    /// prose built around a type rather than a type on its own.
     #[must_use]
     pub fn render_ty(&mut self, t: &Type) -> String {
         let resolved = self.deep_resolve(t);

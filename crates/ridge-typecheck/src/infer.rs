@@ -42,7 +42,7 @@ use ridge_types::{BuiltinTyCons, CapRow, CapabilitySet, Scheme, TyConId, TyConKi
 use rustc_hash::FxHashSet;
 
 use crate::ctx::InferCtx;
-use crate::error::TypeError;
+use crate::error::{TypeDesc, TypeError};
 use crate::instantiate::{generalise, generalise_with_env, instantiate, monoscheme};
 use crate::prelude::lookup_prelude;
 use crate::render::emit_internal;
@@ -1002,11 +1002,9 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 let found_ty = ctx.deep_resolve(&body_ty);
                 let hint =
                     crate::unify::record_ctor_hint(&ctx.tycon_decls, &expected_ty, &found_ty);
-                let (expected, found) =
-                    crate::render::render_type_pair_with(&expected_ty, &found_ty, &ctx.tycon_decls);
                 ctx.errors.push(TypeError::TypeMismatch {
-                    expected,
-                    found,
+                    expected: TypeDesc::ty(expected_ty),
+                    found: TypeDesc::ty(found_ty),
                     span: *span,
                     hint,
                 });
@@ -1716,7 +1714,7 @@ fn infer_binary(
                         BinOp::Pow => "**",
                         _ => "?",
                     };
-                    let found = crate::render::render_type_with(&resolved, &ctx.tycon_decls);
+                    let found = TypeDesc::ty(resolved.clone());
                     ctx.errors.push(TypeError::ArithmeticOnNonNumeric {
                         op: op_sym,
                         found,
@@ -2719,7 +2717,7 @@ mod tests {
         assert!(matches!(ty, Type::Error));
         assert_eq!(ctx.errors.len(), 1, "got: {:?}", ctx.errors);
         assert_eq!(ctx.errors[0].code(), "T052");
-        let msg = ctx.errors[0].to_string();
+        let msg = ctx.errors[0].render(&[]);
         assert!(msg.contains("++"), "hint must point at `++`: {msg}");
     }
 

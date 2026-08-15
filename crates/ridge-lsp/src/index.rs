@@ -6170,7 +6170,10 @@ pub fn collect_signature_fixes(
                 ..
             } => {
                 if let Some(f) = find_fn(module, *span) {
-                    push_constraint_fix(&mut out, uri, li, f, decl, class, ty_var);
+                    // The quick-fix writes the constraint into the signature,
+                    // so it needs the variable as the reader sees it.
+                    let ty_var = ty_var.render(&typed.tycons);
+                    push_constraint_fix(&mut out, uri, li, f, decl, class, &ty_var);
                 }
             }
             _ => {}

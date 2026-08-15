@@ -44,6 +44,7 @@ fn leaf_body_recompile_is_far_cheaper_than_a_full_rebuild() {
         &state.resolved,
         &state.type_errors,
         &state.source_cache(),
+        &state.typed.tycons,
     );
     assert!(diags.is_empty(), "the corpus must check cleanly: {diags:?}");
 

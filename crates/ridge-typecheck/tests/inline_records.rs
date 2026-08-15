@@ -96,7 +96,7 @@ fn parseResult (raw: Text) -> { ok: Bool, value: Int } =
         result
             .errors
             .iter()
-            .map(|(_, e)| format!("{}: {}", e.code(), e))
+            .map(|(_, e)| format!("{}: {}", e.code(), e.render(&[])))
             .collect::<Vec<_>>()
     );
 }
@@ -211,7 +211,7 @@ fn check () -> Text =
         result
             .errors
             .iter()
-            .map(|(_, e)| format!("{}: {}", e.code(), e))
+            .map(|(_, e)| format!("{}: {}", e.code(), e.render(&[])))
             .collect::<Vec<_>>()
     );
     // One anon TyCon for the empty shape.

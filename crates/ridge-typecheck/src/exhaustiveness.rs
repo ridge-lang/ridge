@@ -24,7 +24,7 @@ use ridge_types::{
 };
 
 use crate::ctx::InferCtx;
-use crate::error::TypeError;
+use crate::error::{TypeDesc, TypeError};
 
 /// Maximum number of witnesses stored in a `T016` diagnostic.
 const MAX_WITNESSES: usize = 3;
@@ -1372,7 +1372,7 @@ pub fn check_exhaustiveness(
                 .collect();
 
             ctx.errors.push(TypeError::NonExhaustiveMatch {
-                scrutinee_ty: render_type(scrutinee_ty, arena),
+                scrutinee_ty: TypeDesc::Text(render_type(scrutinee_ty, arena)),
                 witnesses: witness_strings,
                 total_missing,
                 span,
@@ -1487,7 +1487,7 @@ pub fn check_param_irrefutable(
     }
 
     if let Some(witness) = param_pattern_witness(&full_arena, b, pat, &resolved) {
-        let ty = render_type(&resolved, &full_arena);
+        let ty = TypeDesc::ty(resolved.clone());
         ctx.errors
             .push(TypeError::RefutablePatternParam { witness, ty, span });
     }

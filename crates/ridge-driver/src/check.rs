@@ -76,6 +76,8 @@ pub fn collect_diagnostics(
     resolved: &ResolvedWorkspace,
     type_errors: &[(ModuleId, TypeError)],
     sources: &WorkspaceSourceCache,
+    // A type error names types, and naming one needs the constructor table.
+    tycons: &[ridge_typecheck::DiagTyCon],
 ) -> Vec<Diagnostic> {
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -107,7 +109,7 @@ pub fn collect_diagnostics(
         diagnostics.push(Diagnostic::from_resolve(e, sources.id_for_module(*mid)));
     }
     for (mid, e) in type_errors {
-        diagnostics.push(diag_from_typecheck(e, sources.id_for_module(*mid)));
+        diagnostics.push(diag_from_typecheck(e, sources.id_for_module(*mid), tycons));
     }
 
     diagnostics
@@ -159,6 +161,7 @@ pub fn check_workspace(options: CheckOptions) -> Result<CheckArtefacts, CheckErr
         &resolved,
         &typecheck_result.errors,
         &sources,
+        &typecheck_result.typed.tycons,
     );
 
     Ok(CheckArtefacts {
@@ -224,6 +227,7 @@ pub fn check_workspace_typed_with_history(
         &resolved,
         &typecheck_result.errors,
         &sources,
+        &typecheck_result.typed.tycons,
     );
 
     Ok(CheckTypedArtefacts {

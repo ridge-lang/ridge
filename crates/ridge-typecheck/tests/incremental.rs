@@ -108,14 +108,14 @@ fn incremental_typecheck_matches_full_after_body_edit() {
         .result
         .errors
         .iter()
-        .map(|e| format!("{}: {e}", e.code()))
+        .map(|e| format!("{}: {}", e.code(), e.render(&[])))
         .collect();
     inc_errs.sort();
     let mut full_errs: Vec<String> = full2
         .errors
         .iter()
         .filter(|(m, _)| *m == mid)
-        .map(|(_, e)| format!("{}: {e}", e.code()))
+        .map(|(_, e)| format!("{}: {}", e.code(), e.render(&[])))
         .collect();
     full_errs.sort();
     assert_eq!(

@@ -432,7 +432,7 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
     // Surface typecheck errors.
     for (mid, e) in &typecheck_result.errors {
         let sid = sources.id_for_module(*mid);
-        diagnostics.push(diag_from_typecheck(e, sid));
+        diagnostics.push(diag_from_typecheck(e, sid, &typecheck_result.typed.tycons));
     }
 
     // Surface lowering errors. Phase 5 runs between the two above, and until

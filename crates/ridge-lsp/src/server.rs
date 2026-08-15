@@ -888,6 +888,7 @@ fn compile_blocking(
         &state.resolved,
         &state.type_errors,
         &sources,
+        &state.typed.tycons,
     );
     let mut index = WorkspaceIndex::build(generation, &state.typed, &state.resolved, &sources);
     index.signature_fixes = collect_signature_fixes(

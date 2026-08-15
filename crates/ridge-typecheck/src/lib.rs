@@ -58,6 +58,8 @@ pub use error::{CapDeclKind, TypeError};
 pub use render::{emit_internal, emit_internal_strict, render_type_with};
 pub use ridge_resolve::Severity;
 pub use ridge_types::BuiltinTyCons;
+/// The type-constructor table a diagnostic renders against.
+pub use ridge_types::TyConDecl as DiagTyCon;
 pub use solve::{DictPlan, DictResolution};
 
 // Re-export witness types from ridge_types — the canonical definitions live there.
@@ -3140,7 +3142,7 @@ pub fn test_call () -> Text =
             "expected one T055 for `announce`; errors: {:?}",
             result.errors
         );
-        let rendered = t055[0].1.to_string();
+        let rendered = t055[0].1.render(&[]);
         assert!(
             rendered.contains("`announce`") && rendered.contains("`Describe a`"),
             "the report must name the declaration and the class it needs: {rendered}"

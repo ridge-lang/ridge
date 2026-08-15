@@ -338,7 +338,7 @@ fn compile_tier(
             tier,
             module: mod_name,
             path: mod_path,
-            source: first_err.to_string(),
+            source: first_err.render(&typecheck_result.typed.tycons),
         });
     }
 

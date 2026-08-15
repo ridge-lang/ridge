@@ -1706,6 +1706,9 @@ pub fn f (x: Int) -> Int =
 /// A tuple pattern of the wrong length is a length problem, not a type
 /// problem, so it keeps the variant that says so rather than being re-filed as
 /// a pattern type mismatch.
+///
+/// It is not an argument-count problem either, which is what `T003` said until
+/// `T057` was given to it.
 #[test]
 fn a_tuple_pattern_of_the_wrong_length_is_not_a_type_mismatch() {
     let src = "\
@@ -1722,8 +1725,19 @@ pub fn f (p: (Int, Int)) -> Int =
         "a length mismatch must not read as a type mismatch; got {errors:?}"
     );
     assert!(
-        errors.iter().any(|e| e.code() == "T003"),
+        errors.iter().any(|e| matches!(
+            e,
+            TypeError::TupleWidthMismatch {
+                expected: 2,
+                found: 3,
+                ..
+            }
+        )),
         "the length mismatch must still be reported; got {errors:?}"
+    );
+    assert!(
+        errors.iter().all(|e| e.code() != "T003"),
+        "nothing here is a call; got {errors:?}"
     );
 }
 

@@ -511,8 +511,13 @@ pub fn attach_span_pub(e: TypeError, span: Span) -> TypeError {
 /// Attach a `Span` to a `TypeError` that was produced without a proper span
 /// (typically from [`unify`]).
 ///
-/// Replaces the dummy span in `T001 TypeMismatch` and `T010 OccursCheck`
-/// variants; all other variants are returned unchanged.
+/// Replaces the dummy span in the variants `unify` builds without one; all
+/// other variants are returned unchanged.
+///
+/// A variant missing from this list is not a silent no-op — the dummy span
+/// survives and the error renders against the first byte of the file, so a
+/// field whose value has the wrong shape underlines the `type` declaration
+/// instead of the value. That is what `T003` and `T057` did here.
 fn attach_span(e: TypeError, span: Span) -> TypeError {
     match e {
         TypeError::TypeMismatch {
@@ -525,6 +530,26 @@ fn attach_span(e: TypeError, span: Span) -> TypeError {
             found,
             span,
             hint,
+        },
+        TypeError::ArityMismatch {
+            callee,
+            expected,
+            found,
+            hint,
+            ..
+        } => TypeError::ArityMismatch {
+            callee,
+            expected,
+            found,
+            span,
+            hint,
+        },
+        TypeError::TupleWidthMismatch {
+            expected, found, ..
+        } => TypeError::TupleWidthMismatch {
+            expected,
+            found,
+            span,
         },
         TypeError::OccursCheck { var, ty, .. } => TypeError::OccursCheck { var, ty, span },
         TypeError::InsertShapeFullEntity {

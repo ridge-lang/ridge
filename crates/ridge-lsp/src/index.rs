@@ -381,8 +381,8 @@ pub fn collect_uncurry_fixes(
     let mut out: Vec<SyntaxFix> = Vec::new();
     for (mid, err) in type_errors {
         // Only the curried-callback arity mismatch carries the curry hint and an
-        // expected arity of two or more; other T003s (tuples, wrong arg counts)
-        // are left alone.
+        // expected arity of two or more; a plain wrong argument count is left
+        // alone. Tuple widths no longer arrive here at all — they are `T057`.
         let TypeError::ArityMismatch {
             expected,
             hint: Some(_),

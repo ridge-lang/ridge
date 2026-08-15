@@ -501,6 +501,25 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                         caps: callee_caps.clone(),
                     };
                 }
+
+                // Over-application, and the one arity mismatch that is
+                // genuinely about the function being called. Reporting it here
+                // is what lets the message name it: `unify` compares two types
+                // and nothing else, so it has no callee in scope and printed an
+                // empty pair of backticks. It is also the only place the two
+                // can be told apart — an arity mismatch `unify` raises further
+                // down belongs to a callback argument, and naming the callee
+                // there would blame the wrong function.
+                if n_args > n_params {
+                    ctx.errors.push(TypeError::ArityMismatch {
+                        callee: callee_name(callee).unwrap_or_default(),
+                        expected: n_params,
+                        found: n_args,
+                        span: *span,
+                        hint: None,
+                    });
+                    return Type::Error;
+                }
             }
 
             // Unify argument by argument first, so a mismatch can say which
@@ -2197,6 +2216,13 @@ fn attach_span(err: TypeError, span: Span) -> TypeError {
             span,
             hint,
         },
+        TypeError::TupleWidthMismatch {
+            expected, found, ..
+        } => TypeError::TupleWidthMismatch {
+            expected,
+            found,
+            span,
+        },
         TypeError::OccursCheck { var, ty, .. } => TypeError::OccursCheck { var, ty, span },
         TypeError::InsertShapeFullEntity {
             entity,
@@ -3068,6 +3094,105 @@ mod tests {
         infer_expr(&mut ctx, &b, &call);
         let has_t003 = ctx.errors.iter().any(|e| e.code() == "T003");
         assert!(has_t003, "expected T003, errors: {:?}", ctx.errors);
+        ctx.env.pop_frame();
+    }
+
+    /// An over-applied call names the function it over-applied. The name lives
+    /// at the call site; unification, which used to raise this, compares two
+    /// types and has no callee to hand — so the message arrived with an empty
+    /// pair of backticks where the name belonged.
+    #[test]
+    fn an_over_applied_call_names_the_callee() {
+        let b = make_builtins();
+        let mut ctx = InferCtx::new();
+        ctx.env.push_frame();
+
+        // `add : Int -> Int -> Int`, called with three arguments.
+        let add_ty = Type::Fn {
+            params: vec![Type::Con(b.int, vec![]), Type::Con(b.int, vec![])],
+            ret: Box::new(Type::Con(b.int, vec![])),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        ctx.env.bind("add".to_string(), Scheme::mono(add_ty));
+
+        let int_lit = |n: &str| {
+            Expr::Literal(Literal::IntDec {
+                raw: n.to_string(),
+                span: dummy_span(),
+            })
+        };
+        let call = Expr::Call {
+            callee: Box::new(Expr::Ident(make_ident("add"))),
+            args: vec![int_lit("1"), int_lit("2"), int_lit("3")],
+            span: dummy_span(),
+        };
+
+        infer_expr(&mut ctx, &b, &call);
+        let reported = ctx.errors.iter().find_map(|e| match e {
+            TypeError::ArityMismatch {
+                callee,
+                expected,
+                found,
+                ..
+            } => Some((callee.clone(), *expected, *found)),
+            _ => None,
+        });
+        assert_eq!(
+            reported,
+            Some(("add".to_string(), 2, 3)),
+            "errors: {:?}",
+            ctx.errors
+        );
+        ctx.env.pop_frame();
+    }
+
+    /// A tuple that is the wrong width is not an arity mismatch: this call
+    /// passes exactly one argument. It gets `T057`, and naming `takesPair`
+    /// would have been worse than saying nothing — its arity is not what is
+    /// wrong.
+    #[test]
+    fn a_tuple_of_the_wrong_width_is_not_an_arity_mismatch() {
+        let b = make_builtins();
+        let mut ctx = InferCtx::new();
+        ctx.env.push_frame();
+
+        let int = || Type::Con(b.int, vec![]);
+        let takes_pair = Type::Fn {
+            params: vec![Type::Tuple(vec![int(), int()])],
+            ret: Box::new(int()),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        ctx.env
+            .bind("takesPair".to_string(), Scheme::mono(takes_pair));
+
+        let int_lit = |n: &str| {
+            Expr::Literal(Literal::IntDec {
+                raw: n.to_string(),
+                span: dummy_span(),
+            })
+        };
+        let call = Expr::Call {
+            callee: Box::new(Expr::Ident(make_ident("takesPair"))),
+            args: vec![Expr::Tuple {
+                elems: vec![int_lit("1"), int_lit("2"), int_lit("3")],
+                span: dummy_span(),
+            }],
+            span: dummy_span(),
+        };
+
+        infer_expr(&mut ctx, &b, &call);
+        let widths = ctx.errors.iter().find_map(|e| match e {
+            TypeError::TupleWidthMismatch {
+                expected, found, ..
+            } => Some((*expected, *found)),
+            _ => None,
+        });
+        assert_eq!(widths, Some((2, 3)), "errors: {:?}", ctx.errors);
+        assert!(
+            !ctx.errors.iter().any(|e| e.code() == "T003"),
+            "no arity mismatch belongs here: {:?}",
+            ctx.errors
+        );
         ctx.env.pop_frame();
     }
 

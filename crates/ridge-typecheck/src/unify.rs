@@ -392,12 +392,13 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         // ── Two tuples ────────────────────────────────────────────────────────
         (Type::Tuple(xs), Type::Tuple(ys)) => {
             if xs.len() != ys.len() {
-                return Err(TypeError::ArityMismatch {
-                    callee: String::new(),
+                // Not an arity mismatch: `takesPair (1, 2, 3)` passes exactly
+                // one argument, and what differs is the width of the tuple
+                // inside it. The caller re-spans this on the way out.
+                return Err(TypeError::TupleWidthMismatch {
                     expected: xs.len(),
                     found: ys.len(),
                     span: dummy_span(),
-                    hint: None,
                 });
             }
             let xs = xs.clone();
@@ -1464,7 +1465,21 @@ mod tests {
         let a = Type::Tuple(vec![int.clone()]);
         let b = Type::Tuple(vec![int.clone(), int]);
         let err = unify(&mut ctx, &a, &b).unwrap_err();
-        assert_eq!(err.code(), "T003");
+        // T057, not T003. Two tuples of different widths say nothing about how
+        // many arguments anyone passed, and this used to be filed as a call
+        // arity mismatch.
+        assert_eq!(err.code(), "T057");
+        assert!(
+            matches!(
+                err,
+                TypeError::TupleWidthMismatch {
+                    expected: 1,
+                    found: 2,
+                    ..
+                }
+            ),
+            "err: {err:?}"
+        );
     }
 
     // ─────────────────────────────────────────────────────────────────────────

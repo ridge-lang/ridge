@@ -32,6 +32,35 @@ use ridge_resolve::Severity;
 use crate::ctx::InferCtx;
 use crate::error::{CapDeclKind, TypeError};
 
+// ── Display helpers ───────────────────────────────────────────────────────────
+
+/// How a `T003` opens, given a callee that may not have a name.
+///
+/// An annotation mismatch and a lambda applied in place have nothing to print
+/// there, and an empty pair of backticks reads as a name the compiler lost
+/// rather than one that never existed. The rest of the sentence carries fine
+/// without a subject.
+fn arity_subject(callee: &str) -> String {
+    if callee.is_empty() {
+        "expects".to_owned()
+    } else {
+        format!("`{callee}` expects")
+    }
+}
+
+/// The `T057` sentence, agreeing in number on both counts.
+///
+/// Deliberately says nothing about arguments: `takesPair (1, 2, 3)` passes
+/// exactly one, and calling this an arity mismatch sent the reader looking for
+/// a fourth argument nobody wrote.
+fn tuple_width_sentence(expected: usize, found: usize) -> String {
+    format!(
+        "this tuple has {found} component{s1}, but {expected} {s2} expected",
+        s1 = if found == 1 { "" } else { "s" },
+        s2 = if expected == 1 { "is" } else { "are" },
+    )
+}
+
 // ── Display impl ──────────────────────────────────────────────────────────────
 
 impl fmt::Display for TypeError {
@@ -77,7 +106,8 @@ impl fmt::Display for TypeError {
             } => {
                 write!(
                     f,
-                    "T003: arity mismatch\n  `{callee}` expects {expected} argument{s1}, got {found}",
+                    "T003: arity mismatch\n  {subject} {expected} argument{s1}, got {found}",
+                    subject = arity_subject(callee),
                     s1 = if *expected == 1 { "" } else { "s" },
                 )?;
                 if let Some(h) = hint {
@@ -424,6 +454,17 @@ impl fmt::Display for TypeError {
                 write!(f, "T056: unknown type `{name}`\n  {hint}")
             }
 
+            // ── T057 ──────────────────────────────────────────────────────────
+            Self::TupleWidthMismatch {
+                expected, found, ..
+            } => {
+                write!(
+                    f,
+                    "T057: tuple width mismatch\n  {}",
+                    tuple_width_sentence(*expected, *found)
+                )
+            }
+
             // ── T030 ──────────────────────────────────────────────────────────
             Self::AmbiguousConstraint { class, ty_var, .. } => {
                 write!(
@@ -760,6 +801,7 @@ impl HasErrorCode for TypeError {
             | Self::IncompleteRecordPattern { span, .. }
             | Self::NoInstance { span, .. }
             | Self::UnknownTypeName { span, .. }
+            | Self::TupleWidthMismatch { span, .. }
             | Self::AmbiguousConstraint { span, .. }
             | Self::OrphanInstance { span, .. }
             | Self::OverlappingInstance {
@@ -1532,6 +1574,71 @@ mod tests {
         assert!(s.contains("Text"), "should contain found type: {s}");
         assert!(s.contains("expected"), "should contain 'expected': {s}");
         assert!(s.contains("got"), "should contain 'got': {s}");
+    }
+
+    // ── T003 Display — the callee, and what to print without one ──────────────
+
+    #[test]
+    fn display_t003_names_the_callee() {
+        let err = TypeError::ArityMismatch {
+            callee: "add".into(),
+            expected: 2,
+            found: 3,
+            span: sp(),
+            hint: None,
+        };
+        let s = err.to_string();
+        assert!(s.contains("`add` expects 2 arguments, got 3"), "{s}");
+    }
+
+    /// An annotation mismatch and a lambda applied in place have no name to
+    /// print. The message used to open with an empty pair of backticks, which
+    /// reads as a name the compiler lost rather than one that never existed.
+    #[test]
+    fn display_t003_without_a_callee_drops_the_backticks() {
+        let err = TypeError::ArityMismatch {
+            callee: String::new(),
+            expected: 1,
+            found: 2,
+            span: sp(),
+            hint: None,
+        };
+        let s = err.to_string();
+        assert!(s.contains("expects 1 argument, got 2"), "{s}");
+        assert!(!s.contains("``"), "empty backticks must not survive: {s}");
+    }
+
+    // ── T057 Display ──────────────────────────────────────────────────────────
+
+    /// The wording deliberately does not mention arguments. `takesPair (1, 2, 3)`
+    /// passes one argument, and calling it an arity mismatch sent the reader
+    /// looking for a fourth argument nobody wrote.
+    #[test]
+    fn display_t057_speaks_about_components_not_arguments() {
+        let err = TypeError::TupleWidthMismatch {
+            expected: 2,
+            found: 3,
+            span: sp(),
+        };
+        let s = err.to_string();
+        assert!(s.contains("T057"), "{s}");
+        assert!(
+            s.contains("this tuple has 3 components, but 2 are expected"),
+            "{s}"
+        );
+        assert!(!s.contains("argument"), "not an argument count: {s}");
+    }
+
+    /// Both counts can be one, and the sentence has to survive it.
+    #[test]
+    fn display_t057_agrees_in_number() {
+        let one = TypeError::TupleWidthMismatch {
+            expected: 1,
+            found: 1,
+            span: sp(),
+        }
+        .to_string();
+        assert!(one.contains("has 1 component, but 1 is expected"), "{one}");
     }
 
     // ── T014 Display — spec §5.3 exact text shape ─────────────────────────────

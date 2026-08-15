@@ -1586,6 +1586,12 @@ pub const REGISTRY: &[CodeEntry] = &[
         summary: "A type annotation names a type that does not exist.",
     },
     CodeEntry {
+        code: "T057",
+        variants: &["TupleWidthMismatch"],
+        owner: "ridge-typecheck",
+        summary: "A tuple meets a position expecting a different number of components.",
+    },
+    CodeEntry {
         code: "T101",
         variants: &["FfiArityMismatch"],
         owner: "ridge-stdlib",

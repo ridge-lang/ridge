@@ -403,24 +403,12 @@ impl TypeError {
                 )
             }
 
-            // ── T021a ─────────────────────────────────────────────────────────
+            // ── T021 ──────────────────────────────────────────────────────────
             Self::AskOnNonActor { found_ty, .. } => {
                 let found_ty = found_ty.render_in(tycons, namer);
                 write!(
                     f,
                     "ask (`?>`) on non-actor\n  found type `{found_ty}`, expected an actor Handle"
-                )
-            }
-
-            // ── T021b ─────────────────────────────────────────────────────────
-            Self::PropagateOutsideResultOrOption {
-                found_ty, expected, ..
-            } => {
-                let found_ty = found_ty.render_in(tycons, namer);
-                let expected = expected.render_in(tycons, namer);
-                write!(
-                    f,
-                    "`?` used outside Result/Option context\n  found `{found_ty}`, enclosing function returns `{expected}`"
                 )
             }
 
@@ -833,6 +821,18 @@ impl TypeError {
                 write!(
                     f,
                     "missing constraint\n  `{decl}` promises to work for every `{ty_var}`, but its body needs `{class} {ty_var}`\n  fix: {fix_hint}"
+                )
+            }
+
+            // ── T058 ──────────────────────────────────────────────────────────
+            Self::PropagateOutsideResultOrOption {
+                found_ty, expected, ..
+            } => {
+                let found_ty = found_ty.render_in(tycons, namer);
+                let expected = expected.render_in(tycons, namer);
+                write!(
+                    f,
+                    "`?` used outside Result/Option context\n  found `{found_ty}`, enclosing function returns `{expected}`"
                 )
             }
 
@@ -2155,11 +2155,6 @@ mod tests {
                 found_ty: td(),
                 span: sp(),
             },
-            TypeError::PropagateOutsideResultOrOption {
-                found_ty: td(),
-                expected: td(),
-                span: sp(),
-            },
             TypeError::DiscardedResult {
                 ty: td(),
                 span: sp(),
@@ -2373,6 +2368,11 @@ mod tests {
                 found: 3,
                 span: sp(),
             },
+            TypeError::PropagateOutsideResultOrOption {
+                found_ty: td(),
+                expected: td(),
+                span: sp(),
+            },
             TypeError::InternalTypeError {
                 detail: s(),
                 span: sp(),
@@ -2410,8 +2410,43 @@ mod tests {
         let mut seen: Vec<&'static str> = one_of_each().iter().map(TypeError::code).collect();
         seen.sort_unstable();
         seen.dedup();
-        // Fifty-seven variants, fifty-six codes: `T021` is claimed by two.
-        assert_eq!(seen.len(), 56, "codes reached: {seen:?}");
+        assert_eq!(seen.len(), 57, "codes reached: {seen:?}");
+    }
+
+    /// One code, one variant.
+    ///
+    /// A code is the handle its reader has on a failure — the search box, the
+    /// changelog entry, `ridge explain`. Two failures behind one number make
+    /// every one of those ambiguous, and the reader has no way to tell which
+    /// half was meant. `T021` was shared by `AskOnNonActor` and
+    /// `PropagateOutsideResultOrOption` for four releases; the second now
+    /// answers `T058`.
+    ///
+    /// Stated against the list rather than as a count, so it keeps holding as
+    /// variants are added. If a genuine one-failure-two-paths case ever turns
+    /// up here — the parser has one, `P021` — this is the assertion to argue
+    /// with, deliberately, rather than to discover by accident.
+    #[test]
+    fn no_two_variants_answer_with_the_same_code() {
+        use std::collections::HashMap;
+        use std::mem::discriminant;
+
+        let all = one_of_each();
+        let mut variants_per_code: HashMap<&'static str, Vec<_>> = HashMap::new();
+        for e in &all {
+            let claimants = variants_per_code.entry(e.code()).or_default();
+            let d = discriminant(e);
+            if !claimants.contains(&d) {
+                claimants.push(d);
+            }
+        }
+
+        let shared: Vec<&str> = variants_per_code
+            .iter()
+            .filter(|(_, claimants)| claimants.len() > 1)
+            .map(|(code, _)| *code)
+            .collect();
+        assert!(shared.is_empty(), "claimed by two variants: {shared:?}");
     }
 
     // ── The code is written in one place ────────────────────────────────────────────

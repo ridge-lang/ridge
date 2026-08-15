@@ -1004,6 +1004,10 @@ A type annotation names a type that does not exist.
 
 A tuple meets a position expecting a different number of components.
 
+### T058
+
+`?` is applied where the enclosing return type is neither `Result` nor `Option`.
+
 ### T101
 
 The `@ffi` arity doesn't match the Ridge parameter count.

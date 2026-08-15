@@ -1,0 +1,4 @@
+-- expect: T058
+-- T058 PropagateOutsideResultOrOption: using ? on a value outside a
+-- Result/Option context. `x?` where x : Int fires T058.
+fn bad (x: Int) -> Int = x?

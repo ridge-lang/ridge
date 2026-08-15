@@ -375,23 +375,12 @@ pub enum TypeError {
         span: Span,
     },
 
-    // ── T021a ────────────────────────────────────────────────────────────────
+    // ── T021 ─────────────────────────────────────────────────────────────────
     /// The `?>` ask operator is applied to a non-`Handle` value.
     AskOnNonActor {
         /// The actual type found on the LHS of `?>`.
         found_ty: TypeDesc,
         /// Source span of the LHS expression.
-        span: Span,
-    },
-
-    // ── T021b ────────────────────────────────────────────────────────────────
-    /// The `?` propagate operator is used outside a `Result`/`Option` context.
-    PropagateOutsideResultOrOption {
-        /// The actual type of the expression `?` is applied to.
-        found_ty: TypeDesc,
-        /// The type expected by the enclosing context.
-        expected: TypeDesc,
-        /// Source span of the `?` operator.
         span: Span,
     },
 
@@ -968,6 +957,22 @@ pub enum TypeError {
         span: Span,
     },
 
+    // ── T058 ─────────────────────────────────────────────────────────────────
+    /// The `?` propagate operator is used outside a `Result`/`Option` context.
+    ///
+    /// Held `T021` alongside `AskOnNonActor` until 0.3.0. They are not one
+    /// failure reached two ways: one is about actors and the other about
+    /// propagation, they share no fix, and a reader who searched the code they
+    /// were given landed on the other one's explanation.
+    PropagateOutsideResultOrOption {
+        /// The actual type of the expression `?` is applied to.
+        found_ty: TypeDesc,
+        /// The type expected by the enclosing context.
+        expected: TypeDesc,
+        /// Source span of the `?` operator.
+        span: Span,
+    },
+
     // ── T999 ─────────────────────────────────────────────────────────────────
     /// Internal type-checker invariant violation — should never reach users.
     ///
@@ -985,7 +990,7 @@ pub enum TypeError {
 impl TypeError {
     /// Returns the stable `T###` error code for this variant.
     ///
-    /// The codes are allocated in `T001..T057` and `T999` is the catch-all
+    /// The codes are allocated in `T001..T058` and `T999` is the catch-all
     /// internal error. No overlap with `R###`/`M###`.
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -1008,7 +1013,7 @@ impl TypeError {
             Self::CallerCapabilityInsufficient { .. } => "T018",
             Self::ActorCapabilityLeak { .. } => "T019",
             Self::SendOnNonActor { .. } => "T020",
-            Self::AskOnNonActor { .. } | Self::PropagateOutsideResultOrOption { .. } => "T021",
+            Self::AskOnNonActor { .. } => "T021",
             Self::DiscardedResult { .. } => "T022",
             Self::UnsolvedTypeVariable { .. } => "T023",
             Self::RowVariableLeak { .. } => "T024",
@@ -1045,6 +1050,7 @@ impl TypeError {
             Self::MissingConstraint { .. } => "T055",
             Self::UnknownTypeName { .. } => "T056",
             Self::TupleWidthMismatch { .. } => "T057",
+            Self::PropagateOutsideResultOrOption { .. } => "T058",
             Self::InternalTypeError { .. } => "T999",
         }
     }
@@ -1215,14 +1221,14 @@ mod tests {
         }
     }
 
-    fn t021a() -> TypeError {
+    fn t021() -> TypeError {
         TypeError::AskOnNonActor {
             found_ty: "Int".into(),
             span: dummy_span(),
         }
     }
 
-    fn t021b() -> TypeError {
+    fn t058() -> TypeError {
         TypeError::PropagateOutsideResultOrOption {
             found_ty: "Int".into(),
             expected: "Result _ _".into(),
@@ -1387,13 +1393,14 @@ mod tests {
     }
 
     #[test]
-    fn code_t021_ask() {
-        assert_eq!(t021a().code(), "T021");
+    fn code_t021() {
+        assert_eq!(t021().code(), "T021");
     }
 
+    /// Propagation left `T021` in 0.3.0; it must not drift back.
     #[test]
-    fn code_t021_propagate() {
-        assert_eq!(t021b().code(), "T021");
+    fn code_t058() {
+        assert_eq!(t058().code(), "T058");
     }
 
     #[test]

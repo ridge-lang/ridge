@@ -213,9 +213,7 @@ pub(crate) fn lower_child_spec(
         return Err(CodegenError::IrShapeMalformed {
             variant: "IrExpr::ChildSpec",
             span,
-            detail: format!(
-                "ChildSpec actor field is not SymbolRef::ActorType — got {actor:?} (Phase 5 invariant violated)"
-            ),
+            detail: format!("ChildSpec actor field is not SymbolRef::ActorType — got {actor:?}"),
         });
     };
 
@@ -344,9 +342,7 @@ fn actor_beam_module_name(
         return Err(CodegenError::IrShapeMalformed {
             variant,
             span,
-            detail: format!(
-                "actor field is not SymbolRef::ActorType — got {actor:?} (Phase 5 invariant violated)"
-            ),
+            detail: format!("actor field is not SymbolRef::ActorType — got {actor:?}"),
         });
     };
 
@@ -373,9 +369,7 @@ fn build_message_tuple(
         return Err(CodegenError::IrShapeMalformed {
             variant: "IrExpr::Send/Ask",
             span,
-            detail: format!(
-                "Send message field is not SymbolRef::Handler — got {message:?} (Phase 5 invariant violated)"
-            ),
+            detail: format!("Send message field is not SymbolRef::Handler — got {message:?}"),
         });
     };
 

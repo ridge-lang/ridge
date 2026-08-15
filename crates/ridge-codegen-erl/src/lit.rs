@@ -37,7 +37,7 @@ pub(crate) fn lower_lit(lit: &IrLit, span: Span) -> Result<CErlLit, CodegenError
                     span,
                     detail: format!(
                         "non-finite float value ({f}) is not representable as a Core Erlang \
-                         literal; Phase 4 should have rejected it (OQ-E001)"
+                         literal, and lowering should have rejected it"
                     ),
                 });
             }

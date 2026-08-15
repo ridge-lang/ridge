@@ -364,7 +364,7 @@ fn lower_actor_block_w(
         [] => Err(CodegenError::IrShapeMalformed {
             variant: "IrExpr::Block",
             span,
-            detail: "actor body Block with zero stmts — Phase 5 invariant violated".into(),
+            detail: "actor body Block with no statements".into(),
         }),
         // Single statement: it IS the leaf — apply leaf_wrap.
         [single] => lower_expr_in_actor_context_w(single, scope, state_idx, leaf_wrap),

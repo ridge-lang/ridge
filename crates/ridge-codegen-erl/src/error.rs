@@ -12,6 +12,7 @@
 //!
 
 use ridge_ast::Span;
+use ridge_diagnostics::REPORT_URL;
 use ridge_ir::IrNodeId;
 use ridge_types::Type;
 use std::path::PathBuf;
@@ -214,8 +215,8 @@ impl CodegenError {
     /// one attributed to the wrong owner — may still be renumbered.
     /// `E001`–`E099` are codegen errors; `E101`–`E199` are `erlc` toolchain errors.
     ///
-    /// Approved as a frozen-crate additive exception per FROZEN-02 (2026-05-01).
-    /// One `*_code_is_stable` test per variant is required per the FROZEN-02 `DoD`.
+    /// Every variant carries a `*_code_is_stable` test, so the number a variant
+    /// answers with cannot drift without a test saying so.
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
@@ -246,6 +247,44 @@ impl CodegenError {
             _ => None,
         }
     }
+
+    /// Whether this reports a broken invariant rather than a problem with the
+    /// program being compiled.
+    ///
+    /// These fire only when codegen is already wrong, so the reader has nothing
+    /// to fix and no way to act on what the check found. The three below are
+    /// the ones their own definitions call defensive; every other variant
+    /// describes something real about the input or the toolchain, and keeps
+    /// speaking plainly about it.
+    #[must_use]
+    pub const fn is_internal(&self) -> bool {
+        matches!(
+            self,
+            Self::IrShapeMalformed { .. }
+                | Self::TypeErasureUnsupportedErrorSite { .. }
+                | Self::CapabilityLeakIntoCoreErl { .. }
+        )
+    }
+}
+
+/// The shape every internal-invariant message takes.
+///
+/// The reader is told whose fault it is, where to take it, and what to bring —
+/// and `what_failed` stops being an explanation they cannot use and becomes the
+/// line they paste into the report. Writing it once means a new invariant check
+/// cannot arrive with only half of it.
+fn internal_failure(
+    f: &mut std::fmt::Formatter<'_>,
+    code: &str,
+    what_failed: &str,
+) -> std::fmt::Result {
+    write!(
+        f,
+        "{code}: the compiler failed an internal check while generating code\n  \
+         This is a bug in Ridge, not in your program. Please report it at \
+         {REPORT_URL}, with the code you were compiling.\n  \
+         For the report: {what_failed}"
+    )
 }
 
 /// The message opens with `{code}: `, the prefix `Diagnostic::message_parts`
@@ -258,7 +297,9 @@ impl std::fmt::Display for CodegenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let c = self.code();
         match self {
-            Self::IrShapeMalformed { detail, .. } => write!(f, "{c}: malformed IR: {detail}"),
+            Self::IrShapeMalformed {
+                variant, detail, ..
+            } => internal_failure(f, c, &format!("malformed IR at `{variant}` — {detail}")),
             Self::StdlibBridgeMissing { module, name, .. } => {
                 write!(f, "{c}: no stdlib bridge for `{module}.{name}`")
             }
@@ -283,12 +324,15 @@ impl std::fmt::Display for CodegenError {
                 f,
                 "{c}: two Ridge modules mangle to the same BEAM name `{mangled}`"
             ),
-            Self::TypeErasureUnsupportedErrorSite { ir_variant, .. } => {
-                write!(f, "{c}: unexpected Type::Error at IR site `{ir_variant}`")
-            }
-            Self::CapabilityLeakIntoCoreErl { leaked_token, .. } => write!(
+            Self::TypeErasureUnsupportedErrorSite { ir_variant, .. } => internal_failure(
                 f,
-                "{c}: capability token `{leaked_token}` leaked into Core Erlang"
+                c,
+                &format!("unerased error type at IR site `{ir_variant}`"),
+            ),
+            Self::CapabilityLeakIntoCoreErl { leaked_token, .. } => internal_failure(
+                f,
+                c,
+                &format!("capability token `{leaked_token}` survived erasure into generated code"),
             ),
             Self::ErlcVersionTooOld { found, minimum } => write!(
                 f,
@@ -315,7 +359,7 @@ mod tests {
         Span::point(0)
     }
 
-    // ── code() stability tests (FROZEN-02, one per variant) ──────────────────
+    // ── code() stability tests, one per variant ──────────────────────────────
 
     #[test]
     fn ir_shape_malformed_code_is_stable() {
@@ -500,6 +544,67 @@ mod tests {
             let text = e.to_string();
             let prose = text.trim_start_matches(&format!("{}: ", e.code()));
             assert!(prose.len() > 10, "`{}` has no message: {text}", e.code());
+        }
+    }
+
+    // ── Internal-failure voice ────────────────────────────────────────────────
+
+    /// A reader who trips one of these has done nothing wrong and cannot fix
+    /// anything, so the message has to hand them somewhere to go. Asserting it
+    /// here rather than trusting each arm is the point: the leaks that made
+    /// this necessary were individually written strings, and a new invariant
+    /// check would have arrived the same way.
+    #[test]
+    fn every_internal_failure_tells_the_reader_where_to_take_it() {
+        for e in one_of_each().into_iter().filter(CodegenError::is_internal) {
+            let text = e.to_string();
+            assert!(text.contains(REPORT_URL), "`{}`: {text}", e.code());
+            assert!(
+                text.contains("not in your program"),
+                "`{}` must say whose fault it is: {text}",
+                e.code()
+            );
+            assert!(
+                text.contains("For the report:"),
+                "`{}` must mark what to paste: {text}",
+                e.code()
+            );
+        }
+    }
+
+    /// The complement, and the half that keeps the frame honest. A message
+    /// about a missing `erlc` or an unwritable directory describes something
+    /// the reader can act on; calling that a compiler bug would send them to
+    /// file an issue instead of fixing their setup.
+    #[test]
+    fn only_internal_failures_claim_to_be_compiler_bugs() {
+        for e in one_of_each().into_iter().filter(|e| !e.is_internal()) {
+            let text = e.to_string();
+            assert!(
+                !text.contains(REPORT_URL),
+                "`{}` is actionable and must not ask for a bug report: {text}",
+                e.code()
+            );
+        }
+    }
+
+    /// The headline is the line a reader takes in first, and on this channel it
+    /// used to be the broken invariant itself — `Phase 5 invariant violated`,
+    /// addressed to whoever wrote the check. The internal vocabulary is worth
+    /// keeping, but below, as data for the report.
+    #[test]
+    fn no_headline_speaks_the_compilers_own_language() {
+        const INTERNAL: [&str; 4] = ["Phase ", "invariant violated", "OQ-", "IrExpr::"];
+        for e in one_of_each() {
+            let text = e.to_string();
+            let headline = text.lines().next().unwrap_or_default();
+            for marker in INTERNAL {
+                assert!(
+                    !headline.contains(marker),
+                    "`{}` headline carries `{marker}`: {headline}",
+                    e.code()
+                );
+            }
         }
     }
 

@@ -373,7 +373,7 @@ fn emit_handle_call(
         name: CErlAtom("handle_call".into()),
         arity: 3,
         anns: vec![CErlAnn(
-            "%% gen_server:handle_call/3 — ask handlers, messages migrated lazily at receive (§4.30, OQ-E005)".into(),
+            "%% gen_server:handle_call/3 — ask handlers, messages migrated lazily at receive (§4.30)".into(),
         )],
         body,
     })
@@ -427,7 +427,7 @@ fn emit_handle_cast(
         name: CErlAtom("handle_cast".into()),
         arity: 2,
         anns: vec![CErlAnn(
-            "%% gen_server:handle_cast/2 — send handlers, messages migrated lazily at receive (§4.30, OQ-E005)".into(),
+            "%% gen_server:handle_cast/2 — send handlers, messages migrated lazily at receive (§4.30)".into(),
         )],
         body,
     })

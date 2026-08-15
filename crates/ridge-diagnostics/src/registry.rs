@@ -60,6 +60,15 @@ pub struct CodeEntry {
 /// the code in lower case — what the page's headings slugify to.
 pub const INDEX_URL: &str = "https://github.com/ridge-lang/ridge/blob/main/docs/diagnostics.md";
 
+/// Where a person sends a compiler bug.
+///
+/// Some diagnostics report that the compiler failed its own internal check.
+/// The reader of one of those has done nothing wrong and has nothing to fix,
+/// so the only useful thing a message can give them is somewhere to go. A
+/// message that describes the broken invariant and stops leaves them holding a
+/// failure with no next step.
+pub const REPORT_URL: &str = "https://github.com/ridge-lang/ridge/issues/new/choose";
+
 /// Look up one code.
 ///
 /// Case-sensitive, and the codes are upper-case: a caller that wants to accept

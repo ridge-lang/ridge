@@ -322,9 +322,18 @@ fn is_construction(b: &[u8], start: usize, end: usize) -> bool {
 }
 
 /// Whether `i` sits inside the argument list of a `matches!` invocation.
+///
+/// Braces are counted, not treated as a wall. A `matches!` whose arms are
+/// struct variants — `matches!(self, A { .. } | B { .. } | C { .. })` — puts a
+/// balanced `{ .. }` between the opening paren and every arm after the first,
+/// and stopping at one made each of those read as a construction. What that
+/// costs is specific: the scan is only ever consulted for what it calls dead,
+/// so a variant nothing builds looked alive, and the code it answers with
+/// silently left the unemittable list.
 fn in_matches_macro(b: &[u8], i: usize) -> bool {
     let from = i.saturating_sub(400);
     let mut depth = 0i32;
+    let mut braces = 0i32;
     let mut j = i;
     while j > from {
         j -= 1;
@@ -332,7 +341,11 @@ fn in_matches_macro(b: &[u8], i: usize) -> bool {
             b')' => depth += 1,
             b'(' if depth == 0 => return b[..j].ends_with(b"matches!"),
             b'(' => depth -= 1,
-            b';' | b'{' | b'}' if depth == 0 => return false,
+            b'}' => braces += 1,
+            // An unmatched `{` really is where the statement began.
+            b'{' if braces == 0 => return false,
+            b'{' => braces -= 1,
+            b';' if depth == 0 && braces == 0 => return false,
             _ => {}
         }
     }

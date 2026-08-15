@@ -66,6 +66,12 @@ fn tuple_width_sentence(expected: usize, found: usize) -> String {
 impl fmt::Display for TypeError {
     #[expect(clippy::too_many_lines, reason = "one match arm per T### error code")]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The code is written here and nowhere else. Every arm below used to
+        // repeat it inside its own format string, in a different file from the
+        // `code()` that decides it, with nothing comparing the two. A prefix
+        // that drifted would survive the strip in `Diagnostic::message_parts`
+        // and reach the reader as two disagreeing codes on one line.
+        write!(f, "{}: ", self.code())?;
         match self {
             // ── T001 ──────────────────────────────────────────────────────────
             Self::TypeMismatch {
@@ -74,7 +80,7 @@ impl fmt::Display for TypeError {
                 hint,
                 ..
             } => {
-                write!(f, "T001: type mismatch\n  expected {expected}, got {found}")?;
+                write!(f, "type mismatch\n  expected {expected}, got {found}")?;
                 if let Some(h) = hint {
                     write!(f, "\n  hint: {h}")?;
                 }
@@ -91,7 +97,7 @@ impl fmt::Display for TypeError {
             } => {
                 write!(
                     f,
-                    "T002: type mismatch in call to `{callee}`\n  argument {n}: expected {expected}, got {found}",
+                    "type mismatch in call to `{callee}`\n  argument {n}: expected {expected}, got {found}",
                     n = arg_index + 1,
                 )
             }
@@ -106,7 +112,7 @@ impl fmt::Display for TypeError {
             } => {
                 write!(
                     f,
-                    "T003: arity mismatch\n  {subject} {expected} argument{s1}, got {found}",
+                    "arity mismatch\n  {subject} {expected} argument{s1}, got {found}",
                     subject = arity_subject(callee),
                     s1 = if *expected == 1 { "" } else { "s" },
                 )?;
@@ -120,7 +126,7 @@ impl fmt::Display for TypeError {
             Self::MissingField { record, field, .. } => {
                 write!(
                     f,
-                    "T004: missing field in record construction\n  record `{record}` requires field `{field}`"
+                    "missing field in record construction\n  record `{record}` requires field `{field}`"
                 )
             }
 
@@ -131,7 +137,7 @@ impl fmt::Display for TypeError {
                 suggestions,
                 ..
             } => {
-                write!(f, "T005: unknown field `{field}` on record `{record}`")?;
+                write!(f, "unknown field `{field}` on record `{record}`")?;
                 if let Some(s) = suggestions.first() {
                     write!(f, "\n  did you mean: {s}?")?;
                 }
@@ -140,7 +146,7 @@ impl fmt::Display for TypeError {
 
             // ── T006 ──────────────────────────────────────────────────────────
             Self::WithOnNonRecord { ty, .. } => {
-                write!(f, "T006: `with` on non-record\n  found type `{ty}`")
+                write!(f, "`with` on non-record\n  found type `{ty}`")
             }
 
             // ── T007 ──────────────────────────────────────────────────────────
@@ -149,7 +155,7 @@ impl fmt::Display for TypeError {
             } => {
                 write!(
                     f,
-                    "T007: pattern type mismatch\n  expected `{expected}`, but pattern implies `{pattern}`"
+                    "pattern type mismatch\n  expected `{expected}`, but pattern implies `{pattern}`"
                 )
             }
 
@@ -162,7 +168,7 @@ impl fmt::Display for TypeError {
             } => {
                 write!(
                     f,
-                    "T009: wrong constructor arity\n  `{ctor}` expects {expected} argument{s1}, got {found}",
+                    "wrong constructor arity\n  `{ctor}` expects {expected} argument{s1}, got {found}",
                     s1 = if *expected == 1 { "" } else { "s" },
                 )
             }
@@ -171,24 +177,20 @@ impl fmt::Display for TypeError {
             Self::OccursCheck { var, ty, .. } => {
                 write!(
                     f,
-                    "T010: infinite type\n  {var} would have to contain itself: `{ty}`"
+                    "infinite type\n  {var} would have to contain itself: `{ty}`"
                 )
             }
 
             // ── T011 ──────────────────────────────────────────────────────────
             Self::RecursiveTypeAlias { cycle, .. } => {
-                write!(
-                    f,
-                    "T011: recursive type alias\n  cycle: {}",
-                    cycle.join(" -> ")
-                )
+                write!(f, "recursive type alias\n  cycle: {}", cycle.join(" -> "))
             }
 
             // ── T013 ──────────────────────────────────────────────────────────
             Self::PolymorphicRecursion { decl, fix_hint, .. } => {
                 write!(
                     f,
-                    "T013: `{decl}` is used at a second type inside its own definition\n  that is checked only against a signature that annotates every parameter and the return type\n  fix: {fix_hint}"
+                    "`{decl}` is used at a second type inside its own definition\n  that is checked only against a signature that annotates every parameter and the return type\n  fix: {fix_hint}"
                 )
             }
 
@@ -221,30 +223,30 @@ impl fmt::Display for TypeError {
                 match kind {
                     CapDeclKind::Fn => write!(
                         f,
-                        "T014: capability not declared\n  function `{decl}` declared as `fn {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `fn {inferred_src} {decl}`\n    - Remove the call requiring `{missing}`"
+                        "capability not declared\n  function `{decl}` declared as `fn {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `fn {inferred_src} {decl}`\n    - Remove the call requiring `{missing}`"
                     ),
                     CapDeclKind::Handler => write!(
                         f,
-                        "T014: capability not declared\n  handler `{decl}` declared as `on {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `on {inferred_src} {decl}`\n    - Remove the call requiring `{missing}`"
+                        "capability not declared\n  handler `{decl}` declared as `on {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `on {inferred_src} {decl}`\n    - Remove the call requiring `{missing}`"
                     ),
                     CapDeclKind::Init => write!(
                         f,
-                        "T014: capability not declared\n  the init block declared as `init {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `init {inferred_src}`\n    - Remove the call requiring `{missing}`"
+                        "capability not declared\n  the init block declared as `init {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `init {inferred_src}`\n    - Remove the call requiring `{missing}`"
                     ),
                     CapDeclKind::Terminate => write!(
                         f,
-                        "T014: capability not declared\n  the terminate callback declared as `terminate {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `terminate {inferred_src}`\n    - Remove the call requiring `{missing}`"
+                        "capability not declared\n  the terminate callback declared as `terminate {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `terminate {inferred_src}`\n    - Remove the call requiring `{missing}`"
                     ),
                     CapDeclKind::OnDown => write!(
                         f,
-                        "T014: capability not declared\n  the onDown handler declared as `onDown {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `onDown {inferred_src}`\n    - Remove the call requiring `{missing}`"
+                        "capability not declared\n  the onDown handler declared as `onDown {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `onDown {inferred_src}`\n    - Remove the call requiring `{missing}`"
                     ),
                     // Rule 4 compares the inner fn's own annotation against the
                     // *enclosing* effective set, so the resolution lives on the
                     // enclosing declaration, not on the inner fn.
                     CapDeclKind::InnerFn => write!(
                         f,
-                        "T014: capability not declared\n  inner function `{decl}` declares `{inferred}` but the enclosing scope provides only `{declared}`\n  Options:\n    - Add `{missing}` to the enclosing signature\n    - Remove `{missing}` from `{decl}`"
+                        "capability not declared\n  inner function `{decl}` declares `{inferred}` but the enclosing scope provides only `{declared}`\n  Options:\n    - Add `{missing}` to the enclosing signature\n    - Remove `{missing}` from `{decl}`"
                     ),
                 }
             }
@@ -256,7 +258,7 @@ impl fmt::Display for TypeError {
                 suggestions,
                 ..
             } => {
-                write!(f, "T015: unknown handler `{handler}` on actor `{actor}`")?;
+                write!(f, "unknown handler `{handler}` on actor `{actor}`")?;
                 if let Some(s) = suggestions.first() {
                     write!(f, "\n  did you mean: {s}?")?;
                 }
@@ -281,7 +283,7 @@ impl fmt::Display for TypeError {
             } => {
                 write!(
                     f,
-                    "T016: non-exhaustive match on `{scrutinee_ty}`\n  Missing cases:"
+                    "non-exhaustive match on `{scrutinee_ty}`\n  Missing cases:"
                 )?;
                 for w in witnesses {
                     write!(f, "\n    {w}")?;
@@ -297,7 +299,7 @@ impl fmt::Display for TypeError {
             Self::RedundantPattern { arm_index, .. } => {
                 write!(
                     f,
-                    "T017: redundant pattern\n  arm {} is unreachable — an earlier arm already covers this case",
+                    "redundant pattern\n  arm {} is unreachable — an earlier arm already covers this case",
                     arm_index + 1,
                 )
             }
@@ -311,7 +313,7 @@ impl fmt::Display for TypeError {
             } => {
                 write!(
                     f,
-                    "T018: caller capability insufficient\n  `{caller}` calls `{callee}` which requires `{missing}`\n  Options:\n    - Add `{missing}` to the signature of `{caller}`\n    - Use a pure alternative to `{callee}`"
+                    "caller capability insufficient\n  `{caller}` calls `{callee}` which requires `{missing}`\n  Options:\n    - Add `{missing}` to the signature of `{caller}`\n    - Use a pure alternative to `{callee}`"
                 )
             }
 
@@ -324,7 +326,7 @@ impl fmt::Display for TypeError {
             } => {
                 write!(
                     f,
-                    "T019: actor capability leak\n  handler `{handler}` on actor `{actor}` declares `{leaking_caps}` which is not in the actor's capability set"
+                    "actor capability leak\n  handler `{handler}` on actor `{actor}` declares `{leaking_caps}` which is not in the actor's capability set"
                 )
             }
 
@@ -332,7 +334,7 @@ impl fmt::Display for TypeError {
             Self::SendOnNonActor { found_ty, .. } => {
                 write!(
                     f,
-                    "T020: send (`!`) on non-actor\n  found type `{found_ty}`, expected an actor Handle"
+                    "send (`!`) on non-actor\n  found type `{found_ty}`, expected an actor Handle"
                 )
             }
 
@@ -340,7 +342,7 @@ impl fmt::Display for TypeError {
             Self::AskOnNonActor { found_ty, .. } => {
                 write!(
                     f,
-                    "T021: ask (`?>`) on non-actor\n  found type `{found_ty}`, expected an actor Handle"
+                    "ask (`?>`) on non-actor\n  found type `{found_ty}`, expected an actor Handle"
                 )
             }
 
@@ -350,7 +352,7 @@ impl fmt::Display for TypeError {
             } => {
                 write!(
                     f,
-                    "T021: `?` used outside Result/Option context\n  found `{found_ty}`, enclosing function returns `{expected}`"
+                    "`?` used outside Result/Option context\n  found `{found_ty}`, enclosing function returns `{expected}`"
                 )
             }
 
@@ -358,7 +360,7 @@ impl fmt::Display for TypeError {
             Self::DiscardedResult { ty, .. } => {
                 write!(
                     f,
-                    "T022: discarded result\n  expression of type `{ty}` is not bound — use `let _ =` to explicitly discard"
+                    "discarded result\n  expression of type `{ty}` is not bound — use `let _ =` to explicitly discard"
                 )
             }
 
@@ -366,7 +368,7 @@ impl fmt::Display for TypeError {
             Self::UnsolvedTypeVariable { var, .. } => {
                 write!(
                     f,
-                    "T023: unsolved type variable `{var}`\n  add a type annotation to resolve the ambiguity"
+                    "unsolved type variable `{var}`\n  add a type annotation to resolve the ambiguity"
                 )
             }
 
@@ -374,7 +376,7 @@ impl fmt::Display for TypeError {
             Self::RowVariableLeak { decl, .. } => {
                 write!(
                     f,
-                    "T024: capability row variable leaked in `{decl}`\n  add an explicit capability annotation to pin the row"
+                    "capability row variable leaked in `{decl}`\n  add an explicit capability annotation to pin the row"
                 )
             }
 
@@ -387,7 +389,7 @@ impl fmt::Display for TypeError {
             } => {
                 write!(
                     f,
-                    "T025: spawn arity mismatch\n  `{actor}` init expects {expected} argument{s1}, got {found}",
+                    "spawn arity mismatch\n  `{actor}` init expects {expected} argument{s1}, got {found}",
                     s1 = if *expected == 1 { "" } else { "s" },
                 )
             }
@@ -396,7 +398,7 @@ impl fmt::Display for TypeError {
             Self::AskTimeoutNotInt { found, .. } => {
                 write!(
                     f,
-                    "T026: ask timeout must be Int\n  expected `Int`, found `{found}`\n  hint: use `?> handler() timeout 1000` (milliseconds) or `timeout never`"
+                    "ask timeout must be Int\n  expected `Int`, found `{found}`\n  hint: use `?> handler() timeout 1000` (milliseconds) or `timeout never`"
                 )
             }
 
@@ -404,7 +406,7 @@ impl fmt::Display for TypeError {
             Self::MailboxPolicyDropOldestNotShipped { actor, .. } => {
                 write!(
                     f,
-                    "T027: `drop oldest` mailbox policy is not yet implemented\n  actor `{actor}` declares `mailbox bounded N drop oldest`\n  hint: use `drop newest` (silently drop the incoming message) or `error` (signal failure to the sender) until `drop oldest` ships"
+                    "`drop oldest` mailbox policy is not yet implemented\n  actor `{actor}` declares `mailbox bounded N drop oldest`\n  hint: use `drop newest` (silently drop the incoming message) or `error` (signal failure to the sender) until `drop oldest` ships"
                 )
             }
 
@@ -416,7 +418,7 @@ impl fmt::Display for TypeError {
             } => {
                 write!(
                     f,
-                    "T028: record pattern is missing fields\n  type `{record}` has fields not covered by this pattern"
+                    "record pattern is missing fields\n  type `{record}` has fields not covered by this pattern"
                 )?;
                 for field in missing_fields {
                     write!(f, "\n  missing field: `{field}`")?;
@@ -434,7 +436,7 @@ impl fmt::Display for TypeError {
                 fix_hint,
                 ..
             } => {
-                write!(f, "T029: no instance `{class} {ty}`\n  {fix_hint}")
+                write!(f, "no instance `{class} {ty}`\n  {fix_hint}")
             }
 
             // ── T056 ──────────────────────────────────────────────────────────
@@ -451,7 +453,7 @@ impl fmt::Display for TypeError {
                         .join(", ");
                     format!("did you mean {names}?")
                 };
-                write!(f, "T056: unknown type `{name}`\n  {hint}")
+                write!(f, "unknown type `{name}`\n  {hint}")
             }
 
             // ── T057 ──────────────────────────────────────────────────────────
@@ -460,7 +462,7 @@ impl fmt::Display for TypeError {
             } => {
                 write!(
                     f,
-                    "T057: tuple width mismatch\n  {}",
+                    "tuple width mismatch\n  {}",
                     tuple_width_sentence(*expected, *found)
                 )
             }
@@ -469,7 +471,7 @@ impl fmt::Display for TypeError {
             Self::AmbiguousConstraint { class, ty_var, .. } => {
                 write!(
                     f,
-                    "T030: ambiguous constraint\n  cannot determine which instance of `{class}` to use for the type variable `{ty_var}` here\n  hint: add a type annotation to fix the type variable"
+                    "ambiguous constraint\n  cannot determine which instance of `{class}` to use for the type variable `{ty_var}` here\n  hint: add a type annotation to fix the type variable"
                 )
             }
 
@@ -482,7 +484,7 @@ impl fmt::Display for TypeError {
             } => {
                 write!(
                     f,
-                    "T031: orphan instance\n  `instance {class} {ty}` must be defined in the module that declares `{class}` or the module that declares `{ty}`; found in `{instance_module}`\n  hint: move the instance to the class's module or the type's module"
+                    "orphan instance\n  `instance {class} {ty}` must be defined in the module that declares `{class}` or the module that declares `{ty}`; found in `{instance_module}`\n  hint: move the instance to the class's module or the type's module"
                 )
             }
 
@@ -490,7 +492,7 @@ impl fmt::Display for TypeError {
             Self::OverlappingInstance { class, ty, .. } => {
                 write!(
                     f,
-                    "T032: overlapping instance\n  `instance {class} {ty}` is already defined; only one instance per class/type pair is allowed\n  hint: remove the duplicate instance"
+                    "overlapping instance\n  `instance {class} {ty}` is already defined; only one instance per class/type pair is allowed\n  hint: remove the duplicate instance"
                 )
             }
 
@@ -503,7 +505,7 @@ impl fmt::Display for TypeError {
             } => {
                 write!(
                     f,
-                    "T033: missing superclass instance\n  `{class} {ty}` requires `{superclass} {ty}` but no such instance exists\n  hint: add `instance {superclass} {ty}` or add `{superclass}` to the `deriving` list"
+                    "missing superclass instance\n  `{class} {ty}` requires `{superclass} {ty}` but no such instance exists\n  hint: add `instance {superclass} {ty}` or add `{superclass}` to the `deriving` list"
                 )
             }
 
@@ -511,7 +513,7 @@ impl fmt::Display for TypeError {
             Self::ToTextConflict { ty, .. } => {
                 write!(
                     f,
-                    "T034: conflicting ToText instances\n  `{ty}` already has a ToText instance auto-derived from its `pub fn toText`; remove one (either the `pub fn toText` function or the explicit `instance ToText {ty}`)"
+                    "conflicting ToText instances\n  `{ty}` already has a ToText instance auto-derived from its `pub fn toText`; remove one (either the `pub fn toText` function or the explicit `instance ToText {ty}`)"
                 )
             }
 
@@ -519,7 +521,7 @@ impl fmt::Display for TypeError {
             Self::SuperclassCycle { cycle, .. } => {
                 write!(
                     f,
-                    "T035: superclass cycle detected\n  cycle: {}\n  hint: class hierarchies must be acyclic; remove one of the circular superclass requirements",
+                    "superclass cycle detected\n  cycle: {}\n  hint: class hierarchies must be acyclic; remove one of the circular superclass requirements",
                     cycle.join(" -> ")
                 )
             }
@@ -528,7 +530,7 @@ impl fmt::Display for TypeError {
             Self::OpaqueFieldAccess { record, field, .. } => {
                 write!(
                     f,
-                    "T036: field `{field}` of opaque type `{record}` cannot be reached outside its defining module\n  hint: call a function the module exports instead of touching the field directly"
+                    "field `{field}` of opaque type `{record}` cannot be reached outside its defining module\n  hint: call a function the module exports instead of touching the field directly"
                 )
             }
 
@@ -542,7 +544,7 @@ impl fmt::Display for TypeError {
             } => {
                 write!(
                     f,
-                    "T037: record shape mismatch\n  expected `{expected}`, got `{found}`"
+                    "record shape mismatch\n  expected `{expected}`, got `{found}`"
                 )?;
                 if !extra_fields.is_empty() {
                     write!(f, "\n  unexpected field(s): {}", extra_fields.join(", "))?;
@@ -562,7 +564,7 @@ impl fmt::Display for TypeError {
             } => {
                 write!(
                     f,
-                    "T038: wrong number of types in instance head\n  class `{class}` takes {expected} type parameter(s), but the instance head supplies {found}\n  hint: give the instance exactly {expected} type atom(s), parenthesising applied types like `(List a)`"
+                    "wrong number of types in instance head\n  class `{class}` takes {expected} type parameter(s), but the instance head supplies {found}\n  hint: give the instance exactly {expected} type atom(s), parenthesising applied types like `(List a)`"
                 )
             }
 
@@ -575,7 +577,7 @@ impl fmt::Display for TypeError {
             } => {
                 write!(
                     f,
-                    "T039: `{column}` is not a column of `{entity}` in this quoted predicate"
+                    "`{column}` is not a column of `{entity}` in this quoted predicate"
                 )?;
                 if !suggestions.is_empty() {
                     write!(f, "\n  did you mean: {}", suggestions.join(", "))?;
@@ -587,7 +589,7 @@ impl fmt::Display for TypeError {
             Self::QuoteUnsupportedExpr { detail, .. } => {
                 write!(
                     f,
-                    "T040: this is not supported inside a quoted predicate\n  {detail}\n  hint: a quoted predicate is built from column references, literals, comparisons, and `&&`/`||`"
+                    "this is not supported inside a quoted predicate\n  {detail}\n  hint: a quoted predicate is built from column references, literals, comparisons, and `&&`/`||`"
                 )
             }
 
@@ -595,7 +597,7 @@ impl fmt::Display for TypeError {
             Self::QuoteComparisonMismatch { left, right, .. } => {
                 write!(
                     f,
-                    "T041: the two sides of this comparison have different types\n  left is `{left}`, right is `{right}`"
+                    "the two sides of this comparison have different types\n  left is `{left}`, right is `{right}`"
                 )
             }
 
@@ -603,7 +605,7 @@ impl fmt::Display for TypeError {
             Self::QuoteEntityUnknown { .. } => {
                 write!(
                     f,
-                    "T042: cannot tell which entity this quoted predicate is about\n  hint: annotate the predicate's parameter, e.g. `fn (u: User) -> u.age >= 18`"
+                    "cannot tell which entity this quoted predicate is about\n  hint: annotate the predicate's parameter, e.g. `fn (u: User) -> u.age >= 18`"
                 )
             }
 
@@ -611,20 +613,20 @@ impl fmt::Display for TypeError {
             Self::RefutablePatternParam { witness, ty, .. } => {
                 write!(
                     f,
-                    "T043: this parameter pattern does not match every value of `{ty}`\n  it would fail on `{witness}`\n  hint: a function parameter must be irrefutable; destructure in the body with `match`/`let`, or use a single-constructor pattern"
+                    "this parameter pattern does not match every value of `{ty}`\n  it would fail on `{witness}`\n  hint: a function parameter must be irrefutable; destructure in the body with `match`/`let`, or use a single-constructor pattern"
                 )
             }
 
             // ── T044 ──────────────────────────────────────────────────────────
             Self::NotAConstructor { name, hint, .. } => {
-                write!(f, "T044: `{name}` is not a constructor\n  {hint}")
+                write!(f, "`{name}` is not a constructor\n  {hint}")
             }
 
             // ── T045 ──────────────────────────────────────────────────────────
             Self::UnknownFunDepVar { class, var, .. } => {
                 write!(
                     f,
-                    "T045: unknown variable in functional dependency\n  `{var}` is not a type parameter of class `{class}`\n  hint: a functional dependency may only mention the class's own type parameters"
+                    "unknown variable in functional dependency\n  `{var}` is not a type parameter of class `{class}`\n  hint: a functional dependency may only mention the class's own type parameters"
                 )
             }
 
@@ -634,7 +636,7 @@ impl fmt::Display for TypeError {
             } => {
                 write!(
                     f,
-                    "T046: conflicting functional dependency\n  two instances of `{class}` agree on `{determining}` but determine different types, which the class's functional dependency forbids\n  hint: a determining type may map to only one determined type"
+                    "conflicting functional dependency\n  two instances of `{class}` agree on `{determining}` but determine different types, which the class's functional dependency forbids\n  hint: a determining type may map to only one determined type"
                 )
             }
 
@@ -647,7 +649,7 @@ impl fmt::Display for TypeError {
             } => {
                 write!(
                     f,
-                    "T047: insert expects the insert shape `{companion}`, not the full entity `{entity}`"
+                    "insert expects the insert shape `{companion}`, not the full entity `{entity}`"
                 )?;
                 if !omitted.is_empty() {
                     let cols = omitted.join("`, `");
@@ -670,7 +672,7 @@ impl fmt::Display for TypeError {
             } => {
                 write!(
                     f,
-                    "T048: invalid `{member}` callback signature\n  `{member}` must declare ({expected}), but declares ({found})"
+                    "invalid `{member}` callback signature\n  `{member}` must declare ({expected}), but declares ({found})"
                 )
             }
 
@@ -678,7 +680,7 @@ impl fmt::Display for TypeError {
             Self::UnknownTypeVersion { name, ordinal, .. } => {
                 write!(
                     f,
-                    "T049: no previous version known for `{name}@{ordinal}`\n  versioned references resolve against the previous build's snapshot; none records this version"
+                    "no previous version known for `{name}@{ordinal}`\n  versioned references resolve against the previous build's snapshot; none records this version"
                 )
             }
 
@@ -686,16 +688,13 @@ impl fmt::Display for TypeError {
             Self::DuplicateMigration { name, ordinal, .. } => {
                 write!(
                     f,
-                    "T050: duplicate `migrate` for `{name}@{ordinal}`\n  this version edge already has a hook"
+                    "duplicate `migrate` for `{name}@{ordinal}`\n  this version edge already has a hook"
                 )
             }
 
             // ── T051 ──────────────────────────────────────────────────────────
             Self::UnsupportedInstanceHead { class, reason, .. } => {
-                write!(
-                    f,
-                    "T051: unsupported instance head for `{class}`\n  {reason}"
-                )
+                write!(f, "unsupported instance head for `{class}`\n  {reason}")
             }
 
             // ── T052 ──────────────────────────────────────────────────────────
@@ -703,12 +702,12 @@ impl fmt::Display for TypeError {
                 if found == "Text" {
                     write!(
                         f,
-                        "T052: arithmetic on non-numeric type\n  `{op}` requires `Int` or `Float` operands, found `Text`\n  hint: use `++` to concatenate text"
+                        "arithmetic on non-numeric type\n  `{op}` requires `Int` or `Float` operands, found `Text`\n  hint: use `++` to concatenate text"
                     )
                 } else {
                     write!(
                         f,
-                        "T052: arithmetic on non-numeric type\n  `{op}` requires `Int` or `Float` operands, found `{found}`\n  hint: use `++` to concatenate text or lists"
+                        "arithmetic on non-numeric type\n  `{op}` requires `Int` or `Float` operands, found `{found}`\n  hint: use `++` to concatenate text or lists"
                     )
                 }
             }
@@ -717,7 +716,7 @@ impl fmt::Display for TypeError {
             Self::MainHasParams { found, .. } => {
                 write!(
                     f,
-                    "T053: `main` must not take parameters\n  `main` is the program entry point and is invoked with no arguments, but declares {found} parameter{s}\n  hint: declare it as `fn main () -> ...`\n  hint: to read command-line arguments, call `Cli.args ()` from `std.cli` — it needs the `env` capability, so write `fn {{env}} main` and add `\"env\"` to the manifest's `[capabilities] allow`",
+                    "`main` must not take parameters\n  `main` is the program entry point and is invoked with no arguments, but declares {found} parameter{s}\n  hint: declare it as `fn main () -> ...`\n  hint: to read command-line arguments, call `Cli.args ()` from `std.cli` — it needs the `env` capability, so write `fn {{env}} main` and add `\"env\"` to the manifest's `[capabilities] allow`",
                     s = if *found == 1 { "" } else { "s" }
                 )
             }
@@ -731,7 +730,7 @@ impl fmt::Display for TypeError {
             } => {
                 write!(
                     f,
-                    "T054: field access on non-record\n  `{ty}` has no field `{field}` — it is not a record"
+                    "field access on non-record\n  `{ty}` has no field `{field}` — it is not a record"
                 )?;
                 if let Some(s) = suggestion {
                     write!(f, "\n  did you mean `{s}`?")?;
@@ -749,13 +748,16 @@ impl fmt::Display for TypeError {
             } => {
                 write!(
                     f,
-                    "T055: missing constraint\n  `{decl}` promises to work for every `{ty_var}`, but its body needs `{class} {ty_var}`\n  fix: {fix_hint}"
+                    "missing constraint\n  `{decl}` promises to work for every `{ty_var}`, but its body needs `{class} {ty_var}`\n  fix: {fix_hint}"
                 )
             }
 
             // ── T999 ──────────────────────────────────────────────────────────
             Self::InternalTypeError { detail, .. } => {
-                write!(f, "T999: internal type error\n  {detail}\n  This is a compiler bug. Please report it.")
+                write!(
+                    f,
+                    "internal type error\n  {detail}\n  This is a compiler bug. Please report it."
+                )
             }
         }
     }
@@ -1865,5 +1867,511 @@ mod tests {
         assert_eq!(<TypeError as HasErrorCode>::code(&err), "T001");
         assert_eq!(<TypeError as HasErrorCode>::span(&err), sp());
         assert_eq!(<TypeError as HasErrorCode>::severity(&err), Severity::Error);
+    }
+
+    // ── One of each ────────────────────────────────────────────────────────────
+
+    /// Names every variant, so a new one stops the build until it is added to
+    /// the list below instead of quietly escaping every test that walks it.
+    fn assert_every_variant_is_named(e: &TypeError) {
+        match e {
+            TypeError::TypeMismatch { .. }
+            | TypeError::TypeMismatchInCall { .. }
+            | TypeError::ArityMismatch { .. }
+            | TypeError::MissingField { .. }
+            | TypeError::UnknownField { .. }
+            | TypeError::WithOnNonRecord { .. }
+            | TypeError::PatternTypeMismatch { .. }
+            | TypeError::WrongConstructorArity { .. }
+            | TypeError::OccursCheck { .. }
+            | TypeError::RecursiveTypeAlias { .. }
+            | TypeError::PolymorphicRecursion { .. }
+            | TypeError::CapabilityNotDeclared { .. }
+            | TypeError::UnknownActorHandler { .. }
+            | TypeError::NonExhaustiveMatch { .. }
+            | TypeError::RedundantPattern { .. }
+            | TypeError::CallerCapabilityInsufficient { .. }
+            | TypeError::ActorCapabilityLeak { .. }
+            | TypeError::SendOnNonActor { .. }
+            | TypeError::AskOnNonActor { .. }
+            | TypeError::PropagateOutsideResultOrOption { .. }
+            | TypeError::DiscardedResult { .. }
+            | TypeError::UnsolvedTypeVariable { .. }
+            | TypeError::RowVariableLeak { .. }
+            | TypeError::SpawnArityMismatch { .. }
+            | TypeError::AskTimeoutNotInt { .. }
+            | TypeError::MailboxPolicyDropOldestNotShipped { .. }
+            | TypeError::IncompleteRecordPattern { .. }
+            | TypeError::NoInstance { .. }
+            | TypeError::AmbiguousConstraint { .. }
+            | TypeError::OrphanInstance { .. }
+            | TypeError::OverlappingInstance { .. }
+            | TypeError::MissingSuperclassInstance { .. }
+            | TypeError::ToTextConflict { .. }
+            | TypeError::SuperclassCycle { .. }
+            | TypeError::OpaqueFieldAccess { .. }
+            | TypeError::RowMismatch { .. }
+            | TypeError::InstanceArityMismatch { .. }
+            | TypeError::QuoteUnknownColumn { .. }
+            | TypeError::QuoteUnsupportedExpr { .. }
+            | TypeError::QuoteComparisonMismatch { .. }
+            | TypeError::QuoteEntityUnknown { .. }
+            | TypeError::RefutablePatternParam { .. }
+            | TypeError::NotAConstructor { .. }
+            | TypeError::UnknownFunDepVar { .. }
+            | TypeError::ConflictingFunDep { .. }
+            | TypeError::InsertShapeFullEntity { .. }
+            | TypeError::ActorCallbackSignature { .. }
+            | TypeError::UnknownTypeVersion { .. }
+            | TypeError::DuplicateMigration { .. }
+            | TypeError::UnsupportedInstanceHead { .. }
+            | TypeError::ArithmeticOnNonNumeric { .. }
+            | TypeError::MainHasParams { .. }
+            | TypeError::FieldAccessOnNonRecord { .. }
+            | TypeError::MissingConstraint { .. }
+            | TypeError::UnknownTypeName { .. }
+            | TypeError::TupleWidthMismatch { .. }
+            | TypeError::InternalTypeError { .. } => {}
+        }
+    }
+
+    /// Every `TypeError` once, plus one case per branch of the arms that render
+    /// more than one sentence.
+    #[expect(clippy::too_many_lines, reason = "one entry per variant, on purpose")]
+    fn one_of_each() -> Vec<TypeError> {
+        let s = || "x".to_owned();
+        let caps = || CapabilitySet::singleton(Capability::Io);
+
+        let mut all = vec![
+            TypeError::TypeMismatch {
+                expected: s(),
+                found: s(),
+                span: sp(),
+                hint: None,
+            },
+            TypeError::TypeMismatch {
+                expected: s(),
+                found: s(),
+                span: sp(),
+                hint: Some(s()),
+            },
+            TypeError::TypeMismatchInCall {
+                callee: s(),
+                arg_index: 0,
+                expected: s(),
+                found: s(),
+                span: sp(),
+            },
+            TypeError::ArityMismatch {
+                callee: s(),
+                expected: 2,
+                found: 3,
+                span: sp(),
+                hint: None,
+            },
+            TypeError::ArityMismatch {
+                callee: String::new(),
+                expected: 1,
+                found: 2,
+                span: sp(),
+                hint: Some(s()),
+            },
+            TypeError::MissingField {
+                record: s(),
+                field: s(),
+                span: sp(),
+            },
+            TypeError::UnknownField {
+                record: s(),
+                field: s(),
+                suggestions: vec![s()],
+                span: sp(),
+            },
+            TypeError::UnknownField {
+                record: s(),
+                field: s(),
+                suggestions: Vec::new(),
+                span: sp(),
+            },
+            TypeError::WithOnNonRecord {
+                ty: s(),
+                span: sp(),
+            },
+            TypeError::PatternTypeMismatch {
+                expected: s(),
+                pattern: s(),
+                span: sp(),
+            },
+            TypeError::WrongConstructorArity {
+                ctor: s(),
+                expected: 1,
+                found: 2,
+                span: sp(),
+            },
+            TypeError::OccursCheck {
+                var: s(),
+                ty: s(),
+                span: sp(),
+            },
+            TypeError::RecursiveTypeAlias {
+                cycle: vec![s(), s()],
+                span: sp(),
+            },
+            TypeError::PolymorphicRecursion {
+                decl: s(),
+                fix_hint: s(),
+                recursive_call_span: sp(),
+            },
+            TypeError::UnknownActorHandler {
+                actor: s(),
+                handler: s(),
+                suggestions: vec![s()],
+                span: sp(),
+            },
+            TypeError::UnknownActorHandler {
+                actor: s(),
+                handler: s(),
+                suggestions: Vec::new(),
+                span: sp(),
+            },
+            TypeError::NonExhaustiveMatch {
+                scrutinee_ty: s(),
+                witnesses: vec![s()],
+                total_missing: 1,
+                span: sp(),
+            },
+            TypeError::NonExhaustiveMatch {
+                scrutinee_ty: s(),
+                witnesses: vec![s(), s(), s()],
+                total_missing: 9,
+                span: sp(),
+            },
+            TypeError::RedundantPattern {
+                arm_index: 1,
+                span: sp(),
+            },
+            TypeError::CallerCapabilityInsufficient {
+                caller: s(),
+                callee: s(),
+                missing: caps(),
+                span: sp(),
+            },
+            TypeError::ActorCapabilityLeak {
+                actor: s(),
+                handler: s(),
+                leaking_caps: caps(),
+                span: sp(),
+            },
+            TypeError::SendOnNonActor {
+                found_ty: s(),
+                span: sp(),
+            },
+            TypeError::AskOnNonActor {
+                found_ty: s(),
+                span: sp(),
+            },
+            TypeError::PropagateOutsideResultOrOption {
+                found_ty: s(),
+                expected: s(),
+                span: sp(),
+            },
+            TypeError::DiscardedResult {
+                ty: s(),
+                span: sp(),
+            },
+            TypeError::UnsolvedTypeVariable {
+                var: s(),
+                generalisation_site: sp(),
+            },
+            TypeError::RowVariableLeak {
+                decl: s(),
+                span: sp(),
+            },
+            TypeError::SpawnArityMismatch {
+                actor: s(),
+                expected: 1,
+                found: 2,
+                span: sp(),
+            },
+            TypeError::AskTimeoutNotInt {
+                found: s(),
+                span: sp(),
+            },
+            TypeError::MailboxPolicyDropOldestNotShipped {
+                actor: s(),
+                span: sp(),
+            },
+            TypeError::IncompleteRecordPattern {
+                record: s(),
+                missing_fields: vec![s()],
+                span: sp(),
+            },
+            TypeError::NoInstance {
+                class: s(),
+                ty: s(),
+                span: sp(),
+                fix_hint: s(),
+            },
+            TypeError::AmbiguousConstraint {
+                class: s(),
+                ty_var: s(),
+                span: sp(),
+            },
+            TypeError::OrphanInstance {
+                class: s(),
+                ty: s(),
+                instance_module: s(),
+                span: sp(),
+            },
+            TypeError::OverlappingInstance {
+                class: s(),
+                ty: s(),
+                first_span: sp(),
+                second_span: sp(),
+            },
+            TypeError::MissingSuperclassInstance {
+                class: s(),
+                ty: s(),
+                superclass: s(),
+                span: sp(),
+            },
+            TypeError::ToTextConflict {
+                ty: s(),
+                totext_span: sp(),
+                auto_promote_span: sp(),
+            },
+            TypeError::SuperclassCycle {
+                cycle: vec![s(), s()],
+                span: sp(),
+            },
+            TypeError::OpaqueFieldAccess {
+                record: s(),
+                field: s(),
+                span: sp(),
+            },
+            TypeError::RowMismatch {
+                expected: s(),
+                found: s(),
+                missing_fields: vec![s()],
+                extra_fields: vec![s()],
+                span: sp(),
+            },
+            TypeError::RowMismatch {
+                expected: s(),
+                found: s(),
+                missing_fields: Vec::new(),
+                extra_fields: Vec::new(),
+                span: sp(),
+            },
+            TypeError::InstanceArityMismatch {
+                class: s(),
+                expected: 1,
+                found: 2,
+                span: sp(),
+            },
+            TypeError::QuoteUnknownColumn {
+                entity: s(),
+                column: s(),
+                suggestions: vec![s()],
+                span: sp(),
+            },
+            TypeError::QuoteUnknownColumn {
+                entity: s(),
+                column: s(),
+                suggestions: Vec::new(),
+                span: sp(),
+            },
+            TypeError::QuoteUnsupportedExpr {
+                detail: s(),
+                span: sp(),
+            },
+            TypeError::QuoteComparisonMismatch {
+                left: s(),
+                right: s(),
+                span: sp(),
+            },
+            TypeError::QuoteEntityUnknown { span: sp() },
+            TypeError::RefutablePatternParam {
+                witness: s(),
+                ty: s(),
+                span: sp(),
+            },
+            TypeError::NotAConstructor {
+                name: s(),
+                hint: s(),
+                span: sp(),
+            },
+            TypeError::UnknownFunDepVar {
+                class: s(),
+                var: s(),
+                span: sp(),
+            },
+            TypeError::ConflictingFunDep {
+                class: s(),
+                determining: s(),
+                first_span: sp(),
+                second_span: sp(),
+            },
+            TypeError::InsertShapeFullEntity {
+                entity: s(),
+                companion: s(),
+                omitted: vec![s()],
+                span: sp(),
+            },
+            TypeError::ActorCallbackSignature {
+                member: "init",
+                expected: s(),
+                found: s(),
+                span: sp(),
+            },
+            TypeError::UnknownTypeVersion {
+                name: s(),
+                ordinal: 2,
+                span: sp(),
+            },
+            TypeError::DuplicateMigration {
+                name: s(),
+                ordinal: 2,
+                span: sp(),
+            },
+            TypeError::UnsupportedInstanceHead {
+                class: s(),
+                reason: s(),
+                span: sp(),
+            },
+            // `Text` gets advice of its own: `++`, not `+`.
+            TypeError::ArithmeticOnNonNumeric {
+                op: "+",
+                found: "Text".to_owned(),
+                span: sp(),
+            },
+            TypeError::ArithmeticOnNonNumeric {
+                op: "+",
+                found: "Bool".to_owned(),
+                span: sp(),
+            },
+            TypeError::MainHasParams {
+                found: 1,
+                span: sp(),
+            },
+            TypeError::FieldAccessOnNonRecord {
+                ty: s(),
+                field: s(),
+                suggestion: Some(s()),
+                span: sp(),
+            },
+            TypeError::FieldAccessOnNonRecord {
+                ty: s(),
+                field: s(),
+                suggestion: None,
+                span: sp(),
+            },
+            TypeError::MissingConstraint {
+                decl: s(),
+                class: s(),
+                ty_var: s(),
+                fix_hint: s(),
+                span: sp(),
+            },
+            TypeError::UnknownTypeName {
+                name: s(),
+                span: sp(),
+                suggestions: vec![s()],
+            },
+            TypeError::UnknownTypeName {
+                name: s(),
+                span: sp(),
+                suggestions: Vec::new(),
+            },
+            TypeError::TupleWidthMismatch {
+                expected: 2,
+                found: 3,
+                span: sp(),
+            },
+            TypeError::InternalTypeError {
+                detail: s(),
+                span: sp(),
+            },
+        ];
+
+        // T014 writes six different sentences, one per declaration site.
+        for kind in [
+            CapDeclKind::Fn,
+            CapDeclKind::Handler,
+            CapDeclKind::Init,
+            CapDeclKind::Terminate,
+            CapDeclKind::OnDown,
+            CapDeclKind::InnerFn,
+        ] {
+            all.push(TypeError::CapabilityNotDeclared {
+                decl: s(),
+                kind,
+                declared: CapabilitySet::PURE,
+                inferred: caps(),
+                missing: caps(),
+                span: sp(),
+            });
+        }
+
+        for e in &all {
+            assert_every_variant_is_named(e);
+        }
+        all
+    }
+
+    /// The list reaches every code the enum can answer with.
+    #[test]
+    fn one_of_each_reaches_every_code() {
+        let mut seen: Vec<&'static str> = one_of_each().iter().map(TypeError::code).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        // Fifty-seven variants, fifty-six codes: `T021` is claimed by two.
+        assert_eq!(seen.len(), 56, "codes reached: {seen:?}");
+    }
+
+    // ── The code is written in one place ────────────────────────────────────────────
+
+    /// A message opens with the code its variant declares.
+    ///
+    /// True by construction now that `Display` writes the prefix from `code()`,
+    /// which is the point: this is here so the construction stays.
+    #[test]
+    fn every_message_opens_with_the_code_its_variant_declares() {
+        for e in one_of_each() {
+            let text = e.to_string();
+            let want = format!("{}: ", e.code());
+            assert!(text.starts_with(&want), "expected `{want}`, got: {text}");
+        }
+    }
+
+    /// No message says a code twice.
+    ///
+    /// This is the assertion that can fail. Fifty-five messages used to type
+    /// their own prefix, in a different file from the `code()` that decides it.
+    /// One that drifted would reach the reader as two disagreeing codes on one
+    /// line, because `Diagnostic::message_parts` strips only the first.
+    #[test]
+    fn no_message_repeats_the_code_the_frame_already_wrote() {
+        for e in one_of_each() {
+            let text = e.to_string();
+            // `strip_prefix`, not `trim_start_matches`: the latter removes
+            // every repetition, so `T001: T001: …` came back clean and this
+            // test passed against the exact defect it exists to catch.
+            let rest = text
+                .strip_prefix(&format!("{}: ", e.code()))
+                .unwrap_or(&text);
+            let first_word = rest.split_whitespace().next().unwrap_or_default();
+            assert!(
+                !looks_like_a_code(first_word),
+                "`{}` writes a code into its own message: {text}",
+                e.code()
+            );
+        }
+    }
+
+    /// `T123` or `T123:` — what a reader takes for an error code.
+    fn looks_like_a_code(word: &str) -> bool {
+        let w = word.trim_end_matches(':');
+        w.len() == 4 && w.starts_with('T') && w[1..].bytes().all(|b| b.is_ascii_digit())
     }
 }

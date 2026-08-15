@@ -1,0 +1,11 @@
+-- expect: T001
+-- The body of an instance method is type-checked like any other body. This
+-- returned an Int where the method declares Text, and until 0.3.0 it built
+-- and ran: the inference pass had always covered instance bodies, and threw
+-- its diagnostics away afterwards.
+pub type Color = { name: Text }
+
+instance ToText Color =
+    toText (v: Color) -> Text = 42
+
+fn main () -> Unit = ()

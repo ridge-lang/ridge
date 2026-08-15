@@ -487,6 +487,7 @@ pub fn typecheck_workspace_with_history(
             &b,
             Some((&class_table, &instance_env)),
             &migrate_ctx,
+            ws.graph.is_stdlib,
         );
         // `node_types` is indexed by `NodeId.0` and grown on demand, so it can be
         // shorter than the full map but must never exceed it. A violation means
@@ -711,6 +712,7 @@ pub fn typecheck_module_incremental(
         b,
         Some((&typed_ws.class_table, &typed_ws.instance_env)),
         &migrate_ctx,
+        ws.graph.is_stdlib,
     );
 
     ModuleTypecheckIncremental {
@@ -1096,6 +1098,7 @@ fn typecheck_module_inner(
         &crate::class_env::InstanceEnv,
     )>,
     migrate_ctx: &crate::migrate::MigrateHistoryCtx<'_>,
+    is_stdlib: bool,
 ) -> ModuleTypecheckResult {
     use crate::actor::{check_actor_encapsulation, check_actor_mailbox_config};
     use crate::ctx::InferCtx;
@@ -1421,7 +1424,7 @@ fn typecheck_module_inner(
     // the staged rollout: node_types are populated without yet changing which
     // programs are rejected. No-op without the class/instance registries.
     let instance_dict_constraints =
-        crate::scc::infer_instance_methods(&mut ctx, b, ast, ct, ie, false);
+        crate::scc::infer_instance_methods(&mut ctx, b, ast, ct, ie, !is_stdlib);
 
     // Step E: Actor encapsulation checks + mailbox config validation.
     for item in &ast.items {

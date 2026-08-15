@@ -974,8 +974,15 @@ pub fn typecheck_module_decls(
 ///
 /// Derived and prelude instances are not source `InstanceDecl`s and are left
 /// untouched. With `record_errors` false the bodies are inferred for their
-/// node-type side effects only; diagnostics they raise are discarded (the staged
-/// rollout populates `node_types` before it changes which programs are rejected).
+/// node-type side effects only and the diagnostics they raise are discarded.
+///
+/// Every ordinary build passes `true`. The one caller that does not is the
+/// standard library compiling itself, where two distinct `SqlValue` tycons
+/// coexist and an instance body in `std.sql` reports `expected SqlValue, got
+/// SqlValue` — the same type on both sides, which is the shape of that split
+/// rather than a fault in the code. Reconciling it is what remains before this
+/// argument can go away and the standard library's own instance bodies are
+/// checked like everyone else's.
 #[must_use]
 #[expect(
     clippy::too_many_lines,
@@ -1130,15 +1137,18 @@ pub fn infer_instance_methods(
     ctx.deferred_constraints = saved_deferred;
 
     if !record_errors {
-        // The bodies are inferred for their node-type side effects only. Some
-        // stdlib instances trip the source-vs-builtin `SqlValue` split that exists
-        // only during the standard library's own build (two distinct `SqlValue`
-        // tycons), which the seeded class-method schemes reconcile for ordinary
-        // functions but not yet for instance bodies. Those diagnostics are not
-        // real — user builds carry a single `SqlValue` — so discard everything
-        // raised here until that reconciliation is extended (then flip to true to
-        // gain compile-time checking of instance bodies). A failed body-vs-return
-        // unify binds nothing, so it leaves the sub-expression node_types intact.
+        // Reached only by the standard library compiling itself, where the
+        // source-vs-builtin `SqlValue` split puts two tycons of that name in
+        // scope at once. The seeded class-method schemes reconcile them for
+        // ordinary functions but not for instance bodies, so `std.sql` reports
+        // `expected SqlValue, got SqlValue` — a diagnostic about the split, not
+        // about the code, and one no user build can see because a user build
+        // carries a single `SqlValue`. Discarded here until that reconciliation
+        // covers instance bodies too; then this branch and the argument that
+        // selects it both go.
+        //
+        // A failed body-vs-return unify binds nothing, so dropping the error
+        // leaves the sub-expression node_types intact for the lowering.
         ctx.errors.truncate(err_snapshot);
     }
 

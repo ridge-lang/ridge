@@ -1,0 +1,10 @@
+-- expect: T005
+-- Not only the declared return type: an instance body is checked throughout.
+-- A field the record does not have reports T005 here exactly as it does in an
+-- ordinary function.
+pub type Color = { name: Text }
+
+instance ToText Color =
+    toText (v: Color) -> Text = v.nope
+
+fn main () -> Unit = ()

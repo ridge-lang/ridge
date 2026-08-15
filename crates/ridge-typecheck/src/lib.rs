@@ -394,8 +394,18 @@ pub fn typecheck_workspace_with_history(
     for (name, &id) in &stdlib_tycon_names {
         collect_tycon_names.entry(name.clone()).or_insert(id);
     }
-    let collect_result =
-        collect_workspace_gated(&module_ast_pairs, &collect_tycon_names, ws.graph.is_stdlib);
+    // Which module declares each type, for the coherence checks. Built from the
+    // same two sources the collect pass resolves instance heads against — the
+    // arena as it stands before user types are interned, and the per-module id
+    // prediction — so the head's id and its declaring module cannot disagree.
+    let tycon_origins =
+        crate::cross_module::TyConOrigins::new(arena.all(), &per_module_tycon_names, &module_fqns);
+    let collect_result = collect_workspace_gated(
+        &module_ast_pairs,
+        &collect_tycon_names,
+        &tycon_origins,
+        ws.graph.is_stdlib,
+    );
     // Coherence errors are workspace-level; accumulate them tagged with the
     // module they originated in (use ModuleId(0) as a fallback — coherence
     // errors carry their own span, so the module tag is informational only).

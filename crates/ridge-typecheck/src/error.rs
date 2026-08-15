@@ -513,6 +513,15 @@ pub enum TypeError {
         ty: TypeDesc,
         /// Module that contains the violating instance declaration.
         instance_module: String,
+        /// Every module this instance would be legal in: the one declaring the
+        /// class, and the one declaring each type in the head.
+        ///
+        /// Empty when the pair is built in, and that case needs its own
+        /// sentence rather than a shorter list. Telling a reader to move
+        /// `instance ToText Date` to "the class's module or the type's module"
+        /// names two places they cannot go, which is worse than saying nothing:
+        /// it reads as an instruction and cannot be followed.
+        legal_modules: Vec<String>,
         /// Source span of the `instance` keyword.
         span: Span,
     },
@@ -1509,6 +1518,7 @@ mod tests {
             class: "Eq".into(),
             ty: "Logger".into(),
             instance_module: "app.Util".into(),
+            legal_modules: vec!["app.Log".into()],
             span: dummy_span(),
         }
     }

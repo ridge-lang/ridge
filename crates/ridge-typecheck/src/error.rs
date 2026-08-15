@@ -841,7 +841,6 @@ pub enum TypeError {
         span: Span,
     },
 
-    // ── T999 ─────────────────────────────────────────────────────────────────
     // ── T056 ─────────────────────────────────────────────────────────────────
     /// A type annotation names a type that does not exist.
     ///
@@ -861,6 +860,24 @@ pub enum TypeError {
         suggestions: Vec<String>,
     },
 
+    // ── T057 ─────────────────────────────────────────────────────────────────
+    /// Two tuples meet with different numbers of components.
+    ///
+    /// Separate from `T003` because nothing about the call is wrong.
+    /// `takesPair (1, 2, 3)` passes exactly one argument; what differs is the
+    /// width of the tuple inside it. Reported as an arity mismatch it read
+    /// `expects 2 arguments, got 3` and sent the reader looking for a fourth
+    /// argument nobody wrote.
+    TupleWidthMismatch {
+        /// Number of components the position expects.
+        expected: usize,
+        /// Number of components the tuple actually has.
+        found: usize,
+        /// Source span of the tuple.
+        span: Span,
+    },
+
+    // ── T999 ─────────────────────────────────────────────────────────────────
     /// Internal type-checker invariant violation — should never reach users.
     ///
     /// In debug builds this is accompanied by a `debug_assert!` panic (see
@@ -877,7 +894,7 @@ pub enum TypeError {
 impl TypeError {
     /// Returns the stable `T###` error code for this variant.
     ///
-    /// The codes are allocated in `T001..T055` and `T999` is the catch-all
+    /// The codes are allocated in `T001..T057` and `T999` is the catch-all
     /// internal error. No overlap with `R###`/`M###`.
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -936,6 +953,7 @@ impl TypeError {
             Self::FieldAccessOnNonRecord { .. } => "T054",
             Self::MissingConstraint { .. } => "T055",
             Self::UnknownTypeName { .. } => "T056",
+            Self::TupleWidthMismatch { .. } => "T057",
             Self::InternalTypeError { .. } => "T999",
         }
     }
@@ -1342,6 +1360,19 @@ mod tests {
     #[test]
     fn code_t054() {
         assert_eq!(t054().code(), "T054");
+    }
+
+    fn t057() -> TypeError {
+        TypeError::TupleWidthMismatch {
+            expected: 2,
+            found: 3,
+            span: dummy_span(),
+        }
+    }
+
+    #[test]
+    fn code_t057() {
+        assert_eq!(t057().code(), "T057");
     }
 
     // ── T029–T030 helpers and code tests ─────────────────────────────────────

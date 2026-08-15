@@ -26,6 +26,8 @@ use std::collections::HashMap;
 
 use ridge_ast::{self, Item, Module};
 use ridge_types::{Constraint, TyConId, TyVid};
+
+use crate::cross_module::TyConOrigins;
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
@@ -87,8 +89,9 @@ pub struct CollectResult {
 pub fn collect_workspace(
     modules: &[(u32, &Module)],
     user_tycon_names: &FxHashMap<String, TyConId>,
+    origins: &TyConOrigins,
 ) -> CollectResult {
-    collect_workspace_gated(modules, user_tycon_names, false)
+    collect_workspace_gated(modules, user_tycon_names, origins, false)
 }
 
 /// Like [`collect_workspace`] but gated on whether this run is the stdlib's own
@@ -105,6 +108,7 @@ pub fn collect_workspace(
 pub fn collect_workspace_gated(
     modules: &[(u32, &Module)],
     user_tycon_names: &FxHashMap<String, TyConId>,
+    origins: &TyConOrigins,
     is_stdlib: bool,
 ) -> CollectResult {
     let mut class_table = ClassTable::new();
@@ -184,10 +188,10 @@ pub fn collect_workspace_gated(
     );
 
     // Step 5: Orphan-rule check (T031) for all collected instances.
-    check_orphan_rule(&instance_env, &class_table, &mut errors);
+    check_orphan_rule(&instance_env, &class_table, origins, &mut errors);
 
     // Step 6: Missing superclass instance check (T033).
-    check_missing_superclass_instances(&instance_env, &class_table, &mut errors);
+    check_missing_superclass_instances(&instance_env, &class_table, origins, &mut errors);
 
     CollectResult {
         class_table,
@@ -750,18 +754,23 @@ fn collect_derived_instances(
 /// T031 — orphan rule.
 ///
 /// An instance must be in the module that defines the class OR the module that
-/// defines the type. Builtins/prelude have `def_module = None`; the orphan
-/// check treats `None` as matching any module (prelude instances are always
-/// valid in prelude) and as NOT matching any user module (a user module cannot
-/// declare an instance for a builtin type unless it also defined the class).
+/// defines the type. Prelude types have no declaring module, so they match no
+/// user module: a user module cannot write an instance for a built-in type
+/// unless it also defined the class. Prelude instances are injected through
+/// `register_prelude_instances` and carry no declaring module of their own,
+/// which is what exempts them here.
 ///
-/// Specifically: if BOTH `class.def_module` and `tycon.def_module_raw` are
-/// `None` (prelude class + prelude type), only the prelude itself can write
-/// the instance, and since prelude instances are injected directly through
-/// `register_prelude_instances`, the orphan check is a no-op for them.
-/// If the instance is in a user module, it's an orphan unless one of the two
-/// home modules is `Some(module_id)` matching the instance module.
-fn check_orphan_rule(env: &InstanceEnv, ct: &ClassTable, errors: &mut Vec<TypeError>) {
+/// The type's home module comes from [`TyConOrigins`], not from the id's
+/// numeric value. That distinction is the whole check: the rule previously
+/// took any id at or above a hand-written bound to be user-declared, the
+/// built-in table grew past that bound, and the rule quietly stopped applying
+/// to `Sql`, `Html`, `SecureCookie` and forty-one other built-in types.
+fn check_orphan_rule(
+    env: &InstanceEnv,
+    ct: &ClassTable,
+    origins: &TyConOrigins,
+    errors: &mut Vec<TypeError>,
+) {
     for ((class_id, head), info) in &env.instances {
         let class_id = *class_id;
         let Some(inst_module) = info.def_module else {
@@ -769,23 +778,17 @@ fn check_orphan_rule(env: &InstanceEnv, ct: &ClassTable, errors: &mut Vec<TypeEr
         };
 
         let class_module = ct.get(class_id).and_then(|ci| ci.def_module);
-        // For now, `tycon.def_module_raw` is encoded as the `TyConId.0` index;
-        // we do not have direct access to the TyConArena here. Instead we use a
-        // sentinel: builtin TyConIds (0..=16) have `def_module_raw = None`.
-        // User TyConIds start at 17 and carry the module in a side-channel we
-        // do not have here. For now we implement the check conservatively:
-        // - If the class has a known def_module AND it matches the instance module
-        //   → OK.
-        // - If the tycon id is ≥ 17 (user-defined type), we trust that the
-        //   instance is in the correct module (the full check arrives once the
-        //   TyConArena is threaded through).
-        // - Otherwise, if neither class module nor tycon is user-local → orphan.
         let in_class_module = class_module == Some(inst_module);
-        // A head is user-local if any of its constructors is user-defined
-        // (builtins have fixed low ids < 17).
-        let any_user_local = head.iter().any(|t| t.0 >= 17);
+        // The instance is also legal in the module that declares any of the
+        // types in its head. Asked of the declaring module directly: the
+        // built-ins and the reconciled stdlib block answer with a module no
+        // user code can be in, so an instance for one of them is legal only
+        // where the class itself lives.
+        let in_type_module = head
+            .iter()
+            .any(|t| origins.declaring_module(*t) == Some(inst_module));
 
-        if in_class_module || any_user_local {
+        if in_class_module || in_type_module {
             continue; // valid
         }
 
@@ -795,13 +798,28 @@ fn check_orphan_rule(env: &InstanceEnv, ct: &ClassTable, errors: &mut Vec<TypeEr
             .map_or_else(|| format!("#{}", class_id.0), |ci| ci.name.clone());
         let type_name = head
             .iter()
-            .map(|t| format!("#{}", t.0))
+            .map(|t| origins.type_name(*t))
             .collect::<Vec<_>>()
             .join(" ");
+        // The modules this instance would have been legal in. Built here rather
+        // than described in the message, because for a built-in class and a
+        // built-in type the honest answer is that there are none, and only the
+        // check can tell that apart from "somewhere you have not looked".
+        let mut legal_modules: Vec<String> = Vec::new();
+        for raw in std::iter::once(class_module)
+            .chain(head.iter().map(|t| origins.declaring_module(*t)))
+            .flatten()
+        {
+            let name = origins.module_name(raw);
+            if !legal_modules.contains(&name) {
+                legal_modules.push(name);
+            }
+        }
         errors.push(TypeError::OrphanInstance {
             class: class_name,
             ty: TypeDesc::Text(type_name),
-            instance_module: format!("module#{inst_module}"),
+            instance_module: origins.module_name(inst_module),
+            legal_modules,
             span: info.span,
         });
     }
@@ -889,6 +907,7 @@ fn dfs_cycle(
 fn check_missing_superclass_instances(
     env: &InstanceEnv,
     ct: &ClassTable,
+    origins: &TyConOrigins,
     errors: &mut Vec<TypeError>,
 ) {
     // Pre-collect the set of registered (class, head) keys for O(1) lookup.
@@ -917,7 +936,7 @@ fn check_missing_superclass_instances(
                     .map_or_else(|| format!("#{}", class_id.0), |ci| ci.name.clone());
                 let type_name = head
                     .iter()
-                    .map(|t| format!("#{}", t.0))
+                    .map(|t| origins.type_name(*t))
                     .collect::<Vec<_>>()
                     .join(" ");
                 let super_name = ct
@@ -1299,6 +1318,21 @@ mod tests {
         })
     }
 
+    /// Declare every name in `user_types` as belonging to module 0, which is
+    /// the only module these tests build instances in.
+    ///
+    /// Tests that pass an empty table are relying on the orphan rule having
+    /// nothing to say about their instances — either the head does not resolve
+    /// or the class is theirs. That is the safe direction: an empty table can
+    /// only report an orphan that is not one, never miss one that is.
+    fn origins_in_module_0(user_types: &FxHashMap<String, TyConId>) -> TyConOrigins {
+        TyConOrigins::new(
+            &[],
+            std::slice::from_ref(user_types),
+            std::slice::from_ref(&"m".to_string()),
+        )
+    }
+
     // ── Basic class + instance collection ────────────────────────────────────
 
     #[test]
@@ -1312,7 +1346,11 @@ mod tests {
             class_decl_item("MyClass", vec![], "myMethod"),
             class_decl_item("OtherClass", vec![], "otherMethod"),
         ]);
-        let result = collect_workspace(&[(0, &m)], &rustc_hash::FxHashMap::default());
+        let result = collect_workspace(
+            &[(0, &m)],
+            &rustc_hash::FxHashMap::default(),
+            &TyConOrigins::default(),
+        );
 
         assert!(
             result.errors.is_empty(),
@@ -1333,7 +1371,11 @@ mod tests {
 
     #[test]
     fn prelude_classes_in_class_table() {
-        let result = collect_workspace(&[], &rustc_hash::FxHashMap::default());
+        let result = collect_workspace(
+            &[],
+            &rustc_hash::FxHashMap::default(),
+            &TyConOrigins::default(),
+        );
         let ct = &result.class_table;
         assert_eq!(ct.id_by_name("ToText"), Some(TOTEXT_CLASS));
         assert_eq!(ct.id_by_name("Eq"), Some(EQ_CLASS));
@@ -1352,7 +1394,11 @@ mod tests {
             instance_decl_item("ToText", "Int"),
             instance_decl_item("ToText", "Int"),
         ]);
-        let result = collect_workspace(&[(0, &m)], &rustc_hash::FxHashMap::default());
+        let result = collect_workspace(
+            &[(0, &m)],
+            &rustc_hash::FxHashMap::default(),
+            &TyConOrigins::default(),
+        );
         let has_t032 = result.errors.iter().any(|e| e.code() == "T032");
         assert!(
             has_t032,
@@ -1371,8 +1417,11 @@ mod tests {
         let mod0 = module_with_items(vec![class_decl_item("MyShow", vec![], "myShow")]);
         let mod1 = module_with_items(vec![instance_decl_item("MyShow", "Int")]);
 
-        let result =
-            collect_workspace(&[(0, &mod0), (1, &mod1)], &rustc_hash::FxHashMap::default());
+        let result = collect_workspace(
+            &[(0, &mod0), (1, &mod1)],
+            &rustc_hash::FxHashMap::default(),
+            &TyConOrigins::default(),
+        );
         let has_t031 = result.errors.iter().any(|e| e.code() == "T031");
         assert!(
             has_t031,
@@ -1398,7 +1447,11 @@ mod tests {
                 "methodB",
             ),
         ]);
-        let result = collect_workspace(&[(0, &m)], &rustc_hash::FxHashMap::default());
+        let result = collect_workspace(
+            &[(0, &m)],
+            &rustc_hash::FxHashMap::default(),
+            &TyConOrigins::default(),
+        );
         let has_t035 = result.errors.iter().any(|e| e.code() == "T035");
         assert!(
             has_t035,
@@ -1419,7 +1472,7 @@ mod tests {
         user_types.insert("Widget".to_string(), widget_id);
 
         let m = module_with_items(vec![instance_decl_item("Ord", "Widget")]);
-        let result = collect_workspace(&[(0, &m)], &user_types);
+        let result = collect_workspace(&[(0, &m)], &user_types, &origins_in_module_0(&user_types));
         let has_t033 = result.errors.iter().any(|e| e.code() == "T033");
         assert!(
             has_t033,
@@ -1442,7 +1495,7 @@ mod tests {
             instance_decl_item("Eq", "Widget"),
             instance_decl_item("Ord", "Widget"),
         ]);
-        let result = collect_workspace(&[(0, &m)], &user_types);
+        let result = collect_workspace(&[(0, &m)], &user_types, &origins_in_module_0(&user_types));
         let has_t033 = result.errors.iter().any(|e| e.code() == "T033");
         assert!(
             !has_t033,
@@ -1565,7 +1618,7 @@ mod tests {
         user_types.insert("Widget".to_string(), user_id);
 
         let m = module_with_items(vec![pub_fn_to_text_item("Widget")]);
-        let result = collect_workspace(&[(0, &m)], &user_types);
+        let result = collect_workspace(&[(0, &m)], &user_types, &origins_in_module_0(&user_types));
 
         assert!(
             result.errors.is_empty(),
@@ -1596,7 +1649,7 @@ mod tests {
             pub_fn_to_text_item("Color"),
             instance_decl_item("ToText", "Color"),
         ]);
-        let result = collect_workspace(&[(0, &m)], &user_types);
+        let result = collect_workspace(&[(0, &m)], &user_types, &origins_in_module_0(&user_types));
 
         let has_t034 = result.errors.iter().any(|e| e.code() == "T034");
         assert!(
@@ -1785,7 +1838,11 @@ mod tests {
     fn auto_promote_skips_builtin_types() {
         // `Int` (TyConId 0) carries a prelude `ToText` instance.
         let m = module_with_items(vec![pub_fn_to_text_item("Int")]);
-        let result = collect_workspace(&[(0, &m)], &rustc_hash::FxHashMap::default());
+        let result = collect_workspace(
+            &[(0, &m)],
+            &rustc_hash::FxHashMap::default(),
+            &TyConOrigins::default(),
+        );
 
         // No T034: the prelude already covers `ToText Int`, so auto-promotion
         // skips it rather than inserting a duplicate.
@@ -1838,7 +1895,11 @@ mod tests {
         });
 
         let m = module_with_items(vec![decimal_to_text]);
-        let result = collect_workspace(&[(0, &m)], &rustc_hash::FxHashMap::default());
+        let result = collect_workspace(
+            &[(0, &m)],
+            &rustc_hash::FxHashMap::default(),
+            &TyConOrigins::default(),
+        );
 
         let has_t034 = result.errors.iter().any(|e| e.code() == "T034");
         assert!(

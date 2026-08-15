@@ -53,6 +53,20 @@ fn arity_subject(callee: &str) -> String {
 /// Deliberately says nothing about arguments: `takesPair (1, 2, 3)` passes
 /// exactly one, and calling this an arity mismatch sent the reader looking for
 /// a fourth argument nobody wrote.
+/// Render module names as `` `a` ``, `` `a` or `b` ``, `` `a`, `b` or `c` ``.
+///
+/// A message that lists the places an instance may go is read as a set of
+/// options, so it is written as one. Callers pass a non-empty list; an empty
+/// one means there are no options at all, which reads as a different sentence.
+fn join_or(items: &[String]) -> String {
+    let quoted: Vec<String> = items.iter().map(|m| format!("`{m}`")).collect();
+    match quoted.split_last() {
+        None => String::new(),
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+    }
+}
+
 fn tuple_width_sentence(expected: usize, found: usize) -> String {
     format!(
         "this tuple has {found} component{s1}, but {expected} {s2} expected",
@@ -540,13 +554,22 @@ impl TypeError {
                 class,
                 ty,
                 instance_module,
+                legal_modules,
                 ..
             } => {
                 let ty = ty.render_in(tycons, namer);
-                write!(
-                    f,
-                    "orphan instance\n  `instance {class} {ty}` must be defined in the module that declares `{class}` or the module that declares `{ty}`; found in `{instance_module}`\n  hint: move the instance to the class's module or the type's module"
-                )
+                if legal_modules.is_empty() {
+                    write!(
+                        f,
+                        "orphan instance\n  `instance {class} {ty}` cannot be written here: `{class}` and `{ty}` are both built in, so no module in this workspace declares either of them\n  hint: wrap `{ty}` in a type of your own and write the instance for the wrapper"
+                    )
+                } else {
+                    let homes = join_or(legal_modules);
+                    write!(
+                        f,
+                        "orphan instance\n  `instance {class} {ty}` must be defined in {homes}; found in `{instance_module}`\n  hint: move the instance to one of those modules"
+                    )
+                }
             }
 
             // ── T032 ──────────────────────────────────────────────────────────
@@ -2201,6 +2224,7 @@ mod tests {
                 class: s(),
                 ty: td(),
                 instance_module: s(),
+                legal_modules: vec![s()],
                 span: sp(),
             },
             TypeError::OverlappingInstance {

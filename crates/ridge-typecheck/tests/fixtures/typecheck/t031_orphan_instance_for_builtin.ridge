@@ -1,0 +1,9 @@
+-- expect: T031
+-- T031 OrphanInstance: `ToText` and `Date` are both built in, so a user
+-- module declares neither and cannot hold the instance. This was accepted
+-- until 0.3.0 — the rule tested whether the type's id sat above a written-down
+-- bound, and the built-in table had grown past it.
+instance ToText Date =
+    toText (v: Date) -> Text = "d"
+
+fn main () -> Unit = ()

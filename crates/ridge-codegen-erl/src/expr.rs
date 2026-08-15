@@ -573,7 +573,7 @@ pub(crate) fn lower_expr_in_scope(
             AssignTarget::Local { .. } => Err(CodegenError::IrShapeMalformed {
                 variant: "IrExpr::Assign",
                 span: *span,
-                detail: "Assign without enclosing Block — Phase 5 invariant violated".into(),
+                detail: "Assign without an enclosing Block".into(),
             }),
             AssignTarget::StateField { name, .. } => Err(CodegenError::IrShapeMalformed {
                 variant: "IrExpr::Assign",
@@ -826,7 +826,7 @@ fn lower_block_stmts(
         [] => Err(CodegenError::IrShapeMalformed {
             variant: "IrExpr::Block",
             span,
-            detail: "Block with zero stmts — Phase 5 invariant violated".into(),
+            detail: "Block with no statements".into(),
         }),
         [single] => {
             // Single statement: its value is the block's value.
@@ -871,8 +871,8 @@ fn lower_block_stmts(
                     Err(CodegenError::IrShapeMalformed {
                         variant: "IrExpr::Block",
                         span: *let_span,
-                        detail: "Phase 5 invariant violated: LetIn/VarIn must be \
-                                 continuation-form, not Block stmts"
+                        detail: "LetIn/VarIn must be continuation-form, not a Block \
+                                 statement"
                             .into(),
                     })
                 }
@@ -978,7 +978,10 @@ fn lower_construct(
                     return Err(CodegenError::IrShapeMalformed {
                         variant: "SymbolRef::Prelude",
                         span,
-                        detail: format!("Prelude '{name}' expects exactly 1 field, got {}", fields.len()),
+                        detail: format!(
+                            "Prelude '{name}' expects exactly 1 field, got {}",
+                            fields.len()
+                        ),
                     });
                 }
                 let inner = lower_expr_in_scope(&fields[0].1, scope)?;
@@ -991,7 +994,10 @@ fn lower_construct(
                     return Err(CodegenError::IrShapeMalformed {
                         variant: "SymbolRef::Prelude",
                         span,
-                        detail: format!("Prelude '{name}' expects exactly 0 fields, got {}", fields.len()),
+                        detail: format!(
+                            "Prelude '{name}' expects exactly 0 fields, got {}",
+                            fields.len()
+                        ),
                     });
                 }
                 Ok(CErlExpr::Lit(CErlLit::Atom(CErlAtom(tag.into()))))
@@ -1065,9 +1071,7 @@ fn lower_construct(
             other => Err(CodegenError::IrShapeMalformed {
                 variant: "SymbolRef::Prelude",
                 span,
-                detail: format!(
-                    "Prelude '{other}' is not a valid Construct ctor — Phase 5 invariant violated"
-                ),
+                detail: format!("Prelude '{other}' is not a valid Construct ctor"),
             }),
         },
 
@@ -1076,33 +1080,33 @@ fn lower_construct(
         SymbolRef::Local { .. } => Err(CodegenError::IrShapeMalformed {
             variant: "IrExpr::Construct",
             span,
-            detail: "ctor is SymbolRef::Local — not a valid constructor (Phase 5 invariant violated)".into(),
+            detail: "ctor is SymbolRef::Local is not a valid constructor".into(),
         }),
         SymbolRef::Stdlib { .. } => Err(CodegenError::IrShapeMalformed {
             variant: "IrExpr::Construct",
             span,
-            detail: "ctor is SymbolRef::Stdlib — not a valid constructor (Phase 5 invariant violated)".into(),
+            detail: "ctor is SymbolRef::Stdlib is not a valid constructor".into(),
         }),
         SymbolRef::External { .. } => Err(CodegenError::IrShapeMalformed {
             variant: "IrExpr::Construct",
             span,
-            detail: "ctor is SymbolRef::External — not a valid constructor (Phase 5 invariant violated)".into(),
+            detail: "ctor is SymbolRef::External is not a valid constructor".into(),
         }),
         SymbolRef::Handler { .. } => Err(CodegenError::IrShapeMalformed {
             variant: "IrExpr::Construct",
             span,
-            detail: "ctor is SymbolRef::Handler — not a valid constructor (Phase 5 invariant violated)".into(),
+            detail: "ctor is SymbolRef::Handler is not a valid constructor".into(),
         }),
         SymbolRef::ActorType { .. } => Err(CodegenError::IrShapeMalformed {
             variant: "IrExpr::Construct",
             span,
-            detail: "ctor is SymbolRef::ActorType — not a valid constructor (Phase 5 invariant violated)".into(),
+            detail: "ctor is SymbolRef::ActorType is not a valid constructor".into(),
         }),
         // SymbolRef is #[non_exhaustive]; catch future variants.
         _ => Err(CodegenError::IrShapeMalformed {
             variant: "IrExpr::Construct",
             span,
-            detail: "ctor is an unrecognised SymbolRef variant — Phase 5 invariant violated".into(),
+            detail: "ctor is an unrecognised SymbolRef variant".into(),
         }),
     }
 }
@@ -1460,7 +1464,7 @@ fn lower_static_call(
             span,
             detail: format!(
                 "Record constructor '{name}' appeared as Call callee; \
-                 records are constructed via IrExpr::Construct (Phase 5 invariant violated)"
+                 records are constructed via IrExpr::Construct"
             ),
         }),
 
@@ -1473,7 +1477,7 @@ fn lower_static_call(
             span,
             detail: format!(
                 "Handler '{actor}/{handler}' appeared as a Call callee; \
-                 handlers go through IrExpr::Send/Ask (Phase 5 invariant violated)"
+                 handlers go through IrExpr::Send/Ask"
             ),
         }),
         SymbolRef::ActorType { name, .. } => Err(CodegenError::IrShapeMalformed {
@@ -1481,7 +1485,7 @@ fn lower_static_call(
             span,
             detail: format!(
                 "ActorType '{name}' appeared as a Call callee; \
-                 actor types go through IrExpr::Spawn (Phase 5 invariant violated)"
+                 actor types go through IrExpr::Spawn"
             ),
         }),
 
@@ -1599,9 +1603,7 @@ fn lower_prelude_call(
         other => Err(CodegenError::IrShapeMalformed {
             variant: "IrExpr::Call",
             span,
-            detail: format!(
-                "Prelude '{other}' is not a valid Call callee — Phase 5 invariant violated"
-            ),
+            detail: format!("Prelude '{other}' is not a valid Call callee"),
         }),
     }
 }
@@ -3359,7 +3361,7 @@ mod tests {
             }) => {
                 assert_eq!(variant, "IrExpr::Call");
                 assert!(
-                    detail.contains("Handler") && detail.contains("Phase 5 invariant violated"),
+                    detail.contains("Handler") && detail.contains("handlers go through"),
                     "unexpected detail: {detail}"
                 );
             }

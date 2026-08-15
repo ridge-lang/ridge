@@ -30,7 +30,8 @@ pub use diagnostic::{
 };
 
 pub use registry::{
-    lookup as lookup_code, lookup_retired, CodeEntry, RetiredCode, INDEX_URL, REGISTRY, RETIRED,
+    lookup as lookup_code, lookup_retired, CodeEntry, RetiredCode, INDEX_URL, REGISTRY, REPORT_URL,
+    RETIRED,
 };
 
 /// Re-export `Severity` from `ridge_resolve` — one canonical type workspace-wide.

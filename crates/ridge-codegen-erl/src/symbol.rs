@@ -226,7 +226,7 @@ pub(crate) fn lower_symbol(
             span,
             detail: format!(
                 "Handler '{actor}/{handler}' appeared as a value expression; \
-                 handlers are never values (Phase 5 invariant violated)"
+                 handlers are never values"
             ),
         }),
 
@@ -237,7 +237,7 @@ pub(crate) fn lower_symbol(
             span,
             detail: format!(
                 "ActorType '{name}' appeared as a value expression; \
-                 actor types are never values (Phase 5 invariant violated)"
+                 actor types are never values"
             ),
         }),
 

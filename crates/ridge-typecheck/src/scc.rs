@@ -545,6 +545,7 @@ fn write_back_schemes(
                 decl,
                 class_table,
                 &ctx.user_tycon_names,
+                &ctx.tycon_origins,
                 instance_env,
             );
             // Body::Ffi has no expression span to key a scheme entry by.
@@ -761,6 +762,7 @@ pub fn typecheck_module_decls(
                 decl,
                 class_table,
                 &ctx.user_tycon_names,
+                &ctx.tycon_origins,
                 instance_env,
             ) {
                 let scheme = if signature_is_complete(decl) {

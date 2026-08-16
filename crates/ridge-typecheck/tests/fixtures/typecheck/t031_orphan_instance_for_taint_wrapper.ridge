@@ -1,0 +1,9 @@
+-- expect: T031
+-- `SecureCookie` is built in, so an instance for it belongs to whoever declares
+-- the class. Until 0.3.0 this was not the orphan rule declining it — the head
+-- resolved to no type at all and the whole declaration was dropped in silence,
+-- which is also why the taint wrappers were out of reach of the rule.
+instance ToText SecureCookie =
+    toText (v: SecureCookie) -> Text = "x"
+
+fn main () -> Unit = ()

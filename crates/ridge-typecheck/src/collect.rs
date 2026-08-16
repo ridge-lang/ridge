@@ -149,6 +149,7 @@ pub fn collect_workspace_gated(
             module_id,
             &class_table,
             user_tycon_names,
+            origins,
             &mut instance_env,
             &mut errors,
         );
@@ -162,6 +163,7 @@ pub fn collect_workspace_gated(
             module_id,
             &class_table,
             user_tycon_names,
+            origins,
             &mut instance_env,
             &mut errors,
         );
@@ -336,16 +338,19 @@ fn collect_class_decls(
 
 /// Extract one dispatch-key `TyConId` per head atom of an instance declaration.
 ///
-/// Returns `None` for unsupported head forms (the caller skips the instance).
-/// One case is NOT silent: a function-type head keys on the synthetic
-/// `Fn/arity` constructor, which only exists for arities 0..15. Beyond that
-/// there is no dispatch key, so it is rejected here with `T051` — dropping it
-/// silently would surface later as a confusing `T029 NoInstance` at use sites.
+/// Returns `None` when the head cannot be keyed, and says so first. An instance
+/// nobody can dispatch to is worth exactly as much as one that was never
+/// written, so discarding it without a word leaves the author with a passing
+/// build and, eventually, a `T029 NoInstance` for a type they are looking at an
+/// instance for. The over-arity function head has been reported for that reason
+/// since it was added; every other unkeyable head took the silent path until
+/// 0.3.0.
 fn extract_head_tycons(
     head_atoms: &[ridge_ast::Type],
     class: &str,
     span: ridge_ast::Span,
     user_tycon_names: &FxHashMap<String, TyConId>,
+    origins: &TyConOrigins,
     errors: &mut Vec<TypeError>,
 ) -> Option<InstanceHead> {
     let mut head_tycons = InstanceHead::new();
@@ -364,9 +369,43 @@ fn extract_head_tycons(
                 return None;
             }
         }
-        head_tycons.push(extract_tycon_id(atom, user_tycon_names)?);
+        let Some(id) = extract_tycon_id(atom, user_tycon_names, origins) else {
+            errors.push(TypeError::UnsupportedInstanceHead {
+                class: class.to_string(),
+                reason: unkeyable_head_reason(atom),
+                span,
+            });
+            return None;
+        };
+        head_tycons.push(id);
     }
     Some(head_tycons)
+}
+
+/// Why a head atom carries no dispatch key, in terms of what was written.
+///
+/// The two answers are genuinely different problems and the reader needs to
+/// know which one they have: a name nothing declares is a typo or a missing
+/// import, and a shape with no type constructor behind it is a language limit
+/// they cannot spell their way out of.
+fn unkeyable_head_reason(atom: &ridge_ast::Type) -> String {
+    use ridge_ast::Type as AstType;
+    match peel_paren(atom) {
+        AstType::Named { name, .. } => format!(
+            "no type named `{}` is in scope here, so there is nothing to attach the instance to",
+            name.text
+        ),
+        AstType::App { head, .. } => format!(
+            "no type named `{}` is in scope here, so there is nothing to attach the instance to",
+            head.text
+        ),
+        AstType::Tuple { .. } => {
+            "a tuple is not a named type, so an instance cannot be attached to one; \
+             wrap it in a type of your own"
+                .to_string()
+        }
+        _ => "this head has no type constructor to dispatch on".to_string(),
+    }
 }
 
 fn collect_instance_decls(
@@ -374,6 +413,7 @@ fn collect_instance_decls(
     module_id: u32,
     ct: &ClassTable,
     user_tycon_names: &FxHashMap<String, TyConId>,
+    origins: &TyConOrigins,
     env: &mut InstanceEnv,
     errors: &mut Vec<TypeError>,
 ) {
@@ -400,6 +440,7 @@ fn collect_instance_decls(
             &decl.class.text,
             decl.span,
             user_tycon_names,
+            origins,
             errors,
         ) else {
             continue; // Unsupported head form — ignored in this pass.
@@ -521,6 +562,7 @@ fn collect_auto_promoted_to_text(
     module_id: u32,
     ct: &ClassTable,
     user_tycon_names: &FxHashMap<String, TyConId>,
+    origins: &TyConOrigins,
     env: &mut InstanceEnv,
     errors: &mut Vec<TypeError>,
 ) {
@@ -552,7 +594,7 @@ fn collect_auto_promoted_to_text(
         };
 
         // The parameter type must be a concrete named constructor.
-        let Some(tycon_id) = extract_tycon_id(param_ty, user_tycon_names) else {
+        let Some(tycon_id) = extract_tycon_id(param_ty, user_tycon_names, origins) else {
             continue;
         };
 
@@ -631,6 +673,7 @@ pub(crate) fn is_auto_promoted_totext(
     decl: &ridge_ast::FnDecl,
     ct: &ClassTable,
     user_tycon_names: &FxHashMap<String, TyConId>,
+    origins: &TyConOrigins,
     env: &InstanceEnv,
 ) -> bool {
     use ridge_ast::Visibility;
@@ -648,7 +691,7 @@ pub(crate) fn is_auto_promoted_totext(
     let Some(totext_id) = ct.id_by_name("ToText") else {
         return false;
     };
-    let Some(tycon_id) = extract_tycon_id(param_ty, user_tycon_names) else {
+    let Some(tycon_id) = extract_tycon_id(param_ty, user_tycon_names, origins) else {
         return false;
     };
 
@@ -1016,6 +1059,7 @@ fn flatten_head_arg_names(head_atoms: &[ridge_ast::Type]) -> Vec<Option<&str>> {
 fn extract_tycon_id(
     ty: &ridge_ast::Type,
     user_tycon_names: &FxHashMap<String, TyConId>,
+    origins: &TyConOrigins,
 ) -> Option<TyConId> {
     use ridge_ast::Type as AstType;
     match peel_paren(ty) {
@@ -1026,13 +1070,13 @@ fn extract_tycon_id(
         AstType::Named { name, .. } => user_tycon_names
             .get(name.text.as_str())
             .copied()
-            .or_else(|| builtin_tycon_id_by_name(&name.text)),
+            .or_else(|| origins.resolve_compiler_name(&name.text)),
         // `App` covers parametric heads like `List a` or `Map Text a`.
         // The env key uses the outer constructor (`List`, `Map`) only.
         AstType::App { head, .. } => user_tycon_names
             .get(head.text.as_str())
             .copied()
-            .or_else(|| builtin_tycon_id_by_name(&head.text)),
+            .or_else(|| origins.resolve_compiler_name(&head.text)),
         // `Primitive` covers built-in scalars like `Int`, `Float`, `Bool`.
         AstType::Primitive { name, .. } => {
             use ridge_ast::PrimitiveType;
@@ -1060,76 +1104,6 @@ fn extract_tycon_id(
         // parameter atoms; a curried `a -> b -> c` nests its tail in `ret`, so it
         // is arity 1. Arities beyond `FN_ARITY_COUNT` yield `None` (unsupported).
         AstType::Fn { fn_ty, .. } => ridge_types::fn_tycon_id(fn_ty.params.len()),
-        _ => None,
-    }
-}
-
-/// Maps a prelude type name to its fixed `TyConId` index (0-based, matches
-/// `BuiltinTyCons::allocate` assignment order).
-///
-/// Only covers the 17 pre-allocated builtins; user types return `None` here
-/// (they need the [`ridge_types::TyConArena`], threaded in the integration phase).
-fn builtin_tycon_id_by_name(name: &str) -> Option<TyConId> {
-    match name {
-        "Int" => Some(TyConId(0)),
-        "Float" => Some(TyConId(1)),
-        "Bool" => Some(TyConId(2)),
-        "Text" => Some(TyConId(3)),
-        "Unit" => Some(TyConId(4)),
-        "Timestamp" => Some(TyConId(5)),
-        "List" => Some(TyConId(6)),
-        "Map" => Some(TyConId(7)),
-        "Set" => Some(TyConId(8)),
-        "Option" => Some(TyConId(9)),
-        "Result" => Some(TyConId(10)),
-        "Handle" => Some(TyConId(11)),
-        // `ChildSpec` / `Supervisor` — the typed-supervision builtins,
-        // interned after `Instant` (ids 57, 58) in `BuiltinTyCons::allocate`.
-        "ChildSpec" => Some(TyConId(57)),
-        "Supervisor" => Some(TyConId(58)),
-        // `Monitor` — the opaque process-monitor reference (`std.actor`),
-        // interned after `Supervisor` (id 59) in `BuiltinTyCons::allocate`.
-        "Monitor" => Some(TyConId(59)),
-        "Error" => Some(TyConId(12)),
-        "Duration" => Some(TyConId(13)),
-        "Output" => Some(TyConId(14)),
-        "Ordering" => Some(TyConId(15)),
-        "JsonValue" => Some(TyConId(16)),
-        "QExpr" => Some(TyConId(25)),
-        "Quote" => Some(TyConId(26)),
-        // `Ret/1` — the return-type projection. Surfaced for stdlib query-builder
-        // signatures (`Result (List (Ret p)) Error`); reduces during unification.
-        // Interned right after the Fn/N block (see `ridge_types::RET_TYCON_ID`).
-        "Ret" => Some(TyConId(ridge_types::RET_TYCON_ID)),
-        // `Rows/1` — the row-shape projection for the decode terminals
-        // (`Result (List (Rows q)) Error`); reduces during unification. Interned
-        // right after `Ret/1` (see `ridge_types::ROWS_TYCON_ID`).
-        "Rows" => Some(TyConId(ridge_types::ROWS_TYCON_ID)),
-        // `JoinCond/2` — the join-condition shape projection for the N-ary
-        // `joinOn` (`Quote (JoinCond q f)`); reduces during unification. Interned
-        // right after `Rows/1` (see `ridge_types::JOINCOND_TYCON_ID`).
-        "JoinCond" => Some(TyConId(ridge_types::JOINCOND_TYCON_ID)),
-        // `JoinResult/2` — the result projection for the N-ary `joinOn`
-        // (the method's return); reduces during unification. Interned right after
-        // `JoinCond/2` (see `ridge_types::JOINRESULT_TYCON_ID`).
-        "JoinResult" => Some(TyConId(ridge_types::JOINRESULT_TYCON_ID)),
-        // `LeftJoinResult/2` — the result projection for the N-ary LEFT outer-join
-        // verb (`leftJoinOn`'s return); reduces during unification. Interned right
-        // after `JoinResult/2` (see `ridge_types::LEFTJOINRESULT_TYCON_ID`).
-        "LeftJoinResult" => Some(TyConId(ridge_types::LEFTJOINRESULT_TYCON_ID)),
-        // `RightJoinResult/2` — the result projection for the N-ary RIGHT outer-join
-        // verb (`rightJoinOn`'s return); reduces during unification. Interned right
-        // after `LeftJoinResult/2` (see `ridge_types::RIGHTJOINRESULT_TYCON_ID`).
-        "RightJoinResult" => Some(TyConId(ridge_types::RIGHTJOINRESULT_TYCON_ID)),
-        // `FullJoinResult/2` — the result projection for the N-ary FULL outer-join
-        // verb (`fullJoinOn`'s return); reduces during unification. Interned right
-        // after `RightJoinResult/2` (see `ridge_types::FULLJOINRESULT_TYCON_ID`).
-        "FullJoinResult" => Some(TyConId(ridge_types::FULLJOINRESULT_TYCON_ID)),
-        // `InsertShape/1` — the insert-input shape projection for the typed insert
-        // verbs (`InsertShape e`, the entity minus its database-generated columns);
-        // reduces during unification. Interned right after `FullJoinResult/2`
-        // (see `ridge_types::INSERTSHAPE_TYCON_ID`).
-        "InsertShape" => Some(TyConId(ridge_types::INSERTSHAPE_TYCON_ID)),
         _ => None,
     }
 }
@@ -1318,6 +1292,19 @@ mod tests {
         })
     }
 
+    /// The compiler's own types, which is what every real caller passes.
+    ///
+    /// Since the hand-written name table went away, a built-in head resolves
+    /// through this and nothing else — so a test that means `instance ToText
+    /// Int` to be keyed has to hand over a populated table. An empty one now
+    /// reports `T051` rather than dropping the instance, which is the point of
+    /// the change and the reason these two tests started failing.
+    fn builtin_origins() -> TyConOrigins {
+        let mut arena = ridge_types::TyConArena::new();
+        let _ = ridge_types::BuiltinTyCons::allocate(&mut arena);
+        TyConOrigins::new(arena.all(), &[], &[])
+    }
+
     /// Declare every name in `user_types` as belonging to module 0, which is
     /// the only module these tests build instances in.
     ///
@@ -1397,7 +1384,7 @@ mod tests {
         let result = collect_workspace(
             &[(0, &m)],
             &rustc_hash::FxHashMap::default(),
-            &TyConOrigins::default(),
+            &builtin_origins(),
         );
         let has_t032 = result.errors.iter().any(|e| e.code() == "T032");
         assert!(
@@ -1420,7 +1407,7 @@ mod tests {
         let result = collect_workspace(
             &[(0, &mod0), (1, &mod1)],
             &rustc_hash::FxHashMap::default(),
-            &TyConOrigins::default(),
+            &builtin_origins(),
         );
         let has_t031 = result.errors.iter().any(|e| e.code() == "T031");
         assert!(

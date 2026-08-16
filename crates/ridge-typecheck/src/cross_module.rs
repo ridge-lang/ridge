@@ -58,13 +58,21 @@ pub(crate) fn compiler_tycon_names(decls: &[TyConDecl]) -> FxHashMap<String, TyC
 /// missing entry turns into a reported orphan rather than a permitted one — a
 /// caller that forgets to populate this gets a failing build, not a quiet hole
 /// of the kind it exists to close.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct TyConOrigins {
     /// Indexed by `TyConId.0`; ids past the end are unknown rather than absent,
     /// since the collect pass may see a head the prediction never covered.
     entries: Vec<TyConOrigin>,
     /// Fully-qualified module names, indexed by raw `ModuleId`.
     module_fqns: Vec<String>,
+    /// Compiler-declared type names to their ids — the built-ins and the
+    /// reconciled stdlib block, and only those.
+    ///
+    /// Deliberately excludes user types: the flattened workspace map is the
+    /// authority for those, and two tables answering the same question is how
+    /// they come to disagree. This one exists so a name the compiler declares
+    /// resolves without anybody writing it down a second time.
+    compiler_by_name: FxHashMap<String, TyConId>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -121,10 +129,45 @@ impl TyConOrigins {
             }
         }
 
+        // Read off the normalised entries rather than the raw declarations, so
+        // this holds however the table was built. "Compiler-declared" is now
+        // exactly "no declaring module", which by that point includes the
+        // opaque wrappers whose raw field is the `u32::MAX` sentinel — those
+        // are types user code names in signatures and instance heads, and
+        // filtering them on the raw field is what made an
+        // `instance ToText SecureCookie` resolve to nothing at all. It also
+        // excludes user types, which matters when the caller passes an arena
+        // that has already been through a full check and carries them.
+        let anon: std::collections::HashSet<&str> = compiler_decls
+            .iter()
+            .filter(|d| d.is_anon)
+            .map(|d| d.name.as_str())
+            .collect();
+        let compiler_by_name = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.def_module.is_none())
+            .filter_map(|(i, e)| e.name.as_ref().map(|n| (i, n)))
+            .filter(|(_, n)| !anon.contains(n.as_str()))
+            .map(|(i, n)| (n.clone(), TyConId(u32::try_from(i).unwrap_or(u32::MAX))))
+            .collect();
+
         Self {
             entries,
             module_fqns: module_fqns.to_vec(),
+            compiler_by_name,
         }
+    }
+
+    /// The id of a type the compiler itself declares, by the name user code
+    /// writes for it.
+    ///
+    /// Answers only for compiler-declared types. A user type resolves through
+    /// the workspace name map instead, which is the authority for those and
+    /// knows which module wins when two declare the same name.
+    #[must_use]
+    pub fn resolve_compiler_name(&self, name: &str) -> Option<TyConId> {
+        self.compiler_by_name.get(name).copied()
     }
 
     /// The module that declares `id`, or `None` when it is a prelude type or an

@@ -1,0 +1,9 @@
+-- expect: T051
+-- A tuple has no type constructor to dispatch on, so there is no key for the
+-- instance table. Reported rather than dropped: an instance that silently does
+-- not exist reappears later as T029 at a use site, pointing at a type the
+-- reader is looking at an instance for.
+instance ToText (Int, Text) =
+    toText (v: (Int, Text)) -> Text = "x"
+
+fn main () -> Unit = ()

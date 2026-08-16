@@ -261,139 +261,15 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
     // ── 3. Collect source maps ────────────────────────────────────────────────
     let source_maps = collect_source_maps(&lowered.modules);
 
-    // ── 4. Codegen ───────────────────────────────────────────────────────────
-    // Output root is `<workspace_root>/target/ridge/<profile>/`.
-    let out_root = options
-        .workspace_root
-        .join("target")
-        .join("ridge")
-        .join(options.profile.dir_name());
-
-    let codegen_profile = map_profile(options.profile);
-
-    // Decide whether to invoke erlc based on EmitArtefacts.
-    // EmitArtefacts::Core means .core only — no erlc invocation.
-    let invoke_erlc = options.emit.emit_beam();
-
-    // CodegenOptions is #[non_exhaustive], so we build via Default then patch.
-    let mut codegen_opts = CodegenOptions::default();
-    codegen_opts.out_root = out_root;
-    codegen_opts.profile = codegen_profile;
-    codegen_opts.invoke_erlc = invoke_erlc;
-    codegen_opts.install_runtime = true;
-
-    // Capture out_root before codegen_workspace moves codegen_opts.
-    let codegen_out_root = codegen_opts.out_root.clone();
-    let codegen_result = codegen_workspace(&lowered, codegen_opts);
-
-    // ── 4b. Stdlib `.beam` distribution ──────────────────────────────────────
-    // Compile the Ridge stdlib sources into `<out_root>/beam/` so that
-    // `BridgeTarget::RidgeStdlibLocal` callers (e.g. `call 'std.list':head(1)`)
-    // can find their BEAM modules at runtime.
-    //
-    // Idempotent: skipped when the emitted set is complete, written by this
-    // compiler version, and no older than the compiler binary — which covers
-    // incremental rebuilds and repeated `ridge test` runs without treating one
-    // file as proof of the whole standard library.
-    //
-    // Only runs when `invoke_erlc` is true — `.core`-only builds do not need
-    // the stdlib on the BEAM code path.
-    if invoke_erlc {
-        let beam_dir = codegen_out_root.join("beam");
-        // A failure here leaves a typecheck-clean build whose stdlib modules are
-        // absent, so anything calling a Ridge-bodied stdlib function dies at
-        // startup with `undef`. How loudly to say so depends on whether this
-        // invocation is the one that runs it: `build` hands the artefacts to a
-        // later step that can act on a warning, while `run` and `test` are that
-        // step and gain nothing from starting a program already known to be
-        // broken.
-        if let Err(e) =
-            compile_stdlib_beams(&beam_dir, &codegen_out_root, map_profile(options.profile))
-        {
-            let reason = describe_stdlib_bundle_failure(&e);
-            if options.will_execute {
-                return Err(CompileError::StdlibBundleFailed { message: reason });
-            }
-            eprintln!("warning: stdlib BEAM bundling failed: {reason}");
-            eprintln!(
-                "warning: programs calling Ridge-bodied stdlib functions (List.head, Option.withDefault, ...) will crash at runtime with `undef`."
-            );
-        }
-    }
-
-    // ── 5. Collect artefact paths and diagnostics ─────────────────────────────
-    let mut beam_files: Vec<PathBuf> = Vec::new();
-    let mut core_files: Vec<PathBuf> = Vec::new();
-    let mut diagnostics: Vec<Diagnostic> = Vec::new();
-
-    for module_opt in &codegen_result.modules {
-        let Some(m) = module_opt else { continue };
-        if options.emit.emit_core() {
-            core_files.push(m.core_path.clone());
-        }
-        if let Some(beam_path) = &m.beam_path {
-            beam_files.push(beam_path.clone());
-        }
-    }
-
-    // ── 5b. Entry-point modules (the modules that define `fn main`) ──────────
-    // Record the BEAM atom of every module that carries a top-level `fn main`,
-    // tagged with its project name, so `ridge run` / `ridge build --bin` launch
-    // the real entry point rather than `beam_files[0]` (which is merely the
-    // first module by fully-qualified name).
-    let beam_by_module: FxHashMap<ModuleId, String> = codegen_result
-        .modules
-        .iter()
-        .filter_map(|slot| slot.as_ref())
-        .map(|m| (m.module, m.beam_module_name.clone()))
-        .collect();
-    let mut entry_modules: Vec<EntryModule> = Vec::new();
-    for slot in &lowered.modules {
-        let Some(m) = slot else { continue };
-        let has_main = m
-            .items
-            .iter()
-            .any(|item| matches!(item, IrItem::Fn(f) if f.is_main));
-        if !has_main {
-            continue;
-        }
-        // A project that declares an entry has exactly one: the module the
-        // manifest names. Any other `main` in the same project is an ordinary
-        // function that happens to carry the name, not a second candidate —
-        // treating it as one made the alphabetically-first module win over the
-        // declared entry. Projects with no declared entry (libraries) keep the
-        // has-a-`main` rule.
-        if !is_declared_entry(&resolved.graph, m.id) {
-            continue;
-        }
-        let Some(beam_module) = beam_by_module.get(&m.id).cloned() else {
-            continue;
-        };
-        let (module_fqn, project_name) = resolved
-            .graph
-            .modules
-            .iter()
-            .find(|mm| mm.id == m.id)
-            .map(|mm| {
-                let proj = resolved
-                    .graph
-                    .projects
-                    .get(mm.project.0 as usize)
-                    .map(|p| p.manifest.name.clone())
-                    .unwrap_or_default();
-                (mm.fully_qualified_name.clone(), proj)
-            })
-            .unwrap_or_default();
-        entry_modules.push(EntryModule {
-            project_name,
-            module_fqn,
-            beam_module,
-        });
-    }
-
     // Build source cache from the workspace graph — used both here and
     // returned to the caller for rendering.
     let sources = WorkspaceSourceCache::from_workspace(&resolved.graph);
+
+    // ── 3b. Diagnostics from the analysis phases ─────────────────────────────
+    // Assembled before codegen, because whether codegen may run depends on the
+    // answer. Every phase above has already finished, so nothing is lost by
+    // asking now: the user still gets the same diagnostics in one pass.
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
     // Discovery-phase errors (e.g. R023 for legacy .rg files) have no module
     // source location; use the unknown source placeholder.
@@ -442,8 +318,156 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
         diagnostics.push(diag_from_lower(e, sid));
     }
 
-    // Surface codegen errors (non-fatal; best-effort).
-    for e in &codegen_result.errors {
+    // Carrying on past an error to collect more diagnostics is deliberate and
+    // worth keeping. Letting that same decision govern *output* is not:
+    // codegen would replace the artefacts of the last build that succeeded
+    // with the program the compiler has just rejected, and hand `erlc` a
+    // module it should never see. Analysis is free to continue; writing to
+    // `target/` is not.
+    let analysis_failed = diagnostics
+        .iter()
+        .any(|d| matches!(d.severity, Severity::Error));
+
+    // ── 4. Codegen ───────────────────────────────────────────────────────────
+    // Output root is `<workspace_root>/target/ridge/<profile>/`.
+    let out_root = options
+        .workspace_root
+        .join("target")
+        .join("ridge")
+        .join(options.profile.dir_name());
+
+    // Kept for the reload snapshot below, which needs the path whether or not
+    // codegen ran.
+    let codegen_out_root = out_root.clone();
+
+    let codegen_profile = map_profile(options.profile);
+
+    // Decide whether to invoke erlc based on EmitArtefacts.
+    // EmitArtefacts::Core means .core only — no erlc invocation.
+    let invoke_erlc = options.emit.emit_beam();
+
+    let codegen_result = if analysis_failed {
+        None
+    } else {
+        // CodegenOptions is #[non_exhaustive], so we build via Default then patch.
+        let mut codegen_opts = CodegenOptions::default();
+        codegen_opts.out_root = out_root;
+        codegen_opts.profile = codegen_profile;
+        codegen_opts.invoke_erlc = invoke_erlc;
+        codegen_opts.install_runtime = true;
+        Some(codegen_workspace(&lowered, codegen_opts))
+    };
+
+    // ── 4b. Stdlib `.beam` distribution ──────────────────────────────────────
+    // Compile the Ridge stdlib sources into `<out_root>/beam/` so that
+    // `BridgeTarget::RidgeStdlibLocal` callers (e.g. `call 'std.list':head(1)`)
+    // can find their BEAM modules at runtime.
+    //
+    // Idempotent: skipped when the emitted set is complete, written by this
+    // compiler version, and no older than the compiler binary — which covers
+    // incremental rebuilds and repeated `ridge test` runs without treating one
+    // file as proof of the whole standard library.
+    //
+    // Only runs when `invoke_erlc` is true — `.core`-only builds do not need
+    // the stdlib on the BEAM code path — and only when codegen itself ran: a
+    // build that produced no modules has nothing to link the stdlib against.
+    if invoke_erlc && codegen_result.is_some() {
+        let beam_dir = codegen_out_root.join("beam");
+        // A failure here leaves a typecheck-clean build whose stdlib modules are
+        // absent, so anything calling a Ridge-bodied stdlib function dies at
+        // startup with `undef`. How loudly to say so depends on whether this
+        // invocation is the one that runs it: `build` hands the artefacts to a
+        // later step that can act on a warning, while `run` and `test` are that
+        // step and gain nothing from starting a program already known to be
+        // broken.
+        if let Err(e) =
+            compile_stdlib_beams(&beam_dir, &codegen_out_root, map_profile(options.profile))
+        {
+            let reason = describe_stdlib_bundle_failure(&e);
+            if options.will_execute {
+                return Err(CompileError::StdlibBundleFailed { message: reason });
+            }
+            eprintln!("warning: stdlib BEAM bundling failed: {reason}");
+            eprintln!(
+                "warning: programs calling Ridge-bodied stdlib functions (List.head, Option.withDefault, ...) will crash at runtime with `undef`."
+            );
+        }
+    }
+
+    // ── 5. Collect artefact paths ─────────────────────────────────────────────
+    // Both stay empty when codegen was skipped, which is what a failed build
+    // should report: no artefacts were produced, and none were replaced.
+    let mut beam_files: Vec<PathBuf> = Vec::new();
+    let mut core_files: Vec<PathBuf> = Vec::new();
+
+    for module_opt in codegen_result.iter().flat_map(|r| r.modules.iter()) {
+        let Some(m) = module_opt else { continue };
+        if options.emit.emit_core() {
+            core_files.push(m.core_path.clone());
+        }
+        if let Some(beam_path) = &m.beam_path {
+            beam_files.push(beam_path.clone());
+        }
+    }
+
+    // ── 5b. Entry-point modules (the modules that define `fn main`) ──────────
+    // Record the BEAM atom of every module that carries a top-level `fn main`,
+    // tagged with its project name, so `ridge run` / `ridge build --bin` launch
+    // the real entry point rather than `beam_files[0]` (which is merely the
+    // first module by fully-qualified name).
+    let beam_by_module: FxHashMap<ModuleId, String> = codegen_result
+        .iter()
+        .flat_map(|r| r.modules.iter())
+        .filter_map(|slot| slot.as_ref())
+        .map(|m| (m.module, m.beam_module_name.clone()))
+        .collect();
+    let mut entry_modules: Vec<EntryModule> = Vec::new();
+    for slot in &lowered.modules {
+        let Some(m) = slot else { continue };
+        let has_main = m
+            .items
+            .iter()
+            .any(|item| matches!(item, IrItem::Fn(f) if f.is_main));
+        if !has_main {
+            continue;
+        }
+        // A project that declares an entry has exactly one: the module the
+        // manifest names. Any other `main` in the same project is an ordinary
+        // function that happens to carry the name, not a second candidate —
+        // treating it as one made the alphabetically-first module win over the
+        // declared entry. Projects with no declared entry (libraries) keep the
+        // has-a-`main` rule.
+        if !is_declared_entry(&resolved.graph, m.id) {
+            continue;
+        }
+        let Some(beam_module) = beam_by_module.get(&m.id).cloned() else {
+            continue;
+        };
+        let (module_fqn, project_name) = resolved
+            .graph
+            .modules
+            .iter()
+            .find(|mm| mm.id == m.id)
+            .map(|mm| {
+                let proj = resolved
+                    .graph
+                    .projects
+                    .get(mm.project.0 as usize)
+                    .map(|p| p.manifest.name.clone())
+                    .unwrap_or_default();
+                (mm.fully_qualified_name.clone(), proj)
+            })
+            .unwrap_or_default();
+        entry_modules.push(EntryModule {
+            project_name,
+            module_fqn,
+            beam_module,
+        });
+    }
+
+    // Surface codegen errors (non-fatal; best-effort). Reachable only when
+    // codegen ran, which a program that failed analysis never does.
+    for e in codegen_result.iter().flat_map(|r| r.errors.iter()) {
         let sid = WorkspaceSourceCache::unknown_source_id();
         diagnostics.push(diag_from_codegen(e, sid));
     }

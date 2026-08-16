@@ -850,7 +850,7 @@ A function calls another with higher capabilities than itself declares.
 
 ### T019
 
-An actor handler declares capabilities not present in the actor's own declared capability set.
+An actor's `init` block declares a capability that no member of the running actor declares.
 
 ### T020
 

@@ -404,7 +404,7 @@ impl TypeError {
             } => {
                 write!(
                     f,
-                    "actor capability leak\n  handler `{handler}` on actor `{actor}` declares `{leaking_caps}` which is not in the actor's capability set"
+                    "actor capability leak\n  `{handler}` on actor `{actor}` declares `{leaking_caps}`, which no member of the running actor declares"
                 )
             }
 

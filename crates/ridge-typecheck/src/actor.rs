@@ -658,82 +658,70 @@ pub fn infer_actor_send(
 
 // ── Actor encapsulation check ─────────────────────────────────────────────────
 
-/// Per §4.15 rule 2: the actor's declared cap set must equal the union of its
-/// handlers' declared caps.
+/// The actor's effective capability set — what the running actor is permitted
+/// to do, inferred from the members that declare capabilities.
 ///
-/// Fires `T019 ActorCapabilityLeak` when the actor's `init` block declares
-/// capabilities that fall outside the union of the actor's handler caps.
+/// Actors carry no explicit capability annotation, so the set is the union of
+/// every member that serves the actor once it is running: its `on` handlers,
+/// its `terminate` callback and its `onDown` handler. Each declares its own
+/// capabilities inline, where a reader of the actor sees them.
 ///
-/// In 0.1.0, actors have no explicit cap annotation in the AST; the actor's
-/// effective capability set is computed as the union of all handler caps.
-/// Handlers themselves are always within this union by construction, so T019
-/// is only reachable through the `init` block — e.g., an `init` that calls
-/// `Io.println` (needs `{io}`) while no handler declares `{io}`.
+/// `init` is deliberately not part of the union. It runs once, before the
+/// actor serves anything, so the rule that it stay within what the actor may
+/// do is a real boundary rather than a tautology.
+fn effective_actor_caps(schema: &ActorSchema) -> CapabilitySet {
+    schema.handlers.iter().fold(
+        schema.terminate_caps.union(&schema.on_down_caps),
+        |acc, h| acc.union(&h.caps),
+    )
+}
+
+/// Actor encapsulation, as specified: the actor's `init` block may not reach
+/// for a capability the running actor does not have.
 ///
-/// This is a defensive check.  The spec says "should not fire today" for
-/// handler caps; this implementation fires on `init` cap mismatches (D018 Model
-/// B: actor's boundary is the union of handler caps).
+/// Fires `T019 ActorCapabilityLeak` when `init` declares a capability that no
+/// serving member of the actor declares — an `init` that calls `Io.println`
+/// inside an actor that never touches `io` afterwards.
+///
+/// The effective set is derived here from the schema rather than accepted from
+/// the caller. It used to be a parameter, and the one caller built it from the
+/// `on` handlers alone; `terminate` was then checked against a set its own
+/// declaration could not enter, so `terminate io` was rejected unless some
+/// unrelated handler also declared `io`. Deriving it is what stops a caller
+/// from computing it a different way again.
+///
+/// # Arguments
+///
+/// A per-handler leak used to be reported here too, and was unreachable before
+/// this change as well — the set was the union of the handler caps, so no
+/// handler could exceed it. It is gone rather than kept dormant: it could only
+/// have fired through the caller-supplied set that caused the bug above.
 ///
 /// # Arguments
 ///
 /// - `actor_name` — the actor's type name (for the diagnostic).
-/// - `actor_caps` — the effective capability set of the actor (union of handler caps).
 /// - `schema` — the actor's schema containing handler and init definitions.
-/// - `handler_spans` — optional per-handler spans for diagnostics; if
-///   `handler_spans[i]` is `None`, `fallback_span` is used.
-/// - `fallback_span` — used when no per-handler span is available.
+/// - `span` — the actor declaration's span, which is where the diagnostic
+///   points; the members carry no spans of their own yet.
 #[must_use]
 pub fn check_actor_encapsulation(
     actor_name: &str,
-    actor_caps: CapabilitySet,
     schema: &ActorSchema,
-    handler_spans: &[Option<Span>],
-    fallback_span: Span,
+    span: Span,
 ) -> Vec<TypeError> {
     let mut errors = Vec::new();
+    let actor_caps = effective_actor_caps(schema);
 
-    // Check each handler: caps present in handler.caps but absent from actor_caps.
-    // With actor_caps = union(handler_caps), this is always empty for handlers.
-    // Kept for future-proofing (if explicit actor-level cap annotations are added).
-    for (i, handler) in schema.handlers.iter().enumerate() {
-        let leaking = handler.caps.difference(&actor_caps);
-        if !leaking.is_pure() {
-            let hspan = handler_spans
-                .get(i)
-                .and_then(|s| *s)
-                .unwrap_or(fallback_span);
-            errors.push(TypeError::ActorCapabilityLeak {
-                actor: actor_name.to_string(),
-                handler: handler.name.clone(),
-                leaking_caps: leaking,
-                span: hspan,
-            });
-        }
-    }
-
-    // Check the init block: init_caps must be ⊆ actor_caps (union of handler caps).
-    // T019 fires if the init block declares a capability not present in any handler.
-    // This catches the case where an init block uses IO/FS/etc. while no handler
-    // ever uses those capabilities — a genuine capability leak at the actor boundary.
+    // `init` must stay within what the running actor may do. Nothing else is
+    // checked here: every other member contributes to the set it would be
+    // measured against, so a check on one could never fail.
     let init_leaking = schema.init_caps.difference(&actor_caps);
     if !init_leaking.is_pure() {
         errors.push(TypeError::ActorCapabilityLeak {
             actor: actor_name.to_string(),
             handler: "init".to_string(),
             leaking_caps: init_leaking,
-            span: fallback_span,
-        });
-    }
-
-    // The terminate callback runs in the actor process exactly like init, so
-    // the same boundary rule applies: terminate_caps ⊆ actor_caps.
-    let terminate_leaking = schema.terminate_caps.difference(&actor_caps);
-    if !terminate_leaking.is_pure() {
-        errors.push(TypeError::ActorCapabilityLeak {
-            actor: actor_name.to_string(),
-            handler: "terminate".to_string(),
-            leaking_caps: terminate_leaking,
-            span: fallback_span,
+            span,
         });
     }
 
@@ -1407,81 +1395,110 @@ mod tests {
         ctx.env.pop_frame();
     }
 
-    // ── T15-13: actor_encapsulation_no_leak_ok ───────────────────────────────
+    // ── Actor encapsulation (T019) ───────────────────────────────────────────
+
+    /// Builds a schema with no members; each test fills in what it needs.
+    fn bare_schema() -> ActorSchema {
+        ActorSchema {
+            state_fields: vec![],
+            init_params: None,
+            init_caps: CapabilitySet::PURE,
+            terminate_params: None,
+            terminate_caps: CapabilitySet::PURE,
+            on_down_params: None,
+            on_down_caps: CapabilitySet::PURE,
+            handlers: vec![],
+        }
+    }
+
+    fn handler(name: &str, caps: CapabilitySet) -> HandlerSchema {
+        HandlerSchema {
+            name: name.to_string(),
+            params: vec![],
+            ret: Type::Con(ridge_types::TyConId(0), vec![]),
+            caps,
+        }
+    }
 
     #[test]
     fn actor_encapsulation_no_leak_t019_ok() {
-        // actor declares {io, fs}; both handlers union to {io, fs} — no T019.
-        let io_fs = CapabilitySet::singleton(Capability::Io)
-            .union(&CapabilitySet::singleton(Capability::Fs));
-
         let schema = ActorSchema {
-            state_fields: vec![],
-            init_params: None,
-            init_caps: CapabilitySet::PURE,
-            terminate_params: None,
-            terminate_caps: CapabilitySet::PURE,
-            on_down_params: None,
-            on_down_caps: CapabilitySet::PURE,
             handlers: vec![
-                HandlerSchema {
-                    name: "doIo".to_string(),
-                    params: vec![],
-                    ret: Type::Con(ridge_types::TyConId(0), vec![]),
-                    caps: CapabilitySet::singleton(Capability::Io),
-                },
-                HandlerSchema {
-                    name: "doFs".to_string(),
-                    params: vec![],
-                    ret: Type::Con(ridge_types::TyConId(0), vec![]),
-                    caps: CapabilitySet::singleton(Capability::Fs),
-                },
+                handler("doIo", CapabilitySet::singleton(Capability::Io)),
+                handler("doFs", CapabilitySet::singleton(Capability::Fs)),
             ],
+            ..bare_schema()
         };
 
-        let errors = check_actor_encapsulation("MyActor", io_fs, &schema, &[], ds());
+        let errors = check_actor_encapsulation("MyActor", &schema, ds());
         assert!(
             errors.is_empty(),
-            "expected no errors when actor caps == handler union, got {errors:?}"
+            "handlers define the actor's own set, so they cannot leak; got {errors:?}"
         );
     }
 
-    // ── T15-14: actor_encapsulation_handler_leak_T019 ────────────────────────
-
+    /// The case behind #541: a `terminate` that cleans up with `io` inside an
+    /// actor whose handlers are pure. It used to be measured against a set
+    /// built from the handlers alone, so it always leaked.
     #[test]
-    fn actor_encapsulation_handler_leak_t019() {
-        // actor declares {io}, one handler declares {io, fs} — T019 with {fs}.
-        let actor_caps = CapabilitySet::singleton(Capability::Io);
-
+    fn terminate_caps_do_not_leak_when_no_handler_declares_them() {
         let schema = ActorSchema {
-            state_fields: vec![],
-            init_params: None,
-            init_caps: CapabilitySet::PURE,
-            terminate_params: None,
-            terminate_caps: CapabilitySet::PURE,
-            on_down_params: None,
-            on_down_caps: CapabilitySet::PURE,
-            handlers: vec![HandlerSchema {
-                name: "doIoAndFs".to_string(),
-                params: vec![],
-                ret: Type::Con(ridge_types::TyConId(0), vec![]),
-                caps: CapabilitySet::singleton(Capability::Io)
-                    .union(&CapabilitySet::singleton(Capability::Fs)),
-            }],
+            terminate_caps: CapabilitySet::singleton(Capability::Io),
+            handlers: vec![handler("tick", CapabilitySet::PURE)],
+            ..bare_schema()
         };
 
-        let errors = check_actor_encapsulation("MyActor", actor_caps, &schema, &[], ds());
+        let errors = check_actor_encapsulation("MyActor", &schema, ds());
+        assert!(
+            errors.is_empty(),
+            "a terminate callback declares its own capabilities; got {errors:?}"
+        );
+    }
+
+    /// And the answer must not depend on an unrelated member, which is exactly
+    /// what gave the bug away: adding `io` to a handler used to be the fix.
+    #[test]
+    fn terminate_verdict_does_not_depend_on_an_unrelated_handler() {
+        let alone = ActorSchema {
+            terminate_caps: CapabilitySet::singleton(Capability::Io),
+            handlers: vec![handler("tick", CapabilitySet::PURE)],
+            ..bare_schema()
+        };
+        let with_io_handler = ActorSchema {
+            terminate_caps: CapabilitySet::singleton(Capability::Io),
+            handlers: vec![handler("tick", CapabilitySet::singleton(Capability::Io))],
+            ..bare_schema()
+        };
+
+        assert_eq!(
+            check_actor_encapsulation("MyActor", &alone, ds()).len(),
+            check_actor_encapsulation("MyActor", &with_io_handler, ds()).len(),
+            "the same terminate block must get the same verdict either way"
+        );
+    }
+
+    /// The rule that survives: `init` runs before the actor serves anything, so
+    /// it may not reach for a capability the running actor does not have.
+    #[test]
+    fn init_still_leaks_a_capability_no_member_declares() {
+        let schema = ActorSchema {
+            init_caps: CapabilitySet::singleton(Capability::Fs),
+            handlers: vec![handler("doIo", CapabilitySet::singleton(Capability::Io))],
+            ..bare_schema()
+        };
+
+        let errors = check_actor_encapsulation("MyActor", &schema, ds());
         assert_eq!(errors.len(), 1, "expected T019, got {errors:?}");
         assert_eq!(errors[0].code(), "T019");
         if let TypeError::ActorCapabilityLeak {
             actor,
-            handler,
+            handler: member,
             leaking_caps,
             ..
         } = &errors[0]
         {
             assert_eq!(actor, "MyActor");
-            assert_eq!(handler, "doIoAndFs");
+            assert_eq!(member, "init");
             assert!(
                 leaking_caps.contains(Capability::Fs),
                 "expected {{fs}} in leaking_caps, got {leaking_caps:?}"
@@ -1491,6 +1508,37 @@ mod tests {
                 "{{io}} must NOT be in leaking_caps"
             );
         }
+    }
+
+    /// `terminate` contributes to the set `init` is measured against, so an
+    /// init that uses what the shutdown path uses is legal. This is the one
+    /// place the union's contents are observable, so it is what pins them.
+    #[test]
+    fn init_may_use_a_capability_only_terminate_declares() {
+        let schema = ActorSchema {
+            init_caps: CapabilitySet::singleton(Capability::Io),
+            terminate_caps: CapabilitySet::singleton(Capability::Io),
+            handlers: vec![handler("tick", CapabilitySet::PURE)],
+            ..bare_schema()
+        };
+
+        let errors = check_actor_encapsulation("MyActor", &schema, ds());
+        assert!(errors.is_empty(), "got {errors:?}");
+    }
+
+    /// Same for `onDown`, whose declared capabilities the check never read at
+    /// all before this change.
+    #[test]
+    fn init_may_use_a_capability_only_on_down_declares() {
+        let schema = ActorSchema {
+            init_caps: CapabilitySet::singleton(Capability::Fs),
+            on_down_caps: CapabilitySet::singleton(Capability::Fs),
+            handlers: vec![handler("tick", CapabilitySet::PURE)],
+            ..bare_schema()
+        };
+
+        let errors = check_actor_encapsulation("MyActor", &schema, ds());
+        assert!(errors.is_empty(), "got {errors:?}");
     }
 
     // ── T15-15: caller_absorbs_only_time_for_ask ─────────────────────────────

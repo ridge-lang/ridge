@@ -1,8 +1,9 @@
 -- expect-clean
 -- A terminate callback that declares the capability its body uses checks
--- cleanly when a handler also declares it: the actor boundary is the union
--- of handler caps, and the callback's declared set must stay within it
--- (T019 otherwise). The reason param matches over ExitReason's variants;
+-- cleanly. A handler declares it here too, which is fine but is not what
+-- makes it legal — cap_terminate_declares_own_capability_clean is the same
+-- callback with nothing sharing it. The reason param matches over
+-- ExitReason's variants;
 -- NotRunning never reaches terminate (it only comes from monitoring an
 -- already-dead process) but the match must still cover it.
 import std.io as Io

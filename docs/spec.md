@@ -440,7 +440,7 @@ fn spawn main () =
     ...
 ```
 
-Handlers may declare capabilities; the actor's effective capability set is the union of its handlers'. Capabilities of handlers are **encapsulated**: callers of `?>` inherit only `time` (for the implicit timeout), not the handler's capabilities. See [§6.4](#64-actor-encapsulation-model-b).
+Handlers may declare capabilities; the actor's effective capability set is the union of every member that serves the running actor — its `on` handlers, its `terminate` callback and its `onDown` handler. Capabilities of handlers are **encapsulated**: callers of `?>` inherit only `time` (for the implicit timeout), not the handler's capabilities. See [§6.4](#64-actor-encapsulation-model-b).
 
 A bare `spawn` returns a handle to one unprotected process: when it dies, it stays dead. An actor that must come back after a crash is placed under a supervisor, which restarts it according to a declared policy — see [§7.5](#75-supervision).
 
@@ -529,9 +529,9 @@ the actor's process terminates, whether the stop is ordered (a supervisor's
   use). Assignments type-check but are discarded — the process is dying.
 - Callers of `spawn` do **not** inherit the callback's capabilities
   (consistent with handler and `init` encapsulation). The callback's
-  declared set must stay within the union of the actor's handler caps
-  (`T019` otherwise), and its body is checked against its declared set
-  (`T014` otherwise).
+  declared set joins the actor's own capability set, exactly as a handler's
+  does — flushing state on shutdown is the point — and its body is checked
+  against that declared set (`T014` otherwise).
 
 ```ridge
 actor Worker =
@@ -580,8 +580,8 @@ process it monitors (via `Actor.monitor`, §7.5) goes down.
   and why the process went down. Correlate `m` against stored monitors
   with `==` to tell several watched processes apart.
 - The body may read **and mutate** state fields, exactly like a cast
-  handler. Declared capabilities must stay within the union of the actor's
-  handler caps (`T019`); the body is checked against its declared set
+  handler. Declared capabilities join the actor's own capability set, like a
+  handler's; the body is checked against that declared set
   (`T014`).
 - A DOWN delivered to an actor **without** an `onDown` member is
   discarded, like any other out-of-band message.
@@ -1392,7 +1392,7 @@ fn spawn time main () =
 
 Rationale: actors are mental models of separate processes with their own effects. Internal capabilities should not leak through the handle. This preserves the conceptual isolation of actors as independent runtime units.
 
-The compiler still verifies that the actor itself has the right capabilities (its declared set is the union of its handlers'), within the project where the actor is defined.
+The compiler still verifies that the actor itself has the right capabilities, within the project where the actor is defined. Its set is the union of the members that serve it once running — `on` handlers, `terminate`, `onDown` — each declaring what it needs where a reader of the actor sees it. `init` is the exception: it runs before the actor serves anything, so its declared capabilities must stay within that set (`T019` otherwise).
 
 #### §6.4.1. Handles as effect tokens
 

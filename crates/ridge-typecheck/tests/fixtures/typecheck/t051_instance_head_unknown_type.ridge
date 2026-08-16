@@ -1,0 +1,8 @@
+-- expect: T051
+-- The head names a type nothing declares. The annotation names a type that
+-- exists, so nothing else in the declaration reports the mistake — without
+-- this the file type-checked clean.
+instance ToText Nonexistent =
+    toText (v: Int) -> Text = "x"
+
+fn main () -> Unit = ()

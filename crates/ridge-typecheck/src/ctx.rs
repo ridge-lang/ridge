@@ -323,6 +323,14 @@ pub struct InferCtx {
     /// types like `Level`, `LogEntry`, etc.
     pub user_tycon_names: FxHashMap<String, TyConId>,
 
+    /// Where each type constructor was declared, and what the compiler's own
+    /// types are called.
+    ///
+    /// Sits beside `user_tycon_names` because the two answer the same question
+    /// about different halves of the arena, and the paths that resolve a type
+    /// name need both to agree. Empty until the module driver fills it in.
+    pub tycon_origins: crate::cross_module::TyConOrigins,
+
     /// Class name → [`ridge_types::ClassId`], for the paths that meet a `where`
     /// clause without holding the class table.
     ///
@@ -574,6 +582,7 @@ impl InferCtx {
             current_fn_ret: None,
             current_propagate_target: None,
             user_tycon_names: FxHashMap::default(),
+            tycon_origins: crate::cross_module::TyConOrigins::default(),
             class_ids: FxHashMap::default(),
             tycon_decls: Vec::new(),
             node_id_map: None,

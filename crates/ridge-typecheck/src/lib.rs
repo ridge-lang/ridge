@@ -488,6 +488,7 @@ pub fn typecheck_workspace_with_history(
             Some((&class_table, &instance_env)),
             &migrate_ctx,
             ws.graph.is_stdlib,
+            &tycon_origins,
         );
         // `node_types` is indexed by `NodeId.0` and grown on demand, so it can be
         // shorter than the full map but must never exceed it. A violation means
@@ -713,6 +714,10 @@ pub fn typecheck_module_incremental(
         Some((&typed_ws.class_table, &typed_ws.instance_env)),
         &migrate_ctx,
         ws.graph.is_stdlib,
+        // The arena here has already been through a full check, so it carries
+        // user types too; `TyConOrigins` keeps them out of the compiler-name
+        // map by their declaring module, not by where they sit in the arena.
+        &crate::cross_module::TyConOrigins::new(&typed_ws.tycons, &[], &module_fqns),
     );
 
     ModuleTypecheckIncremental {
@@ -1099,6 +1104,7 @@ fn typecheck_module_inner(
     )>,
     migrate_ctx: &crate::migrate::MigrateHistoryCtx<'_>,
     is_stdlib: bool,
+    tycon_origins: &crate::cross_module::TyConOrigins,
 ) -> ModuleTypecheckResult {
     use crate::actor::{check_actor_encapsulation, check_actor_mailbox_config};
     use crate::ctx::InferCtx;
@@ -1124,6 +1130,7 @@ fn typecheck_module_inner(
         collect_user_tycons(ast, id, arena, b, imported_tycons, own_tycon_ids, &mut ctx);
     // Populate the user_tycon_names map for ast_type_to_type resolution.
     ctx.user_tycon_names = tycon_result.user_tycon_names;
+    ctx.tycon_origins = tycon_origins.clone();
     // The same for class names, which an inner `fn`'s `where` clause needs and
     // which expression inference cannot reach through a parameter.
     if let Some((class_table, _)) = registries {

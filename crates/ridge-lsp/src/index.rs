@@ -5938,7 +5938,7 @@ fn referent_key(binding: &Binding, module: ModuleId) -> Option<ReferentKey> {
 /// - `T018` at a call site — add the missing capabilities to the enclosing
 ///   declaration (a `fn`, an `on` handler, or an `init` block), found by name
 ///   plus span containment.
-/// - `T019` (an `init` block declares capabilities no handler declares) —
+/// - `T019` (an `init` block declares capabilities no member declares) —
 ///   replace the `init` capability tokens with the subset that stays within
 ///   the actor's boundary, located by scanning the source after the `init`
 ///   keyword.
@@ -6147,8 +6147,9 @@ pub fn collect_signature_fixes(
                 span,
                 ..
             } => {
-                // `handler` names the leaking member: "init", "terminate", or
-                // an on-handler name (the last is unreachable by construction).
+                // `handler` names the leaking member, and `init` is now the
+                // only one that can reach here: every other member contributes
+                // to the set it would be measured against.
                 if let Some(fix) = build_member_leak_fix(
                     uri,
                     li,
@@ -6369,9 +6370,14 @@ fn push_member_insert_fix(
     });
 }
 
-/// Build the `T019` fix: drop the capabilities an actor member (`init` or
-/// `terminate`, named by `member_keyword`) declares beyond the actor's
-/// boundary (the union of its handlers' caps).
+/// Build the `T019` fix: drop the capabilities the actor's `init` block
+/// (named by `member_keyword`) declares beyond what the running actor may do.
+///
+/// `init` is the only member that can leak. `terminate` and `onDown` used to
+/// arrive here too, and each had an arm; they now contribute their own
+/// capabilities to the actor's set, so they cannot exceed it and no fix is
+/// offered for them. A `member_keyword` naming one returns `None` rather than
+/// an edit that would delete a capability its body needs.
 ///
 /// The capability tokens carry no spans of their own, so they are located by
 /// scanning the source after the member keyword. The whole token region is
@@ -6392,7 +6398,6 @@ fn build_member_leak_fix(
         ridge_ast::Item::Actor(ad) if ad.span == actor_span => {
             ad.members.iter().find_map(|m| match (m, member_keyword) {
                 (ridge_ast::ActorMember::Init(i), "init") => Some((i.span, &i.caps)),
-                (ridge_ast::ActorMember::Terminate(t), "terminate") => Some((t.span, &t.caps)),
                 _ => None,
             })
         }
@@ -6466,7 +6471,7 @@ fn build_member_leak_fix(
         new_text,
         code: "T019",
         title: format!(
-            "Remove {noun} `{leaking_rendered}` from `{member_keyword}` (no handler on `{actor}` declares it)"
+            "Remove {noun} `{leaking_rendered}` from `{member_keyword}` (no member of `{actor}` declares it)"
         ),
     })
 }

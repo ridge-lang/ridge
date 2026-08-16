@@ -5052,9 +5052,11 @@ async fn test_code_action_inner_fn_widens_enclosing() {
 
 #[tokio::test]
 async fn test_code_action_t019_removes_init_leak() {
-    // `init` declares `fs` but no handler does, so it leaks past the actor's
-    // boundary (T019). The fix removes the leaking token — including the
-    // space after it, so `init fs () =` becomes `init () =`.
+    // `init` declares `fs` but no member of the running actor does, so it
+    // leaks past what the actor may do (T019). The fix removes the leaking
+    // token — including the space after it, so `init fs () =` becomes
+    // `init () =`. `init` is the only member that can be flagged this way;
+    // every other one contributes to the set it would be measured against.
     let src = "import std.io as Io\nimport std.fs as Fs\n\nactor Leaky =\n    state x: Int = 0\n    init fs () =\n        x <- 1\n    on io get -> Int =\n        Io.println \"got\"\n        x\n";
     let (service, _socket, uri) = cap_workspace_fixture_allow(src, "[\"io\", \"fs\"]").await;
     let server = service.inner();
@@ -5062,7 +5064,7 @@ async fn test_code_action_t019_removes_init_leak() {
     let actions = request_code_actions(server, &uri, Position::new(5, 5)).await;
     let action = action_titled(
         &actions,
-        "Remove capability `fs` from `init` (no handler on `Leaky` declares it)",
+        "Remove capability `fs` from `init` (no member of `Leaky` declares it)",
     );
 
     let edits = action

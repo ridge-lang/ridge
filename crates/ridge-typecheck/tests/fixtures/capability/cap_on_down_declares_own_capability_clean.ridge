@@ -1,10 +1,12 @@
 -- expect-clean
--- An onDown handler that declares the capability its body uses checks
--- cleanly. A handler declares it here too, which is fine but is not what
--- makes it legal — cap_on_down_declares_own_capability_clean is the same
--- handler with nothing sharing it. The reason param matches over
--- ExitReason's variants,
--- including the monitor-only NotRunning.
+-- An onDown handler declares the capability its body needs, and no `on`
+-- handler declares it. Reporting that a watched process died is the handler's
+-- whole job, so its own declaration is what puts the capability in the actor's
+-- set.
+--
+-- Unlike its terminate twin, this fixture also passed before onDown joined the
+-- set: the check never read `on_down_caps`, though the rule was written down.
+-- It guards the rule now that it is real rather than proving a fix.
 import std.io as Io
 import std.actor as Actor
 import std.actor (ExitReason, Normal, NotRunning, Shutdown, Crashed)
@@ -16,9 +18,8 @@ actor Worker =
 
 actor Watcher =
     state deaths: Int = 0
-    on io watch (w: Handle Worker) -> Unit =
+    on watch (w: Handle Worker) -> Unit =
         let _ = Actor.monitor w
-        Io.println "watching"
     onDown io (m: Monitor) (reason: ExitReason) =
         match reason
             Normal -> Io.println "normal"

@@ -1361,7 +1361,7 @@ pub const REGISTRY: &[CodeEntry] = &[
         code: "T019",
         variants: &["ActorCapabilityLeak"],
         owner: "ridge-typecheck",
-        summary: "An actor handler declares capabilities not present in the actor's own declared capability set.",
+        summary: "An actor's `init` block declares a capability that no member of the running actor declares.",
     },
     CodeEntry {
         code: "T020",

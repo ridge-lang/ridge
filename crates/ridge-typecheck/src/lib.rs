@@ -1445,25 +1445,12 @@ fn typecheck_module_inner(
             if let Some(&actor_id) = ctx.user_tycon_names.get(&ad.name.text) {
                 let decl = arena.get(actor_id);
                 if let ridge_types::TyConKind::Actor(schema) = &decl.kind {
-                    // Actor-level declared caps: actors in 0.1.0 have no explicit
-                    // cap annotation in the AST. The effective cap set is the
-                    // union of all handler caps (Model B, D018). Handler caps are
-                    // always ⊆ this union by construction, so T019 can only fire
-                    // via the init block (init_caps ⊄ union(handler_caps)).
-                    let actor_caps = schema
-                        .handlers
-                        .iter()
-                        .fold(CapabilitySet::PURE, |acc, h| acc.union(&h.caps));
-                    // Per-handler spans — not yet wired; use actor span as fallback.
-                    let handler_spans: Vec<Option<ridge_ast::Span>> =
-                        schema.handlers.iter().map(|_| None).collect();
-                    let encap_errors = check_actor_encapsulation(
-                        &ad.name.text,
-                        actor_caps,
-                        schema,
-                        &handler_spans,
-                        ad.span,
-                    );
+                    // Actors carry no explicit cap annotation in the AST, so the
+                    // effective set is inferred from the members that declare
+                    // capabilities. The check derives it from the schema itself
+                    // — computing it here was how `terminate` came to be
+                    // measured against a set it could not enter.
+                    let encap_errors = check_actor_encapsulation(&ad.name.text, schema, ad.span);
                     ctx.errors.extend(encap_errors);
                 }
             }

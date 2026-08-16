@@ -1,0 +1,18 @@
+-- expect-clean
+-- A terminate callback declares the capability its body needs, and no handler
+-- declares it. Flushing state on the way out is what terminate is for, so the
+-- callback's own declaration is what puts the capability in the actor's set —
+-- it does not have to be borrowed from a handler that has no use for it.
+import std.io as Io
+import std.actor (ExitReason, Normal, NotRunning, Shutdown, Crashed)
+
+actor Worker =
+    state n: Int = 0
+    on tick =
+        n <- n + 1
+    terminate io (reason: ExitReason) =
+        match reason
+            Normal -> Io.println "normal"
+            NotRunning -> Io.println "unreachable"
+            Shutdown -> Io.println "clean"
+            Crashed m -> Io.println m

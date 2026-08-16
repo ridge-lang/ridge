@@ -530,7 +530,7 @@ the actor's process terminates, whether the stop is ordered (a supervisor's
 - Callers of `spawn` do **not** inherit the callback's capabilities
   (consistent with handler and `init` encapsulation). The callback's
   declared set joins the actor's own capability set, exactly as a handler's
-  does — flushing state on shutdown is the point — and its body is checked
+  does, and its body is checked
   against that declared set (`T014` otherwise).
 
 ```ridge
@@ -1392,7 +1392,7 @@ fn spawn time main () =
 
 Rationale: actors are mental models of separate processes with their own effects. Internal capabilities should not leak through the handle. This preserves the conceptual isolation of actors as independent runtime units.
 
-The compiler still verifies that the actor itself has the right capabilities, within the project where the actor is defined. Its set is the union of the members that serve it once running — `on` handlers, `terminate`, `onDown` — each declaring what it needs where a reader of the actor sees it. `init` is the exception: it runs before the actor serves anything, so its declared capabilities must stay within that set (`T019` otherwise).
+The actor's own capability set, within the project where the actor is defined, is the union of the members that serve it once running: its `on` handlers, its `terminate` callback and its `onDown` handler. `init` is the exception. It runs before the actor serves anything, so its declared capabilities must stay within that set (`T019` otherwise).
 
 #### §6.4.1. Handles as effect tokens
 

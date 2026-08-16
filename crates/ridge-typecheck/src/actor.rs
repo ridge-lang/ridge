@@ -8,8 +8,10 @@
 //! - [`infer_send`] — type-infer `handle ! message`
 //! - [`infer_ask`]  — type-infer `handle ?> message args`
 //! - [`infer_spawn`] — type-infer `spawn Actor args`
-//! - [`check_actor_encapsulation`] — verify per §4.15 rule 2 that the actor's
-//!   declared cap set equals the union of its handlers' declared caps.
+//! - [`check_actor_encapsulation`] — verify that an actor's `init` block stays
+//!   within what the running actor may do. The set it is measured against is
+//!   the union of the members that serve the actor: `on` handlers,
+//!   `terminate` and `onDown`.
 //!
 //! # Capability Model B (§8.4, D018)
 //!

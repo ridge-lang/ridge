@@ -1186,7 +1186,7 @@ import std.actor as Actor
 actor Slow =
     mailbox bounded 5 drop newest
     state n: Int = 0
-    on tick =
+    on time tick =
         Time.sleep 100
         n <- n + 1
 
@@ -1268,7 +1268,7 @@ import std.time as Time
 actor Slow =
     mailbox bounded 5 error
     state n: Int = 0
-    on tick =
+    on time tick =
         Time.sleep 200
         n <- n + 1
 
@@ -2058,8 +2058,8 @@ fn spawn io main () -> Result Unit Text =
     let kids = Actor.whichChildren sup
     Io.println $"kids=${Int.toText (List.length kids)}"
     match List.all (fn (_, alive) -> alive) kids
-        True -> Io.println "all-alive"
-        False -> Io.println "some-dead"
+        true -> Io.println "all-alive"
+        false -> Io.println "some-dead"
     Ok ()
 "#;
 
@@ -2786,6 +2786,7 @@ fn io main () -> Result Unit Text =
     let xs = [1, 2, 3, 4, 5]
     match xs
         [] -> Io.println "empty"
+        [only] -> Io.println $"only=${Int.toText only}"
         [first, .., last] -> Io.println $"first=${Int.toText first} last=${Int.toText last}"
     Ok ()
 "#;
@@ -2814,6 +2815,7 @@ fn io main () -> Result Unit Text =
     let xs = [1, 2, 3, 4, 5]
     match xs
         [] -> Io.println "empty"
+        [only] -> Io.println $"only=${Int.toText only}"
         [a, mid @ .., b] ->
             let len = List.length mid
             Io.println $"a=${Int.toText a} b=${Int.toText b} mid_len=${Int.toText len}"
@@ -3082,6 +3084,7 @@ fn io main () -> Result Unit Text =
         Second line.
         """
     Io.println msg
+    Ok ()
 "##;
 
 #[test]
@@ -3192,7 +3195,7 @@ import std.time as Time
 
 actor Worker =
     state n: Int = 0
-    on io slow (msg: Text) =
+    on io time slow (msg: Text) =
         Time.sleep 150
         Io.println $"handled: ${msg}"
     on ping (n: Int) -> Int = n
@@ -3231,7 +3234,7 @@ import std.actor as Actor
 
 actor Worker =
     state n: Int = 0
-    on io slow (msg: Text) =
+    on io time slow (msg: Text) =
         Time.sleep 150
         Io.println $"handled: ${msg}"
 

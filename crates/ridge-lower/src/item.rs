@@ -50,6 +50,7 @@ use ridge_ir::{
     CtorKind, IrConst, IrExpr, IrFfiFn, IrFn, IrItem, IrLit, IrMigration, IrParam, SymbolRef,
 };
 use ridge_resolve::{NodeId, NodeKind};
+use ridge_typecheck::JsonPrim;
 use ridge_types::{Scheme, Type};
 
 use crate::actor_lower::lower_actor;
@@ -2642,6 +2643,74 @@ fn nested_codec_symbol(
     }
 }
 
+/// The `JsonValue` constructor a scalar's encoded form uses.
+///
+/// Exhaustive over [`JsonPrim`]: adding a scalar makes this fail to compile
+/// rather than silently pick a constructor for it, which is how a `Decimal`
+/// came to be wrapped as if it were `Text`.
+const fn json_ctor_for(prim: JsonPrim) -> &'static str {
+    match prim {
+        JsonPrim::Int => "JInt",
+        JsonPrim::Float => "JFloat",
+        JsonPrim::Bool => "JBool",
+        JsonPrim::Text
+        | JsonPrim::Decimal
+        | JsonPrim::Uuid
+        | JsonPrim::Bytes
+        | JsonPrim::Date
+        | JsonPrim::Time
+        | JsonPrim::Timestamp => "JText",
+    }
+}
+
+/// How a scalar's JSON form reads in a decode failure message.
+const fn json_word(prim: JsonPrim) -> &'static str {
+    match prim {
+        JsonPrim::Int | JsonPrim::Float => "number",
+        JsonPrim::Bool => "boolean",
+        _ => "string",
+    }
+}
+
+/// Build `Call(Stdlib { module, name }, args)`.
+fn make_stdlib_call(
+    ctx: &mut LowerCtx<'_>,
+    module: &str,
+    name: &str,
+    args: Vec<IrExpr>,
+    sp: Span,
+) -> IrExpr {
+    IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Stdlib {
+                module: module.into(),
+                name: name.into(),
+            },
+            span: sp,
+        }),
+        args,
+        span: sp,
+    }
+}
+
+/// Build `Call(Prelude { name }, args)` — a prelude constructor application.
+fn prelude_ctor_call(ctx: &mut LowerCtx<'_>, name: &str, args: Vec<IrExpr>, sp: Span) -> IrExpr {
+    IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Prelude {
+                name: name.to_string(),
+            },
+            span: sp,
+        }),
+        args,
+        span: sp,
+    }
+}
+
 /// Structural `encode_shape` — recursively emits the IR expression that encodes
 /// `value_expr` according to its [`FieldShape`].
 ///
@@ -2669,26 +2738,18 @@ fn encode_shape(
     use ridge_types::CapabilitySet;
 
     match shape {
-        // ── Primitive → inline JsonValue ctor ────────────────────────────────
-        FieldShape::Prim(tycon) => {
-            let ctor_name = match tycon.0 {
-                0 => "JInt",
-                1 => "JFloat",
-                2 => "JBool",
-                _ => "JText", // Text (3) and any other primitive fall back to JText
+        // ── Scalar → the matching JsonValue ctor ─────────────────────────────
+        // A scalar with no JSON counterpart goes through its stdlib `toText`
+        // first, so what reaches `JText` is a string and not the runtime
+        // representation of a `Decimal`.
+        FieldShape::Prim(prim) => {
+            let arg = match prim.text_codec() {
+                None => value_expr,
+                Some(codec) => {
+                    make_stdlib_call(ctx, codec.module, codec.to_text, vec![value_expr], sp)
+                }
             };
-            IrExpr::Call {
-                id: ctx.fresh_id(None),
-                callee: Box::new(IrExpr::Symbol {
-                    id: ctx.fresh_id(None),
-                    sym: SymbolRef::Prelude {
-                        name: ctor_name.to_string(),
-                    },
-                    span: sp,
-                }),
-                args: vec![value_expr],
-                span: sp,
-            }
+            prelude_ctor_call(ctx, json_ctor_for(*prim), vec![arg], sp)
         }
 
         // ── JsonValue identity ────────────────────────────────────────────────
@@ -3240,13 +3301,17 @@ fn decode_shape(
     use ridge_typecheck::FieldShape;
 
     match shape {
-        // ── Prim → match JInt/JFloat/JBool/JText; bind v; Ok v; _ -> Err ─────
-        FieldShape::Prim(tycon) => {
-            let (ctor_name, err_code) = match tycon.0 {
-                0 => ("JInt", "decode.expected_int"),
-                1 => ("JFloat", "decode.expected_float"),
-                2 => ("JBool", "decode.expected_bool"),
-                _ => ("JText", "decode.expected_string"), // Text (3) and others
+        // ── Scalar → match its JsonValue ctor; bind v; Ok v; _ -> Err ────────
+        // For a scalar that travels as a string, the bound text goes through
+        // the stdlib parser, which already returns `Result T Error` — so a
+        // malformed value reports itself instead of being waved through.
+        FieldShape::Prim(prim) => {
+            let ctor_name = json_ctor_for(*prim);
+            let err_code = match prim {
+                JsonPrim::Int => "decode.expected_int",
+                JsonPrim::Float => "decode.expected_float",
+                JsonPrim::Bool => "decode.expected_bool",
+                _ => "decode.expected_string",
             };
             let bound = ctx.fresh_local("__dec_prim");
             let bound_local = IrExpr::Local {
@@ -3254,7 +3319,12 @@ fn decode_shape(
                 name: bound.clone(),
                 span: sp,
             };
-            let ok_v = build_ok(bound_local, sp);
+            let ok_v = match prim.text_codec() {
+                None => build_ok(bound_local, sp),
+                Some(codec) => {
+                    make_stdlib_call(ctx, codec.module, codec.from_text, vec![bound_local], sp)
+                }
+            };
             let ok_arm = ridge_ir::IrArm {
                 pat: ridge_ir::IrPat::Ctor {
                     sym: SymbolRef::Prelude {
@@ -3272,12 +3342,11 @@ fn decode_shape(
                 body: ok_v,
                 span: sp,
             };
-            let err_body = build_decode_error(
-                ctx,
-                err_code,
-                format!("expected a JSON {ctor_name} value"),
-                sp,
-            );
+            let expected = match prim.text_codec() {
+                None => format!("expected a JSON {} for `{}`", json_word(*prim), prim.name()),
+                Some(_) => format!("expected a JSON string holding a `{}`", prim.name()),
+            };
+            let err_body = build_decode_error(ctx, err_code, expected, sp);
             let wild_arm = ridge_ir::IrArm {
                 pat: ridge_ir::IrPat::Wild { span: sp },
                 when: None,
@@ -7418,8 +7487,8 @@ mod tests {
             method_body: DerivedMethodBody::DerivedDecodeRecord {
                 field_names: vec!["name".to_string(), "age".to_string()],
                 field_shapes: vec![
-                    FieldShape::Prim(TyConId(3)), // Text
-                    FieldShape::Prim(TyConId(0)), // Int
+                    FieldShape::Prim(JsonPrim::Text), // Text
+                    FieldShape::Prim(JsonPrim::Int),  // Int
                 ],
             },
         };
@@ -7477,7 +7546,7 @@ mod tests {
                     ("Admin".to_string(), vec![], None),
                     (
                         "Circle".to_string(),
-                        vec![FieldShape::Prim(TyConId(1))],
+                        vec![FieldShape::Prim(JsonPrim::Float)],
                         None,
                     ),
                 ],
@@ -7586,7 +7655,7 @@ mod tests {
             },
             method_body: DerivedMethodBody::DerivedDecodeRecord {
                 field_names: vec!["tags".to_string()],
-                field_shapes: vec![FieldShape::Lst(Box::new(FieldShape::Prim(TyConId(3))))],
+                field_shapes: vec![FieldShape::Lst(Box::new(FieldShape::Prim(JsonPrim::Text)))],
             },
         };
 
@@ -7629,7 +7698,7 @@ mod tests {
             },
             method_body: DerivedMethodBody::DerivedDecodeRecord {
                 field_names: vec!["x".to_string()],
-                field_shapes: vec![FieldShape::Prim(TyConId(0))],
+                field_shapes: vec![FieldShape::Prim(JsonPrim::Int)],
             },
         };
 

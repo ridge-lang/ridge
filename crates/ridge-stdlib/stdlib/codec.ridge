@@ -47,3 +47,28 @@ instance Encode Text =
 --
 -- They are built into the compiler rather than spelled out here so that the
 -- canonical file stays focused on the class shapes.
+
+-- ── Scalars that travel as strings ───────────────────────────────────────────
+--
+-- Decimal, Uuid, Bytes, Date, Time and Timestamp have no JSON value that holds
+-- them without loss, so their instances move them as strings. A JSON number is
+-- an IEEE-754 double nearly everywhere it is parsed, which would round the one
+-- type that exists to stay exact.
+--
+-- The spelling is the one std.sql writes to a column of that type, so a value
+-- reads the same whether it lands in a database or in JSON:
+--
+--   Decimal    "5.00"                     (std.decimal.toText / fromText)
+--   Uuid       "3f2504e0-4f89-11d3-…"     (std.uuid.toText / fromText)
+--   Bytes      "6869"                     (std.bytes.toHex / fromHex)
+--   Date       "2026-08-16"               (std.date.toIso / fromIso)
+--   Time       "01:02:03"                 (std.timeofday.toIso / fromIso)
+--   Timestamp  "2026-08-16T20:45:53Z"     (std.time.toIso / fromIso)
+--
+-- Decoding runs the matching reader, so a string that is not a value of that
+-- type comes back as an Err rather than being stored in the field as-is.
+--
+-- Unit has no instance on purpose. The two obvious encodings both cost
+-- something: null is how Option writes None, so Option Unit could not round
+-- trip, and an empty array to avoid that collision is a shape nobody would
+-- guess reading the JSON.

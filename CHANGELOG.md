@@ -7,7 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Decimal`, `Uuid`, `Bytes`, `Date`, `Time` and `Timestamp` have `Encode` and
+  `Decode` instances, so a record holding any of them can derive its JSON
+  codec. None of them has a JSON value that holds it without loss, so they
+  travel as strings in the spelling `std.sql` already writes to a column of
+  that type — a value reads the same whether it lands in a database or in
+  JSON. `Decimal` in particular stays a string rather than a number: a JSON
+  number is an IEEE-754 double nearly everywhere it is parsed, which would
+  round the one type that exists to stay exact. Decoding runs the matching
+  reader, so `"not-a-decimal"` comes back as an `Err` instead of being stored
+  in the field.
+
 ### Fixed
+
+- `deriving (Encode)` no longer accepts a field it cannot encode. A field type
+  with no instance was recorded as "this value is already a `JsonValue`", so
+  the derived `encode` handed the raw runtime value to the JSON encoder: a
+  record with a `Decimal` field compiled with no diagnostic and died at run
+  time inside the runtime, with a stack trace naming the runtime rather than
+  the program. Seven of the eleven scalar types did this, and so did tuples and
+  function types. `decode` was the worse half — the identity shape stored the
+  parsed `JsonValue` in the field and reported `Ok`, so the wrong value
+  travelled and detonated at some later, unrelated call site. What made it
+  invisible was the shape itself: claiming the field was already JSON is
+  exactly what stopped a constraint from being emitted, so the coherence check
+  that would have reported the missing instance never ran. Such a field is now
+  a `T029` naming the field, its type, and whether the fix is to give the type
+  an instance or to wrap it in one — and the shape a derived field can take no
+  longer has room for a type nothing knows how to write.
 
 - An actor's `terminate` and `onDown` members declare their own capabilities. An actor's capability set is inferred rather than written down, and it was the union of its `on` handlers alone — so `terminate` was measured against a set its own declaration could not enter. `terminate io (reason: ExitReason) = Io.println "bye"` was a `T019` unless some handler elsewhere in the actor also declared `io`, which meant an actor could only log on the way out if it also logged while running. The way through was to put `io` on a handler that had no use for it, widening the actor's surface to satisfy a check whose purpose is to keep it narrow; the program that compiled claimed more than the one that did not. `terminate` and `onDown` now contribute what they declare, so an actor that flushes state on shutdown reports the capability it actually uses. `onDown` was carried along for the same reason: the rule was written for it too and had never been enforced, and leaving it out would have kept the same asymmetry pointing the other way. `init` keeps its rule and is now the only member `T019` can name — it runs before the actor serves anything, so requiring it to stay within what the running actor may do is a real constraint rather than a tautology, and the message stops calling it a handler. The quick-fix that offers to drop a leaking capability no longer offers it for `terminate`, where it would have deleted something the callback needs. Nothing that compiled before stops compiling; programs that were rejected for this reason now build.
 - An `instance` declaration the compiler cannot key on is reported instead of discarded. `instance ToText SecureCookie` type-checked clean and did nothing: the head resolved to no type, so the whole declaration was dropped without a word, and writing it twice did not even report the duplicate. Seven built-in types were in that state — `Sql`, `Html`, `SecureCookie`, `SqlValue`, `Table`, `Schema` and `Instant` — for two separate reasons. Four are the opaque wrappers, which mark their home as a module no user code can be in, and the name lookup filtered on exactly that field. The other three were simply absent from a hand-written table of thirty names and hardcoded indices, which still described itself as covering "the 17 pre-allocated builtins". That table is gone; a head now resolves against the type table the compiler already builds, so a name it declares cannot be missing from one list and present in another. Two more shapes were silent and are not: a head naming a type nothing declares, which nothing else reports when the method's own annotation happens to name a type that exists, and a tuple, which has no type constructor to dispatch on and cannot be given one. Both report `T051`, the way an over-arity function head already did — an instance that quietly does not exist comes back later as a `T029` for a type the reader is looking at an instance for. One consequence worth expecting: those seven types now reach the orphan rule, so an instance for one of them from a module that declares neither it nor the class reports `T031` rather than vanishing.

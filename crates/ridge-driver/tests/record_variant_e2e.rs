@@ -77,10 +77,10 @@ pub fn generic_unwrap () -> Int =
 -- Encodes `Ping { seq = 55, ttl = 3 }`, parses it back, and confirms the decoded
 -- value equals the original (returns `seq` on success, a negative code on any
 -- failure). Exercises the record-variant pattern (encode) and construction (decode).
-fn roundtrip (m: Msg) -> Result Msg Text =
+fn roundtrip (m: Msg) -> Result Msg Error =
     match Json.decode (Json.encode (encode m))
         Ok j  -> decode j
-        Err _ -> Err "parse"
+        Err e -> Err e
 
 pub fn derive_roundtrip () -> Int =
     let m = Ping { seq = 55, ttl = 3 }

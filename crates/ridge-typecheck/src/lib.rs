@@ -52,7 +52,7 @@ pub use class_env::{
 pub use collect::{collect_workspace, collect_workspace_gated, CollectResult};
 pub use derive::{
     derive_instances, DelegArg, DelegResult, DelegatedMethod, DerivedInstance, DerivedMethodBody,
-    FieldShape, SchemaColumnSpec,
+    FieldShape, JsonPrim, SchemaColumnSpec, TextCodec,
 };
 pub use error::{CapDeclKind, TypeError};
 pub use render::{emit_internal, emit_internal_strict, render_type_with};

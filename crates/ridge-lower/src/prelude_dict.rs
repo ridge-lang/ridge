@@ -31,6 +31,7 @@
 
 use ridge_ast::Span;
 use ridge_ir::{IrExpr, IrLit, IrParam, SymbolRef};
+use ridge_typecheck::JsonPrim;
 use ridge_types::{ClassId, TyConId, Type, DECODE_CLASS, ENCODE_CLASS, ORD_CLASS, TOTEXT_CLASS};
 
 use crate::ctx::LowerCtx;
@@ -50,30 +51,48 @@ const TYCON_ORDERING: u32 = 15;
 // Interned after the 0–16 builtins, so their ids sit above the block.
 const TYCON_DECIMAL: u32 = 51;
 const TYCON_UUID: u32 = 52;
+const TYCON_BYTES: u32 = 53;
+const TYCON_DATE: u32 = 54;
+const TYCON_TIME: u32 = 55;
+
+/// The scalar a built-in `TyConId` denotes, for the codec classes.
+///
+/// The one place in this module that turns an id into a scalar. Everything
+/// downstream works from [`JsonPrim`] and is exhaustive over it, so a scalar
+/// this does not recognise gets no dictionary rather than a guessed one.
+const fn json_prim_of(tycon: TyConId) -> Option<JsonPrim> {
+    match tycon.0 {
+        TYCON_INT => Some(JsonPrim::Int),
+        TYCON_FLOAT => Some(JsonPrim::Float),
+        TYCON_BOOL => Some(JsonPrim::Bool),
+        TYCON_TEXT => Some(JsonPrim::Text),
+        TYCON_TIMESTAMP => Some(JsonPrim::Timestamp),
+        TYCON_DECIMAL => Some(JsonPrim::Decimal),
+        TYCON_UUID => Some(JsonPrim::Uuid),
+        TYCON_BYTES => Some(JsonPrim::Bytes),
+        TYCON_DATE => Some(JsonPrim::Date),
+        TYCON_TIME => Some(JsonPrim::Time),
+        _ => None,
+    }
+}
 
 /// True if `(class, tycon)` is a prelude-reserved `Encode`/`Decode` instance
 /// whose dictionary has no module-level constant and must be synthesised.
 ///
-/// Covers the four JSON primitives (`Int`/`Float`/`Bool`/`Text`) and the four
-/// parametric containers (`List`/`Option`/`Map`/`Result`). Every other
-/// instance — including user-written ones and derived user types — keeps the
-/// existing `$inst_` symbol path.
+/// Covers every scalar [`json_prim_of`] recognises and the four parametric
+/// containers (`List`/`Option`/`Map`/`Result`). Every other instance —
+/// including user-written ones and derived user types — keeps the existing
+/// `$inst_` symbol path.
 #[must_use]
 pub fn is_prelude_codec_instance(class: ClassId, tycon: TyConId) -> bool {
     if class != ENCODE_CLASS && class != DECODE_CLASS {
         return false;
     }
-    matches!(
-        tycon.0,
-        TYCON_INT
-            | TYCON_FLOAT
-            | TYCON_BOOL
-            | TYCON_TEXT
-            | TYCON_LIST
-            | TYCON_OPTION
-            | TYCON_MAP
-            | TYCON_RESULT
-    )
+    json_prim_of(tycon).is_some()
+        || matches!(
+            tycon.0,
+            TYCON_LIST | TYCON_OPTION | TYCON_MAP | TYCON_RESULT
+        )
 }
 
 /// Synthesise the runtime dictionary expression for a prelude `Encode`/`Decode`
@@ -100,14 +119,16 @@ pub fn synth_prelude_dict(
     let is_encode = class == ENCODE_CLASS;
     let method = if is_encode { "encode" } else { "decode" };
 
+    if let Some(prim) = json_prim_of(tycon) {
+        let method_fn = if is_encode {
+            encode_prim_lambda(ctx, prim, span)
+        } else {
+            decode_prim_lambda(ctx, prim, span)
+        };
+        return Some(dict_map(ctx, method, method_fn, span));
+    }
+
     let method_fn = match tycon.0 {
-        TYCON_INT | TYCON_FLOAT | TYCON_BOOL | TYCON_TEXT => {
-            if is_encode {
-                encode_prim_lambda(ctx, tycon, span)
-            } else {
-                decode_prim_lambda(ctx, tycon, span)
-            }
-        }
         TYCON_LIST => {
             let elem = sub_dicts
                 .into_iter()
@@ -347,6 +368,34 @@ fn prelude_call(ctx: &mut LowerCtx<'_>, name: &str, args: Vec<IrExpr>, span: Spa
     }
 }
 
+/// The `JsonValue` constructor a scalar's encoded form uses.
+///
+/// Exhaustive over [`JsonPrim`] on purpose — the same table as the derived
+/// path in `item.rs`, and a new scalar has to be answered for in both.
+const fn json_ctor_for(prim: JsonPrim) -> &'static str {
+    match prim {
+        JsonPrim::Int => "JInt",
+        JsonPrim::Float => "JFloat",
+        JsonPrim::Bool => "JBool",
+        JsonPrim::Text
+        | JsonPrim::Decimal
+        | JsonPrim::Uuid
+        | JsonPrim::Bytes
+        | JsonPrim::Date
+        | JsonPrim::Time
+        | JsonPrim::Timestamp => "JText",
+    }
+}
+
+/// How a scalar's JSON form reads in a decode failure message.
+const fn json_word(prim: JsonPrim) -> &'static str {
+    match prim {
+        JsonPrim::Int | JsonPrim::Float => "number",
+        JsonPrim::Bool => "boolean",
+        _ => "string",
+    }
+}
+
 fn prelude_ctor(
     ctx: &mut LowerCtx<'_>,
     name: &str,
@@ -436,16 +485,17 @@ fn apply_dict_method(
 
 // ── Encode method bodies ──────────────────────────────────────────────────────
 
-/// `fun(X) -> JInt(X) end` (or JFloat/JBool/JText by primitive).
-fn encode_prim_lambda(ctx: &mut LowerCtx<'_>, tycon: TyConId, span: Span) -> IrExpr {
-    let ctor = match tycon.0 {
-        TYCON_INT => "JInt",
-        TYCON_FLOAT => "JFloat",
-        TYCON_BOOL => "JBool",
-        _ => "JText",
-    };
+/// `fun(X) -> JInt(X) end`, or the constructor the scalar's wire form uses.
+///
+/// A scalar with no JSON counterpart is converted to text first, exactly as
+/// the derived-record path does, so both routes put the same bytes on the wire.
+fn encode_prim_lambda(ctx: &mut LowerCtx<'_>, prim: JsonPrim, span: Span) -> IrExpr {
     let x = local(ctx, "__enc_x", span);
-    let body = prelude_call(ctx, ctor, vec![x], span);
+    let arg = match prim.text_codec() {
+        None => x,
+        Some(codec) => stdlib_call(ctx, codec.module, codec.to_text, vec![x], span),
+    };
+    let body = prelude_call(ctx, json_ctor_for(prim), vec![arg], span);
     lambda(ctx, vec![param("__enc_x".to_string(), span)], body, span)
 }
 
@@ -629,16 +679,26 @@ fn result_variant_object(
 // ── Decode method bodies ──────────────────────────────────────────────────────
 
 /// `fun(J) -> match J { JInt n -> Ok n; _ -> Err(decode.expected_int) } end`.
-fn decode_prim_lambda(ctx: &mut LowerCtx<'_>, tycon: TyConId, span: Span) -> IrExpr {
+fn decode_prim_lambda(ctx: &mut LowerCtx<'_>, prim: JsonPrim, span: Span) -> IrExpr {
     use ridge_ir::{IrArm, IrPat};
-    let (ctor, code, kind) = match tycon.0 {
-        TYCON_INT => ("JInt", "decode.expected_int", "JInt"),
-        TYCON_FLOAT => ("JFloat", "decode.expected_float", "JFloat"),
-        TYCON_BOOL => ("JBool", "decode.expected_bool", "JBool"),
-        _ => ("JText", "decode.expected_string", "JText"),
+    let ctor = json_ctor_for(prim);
+    let code = match prim {
+        JsonPrim::Int => "decode.expected_int",
+        JsonPrim::Float => "decode.expected_float",
+        JsonPrim::Bool => "decode.expected_bool",
+        _ => "decode.expected_string",
+    };
+    let expected = match prim.text_codec() {
+        None => format!("expected a JSON {} for `{}`", json_word(prim), prim.name()),
+        Some(_) => format!("expected a JSON string holding a `{}`", prim.name()),
     };
     let n = local(ctx, "__dec_pv", span);
-    let ok_n = ok(ctx, n, span);
+    // A scalar that travels as a string is parsed by its stdlib reader, which
+    // already answers `Result T Error` — the shape `decode` has to produce.
+    let ok_n = match prim.text_codec() {
+        None => ok(ctx, n, span),
+        Some(codec) => stdlib_call(ctx, codec.module, codec.from_text, vec![n], span),
+    };
     let ok_arm = IrArm {
         pat: IrPat::Ctor {
             sym: SymbolRef::Prelude {
@@ -656,7 +716,7 @@ fn decode_prim_lambda(ctx: &mut LowerCtx<'_>, tycon: TyConId, span: Span) -> IrE
         body: ok_n,
         span,
     };
-    let err = decode_error(ctx, code, &format!("expected a JSON {kind} value"), span);
+    let err = decode_error(ctx, code, &expected, span);
     let wild_arm = IrArm {
         pat: IrPat::Wild { span },
         when: None,

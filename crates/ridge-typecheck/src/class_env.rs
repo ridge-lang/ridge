@@ -609,6 +609,22 @@ pub fn register_prelude_instances(env: &mut InstanceEnv) {
     register_prelude_instances_gated(env, false);
 }
 
+/// The scalars whose `Encode`/`Decode` instances move them as strings.
+///
+/// One table rather than a pair of `insert` calls per type: these six are
+/// registered identically for both classes, and the reader should be able to
+/// see the whole set at once. The ids are the fixed builtin indices — the
+/// table is a place for [`crate::BuiltinTyCons`] to be read from once it is
+/// threaded into this function.
+const TEXT_CODEC_SCALARS: &[(TyConId, &str)] = &[
+    (TyConId(5), "Timestamp"),
+    (TyConId(51), "Decimal"),
+    (TyConId(52), "Uuid"),
+    (TyConId(53), "Bytes"),
+    (TyConId(54), "Date"),
+    (TyConId(55), "Time"),
+];
+
 /// Seed the built-in prelude instances, gated on whether this is the standard
 /// library's own self-compile.
 ///
@@ -812,6 +828,14 @@ pub fn register_prelude_instances_gated(env: &mut InstanceEnv, is_stdlib: bool) 
         );
     }
 
+    // The scalars with no JSON counterpart. They travel as strings in the same
+    // canonical spelling `std.sql` writes to a column, so a value is spelled
+    // the same whether it lands in a database or in JSON. `codec.ridge` does
+    // not declare these, so the stdlib self-compile registers them too.
+    for (id, name) in TEXT_CODEC_SCALARS {
+        let _ = env.insert((ENCODE_CLASS, *id), prelude_inst("encode"), "Encode", name);
+    }
+
     // ── Decode instances ──────────────────────────────────────────────────────
     let _ = env.insert(
         (DECODE_CLASS, TyConId(0)),
@@ -837,6 +861,9 @@ pub fn register_prelude_instances_gated(env: &mut InstanceEnv, is_stdlib: bool) 
         "Decode",
         "Text",
     );
+    for (id, name) in TEXT_CODEC_SCALARS {
+        let _ = env.insert((DECODE_CLASS, *id), prelude_inst("decode"), "Decode", name);
+    }
 
     // ── Parametric container instances (Encode/Decode) ────────────────────────
     // `instance Encode (List a) where Encode a`, and the Option/Map/Result duals,

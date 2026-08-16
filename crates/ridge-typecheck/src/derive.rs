@@ -274,6 +274,141 @@ pub struct DelegatedMethod {
     pub result: DelegResult,
 }
 
+/// A scalar with a built-in `Encode`/`Decode` instance, and the JSON form its
+/// values take on the wire.
+///
+/// Every variant here is a type the codec knows how to move in both
+/// directions. That is the point of naming them instead of carrying a
+/// [`TyConId`]: a scalar with no instance cannot be spelled as a
+/// [`FieldShape::Prim`], so it cannot reach the lowering pass and be guessed
+/// at there.
+///
+/// The four JSON-native scalars map onto a matching JSON value. The rest have
+/// no lossless JSON counterpart and travel as strings in the same canonical
+/// spelling `std.sql` uses for a column of that type, so a value written to a
+/// database and a value written to JSON read the same.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsonPrim {
+    /// `Int` — a JSON number.
+    Int,
+    /// `Float` — a JSON number.
+    Float,
+    /// `Bool` — a JSON boolean.
+    Bool,
+    /// `Text` — a JSON string.
+    Text,
+    /// `Decimal` — a JSON string.
+    ///
+    /// A JSON number is an IEEE-754 double almost everywhere it is parsed, so
+    /// a number on the wire would quietly round the value it exists to keep
+    /// exact.
+    Decimal,
+    /// `Uuid` — a JSON string, the canonical hyphenated spelling.
+    Uuid,
+    /// `Bytes` — a JSON string, lowercase hex.
+    Bytes,
+    /// `Date` — a JSON string, ISO 8601 `YYYY-MM-DD`.
+    Date,
+    /// `Time` — a JSON string, ISO 8601 `HH:MM:SS`.
+    Time,
+    /// `Timestamp` — a JSON string, ISO 8601 in UTC.
+    Timestamp,
+}
+
+/// How a scalar that travels as a string converts to and from one.
+///
+/// The two functions are each other's inverse and already exist in the
+/// stdlib — the codec calls them rather than restating the format, so a
+/// change to the canonical spelling moves both sides at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextCodec {
+    /// Stdlib module holding both functions, e.g. `std.decimal`.
+    pub module: &'static str,
+    /// Name of the value-to-`Text` function.
+    pub to_text: &'static str,
+    /// Name of the `Text`-to-value function. Returns `Result T Error`, which
+    /// is already the shape `decode` has to produce.
+    pub from_text: &'static str,
+}
+
+impl JsonPrim {
+    /// Every scalar the codec knows, in declaration order.
+    ///
+    /// The registration in `class_env` and the shapes this module produces are
+    /// two halves of one claim — that a field of this type can be written and
+    /// read back. `codec_instances_cover_every_scalar` walks this list to check
+    /// they still agree; without it, a scalar could have a shape and no
+    /// instance, which is the state that let a `Decimal` field compile and
+    /// crash.
+    pub const ALL: &'static [Self] = &[
+        Self::Int,
+        Self::Float,
+        Self::Bool,
+        Self::Text,
+        Self::Decimal,
+        Self::Uuid,
+        Self::Bytes,
+        Self::Date,
+        Self::Time,
+        Self::Timestamp,
+    ];
+
+    /// This scalar's arena id, read from the built-in table rather than
+    /// restated.
+    #[must_use]
+    pub const fn tycon_id(self, b: &ridge_types::BuiltinTyCons) -> TyConId {
+        match self {
+            Self::Int => b.int,
+            Self::Float => b.float,
+            Self::Bool => b.bool,
+            Self::Text => b.text,
+            Self::Decimal => b.decimal,
+            Self::Uuid => b.uuid,
+            Self::Bytes => b.bytes,
+            Self::Date => b.date,
+            Self::Time => b.time,
+            Self::Timestamp => b.timestamp,
+        }
+    }
+
+    /// The string conversions for a scalar with no JSON counterpart, or `None`
+    /// for the four that map onto a JSON value directly.
+    #[must_use]
+    pub const fn text_codec(self) -> Option<TextCodec> {
+        let (module, to_text, from_text) = match self {
+            Self::Int | Self::Float | Self::Bool | Self::Text => return None,
+            Self::Decimal => ("std.decimal", "toText", "fromText"),
+            Self::Uuid => ("std.uuid", "toText", "fromText"),
+            Self::Bytes => ("std.bytes", "toHex", "fromHex"),
+            Self::Date => ("std.date", "toIso", "fromIso"),
+            Self::Time => ("std.timeofday", "toIso", "fromIso"),
+            Self::Timestamp => ("std.time", "toIso", "fromIso"),
+        };
+        Some(TextCodec {
+            module,
+            to_text,
+            from_text,
+        })
+    }
+
+    /// This scalar's source-level name, for diagnostics.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Int => "Int",
+            Self::Float => "Float",
+            Self::Bool => "Bool",
+            Self::Text => "Text",
+            Self::Decimal => "Decimal",
+            Self::Uuid => "Uuid",
+            Self::Bytes => "Bytes",
+            Self::Date => "Date",
+            Self::Time => "Time",
+            Self::Timestamp => "Timestamp",
+        }
+    }
+}
+
 /// Structural shape for a single field or payload argument.
 ///
 /// Computed once during derive-time type analysis in `field_to_shape`.  Both
@@ -281,16 +416,16 @@ pub struct DelegatedMethod {
 /// it is purely structural and carries no encode- or decode-specific data.
 /// The lowering pass (`ridge-lower`) consumes this to emit the right `IrExpr`
 /// without re-examining the AST.
-///
-/// `TyConId` values carried here use the same fixed assignments as
-/// `builtin_name_to_tycon_id`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldShape {
-    /// A primitive type (`Int=0`, `Float=1`, `Bool=2`, `Text=3`).
-    /// Encode: `JInt x` / `JFloat x` / `JBool x` / `JText x`.
-    /// Decode: match `JInt n` / … and return `Ok n`.
-    Prim(TyConId),
+    /// A scalar with a built-in instance — see [`JsonPrim`] for the wire form.
+    Prim(JsonPrim),
     /// `JsonValue` itself — encode: identity pass-through; decode: `Ok j`.
+    ///
+    /// Only ever produced for a field whose declared type IS `JsonValue`. It
+    /// used to double as the answer for any type the derive could not place,
+    /// which made the derive claim such a field was already JSON and handed
+    /// the raw runtime value to the encoder.
     Json,
     /// `Option T` — encode: `Some x => encode_shape(T, x); None => JNull`.
     /// Decode: `JNull => Ok None; _ => decode_shape(T) |> map Some`.
@@ -1102,17 +1237,8 @@ fn generate_encode(
     type_params: &[String],
     class_id: ridge_types::ClassId,
 ) -> Result<(DerivedMethodBody, Vec<Constraint>, Vec<usize>), TypeError> {
-    let var_hint = |field: &str, ty: &AstType| TypeError::NoInstance {
-        class: "Encode".to_string(),
-        ty: TypeDesc::Text(type_name.text.clone()),
-        span,
-        fix_hint: format!(
-            "field `{field}` of type `{}` mentions a type variable that is not a \
-             parameter of `{}`; only the type's own parameters can be threaded \
-             through a derived instance",
-            ast_type_display(ty),
-            type_name.text,
-        ),
+    let var_hint = |field: &str, ty: &AstType, why: ShapeError| {
+        shape_error(why, "Encode", type_name, field, ty, span)
     };
     match body {
         TypeBody::Record(r) => {
@@ -1120,7 +1246,7 @@ fn generate_encode(
             let mut field_shapes = Vec::with_capacity(r.fields.len());
             for field in &r.fields {
                 let shape = field_to_shape(&field.ty, user_tycon_names, type_params)
-                    .map_err(|()| var_hint(&field.name.text, &field.ty))?;
+                    .map_err(|why| var_hint(&field.name.text, &field.ty, why))?;
                 field_names.push(field.name.text.clone());
                 field_shapes.push(shape);
             }
@@ -1144,7 +1270,7 @@ fn generate_encode(
                         let mut shapes = Vec::with_capacity(args.len());
                         for ty in args {
                             let shape = field_to_shape(ty, user_tycon_names, type_params)
-                                .map_err(|()| var_hint(&name.text, ty))?;
+                                .map_err(|why| var_hint(&name.text, ty, why))?;
                             all_shapes.push(shape.clone());
                             shapes.push(shape);
                         }
@@ -1155,7 +1281,7 @@ fn generate_encode(
                         let mut field_names = Vec::with_capacity(body.fields.len());
                         for field in &body.fields {
                             let shape = field_to_shape(&field.ty, user_tycon_names, type_params)
-                                .map_err(|()| var_hint(&field.name.text, &field.ty))?;
+                                .map_err(|why| var_hint(&field.name.text, &field.ty, why))?;
                             all_shapes.push(shape.clone());
                             shapes.push(shape);
                             field_names.push(field.name.text.clone());
@@ -1171,7 +1297,7 @@ fn generate_encode(
         TypeBody::Alias(ty) => {
             // Alias types are structural wrappers; use the shape of the underlying type.
             let shape = field_to_shape(ty, user_tycon_names, type_params)
-                .map_err(|()| var_hint("$alias", ty))?;
+                .map_err(|why| var_hint("$alias", ty, why))?;
             let (cc, hvp) = var_indices_to_constraints(
                 &collect_var_param_indices(std::slice::from_ref(&shape)),
                 class_id,
@@ -1211,17 +1337,8 @@ fn generate_decode(
     type_params: &[String],
     class_id: ridge_types::ClassId,
 ) -> Result<(DerivedMethodBody, Vec<Constraint>, Vec<usize>), TypeError> {
-    let var_hint = |field: &str, ty: &AstType| TypeError::NoInstance {
-        class: "Decode".to_string(),
-        ty: TypeDesc::Text(type_name.text.clone()),
-        span,
-        fix_hint: format!(
-            "field `{field}` of type `{}` mentions a type variable that is not a \
-             parameter of `{}`; only the type's own parameters can be threaded \
-             through a derived instance",
-            ast_type_display(ty),
-            type_name.text,
-        ),
+    let var_hint = |field: &str, ty: &AstType, why: ShapeError| {
+        shape_error(why, "Decode", type_name, field, ty, span)
     };
     match body {
         TypeBody::Record(r) => {
@@ -1229,7 +1346,7 @@ fn generate_decode(
             let mut field_shapes = Vec::with_capacity(r.fields.len());
             for field in &r.fields {
                 let shape = field_to_shape(&field.ty, user_tycon_names, type_params)
-                    .map_err(|()| var_hint(&field.name.text, &field.ty))?;
+                    .map_err(|why| var_hint(&field.name.text, &field.ty, why))?;
                 field_names.push(field.name.text.clone());
                 field_shapes.push(shape);
             }
@@ -1253,7 +1370,7 @@ fn generate_decode(
                         let mut shapes = Vec::with_capacity(args.len());
                         for ty in args {
                             let shape = field_to_shape(ty, user_tycon_names, type_params)
-                                .map_err(|()| var_hint(&name.text, ty))?;
+                                .map_err(|why| var_hint(&name.text, ty, why))?;
                             all_shapes.push(shape.clone());
                             shapes.push(shape);
                         }
@@ -1264,7 +1381,7 @@ fn generate_decode(
                         let mut field_names = Vec::with_capacity(body.fields.len());
                         for field in &body.fields {
                             let shape = field_to_shape(&field.ty, user_tycon_names, type_params)
-                                .map_err(|()| var_hint(&field.name.text, &field.ty))?;
+                                .map_err(|why| var_hint(&field.name.text, &field.ty, why))?;
                             all_shapes.push(shape.clone());
                             shapes.push(shape);
                             field_names.push(field.name.text.clone());
@@ -1280,7 +1397,7 @@ fn generate_decode(
         TypeBody::Alias(ty) => {
             // Alias types: decode the underlying shape and wrap in Ok.
             let shape = field_to_shape(ty, user_tycon_names, type_params)
-                .map_err(|()| var_hint("$alias", ty))?;
+                .map_err(|why| var_hint("$alias", ty, why))?;
             let (cc, hvp) = var_indices_to_constraints(
                 &collect_var_param_indices(std::slice::from_ref(&shape)),
                 class_id,
@@ -1559,14 +1676,28 @@ fn sql_primitive_type_name(ty: &AstType) -> Option<String> {
     }
 }
 
+/// Why a field type has no [`FieldShape`].
+///
+/// The distinction matters to the reader: one is a type the derive could
+/// support and does not yet, the other is a type nothing knows how to encode.
+/// Both end as `T029`, with different wording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShapeError {
+    /// The type is, or contains, a type variable that is not one of the
+    /// deriving type's own parameters.
+    UnboundVar,
+    /// A named type with no instance for the class.
+    NoCodec,
+    /// A tuple, a function type or an inline record: there is no type
+    /// constructor for an instance to be attached to, so no instance can
+    /// exist for it and the fix is a different one.
+    Unnameable,
+}
+
 /// Recursively distil an [`AstType`] into a [`FieldShape`].
 ///
-/// Returns `Err(())` when the type IS or CONTAINS a type variable (`Type::Var`)
-/// at any position — this signals the Gap-A boundary: the field needs a
-/// parametric instance that the compiler does not yet support for `deriving`.
-///
 /// Recognised special cases (DX-idiomatic):
-/// - Primitives (`Int`, `Float`, `Bool`, `Text`) → [`FieldShape::Prim`].
+/// - A scalar with a built-in instance → [`FieldShape::Prim`].
 /// - `JsonValue` (named) → [`FieldShape::Json`].
 /// - `Option T` → [`FieldShape::Opt`] (recurses into `T`).
 /// - `List T` or `[T]` sugar → [`FieldShape::Lst`].
@@ -1574,25 +1705,39 @@ fn sql_primitive_type_name(ty: &AstType) -> Option<String> {
 /// - `Result T E` → [`FieldShape::Res`].
 /// - Other user-defined named type → [`FieldShape::User`] (must have its
 ///   own `Encode`/`Decode` instance; coherence checks this at use-site).
+///
+/// Anything else is an error rather than a best guess. A shape that says
+/// "encode this however you can" is how a `Decimal` field used to reach the
+/// runtime untouched and crash the JSON encoder, with nothing reported at
+/// compile time — the shape claiming the field was already JSON is exactly
+/// what stopped the missing instance from being noticed.
 fn field_to_shape(
     ty: &AstType,
     user_tycon_names: &FxHashMap<String, TyConId>,
     type_params: &[String],
-) -> Result<FieldShape, ()> {
+) -> Result<FieldShape, ShapeError> {
     use ridge_ast::base::PrimitiveType;
     match ty {
         // ── Primitives ────────────────────────────────────────────────────────
-        AstType::Primitive { name, .. } => {
-            let id = match name {
-                PrimitiveType::Int => TyConId(0),
-                PrimitiveType::Float => TyConId(1),
-                PrimitiveType::Bool => TyConId(2),
-                PrimitiveType::Text => TyConId(3),
-                // Unit and other primitives fall through to identity/Json handling.
-                _ => return Ok(FieldShape::Json),
-            };
-            Ok(FieldShape::Prim(id))
-        }
+        // Exhaustive on purpose: a new primitive fails to compile here until
+        // someone decides what it looks like on the wire.
+        AstType::Primitive { name, .. } => match name {
+            PrimitiveType::Int => Ok(FieldShape::Prim(JsonPrim::Int)),
+            PrimitiveType::Float => Ok(FieldShape::Prim(JsonPrim::Float)),
+            PrimitiveType::Bool => Ok(FieldShape::Prim(JsonPrim::Bool)),
+            PrimitiveType::Text => Ok(FieldShape::Prim(JsonPrim::Text)),
+            PrimitiveType::Decimal => Ok(FieldShape::Prim(JsonPrim::Decimal)),
+            PrimitiveType::Uuid => Ok(FieldShape::Prim(JsonPrim::Uuid)),
+            PrimitiveType::Bytes => Ok(FieldShape::Prim(JsonPrim::Bytes)),
+            PrimitiveType::Date => Ok(FieldShape::Prim(JsonPrim::Date)),
+            PrimitiveType::Time => Ok(FieldShape::Prim(JsonPrim::Time)),
+            PrimitiveType::Timestamp => Ok(FieldShape::Prim(JsonPrim::Timestamp)),
+            // `Unit` carries nothing, and the two obvious spellings both cost
+            // something: `null` collides with how `Option` encodes `None`, so
+            // `Option Unit` could not round-trip, and an empty array to dodge
+            // that is a shape nobody would guess reading the JSON.
+            PrimitiveType::Unit => Err(ShapeError::NoCodec),
+        },
 
         // ── Type variable ─────────────────────────────────────────────────────
         // A variable that is one of the generic type's parameters becomes a
@@ -1603,7 +1748,7 @@ fn field_to_shape(
             .iter()
             .position(|p| p == &name.text)
             .map(|param_index| FieldShape::Var { param_index })
-            .ok_or(()),
+            .ok_or(ShapeError::UnboundVar),
 
         // ── List sugar [T] ────────────────────────────────────────────────────
         AstType::List { elem, .. } => {
@@ -1621,12 +1766,11 @@ fn field_to_shape(
             if n == "JsonValue" {
                 return Ok(FieldShape::Json);
             }
-            // Builtin scalars by name.
-            if let Some(id) = builtin_name_to_tycon_id(n) {
-                // Only Int/Float/Bool/Text are Prim; others are pass-through.
-                if id.0 <= 3 {
-                    return Ok(FieldShape::Prim(id));
-                }
+            // The parser spells every scalar above as `AstType::Primitive`, so
+            // this only fires for a synthesised AST — but the answer has to be
+            // the same one, not a different table.
+            if let Some(prim) = json_prim_by_name(n) {
+                return Ok(FieldShape::Prim(prim));
             }
             // User-defined type: look it up in the user tycon map.
             if let Some(&id) = user_tycon_names.get(n) {
@@ -1635,9 +1779,10 @@ fn field_to_shape(
                     type_name: n.to_string(),
                 });
             }
-            // Unknown named type — treat as identity (best-effort; coherence
-            // will catch missing instances at call sites).
-            Ok(FieldShape::Json)
+            // A name nothing in the workspace declares. Reporting it beats
+            // encoding it: whatever it turns out to be, the derive has no way
+            // to move its values.
+            Err(ShapeError::NoCodec)
         }
 
         // ── Type application App { head, args } ──────────────────────────────
@@ -1653,9 +1798,9 @@ fn field_to_shape(
                     Ok(FieldShape::Lst(Box::new(inner)))
                 }
                 "Map" if args.len() == 2 => {
-                    // Only Map Text T is supported; any other key type falls
-                    // through to Json (best-effort — user may get a runtime
-                    // encoding that isn't fully round-trippable).
+                    // A JSON object's keys are strings, so only `Map Text T`
+                    // has an object to become. Any other key type is reported
+                    // rather than passed through.
                     let key_is_text = matches!(
                         &args[0],
                         AstType::Primitive {
@@ -1670,8 +1815,7 @@ fn field_to_shape(
                         let val_shape = field_to_shape(&args[1], user_tycon_names, type_params)?;
                         Ok(FieldShape::MapText(Box::new(val_shape)))
                     } else {
-                        // Non-Text keys: encode as opaque Json (no recursion).
-                        Ok(FieldShape::Json)
+                        Err(ShapeError::NoCodec)
                     }
                 }
                 "Result" if args.len() == 2 => {
@@ -1695,23 +1839,23 @@ fn field_to_shape(
                             type_name: h.to_string(),
                         })
                     } else {
-                        Ok(FieldShape::Json)
+                        Err(ShapeError::NoCodec)
                     }
                 }
             }
         }
 
         // ── Everything else — function types, tuples, inline records ─────────
-        // These are unusual in derivable type fields; treat as Json identity.
+        // A tuple has no type constructor, so it cannot carry an instance;
+        // a function has no value to write down at all. Both used to pass
+        // through as if they were already JSON.
         AstType::Tuple { elems, .. } => {
-            // Reject any Var buried inside — a tuple of type variables would
-            // need nested dictionary threading beyond what deriving synthesises.
             for e in elems {
                 check_no_var(e)?;
             }
-            Ok(FieldShape::Json)
+            Err(ShapeError::Unnameable)
         }
-        AstType::Fn { .. } | AstType::Record { .. } => Ok(FieldShape::Json),
+        AstType::Fn { .. } | AstType::Record { .. } => Err(ShapeError::Unnameable),
     }
 }
 
@@ -1720,9 +1864,72 @@ fn field_to_shape(
 /// Used for nested positions (a generic-type application argument, a tuple
 /// element) where the deriver cannot thread a runtime dictionary. A top-level
 /// type-variable field is handled separately by `field_to_shape`'s `Var` arm.
-fn check_no_var(ty: &AstType) -> Result<(), ()> {
+/// Turn a [`ShapeError`] into the `T029` it is reported as.
+///
+/// Both cases name the field and its written type, because the reader is
+/// looking at a `deriving` clause on a type declaration and the offending
+/// field may be several lines away from the span.
+fn shape_error(
+    why: ShapeError,
+    class: &str,
+    type_name: &Ident,
+    field: &str,
+    ty: &AstType,
+    span: Span,
+) -> TypeError {
+    let written = ast_type_display(ty);
+    let fix_hint = match why {
+        ShapeError::UnboundVar => format!(
+            "field `{field}` of type `{written}` mentions a type variable that is not a \
+             parameter of `{}`; only the type's own parameters can be threaded \
+             through a derived instance",
+            type_name.text,
+        ),
+        ShapeError::NoCodec => format!(
+            "field `{field}` of type `{written}` has no `{class}` instance, so \
+             `deriving ({class})` on `{}` has nothing to call for it; hold the \
+             field in a type that has one, or give `{written}` an instance if \
+             it is yours to declare",
+            type_name.text,
+        ),
+        ShapeError::Unnameable => format!(
+            "field `{field}` of type `{written}` has no type constructor for a \
+             `{class}` instance to attach to; wrap it in a named type of your \
+             own and derive `{class}` there"
+        ),
+    };
+    TypeError::NoInstance {
+        class: class.to_string(),
+        ty: TypeDesc::Text(type_name.text.clone()),
+        span,
+        fix_hint,
+    }
+}
+
+/// The scalar a source-level type name denotes, if the codec knows it.
+///
+/// The parser turns every one of these names into `AstType::Primitive`, so
+/// this only serves synthesised ASTs. It exists so that path cannot answer
+/// differently from the `Primitive` arm.
+fn json_prim_by_name(name: &str) -> Option<JsonPrim> {
+    match name {
+        "Int" => Some(JsonPrim::Int),
+        "Float" => Some(JsonPrim::Float),
+        "Bool" => Some(JsonPrim::Bool),
+        "Text" => Some(JsonPrim::Text),
+        "Decimal" => Some(JsonPrim::Decimal),
+        "Uuid" => Some(JsonPrim::Uuid),
+        "Bytes" => Some(JsonPrim::Bytes),
+        "Date" => Some(JsonPrim::Date),
+        "Time" => Some(JsonPrim::Time),
+        "Timestamp" => Some(JsonPrim::Timestamp),
+        _ => None,
+    }
+}
+
+fn check_no_var(ty: &AstType) -> Result<(), ShapeError> {
     match ty {
-        AstType::Var { .. } => Err(()),
+        AstType::Var { .. } => Err(ShapeError::UnboundVar),
         AstType::Paren { inner, .. } => check_no_var(inner),
         AstType::List { elem, .. } => check_no_var(elem),
         AstType::App { args, .. } => {
@@ -1984,7 +2191,7 @@ mod tests {
         );
         let (generated, errors) = derive_instances(
             &decl,
-            TyConId(100),
+            TyConId(300),
             42,
             &ct,
             &mut env,
@@ -1998,7 +2205,7 @@ mod tests {
         ));
         // Instance must be registered.
         assert!(
-            env.get((EQ_CLASS, TyConId(100))).is_some(),
+            env.get((EQ_CLASS, TyConId(300))).is_some(),
             "Eq instance must be in InstanceEnv"
         );
     }
@@ -2015,8 +2222,14 @@ mod tests {
             union_body(vec![("Red", vec![]), ("Green", vec![]), ("Blue", vec![])]),
             vec!["Eq"],
         );
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(17), 42, &ct, &mut env, &FxHashMap::default());
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(217),
+            42,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+        );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         assert_eq!(generated.len(), 1);
         assert!(matches!(
@@ -2037,8 +2250,14 @@ mod tests {
             record_body(vec![("x", float_type()), ("y", float_type())]),
             vec!["Eq"],
         );
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(18), 42, &ct, &mut env, &FxHashMap::default());
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(218),
+            42,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+        );
         assert!(generated.is_empty(), "no instance should be generated");
         assert_eq!(errors.len(), 1, "one T029 expected");
         assert_eq!(
@@ -2067,8 +2286,14 @@ mod tests {
             record_body(vec![("x", int_type()), ("y", int_type())]),
             vec!["ToText"],
         );
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(19), 42, &ct, &mut env, &FxHashMap::default());
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(219),
+            42,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+        );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         assert_eq!(generated.len(), 1);
         if let DerivedMethodBody::DerivedToTextRecord {
@@ -2093,7 +2318,7 @@ mod tests {
                 generated[0].method_body
             );
         }
-        assert!(env.get((TOTEXT_CLASS, TyConId(19))).is_some());
+        assert!(env.get((TOTEXT_CLASS, TyConId(219))).is_some());
     }
 
     // ── derive ToText on a union ──────────────────────────────────────────────
@@ -2108,8 +2333,14 @@ mod tests {
             union_body(vec![("Red", vec![]), ("Green", vec![]), ("Blue", vec![])]),
             vec!["ToText"],
         );
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(20), 42, &ct, &mut env, &FxHashMap::default());
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(220),
+            42,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+        );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         assert_eq!(generated.len(), 1);
         if let DerivedMethodBody::DerivedToTextUnion { variants } = &generated[0].method_body {
@@ -2140,8 +2371,14 @@ mod tests {
             union_body(vec![("Red", vec![]), ("Green", vec![]), ("Blue", vec![])]),
             vec!["Eq", "Ord"],
         );
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(21), 42, &ct, &mut env, &FxHashMap::default());
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(221),
+            42,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+        );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         // Two instances: Eq and Ord.
         assert_eq!(generated.len(), 2, "expected 2 instances (Eq + Ord)");
@@ -2170,8 +2407,14 @@ mod tests {
             record_body(vec![("x", int_type()), ("y", int_type())]),
             vec!["Eq", "Ord"],
         );
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(22), 42, &ct, &mut env, &FxHashMap::default());
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(222),
+            42,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+        );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         let ord = generated
             .iter()
@@ -2193,9 +2436,9 @@ mod tests {
         let ct = make_class_table();
         let mut env = make_instance_env();
 
-        // Pre-insert an explicit Eq instance for TyConId(23).
+        // Pre-insert an explicit Eq instance for TyConId(223).
         env.insert(
-            (EQ_CLASS, TyConId(23)),
+            (EQ_CLASS, TyConId(223)),
             InstanceInfo {
                 def_module: Some(0),
                 methods: vec![("eq".to_string(), String::new())],
@@ -2211,8 +2454,14 @@ mod tests {
 
         // Now try to derive Eq for the same type — should produce T032.
         let decl = type_decl_with_body("Foo", union_body(vec![("A", vec![])]), vec!["Eq"]);
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(23), 42, &ct, &mut env, &FxHashMap::default());
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(223),
+            42,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+        );
         assert!(generated.is_empty(), "no instance generated on conflict");
         assert!(
             errors.iter().any(|e| e.code() == "T032"),
@@ -2231,8 +2480,14 @@ mod tests {
             union_body(vec![("A", vec![])]),
             vec!["Serializable"], // not a known class
         );
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(24), 42, &ct, &mut env, &FxHashMap::default());
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(224),
+            42,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+        );
         assert!(generated.is_empty());
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].code(), "T029", "unknown class → T029");
@@ -2247,8 +2502,14 @@ mod tests {
         // Register a real user class that is not in the derivable set.
         let _ = ct.intern("Fancy");
         let decl = type_decl_with_body("Foo", union_body(vec![("A", vec![])]), vec!["Fancy"]);
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(25), 42, &ct, &mut env, &FxHashMap::default());
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(225),
+            42,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+        );
         assert!(generated.is_empty());
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].code(), "T029");
@@ -2358,6 +2619,241 @@ mod tests {
         }
     }
 
+    fn prim_type(name: ridge_ast::base::PrimitiveType) -> AstType {
+        AstType::Primitive {
+            name,
+            span: Span::point(0),
+        }
+    }
+
+    fn tuple_type(elems: Vec<AstType>) -> AstType {
+        AstType::Tuple {
+            elems,
+            span: Span::point(0),
+        }
+    }
+
+    /// Every scalar with no JSON counterpart gets its own `FieldShape`, so the
+    /// lowering can pick its text conversion rather than guess a constructor.
+    #[test]
+    fn each_scalar_field_keeps_its_own_shape() {
+        use ridge_ast::base::PrimitiveType as P;
+        let cases = [
+            (P::Decimal, JsonPrim::Decimal),
+            (P::Uuid, JsonPrim::Uuid),
+            (P::Bytes, JsonPrim::Bytes),
+            (P::Date, JsonPrim::Date),
+            (P::Time, JsonPrim::Time),
+            (P::Timestamp, JsonPrim::Timestamp),
+        ];
+        for (i, (prim, expected)) in cases.into_iter().enumerate() {
+            let ct = make_class_table();
+            let mut env = make_instance_env();
+            let decl = type_decl_with_body(
+                "Row",
+                record_body(vec![("v", prim_type(prim))]),
+                vec!["Encode"],
+            );
+            let id = TyConId(400 + u32::try_from(i).unwrap_or(0));
+            let (generated, errors) =
+                derive_instances(&decl, id, 42, &ct, &mut env, &FxHashMap::default());
+            assert!(
+                errors.is_empty(),
+                "{expected:?}: unexpected errors {errors:?}"
+            );
+            let DerivedMethodBody::DerivedEncodeRecord { field_shapes, .. } =
+                &generated[0].method_body
+            else {
+                panic!("expected DerivedEncodeRecord for {expected:?}");
+            };
+            assert_eq!(
+                field_shapes,
+                &[FieldShape::Prim(expected)],
+                "{expected:?} must not collapse into another scalar's shape"
+            );
+        }
+    }
+
+    /// A `Unit` field has no instance and no wire form worth inventing, so the
+    /// derive reports it instead of writing the value through untouched.
+    #[test]
+    fn a_field_with_no_instance_stops_the_derive() {
+        use ridge_ast::base::PrimitiveType as P;
+        let ct = make_class_table();
+        let mut env = make_instance_env();
+        let decl = type_decl_with_body(
+            "Row",
+            record_body(vec![("v", prim_type(P::Unit))]),
+            vec!["Encode"],
+        );
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(420),
+            42,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+        );
+        assert!(
+            generated.is_empty(),
+            "nothing may be generated: {generated:?}"
+        );
+        let [TypeError::NoInstance { fix_hint, .. }] = &errors[..] else {
+            panic!("expected exactly one NoInstance, got {errors:?}");
+        };
+        assert!(
+            fix_hint.contains("has no `Encode` instance"),
+            "the hint must name the missing instance: {fix_hint}"
+        );
+        assert!(
+            fix_hint.contains("field `v` of type `Unit`"),
+            "the hint must name the field and its type: {fix_hint}"
+        );
+    }
+
+    /// A tuple cannot carry an instance at all, so the advice differs: there is
+    /// no type constructor to attach one to.
+    #[test]
+    fn a_tuple_field_is_told_it_cannot_carry_an_instance() {
+        let ct = make_class_table();
+        let mut env = make_instance_env();
+        let decl = type_decl_with_body(
+            "Row",
+            record_body(vec![("v", tuple_type(vec![int_type(), text_type()]))]),
+            vec!["Encode"],
+        );
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(421),
+            42,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+        );
+        assert!(
+            generated.is_empty(),
+            "nothing may be generated: {generated:?}"
+        );
+        let [TypeError::NoInstance { fix_hint, .. }] = &errors[..] else {
+            panic!("expected exactly one NoInstance, got {errors:?}");
+        };
+        assert!(
+            fix_hint.contains("no type constructor"),
+            "a tuple needs the wrap-it advice, not the declare-an-instance advice: {fix_hint}"
+        );
+    }
+
+    /// A name nothing declares used to become `FieldShape::Json`, which claimed
+    /// the field was already encoded and silenced the missing instance.
+    #[test]
+    fn an_unknown_named_field_type_is_reported_not_passed_through() {
+        let ct = make_class_table();
+        let mut env = make_instance_env();
+        let decl = type_decl_with_body(
+            "Row",
+            record_body(vec![("v", named_type("Nowhere"))]),
+            vec!["Encode"],
+        );
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(422),
+            42,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+        );
+        assert!(
+            generated.is_empty(),
+            "nothing may be generated: {generated:?}"
+        );
+        assert!(
+            matches!(errors.as_slice(), [TypeError::NoInstance { .. }]),
+            "expected exactly one NoInstance, got {errors:?}"
+        );
+    }
+
+    /// Both halves of the same claim, checked against each other.
+    ///
+    /// A scalar with a [`FieldShape::Prim`] and no registered instance is the
+    /// state this whole area was in: the derive wrote a field the class said
+    /// nothing about. A registered instance with no shape is the mirror — the
+    /// direct call would work and the derived one would not. Neither is
+    /// reachable while this passes, and the check reads both ways rather than
+    /// only asking whether the list is missing something.
+    #[test]
+    fn codec_instances_cover_every_scalar() {
+        use ridge_types::{TyConArena, DECODE_CLASS, ENCODE_CLASS};
+
+        let mut arena = TyConArena::new();
+        let b = ridge_types::BuiltinTyCons::allocate(&mut arena);
+        let mut env = InstanceEnv::new();
+        crate::class_env::register_prelude_instances(&mut env);
+
+        // Forward: every scalar the derive can produce a shape for is a scalar
+        // both classes can move.
+        for prim in JsonPrim::ALL {
+            let id = prim.tycon_id(&b);
+            assert!(
+                env.get((ENCODE_CLASS, id)).is_some(),
+                "`{}` has a field shape but no `Encode` instance",
+                prim.name()
+            );
+            assert!(
+                env.get((DECODE_CLASS, id)).is_some(),
+                "`{}` has a field shape but no `Decode` instance",
+                prim.name()
+            );
+        }
+
+        // Backward: nothing outside the list carries a codec instance except
+        // the four parametric containers, whose dictionaries are synthesised.
+        let containers = [b.list, b.map, b.option, b.result];
+        let known: Vec<TyConId> = JsonPrim::ALL.iter().map(|p| p.tycon_id(&b)).collect();
+        for decl in arena.all() {
+            let id = decl.id;
+            if known.contains(&id) || containers.contains(&id) {
+                continue;
+            }
+            assert!(
+                env.get((ENCODE_CLASS, id)).is_none(),
+                "`{}` has an `Encode` instance but no field shape, so a derived \
+                 field of that type would not compile while a direct call would",
+                decl.name
+            );
+            assert!(
+                env.get((DECODE_CLASS, id)).is_none(),
+                "`{}` has a `Decode` instance but no field shape",
+                decl.name
+            );
+        }
+    }
+
+    /// `JsonValue` is the one type the identity shape is right for.
+    #[test]
+    fn a_json_value_field_still_passes_through() {
+        let ct = make_class_table();
+        let mut env = make_instance_env();
+        let decl = type_decl_with_body(
+            "Row",
+            record_body(vec![("v", named_type("JsonValue"))]),
+            vec!["Encode"],
+        );
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(423),
+            42,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+        );
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        let DerivedMethodBody::DerivedEncodeRecord { field_shapes, .. } = &generated[0].method_body
+        else {
+            panic!("expected DerivedEncodeRecord");
+        };
+        assert_eq!(field_shapes, &[FieldShape::Json]);
+    }
+
     fn var_type(name: &str) -> AstType {
         AstType::Var {
             name: Ident {
@@ -2378,8 +2874,14 @@ mod tests {
             record_body(vec![("name", text_type()), ("age", int_type())]),
             vec!["Encode"],
         );
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(50), 42, &ct, &mut env, &FxHashMap::default());
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(250),
+            42,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+        );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         assert_eq!(generated.len(), 1);
         if let DerivedMethodBody::DerivedEncodeRecord {
@@ -2391,8 +2893,8 @@ mod tests {
             assert_eq!(
                 field_shapes,
                 &[
-                    FieldShape::Prim(TyConId(3)), // Text
-                    FieldShape::Prim(TyConId(0)), // Int
+                    FieldShape::Prim(JsonPrim::Text), // Text
+                    FieldShape::Prim(JsonPrim::Int),  // Int
                 ],
                 "expected [Prim(Text), Prim(Int)]: {field_shapes:?}"
             );
@@ -2402,7 +2904,7 @@ mod tests {
                 generated[0].method_body
             );
         }
-        assert!(env.get((ENCODE_CLASS, TyConId(50))).is_some());
+        assert!(env.get((ENCODE_CLASS, TyConId(250))).is_some());
     }
 
     // ── derive Encode on a record with List/Option/Map fields ─────────────────
@@ -2424,8 +2926,14 @@ mod tests {
             ]),
             vec!["Encode"],
         );
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(51), 42, &ct, &mut env, &FxHashMap::default());
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(251),
+            42,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+        );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         assert_eq!(generated.len(), 1);
         if let DerivedMethodBody::DerivedEncodeRecord { field_shapes, .. } =
@@ -2433,17 +2941,17 @@ mod tests {
         {
             assert_eq!(
                 field_shapes[0],
-                FieldShape::Lst(Box::new(FieldShape::Prim(TyConId(3)))),
+                FieldShape::Lst(Box::new(FieldShape::Prim(JsonPrim::Text))),
                 "tags: List Text → Lst(Prim(Text))"
             );
             assert_eq!(
                 field_shapes[1],
-                FieldShape::Opt(Box::new(FieldShape::Prim(TyConId(3)))),
+                FieldShape::Opt(Box::new(FieldShape::Prim(JsonPrim::Text))),
                 "nick: Option Text → Opt(Prim(Text))"
             );
             assert_eq!(
                 field_shapes[2],
-                FieldShape::MapText(Box::new(FieldShape::Prim(TyConId(0)))),
+                FieldShape::MapText(Box::new(FieldShape::Prim(JsonPrim::Int))),
                 "meta: Map Text Int → MapText(Prim(Int))"
             );
         } else {
@@ -2466,8 +2974,14 @@ mod tests {
             union_body(vec![("Admin", vec![]), ("User", vec![])]),
             vec!["Encode"],
         );
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(52), 42, &ct, &mut env, &FxHashMap::default());
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(252),
+            42,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+        );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         assert_eq!(generated.len(), 1);
         if let DerivedMethodBody::DerivedEncodeUnion { variants } = &generated[0].method_body {
@@ -2499,14 +3013,20 @@ mod tests {
             ]),
             vec!["Encode"],
         );
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(53), 42, &ct, &mut env, &FxHashMap::default());
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(253),
+            42,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+        );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         if let DerivedMethodBody::DerivedEncodeUnion { variants } = &generated[0].method_body {
             assert_eq!(variants[0].0, "Circle");
             assert_eq!(
                 variants[0].1,
-                vec![FieldShape::Prim(TyConId(1))],
+                vec![FieldShape::Prim(JsonPrim::Float)],
                 "Circle Float → [Prim(Float)]"
             );
             assert_eq!(variants[1].0, "Rect");
@@ -2541,8 +3061,14 @@ mod tests {
             text: "a".to_string(),
             span: Span::point(0),
         }];
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(54), 42, &ct, &mut env, &FxHashMap::default());
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(254),
+            42,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+        );
         assert!(errors.is_empty(), "generic Encode must succeed: {errors:?}");
         assert_eq!(generated.len(), 1, "one instance generated");
         let inst = &generated[0];
@@ -2577,8 +3103,14 @@ mod tests {
             vec!["Encode"],
         );
         // decl.params left empty: `b` is unbound.
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(54), 42, &ct, &mut env, &FxHashMap::default());
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(254),
+            42,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+        );
         assert!(generated.is_empty(), "no instance when a var is unbound");
         assert_eq!(errors.len(), 1, "one T029 expected");
         assert_eq!(errors[0].code(), "T029", "unbound var → T029: {errors:?}");
@@ -2593,7 +3125,7 @@ mod tests {
         // Address = { street: Text }  (id=55)
         // Person = { name: Text, addr: Address }  (id=56)
         let mut user_tycon_names = FxHashMap::default();
-        user_tycon_names.insert("Address".to_string(), TyConId(55));
+        user_tycon_names.insert("Address".to_string(), TyConId(255));
 
         let decl = type_decl_with_body(
             "Person",
@@ -2601,16 +3133,16 @@ mod tests {
             vec!["Encode"],
         );
         let (generated, errors) =
-            derive_instances(&decl, TyConId(56), 42, &ct, &mut env, &user_tycon_names);
+            derive_instances(&decl, TyConId(256), 42, &ct, &mut env, &user_tycon_names);
         assert!(errors.is_empty(), "no errors: {errors:?}");
         if let DerivedMethodBody::DerivedEncodeRecord { field_shapes, .. } =
             &generated[0].method_body
         {
-            assert_eq!(field_shapes[0], FieldShape::Prim(TyConId(3))); // name: Text
+            assert_eq!(field_shapes[0], FieldShape::Prim(JsonPrim::Text)); // name: Text
             assert_eq!(
                 field_shapes[1],
                 FieldShape::User {
-                    tycon: TyConId(55),
+                    tycon: TyConId(255),
                     type_name: "Address".to_string(),
                 },
                 "addr: Address → User {{ tycon: 55, type_name: \"Address\" }}"
@@ -2635,8 +3167,14 @@ mod tests {
             record_body(vec![("name", text_type()), ("age", int_type())]),
             vec!["Decode"],
         );
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(60), 42, &ct, &mut env, &FxHashMap::default());
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(260),
+            42,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+        );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         assert_eq!(generated.len(), 1);
         if let DerivedMethodBody::DerivedDecodeRecord {
@@ -2648,8 +3186,8 @@ mod tests {
             assert_eq!(
                 field_shapes,
                 &[
-                    FieldShape::Prim(TyConId(3)), // Text
-                    FieldShape::Prim(TyConId(0)), // Int
+                    FieldShape::Prim(JsonPrim::Text), // Text
+                    FieldShape::Prim(JsonPrim::Int),  // Int
                 ],
                 "expected [Prim(Text), Prim(Int)]: {field_shapes:?}"
             );
@@ -2659,7 +3197,7 @@ mod tests {
                 generated[0].method_body
             );
         }
-        assert!(env.get((DECODE_CLASS, TyConId(60))).is_some());
+        assert!(env.get((DECODE_CLASS, TyConId(260))).is_some());
     }
 
     // ── derive Decode on a record with List/Option/Map fields ─────────────────
@@ -2681,8 +3219,14 @@ mod tests {
             ]),
             vec!["Decode"],
         );
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(61), 42, &ct, &mut env, &FxHashMap::default());
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(261),
+            42,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+        );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         assert_eq!(generated.len(), 1);
         if let DerivedMethodBody::DerivedDecodeRecord { field_shapes, .. } =
@@ -2690,17 +3234,17 @@ mod tests {
         {
             assert_eq!(
                 field_shapes[0],
-                FieldShape::Lst(Box::new(FieldShape::Prim(TyConId(3)))),
+                FieldShape::Lst(Box::new(FieldShape::Prim(JsonPrim::Text))),
                 "tags: List Text → Lst(Prim(Text))"
             );
             assert_eq!(
                 field_shapes[1],
-                FieldShape::Opt(Box::new(FieldShape::Prim(TyConId(3)))),
+                FieldShape::Opt(Box::new(FieldShape::Prim(JsonPrim::Text))),
                 "nick: Option Text → Opt(Prim(Text))"
             );
             assert_eq!(
                 field_shapes[2],
-                FieldShape::MapText(Box::new(FieldShape::Prim(TyConId(0)))),
+                FieldShape::MapText(Box::new(FieldShape::Prim(JsonPrim::Int))),
                 "meta: Map Text Int → MapText(Prim(Int))"
             );
         } else {
@@ -2723,8 +3267,14 @@ mod tests {
             union_body(vec![("Admin", vec![]), ("Guest", vec![])]),
             vec!["Decode"],
         );
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(62), 42, &ct, &mut env, &FxHashMap::default());
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(262),
+            42,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+        );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         assert_eq!(generated.len(), 1);
         if let DerivedMethodBody::DerivedDecodeUnion { variants } = &generated[0].method_body {
@@ -2756,14 +3306,20 @@ mod tests {
             ]),
             vec!["Decode"],
         );
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(63), 42, &ct, &mut env, &FxHashMap::default());
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(263),
+            42,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+        );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         if let DerivedMethodBody::DerivedDecodeUnion { variants } = &generated[0].method_body {
             assert_eq!(variants[0].0, "Circle");
             assert_eq!(
                 variants[0].1,
-                vec![FieldShape::Prim(TyConId(1))],
+                vec![FieldShape::Prim(JsonPrim::Float)],
                 "Circle Float → [Prim(Float)]"
             );
             assert_eq!(variants[1].0, "Rect");
@@ -2792,8 +3348,14 @@ mod tests {
             text: "a".to_string(),
             span: Span::point(0),
         }];
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(64), 42, &ct, &mut env, &FxHashMap::default());
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(264),
+            42,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+        );
         assert!(errors.is_empty(), "generic Decode must succeed: {errors:?}");
         assert_eq!(generated.len(), 1, "one instance generated");
         let inst = &generated[0];
@@ -2816,7 +3378,7 @@ mod tests {
         // Address = { street: Text }  (id=65)
         // Person = { name: Text, addr: Address }  (id=66)
         let mut user_tycon_names = FxHashMap::default();
-        user_tycon_names.insert("Address".to_string(), TyConId(65));
+        user_tycon_names.insert("Address".to_string(), TyConId(265));
 
         let decl = type_decl_with_body(
             "Person",
@@ -2824,16 +3386,16 @@ mod tests {
             vec!["Decode"],
         );
         let (generated, errors) =
-            derive_instances(&decl, TyConId(66), 42, &ct, &mut env, &user_tycon_names);
+            derive_instances(&decl, TyConId(266), 42, &ct, &mut env, &user_tycon_names);
         assert!(errors.is_empty(), "no errors: {errors:?}");
         if let DerivedMethodBody::DerivedDecodeRecord { field_shapes, .. } =
             &generated[0].method_body
         {
-            assert_eq!(field_shapes[0], FieldShape::Prim(TyConId(3))); // name: Text
+            assert_eq!(field_shapes[0], FieldShape::Prim(JsonPrim::Text)); // name: Text
             assert_eq!(
                 field_shapes[1],
                 FieldShape::User {
-                    tycon: TyConId(65),
+                    tycon: TyConId(265),
                     type_name: "Address".to_string(),
                 },
                 "addr: Address → User {{ tycon: 65, type_name: \"Address\" }}"
@@ -2883,7 +3445,7 @@ mod tests {
         // opaque type Money = { cents: Int } deriving (SqlType)
         let decl = opaque_record_decl("Money", ("cents", int_type()), vec!["SqlType"]);
         let (generated, errors) =
-            derive_instances(&decl, TyConId(100), 7, &ct, &mut env, &FxHashMap::default());
+            derive_instances(&decl, TyConId(300), 7, &ct, &mut env, &FxHashMap::default());
         assert!(errors.is_empty(), "no errors: {errors:?}");
         assert_eq!(generated.len(), 1);
         if let DerivedMethodBody::DerivedDelegated {
@@ -2910,7 +3472,7 @@ mod tests {
         }
         let sql = ct.id_by_name("SqlType").expect("SqlType registered");
         assert!(
-            env.get((sql, TyConId(100))).is_some(),
+            env.get((sql, TyConId(300))).is_some(),
             "delegated SqlType instance must be registered"
         );
     }
@@ -2921,9 +3483,9 @@ mod tests {
         let mut env = make_instance_env_with_sql(&ct);
         // opaque type Wrapped = { raw: Widget }; Widget has no SqlType instance.
         let mut names = FxHashMap::default();
-        names.insert("Widget".to_string(), TyConId(70));
+        names.insert("Widget".to_string(), TyConId(270));
         let decl = opaque_record_decl("Wrapped", ("raw", named_type("Widget")), vec!["SqlType"]);
-        let (generated, errors) = derive_instances(&decl, TyConId(101), 7, &ct, &mut env, &names);
+        let (generated, errors) = derive_instances(&decl, TyConId(301), 7, &ct, &mut env, &names);
         assert!(generated.is_empty(), "no instance when inner lacks SqlType");
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].code(), "T029", "missing inner instance → T029");
@@ -2936,7 +3498,7 @@ mod tests {
         // opaque type Email = { raw: Text } deriving (Encode) — transparent, not structural.
         let decl = opaque_record_decl("Email", ("raw", text_type()), vec!["Encode"]);
         let (generated, errors) =
-            derive_instances(&decl, TyConId(102), 7, &ct, &mut env, &FxHashMap::default());
+            derive_instances(&decl, TyConId(302), 7, &ct, &mut env, &FxHashMap::default());
         assert!(errors.is_empty(), "no errors: {errors:?}");
         assert_eq!(generated.len(), 1);
         assert!(
@@ -2956,7 +3518,7 @@ mod tests {
         // opaque type Money = { cents: Int } deriving (Eq) — Eq has no delegation plan.
         let decl = opaque_record_decl("Money", ("cents", int_type()), vec!["Eq"]);
         let (generated, errors) =
-            derive_instances(&decl, TyConId(103), 7, &ct, &mut env, &FxHashMap::default());
+            derive_instances(&decl, TyConId(303), 7, &ct, &mut env, &FxHashMap::default());
         assert!(errors.is_empty(), "no errors: {errors:?}");
         assert_eq!(generated.len(), 1);
         assert!(
@@ -2977,7 +3539,7 @@ mod tests {
             vec!["SqlType"],
         );
         let (generated, errors) =
-            derive_instances(&decl, TyConId(104), 7, &ct, &mut env, &FxHashMap::default());
+            derive_instances(&decl, TyConId(304), 7, &ct, &mut env, &FxHashMap::default());
         assert!(
             generated.is_empty(),
             "SqlType is not structurally derivable"

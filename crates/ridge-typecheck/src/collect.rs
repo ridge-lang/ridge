@@ -184,6 +184,7 @@ pub fn collect_workspace_gated(
     let (derived_instances, implicit_row_instances) = collect_derived_instances(
         modules,
         user_tycon_names,
+        origins,
         &class_table,
         &mut instance_env,
         &mut errors,
@@ -720,6 +721,7 @@ pub(crate) fn is_auto_promoted_totext(
 fn collect_derived_instances(
     modules: &[(u32, &ridge_ast::Module)],
     user_tycon_names: &FxHashMap<String, TyConId>,
+    origins: &TyConOrigins,
     class_table: &ClassTable,
     instance_env: &mut InstanceEnv,
     errors: &mut Vec<TypeError>,
@@ -756,6 +758,7 @@ fn collect_derived_instances(
                 class_table,
                 instance_env,
                 user_tycon_names,
+                origins,
             );
             all_derived.extend(generated);
             errors.extend(derive_errors);
@@ -1078,26 +1081,10 @@ fn extract_tycon_id(
             .copied()
             .or_else(|| origins.resolve_compiler_name(&head.text)),
         // `Primitive` covers built-in scalars like `Int`, `Float`, `Bool`.
-        AstType::Primitive { name, .. } => {
-            use ridge_ast::PrimitiveType;
-            match name {
-                PrimitiveType::Int => Some(TyConId(0)),
-                PrimitiveType::Float => Some(TyConId(1)),
-                PrimitiveType::Bool => Some(TyConId(2)),
-                PrimitiveType::Text => Some(TyConId(3)),
-                PrimitiveType::Unit => Some(TyConId(4)),
-                PrimitiveType::Timestamp => Some(TyConId(5)),
-                // Decimal, Uuid, Bytes and Date are interned last in the builtin
-                // arena (ids 51, 52, 53, 54).
-                PrimitiveType::Decimal => Some(TyConId(51)),
-                PrimitiveType::Uuid => Some(TyConId(52)),
-                PrimitiveType::Bytes => Some(TyConId(53)),
-                PrimitiveType::Date => Some(TyConId(54)),
-                PrimitiveType::Time => Some(TyConId(55)),
-                #[allow(unreachable_patterns)]
-                _ => None,
-            }
-        }
+        // They resolve by name through the same arena-derived table as the two
+        // arms above rather than through a second list of indices, which is
+        // what let the arms disagree about `Bytes` and `Date`.
+        AstType::Primitive { name, .. } => origins.resolve_compiler_name(name.name()),
         // A function-type instance head (`instance Handler (fn a -> R)`) keys on
         // the synthetic per-arity `Fn/N` constructor. The capability row is NOT
         // part of the key — dispatch is arity-only. `fn_ty.params` holds the

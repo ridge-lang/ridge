@@ -42,6 +42,7 @@ use ridge_types::{
 use rustc_hash::FxHashMap;
 
 use crate::class_env::{ClassTable, InstanceEnv, InstanceInfo, InstanceOrigin};
+use crate::cross_module::TyConOrigins;
 use crate::error::{TypeDesc, TypeError};
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -509,6 +510,7 @@ pub fn derive_instances(
     class_table: &ClassTable,
     instance_env: &mut InstanceEnv,
     user_tycon_names: &FxHashMap<String, TyConId>,
+    origins: &TyConOrigins,
 ) -> (Vec<DerivedInstance>, Vec<TypeError>) {
     let mut generated: Vec<DerivedInstance> = Vec::new();
     let mut errors: Vec<TypeError> = Vec::new();
@@ -517,7 +519,7 @@ pub fn derive_instances(
     // derived instances delegate to the inner type's instances (transparent
     // wrapper semantics). Recognised once; consulted per derived class below.
     let newtype = if type_decl.opaque {
-        recognize_newtype(&type_decl.body, user_tycon_names)
+        recognize_newtype(&type_decl.body, user_tycon_names, origins)
     } else {
         None
     };
@@ -721,6 +723,7 @@ pub fn derive_instances(
             &type_decl.name,
             span,
             user_tycon_names,
+            origins,
             &type_params,
         ) {
             Err(e) => errors.push(e),
@@ -789,6 +792,7 @@ struct NewtypeInfo {
 fn recognize_newtype(
     body: &TypeBody,
     user_tycon_names: &FxHashMap<String, TyConId>,
+    origins: &TyConOrigins,
 ) -> Option<NewtypeInfo> {
     let TypeBody::Record(r) = body else {
         return None;
@@ -796,7 +800,7 @@ fn recognize_newtype(
     let [field] = r.fields.as_slice() else {
         return None;
     };
-    let inner_tycon = resolve_ast_type_to_tycon_id(&field.ty, user_tycon_names)?;
+    let inner_tycon = resolve_ast_type_to_tycon_id(&field.ty, user_tycon_names, origins)?;
     let inner_type_name = ast_type_simple_name(&field.ty)?;
     Some(NewtypeInfo {
         field_name: field.name.text.clone(),
@@ -808,24 +812,8 @@ fn recognize_newtype(
 /// The source-level name of a simple (primitive or named) AST type. Returns
 /// `None` for compound types — they cannot be the inner type of a newtype.
 fn ast_type_simple_name(ty: &AstType) -> Option<String> {
-    use ridge_ast::base::PrimitiveType;
     match ty {
-        AstType::Primitive { name, .. } => Some(
-            match name {
-                PrimitiveType::Int => "Int",
-                PrimitiveType::Float => "Float",
-                PrimitiveType::Bool => "Bool",
-                PrimitiveType::Text => "Text",
-                PrimitiveType::Unit => "Unit",
-                PrimitiveType::Timestamp => "Timestamp",
-                PrimitiveType::Decimal => "Decimal",
-                PrimitiveType::Uuid => "Uuid",
-                PrimitiveType::Bytes => "Bytes",
-                PrimitiveType::Date => "Date",
-                PrimitiveType::Time => "Time",
-            }
-            .to_string(),
-        ),
+        AstType::Primitive { name, .. } => Some(name.name().to_string()),
         AstType::Named { name, .. } => Some(name.text.clone()),
         _ => None,
     }
@@ -895,13 +883,14 @@ fn generate_body(
     type_name: &Ident,
     span: Span,
     user_tycon_names: &FxHashMap<String, TyConId>,
+    origins: &TyConOrigins,
     type_params: &[String],
 ) -> Result<(DerivedMethodBody, Vec<Constraint>, Vec<usize>), TypeError> {
     if class_id == EQ_CLASS {
-        let (b, c) = generate_eq(body, type_name, span, user_tycon_names)?;
+        let (b, c) = generate_eq(body, type_name, span, user_tycon_names, origins)?;
         Ok((b, c, vec![]))
     } else if class_id == TOTEXT_CLASS {
-        let (b, c) = generate_to_text(body);
+        let (b, c) = generate_to_text(body, user_tycon_names, origins);
         Ok((b, c, vec![]))
     } else if class_id == ENCODE_CLASS {
         generate_encode(
@@ -986,9 +975,10 @@ fn generate_eq(
     type_name: &Ident,
     span: Span,
     user_tycon_names: &FxHashMap<String, TyConId>,
+    origins: &TyConOrigins,
 ) -> Result<(DerivedMethodBody, Vec<Constraint>), TypeError> {
     // Walk all field types and reject `Float`.
-    if let Some(float_field) = find_float_field(body, user_tycon_names) {
+    if let Some(float_field) = find_float_field(body, user_tycon_names, origins) {
         return Err(TypeError::NoInstance {
             class: "Eq".to_string(),
             ty: TypeDesc::Text(type_name.text.clone()),
@@ -1019,11 +1009,12 @@ fn generate_eq(
 fn find_float_field<'a>(
     body: &'a TypeBody,
     user_tycon_names: &FxHashMap<String, TyConId>,
+    origins: &TyConOrigins,
 ) -> Option<&'a str> {
     match body {
         TypeBody::Record(r) => {
             for field in &r.fields {
-                if ast_type_is_float(&field.ty, user_tycon_names) {
+                if ast_type_is_float(&field.ty, user_tycon_names, origins) {
                     return Some(&field.name.text);
                 }
             }
@@ -1034,7 +1025,7 @@ fn find_float_field<'a>(
                 match ctor {
                     Constructor::Positional { args, .. } => {
                         for ty in args {
-                            if ast_type_is_float(ty, user_tycon_names) {
+                            if ast_type_is_float(ty, user_tycon_names, origins) {
                                 // Return a synthetic name for the positional payload.
                                 return Some("(payload)");
                             }
@@ -1042,7 +1033,7 @@ fn find_float_field<'a>(
                     }
                     Constructor::Record { body, .. } => {
                         for field in &body.fields {
-                            if ast_type_is_float(&field.ty, user_tycon_names) {
+                            if ast_type_is_float(&field.ty, user_tycon_names, origins) {
                                 return Some(&field.name.text);
                             }
                         }
@@ -1052,7 +1043,7 @@ fn find_float_field<'a>(
             None
         }
         TypeBody::Alias(ty) => {
-            if ast_type_is_float(ty, user_tycon_names) {
+            if ast_type_is_float(ty, user_tycon_names, origins) {
                 Some("(alias)")
             } else {
                 None
@@ -1063,20 +1054,23 @@ fn find_float_field<'a>(
 
 /// Returns `true` if the AST type is `Float` (either as a primitive or a named
 /// type that resolves to the Float `TyConId`).
-fn ast_type_is_float(ty: &AstType, user_tycon_names: &FxHashMap<String, TyConId>) -> bool {
+fn ast_type_is_float(
+    ty: &AstType,
+    user_tycon_names: &FxHashMap<String, TyConId>,
+    origins: &TyConOrigins,
+) -> bool {
     use ridge_ast::base::PrimitiveType;
     match ty {
         AstType::Primitive {
             name: PrimitiveType::Float,
             ..
         } => true,
-        AstType::Named { name, .. } => {
-            // Resolve via user tycon names; Float is also in the builtin table.
-            let id = user_tycon_names
-                .get(name.text.as_str())
-                .copied()
-                .or_else(|| builtin_name_to_tycon_id(&name.text));
-            id == Some(TyConId(1)) // Float = TyConId(1)
+        // An alias can land on `Float` under another name, so the comparison is
+        // between two ids the arena handed out — not between one of them and a
+        // number written here.
+        AstType::Named { .. } => {
+            let id = resolve_ast_type_to_tycon_id(ty, user_tycon_names, origins);
+            id.is_some() && id == origins.resolve_compiler_name(PrimitiveType::Float.name())
         }
         _ => false,
     }
@@ -1092,7 +1086,11 @@ fn ast_type_is_float(ty: &AstType, user_tycon_names: &FxHashMap<String, TyConId>
 ///   stdlib dispatch (e.g. `std.int.toText` for `Int`).
 /// - Unions → `"CtorName"` for nullary constructors; `"CtorName(f1, f2)"` with
 ///   per-payload `toText` dispatch for payload constructors.
-fn generate_to_text(body: &TypeBody) -> (DerivedMethodBody, Vec<Constraint>) {
+fn generate_to_text(
+    body: &TypeBody,
+    user_tycon_names: &FxHashMap<String, TyConId>,
+    origins: &TyConOrigins,
+) -> (DerivedMethodBody, Vec<Constraint>) {
     // ctx_constraints: in 0.2.13 all fields of derivable user types are concrete,
     // so the constraint is resolved statically at derive-registration time.
     // We leave ctx_constraints empty — the solver verifies at call sites using
@@ -1103,7 +1101,7 @@ fn generate_to_text(body: &TypeBody) -> (DerivedMethodBody, Vec<Constraint>) {
             let field_tycons: Vec<Option<TyConId>> = r
                 .fields
                 .iter()
-                .map(|f| resolve_ast_type_to_tycon_id(&f.ty, &rustc_hash::FxHashMap::default()))
+                .map(|f| resolve_ast_type_to_tycon_id(&f.ty, user_tycon_names, origins))
                 .collect();
             (
                 DerivedMethodBody::DerivedToTextRecord {
@@ -1121,9 +1119,7 @@ fn generate_to_text(body: &TypeBody) -> (DerivedMethodBody, Vec<Constraint>) {
                     Constructor::Positional { name, args, .. } => {
                         let tycons: Vec<Option<TyConId>> = args
                             .iter()
-                            .map(|ty| {
-                                resolve_ast_type_to_tycon_id(ty, &rustc_hash::FxHashMap::default())
-                            })
+                            .map(|ty| resolve_ast_type_to_tycon_id(ty, user_tycon_names, origins))
                             .collect();
                         (name.text.clone(), args.len(), tycons, None)
                     }
@@ -1131,12 +1127,7 @@ fn generate_to_text(body: &TypeBody) -> (DerivedMethodBody, Vec<Constraint>) {
                         let tycons: Vec<Option<TyConId>> = body
                             .fields
                             .iter()
-                            .map(|f| {
-                                resolve_ast_type_to_tycon_id(
-                                    &f.ty,
-                                    &rustc_hash::FxHashMap::default(),
-                                )
-                            })
+                            .map(|f| resolve_ast_type_to_tycon_id(&f.ty, user_tycon_names, origins))
                             .collect();
                         let field_names = body.fields.iter().map(|f| f.name.text.clone()).collect();
                         (
@@ -1653,19 +1644,12 @@ fn sql_list_or_base(ty: &AstType) -> Option<String> {
 fn sql_primitive_type_name(ty: &AstType) -> Option<String> {
     use ridge_ast::base::PrimitiveType;
     match ty {
-        AstType::Primitive { name, .. } => match name {
-            PrimitiveType::Int => Some("Int".to_string()),
-            PrimitiveType::Text => Some("Text".to_string()),
-            PrimitiveType::Bool => Some("Bool".to_string()),
-            PrimitiveType::Float => Some("Float".to_string()),
-            PrimitiveType::Timestamp => Some("Timestamp".to_string()),
-            PrimitiveType::Decimal => Some("Decimal".to_string()),
-            PrimitiveType::Uuid => Some("Uuid".to_string()),
-            PrimitiveType::Bytes => Some("Bytes".to_string()),
-            PrimitiveType::Date => Some("Date".to_string()),
-            PrimitiveType::Time => Some("Time".to_string()),
-            PrimitiveType::Unit => None,
-        },
+        // `Unit` is the one primitive with no column type, so this asks a
+        // different question from the others and keeps its own answer. Only
+        // the spelling is shared.
+        AstType::Primitive { name, .. } => {
+            (!matches!(name, PrimitiveType::Unit)).then(|| name.name().to_string())
+        }
         AstType::Named { name, .. } => match name.text.as_str() {
             "Int" | "Text" | "Bool" | "Float" | "Decimal" | "Uuid" | "Bytes" | "Date" | "Time"
             | "Duration" | "JsonValue" => Some(name.text.clone()),
@@ -1950,21 +1934,8 @@ fn check_no_var(ty: &AstType) -> Result<(), ShapeError> {
 
 /// A minimal display string for an AST type, used in error hints.
 fn ast_type_display(ty: &AstType) -> String {
-    use ridge_ast::base::PrimitiveType;
     match ty {
-        AstType::Primitive { name, .. } => match name {
-            PrimitiveType::Int => "Int".to_string(),
-            PrimitiveType::Float => "Float".to_string(),
-            PrimitiveType::Bool => "Bool".to_string(),
-            PrimitiveType::Text => "Text".to_string(),
-            PrimitiveType::Unit => "Unit".to_string(),
-            PrimitiveType::Timestamp => "Timestamp".to_string(),
-            PrimitiveType::Decimal => "Decimal".to_string(),
-            PrimitiveType::Uuid => "Uuid".to_string(),
-            PrimitiveType::Bytes => "Bytes".to_string(),
-            PrimitiveType::Date => "Date".to_string(),
-            PrimitiveType::Time => "Time".to_string(),
-        },
+        AstType::Primitive { name, .. } => name.name().to_string(),
         AstType::Named { name, .. } | AstType::Var { name, .. } => name.text.clone(),
         AstType::App { head, args, .. } => {
             let args_str: Vec<String> = args.iter().map(ast_type_display).collect();
@@ -1983,33 +1954,6 @@ fn ast_type_display(ty: &AstType) -> String {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Maps a builtin type name to its fixed `TyConId` (mirrors the assignment in
-/// `BuiltinTyCons::allocate`). Returns `None` for user-defined or unknown types.
-fn builtin_name_to_tycon_id(name: &str) -> Option<TyConId> {
-    match name {
-        "Int" => Some(TyConId(0)),
-        "Float" => Some(TyConId(1)),
-        "Bool" => Some(TyConId(2)),
-        "Text" => Some(TyConId(3)),
-        "Unit" => Some(TyConId(4)),
-        "Timestamp" => Some(TyConId(5)),
-        "List" => Some(TyConId(6)),
-        "Map" => Some(TyConId(7)),
-        "Set" => Some(TyConId(8)),
-        "Option" => Some(TyConId(9)),
-        "Result" => Some(TyConId(10)),
-        "Handle" => Some(TyConId(11)),
-        "Error" => Some(TyConId(12)),
-        "Duration" => Some(TyConId(13)),
-        "Output" => Some(TyConId(14)),
-        "Ordering" => Some(TyConId(15)),
-        // Decimal and Uuid are interned last in the builtin arena (ids 51, 52).
-        "Decimal" => Some(TyConId(51)),
-        "Uuid" => Some(TyConId(52)),
-        _ => None,
-    }
-}
-
 /// Collects all concrete field/payload types from a type body as `TyConId`s.
 ///
 /// Used internally to enumerate `ctx_constraint` candidates. Returns only types
@@ -2018,6 +1962,7 @@ fn builtin_name_to_tycon_id(name: &str) -> Option<TyConId> {
 fn collect_field_tycon_ids(
     body: &TypeBody,
     user_tycon_names: &FxHashMap<String, TyConId>,
+    origins: &TyConOrigins,
 ) -> Vec<TyConId> {
     let mut ids = Vec::new();
     let fields: Vec<&AstType> = match body {
@@ -2034,7 +1979,7 @@ fn collect_field_tycon_ids(
     };
 
     for ty in fields {
-        if let Some(id) = resolve_ast_type_to_tycon_id(ty, user_tycon_names) {
+        if let Some(id) = resolve_ast_type_to_tycon_id(ty, user_tycon_names, origins) {
             ids.push(id);
         }
     }
@@ -2046,30 +1991,17 @@ fn collect_field_tycon_ids(
 fn resolve_ast_type_to_tycon_id(
     ty: &AstType,
     user_tycon_names: &FxHashMap<String, TyConId>,
+    origins: &TyConOrigins,
 ) -> Option<TyConId> {
-    use ridge_ast::base::PrimitiveType;
     match ty {
-        AstType::Primitive { name, .. } => match name {
-            PrimitiveType::Int => Some(TyConId(0)),
-            PrimitiveType::Float => Some(TyConId(1)),
-            PrimitiveType::Bool => Some(TyConId(2)),
-            PrimitiveType::Text => Some(TyConId(3)),
-            PrimitiveType::Unit => Some(TyConId(4)),
-            PrimitiveType::Timestamp => Some(TyConId(5)),
-            // Decimal, Uuid, Bytes, Date and Time are interned last in the builtin
-            // arena (ids 51, 52, 53, 54, 55).
-            PrimitiveType::Decimal => Some(TyConId(51)),
-            PrimitiveType::Uuid => Some(TyConId(52)),
-            PrimitiveType::Bytes => Some(TyConId(53)),
-            PrimitiveType::Date => Some(TyConId(54)),
-            PrimitiveType::Time => Some(TyConId(55)),
-            #[allow(unreachable_patterns)]
-            _ => None,
-        },
+        // Both arms ask the same question, so both go through the same table:
+        // the workspace name map for a user type, and the arena-derived table
+        // for anything the compiler declares.
+        AstType::Primitive { name, .. } => origins.resolve_compiler_name(name.name()),
         AstType::Named { name, .. } => user_tycon_names
             .get(name.text.as_str())
             .copied()
-            .or_else(|| builtin_name_to_tycon_id(&name.text)),
+            .or_else(|| origins.resolve_compiler_name(&name.text)),
         _ => None,
     }
 }
@@ -2196,6 +2128,7 @@ mod tests {
             &ct,
             &mut env,
             &FxHashMap::default(),
+            &make_origins(),
         );
         assert!(errors.is_empty(), "no errors expected: {errors:?}");
         assert_eq!(generated.len(), 1, "one instance generated");
@@ -2229,6 +2162,7 @@ mod tests {
             &ct,
             &mut env,
             &FxHashMap::default(),
+            &make_origins(),
         );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         assert_eq!(generated.len(), 1);
@@ -2257,6 +2191,7 @@ mod tests {
             &ct,
             &mut env,
             &FxHashMap::default(),
+            &make_origins(),
         );
         assert!(generated.is_empty(), "no instance should be generated");
         assert_eq!(errors.len(), 1, "one T029 expected");
@@ -2293,6 +2228,7 @@ mod tests {
             &ct,
             &mut env,
             &FxHashMap::default(),
+            &make_origins(),
         );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         assert_eq!(generated.len(), 1);
@@ -2340,6 +2276,7 @@ mod tests {
             &ct,
             &mut env,
             &FxHashMap::default(),
+            &make_origins(),
         );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         assert_eq!(generated.len(), 1);
@@ -2378,6 +2315,7 @@ mod tests {
             &ct,
             &mut env,
             &FxHashMap::default(),
+            &make_origins(),
         );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         // Two instances: Eq and Ord.
@@ -2414,6 +2352,7 @@ mod tests {
             &ct,
             &mut env,
             &FxHashMap::default(),
+            &make_origins(),
         );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         let ord = generated
@@ -2461,6 +2400,7 @@ mod tests {
             &ct,
             &mut env,
             &FxHashMap::default(),
+            &make_origins(),
         );
         assert!(generated.is_empty(), "no instance generated on conflict");
         assert!(
@@ -2487,6 +2427,7 @@ mod tests {
             &ct,
             &mut env,
             &FxHashMap::default(),
+            &make_origins(),
         );
         assert!(generated.is_empty());
         assert_eq!(errors.len(), 1);
@@ -2509,6 +2450,7 @@ mod tests {
             &ct,
             &mut env,
             &FxHashMap::default(),
+            &make_origins(),
         );
         assert!(generated.is_empty());
         assert_eq!(errors.len(), 1);
@@ -2574,7 +2516,7 @@ mod tests {
             span: Span::point(0),
         };
         assert!(
-            ast_type_is_float(&float_ty, &FxHashMap::default()),
+            ast_type_is_float(&float_ty, &FxHashMap::default(), &make_origins()),
             "Float primitive must be recognised as Float"
         );
         // TyConId(4) is Unit, not Float.
@@ -2583,7 +2525,7 @@ mod tests {
             span: Span::point(0),
         };
         assert!(
-            !ast_type_is_float(&unit_ty, &FxHashMap::default()),
+            !ast_type_is_float(&unit_ty, &FxHashMap::default(), &make_origins()),
             "Unit must NOT be recognised as Float"
         );
     }
@@ -2617,6 +2559,17 @@ mod tests {
             args,
             span: Span::point(0),
         }
+    }
+
+    /// The compiler-declared names, read off a freshly allocated arena.
+    ///
+    /// Tests used to compare against written-down indices, which is the habit
+    /// this change removes from the compiler; they get the same table the
+    /// compiler does.
+    fn make_origins() -> TyConOrigins {
+        let mut arena = ridge_types::TyConArena::new();
+        let _ = ridge_types::BuiltinTyCons::allocate(&mut arena);
+        TyConOrigins::new(arena.all(), &[], &[])
     }
 
     fn prim_type(name: ridge_ast::base::PrimitiveType) -> AstType {
@@ -2655,8 +2608,15 @@ mod tests {
                 vec!["Encode"],
             );
             let id = TyConId(400 + u32::try_from(i).unwrap_or(0));
-            let (generated, errors) =
-                derive_instances(&decl, id, 42, &ct, &mut env, &FxHashMap::default());
+            let (generated, errors) = derive_instances(
+                &decl,
+                id,
+                42,
+                &ct,
+                &mut env,
+                &FxHashMap::default(),
+                &make_origins(),
+            );
             assert!(
                 errors.is_empty(),
                 "{expected:?}: unexpected errors {errors:?}"
@@ -2693,6 +2653,7 @@ mod tests {
             &ct,
             &mut env,
             &FxHashMap::default(),
+            &make_origins(),
         );
         assert!(
             generated.is_empty(),
@@ -2729,6 +2690,7 @@ mod tests {
             &ct,
             &mut env,
             &FxHashMap::default(),
+            &make_origins(),
         );
         assert!(
             generated.is_empty(),
@@ -2761,6 +2723,7 @@ mod tests {
             &ct,
             &mut env,
             &FxHashMap::default(),
+            &make_origins(),
         );
         assert!(
             generated.is_empty(),
@@ -2845,6 +2808,7 @@ mod tests {
             &ct,
             &mut env,
             &FxHashMap::default(),
+            &make_origins(),
         );
         assert!(errors.is_empty(), "unexpected errors: {errors:?}");
         let DerivedMethodBody::DerivedEncodeRecord { field_shapes, .. } = &generated[0].method_body
@@ -2881,6 +2845,7 @@ mod tests {
             &ct,
             &mut env,
             &FxHashMap::default(),
+            &make_origins(),
         );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         assert_eq!(generated.len(), 1);
@@ -2933,6 +2898,7 @@ mod tests {
             &ct,
             &mut env,
             &FxHashMap::default(),
+            &make_origins(),
         );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         assert_eq!(generated.len(), 1);
@@ -2981,6 +2947,7 @@ mod tests {
             &ct,
             &mut env,
             &FxHashMap::default(),
+            &make_origins(),
         );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         assert_eq!(generated.len(), 1);
@@ -3020,6 +2987,7 @@ mod tests {
             &ct,
             &mut env,
             &FxHashMap::default(),
+            &make_origins(),
         );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         if let DerivedMethodBody::DerivedEncodeUnion { variants } = &generated[0].method_body {
@@ -3068,6 +3036,7 @@ mod tests {
             &ct,
             &mut env,
             &FxHashMap::default(),
+            &make_origins(),
         );
         assert!(errors.is_empty(), "generic Encode must succeed: {errors:?}");
         assert_eq!(generated.len(), 1, "one instance generated");
@@ -3110,6 +3079,7 @@ mod tests {
             &ct,
             &mut env,
             &FxHashMap::default(),
+            &make_origins(),
         );
         assert!(generated.is_empty(), "no instance when a var is unbound");
         assert_eq!(errors.len(), 1, "one T029 expected");
@@ -3132,8 +3102,15 @@ mod tests {
             record_body(vec![("name", text_type()), ("addr", named_type("Address"))]),
             vec!["Encode"],
         );
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(256), 42, &ct, &mut env, &user_tycon_names);
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(256),
+            42,
+            &ct,
+            &mut env,
+            &user_tycon_names,
+            &make_origins(),
+        );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         if let DerivedMethodBody::DerivedEncodeRecord { field_shapes, .. } =
             &generated[0].method_body
@@ -3174,6 +3151,7 @@ mod tests {
             &ct,
             &mut env,
             &FxHashMap::default(),
+            &make_origins(),
         );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         assert_eq!(generated.len(), 1);
@@ -3226,6 +3204,7 @@ mod tests {
             &ct,
             &mut env,
             &FxHashMap::default(),
+            &make_origins(),
         );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         assert_eq!(generated.len(), 1);
@@ -3274,6 +3253,7 @@ mod tests {
             &ct,
             &mut env,
             &FxHashMap::default(),
+            &make_origins(),
         );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         assert_eq!(generated.len(), 1);
@@ -3313,6 +3293,7 @@ mod tests {
             &ct,
             &mut env,
             &FxHashMap::default(),
+            &make_origins(),
         );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         if let DerivedMethodBody::DerivedDecodeUnion { variants } = &generated[0].method_body {
@@ -3355,6 +3336,7 @@ mod tests {
             &ct,
             &mut env,
             &FxHashMap::default(),
+            &make_origins(),
         );
         assert!(errors.is_empty(), "generic Decode must succeed: {errors:?}");
         assert_eq!(generated.len(), 1, "one instance generated");
@@ -3385,8 +3367,15 @@ mod tests {
             record_body(vec![("name", text_type()), ("addr", named_type("Address"))]),
             vec!["Decode"],
         );
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(266), 42, &ct, &mut env, &user_tycon_names);
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(266),
+            42,
+            &ct,
+            &mut env,
+            &user_tycon_names,
+            &make_origins(),
+        );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         if let DerivedMethodBody::DerivedDecodeRecord { field_shapes, .. } =
             &generated[0].method_body
@@ -3444,8 +3433,15 @@ mod tests {
         let mut env = make_instance_env_with_sql(&ct);
         // opaque type Money = { cents: Int } deriving (SqlType)
         let decl = opaque_record_decl("Money", ("cents", int_type()), vec!["SqlType"]);
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(300), 7, &ct, &mut env, &FxHashMap::default());
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(300),
+            7,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+            &make_origins(),
+        );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         assert_eq!(generated.len(), 1);
         if let DerivedMethodBody::DerivedDelegated {
@@ -3485,7 +3481,15 @@ mod tests {
         let mut names = FxHashMap::default();
         names.insert("Widget".to_string(), TyConId(270));
         let decl = opaque_record_decl("Wrapped", ("raw", named_type("Widget")), vec!["SqlType"]);
-        let (generated, errors) = derive_instances(&decl, TyConId(301), 7, &ct, &mut env, &names);
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(301),
+            7,
+            &ct,
+            &mut env,
+            &names,
+            &make_origins(),
+        );
         assert!(generated.is_empty(), "no instance when inner lacks SqlType");
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].code(), "T029", "missing inner instance → T029");
@@ -3497,8 +3501,15 @@ mod tests {
         let mut env = make_instance_env_with_sql(&ct);
         // opaque type Email = { raw: Text } deriving (Encode) — transparent, not structural.
         let decl = opaque_record_decl("Email", ("raw", text_type()), vec!["Encode"]);
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(302), 7, &ct, &mut env, &FxHashMap::default());
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(302),
+            7,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+            &make_origins(),
+        );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         assert_eq!(generated.len(), 1);
         assert!(
@@ -3517,8 +3528,15 @@ mod tests {
         let mut env = make_instance_env_with_sql(&ct);
         // opaque type Money = { cents: Int } deriving (Eq) — Eq has no delegation plan.
         let decl = opaque_record_decl("Money", ("cents", int_type()), vec!["Eq"]);
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(303), 7, &ct, &mut env, &FxHashMap::default());
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(303),
+            7,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+            &make_origins(),
+        );
         assert!(errors.is_empty(), "no errors: {errors:?}");
         assert_eq!(generated.len(), 1);
         assert!(
@@ -3538,8 +3556,15 @@ mod tests {
             record_body(vec![("cents", int_type())]),
             vec!["SqlType"],
         );
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(304), 7, &ct, &mut env, &FxHashMap::default());
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(304),
+            7,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+            &make_origins(),
+        );
         assert!(
             generated.is_empty(),
             "SqlType is not structurally derivable"

@@ -141,19 +141,7 @@ fn render_type_atom(ty: &Type) -> String {
 
 /// The `UPPER_IDENT` spelling of a primitive type, for the descriptor type tag.
 const fn primitive_tag(p: PrimitiveType) -> &'static str {
-    match p {
-        PrimitiveType::Int => "Int",
-        PrimitiveType::Float => "Float",
-        PrimitiveType::Bool => "Bool",
-        PrimitiveType::Text => "Text",
-        PrimitiveType::Unit => "Unit",
-        PrimitiveType::Timestamp => "Timestamp",
-        PrimitiveType::Decimal => "Decimal",
-        PrimitiveType::Uuid => "Uuid",
-        PrimitiveType::Bytes => "Bytes",
-        PrimitiveType::Date => "Date",
-        PrimitiveType::Time => "Time",
-    }
+    p.name()
 }
 
 /// Whether a field's declared type is optional (`Option a`), which the

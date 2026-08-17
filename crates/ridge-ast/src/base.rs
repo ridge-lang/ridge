@@ -83,6 +83,32 @@ pub enum PrimitiveType {
     Time,
 }
 
+impl PrimitiveType {
+    /// The name user code writes for this type.
+    ///
+    /// The spelling belongs here, beside the variants, because everything
+    /// downstream needs it for a different reason — resolving the type
+    /// constructor, tagging a column descriptor, rendering a diagnostic — and
+    /// they must agree. Six copies of this table had accumulated across three
+    /// crates before it was written down once.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Int => "Int",
+            Self::Float => "Float",
+            Self::Bool => "Bool",
+            Self::Text => "Text",
+            Self::Unit => "Unit",
+            Self::Timestamp => "Timestamp",
+            Self::Decimal => "Decimal",
+            Self::Uuid => "Uuid",
+            Self::Bytes => "Bytes",
+            Self::Date => "Date",
+            Self::Time => "Time",
+        }
+    }
+}
+
 // ── DocComment ────────────────────────────────────────────────────────────────
 
 /// A documentation comment block.

@@ -143,19 +143,7 @@ fn lower_primitive(ctx: &mut LowerCtx<'_>, prim: PrimitiveType) -> Type {
 
 /// Return the canonical builtin name string for a [`PrimitiveType`].
 const fn primitive_name(prim: PrimitiveType) -> &'static str {
-    match prim {
-        PrimitiveType::Int => "Int",
-        PrimitiveType::Float => "Float",
-        PrimitiveType::Bool => "Bool",
-        PrimitiveType::Text => "Text",
-        PrimitiveType::Unit => "Unit",
-        PrimitiveType::Timestamp => "Timestamp",
-        PrimitiveType::Decimal => "Decimal",
-        PrimitiveType::Uuid => "Uuid",
-        PrimitiveType::Bytes => "Bytes",
-        PrimitiveType::Date => "Date",
-        PrimitiveType::Time => "Time",
-    }
+    prim.name()
 }
 
 /// Convert a slice of AST [`Capability`] values to a [`CapRow::Concrete`].

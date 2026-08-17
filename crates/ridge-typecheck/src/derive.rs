@@ -2054,9 +2054,14 @@ mod tests {
         ct
     }
 
+    fn make_builtins() -> ridge_types::BuiltinTyCons {
+        let mut arena = ridge_types::TyConArena::new();
+        ridge_types::BuiltinTyCons::allocate(&mut arena)
+    }
+
     fn make_instance_env() -> InstanceEnv {
         let mut env = InstanceEnv::new();
-        register_prelude_instances(&mut env);
+        register_prelude_instances(&mut env, &make_builtins());
         env
     }
 
@@ -2461,55 +2466,60 @@ mod tests {
 
     #[test]
     fn prelude_eq_int_registered() {
+        let b = make_builtins();
         let env = make_instance_env();
         assert!(
-            env.get((EQ_CLASS, TyConId(0))).is_some(),
+            env.get((EQ_CLASS, b.int)).is_some(),
             "Eq Int must be in the prelude instance env"
         );
     }
 
     #[test]
     fn prelude_eq_float_absent() {
+        let b = make_builtins();
         let env = make_instance_env();
         assert!(
-            env.get((EQ_CLASS, TyConId(1))).is_none(),
+            env.get((EQ_CLASS, b.float)).is_none(),
             "Eq Float must NOT be in the prelude instance env"
         );
     }
 
     #[test]
     fn prelude_totext_float_registered() {
+        let b = make_builtins();
         let env = make_instance_env();
         assert!(
-            env.get((TOTEXT_CLASS, TyConId(1))).is_some(),
+            env.get((TOTEXT_CLASS, b.float)).is_some(),
             "ToText Float must be in the prelude instance env"
         );
     }
 
     #[test]
     fn prelude_ord_int_registered() {
+        let b = make_builtins();
         let env = make_instance_env();
         assert!(
-            env.get((ORD_CLASS, TyConId(0))).is_some(),
+            env.get((ORD_CLASS, b.int)).is_some(),
             "Ord Int must be in the prelude instance env"
         );
     }
 
     #[test]
     fn prelude_eq_ordering_registered() {
+        let b = make_builtins();
         let env = make_instance_env();
         assert!(
-            env.get((EQ_CLASS, TyConId(15))).is_some(),
+            env.get((EQ_CLASS, b.ordering)).is_some(),
             "Eq Ordering must be registered (required as Ord Ordering's superclass)"
         );
     }
 
     // ── build_fix_hint Float guard in solve.rs is correct ────────────────────
-    // (Verify from the derive side that Float = TyConId(1), not TyConId(4).)
 
+    /// `Unit` used to be mistaken for `Float` here, so the guard is checked from
+    /// both sides rather than by naming the index each one lands on.
     #[test]
-    fn float_is_tycon_id_1_not_4() {
-        // Confirm that a Float AST type resolves to TyConId(1).
+    fn only_float_is_recognised_as_float() {
         use ridge_ast::base::PrimitiveType;
         let float_ty = AstType::Primitive {
             name: PrimitiveType::Float,
@@ -2519,7 +2529,6 @@ mod tests {
             ast_type_is_float(&float_ty, &FxHashMap::default(), &make_origins()),
             "Float primitive must be recognised as Float"
         );
-        // TyConId(4) is Unit, not Float.
         let unit_ty = AstType::Primitive {
             name: PrimitiveType::Unit,
             span: Span::point(0),
@@ -2750,7 +2759,7 @@ mod tests {
         let mut arena = TyConArena::new();
         let b = ridge_types::BuiltinTyCons::allocate(&mut arena);
         let mut env = InstanceEnv::new();
-        crate::class_env::register_prelude_instances(&mut env);
+        crate::class_env::register_prelude_instances(&mut env, &b);
 
         // Forward: every scalar the derive can produce a shape for is a scalar
         // both classes can move.
@@ -3407,11 +3416,13 @@ mod tests {
     }
 
     fn make_instance_env_with_sql(ct: &ClassTable) -> InstanceEnv {
+        let b = make_builtins();
         let mut env = InstanceEnv::new();
-        register_prelude_instances(&mut env);
+        register_prelude_instances(&mut env, &b);
         crate::class_env::register_stdlib_instances(
             &mut env,
             ct,
+            &b,
             &rustc_hash::FxHashMap::default(),
         );
         env

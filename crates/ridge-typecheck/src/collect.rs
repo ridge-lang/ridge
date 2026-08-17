@@ -25,7 +25,7 @@
 use std::collections::HashMap;
 
 use ridge_ast::{self, Item, Module};
-use ridge_types::{Constraint, TyConId, TyVid};
+use ridge_types::{BuiltinTyCons, Constraint, TyConId, TyVid};
 
 use crate::cross_module::TyConOrigins;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -90,8 +90,9 @@ pub fn collect_workspace(
     modules: &[(u32, &Module)],
     user_tycon_names: &FxHashMap<String, TyConId>,
     origins: &TyConOrigins,
+    b: &BuiltinTyCons,
 ) -> CollectResult {
-    collect_workspace_gated(modules, user_tycon_names, origins, false)
+    collect_workspace_gated(modules, user_tycon_names, origins, b, false)
 }
 
 /// Like [`collect_workspace`] but gated on whether this run is the stdlib's own
@@ -109,6 +110,7 @@ pub fn collect_workspace_gated(
     modules: &[(u32, &Module)],
     user_tycon_names: &FxHashMap<String, TyConId>,
     origins: &TyConOrigins,
+    b: &BuiltinTyCons,
     is_stdlib: bool,
 ) -> CollectResult {
     let mut class_table = ClassTable::new();
@@ -127,7 +129,7 @@ pub fn collect_workspace_gated(
     // (`def_module = None`) and are not subject to the orphan check below. The
     // stdlib's own build declares the base `Encode` instances from source, so
     // those are skipped here when `is_stdlib` (avoids a spurious T032).
-    register_prelude_instances_gated(&mut instance_env, is_stdlib);
+    register_prelude_instances_gated(&mut instance_env, b, is_stdlib);
 
     // Step 2: Walk all ClassDecl items, registering user-defined classes.
     // The two-pass approach in collect_class_decls ensures forward references
@@ -175,7 +177,7 @@ pub fn collect_workspace_gated(
     // registered and this call becomes a no-op for those keys. For user
     // workspaces, the source-level declarations are absent and all four entries
     // are inserted here so the constraint solver can discharge them.
-    register_stdlib_instances(&mut instance_env, &class_table, user_tycon_names);
+    register_stdlib_instances(&mut instance_env, &class_table, b, user_tycon_names);
 
     // Step 4b: Synthesise instances for every `TypeDecl` that has a
     // `deriving (…)` clause. Derived instances are registered into the same
@@ -1292,6 +1294,11 @@ mod tests {
         TyConOrigins::new(arena.all(), &[], &[])
     }
 
+    fn make_builtins() -> BuiltinTyCons {
+        let mut arena = ridge_types::TyConArena::new();
+        ridge_types::BuiltinTyCons::allocate(&mut arena)
+    }
+
     /// Declare every name in `user_types` as belonging to module 0, which is
     /// the only module these tests build instances in.
     ///
@@ -1324,6 +1331,7 @@ mod tests {
             &[(0, &m)],
             &rustc_hash::FxHashMap::default(),
             &TyConOrigins::default(),
+            &make_builtins(),
         );
 
         assert!(
@@ -1349,6 +1357,7 @@ mod tests {
             &[],
             &rustc_hash::FxHashMap::default(),
             &TyConOrigins::default(),
+            &make_builtins(),
         );
         let ct = &result.class_table;
         assert_eq!(ct.id_by_name("ToText"), Some(TOTEXT_CLASS));
@@ -1372,6 +1381,7 @@ mod tests {
             &[(0, &m)],
             &rustc_hash::FxHashMap::default(),
             &builtin_origins(),
+            &make_builtins(),
         );
         let has_t032 = result.errors.iter().any(|e| e.code() == "T032");
         assert!(
@@ -1395,6 +1405,7 @@ mod tests {
             &[(0, &mod0), (1, &mod1)],
             &rustc_hash::FxHashMap::default(),
             &builtin_origins(),
+            &make_builtins(),
         );
         let has_t031 = result.errors.iter().any(|e| e.code() == "T031");
         assert!(
@@ -1425,6 +1436,7 @@ mod tests {
             &[(0, &m)],
             &rustc_hash::FxHashMap::default(),
             &TyConOrigins::default(),
+            &make_builtins(),
         );
         let has_t035 = result.errors.iter().any(|e| e.code() == "T035");
         assert!(
@@ -1446,7 +1458,12 @@ mod tests {
         user_types.insert("Widget".to_string(), widget_id);
 
         let m = module_with_items(vec![instance_decl_item("Ord", "Widget")]);
-        let result = collect_workspace(&[(0, &m)], &user_types, &origins_in_module_0(&user_types));
+        let result = collect_workspace(
+            &[(0, &m)],
+            &user_types,
+            &origins_in_module_0(&user_types),
+            &make_builtins(),
+        );
         let has_t033 = result.errors.iter().any(|e| e.code() == "T033");
         assert!(
             has_t033,
@@ -1469,7 +1486,12 @@ mod tests {
             instance_decl_item("Eq", "Widget"),
             instance_decl_item("Ord", "Widget"),
         ]);
-        let result = collect_workspace(&[(0, &m)], &user_types, &origins_in_module_0(&user_types));
+        let result = collect_workspace(
+            &[(0, &m)],
+            &user_types,
+            &origins_in_module_0(&user_types),
+            &make_builtins(),
+        );
         let has_t033 = result.errors.iter().any(|e| e.code() == "T033");
         assert!(
             !has_t033,
@@ -1592,7 +1614,12 @@ mod tests {
         user_types.insert("Widget".to_string(), user_id);
 
         let m = module_with_items(vec![pub_fn_to_text_item("Widget")]);
-        let result = collect_workspace(&[(0, &m)], &user_types, &origins_in_module_0(&user_types));
+        let result = collect_workspace(
+            &[(0, &m)],
+            &user_types,
+            &origins_in_module_0(&user_types),
+            &make_builtins(),
+        );
 
         assert!(
             result.errors.is_empty(),
@@ -1623,7 +1650,12 @@ mod tests {
             pub_fn_to_text_item("Color"),
             instance_decl_item("ToText", "Color"),
         ]);
-        let result = collect_workspace(&[(0, &m)], &user_types, &origins_in_module_0(&user_types));
+        let result = collect_workspace(
+            &[(0, &m)],
+            &user_types,
+            &origins_in_module_0(&user_types),
+            &make_builtins(),
+        );
 
         let has_t034 = result.errors.iter().any(|e| e.code() == "T034");
         assert!(
@@ -1816,6 +1848,7 @@ mod tests {
             &[(0, &m)],
             &rustc_hash::FxHashMap::default(),
             &TyConOrigins::default(),
+            &make_builtins(),
         );
 
         // No T034: the prelude already covers `ToText Int`, so auto-promotion
@@ -1873,6 +1906,7 @@ mod tests {
             &[(0, &m)],
             &rustc_hash::FxHashMap::default(),
             &TyConOrigins::default(),
+            &make_builtins(),
         );
 
         let has_t034 = result.errors.iter().any(|e| e.code() == "T034");

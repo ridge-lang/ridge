@@ -404,6 +404,7 @@ pub fn typecheck_workspace_with_history(
         &module_ast_pairs,
         &collect_tycon_names,
         &tycon_origins,
+        &b,
         ws.graph.is_stdlib,
     );
     // Coherence errors are workspace-level; accumulate them tagged with the

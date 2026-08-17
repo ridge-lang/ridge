@@ -693,7 +693,7 @@ mod tests {
 
         let b = make_builtins();
         let mut env = InstanceEnv::new();
-        register_prelude_instances(&mut env);
+        register_prelude_instances(&mut env, &b);
 
         // Build the ToText set from the prelude env.
         let set: FxHashSet<TyConId> = env
@@ -749,7 +749,7 @@ mod tests {
         });
 
         let mut env = InstanceEnv::new();
-        register_prelude_instances(&mut env);
+        register_prelude_instances(&mut env, &b);
         // Widget has no ToText instance in the registry.
 
         let set: FxHashSet<TyConId> = env

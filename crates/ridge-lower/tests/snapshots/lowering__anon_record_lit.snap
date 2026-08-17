@@ -1,0 +1,46 @@
+---
+source: crates/ridge-lower/tests/lowering.rs
+expression: rendered
+---
+module: m0
+items_count: 2
+items:
+  - kind: fn
+    name: mk
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(107)
+    params: []
+    body:
+      Construct(n0):
+        ctor: Ctor(Record:{anon record} owner=none)
+        fields:
+          a:
+            Lit(n1): Int(1)
+          b:
+            Lit(n2): Text("x")
+  - kind: fn
+    name: readA
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(0)
+    params:
+      - name: r
+        ty: Con(107)
+    body:
+      Match(n3):
+        scrutinee:
+          Local(n4): r
+        arms:
+          -
+            pat:
+              Ctor: Ctor(Record:{anon record} owner=none)
+                fields:
+                  a:
+                    Bind: a
+                  b:
+                    Bind: b
+            body:
+              Local(n5): a

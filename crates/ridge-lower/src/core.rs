@@ -419,7 +419,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
                         id,
                         ctor: SymbolRef::Constructor {
                             ctor_kind,
-                            owner_type,
+                            owner_type: Some(owner_type),
                             name: ctor_name,
                             variant,
                         },
@@ -429,7 +429,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
                 } else {
                     // Unknown stdlib constructor (no reconciled decl): defensive
                     // fallback, same shape as the no-binding arm below.
-                    let owner_type = ctx.lookup_tycon_by_name(&ctor_name).unwrap_or(TyConId(0));
+                    let owner_type = ctx.lookup_tycon_by_name(&ctor_name);
                     IrExpr::Construct {
                         id,
                         ctor: SymbolRef::Constructor {
@@ -454,8 +454,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
                 // which the resolver sets accurately based on the type body.
                 let owner_type = ctx
                     .lookup_constructor_tycon(*sym_id)
-                    .or_else(|| ctx.lookup_tycon_by_name(&ctor_name))
-                    .unwrap_or(TyConId(0));
+                    .or_else(|| ctx.lookup_tycon_by_name(&ctor_name));
                 if !*is_record && !ir_fields.is_empty() {
                     // Record-payload union variant `Login { userId = 7, at = t }`.
                     // Its runtime shape is `{'Login', #{userId => 7, at => t}}` — a
@@ -507,8 +506,9 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
                 }
             } else {
                 // Defensive fallback: no binding map or unrecognised binding.
-                // OQ-PHASE45-007: fall back to lookup_tycon_by_name then TyConId(0).
-                let owner_type = ctx.lookup_tycon_by_name(&ctor_name).unwrap_or(TyConId(0));
+                // Recover the owner from the constructor's own name if the arena
+                // knows it; otherwise the construct genuinely has no owner.
+                let owner_type = ctx.lookup_tycon_by_name(&ctor_name);
                 IrExpr::Construct {
                     id,
                     ctor: SymbolRef::Constructor {
@@ -845,24 +845,16 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             // `Type::Record`, never a nominal `Type::Con`, so there is no anon
             // `TyConId` to recover from the node-type table. Codegen lowers a
             // Record `Construct` to a bare BEAM map (see `lower_construct`) and
-            // ignores `owner_type`/`name`, so the placeholder owner is what ends
-            // up emitted regardless. `name` stays a readable label for the IR.
-            let owner_type = TyConId(0);
-            let record_name = ctx
-                .workspace
-                .and_then(|ws| ws.tycons.get(owner_type.0 as usize))
-                .map_or_else(
-                    || format!("{{anon record #{}}}", owner_type.0),
-                    |d| d.name.clone(),
-                );
-
+            // ignores the owner and the name, so nothing downstream depends on
+            // either — but the label is what a reader of the IR sees, so it has
+            // to say what this is rather than name a type it does not have.
             let id = ctx.fresh_id(None);
             IrExpr::Construct {
                 id,
                 ctor: SymbolRef::Constructor {
                     ctor_kind: ridge_ir::CtorKind::Record,
-                    owner_type,
-                    name: record_name,
+                    owner_type: None,
+                    name: "{anon record}".to_string(),
                     variant: 0,
                 },
                 fields: ir_fields,
@@ -873,9 +865,6 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
 }
 
 // ── Quotation reification (std.query) ─────────────────────────────────────────
-
-/// The `QExpr` builtin `TyConId` (see `ridge_types::builtins`).
-const QEXPR_TYCON: TyConId = TyConId(25);
 
 /// Reify a quoted lambda body into a `Quote { tree }` value.
 ///
@@ -913,11 +902,12 @@ fn reify_quote(
     if avg_interval {
         tree = qexpr_node(ctx, "QAggAvgInterval", 40, vec![tree], span);
     }
+    let owner_type = ctx.builtins().map(|b| b.quote);
     IrExpr::Construct {
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
             ctor_kind: ridge_ir::CtorKind::Record,
-            owner_type: TyConId(0),
+            owner_type,
             name: "Quote".to_string(),
             variant: 0,
         },
@@ -939,11 +929,12 @@ fn qexpr_node(
         .enumerate()
         .map(|(i, a)| (format!("${i}"), a))
         .collect();
+    let owner_type = ctx.builtins().map(|b| b.q_expr);
     IrExpr::Construct {
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
             ctor_kind: ridge_ir::CtorKind::UnionVariant,
-            owner_type: QEXPR_TYCON,
+            owner_type,
             name: name.to_string(),
             variant,
         },
@@ -1646,11 +1637,12 @@ fn escape_like(s: &str) -> String {
 /// is the group parameter's name (the base of `g.key`/`g.count`/`g.sum(…)`).
 fn reify_group_quote(ctx: &mut LowerCtx<'_>, body: &Expr, span: Span, g_name: &str) -> IrExpr {
     let tree = reify_group_node(ctx, body, g_name);
+    let owner_type = ctx.builtins().map(|b| b.quote);
     IrExpr::Construct {
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
             ctor_kind: ridge_ir::CtorKind::Record,
-            owner_type: TyConId(0),
+            owner_type,
             name: "Quote".to_string(),
             variant: 0,
         },
@@ -4163,16 +4155,14 @@ fn lower_ident(ctx: &mut LowerCtx<'_>, ident: &Ident) -> IrExpr {
             is_record,
             ..
         }) => {
-            // OQ-PHASE45-007: emit Symbol { Constructor } using the resolved
-            // TyConId (via lookup_constructor_tycon → owner-type name →
-            // lookup_tycon_by_name). Falls back to TyConId(0) when the symbol
-            // table or workspace is absent (defensive; no L999 emitted).
+            // Emit Symbol { Constructor } using the resolved TyConId (via
+            // lookup_constructor_tycon → owner-type name → lookup_tycon_by_name).
+            // With no symbol table or workspace the constructor has no owner,
+            // which is not an error and emits no diagnostic.
             //
             // Use the resolver-supplied `is_record` flag to determine constructor kind.
             let id = ctx.fresh_id(None);
-            let tycon_id = ctx
-                .lookup_constructor_tycon(*owner_type)
-                .unwrap_or(TyConId(0));
+            let tycon_id = ctx.lookup_constructor_tycon(*owner_type);
             let ctor_kind = if *is_record {
                 ridge_ir::CtorKind::Record
             } else {

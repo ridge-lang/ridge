@@ -57,8 +57,16 @@ pub enum SymbolRef {
     Constructor {
         /// Whether this is a record auto-constructor or a union variant constructor.
         ctor_kind: CtorKind,
-        /// The type-constructor that owns this constructor.
-        owner_type: TyConId,
+        /// The type-constructor that owns this constructor, when there is one.
+        ///
+        /// `None` for constructors with no nominal owner: inline record
+        /// literals, which the type checker infers structurally, and the
+        /// synthesised dictionary and instance values, which are plain maps in
+        /// the IR. Those cases used to write `TyConId(0)` and mean "unowned",
+        /// which reads back as whichever type the arena happens to intern
+        /// first — so an anonymous record was labelled `Int`, and any consumer
+        /// indexing the arena with it got a confident wrong answer.
+        owner_type: Option<TyConId>,
         /// The constructor's source-level name.
         name: String,
         /// The variant index within the union (0 for records).

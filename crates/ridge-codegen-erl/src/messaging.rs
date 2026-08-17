@@ -411,7 +411,6 @@ mod tests {
     use ridge_ast::Span;
     use ridge_ir::{IrExpr, IrLit, IrNodeId, IrTimeout, SymbolRef};
     use ridge_resolve::ModuleId;
-    use ridge_types::TyConId;
 
     fn sp() -> Span {
         Span::point(0)
@@ -516,7 +515,7 @@ mod tests {
         let handle = lit_unit();
         let bad_message = SymbolRef::Constructor {
             ctor_kind: ridge_ir::CtorKind::UnionVariant,
-            owner_type: TyConId(0),
+            owner_type: None,
             name: "Foo".into(),
             variant: 0,
         };

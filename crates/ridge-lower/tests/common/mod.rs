@@ -868,7 +868,8 @@ fn render_sym(sym: &SymbolRef) -> String {
                 CtorKind::Record => "Record",
                 CtorKind::UnionVariant => "Variant",
             };
-            format!("Ctor({kind}:{name} owner={})", owner_type.0)
+            let owner = owner_type.map_or_else(|| "none".to_string(), |t| t.0.to_string());
+            format!("Ctor({kind}:{name} owner={owner})")
         }
         SymbolRef::Prelude { name } => format!("Prelude({name})"),
         _ => "Symbol".to_string(),

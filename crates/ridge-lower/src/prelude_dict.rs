@@ -328,7 +328,8 @@ fn dict_map(ctx: &mut LowerCtx<'_>, method: &str, method_fn: IrExpr, span: Span)
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
             ctor_kind: ridge_ir::CtorKind::Record,
-            owner_type: TyConId(0), // untyped — dicts are plain maps in the IR
+            // Untyped: dicts are plain maps in the IR, owned by no type.
+            owner_type: None,
             name: format!("$synth_dict_{method}"),
             variant: 0,
         },
@@ -1474,7 +1475,7 @@ fn decode_error(ctx: &mut LowerCtx<'_>, code: &str, message: &str, span: Span) -
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
             ctor_kind: ridge_ir::CtorKind::Record,
-            owner_type: TyConId(TYCON_ERROR),
+            owner_type: ctx.builtins().map(|b| b.error),
             name: "Error".to_string(),
             variant: 0,
         },

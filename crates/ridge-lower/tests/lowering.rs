@@ -210,6 +210,14 @@ fn snap_derive_generic_box() {
     snapshot_fixture("derive_generic_box");
 }
 
+/// Inline record literals and the patterns that destructure them, both of which
+/// are structural and so have no owning type. The snapshot pins the label they
+/// carry, which used to be the name of whichever type sat first in the arena.
+#[test]
+fn snap_anon_record_lit() {
+    snapshot_fixture("anon_record_lit");
+}
+
 // ── Group B §3.1: Actor-name → ModuleId wiring ───────────────────────────────
 
 // B-actor-1: Spawn expression resolves actor module via actor_module_cache.
@@ -393,5 +401,43 @@ fn describe (c: Colour) -> Text =
         lowering.errors.is_empty(),
         "lowering must stay quiet once resolve has already spoken; got {:?}",
         lowering.errors
+    );
+}
+
+// An inline record literal is structural: no declared type owns it, so the IR
+// carries no owner for it. The label used to be resolved by indexing the arena
+// with the placeholder id every one of these sites wrote, which meant every
+// anonymous record in the IR was named after the first built-in — `Int`.
+//
+// The sibling tests above assert that a *named* type resolves to a non-zero id.
+// That question is a different one, and asking only it is how this went unseen:
+// a placeholder that reads back as a real type is never contradicted by a check
+// that only looks for a missing one.
+#[test]
+fn an_inline_record_literal_is_not_named_after_a_builtin() {
+    let source = r#"
+fn mk () -> { a: Int, b: Text } =
+    { a = 1, b = "x" }
+"#;
+    let tw = make_workspace("anon_record_owner", "main", source);
+    let result = run_pipeline(&tw.path);
+    let m = result.lowered.modules[0]
+        .as_ref()
+        .expect("module[0] must lower");
+    let rendered = render_lowered_module(m);
+
+    // The premise: the literal really did lower to a Record construct, so the
+    // assertions below are about a node that exists.
+    assert!(
+        rendered.contains("ctor: Ctor(Record:"),
+        "expected a record construct in:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("Ctor(Record:Int "),
+        "an anonymous record must not borrow a built-in's name:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("Ctor(Record:{anon record} owner=none)"),
+        "expected the anonymous record to declare it has no owner:\n{rendered}"
     );
 }

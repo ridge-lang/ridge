@@ -43,7 +43,7 @@ items:
         args:
           -
             Construct(n8):
-              ctor: Ctor(Record:$synth_dict_encode owner=0)
+              ctor: Ctor(Record:$synth_dict_encode owner=none)
               fields:
                 encode:
                   Lambda(n9):
@@ -72,7 +72,7 @@ items:
                                         callee:
                                           Field(n16).encode:
                                             Construct(n17):
-                                              ctor: Ctor(Record:$synth_dict_encode owner=0)
+                                              ctor: Ctor(Record:$synth_dict_encode owner=none)
                                               fields:
                                                 encode:
                                                   Lambda(n18):

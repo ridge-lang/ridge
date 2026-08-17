@@ -1,0 +1,6 @@
+fn mk () -> { a: Int, b: Text } =
+    { a = 1, b = "x" }
+
+fn readA (r: { a: Int, b: Text }) -> Int =
+    match r
+        { a, b } -> a

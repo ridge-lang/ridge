@@ -11,8 +11,8 @@
 
 use ridge_ast::{Span, Type as AstType};
 use ridge_types::{
-    ClassId, Constraint, TyConId, TyVid, DECODE_CLASS, ENCODE_CLASS, EQ_CLASS, ORD_CLASS,
-    TOTEXT_CLASS,
+    BuiltinTyCons, ClassId, Constraint, TyConId, TyVid, DECODE_CLASS, ENCODE_CLASS, EQ_CLASS,
+    ORD_CLASS, TOTEXT_CLASS,
 };
 use rustc_hash::FxHashMap;
 use smallvec::{smallvec, SmallVec};
@@ -602,28 +602,27 @@ pub fn register_prelude_classes(ct: &mut ClassTable) {
 ///   fails with a T029 that includes the footgun warning.
 /// - **`Ord Float`**, **`Ord Bool`** — not defined in the 0.2.13 prelude.
 ///
-/// `TyConId` values are the fixed builtin indices assigned by
-/// [`ridge_types::BuiltinTyCons::allocate`]:
-/// `Int=0, Float=1, Bool=2, Text=3, Unit=4, Timestamp=5, …, Ordering=15`.
-pub fn register_prelude_instances(env: &mut InstanceEnv) {
-    register_prelude_instances_gated(env, false);
+/// Every head is named through `b`, so the instance a reader sees is the type
+/// the arena interned under that name.
+pub fn register_prelude_instances(env: &mut InstanceEnv, b: &BuiltinTyCons) {
+    register_prelude_instances_gated(env, b, false);
 }
 
 /// The scalars whose `Encode`/`Decode` instances move them as strings.
 ///
 /// One table rather than a pair of `insert` calls per type: these six are
 /// registered identically for both classes, and the reader should be able to
-/// see the whole set at once. The ids are the fixed builtin indices — the
-/// table is a place for [`crate::BuiltinTyCons`] to be read from once it is
-/// threaded into this function.
-const TEXT_CODEC_SCALARS: &[(TyConId, &str)] = &[
-    (TyConId(5), "Timestamp"),
-    (TyConId(51), "Decimal"),
-    (TyConId(52), "Uuid"),
-    (TyConId(53), "Bytes"),
-    (TyConId(54), "Date"),
-    (TyConId(55), "Time"),
-];
+/// see the whole set at once.
+const fn text_codec_scalars(b: &BuiltinTyCons) -> [(TyConId, &'static str); 6] {
+    [
+        (b.timestamp, "Timestamp"),
+        (b.decimal, "Decimal"),
+        (b.uuid, "Uuid"),
+        (b.bytes, "Bytes"),
+        (b.date, "Date"),
+        (b.time, "Time"),
+    ]
+}
 
 /// Seed the built-in prelude instances, gated on whether this is the standard
 /// library's own self-compile.
@@ -639,7 +638,7 @@ const TEXT_CODEC_SCALARS: &[(TyConId, &str)] = &[
     clippy::too_many_lines,
     reason = "flat sequential env.insert() calls, one per prelude instance; splitting per class would hurt readability without reducing complexity"
 )]
-pub fn register_prelude_instances_gated(env: &mut InstanceEnv, is_stdlib: bool) {
+pub fn register_prelude_instances_gated(env: &mut InstanceEnv, b: &BuiltinTyCons, is_stdlib: bool) {
     let ds = Span::point(0);
 
     // Helper to build a minimal prelude instance entry.
@@ -672,49 +671,43 @@ pub fn register_prelude_instances_gated(env: &mut InstanceEnv, is_stdlib: bool) 
     };
 
     // ── ToText instances ──────────────────────────────────────────────────────
-    // Int (TyConId 0)
     let _ = env.insert(
-        (TOTEXT_CLASS, TyConId(0)),
+        (TOTEXT_CLASS, b.int),
         prelude_inst("toText"),
         "ToText",
         "Int",
     );
-    // Float (TyConId 1)
     let _ = env.insert(
-        (TOTEXT_CLASS, TyConId(1)),
+        (TOTEXT_CLASS, b.float),
         prelude_inst("toText"),
         "ToText",
         "Float",
     );
-    // Bool (TyConId 2)
     let _ = env.insert(
-        (TOTEXT_CLASS, TyConId(2)),
+        (TOTEXT_CLASS, b.bool),
         prelude_inst("toText"),
         "ToText",
         "Bool",
     );
-    // Text (TyConId 3)
     let _ = env.insert(
-        (TOTEXT_CLASS, TyConId(3)),
+        (TOTEXT_CLASS, b.text),
         prelude_inst("toText"),
         "ToText",
         "Text",
     );
-    // Timestamp (TyConId 5)
     let _ = env.insert(
-        (TOTEXT_CLASS, TyConId(5)),
+        (TOTEXT_CLASS, b.timestamp),
         prelude_inst("toText"),
         "ToText",
         "Timestamp",
     );
-    // Ordering (TyConId 15)
     let _ = env.insert(
-        (TOTEXT_CLASS, TyConId(15)),
+        (TOTEXT_CLASS, b.ordering),
         prelude_inst("toText"),
         "ToText",
         "Ordering",
     );
-    // Decimal (TyConId 51) and Uuid (TyConId 52) each render through their
+    // Decimal and Uuid each render through their
     // stdlib `toText`, so string interpolation carries them the way it already
     // carries Timestamp. Both are builtins — like every entry above — and the
     // auto-promotion pass never synthesizes a second `ToText` for a type the
@@ -723,25 +716,25 @@ pub fn register_prelude_instances_gated(env: &mut InstanceEnv, is_stdlib: bool) 
     // toText` during the self-compile. (Bytes has no single canonical text form —
     // `toHex` and `toUtf8` differ — so it deliberately has no `ToText` instance.)
     let _ = env.insert(
-        (TOTEXT_CLASS, TyConId(51)),
+        (TOTEXT_CLASS, b.decimal),
         prelude_inst("toText"),
         "ToText",
         "Decimal",
     );
     let _ = env.insert(
-        (TOTEXT_CLASS, TyConId(52)),
+        (TOTEXT_CLASS, b.uuid),
         prelude_inst("toText"),
         "ToText",
         "Uuid",
     );
-    // Error (TyConId 12) renders through `std.error.toText` the same way, and it
+    // Error renders through `std.error.toText` the same way, and it
     // is the one that matters most: `Error` is the failure half of every
     // capability-bearing stdlib `Result`, so `$"failed: ${e}"` is the most
     // ordinary line anyone writes with one. Without this seed it is a T029 the
     // reader cannot fix from their own workspace — `Error` takes no `deriving`
     // clause of theirs and an instance of their own would be an orphan (#422).
     let _ = env.insert(
-        (TOTEXT_CLASS, TyConId(12)),
+        (TOTEXT_CLASS, b.error),
         prelude_inst("toText"),
         "ToText",
         "Error",
@@ -749,45 +742,25 @@ pub fn register_prelude_instances_gated(env: &mut InstanceEnv, is_stdlib: bool) 
 
     // ── Eq instances ─────────────────────────────────────────────────────────
     // Eq Float is intentionally absent — floating-point equality is a footgun.
-    // Int (TyConId 0)
-    let _ = env.insert((EQ_CLASS, TyConId(0)), prelude_inst("eq"), "Eq", "Int");
-    // Bool (TyConId 2)
-    let _ = env.insert((EQ_CLASS, TyConId(2)), prelude_inst("eq"), "Eq", "Bool");
-    // Text (TyConId 3)
-    let _ = env.insert((EQ_CLASS, TyConId(3)), prelude_inst("eq"), "Eq", "Text");
-    // Timestamp (TyConId 5)
+    let _ = env.insert((EQ_CLASS, b.int), prelude_inst("eq"), "Eq", "Int");
+    let _ = env.insert((EQ_CLASS, b.bool), prelude_inst("eq"), "Eq", "Bool");
+    let _ = env.insert((EQ_CLASS, b.text), prelude_inst("eq"), "Eq", "Text");
     let _ = env.insert(
-        (EQ_CLASS, TyConId(5)),
+        (EQ_CLASS, b.timestamp),
         prelude_inst("eq"),
         "Eq",
         "Timestamp",
     );
     // Eq Ordering — required by the Ord Ordering superclass check
-    let _ = env.insert(
-        (EQ_CLASS, TyConId(15)),
-        prelude_inst("eq"),
-        "Eq",
-        "Ordering",
-    );
+    let _ = env.insert((EQ_CLASS, b.ordering), prelude_inst("eq"), "Eq", "Ordering");
 
     // ── Ord instances ─────────────────────────────────────────────────────────
-    // Int (TyConId 0)
-    let _ = env.insert(
-        (ORD_CLASS, TyConId(0)),
-        prelude_inst("compare"),
-        "Ord",
-        "Int",
-    );
-    // Text (TyConId 3) — lexicographic ordering
-    let _ = env.insert(
-        (ORD_CLASS, TyConId(3)),
-        prelude_inst("compare"),
-        "Ord",
-        "Text",
-    );
+    let _ = env.insert((ORD_CLASS, b.int), prelude_inst("compare"), "Ord", "Int");
+    // Lexicographic ordering.
+    let _ = env.insert((ORD_CLASS, b.text), prelude_inst("compare"), "Ord", "Text");
     // Ord Ordering — natural ordering: Less < Equal < Greater
     let _ = env.insert(
-        (ORD_CLASS, TyConId(15)),
+        (ORD_CLASS, b.ordering),
         prelude_inst("compare"),
         "Ord",
         "Ordering",
@@ -803,25 +776,25 @@ pub fn register_prelude_instances_gated(env: &mut InstanceEnv, is_stdlib: bool) 
     // `Encode` instances from source, so seeding them again would collide (T032).
     if !is_stdlib {
         let _ = env.insert(
-            (ENCODE_CLASS, TyConId(0)),
+            (ENCODE_CLASS, b.int),
             prelude_inst("encode"),
             "Encode",
             "Int",
         );
         let _ = env.insert(
-            (ENCODE_CLASS, TyConId(1)),
+            (ENCODE_CLASS, b.float),
             prelude_inst("encode"),
             "Encode",
             "Float",
         );
         let _ = env.insert(
-            (ENCODE_CLASS, TyConId(2)),
+            (ENCODE_CLASS, b.bool),
             prelude_inst("encode"),
             "Encode",
             "Bool",
         );
         let _ = env.insert(
-            (ENCODE_CLASS, TyConId(3)),
+            (ENCODE_CLASS, b.text),
             prelude_inst("encode"),
             "Encode",
             "Text",
@@ -832,43 +805,42 @@ pub fn register_prelude_instances_gated(env: &mut InstanceEnv, is_stdlib: bool) 
     // canonical spelling `std.sql` writes to a column, so a value is spelled
     // the same whether it lands in a database or in JSON. `codec.ridge` does
     // not declare these, so the stdlib self-compile registers them too.
-    for (id, name) in TEXT_CODEC_SCALARS {
-        let _ = env.insert((ENCODE_CLASS, *id), prelude_inst("encode"), "Encode", name);
+    for (id, name) in text_codec_scalars(b) {
+        let _ = env.insert((ENCODE_CLASS, id), prelude_inst("encode"), "Encode", name);
     }
 
     // ── Decode instances ──────────────────────────────────────────────────────
     let _ = env.insert(
-        (DECODE_CLASS, TyConId(0)),
+        (DECODE_CLASS, b.int),
         prelude_inst("decode"),
         "Decode",
         "Int",
     );
     let _ = env.insert(
-        (DECODE_CLASS, TyConId(1)),
+        (DECODE_CLASS, b.float),
         prelude_inst("decode"),
         "Decode",
         "Float",
     );
     let _ = env.insert(
-        (DECODE_CLASS, TyConId(2)),
+        (DECODE_CLASS, b.bool),
         prelude_inst("decode"),
         "Decode",
         "Bool",
     );
     let _ = env.insert(
-        (DECODE_CLASS, TyConId(3)),
+        (DECODE_CLASS, b.text),
         prelude_inst("decode"),
         "Decode",
         "Text",
     );
-    for (id, name) in TEXT_CODEC_SCALARS {
-        let _ = env.insert((DECODE_CLASS, *id), prelude_inst("decode"), "Decode", name);
+    for (id, name) in text_codec_scalars(b) {
+        let _ = env.insert((DECODE_CLASS, id), prelude_inst("decode"), "Decode", name);
     }
 
     // ── Parametric container instances (Encode/Decode) ────────────────────────
     // `instance Encode (List a) where Encode a`, and the Option/Map/Result duals,
-    // for both Encode and Decode. The head TyConIds are the fixed builtin slots:
-    // List=6, Map=7, Option=9, Result=10. The constrained element variable sits
+    // for both Encode and Decode. The constrained element variable sits
     // at head position 0 for List/Option, position 1 for `Map Text a` (the Text
     // key is at 0), and positions 0 and 1 for `Result a e`.
     //
@@ -877,50 +849,50 @@ pub fn register_prelude_instances_gated(env: &mut InstanceEnv, is_stdlib: bool) 
     // is what lets the constraint solver discharge `Encode (List Int)` etc. and
     // build the dict-of-dicts plan. `def_module = None` bypasses the orphan rule.
     let _ = env.insert(
-        (ENCODE_CLASS, TyConId(6)),
+        (ENCODE_CLASS, b.list),
         parametric_inst("encode", ENCODE_CLASS, vec![0]),
         "Encode",
         "List",
     );
     let _ = env.insert(
-        (ENCODE_CLASS, TyConId(9)),
+        (ENCODE_CLASS, b.option),
         parametric_inst("encode", ENCODE_CLASS, vec![0]),
         "Encode",
         "Option",
     );
     let _ = env.insert(
-        (ENCODE_CLASS, TyConId(7)),
+        (ENCODE_CLASS, b.map),
         parametric_inst("encode", ENCODE_CLASS, vec![1]),
         "Encode",
         "Map",
     );
     let _ = env.insert(
-        (ENCODE_CLASS, TyConId(10)),
+        (ENCODE_CLASS, b.result),
         parametric_inst("encode", ENCODE_CLASS, vec![0, 1]),
         "Encode",
         "Result",
     );
 
     let _ = env.insert(
-        (DECODE_CLASS, TyConId(6)),
+        (DECODE_CLASS, b.list),
         parametric_inst("decode", DECODE_CLASS, vec![0]),
         "Decode",
         "List",
     );
     let _ = env.insert(
-        (DECODE_CLASS, TyConId(9)),
+        (DECODE_CLASS, b.option),
         parametric_inst("decode", DECODE_CLASS, vec![0]),
         "Decode",
         "Option",
     );
     let _ = env.insert(
-        (DECODE_CLASS, TyConId(7)),
+        (DECODE_CLASS, b.map),
         parametric_inst("decode", DECODE_CLASS, vec![1]),
         "Decode",
         "Map",
     );
     let _ = env.insert(
-        (DECODE_CLASS, TyConId(10)),
+        (DECODE_CLASS, b.result),
         parametric_inst("decode", DECODE_CLASS, vec![0, 1]),
         "Decode",
         "Result",
@@ -1703,6 +1675,7 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
 pub fn register_stdlib_instances(
     env: &mut InstanceEnv,
     ct: &ClassTable,
+    b: &BuiltinTyCons,
     reconciled_tycon_names: &rustc_hash::FxHashMap<String, TyConId>,
 ) {
     let ds = Span::point(0);
@@ -1718,9 +1691,7 @@ pub fn register_stdlib_instances(
             origin: InstanceOrigin::Explicit,
             span: ds,
         };
-        // Builtin TyConIds: Int=0, Float=1, Bool=2, Text=3, Timestamp=5, and the
-        // rich scalars interned last, Decimal=51, Uuid=52, Bytes=53, Date=54 (all
-        // pinned by debug_asserts in `BuiltinTyCons::allocate`). Every type carrying a
+        // Every type carrying a
         // source `instance SqlType T` in sql.ridge is seeded here so a user workspace
         // can discharge `SqlType T` — most visibly the `SqlType n` context a scalar
         // aggregate (`sumOf`/`minOf`/`maxOf`) threads through its `Aggregable`
@@ -1731,31 +1702,30 @@ pub fn register_stdlib_instances(
         // win — they got here first, and we never want to overwrite them or
         // surface a spurious T032.
         for prim in [
-            TyConId(0),  // Int
-            TyConId(3),  // Text
-            TyConId(2),  // Bool
-            TyConId(1),  // Float
-            TyConId(5),  // Timestamp
-            TyConId(13), // Duration
-            TyConId(51), // Decimal
-            TyConId(52), // Uuid
-            TyConId(53), // Bytes
-            TyConId(54), // Date
-            TyConId(55), // Time
+            b.int,       // Int
+            b.text,      // Text
+            b.bool,      // Bool
+            b.float,     // Float
+            b.timestamp, // Timestamp
+            b.duration,  // Duration
+            b.decimal,   // Decimal
+            b.uuid,      // Uuid
+            b.bytes,     // Bytes
+            b.date,      // Date
+            b.time,      // Time
         ] {
             env.instances
                 .entry((sqltype, smallvec![prim]))
                 .or_insert_with(inst);
         }
         // Parametric `SqlType (Option a) where SqlType a` — a nullable column.
-        // Keyed by Option's builtin id (TyConId(9), pinned by a debug_assert in
-        // `BuiltinTyCons::allocate`). The context constraint `SqlType a` rides a
+        // The context constraint `SqlType a` rides a
         // sentinel `TyVid(0)`; `head_var_positions` points the solver at Option's
         // single argument, so discharging `SqlType (Option Text)` recurses to
         // `SqlType Text`. As with the base types, `or_insert_with` lets the
         // source-level declaration win during the stdlib's own build.
         env.instances
-            .entry((sqltype, smallvec![TyConId(9)]))
+            .entry((sqltype, smallvec![b.option]))
             .or_insert_with(|| InstanceInfo {
                 def_module: None,
                 methods: vec![
@@ -3140,6 +3110,17 @@ mod tests {
     use super::*;
     use ridge_types::{DECODE_CLASS, ENCODE_CLASS, EQ_CLASS, ORD_CLASS, TOTEXT_CLASS};
 
+    fn make_builtins() -> BuiltinTyCons {
+        let mut arena = ridge_types::TyConArena::new();
+        BuiltinTyCons::allocate(&mut arena)
+    }
+
+    /// A head for tests that exercise `InstanceEnv::insert` itself. They need a
+    /// stable key and nothing else; naming a built-in would read as a claim
+    /// about that type, which is how `TyConId(0)` came to mean "any head" and
+    /// "Int" at the same time.
+    const ANY_HEAD: TyConId = TyConId(900);
+
     fn dummy_span() -> Span {
         Span::point(0)
     }
@@ -3205,10 +3186,11 @@ mod tests {
 
     #[test]
     fn prelude_encode_decode_instances_registered() {
+        let b = make_builtins();
         let mut env = InstanceEnv::new();
-        register_prelude_instances(&mut env);
+        register_prelude_instances(&mut env, &b);
         // Encode/Decode cover the four JSON primitives Int/Float/Bool/Text.
-        for tycon in [TyConId(0), TyConId(1), TyConId(2), TyConId(3)] {
+        for tycon in [b.int, b.float, b.bool, b.text] {
             assert!(
                 env.get((ENCODE_CLASS, tycon)).is_some(),
                 "Encode instance missing for {tycon:?}"
@@ -3225,7 +3207,7 @@ mod tests {
     #[test]
     fn insert_duplicate_explicit_explicit_returns_err_t032() {
         let mut env = InstanceEnv::new();
-        let key = (TOTEXT_CLASS, TyConId(0));
+        let key = (TOTEXT_CLASS, ANY_HEAD);
 
         let r1 = env.insert(
             key,
@@ -3252,7 +3234,7 @@ mod tests {
     #[test]
     fn insert_auto_promoted_and_explicit_returns_err_t034() {
         let mut env = InstanceEnv::new();
-        let key = (TOTEXT_CLASS, TyConId(1));
+        let key = (TOTEXT_CLASS, ANY_HEAD);
 
         // First: auto-promoted (from pub fn toText)
         let r1 = env.insert(
@@ -3279,7 +3261,7 @@ mod tests {
     #[test]
     fn insert_explicit_then_auto_promoted_returns_err_t034() {
         let mut env = InstanceEnv::new();
-        let key = (TOTEXT_CLASS, TyConId(2));
+        let key = (TOTEXT_CLASS, ANY_HEAD);
 
         // First: explicit
         let r1 = env.insert(
@@ -3308,7 +3290,7 @@ mod tests {
     #[test]
     fn insert_single_then_get() {
         let mut env = InstanceEnv::new();
-        let key = (EQ_CLASS, TyConId(5));
+        let key = (EQ_CLASS, ANY_HEAD);
         env.insert(key, make_instance(InstanceOrigin::Explicit), "Eq", "Foo")
             .expect("single insert must succeed");
         assert!(env.get(key).is_some());
@@ -3319,7 +3301,7 @@ mod tests {
     #[test]
     fn auto_promote_no_conflict() {
         let mut env = InstanceEnv::new();
-        let key = (TOTEXT_CLASS, TyConId(3));
+        let key = (TOTEXT_CLASS, ANY_HEAD);
         let result = env.insert(
             key,
             make_instance(InstanceOrigin::AutoPromoted),

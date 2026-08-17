@@ -194,23 +194,7 @@ fn lookup_totext_param_tycon(
     }
     match cur {
         ridge_ast::Type::Named { name, .. } => ctx.lookup_tycon_by_name(&name.text),
-        ridge_ast::Type::Primitive { name, .. } => {
-            use ridge_ast::PrimitiveType;
-            let type_name = match name {
-                PrimitiveType::Int => "Int",
-                PrimitiveType::Float => "Float",
-                PrimitiveType::Bool => "Bool",
-                PrimitiveType::Text => "Text",
-                PrimitiveType::Unit => "Unit",
-                PrimitiveType::Timestamp => "Timestamp",
-                PrimitiveType::Decimal => "Decimal",
-                PrimitiveType::Uuid => "Uuid",
-                PrimitiveType::Bytes => "Bytes",
-                PrimitiveType::Date => "Date",
-                PrimitiveType::Time => "Time",
-            };
-            ctx.lookup_tycon_by_name(type_name)
-        }
+        ridge_ast::Type::Primitive { name, .. } => ctx.lookup_tycon_by_name(name.name()),
         _ => None,
     }
 }
@@ -636,23 +620,7 @@ pub fn lower_instance(ctx: &mut LowerCtx<'_>, decl: &InstanceDecl) -> Vec<IrItem
             // e.g. `instance SqlType Int`. The name string must match the tycon
             // name used in the typecheck/tycon arena so generated dict-const names
             // like `$inst_SqlType_Int` stay consistent across the pipeline.
-            ridge_ast::Type::Primitive { name, .. } => {
-                use ridge_ast::PrimitiveType;
-                match name {
-                    PrimitiveType::Int => "Int",
-                    PrimitiveType::Float => "Float",
-                    PrimitiveType::Bool => "Bool",
-                    PrimitiveType::Text => "Text",
-                    PrimitiveType::Unit => "Unit",
-                    PrimitiveType::Timestamp => "Timestamp",
-                    PrimitiveType::Decimal => "Decimal",
-                    PrimitiveType::Uuid => "Uuid",
-                    PrimitiveType::Bytes => "Bytes",
-                    PrimitiveType::Date => "Date",
-                    PrimitiveType::Time => "Time",
-                }
-                .to_owned()
-            }
+            ridge_ast::Type::Primitive { name, .. } => name.name().to_owned(),
             // A function-type instance head (`instance Run (fn Int -> Int)`).
             // Name it after the synthetic per-arity `Fn/N` constructor so the
             // generated dict const `$inst_{Class}_Fn{arity}` matches the arena

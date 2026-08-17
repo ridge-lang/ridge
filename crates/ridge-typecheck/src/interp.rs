@@ -191,7 +191,7 @@ fn builtin_has_to_text(b: &BuiltinTyCons, tycon_id: TyConId) -> bool {
         || tycon_id == b.decimal
         || tycon_id == b.uuid
         || tycon_id == b.error
-        || tycon_id == TyConId(15) // Ordering
+        || tycon_id == b.ordering
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -243,7 +243,7 @@ mod tests {
     #[test]
     fn interp_int_ok() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         bind(&mut ctx, "x", Type::Con(b.int, vec![]));
 
         let parts = vec![
@@ -276,7 +276,7 @@ mod tests {
     #[test]
     fn interp_float_ok() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         bind(&mut ctx, "y", Type::Con(b.float, vec![]));
 
         let parts = vec![InterpPart::Expr {
@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn interp_bool_ok() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         bind(&mut ctx, "flag", Type::Con(b.bool, vec![]));
 
         let parts = vec![InterpPart::Expr {
@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn interp_text_ok() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         bind(&mut ctx, "name", Type::Con(b.text, vec![]));
 
         let parts = vec![InterpPart::Expr {
@@ -345,7 +345,7 @@ mod tests {
     #[test]
     fn interp_timestamp_ok() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         bind(&mut ctx, "ts", Type::Con(b.timestamp, vec![]));
 
         let parts = vec![InterpPart::Expr {
@@ -368,7 +368,7 @@ mod tests {
     #[test]
     fn interp_decimal_ok() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         bind(&mut ctx, "p", Type::Con(b.decimal, vec![]));
 
         let parts = vec![InterpPart::Expr {
@@ -391,7 +391,7 @@ mod tests {
     #[test]
     fn interp_uuid_ok() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         bind(&mut ctx, "u", Type::Con(b.uuid, vec![]));
 
         let parts = vec![InterpPart::Expr {
@@ -445,7 +445,7 @@ mod tests {
             is_anon: false,
         });
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         bind(&mut ctx, "user", Type::Con(user_id, vec![]));
 
         let parts = vec![InterpPart::Expr {
@@ -496,7 +496,7 @@ mod tests {
         let mut set: FxHashSet<TyConId> = FxHashSet::default();
         set.insert(user_id);
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         bind(&mut ctx, "user", Type::Con(user_id, vec![]));
 
         let parts = vec![InterpPart::Expr {
@@ -520,7 +520,7 @@ mod tests {
     #[test]
     fn interp_list_no_instance_t029() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         // List Int = Con(list, [Con(int, [])])
         bind(
             &mut ctx,
@@ -557,7 +557,7 @@ mod tests {
     #[test]
     fn interp_error_absorbing() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         // Simulate a hole that types as Error (e.g., an unknown identifier).
         // `Expr::Ident` for an unbound name → T001 + Type::Error.
@@ -590,7 +590,7 @@ mod tests {
     #[test]
     fn interp_no_holes_just_text() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         let parts = vec![InterpPart::Text {
             raw: "hello world".to_string(),
@@ -613,7 +613,7 @@ mod tests {
     fn interp_multiple_parts_ok() {
         use ridge_types::Scheme;
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         ctx.env
             .bind("a".to_string(), Scheme::mono(Type::Con(b.int, vec![])));
@@ -657,7 +657,7 @@ mod tests {
     #[test]
     fn infer_expr_dispatches_interp() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         bind(&mut ctx, "n", Type::Con(b.int, vec![]));
 
         let expr = single_hole(ident("n"));
@@ -708,7 +708,7 @@ mod tests {
             })
             .collect();
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         bind(&mut ctx, "n", Type::Con(b.int, vec![]));
 
         let parts = vec![InterpPart::Expr {
@@ -764,7 +764,7 @@ mod tests {
             })
             .collect();
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         bind(&mut ctx, "w", Type::Con(user_id, vec![]));
 
         let parts = vec![InterpPart::Expr {

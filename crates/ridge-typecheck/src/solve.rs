@@ -992,7 +992,13 @@ fn discharge_concrete(
                 &ridge_types::Type::Con(tyconid, Vec::new()),
                 &ctx.tycon_decls,
             );
-            let fix_hint = build_fix_hint(class_name, tyconid, &ty_name, &ctx.tycon_decls);
+            let fix_hint = build_fix_hint(
+                class_name,
+                tyconid,
+                &ty_name,
+                &ctx.tycon_decls,
+                &ctx.builtins,
+            );
             ctx.errors.push(TypeError::NoInstance {
                 class: class_name.to_string(),
                 ty: TypeDesc::Text(ty_name),
@@ -1269,7 +1275,13 @@ fn resolve_dict_plan(
                     &ridge_types::Type::Con(tyconid, Vec::new()),
                     &ctx.tycon_decls,
                 );
-                let fix_hint = build_fix_hint(class_name, tyconid, &ty_name, &ctx.tycon_decls);
+                let fix_hint = build_fix_hint(
+                    class_name,
+                    tyconid,
+                    &ty_name,
+                    &ctx.tycon_decls,
+                    &ctx.builtins,
+                );
                 ctx.errors.push(TypeError::NoInstance {
                     class: class_name.to_string(),
                     ty: TypeDesc::Text(ty_name),
@@ -1502,10 +1514,12 @@ fn build_fix_hint(
     tyconid: TyConId,
     ty_name: &str,
     tycons: &[ridge_types::TyConDecl],
+    b: &ridge_types::BuiltinTyCons,
 ) -> String {
-    // Float is TyConId(1) in the builtin arena (builtins.rs allocation order:
-    // Int=0, Float=1, Bool=2, Text=3, Unit=4, Timestamp=5, …).
-    let is_eq_float = class_name == "Eq" && tyconid == ridge_types::TyConId(1);
+    // Against the arena's own `Float`, not the name — a user type may be called
+    // `Float`, and telling its author about IEEE rounding would be nonsense.
+    // `b` is a distinct type from `tyconid`, so the two cannot be swapped here.
+    let is_eq_float = class_name == "Eq" && tyconid == b.float;
 
     if is_eq_float {
         "floating-point equality is a footgun (`0.1 + 0.2 ≠ 0.3`); \
@@ -1605,7 +1619,7 @@ mod tests {
 
     #[test]
     fn a_promised_class_is_forwarded_to_the_caller() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         // `fn mySort (xs: List a) -> List a where Ord a` — the body needs
         // `Ord a` and the signature promises it.
         let v = rigid_wanted(&mut ctx, 7, "a", "mySort", vec![ORD_CLASS]);
@@ -1646,7 +1660,7 @@ mod tests {
 
     #[test]
     fn an_unpromised_class_is_t055_not_an_instance_lookup() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         // The same function without the `where` clause. Reporting it here is
         // the point: inferring it instead would publish a requirement the
         // author never wrote and the reader never sees.
@@ -1694,7 +1708,7 @@ mod tests {
 
     #[test]
     fn a_promise_of_one_class_does_not_cover_another() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         // `where Ord a` does not grant `ToText a`.
         let v = rigid_wanted(&mut ctx, 3, "a", "f", vec![ORD_CLASS]);
         ctx.deferred_constraints
@@ -1718,7 +1732,7 @@ mod tests {
 
     #[test]
     fn two_signature_variables_are_promised_separately() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         // `fn f (x: a) (y: b) -> Text where ToText a` — the promise covers `a`
         // and says nothing about `b`, so keying on the class alone would let
         // `b` borrow `a`'s dictionary.
@@ -1767,7 +1781,7 @@ mod tests {
 
     #[test]
     fn a_multi_param_head_of_promised_rigids_is_forwarded() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let mut ct = make_class_table();
         let demo = two_param_class(&mut ct, "Demo");
 
@@ -1803,7 +1817,7 @@ mod tests {
 
     #[test]
     fn an_unpromised_multi_param_head_is_t055_not_ambiguity() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let mut ct = make_class_table();
         let demo = two_param_class(&mut ct, "Demo");
 
@@ -1841,7 +1855,7 @@ mod tests {
 
     #[test]
     fn case_a_concrete_instance_present_no_error() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let mut arena = TyConArena::new();
         let b = BuiltinTyCons::allocate(&mut arena);
 
@@ -1883,7 +1897,7 @@ mod tests {
 
     #[test]
     fn case_a_concrete_no_instance_emits_t029() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let mut arena = TyConArena::new();
         let b = BuiltinTyCons::allocate(&mut arena);
 
@@ -1915,7 +1929,7 @@ mod tests {
 
     #[test]
     fn case_b_free_var_not_in_env_retained() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let a = ctx.fresh_tyvid();
 
         // Push a deferred constraint: ToText a. `a` is fresh and not unified.
@@ -1949,7 +1963,7 @@ mod tests {
 
     #[test]
     fn case_c_escaping_var_emits_t030() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let a = ctx.fresh_tyvid();
 
         ctx.deferred_constraints
@@ -1975,7 +1989,7 @@ mod tests {
 
     #[test]
     fn empty_deferred_is_noop() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         // No constraints pushed.
         let ct = make_class_table();
         let env = InstanceEnv::new();
@@ -1993,7 +2007,7 @@ mod tests {
 
     #[test]
     fn superclass_requirement_propagated() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let mut arena = TyConArena::new();
         let b = BuiltinTyCons::allocate(&mut arena);
 
@@ -2030,7 +2044,7 @@ mod tests {
 
     #[test]
     fn superclass_missing_emits_t029() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let mut arena = TyConArena::new();
         let b = BuiltinTyCons::allocate(&mut arena);
 
@@ -2063,7 +2077,7 @@ mod tests {
 
     #[test]
     fn instantiate_remaps_constraint_to_fresh_tyvid() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         // Pre-allocate one TyVid so that the fresh var allocated during
         // instantiate gets a different raw index than any scheme-bound var.
@@ -2111,7 +2125,7 @@ mod tests {
 
     #[test]
     fn instantiate_unconstrained_scheme_pushes_nothing() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let a = TyVid(0);
         let scheme = Scheme {
             vars: vec![a],
@@ -2132,7 +2146,7 @@ mod tests {
 
     #[test]
     fn retained_constraints_returned_for_attachment() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let a = ctx.fresh_tyvid();
         let b = ctx.fresh_tyvid();
 
@@ -2199,7 +2213,7 @@ mod tests {
     /// After solving: no error, `Encode Int` is also discharged via its concrete instance.
     #[test]
     fn parametric_list_int_enqueues_encode_int() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let mut arena = TyConArena::new();
         let b = BuiltinTyCons::allocate(&mut arena);
 
@@ -2264,7 +2278,7 @@ mod tests {
     /// class. Exercises `resolve_ctx_dict_args_multi` and the `Static.class` field.
     #[test]
     fn multi_param_instance_context_threads_sub_dict() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let mut arena = TyConArena::new();
         let b = BuiltinTyCons::allocate(&mut arena);
         let int_tycon = b.int;
@@ -2348,7 +2362,7 @@ mod tests {
     /// `Encode (List Int)` without `Encode Int` in the env — must emit T029 for Int.
     #[test]
     fn parametric_list_int_missing_element_instance_emits_t029() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let mut arena = TyConArena::new();
         let b = BuiltinTyCons::allocate(&mut arena);
 
@@ -2391,7 +2405,7 @@ mod tests {
     /// NOT position-0 (Text). Only Bool is the constrained element.
     #[test]
     fn parametric_map_text_bool_binds_bool_not_text() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let mut arena = TyConArena::new();
         let b = BuiltinTyCons::allocate(&mut arena);
 
@@ -2447,7 +2461,7 @@ mod tests {
     /// substituted at their correct positions.
     #[test]
     fn parametric_result_int_text_both_positions() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let mut arena = TyConArena::new();
         let b = BuiltinTyCons::allocate(&mut arena);
 

@@ -465,7 +465,7 @@ mod tests {
     #[test]
     fn pipe_basic() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         let list_int = Type::Con(b.list, vec![int_ty(&b)]);
         let length_fn = make_fn_ty(&b, vec![list_int], int_ty(&b));
@@ -501,7 +501,7 @@ mod tests {
     #[test]
     fn pipe_chain() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         let list_int = Type::Con(b.list, vec![int_ty(&b)]);
 
@@ -571,7 +571,7 @@ mod tests {
     #[test]
     fn propagate_in_result_fn() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         // Set enclosing fn return type to Result Text Text.
         ctx.current_fn_ret = Some(result_ty(&b, text_ty(&b), text_ty(&b)));
@@ -605,7 +605,7 @@ mod tests {
     #[test]
     fn propagate_in_option_fn() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         // Set enclosing fn return type to Option Int.
         ctx.current_fn_ret = Some(option_ty(&b, int_ty(&b)));
@@ -635,7 +635,7 @@ mod tests {
     #[test]
     fn propagate_outside_result_or_option_t058() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         // Set enclosing fn return type to Int (not Result/Option).
         ctx.current_fn_ret = Some(int_ty(&b));
@@ -663,7 +663,7 @@ mod tests {
     #[test]
     fn propagate_inner_type_mismatch_t001() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         // Context: fn returning Result Text Text.
         ctx.current_fn_ret = Some(result_ty(&b, text_ty(&b), text_ty(&b)));
@@ -686,7 +686,7 @@ mod tests {
     #[test]
     fn try_block_basic() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         let block = ridge_ast::Block {
             stmts: vec![int_lit("5")],
@@ -717,7 +717,7 @@ mod tests {
     #[test]
     fn try_block_with_propagate() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         // readFile : Text -> Result Text Text
         let read_file_fn = make_fn_ty(
@@ -776,7 +776,7 @@ mod tests {
     #[test]
     fn try_block_outside_fn() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         // No current_fn_ret set — simulates module-level expression.
         assert!(ctx.current_fn_ret.is_none());
 
@@ -799,7 +799,7 @@ mod tests {
     #[test]
     fn discarded_result_t022_basic() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         // readFile : Text -> Result Text Text
         let read_file_fn = make_fn_ty(
@@ -839,7 +839,7 @@ mod tests {
     #[test]
     fn discarded_unit_no_warning() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         // print : Text -> Unit
         let print_fn = make_fn_ty(&b, vec![text_ty(&b)], unit_ty(&b));
@@ -878,7 +878,7 @@ mod tests {
     #[test]
     fn discarded_send_no_warning() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         // Simulate Send result: a fn returning Unit.
         let send_like_fn = make_fn_ty(&b, vec![], unit_ty(&b));

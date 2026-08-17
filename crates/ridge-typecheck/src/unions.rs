@@ -397,7 +397,7 @@ mod tests {
     fn infer_some_int() {
         let (_, b) = make_builtins();
         let schema = make_option_schema();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // Some 42 — variant_idx 0 (Some), arg = int literal
@@ -438,7 +438,7 @@ mod tests {
     fn infer_none() {
         let (_, b) = make_builtins();
         let schema = make_option_schema();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // None — variant_idx 1, no args
@@ -471,7 +471,7 @@ mod tests {
     fn infer_ok_text() {
         let (_, b) = make_builtins();
         let schema = make_result_schema();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // Ok "hi" — variant_idx 0 (Ok), arg = text literal
@@ -518,7 +518,7 @@ mod tests {
     fn infer_err() {
         let (_, b) = make_builtins();
         let schema = make_result_schema();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // Err "boom" — variant_idx 1 (Err), arg = text literal
@@ -565,7 +565,7 @@ mod tests {
     fn infer_some_arity_mismatch() {
         let (_, b) = make_builtins();
         let schema = make_option_schema();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // Some 1 2 — 2 args but Some expects 1
@@ -614,7 +614,7 @@ mod tests {
     fn infer_none_arity_mismatch() {
         let (_, b) = make_builtins();
         let schema = make_option_schema();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // None 1 — 1 arg but None expects 0
@@ -641,7 +641,7 @@ mod tests {
     fn pattern_some_bound_var() {
         let (_, b) = make_builtins();
         let schema = make_option_schema();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // Scrutinee type: Option Int
@@ -690,7 +690,7 @@ mod tests {
     fn pattern_none_no_args() {
         let (_, b) = make_builtins();
         let schema = make_option_schema();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // Scrutinee type: Option ?a
@@ -731,7 +731,7 @@ mod tests {
     fn pattern_arity_mismatch() {
         let (_, b) = make_builtins();
         let schema = make_option_schema();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         let scrutinee_ty = Type::Con(b.option, vec![Type::Con(b.int, vec![])]);
@@ -799,7 +799,7 @@ mod tests {
             is_anon: false,
         });
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // Test construction: `Circle 3.14` → `Shape`
@@ -921,7 +921,7 @@ mod tests {
     fn pattern_ok_bound_var() {
         let (_, b) = make_builtins();
         let schema = make_result_schema();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // scrutinee: Result Text Int
@@ -969,7 +969,7 @@ mod tests {
     fn construction_type_mismatch_emits_t001() {
         let (_, b) = make_builtins();
         let schema = make_option_schema();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // Some "hello" — Some with a Text arg.

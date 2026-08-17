@@ -64,7 +64,7 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         let Type::Con(id, args) = t else {
             return None;
         };
-        if id.0 != ridge_types::RET_TYCON_ID || args.len() != 1 {
+        if *id != ctx.builtins.ret || args.len() != 1 {
             return None;
         }
         match ctx.shallow_resolve(&args[0]) {
@@ -82,7 +82,7 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         let Type::Con(id, args) = t else {
             return None;
         };
-        if id.0 != ridge_types::ROWS_TYCON_ID || args.len() != 1 {
+        if *id != ctx.builtins.rows || args.len() != 1 {
             return None;
         }
         let q = ctx.shallow_resolve(&args[0]);
@@ -97,7 +97,7 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         let Type::Con(id, args) = t else {
             return None;
         };
-        if id.0 != ridge_types::JOINCOND_TYCON_ID || args.len() != 2 {
+        if *id != ctx.builtins.joincond || args.len() != 2 {
             return None;
         }
         let q = ctx.shallow_resolve(&args[0]);
@@ -113,7 +113,7 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         let Type::Con(id, args) = t else {
             return None;
         };
-        if id.0 != ridge_types::JOINRESULT_TYCON_ID || args.len() != 2 {
+        if *id != ctx.builtins.joinresult || args.len() != 2 {
             return None;
         }
         let q = ctx.shallow_resolve(&args[0]);
@@ -129,7 +129,7 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         let Type::Con(id, args) = t else {
             return None;
         };
-        if id.0 != ridge_types::LEFTJOINRESULT_TYCON_ID || args.len() != 2 {
+        if *id != ctx.builtins.left_joinresult || args.len() != 2 {
             return None;
         }
         let q = ctx.shallow_resolve(&args[0]);
@@ -143,7 +143,7 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         let Type::Con(id, args) = t else {
             return None;
         };
-        if id.0 != ridge_types::RIGHTJOINRESULT_TYCON_ID || args.len() != 2 {
+        if *id != ctx.builtins.right_joinresult || args.len() != 2 {
             return None;
         }
         let q = ctx.shallow_resolve(&args[0]);
@@ -157,7 +157,7 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         let Type::Con(id, args) = t else {
             return None;
         };
-        if id.0 != ridge_types::FULLJOINRESULT_TYCON_ID || args.len() != 2 {
+        if *id != ctx.builtins.full_joinresult || args.len() != 2 {
             return None;
         }
         let q = ctx.shallow_resolve(&args[0]);
@@ -174,7 +174,7 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         let Type::Con(id, args) = t else {
             return None;
         };
-        if id.0 != ridge_types::INSERTSHAPE_TYCON_ID || args.len() != 1 {
+        if *id != ctx.builtins.insert_shape || args.len() != 1 {
             return None;
         }
         let e = ctx.shallow_resolve(&args[0]);
@@ -194,7 +194,7 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         let Type::Con(id, args) = lhs else {
             return None;
         };
-        if id.0 != ridge_types::INSERTSHAPE_TYCON_ID || args.len() != 1 {
+        if *id != ctx.builtins.insert_shape || args.len() != 1 {
             return None;
         }
         if !matches!(ctx.shallow_resolve(&args[0]), Type::Var(_)) {
@@ -828,7 +828,7 @@ fn insert_shape_full_entity(ctx: &InferCtx, expected: &Type, found: &Type) -> Op
         // Stuck: an unreduced `InsertShape e`. It only reaches here against a
         // concrete entity that has a companion — a no-companion entity would have
         // unified via the invertible reduction — so the entity drives the lookup.
-        Type::Con(pid, pargs) if pid.0 == ridge_types::INSERTSHAPE_TYCON_ID && pargs.len() == 1 => {
+        Type::Con(pid, pargs) if *pid == ctx.builtins.insert_shape && pargs.len() == 1 => {
             *ctx.insert_shapes.get(entity_id)?
         }
         _ => return None,
@@ -930,7 +930,7 @@ mod tests {
     }
 
     fn make_ctx() -> InferCtx {
-        InferCtx::new()
+        InferCtx::for_tests()
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1038,8 +1038,8 @@ mod tests {
         }
     }
 
-    fn ret_of(arg: Type) -> Type {
-        Type::Con(cid(ridge_types::RET_TYCON_ID), vec![arg])
+    fn ret_of(ret: TyConId, arg: Type) -> Type {
+        Type::Con(ret, vec![arg])
     }
 
     /// `deep_resolve(Ret (fn User -> Summary))` reduces to `Summary`.
@@ -1048,7 +1048,7 @@ mod tests {
         let mut ctx = make_ctx();
         let summary = Type::Con(cid(101), vec![]);
         let proj = pure_fn(vec![Type::Con(cid(100), vec![])], summary.clone());
-        let resolved = ctx.deep_resolve(&ret_of(proj));
+        let resolved = ctx.deep_resolve(&ret_of(ctx.builtins.ret, proj));
         assert_eq!(format!("{resolved:?}"), format!("{summary:?}"));
     }
 
@@ -1072,7 +1072,10 @@ mod tests {
 
         let result_ty = Type::Con(
             cid(10),
-            vec![Type::Con(cid(6), vec![ret_of(Type::Var(p))]), err.clone()],
+            vec![
+                Type::Con(cid(6), vec![ret_of(ctx.builtins.ret, Type::Var(p))]),
+                err.clone(),
+            ],
         );
         let expected = Type::Con(cid(10), vec![Type::Con(cid(6), vec![summary]), err]);
         let resolved = ctx.deep_resolve(&result_ty);
@@ -1086,12 +1089,12 @@ mod tests {
     fn ret_of_unpinned_var_stays_stuck() {
         let mut ctx = make_ctx();
         let p = ctx.fresh_tyvid();
-        let listed = Type::Con(cid(6), vec![ret_of(Type::Var(p))]);
+        let listed = Type::Con(cid(6), vec![ret_of(ctx.builtins.ret, Type::Var(p))]);
         match ctx.deep_resolve(&listed) {
             Type::Con(outer, args) => {
                 assert_eq!(outer, cid(6));
                 assert!(
-                    matches!(&args[0], Type::Con(r, _) if r.0 == ridge_types::RET_TYCON_ID),
+                    matches!(&args[0], Type::Con(r, _) if *r == ctx.builtins.ret),
                     "Ret over an unpinned var must stay a Ret application"
                 );
             }
@@ -1106,7 +1109,13 @@ mod tests {
         let mut ctx = make_ctx();
         let p = ctx.fresh_tyvid();
         let q = ctx.fresh_tyvid();
-        unify(&mut ctx, &ret_of(Type::Var(p)), &ret_of(Type::Var(q))).unwrap();
+        let ret = ctx.builtins.ret;
+        unify(
+            &mut ctx,
+            &ret_of(ret, Type::Var(p)),
+            &ret_of(ret, Type::Var(q)),
+        )
+        .unwrap();
         let summary = Type::Con(cid(101), vec![]);
         let proj = pure_fn(vec![], summary);
         unify(&mut ctx, &Type::Var(p), &proj).unwrap();
@@ -1122,7 +1131,8 @@ mod tests {
         let summary = Type::Con(cid(101), vec![]);
         let proj = pure_fn(vec![Type::Con(cid(100), vec![])], summary.clone());
         let r = ctx.fresh_tyvid();
-        unify(&mut ctx, &ret_of(proj), &Type::Var(r)).unwrap();
+        let ret = ctx.builtins.ret;
+        unify(&mut ctx, &ret_of(ret, proj), &Type::Var(r)).unwrap();
         let resolved = ctx.deep_resolve(&Type::Var(r));
         assert_eq!(format!("{resolved:?}"), format!("{summary:?}"));
     }
@@ -1140,8 +1150,8 @@ mod tests {
         ctx
     }
 
-    fn insert_shape_of(arg: Type) -> Type {
-        Type::Con(cid(ridge_types::INSERTSHAPE_TYCON_ID), vec![arg])
+    fn insert_shape_of(insert_shape: TyConId, arg: Type) -> Type {
+        Type::Con(insert_shape, vec![arg])
     }
 
     /// `InsertShape User` reduces to the companion `UserInsert` — a gen-column
@@ -1149,7 +1159,10 @@ mod tests {
     #[test]
     fn insert_shape_of_gen_entity_reduces_to_companion() {
         let mut ctx = make_shape_ctx();
-        let resolved = ctx.deep_resolve(&insert_shape_of(Type::Con(cid(100), vec![])));
+        let resolved = ctx.deep_resolve(&insert_shape_of(
+            ctx.builtins.insert_shape,
+            Type::Con(cid(100), vec![]),
+        ));
         assert_eq!(
             format!("{resolved:?}"),
             format!("{:?}", Type::Con(cid(200), vec![]))
@@ -1161,7 +1174,10 @@ mod tests {
     #[test]
     fn insert_shape_of_plain_entity_is_identity() {
         let mut ctx = make_shape_ctx();
-        let resolved = ctx.deep_resolve(&insert_shape_of(Type::Con(cid(150), vec![])));
+        let resolved = ctx.deep_resolve(&insert_shape_of(
+            ctx.builtins.insert_shape,
+            Type::Con(cid(150), vec![]),
+        ));
         assert_eq!(
             format!("{resolved:?}"),
             format!("{:?}", Type::Con(cid(150), vec![]))
@@ -1174,8 +1190,8 @@ mod tests {
     fn insert_shape_of_unpinned_var_stays_stuck() {
         let mut ctx = make_shape_ctx();
         let e = ctx.fresh_tyvid();
-        match ctx.deep_resolve(&insert_shape_of(Type::Var(e))) {
-            Type::Con(id, _) => assert_eq!(id.0, ridge_types::INSERTSHAPE_TYCON_ID),
+        match ctx.deep_resolve(&insert_shape_of(ctx.builtins.insert_shape, Type::Var(e))) {
+            Type::Con(id, _) => assert_eq!(id, ctx.builtins.insert_shape),
             other => panic!("expected InsertShape ?e to be carried, got {other:?}"),
         }
     }
@@ -1187,9 +1203,10 @@ mod tests {
     fn insert_shape_inverts_against_companion() {
         let mut ctx = make_shape_ctx();
         let e = ctx.fresh_tyvid();
+        let insert_shape = ctx.builtins.insert_shape;
         unify(
             &mut ctx,
-            &insert_shape_of(Type::Var(e)),
+            &insert_shape_of(insert_shape, Type::Var(e)),
             &Type::Con(cid(200), vec![]),
         )
         .unwrap();
@@ -1205,9 +1222,10 @@ mod tests {
     fn insert_shape_inverts_against_plain_entity() {
         let mut ctx = make_shape_ctx();
         let e = ctx.fresh_tyvid();
+        let insert_shape = ctx.builtins.insert_shape;
         unify(
             &mut ctx,
-            &insert_shape_of(Type::Var(e)),
+            &insert_shape_of(insert_shape, Type::Var(e)),
             &Type::Con(cid(150), vec![]),
         )
         .unwrap();
@@ -1225,9 +1243,10 @@ mod tests {
     fn insert_shape_rejects_full_gen_entity() {
         let mut ctx = make_shape_ctx();
         let e = ctx.fresh_tyvid();
+        let insert_shape = ctx.builtins.insert_shape;
         let err = unify(
             &mut ctx,
-            &insert_shape_of(Type::Var(e)),
+            &insert_shape_of(insert_shape, Type::Var(e)),
             &Type::Con(cid(100), vec![]),
         )
         .unwrap_err();

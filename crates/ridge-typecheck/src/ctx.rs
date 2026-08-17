@@ -11,8 +11,8 @@
 use ena::unify::{InPlaceUnificationTable, NoError, UnifyKey, UnifyValue};
 use ridge_resolve::{NodeIdMap, NodeKind};
 use ridge_types::{
-    AnonRecordTable, CapRow, CapVid, CapabilitySet, Row, RowTail, RowVid, Scheme, TyConDecl,
-    TyConId, TyVid, Type,
+    AnonRecordTable, BuiltinTyCons, CapRow, CapVid, CapabilitySet, Row, RowTail, RowVid, Scheme,
+    TyConDecl, TyConId, TyVid, Type,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -282,6 +282,16 @@ pub struct MonomorphicInScc {
 /// state introduced in T6: lexical type environment, capability tracking,
 /// error accumulator, and the enclosing-function return type.
 pub struct InferCtx {
+    /// The built-in type constructors, as the arena interned them.
+    ///
+    /// Required rather than optional: the type-level projections reduce by
+    /// comparing against `builtins.ret`, `builtins.rows` and the join heads, and
+    /// a context that could not name them would answer "not a projection" for
+    /// every type instead of admitting it does not know. Every reduction below
+    /// then silently stops firing, which no negative test can distinguish from
+    /// a projection that is correctly stuck.
+    pub builtins: BuiltinTyCons,
+
     /// Union-find table for type unification variables.
     pub tyvids: InPlaceUnificationTable<TyVidKey>,
     /// Union-find table for capability-row variables.
@@ -560,19 +570,17 @@ pub struct RowsTycons {
     /// `JoinCond`/`FullJoinResult`/`Rows` projections key on it. `None` until
     /// std.repo's `FullJoined` is reconciled.
     pub full_joined: Option<TyConId>,
-    /// `Option`'s tycon id, wrapping an outer join's nullable side.
-    pub option: TyConId,
-    /// `Bool`'s tycon id, the result of a `JoinCond` condition. Carried here so
-    /// the projection reductions can build `… -> Bool` without a `BuiltinTyCons`
-    /// handle (the context holds none).
-    pub bool: TyConId,
 }
 
 impl InferCtx {
-    /// Creates a fresh, empty inference context.
+    /// Creates a fresh, empty inference context over the workspace's built-ins.
+    ///
+    /// `b` is the same handle set the rest of the pipeline resolves types
+    /// through, so a projection head means here what it means everywhere else.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(b: &BuiltinTyCons) -> Self {
         Self {
+            builtins: *b,
             tyvids: InPlaceUnificationTable::new(),
             capvids: InPlaceUnificationTable::new(),
             rowvids: InPlaceUnificationTable::new(),
@@ -764,19 +772,25 @@ impl InferCtx {
         if *qid == rt.left_join {
             let e = qargs.first()?.clone();
             let f = qargs.get(1)?.clone();
-            return Some(Type::Tuple(vec![e, Type::Con(rt.option, vec![f])]));
+            return Some(Type::Tuple(vec![
+                e,
+                Type::Con(self.builtins.option, vec![f]),
+            ]));
         }
         if *qid == rt.right_join {
             let e = qargs.first()?.clone();
             let f = qargs.get(1)?.clone();
-            return Some(Type::Tuple(vec![Type::Con(rt.option, vec![e]), f]));
+            return Some(Type::Tuple(vec![
+                Type::Con(self.builtins.option, vec![e]),
+                f,
+            ]));
         }
         if *qid == rt.full_join {
             let e = qargs.first()?.clone();
             let f = qargs.get(1)?.clone();
             return Some(Type::Tuple(vec![
-                Type::Con(rt.option, vec![e]),
-                Type::Con(rt.option, vec![f]),
+                Type::Con(self.builtins.option, vec![e]),
+                Type::Con(self.builtins.option, vec![f]),
             ]));
         }
         // `Rows (Joined q' f a)` reduces to `(Rows q', f)` — the left composite's
@@ -798,7 +812,10 @@ impl InferCtx {
             let q_inner = qargs.first()?;
             let f = qargs.get(1)?.clone();
             let inner_rows = self.reduce_rows_arg(q_inner)?;
-            return Some(Type::Tuple(vec![inner_rows, Type::Con(rt.option, vec![f])]));
+            return Some(Type::Tuple(vec![
+                inner_rows,
+                Type::Con(self.builtins.option, vec![f]),
+            ]));
         }
         // `Rows (RightJoined q' f a)` reduces to `(Option (Rows q'), f)` — the left
         // composite's own row made optional AS A UNIT (a right join null-extends the
@@ -808,7 +825,10 @@ impl InferCtx {
             let q_inner = qargs.first()?;
             let f = qargs.get(1)?.clone();
             let inner_rows = self.reduce_rows_arg(q_inner)?;
-            return Some(Type::Tuple(vec![Type::Con(rt.option, vec![inner_rows]), f]));
+            return Some(Type::Tuple(vec![
+                Type::Con(self.builtins.option, vec![inner_rows]),
+                f,
+            ]));
         }
         // `Rows (FullJoined q' f a)` reduces to `(Option (Rows q'), Option f)` — a full
         // join keeps every row of both sides and null-extends whichever matched none,
@@ -818,8 +838,8 @@ impl InferCtx {
             let f = qargs.get(1)?.clone();
             let inner_rows = self.reduce_rows_arg(q_inner)?;
             return Some(Type::Tuple(vec![
-                Type::Con(rt.option, vec![inner_rows]),
-                Type::Con(rt.option, vec![f]),
+                Type::Con(self.builtins.option, vec![inner_rows]),
+                Type::Con(self.builtins.option, vec![f]),
             ]));
         }
         None
@@ -964,12 +984,13 @@ impl InferCtx {
     /// while `q` is not yet a recognised receiver, leaving the projection stuck.
     #[must_use]
     pub fn reduce_joincond_arg(&self, q: &Type, f: &Type) -> Option<Type> {
-        let rt = self.rows_tycons?;
+        // `join_entities` gates on the reconciled receivers itself, so a
+        // workspace without them leaves this stuck without a second check.
         let mut params = self.join_entities(q)?;
         params.push(f.clone());
         Some(Type::Fn {
             params,
-            ret: Box::new(Type::Con(rt.bool, vec![])),
+            ret: Box::new(Type::Con(self.builtins.bool, vec![])),
             caps: CapRow::Concrete(CapabilitySet::PURE),
         })
     }
@@ -1164,7 +1185,7 @@ impl InferCtx {
                 // deep-resolved, so its return is fully resolved too. While the
                 // argument is still a variable (`Ret ?p`), the projection is left
                 // intact — it reduces once `p` is pinned to a function type.
-                if id.0 == ridge_types::RET_TYCON_ID && new_args.len() == 1 {
+                if *id == self.builtins.ret && new_args.len() == 1 {
                     if let Type::Fn { ret, .. } = &new_args[0] {
                         return (**ret).clone();
                     }
@@ -1175,7 +1196,7 @@ impl InferCtx {
                 // query exposes its (possibly still-free) entity for the declared
                 // result type to pin. While the argument is a variable (`Rows ?q`),
                 // the projection is left intact, reducing once `q` is a receiver.
-                if id.0 == ridge_types::ROWS_TYCON_ID && new_args.len() == 1 {
+                if *id == self.builtins.rows && new_args.len() == 1 {
                     if let Some(reduced) = self.reduce_rows_arg(&new_args[0]) {
                         return reduced;
                     }
@@ -1184,7 +1205,7 @@ impl InferCtx {
                 // accepts over `q` and the new right entity `f` — the receiver's
                 // leaf entities then `f`, returning `Bool`. While `q` is a variable
                 // the projection is left intact, reducing once `q` is a receiver.
-                if id.0 == ridge_types::JOINCOND_TYCON_ID && new_args.len() == 2 {
+                if *id == self.builtins.joincond && new_args.len() == 2 {
                     if let Some(reduced) = self.reduce_joincond_arg(&new_args[0], &new_args[1]) {
                         return reduced;
                     }
@@ -1192,7 +1213,7 @@ impl InferCtx {
                 // `JoinResult q f` normalises to the type `joinOn` produces — a
                 // binary `Join` from a query, the nested `Joined` from a composite.
                 // Stuck while `q` is a variable or `Joined` is unreconciled.
-                if id.0 == ridge_types::JOINRESULT_TYCON_ID && new_args.len() == 2 {
+                if *id == self.builtins.joinresult && new_args.len() == 2 {
                     if let Some(reduced) = self.reduce_joinresult_arg(&new_args[0], &new_args[1]) {
                         return reduced;
                     }
@@ -1201,7 +1222,7 @@ impl InferCtx {
                 // a binary `LeftJoin` from a query, the nested `LeftJoined` from a
                 // composite. Stuck while `q` is a variable or `LeftJoined` is
                 // unreconciled.
-                if id.0 == ridge_types::LEFTJOINRESULT_TYCON_ID && new_args.len() == 2 {
+                if *id == self.builtins.left_joinresult && new_args.len() == 2 {
                     if let Some(reduced) =
                         self.reduce_leftjoinresult_arg(&new_args[0], &new_args[1])
                     {
@@ -1212,7 +1233,7 @@ impl InferCtx {
                 // a binary `RightJoin` from a query, the nested `RightJoined` from a
                 // composite. Stuck while `q` is a variable or `RightJoined` is
                 // unreconciled.
-                if id.0 == ridge_types::RIGHTJOINRESULT_TYCON_ID && new_args.len() == 2 {
+                if *id == self.builtins.right_joinresult && new_args.len() == 2 {
                     if let Some(reduced) =
                         self.reduce_rightjoinresult_arg(&new_args[0], &new_args[1])
                     {
@@ -1223,7 +1244,7 @@ impl InferCtx {
                 // a binary `FullJoin` from a query, the nested `FullJoined` from a
                 // composite. Stuck while `q` is a variable or `FullJoined` is
                 // unreconciled.
-                if id.0 == ridge_types::FULLJOINRESULT_TYCON_ID && new_args.len() == 2 {
+                if *id == self.builtins.full_joinresult && new_args.len() == 2 {
                     if let Some(reduced) =
                         self.reduce_fulljoinresult_arg(&new_args[0], &new_args[1])
                     {
@@ -1234,7 +1255,7 @@ impl InferCtx {
                 // the `<Entity>Insert` companion when the entity's schema marks
                 // generated columns, the entity itself when it marks none. Stuck
                 // while `e` is a variable or carries no shape-table entry.
-                if id.0 == ridge_types::INSERTSHAPE_TYCON_ID && new_args.len() == 1 {
+                if *id == self.builtins.insert_shape && new_args.len() == 1 {
                     if let Some(reduced) = self.reduce_insert_shape_arg(&new_args[0]) {
                         return reduced;
                     }
@@ -1353,9 +1374,20 @@ impl InferCtx {
     }
 }
 
-impl Default for InferCtx {
-    fn default() -> Self {
-        Self::new()
+#[cfg(test)]
+impl InferCtx {
+    /// Scaffolding constructor for unit tests, which have no workspace to take
+    /// a handle set from.
+    ///
+    /// It interns its own built-ins, which is honest only because the arena it
+    /// interns them into is empty and stays private to the context. Gated on
+    /// `cfg(test)` so the compiler — not a review — is what keeps it out of the
+    /// compilation pipeline, where a second arena would be a second answer to a
+    /// question the workspace has already answered.
+    #[must_use]
+    pub fn for_tests() -> Self {
+        let mut arena = ridge_types::TyConArena::new();
+        Self::new(&BuiltinTyCons::allocate(&mut arena))
     }
 }
 
@@ -1374,7 +1406,7 @@ mod tests {
 
     #[test]
     fn fresh_tyvid_increments() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let v0 = ctx.fresh_tyvid();
         let v1 = ctx.fresh_tyvid();
         let v2 = ctx.fresh_tyvid();
@@ -1387,7 +1419,7 @@ mod tests {
 
     #[test]
     fn fresh_capvid_increments() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let c0 = ctx.fresh_capvid();
         let c1 = ctx.fresh_capvid();
         assert_eq!(c0, CapVid(0));
@@ -1398,7 +1430,7 @@ mod tests {
 
     #[test]
     fn shallow_resolve_unbound_var() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let v = ctx.fresh_tyvid();
         let resolved = ctx.shallow_resolve(&Type::Var(v));
         assert!(matches!(resolved, Type::Var(_)));
@@ -1408,7 +1440,7 @@ mod tests {
 
     #[test]
     fn shallow_resolve_bound_var() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let v = ctx.fresh_tyvid();
         // Bind v → Int (Con(0, []))
         let int_ty = Type::Con(cid(0), vec![]);
@@ -1421,7 +1453,7 @@ mod tests {
 
     #[test]
     fn shallow_resolve_alias_transparent() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let alias = Type::Alias {
             name: cid(7),
             body: Box::new(Type::Con(cid(0), vec![])),
@@ -1435,7 +1467,7 @@ mod tests {
 
     #[test]
     fn shallow_resolve_con_unchanged() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let t = Type::Con(cid(3), vec![]);
         let resolved = ctx.shallow_resolve(&t);
         assert!(matches!(resolved, Type::Con(TyConId(3), _)));
@@ -1445,7 +1477,7 @@ mod tests {
 
     #[test]
     fn shallow_resolve_error_unchanged() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let resolved = ctx.shallow_resolve(&Type::Error);
         assert!(matches!(resolved, Type::Error));
     }
@@ -1454,7 +1486,7 @@ mod tests {
 
     #[test]
     fn shallow_resolve_caps_unbound() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let c = ctx.fresh_capvid();
         let resolved = ctx.shallow_resolve_caps(&CapRow::Var(c));
         assert!(matches!(resolved, CapRow::Var(_)));
@@ -1464,7 +1496,7 @@ mod tests {
 
     #[test]
     fn shallow_resolve_caps_concrete() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let row = CapRow::Concrete(CapabilitySet::PURE);
         let resolved = ctx.shallow_resolve_caps(&row);
         assert_eq!(resolved, CapRow::Concrete(CapabilitySet::PURE));

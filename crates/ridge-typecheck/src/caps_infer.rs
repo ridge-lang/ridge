@@ -527,7 +527,7 @@ mod tests {
     #[test]
     fn infer_pure_fn() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // body: let x = 5; x
@@ -557,7 +557,7 @@ mod tests {
     #[test]
     fn infer_io_println() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // Bind Io.println in env.
@@ -590,7 +590,7 @@ mod tests {
     #[test]
     fn infer_fs_readfile() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         bind_mono(&mut ctx, "Fs.readFile", fs_readfile_scheme(&b).ty);
@@ -622,7 +622,7 @@ mod tests {
     #[test]
     fn infer_union_two_caps() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         bind_mono(&mut ctx, "Io.println", io_println_scheme(&b).ty);
@@ -666,7 +666,7 @@ mod tests {
     #[test]
     fn infer_send_no_cap() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // body: actor ! msg  (Send)
@@ -689,7 +689,7 @@ mod tests {
     #[test]
     fn infer_ask_time_cap() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // body: actor ?> handler  (Ask)
@@ -718,7 +718,7 @@ mod tests {
     #[test]
     fn infer_spawn_cap() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // body: spawn MyActor  (Spawn)
@@ -745,7 +745,7 @@ mod tests {
     #[test]
     fn infer_lambda_cap_isolation() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         bind_mono(&mut ctx, "Io.println", io_println_scheme(&b).ty);
@@ -795,7 +795,7 @@ mod tests {
     #[test]
     fn infer_lambda_called_propagates() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         bind_mono(&mut ctx, "Io.println", io_println_scheme(&b).ty);
@@ -825,7 +825,7 @@ mod tests {
     #[test]
     fn infer_hof_capability_polymorphism() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // Bind stdlib symbols in env.
@@ -878,7 +878,7 @@ mod tests {
     #[test]
     fn infer_pipe_caps_pure() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         bind_poly_cap(&mut ctx, "List.length", list_length_scheme(&b));
@@ -910,7 +910,7 @@ mod tests {
     #[test]
     fn infer_if_branches_union() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         bind_mono(&mut ctx, "Io.println", io_println_scheme(&b).ty);
@@ -951,7 +951,7 @@ mod tests {
     #[test]
     fn infer_match_arms_union() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         bind_mono(&mut ctx, "Io.println", io_println_scheme(&b).ty);
@@ -1018,7 +1018,7 @@ mod tests {
     #[test]
     fn infer_try_block_propagates() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         bind_mono(&mut ctx, "Io.println", io_println_scheme(&b).ty);

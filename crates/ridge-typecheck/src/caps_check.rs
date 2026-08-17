@@ -626,7 +626,7 @@ mod tests {
     #[test]
     fn pure_fn_pure_body_ok() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         let body = block_expr(vec![int_lit(1)]);
@@ -653,7 +653,7 @@ mod tests {
     #[test]
     fn pure_fn_io_body_t014() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         bind_mono(&mut ctx, "Io.println", io_println_scheme(&b));
 
@@ -690,7 +690,7 @@ mod tests {
     #[test]
     fn decl_io_body_io_ok() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         bind_mono(&mut ctx, "Io.println", io_println_scheme(&b));
 
@@ -711,7 +711,7 @@ mod tests {
     #[test]
     fn decl_io_body_io_and_fs_t014() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         bind_mono(&mut ctx, "Io.println", io_println_scheme(&b));
         bind_mono(&mut ctx, "Fs.readFile", fs_readfile_scheme(&b));
@@ -746,7 +746,7 @@ mod tests {
     #[test]
     fn caller_callee_subset_ok() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // Bind B as a fn with {io} caps.
@@ -776,7 +776,7 @@ mod tests {
     #[test]
     fn caller_callee_subset_t018() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // Bind B as a fn with {io, fs} caps.
@@ -820,7 +820,7 @@ mod tests {
     #[test]
     fn file_private_decl_skips_declared_check() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         bind_mono(&mut ctx, "Io.println", io_println_scheme(&b));
 
@@ -842,7 +842,7 @@ mod tests {
     #[test]
     fn file_private_decl_used_at_caller() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // _helper is bound in the env with {io} caps (as if computed by T13 earlier).
@@ -869,7 +869,7 @@ mod tests {
     #[test]
     fn file_private_decl_caller_insufficient_t018() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // _helper has {io} caps in the env.
@@ -903,7 +903,7 @@ mod tests {
     #[test]
     fn inner_fn_subset_t014() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // Build inner fn with {fs} declared.
@@ -940,7 +940,7 @@ mod tests {
     #[test]
     fn inner_fn_subset_ok() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         let inner_decl = FnDecl {
@@ -978,7 +978,7 @@ mod tests {
     #[test]
     fn hof_polymorphic_propagates() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // Bind Io.println with {io} caps.
@@ -1052,7 +1052,7 @@ mod tests {
     #[test]
     fn ask_requires_time_t018() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // body: actor ?> handler  (Ask)
@@ -1087,7 +1087,7 @@ mod tests {
     #[test]
     fn spawn_requires_spawn_t018() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         let body = Expr::Spawn {

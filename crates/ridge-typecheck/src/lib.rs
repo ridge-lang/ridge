@@ -1113,7 +1113,7 @@ fn typecheck_module_inner(
     use crate::stdlib_env::seed_stdlib_env;
     use crate::tycon_collect::{collect_user_tycons, prescan_inline_records};
 
-    let mut ctx = InferCtx::new();
+    let mut ctx = InferCtx::new(b);
     // Attach the resolver's NodeIdMap so infer_expr can write back per-expression
     // types. The map is stamped once during resolve and threaded in here rather
     // than rebuilt, so resolve and typecheck stay keyed by the same NodeIds.
@@ -1320,8 +1320,6 @@ fn typecheck_module_inner(
                 right_joined: right_joined_id,
                 // `FullJoined` (the nested N-ary FULL outer join) — same fallback.
                 full_joined: full_joined_id,
-                option: b.option,
-                bool: b.bool,
             });
         }
     }

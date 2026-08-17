@@ -326,7 +326,7 @@ mod tests {
         // A rigid is a constant, so it comes back as itself. Freshening it
         // would give each use of the signature's `a` its own variable, and the
         // body would be free to satisfy them one at a time.
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let scheme = Scheme::mono(Type::Fn {
             params: vec![Type::Rigid {
                 id: RigidId(0),
@@ -352,7 +352,7 @@ mod tests {
 
     #[test]
     fn instantiate_forall_a_a_to_a_produces_fresh_var() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let a = TyVid(0);
         let scheme = Scheme {
             vars: vec![a],
@@ -372,7 +372,7 @@ mod tests {
 
     #[test]
     fn instantiate_separate_calls_produce_distinct_vars() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let a = TyVid(0);
         // forall a. a -> a
         let scheme = Scheme {
@@ -412,7 +412,7 @@ mod tests {
 
     #[test]
     fn instantiate_monomorphic_scheme_unchanged() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let int = Type::Con(cid(0), vec![]);
         let scheme = Scheme::mono(int);
         let result = instantiate(&mut ctx, &scheme);
@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn instantiate_two_vars_produces_two_distinct_fresh_vars() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let a = TyVid(0);
         let b = TyVid(1);
         let scheme = Scheme {
@@ -454,7 +454,7 @@ mod tests {
 
     #[test]
     fn instantiate_cap_var_produces_fresh_capvid() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let a = TyVid(0);
         let c = CapVid(0);
         // forall a {c}. fn c a -> a
@@ -495,7 +495,7 @@ mod tests {
 
     #[test]
     fn generalise_concrete_type_returns_monomorphic() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         let int = Type::Con(cid(0), vec![]);
         let s = generalise(&mut ctx, &int);
@@ -516,7 +516,7 @@ mod tests {
 
     #[test]
     fn generalise_excludes_env_free_vars() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // Allocate ?a in the unification table.
@@ -549,7 +549,7 @@ mod tests {
 
     #[test]
     fn generalise_includes_unbound_body_vars() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         let b = ctx.fresh_tyvid();
@@ -594,7 +594,7 @@ mod tests {
 
         let mut arena = TyConArena::new();
         let b = BuiltinTyCons::allocate(&mut arena);
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // let id_fn = fn x -> x
@@ -693,7 +693,7 @@ mod tests {
 
         let mut arena = TyConArena::new();
         let b = BuiltinTyCons::allocate(&mut arena);
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // var f = fn x -> x  (monoscheme — no generalisation)
@@ -762,7 +762,7 @@ mod tests {
 
         let mut arena = TyConArena::new();
         let b = BuiltinTyCons::allocate(&mut arena);
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         let v0 = ctx.fresh_tyvid();
         let v1 = ctx.fresh_tyvid();
@@ -794,7 +794,7 @@ mod tests {
 
         let mut arena = TyConArena::new();
         let b = BuiltinTyCons::allocate(&mut arena);
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         let va = ctx.fresh_tyvid();
         let vb = ctx.fresh_tyvid();
@@ -855,7 +855,7 @@ mod tests {
 
     #[test]
     fn env_free_tyvids_collects_across_frames() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         let v0 = ctx.fresh_tyvid();
         let v1 = ctx.fresh_tyvid();
@@ -895,7 +895,7 @@ mod tests {
 
     #[test]
     fn generalise_collects_record_field_vars() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         let a = ctx.fresh_tyvid();
         let rec = Type::record(

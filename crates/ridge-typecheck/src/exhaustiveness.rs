@@ -1802,7 +1802,7 @@ mod tests {
     #[test]
     fn match_bool_exhaustive() {
         let (arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let arms = vec![bool_arm(true), bool_arm(false)];
         let scrutinee_ty = Type::Con(b.bool, vec![]);
         check_exhaustiveness(&mut ctx, &arena, &b, &scrutinee_ty, &arms, dummy_span());
@@ -1814,7 +1814,7 @@ mod tests {
     #[test]
     fn match_bool_missing_false() {
         let (arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let arms = vec![bool_arm(true)];
         let scrutinee_ty = Type::Con(b.bool, vec![]);
         check_exhaustiveness(&mut ctx, &arena, &b, &scrutinee_ty, &arms, dummy_span());
@@ -1838,7 +1838,7 @@ mod tests {
     #[test]
     fn match_option_exhaustive() {
         let (arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let arms = vec![
             ctor_arm(
                 "Some",
@@ -1859,7 +1859,7 @@ mod tests {
     #[test]
     fn match_option_missing_none() {
         let (arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let arms = vec![ctor_arm(
             "Some",
             vec![Pattern::Var {
@@ -1915,7 +1915,7 @@ mod tests {
                 },
             ],
         );
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let arms = vec![ctor_arm(
             "Circle",
             vec![Pattern::Var {
@@ -1960,7 +1960,7 @@ mod tests {
             .collect();
         let (_id, ty) = add_union(&mut arena, "Big50", variants);
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let arms = vec![ctor_arm("V0", vec![])];
         check_exhaustiveness(&mut ctx, &arena, &b, &ty, &arms, dummy_span());
 
@@ -1983,7 +1983,7 @@ mod tests {
     #[test]
     fn match_wildcard_exhaustive() {
         let (arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let arms = vec![wildcard_arm()];
         let scrutinee_ty = Type::Con(b.int, vec![]);
         check_exhaustiveness(&mut ctx, &arena, &b, &scrutinee_ty, &arms, dummy_span());
@@ -1995,7 +1995,7 @@ mod tests {
     #[test]
     fn match_redundant_arm_t017() {
         let (arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let arms = vec![wildcard_arm(), int_arm("0")];
         let scrutinee_ty = Type::Con(b.int, vec![]);
         check_exhaustiveness(&mut ctx, &arena, &b, &scrutinee_ty, &arms, dummy_span());
@@ -2012,7 +2012,7 @@ mod tests {
     #[test]
     fn match_redundant_after_specific() {
         let (arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let some_1_arm = ctor_arm(
             "Some",
             vec![Pattern::Literal {
@@ -2043,7 +2043,7 @@ mod tests {
     #[test]
     fn match_tuple_exhaustive() {
         let (arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let bool_ty = Type::Con(b.bool, vec![]);
         let scrutinee_ty = Type::Tuple(vec![bool_ty.clone(), bool_ty]);
         let arms = vec![
@@ -2077,7 +2077,7 @@ mod tests {
     #[test]
     fn match_tuple_missing() {
         let (arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let bool_ty = Type::Con(b.bool, vec![]);
         let scrutinee_ty = Type::Tuple(vec![bool_ty.clone(), bool_ty]);
         let arms = vec![tuple_arm(vec![
@@ -2105,7 +2105,7 @@ mod tests {
     #[test]
     fn match_int_literal_default_required() {
         let (arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let arms = vec![int_arm("0")];
         let scrutinee_ty = Type::Con(b.int, vec![]);
         check_exhaustiveness(&mut ctx, &arena, &b, &scrutinee_ty, &arms, dummy_span());
@@ -2117,7 +2117,7 @@ mod tests {
     #[test]
     fn match_int_literal_with_default() {
         let (arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let arms = vec![int_arm("0"), wildcard_arm()];
         let scrutinee_ty = Type::Con(b.int, vec![]);
         check_exhaustiveness(&mut ctx, &arena, &b, &scrutinee_ty, &arms, dummy_span());
@@ -2136,7 +2136,7 @@ mod tests {
             "User",
             vec![("name", text_ty), ("age", Type::Con(b.int, vec![]))],
         );
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         // Record-body constructor pattern — fields are Some(...).
         // This lifts to Wildcard in lift_pattern, so it covers everything.
         let arms = vec![record_ctor_arm("User")];
@@ -2163,7 +2163,7 @@ mod tests {
     #[test]
     fn match_guarded_variable_arms_not_redundant() {
         let (arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let arms = vec![
             with_guard(wildcard_arm()),
             with_guard(wildcard_arm()),
@@ -2181,7 +2181,7 @@ mod tests {
     #[test]
     fn match_single_guarded_arm_not_exhaustive() {
         let (arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let arms = vec![with_guard(wildcard_arm())];
         let scrutinee_ty = Type::Con(b.int, vec![]);
         check_exhaustiveness(&mut ctx, &arena, &b, &scrutinee_ty, &arms, dummy_span());
@@ -2200,7 +2200,7 @@ mod tests {
     #[test]
     fn match_guarded_arm_redundant_after_unguarded() {
         let (arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let arms = vec![bool_arm(true), with_guard(bool_arm(true)), bool_arm(false)];
         let scrutinee_ty = Type::Con(b.bool, vec![]);
         check_exhaustiveness(&mut ctx, &arena, &b, &scrutinee_ty, &arms, dummy_span());
@@ -2250,7 +2250,7 @@ mod tests {
     #[test]
     fn match_list_nil_and_cons_exhaustive() {
         let (arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let arms = vec![list_nil_arm(), cons_wildcard_arm()];
         let scrutinee_ty = make_list_ty(&b);
         check_exhaustiveness(&mut ctx, &arena, &b, &scrutinee_ty, &arms, dummy_span());
@@ -2261,7 +2261,7 @@ mod tests {
     #[test]
     fn match_list_nil_only_non_exhaustive() {
         let (arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let arms = vec![list_nil_arm()];
         let scrutinee_ty = make_list_ty(&b);
         check_exhaustiveness(&mut ctx, &arena, &b, &scrutinee_ty, &arms, dummy_span());
@@ -2277,7 +2277,7 @@ mod tests {
         use ridge_ast::pattern::ListPatElem;
 
         let (arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         // `[_, ..]` as a List node
         let list_pat = Pattern::List {
@@ -2303,7 +2303,7 @@ mod tests {
         use ridge_ast::pattern::ListPatElem;
 
         let (arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         let list_pat = Pattern::List {
             elements: vec![
@@ -2351,7 +2351,7 @@ mod tests {
     #[test]
     fn match_list_suffix_rest_plus_nil_exhaustive() {
         let (arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let arms = vec![
             list_nil_arm(),
             list_arm(list_node(vec![list_rest(), list_elem_var("last")])),
@@ -2364,7 +2364,7 @@ mod tests {
     #[test]
     fn match_list_suffix_rest_only_non_exhaustive() {
         let (arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let arms = vec![list_arm(list_node(vec![
             list_rest(),
             list_elem_var("last"),
@@ -2379,7 +2379,7 @@ mod tests {
     #[test]
     fn match_list_middle_rest_plus_nil_missing_singleton() {
         let (arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let arms = vec![
             list_nil_arm(),
             list_arm(list_node(vec![
@@ -2396,7 +2396,7 @@ mod tests {
     #[test]
     fn match_list_middle_rest_plus_nil_plus_singleton_exhaustive() {
         let (arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let arms = vec![
             list_nil_arm(),
             list_arm(list_node(vec![ListPatElem::Elem(Pattern::Wildcard {
@@ -2417,7 +2417,7 @@ mod tests {
     #[test]
     fn match_list_mixed_min_lengths_missing_singleton() {
         let (arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let arms = vec![
             list_arm(list_node(vec![
                 list_elem_var("a"),
@@ -2434,7 +2434,7 @@ mod tests {
     #[test]
     fn match_list_mixed_min_lengths_exhaustive() {
         let (arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let arms = vec![
             list_arm(list_node(vec![
                 list_elem_var("a"),

@@ -54,110 +54,6 @@ pub fn fn_tycon_arity(id: TyConId) -> Option<usize> {
     (offset < FN_ARITY_COUNT).then_some(offset)
 }
 
-/// `TyConId` of `Ret/1` — the built-in return-type extractor.
-///
-/// `Ret p` is a type-level projection that reduces to the return type of a
-/// concrete function type: `Ret (fn a -> r)` normalises to `r`. It exists so a
-/// receiver-polymorphic builder method can name "the return of the projection"
-/// in its result type (`Result (List (Ret p))`) without an associated-type
-/// family — the one place a determined function's return must flow to a result.
-/// Reserved immediately after the `Fn/N` block, so user allocation never
-/// collides; the reduction lives in unification and `deep_resolve`, and the
-/// constructor is internal (never written in surface syntax).
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "FN_ARITY_COUNT is 16 — far within u32"
-)]
-pub const RET_TYCON_ID: u32 = FN_TYCON_BASE + FN_ARITY_COUNT as u32;
-
-/// `TyConId` of `Rows/1` — the built-in row-shape extractor for the query
-/// builder's decode terminals.
-///
-/// `Rows q` is a type-level projection that reduces to the row a receiver decodes
-/// into: `Rows (Query e a)` to the entity `e`, `Rows (Join e f a)` to the pair
-/// `(e, f)`, and `Rows (LeftJoin e f a)` to `(e, Option f)`. It is the result
-/// linkage the unified `toList`/`first` use — one pair of terminals over a query,
-/// an inner join, or a left join — naming "the row of the receiver" in their result
-/// (`Result (List (Rows q))`) without an associated-type family. Unlike `Ret`,
-/// whose reduction is structural over a function type, `Rows` reduces by the
-/// receiver's own type constructor, so the reduction reads the reconciled
-/// `Query`/`Join`/`LeftJoin` ids from the inference context. Reserved immediately
-/// after `Ret/1`; the constructor is internal (never written in user surface
-/// syntax) and the reduction lives in unification and `deep_resolve`.
-pub const ROWS_TYCON_ID: u32 = RET_TYCON_ID + 1;
-
-/// `TyConId` of `JoinCond/2` — the join-condition shape extractor for the N-ary
-/// join builder.
-///
-/// `JoinCond q f` is a type-level projection that reduces to the curried
-/// condition a `joinOn` over receiver `q` adding right entity `f` accepts:
-/// `JoinCond (Query e a) f` to `e -> f -> Bool`, `JoinCond (Join e g a) f` to
-/// `e -> g -> f -> Bool`, and `JoinCond (Joined q' g a) f` to the left
-/// composite's entities followed by `g` and `f`. It lets the single `Joinable`
-/// method name "the condition over this receiver's leaves plus the new table"
-/// without an associated-type family, so the lambda's arity and per-leaf
-/// entities are fixed at compile time. Reserved immediately after `Rows/1`; the
-/// reduction reads the reconciled receiver ids from the context and lives in
-/// unification and `deep_resolve`. Internal — never written in surface syntax.
-pub const JOINCOND_TYCON_ID: u32 = ROWS_TYCON_ID + 1;
-
-/// `TyConId` of `JoinResult/2` — the result-type extractor for the N-ary join
-/// builder.
-///
-/// `JoinResult q f` reduces to the type `joinOn` produces from receiver `q` and
-/// new right entity `f`: `JoinResult (Query e a) f` to the binary `Join e f a`
-/// (the depth-2 inner join keeps its existing vocabulary), and any composite
-/// receiver (`Join`/`Joined`) to `Joined q f a`, the nested form. It lets the
-/// single `Joinable` method return the receiver-determined shape without an
-/// associated-type family. Reserved immediately after `JoinCond/2`; same
-/// reduction sites as the others. Internal — never written in surface syntax.
-pub const JOINRESULT_TYCON_ID: u32 = JOINCOND_TYCON_ID + 1;
-
-/// `TyConId` of `LeftJoinResult/2` — the LEFT outer-join result extractor.
-///
-/// `LeftJoinResult q f` reduces to the type `leftJoinOn` produces from receiver
-/// `q` and the new right entity `f`: a binary `LeftJoin e f a` from a query, the
-/// nested `LeftJoined q f a` from a composite. Reserved immediately after
-/// `JoinResult/2`; same reduction sites. Internal — never written in surface
-/// syntax.
-pub const LEFTJOINRESULT_TYCON_ID: u32 = JOINRESULT_TYCON_ID + 1;
-
-/// `TyConId` of `RightJoinResult/2` — the RIGHT outer-join result extractor.
-///
-/// `RightJoinResult q f` reduces to the type `rightJoinOn` produces from receiver
-/// `q` and the new right entity `f`: a binary `RightJoin e f a` from a query, the
-/// nested `RightJoined q f a` from a composite. Reserved immediately after
-/// `LeftJoinResult/2`; same reduction sites. Internal — never written in surface
-/// syntax.
-pub const RIGHTJOINRESULT_TYCON_ID: u32 = LEFTJOINRESULT_TYCON_ID + 1;
-
-/// `TyConId` of `FullJoinResult/2` — the FULL outer-join result extractor.
-///
-/// `FullJoinResult q f` reduces to the type `fullJoinOn` produces from receiver
-/// `q` and the new right entity `f`: a binary `FullJoin e f a` from a query, the
-/// nested `FullJoined q f a` from a composite. Reserved immediately after
-/// `RightJoinResult/2`; same reduction sites. Internal — never written in surface
-/// syntax.
-pub const FULLJOINRESULT_TYCON_ID: u32 = RIGHTJOINRESULT_TYCON_ID + 1;
-
-/// `TyConId` of `InsertShape/1` — the insert-input shape extractor.
-///
-/// `InsertShape e` reduces to the record a typed insert accepts for entity `e`:
-/// the entity minus its database-generated columns. For an entity whose schema
-/// marks generated columns (a serial/identity `id`, a `DEFAULT` column) it
-/// reduces to a synthesized companion record `<Entity>Insert` carrying only the
-/// caller-supplied fields, so writing a generated column by hand is a
-/// compile-time type error; for an entity with none it reduces to the entity
-/// itself, so an insert of such an entity is unchanged (backward-compatible).
-/// Unlike the receiver-driven `Rows`/`JoinResult` projections, this one is
-/// **invertible**: a stuck `InsertShape ?e` unified against a concrete companion
-/// recovers and binds `?e` to that companion's entity, so the entity flows from
-/// the repository argument or the shaped value in either order. Reserved
-/// immediately after `FullJoinResult/2`; the reduction reads the per-entity
-/// shape table from the context and lives in unification and `deep_resolve`.
-/// Internal — never written in user surface syntax (the stdlib names it).
-pub const INSERTSHAPE_TYCON_ID: u32 = FULLJOINRESULT_TYCON_ID + 1;
-
 /// The arena/dictionary name of the synthetic `Fn/arity` constructor.
 ///
 /// Returns `"Fn0"`, `"Fn1"`, … . This name is the bridge that keeps the
@@ -174,7 +70,7 @@ pub fn fn_tycon_name(arity: usize) -> String {
 /// `#[non_exhaustive]` so that adding a new built-in (e.g. in 0.2.0) is
 /// non-breaking for downstream match sites.
 #[non_exhaustive]
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct BuiltinTyCons {
     /// `Int` — 64-bit signed integer (D029).
     pub int: TyConId,
@@ -292,45 +188,43 @@ pub struct BuiltinTyCons {
     pub fns: [TyConId; FN_ARITY_COUNT],
     /// `Ret/1` — the return-type extractor. `Ret p` reduces to the return of a
     /// concrete function `p`. Internal: it appears only in Rust-seeded schemes,
-    /// never in surface syntax. See [`RET_TYCON_ID`].
+    /// never in surface syntax.
     pub ret: TyConId,
     /// `Rows/1` — the row-shape extractor for the decode terminals. `Rows q`
     /// reduces to the row a query/join receiver decodes into. Internal; the
-    /// reduction reads the reconciled receiver ids from the context. See
-    /// [`ROWS_TYCON_ID`].
+    /// reduction reads the reconciled receiver ids from the context.
     pub rows: TyConId,
     /// `JoinCond/2` — the join-condition shape extractor. `JoinCond q f` reduces
     /// to the curried condition `joinOn` accepts over receiver `q` and new right
     /// entity `f`. Internal; the reduction reads the reconciled receiver ids from
-    /// the context. See [`JOINCOND_TYCON_ID`].
+    /// the context.
     pub joincond: TyConId,
     /// `JoinResult/2` — the join-result extractor. `JoinResult q f` reduces to the
     /// type `joinOn` produces from receiver `q` and new right entity `f` (a binary
     /// `Join` from a query, the nested `Joined` from a composite). Internal; the
-    /// reduction reads the reconciled receiver ids from the context. See
-    /// [`JOINRESULT_TYCON_ID`].
+    /// reduction reads the reconciled receiver ids from the context.
     pub joinresult: TyConId,
     /// `LeftJoinResult/2` — the LEFT outer-join result extractor. `LeftJoinResult
     /// q f` reduces to the type `leftJoinOn` produces from receiver `q` and the
     /// new right entity `f` (a binary `LeftJoin` from a query, the nested
     /// `LeftJoined` from a composite). Internal; the reduction reads the
-    /// reconciled receiver ids from the context. See [`LEFTJOINRESULT_TYCON_ID`].
+    /// reconciled receiver ids from the context.
     pub left_joinresult: TyConId,
     /// `RightJoinResult/2` — the RIGHT outer-join result extractor. `RightJoinResult
     /// q f` reduces to the type `rightJoinOn` produces (a binary `RightJoin` from a
     /// query, the nested `RightJoined` from a composite). Internal; reads the
-    /// reconciled receiver ids from the context. See [`RIGHTJOINRESULT_TYCON_ID`].
+    /// reconciled receiver ids from the context.
     pub right_joinresult: TyConId,
     /// `FullJoinResult/2` — the FULL outer-join result extractor. `FullJoinResult q
     /// f` reduces to the type `fullJoinOn` produces (a binary `FullJoin` from a
     /// query, the nested `FullJoined` from a composite). Internal; reads the
-    /// reconciled receiver ids from the context. See [`FULLJOINRESULT_TYCON_ID`].
+    /// reconciled receiver ids from the context.
     pub full_joinresult: TyConId,
     /// `InsertShape/1` — the insert-input shape extractor. `InsertShape e`
     /// reduces to the record a typed insert accepts for `e` — the entity minus
     /// its database-generated columns (a synthesized `<Entity>Insert` companion,
     /// or `e` itself when none). Internal; the reduction reads the per-entity
-    /// shape table from the context and is invertible. See [`INSERTSHAPE_TYCON_ID`].
+    /// shape table from the context and is invertible.
     pub insert_shape: TyConId,
     /// `Decimal` — an arbitrary-precision base-10 number. A primitive like
     /// `Int`/`Float`, but interned last (id 51) so the historical 0..50 index
@@ -1492,8 +1386,8 @@ impl BuiltinTyCons {
             });
         }
 
-        // Ret/1 — the return-type extractor, interned right after the Fn/N block
-        // (RET_TYCON_ID = 43). Unlike the Fn dispatch keys it IS applied as
+        // Ret/1 — the return-type extractor, interned right after the Fn/N
+        // block. Unlike the Fn dispatch keys it IS applied as
         // `Type::Con(ret, [p])`, so its arity is 1; the reduction `Ret (fn .. -> r)
         // -> r` lives in the unifier and `deep_resolve`.
         let ret = arena.intern(TyConDecl {
@@ -1508,7 +1402,7 @@ impl BuiltinTyCons {
         });
 
         // Rows/1 — the row-shape extractor for the decode terminals, interned
-        // right after Ret/1 (ROWS_TYCON_ID = 44). Applied as `Type::Con(rows, [q])`;
+        // right after Ret/1. Applied as `Type::Con(rows, [q])`;
         // the reduction `Rows (Query e a) -> e` (and the join shapes) lives in the
         // unifier and `deep_resolve`, keyed on the receiver's reconciled tycon.
         let rows = arena.intern(TyConDecl {
@@ -1523,7 +1417,7 @@ impl BuiltinTyCons {
         });
 
         // JoinCond/2 — the join-condition shape extractor, interned right after
-        // Rows/1 (JOINCOND_TYCON_ID = 45). Applied as `Type::Con(joincond, [q, f])`;
+        // Rows/1. Applied as `Type::Con(joincond, [q, f])`;
         // the reduction `JoinCond (Query e a) f -> e -> f -> Bool` (and the
         // composite shapes) lives in the unifier and `deep_resolve`, keyed on the
         // receiver's reconciled tycon.
@@ -1539,7 +1433,7 @@ impl BuiltinTyCons {
         });
 
         // JoinResult/2 — the join-result extractor, interned right after
-        // JoinCond/2 (JOINRESULT_TYCON_ID = 46). Applied as
+        // JoinCond/2. Applied as
         // `Type::Con(joinresult, [q, f])`; the reduction `JoinResult (Query e a) f
         // -> Join e f a` (binary) and `JoinResult <composite> f -> Joined …` lives
         // in the unifier and `deep_resolve`, keyed on the receiver's reconciled
@@ -1556,7 +1450,7 @@ impl BuiltinTyCons {
         });
 
         // LeftJoinResult/2 — the LEFT outer-join result extractor, interned right
-        // after JoinResult/2 (LEFTJOINRESULT_TYCON_ID = 47). Applied as
+        // after JoinResult/2. Applied as
         // `Type::Con(left_joinresult, [q, f])`; the reduction `LeftJoinResult
         // (Query e a) f -> LeftJoin e f a` (binary) and `LeftJoinResult <composite>
         // f -> LeftJoined …` lives in the unifier and `deep_resolve`, keyed on the
@@ -1573,7 +1467,7 @@ impl BuiltinTyCons {
         });
 
         // RightJoinResult/2 — the RIGHT outer-join result extractor, interned right
-        // after LeftJoinResult/2 (RIGHTJOINRESULT_TYCON_ID = 48). Applied as
+        // after LeftJoinResult/2. Applied as
         // `Type::Con(right_joinresult, [q, f])`; the reduction `RightJoinResult
         // (Query e a) f -> RightJoin e f a` (binary) and `RightJoinResult <composite>
         // f -> RightJoined …` lives in the unifier and `deep_resolve`.
@@ -1589,7 +1483,7 @@ impl BuiltinTyCons {
         });
 
         // FullJoinResult/2 — the FULL outer-join result extractor, interned right
-        // after RightJoinResult/2 (FULLJOINRESULT_TYCON_ID = 49). Applied as
+        // after RightJoinResult/2. Applied as
         // `Type::Con(full_joinresult, [q, f])`; the reduction `FullJoinResult
         // (Query e a) f -> FullJoin e f a` (binary) and `FullJoinResult <composite> f
         // -> FullJoined …` lives in the unifier and `deep_resolve`.
@@ -1605,7 +1499,7 @@ impl BuiltinTyCons {
         });
 
         // InsertShape/1 — the insert-input shape extractor, interned right after
-        // FullJoinResult/2 (INSERTSHAPE_TYCON_ID = 50). Applied as
+        // FullJoinResult/2. Applied as
         // `Type::Con(insert_shape, [e])`; the reduction `InsertShape e -> <Entity>Insert`
         // (or `-> e` when the entity has no generated columns) lives in the unifier
         // and `deep_resolve`, keyed on the per-entity shape table, and is invertible.
@@ -1816,29 +1710,21 @@ impl BuiltinTyCons {
         debug_assert_eq!(fns[0].0, FN_TYCON_BASE);
         debug_assert_eq!(fns[0].0, 27);
         debug_assert_eq!(fns[FN_ARITY_COUNT - 1].0, 42);
-        // Ret/1 sits immediately after the Fn/N block (RET_TYCON_ID = 43).
-        debug_assert_eq!(ret.0, RET_TYCON_ID);
+        // Ret/1 sits immediately after the Fn/N block.
         debug_assert_eq!(ret.0, 43);
-        // Rows/1 sits immediately after Ret/1 (ROWS_TYCON_ID = 44).
-        debug_assert_eq!(rows.0, ROWS_TYCON_ID);
+        // Rows/1 sits immediately after Ret/1.
         debug_assert_eq!(rows.0, 44);
-        // JoinCond/2 sits immediately after Rows/1 (JOINCOND_TYCON_ID = 45).
-        debug_assert_eq!(joincond.0, JOINCOND_TYCON_ID);
+        // JoinCond/2 sits immediately after Rows/1.
         debug_assert_eq!(joincond.0, 45);
-        // JoinResult/2 sits immediately after JoinCond/2 (JOINRESULT_TYCON_ID = 46).
-        debug_assert_eq!(joinresult.0, JOINRESULT_TYCON_ID);
+        // JoinResult/2 sits immediately after JoinCond/2.
         debug_assert_eq!(joinresult.0, 46);
-        // LeftJoinResult/2 sits right after JoinResult/2 (LEFTJOINRESULT_TYCON_ID = 47).
-        debug_assert_eq!(left_joinresult.0, LEFTJOINRESULT_TYCON_ID);
+        // LeftJoinResult/2 sits right after JoinResult/2.
         debug_assert_eq!(left_joinresult.0, 47);
-        // RightJoinResult/2 sits right after it (RIGHTJOINRESULT_TYCON_ID = 48).
-        debug_assert_eq!(right_joinresult.0, RIGHTJOINRESULT_TYCON_ID);
+        // RightJoinResult/2 sits right after it.
         debug_assert_eq!(right_joinresult.0, 48);
-        // FullJoinResult/2 sits right after it (FULLJOINRESULT_TYCON_ID = 49).
-        debug_assert_eq!(full_joinresult.0, FULLJOINRESULT_TYCON_ID);
+        // FullJoinResult/2 sits right after it.
         debug_assert_eq!(full_joinresult.0, 49);
-        // InsertShape/1 sits right after FullJoinResult/2 (INSERTSHAPE_TYCON_ID = 50).
-        debug_assert_eq!(insert_shape.0, INSERTSHAPE_TYCON_ID);
+        // InsertShape/1 sits right after FullJoinResult/2.
         debug_assert_eq!(insert_shape.0, 50);
         // Decimal, Uuid, Bytes, Date and Time are interned last so they do not
         // disturb the 0..50 layout.

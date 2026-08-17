@@ -2247,11 +2247,11 @@ mod tests {
                 &["x", "y"],
                 "expected field names [x, y], got {field_names:?}"
             );
-            // Int fields resolve to TyConId(0).
+            let b = make_builtins();
             assert_eq!(
                 field_tycons,
-                &[Some(TyConId(0)), Some(TyConId(0))],
-                "Int fields must resolve to TyConId(0): {field_tycons:?}"
+                &[Some(b.int), Some(b.int)],
+                "Int fields must resolve to Int: {field_tycons:?}"
             );
         } else {
             panic!(
@@ -3463,7 +3463,7 @@ mod tests {
         } = &generated[0].method_body
         {
             assert_eq!(field_name, "cents");
-            assert_eq!(*inner_tycon, TyConId(0), "inner Int");
+            assert_eq!(*inner_tycon, make_builtins().int, "inner Int");
             assert_eq!(inner_type_name, "Int");
             let names: Vec<&str> = methods.iter().map(|m| m.name.as_str()).collect();
             assert_eq!(names, ["toSql", "fromSql"]);

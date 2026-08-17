@@ -1558,7 +1558,9 @@ mod tests {
 
     fn make_ctx_with_builtins(arena: &mut TyConArena) -> (BuiltinTyCons, InferCtx) {
         let b = BuiltinTyCons::allocate(arena);
-        let mut ctx = InferCtx::new();
+        // The context takes its handles from this arena, not a private one, so
+        // they agree with the decls copied in on the next line.
+        let mut ctx = InferCtx::new(&b);
         ctx.tycon_decls = arena.all().to_vec();
         (b, ctx)
     }

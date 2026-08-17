@@ -1902,11 +1902,12 @@ mod tests {
         });
 
         let m = module_with_items(vec![decimal_to_text]);
+        let b = make_builtins();
         let result = collect_workspace(
             &[(0, &m)],
             &rustc_hash::FxHashMap::default(),
             &TyConOrigins::default(),
-            &make_builtins(),
+            &b,
         );
 
         let has_t034 = result.errors.iter().any(|e| e.code() == "T034");
@@ -1919,7 +1920,7 @@ mod tests {
         // auto-promotion — proof the seed ran and the promotion was skipped.
         let inst = result
             .instance_env
-            .get((TOTEXT_CLASS, TyConId(51)))
+            .get((TOTEXT_CLASS, b.decimal))
             .expect("prelude seeds ToText Decimal");
         assert_eq!(
             inst.origin,

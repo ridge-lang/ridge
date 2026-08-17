@@ -1862,7 +1862,7 @@ fn is_joincond_quote_param(ctx: &mut InferCtx, t: &Type) -> bool {
     let Some(inner) = args.first() else {
         return false;
     };
-    matches!(ctx.deep_resolve(inner), Type::Con(id, _) if id.0 == ridge_types::JOINCOND_TYCON_ID)
+    matches!(ctx.deep_resolve(inner), Type::Con(id, _) if id == ctx.builtins.joincond)
 }
 
 /// Give an open quote parameter (`Quote p` with `p` still a bare variable) a
@@ -2593,7 +2593,7 @@ mod tests {
     #[test]
     fn infer_literal_int() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let lit = Expr::Literal(Literal::IntDec {
             raw: "42".to_string(),
             span: dummy_span(),
@@ -2609,7 +2609,7 @@ mod tests {
     #[test]
     fn infer_literal_float() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let lit = Expr::Literal(Literal::Float {
             raw: "3.14".to_string(),
             span: dummy_span(),
@@ -2622,7 +2622,7 @@ mod tests {
     #[test]
     fn infer_literal_bool() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let lit = Expr::Literal(Literal::Bool {
             value: true,
             span: dummy_span(),
@@ -2635,7 +2635,7 @@ mod tests {
     #[test]
     fn infer_literal_text() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let lit = Expr::Literal(Literal::Text {
             raw: r#""hello""#.to_string(),
             span: dummy_span(),
@@ -2649,7 +2649,7 @@ mod tests {
     #[test]
     fn infer_literal_int_hex() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let lit = Expr::Literal(Literal::IntHex {
             raw: "0xFF".to_string(),
             span: dummy_span(),
@@ -2686,7 +2686,7 @@ mod tests {
     #[test]
     fn infer_binary_int_add_ok() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let ty = infer_expr(&mut ctx, &b, &binary(BinOp::Add, lit_int(1), lit_int(2)));
         assert!(matches!(ty, Type::Con(id, _) if id == b.int));
         assert!(ctx.errors.is_empty(), "got: {:?}", ctx.errors);
@@ -2695,7 +2695,7 @@ mod tests {
     #[test]
     fn infer_binary_text_concat_ok() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let ty = infer_expr(
             &mut ctx,
             &b,
@@ -2708,7 +2708,7 @@ mod tests {
     #[test]
     fn infer_binary_text_add_rejected_t052() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let ty = infer_expr(
             &mut ctx,
             &b,
@@ -2724,7 +2724,7 @@ mod tests {
     #[test]
     fn infer_binary_bool_sub_rejected_t052() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let true_lit = || {
             Expr::Literal(Literal::Bool {
                 value: true,
@@ -2743,7 +2743,7 @@ mod tests {
     #[test]
     fn infer_binary_unresolved_var_not_rejected() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         let x_var = ctx.fresh_tyvid();
         ctx.env
@@ -2760,7 +2760,7 @@ mod tests {
     #[test]
     fn infer_ident_local() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let int_ty = Type::Con(b.int, vec![]);
         ctx.env.push_frame();
         ctx.env.bind("x".to_string(), Scheme::mono(int_ty));
@@ -2778,7 +2778,7 @@ mod tests {
         let b = make_builtins();
         // List.map : ∀ a b c. (fn c (a -> b)) -> List a -> List b
         let scheme = lookup_stdlib_by_segments(&b, "List", "map").expect("List.map must exist");
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         let t1 = instantiate(&mut ctx, &scheme);
         let t2 = instantiate(&mut ctx, &scheme);
@@ -2814,7 +2814,7 @@ mod tests {
         let b = make_builtins();
         let scheme =
             lookup_stdlib_by_segments(&b, "List", "length").expect("List.length must exist");
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let ty = instantiate(&mut ctx, &scheme);
         // List.length : List a -> Int — result is a Fn type.
         assert!(
@@ -2829,7 +2829,7 @@ mod tests {
     #[test]
     fn infer_lambda_identity() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         // fn x -> x
         let x_pat = Pattern::Var {
@@ -2871,7 +2871,7 @@ mod tests {
     #[test]
     fn infer_lambda_call_unifies_param() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // fn x -> x
@@ -2913,7 +2913,7 @@ mod tests {
     #[test]
     fn infer_let_then_apply_to_int() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // let f = fn x -> x
@@ -2973,7 +2973,7 @@ mod tests {
     #[test]
     fn infer_if_branches_unify() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         let cond = Expr::Literal(Literal::Bool {
@@ -3008,7 +3008,7 @@ mod tests {
     fn infer_match_arms_unify() {
         use ridge_ast::MatchArm;
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         let scrutinee = Expr::Literal(Literal::IntDec {
@@ -3059,7 +3059,7 @@ mod tests {
     #[test]
     fn infer_call_arity_mismatch_fires_t003() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // fn x -> x — unary
@@ -3102,7 +3102,7 @@ mod tests {
     #[test]
     fn an_over_applied_call_names_the_callee() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // `add : Int -> Int -> Int`, called with three arguments.
@@ -3151,7 +3151,7 @@ mod tests {
     #[test]
     fn a_tuple_of_the_wrong_width_is_not_an_arity_mismatch() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         let int = || Type::Con(b.int, vec![]);
@@ -3204,7 +3204,7 @@ mod tests {
     #[test]
     fn infer_call_param_type_mismatch_names_the_argument() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // Bind `neg` as Int -> Int
@@ -3245,7 +3245,7 @@ mod tests {
     #[test]
     fn a_partial_application_also_names_the_argument() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // `add : Int -> Int -> Int`, supplied one Text argument.
@@ -3287,7 +3287,7 @@ mod tests {
     #[test]
     fn infer_return_unifies_with_enclosing_fn_ret() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // Set the enclosing fn return type to Int.
@@ -3316,7 +3316,7 @@ mod tests {
     #[test]
     fn infer_return_outside_fn_no_error() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // current_fn_ret is None (outside any fn).
@@ -3341,7 +3341,7 @@ mod tests {
     #[test]
     fn infer_pattern_wildcard() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         let int_ty = Type::Con(b.int, vec![]);
         let pat = Pattern::Wildcard { span: dummy_span() };
@@ -3358,7 +3358,7 @@ mod tests {
     #[test]
     fn infer_pattern_ident_binds() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         let int_ty = Type::Con(b.int, vec![]);
         let pat = Pattern::Var {
@@ -3378,7 +3378,7 @@ mod tests {
     #[test]
     fn infer_pattern_literal_unifies() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         let int_ty = Type::Con(b.int, vec![]);
         let pat = Pattern::Literal {
@@ -3398,7 +3398,7 @@ mod tests {
     #[test]
     fn infer_pattern_literal_mismatch_names_both_sides() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         let text_ty = Type::Con(b.text, vec![]);
         let pat = Pattern::Literal {
@@ -3425,7 +3425,7 @@ mod tests {
     #[test]
     fn infer_pattern_tuple() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         let int_ty = Type::Con(b.int, vec![]);
         let text_ty = Type::Con(b.text, vec![]);
@@ -3458,7 +3458,7 @@ mod tests {
     #[test]
     fn infer_block_returns_last_stmt_type() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         let block = ridge_ast::Block {
@@ -3484,7 +3484,7 @@ mod tests {
     #[test]
     fn infer_block_empty_unit() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let block = ridge_ast::Block {
             stmts: vec![],
             span: dummy_span(),
@@ -3501,7 +3501,7 @@ mod tests {
         use ridge_ast::{FnDecl, PrimitiveType, Visibility};
 
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // inner fn add (x: Int) -> Int = x
@@ -3551,7 +3551,7 @@ mod tests {
     #[test]
     fn infer_assign_returns_unit() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // Bind `x` as Int
@@ -3579,7 +3579,7 @@ mod tests {
     #[test]
     fn infer_var_mutable_binding() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         let var_expr = Expr::Var {
@@ -3606,7 +3606,7 @@ mod tests {
     #[test]
     fn env_inner_scope_hides_outer() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         ctx.env.push_frame();
         ctx.env
@@ -3632,7 +3632,7 @@ mod tests {
     #[test]
     fn infer_tuple_expr() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         let tup = Expr::Tuple {
@@ -3667,7 +3667,7 @@ mod tests {
     #[test]
     fn infer_list_homogeneous() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         let list = Expr::List {
@@ -3706,7 +3706,7 @@ mod tests {
     #[test]
     fn t3_literal_node_type_written() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let sp = Span::new(0, 2);
         ctx.node_id_map = Some(make_node_id_map_for_expr(sp));
 
@@ -3733,7 +3733,7 @@ mod tests {
     #[test]
     fn t3_ident_node_type_written() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let sp = Span::new(0, 3);
         ctx.node_id_map = Some(make_node_id_map_for_expr(sp));
         ctx.env.push_frame();
@@ -3763,7 +3763,7 @@ mod tests {
     fn t3_call_node_type_written() {
         use ridge_ast::Span;
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         // Set up: fn_span for callee, arg_span for arg, call_span for the call.
         let fn_span = Span::new(0, 3);
@@ -3821,7 +3821,7 @@ mod tests {
     #[test]
     fn t3_if_node_type_written() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         let cond_sp = Span::new(0, 4);
         let then_sp = Span::new(5, 6);
@@ -3879,7 +3879,7 @@ mod tests {
     fn t3_match_node_type_written() {
         use ridge_ast::{MatchArm, Pattern};
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         let scrut_sp = Span::new(0, 4);
         let arm_sp = Span::new(5, 6);
@@ -3938,7 +3938,7 @@ mod tests {
     #[test]
     fn t3_lambda_node_type_written() {
         let b = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         let param_sp = Span::new(0, 1);
         let body_sp = Span::new(2, 3);

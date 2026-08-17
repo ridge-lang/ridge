@@ -1459,7 +1459,7 @@ mod tests {
     #[test]
     fn typecheck_module_decls_identity_generalised() {
         let (_, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // identity body: n
@@ -1505,7 +1505,7 @@ mod tests {
     #[test]
     fn typecheck_module_decls_mutually_recursive_no_errors() {
         let (_, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         let even_body = Expr::Call {
@@ -1546,7 +1546,7 @@ mod tests {
     #[test]
     fn typecheck_module_decls_single_non_recursive() {
         let (_, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         let body = Expr::Literal(Literal::IntDec {
@@ -1587,7 +1587,7 @@ mod tests {
 
     #[test]
     fn unsolved_type_variable_t023_fires() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // Allocate a fresh TyVid, never unify it.
@@ -1679,7 +1679,7 @@ mod tests {
     #[test]
     fn t4_mono_fn_scheme_populated() {
         let (arena, b) = make_builtins();
-        let mut ctx = crate::ctx::InferCtx::new();
+        let mut ctx = crate::ctx::InferCtx::for_tests();
 
         // The body literal lives at [5,7); we stamp that as NodeKind::Expr.
         // The decl span [0,10) is NOT stamped — T4 keys by body span, not decl span.
@@ -1726,7 +1726,7 @@ mod tests {
     #[test]
     fn t4_polymorphic_fn_scheme_populated() {
         let (arena, b) = make_builtins();
-        let mut ctx = crate::ctx::InferCtx::new();
+        let mut ctx = crate::ctx::InferCtx::for_tests();
 
         let decl_span = Span::new(0, 10);
         let param_span = Span::new(5, 6);
@@ -1791,7 +1791,7 @@ mod tests {
     #[test]
     fn t4_let_bound_local_not_in_schemes() {
         let (arena, b) = make_builtins();
-        let mut ctx = crate::ctx::InferCtx::new();
+        let mut ctx = crate::ctx::InferCtx::for_tests();
 
         // Use span [0, 10) for the decl (matches make_fn_decl_at("foo", 0, ...)).
         let decl_span = Span::new(0, 10);

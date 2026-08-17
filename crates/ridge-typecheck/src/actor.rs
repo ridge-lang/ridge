@@ -1057,7 +1057,7 @@ mod tests {
         let (mut arena, b) = make_builtins();
         let counter_id = register_counter(&mut arena, &b);
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         bind_actor_handle(&mut ctx, "counter", counter_id);
 
@@ -1090,7 +1090,7 @@ mod tests {
         let (mut arena, b) = make_builtins();
         let counter_id = register_counter(&mut arena, &b);
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         bind_actor_handle(&mut ctx, "counter", counter_id);
 
@@ -1127,7 +1127,7 @@ mod tests {
         let (mut arena, b) = make_builtins();
         let counter_id = register_counter(&mut arena, &b);
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         bind_actor_handle(&mut ctx, "counter", counter_id);
 
@@ -1152,7 +1152,7 @@ mod tests {
     fn send_on_non_actor_t020() {
         let (arena, b) = make_builtins();
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // 42 ! foo
@@ -1174,7 +1174,7 @@ mod tests {
         let (mut arena, b) = make_builtins();
         let counter_id = register_counter(&mut arena, &b);
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         bind_actor_handle(&mut ctx, "counter", counter_id);
 
@@ -1203,7 +1203,7 @@ mod tests {
         let (mut arena, b) = make_builtins();
         let counter_id = register_counter(&mut arena, &b);
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         bind_actor_handle(&mut ctx, "counter", counter_id);
 
@@ -1237,7 +1237,7 @@ mod tests {
     fn ask_on_non_actor_t021() {
         let (arena, b) = make_builtins();
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // 42 ?> foo
@@ -1259,7 +1259,7 @@ mod tests {
         let (mut arena, b) = make_builtins();
         let counter_id = register_counter(&mut arena, &b);
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // spawn Counter 0   (Counter has init: Int)
@@ -1289,7 +1289,7 @@ mod tests {
         let (mut arena, b) = make_builtins();
         let logger_id = register_logger(&mut arena, &b);
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // spawn Logger   (Logger has no init)
@@ -1318,7 +1318,7 @@ mod tests {
         let (mut arena, b) = make_builtins();
         let _logger_id = register_logger(&mut arena, &b);
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // spawn Logger 1 2   (Logger has no init, but we pass 2 args)
@@ -1351,7 +1351,7 @@ mod tests {
         let (mut arena, b) = make_builtins();
         let _counter_id = register_counter(&mut arena, &b);
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // spawn Counter   (Counter requires Int arg)
@@ -1383,7 +1383,7 @@ mod tests {
         let (mut arena, b) = make_builtins();
         let _counter_id = register_counter(&mut arena, &b);
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // spawn Counter "hi"   (Counter requires Int, we pass Text)
@@ -1552,7 +1552,7 @@ mod tests {
         let (mut arena, b) = make_builtins();
         let counter_id = register_counter(&mut arena, &b);
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         bind_actor_handle(&mut ctx, "counter", counter_id);
 
@@ -1600,7 +1600,7 @@ mod tests {
         let (mut arena, b) = make_builtins();
         let _counter_id = register_counter(&mut arena, &b);
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // body: spawn Counter 0
@@ -1634,7 +1634,7 @@ mod tests {
         let (mut arena, b) = make_builtins();
         let counter_id = register_counter(&mut arena, &b);
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         bind_actor_handle(&mut ctx, "counter", counter_id);
 
@@ -1683,7 +1683,7 @@ mod tests {
         let (mut arena, b) = make_builtins();
         let counter_id = register_counter(&mut arena, &b);
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // child Counter (0)   (Counter has init: Int)
@@ -1711,7 +1711,7 @@ mod tests {
         let (mut arena, b) = make_builtins();
         let logger_id = register_logger(&mut arena, &b);
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // child Logger   (Logger has no init; no parens)
@@ -1737,7 +1737,7 @@ mod tests {
         let (mut arena, b) = make_builtins();
         let _logger_id = register_logger(&mut arena, &b);
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // child Logger (1, 2)   (Logger has no init, but we pass 2 args)
@@ -1768,7 +1768,7 @@ mod tests {
         let (mut arena, b) = make_builtins();
         let _counter_id = register_counter(&mut arena, &b);
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // child Counter ()   (Counter requires Int arg)
@@ -1798,7 +1798,7 @@ mod tests {
         let (mut arena, b) = make_builtins();
         let _counter_id = register_counter(&mut arena, &b);
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // child Counter ("hi")   (Counter requires Int, we pass Text)
@@ -1818,7 +1818,7 @@ mod tests {
 
         let (_arena, b) = make_builtins();
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // body: child Counter (0) — pure value construction, unlike spawn.
@@ -1884,13 +1884,13 @@ mod tests {
         let (mut arena, b) = make_builtins();
         let counter_id = register_counter(&mut arena, &b);
         let ask_error_id = {
-            let mut ctx_probe = InferCtx::new();
+            let mut ctx_probe = InferCtx::for_tests();
             let id = register_ask_error(&mut arena, &mut ctx_probe);
             drop(ctx_probe);
             id
         };
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         ctx.tycon_decls = arena.all().to_vec();
         bind_actor_handle(&mut ctx, "counter", counter_id);
@@ -1929,13 +1929,13 @@ mod tests {
         let (mut arena, b) = make_builtins();
         let counter_id = register_counter(&mut arena, &b);
         let ask_error_id = {
-            let mut ctx_probe = InferCtx::new();
+            let mut ctx_probe = InferCtx::for_tests();
             let id = register_ask_error(&mut arena, &mut ctx_probe);
             drop(ctx_probe);
             id
         };
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         ctx.tycon_decls = arena.all().to_vec();
         bind_actor_handle(&mut ctx, "counter", counter_id);
@@ -1972,7 +1972,7 @@ mod tests {
     #[test]
     fn tryask_non_tryask_callee_not_detected() {
         let (_arena, b) = make_builtins();
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // A same-named user function is not the compiler-known symbol.
@@ -1989,11 +1989,11 @@ mod tests {
     fn tryask_unknown_handler_t015() {
         let (mut arena, b) = make_builtins();
         let counter_id = register_counter(&mut arena, &b);
-        let mut ctx_probe = InferCtx::new();
+        let mut ctx_probe = InferCtx::for_tests();
         let _ = register_ask_error(&mut arena, &mut ctx_probe);
         drop(ctx_probe);
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         ctx.tycon_decls = arena.all().to_vec();
         bind_actor_handle(&mut ctx, "counter", counter_id);
@@ -2018,11 +2018,11 @@ mod tests {
     #[test]
     fn tryask_on_non_actor_t021() {
         let (mut arena, b) = make_builtins();
-        let mut ctx_probe = InferCtx::new();
+        let mut ctx_probe = InferCtx::for_tests();
         let _ = register_ask_error(&mut arena, &mut ctx_probe);
         drop(ctx_probe);
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         ctx.tycon_decls = arena.all().to_vec();
         bind_tryask_callee(&mut ctx, "tryAsk", Type::Con(b.unit, vec![]));
@@ -2044,13 +2044,13 @@ mod tests {
         let (mut arena, b) = make_builtins();
         let counter_id = register_counter(&mut arena, &b);
         let ask_error_id = {
-            let mut ctx_probe = InferCtx::new();
+            let mut ctx_probe = InferCtx::for_tests();
             let id = register_ask_error(&mut arena, &mut ctx_probe);
             drop(ctx_probe);
             id
         };
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         ctx.tycon_decls = arena.all().to_vec();
         bind_actor_handle(&mut ctx, "counter", counter_id);
@@ -2089,11 +2089,11 @@ mod tests {
     fn tryask_payload_type_mismatch_t001() {
         let (mut arena, b) = make_builtins();
         let counter_id = register_counter(&mut arena, &b);
-        let mut ctx_probe = InferCtx::new();
+        let mut ctx_probe = InferCtx::for_tests();
         let _ = register_ask_error(&mut arena, &mut ctx_probe);
         drop(ctx_probe);
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         ctx.tycon_decls = arena.all().to_vec();
         bind_actor_handle(&mut ctx, "counter", counter_id);
@@ -2127,11 +2127,11 @@ mod tests {
     fn tryask_wrong_arity_t003() {
         let (mut arena, b) = make_builtins();
         let counter_id = register_counter(&mut arena, &b);
-        let mut ctx_probe = InferCtx::new();
+        let mut ctx_probe = InferCtx::for_tests();
         let _ = register_ask_error(&mut arena, &mut ctx_probe);
         drop(ctx_probe);
 
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
         ctx.tycon_decls = arena.all().to_vec();
         bind_actor_handle(&mut ctx, "counter", counter_id);

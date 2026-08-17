@@ -851,15 +851,20 @@ mod tests {
         )
     }
 
-    /// Build a `TyConArena` + `BuiltinTyCons`, then intern a record `TyCon`.
-    /// Returns (arena, builtins, `user_tycon_id`).
-    fn make_arena_with_record(
-        name: &str,
-        schema: RecordSchema,
-    ) -> (TyConArena, BuiltinTyCons, TyConId) {
+    /// Build a `TyConArena` and its `BuiltinTyCons`, then intern a record
+    /// `TyCon` whose schema the caller builds from those handles.
+    ///
+    /// Split in two because a field schema that says "Text" has to name the
+    /// same `Text` the inference will infer for a text literal, so the handles
+    /// have to exist before the schema does.
+    fn make_arena() -> (TyConArena, BuiltinTyCons) {
         let mut arena = TyConArena::new();
         let b = BuiltinTyCons::allocate(&mut arena);
-        let tycon_id = arena.intern(TyConDecl {
+        (arena, b)
+    }
+
+    fn intern_record(arena: &mut TyConArena, name: &str, schema: RecordSchema) -> TyConId {
+        arena.intern(TyConDecl {
             id: TyConId(0), // will be overwritten by intern
             name: name.to_string(),
             #[expect(
@@ -872,8 +877,7 @@ mod tests {
             def_module_raw: None,
             opaque: false,
             is_anon: false,
-        });
-        (arena, b, tycon_id)
+        })
     }
 
     // ── Test 1: bare ctor happy path ──────────────────────────────────────────
@@ -881,12 +885,13 @@ mod tests {
 
     #[test]
     fn t1_bare_ctor_happy_path_user() {
+        let (mut arena, b) = make_arena();
         let schema = make_schema(&[
-            ("name", Type::Con(TyConId(3), vec![])), // Text placeholder
-            ("age", Type::Con(TyConId(0), vec![])),  // Int placeholder
+            ("name", Type::Con(b.text, vec![])),
+            ("age", Type::Con(b.int, vec![])),
         ]);
-        let (arena, b, user_id) = make_arena_with_record("User", schema.clone());
-        let mut ctx = InferCtx::new();
+        let user_id = intern_record(&mut arena, "User", schema.clone());
+        let mut ctx = InferCtx::new(&b);
         ctx.env.push_frame();
 
         let fields = vec![
@@ -916,11 +921,10 @@ mod tests {
 
     #[test]
     fn t2_qualified_ctor_happy_path_response() {
-        let schema = make_schema(&[
-            ("status", Type::Con(TyConId(0), vec![])), // Int placeholder
-        ]);
-        let (arena, b, resp_id) = make_arena_with_record("Response", schema.clone());
-        let mut ctx = InferCtx::new();
+        let (mut arena, b) = make_arena();
+        let schema = make_schema(&[("status", Type::Con(b.int, vec![]))]);
+        let resp_id = intern_record(&mut arena, "Response", schema.clone());
+        let mut ctx = InferCtx::new(&b);
         ctx.env.push_frame();
 
         let fields = vec![fi("status", Some(int_lit("200")))];
@@ -944,12 +948,13 @@ mod tests {
 
     #[test]
     fn t3_missing_field_emits_t004() {
+        let (mut arena, b) = make_arena();
         let schema = make_schema(&[
-            ("name", Type::Con(TyConId(3), vec![])),
-            ("age", Type::Con(TyConId(0), vec![])),
+            ("name", Type::Con(b.text, vec![])),
+            ("age", Type::Con(b.int, vec![])),
         ]);
-        let (arena, b, user_id) = make_arena_with_record("User", schema.clone());
-        let mut ctx = InferCtx::new();
+        let user_id = intern_record(&mut arena, "User", schema.clone());
+        let mut ctx = InferCtx::new(&b);
         ctx.env.push_frame();
 
         // Only provide `name`, omit `age`.
@@ -966,9 +971,10 @@ mod tests {
 
     #[test]
     fn t4_unknown_field_emits_t005_with_suggestion() {
-        let schema = make_schema(&[("name", Type::Con(TyConId(3), vec![]))]);
-        let (arena, b, user_id) = make_arena_with_record("User", schema.clone());
-        let mut ctx = InferCtx::new();
+        let (mut arena, b) = make_arena();
+        let schema = make_schema(&[("name", Type::Con(b.text, vec![]))]);
+        let user_id = intern_record(&mut arena, "User", schema.clone());
+        let mut ctx = InferCtx::new(&b);
         ctx.env.push_frame();
 
         // Provide `nme` (typo of `name`) plus the required `name`.
@@ -1003,9 +1009,10 @@ mod tests {
     #[test]
     fn t5_field_type_mismatch_emits_t001() {
         // `age` is declared as Int but supplied as Text.
-        let schema = make_schema(&[("age", Type::Con(TyConId(0), vec![]))]);
-        let (arena, b, user_id) = make_arena_with_record("User", schema.clone());
-        let mut ctx = InferCtx::new();
+        let (mut arena, b) = make_arena();
+        let schema = make_schema(&[("age", Type::Con(b.int, vec![]))]);
+        let user_id = intern_record(&mut arena, "User", schema.clone());
+        let mut ctx = InferCtx::new(&b);
         ctx.env.push_frame();
 
         // Supply `age = "not-a-number"` (Text, not Int).
@@ -1023,9 +1030,10 @@ mod tests {
 
     #[test]
     fn t6_field_access_happy_path() {
-        let schema = make_schema(&[("name", Type::Con(TyConId(3), vec![]))]);
-        let (arena, b, user_id) = make_arena_with_record("User", schema);
-        let mut ctx = InferCtx::new();
+        let (mut arena, b) = make_arena();
+        let schema = make_schema(&[("name", Type::Con(b.text, vec![]))]);
+        let user_id = intern_record(&mut arena, "User", schema);
+        let mut ctx = InferCtx::new(&b);
 
         let base_ty = Type::Con(user_id, vec![]);
         let field = id("name");
@@ -1036,9 +1044,9 @@ mod tests {
             "expected no errors; got {:?}",
             ctx.errors
         );
-        // Should be Text (TyConId(3) in our placeholder schema).
+        // Should be Text, the type the schema declares for `name`.
         assert!(
-            matches!(ty, Type::Con(TyConId(3), _)),
+            matches!(ty, Type::Con(id, _) if id == b.text),
             "expected Text (TyConId 3), got {ty:?}"
         );
     }
@@ -1047,9 +1055,10 @@ mod tests {
 
     #[test]
     fn t7_field_access_unknown_field_emits_t005() {
-        let schema = make_schema(&[("name", Type::Con(TyConId(3), vec![]))]);
-        let (arena, b, user_id) = make_arena_with_record("User", schema);
-        let mut ctx = InferCtx::new();
+        let (mut arena, b) = make_arena();
+        let schema = make_schema(&[("name", Type::Con(b.text, vec![]))]);
+        let user_id = intern_record(&mut arena, "User", schema);
+        let mut ctx = InferCtx::new(&b);
 
         let base_ty = Type::Con(user_id, vec![]);
         let field = id("nme"); // typo
@@ -1065,7 +1074,7 @@ mod tests {
     fn t8_field_access_on_non_record_emits_t054() {
         let mut arena = TyConArena::new();
         let b = BuiltinTyCons::allocate(&mut arena);
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
 
         // Use Int as the base type — definitely not a record.
         let base_ty = Type::Con(b.int, vec![]);
@@ -1085,12 +1094,13 @@ mod tests {
 
     #[test]
     fn t9_with_update_happy_path() {
+        let (mut arena, b) = make_arena();
         let schema = make_schema(&[
-            ("name", Type::Con(TyConId(3), vec![])),
-            ("age", Type::Con(TyConId(0), vec![])),
+            ("name", Type::Con(b.text, vec![])),
+            ("age", Type::Con(b.int, vec![])),
         ]);
-        let (arena, b, user_id) = make_arena_with_record("User", schema);
-        let mut ctx = InferCtx::new();
+        let user_id = intern_record(&mut arena, "User", schema);
+        let mut ctx = InferCtx::new(&b);
         ctx.env.push_frame();
 
         let base_ty = Type::Con(user_id, vec![]);
@@ -1115,7 +1125,7 @@ mod tests {
     fn t10_with_update_on_non_record_emits_t006() {
         let mut arena = TyConArena::new();
         let b = BuiltinTyCons::allocate(&mut arena);
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
 
         // Use Int as base — not a record.
@@ -1132,9 +1142,10 @@ mod tests {
 
     #[test]
     fn t11_with_update_unknown_field_emits_t005() {
-        let schema = make_schema(&[("age", Type::Con(TyConId(0), vec![]))]);
-        let (arena, b, user_id) = make_arena_with_record("User", schema);
-        let mut ctx = InferCtx::new();
+        let (mut arena, b) = make_arena();
+        let schema = make_schema(&[("age", Type::Con(b.int, vec![]))]);
+        let user_id = intern_record(&mut arena, "User", schema);
+        let mut ctx = InferCtx::new(&b);
         ctx.env.push_frame();
 
         let base_ty = Type::Con(user_id, vec![]);
@@ -1154,6 +1165,7 @@ mod tests {
         // type Box a = { value: a }
         // Box { value = 42 } → Box Int (fresh var resolved to Int)
         let a = TyVid(0);
+        let (mut arena, b) = make_arena();
         let schema = RecordSchema::new(
             vec![a],
             vec![RecordField {
@@ -1161,8 +1173,8 @@ mod tests {
                 ty: Type::Var(a),
             }],
         );
-        let (arena, b, box_id) = make_arena_with_record("Box", schema.clone());
-        let mut ctx = InferCtx::new();
+        let box_id = intern_record(&mut arena, "Box", schema.clone());
+        let mut ctx = InferCtx::new(&b);
         ctx.env.push_frame();
 
         let fields = vec![fi("value", Some(int_lit("42")))];
@@ -1203,12 +1215,13 @@ mod tests {
     /// `User { name, .. }` — shorthand binds `name`; `..` allows omitting `age`.
     #[test]
     fn record_pattern_rest_binds_named_field() {
+        let (mut arena, b) = make_arena();
         let schema = make_schema(&[
-            ("name", Type::Con(TyConId(3), vec![])),
-            ("age", Type::Con(TyConId(0), vec![])),
+            ("name", Type::Con(b.text, vec![])),
+            ("age", Type::Con(b.int, vec![])),
         ]);
-        let (arena, b, user_id) = make_arena_with_record("User", schema.clone());
-        let mut ctx = InferCtx::new();
+        let user_id = intern_record(&mut arena, "User", schema.clone());
+        let mut ctx = InferCtx::new(&b);
         ctx.env.push_frame();
         let fields = vec![fp_short("name")];
         let expected = Type::Var(ctx.fresh_tyvid());
@@ -1239,12 +1252,13 @@ mod tests {
     /// `User { name, age }` — all fields named, no `..` → exhaustive, no errors.
     #[test]
     fn record_pattern_all_fields_no_rest_ok() {
+        let (mut arena, b) = make_arena();
         let schema = make_schema(&[
-            ("name", Type::Con(TyConId(3), vec![])),
-            ("age", Type::Con(TyConId(0), vec![])),
+            ("name", Type::Con(b.text, vec![])),
+            ("age", Type::Con(b.int, vec![])),
         ]);
-        let (arena, b, user_id) = make_arena_with_record("User", schema.clone());
-        let mut ctx = InferCtx::new();
+        let user_id = intern_record(&mut arena, "User", schema.clone());
+        let mut ctx = InferCtx::new(&b);
         ctx.env.push_frame();
         let fields = vec![fp_short("name"), fp_short("age")];
         let expected = Type::Var(ctx.fresh_tyvid());
@@ -1271,9 +1285,10 @@ mod tests {
     /// `User { nope, .. }` — unknown field name reported.
     #[test]
     fn record_pattern_unknown_field_reported() {
-        let schema = make_schema(&[("name", Type::Con(TyConId(3), vec![]))]);
-        let (arena, b, user_id) = make_arena_with_record("User", schema.clone());
-        let mut ctx = InferCtx::new();
+        let (mut arena, b) = make_arena();
+        let schema = make_schema(&[("name", Type::Con(b.text, vec![]))]);
+        let user_id = intern_record(&mut arena, "User", schema.clone());
+        let mut ctx = InferCtx::new(&b);
         ctx.env.push_frame();
         let fields = vec![fp_short("nope")];
         let expected = Type::Var(ctx.fresh_tyvid());
@@ -1302,12 +1317,13 @@ mod tests {
     /// `User { name }` without `..` on a 2-field record → missing `age`.
     #[test]
     fn record_pattern_missing_field_without_rest() {
+        let (mut arena, b) = make_arena();
         let schema = make_schema(&[
-            ("name", Type::Con(TyConId(3), vec![])),
-            ("age", Type::Con(TyConId(0), vec![])),
+            ("name", Type::Con(b.text, vec![])),
+            ("age", Type::Con(b.int, vec![])),
         ]);
-        let (arena, b, user_id) = make_arena_with_record("User", schema.clone());
-        let mut ctx = InferCtx::new();
+        let user_id = intern_record(&mut arena, "User", schema.clone());
+        let mut ctx = InferCtx::new(&b);
         ctx.env.push_frame();
         let fields = vec![fp_short("name")];
         let expected = Type::Var(ctx.fresh_tyvid());
@@ -1337,7 +1353,7 @@ mod tests {
 
     #[test]
     fn structural_field_access_returns_field_type() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let mut arena = TyConArena::new();
         let b = BuiltinTyCons::allocate(&mut arena);
         let rec = Type::record(
@@ -1354,7 +1370,7 @@ mod tests {
 
     #[test]
     fn structural_field_access_unknown_field_errors() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let mut arena = TyConArena::new();
         let b = BuiltinTyCons::allocate(&mut arena);
         let rec = Type::record(
@@ -1369,7 +1385,7 @@ mod tests {
 
     #[test]
     fn structural_with_present_field_unifies_and_returns_base() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let mut arena = TyConArena::new();
         let b = BuiltinTyCons::allocate(&mut arena);
         let rec = Type::record(
@@ -1384,7 +1400,7 @@ mod tests {
 
     #[test]
     fn structural_with_unknown_field_errors() {
-        let mut ctx = InferCtx::new();
+        let mut ctx = InferCtx::for_tests();
         let mut arena = TyConArena::new();
         let b = BuiltinTyCons::allocate(&mut arena);
         let rec = Type::record(

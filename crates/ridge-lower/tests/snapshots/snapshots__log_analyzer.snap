@@ -633,7 +633,7 @@ items:
             args:
               -
                 Construct(n186):
-                  ctor: Ctor(Record:$synth_dict_compare owner=0)
+                  ctor: Ctor(Record:$synth_dict_compare owner=none)
                   fields:
                     compare:
                       Lambda(n187):

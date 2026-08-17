@@ -48,7 +48,7 @@ items:
               args:
                 -
                   Construct(n10):
-                    ctor: Ctor(Record:$synth_dict_encode owner=0)
+                    ctor: Ctor(Record:$synth_dict_encode owner=none)
                     fields:
                       encode:
                         Lambda(n11):
@@ -80,7 +80,7 @@ items:
         ty: Error
     body:
       Construct(n17):
-        ctor: Ctor(Record:$inst_Encode_Box owner=0)
+        ctor: Ctor(Record:$inst_Encode_Box owner=none)
         fields:
           encode:
             Lambda(n18):
@@ -121,7 +121,7 @@ items:
         ty: Error
     body:
       Construct(n31):
-        ctor: Ctor(Record:$inst_Decode_Box owner=0)
+        ctor: Ctor(Record:$inst_Decode_Box owner=none)
         fields:
           decode:
             Lambda(n32):

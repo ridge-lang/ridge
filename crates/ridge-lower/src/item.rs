@@ -391,8 +391,10 @@ fn synth_bool(ctx: &mut LowerCtx<'_>, b: bool, span: ridge_ast::Span) -> IrExpr 
 }
 
 /// Synthesize a record-construction IR expression (codegen lowers it to a
-/// `MapLit`). `owner_type` is irrelevant for records — codegen reads only
-/// `ctor_kind` — so a placeholder id is used, matching the instance-dict path.
+/// `MapLit`). These records are synthesized, not declared, so they have no
+/// owning type — the same as the instance-dict path. Codegen reads the owner to
+/// decide whether the value carries a `__ridge_v` identity tag, and an unowned
+/// record correctly gets none.
 fn synth_record(
     ctx: &mut LowerCtx<'_>,
     name: &str,
@@ -403,7 +405,7 @@ fn synth_record(
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
             ctor_kind: CtorKind::Record,
-            owner_type: ridge_types::TyConId(0),
+            owner_type: None,
             name: name.to_owned(),
             variant: 0,
         },
@@ -725,8 +727,8 @@ pub fn lower_instance(ctx: &mut LowerCtx<'_>, decl: &InstanceDecl) -> Vec<IrItem
         id,
         ctor: SymbolRef::Constructor {
             ctor_kind: CtorKind::Record,
-            // TyConId(0) is a placeholder — dicts are untyped in the IR.
-            owner_type: ridge_types::TyConId(0),
+            // Dicts are untyped in the IR — no declared type owns them.
+            owner_type: None,
             name: dict_name.clone(),
             variant: 0,
         },
@@ -1052,7 +1054,7 @@ pub fn lower_derived_instance(
                         })
                         .collect();
                     let pat = build_union_variant_bind_pat(
-                        derived.key.1,
+                        Some(derived.key.1),
                         ctor_name,
                         binds,
                         field_names.as_deref(),
@@ -1162,7 +1164,7 @@ pub fn lower_derived_instance(
                         })
                         .collect();
                     let pat = build_union_variant_bind_pat(
-                        derived.key.1,
+                        Some(derived.key.1),
                         ctor_name,
                         args,
                         field_names.as_deref(),
@@ -1269,7 +1271,7 @@ pub fn lower_derived_instance(
             id: ctx.fresh_id(None),
             ctor: SymbolRef::Constructor {
                 ctor_kind: CtorKind::Record,
-                owner_type: ridge_types::TyConId(0),
+                owner_type: None,
                 name: dict_name.clone(),
                 variant: 0,
             },
@@ -1343,7 +1345,7 @@ pub fn lower_derived_instance(
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
             ctor_kind: CtorKind::Record,
-            owner_type: ridge_types::TyConId(0),
+            owner_type: None,
             name: dict_name.clone(),
             variant: 0,
         },
@@ -1486,7 +1488,7 @@ fn build_delegated_instance(
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
             ctor_kind: CtorKind::Record,
-            owner_type: ridge_types::TyConId(0),
+            owner_type: None,
             name: dict_name.clone(),
             variant: 0,
         },
@@ -1598,7 +1600,7 @@ fn wrap_newtype(
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
             ctor_kind: CtorKind::Record,
-            owner_type: newtype_tycon,
+            owner_type: Some(newtype_tycon),
             name: type_name.to_string(),
             variant: 0,
         },
@@ -1700,7 +1702,7 @@ fn build_ord_record_body(ctx: &mut LowerCtx<'_>, field_names: &[String], sp: Spa
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
             ctor_kind: CtorKind::UnionVariant,
-            owner_type: ridge_types::TyConId(15), // Ordering
+            owner_type: ctx.builtins().map(|b| b.ordering),
             name: name.to_string(),
             variant,
         },
@@ -1842,7 +1844,7 @@ fn build_ord_union_body(
             id: ctx.fresh_id(None),
             ctor: SymbolRef::Constructor {
                 ctor_kind: CtorKind::UnionVariant,
-                owner_type: ridge_types::TyConId(15),
+                owner_type: ctx.builtins().map(|b| b.ordering),
                 name: "Equal".to_string(),
                 variant: 1,
             },
@@ -1855,7 +1857,7 @@ fn build_ord_union_body(
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
             ctor_kind: CtorKind::UnionVariant,
-            owner_type: ridge_types::TyConId(15),
+            owner_type: ctx.builtins().map(|b| b.ordering),
             name: name.to_string(),
             variant: v,
         },
@@ -1874,8 +1876,13 @@ fn build_ord_union_body(
                     span: sp,
                 })
                 .collect();
-            let a_pat =
-                build_union_variant_bind_pat(owner_tycon, ctor_i, a_args, field_i.as_deref(), sp);
+            let a_pat = build_union_variant_bind_pat(
+                Some(owner_tycon),
+                ctor_i,
+                a_args,
+                field_i.as_deref(),
+                sp,
+            );
 
             let inner_arms: Vec<IrArm> = variants
                 .iter()
@@ -1889,7 +1896,7 @@ fn build_ord_union_body(
                         })
                         .collect();
                     let b_pat = build_union_variant_bind_pat(
-                        owner_tycon,
+                        Some(owner_tycon),
                         ctor_j,
                         b_args,
                         field_j.as_deref(),
@@ -2052,7 +2059,7 @@ fn build_to_text_record_body(
 /// `{'Ctor', #{f0 => …}}` runtime shape that construction and matching use.
 /// Shared by every union derive (`ToText`, `Ord`, `Encode`, `Decode`).
 fn build_union_variant_bind_pat(
-    owner_type: ridge_types::TyConId,
+    owner_type: Option<ridge_types::TyConId>,
     ctor_name: &str,
     binds: Vec<ridge_ir::IrPat>,
     field_names: Option<&[String]>,
@@ -2106,7 +2113,7 @@ fn build_union_variant_bind_pat(
 /// `Decode` when reassembling a variant from decoded fields.
 fn build_union_variant_construct(
     ctx: &mut LowerCtx<'_>,
-    owner_type: ridge_types::TyConId,
+    owner_type: Option<ridge_types::TyConId>,
     ctor_name: &str,
     values: Vec<IrExpr>,
     field_names: Option<&[String]>,
@@ -2249,7 +2256,7 @@ fn build_ord_payload_body(
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
             ctor_kind: CtorKind::UnionVariant,
-            owner_type: ridge_types::TyConId(15), // Ordering
+            owner_type: ctx.builtins().map(|b| b.ordering),
             name: name.to_string(),
             variant,
         },
@@ -3105,15 +3112,14 @@ fn build_result_variant_object(
 
 /// Build a `Construct(Prelude{Err}, [("$0", record{code, message})])`.
 ///
-/// Error records use `TyConId(12)` (the builtin `Error` type) and lower to an
-/// Erlang atom-keyed map `#{ code => B, message => B }` (expr.rs:836-851).
+/// Error records are owned by the builtin `Error` type and lower to an
+/// Erlang atom-keyed map `#{ code => B, message => B }`.
 fn build_decode_error(ctx: &mut LowerCtx<'_>, code: &str, message: String, sp: Span) -> IrExpr {
-    use ridge_types::TyConId;
     let err_record = IrExpr::Construct {
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
             ctor_kind: CtorKind::Record,
-            owner_type: TyConId(12), // Error = builtin TyConId(12)
+            owner_type: ctx.builtins().map(|b| b.error),
             name: "Error".to_string(),
             variant: 0,
         },
@@ -4389,7 +4395,7 @@ fn build_decode_record_body(
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
             ctor_kind: CtorKind::Record,
-            owner_type: tycon,
+            owner_type: Some(tycon),
             name: type_name.to_string(),
             variant: 0,
         },
@@ -4571,7 +4577,7 @@ fn build_from_row_record_body(
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
             ctor_kind: CtorKind::Record,
-            owner_type: tycon,
+            owner_type: Some(tycon),
             name: type_name.to_string(),
             variant: 0,
         },
@@ -4917,14 +4923,14 @@ fn schema_builder_call(ctx: &mut LowerCtx<'_>, name: &str, args: Vec<IrExpr>, sp
 
 /// Build a nullary `std.schema` union value (a `DbType` or `Generation`
 /// constructor) for the synthesized body. Codegen lowers a zero-payload
-/// `UnionVariant` construct to a bare atom, so `owner_type`/`variant` are
-/// placeholders — the same convention the record-construct helpers use.
+/// `UnionVariant` construct to a bare atom, and these values are synthesized
+/// rather than declared, so there is no owning type to name.
 fn schema_union_value(ctx: &mut LowerCtx<'_>, ctor: &str, sp: Span) -> IrExpr {
     IrExpr::Construct {
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
             ctor_kind: CtorKind::UnionVariant,
-            owner_type: ridge_types::TyConId(0),
+            owner_type: None,
             name: ctor.to_string(),
             variant: 0,
         },
@@ -5040,7 +5046,7 @@ fn build_schema_instance(
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
             ctor_kind: CtorKind::Record,
-            owner_type: ridge_types::TyConId(0),
+            owner_type: None,
             name: dict_name.clone(),
             variant: 0,
         },
@@ -5144,7 +5150,7 @@ fn build_row_instance(
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
             ctor_kind: CtorKind::Record,
-            owner_type: ridge_types::TyConId(0),
+            owner_type: None,
             name: dict_name.clone(),
             variant: 0,
         },
@@ -5460,7 +5466,7 @@ fn build_decode_union_body(
                 id: ctx.fresh_id(None),
                 ctor: SymbolRef::Constructor {
                     ctor_kind: CtorKind::UnionVariant,
-                    owner_type: tycon,
+                    owner_type: Some(tycon),
                     name: (*ctor_name).to_string(),
                     variant: 0,
                 },
@@ -5815,7 +5821,7 @@ fn build_union_payload_ctor_body(
         })
         .collect();
     let ctor_val =
-        build_union_variant_construct(ctx, tycon, ctor_name, dec_values, field_names, sp);
+        build_union_variant_construct(ctx, Some(tycon), ctor_name, dec_values, field_names, sp);
     let ok_ctor = build_ok(ctor_val, sp);
 
     // Sequence payload decodes innermost-first.

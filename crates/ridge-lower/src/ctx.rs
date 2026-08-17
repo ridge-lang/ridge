@@ -401,6 +401,22 @@ impl<'tw> LowerCtx<'tw> {
             .unwrap_or(CapabilitySet::PURE)
     }
 
+    /// The built-in type-constructor handles, as the arena interned them.
+    ///
+    /// This is the only way lowering may name a built-in. Neither of the
+    /// alternatives works: a written-down id assumes the arena's layout, which
+    /// is the coupling being removed, and [`Self::lookup_tycon_by_name`] keeps
+    /// the *last* declaration for a name — user types are interned after the
+    /// built-ins, so a user type called `Ordering` would shadow the real one and
+    /// the lookup would hand back a user id without a word.
+    ///
+    /// `None` when no workspace is attached, which is the case for the
+    /// hand-built contexts in unit tests.
+    #[must_use]
+    pub fn builtins(&self) -> Option<&'tw ridge_types::BuiltinTyCons> {
+        self.workspace.map(|ws| &ws.builtins)
+    }
+
     /// Looks up a `TyConId` by name from the workspace's tycon list.
     ///
     /// On the first call the lookup builds a name→`TyConId` cache from
@@ -408,9 +424,8 @@ impl<'tw> LowerCtx<'tw> {
     /// for subsequent O(1) queries.  If no workspace is attached, or no matching
     /// tycon is found, returns `None`.
     ///
-    /// The fallback at each call site is `TyConId(0)` (which is `Int` for the
-    /// built-in arena), documented at each use so that snapshot output makes the
-    /// miss visible.
+    /// Only for *user* types, where the last-wins behaviour of the cache is the
+    /// intended one. Built-ins go through [`Self::builtins`].
     #[must_use]
     pub fn lookup_tycon_by_name(&mut self, name: &str) -> Option<TyConId> {
         let ws = self.workspace?;
@@ -667,8 +682,8 @@ impl<'tw> LowerCtx<'tw> {
     /// source name → [`LowerCtx::lookup_tycon_by_name`] → `TyConId`.
     ///
     /// Returns `None` on any failure (missing symbol table, out-of-bounds
-    /// `SymbolId`, or no matching tycon name). Callers fall back to
-    /// `TyConId(0)` exactly as today — no behavioural regression. // OQ-PHASE45-007
+    /// `SymbolId`, or no matching tycon name), which callers carry through as
+    /// a constructor with no owner.
     #[must_use]
     pub fn lookup_constructor_tycon(&mut self, owner_type: SymbolId) -> Option<TyConId> {
         let table = self.symbol_table?;
@@ -848,8 +863,8 @@ mod tests {
 
     // B-ctx-3: lookup_constructor_tycon returns None when symbol_table is absent.
     //
-    // Defensive fallback: without the symbol table the method returns None so
-    // callers fall back to TyConId(0).
+    // Without the symbol table there is nothing to resolve against, so the
+    // method returns None and the constructor ends up with no owner.
     #[test]
     fn lookup_constructor_tycon_none_without_symbol_table() {
         let mut ctx = LowerCtx::new(ModuleId(0), &[]);

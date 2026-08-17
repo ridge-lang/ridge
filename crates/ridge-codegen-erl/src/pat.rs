@@ -224,7 +224,6 @@ mod tests {
     use ridge_ast::Span;
     use ridge_ir::{CtorKind, IrLit, IrPat, SymbolRef};
     use ridge_resolve::ModuleId;
-    use ridge_types::TyConId;
 
     fn sp() -> Span {
         Span::point(0)
@@ -331,7 +330,7 @@ mod tests {
         let pat = IrPat::Ctor {
             sym: SymbolRef::Constructor {
                 ctor_kind: CtorKind::Record,
-                owner_type: TyConId(0),
+                owner_type: None,
                 name: "User".into(),
                 variant: 0,
             },
@@ -367,7 +366,7 @@ mod tests {
         let pat = IrPat::Ctor {
             sym: SymbolRef::Constructor {
                 ctor_kind: CtorKind::UnionVariant,
-                owner_type: TyConId(1),
+                owner_type: None,
                 name: "Info".into(),
                 variant: 0,
             },
@@ -387,7 +386,7 @@ mod tests {
         let pat = IrPat::Ctor {
             sym: SymbolRef::Constructor {
                 ctor_kind: CtorKind::UnionVariant,
-                owner_type: TyConId(2),
+                owner_type: None,
                 name: "Pair".into(),
                 variant: 0,
             },

@@ -282,7 +282,6 @@ mod tests {
     use ridge_ast::Span;
     use ridge_ir::{CtorKind, SymbolRef};
     use ridge_resolve::ModuleId;
-    use ridge_types::TyConId;
 
     fn sp() -> Span {
         Span::point(0)
@@ -483,7 +482,7 @@ mod tests {
         // §4.3: Constructor used as a zero-arg value → bare atom.
         let sym = SymbolRef::Constructor {
             ctor_kind: CtorKind::UnionVariant,
-            owner_type: TyConId(0),
+            owner_type: None,
             name: "None".into(),
             variant: 0,
         };

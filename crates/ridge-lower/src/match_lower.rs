@@ -31,8 +31,8 @@
 //! `SymbolId` is translated to a `TyConId` via
 //! `LowerCtx::lookup_constructor_tycon`, which reads the per-module `SymbolTable`
 //! to find the owner type's source name and then resolves it through
-//! `lookup_tycon_by_name`. Falls back to `TyConId(0)` when the symbol table or
-//! workspace is absent. // OQ-PHASE45-007
+//! `lookup_tycon_by_name`. With no symbol table or workspace the pattern
+//! carries no owner.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![cfg_attr(
@@ -943,10 +943,10 @@ pub fn lower_pattern_full(ctx: &mut LowerCtx<'_>, pat: &Pattern) -> IrPat {
         //
         // The anonymous TyConId is taken from the scrutinee's inferred type recorded
         // in `node_types` by the typecheck pass.  When the node-type table is absent
-        // (unit-test scaffolding), we fall back to `TyConId(0)` — the IR is still
-        // structurally correct even if the id is wrong.
+        // (unit-test scaffolding) the pattern has no owner, and the IR is still
+        // structurally correct without one.
         Pattern::Record { fields, span, .. } => {
-            let anon_id: TyConId = ctx
+            let anon_id: Option<TyConId> = ctx
                 .node_id_map
                 .as_ref()
                 .and_then(|m| m.get(*span, NodeKind::Expr))
@@ -957,16 +957,15 @@ pub fn lower_pattern_full(ctx: &mut LowerCtx<'_>, pat: &Pattern) -> IrPat {
                     } else {
                         None
                     }
-                })
-                .unwrap_or(TyConId(0));
+                });
 
-            let anon_name = ctx
-                .workspace
-                .and_then(|ws| ws.tycons.get(anon_id.0 as usize))
-                .map_or_else(
-                    || format!("{{anon record #{}}}", anon_id.0),
-                    |d| d.name.clone(),
-                );
+            // Only the record's own decl may name it. With no id there is
+            // nothing to look up, and naming it after whatever the arena
+            // happens to hold at the front is how these patterns came out
+            // labelled `Int`.
+            let anon_name = anon_id
+                .and_then(|id| ctx.workspace.and_then(|ws| ws.tycons.get(id.0 as usize)))
+                .map_or_else(|| "{anon record}".to_string(), |d| d.name.clone());
 
             let ir_fields: Vec<(String, IrPat)> = fields
                 .iter()
@@ -1112,10 +1111,10 @@ fn qexpr_variant(name: &str) -> Option<u32> {
 /// defensive `L999` and returns `IrPat::Wild { span }` so the surrounding
 /// tree remains structurally valid.
 ///
-/// OQ-PHASE45-007: `owner_type` is now resolved via
-/// `LowerCtx::lookup_constructor_tycon(owner_sym_id)` which translates the
-/// resolve-layer `SymbolId` to a `TyConId` via the symbol table. Falls back
-/// to `TyConId(0)` when the symbol table or workspace is absent (defensive).
+/// `owner_type` is resolved via
+/// `LowerCtx::lookup_constructor_tycon(owner_sym_id)`, which translates the
+/// resolve-layer `SymbolId` to a `TyConId` via the symbol table. With no
+/// symbol table or workspace the pattern carries no owner.
 #[allow(
     clippy::too_many_lines,
     reason = "flat constructor-binding dispatch; the arms read best in one place"
@@ -1144,11 +1143,10 @@ fn lower_constructor_pattern(
             is_record,
             ..
         }) => {
-            // OQ-PHASE45-007: resolve SymbolId → TyConId via lookup_constructor_tycon.
-            // Falls back to TyConId(0) when the symbol table or workspace is absent.
-            let tycon_id = ctx
-                .lookup_constructor_tycon(*owner_sym_id)
-                .unwrap_or(TyConId(0));
+            // Resolve the resolver's `SymbolId` to the arena's `TyConId`. With no
+            // symbol table or workspace there is nothing to resolve against, and
+            // the pattern carries no owner.
+            let tycon_id = ctx.lookup_constructor_tycon(*owner_sym_id);
 
             // Record-payload union variant pattern `Login { userId, .. }`:
             // runtime shape `{'Login', #{userId := U, ..}}`. Nest a Record (map)
@@ -1223,7 +1221,7 @@ fn lower_constructor_pattern(
                 return IrPat::Ctor {
                     sym: SymbolRef::Constructor {
                         ctor_kind: CtorKind::UnionVariant,
-                        owner_type: TyConId(25), // QExpr
+                        owner_type: ctx.builtins().map(|b| b.q_expr),
                         name: prelude_name,
                         variant,
                     },
@@ -1261,7 +1259,7 @@ fn lower_constructor_pattern(
                         return IrPat::Ctor {
                             sym: SymbolRef::Constructor {
                                 ctor_kind: CtorKind::UnionVariant,
-                                owner_type,
+                                owner_type: Some(owner_type),
                                 name: prelude_name,
                                 variant,
                             },
@@ -1852,10 +1850,10 @@ mod tests {
 
         let ir_pat = lower_pattern_full(&mut ctx, &ctor_pat);
 
-        // OQ-PHASE45-007: no error emitted — lookup_constructor_tycon falls
-        // back to TyConId(0) silently when the symbol table is absent.
-        // Previously an L999 / OQ-L013 placeholder error was emitted; that
-        // behaviour was removed when the SymbolId→TyConId mapping was wired.
+        // No error emitted: without a symbol table there is no owner to
+        // resolve, and a constructor without one is not a lowering failure.
+        // An L999 placeholder error used to fire here; it went away when the
+        // SymbolId-to-TyConId mapping was wired.
         assert!(
             ctx.errors.is_empty(),
             "expected no errors after wiring; got: {:?}",
@@ -1883,8 +1881,8 @@ mod tests {
                     } => {
                         assert_eq!(name, "Some");
                         assert_eq!(variant, 0);
-                        // Without a workspace the fallback TyConId(0) is used.
-                        assert_eq!(owner_type.0, 0, "fallback TyConId(0) when no workspace");
+                        // Without a workspace there is no owner to resolve.
+                        assert_eq!(owner_type, None, "no owner without a workspace");
                     }
                     other => panic!("expected Constructor sym, got {other:?}"),
                 }

@@ -928,9 +928,10 @@ fn lower_construct(
                 .collect::<Result<Vec<_>, CodegenError>>()?;
             // Tag the value with its type identity (`__ridge_v`) so the
             // runtime can tell which record type — and which layout version —
-            // a live map belongs to. Anonymous/built-in records have no meta
-            // and stay untagged.
-            if let Some(meta) = scope.tables.record_meta.get(owner_type) {
+            // a live map belongs to. A record with no owning type has no
+            // identity to tag, and built-ins have no meta entry, so both stay
+            // untagged.
+            if let Some(meta) = owner_type.and_then(|t| scope.tables.record_meta.get(&t)) {
                 let tag = CErlExpr::Tuple(vec![
                     CErlExpr::Lit(CErlLit::Atom(CErlAtom(meta.fqn.clone()))),
                     CErlExpr::Lit(CErlLit::Atom(CErlAtom(meta.name.clone()))),
@@ -1833,7 +1834,7 @@ mod tests {
         AssignTarget, CapabilitySet, CtorKind, IrArm, IrExpr, IrLit, IrNodeId, IrParam, IrPat,
         SymbolRef,
     };
-    use ridge_types::{TyConId, Type};
+    use ridge_types::Type;
 
     fn sp() -> Span {
         Span::point(0)
@@ -2387,7 +2388,7 @@ mod tests {
                 pat: IrPat::Ctor {
                     sym: SymbolRef::Constructor {
                         ctor_kind: CtorKind::Record,
-                        owner_type: TyConId(0),
+                        owner_type: None,
                         name: "Point".into(),
                         variant: 0,
                     },
@@ -2425,7 +2426,7 @@ mod tests {
                 pat: IrPat::Ctor {
                     sym: SymbolRef::Constructor {
                         ctor_kind: CtorKind::UnionVariant,
-                        owner_type: TyConId(1),
+                        owner_type: None,
                         name: "Foo".into(),
                         variant: 0,
                     },
@@ -2596,7 +2597,7 @@ mod tests {
             id: node(),
             ctor: SymbolRef::Constructor {
                 ctor_kind: CtorKind::Record,
-                owner_type: TyConId(0),
+                owner_type: None,
                 name: "Point".into(),
                 variant: 0,
             },
@@ -2630,7 +2631,7 @@ mod tests {
             id: node(),
             ctor: SymbolRef::Constructor {
                 ctor_kind: CtorKind::UnionVariant,
-                owner_type: TyConId(0),
+                owner_type: None,
                 name: "Foo".into(),
                 variant: 0,
             },
@@ -2660,7 +2661,7 @@ mod tests {
             id: node(),
             ctor: SymbolRef::Constructor {
                 ctor_kind: CtorKind::UnionVariant,
-                owner_type: TyConId(0),
+                owner_type: None,
                 name: "Bar".into(),
                 variant: 1,
             },
@@ -2947,7 +2948,7 @@ mod tests {
             id: node(),
             ctor: SymbolRef::Constructor {
                 ctor_kind: CtorKind::Record,
-                owner_type: TyConId(0),
+                owner_type: None,
                 name: "Point".into(),
                 variant: 0,
             },
@@ -2993,7 +2994,7 @@ mod tests {
             id: node(),
             ctor: SymbolRef::Constructor {
                 ctor_kind: CtorKind::Record,
-                owner_type: TyConId(0),
+                owner_type: None,
                 name: "Point".into(),
                 variant: 0,
             },
@@ -3115,7 +3116,7 @@ mod tests {
                 id: node(),
                 sym: SymbolRef::Constructor {
                     ctor_kind: CtorKind::UnionVariant,
-                    owner_type: TyConId(0),
+                    owner_type: None,
                     name: "Cons".into(),
                     variant: 0,
                 },
@@ -3759,7 +3760,7 @@ mod tests {
     fn union_ctor(name: &str) -> SymbolRef {
         SymbolRef::Constructor {
             ctor_kind: CtorKind::UnionVariant,
-            owner_type: TyConId(0),
+            owner_type: None,
             name: name.into(),
             variant: 1,
         }
@@ -3842,7 +3843,6 @@ mod tests {
     #[test]
     fn field_on_literal_record_construct_peephole_fires() {
         use ridge_ir::{CtorKind, SymbolRef};
-        use ridge_types::TyConId;
 
         // Build a literal dict: `#{ 'toText' => 42 }` (an int stands in for a fun ref).
         let method_value = IrExpr::Lit {
@@ -3854,7 +3854,7 @@ mod tests {
             id: node(),
             ctor: SymbolRef::Constructor {
                 ctor_kind: CtorKind::Record,
-                owner_type: TyConId(0),
+                owner_type: None,
                 name: "$inst_Show_Color".into(),
                 variant: 0,
             },

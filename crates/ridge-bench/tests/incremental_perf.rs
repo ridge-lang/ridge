@@ -43,6 +43,7 @@ fn leaf_body_recompile_is_far_cheaper_than_a_full_rebuild() {
         &state.disc_resolve_errors,
         &state.resolved,
         &state.type_errors,
+        &state.lower_errors,
         &state.source_cache(),
         &state.typed.tycons,
     );

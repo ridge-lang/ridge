@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use ridge_diagnostics::Diagnostic;
+use ridge_lower::lower_workspace;
 use ridge_manifest::find_workspace_root;
 use ridge_reload::VersionHistory;
 use ridge_resolve::{
@@ -16,7 +17,7 @@ use ridge_typecheck::{
     typecheck_workspace, typecheck_workspace_with_history, TypeError, TypedWorkspace,
 };
 
-use crate::diag_adapters::diag_from_typecheck;
+use crate::diag_adapters::{diag_from_lower, diag_from_typecheck};
 use crate::error::CheckError;
 use crate::incremental::IncrementalState;
 use crate::options::CheckOptions;
@@ -65,16 +66,24 @@ pub struct CheckTypedArtefacts {
 
 // ── Diagnostic aggregation ────────────────────────────────────────────────────
 
-/// Flatten every structured diagnostic — discovery, lex, parse, resolve, and
-/// typecheck — into one list, resolving each to its source via `sources`.
+/// Flatten every structured diagnostic — discovery, lex, parse, resolve,
+/// typecheck and lowering — into one list, resolving each to its source via
+/// `sources`.
 ///
 /// Shared by the full-check entry points and the LSP's incremental path so they
 /// produce byte-identical diagnostic sets.
+///
+/// Lowering is in that list because two of its diagnostics are ordinary user
+/// errors: a literal's *form* is validated by the lexer and its *value* only in
+/// Phase 5, so `L110` and `L111` cannot be raised any earlier. Leaving them out
+/// is what let `ridge check` call an out-of-range literal well-typed while
+/// `ridge run` rejected it.
 #[must_use]
 pub fn collect_diagnostics(
     disc_resolve_errors: &[ResolveError],
     resolved: &ResolvedWorkspace,
     type_errors: &[(ModuleId, TypeError)],
+    lower_errors: &[(ModuleId, ridge_lower::error::LowerError)],
     sources: &WorkspaceSourceCache,
     // A type error names types, and naming one needs the constructor table.
     tycons: &[ridge_typecheck::DiagTyCon],
@@ -110,6 +119,9 @@ pub fn collect_diagnostics(
     }
     for (mid, e) in type_errors {
         diagnostics.push(diag_from_typecheck(e, sources.id_for_module(*mid), tycons));
+    }
+    for (mid, e) in lower_errors {
+        diagnostics.push(diag_from_lower(e, sources.id_for_module(*mid)));
     }
 
     diagnostics
@@ -148,6 +160,10 @@ pub fn check_workspace(options: CheckOptions) -> Result<CheckArtefacts, CheckErr
 
     let resolved = resolve_workspace_with(ws_graph, options.retain_indices);
     let typecheck_result = typecheck_workspace(&resolved);
+    // Phase 5 runs here for its diagnostics alone; the lowered workspace is
+    // discarded because `check` writes no artefacts. Measured at 1-5% of the
+    // check it follows.
+    let lower_errors = lower_workspace(&typecheck_result.typed, &resolved).errors;
 
     // ── 3. Collect diagnostics ────────────────────────────────────────────────
     // Build source cache from the workspace graph.
@@ -160,6 +176,7 @@ pub fn check_workspace(options: CheckOptions) -> Result<CheckArtefacts, CheckErr
         &disc_resolve_errors,
         &resolved,
         &typecheck_result.errors,
+        &lower_errors,
         &sources,
         &typecheck_result.typed.tycons,
     );
@@ -218,6 +235,7 @@ pub fn check_workspace_typed_with_history(
 
     let resolved = resolve_workspace_with(ws_graph, options.retain_indices);
     let typecheck_result = typecheck_workspace_with_history(&resolved, history);
+    let lower_errors = lower_workspace(&typecheck_result.typed, &resolved).errors;
 
     // ── 3. Collect diagnostics ────────────────────────────────────────────────
     let sources = WorkspaceSourceCache::from_workspace(&resolved.graph);
@@ -226,6 +244,7 @@ pub fn check_workspace_typed_with_history(
         &disc_resolve_errors,
         &resolved,
         &typecheck_result.errors,
+        &lower_errors,
         &sources,
         &typecheck_result.typed.tycons,
     );

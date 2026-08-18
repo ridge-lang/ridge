@@ -965,7 +965,7 @@ Ridge's type system is based on **Hindley-Milner with extensions**:
 ### 5.2. Built-in types
 
 ```
-Int        -- 64-bit signed integer
+Int        -- 64-bit signed integer; see the note below on range and overflow
 Float      -- 64-bit IEEE 754 double
 Decimal    -- exact base-10, arbitrary precision (a `19.99m` literal); see §9 std.decimal
 Uuid       -- RFC 4122 identifier (no literal; from Uuid.generate / Uuid.fromText); see §9 std.uuid
@@ -981,6 +981,22 @@ Result a e -- Ok a | Err e
 Handle a   -- reference to a spawned actor of type a
 Timestamp  -- opaque; no literal syntax; see §9.2 std.time for construction
 ```
+
+**Integer range and overflow.** `Int` holds exactly the values from
+-9223372036854775808 to 9223372036854775807. Arithmetic that would leave that
+range — `+`, `-`, `*`, `^`, and unary negation — raises. It neither wraps nor
+widens: a program gets the number it computed, or an error, and never a
+different number reported as success.
+
+Wrapping and saturating behaviour stay available where a program wants them,
+as named operations rather than as the default — `Int.wrappingAdd` and
+`Int.saturatingAdd` today.
+
+A literal outside the range is rejected where it is written (`L110`). The
+check on arithmetic results is specified here and not yet implemented: a
+result past the boundary is currently computed at full precision instead of
+raising. Until that lands, staying inside the range is the program's own
+discipline rather than a guarantee the compiler keeps.
 
 ### 5.3. Type inference algorithm
 

@@ -903,7 +903,7 @@ fn reify_quote(
     if avg_interval {
         tree = qexpr_node(ctx, "QAggAvgInterval", 40, vec![tree], span);
     }
-    let owner_type = ctx.builtins().map(|b| b.quote);
+    let owner_type = Some(ctx.builtins.quote);
     IrExpr::Construct {
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
@@ -930,7 +930,7 @@ fn qexpr_node(
         .enumerate()
         .map(|(i, a)| (format!("${i}"), a))
         .collect();
-    let owner_type = ctx.builtins().map(|b| b.q_expr);
+    let owner_type = Some(ctx.builtins.q_expr);
     IrExpr::Construct {
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
@@ -961,10 +961,7 @@ fn captured_ident_type(ctx: &LowerCtx<'_>, span: Span) -> Option<Type> {
 /// average to `float8`, so it reads the average's epoch milliseconds instead. Any
 /// other column type, or a missing stamp, keeps the plain `QAggAvg`.
 fn agg_col_is_interval(ctx: &LowerCtx<'_>, span: Span) -> bool {
-    let Some(ws) = ctx.workspace else {
-        return false;
-    };
-    matches!(captured_ident_type(ctx, span), Some(Type::Con(id, _)) if id == ws.builtins.duration)
+    matches!(captured_ident_type(ctx, span), Some(Type::Con(id, _)) if id == ctx.builtins.duration)
 }
 
 /// The `QExpr` literal constructor (`name`, `variant`) for a captured scalar's
@@ -972,7 +969,7 @@ fn agg_col_is_interval(ctx: &LowerCtx<'_>, span: Span) -> bool {
 /// (`is_quote_scalar`: Int/Text/Bool/Float/Decimal/Uuid/Timestamp/Bytes/Date/Time),
 /// so a `None` here is an internal invariant violation, not a user error.
 fn captured_scalar_qlit(ctx: &LowerCtx<'_>, ty: &Type) -> Option<(&'static str, u32)> {
-    let b = &ctx.workspace?.builtins;
+    let b = ctx.builtins;
     match ty {
         Type::Con(id, _) if *id == b.int => Some(("QLitInt", 1)),
         Type::Con(id, _) if *id == b.float => Some(("QLitFloat", 4)),
@@ -1534,9 +1531,12 @@ fn reify_in_runtime(
     Some(qexpr_node(ctx, "QIn", 25, vec![col_ir, items], span))
 }
 
-/// The element type of a `List a`, peeled of aliases. `None` for any other shape.
+/// The element type of a `List a`, peeled of aliases. `None` for any other
+/// shape — which is now the only reason it answers `None`: it used to give the
+/// same answer for "no workspace attached", so a `List a` in a context without
+/// one was reported as not being a list at all.
 fn list_elem_type(ctx: &LowerCtx<'_>, ty: &Type) -> Option<Type> {
-    let list = ctx.workspace?.builtins.list;
+    let list = ctx.builtins.list;
     match ty {
         Type::Con(id, args) if *id == list && args.len() == 1 => Some(deep_peel_alias(&args[0])),
         _ => None,
@@ -1638,7 +1638,7 @@ fn escape_like(s: &str) -> String {
 /// is the group parameter's name (the base of `g.key`/`g.count`/`g.sum(…)`).
 fn reify_group_quote(ctx: &mut LowerCtx<'_>, body: &Expr, span: Span, g_name: &str) -> IrExpr {
     let tree = reify_group_node(ctx, body, g_name);
-    let owner_type = ctx.builtins().map(|b| b.quote);
+    let owner_type = Some(ctx.builtins.quote);
     IrExpr::Construct {
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
@@ -3291,7 +3291,7 @@ pub(crate) fn dict_plan_to_expr(
             // Synthesise the dictionary map inline at the use site instead, with
             // the already-lowered element dicts threaded in. This is what makes
             // `List Int` / `Option Text` / etc. run.
-            if crate::prelude_dict::is_prelude_codec_instance(class, tycon) {
+            if crate::prelude_dict::is_prelude_codec_instance(ctx.builtins, class, tycon) {
                 return crate::prelude_dict::synth_prelude_dict(ctx, class, tycon, sub_dicts, span)
                     .unwrap_or_else(|| {
                         // `is_prelude_codec_instance` already matched, so synth
@@ -3310,7 +3310,7 @@ pub(crate) fn dict_plan_to_expr(
             // is the native term comparator. Synthesise the dictionary inline so a
             // polymorphic `where Ord a` call (notably `sort`/`sortBy`) resolves for
             // a primitive element or key.
-            if crate::prelude_dict::is_prelude_ord_instance(class, tycon) {
+            if crate::prelude_dict::is_prelude_ord_instance(ctx.builtins, class, tycon) {
                 return crate::prelude_dict::synth_ord_dict(ctx, span);
             }
 
@@ -4666,7 +4666,7 @@ mod tests {
     }
 
     fn fresh_ctx() -> LowerCtx<'static> {
-        LowerCtx::new(ModuleId(0), &[])
+        LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins())
     }
 
     // ── Literal::IntDec ───────────────────────────────────────────────────────
@@ -4965,7 +4965,7 @@ mod tests {
         let mut binding_map: BindingMap = vec![None; (node_id.0 + 1) as usize];
         binding_map[node_id.0 as usize] = Some(Binding::Local(local_id));
 
-        let mut ctx = LowerCtx::new(ModuleId(0), &[]);
+        let mut ctx = LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins());
         ctx.attach_bindings(nid_map, Box::leak(Box::new(binding_map)));
 
         let expr = Expr::Ident(Ident {
@@ -5004,7 +5004,7 @@ mod tests {
             name: "toText".into(),
         });
 
-        let mut ctx = LowerCtx::new(ModuleId(0), &[]);
+        let mut ctx = LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins());
         ctx.attach_bindings(nid_map, Box::leak(Box::new(binding_map)));
 
         let expr = Expr::Ident(Ident {
@@ -5467,7 +5467,7 @@ mod tests {
             module: std_actor_module_id(),
             name: "tryAsk".into(),
         });
-        let mut ctx = LowerCtx::new(ModuleId(0), &[]);
+        let mut ctx = LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins());
         ctx.attach_bindings(nid_map, Box::leak(Box::new(bm)));
         ctx
     }
@@ -5663,7 +5663,7 @@ mod tests {
             module: std_actor_module_id(),
             name: "mailboxSize".into(),
         });
-        let mut ctx = LowerCtx::new(ModuleId(0), &[]);
+        let mut ctx = LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins());
         ctx.attach_bindings(nid_map, Box::leak(Box::new(bm)));
 
         let expr = Expr::Call {
@@ -5920,7 +5920,7 @@ mod tests {
             is_record: false,
             owner_module: ModuleId(0),
         });
-        let mut ctx = LowerCtx::new(ModuleId(0), &[]);
+        let mut ctx = LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins());
         ctx.attach_bindings(nid_map, Box::leak(Box::new(bm)));
         let _ = ctor_name;
         (ctx, span)
@@ -6068,7 +6068,7 @@ mod tests {
         bm[node_id.0 as usize] = Some(binding);
         // Avoid unused-import warning for LocalId — pattern match guarantees call.
         let _ = LocalId(0);
-        let mut ctx = LowerCtx::new(ModuleId(0), &[]);
+        let mut ctx = LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins());
         ctx.attach_bindings(nid_map, Box::leak(Box::new(bm)));
         (ctx, span)
     }
@@ -6661,7 +6661,11 @@ mod tests {
         bm[ident_nid.0 as usize] = Some(Binding::Local(local_id));
 
         let node_types_leaked: &'static [Option<Type>] = Box::leak(node_types.into_boxed_slice());
-        let mut ctx = LowerCtx::new(ModuleId(0), node_types_leaked);
+        let mut ctx = LowerCtx::new(
+            ModuleId(0),
+            node_types_leaked,
+            crate::test_support::builtins(),
+        );
         ctx.attach_bindings(nid_map, Box::leak(Box::new(bm)));
         ctx
     }
@@ -6832,7 +6836,7 @@ mod tests {
         let node_id = nid_map.assign(ident_span, NodeKind::Ident).unwrap();
         let mut bm: BindingMap = vec![None; (node_id.0 + 1) as usize];
         bm[node_id.0 as usize] = Some(binding);
-        let mut ctx = LowerCtx::new(ModuleId(0), &[]);
+        let mut ctx = LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins());
         ctx.attach_bindings(nid_map, Box::leak(Box::new(bm)));
         ctx.in_actor_body = true;
         ctx.current_state_fields = Some(
@@ -6885,7 +6889,7 @@ mod tests {
         let mut bm: BindingMap = vec![None; (node_id.0 + 1) as usize];
         bm[node_id.0 as usize] = Some(Binding::Local(LocalId(0)));
 
-        let mut ctx = LowerCtx::new(ModuleId(0), &[]);
+        let mut ctx = LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins());
         ctx.attach_bindings(nid_map, Box::leak(Box::new(bm)));
         // in_actor_body is false (default).
         ctx.current_state_fields = None;

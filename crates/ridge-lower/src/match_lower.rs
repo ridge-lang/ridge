@@ -1221,7 +1221,7 @@ fn lower_constructor_pattern(
                 return IrPat::Ctor {
                     sym: SymbolRef::Constructor {
                         ctor_kind: CtorKind::UnionVariant,
-                        owner_type: ctx.builtins().map(|b| b.q_expr),
+                        owner_type: Some(ctx.builtins.q_expr),
                         name: prelude_name,
                         variant,
                     },
@@ -1405,7 +1405,7 @@ mod tests {
     }
 
     fn fresh_ctx() -> LowerCtx<'static> {
-        LowerCtx::new(ModuleId(0), &[])
+        LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins())
     }
 
     fn int_pat(n: &str) -> Pattern {
@@ -1581,7 +1581,7 @@ mod tests {
             owner_module: ModuleId(0),
         });
 
-        let mut ctx = LowerCtx::new(ModuleId(0), &[]);
+        let mut ctx = LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins());
         ctx.attach_bindings(nid_map, Box::leak(Box::new(binding_map)));
         ctx
     }

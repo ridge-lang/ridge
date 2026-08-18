@@ -1546,57 +1546,57 @@ impl BuiltinTyCons {
                         ]),
                     },
                     // A decimal literal captured in a quoted predicate. Carries a
-                    // Decimal (tycon id 51, interned after this union). Appended last,
-                    // like `QExists`, so the variant indices the lowering pass
-                    // hardcodes stay put.
+                    // Decimal, which is interned after this union — hence the
+                    // forward reference. Appended last, like `QExists`, so the
+                    // variant indices the lowering pass hardcodes stay put.
                     UnionVariant {
                         name: "QLitDecimal".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(decimal, vec![])]),
                     },
                     // A uuid captured in a quoted predicate (a uuid has no literal
                     // syntax, so this only ever holds a captured runtime value).
-                    // Carries a Uuid (tycon id 52). Appended last so the variant
-                    // indices the lowering pass hardcodes stay put.
+                    // Appended last so the variant indices the lowering pass
+                    // hardcodes stay put.
                     UnionVariant {
                         name: "QLitUuid".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(uuid, vec![])]),
                     },
                     // A timestamp captured in a quoted predicate (Timestamp has no
-                    // literal syntax either). Carries a Timestamp (tycon id 5); the
-                    // renderers move it across `SqlInstant` as epoch microseconds.
-                    // Appended last so the hardcoded variant indices stay put.
+                    // literal syntax either). The renderers move it across
+                    // `SqlInstant` as epoch microseconds. Appended last so the
+                    // hardcoded variant indices stay put.
                     UnionVariant {
                         name: "QLitInstant".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(timestamp, vec![])]),
                     },
                     // A byte string captured in a quoted predicate (Bytes has no
-                    // literal syntax either). Carries a Bytes (tycon id 53); the
-                    // renderers move it across `SqlBytes` as canonical hex. Appended
-                    // last so the hardcoded variant indices stay put.
+                    // literal syntax either). The renderers move it across
+                    // `SqlBytes` as canonical hex. Appended last so the hardcoded
+                    // variant indices stay put.
                     UnionVariant {
                         name: "QLitBytes".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(bytes, vec![])]),
                     },
                     // A calendar date captured in a quoted predicate (Date has no
-                    // literal syntax either). Carries a Date (tycon id 54); the
-                    // renderers move it across `SqlDate` as ISO text. Appended last
-                    // so the hardcoded variant indices stay put.
+                    // literal syntax either). The renderers move it across
+                    // `SqlDate` as ISO text. Appended last so the hardcoded variant
+                    // indices stay put.
                     UnionVariant {
                         name: "QLitDate".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(date, vec![])]),
                     },
-                    // A wall-clock time of day captured in a quoted predicate (Time has
-                    // no literal syntax either). Carries a Time (tycon id 55); the
-                    // renderers move it across `SqlTime` as ISO text. Appended last so
-                    // the hardcoded variant indices stay put.
+                    // A wall-clock time of day captured in a quoted predicate (Time
+                    // has no literal syntax either). The renderers move it across
+                    // `SqlTime` as ISO text. Appended last so the hardcoded variant
+                    // indices stay put.
                     UnionVariant {
                         name: "QLitTime".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(time, vec![])]),
                     },
                     // A duration captured in a quoted predicate (Duration has no
-                    // literal syntax either). Carries a Duration (tycon id 13); the
-                    // renderers move it across `SqlInterval` as its millisecond span.
-                    // Appended last so the hardcoded variant indices stay put.
+                    // literal syntax either). The renderers move it across
+                    // `SqlInterval` as its millisecond span. Appended last so the
+                    // hardcoded variant indices stay put.
                     UnionVariant {
                         name: "QLitInterval".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(duration, vec![])]),

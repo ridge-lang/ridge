@@ -13,12 +13,10 @@
 //!
 //! # Type-constructor dispatch
 //!
-//! The built-in `TyCon` indices are stable (assigned in `BuiltinTyCons::allocate`):
-//! - `Option` → `TyConId(9)`
-//! - `Result` → `TyConId(10)`
-//!
-//! We match on `Type::Con(id, _)` using these constants.  An unrecognised
-//! head emits `L999` and returns a `Unit` stub.
+//! The scope's head is matched against `LowerCtx::builtins` — the handles the
+//! arena assigned to `Option` and `Result` — so the dispatch does not depend on
+//! where in the arena either one landed.  An unrecognised head emits `L999` and
+//! returns a `Unit` stub.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![cfg_attr(
@@ -28,18 +26,11 @@
 
 use ridge_ast::{Expr, Span};
 use ridge_ir::{IrArm, IrExpr, IrLit, IrPat, SymbolRef};
-use ridge_types::{TyConId, Type};
+use ridge_types::Type;
 
 use crate::core::lower_expr;
 use crate::ctx::LowerCtx;
 use crate::error::LowerError;
-
-// ── TyCon id constants (must match BuiltinTyCons::allocate order) ─────────────
-
-/// `Option a` — `TyConId` assigned at index 9.
-const OPTION_TYCON: TyConId = TyConId(9);
-/// `Result a e` — `TyConId` assigned at index 10.
-const RESULT_TYCON: TyConId = TyConId(10);
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -70,8 +61,8 @@ pub fn lower_propagate(ctx: &mut LowerCtx<'_>, inner: &Expr, span: Span) -> IrEx
 
     // ── Dispatch on the head type-constructor ─────────────────────────────────
     match &scope_ty {
-        Type::Con(id, _) if *id == RESULT_TYCON => lower_propagate_result(ctx, inner, span),
-        Type::Con(id, _) if *id == OPTION_TYCON => lower_propagate_option(ctx, inner, span),
+        Type::Con(id, _) if *id == ctx.builtins.result => lower_propagate_result(ctx, inner, span),
+        Type::Con(id, _) if *id == ctx.builtins.option => lower_propagate_option(ctx, inner, span),
         _other => {
             ctx.errors.push(LowerError::InternalLoweringError {
                 span,
@@ -262,7 +253,7 @@ mod tests {
     use ridge_ast::{Literal, Span};
     use ridge_ir::{IrExpr, IrLit, IrPat, SymbolRef};
     use ridge_resolve::ModuleId;
-    use ridge_types::{TyConId, Type};
+    use ridge_types::Type;
 
     use crate::ctx::LowerCtx;
 
@@ -271,24 +262,27 @@ mod tests {
     }
 
     fn fresh_ctx() -> LowerCtx<'static> {
-        LowerCtx::new(ModuleId(0), &[])
+        LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins())
     }
 
     fn unit_expr() -> Expr {
         Expr::Unit(sp())
     }
 
+    /// `Result Int Int` — built from the same handles the code under test
+    /// reads, so the fixture follows the arena instead of pinning it.
     fn result_ty() -> Type {
-        // Result a e — TyConId(10)
+        let b = crate::test_support::builtins();
         Type::Con(
-            TyConId(10),
-            vec![Type::Con(TyConId(0), vec![]), Type::Con(TyConId(0), vec![])],
+            b.result,
+            vec![Type::Con(b.int, vec![]), Type::Con(b.int, vec![])],
         )
     }
 
+    /// `Option Int`, on the same terms as [`result_ty`].
     fn option_ty() -> Type {
-        // Option a — TyConId(9)
-        Type::Con(TyConId(9), vec![Type::Con(TyConId(0), vec![])])
+        let b = crate::test_support::builtins();
+        Type::Con(b.option, vec![Type::Con(b.int, vec![])])
     }
 
     // ── T7-prop-1: Result scope → Match with Ok and Err arms ─────────────────

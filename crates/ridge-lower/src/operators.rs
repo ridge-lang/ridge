@@ -306,30 +306,22 @@ fn looks_like_float(expr: &Expr) -> bool {
     }
 }
 
-/// Returns `true` if `ty` is the workspace's `Float` tycon.
+/// Returns `true` if `ty` is the `Float` tycon.
 ///
-/// Checks via the workspace's `builtins.float` id when a workspace is attached.
-/// Falls back to `false` (Int default) when no workspace is present.
-///
-/// PHASE45-T3: used by arithmetic op dispatch.
+/// Used by arithmetic op dispatch. It used to answer `false` when no workspace
+/// was attached, which reported a `Float` as not a `Float` and sent the
+/// operation to the `Int` op; the table it reads is now part of the context, so
+/// there is no such case to fall back from.
 fn is_float(ctx: &LowerCtx<'_>, ty: &Type) -> bool {
-    let Some(ws) = ctx.workspace else {
-        return false;
-    };
-    matches!(ty, Type::Con(id, _) if *id == ws.builtins.float)
+    matches!(ty, Type::Con(id, _) if *id == ctx.builtins.float)
 }
 
-/// Returns `true` if `ty` is the workspace's `List` tycon.
+/// Returns `true` if `ty` is the `List` tycon.
 ///
-/// Checks via the workspace's `builtins.list` id when a workspace is attached.
-/// Falls back to `false` (Text default) when no workspace is present.
-///
-/// PHASE45-T3: used by `++` concat dispatch.
+/// Used by `++` concat dispatch, with the same history as [`is_float`]: the old
+/// `false` for a missing workspace sent list concatenation to the text op.
 fn is_list(ctx: &LowerCtx<'_>, ty: &Type) -> bool {
-    let Some(ws) = ctx.workspace else {
-        return false;
-    };
-    matches!(ty, Type::Con(id, _) if *id == ws.builtins.list)
+    matches!(ty, Type::Con(id, _) if *id == ctx.builtins.list)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -346,7 +338,7 @@ mod tests {
     }
 
     fn fresh_ctx() -> LowerCtx<'static> {
-        LowerCtx::new(ModuleId(0), &[])
+        LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins())
     }
 
     fn int_expr(n: i64) -> Expr {

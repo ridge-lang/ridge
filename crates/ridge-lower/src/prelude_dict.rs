@@ -32,48 +32,59 @@
 use ridge_ast::Span;
 use ridge_ir::{IrExpr, IrLit, IrParam, SymbolRef};
 use ridge_typecheck::JsonPrim;
-use ridge_types::{ClassId, TyConId, Type, DECODE_CLASS, ENCODE_CLASS, ORD_CLASS, TOTEXT_CLASS};
+use ridge_types::{
+    BuiltinTyCons, ClassId, TyConId, Type, DECODE_CLASS, ENCODE_CLASS, ORD_CLASS, TOTEXT_CLASS,
+};
 
 use crate::ctx::LowerCtx;
-
-// TyConId assignments from `ridge_types::BuiltinTyCons::allocate`.
-const TYCON_INT: u32 = 0;
-const TYCON_FLOAT: u32 = 1;
-const TYCON_BOOL: u32 = 2;
-const TYCON_TEXT: u32 = 3;
-const TYCON_TIMESTAMP: u32 = 5;
-const TYCON_LIST: u32 = 6;
-const TYCON_MAP: u32 = 7;
-const TYCON_OPTION: u32 = 9;
-const TYCON_RESULT: u32 = 10;
-const TYCON_ERROR: u32 = 12;
-const TYCON_ORDERING: u32 = 15;
-// Interned after the 0–16 builtins, so their ids sit above the block.
-const TYCON_DECIMAL: u32 = 51;
-const TYCON_UUID: u32 = 52;
-const TYCON_BYTES: u32 = 53;
-const TYCON_DATE: u32 = 54;
-const TYCON_TIME: u32 = 55;
 
 /// The scalar a built-in `TyConId` denotes, for the codec classes.
 ///
 /// The one place in this module that turns an id into a scalar. Everything
 /// downstream works from [`JsonPrim`] and is exhaustive over it, so a scalar
 /// this does not recognise gets no dictionary rather than a guessed one.
-const fn json_prim_of(tycon: TyConId) -> Option<JsonPrim> {
-    match tycon.0 {
-        TYCON_INT => Some(JsonPrim::Int),
-        TYCON_FLOAT => Some(JsonPrim::Float),
-        TYCON_BOOL => Some(JsonPrim::Bool),
-        TYCON_TEXT => Some(JsonPrim::Text),
-        TYCON_TIMESTAMP => Some(JsonPrim::Timestamp),
-        TYCON_DECIMAL => Some(JsonPrim::Decimal),
-        TYCON_UUID => Some(JsonPrim::Uuid),
-        TYCON_BYTES => Some(JsonPrim::Bytes),
-        TYCON_DATE => Some(JsonPrim::Date),
-        TYCON_TIME => Some(JsonPrim::Time),
-        _ => None,
-    }
+fn json_prim_of(b: &BuiltinTyCons, tycon: TyConId) -> Option<JsonPrim> {
+    [
+        (b.int, JsonPrim::Int),
+        (b.float, JsonPrim::Float),
+        (b.bool, JsonPrim::Bool),
+        (b.text, JsonPrim::Text),
+        (b.timestamp, JsonPrim::Timestamp),
+        (b.decimal, JsonPrim::Decimal),
+        (b.uuid, JsonPrim::Uuid),
+        (b.bytes, JsonPrim::Bytes),
+        (b.date, JsonPrim::Date),
+        (b.time, JsonPrim::Time),
+    ]
+    .into_iter()
+    .find_map(|(id, prim)| (id == tycon).then_some(prim))
+}
+
+/// The parametric container a prelude codec instance dispatches over, or
+/// `None` for anything else.
+///
+/// Split out from [`is_prelude_codec_instance`] so the membership test and
+/// [`synth_prelude_dict`]'s arms read the same four handles rather than two
+/// hand-kept lists.
+fn codec_container_of(b: &BuiltinTyCons, tycon: TyConId) -> Option<CodecContainer> {
+    [
+        (b.list, CodecContainer::List),
+        (b.option, CodecContainer::Option),
+        (b.map, CodecContainer::Map),
+        (b.result, CodecContainer::Result),
+    ]
+    .into_iter()
+    .find_map(|(id, c)| (id == tycon).then_some(c))
+}
+
+/// The four containers the prelude registers parametric `Encode`/`Decode`
+/// instances for.
+#[derive(Clone, Copy)]
+enum CodecContainer {
+    List,
+    Option,
+    Map,
+    Result,
 }
 
 /// True if `(class, tycon)` is a prelude-reserved `Encode`/`Decode` instance
@@ -84,15 +95,11 @@ const fn json_prim_of(tycon: TyConId) -> Option<JsonPrim> {
 /// including user-written ones and derived user types — keeps the existing
 /// `$inst_` symbol path.
 #[must_use]
-pub fn is_prelude_codec_instance(class: ClassId, tycon: TyConId) -> bool {
+pub fn is_prelude_codec_instance(b: &BuiltinTyCons, class: ClassId, tycon: TyConId) -> bool {
     if class != ENCODE_CLASS && class != DECODE_CLASS {
         return false;
     }
-    json_prim_of(tycon).is_some()
-        || matches!(
-            tycon.0,
-            TYCON_LIST | TYCON_OPTION | TYCON_MAP | TYCON_RESULT
-        )
+    json_prim_of(b, tycon).is_some() || codec_container_of(b, tycon).is_some()
 }
 
 /// Synthesise the runtime dictionary expression for a prelude `Encode`/`Decode`
@@ -113,13 +120,16 @@ pub fn synth_prelude_dict(
     sub_dicts: Vec<IrExpr>,
     span: Span,
 ) -> Option<IrExpr> {
-    if !is_prelude_codec_instance(class, tycon) {
+    // Copy the handle out before `ctx` is borrowed mutably below; the table
+    // outlives the context, so this is a second shared borrow, not a clone.
+    let b = ctx.builtins;
+    if !is_prelude_codec_instance(b, class, tycon) {
         return None;
     }
     let is_encode = class == ENCODE_CLASS;
     let method = if is_encode { "encode" } else { "decode" };
 
-    if let Some(prim) = json_prim_of(tycon) {
+    if let Some(prim) = json_prim_of(b, tycon) {
         let method_fn = if is_encode {
             encode_prim_lambda(ctx, prim, span)
         } else {
@@ -128,8 +138,8 @@ pub fn synth_prelude_dict(
         return Some(dict_map(ctx, method, method_fn, span));
     }
 
-    let method_fn = match tycon.0 {
-        TYCON_LIST => {
+    let method_fn = match codec_container_of(b, tycon) {
+        Some(CodecContainer::List) => {
             let elem = sub_dicts
                 .into_iter()
                 .next()
@@ -140,7 +150,7 @@ pub fn synth_prelude_dict(
                 decode_list_lambda(ctx, elem, span)
             }
         }
-        TYCON_OPTION => {
+        Some(CodecContainer::Option) => {
             let elem = sub_dicts
                 .into_iter()
                 .next()
@@ -151,7 +161,7 @@ pub fn synth_prelude_dict(
                 decode_option_lambda(ctx, elem, span)
             }
         }
-        TYCON_MAP => {
+        Some(CodecContainer::Map) => {
             // Map Text a — the value dictionary sits at head position 1, which
             // is the sole entry in `sub_dicts` (the Text key carries no dict).
             let val = sub_dicts
@@ -164,7 +174,7 @@ pub fn synth_prelude_dict(
                 decode_map_lambda(ctx, val, span)
             }
         }
-        TYCON_RESULT => {
+        Some(CodecContainer::Result) => {
             let mut it = sub_dicts.into_iter();
             let ok = it.next().unwrap_or_else(|| unit(ctx, span));
             let err = it.next().unwrap_or_else(|| unit(ctx, span));
@@ -174,7 +184,7 @@ pub fn synth_prelude_dict(
                 decode_result_lambda(ctx, ok, err, span)
             }
         }
-        _ => return None,
+        None => return None,
     };
 
     Some(dict_map(ctx, method, method_fn, span))
@@ -190,12 +200,8 @@ pub fn synth_prelude_dict(
 /// exactly like the codec primitives. Every other `Ord` — a derived or
 /// hand-written user instance — keeps the `$inst_` symbol path.
 #[must_use]
-pub fn is_prelude_ord_instance(class: ClassId, tycon: TyConId) -> bool {
-    class == ORD_CLASS
-        && matches!(
-            tycon.0,
-            TYCON_INT | TYCON_FLOAT | TYCON_BOOL | TYCON_TEXT | TYCON_ORDERING
-        )
+pub fn is_prelude_ord_instance(b: &BuiltinTyCons, class: ClassId, tycon: TyConId) -> bool {
+    class == ORD_CLASS && [b.int, b.float, b.bool, b.text, b.ordering].contains(&tycon)
 }
 
 /// True if `(class, tycon)` is a built-in `ToText` instance whose dictionary
@@ -223,11 +229,12 @@ pub fn is_prelude_ord_instance(class: ClassId, tycon: TyConId) -> bool {
 /// the set and the per-type conversion cannot drift apart: that drift is
 /// exactly what left two admitted types with no arm to render them.
 #[must_use]
-pub fn is_prelude_totext_instance(class: ClassId, tycon: TyConId) -> bool {
-    class == TOTEXT_CLASS && prelude_totext_target(tycon).is_some()
+pub fn is_prelude_totext_instance(b: &BuiltinTyCons, class: ClassId, tycon: TyConId) -> bool {
+    class == TOTEXT_CLASS && prelude_totext_target(b, tycon).is_some()
 }
 
 /// How a built-in `ToText` value is turned into text.
+#[derive(Clone, Copy)]
 enum ToTextTarget {
     /// The value is already text; the conversion is the identity.
     Identity,
@@ -245,19 +252,20 @@ enum ToTextTarget {
 /// built-in `ToText` instance means adding one arm here and the matching arm in
 /// [`crate::interp::wrap_to_text`], which is what keeps a value rendered through
 /// a dictionary reading the same as one interpolated inline.
-const fn prelude_totext_target(tycon: TyConId) -> Option<ToTextTarget> {
-    Some(match tycon.0 {
-        TYCON_TEXT => ToTextTarget::Identity,
-        TYCON_ORDERING => ToTextTarget::Ordering,
-        TYCON_INT => ToTextTarget::Module("std.int"),
-        TYCON_FLOAT => ToTextTarget::Module("std.float"),
-        TYCON_BOOL => ToTextTarget::Module("std.bool"),
-        TYCON_TIMESTAMP => ToTextTarget::Module("std.time"),
-        TYCON_ERROR => ToTextTarget::Module("std.error"),
-        TYCON_DECIMAL => ToTextTarget::Module("std.decimal"),
-        TYCON_UUID => ToTextTarget::Module("std.uuid"),
-        _ => return None,
-    })
+fn prelude_totext_target(b: &BuiltinTyCons, tycon: TyConId) -> Option<ToTextTarget> {
+    [
+        (b.text, ToTextTarget::Identity),
+        (b.ordering, ToTextTarget::Ordering),
+        (b.int, ToTextTarget::Module("std.int")),
+        (b.float, ToTextTarget::Module("std.float")),
+        (b.bool, ToTextTarget::Module("std.bool")),
+        (b.timestamp, ToTextTarget::Module("std.time")),
+        (b.error, ToTextTarget::Module("std.error")),
+        (b.decimal, ToTextTarget::Module("std.decimal")),
+        (b.uuid, ToTextTarget::Module("std.uuid")),
+    ]
+    .into_iter()
+    .find_map(|(id, target)| (id == tycon).then_some(target))
 }
 
 /// Synthesise the runtime dictionary for a built-in `ToText` instance.
@@ -283,7 +291,7 @@ pub fn synth_totext_dict(
     }
     // Resolve before touching `ctx`: declining after minting an id would leave a
     // gap in the id sequence for a dictionary that was never emitted.
-    let target = prelude_totext_target(tycon)?;
+    let target = prelude_totext_target(ctx.builtins, tycon)?;
     let arg = || param("__totext_x".to_string(), span);
     let x = local(ctx, "__totext_x", span);
     let body = match target {
@@ -1475,7 +1483,7 @@ fn decode_error(ctx: &mut LowerCtx<'_>, code: &str, message: &str, span: Span) -
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
             ctor_kind: ridge_ir::CtorKind::Record,
-            owner_type: ctx.builtins().map(|b| b.error),
+            owner_type: Some(ctx.builtins.error),
             name: "Error".to_string(),
             variant: 0,
         },

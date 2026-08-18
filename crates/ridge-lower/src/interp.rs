@@ -76,27 +76,6 @@ use crate::core::lower_expr;
 use crate::ctx::LowerCtx;
 use crate::error::LowerError;
 
-// ── TyCon id constants — must match BuiltinTyCons::allocate order ─────────────
-
-/// `Int` — `TyConId(0)`.
-const INT_TYCON: TyConId = TyConId(0);
-/// `Float` — `TyConId(1)`.
-const FLOAT_TYCON: TyConId = TyConId(1);
-/// `Bool` — `TyConId(2)`.
-const BOOL_TYCON: TyConId = TyConId(2);
-/// `Text` — `TyConId(3)`.
-const TEXT_TYCON: TyConId = TyConId(3);
-/// `Timestamp` — `TyConId(5)`.
-const TIMESTAMP_TYCON: TyConId = TyConId(5);
-/// `Decimal` — `TyConId(51)` (interned after the 0–16 builtins).
-const DECIMAL_TYCON: TyConId = TyConId(51);
-/// `Uuid` — `TyConId(52)` (interned after the 0–16 builtins).
-const UUID_TYCON: TyConId = TyConId(52);
-/// `Error` — `TyConId(12)`. The failure half of every stdlib `Result`.
-const ERROR_TYCON: TyConId = TyConId(12);
-/// `Ordering` — `TyConId(15)`. The built-in result of `compare`.
-const ORDERING_TYCON: TyConId = TyConId(15);
-
 // ── Public entry point ────────────────────────────────────────────────────────
 
 /// Lower a multi-part or hole-containing `Interp` expression to a left-fold
@@ -217,53 +196,46 @@ fn lookup_expr_type(ctx: &LowerCtx<'_>, expr: &Expr) -> Option<Type> {
               below it, and they pass through for unrelated reasons"
 )]
 fn wrap_to_text(ctx: &mut LowerCtx<'_>, inner: IrExpr, ty: Option<Type>, span: Span) -> IrExpr {
+    // Copied out before `ctx` is borrowed mutably by the arms; the table
+    // outlives the context, so this is a second shared borrow, not a clone.
+    let b = ctx.builtins;
     match ty {
         // ── Type::Text — identity; no wrapper ────────────────────────────────
-        Some(Type::Con(id, _)) if id == TEXT_TYCON => inner,
+        Some(Type::Con(id, _)) if id == b.text => inner,
 
         // ── Type::Int — std.int.toText ────────────────────────────────────────
-        Some(Type::Con(id, _)) if id == INT_TYCON => make_to_text_call(ctx, inner, "std.int", span),
+        Some(Type::Con(id, _)) if id == b.int => make_to_text_call(ctx, inner, "std.int", span),
 
         // ── Type::Float — std.float.toText ────────────────────────────────────
-        Some(Type::Con(id, _)) if id == FLOAT_TYCON => {
-            make_to_text_call(ctx, inner, "std.float", span)
-        }
+        Some(Type::Con(id, _)) if id == b.float => make_to_text_call(ctx, inner, "std.float", span),
 
         // ── Type::Bool — std.bool.toText ─────────────────────────────────────
-        Some(Type::Con(id, _)) if id == BOOL_TYCON => {
-            make_to_text_call(ctx, inner, "std.bool", span)
-        }
+        Some(Type::Con(id, _)) if id == b.bool => make_to_text_call(ctx, inner, "std.bool", span),
 
         // ── Type::Timestamp — std.time.toText ────────────────────────────────
-        Some(Type::Con(id, _)) if id == TIMESTAMP_TYCON => {
+        Some(Type::Con(id, _)) if id == b.timestamp => {
             make_to_text_call(ctx, inner, "std.time", span)
         }
 
         // ── Type::Decimal — std.decimal.toText ───────────────────────────────
-        Some(Type::Con(id, _)) if id == DECIMAL_TYCON => {
+        Some(Type::Con(id, _)) if id == b.decimal => {
             make_to_text_call(ctx, inner, "std.decimal", span)
         }
 
         // ── Type::Uuid — std.uuid.toText ─────────────────────────────────────
-        Some(Type::Con(id, _)) if id == UUID_TYCON => {
-            make_to_text_call(ctx, inner, "std.uuid", span)
-        }
+        Some(Type::Con(id, _)) if id == b.uuid => make_to_text_call(ctx, inner, "std.uuid", span),
 
         // ── Type::Error — std.error.toText ───────────────────────────────────
         // Must sit above the `Some(Type::Con(tycon_id, _))` catch-all, which
         // would otherwise route it through the instance registry; the direct
         // call is what every other built-in with a stdlib module gets.
-        Some(Type::Con(id, _)) if id == ERROR_TYCON => {
-            make_to_text_call(ctx, inner, "std.error", span)
-        }
+        Some(Type::Con(id, _)) if id == b.error => make_to_text_call(ctx, inner, "std.error", span),
 
         // ── Type::Ordering — the built-in `compare` result ───────────────────
         // Renders the `Less`/`Equal`/`Greater` atom via the runtime helper.
         // Ordering has no stdlib module, so it does not go through the generic
         // `std.<x>.toText` path; without this arm the raw atom is spliced.
-        Some(Type::Con(id, _)) if id == ORDERING_TYCON => {
-            make_ordering_to_text_call(ctx, inner, span)
-        }
+        Some(Type::Con(id, _)) if id == b.ordering => make_ordering_to_text_call(ctx, inner, span),
 
         // ── Type::Var — polymorphic hole in a constrained fn ─────────────────
         // When the hole type is a free variable AND the enclosing fn is
@@ -444,18 +416,21 @@ fn try_dict_to_text(ctx: &mut LowerCtx<'_>, inner: &IrExpr, span: Span) -> Optio
 /// record field or union payload. The mapping follows the same closed set as
 /// [`wrap_to_text`]:
 ///
-/// | `TyConId` | Dispatch target          |
-/// |-----------|--------------------------|
-/// | 0 (Int)   | `std.int.toText`         |
-/// | 1 (Float) | `std.float.toText`       |
-/// | 2 (Bool)  | `std.bool.toText`        |
-/// | 3 (Text)  | identity — returned as-is |
-/// | 5 (Timestamp) | `std.time.toText`    |
-/// | 51 (Decimal)  | `std.decimal.toText` |
-/// | 52 (Uuid)     | `std.uuid.toText`    |
-/// | 12 (Error)    | `std.error.toText`   |
-/// | 15 (Ordering) | `std.list._orderingToText` |
-/// | other     | identity — no known stdlib dispatch; field rendered as-is |
+/// | Built-in    | Dispatch target             |
+/// |-------------|-----------------------------|
+/// | `Int`       | `std.int.toText`            |
+/// | `Float`     | `std.float.toText`          |
+/// | `Bool`      | `std.bool.toText`           |
+/// | `Text`      | identity — returned as-is   |
+/// | `Timestamp` | `std.time.toText`           |
+/// | `Decimal`   | `std.decimal.toText`        |
+/// | `Uuid`      | `std.uuid.toText`           |
+/// | `Error`     | `std.error.toText`          |
+/// | `Ordering`  | `std.list._orderingToText`  |
+/// | other       | identity — no known stdlib dispatch; field rendered as-is |
+///
+/// Each row is matched against the handle `LowerCtx::builtins` carries, so the
+/// table stays correct wherever the arena puts a built-in.
 ///
 /// For user-defined types the derived instance lowering emits an identity
 /// (no wrapper) because those types render via their own derived or explicit
@@ -466,21 +441,22 @@ pub(crate) fn wrap_to_text_by_tycon(
     tycon_id: TyConId,
     span: Span,
 ) -> IrExpr {
-    if tycon_id == INT_TYCON {
+    let b = ctx.builtins;
+    if tycon_id == b.int {
         make_to_text_call(ctx, arg, "std.int", span)
-    } else if tycon_id == FLOAT_TYCON {
+    } else if tycon_id == b.float {
         make_to_text_call(ctx, arg, "std.float", span)
-    } else if tycon_id == BOOL_TYCON {
+    } else if tycon_id == b.bool {
         make_to_text_call(ctx, arg, "std.bool", span)
-    } else if tycon_id == TIMESTAMP_TYCON {
+    } else if tycon_id == b.timestamp {
         make_to_text_call(ctx, arg, "std.time", span)
-    } else if tycon_id == DECIMAL_TYCON {
+    } else if tycon_id == b.decimal {
         make_to_text_call(ctx, arg, "std.decimal", span)
-    } else if tycon_id == UUID_TYCON {
+    } else if tycon_id == b.uuid {
         make_to_text_call(ctx, arg, "std.uuid", span)
-    } else if tycon_id == ERROR_TYCON {
+    } else if tycon_id == b.error {
         make_to_text_call(ctx, arg, "std.error", span)
-    } else if tycon_id == ORDERING_TYCON {
+    } else if tycon_id == b.ordering {
         make_ordering_to_text_call(ctx, arg, span)
     } else {
         // Text (TyConId 3) and all user-defined types: identity.
@@ -581,7 +557,7 @@ mod tests {
     use ridge_ast::{expr::InterpPart, Literal, Span};
     use ridge_ir::{IrExpr, IrLit, SymbolRef};
     use ridge_resolve::{ModuleId, NodeIdMap, NodeKind};
-    use ridge_types::{TyConId, Type};
+    use ridge_types::Type;
 
     fn sp() -> Span {
         Span::point(0)
@@ -592,7 +568,7 @@ mod tests {
     }
 
     fn fresh_ctx() -> LowerCtx<'static> {
-        LowerCtx::new(ModuleId(0), &[])
+        LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins())
     }
 
     /// Build a `LowerCtx` whose `node_types` table has a single entry at index
@@ -607,7 +583,7 @@ mod tests {
         node_types[node_id as usize] = Some(ty);
         // Box::leak so that the slice has 'static lifetime for the test.
         let leaked: &'static [Option<Type>] = Box::leak(node_types.into_boxed_slice());
-        let mut ctx = LowerCtx::new(ModuleId(0), leaked);
+        let mut ctx = LowerCtx::new(ModuleId(0), leaked, crate::test_support::builtins());
         // Wire node_id_map: (Span::point(0), NodeKind::Expr) → NodeId(node_id).
         // This matches the test expressions which all use sp() = Span::point(0).
         let mut nid_map = NodeIdMap::default();
@@ -749,8 +725,9 @@ mod tests {
     // Requires node_types to be populated so the type lookup succeeds.
     #[test]
     fn int_hole_wraps_to_text() {
+        let b = crate::test_support::builtins();
         // span().start == 0, so proxy_nid = 0.
-        let mut ctx = ctx_with_type_at(0, Type::Con(INT_TYCON, vec![]));
+        let mut ctx = ctx_with_type_at(0, Type::Con(b.int, vec![]));
         let parts = vec![expr_part(int_expr())];
         let ir = lower_interp_full(&mut ctx, &parts, sp());
 
@@ -787,7 +764,8 @@ mod tests {
     // ── T9-i-4: Float hole wraps in std.float.toText ─────────────────────────
     #[test]
     fn float_hole_wraps_to_text() {
-        let mut ctx = ctx_with_type_at(0, Type::Con(FLOAT_TYCON, vec![]));
+        let b = crate::test_support::builtins();
+        let mut ctx = ctx_with_type_at(0, Type::Con(b.float, vec![]));
         let parts = vec![expr_part(float_expr())];
         let ir = lower_interp_full(&mut ctx, &parts, sp());
 
@@ -818,7 +796,8 @@ mod tests {
     // ── T9-i-5: Bool hole wraps in std.bool.toText ───────────────────────────
     #[test]
     fn bool_hole_wraps_to_text() {
-        let mut ctx = ctx_with_type_at(0, Type::Con(BOOL_TYCON, vec![]));
+        let b = crate::test_support::builtins();
+        let mut ctx = ctx_with_type_at(0, Type::Con(b.bool, vec![]));
         let parts = vec![expr_part(bool_expr())];
         let ir = lower_interp_full(&mut ctx, &parts, sp());
 
@@ -849,7 +828,8 @@ mod tests {
     // ── T9-i-6: Text hole is identity (no wrapper) ───────────────────────────
     #[test]
     fn text_hole_is_identity() {
-        let mut ctx = ctx_with_type_at(0, Type::Con(TEXT_TYCON, vec![]));
+        let b = crate::test_support::builtins();
+        let mut ctx = ctx_with_type_at(0, Type::Con(b.text, vec![]));
         let parts = vec![expr_part(text_expr("hi"))];
         let ir = lower_interp_full(&mut ctx, &parts, sp());
 
@@ -871,7 +851,8 @@ mod tests {
     // ── T9-i-7: Timestamp hole wraps in std.time.toText ──────────────────────
     #[test]
     fn timestamp_hole_wraps_to_text() {
-        let mut ctx = ctx_with_type_at(0, Type::Con(TIMESTAMP_TYCON, vec![]));
+        let b = crate::test_support::builtins();
+        let mut ctx = ctx_with_type_at(0, Type::Con(b.timestamp, vec![]));
         let parts = vec![expr_part(timestamp_expr())];
         let ir = lower_interp_full(&mut ctx, &parts, sp());
 
@@ -902,7 +883,8 @@ mod tests {
     // ── T9-i-7b: Decimal hole wraps in std.decimal.toText ────────────────────
     #[test]
     fn decimal_hole_wraps_to_text() {
-        let mut ctx = ctx_with_type_at(0, Type::Con(DECIMAL_TYCON, vec![]));
+        let b = crate::test_support::builtins();
+        let mut ctx = ctx_with_type_at(0, Type::Con(b.decimal, vec![]));
         let parts = vec![expr_part(timestamp_expr())];
         let ir = lower_interp_full(&mut ctx, &parts, sp());
 
@@ -933,7 +915,8 @@ mod tests {
     // ── T9-i-7c: Uuid hole wraps in std.uuid.toText ──────────────────────────
     #[test]
     fn uuid_hole_wraps_to_text() {
-        let mut ctx = ctx_with_type_at(0, Type::Con(UUID_TYCON, vec![]));
+        let b = crate::test_support::builtins();
+        let mut ctx = ctx_with_type_at(0, Type::Con(b.uuid, vec![]));
         let parts = vec![expr_part(timestamp_expr())];
         let ir = lower_interp_full(&mut ctx, &parts, sp());
 
@@ -968,13 +951,14 @@ mod tests {
     // std.decimal.toText, the same target the interpolation arm uses.
     #[test]
     fn wrap_by_tycon_decimal_dispatches_std_decimal() {
+        let b = crate::test_support::builtins();
         let mut ctx = fresh_ctx();
         let arg = IrExpr::Lit {
             id: ctx.fresh_id(None),
             value: IrLit::Text("x".into()),
             span: sp(),
         };
-        let ir = wrap_to_text_by_tycon(&mut ctx, arg, DECIMAL_TYCON, sp());
+        let ir = wrap_to_text_by_tycon(&mut ctx, arg, b.decimal, sp());
         match ir {
             IrExpr::Call { callee, .. } => match *callee {
                 IrExpr::Symbol {
@@ -997,13 +981,14 @@ mod tests {
     // ── T9-i-7e: wrap_to_text_by_tycon dispatches a Uuid field ────────────────
     #[test]
     fn wrap_by_tycon_uuid_dispatches_std_uuid() {
+        let b = crate::test_support::builtins();
         let mut ctx = fresh_ctx();
         let arg = IrExpr::Lit {
             id: ctx.fresh_id(None),
             value: IrLit::Text("x".into()),
             span: sp(),
         };
-        let ir = wrap_to_text_by_tycon(&mut ctx, arg, UUID_TYCON, sp());
+        let ir = wrap_to_text_by_tycon(&mut ctx, arg, b.uuid, sp());
         match ir {
             IrExpr::Call { callee, .. } => match *callee {
                 IrExpr::Symbol {
@@ -1045,11 +1030,12 @@ mod tests {
 
     // ── T9-i-9: Unknown type emits L107 ──────────────────────────────────────
     //
-    // Uses a TyConId not in the closed set (e.g. List = TyConId(6)).
+    // `List` is outside the set `wrap_to_text` converts. Which type stands in
+    // does not matter, only that it is one with no arm.
     #[test]
     fn unknown_type_emits_l107() {
-        let list_tycon = TyConId(6);
-        let mut ctx = ctx_with_type_at(0, Type::Con(list_tycon, vec![]));
+        let b = crate::test_support::builtins();
+        let mut ctx = ctx_with_type_at(0, Type::Con(b.list, vec![]));
         let parts = vec![expr_part(int_expr())];
         let _ir = lower_interp_full(&mut ctx, &parts, sp());
 

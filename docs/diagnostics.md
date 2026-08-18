@@ -870,7 +870,7 @@ A type variable cannot be resolved — the user must add a type annotation.
 
 ### T024
 
-A capability variable escapes into a user-visible type (D057).
+A capability variable escapes into a user-visible type.
 
 ### T025
 

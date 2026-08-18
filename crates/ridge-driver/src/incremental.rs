@@ -30,6 +30,8 @@ use ridge_typecheck::{
     typecheck_module_incremental, typecheck_workspace, TypeError, TypecheckResult, TypedWorkspace,
 };
 
+use ridge_lower::{error::LowerError, lower_module, lower_workspace};
+
 use crate::sources::WorkspaceSourceCache;
 
 /// A resolved + typed workspace plus the bookkeeping needed to recompute it
@@ -42,6 +44,15 @@ pub struct IncrementalState {
     pub typed: TypedWorkspace,
     /// Type errors per module — [`TypedWorkspace`] does not retain them.
     pub type_errors: Vec<(ModuleId, TypeError)>,
+    /// Lowering errors per module.
+    ///
+    /// Phase 5 is where a literal's validated *form* becomes a *value*, so
+    /// `L110` and `L111` — the two ordinary user errors in the `L1##` range —
+    /// can only be raised here. Keeping them on the incremental state is what
+    /// lets the editor report them: without it, a check that stops after
+    /// type-checking calls an out-of-range literal well-typed, and the build
+    /// disagrees minutes later.
+    pub lower_errors: Vec<(ModuleId, LowerError)>,
     /// Discovery-phase resolve errors (e.g. `R023`), which an in-file edit never
     /// changes. Retained so the full diagnostic set can be reproduced.
     pub disc_resolve_errors: Vec<ResolveError>,
@@ -75,10 +86,13 @@ impl IncrementalState {
             .iter()
             .map(|ast| registry_hash(ast))
             .collect();
+        let typed = typecheck.typed;
+        let lower_errors = lower_workspace(&typed, &resolved).errors;
         Self {
             resolved,
-            typed: typecheck.typed,
+            typed,
             type_errors: typecheck.errors,
+            lower_errors,
             disc_resolve_errors,
             surface_hashes,
             registry_hashes,
@@ -198,7 +212,45 @@ impl IncrementalState {
         self.type_errors.retain(|(m, _)| !in_set.contains(m));
         self.type_errors.extend(fresh_type_errors);
 
+        // Lower the same set, one module at a time. `lower_workspace` would
+        // lower every module in the project on every keystroke — measured at
+        // 74% overhead on a 128-module workspace and growing — while
+        // `lower_module` on the changed module is flat at ~0.02 ms.
+        self.relower(&recompute, &in_set);
+
         recompute
+    }
+
+    /// Re-lower `modules` and swap their errors into the cache.
+    ///
+    /// Runs unconditionally, including when earlier phases reported errors:
+    /// the point of this issue is that `check` and `build` agree, and a gate on
+    /// one side and not the other is how they came apart in the first place.
+    fn relower(&mut self, modules: &[ModuleId], in_set: &FxHashSet<ModuleId>) {
+        let stdlib_fqns = ridge_lower::stdlib_fqns(&self.resolved);
+        let mut fresh: Vec<(ModuleId, LowerError)> = Vec::new();
+        for &m in modules {
+            let i = m.0 as usize;
+            let Some(typed) = self.typed.modules.get(i) else {
+                continue;
+            };
+            let fqn = self
+                .resolved
+                .graph
+                .modules
+                .get(i)
+                .map_or("", |g| g.fully_qualified_name.as_str());
+            let (_lowered, errs) = lower_module(
+                typed,
+                &self.typed,
+                self.resolved.modules.get(i),
+                &stdlib_fqns,
+                fqn,
+            );
+            fresh.extend(errs.into_iter().map(|e| (m, e)));
+        }
+        self.lower_errors.retain(|(m, _)| !in_set.contains(m));
+        self.lower_errors.extend(fresh);
     }
 
     /// Rebuild the whole workspace's resolution and type-check from the cached
@@ -223,6 +275,7 @@ impl IncrementalState {
         let tc = typecheck_workspace(&self.resolved);
         self.typed = tc.typed;
         self.type_errors = tc.errors;
+        self.lower_errors = lower_workspace(&self.typed, &self.resolved).errors;
 
         (0..n)
             .map(|i| ModuleId(u32::try_from(i).unwrap_or(u32::MAX)))

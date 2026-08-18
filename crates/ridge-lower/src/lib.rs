@@ -64,17 +64,7 @@ use rustc_hash::FxHashMap;
 /// the definition-of-done literal.
 #[must_use]
 pub fn lower_workspace(twork: &TypedWorkspace, rwork: &ResolvedWorkspace) -> LoweringResult {
-    // Per-ModuleId FQN for stdlib modules only (FQN starts with `std.`). A
-    // cross-stdlib-module call (e.g. `std.query` → `std.sql`) routes through the
-    // stdlib bridge so its BEAM atom is the dotted FQN, not the user-module
-    // `ridge_module_<id>` mangle. User modules are absent and keep the mangle.
-    let stdlib_fqns: FxHashMap<ModuleId, String> = rwork
-        .graph
-        .modules
-        .iter()
-        .filter(|m| m.fully_qualified_name.starts_with("std."))
-        .map(|m| (m.id, m.fully_qualified_name.clone()))
-        .collect();
+    let stdlib_fqns = stdlib_fqns(rwork);
     let mut errors: Vec<(ModuleId, error::LowerError)> = Vec::new();
     let modules = twork
         .modules
@@ -123,6 +113,26 @@ pub struct LoweringResult {
     pub workspace: LoweredWorkspace,
     /// Every error raised while lowering, paired with the module it came from.
     pub errors: Vec<(ModuleId, error::LowerError)>,
+}
+
+/// Per-`ModuleId` fully-qualified name for stdlib modules only.
+///
+/// A cross-stdlib-module call (`std.query` → `std.sql`) routes through the
+/// stdlib bridge so its BEAM atom is the dotted FQN, not the user-module
+/// `ridge_module_<id>` mangle. User modules are absent and keep the mangle.
+///
+/// [`lower_module`] needs this map, so anything lowering module-by-module —
+/// the editor's incremental path — has to build the same one. Sharing the
+/// definition is what keeps the two from drifting.
+#[must_use]
+pub fn stdlib_fqns(rwork: &ResolvedWorkspace) -> FxHashMap<ModuleId, String> {
+    rwork
+        .graph
+        .modules
+        .iter()
+        .filter(|m| m.fully_qualified_name.starts_with("std."))
+        .map(|m| (m.id, m.fully_qualified_name.clone()))
+        .collect()
 }
 
 /// Lower a single typed module to Core IR.

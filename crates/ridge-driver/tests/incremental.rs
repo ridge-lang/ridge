@@ -358,6 +358,7 @@ fn check_workspace_incremental_tracks_buffer_text_and_diagnostics() {
         &state.disc_resolve_errors,
         &state.resolved,
         &state.type_errors,
+        &state.lower_errors,
         &sources,
         &state.typed.tycons,
     );
@@ -380,6 +381,7 @@ fn check_workspace_incremental_tracks_buffer_text_and_diagnostics() {
         &state.disc_resolve_errors,
         &state.resolved,
         &state.type_errors,
+        &state.lower_errors,
         &sources,
         &state.typed.tycons,
     );

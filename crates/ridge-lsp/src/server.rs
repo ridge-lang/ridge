@@ -887,6 +887,7 @@ fn compile_blocking(
         &state.disc_resolve_errors,
         &state.resolved,
         &state.type_errors,
+        &state.lower_errors,
         &sources,
         &state.typed.tycons,
     );

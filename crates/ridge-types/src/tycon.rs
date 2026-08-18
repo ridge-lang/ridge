@@ -53,6 +53,24 @@ impl TyConArena {
         id
     }
 
+    /// The id [`Self::intern`] will assign to the next declaration.
+    ///
+    /// A self-referential schema — a union whose variants carry the union's
+    /// own type — needs its id before the declaration exists. Reading it here
+    /// keeps `intern`'s numbering rule in one place instead of writing the
+    /// number down at every leaf that names the type.
+    ///
+    /// Only valid immediately before the matching `intern`: anything interned
+    /// in between takes the id instead.
+    #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "same bound as intern, whose numbering this reports"
+    )]
+    pub const fn next_id(&self) -> TyConId {
+        TyConId(self.decls.len() as u32)
+    }
+
     /// Retrieves a [`TyConDecl`] by its [`TyConId`].
     ///
     /// # Panics

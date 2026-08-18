@@ -1,12 +1,10 @@
 //! [`BuiltinTyCons`] — the table of built-in type-constructor identifiers.
 //!
-//! # T3 implementation
-//!
-//! `BuiltinTyCons::allocate(&mut TyConArena)` registers the 12 built-in
-//! `TyCons` (indices 0..11) and returns populated struct fields.
-//!
-//! Calling `unallocated()` is still available for tests and scaffolding that
-//! hasn't wired the real arena yet.
+//! [`BuiltinTyCons::allocate`] interns every built-in into a fresh
+//! [`TyConArena`] and hands back a handle for each one. The table is the only
+//! place the resulting ids are written down: which number a built-in lands on
+//! follows from the order this file interns them, and nothing outside is
+//! entitled to predict one.
 
 use crate::{
     capability_set::CapabilitySet,
@@ -27,32 +25,6 @@ use crate::{
 /// stable dispatch key, chosen by **arity alone** — the capability row is *not*
 /// part of the key. Sixteen covers every realistic function arity.
 pub const FN_ARITY_COUNT: usize = 16;
-
-/// `TyConId` of `Fn/0` — the base of the reserved function-type block.
-///
-/// The block `Fn/0 … Fn/15` is interned immediately after the last nominal
-/// builtin (`Quote` = 26) and before any user/stdlib `TyCon`, so user
-/// allocation never collides with it. [`BuiltinTyCons::allocate`] asserts this
-/// layout.
-pub const FN_TYCON_BASE: u32 = 27;
-
-/// Maps a function arity to its synthetic `Fn/arity` [`TyConId`], or `None` when
-/// the arity exceeds [`FN_ARITY_COUNT`].
-#[must_use]
-pub fn fn_tycon_id(arity: usize) -> Option<TyConId> {
-    let arity = u32::try_from(arity)
-        .ok()
-        .filter(|&a| (a as usize) < FN_ARITY_COUNT)?;
-    Some(TyConId(FN_TYCON_BASE + arity))
-}
-
-/// Inverse of [`fn_tycon_id`]: recovers the arity from a synthetic `Fn/arity`
-/// id, or `None` when `id` is not in the reserved function-type block.
-#[must_use]
-pub fn fn_tycon_arity(id: TyConId) -> Option<usize> {
-    let offset = id.0.checked_sub(FN_TYCON_BASE)? as usize;
-    (offset < FN_ARITY_COUNT).then_some(offset)
-}
 
 /// The arena/dictionary name of the synthetic `Fn/arity` constructor.
 ///
@@ -184,7 +156,7 @@ pub struct BuiltinTyCons {
     pub quote: TyConId,
     /// Synthetic per-arity function-type constructors `Fn/0 … Fn/15`
     /// (index = arity). Dispatch keys only — never applied as `Type::Con`.
-    /// See [`fn_tycon_id`] / [`FN_ARITY_COUNT`].
+    /// See [`Self::fn_tycon_id`] / [`FN_ARITY_COUNT`].
     pub fns: [TyConId; FN_ARITY_COUNT],
     /// `Ret/1` — the return-type extractor. `Ret p` reduces to the return of a
     /// concrete function `p`. Internal: it appears only in Rust-seeded schemes,
@@ -227,30 +199,25 @@ pub struct BuiltinTyCons {
     /// shape table from the context and is invertible.
     pub insert_shape: TyConId,
     /// `Decimal` — an arbitrary-precision base-10 number. A primitive like
-    /// `Int`/`Float`, but interned last (id 51) so the historical 0..50 index
-    /// layout stays stable for the many call sites that hardcode those ids. The
-    /// value/DDL wiring lives in `std.decimal` and `std.sql`.
+    /// `Int`/`Float`. The value/DDL wiring lives in `std.decimal` and
+    /// `std.sql`.
     pub decimal: TyConId,
-    /// `Uuid` — an RFC 4122 identifier. A primitive like `Int`/`Text`, interned
-    /// after `Decimal` (id 52) so the historical 0..50 index layout stays stable.
-    /// It has no literal syntax; a value comes from `std.uuid` (`generate`, `fromText`),
+    /// `Uuid` — an RFC 4122 identifier. A primitive like `Int`/`Text`. It has no
+    /// literal syntax; a value comes from `std.uuid` (`generate`, `fromText`),
     /// and the codec that moves it across a SQL `uuid` column lives in `std.sql`.
     pub uuid: TyConId,
-    /// `Bytes` — a raw byte string. A primitive like `Text`, interned after `Uuid`
-    /// (id 53) so the historical 0..50 index layout stays stable. It has no literal
+    /// `Bytes` — a raw byte string. A primitive like `Text`. It has no literal
     /// syntax; a value comes from `std.bytes` (`fromHex`, `fromUtf8`, `generate`), and
     /// the codec that moves it across a SQL `bytea` column lives in `std.sql`.
     pub bytes: TyConId,
-    /// `Date` — a calendar date (year-month-day, no time-of-day, no timezone). A
-    /// primitive interned after `Bytes` (id 54) so the historical 0..50 index
-    /// layout stays stable. It has no literal syntax; a value comes from
-    /// `std.date` (`fromYmd`, `fromIso`, `today`), and the codec that moves it
-    /// across a SQL `date` column lives in `std.sql`.
+    /// `Date` — a calendar date (year-month-day, no time-of-day, no timezone).
+    /// A primitive. It has no literal syntax; a value comes from `std.date`
+    /// (`fromYmd`, `fromIso`, `today`), and the codec that moves it across a
+    /// SQL `date` column lives in `std.sql`.
     pub date: TyConId,
     /// `Time` — a wall-clock time of day (hour-minute-second, no date, no
-    /// timezone). A primitive interned after `Date` (id 55) so the historical
-    /// 0..50 index layout stays stable. It has no literal syntax; a value comes
-    /// from `std.timeofday` (`fromHms`, `fromIso`, `nowUtc`), and the codec that
+    /// timezone). A primitive. It has no literal syntax; a value comes from
+    /// `std.timeofday` (`fromHms`, `fromIso`, `nowUtc`), and the codec that
     /// moves it across a SQL `time` column lives in `std.sql`.
     pub time: TyConId,
     /// `Instant` — an opaque monotonic reading for measuring elapsed time
@@ -290,76 +257,34 @@ pub struct BuiltinTyCons {
 }
 
 impl BuiltinTyCons {
-    /// Returns an uninitialised `BuiltinTyCons` with sentinel values.
+    /// The synthetic `Fn/arity` [`TyConId`], or `None` when the arity is past
+    /// the reserved block ([`FN_ARITY_COUNT`]).
     ///
-    /// **Panics** if any field is used before `allocate` (T3) has been called.
-    /// This constructor exists only so that T2 types compile; real allocation
-    /// is implemented in T3.
+    /// Reads the block [`Self::allocate`] filled rather than computing an
+    /// index from a base, so the answer follows the arena wherever it puts
+    /// the block.
     #[must_use]
-    pub const fn unallocated() -> Self {
-        // Sentinel value — any use before T3 wires the real IDs will panic at
-        // the call site (via the debug assertion in T3's allocator).
-        const SENTINEL: TyConId = TyConId(u32::MAX);
-        Self {
-            int: SENTINEL,
-            float: SENTINEL,
-            bool: SENTINEL,
-            text: SENTINEL,
-            unit: SENTINEL,
-            timestamp: SENTINEL,
-            list: SENTINEL,
-            map: SENTINEL,
-            set: SENTINEL,
-            option: SENTINEL,
-            result: SENTINEL,
-            handle: SENTINEL,
-            error: SENTINEL,
-            duration: SENTINEL,
-            proc_output: SENTINEL,
-            ordering: SENTINEL,
-            json_value: SENTINEL,
-            sql: SENTINEL,
-            html: SENTINEL,
-            secure_cookie: SENTINEL,
-            sql_value: SENTINEL,
-            column: SENTINEL,
-            table: SENTINEL,
-            field_schema: SENTINEL,
-            schema: SENTINEL,
-            q_expr: SENTINEL,
-            quote: SENTINEL,
-            fns: [SENTINEL; FN_ARITY_COUNT],
-            ret: SENTINEL,
-            rows: SENTINEL,
-            joincond: SENTINEL,
-            joinresult: SENTINEL,
-            left_joinresult: SENTINEL,
-            right_joinresult: SENTINEL,
-            full_joinresult: SENTINEL,
-            insert_shape: SENTINEL,
-            decimal: SENTINEL,
-            uuid: SENTINEL,
-            bytes: SENTINEL,
-            date: SENTINEL,
-            time: SENTINEL,
-            instant: SENTINEL,
-            child_spec: SENTINEL,
-            supervisor: SENTINEL,
-            monitor: SENTINEL,
-            cli_parsed: SENTINEL,
-        }
+    pub fn fn_tycon_id(&self, arity: usize) -> Option<TyConId> {
+        self.fns.get(arity).copied()
+    }
+
+    /// Inverse of [`Self::fn_tycon_id`]: the arity `id` stands for, or `None`
+    /// when `id` is not one of the synthetic function-type constructors.
+    #[must_use]
+    pub fn fn_tycon_arity(&self, id: TyConId) -> Option<usize> {
+        self.fns.iter().position(|&f| f == id)
     }
 
     /// Allocates the built-in `TyCons` into `arena` and returns a populated
     /// `BuiltinTyCons`.
     ///
-    /// Indices are assigned in a fixed order (Int=0, Float=1, Bool=2, Text=3,
-    /// Unit=4, Timestamp=5, List=6, Map=7, Set=8, Option=9, Result=10,
-    /// Handle=11, Error=12, Duration=13, Output=14, Ordering=15,
-    /// JsonValue=16, Sql=17, Html=18, SecureCookie=19, SqlValue=20) matching
-    /// spec §4.1.
+    /// Ids come out of the arena in interning order. Which number a built-in
+    /// lands on is not part of the contract — read the returned struct, and
+    /// re-order this function freely when a new built-in belongs next to its
+    /// relatives rather than at the end.
+    ///
     /// Callers must pass a **fresh** arena (i.e. `arena.is_empty()` must be
-    /// true) so that the resulting `TyConId`s are stable and predictable.
+    /// true) so no user `TyCon` is interned ahead of the built-ins.
     ///
     /// # Panics
     ///
@@ -655,6 +580,11 @@ impl BuiltinTyCons {
         // can build and match JSON without importing std.json. JList/JObject are
         // self-referential, so their payloads name JsonValue's own TyConId. The
         // arena assigns ids sequentially, so this is index 16 (asserted below).
+        // A union whose variants carry the union's own type needs its id
+        // before the declaration exists. `next_id` reports what `intern` is
+        // about to assign, so the schema names the arena's answer rather than
+        // a number copied into every leaf.
+        let json_value_self = arena.next_id();
         let json_value = arena.intern(TyConDecl {
             id: TyConId(0),
             name: "JsonValue".to_string(),
@@ -687,7 +617,7 @@ impl BuiltinTyCons {
                         // List JsonValue
                         kind: VariantPayload::Positional(vec![Type::Con(
                             list,
-                            vec![Type::Con(TyConId(16), vec![])],
+                            vec![Type::Con(json_value_self, vec![])],
                         )]),
                     },
                     UnionVariant {
@@ -695,7 +625,7 @@ impl BuiltinTyCons {
                         // Map Text JsonValue
                         kind: VariantPayload::Positional(vec![Type::Con(
                             map,
-                            vec![Type::Con(text, vec![]), Type::Con(TyConId(16), vec![])],
+                            vec![Type::Con(text, vec![]), Type::Con(json_value_self, vec![])],
                         )]),
                     },
                 ],
@@ -796,6 +726,7 @@ impl BuiltinTyCons {
         // sql.ridge. Marked opaque (and given the cross-module sentinel module)
         // so consumers cannot construct or match its variants; they reach it only
         // through the imported `toSql`/`fromSql` methods.
+        let sql_value_self = arena.next_id();
         let sql_value = arena.intern(TyConDecl {
             id: TyConId(0),
             name: "SqlValue".to_string(),
@@ -880,7 +811,7 @@ impl BuiltinTyCons {
                         name: "SqlArray".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(
                             list,
-                            vec![Type::Con(TyConId(20), vec![])],
+                            vec![Type::Con(sql_value_self, vec![])],
                         )]),
                     },
                 ],
@@ -1005,339 +936,18 @@ impl BuiltinTyCons {
 
         // QExpr — the reified quotation expression tree. A prelude union (like
         // JsonValue) so the quotation runtime builds and matches it without an
-        // import. Self-referential variants name QExpr's own id (index 25).
+        // import. Its variants are filled in a second pass below.
         let q_expr = arena.intern(TyConDecl {
             id: TyConId(0),
             name: "QExpr".to_string(),
             arity: 0,
+            // Interned empty: the variants below name QExpr itself and five
+            // primitives that are interned after it, so the schema is written
+            // back once every id it mentions exists. This is the two-pass shape
+            // `TyConArena::replace_kind` documents for user types.
             kind: TyConKind::Union(UnionSchema {
                 params: vec![],
-                variants: vec![
-                    UnionVariant {
-                        name: "QCol".to_string(),
-                        kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
-                    },
-                    UnionVariant {
-                        name: "QLitInt".to_string(),
-                        kind: VariantPayload::Positional(vec![Type::Con(int, vec![])]),
-                    },
-                    UnionVariant {
-                        name: "QLitText".to_string(),
-                        kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
-                    },
-                    UnionVariant {
-                        name: "QLitBool".to_string(),
-                        kind: VariantPayload::Positional(vec![Type::Con(bool_, vec![])]),
-                    },
-                    UnionVariant {
-                        name: "QLitFloat".to_string(),
-                        kind: VariantPayload::Positional(vec![Type::Con(float, vec![])]),
-                    },
-                    UnionVariant {
-                        name: "QAnd".to_string(),
-                        kind: VariantPayload::Positional(vec![
-                            Type::Con(TyConId(25), vec![]),
-                            Type::Con(TyConId(25), vec![]),
-                        ]),
-                    },
-                    UnionVariant {
-                        name: "QOr".to_string(),
-                        kind: VariantPayload::Positional(vec![
-                            Type::Con(TyConId(25), vec![]),
-                            Type::Con(TyConId(25), vec![]),
-                        ]),
-                    },
-                    UnionVariant {
-                        name: "QNot".to_string(),
-                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(25), vec![])]),
-                    },
-                    UnionVariant {
-                        name: "QEq".to_string(),
-                        kind: VariantPayload::Positional(vec![
-                            Type::Con(TyConId(25), vec![]),
-                            Type::Con(TyConId(25), vec![]),
-                        ]),
-                    },
-                    UnionVariant {
-                        name: "QNe".to_string(),
-                        kind: VariantPayload::Positional(vec![
-                            Type::Con(TyConId(25), vec![]),
-                            Type::Con(TyConId(25), vec![]),
-                        ]),
-                    },
-                    UnionVariant {
-                        name: "QLt".to_string(),
-                        kind: VariantPayload::Positional(vec![
-                            Type::Con(TyConId(25), vec![]),
-                            Type::Con(TyConId(25), vec![]),
-                        ]),
-                    },
-                    UnionVariant {
-                        name: "QGt".to_string(),
-                        kind: VariantPayload::Positional(vec![
-                            Type::Con(TyConId(25), vec![]),
-                            Type::Con(TyConId(25), vec![]),
-                        ]),
-                    },
-                    UnionVariant {
-                        name: "QLe".to_string(),
-                        kind: VariantPayload::Positional(vec![
-                            Type::Con(TyConId(25), vec![]),
-                            Type::Con(TyConId(25), vec![]),
-                        ]),
-                    },
-                    UnionVariant {
-                        name: "QGe".to_string(),
-                        kind: VariantPayload::Positional(vec![
-                            Type::Con(TyConId(25), vec![]),
-                            Type::Con(TyConId(25), vec![]),
-                        ]),
-                    },
-                    // A projection: a select-list of `(alias, column)` pairs. The
-                    // alias is the output column name (the record field), the
-                    // QExpr is the projected column.
-                    UnionVariant {
-                        name: "QProj".to_string(),
-                        kind: VariantPayload::Positional(vec![Type::Con(
-                            list,
-                            vec![Type::Tuple(vec![
-                                Type::Con(text, vec![]),
-                                Type::Con(TyConId(25), vec![]),
-                            ])],
-                        )]),
-                    },
-                    // A right-side column reference in a join. `QCol` names a
-                    // column of the left (or only) table; `QColR` names one of the
-                    // right table, so a two-table quote keeps the two sides apart.
-                    // Single-table quotes never produce it.
-                    UnionVariant {
-                        name: "QColR".to_string(),
-                        kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
-                    },
-                    // The group key of a `groupBy` query — the column the rows are
-                    // partitioned by. In a `summarize` projection or a `having`
-                    // predicate it stands for `g.key`. Carries no column of its own:
-                    // the key column travels alongside the tree at the seam.
-                    UnionVariant {
-                        name: "QGroupKey".to_string(),
-                        kind: VariantPayload::Nullary,
-                    },
-                    // A per-group `COUNT(*)` — `g.count`. Nullary: it counts the
-                    // rows of the group, naming no column.
-                    UnionVariant {
-                        name: "QAggCount".to_string(),
-                        kind: VariantPayload::Nullary,
-                    },
-                    // The per-group scalar aggregates over a single column —
-                    // `g.sum(col)`, `g.avg(col)`, `g.min(col)`, `g.max(col)`. Each
-                    // wraps the `QCol` it folds.
-                    UnionVariant {
-                        name: "QAggSum".to_string(),
-                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(25), vec![])]),
-                    },
-                    UnionVariant {
-                        name: "QAggAvg".to_string(),
-                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(25), vec![])]),
-                    },
-                    UnionVariant {
-                        name: "QAggMin".to_string(),
-                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(25), vec![])]),
-                    },
-                    UnionVariant {
-                        name: "QAggMax".to_string(),
-                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(25), vec![])]),
-                    },
-                    // A column reference tagged by source index in an N-ary join.
-                    // `QCol` names a column of leaf 0 (the left or only table) and
-                    // `QColR` one of leaf 1 (the binary right table); `QColAt`
-                    // carries the leaf index explicitly so a join of three or more
-                    // tables can name a column of any source. The leaf order is the
-                    // left-to-right walk of the join tree, so `QColAt 2` is the
-                    // third table joined. Two-table quotes never produce it — they
-                    // stay `QCol`/`QColR` so the binary path is byte-identical.
-                    UnionVariant {
-                        name: "QColAt".to_string(),
-                        kind: VariantPayload::Positional(vec![
-                            Type::Con(int, vec![]),
-                            Type::Con(text, vec![]),
-                        ]),
-                    },
-                    // A `<expr> IS NOT TRUE` test: true when the inner predicate is
-                    // false OR unknown (NULL). The three-valued dual of `QNot` — `QNot`
-                    // of a NULL is still NULL, this is TRUE — so `every` can probe for a
-                    // row that violates its predicate, an outer join's unmatched side
-                    // (whose columns read NULL) counting as a violation. Appended last so
-                    // the existing variant indices the lowering pass hardcodes stay put.
-                    UnionVariant {
-                        name: "QNotTrue".to_string(),
-                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(25), vec![])]),
-                    },
-                    // A `value LIKE pattern` test. The first operand is the column,
-                    // the second a `QLitText` carrying the SQL LIKE pattern (already
-                    // escaped and wrapped at reify time for the `contains`/`startsWith`/
-                    // `endsWith` forms, passed through verbatim for the raw `like`
-                    // form). Appended after `QNotTrue` so existing variant indices the
-                    // lowering pass hardcodes stay put.
-                    UnionVariant {
-                        name: "QLike".to_string(),
-                        kind: VariantPayload::Positional(vec![
-                            Type::Con(TyConId(25), vec![]),
-                            Type::Con(TyConId(25), vec![]),
-                        ]),
-                    },
-                    // A `value IN (e0, e1, …)` test. The first operand is the column,
-                    // the second a list of literal `QExpr` elements (the IN set). An
-                    // empty set renders as `FALSE` — nothing is a member of it.
-                    UnionVariant {
-                        name: "QIn".to_string(),
-                        kind: VariantPayload::Positional(vec![
-                            Type::Con(TyConId(25), vec![]),
-                            Type::Con(list, vec![Type::Con(TyConId(25), vec![])]),
-                        ]),
-                    },
-                    // The arithmetic value nodes — `a + b`, `a - b`, `a * b`,
-                    // `a / b`, `a % b` — each over two operand `QExpr`s. Unlike the
-                    // comparison nodes these stand for a *value*, not a predicate:
-                    // they appear as an operand of a comparison (`price * qty > 100`),
-                    // recursively. Both operands share one numeric type (Int or
-                    // Float); `%` is Int-only, matching Postgres. Appended after
-                    // `QIn` so existing variant indices the lowering pass hardcodes
-                    // stay put.
-                    UnionVariant {
-                        name: "QAdd".to_string(),
-                        kind: VariantPayload::Positional(vec![
-                            Type::Con(TyConId(25), vec![]),
-                            Type::Con(TyConId(25), vec![]),
-                        ]),
-                    },
-                    UnionVariant {
-                        name: "QSub".to_string(),
-                        kind: VariantPayload::Positional(vec![
-                            Type::Con(TyConId(25), vec![]),
-                            Type::Con(TyConId(25), vec![]),
-                        ]),
-                    },
-                    UnionVariant {
-                        name: "QMul".to_string(),
-                        kind: VariantPayload::Positional(vec![
-                            Type::Con(TyConId(25), vec![]),
-                            Type::Con(TyConId(25), vec![]),
-                        ]),
-                    },
-                    UnionVariant {
-                        name: "QDiv".to_string(),
-                        kind: VariantPayload::Positional(vec![
-                            Type::Con(TyConId(25), vec![]),
-                            Type::Con(TyConId(25), vec![]),
-                        ]),
-                    },
-                    UnionVariant {
-                        name: "QMod".to_string(),
-                        kind: VariantPayload::Positional(vec![
-                            Type::Con(TyConId(25), vec![]),
-                            Type::Con(TyConId(25), vec![]),
-                        ]),
-                    },
-                    // A conditional value — `if cond then a else b` → the SQL
-                    // `CASE WHEN cond THEN a ELSE b END`. The first child is the
-                    // boolean condition, the second and third its two branches.
-                    // The branches share one type — the value the whole CASE
-                    // yields — or are both predicates, making the CASE itself a
-                    // boolean usable in a WHERE. Appended after the arithmetic
-                    // nodes so existing variant indices the lowering pass
-                    // hardcodes stay put.
-                    UnionVariant {
-                        name: "QCase".to_string(),
-                        kind: VariantPayload::Positional(vec![
-                            Type::Con(TyConId(25), vec![]),
-                            Type::Con(TyConId(25), vec![]),
-                            Type::Con(TyConId(25), vec![]),
-                        ]),
-                    },
-                    // A correlated `EXISTS (SELECT 1 FROM <table> …)` subquery test,
-                    // the in-quote `exists inner (fn p -> …)` over a captured table.
-                    // The first operand is the inner table name (a runtime value read
-                    // off the captured repo), the second the correlated predicate over
-                    // the outer row (`QCol`) and the inner row (`QColR`) — the same two
-                    // sides a join condition names, so the backend probes it through
-                    // the existing two-row predicate path. `notExists` wraps it in a
-                    // `QNot`. Appended after `QCase` so existing variant indices the
-                    // lowering pass hardcodes stay put.
-                    UnionVariant {
-                        name: "QExists".to_string(),
-                        kind: VariantPayload::Positional(vec![
-                            Type::Con(text, vec![]),
-                            Type::Con(TyConId(25), vec![]),
-                        ]),
-                    },
-                    // A decimal literal captured in a quoted predicate. Carries a
-                    // Decimal (tycon id 51, interned after this union). Appended last,
-                    // like `QExists`, so the variant indices the lowering pass
-                    // hardcodes stay put.
-                    UnionVariant {
-                        name: "QLitDecimal".to_string(),
-                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(51), vec![])]),
-                    },
-                    // A uuid captured in a quoted predicate (a uuid has no literal
-                    // syntax, so this only ever holds a captured runtime value).
-                    // Carries a Uuid (tycon id 52). Appended last so the variant
-                    // indices the lowering pass hardcodes stay put.
-                    UnionVariant {
-                        name: "QLitUuid".to_string(),
-                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(52), vec![])]),
-                    },
-                    // A timestamp captured in a quoted predicate (Timestamp has no
-                    // literal syntax either). Carries a Timestamp (tycon id 5); the
-                    // renderers move it across `SqlInstant` as epoch microseconds.
-                    // Appended last so the hardcoded variant indices stay put.
-                    UnionVariant {
-                        name: "QLitInstant".to_string(),
-                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(5), vec![])]),
-                    },
-                    // A byte string captured in a quoted predicate (Bytes has no
-                    // literal syntax either). Carries a Bytes (tycon id 53); the
-                    // renderers move it across `SqlBytes` as canonical hex. Appended
-                    // last so the hardcoded variant indices stay put.
-                    UnionVariant {
-                        name: "QLitBytes".to_string(),
-                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(53), vec![])]),
-                    },
-                    // A calendar date captured in a quoted predicate (Date has no
-                    // literal syntax either). Carries a Date (tycon id 54); the
-                    // renderers move it across `SqlDate` as ISO text. Appended last
-                    // so the hardcoded variant indices stay put.
-                    UnionVariant {
-                        name: "QLitDate".to_string(),
-                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(54), vec![])]),
-                    },
-                    // A wall-clock time of day captured in a quoted predicate (Time has
-                    // no literal syntax either). Carries a Time (tycon id 55); the
-                    // renderers move it across `SqlTime` as ISO text. Appended last so
-                    // the hardcoded variant indices stay put.
-                    UnionVariant {
-                        name: "QLitTime".to_string(),
-                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(55), vec![])]),
-                    },
-                    // A duration captured in a quoted predicate (Duration has no
-                    // literal syntax either). Carries a Duration (tycon id 13); the
-                    // renderers move it across `SqlInterval` as its millisecond span.
-                    // Appended last so the hardcoded variant indices stay put.
-                    UnionVariant {
-                        name: "QLitInterval".to_string(),
-                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(13), vec![])]),
-                    },
-                    // A grouped average over an interval column — `g.avg (fn u ->
-                    // u.took)` where `took` is a `Duration`. It folds the same `QCol`
-                    // (tycon id 25) as `QAggAvg`, but Postgres cannot cast an interval
-                    // average to `float8`, so the renderer reads the average's epoch
-                    // milliseconds instead. Distinct from `QAggAvg` because the reifier
-                    // knows the column type while the renderer does not. Appended last
-                    // so the hardcoded variant indices stay put.
-                    UnionVariant {
-                        name: "QAggAvgInterval".to_string(),
-                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(25), vec![])]),
-                    },
-                ],
+                variants: Vec::new(),
             }),
             def_span: None,
             def_module_raw: None, // prelude — no user module
@@ -1369,9 +979,9 @@ impl BuiltinTyCons {
         // types are structural (`Type::Fn`) with no nominal TyCon; these ids let
         // an instance head over a function type participate in (ClassId, TyConId)
         // dispatch, keyed by arity only (caps are NOT part of the key). They are
-        // dispatch keys — never applied as `Type::Con`, so `arity` is 0. They sit
-        // immediately after the nominal builtins and before any user/stdlib TyCon
-        // (FN_TYCON_BASE = 27), so user allocation cannot collide.
+        // dispatch keys — never applied as `Type::Con`, so `arity` is 0. Like
+        // every other built-in they are interned before any user/stdlib TyCon,
+        // so user allocation cannot collide with them.
         let mut fns = [TyConId(u32::MAX); FN_ARITY_COUNT];
         for (n, slot) in fns.iter_mut().enumerate() {
             *slot = arena.intern(TyConDecl {
@@ -1514,11 +1124,10 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
-        // Decimal — an arbitrary-precision base-10 primitive (id 51). A scalar
-        // like Int/Float/Timestamp, but interned last so the historical 0..50
-        // index layout stays fixed; several call sites hardcode those ids. Its
-        // runtime value is a scaled integer carried by `ridge_rt`; the codec and
-        // column wiring live in `std.decimal` / `std.sql`.
+        // Decimal — an arbitrary-precision base-10 primitive. A scalar like
+        // Int/Float/Timestamp. Its runtime value is a scaled integer carried by
+        // `ridge_rt`; the codec and column wiring live in `std.decimal` /
+        // `std.sql`.
         let decimal = arena.intern(TyConDecl {
             id: TyConId(0),
             name: "Decimal".to_string(),
@@ -1530,10 +1139,9 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
-        // Uuid — an RFC 4122 identifier primitive (id 52). A scalar like
-        // Int/Text, interned after Decimal so the historical 0..50 layout stays
-        // fixed. Its runtime value is the canonical text carried by `ridge_rt`;
-        // the constructors live in `std.uuid` and the SQL codec in `std.sql`.
+        // Uuid — an RFC 4122 identifier primitive. A scalar like Int/Text. Its
+        // runtime value is the canonical text carried by `ridge_rt`; the
+        // constructors live in `std.uuid` and the SQL codec in `std.sql`.
         let uuid = arena.intern(TyConDecl {
             id: TyConId(0),
             name: "Uuid".to_string(),
@@ -1545,10 +1153,9 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
-        // Bytes — a raw byte string primitive (id 53). A scalar like Text, interned
-        // after Uuid so the historical 0..50 layout stays fixed. Its runtime value
-        // is a raw BEAM binary; the constructors live in `std.bytes` and the SQL
-        // codec (a `bytea` column) in `std.sql`.
+        // Bytes — a raw byte string primitive. A scalar like Text. Its runtime
+        // value is a raw BEAM binary; the constructors live in `std.bytes` and
+        // the SQL codec (a `bytea` column) in `std.sql`.
         let bytes = arena.intern(TyConDecl {
             id: TyConId(0),
             name: "Bytes".to_string(),
@@ -1560,8 +1167,7 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
-        // Date — a calendar date primitive (id 54). A scalar interned after Bytes
-        // so the historical 0..50 layout stays fixed. Its runtime value is a
+        // Date — a calendar date primitive. Its runtime value is a
         // `{date, EpochDays}` day count; the constructors live in `std.date` and
         // the SQL codec (a `date` column) in `std.sql`.
         let date = arena.intern(TyConDecl {
@@ -1575,10 +1181,9 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
-        // Time — a wall-clock time-of-day primitive (id 55). A scalar interned after
-        // Date so the historical 0..50 layout stays fixed. Its runtime value is a
-        // `{time, Micros}` count of microseconds since midnight; the constructors live
-        // in `std.timeofday` and the SQL codec (a `time` column) in `std.sql`.
+        // Time — a wall-clock time-of-day primitive. Its runtime value is a
+        // `{time, Micros}` count of microseconds since midnight; the constructors
+        // live in `std.timeofday` and the SQL codec (a `time` column) in `std.sql`.
         let time = arena.intern(TyConDecl {
             id: TyConId(0),
             name: "Time".to_string(),
@@ -1609,8 +1214,7 @@ impl BuiltinTyCons {
         // Two 1-arity opaque types, modelled exactly on `Handle a` above: the
         // "schema" is the actor's TyConDecl, looked up at use sites. `child
         // ActorName (args...)` produces a `ChildSpec(ActorTyCon)`; `supervise`
-        // in `std.actor` produces a `Supervisor(ActorTyCon)`. Interned after
-        // Instant so the historical 0..56 index layout stays stable.
+        // in `std.actor` produces a `Supervisor(ActorTyCon)`.
         let child_spec = arena.intern(TyConDecl {
             id: TyConId(0),
             name: "ChildSpec".to_string(),
@@ -1634,8 +1238,7 @@ impl BuiltinTyCons {
 
         // Monitor — an opaque process-monitor reference (std.actor). 0-arity,
         // modelled on `ChildSpec`/`Supervisor` above; a BEAM `reference()` has
-        // no Ridge type to alias, so it cannot be a stdlib `pub type`. Interned
-        // after Supervisor so the historical 0..58 index layout stays stable.
+        // no Ridge type to alias, so it cannot be a stdlib `pub type`.
         let monitor = arena.intern(TyConDecl {
             id: TyConId(0),
             name: "Monitor".to_string(),
@@ -1650,7 +1253,7 @@ impl BuiltinTyCons {
         // Parsed { flags: Map Text Text, switches: List Text, positionals: List Text }
         // — the result type of `std.cli.parse`. Registered as a record so field
         // access (`p.positionals`) is typeable at app compile time, mirroring
-        // `proc_output`. Interned last so the 0..59 layout stays stable.
+        // `proc_output`.
         let cli_parsed = arena.intern(TyConDecl {
             id: TyConId(0),
             name: "Parsed".to_string(),
@@ -1678,69 +1281,340 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
-        // Verify assignment order matches spec §4.1 indices 0..16.
-        debug_assert_eq!(int.0, 0);
-        debug_assert_eq!(float.0, 1);
-        debug_assert_eq!(bool_.0, 2);
-        debug_assert_eq!(text.0, 3);
-        debug_assert_eq!(unit.0, 4);
-        debug_assert_eq!(timestamp.0, 5);
-        debug_assert_eq!(list.0, 6);
-        debug_assert_eq!(map.0, 7);
-        debug_assert_eq!(set.0, 8);
-        debug_assert_eq!(option.0, 9);
-        debug_assert_eq!(result.0, 10);
-        debug_assert_eq!(handle.0, 11);
-        debug_assert_eq!(error.0, 12);
-        debug_assert_eq!(duration.0, 13);
-        debug_assert_eq!(proc_output.0, 14);
-        debug_assert_eq!(ordering.0, 15);
-        debug_assert_eq!(json_value.0, 16);
-        debug_assert_eq!(sql.0, 17);
-        debug_assert_eq!(html.0, 18);
-        debug_assert_eq!(secure_cookie.0, 19);
-        debug_assert_eq!(sql_value.0, 20);
-        debug_assert_eq!(column.0, 21);
-        debug_assert_eq!(table.0, 22);
-        debug_assert_eq!(field_schema.0, 23);
-        debug_assert_eq!(schema.0, 24);
-        debug_assert_eq!(q_expr.0, 25);
-        debug_assert_eq!(quote.0, 26);
-        // Synthetic Fn/N block: Fn/0 = 27 … Fn/15 = 42 (FN_TYCON_BASE = 27).
-        debug_assert_eq!(fns[0].0, FN_TYCON_BASE);
-        debug_assert_eq!(fns[0].0, 27);
-        debug_assert_eq!(fns[FN_ARITY_COUNT - 1].0, 42);
-        // Ret/1 sits immediately after the Fn/N block.
-        debug_assert_eq!(ret.0, 43);
-        // Rows/1 sits immediately after Ret/1.
-        debug_assert_eq!(rows.0, 44);
-        // JoinCond/2 sits immediately after Rows/1.
-        debug_assert_eq!(joincond.0, 45);
-        // JoinResult/2 sits immediately after JoinCond/2.
-        debug_assert_eq!(joinresult.0, 46);
-        // LeftJoinResult/2 sits right after JoinResult/2.
-        debug_assert_eq!(left_joinresult.0, 47);
-        // RightJoinResult/2 sits right after it.
-        debug_assert_eq!(right_joinresult.0, 48);
-        // FullJoinResult/2 sits right after it.
-        debug_assert_eq!(full_joinresult.0, 49);
-        // InsertShape/1 sits right after FullJoinResult/2.
-        debug_assert_eq!(insert_shape.0, 50);
-        // Decimal, Uuid, Bytes, Date and Time are interned last so they do not
-        // disturb the 0..50 layout.
-        debug_assert_eq!(decimal.0, 51);
-        debug_assert_eq!(uuid.0, 52);
-        debug_assert_eq!(bytes.0, 53);
-        debug_assert_eq!(date.0, 54);
-        debug_assert_eq!(time.0, 55);
-        debug_assert_eq!(instant.0, 56);
-        // ChildSpec and Supervisor are interned after Instant.
-        debug_assert_eq!(child_spec.0, 57);
-        debug_assert_eq!(supervisor.0, 58);
-        // Monitor is interned after Supervisor.
-        debug_assert_eq!(monitor.0, 59);
-        // Parsed (std.cli) is interned last so the 0..59 layout stays stable.
-        debug_assert_eq!(cli_parsed.0, 60);
+        // QExpr, pass two. Every id its variants name now exists, so they
+        // read the handle rather than the number the schema used to carry.
+        arena.replace_kind(
+            q_expr,
+            TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "QCol".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "QLitInt".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(int, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "QLitText".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "QLitBool".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(bool_, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "QLitFloat".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(float, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "QAnd".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(q_expr, vec![]),
+                            Type::Con(q_expr, vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "QOr".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(q_expr, vec![]),
+                            Type::Con(q_expr, vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "QNot".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(q_expr, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "QEq".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(q_expr, vec![]),
+                            Type::Con(q_expr, vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "QNe".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(q_expr, vec![]),
+                            Type::Con(q_expr, vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "QLt".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(q_expr, vec![]),
+                            Type::Con(q_expr, vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "QGt".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(q_expr, vec![]),
+                            Type::Con(q_expr, vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "QLe".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(q_expr, vec![]),
+                            Type::Con(q_expr, vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "QGe".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(q_expr, vec![]),
+                            Type::Con(q_expr, vec![]),
+                        ]),
+                    },
+                    // A projection: a select-list of `(alias, column)` pairs. The
+                    // alias is the output column name (the record field), the
+                    // QExpr is the projected column.
+                    UnionVariant {
+                        name: "QProj".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(
+                            list,
+                            vec![Type::Tuple(vec![
+                                Type::Con(text, vec![]),
+                                Type::Con(q_expr, vec![]),
+                            ])],
+                        )]),
+                    },
+                    // A right-side column reference in a join. `QCol` names a
+                    // column of the left (or only) table; `QColR` names one of the
+                    // right table, so a two-table quote keeps the two sides apart.
+                    // Single-table quotes never produce it.
+                    UnionVariant {
+                        name: "QColR".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
+                    },
+                    // The group key of a `groupBy` query — the column the rows are
+                    // partitioned by. In a `summarize` projection or a `having`
+                    // predicate it stands for `g.key`. Carries no column of its own:
+                    // the key column travels alongside the tree at the seam.
+                    UnionVariant {
+                        name: "QGroupKey".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    // A per-group `COUNT(*)` — `g.count`. Nullary: it counts the
+                    // rows of the group, naming no column.
+                    UnionVariant {
+                        name: "QAggCount".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    // The per-group scalar aggregates over a single column —
+                    // `g.sum(col)`, `g.avg(col)`, `g.min(col)`, `g.max(col)`. Each
+                    // wraps the `QCol` it folds.
+                    UnionVariant {
+                        name: "QAggSum".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(q_expr, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "QAggAvg".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(q_expr, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "QAggMin".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(q_expr, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "QAggMax".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(q_expr, vec![])]),
+                    },
+                    // A column reference tagged by source index in an N-ary join.
+                    // `QCol` names a column of leaf 0 (the left or only table) and
+                    // `QColR` one of leaf 1 (the binary right table); `QColAt`
+                    // carries the leaf index explicitly so a join of three or more
+                    // tables can name a column of any source. The leaf order is the
+                    // left-to-right walk of the join tree, so `QColAt 2` is the
+                    // third table joined. Two-table quotes never produce it — they
+                    // stay `QCol`/`QColR` so the binary path is byte-identical.
+                    UnionVariant {
+                        name: "QColAt".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(int, vec![]),
+                            Type::Con(text, vec![]),
+                        ]),
+                    },
+                    // A `<expr> IS NOT TRUE` test: true when the inner predicate is
+                    // false OR unknown (NULL). The three-valued dual of `QNot` — `QNot`
+                    // of a NULL is still NULL, this is TRUE — so `every` can probe for a
+                    // row that violates its predicate, an outer join's unmatched side
+                    // (whose columns read NULL) counting as a violation. Appended last so
+                    // the existing variant indices the lowering pass hardcodes stay put.
+                    UnionVariant {
+                        name: "QNotTrue".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(q_expr, vec![])]),
+                    },
+                    // A `value LIKE pattern` test. The first operand is the column,
+                    // the second a `QLitText` carrying the SQL LIKE pattern (already
+                    // escaped and wrapped at reify time for the `contains`/`startsWith`/
+                    // `endsWith` forms, passed through verbatim for the raw `like`
+                    // form). Appended after `QNotTrue` so existing variant indices the
+                    // lowering pass hardcodes stay put.
+                    UnionVariant {
+                        name: "QLike".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(q_expr, vec![]),
+                            Type::Con(q_expr, vec![]),
+                        ]),
+                    },
+                    // A `value IN (e0, e1, …)` test. The first operand is the column,
+                    // the second a list of literal `QExpr` elements (the IN set). An
+                    // empty set renders as `FALSE` — nothing is a member of it.
+                    UnionVariant {
+                        name: "QIn".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(q_expr, vec![]),
+                            Type::Con(list, vec![Type::Con(q_expr, vec![])]),
+                        ]),
+                    },
+                    // The arithmetic value nodes — `a + b`, `a - b`, `a * b`,
+                    // `a / b`, `a % b` — each over two operand `QExpr`s. Unlike the
+                    // comparison nodes these stand for a *value*, not a predicate:
+                    // they appear as an operand of a comparison (`price * qty > 100`),
+                    // recursively. Both operands share one numeric type (Int or
+                    // Float); `%` is Int-only, matching Postgres. Appended after
+                    // `QIn` so existing variant indices the lowering pass hardcodes
+                    // stay put.
+                    UnionVariant {
+                        name: "QAdd".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(q_expr, vec![]),
+                            Type::Con(q_expr, vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "QSub".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(q_expr, vec![]),
+                            Type::Con(q_expr, vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "QMul".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(q_expr, vec![]),
+                            Type::Con(q_expr, vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "QDiv".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(q_expr, vec![]),
+                            Type::Con(q_expr, vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "QMod".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(q_expr, vec![]),
+                            Type::Con(q_expr, vec![]),
+                        ]),
+                    },
+                    // A conditional value — `if cond then a else b` → the SQL
+                    // `CASE WHEN cond THEN a ELSE b END`. The first child is the
+                    // boolean condition, the second and third its two branches.
+                    // The branches share one type — the value the whole CASE
+                    // yields — or are both predicates, making the CASE itself a
+                    // boolean usable in a WHERE. Appended after the arithmetic
+                    // nodes so existing variant indices the lowering pass
+                    // hardcodes stay put.
+                    UnionVariant {
+                        name: "QCase".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(q_expr, vec![]),
+                            Type::Con(q_expr, vec![]),
+                            Type::Con(q_expr, vec![]),
+                        ]),
+                    },
+                    // A correlated `EXISTS (SELECT 1 FROM <table> …)` subquery test,
+                    // the in-quote `exists inner (fn p -> …)` over a captured table.
+                    // The first operand is the inner table name (a runtime value read
+                    // off the captured repo), the second the correlated predicate over
+                    // the outer row (`QCol`) and the inner row (`QColR`) — the same two
+                    // sides a join condition names, so the backend probes it through
+                    // the existing two-row predicate path. `notExists` wraps it in a
+                    // `QNot`. Appended after `QCase` so existing variant indices the
+                    // lowering pass hardcodes stay put.
+                    UnionVariant {
+                        name: "QExists".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(text, vec![]),
+                            Type::Con(q_expr, vec![]),
+                        ]),
+                    },
+                    // A decimal literal captured in a quoted predicate. Carries a
+                    // Decimal (tycon id 51, interned after this union). Appended last,
+                    // like `QExists`, so the variant indices the lowering pass
+                    // hardcodes stay put.
+                    UnionVariant {
+                        name: "QLitDecimal".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(decimal, vec![])]),
+                    },
+                    // A uuid captured in a quoted predicate (a uuid has no literal
+                    // syntax, so this only ever holds a captured runtime value).
+                    // Carries a Uuid (tycon id 52). Appended last so the variant
+                    // indices the lowering pass hardcodes stay put.
+                    UnionVariant {
+                        name: "QLitUuid".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(uuid, vec![])]),
+                    },
+                    // A timestamp captured in a quoted predicate (Timestamp has no
+                    // literal syntax either). Carries a Timestamp (tycon id 5); the
+                    // renderers move it across `SqlInstant` as epoch microseconds.
+                    // Appended last so the hardcoded variant indices stay put.
+                    UnionVariant {
+                        name: "QLitInstant".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(timestamp, vec![])]),
+                    },
+                    // A byte string captured in a quoted predicate (Bytes has no
+                    // literal syntax either). Carries a Bytes (tycon id 53); the
+                    // renderers move it across `SqlBytes` as canonical hex. Appended
+                    // last so the hardcoded variant indices stay put.
+                    UnionVariant {
+                        name: "QLitBytes".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(bytes, vec![])]),
+                    },
+                    // A calendar date captured in a quoted predicate (Date has no
+                    // literal syntax either). Carries a Date (tycon id 54); the
+                    // renderers move it across `SqlDate` as ISO text. Appended last
+                    // so the hardcoded variant indices stay put.
+                    UnionVariant {
+                        name: "QLitDate".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(date, vec![])]),
+                    },
+                    // A wall-clock time of day captured in a quoted predicate (Time has
+                    // no literal syntax either). Carries a Time (tycon id 55); the
+                    // renderers move it across `SqlTime` as ISO text. Appended last so
+                    // the hardcoded variant indices stay put.
+                    UnionVariant {
+                        name: "QLitTime".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(time, vec![])]),
+                    },
+                    // A duration captured in a quoted predicate (Duration has no
+                    // literal syntax either). Carries a Duration (tycon id 13); the
+                    // renderers move it across `SqlInterval` as its millisecond span.
+                    // Appended last so the hardcoded variant indices stay put.
+                    UnionVariant {
+                        name: "QLitInterval".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(duration, vec![])]),
+                    },
+                    // A grouped average over an interval column — `g.avg (fn u ->
+                    // u.took)` where `took` is a `Duration`. It folds the same `QCol`
+                    // as `QAggAvg`, but Postgres cannot cast an interval
+                    // average to `float8`, so the renderer reads the average's epoch
+                    // milliseconds instead. Distinct from `QAggAvg` because the reifier
+                    // knows the column type while the renderer does not. Appended last
+                    // so the hardcoded variant indices stay put.
+                    UnionVariant {
+                        name: "QAggAvgInterval".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(q_expr, vec![])]),
+                    },
+                ],
+            }),
+        );
 
         // Suppress the "unused" lint — CapabilitySet is imported for future use
         // in T4 (actor schemas carry CapabilitySet).
@@ -1839,24 +1713,134 @@ mod tests {
         assert_eq!(seen.len(), 15);
     }
 
+    /// Every handle points at the declaration it is named for.
+    ///
+    /// This is the property the `debug_assert_eq!(int.0, 0)` roll-call was
+    /// standing in for. It was never really claiming that `Int` is 0 — it was
+    /// catching a field wired to the wrong `intern` result, and it happened to
+    /// do that by pinning a number. Names survive a re-ordering, so the arena
+    /// is free to intern a new built-in next to its relatives instead of at
+    /// the end.
+    ///
+    /// The destructure is exhaustive on purpose: a new field cannot be added
+    /// to `BuiltinTyCons` without this test failing to compile, which is what
+    /// keeps the roll-call complete. (`#[non_exhaustive]` binds other crates,
+    /// not this one.) The other direction is covered by `unused_variables`: a
+    /// field bound here and then left out of the table below is an unused
+    /// binding, which the `-D warnings` gate turns into a build failure.
     #[test]
-    fn ids_match_spec_order() {
-        let (_, b) = make_arena_with_builtins();
-        assert_eq!(b.int.0, 0);
-        assert_eq!(b.float.0, 1);
-        assert_eq!(b.bool.0, 2);
-        assert_eq!(b.text.0, 3);
-        assert_eq!(b.unit.0, 4);
-        assert_eq!(b.timestamp.0, 5);
-        assert_eq!(b.list.0, 6);
-        assert_eq!(b.map.0, 7);
-        assert_eq!(b.set.0, 8);
-        assert_eq!(b.option.0, 9);
-        assert_eq!(b.result.0, 10);
-        assert_eq!(b.handle.0, 11);
-        assert_eq!(b.error.0, 12);
-        assert_eq!(b.duration.0, 13);
-        assert_eq!(b.proc_output.0, 14);
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one line per built-in on each side; the length is the completeness"
+    )]
+    fn every_handle_points_at_the_decl_it_is_named_for() {
+        let (arena, b) = make_arena_with_builtins();
+        let BuiltinTyCons {
+            int,
+            float,
+            bool: bool_,
+            text,
+            unit,
+            timestamp,
+            list,
+            map,
+            set,
+            option,
+            result,
+            handle,
+            error,
+            duration,
+            proc_output,
+            ordering,
+            json_value,
+            sql,
+            html,
+            secure_cookie,
+            sql_value,
+            column,
+            table,
+            field_schema,
+            schema,
+            q_expr,
+            quote,
+            fns,
+            ret,
+            rows,
+            joincond,
+            joinresult,
+            left_joinresult,
+            right_joinresult,
+            full_joinresult,
+            insert_shape,
+            decimal,
+            uuid,
+            bytes,
+            date,
+            time,
+            instant,
+            child_spec,
+            supervisor,
+            monitor,
+            cli_parsed,
+        } = b;
+
+        let named: [(TyConId, &str); 45] = [
+            (int, "Int"),
+            (float, "Float"),
+            (bool_, "Bool"),
+            (text, "Text"),
+            (unit, "Unit"),
+            (timestamp, "Timestamp"),
+            (list, "List"),
+            (map, "Map"),
+            (set, "Set"),
+            (option, "Option"),
+            (result, "Result"),
+            (handle, "Handle"),
+            (error, "Error"),
+            (duration, "Duration"),
+            (proc_output, "Output"),
+            (ordering, "Ordering"),
+            (json_value, "JsonValue"),
+            (sql, "Sql"),
+            (html, "Html"),
+            (secure_cookie, "SecureCookie"),
+            (sql_value, "SqlValue"),
+            (column, "Column"),
+            (table, "Table"),
+            (field_schema, "FieldSchema"),
+            (schema, "Schema"),
+            (q_expr, "QExpr"),
+            (quote, "Quote"),
+            (ret, "Ret"),
+            (rows, "Rows"),
+            (joincond, "JoinCond"),
+            (joinresult, "JoinResult"),
+            (left_joinresult, "LeftJoinResult"),
+            (right_joinresult, "RightJoinResult"),
+            (full_joinresult, "FullJoinResult"),
+            (insert_shape, "InsertShape"),
+            (decimal, "Decimal"),
+            (uuid, "Uuid"),
+            (bytes, "Bytes"),
+            (date, "Date"),
+            (time, "Time"),
+            (instant, "Instant"),
+            (child_spec, "ChildSpec"),
+            (supervisor, "Supervisor"),
+            (monitor, "Monitor"),
+            (cli_parsed, "Parsed"),
+        ];
+        for (id, name) in named {
+            assert_eq!(
+                arena.get(id).name,
+                name,
+                "the handle for `{name}` points at a different declaration"
+            );
+        }
+        for (arity, &id) in fns.iter().enumerate() {
+            assert_eq!(arena.get(id).name, fn_tycon_name(arity));
+        }
     }
 
     #[test]
@@ -1884,30 +1868,29 @@ mod tests {
         // ChildSpec / Supervisor + the process-monitor reference Monitor
         // + std.cli's Parsed record (interned last).
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 18);
         assert_eq!(arena.len(), 61);
     }
 
     #[test]
-    fn fn_tycons_are_arity_keyed_and_contiguous() {
+    fn fn_tycons_are_arity_keyed() {
         let (arena, b) = make_arena_with_builtins();
-        // Fn/0 = 27 … Fn/15 = 42, named "Fn0" … "Fn15", all Builtin-kind.
+        // Named "Fn0" … "Fn15", all Builtin-kind, and the two accessors agree
+        // with the block the allocator filled. Where the block sits is the
+        // arena's business.
         for (n, &id) in b.fns.iter().enumerate() {
-            let n_u32 = u32::try_from(n).unwrap();
-            assert_eq!(id.0, FN_TYCON_BASE + n_u32);
-            assert_eq!(fn_tycon_id(n), Some(id));
-            assert_eq!(fn_tycon_arity(id), Some(n));
+            assert_eq!(b.fn_tycon_id(n), Some(id));
+            assert_eq!(b.fn_tycon_arity(id), Some(n));
             let decl = arena.get(id);
             assert_eq!(decl.name, fn_tycon_name(n));
             assert_eq!(decl.name, format!("Fn{n}"));
             assert!(matches!(decl.kind, TyConKind::Builtin));
             assert!(decl.def_module_raw.is_none());
         }
-        // Out of range → None, both directions.
-        let count_u32 = u32::try_from(FN_ARITY_COUNT).unwrap();
-        assert_eq!(fn_tycon_id(FN_ARITY_COUNT), None);
-        assert_eq!(fn_tycon_arity(TyConId(FN_TYCON_BASE - 1)), None);
-        assert_eq!(fn_tycon_arity(TyConId(FN_TYCON_BASE + count_u32)), None);
+        // Out of range → None, both directions. A nominal built-in is not a
+        // function type however the arena numbered it.
+        assert_eq!(b.fn_tycon_id(FN_ARITY_COUNT), None);
+        assert_eq!(b.fn_tycon_arity(b.int), None);
+        assert_eq!(b.fn_tycon_arity(b.cli_parsed), None);
     }
 
     #[test]
@@ -2141,7 +2124,6 @@ mod tests {
         let decl = arena.get(b.json_value);
         assert_eq!(decl.name, "JsonValue");
         assert_eq!(decl.arity, 0);
-        assert_eq!(b.json_value.0, 16);
         if let TyConKind::Union(schema) = &decl.kind {
             let names: Vec<&str> = schema.variants.iter().map(|v| v.name.as_str()).collect();
             assert_eq!(

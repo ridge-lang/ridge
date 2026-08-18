@@ -123,7 +123,7 @@ mod tests {
     }
 
     fn fresh_ctx() -> LowerCtx<'static> {
-        LowerCtx::new(ModuleId(0), &[])
+        LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins())
     }
 
     fn field_ident(name: &str) -> Ident {

@@ -120,6 +120,21 @@ pub struct LowerCtx<'tw> {
     /// interp `ToText` dispatch (§4.6).  `None` for unit tests that do not wire
     /// the full pipeline.
     pub workspace: Option<&'tw TypedWorkspace>,
+    /// The built-in `TyConId` handles, as the arena assigned them.
+    ///
+    /// This is the only way lowering may name a built-in, and it is required
+    /// at construction because there is no correct answer for its absence.
+    /// Neither alternative works: a written-down id assumes the arena's
+    /// layout, which is the coupling this field exists to remove, and
+    /// [`Self::lookup_tycon_by_name`] keeps the *last* declaration for a name
+    /// — user types are interned after the built-ins, so a user type called
+    /// `Ordering` would shadow the real one and the lookup would hand back a
+    /// user id without a word.
+    ///
+    /// It sits beside [`Self::workspace`] rather than inside it because a
+    /// `LowerCtx` can be built without a workspace — unit tests do — and
+    /// naming `Int` is not something those may get wrong.
+    pub builtins: &'tw ridge_types::BuiltinTyCons,
     /// The current module's `inferred_caps` side-table from Phase 4.
     ///
     /// Keyed by the proxy `NodeId(span.start)` that `ridge-typecheck` uses for
@@ -234,14 +249,21 @@ impl<'tw> LowerCtx<'tw> {
     ///
     /// `node_types` is borrowed from `TypedModule.node_types` for the lifetime
     /// `'tw`; all counters start at zero and all collections are empty.
+    /// `builtins` is the arena's own answer for where the built-ins landed —
+    /// see [`Self::builtins`] for why it is not optional.
     ///
     /// This constructor does NOT wire the `BindingMap` / `NodeIdMap` needed for
     /// `Ident`/`Qualified` lowering.  Use `attach_bindings` when
     /// a `ResolvedModule` is available.
     #[must_use]
-    pub fn new(module_id: ModuleId, node_types: &'tw [Option<Type>]) -> Self {
+    pub fn new(
+        module_id: ModuleId,
+        node_types: &'tw [Option<Type>],
+        builtins: &'tw ridge_types::BuiltinTyCons,
+    ) -> Self {
         Self {
             module_id,
+            builtins,
             ir_node_id_counter: 0,
             node_types,
             source_map: FxHashMap::default(),
@@ -399,22 +421,6 @@ impl<'tw> LowerCtx<'tw> {
             .get(&proxy_nid)
             .copied()
             .unwrap_or(CapabilitySet::PURE)
-    }
-
-    /// The built-in type-constructor handles, as the arena interned them.
-    ///
-    /// This is the only way lowering may name a built-in. Neither of the
-    /// alternatives works: a written-down id assumes the arena's layout, which
-    /// is the coupling being removed, and [`Self::lookup_tycon_by_name`] keeps
-    /// the *last* declaration for a name — user types are interned after the
-    /// built-ins, so a user type called `Ordering` would shadow the real one and
-    /// the lookup would hand back a user id without a word.
-    ///
-    /// `None` when no workspace is attached, which is the case for the
-    /// hand-built contexts in unit tests.
-    #[must_use]
-    pub fn builtins(&self) -> Option<&'tw ridge_types::BuiltinTyCons> {
-        self.workspace.map(|ws| &ws.builtins)
     }
 
     /// Looks up a `TyConId` by name from the workspace's tycon list.
@@ -614,7 +620,7 @@ impl<'tw> LowerCtx<'tw> {
             module,
             name,
             &ws.stdlib_tycons,
-            &ws.builtins,
+            self.builtins,
             classes,
         )
     }
@@ -732,7 +738,7 @@ impl<'tw> LowerCtx<'tw> {
         // route here too. Fall back to its union so a stdlib body can construct a node
         // the quotation reifier never emits — e.g. `every`'s `QNotTrue` violator —
         // rather than dropping to the record fallback (which would emit an empty map).
-        if let Some(decl) = ws.tycons.get(ws.builtins.q_expr.0 as usize) {
+        if let Some(decl) = ws.tycons.get(self.builtins.q_expr.0 as usize) {
             if let TyConKind::Union(u) = &decl.kind {
                 if let Some((i, v)) = u.variants.iter().enumerate().find(|(_, v)| v.name == name) {
                     let is_record = matches!(v.kind, VariantPayload::Record(_));
@@ -747,7 +753,7 @@ impl<'tw> LowerCtx<'tw> {
         // `Greater` (or a pattern over one) lowers to the same nullary
         // `UnionVariant` codegen already uses for derived `compare`, emitting the
         // `'Less'`/`'Equal'`/`'Greater'` atom the runtime comparator returns.
-        if let Some(decl) = ws.tycons.get(ws.builtins.ordering.0 as usize) {
+        if let Some(decl) = ws.tycons.get(self.builtins.ordering.0 as usize) {
             if let TyConKind::Union(u) = &decl.kind {
                 if let Some((i, v)) = u.variants.iter().enumerate().find(|(_, v)| v.name == name) {
                     let is_record = matches!(v.kind, VariantPayload::Record(_));
@@ -834,7 +840,7 @@ mod tests {
     // Before any call to `lookup_actor_module`, the cache must be `None`.
     #[test]
     fn actor_module_cache_empty_initially() {
-        let ctx = LowerCtx::new(ModuleId(0), &[]);
+        let ctx = LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins());
         assert!(
             ctx.actor_module_cache.is_none(),
             "actor_module_cache must be None before first lookup"
@@ -848,7 +854,7 @@ mod tests {
     // because there is nothing to scan.
     #[test]
     fn actor_module_lookup_none_without_workspace() {
-        let mut ctx = LowerCtx::new(ModuleId(0), &[]);
+        let mut ctx = LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins());
         let result = ctx.lookup_actor_module("Counter");
         assert!(
             result.is_none(),
@@ -867,7 +873,7 @@ mod tests {
     // method returns None and the constructor ends up with no owner.
     #[test]
     fn lookup_constructor_tycon_none_without_symbol_table() {
-        let mut ctx = LowerCtx::new(ModuleId(0), &[]);
+        let mut ctx = LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins());
         let result = ctx.lookup_constructor_tycon(SymbolId(0));
         assert!(
             result.is_none(),
@@ -885,7 +891,7 @@ mod tests {
         let table = SymbolTable::empty(ModuleId(0));
         let table_ref = Box::leak(Box::new(table));
 
-        let mut ctx = LowerCtx::new(ModuleId(0), &[]);
+        let mut ctx = LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins());
         ctx.attach_symbol_table(table_ref);
 
         // SymbolId(99) is out of range for an empty table.

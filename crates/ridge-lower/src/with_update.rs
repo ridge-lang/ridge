@@ -90,7 +90,7 @@ mod tests {
     }
 
     fn fresh_ctx() -> LowerCtx<'static> {
-        LowerCtx::new(ModuleId(0), &[])
+        LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins())
     }
 
     fn int_lit_expr(n: i64) -> Expr {

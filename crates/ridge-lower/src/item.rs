@@ -1542,36 +1542,37 @@ fn delegated_inner_call(
 
     // Prelude `Encode`/`Decode` for a primitive inner: synthesise the dictionary
     // inline (these instances have no module-level `$inst_` const).
-    let dict = if crate::prelude_dict::is_prelude_codec_instance(class_id, inner_tycon) {
-        crate::prelude_dict::synth_prelude_dict(ctx, class_id, inner_tycon, vec![], sp)
-            .unwrap_or_else(|| IrExpr::Lit {
+    let dict =
+        if crate::prelude_dict::is_prelude_codec_instance(ctx.builtins, class_id, inner_tycon) {
+            crate::prelude_dict::synth_prelude_dict(ctx, class_id, inner_tycon, vec![], sp)
+                .unwrap_or_else(|| IrExpr::Lit {
+                    id: ctx.fresh_id(None),
+                    value: IrLit::Unit,
+                    span: sp,
+                })
+        } else if let Some(home) = stdlib_class_home_module(class_name) {
+            // Stdlib class (`SqlType`): its base-type dictionary lives in the home
+            // module and is fetched cross-module.
+            IrExpr::Symbol {
                 id: ctx.fresh_id(None),
-                value: IrLit::Unit,
+                sym: SymbolRef::Stdlib {
+                    module: home.to_owned(),
+                    name: format!("$inst_{class_name}_{inner_type_name}"),
+                },
                 span: sp,
-            })
-    } else if let Some(home) = stdlib_class_home_module(class_name) {
-        // Stdlib class (`SqlType`): its base-type dictionary lives in the home
-        // module and is fetched cross-module.
-        IrExpr::Symbol {
-            id: ctx.fresh_id(None),
-            sym: SymbolRef::Stdlib {
-                module: home.to_owned(),
-                name: format!("$inst_{class_name}_{inner_type_name}"),
-            },
-            span: sp,
-        }
-    } else {
-        // A user-class instance defined locally (not reached for the MVP's
-        // delegated classes; kept for completeness).
-        IrExpr::Symbol {
-            id: ctx.fresh_id(None),
-            sym: SymbolRef::Local {
-                name: format!("$inst_{class_name}_{inner_type_name}"),
-                module: ctx.module_id,
-            },
-            span: sp,
-        }
-    };
+            }
+        } else {
+            // A user-class instance defined locally (not reached for the MVP's
+            // delegated classes; kept for completeness).
+            IrExpr::Symbol {
+                id: ctx.fresh_id(None),
+                sym: SymbolRef::Local {
+                    name: format!("$inst_{class_name}_{inner_type_name}"),
+                    module: ctx.module_id,
+                },
+                span: sp,
+            }
+        };
 
     let projected = IrExpr::Field {
         id: ctx.fresh_id(None),
@@ -1702,7 +1703,7 @@ fn build_ord_record_body(ctx: &mut LowerCtx<'_>, field_names: &[String], sp: Spa
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
             ctor_kind: CtorKind::UnionVariant,
-            owner_type: ctx.builtins().map(|b| b.ordering),
+            owner_type: Some(ctx.builtins.ordering),
             name: name.to_string(),
             variant,
         },
@@ -1844,7 +1845,7 @@ fn build_ord_union_body(
             id: ctx.fresh_id(None),
             ctor: SymbolRef::Constructor {
                 ctor_kind: CtorKind::UnionVariant,
-                owner_type: ctx.builtins().map(|b| b.ordering),
+                owner_type: Some(ctx.builtins.ordering),
                 name: "Equal".to_string(),
                 variant: 1,
             },
@@ -1857,7 +1858,7 @@ fn build_ord_union_body(
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
             ctor_kind: CtorKind::UnionVariant,
-            owner_type: ctx.builtins().map(|b| b.ordering),
+            owner_type: Some(ctx.builtins.ordering),
             name: name.to_string(),
             variant: v,
         },
@@ -2256,7 +2257,7 @@ fn build_ord_payload_body(
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
             ctor_kind: CtorKind::UnionVariant,
-            owner_type: ctx.builtins().map(|b| b.ordering),
+            owner_type: Some(ctx.builtins.ordering),
             name: name.to_string(),
             variant,
         },
@@ -3119,7 +3120,7 @@ fn build_decode_error(ctx: &mut LowerCtx<'_>, code: &str, message: String, sp: S
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
             ctor_kind: CtorKind::Record,
-            owner_type: ctx.builtins().map(|b| b.error),
+            owner_type: Some(ctx.builtins.error),
             name: "Error".to_string(),
             variant: 0,
         },
@@ -6742,7 +6743,7 @@ mod tests {
     }
 
     fn fresh_ctx() -> LowerCtx<'static> {
-        LowerCtx::new(ModuleId(0), &[])
+        LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins())
     }
 
     fn ident(text: &str) -> Ident {
@@ -7119,9 +7120,10 @@ mod tests {
         use ridge_types::{TyConId, TOTEXT_CLASS};
 
         let mut ctx = fresh_ctx();
+        let int_ty = ctx.builtins.int;
 
         // Point = { x: Int, y: Int } deriving (ToText)
-        // field_tycons: [Some(TyConId(0)), Some(TyConId(0))] — both Int
+        // Both fields are `Int`.
         let derived = DerivedInstance {
             key: (TOTEXT_CLASS, TyConId(100)),
             instance_info: InstanceInfo {
@@ -7134,7 +7136,7 @@ mod tests {
             },
             method_body: DerivedMethodBody::DerivedToTextRecord {
                 field_names: vec!["x".to_string(), "y".to_string()],
-                field_tycons: vec![Some(TyConId(0)), Some(TyConId(0))],
+                field_tycons: vec![Some(int_ty), Some(int_ty)],
             },
         };
 
@@ -7182,6 +7184,7 @@ mod tests {
         use ridge_types::{TyConId, TOTEXT_CLASS};
 
         let mut ctx = fresh_ctx();
+        let int_ty = ctx.builtins.int;
 
         // Shape = Circle(Int) | Rect(Int, Int) deriving (ToText)
         let derived = DerivedInstance {
@@ -7197,12 +7200,12 @@ mod tests {
             method_body: DerivedMethodBody::DerivedToTextUnion {
                 variants: vec![
                     // Circle(Int) — 1 Int payload
-                    ("Circle".to_string(), 1, vec![Some(TyConId(0))], None),
+                    ("Circle".to_string(), 1, vec![Some(int_ty)], None),
                     // Rect(Int, Int) — 2 Int payloads
                     (
                         "Rect".to_string(),
                         2,
-                        vec![Some(TyConId(0)), Some(TyConId(0))],
+                        vec![Some(int_ty), Some(int_ty)],
                         None,
                     ),
                     // Point — nullary, no payloads

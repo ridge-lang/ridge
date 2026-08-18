@@ -97,7 +97,7 @@ mod tests {
     use ridge_ast::{Block, Expr, Span};
     use ridge_ir::{IrExpr, IrLit};
     use ridge_resolve::ModuleId;
-    use ridge_types::{TyConId, Type};
+    use ridge_types::Type;
 
     use crate::ctx::LowerCtx;
 
@@ -110,14 +110,14 @@ mod tests {
     }
 
     fn fresh_ctx() -> LowerCtx<'static> {
-        LowerCtx::new(ModuleId(0), &[])
+        LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins())
     }
 
     fn result_ty() -> Type {
-        // Result a e — TyConId(10)
+        let b = crate::test_support::builtins();
         Type::Con(
-            TyConId(10),
-            vec![Type::Con(TyConId(0), vec![]), Type::Con(TyConId(0), vec![])],
+            b.result,
+            vec![Type::Con(b.int, vec![]), Type::Con(b.int, vec![])],
         )
     }
 

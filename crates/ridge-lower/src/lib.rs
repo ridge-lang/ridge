@@ -34,6 +34,8 @@ pub mod operators;
 pub mod pipe;
 pub mod prelude_dict;
 pub mod propagate;
+#[cfg(test)]
+mod test_support;
 pub mod try_block;
 pub mod with_update;
 
@@ -150,7 +152,7 @@ pub fn lower_module(
     stdlib_fqns: &FxHashMap<ModuleId, String>,
     module_fqn: &str,
 ) -> (LoweredModule, Vec<error::LowerError>) {
-    let mut ctx = LowerCtx::new(typed.id, &typed.node_types);
+    let mut ctx = LowerCtx::new(typed.id, &typed.node_types, &ws.builtins);
     // The module FQN keys version-history lookups for `migrate` hooks.
     module_fqn.clone_into(&mut ctx.module_fqn);
     // Attach workspace-level context (tycons + builtins) for `with` schema
@@ -258,7 +260,7 @@ mod tests {
     // ── Test 2: LowerCtx fresh_id density and provenance ─────────────────────
     #[test]
     fn lower_ctx_fresh_id_density_and_provenance() {
-        let mut ctx = LowerCtx::new(ModuleId(0), &[]);
+        let mut ctx = LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins());
 
         let id0 = ctx.fresh_id(Some(NodeId(0)));
         let id1 = ctx.fresh_id(None);
@@ -288,7 +290,7 @@ mod tests {
     // ── Test 3: LowerCtx fresh_local unique names ─────────────────────────────
     #[test]
     fn lower_ctx_fresh_local_unique() {
-        let mut ctx = LowerCtx::new(ModuleId(0), &[]);
+        let mut ctx = LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins());
 
         let name0 = ctx.fresh_local("__prop_ok");
         let name1 = ctx.fresh_local("__prop_ok");
@@ -305,7 +307,7 @@ mod tests {
     fn lower_ctx_propagation_scope_stack() {
         use ridge_types::Type;
 
-        let mut ctx = LowerCtx::new(ModuleId(0), &[]);
+        let mut ctx = LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins());
 
         // Initially empty.
         assert!(ctx.current_propagation_scope().is_none());

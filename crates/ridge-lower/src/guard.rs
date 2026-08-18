@@ -152,7 +152,7 @@ mod tests {
     }
 
     fn fresh_ctx() -> LowerCtx<'static> {
-        LowerCtx::new(ModuleId(0), &[])
+        LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins())
     }
 
     fn bool_cond(value: bool) -> Expr {

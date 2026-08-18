@@ -382,7 +382,7 @@ mod tests {
     }
 
     fn fresh_ctx() -> LowerCtx<'static> {
-        LowerCtx::new(ModuleId(0), &[])
+        LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins())
     }
 
     // ── Simple let-then-expr ─────────────────────────────────────────────────────
@@ -404,7 +404,7 @@ mod tests {
         let mut binding_map: BindingMap = vec![None; (node_id.0 + 1) as usize];
         binding_map[node_id.0 as usize] = Some(Binding::Local(local_id));
 
-        let mut ctx = LowerCtx::new(ModuleId(0), &[]);
+        let mut ctx = LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins());
         ctx.attach_bindings(nid_map, Box::leak(Box::new(binding_map)));
 
         let stmts = vec![
@@ -684,7 +684,7 @@ mod tests {
         let mut binding_map: BindingMap = vec![None; (node_id.0 + 1) as usize];
         binding_map[node_id.0 as usize] = Some(Binding::Local(local_id));
 
-        let mut ctx = LowerCtx::new(ModuleId(0), &[]);
+        let mut ctx = LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins());
         ctx.attach_bindings(nid_map, Box::leak(Box::new(binding_map)));
 
         let target = Expr::Ident(Ident {

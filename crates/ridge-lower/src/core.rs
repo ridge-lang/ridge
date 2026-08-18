@@ -308,7 +308,20 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             let id = ctx.fresh_id(None);
             let (ir_params, pattern_entries) = lower_lambda_params(ctx, *span, params);
 
+            // A `?` in the body belongs to the lambda, not to whatever function
+            // encloses it. Without this the body reads the enclosing `fn`'s
+            // scope, which produced three different wrong answers depending on
+            // what that function returned: `L999` when it was neither `Result`
+            // nor `Option`, a working build when it happened to match, and a
+            // `.core` file `erlc` refused when it was the other one.
+            let scoped = lambda_return_type(ctx, *span);
+            if let Some(ret) = scoped.clone() {
+                ctx.push_propagation_scope(ret);
+            }
             let lowered_body = lower_expr(ctx, body);
+            if scoped.is_some() {
+                ctx.pop_propagation_scope();
+            }
             let wrapped_body = wrap_pattern_params(ctx, lowered_body, pattern_entries);
 
             // Anonymous lambdas have no inferred_caps entry; fall back to PURE.
@@ -947,6 +960,24 @@ fn qexpr_node(
 /// The resolved type of a captured identifier at `span`, peeled of aliases.
 /// `infer_expr` writes ident node types under `NodeKind::Expr`; the `Ident`
 /// fallback guards against any future wrapper-keying change.
+/// The return type of the lambda at `span`, as Phase 4 inferred it.
+///
+/// Read from the inferred type rather than the syntactic annotation so it works
+/// for the bare `fn params -> body` form too — the type-checker resolves the
+/// lambda's own return type either way, which is what #502 fixed on its side.
+///
+/// `None` when no type is recorded for the span, which happens only where there
+/// is no `node_types` table at all (hand-built contexts in unit tests). The
+/// caller then leaves the scope stack alone.
+fn lambda_return_type(ctx: &LowerCtx<'_>, span: Span) -> Option<Type> {
+    let m = ctx.node_id_map.as_ref()?;
+    let nid = m.get(span, NodeKind::Expr)?;
+    match deep_peel_alias(ctx.node_type(nid)?) {
+        Type::Fn { ret, .. } => Some(*ret),
+        _ => None,
+    }
+}
+
 fn captured_ident_type(ctx: &LowerCtx<'_>, span: Span) -> Option<Type> {
     let m = ctx.node_id_map.as_ref()?;
     let nid = m

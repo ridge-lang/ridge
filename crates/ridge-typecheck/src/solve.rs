@@ -348,7 +348,7 @@ fn dispatch_constraint(
         // params/ret are projected as positional "type arguments" by
         // `resolve_ctx_dict_args`, exactly like `List a` / `Result a e`.
         Type::Fn { params, .. } => {
-            if let Some(tyconid) = ridge_types::fn_tycon_id(params.len()) {
+            if let Some(tyconid) = ctx.builtins.fn_tycon_id(params.len()) {
                 let resolved_con = resolved.clone();
                 discharge_concrete(
                     ctx,
@@ -464,7 +464,7 @@ fn dispatch_multi_constraint(
             // The arity distinguishes a 1-row predicate from a 2-row one, which is
             // how the fundep tells a `Query` filter from a `Join` filter.
             Type::Fn { params, .. } => {
-                if let Some(id) = ridge_types::fn_tycon_id(params.len()) {
+                if let Some(id) = ctx.builtins.fn_tycon_id(params.len()) {
                     head_tycons.push(id);
                 }
             }

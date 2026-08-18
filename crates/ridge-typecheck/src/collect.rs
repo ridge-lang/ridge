@@ -152,6 +152,7 @@ pub fn collect_workspace_gated(
             &class_table,
             user_tycon_names,
             origins,
+            b,
             &mut instance_env,
             &mut errors,
         );
@@ -166,6 +167,7 @@ pub fn collect_workspace_gated(
             &class_table,
             user_tycon_names,
             origins,
+            b,
             &mut instance_env,
             &mut errors,
         );
@@ -354,6 +356,7 @@ fn extract_head_tycons(
     span: ridge_ast::Span,
     user_tycon_names: &FxHashMap<String, TyConId>,
     origins: &TyConOrigins,
+    b: &BuiltinTyCons,
     errors: &mut Vec<TypeError>,
 ) -> Option<InstanceHead> {
     let mut head_tycons = InstanceHead::new();
@@ -372,7 +375,7 @@ fn extract_head_tycons(
                 return None;
             }
         }
-        let Some(id) = extract_tycon_id(atom, user_tycon_names, origins) else {
+        let Some(id) = extract_tycon_id(atom, user_tycon_names, origins, b) else {
             errors.push(TypeError::UnsupportedInstanceHead {
                 class: class.to_string(),
                 reason: unkeyable_head_reason(atom),
@@ -411,12 +414,17 @@ fn unkeyable_head_reason(atom: &ridge_ast::Type) -> String {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one parameter per table this pass consults; they are separate authorities, not a bundle"
+)]
 fn collect_instance_decls(
     ast: &Module,
     module_id: u32,
     ct: &ClassTable,
     user_tycon_names: &FxHashMap<String, TyConId>,
     origins: &TyConOrigins,
+    b: &BuiltinTyCons,
     env: &mut InstanceEnv,
     errors: &mut Vec<TypeError>,
 ) {
@@ -444,6 +452,7 @@ fn collect_instance_decls(
             decl.span,
             user_tycon_names,
             origins,
+            b,
             errors,
         ) else {
             continue; // Unsupported head form — ignored in this pass.
@@ -560,12 +569,17 @@ fn collect_instance_decls(
 /// same module by the naming convention). When an explicit `instance ToText T`
 /// already exists for the same type, [`InstanceEnv::insert`] fires T034
 /// automatically through the `InstanceOrigin` routing.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one parameter per table this pass consults; they are separate authorities, not a bundle"
+)]
 fn collect_auto_promoted_to_text(
     ast: &ridge_ast::Module,
     module_id: u32,
     ct: &ClassTable,
     user_tycon_names: &FxHashMap<String, TyConId>,
     origins: &TyConOrigins,
+    b: &BuiltinTyCons,
     env: &mut InstanceEnv,
     errors: &mut Vec<TypeError>,
 ) {
@@ -597,7 +611,7 @@ fn collect_auto_promoted_to_text(
         };
 
         // The parameter type must be a concrete named constructor.
-        let Some(tycon_id) = extract_tycon_id(param_ty, user_tycon_names, origins) else {
+        let Some(tycon_id) = extract_tycon_id(param_ty, user_tycon_names, origins, b) else {
             continue;
         };
 
@@ -606,8 +620,7 @@ fn collect_auto_promoted_to_text(
         // Bool, Text, Timestamp, Ordering, Decimal, Uuid) is seeded in
         // `register_prelude_instances`; auto-promotion targets user-defined
         // types only. Keying on the env — rather than a fixed id range — stays
-        // correct as builtins are interned past the historical 0..16 block
-        // (Decimal and Uuid sit at 51/52). Explicit and derived instances are
+        // correct wherever the arena puts a builtin. Explicit and derived instances are
         // registered in later passes, so a non-auto-promoted hit here can only
         // be a prelude seed.
         //
@@ -677,6 +690,7 @@ pub(crate) fn is_auto_promoted_totext(
     ct: &ClassTable,
     user_tycon_names: &FxHashMap<String, TyConId>,
     origins: &TyConOrigins,
+    b: &BuiltinTyCons,
     env: &InstanceEnv,
 ) -> bool {
     use ridge_ast::Visibility;
@@ -694,7 +708,7 @@ pub(crate) fn is_auto_promoted_totext(
     let Some(totext_id) = ct.id_by_name("ToText") else {
         return false;
     };
-    let Some(tycon_id) = extract_tycon_id(param_ty, user_tycon_names, origins) else {
+    let Some(tycon_id) = extract_tycon_id(param_ty, user_tycon_names, origins, b) else {
         return false;
     };
 
@@ -1065,6 +1079,7 @@ fn extract_tycon_id(
     ty: &ridge_ast::Type,
     user_tycon_names: &FxHashMap<String, TyConId>,
     origins: &TyConOrigins,
+    b: &BuiltinTyCons,
 ) -> Option<TyConId> {
     use ridge_ast::Type as AstType;
     match peel_paren(ty) {
@@ -1092,7 +1107,7 @@ fn extract_tycon_id(
         // part of the key — dispatch is arity-only. `fn_ty.params` holds the
         // parameter atoms; a curried `a -> b -> c` nests its tail in `ret`, so it
         // is arity 1. Arities beyond `FN_ARITY_COUNT` yield `None` (unsupported).
-        AstType::Fn { fn_ty, .. } => ridge_types::fn_tycon_id(fn_ty.params.len()),
+        AstType::Fn { fn_ty, .. } => b.fn_tycon_id(fn_ty.params.len()),
         _ => None,
     }
 }

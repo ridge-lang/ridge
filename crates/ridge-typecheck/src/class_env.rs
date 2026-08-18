@@ -1819,7 +1819,7 @@ pub fn register_stdlib_instances(
     // for user workspaces; a no-op during the stdlib's own build, where
     // repo.ridge's source instances are collected directly.
     if let Some(refinable) = ct.id_by_name("Refinable") {
-        if let (Some(fn1), Some(fn2)) = (ridge_types::fn_tycon_id(1), ridge_types::fn_tycon_id(2)) {
+        if let (Some(fn1), Some(fn2)) = (b.fn_tycon_id(1), b.fn_tycon_id(2)) {
             let refinable_inst = || InstanceInfo {
                 def_module: None,
                 methods: vec![("filter".to_string(), String::new())],
@@ -1890,7 +1890,7 @@ pub fn register_stdlib_instances(
         ct.id_by_name("Adapter"),
         ct.id_by_name("Row"),
     ) {
-        if let (Some(fn1), Some(fn2)) = (ridge_types::fn_tycon_id(1), ridge_types::fn_tycon_id(2)) {
+        if let (Some(fn1), Some(fn2)) = (b.fn_tycon_id(1), b.fn_tycon_id(2)) {
             let ctx_constraints = vec![
                 ridge_types::Constraint::single(adapter, ridge_types::TyVid(0)),
                 ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
@@ -1962,7 +1962,7 @@ pub fn register_stdlib_instances(
     // key, it does not reach the store. The key's column type `k` is free in each
     // head, the fundep fixing only the key's arity per receiver.
     if let Some(orderable) = ct.id_by_name("Orderable") {
-        if let (Some(fn1), Some(fn2)) = (ridge_types::fn_tycon_id(1), ridge_types::fn_tycon_id(2)) {
+        if let (Some(fn1), Some(fn2)) = (b.fn_tycon_id(1), b.fn_tycon_id(2)) {
             let orderable_inst = || InstanceInfo {
                 def_module: None,
                 methods: vec![("orderBy".to_string(), String::new())],
@@ -2018,7 +2018,7 @@ pub fn register_stdlib_instances(
         ct.id_by_name("Adapter"),
         ct.id_by_name("SqlType"),
     ) {
-        if let (Some(fn1), Some(fn2)) = (ridge_types::fn_tycon_id(1), ridge_types::fn_tycon_id(2)) {
+        if let (Some(fn1), Some(fn2)) = (b.fn_tycon_id(1), b.fn_tycon_id(2)) {
             let ctx_constraints = vec![
                 ridge_types::Constraint::single(adapter, ridge_types::TyVid(0)),
                 ridge_types::Constraint::single(sqltype, ridge_types::TyVid(0)),
@@ -2070,7 +2070,7 @@ pub fn register_stdlib_instances(
         ct.id_by_name("SqlType"),
         reconciled_tycon_names.get("Seq"),
     ) {
-        if let Some(fn1) = ridge_types::fn_tycon_id(1) {
+        if let Some(fn1) = b.fn_tycon_id(1) {
             env.instances
                 .entry((aggregable, smallvec![seq, fn1]))
                 .or_insert_with(|| InstanceInfo {
@@ -2902,7 +2902,7 @@ pub fn register_stdlib_instances(
     // positions as the `Countable` instances above — `a@1` in a query, `a@2` in a
     // join.
     if let (Some(every), Some(adapter)) = (ct.id_by_name("Every"), ct.id_by_name("Adapter")) {
-        if let (Some(fn1), Some(fn2)) = (ridge_types::fn_tycon_id(1), ridge_types::fn_tycon_id(2)) {
+        if let (Some(fn1), Some(fn2)) = (b.fn_tycon_id(1), b.fn_tycon_id(2)) {
             let every_inst = |position: usize| InstanceInfo {
                 def_module: None,
                 methods: vec![("every".to_string(), String::new())],
@@ -2944,7 +2944,7 @@ pub fn register_stdlib_instances(
     // store and does not decode (it only tests the probe empty), so neither `Adapter` nor
     // `Row`, and no head-position augmentation, like `Countable (Seq a)`.
     if let (Some(every), Some(&seq)) = (ct.id_by_name("Every"), reconciled_tycon_names.get("Seq")) {
-        if let Some(fn1) = ridge_types::fn_tycon_id(1) {
+        if let Some(fn1) = b.fn_tycon_id(1) {
             env.instances
                 .entry((every, smallvec![seq, fn1]))
                 .or_insert_with(|| InstanceInfo {
@@ -2999,7 +2999,7 @@ pub fn register_stdlib_instances(
     // per receiver. Each instance only builds the `Grouped` record and reaches no
     // store, so it carries no context constraints (like `Pageable`).
     if let Some(groupable) = ct.id_by_name("Groupable") {
-        if let (Some(fn1), Some(fn2)) = (ridge_types::fn_tycon_id(1), ridge_types::fn_tycon_id(2)) {
+        if let (Some(fn1), Some(fn2)) = (b.fn_tycon_id(1), b.fn_tycon_id(2)) {
             let groupable_inst = || InstanceInfo {
                 def_module: None,
                 methods: vec![("groupBy".to_string(), String::new())],

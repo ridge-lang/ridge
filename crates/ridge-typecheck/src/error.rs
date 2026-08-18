@@ -403,7 +403,7 @@ pub enum TypeError {
     },
 
     // ── T024 ─────────────────────────────────────────────────────────────────
-    /// A capability variable escapes into a user-visible type (D057).
+    /// A capability variable escapes into a user-visible type.
     RowVariableLeak {
         /// Name of the declaration where the leak was detected.
         decl: String,

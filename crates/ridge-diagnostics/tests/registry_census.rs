@@ -14,7 +14,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use ridge_diagnostics::{REGISTRY, RETIRED};
+use ridge_diagnostics::{lookup_code, lookup_retired, REGISTRY, RETIRED};
 
 /// Every `Self::Variant { .. } => "X001"` arm, or-patterns included.
 ///
@@ -261,5 +261,75 @@ fn no_code_is_declared_by_two_crates() {
         shared.is_empty(),
         "one code, more than one meaning:\n  {}",
         shared.join("\n  ")
+    );
+}
+
+/// Split a summary into the tokens that could be a code.
+///
+/// A code is the only four-character run of an uppercase letter and three
+/// digits the page ever means, so the shape alone is enough to find candidates.
+/// What the shape cannot do is say whether one resolves — that is the test
+/// below.
+fn code_shaped_tokens(summary: &str) -> Vec<&str> {
+    summary
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| is_code(t))
+        .collect()
+}
+
+/// A code-shaped token in a summary is a code.
+///
+/// The page tells its reader that the leading letter groups the codes, and
+/// then indexes itself by that letter. So a reader who meets `X001` in an
+/// entry does the thing the page just taught them: look for the `X` group. If
+/// the token is a real cross-reference that works, and it is worth having —
+/// one entry points at another this way. If it is anything else, the reader is
+/// sent to a section that does not exist, by the one document whose subject is
+/// what these tokens mean.
+///
+/// Nothing else in the workspace can catch this. The census above reconciles
+/// codes that are *declared*; a number that only ever appears inside a summary
+/// is declared nowhere, so it passes every check here without this one.
+#[test]
+fn no_dangling_code_shaped_token_in_a_summary() {
+    let entries = REGISTRY
+        .iter()
+        .map(|e| (e.code, e.summary))
+        .chain(RETIRED.iter().map(|r| (r.code, r.summary)));
+
+    let dangling: Vec<String> = entries
+        .flat_map(|(code, summary)| {
+            code_shaped_tokens(summary)
+                .into_iter()
+                .filter(|t| lookup_code(t).is_none())
+                .filter(|t| lookup_retired(t).is_none())
+                .map(move |t| format!("{code} cites {t}"))
+        })
+        .collect();
+
+    assert!(
+        dangling.is_empty(),
+        "a summary names something code-shaped that no table declares — say \
+         what it means, or drop it:\n  {}",
+        dangling.join("\n  ")
+    );
+}
+
+/// The scan above can fire.
+///
+/// Its subject is a token that should never be there, so on a healthy registry
+/// it finds nothing — and a test that reports nothing looks the same whether
+/// it is passing or has stopped reading. This pins the tokenizer against text
+/// where the answer is known.
+#[test]
+fn the_token_scan_can_still_find_one() {
+    assert_eq!(
+        code_shaped_tokens("A capability variable escapes into a type (Z999)."),
+        vec!["Z999"],
+        "the tokenizer stopped seeing code-shaped tokens"
+    );
+    assert!(
+        code_shaped_tokens("No codes here, only prose about UTF8 and 0.3.0.").is_empty(),
+        "the tokenizer is matching things that are not code-shaped"
     );
 }

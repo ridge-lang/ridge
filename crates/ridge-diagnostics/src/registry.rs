@@ -1391,7 +1391,7 @@ pub const REGISTRY: &[CodeEntry] = &[
         code: "T024",
         variants: &["RowVariableLeak"],
         owner: "ridge-typecheck",
-        summary: "A capability variable escapes into a user-visible type (D057).",
+        summary: "A capability variable escapes into a user-visible type.",
     },
     CodeEntry {
         code: "T025",

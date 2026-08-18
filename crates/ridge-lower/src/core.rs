@@ -172,14 +172,15 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             span,
         } => lower_assign(ctx, target, value, *span),
 
-        // Bare `let` / `var` outside of a block context is a Phase 4 invariant
-        // violation — emit a defensive L999 error and return a Unit stub.
+        // Bare `let` / `var` outside of a block context is a type-checker
+        // invariant violation — emit a defensive L999 error and return a
+        // Unit stub.
         Expr::Let { span, .. } => {
             let id = ctx.fresh_id(None);
             ctx.errors.push(LowerError::InternalLoweringError {
                 span: *span,
                 message: "`let` binding encountered outside of block context; \
-                          Phase 4 should have rejected this"
+                          the type checker should have rejected this"
                     .into(),
             });
             IrExpr::Lit {
@@ -194,7 +195,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             ctx.errors.push(LowerError::InternalLoweringError {
                 span: *span,
                 message: "`var` binding encountered outside of block context; \
-                          Phase 4 should have rejected this"
+                          the type checker should have rejected this"
                     .into(),
             });
             IrExpr::Lit {

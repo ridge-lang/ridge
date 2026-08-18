@@ -163,12 +163,12 @@ pub fn lower_assign(ctx: &mut LowerCtx<'_>, target: &Expr, value: &Expr, span: S
         }
         Some(_other) => {
             // Any non-Local binding in an assignment position is unexpected —
-            // Phase 4 should have rejected this.  Emit defensive error.
+            // the type checker should have rejected this.  Emit defensive error.
             ctx.errors.push(LowerError::InternalLoweringError {
                 span: target_span,
                 message: format!(
                     "assignment target `{}` resolves to a non-mutable binding; \
-                     Phase 4 should have rejected this",
+                     the type checker should have rejected this",
                     ident.text
                 ),
             });

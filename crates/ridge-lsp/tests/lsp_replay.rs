@@ -9108,3 +9108,33 @@ async fn test_bare_import_alias_reads_but_does_not_rename() {
         "a bare import's implicit alias is not renameable"
     );
 }
+
+/// A stdlib function that can fail says so on hover.
+///
+/// The card is lifted from the `--` block above the declaration, so the editor
+/// tells the truth only for as long as that block does. `Int.abs` is the sharp
+/// case: it looks total, and it is not — the range reaches one further below
+/// zero than above it, so the smallest value has no absolute value inside the
+/// type. Someone reading the signature alone has no way to know that.
+///
+/// This pins the reachability, not the wording: what must not regress is that
+/// the failure is visible where the function is used, whatever sentence says it.
+#[tokio::test]
+async fn test_hover_on_a_partial_stdlib_function_shows_that_it_can_fail() {
+    let src = "import std.int as Int\npub fn f (n: Int) -> Int = Int.abs n\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    let line1 = "pub fn f (n: Int) -> Int = Int.abs n";
+    let col = u32::try_from(line1.find("abs").expect("abs use") + 1).expect("offset fits u32");
+    let h = server
+        .hover(hover_at(&uri, 1, col))
+        .await
+        .expect("hover ok");
+    let md = hover_markdown(h).expect("hover over a stdlib function returns markup");
+
+    assert!(
+        md.contains("Raises"),
+        "hover on Int.abs must surface that it can fail, got {md:?}"
+    );
+}

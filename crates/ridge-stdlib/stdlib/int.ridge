@@ -12,13 +12,15 @@
 pub fn toText (n: Int) -> Text
 
 -- Parse a text string as a decimal integer.
--- Delegates to ridge_rt:int_parse/1 which returns Option-shaped value
--- ({ok, N} on success, error on failure — bridged as Option Int at runtime).
+-- Answers None for text that is not a number and for a number outside
+-- Int's range — a value the type cannot hold is not a successful parse.
 @ffi("ridge_rt", "int_parse", 1)
 pub fn parse (s: Text) -> Option Int
 
--- Absolute value.
-@ffi("erlang", "abs", 1)
+-- Absolute value. Raises for the smallest Int: the range reaches one
+-- further below zero than above it, so that one value has no positive
+-- counterpart inside the type.
+@ffi("ridge_rt", "int_abs", 1)
 pub fn abs (n: Int) -> Int
 
 -- Smaller of two integers.

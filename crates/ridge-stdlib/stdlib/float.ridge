@@ -26,12 +26,14 @@ pub fn parse (s: Text) -> Option Float
 @ffi("erlang", "float", 1)
 pub fn fromInt (n: Int) -> Float
 
--- Round to nearest integer (Erlang round/1 semantics: half rounds away from zero).
-@ffi("erlang", "round", 1)
+-- Round to the nearest integer; a half rounds away from zero.
+-- Raises when the result is outside Int's range, which a large enough
+-- Float will be: Float reaches far past what Int can hold.
+@ffi("ridge_rt", "int_round", 1)
 pub fn round (f: Float) -> Int
 
--- Raw BEAM truncation (rounds toward zero).
-@ffi("erlang", "trunc", 1)
+-- Truncate toward zero. Raises when the result is outside Int's range.
+@ffi("ridge_rt", "int_trunc", 1)
 pub fn truncate (f: Float) -> Int
 
 -- Floor: greatest integer <= f.

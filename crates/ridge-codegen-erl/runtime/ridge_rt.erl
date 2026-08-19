@@ -30,7 +30,7 @@
     tod_from_hms/3, tod_to_iso/1, tod_from_iso/1,
     tod_hour/1, tod_minute/1, tod_second/1, tod_now/1, tod_now_utc/0, tod_now_utc/1,
     tod_add_seconds/2, tod_diff_seconds/2, tod_cmp/2,
-    int_parse/0, int_parse/1, float_parse/1, float_to_text/1, bool_to_text/1,
+    int_parse/0, int_parse/1, int_round/1, int_trunc/1, int_abs/1, float_parse/1, float_to_text/1, bool_to_text/1,
     sql_literal/1, sql_value_source/1,
     text_split_all/2, text_replace_all/3, text_join/2, text_slice/3,
     text_like/2, like_prefix/1, like_suffix/1, like_contains/1,
@@ -826,11 +826,55 @@ bytes_hex_nibble(_) -> error.
 
 %% --- Numbers ---
 
+%% Int's range lives here, and only here.
+%%
+%% `Int` is a 64-bit signed integer and a value outside that range is an error,
+%% not a wider number. The BEAM's integers are arbitrary precision, so nothing
+%% enforces that for free: every point where a value *becomes* an `Int` has to
+%% check. Which is exactly why the bound is written once — a rule every call
+%% site has to remember is a rule some call site will not.
+%%
+%% The two helpers split on what the caller's signature can say. A producer
+%% returning `Option Int` has somewhere to put "no"; one returning a bare `Int`
+%% does not, and raises.
+-define(INT_MIN, -9223372036854775808).
+-define(INT_MAX, 9223372036854775807).
+
+int_in_range(N) when is_integer(N) -> N >= ?INT_MIN andalso N =< ?INT_MAX.
+
+int_or_raise(N, Fn) ->
+    case int_in_range(N) of
+        true  -> N;
+        false -> erlang:error({ridge_int_out_of_range, Fn, N})
+    end.
+
 %% int_parse/0: returns a fun ref for use in higher-order contexts (e.g. Option.flatMap Int.parse).
 int_parse() -> fun int_parse/1.
 
 int_parse(B) ->
-    try {some, binary_to_integer(B)} catch _:_ -> none end.
+    try
+        N = binary_to_integer(B),
+        case int_in_range(N) of
+            true  -> {some, N};
+            false -> none
+        end
+    catch _:_ -> none end.
+
+%% int_round/1, int_trunc/1 — std.float.round and std.float.truncate.
+%%
+%% `erlang:round/1` and `erlang:trunc/1` narrow a float to an integer of
+%% whatever size the float needed, so `Float.round 1.0e30` used to hand back a
+%% 31-digit `Int`. Both signatures return a bare `Int`, so out of range raises.
+int_round(F) -> int_or_raise(round(F), <<"Float.round">>).
+
+int_trunc(F) -> int_or_raise(trunc(F), <<"Float.truncate">>).
+
+%% int_abs/1 — std.int.abs.
+%%
+%% The one case where a total-looking function is not total: the negative range
+%% runs one further than the positive one, so the smallest `Int` has no
+%% absolute value inside the type.
+int_abs(N) -> int_or_raise(abs(N), <<"Int.abs">>).
 
 %% float_parse/1: std.float.parse — Text -> Option Float.
 %% Accepts both float-shaped strings ("3.14", "1e3") and integer-shaped
@@ -1369,7 +1413,14 @@ erlang_to_json_value(M) when is_map(M)     ->
 %%   asObject : JsonValue -> Option (Map Text JsonValue)
 %%   isNull   : JsonValue -> Bool
 
-json_as_int({json_int, N}) -> {some, N};
+%% A JSON number is written by whoever sent the document, so this is the one
+%% producer whose out-of-range value is chosen by someone other than the
+%% program's author. `Option Int` already has the word for it.
+json_as_int({json_int, N}) ->
+    case int_in_range(N) of
+        true  -> {some, N};
+        false -> none
+    end;
 json_as_int(_)             -> none.
 
 json_as_float({json_float, F}) -> {some, F};
@@ -2105,6 +2156,10 @@ describe_failure(error, {ridge_rt_ask_timeout, Msg, Timeout}, _Stack) ->
     {iolist_to_binary(
        io_lib:format("no answer to `~ts` within ~B ms", [ask_label(Msg), Timeout])),
      <<"raise the deadline with `timeout <ms>`, or ask with `Actor.tryAsk`">>};
+describe_failure(error, {ridge_int_out_of_range, Fn, Value}, _Stack) ->
+    {iolist_to_binary(
+       io_lib:format("`~ts` produced ~B, which is outside the range of `Int`", [Fn, Value])),
+     int_range_help(Fn)};
 describe_failure(error, ridge_loader_requires_otp_27, _Stack) ->
     {<<"this program needs Erlang/OTP 27 or newer">>, none};
 describe_failure(error, badarith, Stack) ->
@@ -2130,6 +2185,18 @@ ask_label(Msg) ->
 %% reason alone does not say which one happened. The top stack frame does: a BIF
 %% frame carries its arguments rather than an arity, so a zero divisor is
 %% readable there. That is the difference between naming the fault and hedging.
+%% int_range_help/1 - what to say after naming an out-of-range result.
+%%
+%% `Int.abs` gets its own line because the general one does not explain it: the
+%% range is not symmetric, and that asymmetry is the entire reason the smallest
+%% value has no absolute value inside the type. Telling someone the bounds when
+%% their argument was already inside them is not help.
+int_range_help(<<"Int.abs">>) ->
+    <<"`Int` reaches one further below zero than above it, so its smallest "
+      "value has no positive counterpart">>;
+int_range_help(_) ->
+    <<"`Int` holds -9223372036854775808 to 9223372036854775807">>.
+
 arith_failure([{erlang, Op, [_, Divisor], _} | _])
   when (Op =:= 'div' orelse Op =:= 'rem' orelse Op =:= '/'), Divisor == 0 ->
     {<<"divided by zero">>, none};

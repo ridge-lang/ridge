@@ -612,3 +612,125 @@ fn a_program_that_returns_err_is_not_framed_as_a_broken_toolchain() {
                 .and(contains("--- stdout ---").not()),
         );
 }
+
+/// A number too large for `Int` is not a successful parse.
+///
+/// `Int.parse` and `Json.asInt` both answer `Option Int`, so they already have
+/// the word for a value the type cannot hold. They used to hand one back
+/// anyway: the BEAM's integers are arbitrary precision, so the bound the spec
+/// states was not enforced anywhere a value entered the language.
+///
+/// The JSON case is the one that matters most and is the reason both are in one
+/// test: that number is written by whoever sent the document, not by the
+/// program's author.
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn a_number_too_large_for_int_does_not_arrive_as_one() {
+    let tw = make_capable_app_workspace(
+        r#"import std.io   as Io
+import std.int  as Int
+import std.json as Json
+import std.map  as Map
+
+fn describe (label: Text) (o: Option Int) -> Text =
+    match o
+        Some n -> Text.concat label (Int.toText n)
+        None   -> Text.concat label "out-of-range"
+
+pub fn io main () -> Unit =
+    Io.println (describe "parseBig=" (Int.parse "99999999999999999999999999"))
+    Io.println (describe "parseOk=" (Int.parse "123"))
+    match Json.decode "{\"n\": 99999999999999999999999999}"
+        Ok j ->
+            match Json.asObject j
+                Some m ->
+                    match Map.get "n" m
+                        Some v -> Io.println (describe "json=" (Json.asInt v))
+                        None   -> Io.println "no key"
+                None -> Io.println "not an object"
+        Err _ -> Io.println "decode failed"
+"#,
+        r#""io""#,
+    );
+
+    ridge_cmd()
+        .arg("run")
+        .current_dir(&tw.path)
+        .assert()
+        .success()
+        .stdout(
+            // Labelled so each claim stands on its own rather than on the order
+            // three lines happen to arrive in.
+            contains("parseBig=out-of-range")
+                .and(contains("json=out-of-range"))
+                // The ordinary parse still works: a guard that rejected
+                // everything would satisfy the two claims above.
+                .and(contains("parseOk=123"))
+                .and(contains("99999999999999999999999999").not()),
+        );
+}
+
+/// Narrowing a `Float` too large for `Int` says so, and says what the range is.
+///
+/// `Float.round` and `Float.truncate` return a bare `Int`, so unlike the
+/// parsers they have nowhere to put "no" — the answer is an error. `Float`
+/// reaches far past what `Int` holds, so this is reachable from any ordinary
+/// computation rather than from a literal someone typed.
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn narrowing_a_float_past_ints_range_names_the_value_and_the_range() {
+    let tw = make_capable_app_workspace(
+        r#"import std.io    as Io
+import std.int   as Int
+import std.float as Float
+
+pub fn io main () -> Unit =
+    Io.println (Int.toText (Float.round (Float.pow 10.0 30.0)))
+"#,
+        r#""io""#,
+    );
+
+    ridge_cmd()
+        .arg("run")
+        .current_dir(&tw.path)
+        .assert()
+        .failure()
+        .stderr(
+            contains("`Float.round` produced")
+                .and(contains("outside the range of `Int`"))
+                .and(contains("-9223372036854775808 to 9223372036854775807"))
+                .and(contains("badarg").not()),
+        );
+}
+
+/// `Int.abs` at the minimum explains the asymmetry rather than restating it.
+///
+/// The range reaches one further below zero than above it, so the smallest
+/// `Int` has no absolute value inside the type — the mistake `Math.abs` is
+/// known for in Java, which returns the negative number unchanged. Repeating
+/// the bounds would not help here: the argument was already inside them.
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn abs_of_the_smallest_int_explains_why_there_is_no_answer() {
+    let tw = make_capable_app_workspace(
+        r#"import std.io  as Io
+import std.int as Int
+
+pub fn io main () -> Unit =
+    Io.println (Int.toText (Int.abs (0 - 9223372036854775807 - 1)))
+"#,
+        r#""io""#,
+    );
+
+    ridge_cmd()
+        .arg("run")
+        .current_dir(&tw.path)
+        .assert()
+        .failure()
+        .stderr(
+            contains("`Int.abs` produced 9223372036854775808")
+                .and(contains("one further below zero than above it"))
+                // The generic range line would be no help: the argument was in range.
+                .and(contains("`Int` holds -9223372036854775808").not()),
+        );
+}

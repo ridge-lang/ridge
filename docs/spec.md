@@ -998,11 +998,20 @@ Wrapping and saturating behaviour stay available where a program wants them,
 as named operations rather than as the default — `Int.wrappingAdd` and
 `Int.saturatingAdd` today.
 
-A literal outside the range is rejected where it is written (`L110`). The
-check on arithmetic results is specified here and not yet implemented: a
-result past the boundary is currently computed at full precision instead of
-raising. Until that lands, staying inside the range is the program's own
-discipline rather than a guarantee the compiler keeps.
+The bound is enforced everywhere a value becomes an `Int`, not only where two
+of them are combined. A literal outside the range is rejected where it is
+written (`L110`). A parse or a decode that would produce one answers `None`
+instead — a number the type cannot hold is not a successful parse, and that
+matters most for input the program did not write, such as a JSON document.
+Narrowing a `Float` past the boundary raises, and so does `Int.abs` of the
+smallest value: the range reaches one further below zero than above it, so
+that one value has no absolute value inside the type.
+
+Arithmetic is the exception, and it is temporary. The rule above is specified
+and not yet implemented for `+`, `-`, `*`, `^` and unary negation: a result
+past the boundary is currently computed at full precision instead of raising.
+Until that closes, staying inside the range across arithmetic is the program's
+own discipline rather than a guarantee the compiler keeps.
 
 ### 5.3. Type inference algorithm
 

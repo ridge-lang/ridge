@@ -7,8 +7,8 @@
 %%   {error, Msg} when is_binary(Msg) -> halt(1) + write Msg to stderr
 %%   {error, Other}                   -> halt(1) + write `~p` of Other to stderr
 %%   anything else                    -> halt(0) silently
-%%   exception                        -> halt(1) + crash report to stderr
-%%   killed by an exit signal         -> halt(1) + the reason to stderr
+%%   exception                        -> halt(1) + the reason, in Ridge's voice
+%%   killed by an exit signal         -> halt(1) + the reason, in Ridge's voice
 %%
 %% The fallthrough to halt(0) is deliberate: programs whose main returns plain
 %% `Unit` (e.g. `fn io main () -> Unit = Io.println "..."`) — or any non-Result
@@ -34,8 +34,9 @@ run([ModAtom, FnAtom]) ->
             finish(Outcome);
         {'DOWN', Ref, process, Pid, Reason} ->
             %% main was killed by an exit signal rather than returning: report
-            %% the reason the same way a released program would fail.
-            io:format(standard_error, "main exited: ~p~n", [Reason]),
+            %% the reason the same way a released program would fail. There is
+            %% no stack to offer - the signal came from somewhere else.
+            report_failure(exit, Reason, []),
             erlang:halt(1)
     end;
 run(Other) ->
@@ -54,7 +55,7 @@ run_detached([ModAtom, FnAtom]) ->
             _ -> ok
         catch
             Class:Reason:Stack ->
-                io:format(standard_error, "main crashed: ~p:~p~nstack: ~p~n", [Class, Reason, Stack])
+                report_failure(Class, Reason, Stack)
         end
     end),
     ok;
@@ -80,5 +81,38 @@ finish({returned, {error, Other}}) ->
 finish({returned, _}) ->
     erlang:halt(0);
 finish({crashed, Class, Reason, Stack}) ->
-    io:format(standard_error, "main crashed: ~p:~p~nstack: ~p~n", [Class, Reason, Stack]),
+    report_failure(Class, Reason, Stack),
     erlang:halt(1).
+
+%% report_failure/3 - write a stopped program's reason to stderr in Ridge's
+%% voice, and say how to see the Erlang underneath it.
+%%
+%% The internal reason and the stack are the two things a reader can neither
+%% use nor avoid, so they move behind RIDGE_BACKTRACE - the bargain Rust
+%% strikes with RUST_BACKTRACE, for the same reason: whoever needs the stack
+%% knows to ask for it, and whoever does not should never have to scroll past
+%% it. The note is printed either way, so the door is visible from both sides.
+report_failure(Class, Reason, Stack) ->
+    {Sentence, Help} = ridge_rt:describe_failure(Class, Reason, Stack),
+    io:format(standard_error, "error: ~ts~n", [Sentence]),
+    case Help of
+        none -> ok;
+        _    -> io:format(standard_error, "  help: ~ts~n", [Help])
+    end,
+    case backtrace_wanted() of
+        false ->
+            io:format(standard_error,
+                      "  note: set RIDGE_BACKTRACE=1 to see the runtime stack~n", []);
+        true ->
+            io:format(standard_error, "  raised: ~p:~p~n  stack: ~p~n",
+                      [Class, Reason, Stack])
+    end.
+
+%% backtrace_wanted/0 - RIDGE_BACKTRACE, where unset, empty and "0" all mean no.
+backtrace_wanted() ->
+    case os:getenv("RIDGE_BACKTRACE") of
+        false -> false;
+        ""    -> false;
+        "0"   -> false;
+        _     -> true
+    end.

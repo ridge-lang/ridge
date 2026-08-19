@@ -1767,9 +1767,9 @@ fn spawn io time main () -> Result Unit Text =
 
 /// More than `intensity` restarts within `period` kills the supervisor
 /// itself. The first crash is absorbed (`back-once=0`); the second inside
-/// the window exhausts the budget, and the subsequent `whichChildren` raises
-/// `ridge_sup_noproc` in `main` — a dead supervisor reads as a crash of the
-/// caller, never as a silent empty answer.
+/// the window exhausts the budget, and the subsequent `whichChildren` stops
+/// `main` — a dead supervisor reads as a crash of the caller, never as a
+/// silent empty answer — and the crash names the supervisor, not the atom.
 #[test]
 fn beam_e2e_supervisor_intensity_exhaustion_fails_loudly() {
     let (beam_dir, module, _td) =
@@ -1780,8 +1780,12 @@ fn beam_e2e_supervisor_intensity_exhaustion_fails_loudly() {
         "expected a non-zero exit (whichChildren on a dead supervisor), got 0\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
     );
     assert!(
-        stderr.contains("ridge_sup_noproc"),
-        "expected 'ridge_sup_noproc' on stderr, got:\n{stderr}"
+        stderr.contains("asked a supervisor that is no longer running"),
+        "expected the crash to name the cause, got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("ridge_sup_noproc"),
+        "the internal reason atom must not reach a reader, got:\n{stderr}"
     );
     assert!(
         stdout.contains("back-once=0"),
@@ -1956,10 +1960,10 @@ fn spawn io time main () -> Result Unit Text =
     Ok ()
 "#;
 
-/// Asking a stopped supervised child with `?>` must fail fast with the
-/// structured `ridge_ask_noproc` reason — the caller crashes with a
-/// recognisable cause rather than hanging or surfacing an opaque
-/// `exit:{noproc,_}`. The `Err`-returning alternative for callers that want
+/// Asking a stopped supervised child with `?>` must fail fast and say so:
+/// the caller crashes with a cause a reader can act on rather than hanging,
+/// surfacing an opaque `exit:{noproc,_}`, or naming the internal reason the
+/// runtime raises. The `Err`-returning alternative for callers that want
 /// to handle the absence is `tryAsk` (previous test).
 #[test]
 fn beam_e2e_ask_on_stopped_child_fails_loudly() {
@@ -1971,8 +1975,12 @@ fn beam_e2e_ask_on_stopped_child_fails_loudly() {
         "expected a non-zero exit (ask on a stopped child), got 0\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
     );
     assert!(
-        stderr.contains("ridge_ask_noproc"),
-        "expected 'ridge_ask_noproc' on stderr, got:\n{stderr}"
+        stderr.contains("asked an actor that is no longer running"),
+        "expected the crash to name the cause, got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("ridge_ask_noproc"),
+        "the internal reason atom must not reach a reader, got:\n{stderr}"
     );
     assert!(
         !stdout.contains("should-not-reach"),
@@ -2012,7 +2020,7 @@ fn spawn io time main () -> Result Unit Text =
     Ok ()
 "#;
 
-/// `?>` on a dead actor must raise `ridge_ask_noproc` in the caller even
+/// `?>` on a dead actor must stop the caller and say why, even
 /// when the calling function uses `?` somewhere in its body — the
 /// propagation wrapper around such bodies used to swallow the exit and
 /// report success. This is the plain-handle twin of the stopped-child case
@@ -2026,8 +2034,12 @@ fn beam_e2e_ask_on_dead_plain_actor_fails_loudly() {
         "expected a non-zero exit (ask on a dead actor), got 0\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
     );
     assert!(
-        stderr.contains("ridge_ask_noproc"),
-        "expected 'ridge_ask_noproc' on stderr, got:\n{stderr}"
+        stderr.contains("asked an actor that is no longer running"),
+        "expected the crash to name the cause, got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("ridge_ask_noproc"),
+        "the internal reason atom must not reach a reader, got:\n{stderr}"
     );
     assert!(
         !stdout.contains("should-not-reach"),

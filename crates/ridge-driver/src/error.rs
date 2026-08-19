@@ -292,19 +292,32 @@ pub enum RunError {
     #[error(transparent)]
     Toolchain(#[from] ToolchainError),
 
-    /// The BEAM process exited with a non-zero code.
+    /// The program exited with a non-zero code.
     ///
     /// No code, deliberately. This is the program's own exit status, not
     /// something Ridge diagnosed: giving it a `C0NN` would put a compiler code
     /// on the user's `exit 1`.
-    #[error("erl exited with code {code}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}")]
-    ErlExitNonZero {
+    ///
+    /// It carries no captured output for the same reason. Whatever the program
+    /// wrote is already on the terminal, in the program's own voice, and
+    /// reprinting it inside a banner signed by Ridge is how a well-typed
+    /// program that simply returned `Err` came to read as a broken toolchain.
+    #[error("the program exited with code {code}")]
+    ProgramExitNonZero {
         /// Process exit code.
         code: i32,
-        /// Captured standard output.
-        stdout: String,
-        /// Captured standard error.
-        stderr: String,
+    },
+
+    /// `C016` - the program was still running when the run timeout elapsed.
+    ///
+    /// Distinct from [`Self::ProgramExitNonZero`] on purpose: there the
+    /// program chose its exit status, here it never got to. One is the program
+    /// reporting, the other is Ridge giving up on it, and a reader deciding
+    /// what to do next needs to know which of the two happened.
+    #[error("C016 RunTimedOut: the program did not finish within {seconds} seconds")]
+    RunTimedOut {
+        /// The run timeout that elapsed, in seconds.
+        seconds: u64,
     },
 
     /// `C014` — codegen produced no BEAM module to run.
@@ -328,8 +341,9 @@ impl RunError {
     /// The stable code for this failure, when it has one.
     ///
     /// Three variants answer `None`. [`Self::CompileDiagnostics`] holds
-    /// diagnostics that each carry their own code, and [`Self::ErlExitNonZero`]
-    /// reports the program's exit status rather than a Ridge failure.
+    /// diagnostics that each carry their own code, and
+    /// [`Self::ProgramExitNonZero`] reports the program's exit status rather
+    /// than a Ridge failure.
     /// [`Self::CompileFailed`] forwards whatever the compile phase answered,
     /// including its `None`.
     #[must_use]
@@ -339,15 +353,16 @@ impl RunError {
             Self::Toolchain(e) => e.code(),
             Self::NoBeamModule => "C014",
             Self::WaitFailed { .. } => "C015",
-            Self::CompileDiagnostics(_) | Self::ErlExitNonZero { .. } => return None,
+            Self::RunTimedOut { .. } => "C016",
+            Self::CompileDiagnostics(_) | Self::ProgramExitNonZero { .. } => return None,
         })
     }
 }
 
 /// Process exit code returned from a successful `run_workspace` call.
 ///
-/// Zero indicates success; non-zero indicates the BEAM node exited non-zero
-/// (which is treated as [`RunError::ErlExitNonZero`] — this value is only
-/// returned on exit code 0).
+/// Zero indicates success; a non-zero exit is reported as
+/// [`RunError::ProgramExitNonZero`] instead, so this value is only ever
+/// returned on exit code 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProcessExitCode(pub i32);

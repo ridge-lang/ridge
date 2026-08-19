@@ -11,7 +11,9 @@ use std::io::Write;
 use ariadne::{Cache, Color, Config, Label, Report, ReportKind, Source};
 use is_terminal::IsTerminal;
 
-use crate::diagnostic::{Diagnostic, NoteSeverity, RenderError, SourceCache, SourceId};
+use crate::diagnostic::{
+    Diagnostic, DiagnosticNote, NoteSeverity, RenderError, SourceCache, SourceId,
+};
 use ridge_resolve::Severity;
 
 // ── AriadneCacheAdapter ───────────────────────────────────────────────────────
@@ -172,6 +174,37 @@ const fn map_note_color(sev: NoteSeverity) -> Color {
     }
 }
 
+/// Write a structured note on a diagnostic that has no source to underline.
+///
+/// The main path draws these as ariadne labels over their span. A diagnostic
+/// with no source file has no span worth pointing at — a toolchain error
+/// carries a sentinel — so here the note is prose. It is usually prose written
+/// by another program: `erlc`'s own message about the file it refused, which is
+/// the one thing the reader needs and the only thing they cannot reconstruct.
+///
+/// Continuation lines are indented to the width of the label so a multi-line
+/// note reads as one block, rather than as a first line followed by text that
+/// looks like it came from the compiler.
+fn write_prose_note(writer: &mut dyn Write, note: &DiagnosticNote) -> Result<(), RenderError> {
+    let label = match note.severity {
+        NoteSeverity::Help => "Help",
+        NoteSeverity::Hint => "Hint",
+        NoteSeverity::Note => "Note",
+    };
+    // Trailing whitespace, because the text usually arrives from another
+    // program's stderr and those end in a newline: split as-is and the block
+    // finishes with a stray indented blank line.
+    let mut lines = note.message.trim_end().lines();
+    let Some(first) = lines.next() else {
+        return Ok(());
+    };
+    writeln!(writer, "  {label}: {first}")?;
+    for line in lines {
+        writeln!(writer, "        {line}")?;
+    }
+    Ok(())
+}
+
 // ── render_with_ariadne ───────────────────────────────────────────────────────
 
 /// Render a slice of diagnostics to `writer`.
@@ -238,6 +271,9 @@ pub fn render_with_ariadne(
             }
             for help in &parts.helps {
                 writeln!(writer, "  Help: {help}")?;
+            }
+            for note in &diag.notes {
+                write_prose_note(writer, note)?;
             }
             continue;
         }
@@ -307,6 +343,9 @@ pub fn render_with_ariadne(
             }
             for help in &parts.helps {
                 writeln!(writer, "help: {help}")?;
+            }
+            for note in &diag.notes {
+                write_prose_note(writer, note)?;
             }
             writeln!(writer, "  --> <unknown source> (source not available)")?;
         }
@@ -420,6 +459,47 @@ mod tests {
         assert!(
             !out.contains('╭') && !out.contains('│'),
             "no frame without a source to frame: {out:?}"
+        );
+    }
+
+    /// A note on a source-less diagnostic reaches the reader.
+    ///
+    /// This is the shape `E004` has: `erlc` refuses the generated file, its own
+    /// message is captured and attached as a note, and the diagnostic carries
+    /// no `.ridge` source because a toolchain failure has none to carry. That
+    /// last fact used to select a branch which printed the headline and moved
+    /// on — so the one line saying *where* and *why* was collected, attached,
+    /// and then dropped one step before the terminal.
+    ///
+    /// The note here is multi-line because `erlc`'s is: the message, then the
+    /// offending source line.
+    #[test]
+    fn a_note_on_a_source_less_diagnostic_is_not_swallowed() {
+        let _lock = COLOR_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = EnvGuard::set("RIDGE_COLOR", "never");
+        let cache = TestCache::empty();
+        let mut diag = make_diag("E004", Severity::Error, "<unknown>");
+        diag.push_note(DiagnosticNote {
+            span: Span::new(0, 1),
+            message: "erlc output:\nfoo.core:7: syntax error before: e16\n%    7|   1e16".into(),
+            severity: NoteSeverity::Note,
+        });
+
+        let mut buf = Vec::new();
+        render_with_ariadne(&[diag], &cache, &mut buf).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+
+        assert!(
+            out.contains("syntax error before: e16"),
+            "the toolchain's own message must survive: {out:?}"
+        );
+        assert!(
+            out.contains("%    7|   1e16"),
+            "every line of a multi-line note survives: {out:?}"
+        );
+        assert!(
+            out.contains("  Note: erlc output:"),
+            "the note is labelled and indented under its diagnostic: {out:?}"
         );
     }
 

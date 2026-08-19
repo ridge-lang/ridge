@@ -3321,3 +3321,43 @@ fn beam_e2e_as_patterns_compile_and_bind() {
         );
     }
 }
+
+const EXPONENTIAL_FLOAT_SOURCE: &str = r#"
+import std.io as Io
+import std.float as Float
+
+fn name (f: Float) -> Text =
+    match f
+        1.0e16 -> "the boundary"
+        5.0e-8 -> "the small one"
+        _      -> "neither"
+
+fn io main () -> Result Unit Text =
+    Io.println (name 1.0e16)
+    Io.println (name 5.0e-8)
+    Io.println (name 1.5)
+    Io.println (Float.toText 2.0e20)
+    Ok ()
+"#;
+
+/// A float whose shortest form goes exponential still reaches `erlc` as a float.
+///
+/// The printer renders floats with the shortest decimal that round-trips, and
+/// past `1e16` that form drops the decimal point when the mantissa is a single
+/// digit — so `1.0e16` arrived as `1e16` and erlc refused the whole module.
+/// `ridge check` passed first, which put the failure as far from the literal as
+/// it could get.
+///
+/// Both positions matter: the same printer serves expressions and patterns, so
+/// the literals here are matched as well as printed. A match that succeeds is
+/// also the check that inserting the point did not change the number.
+#[test]
+fn beam_e2e_exponential_float_literals_compile_and_match() {
+    let (stdout, _) = run_inline_actor_test("ExpFloat", EXPONENTIAL_FLOAT_SOURCE);
+    for expected in ["the boundary", "the small one", "neither"] {
+        assert!(
+            stdout.contains(expected),
+            "expected '{expected}' in output, got:\n{stdout}"
+        );
+    }
+}

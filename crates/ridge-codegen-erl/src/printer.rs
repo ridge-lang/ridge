@@ -128,6 +128,37 @@ pub fn print_var(v: &CErlVar) -> String {
     v.0.clone()
 }
 
+/// Write a shortest-decimal rendering the way Core Erlang spells a float.
+///
+/// `ryu` gives the shortest decimal that round-trips, which is the property to
+/// want here: it is deterministic across platforms, which is why it was chosen.
+/// What it does not promise is a token *this target* accepts. Past `1e16` and
+/// below `1e-5` it switches to exponential notation, and a mantissa that needs
+/// only one digit then carries no decimal point — so `1.0e16` arrives at `erlc`
+/// as `1e16`, which is a syntax error. Core Erlang wants a digit on each side
+/// of a point; `1.0e16` is the same number, written the way the target spells
+/// it.
+///
+/// `NaN` and the infinities are rejected before codegen, and neither ends in a
+/// digit, so they pass through untouched rather than becoming `inf.0`.
+fn core_float_token(shortest: &str) -> String {
+    fn ends_in_digit(s: &str) -> bool {
+        s.ends_with(|c: char| c.is_ascii_digit())
+    }
+
+    if shortest.contains('.') {
+        return shortest.to_owned();
+    }
+    match shortest.find(['e', 'E']) {
+        // `1e16` -> `1.0e16`, `-5e-8` -> `-5.0e-8`.
+        Some(i) if ends_in_digit(&shortest[..i]) => {
+            format!("{}.0{}", &shortest[..i], &shortest[i..])
+        }
+        None if ends_in_digit(shortest) => format!("{shortest}.0"),
+        _ => shortest.to_owned(),
+    }
+}
+
 /// Print a literal value.
 #[must_use]
 pub fn print_lit(l: &CErlLit) -> String {
@@ -135,7 +166,7 @@ pub fn print_lit(l: &CErlLit) -> String {
         CErlLit::Int(n) => n.to_string(),
         CErlLit::Float(f) => {
             let mut buf = ryu::Buffer::new();
-            buf.format(*f).to_string()
+            core_float_token(buf.format(*f))
         }
         CErlLit::Atom(a) => print_atom(a),
         CErlLit::Binary(bytes) => {
@@ -540,6 +571,40 @@ mod tests {
         atom("true")
     }
 
+    /// Every float reaches `erlc` with a decimal point in it.
+    ///
+    /// Core Erlang wants a digit on each side of the point. The shortest
+    /// decimal does not always have one: past `1e16` and below `1e-5` the
+    /// rendering goes exponential, and a single-digit mantissa then carries no
+    /// point at all, so `1.0e16` used to arrive as `1e16` and `erlc` refused
+    /// the file. `1.25e18` survived that only because its mantissa happened to
+    /// have a fraction to print — which is why the cases below straddle the
+    /// boundary in both directions rather than testing one large number.
+    #[test]
+    fn every_float_carries_the_decimal_point_core_erlang_requires() {
+        let cases = [
+            (1.5_f64, "1.5"),
+            (1e15, "1000000000000000.0"),
+            (1e16, "1.0e16"),
+            (2e20, "2.0e20"),
+            (1.25e18, "1.25e18"),
+            (-1e16, "-1.0e16"),
+            (1e-5, "0.00001"),
+            (1e-6, "1.0e-6"),
+            (5e-8, "5.0e-8"),
+            (0.0, "0.0"),
+            (-0.0, "-0.0"),
+        ];
+        for (value, expected) in cases {
+            let printed = print_lit(&CErlLit::Float(value));
+            assert_eq!(printed, expected, "printing {value:e}");
+            assert!(
+                printed.contains('.'),
+                "no decimal point in {printed}, which erlc rejects"
+            );
+        }
+    }
+
     // ── Test 2 ────────────────────────────────────────────────────────────────
 
     #[test]
@@ -547,8 +612,7 @@ mod tests {
         assert_eq!(print_lit(&CErlLit::Int(42)), "42");
         assert_eq!(print_lit(&CErlLit::Int(-7)), "-7");
 
-        let float_str = print_lit(&CErlLit::Float(1.5));
-        assert!(float_str.contains('1'), "float: {float_str}");
+        assert_eq!(print_lit(&CErlLit::Float(1.5)), "1.5");
 
         let atom_str = print_lit(&CErlLit::Atom(CErlAtom("ok".into())));
         assert_eq!(atom_str, "'ok'");

@@ -4,9 +4,13 @@
 //!
 //! # Design notes
 //!
-//! - All binary operators (except `::` Cons) lower to `IrExpr::Call` with a
-//!   `SymbolRef::Stdlib` callee — see §4.11 for the rationale.
+//! - Most binary operators lower to `IrExpr::Call` with a `SymbolRef::Stdlib`
+//!   callee — see §4.11 for the rationale.
 //! - `BinOp::Cons` lowers to the dedicated `IrExpr::Cons` variant.
+//! - `&&` and `||` lower to a two-armed `IrExpr::Match`, because they are the
+//!   two operators that must *not* evaluate an operand. A call cannot express
+//!   that: it evaluates its arguments, and normalisation hoists them ahead of
+//!   the call besides. See `lower_short_circuit`.
 //! - Arithmetic type dispatch (`Int` vs `Float` family) requires upstream
 //!   `node_types` wiring (Phase 4 left it empty; not currently scheduled).
 //!   All arithmetic ops default to the Int family; see `op_to_symbol`.
@@ -20,7 +24,7 @@
 )]
 
 use ridge_ast::{expr::BinOp, expr::UnaryOp, Expr, Span};
-use ridge_ir::{IrExpr, IrLit, SymbolRef};
+use ridge_ir::{IrArm, IrExpr, IrLit, IrPat, SymbolRef};
 use ridge_resolve::NodeKind;
 use ridge_types::Type;
 
@@ -33,6 +37,8 @@ use crate::error::LowerError;
 /// Lower `lhs op rhs` to an [`IrExpr`].
 ///
 /// `BinOp::Cons` → `IrExpr::Cons { head, tail }`.
+/// `BinOp::And` / `BinOp::Or` → a two-armed `IrExpr::Match`, so the right
+/// operand runs only when the left one leaves the answer open.
 /// All other binary ops → `IrExpr::Call { callee: Symbol(stdlib), args: [lhs', rhs'] }`.
 /// `BinOp::Pipe` → defensive `Unit` stub with `InternalLoweringError` (L999);
 /// the parser never emits it as `Expr::Binary`.
@@ -70,6 +76,11 @@ pub fn lower_binary(
             value: IrLit::Unit,
             span,
         };
+    }
+
+    // ── BinOp::And / BinOp::Or — control flow, not a call ────────────────────
+    if matches!(op, BinOp::And | BinOp::Or) {
+        return lower_short_circuit(ctx, op, lhs, rhs, span);
     }
 
     // ── All other ops — lower to stdlib Call ──────────────────────────────────
@@ -139,6 +150,71 @@ pub fn lower_unary(ctx: &mut LowerCtx<'_>, op: UnaryOp, expr: &Expr, span: Span)
                 span,
             }
         }
+    }
+}
+
+/// Lower `a && b` / `a || b` so the right operand runs only when it can change
+/// the answer.
+///
+/// `&&` and `||` are control flow wearing an operator's spelling, and lowering
+/// them as calls made them strict: a call evaluates its arguments, so
+/// `n > 0 && 100 / n > 5` divided by zero on the very input the guard exists to
+/// exclude. Swapping the callee would not have been enough either — normalising
+/// the call hoists the right operand into a binding that runs before it, so by
+/// the time anything could choose, the division has happened.
+///
+/// Lowering to the shape `if` already uses puts the right operand inside a
+/// branch, which is the one place nothing can hoist it out of:
+///
+/// - `a && b` → `match a { true -> b, false -> false }`
+/// - `a || b` → `match a { true -> true, false -> b }`
+///
+/// It also takes both operators out of the stdlib: nothing about the host
+/// appears in either one now. `std.bool.and` and `std.bool.or` stay as they
+/// are — a strict boolean function is a fine thing to be able to call, it was
+/// only wrong as what an operator means.
+fn lower_short_circuit(
+    ctx: &mut LowerCtx<'_>,
+    op: BinOp,
+    lhs: &Expr,
+    rhs: &Expr,
+    span: Span,
+) -> IrExpr {
+    let id = ctx.fresh_id(None);
+    let scrutinee = Box::new(lower_expr(ctx, lhs));
+
+    // The arm the left operand already decides carries the constant; the other
+    // one carries the right operand, evaluated there and only there.
+    let decided = matches!(op, BinOp::Or);
+    let short_id = ctx.fresh_id(None);
+    let short_body = IrExpr::Lit {
+        id: short_id,
+        value: IrLit::Bool(decided),
+        span,
+    };
+    let rest_body = lower_expr(ctx, rhs);
+
+    let (true_body, false_body) = if decided {
+        (short_body, rest_body)
+    } else {
+        (rest_body, short_body)
+    };
+
+    let arm = |value: bool, body: IrExpr| IrArm {
+        pat: IrPat::Lit {
+            value: IrLit::Bool(value),
+            span,
+        },
+        when: None,
+        body,
+        span,
+    };
+
+    IrExpr::Match {
+        id,
+        scrutinee,
+        arms: vec![arm(true, true_body), arm(false, false_body)],
+        span,
     }
 }
 
@@ -522,29 +598,47 @@ mod tests {
         }
     }
 
-    // ── T4-op-6: And lowers to std.bool.and ───────────────────────────────────
-
+    /// `&&` and `||` lower to a branch, so the right operand sits where nothing
+    /// can hoist it out.
+    ///
+    /// This used to be a call to `std.bool.and`, and a call evaluates its
+    /// arguments — which is how `n > 0 && 100 / n > 5` came to divide by zero
+    /// on the input the guard was written to exclude. What the assertion below
+    /// is really pinning is that the right operand is *inside an arm*: put it
+    /// back in an argument list and normalisation runs it before anything gets
+    /// to choose.
     #[test]
-    fn binary_and_bool() {
-        let mut ctx = fresh_ctx();
-        let ir = lower_binary(&mut ctx, BinOp::And, &int_expr(1), &int_expr(2), sp());
+    fn boolean_operators_put_the_right_operand_inside_a_branch() {
+        for (op, decided_by_the_left, arm_holding_the_right) in
+            [(BinOp::And, false, 0_usize), (BinOp::Or, true, 1)]
+        {
+            let mut ctx = fresh_ctx();
+            let ir = lower_binary(&mut ctx, op, &int_expr(1), &int_expr(2), sp());
 
-        match ir {
-            IrExpr::Call { callee, .. } => match *callee {
-                IrExpr::Symbol {
-                    sym:
-                        SymbolRef::Stdlib {
-                            ref module,
-                            ref name,
-                        },
+            let IrExpr::Match { arms, .. } = ir else {
+                panic!("expected IrExpr::Match for {op:?}, got {ir:?}");
+            };
+            assert_eq!(arms.len(), 2, "{op:?} needs a true arm and a false arm");
+
+            // The arm the left operand settles on its own carries the constant.
+            let short = &arms[1 - arm_holding_the_right];
+            match short.body {
+                IrExpr::Lit {
+                    value: IrLit::Bool(b),
                     ..
-                } => {
-                    assert_eq!(module, "std.bool");
-                    assert_eq!(name, "and");
-                }
-                ref other => panic!("expected Stdlib(std.bool.and), got {other:?}"),
-            },
-            other => panic!("expected IrExpr::Call, got {other:?}"),
+                } => assert_eq!(
+                    b, decided_by_the_left,
+                    "{op:?} answers {decided_by_the_left} without the right operand"
+                ),
+                ref other => panic!("expected a Bool literal for {op:?}, got {other:?}"),
+            }
+
+            // The other arm is where the right operand went, and the only place
+            // it is reachable from.
+            assert!(
+                matches!(arms[arm_holding_the_right].body, IrExpr::Lit { .. }),
+                "{op:?} must evaluate its right operand inside the other arm"
+            );
         }
     }
 

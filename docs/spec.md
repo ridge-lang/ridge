@@ -895,6 +895,12 @@ Note: The full normative grammar lives in `docs/grammar.ebnf`. The productions a
 | 12 | function application | left | |
 | 13 | `?` (postfix propagate), `.` (field access) | left | call-suffix band |
 
+**`&&` and `||` evaluate their right operand only when the left one does not
+settle the result.** `false && e` is `false` and `true || e` is `true` without
+`e` running at all, which is what makes a guard like `n > 0 && 100 / n > 5`
+mean what it reads as. They are the only operators that skip an operand:
+every other one in the table above evaluates both, left to right.
+
 ### 4.5. Rest patterns in list and record patterns
 
 **List patterns** match against the `List a` type.

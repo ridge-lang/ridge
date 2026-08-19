@@ -1,5 +1,6 @@
 ---
 source: crates/ridge-lower/tests/snapshots.rs
+assertion_line: 23
 expression: rendered
 ---
 module: m0
@@ -21,58 +22,76 @@ items:
     body:
       Match(n0):
         scrutinee:
-          Call(n1):
-            callee:
-              Symbol(n2): Stdlib(std.bool.and)
-            args:
+          Match(n1):
+            scrutinee:
+              Call(n2):
+                callee:
+                  Symbol(n3): Stdlib(std.op.ge)
+                args:
+                  -
+                    Local(n4): r
+                  -
+                    Lit(n5): Int(0)
+            arms:
               -
-                Call(n3):
-                  callee:
-                    Symbol(n4): Stdlib(std.op.ge)
-                  args:
-                    -
-                      Local(n5): r
-                    -
-                      Lit(n6): Int(0)
-              -
-                Call(n7):
-                  callee:
-                    Symbol(n8): Stdlib(std.bool.and)
-                  args:
-                    -
-                      Call(n9):
+                pat:
+                  Lit: Bool(true)
+                body:
+                  Match(n6):
+                    scrutinee:
+                      Call(n7):
                         callee:
-                          Symbol(n10): Stdlib(std.op.lt)
+                          Symbol(n8): Stdlib(std.op.lt)
                         args:
                           -
-                            Local(n11): r
+                            Local(n9): r
                           -
-                            Field(n12).rows:
-                              Local(n13): grid
-                    -
-                      Call(n14):
-                        callee:
-                          Symbol(n15): Stdlib(std.bool.and)
-                        args:
-                          -
-                            Call(n16):
-                              callee:
-                                Symbol(n17): Stdlib(std.op.ge)
-                              args:
-                                -
-                                  Local(n18): c
-                                -
-                                  Lit(n19): Int(0)
-                          -
-                            Call(n20):
-                              callee:
-                                Symbol(n21): Stdlib(std.op.lt)
-                              args:
-                                -
-                                  Local(n22): c
-                                -
-                                  Field(n23).cols:
-                                    Local(n24): grid
+                            Field(n10).rows:
+                              Local(n11): grid
+                    arms:
+                      -
+                        pat:
+                          Lit: Bool(true)
+                        body:
+                          Match(n12):
+                            scrutinee:
+                              Call(n13):
+                                callee:
+                                  Symbol(n14): Stdlib(std.op.ge)
+                                args:
+                                  -
+                                    Local(n15): c
+                                  -
+                                    Lit(n16): Int(0)
+                            arms:
+                              -
+                                pat:
+                                  Lit: Bool(true)
+                                body:
+                                  Call(n17):
+                                    callee:
+                                      Symbol(n18): Stdlib(std.op.lt)
+                                    args:
+                                      -
+                                        Local(n19): c
+                                      -
+                                        Field(n20).cols:
+                                          Local(n21): grid
+                              -
+                                pat:
+                                  Lit: Bool(false)
+                                body:
+                                  Lit(n22): Bool(false)
+                      -
+                        pat:
+                          Lit: Bool(false)
+                        body:
+                          Lit(n23): Bool(false)
+              -
+                pat:
+                  Lit: Bool(false)
+                body:
+                  Lit(n24): Bool(false)
         arms:
           -
             pat:

@@ -3361,3 +3361,48 @@ fn beam_e2e_exponential_float_literals_compile_and_match() {
         );
     }
 }
+
+const SHORT_CIRCUIT_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+
+fn boom (n: Int) -> Bool = Int.div 1 n == 0
+
+fn safeRatio (n: Int) -> Bool = n > 0 && Int.div 100 n > 5
+
+fn describe (label: Text) (b: Bool) -> Text =
+    if b then Text.concat label "=true" else Text.concat label "=false"
+
+fn io main () -> Result Unit Text =
+    Io.println (describe "guard0" (safeRatio 0))
+    Io.println (describe "guard4" (safeRatio 4))
+    Io.println (describe "andShort" (false && boom 0))
+    Io.println (describe "orShort" (true || boom 0))
+    Io.println (describe "andBoth" (true && 1 == 1))
+    Io.println (describe "orBoth" (false || 1 == 2))
+    Ok ()
+"#;
+
+/// `&&` and `||` leave the right operand alone once the left has decided.
+///
+/// They used to lower to a call, and a call evaluates its arguments — so
+/// `n > 0 && 100 / n > 5` divided by zero on `n = 0`, the one input the guard
+/// exists to exclude. The last two cases are the other half of the contract:
+/// short-circuiting must not turn into never evaluating the right operand.
+#[test]
+fn beam_e2e_boolean_operators_short_circuit() {
+    let (stdout, _) = run_inline_actor_test("ShortCircuit", SHORT_CIRCUIT_SOURCE);
+    for expected in [
+        "guard0=false",
+        "guard4=true",
+        "andShort=false",
+        "orShort=true",
+        "andBoth=true",
+        "orBoth=false",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "expected '{expected}' in output, got:\n{stdout}"
+        );
+    }
+}

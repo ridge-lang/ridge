@@ -34,7 +34,7 @@ const ERL_TIMEOUT_SECS: u64 = 60;
 /// 4. Resolve the BEAM module name from `options.main_module` or the first
 ///    `.beam` file produced.
 /// 5. Invoke `erl -noshell -pa <beam_dir> -s <module> start -s init stop`.
-/// 6. Return `Ok(ProcessExitCode(0))` on exit-0 or `RunError::ErlExitNonZero`
+/// 6. Return `Ok(ProcessExitCode(0))` on exit-0 or `RunError::ProgramExitNonZero`
 ///    on non-zero.
 ///
 /// ## Reporting
@@ -56,7 +56,7 @@ const ERL_TIMEOUT_SECS: u64 = 60;
 ///   diagnostics (e.g. `R016` capability not declared).
 /// - [`RunError::Toolchain`] — `erl` not on PATH (`C004`).
 /// - [`RunError::NoBeamModule`] — codegen produced no `.beam` output.
-/// - [`RunError::ErlExitNonZero`] — BEAM node exited non-zero.
+/// - [`RunError::ProgramExitNonZero`] — the program exited non-zero.
 /// - [`RunError::Toolchain`] — OS could not spawn `erl` (`C013`).
 #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 pub fn run_workspace<R>(options: RunOptions, report: R) -> Result<ProcessExitCode, RunError>
@@ -173,8 +173,8 @@ where
 
     // Inherit stdout so the BEAM program's `Io.println` calls reach the
     // user's terminal as they happen, rather than being buffered into a pipe
-    // and dumped at exit. Stderr stays piped so crash dumps remain available
-    // for inclusion in `RunError::ErlExitNonZero` on failure.
+    // and dumped at exit. Stderr stays piped only so it can be relayed in one
+    // piece once the wait is over; it is never rewritten on the way through.
     let mut child = cmd
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::piped())
@@ -188,30 +188,19 @@ where
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let stderr = drain_pipe(child.stderr.take());
+                relay_stderr(&drain_pipe(child.stderr.take()));
                 let code = status.code().unwrap_or(-1);
                 if code == 0 {
-                    // Stderr is still piped; relay anything that landed there
-                    // (warnings, etc.) so it isn't dropped on success.
-                    use std::io::Write;
-                    let _ = std::io::stderr().write_all(stderr.as_bytes());
                     return Ok(ProcessExitCode(0));
                 }
-                return Err(RunError::ErlExitNonZero {
-                    code,
-                    // Stdout was inherited and already on the user's terminal;
-                    // nothing to surface in the error struct.
-                    stdout: String::new(),
-                    stderr,
-                });
+                return Err(RunError::ProgramExitNonZero { code });
             }
             Ok(None) => {
                 if start.elapsed() > timeout {
                     let _ = child.kill();
-                    return Err(RunError::ErlExitNonZero {
-                        code: -1,
-                        stdout: String::new(),
-                        stderr: format!("erl process timed out after {ERL_TIMEOUT_SECS} seconds"),
+                    relay_stderr(&drain_pipe(child.stderr.take()));
+                    return Err(RunError::RunTimedOut {
+                        seconds: ERL_TIMEOUT_SECS,
                     });
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
@@ -232,6 +221,17 @@ where
 /// Returns the absolute path to `erl` or `C004 ErlangNotFound`.
 fn probe_erl() -> Result<std::path::PathBuf, RunError> {
     which::which("erl").map_err(|_| ToolchainError::erl_not_found().into())
+}
+
+/// Hand the program's stderr to ours, byte for byte.
+///
+/// What the program wrote is the program's own message whether it succeeded,
+/// failed or hung, so it travels the same way in all three cases. Relaying it
+/// on one path and framing it on another is what let a well-typed program that
+/// returned `Err` read as a broken toolchain.
+fn relay_stderr(text: &str) {
+    use std::io::Write as _;
+    let _ = std::io::stderr().write_all(text.as_bytes());
 }
 
 /// Drain a child process stdio pipe into a `String`.

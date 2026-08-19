@@ -446,3 +446,169 @@ fn run_aborts_on_missing_capability() {
         .failure()
         .stderr(contains("R016"));
 }
+
+// ── A stopped program speaks Ridge, not Erlang ───────────────────────────────
+
+/// An app workspace whose member declares capabilities.
+///
+/// `make_app_workspace` writes a manifest with none, which suits most of this
+/// file; the actor test below needs `spawn` and `time`, and the capability gate
+/// refuses the program without them.
+#[cfg(feature = "beam-runtime")]
+fn make_capable_app_workspace(source: &str, allow: &str) -> common::TempWorkspace {
+    let tw = common::TempWorkspace::new();
+    write_file(
+        &tw.path,
+        "ridge.toml",
+        r#"[workspace]
+name = "crash-ws"
+version = "0.1.0"
+members = ["apps/*"]
+"#,
+    );
+    write_file(
+        &tw.path,
+        "apps/demo/ridge.toml",
+        &format!(
+            r#"[project]
+name = "demo"
+version = "0.1.0"
+kind = "app"
+entry = "src/Main.ridge"
+
+[capabilities]
+allow = [{allow}]
+"#
+        ),
+    );
+    write_file(&tw.path, "apps/demo/src/Main.ridge", source);
+    tw
+}
+
+/// Asking a stopped actor names what happened and what to do instead.
+///
+/// The reason travelled as `exit:ridge_ask_noproc` — an atom that appears in no
+/// documentation — over a stack through the runtime's own source files. None of
+/// that is the reader's, and the one thing that was theirs, the remedy, was the
+/// part missing.
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn asking_a_stopped_actor_names_the_fault_and_the_remedy() {
+    let tw = make_capable_app_workspace(
+        r#"import std.io    as Io
+import std.actor as Actor
+
+actor Worker =
+    state n: Int = 0
+
+    on ping (x: Int) -> Int =
+        n + x
+
+pub fn io spawn time main () -> Unit =
+    let w = spawn Worker
+    let _ = Actor.stop w
+    let r = w ?> ping 1
+    Io.println "unreachable"
+"#,
+        r#""io", "spawn", "time""#,
+    );
+
+    ridge_cmd()
+        .arg("run")
+        .current_dir(&tw.path)
+        .assert()
+        .failure()
+        .stderr(
+            contains("asked an actor that is no longer running")
+                .and(contains("Actor.tryAsk"))
+                .and(contains("ridge_ask_noproc").not())
+                .and(contains("ridge_rt").not())
+                .and(contains("stack:").not()),
+        );
+}
+
+/// `badarith` covers every arithmetic fault OTP has, so the reason alone cannot
+/// name this one. The top stack frame carries the operator and its arguments,
+/// which is what turns a hedge into a sentence.
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn dividing_by_zero_is_reported_as_dividing_by_zero() {
+    let tw = make_app_workspace(
+        "Main",
+        r#"pub fn main () -> Unit =
+    let d = 0
+    let _ = 10 / d
+    ()
+"#,
+    );
+
+    ridge_cmd()
+        .arg("run")
+        .current_dir(&tw.path)
+        .assert()
+        .failure()
+        .stderr(
+            contains("divided by zero")
+                .and(contains("RIDGE_BACKTRACE"))
+                .and(contains("badarith").not())
+                .and(contains("erl_erts_errors").not()),
+        );
+}
+
+/// The Erlang underneath is still one variable away.
+///
+/// Hiding it outright would trade one unusable output for another: whoever is
+/// debugging the runtime itself needs the term and the frames, and they are the
+/// people least likely to be served by a sentence.
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn the_runtime_stack_is_one_environment_variable_away() {
+    let tw = make_app_workspace(
+        "Main",
+        r#"pub fn main () -> Unit =
+    let d = 0
+    let _ = 10 / d
+    ()
+"#,
+    );
+
+    ridge_cmd()
+        .arg("run")
+        .env("RIDGE_BACKTRACE", "1")
+        .current_dir(&tw.path)
+        .assert()
+        .failure()
+        .stderr(
+            contains("divided by zero")
+                .and(contains("stack:"))
+                .and(contains("badarith")),
+        );
+}
+
+/// A program that returns `Err` failed on its own terms, and Ridge adds nothing.
+///
+/// It used to arrive wrapped in `erl exited with code 1` between stdout and
+/// stderr banners — the toolchain announcing a breakage that never happened,
+/// over the top of a well-typed program doing exactly what it said it would.
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn a_program_that_returns_err_is_not_framed_as_a_broken_toolchain() {
+    let tw = make_app_workspace(
+        "Main",
+        r#"pub fn main () -> Result Unit Text =
+    Err "the input file has no header row"
+"#,
+    );
+
+    ridge_cmd()
+        .arg("run")
+        .current_dir(&tw.path)
+        .assert()
+        .failure()
+        .stderr(
+            contains("the input file has no header row")
+                .and(contains("erl exited with code").not())
+                .and(contains("--- stderr ---").not())
+                .and(contains("--- stdout ---").not()),
+        );
+}

@@ -76,6 +76,10 @@ Codegen produced no BEAM module to run.
 
 The runtime started, but the OS stopped reporting on it.
 
+### C016
+
+The program did not finish within the run timeout.
+
 ### C101
 
 The source could not be parsed.

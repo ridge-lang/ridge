@@ -321,6 +321,11 @@ fn execute_plain(args: &RunArgs, workspace_root: PathBuf, member_name: String, p
                 // bypass).
                 render_diagnostics(&payload.diagnostics, &payload.sources);
             }
+            // The program has already said what happened, in its own voice,
+            // on its own stderr. Prefixing that with `error:` signs the
+            // program's failure as Ridge's, and exiting 1 over the status the
+            // program chose throws away what it was trying to report.
+            RunError::ProgramExitNonZero { code } => process::exit(*code),
             _ => {
                 eprintln!("error: {e}");
             }

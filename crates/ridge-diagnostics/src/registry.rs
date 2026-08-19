@@ -236,6 +236,12 @@ pub const REGISTRY: &[CodeEntry] = &[
         summary: "The runtime started, but the OS stopped reporting on it.",
     },
     CodeEntry {
+        code: "C016",
+        variants: &["RunTimedOut"],
+        owner: "ridge-driver",
+        summary: "The program did not finish within the run timeout.",
+    },
+    CodeEntry {
         code: "C101",
         variants: &["FmtSourceUnparseable"],
         owner: "ridge-fmt",

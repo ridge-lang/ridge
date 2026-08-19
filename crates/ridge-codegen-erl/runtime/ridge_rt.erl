@@ -50,7 +50,8 @@
     start_supervisor/4, start_supervised_child/2, stop_supervised_child/2,
     which_children/1, set_child_id/2, set_child_restart/2, try_ask/3,
     monitor_handle/1, demonitor_flush/1, await_down/2, stop_handle/1,
-    exit_reason_to_ridge/1, apply_code_change/2, migrate_message/1,
+    exit_reason_to_ridge/1, describe_failure/3, apply_code_change/2,
+    migrate_message/1,
     migrate_value/1, derive_record_migration/4, migration_count/0,
     set_migrate_report/1, invalidate_record_versions/1,
     diagnostics_to_stderr/0,
@@ -2080,6 +2081,60 @@ exit_reason_to_ridge(shutdown)          -> 'Shutdown';
 exit_reason_to_ridge({shutdown, _})     -> 'Shutdown';
 exit_reason_to_ridge(Reason) ->
     {'Crashed', iolist_to_binary(io_lib:format("~p", [Reason]))}.
+
+%% describe_failure/3 - the sentence a person reads when a program stops, and
+%% the remedy where there is one.
+%%
+%% Every runner that reports a failure to a terminal comes through here, so the
+%% vocabulary is settled once rather than once per command. Answers
+%% `{Sentence, Help}`, where `Help` is `none` when there is nothing useful to
+%% suggest; both are UTF-8 binaries ready for `~ts`.
+%%
+%% A reason with no clause of its own keeps its Erlang rendering on purpose.
+%% Inventing a sentence for something nobody anticipated would be a guess in
+%% Ridge's voice, and a reader could not tell the two apart. What does go is the
+%% stack: it is the part that named the runtime's own source files in a user's
+%% terminal, and the part nobody can act on.
+describe_failure(exit, ridge_ask_noproc, _Stack) ->
+    {<<"asked an actor that is no longer running">>,
+     <<"`Actor.tryAsk` answers `Err Noproc` instead of raising">>};
+describe_failure(exit, ridge_sup_noproc, _Stack) ->
+    {<<"asked a supervisor that is no longer running">>,
+     <<"a supervisor stops together with the actors it started">>};
+describe_failure(error, {ridge_rt_ask_timeout, Msg, Timeout}, _Stack) ->
+    {iolist_to_binary(
+       io_lib:format("no answer to `~ts` within ~B ms", [ask_label(Msg), Timeout])),
+     <<"raise the deadline with `timeout <ms>`, or ask with `Actor.tryAsk`">>};
+describe_failure(error, ridge_loader_requires_otp_27, _Stack) ->
+    {<<"this program needs Erlang/OTP 27 or newer">>, none};
+describe_failure(error, badarith, Stack) ->
+    arith_failure(Stack);
+describe_failure(Class, Reason, _Stack) ->
+    {iolist_to_binary(io_lib:format("the program stopped: ~p:~p", [Class, Reason])),
+     none}.
+
+%% ask_label/1 - the handler name inside an ask message, which is the name the
+%% program wrote. `?> slowWork 21` travels as `{slowWork, 21}`; a handler that
+%% takes nothing travels as the bare atom.
+ask_label(Msg) when is_atom(Msg) ->
+    atom_to_binary(Msg, utf8);
+ask_label(Msg) when is_tuple(Msg), tuple_size(Msg) > 0 ->
+    case element(1, Msg) of
+        Name when is_atom(Name) -> atom_to_binary(Name, utf8);
+        _                       -> iolist_to_binary(io_lib:format("~p", [Msg]))
+    end;
+ask_label(Msg) ->
+    iolist_to_binary(io_lib:format("~p", [Msg])).
+
+%% arith_failure/1 - `badarith` covers every arithmetic fault OTP has, and the
+%% reason alone does not say which one happened. The top stack frame does: a BIF
+%% frame carries its arguments rather than an arity, so a zero divisor is
+%% readable there. That is the difference between naming the fault and hedging.
+arith_failure([{erlang, Op, [_, Divisor], _} | _])
+  when (Op =:= 'div' orelse Op =:= 'rem' orelse Op =:= '/'), Divisor == 0 ->
+    {<<"divided by zero">>, none};
+arith_failure(_) ->
+    {<<"invalid arithmetic">>, none}.
 
 %% stop_handle/1 — target of the stdlib `Actor.stop` fn. Asks the process to
 %% stop normally (gen_server:stop/1, exit reason `normal`): its terminate/2

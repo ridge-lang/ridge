@@ -593,8 +593,11 @@ fn run_erl_direct(
 // halts zero.  These three tests cover the three shapes mains take in
 // practice.
 
-/// T2-17: `run_workspace` halts non-zero and surfaces the message on stderr
-/// when main returns `Err _`.
+/// `run_workspace` reports a non-zero status when main returns `Err _`.
+///
+/// The message itself travels to the terminal rather than into the error, so
+/// the text is asserted by the CLI tests that read `ridge`'s stderr. What has
+/// to hold here is that an `Err` main is still a non-zero exit.
 #[test]
 #[cfg(feature = "beam-runtime")]
 fn run_err_main_returns_nonzero_with_stderr() {
@@ -611,10 +614,9 @@ fn run_err_main_returns_nonzero_with_stderr() {
         result.is_err(),
         "expected non-zero exit for Err main, got Ok"
     );
-    let err_str = format!("{:?}", result.unwrap_err());
     assert!(
-        err_str.contains("boom"),
-        "expected the Err message 'boom' to surface (on stderr), got: {err_str}"
+        matches!(result, Err(RunError::ProgramExitNonZero { code: 1 })),
+        "expected the program's own exit status, got: {result:?}"
     );
 }
 
@@ -690,16 +692,23 @@ fn run_unit_main_returns_zero() {
     );
 }
 
-/// A main that crashes must still exit non-zero with the reason on stderr.
+/// A main that crashes must exit non-zero, and its reason must reach the user
+/// rather than the error struct.
 ///
-/// `ridge_main_runner` now runs main in its own monitored process instead of
-/// the boot process `-s` hands it, because that process traps exits and turned
-/// a fatal signal into a silent success. This pins the crash path across that
+/// `ridge_main_runner` runs main in its own monitored process instead of the
+/// boot process `-s` hands it, because that process traps exits and turned a
+/// fatal signal into a silent success. This pins the crash path across that
 /// change: the outcome travels back as a message, not as the caller's own
 /// stack, so the projection has to keep working.
+///
+/// What the crash *says* is asserted where a person would read it, by the CLI
+/// tests that spawn `ridge` and inspect its stderr. Here the program's stderr
+/// is relayed straight through instead of captured, so the status is all there
+/// is to match on - which is the point. The driver stopped rewriting the
+/// program's own words.
 #[test]
 #[cfg(feature = "beam-runtime")]
-fn run_crashing_main_returns_nonzero_with_stderr() {
+fn run_crashing_main_reports_the_programs_own_exit_status() {
     let _guard = PATH_ENV_LOCK.lock().expect("PATH_ENV_LOCK not poisoned");
 
     let source = "fn main () -> Unit =\n    let d = 0\n    let _ = 10 / d\n    ()\n";
@@ -713,10 +722,9 @@ fn run_crashing_main_returns_nonzero_with_stderr() {
         result.is_err(),
         "expected non-zero exit for a crashing main, got Ok"
     );
-    let err_str = format!("{:?}", result.unwrap_err());
     assert!(
-        err_str.contains("main crashed") && err_str.contains("badarith"),
-        "expected the crash reason to surface on stderr, got: {err_str}"
+        matches!(result, Err(RunError::ProgramExitNonZero { code: 1 })),
+        "expected the program's own exit status, got: {result:?}"
     );
 }
 

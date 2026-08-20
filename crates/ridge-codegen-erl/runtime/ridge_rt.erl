@@ -2204,15 +2204,23 @@ ask_label(Msg) ->
 %% readable there. That is the difference between naming the fault and hedging.
 %% int_range_help/1 - what to say after naming an out-of-range result.
 %%
-%% `Int.abs` gets its own line because the general one does not explain it: the
-%% range is not symmetric, and that asymmetry is the entire reason the smallest
-%% value has no absolute value inside the type. Telling someone the bounds when
-%% their argument was already inside them is not help.
-int_range_help(<<"Int.abs">>) ->
-    <<"`Int` reaches one further below zero than above it, so its smallest "
-      "value has no positive counterpart">>;
+%% `Int.abs` and `Int.neg` get their own line because the general one does not
+%% explain them: the range is not symmetric, and that asymmetry is the entire
+%% reason the smallest value has no positive counterpart. Telling someone the
+%% bounds when their argument was already inside them is not help.
+int_range_help(<<"Int.abs">>) -> asymmetry_help();
+int_range_help(<<"Int.neg">>) -> asymmetry_help();
+int_range_help(<<"Int.div">>) ->
+    <<"the only division that leaves the range is the smallest `Int` over -1, "
+      "which is one past the largest">>;
 int_range_help(_) ->
-    <<"`Int` holds -9223372036854775808 to 9223372036854775807">>.
+    <<"`Int` holds -9223372036854775808 to 9223372036854775807; use "
+      "`Int.wrappingAdd` or `Int.saturatingAdd` for a defined answer at the "
+      "boundary">>.
+
+asymmetry_help() ->
+    <<"`Int` reaches one further below zero than above it, so its smallest "
+      "value has no positive counterpart">>.
 
 arith_failure([{erlang, Op, [_, Divisor], _} | _])
   when (Op =:= 'div' orelse Op =:= 'rem' orelse Op =:= '/'), Divisor == 0 ->

@@ -1616,6 +1616,7 @@ const fn bridge_target_arity(target: &stdlib_map::BridgeTarget) -> u32 {
     use stdlib_map::BridgeTarget;
     match target {
         BridgeTarget::BeamStdlib { arity, .. }
+        | BridgeTarget::BeamStdlibCheckedInt { arity, .. }
         | BridgeTarget::BeamStdlibPerm { arity, .. }
         | BridgeTarget::RidgeRuntime { arity, .. }
         | BridgeTarget::RidgeStdlibLocal { arity, .. } => *arity,
@@ -1718,6 +1719,40 @@ pub(crate) fn lower_call_to_stdlib(
                 fn_name: CErlAtom((*fn_name).into()),
                 args: lowered_args,
             })
+        }
+
+        // The same instruction as `BeamStdlib`, wrapped in the test that decides
+        // whether what the host answered is a value of the declared Ridge type.
+        // This is the hot path — `a + b` reaches here — so the test is expanded
+        // at the operation rather than reached through a call; see
+        // `crate::int_range` for what that is worth and why.
+        BridgeTarget::BeamStdlibCheckedInt {
+            module: m,
+            fn_name,
+            arity,
+        } => {
+            if args.len() != *arity as usize {
+                return Err(CodegenError::IrShapeMalformed {
+                    variant: "IrExpr::Call",
+                    span,
+                    detail: format!(
+                        "stdlib call '{module}.{name}' expects {arity} args, got {}",
+                        args.len()
+                    ),
+                });
+            }
+            let lowered_args = args
+                .iter()
+                .map(|a| lower_expr_in_scope(a, scope))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(crate::int_range::narrow_to_int(
+                CErlExpr::Call {
+                    module: CErlAtom((*m).into()),
+                    fn_name: CErlAtom((*fn_name).into()),
+                    args: lowered_args,
+                },
+                &crate::int_range::ridge_label(module, name),
+            ))
         }
 
         BridgeTarget::BeamStdlibPerm {
@@ -1869,6 +1904,55 @@ mod tests {
     }
 
     // ── name_to_erl_var mangler tests ────────────────────────────────────────
+
+    #[test]
+    fn the_call_site_of_a_checked_primitive_carries_the_range_test() {
+        // This is the spelling `a + b` reaches, and the hot one: the test is
+        // expanded here rather than reached through a call, which is worth
+        // about 3x — see `crate::int_range`.
+        let mut scope = LocalScope::new();
+        let printed = crate::printer::print_expr(
+            &lower_call_to_stdlib(
+                "std.int",
+                "add",
+                &[lit_int(1), lit_int(2)],
+                sp(),
+                &mut scope,
+            )
+            .expect("std.int.add lowers"),
+        );
+        assert!(
+            printed.contains("call 'erlang':'+' (1, 2)"),
+            "the call site must still add; got: {printed}"
+        );
+        assert!(
+            printed.contains("ridge_int_out_of_range"),
+            "the call site must test its result; got: {printed}"
+        );
+    }
+
+    #[test]
+    fn the_call_site_of_an_unchecked_primitive_carries_nothing_extra() {
+        let mut scope = LocalScope::new();
+        let printed = crate::printer::print_expr(
+            &lower_call_to_stdlib(
+                "std.int",
+                "rem",
+                &[lit_int(7), lit_int(3)],
+                sp(),
+                &mut scope,
+            )
+            .expect("std.int.rem lowers"),
+        );
+        assert!(
+            printed.contains("call 'erlang':'rem' (7, 3)"),
+            "the call site must still take the remainder; got: {printed}"
+        );
+        assert!(
+            !printed.contains("ridge_int_out_of_range"),
+            "a remainder cannot leave the range and must not be tested; got: {printed}"
+        );
+    }
 
     #[test]
     fn mangler_simple() {

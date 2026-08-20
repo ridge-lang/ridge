@@ -788,8 +788,21 @@ fn lower_primitive_wrapper(prim: &IrPrimitiveFn) -> Result<CErlFn, CodegenError>
             fn_name: CErlAtom((*fn_name).to_owned()),
             args,
         },
-        // A primitive whose BEAM answer is a runtime helper rather than a BIF —
-        // the shape a checked arithmetic operation would take.
+        // The same instruction, with the range test around it. This wrapper is
+        // what `std.int:add/2` is in the compiled stdlib module — reachable by
+        // an explicit `apply`, and by a hot reload — so it has to answer the
+        // same way the expanded form does.
+        BridgeTarget::BeamStdlibCheckedInt {
+            module: m, fn_name, ..
+        } => crate::int_range::narrow_to_int(
+            CErlExpr::Call {
+                module: CErlAtom((*m).to_owned()),
+                fn_name: CErlAtom((*fn_name).to_owned()),
+                args,
+            },
+            &crate::int_range::ridge_label(&prim.module, &prim.name),
+        ),
+        // A primitive whose BEAM answer is a runtime helper rather than a BIF.
         BridgeTarget::RidgeRuntime { fn_name, .. } => CErlExpr::Call {
             module: CErlAtom("ridge_rt".to_owned()),
             fn_name: CErlAtom((*fn_name).to_owned()),
@@ -822,10 +835,69 @@ mod tests {
     use super::*;
     use ridge_ast::Span;
     use ridge_ir::{
-        CapabilitySet, IrConst, IrExpr, IrFn, IrItem, IrLit, IrNodeId, IrParam, LoweredModule,
-        LoweredWorkspace, ModuleId, NodeId, Scheme, Type,
+        CapabilitySet, IrConst, IrExpr, IrFn, IrItem, IrLit, IrNodeId, IrParam, IrPrimitiveFn,
+        LoweredModule, LoweredWorkspace, ModuleId, NodeId, Scheme, Type,
     };
     use rustc_hash::FxHashMap;
+
+    fn primitive(module: &str, name: &str, arity: usize) -> IrPrimitiveFn {
+        IrPrimitiveFn {
+            module: module.to_owned(),
+            name: name.to_owned(),
+            params: (0..arity).map(|i| format!("p{i}")).collect(),
+            is_pub: true,
+            span: sp(),
+        }
+    }
+
+    #[test]
+    fn the_exported_wrapper_of_a_checked_primitive_carries_the_range_test() {
+        // `std.int:add/2` in the compiled stdlib module is the third spelling of
+        // addition — reachable by an explicit apply and by a hot reload — and it
+        // has to answer the way the other two do.
+        let printed = crate::printer::print_expr(
+            &lower_primitive_wrapper(&primitive("std.int", "add", 2))
+                .expect("std.int.add has a BEAM spelling")
+                .body,
+        );
+        assert!(
+            printed.contains("call 'erlang':'+'"),
+            "the wrapper must still add; got: {printed}"
+        );
+        assert!(
+            printed.contains("ridge_int_out_of_range"),
+            "the wrapper must test its result; got: {printed}"
+        );
+    }
+
+    #[test]
+    fn the_exported_wrapper_of_an_unchecked_primitive_carries_nothing_extra() {
+        let printed = crate::printer::print_expr(
+            &lower_primitive_wrapper(&primitive("std.float", "add", 2))
+                .expect("std.float.add has a BEAM spelling")
+                .body,
+        );
+        assert!(
+            !printed.contains("ridge_int_out_of_range"),
+            "float addition must not be range-tested; got: {printed}"
+        );
+    }
+
+    #[test]
+    fn the_remainder_wrapper_carries_nothing_extra() {
+        // The one `std.int` primitive deliberately left untested. Asserted here
+        // rather than left implicit, so that dropping the exemption shows up as
+        // a failing test instead of as a silent slowdown on every `%`.
+        let printed = crate::printer::print_expr(
+            &lower_primitive_wrapper(&primitive("std.int", "rem", 2))
+                .expect("std.int.rem has a BEAM spelling")
+                .body,
+        );
+        assert!(
+            !printed.contains("ridge_int_out_of_range"),
+            "a remainder cannot leave the range and must not be tested; got: {printed}"
+        );
+    }
 
     fn sp() -> Span {
         Span::point(0)

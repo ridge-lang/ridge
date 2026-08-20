@@ -25,6 +25,7 @@ pub(crate) mod anf;
 pub(crate) mod expr;
 pub(crate) mod handler;
 pub(crate) mod init;
+pub(crate) mod int_range;
 pub(crate) mod item;
 pub(crate) mod letrec_detect;
 pub(crate) mod lit;

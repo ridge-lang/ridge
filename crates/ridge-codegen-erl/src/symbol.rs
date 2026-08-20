@@ -76,6 +76,36 @@ fn stdlib_value_fn_ref(module: CErlAtom, fn_name: CErlAtom, arity: u32) -> CErlE
     }
 }
 
+/// The same eta-expansion, for a primitive whose host spelling is wider than
+/// the Ridge type it implements: the range test goes around the call inside the
+/// fun.
+///
+/// `Int.add` handed to a higher-order function has to behave exactly as `+`
+/// does — the operator and the qualified name resolve to one entry precisely so
+/// that they cannot drift. If this path emitted the bare instruction,
+/// `List.fold Int.add 0 xs` would be the one spelling of addition that quietly
+/// keeps a value the type says cannot exist.
+///
+/// Built by wrapping [`stdlib_value_fn_ref`] rather than by repeating it, so
+/// the two shapes cannot come apart either.
+fn stdlib_value_checked_int_fn_ref(
+    module: CErlAtom,
+    fn_name: CErlAtom,
+    arity: u32,
+    label: &str,
+) -> CErlExpr {
+    match stdlib_value_fn_ref(module, fn_name, arity) {
+        CErlExpr::Fun { params, body } => CErlExpr::Fun {
+            params,
+            body: Box::new(crate::int_range::narrow_to_int(*body, label)),
+        },
+        // The 0-arity shape, which resolves the value at the use site. No
+        // primitive has arity 0 today; testing it anyway costs nothing and
+        // keeps this total.
+        resolved => crate::int_range::narrow_to_int(resolved, label),
+    }
+}
+
 /// Lower a [`SymbolRef`] used as a value expression to a [`CErlExpr`].
 ///
 /// Variants whose lowering requires arity lookup, stdlib mapping, or other
@@ -182,6 +212,16 @@ pub(crate) fn lower_symbol(
                     CErlAtom((*m).into()),
                     CErlAtom((*fn_name).into()),
                     *arity,
+                )),
+                Some(BridgeTarget::BeamStdlibCheckedInt {
+                    module: m,
+                    fn_name,
+                    arity,
+                }) => Ok(stdlib_value_checked_int_fn_ref(
+                    CErlAtom((*m).into()),
+                    CErlAtom((*fn_name).into()),
+                    *arity,
+                    &crate::int_range::ridge_label(module, name),
                 )),
                 Some(BridgeTarget::RidgeRuntime { fn_name, arity, .. }) => Ok(stdlib_value_fn_ref(
                     CErlAtom("ridge_rt".into()),
@@ -349,6 +389,46 @@ mod tests {
             }
             other => panic!("expected Apply(LocalFnRef(myConst/0), []), got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_checked_primitive_as_a_value_carries_the_range_test() {
+        // `List.fold Int.add 0 xs` must add the way `+` adds. The operator and
+        // the qualified name resolve to one bridge entry so they cannot drift;
+        // this is the spelling that would drift anyway if the eta-expansion
+        // emitted the bare instruction.
+        let sym = SymbolRef::Stdlib {
+            module: "std.int".into(),
+            name: "add".into(),
+        };
+        let printed = crate::printer::print_expr(
+            &lower_symbol(&sym, sp(), &empty_arity(), None).expect("Int.add is a known symbol"),
+        );
+        assert!(
+            printed.contains("call 'erlang':'+'"),
+            "the fun must still add; got: {printed}"
+        );
+        assert!(
+            printed.contains("ridge_int_out_of_range"),
+            "the fun must test its result; got: {printed}"
+        );
+    }
+
+    #[test]
+    fn an_unchecked_primitive_as_a_value_carries_nothing_extra() {
+        // The negative control. Without it, a change that wrapped every stdlib
+        // value in the range test would pass the assertion above.
+        let sym = SymbolRef::Stdlib {
+            module: "std.float".into(),
+            name: "add".into(),
+        };
+        let printed = crate::printer::print_expr(
+            &lower_symbol(&sym, sp(), &empty_arity(), None).expect("Float.add is a known symbol"),
+        );
+        assert!(
+            !printed.contains("ridge_int_out_of_range"),
+            "float addition must not be range-tested; got: {printed}"
+        );
     }
 
     #[test]

@@ -99,7 +99,7 @@ pub fn build_call_graph(decls: &[&FnDecl]) -> CallGraph {
 
     for (i, d) in decls.iter().enumerate() {
         let mut called: FxHashSet<DeclId> = FxHashSet::default();
-        // Body::Ffi has no expression to walk for call-graph edges.
+        // A body-less declaration contributes no call-graph edges.
         if let Body::Expr(e) = &d.body {
             collect_called_names(e, &name_to_id, &mut called);
         }
@@ -549,8 +549,9 @@ fn write_back_schemes(
                 &ctx.builtins,
                 instance_env,
             );
-            // Body::Ffi has no expression span to key a scheme entry by.
-            // We still bind the name in the env for forward references.
+            // A body-less declaration has no expression span to key a scheme
+            // entry by.  We still bind the name in the env for forward
+            // references.
             if let Body::Expr(e) = &decl.body {
                 generalised.push((e, decl.name.text.clone(), scheme, skip_name_bind));
             } else if !skip_name_bind {
@@ -823,10 +824,11 @@ pub fn typecheck_module_decls(
                     }
                 }
 
-                // Body::Ffi carries a fully-declared signature; no inference needed.
+                // A body-less declaration carries a fully-declared
+                // signature; there is nothing to infer.
                 let body_ty = match &decl.body {
                     Body::Expr(e) => infer_expr(ctx, b, e),
-                    Body::Ffi { .. } => *ret_ty_box.clone(),
+                    Body::Ffi { .. } | Body::Primitive => *ret_ty_box.clone(),
                 };
                 // Unify body type with declared ret.
                 if unify(ctx, &body_ty, ret_ty_box).is_err() {

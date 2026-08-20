@@ -36,7 +36,7 @@ pub use actor::{
 };
 pub use expr::{AssignTarget, IrArm, IrExpr, IrTimeout};
 pub use id::IrNodeId;
-pub use item::{IrConst, IrFfiFn, IrFn, IrItem, IrMigration, IrParam};
+pub use item::{IrConst, IrFfiFn, IrFn, IrItem, IrMigration, IrParam, IrPrimitiveFn};
 pub use lit::IrLit;
 pub use pat::IrPat;
 pub use symbol::{CtorKind, SymbolRef};

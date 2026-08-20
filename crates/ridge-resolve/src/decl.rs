@@ -12,7 +12,7 @@ use ridge_ast::{Body, Constructor, Item, Module, TypeBody};
 use crate::error::ResolveError;
 use crate::imports::{prelude_resolutions, Binding};
 
-// ── Crate-path gate (T003 FfiOutsideStdlib) ───────────────────────────────────
+// ── Stdlib-only attribute gate (R022) ─────────────────────────────────────────
 
 /// Emit `R022 FfiOutsideStdlib` for every `@ffi`-decorated `fn` found in
 /// `module`, unless the module belongs to the standard library.
@@ -27,10 +27,14 @@ use crate::imports::{prelude_resolutions, Binding};
 ///
 /// # Errors emitted
 ///
-/// - [`ResolveError::FfiOutsideStdlib`] (`R022`) — for each `@ffi` decl in a
-///   module that is not part of the standard library.
+/// - [`ResolveError::StdlibOnlyAttribute`] (`R022`) — for each `@ffi` or
+///   `@primitive` decl in a module that is not part of the standard library.
+///
+/// Both are checked here because they are one privilege wearing two spellings:
+/// each lets a declaration claim an implementation the language did not write,
+/// and neither belongs in ordinary code.
 #[must_use]
-pub fn check_ffi_outside_stdlib(module: &Module, is_stdlib: bool) -> Vec<ResolveError> {
+pub fn check_stdlib_only_attributes(module: &Module, is_stdlib: bool) -> Vec<ResolveError> {
     if is_stdlib {
         return Vec::new();
     }
@@ -38,9 +42,15 @@ pub fn check_ffi_outside_stdlib(module: &Module, is_stdlib: bool) -> Vec<Resolve
     let mut errors = Vec::new();
     for item in &module.items {
         if let Item::Fn(d) = item {
-            if matches!(d.body, Body::Ffi { .. }) {
-                errors.push(ResolveError::FfiOutsideStdlib { span: d.name.span });
-            }
+            let attr = match d.body {
+                Body::Ffi { .. } => "@ffi",
+                Body::Primitive => "@primitive",
+                Body::Expr(_) => continue,
+            };
+            errors.push(ResolveError::StdlibOnlyAttribute {
+                attr,
+                span: d.name.span,
+            });
         }
     }
     errors
@@ -135,7 +145,7 @@ mod tests {
             doc: vec![],
             span: ridge_ast::Span::point(0),
         };
-        let errs = check_ffi_outside_stdlib(&module, true);
+        let errs = check_stdlib_only_attributes(&module, true);
         assert!(errs.is_empty());
     }
 
@@ -173,17 +183,72 @@ mod tests {
     #[test]
     fn r022_fires_for_ffi_in_user_module() {
         let module = module_with_ffi();
-        let errs = check_ffi_outside_stdlib(&module, false);
+        let errs = check_stdlib_only_attributes(&module, false);
         assert_eq!(errs.len(), 1);
-        assert!(matches!(errs[0], ResolveError::FfiOutsideStdlib { .. }));
+        assert!(matches!(errs[0], ResolveError::StdlibOnlyAttribute { .. }));
         assert_eq!(errs[0].code(), "R022");
     }
 
     #[test]
     fn no_r022_for_ffi_in_stdlib_module() {
         let module = module_with_ffi();
-        let errs = check_ffi_outside_stdlib(&module, true);
+        let errs = check_stdlib_only_attributes(&module, true);
         assert!(errs.is_empty(), "stdlib `@ffi` must be allowed: {errs:?}");
+    }
+
+    /// Build a module containing a single `@primitive` `pub fn`.
+    fn module_with_primitive() -> Module {
+        use ridge_ast::{FnDecl, Ident, Span, Visibility};
+
+        let span = Span::point(0);
+        let decl = FnDecl {
+            attrs: vec![],
+            vis: Visibility::Pub,
+            caps: vec![],
+            name: Ident {
+                text: "add".to_owned(),
+                span,
+            },
+            params: vec![],
+            ret: None,
+            constraints: vec![],
+            body: Body::Primitive,
+            span,
+            doc: None,
+        };
+        Module {
+            items: vec![Item::Fn(decl)],
+            doc: vec![],
+            span,
+        }
+    }
+
+    #[test]
+    fn r022_fires_for_primitive_in_user_module() {
+        // Without this gate, a user declaring `@primitive` would get no answer
+        // until codegen, and the answer would be about a missing bridge entry
+        // rather than about an attribute they are not allowed to write.
+        let module = module_with_primitive();
+        let errs = check_stdlib_only_attributes(&module, false);
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].code(), "R022");
+        let ResolveError::StdlibOnlyAttribute { attr, .. } = errs[0] else {
+            panic!("expected StdlibOnlyAttribute, got {:?}", errs[0]);
+        };
+        assert_eq!(
+            attr, "@primitive",
+            "the diagnostic must name the attribute the author actually wrote"
+        );
+    }
+
+    #[test]
+    fn no_r022_for_primitive_in_stdlib_module() {
+        let module = module_with_primitive();
+        let errs = check_stdlib_only_attributes(&module, true);
+        assert!(
+            errs.is_empty(),
+            "stdlib `@primitive` must be allowed: {errs:?}"
+        );
     }
 
     // ── R028 ReservedName ──────────────────────────────────────────────────────

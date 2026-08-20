@@ -670,6 +670,57 @@ pub fn io main () -> Unit =
         );
 }
 
+/// Arithmetic still computes, spelled either way.
+///
+/// `+` and `Int.add` are the same declaration reached by two syntaxes, and the
+/// declaration no longer names anything to reach. What replaces the name is a
+/// table inside the BEAM backend, so this is the check that the table is
+/// complete and that both spellings land in it — an operator that resolved and
+/// a function call that did not would be a compile error, and the reverse would
+/// be two different meanings for one operation.
+///
+/// `%` earns its line: `Int.mod` is an ordinary Ridge body that calls `rem` by
+/// name, which reaches the primitive as a local function rather than through
+/// the operator path. That is the case that needs the wrapper to exist in the
+/// compiled module at all.
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn arithmetic_computes_the_same_answer_by_operator_and_by_name() {
+    let tw = make_capable_app_workspace(
+        r#"import std.io    as Io
+import std.int   as Int
+import std.float as Float
+
+fn showInt (label: Text) (n: Int) -> Text = Text.concat label (Int.toText n)
+
+pub fn io main () -> Unit =
+    Io.println (showInt "op=" (2 + 3 * 4 - 1))
+    Io.println (showInt "named=" (Int.sub (Int.add 2 (Int.mul 3 4)) 1))
+    Io.println (showInt "div=" (7 / 2))
+    Io.println (showInt "mod=" (7 % 2))
+    Io.println (showInt "neg=" (Int.neg 5))
+    Io.println (Text.concat "float=" (Float.toText (Float.neg (1.5 * 2.0))))
+"#,
+        r#""io""#,
+    );
+
+    ridge_cmd()
+        .arg("run")
+        .current_dir(&tw.path)
+        .assert()
+        .success()
+        .stdout(
+            // Labelled, so a wrong answer names which operation gave it rather
+            // than shifting a line and failing on all of them.
+            contains("op=13")
+                .and(contains("named=13"))
+                .and(contains("div=3"))
+                .and(contains("mod=1"))
+                .and(contains("neg=-5"))
+                .and(contains("float=-3.0")),
+        );
+}
+
 /// Narrowing a `Float` too large for `Int` says so, and says what the range is.
 ///
 /// `Float.round` and `Float.truncate` return a bare `Int`, so unlike the

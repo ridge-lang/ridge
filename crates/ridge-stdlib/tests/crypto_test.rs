@@ -20,7 +20,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use ridge_stdlib::build_driver::{build_all, discover};
-use ridge_stdlib::ffi_targets;
+use ridge_stdlib::stdlib_targets::{self, StdlibTarget};
 
 static BUILD_LOCK: Mutex<()> = Mutex::new(());
 
@@ -50,17 +50,30 @@ fn std_crypto_is_discovered_and_built() {
     );
 }
 
-#[test]
-fn constant_time_eq_is_in_the_ffi_table() {
-    let target = ffi_targets::lookup("std.crypto", "constantTimeEq")
-        .expect("std.crypto::constantTimeEq must resolve in the generated ffi_targets table");
-    assert_eq!(target.beam_module, "crypto");
-    assert_eq!(target.fn_name, "hash_equals");
-    assert_eq!(target.arity, 2);
+/// The declared host target for `std.crypto::{name}`, or a failure naming it.
+fn foreign_target(name: &str) -> (String, String, u32) {
+    let target = stdlib_targets::lookup("std.crypto", name)
+        .unwrap_or_else(|| panic!("std.crypto::{name} must resolve in the stdlib target table"));
+    match target {
+        StdlibTarget::Foreign {
+            module,
+            fn_name,
+            arity,
+        } => (module.clone(), fn_name.clone(), *arity),
+        other => panic!("std.crypto::{name} must be a host function, got {other:?}"),
+    }
 }
 
 #[test]
-fn digests_and_base64_are_in_the_ffi_table() {
+fn constant_time_eq_is_in_the_stdlib_target_table() {
+    assert_eq!(
+        foreign_target("constantTimeEq"),
+        ("crypto".to_owned(), "hash_equals".to_owned(), 2)
+    );
+}
+
+#[test]
+fn digests_and_base64_are_in_the_stdlib_target_table() {
     let cases = [
         ("sha256", "crypto_sha256", 1),
         ("hmacSha256", "crypto_hmac_sha256", 2),
@@ -68,10 +81,10 @@ fn digests_and_base64_are_in_the_ffi_table() {
         ("base64Decode", "base64_decode", 1),
     ];
     for (name, target_fn, arity) in cases {
-        let target = ffi_targets::lookup("std.crypto", name)
-            .unwrap_or_else(|| panic!("std.crypto::{name} must resolve in the ffi_targets table"));
-        assert_eq!(target.beam_module, "ridge_rt", "{name}");
-        assert_eq!(target.fn_name, target_fn, "{name}");
-        assert_eq!(target.arity, arity, "{name}");
+        assert_eq!(
+            foreign_target(name),
+            ("ridge_rt".to_owned(), target_fn.to_owned(), arity),
+            "{name}"
+        );
     }
 }

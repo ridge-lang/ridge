@@ -11,8 +11,8 @@ pub mod build_driver;
 pub mod codegen_ffi_targets;
 pub mod codegen_manifest;
 pub mod ffi_caps_audit;
-pub mod ffi_targets;
 pub mod ffi_validator;
+pub mod stdlib_targets;
 
 use std::path::Path;
 

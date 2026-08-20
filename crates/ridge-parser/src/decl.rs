@@ -158,35 +158,76 @@ fn parse_ffi_attr(cur: &mut Cursor<'_>) -> Result<FfiAttr, ParseError> {
     })
 }
 
-/// Parse the header of a function declaration that is preceded by `@ffi(...)`.
+// ── @primitive attribute ──────────────────────────────────────────────────────
+
+/// Parse a `@primitive` attribute and return the span it covers.
 ///
-/// Called from [`parse_item`] after the `@ffi` attribute has been successfully
-/// parsed and consumed.  The cursor must be positioned at `Visibility` (either
-/// `pub` or `fn`).
+/// Grammar (additive — no lexer change):
+/// ```ebnf
+/// Attr = "@" "primitive" ;
+/// ```
+///
+/// `@primitive` marks a standard-library declaration whose operation is part of
+/// the language rather than a call into anything: `+` on two `Int`s means
+/// addition, and each backend spells that however its target does.  It takes no
+/// arguments — the arity is the declared parameter count, and a second number
+/// beside it could only ever disagree with the first.
+///
+/// The cursor must be positioned at `Token::At`.  On success it is advanced
+/// past the attribute name.
+fn parse_primitive_attr(cur: &mut Cursor<'_>) -> Result<ridge_ast::Span, ParseError> {
+    let start = cur.expect(&Token::At)?; // consume `@`
+
+    let span = cur.span();
+    match cur.peek().clone() {
+        Token::LowerIdent(ref s) if s == "primitive" => {
+            cur.bump(); // consume `primitive`
+        }
+        _ => {
+            return Err(ParseError::Expected {
+                span,
+                expected: "`primitive`",
+                found: cur.peek().to_string(),
+            });
+        }
+    }
+
+    Ok(start.merge(span))
+}
+
+/// Parse the header of a function declaration whose body is supplied from
+/// outside the source — `@ffi(...)` or `@primitive`.
+///
+/// Called from [`parse_item`] once the attribute has been parsed and consumed.
+/// The cursor must be positioned at `Visibility` (either `pub` or `fn`).
 ///
 /// Grammar for this case:
 /// ```ebnf
 /// FnDecl = Visibility "fn" [CapList] Ident { Param } [ "->" Type ] ;
-///          (* no "=" or body — forbidden when @ffi is present *)
+///          (* no "=" or body — the attribute stands in for one *)
 /// ```
+///
+/// Both attributes share this reader rather than each having its own: the two
+/// headers are the same grammar, and two copies of it would be free to drift.
+/// `body` is what the caller already decided the declaration means, and
+/// `no_body_reason` completes the sentence a `=` after the header gets told.
 ///
 /// Returns `Err` with a descriptive `ParseError` if:
 /// - `pub` is absent or a non-`fn` keyword follows,
-/// - a `=` body is found after the header (P002: `@ffi` + body is forbidden),
+/// - a `=` body is found after the header,
 /// - any other unexpected token is encountered.
 ///
 /// Precondition: `cur.peek()` is at the first token of the visibility.
-/// `ffi` carries the already-parsed attribute; `doc` is the preceding doc comment.
-fn parse_fn_decl_ffi(
+fn parse_fn_decl_no_body(
     cur: &mut Cursor<'_>,
-    ffi: FfiAttr,
+    start: ridge_ast::Span,
+    body: Body,
+    no_body_reason: &str,
     doc: Option<DocComment>,
 ) -> Result<FnDecl, ParseError> {
-    let start = ffi.span;
-
-    // Visibility — must be `pub` for an FFI decl (private @ffi makes no sense
-    // at the language level, though we do not hard-enforce it here — the
-    // crate-path check in T3 will catch invalid usage anyway).
+    // Visibility — these declarations are expected to be `pub` (a private one
+    // makes no sense at the language level), though it is not hard-enforced
+    // here: the stdlib-only check in `ridge-resolve` catches invalid usage.
     let vis = parse_visibility(cur)?;
 
     cur.expect(&Token::KwFn)?; // consume `fn`
@@ -229,12 +270,12 @@ fn parse_fn_decl_ffi(
         None
     };
 
-    // Reject body: `@ffi` decls must NOT have an `=`-introduced body.
+    // Reject a body: the attribute already said where the implementation
+    // comes from, so an `=` here is two answers to one question.
     if cur.peek() == &Token::Assign {
         return Err(ParseError::UnexpectedToken {
             span: cur.span(),
-            description: "function annotated with `@ffi(...)` must not have an `=` body (T2 §5.2)"
-                .to_string(),
+            description: format!("this function has no body — {no_body_reason}"),
         });
     }
 
@@ -248,11 +289,7 @@ fn parse_fn_decl_ffi(
         params,
         ret,
         constraints: vec![],
-        body: Body::Ffi {
-            module: ffi.module,
-            name: ffi.name,
-            arity: ffi.arity,
-        },
+        body,
         span: start.merge(end_span),
         doc,
     })
@@ -532,21 +569,47 @@ pub(crate) fn parse_item(
     doc: Option<DocComment>,
     vis: Visibility,
 ) -> Result<Item, ParseError> {
-    // ── Attribute handling — `@ffi` and `@test` ───────────────────────────────
+    // ── Attribute handling — `@ffi`, `@primitive` and `@test` ─────────────────
     // When the current token is `@`, inspect the following identifier to decide
     // which attribute to parse.  The visibility passed in will be `Private`
     // (because `@` is not a visibility keyword); visibility is re-parsed after
-    // any `@test` attributes, or inside `parse_fn_decl_ffi` for `@ffi`.
+    // any `@test` attributes, or inside `parse_fn_decl_no_body` for the two
+    // attributes that stand in for a body.
     if cur.peek() == &Token::At {
         // Peek past `@` to see the attribute name.
         let attr_name = cur.peek_n(1).cloned();
         if matches!(&attr_name, Some(Token::LowerIdent(s)) if s == "ffi") {
-            // `@ffi(...)` — existing path, unchanged.
             let ffi = parse_ffi_attr(cur)?;
+            let span = ffi.span;
+            let body = Body::Ffi {
+                module: ffi.module,
+                name: ffi.name,
+                arity: ffi.arity,
+            };
             while cur.peek() == &Token::Newline {
                 cur.bump();
             }
-            return Ok(Item::Fn(parse_fn_decl_ffi(cur, ffi, doc)?));
+            return Ok(Item::Fn(parse_fn_decl_no_body(
+                cur,
+                span,
+                body,
+                "the foreign function named in `@ffi(...)` is its implementation",
+                doc,
+            )?));
+        }
+
+        if matches!(&attr_name, Some(Token::LowerIdent(s)) if s == "primitive") {
+            let span = parse_primitive_attr(cur)?;
+            while cur.peek() == &Token::Newline {
+                cur.bump();
+            }
+            return Ok(Item::Fn(parse_fn_decl_no_body(
+                cur,
+                span,
+                Body::Primitive,
+                "`@primitive` says the compiler supplies it",
+                doc,
+            )?));
         }
 
         if matches!(&attr_name, Some(Token::LowerIdent(s)) if s == "test") {
@@ -3978,6 +4041,63 @@ mod tests {
         assert!(
             matches!(result.unwrap(), Item::ClassDecl(_)),
             "expected Item::ClassDecl"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // `@primitive` — a standard-library declaration whose operation is part of
+    // the language.  It takes no arguments and forbids a body, and the arity is
+    // the declared parameter count.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    fn parse_top_item(src: &str) -> Result<Item, ParseError> {
+        let toks = lex(src);
+        let mut cur = Cursor::new(&toks);
+        let vis = parse_visibility(&mut cur)?;
+        parse_item(&mut cur, None, vis)
+    }
+
+    #[test]
+    fn primitive_declares_a_body_that_names_nothing() {
+        let src = "@primitive\npub fn add (a: Int) (b: Int) -> Int\n";
+        let item = parse_top_item(src).expect("`@primitive` declaration should parse");
+        let Item::Fn(decl) = item else {
+            panic!("expected Item::Fn");
+        };
+        assert_eq!(decl.name.text, "add");
+        assert_eq!(decl.params.len(), 2, "the parameter list is the arity");
+        assert_eq!(
+            decl.body,
+            Body::Primitive,
+            "a `@primitive` declaration must carry no implementation at all"
+        );
+    }
+
+    #[test]
+    fn primitive_with_a_body_is_two_answers_to_one_question() {
+        let src = "@primitive\npub fn add (a: Int) (b: Int) -> Int = a\n";
+        let err = parse_top_item(src).expect_err("`@primitive` plus a body must be rejected");
+        let ParseError::UnexpectedToken { description, .. } = &err else {
+            panic!("expected UnexpectedToken, got {err:?}");
+        };
+        assert!(
+            description.contains("no body") && description.contains("@primitive"),
+            "the message must say which attribute already answered: {description}"
+        );
+    }
+
+    #[test]
+    fn ffi_with_a_body_is_still_rejected_and_names_its_own_attribute() {
+        // The two attributes now share one header reader; this pins that the
+        // shared path still tells an `@ffi` author about `@ffi`.
+        let src = "@ffi(\"erlang\", \"abs\", 1)\npub fn abs (n: Int) -> Int = n\n";
+        let err = parse_top_item(src).expect_err("`@ffi` plus a body must be rejected");
+        let ParseError::UnexpectedToken { description, .. } = &err else {
+            panic!("expected UnexpectedToken, got {err:?}");
+        };
+        assert!(
+            description.contains("@ffi"),
+            "the message must name `@ffi`, not the other attribute: {description}"
         );
     }
 

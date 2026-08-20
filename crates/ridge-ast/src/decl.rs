@@ -21,8 +21,9 @@ use crate::{
 /// Attributes are written above a `fn` declaration and control compiler
 /// behaviour without changing the function's type or calling convention.
 ///
-/// Currently only the `@test` attribute is represented here.  The `@ffi`
-/// attribute is handled separately as [`Body::Ffi`] and does not appear in
+/// Currently only the `@test` attribute is represented here.  The two
+/// attributes that stand in for a body — `@ffi` and `@primitive` — are
+/// represented as [`Body::Ffi`] and [`Body::Primitive`] and do not appear in
 /// this enum.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Attribute {
@@ -43,13 +44,20 @@ pub enum Attribute {
 
 /// The body of a function declaration (grammar §4.1).
 ///
-/// Most functions have an ordinary expression body (`Body::Expr`).  Functions
-/// in the Ridge standard library that delegate directly to a BEAM built-in are
-/// annotated with `@ffi(module, name, arity)` and carry `Body::Ffi` instead —
-/// the expression body is **omitted** from source.
+/// Most functions have an ordinary expression body (`Body::Expr`).  Two kinds
+/// of standard-library declaration have no expression to write, and each says
+/// something different about where the implementation comes from:
 ///
-/// Semantic checking (T3+) is responsible for rejecting `Body::Ffi` outside the
-/// `crates/ridge-stdlib/` crate path (error `T003 FfiOutsideStdlib`).
+/// - `@ffi(module, name, arity)` names a function of the host runtime, and
+///   carries [`Body::Ffi`].  A backend that is not that host has to shim the
+///   call or refuse it.
+/// - `@primitive` names nothing.  The operation is part of the language, and
+///   every backend supplies it however its target spells it — `erlang:'+'/2`
+///   on the BEAM, a machine instruction elsewhere.  It carries
+///   [`Body::Primitive`].
+///
+/// Both are restricted to the standard library; a user module that writes
+/// either gets `R022` from `ridge-resolve`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Body {
     /// A normal expression body, written as `= <Expr>` in source.
@@ -57,15 +65,23 @@ pub enum Body {
     /// An FFI passthrough declared with `@ffi("module", "name", arity)`.
     ///
     /// The function header (name, params, return type) is fully present in the
-    /// AST; only the expression body is replaced by this BEAM-level bridge.
+    /// AST; only the expression body is replaced by this bridge to the host.
     Ffi {
-        /// The BEAM/Erlang module name (e.g. `"erlang"`).
+        /// The host module name (e.g. `"erlang"`).
         module: String,
-        /// The function name inside that module (e.g. `"+"`).
+        /// The function name inside that module (e.g. `"integer_to_binary"`).
         name: String,
         /// The expected arity (must match the Ridge param count — checked in T3).
         arity: u32,
     },
+    /// A language primitive declared with `@primitive`.
+    ///
+    /// The declaration gives the operation a Ridge name, a signature, and
+    /// documentation, and says nothing at all about how it is carried out.
+    /// Naming the implementation is the backend's job, and the arity is the
+    /// declared parameter count — there is no second number to disagree with
+    /// it.
+    Primitive,
 }
 
 // ── ImportDecl / ModulePath ───────────────────────────────────────────────────
@@ -300,8 +316,8 @@ pub struct FnDecl {
     /// Function-level attributes (e.g. `@test "…"`).
     ///
     /// Most functions have no attributes — this is `vec![]` in the common
-    /// case.  The `@ffi` attribute is represented as [`Body::Ffi`] and does
-    /// not appear here.
+    /// case.  `@ffi` and `@primitive` stand in for the body instead, and are
+    /// represented on [`FnDecl::body`] rather than here.
     pub attrs: Vec<Attribute>,
     /// Visibility modifier (default: `Private`).
     pub vis: Visibility,
@@ -318,10 +334,11 @@ pub struct FnDecl {
     /// `Show` is desugared to `ToText` at parse time; entries here always use
     /// canonical class names.
     pub constraints: Vec<ClassConstraint>,
-    /// The function body — either a normal expression or an FFI passthrough.
+    /// Where the function's implementation comes from.
     ///
     /// `Body::Expr` is the common case (all non-stdlib functions).
-    /// `Body::Ffi` is produced when an `@ffi(...)` attribute precedes the decl.
+    /// `Body::Ffi` is produced when an `@ffi(...)` attribute precedes the decl,
+    /// and `Body::Primitive` when `@primitive` does.
     pub body: Body,
     /// Span covering the whole declaration.
     pub span: Span,

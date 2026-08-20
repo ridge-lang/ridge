@@ -652,7 +652,7 @@ impl<'tw> LowerCtx<'tw> {
             let Item::Fn(decl) = item else { continue };
             let body = match &decl.body {
                 Body::Expr(e) => e,
-                Body::Ffi { .. } => continue,
+                Body::Ffi { .. } | Body::Primitive => continue,
             };
             // Mirror the body-node-kind keying from item.rs / scc.rs.
             let (body_span, body_kind) = match body {

@@ -77,23 +77,23 @@ pub fn max (a: Float) (b: Float) -> Float =
 pub fn pow (base: Float) (exp: Float) -> Float
 
 -- Addition.
-@ffi("erlang", "+", 2)
+@primitive
 pub fn add (a: Float) (b: Float) -> Float
 
 -- Subtraction.
-@ffi("erlang", "-", 2)
+@primitive
 pub fn sub (a: Float) (b: Float) -> Float
 
 -- Multiplication.
-@ffi("erlang", "*", 2)
+@primitive
 pub fn mul (a: Float) (b: Float) -> Float
 
--- Division.
-@ffi("erlang", "/", 2)
+-- Division. Raises when `b` is zero rather than answering an infinity.
+@primitive
 pub fn div (a: Float) (b: Float) -> Float
 
 -- Negate a float.
-@ffi("erlang", "-", 1)
+@primitive
 pub fn neg (f: Float) -> Float
 
 -- Total ordering comparison for IEEE-754 floats.

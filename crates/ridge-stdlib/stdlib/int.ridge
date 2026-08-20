@@ -1,8 +1,12 @@
 -- std.int — Integer utilities (Tier 1, no stdlib imports).
 --
--- Direct @ffi wrappers delegate to BEAM erlang:* and ridge_rt:*.
--- Pure Ridge functions use if/then/else expressions.
--- Hybrid functions combine a raw @ffi with a Ridge wrapper.
+-- The arithmetic here is declared @primitive: addition is an operation of the
+-- language, so the declaration gives it a name, a signature and documentation
+-- and says nothing about how it is carried out. Every backend supplies that
+-- itself.
+--
+-- The rest is ordinary: @ffi wrappers name a function of the host runtime, and
+-- pure Ridge functions have a body like any other.
 --
 -- Int is fixed 64-bit signed in the Ridge model.
 -- wrappingAdd / saturatingAdd provided for overflow-safe arithmetic.
@@ -32,25 +36,24 @@ pub fn max (a: Int) (b: Int) -> Int =
     if a >= b then a else b
 
 -- Addition.
-@ffi("erlang", "+", 2)
+@primitive
 pub fn add (a: Int) (b: Int) -> Int
 
 -- Subtraction.
-@ffi("erlang", "-", 2)
+@primitive
 pub fn sub (a: Int) (b: Int) -> Int
 
 -- Multiplication.
-@ffi("erlang", "*", 2)
+@primitive
 pub fn mul (a: Int) (b: Int) -> Int
 
--- Integer division (truncates toward zero, Erlang div semantics).
-@ffi("erlang", "div", 2)
+-- Integer division, truncating toward zero. Raises when `b` is zero.
+@primitive
 pub fn div (a: Int) (b: Int) -> Int
 
--- Truncating remainder (Erlang rem semantics).
--- Result has the same sign as the dividend `a`. Satisfies
--- `a == b * (a div b) + (a rem b)`.
-@ffi("erlang", "rem", 2)
+-- Truncating remainder. Result has the same sign as the dividend `a`, and
+-- satisfies `a == b * (a div b) + (a rem b)`. Raises when `b` is zero.
+@primitive
 pub fn rem (a: Int) (b: Int) -> Int
 
 -- Mathematical modulo (Python `%` semantics).
@@ -64,7 +67,7 @@ pub fn mod (a: Int) (b: Int) -> Int =
     rem (r + b) b
 
 -- Negate an integer.
-@ffi("erlang", "-", 1)
+@primitive
 pub fn neg (n: Int) -> Int
 
 -- Integer power: `base` raised to a non-negative integer `exp`.

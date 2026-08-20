@@ -1,9 +1,21 @@
 //! §3.4 / §3.5 — Static stdlib bridge map (path A) and `BridgeTarget` enum.
 //!
 //! `lookup(module, name)` is the **only** call site in this crate that produces
-//! BEAM module/function names from Ridge stdlib symbols.  After T11.5 the path-A
-//! static map holds exactly six entries (`std.op.*`); all other stdlib symbols
-//! are served by path B (`crate::ffi_targets::lookup` — the generated table).
+//! BEAM module/function names from Ridge stdlib symbols.  The path-A static map
+//! holds the symbols that name no implementation of their own — the comparison
+//! operators, the slice-pattern helpers, and the arithmetic primitives — and
+//! this crate is where each of them acquires a BEAM spelling.  Everything else
+//! is served by path B (`crate::ffi_targets::lookup` — the generated table),
+//! which describes declarations that named a target themselves.
+//!
+//! ## Why arithmetic is here
+//!
+//! `a + b` is a language operation, not a library call.  Its stdlib declaration
+//! (`@primitive pub fn add …`) deliberately says nothing about how addition is
+//! carried out, so the shared table has no entry for it and cannot hand a
+//! second backend a BEAM module name for something as basic as `+`.  This file
+//! is the whole of the BEAM's answer, and an LLVM backend writes a different
+//! one without touching the stdlib or the IR.
 //!
 //! ## Arg order note
 //!
@@ -70,42 +82,60 @@ pub enum BridgeTarget {
     },
 }
 
+// ── Arithmetic primitives ─────────────────────────────────────────────────────
+
+/// How the BEAM spells each `@primitive` arithmetic symbol.
+///
+/// Kept as its own named table, separate from the entries folded into
+/// [`build_map`], because two tests read it as a set: every symbol the stdlib
+/// declares `@primitive` must appear here, and every symbol here must be one
+/// the stdlib declares.  A one-way check would let either side grow an entry
+/// the other never hears about — a primitive with no BEAM spelling fails at
+/// codegen, and a spelling for a primitive nobody declares is dead weight that
+/// reads like coverage.
+///
+/// Entries are `(ridge_module, ridge_name, beam_module, beam_fn, arity)`.
+/// Adding one means editing this file, which is the intended friction: the set
+/// of operations the language treats as primitive is a language decision, and
+/// it should cost a deliberate edit in each backend that claims to implement
+/// them.
+pub(crate) const PRIMITIVE_ENTRIES: &[(&str, &str, &str, &str, u32)] = &[
+    // Int — `div` and `rem` truncate toward zero, which is what the Ridge
+    // declarations promise.
+    ("std.int", "add", "erlang", "+", 2),
+    ("std.int", "sub", "erlang", "-", 2),
+    ("std.int", "mul", "erlang", "*", 2),
+    ("std.int", "div", "erlang", "div", 2),
+    ("std.int", "rem", "erlang", "rem", 2),
+    ("std.int", "neg", "erlang", "-", 1),
+    // Float — `/` rather than `div`, and the BEAM raises `badarith` on a zero
+    // divisor rather than answering an infinity.
+    ("std.float", "add", "erlang", "+", 2),
+    ("std.float", "sub", "erlang", "-", 2),
+    ("std.float", "mul", "erlang", "*", 2),
+    ("std.float", "div", "erlang", "/", 2),
+    ("std.float", "neg", "erlang", "-", 1),
+];
+
 // ── Backing store ─────────────────────────────────────────────────────────────
 
 type BridgeMap = FxHashMap<String, BridgeTarget>;
 
-// The bridge-map table now contains only the six std.op.* entries (T11.5
-// path-A retirement complete).  The allow attribute is retained for future additions.
+/// Build the path-A table: the arithmetic primitives from
+/// [`PRIMITIVE_ENTRIES`], plus the symbols below that have no Ridge surface at
+/// all.
+///
+/// A stdlib function that declares its own target is *not* here — it is served
+/// by the generated path-B table.  What lands in this file is everything whose
+/// BEAM spelling is a decision this crate makes rather than one it reads.
 #[allow(clippy::too_many_lines)]
 fn build_map() -> BridgeMap {
     use BridgeTarget::BeamStdlib;
 
-    // ── T11.5: path-A entries — final retirement ─────────────────────────────────
-    //
-    // T11 retired 29 @ffi-decorated entries to path B.  T11.5 retires the remaining
-    // 15 cat-B/C entries (pure-Ridge bodies + name-change entries) by widening path
-    // B to cover every `pub fn` in stdlib `.ridge` files.
-    //
-    // Only cat-A entries remain: `std.op.*` — emitted by `ridge-lower::operators`
-    // with no Ridge surface; they have no `.ridge` body or `@ffi` annotation.
-    // These six entries are permanent.
-    //
-    // Cat-B (pure-Ridge, no @ffi) retired in T11.5 (now served by path B):
-    //   std.list.{head, drop, filterMap, find}
-    //   std.map.{empty, get}
-    //   std.option.{withDefault, flatMap}
-    //   std.text.{split, startsWith, padLeft, lines, concat}
-    //
-    // Cat-C (name-change) retired in T11.5:
-    //   std.env.var  → emit-site renamed to std.env.get  (path B serves "get")
-    //   std.time.diffSeconds → emit-site renamed to std.time.diffMs (path B serves "diffMs")
-    //
-    // Effective count: 21 → 6.  Closes G3 (§11.2).
-
     let entries: &[(&'static str, &'static str, BridgeTarget)] = &[
-        // ── std.op (polymorphic comparison operators) (cat A — permanent) ────
-        // Emitted by ridge-lower::operators; no Ridge surface, no @ffi stub.
-        // The plan uses "neq" but the lower phase emits "ne" (see operators.rs BinOp::Ne).
+        // ── std.op (polymorphic comparison operators) ─────────────────────────
+        // Emitted by ridge-lower::operators; no Ridge surface, no declaration.
+        // The lower phase emits "ne" for `!=` (see operators.rs BinOp::Ne).
         (
             "std.op",
             "eq",
@@ -247,7 +277,17 @@ fn build_map() -> BridgeMap {
     ];
 
     let mut map = FxHashMap::default();
-    map.reserve(entries.len());
+    map.reserve(entries.len() + PRIMITIVE_ENTRIES.len());
+    for (module, name, beam_module, beam_fn, arity) in PRIMITIVE_ENTRIES {
+        map.insert(
+            format!("{module}::{name}"),
+            BeamStdlib {
+                module: beam_module,
+                fn_name: beam_fn,
+                arity: *arity,
+            },
+        );
+    }
     for (module, name, target) in entries {
         // Key is "module::name" — double-colon avoids collisions with any single
         // dot-separated component that could theoretically contain a colon.
@@ -261,22 +301,39 @@ static BRIDGE_MAP: OnceLock<BridgeMap> = OnceLock::new();
 
 // ── Seam adapter ──────────────────────────────────────────────────────────────
 //
-// Adapts `ridge_stdlib::ffi_targets::StdlibFfiTarget` (target-neutral) into
-// `BridgeTarget::RidgeStdlibLocal` (BEAM-specific).  The adapter map is
-// built once from `ridge_stdlib::ffi_targets::all_entries()` and cached in a
-// `OnceLock`, mirroring the `BRIDGE_MAP` pattern.
+// Adapts `ridge_stdlib::stdlib_targets::StdlibTarget` (target-neutral) into
+// `BridgeTarget` (BEAM-specific).  The adapter map is built once from
+// `all_entries()` and cached in a `OnceLock`, mirroring `BRIDGE_MAP`.
+//
+// `StdlibTarget::Primitive` is deliberately absent from the adapter: it names
+// no target to adapt, and `PRIMITIVE_ENTRIES` above is where the BEAM's answer
+// for those symbols lives.
 
 fn build_stdlib_local_map() -> BridgeMap {
+    use ridge_stdlib::stdlib_targets::StdlibTarget;
+
     let mut m = FxHashMap::default();
-    for (key, t) in ridge_stdlib::ffi_targets::all_entries() {
-        m.insert(
-            key.to_owned(),
-            BridgeTarget::RidgeStdlibLocal {
-                beam_module: t.beam_module.clone(),
-                fn_name: t.fn_name.clone(),
-                arity: t.arity,
+    for (key, t) in ridge_stdlib::stdlib_targets::all_entries() {
+        let target = match t {
+            // A declaration that named a host function, and a compiled Ridge
+            // body, reach the BEAM the same way: a module atom and a name.
+            StdlibTarget::Foreign {
+                module,
+                fn_name,
+                arity,
+            }
+            | StdlibTarget::RidgeModule {
+                module,
+                fn_name,
+                arity,
+            } => BridgeTarget::RidgeStdlibLocal {
+                beam_module: module.clone(),
+                fn_name: fn_name.clone(),
+                arity: *arity,
             },
-        );
+            StdlibTarget::Primitive { .. } => continue,
+        };
+        m.insert(key.to_owned(), target);
     }
     m
 }
@@ -292,28 +349,33 @@ static STDLIB_LOCAL_MAP: OnceLock<BridgeMap> = OnceLock::new();
 ///
 /// ## Lookup strategy: path B then path A
 ///
-/// Path B — consult the canonical Ridge stdlib FFI table first (covers both
-/// `@ffi`-decorated stubs and pure-Ridge `pub fn` bodies).
-/// `ridge_stdlib::ffi_targets::lookup` returns `Some(&'static StdlibFfiTarget)`;
-/// the seam adapter converts this into `BridgeTarget::RidgeStdlibLocal` via
-/// `STDLIB_LOCAL_MAP`.
+/// Path B — consult the shared stdlib table first.  It covers `@ffi` stubs and
+/// pure-Ridge bodies, and the seam adapter converts either into
+/// `BridgeTarget::RidgeStdlibLocal` via `STDLIB_LOCAL_MAP`.  A symbol the
+/// stdlib declared `@primitive` is skipped here on purpose: it named nothing
+/// to adapt, and answering from path B would route `1 + 2` through a call to
+/// the stdlib wrapper instead of straight to the instruction.
 ///
-/// Path A fallback — `BRIDGE_MAP` is the minimal kept set: exactly six
-/// `std.op.*` entries (`eq, ne, lt, gt, le, ge`) emitted by
-/// `ridge-lower::operators` with no Ridge surface.
+/// Path A fallback — `BRIDGE_MAP` holds the symbols that name no
+/// implementation of their own: the six `std.op.*` comparisons and the nine
+/// `__slice__.*` helpers, both emitted by `ridge-lower` with no Ridge surface,
+/// plus the eleven arithmetic primitives from [`PRIMITIVE_ENTRIES`], which do
+/// have a Ridge surface but declare it `@primitive`.
 #[must_use]
 pub fn lookup(module: &str, name: &str) -> Option<&'static BridgeTarget> {
-    // Path B — consult the canonical stdlib FFI table.
-    if ridge_stdlib::ffi_targets::lookup(module, name).is_some() {
+    let key = format!("{module}::{name}");
+
+    // Path B — the shared stdlib table, for symbols that named a target.
+    let shared = ridge_stdlib::stdlib_targets::lookup(module, name);
+    if shared.is_some_and(|t| !t.is_primitive()) {
         let map: &'static BridgeMap = STDLIB_LOCAL_MAP.get_or_init(build_stdlib_local_map);
-        let key = format!("{module}::{name}");
         if let Some(t) = map.get(&key) {
             return Some(t); // BridgeTarget::RidgeStdlibLocal
         }
     }
-    // Path A fallback — the small kept set (std.op.*).
+
+    // Path A — the symbols whose BEAM spelling this crate decides.
     let map: &'static BridgeMap = BRIDGE_MAP.get_or_init(build_map);
-    let key = format!("{module}::{name}");
     map.get(&key)
 }
 
@@ -323,20 +385,18 @@ pub fn lookup(module: &str, name: &str) -> Option<&'static BridgeTarget> {
 mod tests {
     use super::*;
 
-    // ── T11.5: G3 gate — std.op.* entries are the only user-facing path-A entries ─
-    //
-    // G3 (§11.2): the only user-surface path-A entries are `std.op.*` (6 entries).
-    // Internal `__slice__.*` entries (9 entries) are also in the static map but are
-    // only ever emitted by the lowering pass for slice-pattern guards/extractions —
-    // they never correspond to a user-written Ridge expression.
+    // Path A holds three groups, and nothing else: the six `std.op.*`
+    // comparisons and the nine `__slice__.*` helpers, neither of which has any
+    // Ridge surface, plus the eleven arithmetic primitives, which do.
     #[test]
-    fn build_map_has_std_op_and_slice_entries() {
+    fn build_map_has_std_op_slice_and_primitive_entries() {
         let map = build_map();
-        // 6 std.op entries + 9 __slice__ entries = 15 total.
+        let expected = 6 + 9 + PRIMITIVE_ENTRIES.len();
         assert_eq!(
             map.len(),
-            15,
-            "build_map must return 15 entries (6 std.op + 9 __slice__); got {}.",
+            expected,
+            "build_map must return {expected} entries (6 std.op + 9 __slice__ + {} primitives); got {}.",
+            PRIMITIVE_ENTRIES.len(),
             map.len()
         );
         // Verify all 6 std.op entries are present.
@@ -580,6 +640,79 @@ mod tests {
             lookup("std.env", "var").is_none(),
             "std.env.var must not be in any bridge after T11.5 cat-C retire"
         );
+    }
+
+    // ── The primitive set, checked in both directions ─────────────────────────
+    //
+    // The stdlib decides which operations are primitive; this crate decides how
+    // the BEAM spells each one. Neither list is derived from the other, so the
+    // only thing keeping them together is a check that reads both — and it has
+    // to read both ways round. A one-directional check is never contradicted:
+    // "every primitive has a spelling" stays true while this file grows an
+    // entry for an operation nobody declares, and "every spelling is used"
+    // stays true while the stdlib declares one this backend cannot emit.
+
+    /// What the standard library declares `@primitive`, as `(module, name)`.
+    fn declared_primitives() -> Vec<(String, String)> {
+        ridge_stdlib::stdlib_targets::primitive_symbols()
+            .into_iter()
+            .map(|(m, n, _)| (m.to_owned(), n.to_owned()))
+            .collect()
+    }
+
+    /// What this backend claims to be able to emit, as `(module, name)`.
+    fn spelled_primitives() -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> = PRIMITIVE_ENTRIES
+            .iter()
+            .map(|(m, n, _, _, _)| ((*m).to_owned(), (*n).to_owned()))
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn every_declared_primitive_has_a_beam_spelling() {
+        let declared = declared_primitives();
+        assert!(
+            !declared.is_empty(),
+            "the stdlib declares no primitives at all — either the sources changed or the generated table stopped recognising `@primitive`"
+        );
+        let spelled = spelled_primitives();
+        let missing: Vec<_> = declared.iter().filter(|d| !spelled.contains(d)).collect();
+        assert!(
+            missing.is_empty(),
+            "the stdlib declares these `@primitive` symbols and this backend has no answer for them: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn every_beam_spelling_answers_a_declared_primitive() {
+        let declared = declared_primitives();
+        let extra: Vec<_> = spelled_primitives()
+            .into_iter()
+            .filter(|s| !declared.contains(s))
+            .collect();
+        assert!(
+            extra.is_empty(),
+            "this backend spells these symbols as primitives but the stdlib declares no such thing: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn a_primitive_resolves_to_the_instruction_not_to_the_stdlib_wrapper() {
+        // The failure this guards against is silent and slow rather than loud:
+        // if path B ever answers for a primitive, `1 + 2` becomes a call into
+        // the compiled `std.int` module, which then calls `erlang:'+'`. It
+        // still gives the right answer, one function call later, every time.
+        match lookup("std.int", "add") {
+            Some(BridgeTarget::BeamStdlib {
+                module, fn_name, ..
+            }) => {
+                assert_eq!(*module, "erlang");
+                assert_eq!(*fn_name, "+");
+            }
+            other => panic!("std.int.add must resolve to the BEAM instruction, got {other:?}"),
+        }
     }
 
     #[test]

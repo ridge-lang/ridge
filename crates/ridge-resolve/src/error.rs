@@ -324,11 +324,16 @@ pub enum ResolveError {
         span: Span,
     },
 
-    /// R022 — an `@ffi` attribute was used outside the `crates/ridge-stdlib/`
-    /// crate.  `@ffi` is stdlib-only in 0.1.0 (§5.5 / T003 `FfiOutsideStdlib`).
-    #[error("`@ffi` is only allowed in the Ridge standard library (T003)")]
-    FfiOutsideStdlib {
-        /// Span of the function name carrying the `@ffi` annotation.
+    /// R022 — a declaration used an attribute the standard library reserves.
+    ///
+    /// `@ffi` names a function of the host runtime and `@primitive` claims an
+    /// operation the compiler supplies; both would let ordinary code step
+    /// outside what the language guarantees, so both are stdlib-only.
+    #[error("`{attr}` is only allowed in the standard library")]
+    StdlibOnlyAttribute {
+        /// The attribute as written, including the `@`.
+        attr: &'static str,
+        /// Span of the function name carrying the attribute.
         span: Span,
     },
 
@@ -462,7 +467,7 @@ impl ResolveError {
             Self::UnknownCapabilityKeyword { .. } => "R019",
             Self::CapabilityListOnWrongDecl { .. } => "R020",
             Self::ActorStateMissingDefaultOrInit { .. } => "R021",
-            Self::FfiOutsideStdlib { .. } => "R022",
+            Self::StdlibOnlyAttribute { .. } => "R022",
             Self::LegacyRgExtension { .. } => "R023",
             Self::AmbiguousMethodName { .. } => "R024",
             Self::OpaqueConstruct { .. } => "R025",
@@ -517,7 +522,7 @@ impl ResolveError {
             | Self::CapabilityListOnWrongDecl { span }
             | Self::ActorStateMissingDefaultOrInit { span, .. }
             | Self::DuplicateActorMember { span, .. }
-            | Self::FfiOutsideStdlib { span }
+            | Self::StdlibOnlyAttribute { span, .. }
             | Self::ReservedName { span, .. }
             | Self::AmbiguousMethodName { span, .. }
             | Self::OpaqueConstruct { span, .. }

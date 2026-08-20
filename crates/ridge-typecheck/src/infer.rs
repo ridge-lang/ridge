@@ -986,11 +986,12 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             let saved_ret = ctx.current_fn_ret.take();
             ctx.current_fn_ret = Some(ret_ty_declared.clone());
 
-            // Inner fns always have Body::Expr; Body::Ffi is top-level stdlib only.
+            // Inner fns always have Body::Expr; the body-less forms are
+            // top-level stdlib only.
             let body_ty = match &decl.body {
                 Body::Expr(e) => infer_expr(ctx, b, e),
-                // Body::Ffi carries a fully-declared signature; skip inference.
-                Body::Ffi { .. } => ret_ty_declared.clone(),
+                // A fully-declared signature and nothing to infer against it.
+                Body::Ffi { .. } | Body::Primitive => ret_ty_declared.clone(),
             };
             if unify(ctx, &body_ty, &ret_ty_declared).is_err() {
                 // Built here rather than forwarded from `unify`, whose pair is

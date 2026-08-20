@@ -71,10 +71,12 @@ pub type SendError = | MailboxFull
 -- monitor consumers (`await`, `onDown`): the process stopped normally
 -- (`Normal` — e.g. via `Actor.stop`), was already dead when monitored
 -- (`NotRunning` — never delivered to `terminate`), stopped in an ordered
--- way (`Shutdown`), or crashed (`Crashed`, with the OTP exit reason
--- rendered as text). Variants lower to `'Normal'` / `'NotRunning'` /
--- `'Shutdown'` / `{'Crashed', Text}`; the runtime maps OTP reasons at the
--- boundary.
+-- way (`Shutdown`), or crashed (`Crashed`). A `Crashed` carries the same
+-- sentence `ridge run` would have printed for that failure, so it can be
+-- logged or shown as-is; a failure Ridge has no words for keeps its Erlang
+-- rendering, framed so a reader can tell which of the two they are looking
+-- at. Variants lower to `'Normal'` / `'NotRunning'` / `'Shutdown'` /
+-- `{'Crashed', Text}`; the runtime maps OTP reasons at the boundary.
 pub type ExitReason = Normal | NotRunning | Shutdown | Crashed Text
 
 -- Start a supervisor over `children`. `intensity` and `period` bound the

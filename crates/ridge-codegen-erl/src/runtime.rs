@@ -42,6 +42,13 @@ const RIDGE_LOADER_SOURCE: &str = include_str!("../runtime/ridge_loader.erl");
 /// in via [`install_bench_runner`] / [`compile_bench_runner`].
 const RIDGE_BENCH_RUNNER_SOURCE: &str = include_str!("../runtime/ridge_bench_runner.erl");
 
+/// The bundled `ridge_repl_runner.erl` source, embedded at compile time.
+///
+/// Like the bench runner this is opt-in rather than installed on every build:
+/// only `ridge repl` needs it, and it is the only runner whose session is a
+/// throwaway workspace rather than a project.
+const RIDGE_REPL_RUNNER_SOURCE: &str = include_str!("../runtime/ridge_repl_runner.erl");
+
 /// The bundled `ridge_sqlite.erl` source — the SQLite adapter runtime that loads
 /// and drives the native bridge. Installed and compiled only under the
 /// `beam-runtime` feature, alongside the baked NIF object it loads.
@@ -188,6 +195,49 @@ pub fn compile_bench_runner(erlc_path: &Path, out_root: &Path) -> Result<PathBuf
         "ridge_bench_runner.beam",
     )?;
     Ok(beam_out_dir.join("ridge_bench_runner.beam"))
+}
+
+/// Install the bundled `ridge_repl_runner.erl` under `<out_root>/runtime/`.
+///
+/// Separate from [`install_runtime`] for the same reason as the bench runner:
+/// only `ridge repl` loads it. Idempotent — skips the write when the
+/// destination already matches.
+///
+/// I/O failures surface as [`CodegenError::OutputDirNotWritable`].
+pub fn install_repl_runner(out_root: &Path) -> Result<PathBuf, CodegenError> {
+    let runtime_dir = out_root.join("runtime");
+    std::fs::create_dir_all(&runtime_dir).map_err(|e| CodegenError::OutputDirNotWritable {
+        path: runtime_dir.clone(),
+        io_err: e.to_string(),
+    })?;
+    install_runner_source(
+        &runtime_dir,
+        "ridge_repl_runner.erl",
+        RIDGE_REPL_RUNNER_SOURCE,
+    )?;
+    Ok(runtime_dir.join("ridge_repl_runner.erl"))
+}
+
+/// Compile the installed `ridge_repl_runner.erl` to `ridge_repl_runner.beam`.
+///
+/// Companion to [`install_repl_runner`]; the `.beam` lands in `<out_root>/beam/`
+/// so `erl -pa <beam_dir>` can load it. Idempotent.
+///
+/// Errors during `erlc` surface as [`CodegenError::ErlcRejectedInput`].
+pub fn compile_repl_runner(erlc_path: &Path, out_root: &Path) -> Result<PathBuf, CodegenError> {
+    let beam_out_dir = out_root.join("beam");
+    std::fs::create_dir_all(&beam_out_dir).map_err(|e| CodegenError::OutputDirNotWritable {
+        path: beam_out_dir.clone(),
+        io_err: e.to_string(),
+    })?;
+    compile_runner_if_stale(
+        erlc_path,
+        out_root,
+        &beam_out_dir,
+        "ridge_repl_runner.erl",
+        "ridge_repl_runner.beam",
+    )?;
+    Ok(beam_out_dir.join("ridge_repl_runner.beam"))
 }
 
 /// Compile the installed `ridge_rt.erl` to `ridge_rt.beam` using `erlc`.
@@ -396,6 +446,59 @@ mod tests {
             .and_then(|m| m.modified())
             .expect("mtime");
         assert_eq!(first, second, "matching sources must not be rewritten");
+    }
+
+    /// The REPL runner installs on request, and only on request.
+    ///
+    /// Both halves matter. It has to be installable from here — that is the
+    /// whole point of moving it out of the CLI — and it must stay out of the
+    /// ordinary build, because every project would otherwise carry a runner
+    /// only an interactive session ever loads.
+    #[test]
+    fn the_repl_runner_installs_on_request_and_not_before() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let installed = tmp.path().join("runtime").join("ridge_repl_runner.erl");
+
+        install_runtime(tmp.path()).expect("install_runtime");
+        assert!(
+            !installed.exists(),
+            "an ordinary build must not install the REPL runner"
+        );
+
+        install_repl_runner(tmp.path()).expect("install_repl_runner");
+        let source = std::fs::read_to_string(&installed).expect("ridge_repl_runner.erl");
+        assert!(
+            source.contains("-module(ridge_repl_runner)."),
+            "the installed source must declare the ridge_repl_runner module"
+        );
+    }
+
+    /// Every runner that reports a crash reports it through the one place.
+    ///
+    /// Four of them each held their own copy of the `RIDGE_BACKTRACE` bargain,
+    /// and a runner that forgot half of it would still have looked right: the
+    /// sentence would print, and only the way out would be missing.
+    #[test]
+    fn every_runner_reports_a_crash_through_ridge_rt() {
+        for (name, source) in [
+            ("ridge_main_runner.erl", RIDGE_MAIN_RUNNER_SOURCE),
+            ("ridge_test_runner.erl", RIDGE_TEST_RUNNER_SOURCE),
+            ("ridge_bench_runner.erl", RIDGE_BENCH_RUNNER_SOURCE),
+            ("ridge_repl_runner.erl", RIDGE_REPL_RUNNER_SOURCE),
+        ] {
+            assert!(
+                source.contains("ridge_rt:print_failure("),
+                "{name} must report crashes through ridge_rt:print_failure/4"
+            );
+            assert!(
+                !source.contains("os:getenv(\"RIDGE_BACKTRACE\")"),
+                "{name} must not read RIDGE_BACKTRACE itself — naming it in a                  comment is fine, deciding on it is not"
+            );
+        }
+        assert!(
+            RIDGE_RT_SOURCE.contains("os:getenv(\"RIDGE_BACKTRACE\")"),
+            "and the one place that does decide must still be ridge_rt"
+        );
     }
 
     #[test]

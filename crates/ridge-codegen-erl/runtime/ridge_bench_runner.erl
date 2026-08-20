@@ -77,7 +77,8 @@ report(Mod, Fn) ->
         %% One crashing benchmark must not abort the others or the whole run;
         %% surface it on stderr and emit a marker line on stdout.
         Class:Reason:Stack ->
-            io:format(standard_error, "bench ~s crashed: ~p:~p~n~p~n", [Fn, Class, Reason, Stack]),
+            ridge_rt:print_failure(
+              io_lib:format("bench ~ts crashed: ", [Fn]), Class, Reason, Stack),
             io:format("{\"bench\":\"~s\",\"error\":true}~n", [Fn])
     end.
 

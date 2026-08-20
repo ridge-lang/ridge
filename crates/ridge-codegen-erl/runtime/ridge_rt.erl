@@ -50,7 +50,8 @@
     start_supervisor/4, start_supervised_child/2, stop_supervised_child/2,
     which_children/1, set_child_id/2, set_child_restart/2, try_ask/3,
     monitor_handle/1, demonitor_flush/1, await_down/2, stop_handle/1,
-    exit_reason_to_ridge/1, describe_failure/3, apply_code_change/2,
+    exit_reason_to_ridge/1, describe_failure/3, print_failure/4,
+    apply_code_change/2,
     migrate_message/1,
     migrate_value/1, derive_record_migration/4, migration_count/0,
     set_migrate_report/1, invalidate_record_versions/1,
@@ -2148,42 +2149,130 @@ exit_reason_to_ridge(normal)            -> 'Normal';
 exit_reason_to_ridge(shutdown)          -> 'Shutdown';
 exit_reason_to_ridge({shutdown, _})     -> 'Shutdown';
 exit_reason_to_ridge(Reason) ->
-    {'Crashed', iolist_to_binary(io_lib:format("~p", [Reason]))}.
+    {'Crashed', crash_text(Reason)}.
+
+%% crash_text/1 - why an actor died, in the words a runner would have printed.
+%%
+%% A process that raised carries `{Reason, Stack}` as its exit reason, and
+%% rendering that pair with `~p` put an entire Erlang stack - gen_server's own
+%% frames and line numbers included - inside a field Ridge types as `Text`.
+%% A handler that divided by zero measured 367 bytes of it.
+%%
+%% Peeling the pair is also what makes the reason recognisable: `badarith` and
+%% `{ridge_int_out_of_range, _, _}` are exactly the failures failure_sentence/3
+%% already has words for, and they only ever arrive wrapped.
+crash_text(Reason) ->
+    {Class, Bare, Stack} = raised_or_exited(Reason),
+    case failure_sentence(Class, Bare, Stack) of
+        none      -> iolist_to_binary(io_lib:format("the actor stopped: ~p", [Bare]));
+        {Text, _} -> Text
+    end.
+
+%% raised_or_exited/1 - split an exit reason into the class, reason and stack a
+%% `catch` would have bound, which is the shape failure_sentence/3 speaks.
+%%
+%% A reason paired with a stacktrace came from a raise; a bare one came from
+%% `exit/1`. The stacktrace guard is deliberately narrow - a non-empty list
+%% whose head names a module and a function - so a program that exits with its
+%% own `{tag, [1, 2, 3]}` keeps both halves of it.
+raised_or_exited({Bare, [Frame | _] = Stack})
+  when is_tuple(Frame), tuple_size(Frame) >= 3 ->
+    case {element(1, Frame), element(2, Frame)} of
+        {M, F} when is_atom(M), is_atom(F) -> {error, Bare, Stack};
+        _                                  -> {exit, {Bare, Stack}, []}
+    end;
+raised_or_exited(Reason) ->
+    {exit, Reason, []}.
 
 %% describe_failure/3 - the sentence a person reads when a program stops, and
 %% the remedy where there is one.
 %%
-%% Every runner that reports a failure to a terminal comes through here, so the
-%% vocabulary is settled once rather than once per command. Answers
-%% `{Sentence, Help}`, where `Help` is `none` when there is nothing useful to
-%% suggest; both are UTF-8 binaries ready for `~ts`.
+%% Answers `{Sentence, Help}`, where `Help` is `none` when there is nothing
+%% useful to suggest; both are UTF-8 binaries ready for `~ts`. Runners reach it
+%% through print_failure/4 rather than calling it themselves, which is what
+%% keeps the shape of the report - and the bargain over the stack - out of four
+%% separate places.
 %%
 %% A reason with no clause of its own keeps its Erlang rendering on purpose.
 %% Inventing a sentence for something nobody anticipated would be a guess in
-%% Ridge's voice, and a reader could not tell the two apart. What does go is the
-%% stack: it is the part that named the runtime's own source files in a user's
-%% terminal, and the part nobody can act on.
-describe_failure(exit, ridge_ask_noproc, _Stack) ->
+%% Ridge's voice, and a reader could not tell the two apart. What does not
+%% survive is the stack: it named the runtime's own source files in a user's
+%% terminal, and nobody can act on it.
+describe_failure(Class, Reason, Stack) ->
+    case failure_sentence(Class, Reason, Stack) of
+        none ->
+            {iolist_to_binary(
+               io_lib:format("the program stopped: ~p:~p", [Class, Reason])),
+             none};
+        Described ->
+            Described
+    end.
+
+%% print_failure/4 - write a stopped program's reason to stderr in Ridge's
+%% voice, and say how to see the Erlang underneath it.
+%%
+%% The internal reason and the stack are the two things a reader can neither
+%% use nor avoid, so they move behind RIDGE_BACKTRACE - the bargain Rust
+%% strikes with RUST_BACKTRACE, for the same reason: whoever needs the stack
+%% knows to ask for it, and whoever does not should never have to scroll past
+%% it. The note is printed either way, so the door is visible from both sides.
+%%
+%% That bargain lives here rather than in each runner because a command that
+%% forgot half of it would still look right: the sentence would print, and only
+%% the way out would be missing. `Prefix` is the one part a command chooses for
+%% itself - `ridge test` opens with `FAIL: `, `ridge run` with `error: ` - and
+%% it stays a command's own because it is what a reader greps for.
+print_failure(Prefix, Class, Reason, Stack) ->
+    {Sentence, Help} = describe_failure(Class, Reason, Stack),
+    io:format(standard_error, "~ts~ts~n", [Prefix, Sentence]),
+    case Help of
+        none -> ok;
+        _    -> io:format(standard_error, "  help: ~ts~n", [Help])
+    end,
+    case backtrace_wanted() of
+        false ->
+            io:format(standard_error,
+                      "  note: set RIDGE_BACKTRACE=1 to see the runtime stack~n", []);
+        true ->
+            io:format(standard_error, "  raised: ~p:~p~n  stack: ~p~n",
+                      [Class, Reason, Stack])
+    end.
+
+%% backtrace_wanted/0 - RIDGE_BACKTRACE, where unset, empty and "0" all mean no.
+backtrace_wanted() ->
+    case os:getenv("RIDGE_BACKTRACE") of
+        false -> false;
+        ""    -> false;
+        "0"   -> false;
+        _     -> true
+    end.
+
+%% failure_sentence/3 - the words Ridge has for this failure, or `none`.
+%%
+%% Separate from describe_failure/3 because the vocabulary has two consumers
+%% that cannot share a frame. A runner is reporting that the *program* stopped;
+%% exit_reason_to_ridge/1 is describing an *actor* that died and handing the
+%% result to the program as a value. Same words, different sentence around them.
+failure_sentence(exit, ridge_ask_noproc, _Stack) ->
     {<<"asked an actor that is no longer running">>,
      <<"`Actor.tryAsk` answers `Err Noproc` instead of raising">>};
-describe_failure(exit, ridge_sup_noproc, _Stack) ->
+failure_sentence(exit, ridge_sup_noproc, _Stack) ->
     {<<"asked a supervisor that is no longer running">>,
      <<"a supervisor stops together with the actors it started">>};
-describe_failure(error, {ridge_rt_ask_timeout, Msg, Timeout}, _Stack) ->
+failure_sentence(error, {ridge_rt_ask_timeout, Msg, Timeout}, _Stack) ->
     {iolist_to_binary(
        io_lib:format("no answer to `~ts` within ~B ms", [ask_label(Msg), Timeout])),
      <<"raise the deadline with `timeout <ms>`, or ask with `Actor.tryAsk`">>};
-describe_failure(error, {ridge_int_out_of_range, Fn, Value}, _Stack) ->
+failure_sentence(error, {ridge_int_out_of_range, Fn, Value}, _Stack) ->
     {iolist_to_binary(
        io_lib:format("`~ts` produced ~B, which is outside the range of `Int`", [Fn, Value])),
      int_range_help(Fn)};
-describe_failure(error, ridge_loader_requires_otp_27, _Stack) ->
+failure_sentence(error, ridge_loader_requires_otp_27, _Stack) ->
     {<<"this program needs Erlang/OTP 27 or newer">>, none};
-describe_failure(error, badarith, Stack) ->
+failure_sentence(error, badarith, Stack) ->
     arith_failure(Stack);
-describe_failure(Class, Reason, _Stack) ->
-    {iolist_to_binary(io_lib:format("the program stopped: ~p:~p", [Class, Reason])),
-     none}.
+failure_sentence(_Class, _Reason, _Stack) ->
+    none.
 
 %% ask_label/1 - the handler name inside an ask message, which is the name the
 %% program wrote. `?> slowWork 21` travels as `{slowWork, 21}`; a handler that

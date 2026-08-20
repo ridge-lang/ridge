@@ -49,6 +49,26 @@ pub enum BridgeTarget {
         /// Arity.
         arity: u32,
     },
+    /// Path A, where the BEAM spelling is *wider* than the Ridge type it
+    /// implements.
+    ///
+    /// `erlang:'+'` answers an arbitrary-precision integer; Ridge's `+` answers
+    /// an `Int`, which is 64 bits. The instruction is still the right one — it
+    /// just does not, by itself, deliver a value of the declared type. Codegen
+    /// wraps the call in the range test (`crate::int_range`) and raises when the
+    /// result left the type.
+    ///
+    /// This is a statement about the distance between one host operation and
+    /// one language operation, which is why it lives in this crate. A backend
+    /// whose addition is already 64 bits wide records something else.
+    BeamStdlibCheckedInt {
+        /// BEAM module atom.
+        module: &'static str,
+        /// BEAM function name atom.
+        fn_name: &'static str,
+        /// Arity.
+        arity: u32,
+    },
     /// Path A with arg permutation: BEAM expects args in a different order.
     BeamStdlibPerm {
         /// BEAM module atom.
@@ -99,22 +119,53 @@ pub enum BridgeTarget {
 /// of operations the language treats as primitive is a language decision, and
 /// it should cost a deliberate edit in each backend that claims to implement
 /// them.
-pub(crate) const PRIMITIVE_ENTRIES: &[(&str, &str, &str, &str, u32)] = &[
+/// Whether a primitive's BEAM spelling already delivers the Ridge type.
+///
+/// Kept as a named column rather than inferred from the module name: "it is in
+/// `std.int`, so check it" is a proxy for the real question, and a proxy is
+/// what silently answers wrongly the first time something in `std.int` returns
+/// a `Bool`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResultFit {
+    /// It does. Nothing is emitted around the call.
+    Exact,
+    /// It does not: the host operation answers an integer of whatever size the
+    /// arithmetic needed, where `Int` promises 64 bits. Codegen tests the
+    /// result and raises when it left the range.
+    WiderThanInt,
+}
+
+pub(crate) const PRIMITIVE_ENTRIES: &[(&str, &str, &str, &str, u32, ResultFit)] = &[
     // Int — `div` and `rem` truncate toward zero, which is what the Ridge
     // declarations promise.
-    ("std.int", "add", "erlang", "+", 2),
-    ("std.int", "sub", "erlang", "-", 2),
-    ("std.int", "mul", "erlang", "*", 2),
-    ("std.int", "div", "erlang", "div", 2),
-    ("std.int", "rem", "erlang", "rem", 2),
-    ("std.int", "neg", "erlang", "-", 1),
+    //
+    // Every one of these can answer outside `Int` except `rem`, and the
+    // exception is worth stating rather than leaving as an omission that reads
+    // like an oversight: a remainder is smaller in magnitude than its divisor,
+    // so it is inside the range whenever both operands are. The awkward case
+    // is the one that catches `div` — the smallest `Int` divided by -1 is one
+    // past the largest — and `rem` answers 0 there.
+    ("std.int", "add", "erlang", "+", 2, ResultFit::WiderThanInt),
+    ("std.int", "sub", "erlang", "-", 2, ResultFit::WiderThanInt),
+    ("std.int", "mul", "erlang", "*", 2, ResultFit::WiderThanInt),
+    (
+        "std.int",
+        "div",
+        "erlang",
+        "div",
+        2,
+        ResultFit::WiderThanInt,
+    ),
+    ("std.int", "rem", "erlang", "rem", 2, ResultFit::Exact),
+    ("std.int", "neg", "erlang", "-", 1, ResultFit::WiderThanInt),
     // Float — `/` rather than `div`, and the BEAM raises `badarith` on a zero
-    // divisor rather than answering an infinity.
-    ("std.float", "add", "erlang", "+", 2),
-    ("std.float", "sub", "erlang", "-", 2),
-    ("std.float", "mul", "erlang", "*", 2),
-    ("std.float", "div", "erlang", "/", 2),
-    ("std.float", "neg", "erlang", "-", 1),
+    // divisor rather than answering an infinity. `Float` is the host's own
+    // width, so none of these needs narrowing.
+    ("std.float", "add", "erlang", "+", 2, ResultFit::Exact),
+    ("std.float", "sub", "erlang", "-", 2, ResultFit::Exact),
+    ("std.float", "mul", "erlang", "*", 2, ResultFit::Exact),
+    ("std.float", "div", "erlang", "/", 2, ResultFit::Exact),
+    ("std.float", "neg", "erlang", "-", 1, ResultFit::Exact),
 ];
 
 // ── Backing store ─────────────────────────────────────────────────────────────
@@ -278,15 +329,20 @@ fn build_map() -> BridgeMap {
 
     let mut map = FxHashMap::default();
     map.reserve(entries.len() + PRIMITIVE_ENTRIES.len());
-    for (module, name, beam_module, beam_fn, arity) in PRIMITIVE_ENTRIES {
-        map.insert(
-            format!("{module}::{name}"),
-            BeamStdlib {
+    for (module, name, beam_module, beam_fn, arity, fit) in PRIMITIVE_ENTRIES {
+        let target = match fit {
+            ResultFit::Exact => BeamStdlib {
                 module: beam_module,
                 fn_name: beam_fn,
                 arity: *arity,
             },
-        );
+            ResultFit::WiderThanInt => BridgeTarget::BeamStdlibCheckedInt {
+                module: beam_module,
+                fn_name: beam_fn,
+                arity: *arity,
+            },
+        };
+        map.insert(format!("{module}::{name}"), target);
     }
     for (module, name, target) in entries {
         // Key is "module::name" — double-colon avoids collisions with any single
@@ -664,7 +720,7 @@ mod tests {
     fn spelled_primitives() -> Vec<(String, String)> {
         let mut v: Vec<(String, String)> = PRIMITIVE_ENTRIES
             .iter()
-            .map(|(m, n, _, _, _)| ((*m).to_owned(), (*n).to_owned()))
+            .map(|(m, n, _, _, _, _)| ((*m).to_owned(), (*n).to_owned()))
             .collect();
         v.sort();
         v
@@ -705,7 +761,7 @@ mod tests {
         // the compiled `std.int` module, which then calls `erlang:'+'`. It
         // still gives the right answer, one function call later, every time.
         match lookup("std.int", "add") {
-            Some(BridgeTarget::BeamStdlib {
+            Some(BridgeTarget::BeamStdlibCheckedInt {
                 module, fn_name, ..
             }) => {
                 assert_eq!(*module, "erlang");
@@ -713,6 +769,47 @@ mod tests {
             }
             other => panic!("std.int.add must resolve to the BEAM instruction, got {other:?}"),
         }
+        // `Float` is the host's own width, so its arithmetic needs no test and
+        // resolves to the plain instruction. If this ever starts matching the
+        // checked variant, every float operation grew an integer range test.
+        match lookup("std.float", "add") {
+            Some(BridgeTarget::BeamStdlib { fn_name, .. }) => assert_eq!(*fn_name, "+"),
+            other => panic!("std.float.add must resolve to the bare instruction, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn every_int_operation_that_can_leave_the_range_is_tested() {
+        // Read out of the table rather than asserted against a copy of it: the
+        // list below is the claim, and the claim is what someone adding a sixth
+        // `std.int` primitive has to come and argue with.
+        //
+        // `rem` is the deliberate omission. A remainder is smaller in magnitude
+        // than its divisor, so it cannot leave a range both operands are inside
+        // — including the case that catches `div`, where the smallest `Int`
+        // over -1 is one past the largest and `rem` answers 0.
+        let checked: Vec<&str> = PRIMITIVE_ENTRIES
+            .iter()
+            .filter(|(m, _, _, _, _, fit)| *m == "std.int" && *fit == ResultFit::WiderThanInt)
+            .map(|(_, n, _, _, _, _)| *n)
+            .collect();
+        assert_eq!(checked, vec!["add", "sub", "mul", "div", "neg"]);
+
+        let exact: Vec<&str> = PRIMITIVE_ENTRIES
+            .iter()
+            .filter(|(m, _, _, _, _, fit)| *m == "std.int" && *fit == ResultFit::Exact)
+            .map(|(_, n, _, _, _, _)| *n)
+            .collect();
+        assert_eq!(exact, vec!["rem"]);
+
+        // And nothing on `Float` is tested: the range belongs to `Int`.
+        assert!(
+            PRIMITIVE_ENTRIES
+                .iter()
+                .filter(|(m, _, _, _, _, _)| *m == "std.float")
+                .all(|(_, _, _, _, _, fit)| *fit == ResultFit::Exact),
+            "a Float primitive was marked as needing the Int range test"
+        );
     }
 
     #[test]

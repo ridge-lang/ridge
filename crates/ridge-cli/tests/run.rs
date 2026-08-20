@@ -785,3 +785,109 @@ pub fn io main () -> Unit =
                 .and(contains("`Int` holds -9223372036854775808").not()),
         );
 }
+
+/// Arithmetic past the end of `Int` raises, and the failure names the operation.
+///
+/// This is the half of the range rule that arithmetic left open: a program could
+/// stay inside the type at every entry point and still walk out of it by adding.
+/// The value in the message is the one the host produced, which is what makes it
+/// obvious that the answer was never going to fit.
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn adding_past_the_end_of_int_names_the_operation_and_the_opt_outs() {
+    let tw = make_capable_app_workspace(
+        r#"import std.io  as Io
+import std.int as Int
+
+pub fn io main () -> Unit =
+    Io.println (Int.toText (9223372036854775807 + 1))
+"#,
+        r#""io""#,
+    );
+
+    ridge_cmd()
+        .arg("run")
+        .current_dir(&tw.path)
+        .assert()
+        .failure()
+        .stderr(
+            contains("`Int.add` produced 9223372036854775808")
+                .and(contains("outside the range of `Int`"))
+                // Naming the escape hatches is most of the help: the reader has
+                // just been told no, and there are two supported ways to say yes.
+                .and(contains("Int.wrappingAdd"))
+                .and(contains("Int.saturatingAdd"))
+                .and(contains("badarith").not()),
+        );
+}
+
+/// The operator and the qualified name are one operation, including in the
+/// spelling that is easiest to leave behind.
+///
+/// `Int.add` handed to a higher-order function is emitted as its own small fun
+/// rather than as the call `a + b` becomes, so it is the spelling that would
+/// quietly keep an out-of-range value if the range test were attached to the
+/// call site alone.
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn a_primitive_passed_to_a_higher_order_function_is_still_checked() {
+    let tw = make_capable_app_workspace(
+        r#"import std.io   as Io
+import std.int  as Int
+import std.list as List
+
+pub fn io main () -> Unit =
+    Io.println (Int.toText (List.fold Int.add 0 [9223372036854775807, 1]))
+"#,
+        r#""io""#,
+    );
+
+    ridge_cmd()
+        .arg("run")
+        .current_dir(&tw.path)
+        .assert()
+        .failure()
+        .stderr(
+            contains("`Int.add` produced 9223372036854775808")
+                .and(contains("outside the range of `Int`")),
+        );
+}
+
+/// Landing exactly on either end of the range is an ordinary result.
+///
+/// The negative control for the two tests above: a range test that is wrong by
+/// one would break arithmetic with nothing wrong with it, and would do it at
+/// the boundary, where the least code is looking.
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn arithmetic_that_reaches_the_ends_of_the_range_succeeds() {
+    let tw = make_capable_app_workspace(
+        r#"import std.io  as Io
+import std.int as Int
+
+pub fn io main () -> Unit =
+    let maxVal = 9223372036854775807
+    let minVal = 0 - maxVal - 1
+    Io.println (Int.toText (maxVal - 1 + 1))
+    Io.println (Int.toText (minVal + 1 - 1))
+    Io.println (Int.toText (Int.wrappingAdd maxVal 1))
+    Io.println (Int.toText (Int.saturatingAdd maxVal 1))
+    Io.println (Int.toText (Int.rem minVal (0 - 1)))
+"#,
+        r#""io""#,
+    );
+
+    ridge_cmd()
+        .arg("run")
+        .current_dir(&tw.path)
+        .assert()
+        .success()
+        .stdout(
+            contains("9223372036854775807")
+                .and(contains("-9223372036854775808"))
+                // `rem` is the one integer operation with no range test, because
+                // a remainder cannot leave a range its operands are inside —
+                // including this case, which is the one that catches `div`.
+                .and(contains("\n0")),
+        );
+}

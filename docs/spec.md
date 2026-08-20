@@ -910,7 +910,9 @@ functions written in terms of the ones above.
 
 An operator and the function it names are the same operation, so `a + b` and
 `Int.add a b` always mean the same thing. Nothing may attach to one spelling
-and not the other.
+and not the other — including the range check on integer arithmetic described
+in §5.2, which applies to `Int.add` handed to a higher-order function exactly
+as it applies to `+`.
 
 ### 4.5. Rest patterns in list and record patterns
 
@@ -1001,9 +1003,14 @@ Timestamp  -- opaque; no literal syntax; see §9.2 std.time for construction
 
 **Integer range and overflow.** `Int` holds exactly the values from
 -9223372036854775808 to 9223372036854775807. Arithmetic that would leave that
-range — `+`, `-`, `*`, `^`, and unary negation — raises. It neither wraps nor
-widens: a program gets the number it computed, or an error, and never a
+range — `+`, `-`, `*`, `/`, `^`, and unary negation — raises. It neither wraps
+nor widens: a program gets the number it computed, or an error, and never a
 different number reported as success.
+
+Division is on that list for one case only, and it is the one that is easy to
+miss: the smallest `Int` divided by -1 is one past the largest. Remainder is
+not on it at all, and cannot be — a remainder is smaller in magnitude than its
+divisor, so it stays inside any range both operands are inside.
 
 Wrapping and saturating behaviour stay available where a program wants them,
 as named operations rather than as the default — `Int.wrappingAdd` and
@@ -1017,12 +1024,6 @@ matters most for input the program did not write, such as a JSON document.
 Narrowing a `Float` past the boundary raises, and so does `Int.abs` of the
 smallest value: the range reaches one further below zero than above it, so
 that one value has no absolute value inside the type.
-
-Arithmetic is the exception, and it is temporary. The rule above is specified
-and not yet implemented for `+`, `-`, `*`, `^` and unary negation: a result
-past the boundary is currently computed at full precision instead of raising.
-Until that closes, staying inside the range across arithmetic is the program's
-own discipline rather than a guarantee the compiler keeps.
 
 ### 5.3. Type inference algorithm
 

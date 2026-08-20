@@ -8,8 +8,11 @@
 -- The rest is ordinary: @ffi wrappers name a function of the host runtime, and
 -- pure Ridge functions have a body like any other.
 --
--- Int is fixed 64-bit signed in the Ridge model.
--- wrappingAdd / saturatingAdd provided for overflow-safe arithmetic.
+-- Int is a 64-bit signed integer, holding -9223372036854775808 to
+-- 9223372036854775807. An operation whose result would leave that range
+-- raises rather than silently wrapping, so a value of type Int is always a
+-- value the type can hold. wrappingAdd and saturatingAdd are the explicit
+-- opt-outs for code that wants a defined answer at the boundary instead.
 
 -- Convert an integer to its decimal text representation.
 @ffi("erlang", "integer_to_binary", 1)
@@ -35,44 +38,57 @@ pub fn min (a: Int) (b: Int) -> Int =
 pub fn max (a: Int) (b: Int) -> Int =
     if a >= b then a else b
 
--- Addition.
+-- Addition. Raises when the result would leave the range of `Int`.
 @primitive
 pub fn add (a: Int) (b: Int) -> Int
 
--- Subtraction.
+-- Subtraction. Raises when the result would leave the range of `Int`.
 @primitive
 pub fn sub (a: Int) (b: Int) -> Int
 
--- Multiplication.
+-- Multiplication. Raises when the result would leave the range of `Int`.
 @primitive
 pub fn mul (a: Int) (b: Int) -> Int
 
--- Integer division, truncating toward zero. Raises when `b` is zero.
+-- Integer division, truncating toward zero. Raises when `b` is zero, and for
+-- the one division that leaves the range: the smallest `Int` over -1 is one
+-- past the largest.
 @primitive
 pub fn div (a: Int) (b: Int) -> Int
 
 -- Truncating remainder. Result has the same sign as the dividend `a`, and
 -- satisfies `a == b * (a div b) + (a rem b)`. Raises when `b` is zero.
+--
+-- Unlike the rest of the arithmetic here, this one cannot leave the range: a
+-- remainder is smaller in magnitude than its divisor. Even the case that
+-- catches `div` is fine — the smallest `Int` remainder -1 is 0.
 @primitive
 pub fn rem (a: Int) (b: Int) -> Int
 
 -- Mathematical modulo (Python `%` semantics).
 -- Result has the same sign as the divisor `b` and lies in
 -- `[0, |b|)` when `b` is positive, or `(b, 0]` when `b` is negative.
--- Implemented via `((a rem b) + b) rem b`; correct for every combination
--- of signs of `a` and `b`. Compiler lowering of the `%` operator routes
--- here.
+-- Compiler lowering of the `%` operator routes here.
+--
+-- The remainder already is the answer whenever it agrees in sign with the
+-- divisor; otherwise one divisor away from it is. Written this way rather
+-- than as `((a rem b) + b) rem b` because that form adds two values that can
+-- agree in sign, and for a large enough divisor the sum leaves the range and
+-- the whole thing raises on inputs it used to answer.
 pub fn mod (a: Int) (b: Int) -> Int =
     let r = rem a b
-    rem (r + b) b
+    if r == 0 || (r < 0) == (b < 0) then r
+    else r + b
 
--- Negate an integer.
+-- Negate an integer. Raises for the smallest `Int`, which has no positive
+-- counterpart inside the type — the same asymmetry that makes `abs` partial.
 @primitive
 pub fn neg (n: Int) -> Int
 
 -- Integer power: `base` raised to a non-negative integer `exp`.
--- Implemented via repeated squaring so the result is exact even for large
--- exponents. The compiler lowering of the `^` operator routes here.
+-- Implemented via repeated squaring. The compiler lowering of the `^`
+-- operator routes here. Raises when the result leaves the range of `Int`,
+-- which for a base above 1 happens quickly.
 --
 -- Conventions:
 -- - `pow n 0` returns `1` for every `n` (including `0`).
@@ -87,30 +103,38 @@ pub fn pow (base: Int) (exp: Int) -> Int =
         half * half
     else base * pow base (exp - 1)
 
--- Wrapping addition — result is masked to the 64-bit signed range.
--- Erlang integers are arbitrary-precision, so we simulate 64-bit wrap
--- by subtracting / adding the 64-bit modulus when the result overflows.
--- This function is the safe alternative to plain add for code that
--- must not crash on overflow.
+-- Wrapping addition — the result is what a 64-bit register would hold, so
+-- `wrappingAdd maxValue 1` is the smallest `Int` rather than a failure. This
+-- is the explicit opt-out from the rule that `+` raises at the boundary.
+--
+-- Every step below stays inside the range, on purpose: the overflow is
+-- predicted from the operands rather than produced and then folded back.
+-- Producing it first is what the old implementation did, and under a `+` that
+-- raises it never reaches the fold. It also means this function no longer
+-- depends on the host having arbitrary-precision integers, so it says the
+-- same thing on a backend whose integers are 64 bits wide.
+--
+-- `minVal` is built rather than written because `Int` reaches one further
+-- below zero than above it, so the smallest value has no literal.
 pub fn wrappingAdd (a: Int) (b: Int) -> Int =
-    let s = a + b
     let maxVal = 9223372036854775807
-    -- Written as arithmetic rather than as literals: `Int` holds the 64-bit
-    -- signed range, so neither `-9223372036854775808` (whose positive half is
-    -- one past the maximum) nor 2^64 can be spelled directly. The values are
-    -- built at runtime, where integers are arbitrary-precision.
     let minVal = 0 - maxVal - 1
-    let modulus = (maxVal + 1) * 2
-    if s > maxVal then s - modulus
-    else if s < minVal then s + modulus
-    else s
+    if b >= 0 then
+        -- Wraps exactly when `a + b` would pass the top; the wrapped value is
+        -- `a + b - 2^64`, and both halves of that are inside the range.
+        if a > maxVal - b then (a - maxVal - 1) + (b - maxVal - 1)
+        else a + b
+    else
+        if a < minVal - b then (a - minVal) + (b - minVal)
+        else a + b
 
--- Saturating addition — result is clamped to [Int64.min, Int64.max].
--- Use this when you want a bounded result instead of wrapping.
+-- Saturating addition — the result is clamped to the ends of `Int` instead of
+-- raising. The other explicit opt-out; use it when a bounded answer is more
+-- useful than a failure.
 pub fn saturatingAdd (a: Int) (b: Int) -> Int =
-    let s = a + b
     let maxVal = 9223372036854775807
     let minVal = 0 - maxVal - 1
-    if s > maxVal then maxVal
-    else if s < minVal then minVal
-    else s
+    if b >= 0 then
+        if a > maxVal - b then maxVal else a + b
+    else
+        if a < minVal - b then minVal else a + b

@@ -1,7 +1,14 @@
 import std.test (ensure)
+import std.int as Int
 
--- Private helpers for std.int test suite: FFI bridges to the raw BEAM builtins
--- std.int wraps, plus pure-Ridge replicas of wrappingAdd/saturatingAdd.
+-- FFI bridges to the raw BEAM builtins std.int wraps, so the suite can compare
+-- the wrapper against the thing it wraps.
+--
+-- Everything std.int implements in Ridge is called through `Int.` instead. It
+-- used to be replicated here, which meant the boundary behaviour of
+-- wrappingAdd, saturatingAdd, mod and pow was asserted against a copy: the two
+-- could disagree and the suite would still pass, because it was reading the
+-- copy both times.
 @ffi("erlang", "integer_to_binary", 1)
 fn _toText (n: Int) -> Text
 
@@ -17,37 +24,8 @@ fn _neg (n: Int) -> Int
 @ffi("erlang", "rem", 2)
 fn _rem (a: Int) (b: Int) -> Int
 
-fn _mod (a: Int) (b: Int) -> Int =
-    let r = _rem a b
-    _rem (r + b) b
-
 fn _min (a: Int) (b: Int) -> Int = if a <= b then a else b
 fn _max (a: Int) (b: Int) -> Int = if a >= b then a else b
-
-fn _wrappingAdd (a: Int) (b: Int) -> Int =
-    let s = a + b
-    let maxVal = 9223372036854775807
-    let minVal = 0 - maxVal - 1
-    let modulus = (maxVal + 1) * 2
-    if s > maxVal then s - modulus
-    else if s < minVal then s + modulus
-    else s
-
-fn _saturatingAdd (a: Int) (b: Int) -> Int =
-    let s = a + b
-    let maxVal = 9223372036854775807
-    let minVal = 0 - maxVal - 1
-    if s > maxVal then maxVal
-    else if s < minVal then minVal
-    else s
-
-fn _pow (base: Int) (exp: Int) -> Int =
-    if exp < 0 then 0
-    else if exp == 0 then 1
-    else if (_rem exp 2) == 0 then
-        let half = _pow base (exp / 2)
-        half * half
-    else base * _pow base (exp - 1)
 
 @test "smoke_int"
 pub fn test_smoke_int () -> Result Unit Text = Ok ()
@@ -104,19 +82,49 @@ pub fn test_neg_round_trip () -> Result Unit Text =
 
 @test "wrappingAdd_no_overflow"
 pub fn test_wrappingAdd_no_overflow () -> Result Unit Text =
-    if _wrappingAdd 3 4 == 7 then Ok ()
+    if Int.wrappingAdd 3 4 == 7 then Ok ()
     else Err "wrappingAdd 3 4 should be 7 (no overflow)"
 
 @test "saturatingAdd_clamps_high"
 pub fn test_saturatingAdd_clamps_high () -> Result Unit Text =
     let maxVal = 9223372036854775807
-    if _saturatingAdd maxVal 1 == maxVal then Ok ()
+    if Int.saturatingAdd maxVal 1 == maxVal then Ok ()
     else Err "saturatingAdd maxVal 1 should clamp to maxVal"
+
+@test "wrappingAdd_wraps_at_the_top"
+pub fn test_wrappingAdd_wraps_at_the_top () -> Result Unit Text =
+    let maxVal = 9223372036854775807
+    let minVal = 0 - maxVal - 1
+    -- The opt-out doing what it exists for. `maxVal + 1` raises; this answers.
+    ensure (Int.wrappingAdd maxVal 1 == minVal) "wrappingAdd maxVal 1 should wrap to minVal" ?
+    ensure (Int.wrappingAdd minVal (_neg 1) == maxVal) "wrappingAdd minVal (-1) should wrap to maxVal" ?
+    Ok ()
+
+@test "arithmetic_reaches_the_ends_of_the_range"
+pub fn test_arithmetic_reaches_the_ends_of_the_range () -> Result Unit Text =
+    let maxVal = 9223372036854775807
+    let minVal = 0 - maxVal - 1
+    -- The boundary is inclusive: landing exactly on either end is an ordinary
+    -- result, not a failure. Worth asserting because an off-by-one in the range
+    -- test would break arithmetic that has nothing wrong with it.
+    ensure (maxVal - 1 + 1 == maxVal) "reaching maxVal must not raise" ?
+    ensure (minVal + 1 - 1 == minVal) "reaching minVal must not raise" ?
+    Ok ()
+
+@test "mod_survives_a_divisor_near_the_top_of_the_range"
+pub fn test_mod_survives_a_divisor_near_the_top_of_the_range () -> Result Unit Text =
+    let maxVal = 9223372036854775807
+    -- `((a rem b) + b) rem b` adds two values of the same sign here, which
+    -- leaves the range and raises. The answer is an ordinary one, so the
+    -- implementation must reach it without going outside first.
+    ensure (Int.mod (maxVal - 1) maxVal == maxVal - 1) "mod (maxVal-1) maxVal should be maxVal-1" ?
+    ensure (Int.mod (_neg 1) maxVal == maxVal - 1) "mod (-1) maxVal should be maxVal-1" ?
+    Ok ()
 
 @test "saturatingAdd_clamps_low"
 pub fn test_saturatingAdd_clamps_low () -> Result Unit Text =
     let minVal = 0 - 9223372036854775807 - 1
-    if _saturatingAdd minVal (_neg 1) == minVal then Ok ()
+    if Int.saturatingAdd minVal (_neg 1) == minVal then Ok ()
     else Err "saturatingAdd minVal (-1) should clamp to minVal"
 
 @test "rem_positive"
@@ -136,22 +144,22 @@ pub fn test_rem_zero_dividend () -> Result Unit Text =
 
 @test "mod_positive"
 pub fn test_mod_positive () -> Result Unit Text =
-    if (_mod 10 3) == 1 then Ok ()
+    if (Int.mod 10 3) == 1 then Ok ()
     else Err "10 mod 3 should be 1"
 
 @test "mod_negative_dividend_takes_divisor_sign"
 pub fn test_mod_negative_dividend_takes_divisor_sign () -> Result Unit Text =
-    if (_mod (_neg 10) 3) == 2 then Ok ()
+    if (Int.mod (_neg 10) 3) == 2 then Ok ()
     else Err "(-10) mod 3 should be 2 (mod takes the divisor's sign)"
 
 @test "mod_negative_divisor"
 pub fn test_mod_negative_divisor () -> Result Unit Text =
-    if (_mod 10 (_neg 3)) == (_neg 2) then Ok ()
+    if (Int.mod 10 (_neg 3)) == (_neg 2) then Ok ()
     else Err "10 mod (-3) should be -2 (mod takes the divisor's sign)"
 
 @test "mod_both_negative"
 pub fn test_mod_both_negative () -> Result Unit Text =
-    if (_mod (_neg 10) (_neg 3)) == (_neg 1) then Ok ()
+    if (Int.mod (_neg 10) (_neg 3)) == (_neg 1) then Ok ()
     else Err "(-10) mod (-3) should be -1"
 
 @test "percent_operator_lowers_to_mod"
@@ -168,33 +176,33 @@ pub fn test_percent_operator_fizzbuzz_15 () -> Result Unit Text =
 
 @test "pow_zero_exp_is_one"
 pub fn test_pow_zero_exp_is_one () -> Result Unit Text =
-    if (_pow 7 0) == 1 then
-        if (_pow 0 0) == 1 then Ok ()
+    if (Int.pow 7 0) == 1 then
+        if (Int.pow 0 0) == 1 then Ok ()
         else Err "pow 0 0 should be 1 by convention"
     else Err "pow 7 0 should be 1"
 
 @test "pow_one_exp_is_base"
 pub fn test_pow_one_exp_is_base () -> Result Unit Text =
-    if (_pow 7 1) == 7 then Ok ()
+    if (Int.pow 7 1) == 7 then Ok ()
     else Err "pow 7 1 should be 7"
 
 @test "pow_positive"
 pub fn test_pow_positive () -> Result Unit Text =
-    if (_pow 2 10) == 1024 then
-        if (_pow 3 5) == 243 then Ok ()
+    if (Int.pow 2 10) == 1024 then
+        if (Int.pow 3 5) == 243 then Ok ()
         else Err "pow 3 5 should be 243"
     else Err "pow 2 10 should be 1024"
 
 @test "pow_negative_base"
 pub fn test_pow_negative_base () -> Result Unit Text =
-    if (_pow (_neg 2) 3) == (_neg 8) then
-        if (_pow (_neg 2) 4) == 16 then Ok ()
+    if (Int.pow (_neg 2) 3) == (_neg 8) then
+        if (Int.pow (_neg 2) 4) == 16 then Ok ()
         else Err "pow (-2) 4 should be 16"
     else Err "pow (-2) 3 should be -8"
 
 @test "pow_negative_exp_truncates_to_zero"
 pub fn test_pow_negative_exp_truncates_to_zero () -> Result Unit Text =
-    if (_pow 2 (_neg 1)) == 0 then Ok ()
+    if (Int.pow 2 (_neg 1)) == 0 then Ok ()
     else Err "pow 2 (-1) should be 0 (truncating Int semantics)"
 
 @test "caret_operator_lowers_to_pow"

@@ -1,5 +1,6 @@
 ---
 source: crates/ridge-codegen-erl/tests/core_ast_snapshot.rs
+assertion_line: 41
 expression: "&cerl_module"
 ---
 CErlModule {
@@ -140,75 +141,276 @@ CErlModule {
                                                 ),
                                                 body: Let {
                                                     var: CErlVar(
-                                                        "V_Anf2",
+                                                        "V_Anf17",
                                                     ),
                                                     value: Let {
                                                         var: CErlVar(
-                                                            "V_Anf1",
-                                                        ),
-                                                        value: Call {
-                                                            module: CErlAtom(
-                                                                "erlang",
-                                                            ),
-                                                            fn_name: CErlAtom(
-                                                                "-",
-                                                            ),
-                                                            args: [
-                                                                Var(
-                                                                    CErlVar(
-                                                                        "V_K",
-                                                                    ),
-                                                                ),
-                                                                Lit(
-                                                                    Int(
-                                                                        1,
-                                                                    ),
-                                                                ),
-                                                            ],
-                                                        },
-                                                        body: Apply {
-                                                            callee: LocalFnRef {
-                                                                name: CErlAtom(
-                                                                    "fib",
-                                                                ),
-                                                                arity: 1,
-                                                            },
-                                                            args: [
-                                                                Var(
-                                                                    CErlVar(
-                                                                        "V_Anf1",
-                                                                    ),
-                                                                ),
-                                                            ],
-                                                        },
-                                                    },
-                                                    body: Let {
-                                                        var: CErlVar(
-                                                            "V_Anf4",
+                                                            "V_Anf8",
                                                         ),
                                                         value: Let {
                                                             var: CErlVar(
-                                                                "V_Anf3",
+                                                                "V_Anf7",
                                                             ),
-                                                            value: Call {
-                                                                module: CErlAtom(
-                                                                    "erlang",
+                                                            value: Let {
+                                                                var: CErlVar(
+                                                                    "V_Anf1",
                                                                 ),
-                                                                fn_name: CErlAtom(
-                                                                    "-",
-                                                                ),
-                                                                args: [
-                                                                    Var(
+                                                                value: Call {
+                                                                    module: CErlAtom(
+                                                                        "erlang",
+                                                                    ),
+                                                                    fn_name: CErlAtom(
+                                                                        "-",
+                                                                    ),
+                                                                    args: [
+                                                                        Var(
+                                                                            CErlVar(
+                                                                                "V_K",
+                                                                            ),
+                                                                        ),
+                                                                        Lit(
+                                                                            Int(
+                                                                                1,
+                                                                            ),
+                                                                        ),
+                                                                    ],
+                                                                },
+                                                                body: Case {
+                                                                    scrutinee: Var(
                                                                         CErlVar(
-                                                                            "V_K",
+                                                                            "V_Anf1",
                                                                         ),
                                                                     ),
-                                                                    Lit(
-                                                                        Int(
-                                                                            2,
-                                                                        ),
-                                                                    ),
-                                                                ],
+                                                                    clauses: [
+                                                                        CErlClause {
+                                                                            pattern: Var(
+                                                                                CErlVar(
+                                                                                    "V_IntRange",
+                                                                                ),
+                                                                            ),
+                                                                            guard: Let {
+                                                                                var: CErlVar(
+                                                                                    "V_Anf2",
+                                                                                ),
+                                                                                value: Call {
+                                                                                    module: CErlAtom(
+                                                                                        "erlang",
+                                                                                    ),
+                                                                                    fn_name: CErlAtom(
+                                                                                        "=<",
+                                                                                    ),
+                                                                                    args: [
+                                                                                        Lit(
+                                                                                            Int(
+                                                                                                -576460752303423488,
+                                                                                            ),
+                                                                                        ),
+                                                                                        Var(
+                                                                                            CErlVar(
+                                                                                                "V_IntRange",
+                                                                                            ),
+                                                                                        ),
+                                                                                    ],
+                                                                                },
+                                                                                body: Let {
+                                                                                    var: CErlVar(
+                                                                                        "V_Anf3",
+                                                                                    ),
+                                                                                    value: Call {
+                                                                                        module: CErlAtom(
+                                                                                            "erlang",
+                                                                                        ),
+                                                                                        fn_name: CErlAtom(
+                                                                                            "=<",
+                                                                                        ),
+                                                                                        args: [
+                                                                                            Var(
+                                                                                                CErlVar(
+                                                                                                    "V_IntRange",
+                                                                                                ),
+                                                                                            ),
+                                                                                            Lit(
+                                                                                                Int(
+                                                                                                    576460752303423487,
+                                                                                                ),
+                                                                                            ),
+                                                                                        ],
+                                                                                    },
+                                                                                    body: Call {
+                                                                                        module: CErlAtom(
+                                                                                            "erlang",
+                                                                                        ),
+                                                                                        fn_name: CErlAtom(
+                                                                                            "and",
+                                                                                        ),
+                                                                                        args: [
+                                                                                            Var(
+                                                                                                CErlVar(
+                                                                                                    "V_Anf2",
+                                                                                                ),
+                                                                                            ),
+                                                                                            Var(
+                                                                                                CErlVar(
+                                                                                                    "V_Anf3",
+                                                                                                ),
+                                                                                            ),
+                                                                                        ],
+                                                                                    },
+                                                                                },
+                                                                            },
+                                                                            body: Var(
+                                                                                CErlVar(
+                                                                                    "V_IntRange",
+                                                                                ),
+                                                                            ),
+                                                                        },
+                                                                        CErlClause {
+                                                                            pattern: Var(
+                                                                                CErlVar(
+                                                                                    "V_IntRange",
+                                                                                ),
+                                                                            ),
+                                                                            guard: Let {
+                                                                                var: CErlVar(
+                                                                                    "V_Anf4",
+                                                                                ),
+                                                                                value: Call {
+                                                                                    module: CErlAtom(
+                                                                                        "erlang",
+                                                                                    ),
+                                                                                    fn_name: CErlAtom(
+                                                                                        "=<",
+                                                                                    ),
+                                                                                    args: [
+                                                                                        Lit(
+                                                                                            Int(
+                                                                                                -9223372036854775808,
+                                                                                            ),
+                                                                                        ),
+                                                                                        Var(
+                                                                                            CErlVar(
+                                                                                                "V_IntRange",
+                                                                                            ),
+                                                                                        ),
+                                                                                    ],
+                                                                                },
+                                                                                body: Let {
+                                                                                    var: CErlVar(
+                                                                                        "V_Anf5",
+                                                                                    ),
+                                                                                    value: Call {
+                                                                                        module: CErlAtom(
+                                                                                            "erlang",
+                                                                                        ),
+                                                                                        fn_name: CErlAtom(
+                                                                                            "=<",
+                                                                                        ),
+                                                                                        args: [
+                                                                                            Var(
+                                                                                                CErlVar(
+                                                                                                    "V_IntRange",
+                                                                                                ),
+                                                                                            ),
+                                                                                            Lit(
+                                                                                                Int(
+                                                                                                    9223372036854775807,
+                                                                                                ),
+                                                                                            ),
+                                                                                        ],
+                                                                                    },
+                                                                                    body: Call {
+                                                                                        module: CErlAtom(
+                                                                                            "erlang",
+                                                                                        ),
+                                                                                        fn_name: CErlAtom(
+                                                                                            "and",
+                                                                                        ),
+                                                                                        args: [
+                                                                                            Var(
+                                                                                                CErlVar(
+                                                                                                    "V_Anf4",
+                                                                                                ),
+                                                                                            ),
+                                                                                            Var(
+                                                                                                CErlVar(
+                                                                                                    "V_Anf5",
+                                                                                                ),
+                                                                                            ),
+                                                                                        ],
+                                                                                    },
+                                                                                },
+                                                                            },
+                                                                            body: Var(
+                                                                                CErlVar(
+                                                                                    "V_IntRange",
+                                                                                ),
+                                                                            ),
+                                                                        },
+                                                                        CErlClause {
+                                                                            pattern: Var(
+                                                                                CErlVar(
+                                                                                    "V_IntRange",
+                                                                                ),
+                                                                            ),
+                                                                            guard: Lit(
+                                                                                Atom(
+                                                                                    CErlAtom(
+                                                                                        "true",
+                                                                                    ),
+                                                                                ),
+                                                                            ),
+                                                                            body: Let {
+                                                                                var: CErlVar(
+                                                                                    "V_Anf6",
+                                                                                ),
+                                                                                value: Tuple(
+                                                                                    [
+                                                                                        Lit(
+                                                                                            Atom(
+                                                                                                CErlAtom(
+                                                                                                    "ridge_int_out_of_range",
+                                                                                                ),
+                                                                                            ),
+                                                                                        ),
+                                                                                        Lit(
+                                                                                            Binary(
+                                                                                                [
+                                                                                                    73,
+                                                                                                    110,
+                                                                                                    116,
+                                                                                                    46,
+                                                                                                    115,
+                                                                                                    117,
+                                                                                                    98,
+                                                                                                ],
+                                                                                            ),
+                                                                                        ),
+                                                                                        Var(
+                                                                                            CErlVar(
+                                                                                                "V_IntRange",
+                                                                                            ),
+                                                                                        ),
+                                                                                    ],
+                                                                                ),
+                                                                                body: Call {
+                                                                                    module: CErlAtom(
+                                                                                        "erlang",
+                                                                                    ),
+                                                                                    fn_name: CErlAtom(
+                                                                                        "error",
+                                                                                    ),
+                                                                                    args: [
+                                                                                        Var(
+                                                                                            CErlVar(
+                                                                                                "V_Anf6",
+                                                                                            ),
+                                                                                        ),
+                                                                                    ],
+                                                                                },
+                                                                            },
+                                                                        },
+                                                                    ],
+                                                                },
                                                             },
                                                             body: Apply {
                                                                 callee: LocalFnRef {
@@ -220,32 +422,554 @@ CErlModule {
                                                                 args: [
                                                                     Var(
                                                                         CErlVar(
-                                                                            "V_Anf3",
+                                                                            "V_Anf7",
                                                                         ),
                                                                     ),
                                                                 ],
                                                             },
                                                         },
-                                                        body: Call {
-                                                            module: CErlAtom(
-                                                                "erlang",
+                                                        body: Let {
+                                                            var: CErlVar(
+                                                                "V_Anf16",
                                                             ),
-                                                            fn_name: CErlAtom(
-                                                                "+",
-                                                            ),
-                                                            args: [
-                                                                Var(
-                                                                    CErlVar(
-                                                                        "V_Anf2",
-                                                                    ),
+                                                            value: Let {
+                                                                var: CErlVar(
+                                                                    "V_Anf15",
                                                                 ),
-                                                                Var(
-                                                                    CErlVar(
-                                                                        "V_Anf4",
+                                                                value: Let {
+                                                                    var: CErlVar(
+                                                                        "V_Anf9",
                                                                     ),
+                                                                    value: Call {
+                                                                        module: CErlAtom(
+                                                                            "erlang",
+                                                                        ),
+                                                                        fn_name: CErlAtom(
+                                                                            "-",
+                                                                        ),
+                                                                        args: [
+                                                                            Var(
+                                                                                CErlVar(
+                                                                                    "V_K",
+                                                                                ),
+                                                                            ),
+                                                                            Lit(
+                                                                                Int(
+                                                                                    2,
+                                                                                ),
+                                                                            ),
+                                                                        ],
+                                                                    },
+                                                                    body: Case {
+                                                                        scrutinee: Var(
+                                                                            CErlVar(
+                                                                                "V_Anf9",
+                                                                            ),
+                                                                        ),
+                                                                        clauses: [
+                                                                            CErlClause {
+                                                                                pattern: Var(
+                                                                                    CErlVar(
+                                                                                        "V_IntRange",
+                                                                                    ),
+                                                                                ),
+                                                                                guard: Let {
+                                                                                    var: CErlVar(
+                                                                                        "V_Anf10",
+                                                                                    ),
+                                                                                    value: Call {
+                                                                                        module: CErlAtom(
+                                                                                            "erlang",
+                                                                                        ),
+                                                                                        fn_name: CErlAtom(
+                                                                                            "=<",
+                                                                                        ),
+                                                                                        args: [
+                                                                                            Lit(
+                                                                                                Int(
+                                                                                                    -576460752303423488,
+                                                                                                ),
+                                                                                            ),
+                                                                                            Var(
+                                                                                                CErlVar(
+                                                                                                    "V_IntRange",
+                                                                                                ),
+                                                                                            ),
+                                                                                        ],
+                                                                                    },
+                                                                                    body: Let {
+                                                                                        var: CErlVar(
+                                                                                            "V_Anf11",
+                                                                                        ),
+                                                                                        value: Call {
+                                                                                            module: CErlAtom(
+                                                                                                "erlang",
+                                                                                            ),
+                                                                                            fn_name: CErlAtom(
+                                                                                                "=<",
+                                                                                            ),
+                                                                                            args: [
+                                                                                                Var(
+                                                                                                    CErlVar(
+                                                                                                        "V_IntRange",
+                                                                                                    ),
+                                                                                                ),
+                                                                                                Lit(
+                                                                                                    Int(
+                                                                                                        576460752303423487,
+                                                                                                    ),
+                                                                                                ),
+                                                                                            ],
+                                                                                        },
+                                                                                        body: Call {
+                                                                                            module: CErlAtom(
+                                                                                                "erlang",
+                                                                                            ),
+                                                                                            fn_name: CErlAtom(
+                                                                                                "and",
+                                                                                            ),
+                                                                                            args: [
+                                                                                                Var(
+                                                                                                    CErlVar(
+                                                                                                        "V_Anf10",
+                                                                                                    ),
+                                                                                                ),
+                                                                                                Var(
+                                                                                                    CErlVar(
+                                                                                                        "V_Anf11",
+                                                                                                    ),
+                                                                                                ),
+                                                                                            ],
+                                                                                        },
+                                                                                    },
+                                                                                },
+                                                                                body: Var(
+                                                                                    CErlVar(
+                                                                                        "V_IntRange",
+                                                                                    ),
+                                                                                ),
+                                                                            },
+                                                                            CErlClause {
+                                                                                pattern: Var(
+                                                                                    CErlVar(
+                                                                                        "V_IntRange",
+                                                                                    ),
+                                                                                ),
+                                                                                guard: Let {
+                                                                                    var: CErlVar(
+                                                                                        "V_Anf12",
+                                                                                    ),
+                                                                                    value: Call {
+                                                                                        module: CErlAtom(
+                                                                                            "erlang",
+                                                                                        ),
+                                                                                        fn_name: CErlAtom(
+                                                                                            "=<",
+                                                                                        ),
+                                                                                        args: [
+                                                                                            Lit(
+                                                                                                Int(
+                                                                                                    -9223372036854775808,
+                                                                                                ),
+                                                                                            ),
+                                                                                            Var(
+                                                                                                CErlVar(
+                                                                                                    "V_IntRange",
+                                                                                                ),
+                                                                                            ),
+                                                                                        ],
+                                                                                    },
+                                                                                    body: Let {
+                                                                                        var: CErlVar(
+                                                                                            "V_Anf13",
+                                                                                        ),
+                                                                                        value: Call {
+                                                                                            module: CErlAtom(
+                                                                                                "erlang",
+                                                                                            ),
+                                                                                            fn_name: CErlAtom(
+                                                                                                "=<",
+                                                                                            ),
+                                                                                            args: [
+                                                                                                Var(
+                                                                                                    CErlVar(
+                                                                                                        "V_IntRange",
+                                                                                                    ),
+                                                                                                ),
+                                                                                                Lit(
+                                                                                                    Int(
+                                                                                                        9223372036854775807,
+                                                                                                    ),
+                                                                                                ),
+                                                                                            ],
+                                                                                        },
+                                                                                        body: Call {
+                                                                                            module: CErlAtom(
+                                                                                                "erlang",
+                                                                                            ),
+                                                                                            fn_name: CErlAtom(
+                                                                                                "and",
+                                                                                            ),
+                                                                                            args: [
+                                                                                                Var(
+                                                                                                    CErlVar(
+                                                                                                        "V_Anf12",
+                                                                                                    ),
+                                                                                                ),
+                                                                                                Var(
+                                                                                                    CErlVar(
+                                                                                                        "V_Anf13",
+                                                                                                    ),
+                                                                                                ),
+                                                                                            ],
+                                                                                        },
+                                                                                    },
+                                                                                },
+                                                                                body: Var(
+                                                                                    CErlVar(
+                                                                                        "V_IntRange",
+                                                                                    ),
+                                                                                ),
+                                                                            },
+                                                                            CErlClause {
+                                                                                pattern: Var(
+                                                                                    CErlVar(
+                                                                                        "V_IntRange",
+                                                                                    ),
+                                                                                ),
+                                                                                guard: Lit(
+                                                                                    Atom(
+                                                                                        CErlAtom(
+                                                                                            "true",
+                                                                                        ),
+                                                                                    ),
+                                                                                ),
+                                                                                body: Let {
+                                                                                    var: CErlVar(
+                                                                                        "V_Anf14",
+                                                                                    ),
+                                                                                    value: Tuple(
+                                                                                        [
+                                                                                            Lit(
+                                                                                                Atom(
+                                                                                                    CErlAtom(
+                                                                                                        "ridge_int_out_of_range",
+                                                                                                    ),
+                                                                                                ),
+                                                                                            ),
+                                                                                            Lit(
+                                                                                                Binary(
+                                                                                                    [
+                                                                                                        73,
+                                                                                                        110,
+                                                                                                        116,
+                                                                                                        46,
+                                                                                                        115,
+                                                                                                        117,
+                                                                                                        98,
+                                                                                                    ],
+                                                                                                ),
+                                                                                            ),
+                                                                                            Var(
+                                                                                                CErlVar(
+                                                                                                    "V_IntRange",
+                                                                                                ),
+                                                                                            ),
+                                                                                        ],
+                                                                                    ),
+                                                                                    body: Call {
+                                                                                        module: CErlAtom(
+                                                                                            "erlang",
+                                                                                        ),
+                                                                                        fn_name: CErlAtom(
+                                                                                            "error",
+                                                                                        ),
+                                                                                        args: [
+                                                                                            Var(
+                                                                                                CErlVar(
+                                                                                                    "V_Anf14",
+                                                                                                ),
+                                                                                            ),
+                                                                                        ],
+                                                                                    },
+                                                                                },
+                                                                            },
+                                                                        ],
+                                                                    },
+                                                                },
+                                                                body: Apply {
+                                                                    callee: LocalFnRef {
+                                                                        name: CErlAtom(
+                                                                            "fib",
+                                                                        ),
+                                                                        arity: 1,
+                                                                    },
+                                                                    args: [
+                                                                        Var(
+                                                                            CErlVar(
+                                                                                "V_Anf15",
+                                                                            ),
+                                                                        ),
+                                                                    ],
+                                                                },
+                                                            },
+                                                            body: Call {
+                                                                module: CErlAtom(
+                                                                    "erlang",
                                                                 ),
-                                                            ],
+                                                                fn_name: CErlAtom(
+                                                                    "+",
+                                                                ),
+                                                                args: [
+                                                                    Var(
+                                                                        CErlVar(
+                                                                            "V_Anf8",
+                                                                        ),
+                                                                    ),
+                                                                    Var(
+                                                                        CErlVar(
+                                                                            "V_Anf16",
+                                                                        ),
+                                                                    ),
+                                                                ],
+                                                            },
                                                         },
+                                                    },
+                                                    body: Case {
+                                                        scrutinee: Var(
+                                                            CErlVar(
+                                                                "V_Anf17",
+                                                            ),
+                                                        ),
+                                                        clauses: [
+                                                            CErlClause {
+                                                                pattern: Var(
+                                                                    CErlVar(
+                                                                        "V_IntRange",
+                                                                    ),
+                                                                ),
+                                                                guard: Let {
+                                                                    var: CErlVar(
+                                                                        "V_Anf18",
+                                                                    ),
+                                                                    value: Call {
+                                                                        module: CErlAtom(
+                                                                            "erlang",
+                                                                        ),
+                                                                        fn_name: CErlAtom(
+                                                                            "=<",
+                                                                        ),
+                                                                        args: [
+                                                                            Lit(
+                                                                                Int(
+                                                                                    -576460752303423488,
+                                                                                ),
+                                                                            ),
+                                                                            Var(
+                                                                                CErlVar(
+                                                                                    "V_IntRange",
+                                                                                ),
+                                                                            ),
+                                                                        ],
+                                                                    },
+                                                                    body: Let {
+                                                                        var: CErlVar(
+                                                                            "V_Anf19",
+                                                                        ),
+                                                                        value: Call {
+                                                                            module: CErlAtom(
+                                                                                "erlang",
+                                                                            ),
+                                                                            fn_name: CErlAtom(
+                                                                                "=<",
+                                                                            ),
+                                                                            args: [
+                                                                                Var(
+                                                                                    CErlVar(
+                                                                                        "V_IntRange",
+                                                                                    ),
+                                                                                ),
+                                                                                Lit(
+                                                                                    Int(
+                                                                                        576460752303423487,
+                                                                                    ),
+                                                                                ),
+                                                                            ],
+                                                                        },
+                                                                        body: Call {
+                                                                            module: CErlAtom(
+                                                                                "erlang",
+                                                                            ),
+                                                                            fn_name: CErlAtom(
+                                                                                "and",
+                                                                            ),
+                                                                            args: [
+                                                                                Var(
+                                                                                    CErlVar(
+                                                                                        "V_Anf18",
+                                                                                    ),
+                                                                                ),
+                                                                                Var(
+                                                                                    CErlVar(
+                                                                                        "V_Anf19",
+                                                                                    ),
+                                                                                ),
+                                                                            ],
+                                                                        },
+                                                                    },
+                                                                },
+                                                                body: Var(
+                                                                    CErlVar(
+                                                                        "V_IntRange",
+                                                                    ),
+                                                                ),
+                                                            },
+                                                            CErlClause {
+                                                                pattern: Var(
+                                                                    CErlVar(
+                                                                        "V_IntRange",
+                                                                    ),
+                                                                ),
+                                                                guard: Let {
+                                                                    var: CErlVar(
+                                                                        "V_Anf20",
+                                                                    ),
+                                                                    value: Call {
+                                                                        module: CErlAtom(
+                                                                            "erlang",
+                                                                        ),
+                                                                        fn_name: CErlAtom(
+                                                                            "=<",
+                                                                        ),
+                                                                        args: [
+                                                                            Lit(
+                                                                                Int(
+                                                                                    -9223372036854775808,
+                                                                                ),
+                                                                            ),
+                                                                            Var(
+                                                                                CErlVar(
+                                                                                    "V_IntRange",
+                                                                                ),
+                                                                            ),
+                                                                        ],
+                                                                    },
+                                                                    body: Let {
+                                                                        var: CErlVar(
+                                                                            "V_Anf21",
+                                                                        ),
+                                                                        value: Call {
+                                                                            module: CErlAtom(
+                                                                                "erlang",
+                                                                            ),
+                                                                            fn_name: CErlAtom(
+                                                                                "=<",
+                                                                            ),
+                                                                            args: [
+                                                                                Var(
+                                                                                    CErlVar(
+                                                                                        "V_IntRange",
+                                                                                    ),
+                                                                                ),
+                                                                                Lit(
+                                                                                    Int(
+                                                                                        9223372036854775807,
+                                                                                    ),
+                                                                                ),
+                                                                            ],
+                                                                        },
+                                                                        body: Call {
+                                                                            module: CErlAtom(
+                                                                                "erlang",
+                                                                            ),
+                                                                            fn_name: CErlAtom(
+                                                                                "and",
+                                                                            ),
+                                                                            args: [
+                                                                                Var(
+                                                                                    CErlVar(
+                                                                                        "V_Anf20",
+                                                                                    ),
+                                                                                ),
+                                                                                Var(
+                                                                                    CErlVar(
+                                                                                        "V_Anf21",
+                                                                                    ),
+                                                                                ),
+                                                                            ],
+                                                                        },
+                                                                    },
+                                                                },
+                                                                body: Var(
+                                                                    CErlVar(
+                                                                        "V_IntRange",
+                                                                    ),
+                                                                ),
+                                                            },
+                                                            CErlClause {
+                                                                pattern: Var(
+                                                                    CErlVar(
+                                                                        "V_IntRange",
+                                                                    ),
+                                                                ),
+                                                                guard: Lit(
+                                                                    Atom(
+                                                                        CErlAtom(
+                                                                            "true",
+                                                                        ),
+                                                                    ),
+                                                                ),
+                                                                body: Let {
+                                                                    var: CErlVar(
+                                                                        "V_Anf22",
+                                                                    ),
+                                                                    value: Tuple(
+                                                                        [
+                                                                            Lit(
+                                                                                Atom(
+                                                                                    CErlAtom(
+                                                                                        "ridge_int_out_of_range",
+                                                                                    ),
+                                                                                ),
+                                                                            ),
+                                                                            Lit(
+                                                                                Binary(
+                                                                                    [
+                                                                                        73,
+                                                                                        110,
+                                                                                        116,
+                                                                                        46,
+                                                                                        97,
+                                                                                        100,
+                                                                                        100,
+                                                                                    ],
+                                                                                ),
+                                                                            ),
+                                                                            Var(
+                                                                                CErlVar(
+                                                                                    "V_IntRange",
+                                                                                ),
+                                                                            ),
+                                                                        ],
+                                                                    ),
+                                                                    body: Call {
+                                                                        module: CErlAtom(
+                                                                            "erlang",
+                                                                        ),
+                                                                        fn_name: CErlAtom(
+                                                                            "error",
+                                                                        ),
+                                                                        args: [
+                                                                            Var(
+                                                                                CErlVar(
+                                                                                    "V_Anf22",
+                                                                                ),
+                                                                            ),
+                                                                        ],
+                                                                    },
+                                                                },
+                                                            },
+                                                        ],
                                                     },
                                                 },
                                             },

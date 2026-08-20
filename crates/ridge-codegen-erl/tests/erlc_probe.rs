@@ -297,6 +297,232 @@ fn bench_runner_times_and_reports_bench_functions() {
     );
 }
 
+/// A crashing benchmark is reported in Ridge's words, and does not take the
+/// rest of the run with it.
+///
+/// The bench runner is the one place the prefix is built with `io_lib:format`
+/// instead of passed as a binary, so it is the call site whose shape differs
+/// from the other three — and it was the only crash clause of the four that
+/// nothing ran. The second half is the claim the runner's own comment makes
+/// and nothing checked: one crashing benchmark must not abort the others.
+#[test]
+#[cfg_attr(
+    not(feature = "beam-runtime"),
+    ignore = "requires OTP installation; run with --features beam-runtime"
+)]
+fn a_crashing_benchmark_is_named_and_does_not_stop_the_run() {
+    if which::which("erlc").is_err() || which::which("erl").is_err() {
+        eprintln!("erl/erlc not on PATH — skipping a_crashing_benchmark_is_named_...");
+        return;
+    }
+
+    let dir = tempdir().unwrap();
+    let out_root = dir.path();
+    output_layout::ensure_out_dirs(out_root).expect("ensure_out_dirs");
+    runtime::install_runtime(out_root).expect("install_runtime");
+    runtime::install_bench_runner(out_root).expect("install_bench_runner");
+    let info = erlc::probe(None).expect("probe");
+    runtime::compile_runtime(&info.path, out_root).expect("compile_runtime");
+    runtime::compile_bench_runner(&info.path, out_root).expect("compile_bench_runner");
+
+    // Two details make this module match what Ridge emits rather than what
+    // Erlang would write by hand. The divisor comes from a function, so erlc
+    // reports no warning about an expression it can already see will fail. And
+    // the division is a qualified call: written as `1 / zero()` it compiles to
+    // an inline instruction whose stacktrace names only the calling function,
+    // and `arith_failure/1` would correctly fall back to its hedge — the test
+    // would then be asserting Ridge's wording against Erlang's shape. Ridge's
+    // `/` on `Int` lowers to an external `erlang:div/2`, which leaves the BIF
+    // frame that carries the arguments and lets the fault be named.
+    let beam_dir = output_layout::beam_dir(out_root);
+    let demo_erl = out_root.join("bench_crash_demo.erl");
+    fs::write(
+        &demo_erl,
+        "-module(bench_crash_demo).\n\
+         -export([bench_boom/0, bench_fine/0]).\n\
+         bench_boom() -> erlang:'div'(1, zero()).\n\
+         bench_fine() -> lists:sum(lists:seq(1, 1000)).\n\
+         zero() -> 0.\n",
+    )
+    .expect("write bench_crash_demo.erl");
+    let status = std::process::Command::new(&info.path)
+        .arg("-o")
+        .arg(&beam_dir)
+        .arg(&demo_erl)
+        .status()
+        .expect("erlc bench_crash_demo");
+    assert!(status.success(), "erlc must compile bench_crash_demo");
+
+    let output = std::process::Command::new("erl")
+        .arg("-noshell")
+        .arg("-pa")
+        .arg(&beam_dir)
+        .arg("-s")
+        .arg("ridge_bench_runner")
+        .arg("run")
+        .arg("bench_crash_demo")
+        .arg("-s")
+        .arg("init")
+        .arg("stop")
+        .output()
+        .expect("run bench runner");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let ctx = format!("stdout:\n{stdout}\nstderr:\n{stderr}");
+
+    // The crash keeps this command's framing and gains Ridge's words.
+    assert!(
+        stderr.contains("bench bench_boom crashed: divided by zero"),
+        "{ctx}"
+    );
+    assert!(
+        stderr.contains("RIDGE_BACKTRACE"),
+        "the way to the Erlang must still be offered; {ctx}"
+    );
+    assert!(
+        !stderr.contains("badarith"),
+        "the raw OTP reason should be behind the variable; {ctx}"
+    );
+
+    // The marker line is the machine contract, and it is on stdout, separate
+    // from anything a person reads. Changing the human half must not move it.
+    assert!(
+        stdout.contains("{\"bench\":\"bench_boom\",\"error\":true}"),
+        "{ctx}"
+    );
+
+    // And the run went on.
+    assert!(
+        stdout.contains("\"bench\":\"bench_fine\"") && stdout.contains("\"median_ns\":"),
+        "a crashing benchmark must not abort the ones after it; {ctx}"
+    );
+}
+
+/// What `exit_reason_to_ridge/1` puts inside a `Crashed`, across every shape.
+///
+/// Driven from Erlang rather than from Ridge source because the interesting
+/// cases include reasons no Ridge program can raise on purpose — an actor
+/// killed from outside, or a term a library chose — and those are exactly the
+/// ones where the answer used to be an Erlang dump in a `Text` field.
+///
+/// Both directions are asserted. A reason Ridge has words for must lose its
+/// stack; a reason Ridge does not have words for must keep its term, framed so
+/// a reader can tell which of the two they are looking at. Getting only the
+/// first half right would read as a success and be a guess in Ridge's voice.
+#[test]
+#[cfg_attr(
+    not(feature = "beam-runtime"),
+    ignore = "requires OTP installation; run with --features beam-runtime"
+)]
+fn a_crashed_payload_says_what_ridge_knows_and_frames_what_it_does_not() {
+    if which::which("erlc").is_err() || which::which("erl").is_err() {
+        eprintln!("erl/erlc not on PATH — skipping exit_reason_to_ridge probe");
+        return;
+    }
+
+    let dir = tempdir().unwrap();
+    let out_root = dir.path();
+    output_layout::ensure_out_dirs(out_root).expect("ensure_out_dirs");
+    runtime::install_runtime(out_root).expect("install_runtime");
+    let info = erlc::probe(None).expect("probe");
+    runtime::compile_runtime(&info.path, out_root).expect("compile_runtime");
+
+    let beam_dir = output_layout::beam_dir(out_root);
+    let probe_erl = out_root.join("reason_probe.erl");
+    // Each line carries the answer alone. Echoing the reason as well would put
+    // `gen_server` in stdout whatever the runtime did with it, and the
+    // assertion that no stacktrace reaches a `Text` field would then be
+    // reading a line the runtime never produced.
+    fs::write(
+        &probe_erl,
+        "-module(reason_probe).\n\
+         -export([run/0]).\n\
+         run() ->\n\
+             Stack = [{worker, handle_call, 3, [{file, \"worker.erl\"}, {line, 5}]},\n\
+                      {gen_server, try_handle_call, 4, [{file, \"gen_server.erl\"}, {line, 2470}]}],\n\
+             show(\"normal\", normal),\n\
+             show(\"shutdown\", shutdown),\n\
+             show(\"noproc\", noproc),\n\
+             show(\"killed\", killed),\n\
+             show(\"ask\", ridge_ask_noproc),\n\
+             show(\"range\", {{ridge_int_out_of_range, <<\"Int.add\">>, 99}, Stack}),\n\
+             show(\"arith\", {badarith, [{erlang, 'div', [1, 0], []} | Stack]}),\n\
+             show(\"tagged\", {my_own_tag, [1, 2, 3]}).\n\
+         show(Label, R) ->\n\
+             case ridge_rt:exit_reason_to_ridge(R) of\n\
+                 {'Crashed', Text} -> io:format(\"~s|Crashed|~ts~n\", [Label, Text]);\n\
+                 Ordered           -> io:format(\"~s|~p~n\", [Label, Ordered])\n\
+             end.\n",
+    )
+    .expect("write reason_probe.erl");
+    let status = std::process::Command::new(&info.path)
+        .arg("-o")
+        .arg(&beam_dir)
+        .arg(&probe_erl)
+        .status()
+        .expect("erlc reason_probe");
+    assert!(status.success(), "erlc must compile reason_probe");
+
+    let output = std::process::Command::new("erl")
+        .arg("-noshell")
+        .arg("-pa")
+        .arg(&beam_dir)
+        .arg("-s")
+        .arg("reason_probe")
+        .arg("run")
+        .arg("-s")
+        .arg("init")
+        .arg("stop")
+        .output()
+        .expect("run reason_probe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let ctx = format!("stdout:\n{stdout}\nstderr:\n{stderr}");
+
+    // The probe has to be able to fail: if the lines never arrived, every
+    // `contains` below would be unsatisfied for a reason that has nothing to
+    // do with what is under test.
+    assert_eq!(
+        stdout.lines().filter(|l| l.contains('|')).count(),
+        8,
+        "the probe must report all eight reasons; {ctx}"
+    );
+
+    // An ordered stop is not a crash and never was.
+    assert!(stdout.contains("normal|'Normal'"), "{ctx}");
+    assert!(stdout.contains("shutdown|'Shutdown'"), "{ctx}");
+    assert!(stdout.contains("noproc|'NotRunning'"), "{ctx}");
+
+    // What Ridge has words for arrives as those words.
+    assert!(
+        stdout.contains("ask|Crashed|asked an actor that is no longer running"),
+        "{ctx}"
+    );
+    assert!(
+        stdout.contains("range|Crashed|`Int.add` produced 99, which is outside the range of `Int`"),
+        "{ctx}"
+    );
+    assert!(stdout.contains("arith|Crashed|divided by zero"), "{ctx}");
+
+    // And the stacktrace it arrived with does not come along. This is the
+    // assertion the whole test exists for: the payload is a `Text` field, and
+    // it used to hold gen_server's own frames.
+    assert!(
+        !stdout.contains("gen_server"),
+        "a stacktrace reached a Text field; {ctx}"
+    );
+
+    // What Ridge has no words for keeps its term, and says as much.
+    assert!(
+        stdout.contains("killed|Crashed|the actor stopped: killed"),
+        "{ctx}"
+    );
+    assert!(
+        stdout.contains("tagged|Crashed|the actor stopped: {my_own_tag,[1,2,3]}"),
+        "a reason that merely looks like a stacktrace must keep both halves; {ctx}"
+    );
+}
+
 /// `compile_core` returns `E003 ErlcNotFound` when the erlc executable path
 /// does not exist.  No real erlc needed — the binary simply doesn't exist.
 #[test]

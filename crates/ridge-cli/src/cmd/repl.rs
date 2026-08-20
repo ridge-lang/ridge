@@ -47,8 +47,10 @@
 //! ## REPL runner
 //!
 //! The REPL compiles each `_repl_<n>` expression into a temporary workspace,
-//! then invokes an embedded Erlang runner (`ridge_repl_runner.erl`) to call
-//! `Module:'_repl_<n>'()` and print the result in a human-readable form.
+//! then invokes `ridge_repl_runner.erl` to call `Module:'_repl_<n>'()` and
+//! print the result in a human-readable form. That runner is installed from
+//! `ridge-codegen-erl`, where it sits beside the other four: it is a BEAM
+//! module, and this crate is not the BEAM code generator.
 
 // REPL-local stylistic allows.  These don't reflect bugs — the code is
 // structured for legibility, not for maximum micro-optimisation:
@@ -81,63 +83,6 @@ use crate::error::CliError;
 use crate::render::render_diagnostics;
 
 // ── Embedded REPL runner ──────────────────────────────────────────────────────
-
-/// Erlang-side REPL result printer.
-///
-/// Written to `<session_tmpdir>/runtime/` and compiled to `.beam` on session
-/// start so that `erl -pa <beam_dir> -s ridge_repl_runner run <Mod> <Fn>`
-/// can pretty-print the result of each REPL expression.
-///
-/// Handles:
-/// - `ok`          → Unit result from side-effectful fn; no output.
-/// - `{ok, _}`     → Result Ok branch; no output.
-/// - `{error, B}`  → prints "error: <Msg>" to stderr, exits 1.
-/// - `true`/`false`→ prints "true"/"false".
-/// - Integer       → decimal.
-/// - Float         → `~g` format.
-/// - Binary        → UTF-8 text (`~ts`).
-/// - Anything else → Erlang `~p` representation.
-/// - Exception     → stderr + exit 1.
-const REPL_RUNNER_SOURCE: &str = r#"-module(ridge_repl_runner).
--export([run/1]).
-
-run([ModAtom, FnAtom]) ->
-    try ModAtom:FnAtom() of
-        ok ->
-            erlang:halt(0);
-        {ok, _} ->
-            erlang:halt(0);
-        {error, Msg} when is_binary(Msg) ->
-            io:format(standard_error, "error: ~ts~n", [Msg]),
-            erlang:halt(1);
-        true ->
-            io:put_chars(standard_io, <<"true\n">>),
-            erlang:halt(0);
-        false ->
-            io:put_chars(standard_io, <<"false\n">>),
-            erlang:halt(0);
-        V when is_integer(V) ->
-            io:format("~B~n", [V]),
-            erlang:halt(0);
-        V when is_float(V) ->
-            io:format("~g~n", [V]),
-            erlang:halt(0);
-        V when is_binary(V) ->
-            io:format("~ts~n", [V]),
-            erlang:halt(0);
-        V ->
-            io:format("~p~n", [V]),
-            erlang:halt(0)
-    catch
-        Class:Reason:Stack ->
-            io:format(standard_error, "error: ~p:~p~nstack:~p~n",
-                      [Class, Reason, Stack]),
-            erlang:halt(1)
-    end;
-run(Other) ->
-    io:format(standard_error, "error: bad runner args ~p~n", [Other]),
-    erlang:halt(2).
-"#;
 
 // ── Argument struct ───────────────────────────────────────────────────────────
 
@@ -277,22 +222,15 @@ impl ReplSession {
         )
         .map_err(|e| format!("failed to write project manifest: {e}"))?;
 
-        // Write the REPL runner Erlang source and compile it to a .beam.
-        let runner_erl = runtime_dir.join("ridge_repl_runner.erl");
-        std::fs::write(&runner_erl, REPL_RUNNER_SOURCE)
-            .map_err(|e| format!("failed to write REPL runner source: {e}"))?;
-
-        let erlc_out = process::Command::new(erlc_path)
-            .arg("-o")
-            .arg(&beam_dir)
-            .arg(&runner_erl)
-            .output()
-            .map_err(|e| format!("failed to spawn erlc: {e}"))?;
-
-        if !erlc_out.status.success() {
-            let stderr = String::from_utf8_lossy(&erlc_out.stderr);
-            return Err(format!("erlc failed to compile REPL runner: {stderr}"));
-        }
+        // Install and compile the REPL runner from the code generator that
+        // owns it. `<out_root>/runtime/` and `<out_root>/beam/` are the same
+        // two directories built above, which is what puts the runner on the
+        // `-pa` path a session already passes to `erl`.
+        let out_root = ws.join("target").join("ridge").join("debug");
+        ridge_codegen_erl::runtime::install_repl_runner(&out_root)
+            .map_err(|e| format!("failed to install the REPL runner: {e}"))?;
+        ridge_codegen_erl::runtime::compile_repl_runner(erlc_path, &out_root)
+            .map_err(|e| format!("failed to compile the REPL runner: {e}"))?;
 
         // erl_path is not used during session init (only erlc_path is needed).
         // Suppress the lint — the parameter is part of the public API for

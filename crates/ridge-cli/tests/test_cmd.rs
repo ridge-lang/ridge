@@ -114,6 +114,10 @@ pub fn test_other () -> Result Unit Text = Err \"should not run\"
 // ── Test 3: test_failed_test — non-zero exit + stderr (beam-runtime) ──────────
 
 /// `ridge test` exits 1 and emits the failure message when a test returns `Err`.
+///
+/// Doubles as the control for the crash-reporting tests below: a test that
+/// returns `Err` did not crash, so it keeps its own message and gets none of
+/// the apparatus around a failure the runtime had to describe.
 #[cfg(feature = "beam-runtime")]
 #[test]
 fn test_failed_test() {
@@ -126,6 +130,61 @@ fn test_failed_test() {
         .assert()
         .failure()
         .stderr(contains("expected failure"));
+}
+
+// ── Crash reporting (beam-runtime) ───────────────────────────────────────────
+
+/// A test that crashes reads like every other Ridge failure.
+///
+/// It read `FAIL: error:badarith` over a stack through the runtime's own source
+/// files — the exact output `ridge run` stopped producing, on the command a
+/// person is most likely to be staring at.
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn a_crashing_test_names_the_fault_instead_of_the_erlang() {
+    let src = "pub fn test_divides_by_zero () -> Result Unit Text =\n\
+        \x20   let d = 0\n\
+        \x20   let _ = 10 / d\n\
+        \x20   Ok ()\n";
+    let tw = make_test_workspace("Demo", src);
+
+    ridge_cmd()
+        .arg("test")
+        .current_dir(&tw.path)
+        .assert()
+        .failure()
+        .stderr(
+            contains("FAIL: divided by zero")
+                .and(contains("RIDGE_BACKTRACE"))
+                .and(contains("badarith").not())
+                .and(contains("stack:").not()),
+        );
+}
+
+/// The Erlang is one variable away here too, and it is the same variable.
+///
+/// A reader who learned `RIDGE_BACKTRACE` from `ridge run` should not have to
+/// discover that `ridge test` spells it differently, or does not have it.
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn a_crashing_test_still_has_its_stack_behind_the_same_variable() {
+    let src = "pub fn test_divides_by_zero () -> Result Unit Text =\n\
+        \x20   let d = 0\n\
+        \x20   let _ = 10 / d\n\
+        \x20   Ok ()\n";
+    let tw = make_test_workspace("Demo", src);
+
+    ridge_cmd()
+        .arg("test")
+        .env("RIDGE_BACKTRACE", "1")
+        .current_dir(&tw.path)
+        .assert()
+        .failure()
+        .stderr(
+            contains("FAIL: divided by zero")
+                .and(contains("stack:"))
+                .and(contains("badarith")),
+        );
 }
 
 // ── Test 4: test_bool_deprecation_warning — pass + C303 warning (beam-runtime) ─

@@ -85,34 +85,11 @@ finish({crashed, Class, Reason, Stack}) ->
     erlang:halt(1).
 
 %% report_failure/3 - write a stopped program's reason to stderr in Ridge's
-%% voice, and say how to see the Erlang underneath it.
+%% voice, under this command's own opening word.
 %%
-%% The internal reason and the stack are the two things a reader can neither
-%% use nor avoid, so they move behind RIDGE_BACKTRACE - the bargain Rust
-%% strikes with RUST_BACKTRACE, for the same reason: whoever needs the stack
-%% knows to ask for it, and whoever does not should never have to scroll past
-%% it. The note is printed either way, so the door is visible from both sides.
+%% The report itself - the sentence, the help line, and the bargain that keeps
+%% the stack behind RIDGE_BACKTRACE - belongs to ridge_rt:print_failure/4, so
+%% that `ridge test`, `ridge bench` and the REPL strike it on the same terms
+%% rather than each remembering to.
 report_failure(Class, Reason, Stack) ->
-    {Sentence, Help} = ridge_rt:describe_failure(Class, Reason, Stack),
-    io:format(standard_error, "error: ~ts~n", [Sentence]),
-    case Help of
-        none -> ok;
-        _    -> io:format(standard_error, "  help: ~ts~n", [Help])
-    end,
-    case backtrace_wanted() of
-        false ->
-            io:format(standard_error,
-                      "  note: set RIDGE_BACKTRACE=1 to see the runtime stack~n", []);
-        true ->
-            io:format(standard_error, "  raised: ~p:~p~n  stack: ~p~n",
-                      [Class, Reason, Stack])
-    end.
-
-%% backtrace_wanted/0 - RIDGE_BACKTRACE, where unset, empty and "0" all mean no.
-backtrace_wanted() ->
-    case os:getenv("RIDGE_BACKTRACE") of
-        false -> false;
-        ""    -> false;
-        "0"   -> false;
-        _     -> true
-    end.
+    ridge_rt:print_failure(<<"error: ">>, Class, Reason, Stack).

@@ -10,7 +10,8 @@
 %%   true                           -> halt(0)           (Bool transitional)
 %%   false                          -> halt(1) + stderr  (Bool transitional)
 %%   any other shape                -> halt(1) + stderr
-%%   exception                      -> halt(1) + stderr + stacktrace
+%%   exception                      -> halt(1) + stderr (stack behind
+%%                                     RIDGE_BACKTRACE)
 %%
 -module(ridge_test_runner).
 -export([run/1]).
@@ -38,9 +39,12 @@ run([ModAtom, FnAtom]) ->
             io:format(standard_error, "FAIL: unexpected return ~p~n", [Other]),
             erlang:halt(1)
     catch
+        %% A failing test is the report a person reads most, so it reads like
+        %% every other Ridge failure: the sentence here, the Erlang behind
+        %% RIDGE_BACKTRACE. `FAIL: ` stays the opening word because that is
+        %% what a reader scanning a run greps for.
         Class:Reason:Stack ->
-            io:format(standard_error, "FAIL: ~p:~p~nstack:~p~n",
-                      [Class, Reason, Stack]),
+            ridge_rt:print_failure(<<"FAIL: ">>, Class, Reason, Stack),
             erlang:halt(1)
     end;
 run(Other) ->

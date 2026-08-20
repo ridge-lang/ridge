@@ -14,6 +14,8 @@
 #[cfg(feature = "beam-runtime")]
 use assert_cmd::Command;
 #[cfg(feature = "beam-runtime")]
+use predicates::prelude::PredicateBooleanExt;
+#[cfg(feature = "beam-runtime")]
 use predicates::str::contains;
 
 // ── Helper ────────────────────────────────────────────────────────────────────
@@ -39,6 +41,69 @@ fn repl_arithmetic() {
         .assert()
         .success()
         .stdout(contains("2"));
+}
+
+// ── Test 1b: a crashing expression ────────────────────────────────────────────
+
+/// An expression that crashes in the REPL reports it the way `ridge run` does.
+///
+/// Same failure, same words: someone moving between the REPL and a real run is
+/// looking at one language, and should not have to learn its error vocabulary
+/// twice.
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn repl_crash_reads_like_a_run() {
+    ridge_cmd()
+        .arg("repl")
+        .write_stdin("1 / 0\n:q\n")
+        .assert()
+        .stderr(
+            contains("divided by zero")
+                .and(contains("badarith").not())
+                .and(contains("stack:").not()),
+        );
+}
+
+/// The REPL runner is Erlang, so it does not live in this crate.
+///
+/// It was a Rust string constant here: a BEAM module inside the CLI, and the
+/// one runner of five a second backend would have inherited rather than
+/// replaced. Nothing but this stops it coming back — a string constant is
+/// always the easiest place to put "just one" module.
+#[test]
+fn the_cli_crate_holds_no_erlang_module() {
+    fn erlang_modules_under(dir: &std::path::Path, found: &mut Vec<String>, scanned: &mut usize) {
+        let entries = std::fs::read_dir(dir).expect("read crate source directory");
+        for entry in entries {
+            let path = entry.expect("directory entry").path();
+            if path.is_dir() {
+                erlang_modules_under(&path, found, scanned);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                *scanned += 1;
+                let text = std::fs::read_to_string(&path).expect("read source file");
+                if text.contains("-module(") {
+                    found.push(path.display().to_string());
+                }
+            }
+        }
+    }
+
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut found = Vec::new();
+    let mut scanned = 0;
+    erlang_modules_under(&src, &mut found, &mut scanned);
+
+    // A walk that reaches nothing reports nothing, which is indistinguishable
+    // from a clean result. The floor is well under the real count and only has
+    // to rule that out.
+    assert!(
+        scanned > 10,
+        "the walk only reached {scanned} source files, so a clean result proves nothing"
+    );
+    assert!(
+        found.is_empty(),
+        "Erlang belongs in ridge-codegen-erl beside the other runners; found it in: {found:?}"
+    );
 }
 
 // ── Test 2: let-binding accumulation ──────────────────────────────────────────

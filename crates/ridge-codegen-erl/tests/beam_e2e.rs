@@ -2422,6 +2422,60 @@ fn beam_e2e_await_observes_crash() {
     assert!(stdout.contains("await-crashed"), "got:\n{stdout}");
 }
 
+/// The `Crashed` payload is a sentence a program can show, not a stack dump.
+///
+/// It travelled as `~p` of the exit reason, and a crashed process carries its
+/// reason *paired with its stacktrace* — so `Crashed msg` held gen_server's own
+/// frames and line numbers, measured at 367 bytes for a handler that divided by
+/// zero, inside a field Ridge types as `Text`. Whatever a program did with that
+/// value — log it, show it, send it to an operator — carried all of it along.
+///
+/// The sibling test above asserts the match arm is reached; this one is the
+/// only place that looks at what the arm actually received.
+const MONITOR_AWAIT_CRASH_TEXT_SOURCE: &str = r#"
+import std.io    as Io
+import std.actor as Actor
+import std.actor (ExitReason, Normal, NotRunning, Shutdown, Crashed)
+
+actor Worker =
+    state n: Int = 0
+
+    on explode (d: Int) -> Unit =
+        n <- 10 / d
+
+fn spawn io time main () -> Result Unit Text =
+    let w = spawn Worker
+    let m = Actor.monitor w
+    w ! explode 0
+    match Actor.await m 3000
+        Some (Crashed r) -> Io.println $"payload=${r}"
+        Some Normal -> Io.println "await-normal"
+        Some Shutdown -> Io.println "await-shutdown"
+        Some NotRunning -> Io.println "await-notrunning"
+        None -> Io.println "await-timeout"
+    Ok ()
+"#;
+
+#[test]
+fn beam_e2e_a_crashed_payload_reads_as_a_sentence() {
+    let (stdout, _) =
+        run_inline_actor_test("MonitorAwaitCrashText", MONITOR_AWAIT_CRASH_TEXT_SOURCE);
+
+    // The marker earns its keep. A dying gen_server also makes OTP's default
+    // logger write its own report — stacktrace and all — onto this same
+    // stream, so a whole-output search for `gen_server` finds it whatever the
+    // payload holds, and would have called this broken while it was fixed.
+    let payload = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("payload="))
+        .unwrap_or_else(|| panic!("the Crashed arm never printed; got:\n{stdout}"));
+
+    assert_eq!(
+        payload, "divided by zero",
+        "the payload should be that sentence and nothing else; whole output:\n{stdout}"
+    );
+}
+
 /// `await` on a live actor times out and returns `None`.
 const MONITOR_AWAIT_TIMEOUT_SOURCE: &str = r#"
 import std.io    as Io

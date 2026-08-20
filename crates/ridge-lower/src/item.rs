@@ -47,7 +47,8 @@ use ridge_ast::{
     Attribute, Body, Expr, Ident, Param, Pattern, Span, Visibility,
 };
 use ridge_ir::{
-    CtorKind, IrConst, IrExpr, IrFfiFn, IrFn, IrItem, IrLit, IrMigration, IrParam, SymbolRef,
+    CtorKind, IrConst, IrExpr, IrFfiFn, IrFn, IrItem, IrLit, IrMigration, IrParam, IrPrimitiveFn,
+    SymbolRef,
 };
 use ridge_resolve::{NodeId, NodeKind};
 use ridge_typecheck::JsonPrim;
@@ -107,6 +108,23 @@ pub fn lower_item_multi(ctx: &mut LowerCtx<'_>, item: &Item) -> Vec<IrItem> {
                     ffi_module: ffi_module.clone(),
                     ffi_fn: ffi_fn.clone(),
                     ffi_call_arity: *ffi_arity,
+                    params,
+                    is_pub: matches!(decl.vis, Visibility::Pub),
+                    span: decl.span,
+                })];
+            }
+            // `@primitive` has no Ridge body either, and needs a real function
+            // in the emitted module for the same reason: `Int.mod` calls `rem`
+            // by name, which reaches it as `SymbolRef::Local`.  What travels is
+            // the Ridge symbol and the arity — the parameter count is the
+            // arity, because `@primitive` declares no second number.  Which
+            // instruction this becomes is decided by the backend, from its own
+            // table, and is deliberately not written down here.
+            if matches!(decl.body, Body::Primitive) {
+                let params: Vec<String> = (0..decl.params.len()).map(|i| format!("p{i}")).collect();
+                return vec![IrItem::Primitive(IrPrimitiveFn {
+                    module: ctx.module_fqn.clone(),
+                    name: decl.name.text.clone(),
                     params,
                     is_pub: matches!(decl.vis, Visibility::Pub),
                     span: decl.span,
@@ -453,20 +471,12 @@ pub fn lower_fn(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrFn {
     // so that bare-param types can be extracted from it (see param_to_ir_param).
     // The scheme is keyed by the body's NodeId; the body_kind mirrors the
     // logic in ridge-typecheck/src/scc.rs:309-312 (Block/Try/Expr).
-    // Body::Ffi has no expression to lower — its codegen is handled in T3+ by
-    // the codegen layer that consumes Body::Ffi directly.
-    // TODO(T3): lower_fn must be skipped / re-routed for Body::Ffi; for now,
-    // treat it as Body::Expr with a Type::Error body to keep the workspace green.
+    // A body-less declaration has no expression to lower; `lower_item_multi`
+    // turns those into `IrItem::Ffi` / `IrItem::Primitive` before reaching here.
     let expr = match &decl.body {
         Body::Expr(e) => e,
-        Body::Ffi { .. } => {
-            // TODO(T3): codegen for @ffi bodies is wired in T3.
-            // Returning a dummy IrFn is not possible here without an expression,
-            // so we fall back to an early return with a placeholder.
-            // This path is unreachable until T3 introduces stdlib compilation.
-            unreachable!(
-                "Body::Ffi encountered in lower_fn — T3 must re-route @ffi decls before lowering"
-            )
+        Body::Ffi { .. } | Body::Primitive => {
+            unreachable!("a body-less declaration reached lower_fn — lower_item_multi routes those")
         }
     };
 

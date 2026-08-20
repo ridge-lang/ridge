@@ -82,7 +82,7 @@ pub mod visibility;
 pub mod walker;
 
 pub use capabilities::check_capabilities;
-pub use decl::{check_ffi_outside_stdlib, check_reserved_prelude_names};
+pub use decl::{check_reserved_prelude_names, check_stdlib_only_attributes};
 pub use discovery::{derive_module_fqn, discover_standalone, discover_workspace};
 pub use error::{ManifestError, ResolveError, Severity};
 pub use forbid::check_forbid_rules;
@@ -155,7 +155,7 @@ pub struct WorkspaceGraph {
     /// Whether this workspace is the Ridge standard library.
     ///
     /// Discovery sets this to `false`; the stdlib build paths flip it to `true`
-    /// after discovery. It gates the `@ffi` privilege (R022): standard-library
+    /// after discovery. It gates the stdlib-only attributes (R022):
     /// modules may declare `@ffi`, user code may not. The flag is threaded from
     /// the driver instead of being inferred from the source path, which cannot
     /// be trusted (the stdlib is built from copied sources under a throwaway
@@ -441,12 +441,12 @@ pub fn resolve_workspace_with(ws: WorkspaceGraph, retain_indices: bool) -> Resol
         capabilities::check_capabilities(&pm.ast, project, &ws.manifest, &mut cap_errors);
         all_errors.extend(cap_errors.into_iter().map(|e| (pm.id, e)));
 
-        // `@ffi` gate (R022). User-authored modules may not declare `@ffi`;
-        // only the standard library can. Whether this workspace is the stdlib
-        // is decided by the driver and carried on the graph, not guessed from
-        // the source path.
-        let ffi_errors = decl::check_ffi_outside_stdlib(&pm.ast, ws.is_stdlib);
-        all_errors.extend(ffi_errors.into_iter().map(|e| (pm.id, e)));
+        // Stdlib-only attribute gate (R022). User-authored modules may not
+        // declare `@ffi` or `@primitive`; only the standard library can.
+        // Whether this workspace is the stdlib is decided by the driver and
+        // carried on the graph, not guessed from the source path.
+        let attr_errors = decl::check_stdlib_only_attributes(&pm.ast, ws.is_stdlib);
+        all_errors.extend(attr_errors.into_iter().map(|e| (pm.id, e)));
 
         let reserved_errors = decl::check_reserved_prelude_names(&pm.ast, ws.is_stdlib);
         all_errors.extend(reserved_errors.into_iter().map(|e| (pm.id, e)));
@@ -800,7 +800,7 @@ pub fn resolve_module_incremental(
     let mut cap_errors = Vec::new();
     capabilities::check_capabilities(edited_ast, project, &cached.graph.manifest, &mut cap_errors);
     errors.extend(cap_errors);
-    errors.extend(decl::check_ffi_outside_stdlib(
+    errors.extend(decl::check_stdlib_only_attributes(
         edited_ast,
         cached.graph.is_stdlib,
     ));

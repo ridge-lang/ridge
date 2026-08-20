@@ -32,6 +32,14 @@ pub enum IrItem {
     /// without `erlc +from_core` rejecting the Core Erlang module with
     /// "undefined function X/N".
     Ffi(IrFfiFn),
+    /// A `@primitive`-declared function.
+    ///
+    /// Like [`IrItem::Ffi`] this has no Ridge expression body, and for the
+    /// same reason it still becomes a real function in the emitted module:
+    /// same-module Ridge callers reach it as `SymbolRef::Local`.  Unlike
+    /// `Ffi`, it names no implementation — the backend looks the symbol up in
+    /// its own table and supplies whatever its target uses.
+    Primitive(IrPrimitiveFn),
     /// A `migrate` hook from a record type's `do … end` section.
     ///
     /// Actor-level hooks live on [`IrActor::migrations`] instead; this item
@@ -115,6 +123,30 @@ pub struct IrConst {
     pub span: Span,
     /// Whether this constant is `pub`.
     pub is_pub: bool,
+}
+
+/// A lowered `@primitive` declaration.
+///
+/// Carries the Ridge symbol and the shape of the wrapper to define, and
+/// nothing about how the operation is carried out — that is the one fact this
+/// type exists to keep out of the IR.  A backend resolves `(module, name)`
+/// against its own table; a symbol it has no entry for is a codegen error, not
+/// a silently missing function.
+#[derive(Debug, Clone)]
+pub struct IrPrimitiveFn {
+    /// The declaring Ridge module, dotted (e.g. `"std.int"`).
+    pub module: String,
+    /// The Ridge function name (e.g. `"add"`).
+    pub name: String,
+    /// Parameter names for the wrapper function; `params.len()` is the arity.
+    ///
+    /// There is no second arity to disagree with this one: `@primitive` takes
+    /// no arguments, so the declared parameter count is the only count.
+    pub params: Vec<String>,
+    /// Whether this declaration is `pub` (exported from the emitted module).
+    pub is_pub: bool,
+    /// Source span of the `@primitive` declaration.
+    pub span: Span,
 }
 
 /// A lowered `@ffi`-decorated function stub.

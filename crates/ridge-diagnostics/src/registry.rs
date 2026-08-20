@@ -1215,9 +1215,9 @@ pub const REGISTRY: &[CodeEntry] = &[
     },
     CodeEntry {
         code: "R022",
-        variants: &["FfiOutsideStdlib"],
+        variants: &["StdlibOnlyAttribute"],
         owner: "ridge-resolve",
-        summary: "An `@ffi` attribute was used outside the `crates/ridge-stdlib/` crate.",
+        summary: "An attribute the standard library reserves (`@ffi` or `@primitive`) was used in ordinary code.",
     },
     CodeEntry {
         code: "R023",

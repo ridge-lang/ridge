@@ -901,6 +901,17 @@ settle the result.** `false && e` is `false` and `true || e` is `true` without
 mean what it reads as. They are the only operators that skip an operand:
 every other one in the table above evaluates both, left to right.
 
+**Arithmetic is defined here, not by the runtime underneath.** Addition,
+subtraction, multiplication, division, remainder and negation are primitive
+operations of the language: their declarations in `std.int` and `std.float`
+name no implementation, and each compilation target supplies the operation the
+way that target does. `%` and `^` are not primitive — they are ordinary Ridge
+functions written in terms of the ones above.
+
+An operator and the function it names are the same operation, so `a + b` and
+`Int.add a b` always mean the same thing. Nothing may attach to one spelling
+and not the other.
+
 ### 4.5. Rest patterns in list and record patterns
 
 **List patterns** match against the `List a` type.
@@ -2270,7 +2281,9 @@ BEAM is the runtime the language was designed against. Benefits inherited for fr
 Mapping:
 - Ridge actors → gen_server processes.
 - Ridge types → erased at runtime (BEAM is dynamically typed).
-- Ridge stdlib → thin wrappers over Erlang/OTP primitives.
+- Ridge stdlib → thin wrappers over Erlang/OTP, except the arithmetic 
+  primitives, which this backend emits as BEAM operators with no wrapper in 
+  between.
 
 ### 11.2. Exploratory backends
 

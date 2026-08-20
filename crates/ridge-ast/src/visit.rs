@@ -629,9 +629,10 @@ pub fn walk_type_decl<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, d: &'ast TypeDec
 
 /// Walk a [`FnDecl`]: name, params, optional return type, constraints, and body.
 ///
-/// For `Body::Expr(e)` the expression is visited normally.
-/// For `Body::Ffi { .. }` there is no expression child to visit — the FFI
-/// passthrough is a leaf from the visitor's perspective.
+/// For `Body::Expr(e)` the expression is visited normally.  `Body::Ffi` and
+/// `Body::Primitive` have no expression child to visit — a declaration whose
+/// implementation comes from elsewhere is a leaf from the visitor's
+/// perspective.
 pub fn walk_fn_decl<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, d: &'ast FnDecl) {
     use crate::Body;
     v.visit_ident(&d.name);
@@ -649,9 +650,9 @@ pub fn walk_fn_decl<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, d: &'ast FnDecl) {
     }
     match &d.body {
         Body::Expr(e) => v.visit_expr(e),
-        Body::Ffi { .. } => {
-            // FFI passthrough — no expression child to visit.
-        }
+        // No expression child: the host supplies it (`@ffi`) or the backend
+        // does (`@primitive`).
+        Body::Ffi { .. } | Body::Primitive => {}
     }
 }
 

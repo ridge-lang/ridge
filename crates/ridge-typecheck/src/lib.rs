@@ -752,11 +752,13 @@ fn infer_caps_for_decls(
         } else {
             Some(caps_from_ast_slice(&f.caps))
         };
-        // Body::Ffi has no expression to check caps against — T3 validates it.
-        // We skip it here and leave no inferred-caps entry for the decl.
+        // A declaration with no body has no expression to check caps against:
+        // `@ffi` is validated against the audit table, and `@primitive` names
+        // an operation of the language, which requires nothing.  Skip both and
+        // leave no inferred-caps entry for the decl.
         let expr = match &f.body {
             Body::Expr(e) => e,
-            Body::Ffi { .. } => continue,
+            Body::Ffi { .. } | Body::Primitive => continue,
         };
         let effective = check_caps_decl(ctx, b, &f.name.text, declared, expr, f.span);
         let (body_span, body_kind) = match expr {
@@ -2973,10 +2975,10 @@ mod tests {
             // This mirrors the keying logic in typecheck_module_inner Step D.
             for item in &module.ast.items {
                 if let Item::Fn(f) = item {
-                    // Body::Ffi has no expression span — skip.
+                    // A body-less declaration has no expression span — skip.
                     let expr = match &f.body {
                         Body::Expr(e) => e,
-                        Body::Ffi { .. } => continue,
+                        Body::Ffi { .. } | Body::Primitive => continue,
                     };
                     let (body_span, body_kind) = match expr {
                         AstExpr::Block(b) => (b.span, NodeKind::Block),

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Arithmetic is a primitive of the language rather than a call into the host.
+  `Int.add` and its ten siblings used to be declared `@ffi("erlang", "+", 2)`,
+  which put the name of one runtime in the shared table every code generator
+  reads — so `a + b` reached the intermediate representation already spelled as
+  an Erlang call, and a second backend would have had to recognise and undo
+  that. The declarations now say `@primitive`, which names nothing at all, and
+  each backend answers from its own table. Nothing changes in what gets
+  emitted: the BEAM still compiles `n + 1` to `erlang:'+'/2` with no wrapper in
+  between, and `a + b` and `Int.add a b` remain one operation reached two ways.
+
+  The table itself stopped describing every symbol as a BEAM module. It now
+  distinguishes the three answers a standard-library declaration can give about
+  where its implementation comes from — a function of the host, an ordinary
+  Ridge body, or an operation of the language — which is what makes the third
+  one expressible. `@primitive` is standard-library-only, on the same footing
+  as `@ffi`: writing either in ordinary code is `R022`, and that diagnostic now
+  names the attribute the author actually wrote.
+
 ### Added
 
 - `Decimal`, `Uuid`, `Bytes`, `Date`, `Time` and `Timestamp` have `Encode` and

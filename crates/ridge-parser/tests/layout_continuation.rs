@@ -36,6 +36,7 @@ fn fn_value(f: &FnDecl) -> &Expr {
         Body::Expr(Expr::Block(b)) if b.stmts.len() == 1 => &b.stmts[0],
         Body::Expr(e) => e,
         Body::Ffi { .. } => panic!("fn has an FFI body, not an expression"),
+        Body::Primitive => panic!("fn is a primitive, not an expression"),
     }
 }
 

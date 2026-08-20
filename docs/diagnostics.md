@@ -750,7 +750,7 @@ An actor state type has neither a `default` nor an `init`, so it can never be bu
 
 ### R022
 
-An `@ffi` attribute was used outside the `crates/ridge-stdlib/` crate.
+An attribute the standard library reserves (`@ffi` or `@primitive`) was used in ordinary code.
 
 ### R023
 

@@ -141,10 +141,10 @@ fn compute_phase45_totals(result: &ridge_typecheck::TypecheckResult) -> (usize, 
         let (node_id_map, _) = assign_node_ids(&module.ast);
         for item in &module.ast.items {
             if let Item::Fn(f) = item {
-                // Body::Ffi has no expression span — skip.
+                // A body-less declaration has no expression span — skip.
                 let expr = match &f.body {
                     Body::Expr(e) => e,
-                    Body::Ffi { .. } => continue,
+                    Body::Ffi { .. } | Body::Primitive => continue,
                 };
                 let (body_span, body_kind) = match expr {
                     AstExpr::Block(b) => (b.span, NodeKind::Block),

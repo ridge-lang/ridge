@@ -244,13 +244,14 @@ fn build_lambda(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrExpr {
         }
     }
 
-    // Inner fns always have Body::Expr; Body::Ffi is only valid at module
-    // top-level (T3 will reject it elsewhere).
+    // Inner fns always have Body::Expr; the body-less forms are only valid at
+    // module top level, and the parser only produces them there.
     let body_expr = match &decl.body {
         Body::Expr(e) => e,
-        Body::Ffi { .. } => {
-            // TODO(T3): @ffi in inner-fn position is a T003 error, not lowerable.
-            unreachable!("Body::Ffi in inner-fn position — T3 must reject this before lowering")
+        Body::Ffi { .. } | Body::Primitive => {
+            unreachable!(
+                "a body-less declaration in inner-fn position — the parser cannot make one"
+            )
         }
     };
     // A promised class reaches the body as an incoming dictionary, the same way

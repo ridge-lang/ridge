@@ -68,16 +68,16 @@ fn main() {
         }
     }
 
-    // ── ffi_targets extractor (T14.5.3) ──────────────────────────────────────
+    // ── stdlib-target table extractor ────────────────────────────────────────
     let out_dir = std::env::var("OUT_DIR").unwrap_or_else(|_| {
-        eprintln!("T201 FfiTargetGen: OUT_DIR not set");
+        eprintln!("stdlib target table: OUT_DIR not set");
         std::process::exit(1);
     });
-    let out_path = PathBuf::from(&out_dir).join("ffi_targets.rs");
+    let out_path = PathBuf::from(&out_dir).join("stdlib_targets.rs");
 
-    match generate_ffi_targets(stdlib_dir, &out_path) {
+    match generate_stdlib_targets(stdlib_dir, &out_path) {
         Ok(n) => {
-            println!("cargo:warning=ridge-stdlib: generated {n} ffi_targets entries");
+            println!("cargo:warning=ridge-stdlib: generated {n} stdlib target entries");
         }
         Err(e) => {
             eprintln!("{e}");
@@ -133,7 +133,7 @@ const STDLIB_CLASSES: &[(&str, &str)] = &[
 
 // Constructor-shaped fns must export arity 0; this invariant catches accidental
 // (_unit: Unit) regressions at build time. Hoisted to module scope (out of
-// `generate_ffi_targets`) to satisfy `clippy::items_after_statements`.
+// `generate_stdlib_targets`) to satisfy `clippy::items_after_statements`.
 const ARITY_0_CONSTRUCTORS: &[(&str, &str)] = &[
     ("std.list", "empty"),
     ("std.map", "empty"),
@@ -190,14 +190,25 @@ const STDLIB_MODULES: &[&str] = &[
 struct FfiEntry {
     ridge_module: String,
     ridge_fn: String,
-    beam_module: String,
-    beam_fn: String,
     arity: u32,
+    kind: EntryKind,
+}
+
+/// Which of the three answers a declaration gave about its implementation.
+///
+/// `RidgeModule` carries no names because there are none to carry: the module
+/// and function are the Ridge ones, and writing them down a second time only
+/// creates somewhere for a copy to be wrong.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum EntryKind {
+    Foreign { module: String, fn_name: String },
+    RidgeModule,
+    Primitive,
 }
 
 // ── Generation ────────────────────────────────────────────────────────────────
 
-fn generate_ffi_targets(stdlib_dir: &Path, out_path: &Path) -> Result<usize, String> {
+fn generate_stdlib_targets(stdlib_dir: &Path, out_path: &Path) -> Result<usize, String> {
     let mut entries: Vec<FfiEntry> = Vec::new();
 
     for &dotted in STDLIB_MODULES {
@@ -208,10 +219,14 @@ fn generate_ffi_targets(stdlib_dir: &Path, out_path: &Path) -> Result<usize, Str
             continue;
         }
 
-        let src = std::fs::read_to_string(&full)
-            .map_err(|e| format!("T201 FfiTargetGen: could not read {}: {e}", full.display()))?;
+        let src = std::fs::read_to_string(&full).map_err(|e| {
+            format!(
+                "stdlib target table: could not read {}: {e}",
+                full.display()
+            )
+        })?;
 
-        extract_ffi(&src, dotted, &mut entries);
+        extract_ffi(&src, dotted, &mut entries)?;
     }
 
     // Stable, deterministic sort: (module, fn_name).
@@ -251,7 +266,7 @@ fn generate_ffi_targets(stdlib_dir: &Path, out_path: &Path) -> Result<usize, Str
     let content = emit_rs(&entries);
     std::fs::write(out_path, content).map_err(|e| {
         format!(
-            "T201 FfiTargetGen: could not write {}: {e}",
+            "stdlib target table: could not write {}: {e}",
             out_path.display()
         )
     })?;
@@ -268,9 +283,12 @@ fn generate_ffi_targets(stdlib_dir: &Path, out_path: &Path) -> Result<usize, Str
 // typeclasses (e.g. `$inst_SqlType_Int/0` in `std.sql`), so that
 // `SymbolRef::Stdlib { module: "std.sql", name: "$inst_SqlType_Int" }` resolves
 // to arity 0 and codegen emits `call 'std.sql':'$inst_SqlType_Int' ()`.
-fn extract_ffi(src: &str, module: &str, out: &mut Vec<FfiEntry>) {
-    // `pending` holds the parsed @ffi attribute for the immediately following fn.
-    let mut pending: Option<(String, String, u32)> = None;
+fn extract_ffi(src: &str, module: &str, out: &mut Vec<FfiEntry>) -> Result<(), String> {
+    // What the attribute above the next `fn` line said, if anything.
+    let mut pending: Option<EntryKind> = None;
+    // `@ffi` declares its own arity; `@primitive` leaves this `None` and the
+    // parameter list on the `fn` line supplies it.
+    let mut pending_arity: Option<u32> = None;
 
     for line in src.lines() {
         let t = line.trim();
@@ -282,10 +300,35 @@ fn extract_ffi(src: &str, module: &str, out: &mut Vec<FfiEntry>) {
 
         // Detect @ffi attribute.
         if let Some(rest) = t.strip_prefix("@ffi(") {
-            if let Some(attr) = parse_ffi_attr(rest) {
-                pending = Some(attr);
+            if let Some((module, fn_name, arity)) = parse_ffi_attr(rest) {
+                pending = Some(EntryKind::Foreign { module, fn_name });
+                pending_arity = Some(arity);
                 continue;
             }
+        }
+
+        // Detect @primitive. It carries no arguments: the arity is the
+        // declared parameter count, read off the `fn` line below.
+        if t == "@primitive" {
+            pending = Some(EntryKind::Primitive);
+            pending_arity = None;
+            continue;
+        }
+
+        // Any other attribute is one this scanner has not been taught. Refusing
+        // is the whole point: falling through would read the declaration below
+        // as an ordinary Ridge body and emit an entry pointing at a function
+        // that does not exist, which no test downstream is looking for.
+        if t.starts_with('@') {
+            return Err(format!(
+                concat!(
+                    "stdlib target table: {m} declares `{a}`, an attribute this ",
+                    "extractor does not know. Teach `extract_ffi` what it means ",
+                    "before using it in the standard library."
+                ),
+                m = module,
+                a = t
+            ));
         }
 
         // Detect instance declarations for stdlib-defined typeclasses and emit a
@@ -309,15 +352,15 @@ fn extract_ffi(src: &str, module: &str, out: &mut Vec<FfiEntry>) {
                     };
                     out.push(FfiEntry {
                         ridge_module: module.to_owned(),
-                        ridge_fn: dict_name.clone(),
-                        beam_module: module.to_owned(),
-                        beam_fn: dict_name,
+                        ridge_fn: dict_name,
                         arity,
+                        kind: EntryKind::RidgeModule,
                     });
                 }
             }
-            // Instance lines are not fn declarations; reset @ffi pending state.
+            // Instance lines are not fn declarations; reset pending state.
             pending = None;
+            pending_arity = None;
             continue;
         }
 
@@ -330,21 +373,23 @@ fn extract_ffi(src: &str, module: &str, out: &mut Vec<FfiEntry>) {
         };
 
         if let Some(rest) = fn_rest_opt {
-            if let Some((beam_module, beam_fn, arity)) = pending.take() {
-                // @ffi-decorated: use the attribute's BEAM target.
+            if let Some(kind) = pending.take() {
                 if let Some(ridge_fn) = extract_fn_name(rest) {
+                    // `@ffi` states its own arity; `@primitive` has only the
+                    // parameter list, which is the arity by construction.
+                    let arity = pending_arity.unwrap_or_else(|| {
+                        count_param_groups(rest, &ridge_fn) + count_where_constraints(rest)
+                    });
                     out.push(FfiEntry {
                         ridge_module: module.to_owned(),
                         ridge_fn,
-                        beam_module,
-                        beam_fn,
                         arity,
+                        kind,
                     });
                 }
             } else if is_pub {
-                // T11.5: pure-Ridge public fn (no @ffi) — emit a StdlibFfiTarget
-                // entry whose BEAM target is the compiled Ridge stdlib module.
-                // Skip private fns: they are implementation helpers, not public API.
+                // A pure-Ridge public fn compiles into the stdlib module of its
+                // own name. Private fns are implementation helpers, not API.
                 if let Some(ridge_fn) = extract_fn_name(rest) {
                     // A constrained fn (`where C a, D b`) compiles with one
                     // dictionary parameter prepended per constraint, so its BEAM
@@ -353,22 +398,22 @@ fn extract_ffi(src: &str, module: &str, out: &mut Vec<FfiEntry>) {
                     let arity = count_param_groups(rest, &ridge_fn) + count_where_constraints(rest);
                     out.push(FfiEntry {
                         ridge_module: module.to_owned(),
-                        ridge_fn: ridge_fn.clone(),
-                        // beam_module = the Ridge dotted module name — the compiled
-                        // stdlib BEAM module atom (e.g. 'std.list', 'std.option').
-                        beam_module: module.to_owned(),
-                        // beam_fn = the Ridge fn name (compiled without mangling).
-                        beam_fn: ridge_fn,
+                        ridge_fn,
                         arity,
+                        kind: EntryKind::RidgeModule,
                     });
                 }
             }
+            pending_arity = None;
             continue;
         }
 
         // Any other non-trivial line resets state.
         pending = None;
+        pending_arity = None;
     }
+
+    Ok(())
 }
 
 /// Parse the head of an `instance` declaration to `(class_name, type_name,
@@ -634,71 +679,86 @@ fn module_to_path(dotted: &str) -> PathBuf {
 // ── Emitter ───────────────────────────────────────────────────────────────────
 
 fn emit_rs(entries: &[FfiEntry]) -> String {
-    // The generated file provides:
-    //   pub fn lookup(module: &str, name: &str) -> Option<&'static StdlibFfiTarget>
-    // It is included via `include!(concat!(env!("OUT_DIR"), "/ffi_targets.rs"))` in
-    // `src/ffi_targets.rs`.  The function references `StdlibFfiTarget` from the
-    // parent module (declared in `src/ffi_targets.rs`).
+    // The generated file is included by `src/stdlib_targets.rs`, which
+    // declares `StdlibTarget`; everything below is written against that type.
     //
-    // `StdlibFfiTarget` has `String` fields, so we cannot place instances in a
-    // `static`.  We use `OnceLock<HashMap<...>>` to initialize lazily on first
-    // lookup — mirroring the `BRIDGE_MAP` pattern in `ridge-codegen-erl`.
-    // OnceLock cache chosen over per-call clone to avoid repeated allocation.
+    // `StdlibTarget` has `String` fields, so instances cannot live in a
+    // `static`. A `OnceLock<HashMap<..>>` initialises lazily on first lookup,
+    // mirroring the `BRIDGE_MAP` pattern in `ridge-codegen-erl`, and is chosen
+    // over a per-call clone to avoid repeated allocation.
+    //
+    // Written with raw strings and `writeln!` rather than escaped newlines:
+    // the template reads as the file it produces, and a stray backslash
+    // cannot quietly change what gets generated.
+    const PREAMBLE: &str = r"
+// @generated by crates/ridge-stdlib/build.rs
+// Do not edit by hand — re-run cargo build to regenerate.
+//
+// Provides `lookup(module, name) -> Option<&'static StdlibTarget>`, read by
+// every codegen backend as the single source of truth for how a Ridge stdlib
+// symbol resolves: a host function, a compiled Ridge body, or a language
+// primitive the backend supplies itself.
 
-    let mut out = String::from("// @generated by crates/ridge-stdlib/build.rs\n");
-    out.push_str("// Do not edit by hand — re-run cargo build to regenerate.\n");
-    out.push_str("//\n");
-    out.push_str("// Provides `lookup(module, name) -> Option<&'static StdlibFfiTarget>`\n");
-    out.push_str("// consumed by `ridge-codegen-erl` (and future codegen backends) as the\n");
-    out.push_str("// single source of truth for path-B stdlib FFI targets.\n");
-    out.push_str("// Covers both @ffi stubs and pure-Ridge pub fn bodies.\n\n");
+use std::collections::HashMap;
+use std::sync::OnceLock;
 
-    out.push_str("use std::collections::HashMap;\n");
-    out.push_str("use std::sync::OnceLock;\n\n");
+type TargetMap = HashMap<String, StdlibTarget>;
 
-    // Use String keys so the HashMap can be queried with &str without lifetime issues.
-    out.push_str("type FfiMap = HashMap<String, StdlibFfiTarget>;\n\n");
-    out.push_str("static FFI_MAP: OnceLock<FfiMap> = OnceLock::new();\n\n");
+static TARGET_MAP: OnceLock<TargetMap> = OnceLock::new();
 
-    // Emit the map-builder function.
-    out.push_str("#[allow(clippy::too_many_lines)]\n");
-    out.push_str("fn build_ffi_map() -> FfiMap {\n");
-    out.push_str("    let mut m = HashMap::new();\n");
+#[allow(clippy::too_many_lines)]
+fn build_target_map() -> TargetMap {
+    let mut m = HashMap::new();
+";
+
+    const EPILOGUE: &str = r#"
+    m
+}
+
+/// Look up how a Ridge stdlib symbol resolves.
+///
+/// Generated from the stdlib `.ridge` declarations at build time. A `None`
+/// means the symbol is unknown — a `@primitive` declaration answers
+/// `Some(StdlibTarget::Primitive { .. })`, so a backend can tell an operation
+/// it has to supply from a name nobody declared.
+#[must_use]
+pub fn lookup(module: &str, name: &str) -> Option<&'static StdlibTarget> {
+    let map: &TargetMap = TARGET_MAP.get_or_init(build_target_map);
+    let key = format!("{module}::{name}");
+    map.get(&key)
+}
+"#;
+
+    let mut out = String::from(PREAMBLE);
     let _ = writeln!(out, "    m.reserve({});", entries.len());
 
     for e in entries {
-        // Key: "ridge_module::ridge_fn" (double-colon matches BRIDGE_MAP convention).
+        // Key: "ridge_module::ridge_fn" (double-colon matches BRIDGE_MAP).
         let key = format!("{}::{}", e.ridge_module, e.ridge_fn);
-        let _ = writeln!(out, "    m.insert(\"{key}\".to_owned(), StdlibFfiTarget {{");
-        let _ = writeln!(
-            out,
-            "        beam_module: \"{}\".to_owned(),",
-            e.beam_module
-        );
-        let _ = writeln!(out, "        fn_name: \"{}\".to_owned(),", e.beam_fn);
+        let _ = write!(out, r#"    m.insert("{key}".to_owned(), "#);
+        match &e.kind {
+            EntryKind::Foreign { module, fn_name } => {
+                let _ = writeln!(out, "StdlibTarget::Foreign {{");
+                let _ = writeln!(out, r#"        module: "{module}".to_owned(),"#);
+                let _ = writeln!(out, r#"        fn_name: "{fn_name}".to_owned(),"#);
+            }
+            EntryKind::RidgeModule => {
+                // The module and function are the Ridge ones; a compiled
+                // Ridge body is reached under the name it was written with.
+                let _ = writeln!(out, "StdlibTarget::RidgeModule {{");
+                let _ = writeln!(out, r#"        module: "{}".to_owned(),"#, e.ridge_module);
+                let _ = writeln!(out, r#"        fn_name: "{}".to_owned(),"#, e.ridge_fn);
+            }
+            EntryKind::Primitive => {
+                // No module, no function name: that is the whole point.
+                let _ = writeln!(out, "StdlibTarget::Primitive {{");
+            }
+        }
         let _ = writeln!(out, "        arity: {},", e.arity);
-        out.push_str("    });\n");
+        let _ = writeln!(out, "    }});");
     }
 
-    out.push_str("    m\n");
-    out.push_str("}\n\n");
-
-    // Emit the lookup function.
-    out.push_str("/// Look up the [`StdlibFfiTarget`] for a Ridge stdlib symbol.\n");
-    out.push_str("///\n");
-    out.push_str("/// Generated from stdlib `.ridge` declarations at build time (T14.5.3).\n");
-    out.push_str("/// Covers both `@ffi`-decorated stubs (BEAM target from the attribute) and\n");
-    out.push_str("/// pure-Ridge `pub fn` bodies (BEAM target = compiled Ridge stdlib module).\n");
-    out.push_str("///\n");
-    out.push_str("/// Returns `None` only for unknown symbols.  Consumers adapt the returned\n");
-    out.push_str("/// [`StdlibFfiTarget`] into their own target representation at the seam.\n");
-    out.push_str("#[must_use]\n");
-    out.push_str("pub fn lookup(module: &str, name: &str) -> Option<&'static StdlibFfiTarget> {\n");
-    out.push_str("    let map: &'static FfiMap = FFI_MAP.get_or_init(build_ffi_map);\n");
-    out.push_str("    let key = format!(\"{module}::{name}\");\n");
-    out.push_str("    map.get(&key)\n");
-    out.push_str("}\n");
-
+    out.push_str(EPILOGUE);
     out
 }
 

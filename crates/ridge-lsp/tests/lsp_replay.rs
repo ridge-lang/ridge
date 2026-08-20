@@ -9119,6 +9119,37 @@ async fn test_bare_import_alias_reads_but_does_not_rename() {
 ///
 /// This pins the reachability, not the wording: what must not regress is that
 /// the failure is visible where the function is used, whatever sentence says it.
+/// Hover over `Int.add` still shows the function, not the machinery under it.
+///
+/// The hover card is lifted from the `--` block above a declaration, and the
+/// lifter skips whatever attribute sits between the two. `@primitive` is a new
+/// kind of thing to sit there, and the two ways this could go wrong are quiet:
+/// the card loses its documentation, or it gains an attribute line that means
+/// nothing to someone writing `a + b`.
+#[tokio::test]
+async fn test_hover_on_arithmetic_shows_the_doc_and_not_the_attribute() {
+    let src = "import std.int as Int\npub fn f (a: Int) (b: Int) -> Int = Int.add a b\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    let line1 = "pub fn f (a: Int) (b: Int) -> Int = Int.add a b";
+    let col = u32::try_from(line1.find("add").expect("add use") + 1).expect("offset fits u32");
+    let h = server
+        .hover(hover_at(&uri, 1, col))
+        .await
+        .expect("hover ok");
+    let md = hover_markdown(h).expect("hover over a stdlib function returns markup");
+
+    assert!(
+        md.contains("Addition"),
+        "hover on Int.add must carry its documentation, got {md:?}"
+    );
+    assert!(
+        !md.contains("@primitive"),
+        "the attribute is compiler bookkeeping and has no business in the card: {md:?}"
+    );
+}
+
 #[tokio::test]
 async fn test_hover_on_a_partial_stdlib_function_shows_that_it_can_fail() {
     let src = "import std.int as Int\npub fn f (n: Int) -> Int = Int.abs n\n";

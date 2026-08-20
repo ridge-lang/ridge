@@ -166,6 +166,14 @@ pub fn extract_ffi_from_source(module: &str, src: &str, out: &mut Vec<FfiDecl>) 
             continue;
         }
 
+        // `@primitive` names no target, so there is nothing for this extractor
+        // to describe. Skipped explicitly rather than left to the reset below,
+        // so the omission reads as a decision.
+        if trimmed == "@primitive" {
+            pending = None;
+            continue;
+        }
+
         // Detect `@ffi("module", "fn_name", arity)`.
         if let Some(rest) = trimmed.strip_prefix("@ffi(") {
             if let Some(attr) = parse_ffi_attr(rest) {
@@ -210,6 +218,10 @@ pub fn extract_ffi_from_source(module: &str, src: &str, out: &mut Vec<FfiDecl>) 
 /// For `@ffi` stubs the emitted `FfiDecl` uses the BEAM target from the
 /// attribute (`beam_module`, `beam_fn`, `arity` as declared).
 ///
+/// A `@primitive` declaration produces no entry at all: it names no target,
+/// and this type exists to describe one.  The set of primitives is published
+/// by `crate::stdlib_targets::primitive_symbols` instead.
+///
 /// For pure-Ridge `pub fn` functions (no `@ffi`) the emitted `FfiDecl` uses:
 /// - `beam_module` = the Ridge dotted module name (e.g. `"std.list"`), which
 ///   is the atom of the compiled stdlib BEAM module.
@@ -251,11 +263,22 @@ pub fn extract_all_stdlib_decls(stdlib_dir: &Path) -> Result<Vec<FfiDecl>, Strin
 /// `@ffi` are skipped (they are implementation helpers).
 pub fn extract_all_from_source(module: &str, src: &str, out: &mut Vec<FfiDecl>) {
     let mut pending: Option<(String, String, u32)> = None;
+    // Set by `@primitive`, cleared by the next `fn` line. Without it the
+    // declaration below would read as an ordinary Ridge body and be described
+    // as living in the compiled stdlib module — which is exactly the answer a
+    // primitive must not give.
+    let mut skip_next_fn = false;
 
     for line in src.lines() {
         let trimmed = line.trim();
 
         if trimmed.is_empty() || trimmed.starts_with("--") {
+            continue;
+        }
+
+        if trimmed == "@primitive" {
+            pending = None;
+            skip_next_fn = true;
             continue;
         }
 
@@ -274,6 +297,9 @@ pub fn extract_all_from_source(module: &str, src: &str, out: &mut Vec<FfiDecl>) 
         };
 
         if let Some(rest) = fn_rest_opt {
+            if std::mem::take(&mut skip_next_fn) {
+                continue;
+            }
             if let Some((beam_module, beam_fn, arity)) = pending.take() {
                 // @ffi-decorated: emit with BEAM target from attribute.
                 if let Some(ridge_fn) = extract_fn_name(rest) {

@@ -23,7 +23,8 @@ use crate::core_ast::{
 use crate::error::CodegenError;
 use crate::item::{lower_const, lower_fn_with_module_name};
 use crate::scope::LocalShape;
-use ridge_ir::{IrFfiFn, IrItem, LoweredModule, LoweredWorkspace};
+use crate::stdlib_map::BridgeTarget;
+use ridge_ir::{IrFfiFn, IrItem, IrPrimitiveFn, LoweredModule, LoweredWorkspace};
 use ridge_resolve::ModuleId;
 use rustc_hash::FxHashMap;
 
@@ -56,6 +57,10 @@ pub(crate) fn build_external_arity(
                 IrItem::Ffi(ffi) => {
                     #[allow(clippy::cast_possible_truncation)]
                     names.insert(ffi.name.clone(), ffi.params.len() as u32);
+                }
+                IrItem::Primitive(prim) => {
+                    #[allow(clippy::cast_possible_truncation)]
+                    names.insert(prim.name.clone(), prim.params.len() as u32);
                 }
                 _ => {}
             }
@@ -173,30 +178,7 @@ pub(crate) fn lower_module_with_name(
     ws: &LoweredWorkspace,
     beam_name: &str,
 ) -> Result<CErlModule, CodegenError> {
-    // Build a fn/const arity table for this module so that SymbolRef::Local
-    // used as a value can resolve to a LocalFnRef (T8 wiring).
-    // Fns use params.len(); consts are always arity 0.
-    // @ffi stubs (IrItem::Ffi) are included so that SymbolRef::Local calls
-    // to them can be resolved as LocalFnRef — their wrapper is emitted below.
-    let mut fn_arity: FxHashMap<String, LocalShape> = FxHashMap::default();
-    for item in &m.items {
-        match item {
-            IrItem::Fn(fn_) => {
-                #[allow(clippy::cast_possible_truncation)]
-                let arity = fn_.params.len() as u32;
-                fn_arity.insert(fn_.name.clone(), LocalShape::func(arity));
-            }
-            IrItem::Const(c) => {
-                fn_arity.insert(c.name.clone(), LocalShape::constant());
-            }
-            IrItem::Ffi(ffi) => {
-                #[allow(clippy::cast_possible_truncation)]
-                let arity = ffi.params.len() as u32;
-                fn_arity.insert(ffi.name.clone(), LocalShape::func(arity));
-            }
-            _ => {}
-        }
-    }
+    let fn_arity = local_shapes(m);
 
     // If the module contains any actor, its parent module must expose every
     // top-level fn and const to the BEAM linker — actor sub-modules compile
@@ -264,6 +246,19 @@ pub(crate) fn lower_module_with_name(
                         name: cerl_fn.name.clone(),
                         #[allow(clippy::cast_possible_truncation)]
                         arity: ffi.params.len() as u32,
+                    });
+                }
+                fns.push(cerl_fn);
+            }
+            // IrItem::Primitive → the same thin wrapper, over a target this
+            // crate chooses rather than one the declaration named.
+            IrItem::Primitive(prim) => {
+                let cerl_fn = lower_primitive_wrapper(prim)?;
+                if prim.is_pub {
+                    exports.push(CErlExport {
+                        name: cerl_fn.name.clone(),
+                        #[allow(clippy::cast_possible_truncation)]
+                        arity: prim.params.len() as u32,
                     });
                 }
                 fns.push(cerl_fn);
@@ -650,29 +645,9 @@ pub(crate) fn lower_module_all_named(
 ) -> Result<(CErlModule, Vec<CErlModule>), CodegenError> {
     let main_module = lower_module_with_name(m, ws, beam_name)?;
 
-    // Collect actor sub-modules.
-    // Rebuild fn_arity to pass to lower_actor so handlers can reference
-    // module-level fns and constants via SymbolRef::Local.
-    // Include @ffi stubs (IrItem::Ffi) so actors can reference them too.
-    let mut fn_arity_for_actors: FxHashMap<String, LocalShape> = FxHashMap::default();
-    for item in &m.items {
-        match item {
-            IrItem::Fn(fn_) => {
-                #[allow(clippy::cast_possible_truncation)]
-                let arity = fn_.params.len() as u32;
-                fn_arity_for_actors.insert(fn_.name.clone(), LocalShape::func(arity));
-            }
-            IrItem::Const(c) => {
-                fn_arity_for_actors.insert(c.name.clone(), LocalShape::constant());
-            }
-            IrItem::Ffi(ffi) => {
-                #[allow(clippy::cast_possible_truncation)]
-                let arity = ffi.params.len() as u32;
-                fn_arity_for_actors.insert(ffi.name.clone(), LocalShape::func(arity));
-            }
-            _ => {}
-        }
-    }
+    // Actors reach back into the parent module through SymbolRef::Local, so
+    // they need the same table the parent was lowered against.
+    let fn_arity_for_actors = local_shapes(m);
     let mut actor_modules = Vec::new();
     for item in &m.items {
         if let IrItem::Actor(actor) = item {
@@ -684,6 +659,39 @@ pub(crate) fn lower_module_all_named(
     }
 
     Ok((main_module, actor_modules))
+}
+
+// ── Local-symbol shapes ───────────────────────────────────────────────────────
+
+/// Every name a `SymbolRef::Local` in this module can refer to, with its shape.
+///
+/// Fns take their parameter count; consts are arity 0. `IrItem::Ffi` and
+/// `IrItem::Primitive` are in here for the same reason: neither has a Ridge
+/// body, but both become a real function in the emitted module, and a
+/// same-module caller reaching one by name has to resolve to a `LocalFnRef`
+/// rather than fall through to `erlc` as an undefined function.
+///
+/// One builder rather than two: the main module and its actor sub-modules need
+/// the identical table, and when this existed as two copies of the same loop,
+/// teaching it about a new item kind meant remembering to do it twice.
+fn local_shapes(m: &LoweredModule) -> FxHashMap<String, LocalShape> {
+    #[allow(clippy::cast_possible_truncation)]
+    const fn arity_of(n: usize) -> u32 {
+        n as u32
+    }
+
+    let mut shapes: FxHashMap<String, LocalShape> = FxHashMap::default();
+    for item in &m.items {
+        let (name, shape) = match item {
+            IrItem::Fn(fn_) => (&fn_.name, LocalShape::func(arity_of(fn_.params.len()))),
+            IrItem::Const(c) => (&c.name, LocalShape::constant()),
+            IrItem::Ffi(ffi) => (&ffi.name, LocalShape::func(arity_of(ffi.params.len()))),
+            IrItem::Primitive(prim) => (&prim.name, LocalShape::func(arity_of(prim.params.len()))),
+            _ => continue,
+        };
+        shapes.insert(name.clone(), shape);
+    }
+    shapes
 }
 
 // ── @ffi wrapper emission ─────────────────────────────────────────────────────
@@ -737,6 +745,74 @@ fn lower_ffi_wrapper(ffi: &IrFfiFn) -> CErlFn {
             body: Box::new(body),
         },
     }
+}
+
+// ── @primitive wrapper emission ───────────────────────────────────────────────
+
+/// Emit a thin wrapper `CErlFn` for an [`IrItem::Primitive`] declaration.
+///
+/// The declaration named no target, so this function is where one appears:
+/// the symbol is resolved through [`crate::stdlib_map::lookup`], the same
+/// table a call site consults, so `Int.add 1 2` and `1 + 2` cannot end up
+/// meaning different things.
+///
+/// ```text
+/// 'add'/2 =
+///   fun (V_P0, V_P1) ->
+///     call 'erlang':'+' (V_P0, V_P1)
+/// ```
+///
+/// A symbol with no entry is `E002`, not a missing function: it would
+/// otherwise reach `erlc` as an undefined call, and the reader would be told
+/// about a name rather than about a primitive nobody taught this backend.
+fn lower_primitive_wrapper(prim: &IrPrimitiveFn) -> Result<CErlFn, CodegenError> {
+    let missing = || CodegenError::StdlibBridgeMissing {
+        module: prim.module.clone(),
+        name: prim.name.clone(),
+        span: prim.span,
+    };
+
+    let params: Vec<CErlVar> = prim
+        .params
+        .iter()
+        .map(|p| CErlVar(format!("V_{}", p.to_uppercase().replace('-', "_"))))
+        .collect();
+    let args: Vec<CErlExpr> = params.iter().map(|v| CErlExpr::Var(v.clone())).collect();
+
+    let target = crate::stdlib_map::lookup(&prim.module, &prim.name).ok_or_else(missing)?;
+    let body = match target {
+        BridgeTarget::BeamStdlib {
+            module, fn_name, ..
+        } => CErlExpr::Call {
+            module: CErlAtom((*module).to_owned()),
+            fn_name: CErlAtom((*fn_name).to_owned()),
+            args,
+        },
+        // A primitive whose BEAM answer is a runtime helper rather than a BIF —
+        // the shape a checked arithmetic operation would take.
+        BridgeTarget::RidgeRuntime { fn_name, .. } => CErlExpr::Call {
+            module: CErlAtom("ridge_rt".to_owned()),
+            fn_name: CErlAtom((*fn_name).to_owned()),
+            args,
+        },
+        // Neither of the remaining shapes describes a primitive: an argument
+        // permutation is a library-call convention, and a compiled Ridge body
+        // is the opposite of a declaration that has none.
+        _ => return Err(missing()),
+    };
+
+    #[allow(clippy::cast_possible_truncation)]
+    let arity = prim.params.len() as u32;
+
+    Ok(CErlFn {
+        name: CErlAtom(prim.name.clone()),
+        arity,
+        anns: vec![],
+        body: CErlExpr::Fun {
+            params,
+            body: Box::new(body),
+        },
+    })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

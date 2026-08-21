@@ -1399,6 +1399,12 @@ fn typecheck_module_inner(
     let (ct, ie) = registries.unwrap_or((&scratch_class_table, &scratch_instance_env));
     typecheck_module_decls(&mut ctx, b, &fn_decls, ct, ie);
 
+    // Entry-point contract, second half (T059): a program that ends in `Err`
+    // has to be able to say why. Checked here rather than beside the arity rule
+    // above because it needs the resolved return type, which only exists once
+    // the decls have been through Algorithm W.
+    check_main_error_showable(&mut ctx, b, &fn_decls);
+
     // Step D: Capability checking for each fn decl.
     // OQ-PHASE45-005: span-keyed lookup via fn body's span + NodeKind.
     // D040: file-private / unannotated / annotated cap handling is inside
@@ -1533,6 +1539,79 @@ fn typecheck_module_inner(
 }
 
 // ── Class method scheme seeding ────────────────────────────────────────────────
+
+/// Require `main`'s error type to be renderable as text (T059).
+///
+/// `Err` is the documented way for a Ridge program to fail, so it is the
+/// failure path most programs take on purpose — and the runner that projects it
+/// onto stderr has no type to work from. Several Ridge shapes share one Erlang
+/// shape (a record and a `Map` are both maps; a nullary constructor and a
+/// `Bool` are both atoms), so anything the runtime rendered there would be a
+/// guess, and it would guess wrong on exactly the error types people define for
+/// themselves. The compiler knows the type; the obligation belongs here.
+///
+/// Silent cases, and why: a `main` that is absent or failed to infer has
+/// nothing to check, and a `main` whose error type is still a variable is a
+/// program with an earlier error already reported. Neither is worth a second
+/// diagnostic on top of the first.
+fn check_main_error_showable(
+    ctx: &mut crate::ctx::InferCtx,
+    b: &BuiltinTyCons,
+    fn_decls: &[&ridge_ast::FnDecl],
+) {
+    let Some(decl) = fn_decls.iter().find(|d| d.name.text == "main") else {
+        return;
+    };
+    let Some(scheme) = ctx.name_schemes_accum.get("main").cloned() else {
+        return;
+    };
+
+    // `main` takes no parameters (the arity rule above), so its scheme is either
+    // the bare return type or a zero-parameter `Fn`.
+    let ret = match &scheme.ty {
+        Type::Fn { ret, .. } => ret.as_ref(),
+        other => other,
+    };
+    let Type::Con(tycon, args) = ret else {
+        return;
+    };
+    if *tycon != b.result || args.len() != 2 {
+        return;
+    }
+    let err_ty = &args[1];
+
+    // An unresolved error type means an earlier failure; `Type::Error` says so
+    // outright. Reporting either would stack a second diagnostic on a first.
+    if matches!(err_ty, Type::Error | Type::Var(_)) {
+        return;
+    }
+
+    let to_text_set = ctx.to_text_tycons.clone();
+    if crate::interp::has_to_text(b, err_ty, to_text_set.as_ref()) {
+        return;
+    }
+
+    let ty_name = crate::render::render_type_with(err_ty, &ctx.tycon_decls);
+    let extendable = crate::render::user_can_extend(err_ty, &ctx.tycon_decls);
+
+    // Where the reader would go to add the instance. A built-in carries neither
+    // half, which is the same reason `fix_hint` stops offering `deriving` for it.
+    let decl_site = match err_ty {
+        Type::Con(tycon, _) => ctx
+            .tycon_decls
+            .iter()
+            .find(|d| d.id == *tycon)
+            .and_then(|d| Some((d.def_module_raw?, d.def_span?))),
+        _ => None,
+    };
+
+    ctx.errors.push(TypeError::MainErrorNotShowable {
+        ty: crate::error::TypeDesc::ty(err_ty.clone()),
+        fix_hint: crate::render::no_instance_hint("ToText", &ty_name, extendable),
+        decl_site,
+        span: decl.span,
+    });
+}
 
 /// Seeds one polymorphic scheme per class method into `ctx.env`.
 ///

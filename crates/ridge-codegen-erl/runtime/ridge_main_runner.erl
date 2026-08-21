@@ -75,8 +75,21 @@ invoke(ModAtom, FnAtom) ->
 finish({returned, {error, Msg}}) when is_binary(Msg) ->
     io:format(standard_error, "~ts~n", [Msg]),
     erlang:halt(1);
+%% Unreachable for a well-typed program: T059 requires `main`'s error type to
+%% have a `ToText` instance, and the lowering calls it at the boundary, so what
+%% arrives here is always a binary. A non-binary means that guarantee broke.
+%%
+%% It is kept rather than deleted because the alternative is a `function_clause`
+%% the reader can neither read nor report. And it says whose failure it is: an
+%% unlabelled `~p` here reads as the program's own output, which sends someone
+%% looking for a bug in their code that is not there.
 finish({returned, {error, Other}}) ->
-    io:format(standard_error, "~p~n", [Other]),
+    io:format(standard_error,
+              "error: the compiler did not render `main`'s error value~n"
+              "  note: this is a bug in Ridge, not in your program. Please "
+              "report it at https://github.com/ridge-lang/ridge/issues/new/choose~n"
+              "  for the report: ~p~n",
+              [Other]),
     erlang:halt(1);
 finish({returned, _}) ->
     erlang:halt(0);

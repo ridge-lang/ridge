@@ -1756,6 +1756,16 @@ its callers fail.
   "no children"; `startChild` and `stopChild` return
   `Err "supervisor_not_running"`.
 
+**`main`'s error type must be able to render itself.** A `main` returning
+`Result a E` requires `E` to have a `ToText` instance; without one the program
+does not compile (`T059`). `Err` is the documented way for a program to fail, so
+it is the failure path most programs take on purpose — and the runner that
+projects it onto stderr and an exit code has no type to work from. Several Ridge
+shapes share one Erlang shape, so a runtime renderer would be guessing, and it
+would guess wrong on exactly the error types a program defines for itself. The
+conversion happens once, at the boundary, using the same instance string
+interpolation uses. `Text` needs nothing: it is already text.
+
 **Supervisors are unlinked.** Starting a supervisor shares no fate with the
 starter: the supervisor ties its children's lifetimes, not its starter's.
 This is §7.2's rule applied one level up — fate-sharing is declared (a

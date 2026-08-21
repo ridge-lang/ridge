@@ -195,7 +195,12 @@ fn lookup_expr_type(ctx: &LowerCtx<'_>, expr: &Expr) -> Option<Type> {
               together: the first has to sit above the catch-all and the second \
               below it, and they pass through for unrelated reasons"
 )]
-fn wrap_to_text(ctx: &mut LowerCtx<'_>, inner: IrExpr, ty: Option<Type>, span: Span) -> IrExpr {
+pub(crate) fn wrap_to_text(
+    ctx: &mut LowerCtx<'_>,
+    inner: IrExpr,
+    ty: Option<Type>,
+    span: Span,
+) -> IrExpr {
     // Copied out before `ctx` is borrowed mutably by the arms; the table
     // outlives the context, so this is a second shared borrow, not a clone.
     let b = ctx.builtins;

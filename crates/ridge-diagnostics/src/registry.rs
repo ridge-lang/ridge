@@ -1604,6 +1604,12 @@ pub const REGISTRY: &[CodeEntry] = &[
         summary: "`?` is applied where the enclosing return type is neither `Result` nor `Option`.",
     },
     CodeEntry {
+        code: "T059",
+        variants: &["MainErrorNotShowable"],
+        owner: "ridge-typecheck",
+        summary: "`main` returns a `Result` whose error type has no `ToText` instance.",
+    },
+    CodeEntry {
         code: "T101",
         variants: &["FfiArityMismatch"],
         owner: "ridge-stdlib",

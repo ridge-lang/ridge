@@ -613,6 +613,34 @@ fn a_program_that_returns_err_is_not_framed_as_a_broken_toolchain() {
         );
 }
 
+/// A program that fails with its own error type prints that type, not an atom.
+///
+/// `Err Boom` reached the terminal as `'Boom'` — an Erlang atom, quotes
+/// included, with nothing to say it was an error and nothing to say what
+/// failed. A record error type fared worse: an Erlang map, keys and all.
+///
+/// The type is required to render itself (T059) and the conversion happens at
+/// the boundary, so what arrives here is the same text `${…}` would produce.
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn a_typed_error_reaches_the_terminal_as_a_sentence() {
+    let tw = make_app_workspace(
+        "Main",
+        r#"type MyErr = Boom | Fizzle deriving (ToText)
+
+pub fn main () -> Result Unit MyErr =
+    Err Boom
+"#,
+    );
+
+    ridge_cmd()
+        .arg("run")
+        .current_dir(&tw.path)
+        .assert()
+        .failure()
+        .stderr(contains("Boom").and(contains("'Boom'").not()));
+}
+
 /// A number too large for `Int` is not a successful parse.
 ///
 /// `Int.parse` and `Json.asInt` both answer `Option Int`, so they already have

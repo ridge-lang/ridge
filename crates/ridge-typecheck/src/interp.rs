@@ -122,13 +122,8 @@ fn check_hole_to_text(
         }
 
         // Concrete type constructor: consult the instance set.
-        Type::Con(tycon_id, _) => {
-            let has_instance = to_text_set.map_or_else(
-                || builtin_has_to_text(b, *tycon_id),
-                |set| set.contains(tycon_id),
-            );
-
-            if !has_instance {
+        Type::Con(..) => {
+            if !has_to_text(b, tr, to_text_set) {
                 let ty_name = crate::render::render_type_with(tr, &ctx.tycon_decls);
                 let hint = interp_hint(
                     &ty_name,
@@ -157,6 +152,31 @@ fn check_hole_to_text(
                 fix_hint: hint,
             });
         }
+    }
+}
+
+/// Whether `ty` has a `ToText` instance a program can call.
+///
+/// The one place that answers this. Interpolation asks it about a hole; the
+/// entry-point contract asks it about `main`'s error type. Both have to get the
+/// same answer for the same type — a type that prints inside `${…}` is a type
+/// that prints when the program fails, and the other way round — and two copies
+/// of this lookup could drift apart without either one looking wrong.
+///
+/// Only a concrete type constructor can carry an instance: a function, a tuple
+/// or an unresolved variable is `false` here, and the caller decides whether
+/// that is worth a diagnostic in its own context.
+pub(crate) fn has_to_text(
+    b: &BuiltinTyCons,
+    ty: &Type,
+    to_text_set: Option<&FxHashSet<TyConId>>,
+) -> bool {
+    match ty {
+        Type::Con(tycon_id, _) => to_text_set.map_or_else(
+            || builtin_has_to_text(b, *tycon_id),
+            |set| set.contains(tycon_id),
+        ),
+        _ => false,
     }
 }
 

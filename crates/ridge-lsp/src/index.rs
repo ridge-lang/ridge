@@ -5969,6 +5969,23 @@ pub fn collect_signature_fixes(
         };
         let text: &str = module_text.get(mi).map_or("", |t| &**t);
         match err {
+            // Offered only when the error type is declared in the same
+            // module as `main`. A `SignatureFix` carries one uri, and the
+            // server uses it for both "is this action for the document the
+            // reader is in" and "where does the edit go" — so a type declared
+            // elsewhere cannot be expressed here without mis-aiming one of the
+            // two. That reader still gets the sentence, which names the type
+            // and the clause to add.
+            TypeError::MainErrorNotShowable {
+                decl_site: Some((decl_mod, decl_span)),
+                span,
+                ..
+            } if *decl_mod == mid.0 => {
+                if let Some(t) = find_type_decl(module, *decl_span) {
+                    push_deriving_to_text_fix(&mut out, uri, li, *span, t);
+                }
+            }
+
             TypeError::CapabilityNotDeclared {
                 decl,
                 kind,
@@ -6202,6 +6219,17 @@ const fn span_within(inner: ridge_ast::Span, outer: ridge_ast::Span) -> bool {
 }
 
 /// Find the top-level `fn` whose whole-declaration span is `span`.
+fn find_type_decl(
+    module: &ridge_typecheck::TypedModule,
+    span: ridge_ast::Span,
+) -> Option<&ridge_ast::TypeDecl> {
+    module.ast.items.iter().find_map(|item| match item {
+        ridge_ast::Item::Type(t) if t.span == span => Some(t),
+        _ => None,
+    })
+}
+
+/// Find the top-level `fn` whose whole-declaration span is `span`.
 fn find_fn(
     module: &ridge_typecheck::TypedModule,
     span: ridge_ast::Span,
@@ -6334,6 +6362,44 @@ fn push_constraint_fix(
         new_text,
         code: "T055",
         title: format!("Add `{class} {ty_var}` to `{decl_name}`"),
+    });
+}
+
+/// Offer `deriving (ToText)` on the type `main` returns as its error (T059).
+///
+/// `main_span` and `decl` point at different places on purpose: the action is
+/// offered where the diagnostic is (on `main`, which is what `decl_range`
+/// selects — the server attaches an action to a diagnostic whose range overlaps
+/// it), while the edit lands on the `type` declaration that discharges the
+/// obligation.
+///
+/// Three shapes, two of them refusals:
+///   - an existing `deriving (Eq)` grows a member: `, ToText` after the last one
+///   - no clause at all gains one at the end of the declaration
+///   - a declaration with `migrate` hooks gets nothing: the `do … end` block
+///     sits between the body and the end of the span, so an insertion there
+///     would land after `end`. Offering no action beats moving a reader's code
+///     to the wrong place, which is the same call `push_insert_fix` makes when
+///     it cannot see where a `where` clause goes.
+fn push_deriving_to_text_fix(
+    out: &mut Vec<SignatureFix>,
+    uri: &Url,
+    li: &LineIndex,
+    main_span: ridge_ast::Span,
+    decl: &ridge_ast::TypeDecl,
+) {
+    let (insert_byte, new_text) = match decl.deriving.last() {
+        Some(last) => (last.span.end, ", ToText".to_owned()),
+        None if decl.migrates.is_empty() => (decl.span.end, " deriving (ToText)".to_owned()),
+        None => return,
+    };
+    out.push(SignatureFix {
+        uri: uri.clone(),
+        decl_range: span_to_range(li, main_span),
+        edit_range: point_range(li, insert_byte),
+        new_text,
+        code: "T059",
+        title: format!("Add `deriving (ToText)` to `{}`", decl.name.text),
     });
 }
 

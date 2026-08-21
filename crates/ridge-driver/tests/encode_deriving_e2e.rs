@@ -37,7 +37,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// `Person { name = "Ann", age = 30 }` must encode to `{"name":"Ann","age":30}`.
 ///
 /// The test redeclares `class Encode a = encode (x: a) -> JsonValue` so the
-/// resolver's ClassMethodIndex resolves bare `encode x` calls (the same trick
+/// resolver's `ClassMethodIndex` resolves bare `encode x` calls (the same trick
 /// used in `typeclass_deriving_e2e.rs` for the Show class, line 34).
 const SOURCE_RECORD_PRIMITIVES: &str = r#"
 class Encode a =
@@ -104,7 +104,7 @@ pub fn main_user_empty_city () -> Text =
 /// A nullary union type with derived Encode.
 ///
 /// `Admin` must encode to `"Admin"` (bare JSON string).
-const SOURCE_NULLARY_UNION: &str = r#"
+const SOURCE_NULLARY_UNION: &str = r"
 class Encode a =
     encode (x: a) -> JsonValue
 
@@ -121,7 +121,7 @@ pub fn main_guest () -> Text =
 
 pub fn main_editor () -> Text =
     toJson Editor
-"#;
+";
 
 // ── Workspace helpers ─────────────────────────────────────────────────────────
 

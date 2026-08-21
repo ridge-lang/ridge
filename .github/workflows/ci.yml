@@ -132,6 +132,26 @@ jobs:
         if: steps.changes.outputs.code == 'true'
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # The pass above compiles nothing that sits behind a feature flag, and the
+      # released binary is built with two of them: `beam-runtime` bakes in the
+      # SQLite bridge, and `cli-watch` is what `run --watch` and `run --reload`
+      # are made of. Until this step existed, no job here compiled `cli-watch` at
+      # all — the release build was the first thing to look at that code, and it
+      # holds `#[cfg(unix)]` and `#[cfg(windows)]` branches that only this matrix
+      # can reach.
+      #
+      # `--all-features` rather than the release's exact list, so a feature added
+      # later is covered the day it lands instead of the day someone remembers to
+      # edit this file. Both passes stay: `--all-features` never compiles a
+      # `#[cfg(not(feature = ...))]` branch, and run.rs has four of them.
+      #
+      # This is what makes the OTP install above load-bearing for the lint job:
+      # `beam-runtime` runs ridge-codegen-erl's build script, which needs
+      # `erl_nif.h` and a C compiler to build the SQLite object.
+      - name: Run clippy (every feature)
+        if: steps.changes.outputs.code == 'true'
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
   # The BEAM end-to-end suites are gated behind the `beam-runtime` feature: they
   # compile each example through the full pipeline, invoke erlc/erl on the
   # installed OTP, and assert real runtime output. The default `cargo test` in

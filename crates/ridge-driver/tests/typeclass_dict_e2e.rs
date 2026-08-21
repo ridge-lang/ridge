@@ -113,7 +113,7 @@ fn typeclass_dict_passing_computes_correct_values() {
     if !artefacts.diagnostics.is_empty() {
         eprintln!("COMPILE DIAGNOSTICS:");
         for d in &artefacts.diagnostics {
-            eprintln!("  {:?}", d);
+            eprintln!("  {d:?}");
         }
     }
 
@@ -303,7 +303,7 @@ fn method_invocation_by_name_computes_correct_values() {
     if !artefacts.diagnostics.is_empty() {
         eprintln!("COMPILE DIAGNOSTICS:");
         for d in &artefacts.diagnostics {
-            eprintln!("  {:?}", d);
+            eprintln!("  {d:?}");
         }
     }
 
@@ -406,7 +406,7 @@ fn method_invocation_distinct_instances_dispatch_by_argument() {
     if !artefacts.diagnostics.is_empty() {
         eprintln!("COMPILE DIAGNOSTICS:");
         for d in &artefacts.diagnostics {
-            eprintln!("  {:?}", d);
+            eprintln!("  {d:?}");
         }
     }
 

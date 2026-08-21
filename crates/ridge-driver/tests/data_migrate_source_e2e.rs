@@ -21,6 +21,10 @@
 //!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 
+// Each test below is one end-to-end scenario: a Ridge program, a real OTP
+// run, and the assertions on its output. A split by line count would put
+// half a scenario out of sight of the half that explains it.
+#![allow(clippy::too_many_lines)]
 #![cfg(feature = "beam-runtime")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -95,7 +99,7 @@ pub fn migrationSrc () -> Text = Migrate.migrationToSource (sampleMigration ())
 // the fixpoint can be checked.
 fn build_roundtrip_source(model_src: &str, migration_src: &str) -> String {
     format!(
-        r#"
+        r"
 import std.sql (DbBigInt, DbInt, DbText, DbVarchar)
 import std.schema (EntitySchema, Identity, DefaultLit, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, checkRaw, compositePrimaryKey, uniqueConstraint)
 import std.migrate (migration, createSchema, addEntityColumn, alterColumn, dropColumn, dropTable, modelToSource, migrationToSource)
@@ -111,7 +115,7 @@ fn rebuiltMigration () = (
 
 pub fn modelReSrc () -> Text = modelToSource (rebuiltModel ())
 pub fn migrationReSrc () -> Text = migrationToSource (rebuiltMigration ())
-"#
+"
     )
 }
 

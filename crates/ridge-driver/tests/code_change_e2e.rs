@@ -12,7 +12,7 @@ use std::process::Command;
 
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
-const SOURCE: &str = r#"
+const SOURCE: &str = r"
 actor Counter =
     state count: Int = 0
 
@@ -24,7 +24,7 @@ actor Counter =
 
 fn spawn main () -> Unit =
     ()
-"#;
+";
 
 fn write_workspace(root: &std::path::Path) {
     let app_src = root.join("app").join("src");

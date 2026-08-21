@@ -20,13 +20,13 @@ use std::process::Command;
 
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
-const SRC: &str = r#"
+const SRC: &str = r"
 import std.sql (sqlNull, sqlValueSource)
 
 -- `sqlNull ()` is a 0-param stdlib factory; calling it from a user module used to emit an
 -- arity-1 call that was `undef`. Rendering the result proves the call ran.
 pub fn nullSrc () -> Text = sqlValueSource (sqlNull ())
-"#;
+";
 
 fn write_workspace(root: &Path, source: &str) {
     let app_src = root.join("app").join("src");

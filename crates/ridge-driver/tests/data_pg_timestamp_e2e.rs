@@ -162,14 +162,9 @@ fn postgres_timestamp_round_trips_an_instant() {
         eprintln!("erl/erlc not on PATH — skipping postgres_timestamp_round_trips_an_instant");
         return;
     }
-    let url = match std::env::var("RIDGE_TEST_PG_URL") {
-        Ok(u) => u,
-        Err(_) => {
-            eprintln!(
-                "RIDGE_TEST_PG_URL not set — skipping postgres_timestamp_round_trips_an_instant"
-            );
-            return;
-        }
+    let Ok(url) = std::env::var("RIDGE_TEST_PG_URL") else {
+        eprintln!("RIDGE_TEST_PG_URL not set — skipping postgres_timestamp_round_trips_an_instant");
+        return;
     };
     let parts = parse_pg_url(&url)
         .unwrap_or_else(|| panic!("RIDGE_TEST_PG_URL is not a postgres:// URL: {url}"));

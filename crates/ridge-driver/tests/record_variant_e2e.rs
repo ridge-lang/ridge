@@ -19,7 +19,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 // ── Source ────────────────────────────────────────────────────────────────────
 
-const SOURCE: &str = r#"
+const SOURCE: &str = r"
 import std.json as Json
 
 type Event =
@@ -87,7 +87,7 @@ pub fn derive_roundtrip () -> Int =
     match roundtrip m
         Ok m2 -> if m2 == m then 55 else -1
         Err _ -> -2
-"#;
+";
 
 // ── Workspace setup ───────────────────────────────────────────────────────────
 

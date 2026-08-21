@@ -761,6 +761,9 @@ use ridge_driver::{
 /// Execute `ridge run --reload`: boot a persistent dev node, then per save
 /// compile → plan → hot-apply into the node. Rejected edits keep the node on
 /// its current code and offer a cold restart.
+// One save-compile-plan-apply loop, the same shape as `execute_watch` above and
+// allowed for the same reason: the steps only make sense in sequence.
+#[allow(clippy::too_many_lines)]
 fn execute_reload(
     args: &RunArgs,
     workspace_root: &Path,
@@ -945,7 +948,7 @@ fn execute_reload(
         ) {
             Ok(line) => {
                 node_snapshot = plan.new_snapshot;
-                node_vsn = manifest.new_vsn.clone();
+                node_vsn.clone_from(&manifest.new_vsn);
                 eprintln!("{line}");
             }
             Err(msg) => {

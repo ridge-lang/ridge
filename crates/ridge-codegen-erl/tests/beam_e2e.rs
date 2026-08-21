@@ -896,7 +896,7 @@ fn beam_e2e_ordering_constructors_resolve_and_match() {
 // a readable exponent range, keeping the round-trip digits intact, so a whole
 // or near-whole float prints as a plain decimal.
 
-const FLOAT_TOTEXT_SOURCE: &str = r#"
+const FLOAT_TOTEXT_SOURCE: &str = r"
 import std.io as Io
 import std.float as Float
 
@@ -910,7 +910,7 @@ fn io main () -> Result Unit Text =
     Io.println (Float.toText (0.0 - 5600.0))
     Io.println (Float.toText 0.0)
     Ok ()
-"#;
+";
 
 /// Regression: `Float.toText` must render ordinary-magnitude floats as plain
 /// decimals rather than Erlang's shortest exponent form (`5.6e3`), while keeping
@@ -3049,7 +3049,7 @@ fn beam_e2e_slice_empty_list_falls_through() {
 
 /// Triple-quoted string: dedent against the closing delimiter and drop the
 /// opening/closing newlines, then print the value.
-const STRING_MULTILINE_SOURCE: &str = r##"
+const STRING_MULTILINE_SOURCE: &str = r#"
 import std.io as Io
 
 fn io main () -> Result Unit Text =
@@ -3059,7 +3059,7 @@ fn io main () -> Result Unit Text =
         """
     Io.println s
     Ok ()
-"##;
+"#;
 
 /// `"""` must dedent to `line one\nline two` (no leading margin spaces).
 #[test]
@@ -3077,13 +3077,13 @@ fn beam_e2e_string_multiline_dedent() {
 
 /// Raw string: backslash escapes are NOT decoded — `r"a\nb"` is the literal
 /// four characters a, backslash, n, b.
-const STRING_RAW_NO_DECODE_SOURCE: &str = r##"
+const STRING_RAW_NO_DECODE_SOURCE: &str = r#"
 import std.io as Io
 
 fn io main () -> Result Unit Text =
     Io.println r"a\nb"
     Ok ()
-"##;
+"#;
 
 #[test]
 fn beam_e2e_string_raw_no_escape_decode() {
@@ -3095,6 +3095,15 @@ fn beam_e2e_string_raw_no_escape_decode() {
 }
 
 /// Raw string with one hash embeds a plain double-quote: `r#"say "hi""#`.
+//
+// Ridge spells raw strings the way Rust does, so this fixture's body contains a
+// literal `"#`. That makes the second hash load-bearing: with one hash the
+// literal would end inside the Ridge program and the rest of the file would be
+// parsed as code. `needless_raw_string_hashes` misses the `"#` when it counts,
+// reports the hashes as unnecessary, and `cargo clippy --fix` applies it — the
+// file then stops compiling, and cargo rolls back every other fix in the crate
+// with it.
+#[allow(clippy::needless_raw_string_hashes)]
 const STRING_RAW_HASH_SOURCE: &str = r##"
 import std.io as Io
 
@@ -3115,7 +3124,7 @@ fn beam_e2e_string_raw_hash_embeds_quote() {
 // ── Prefix rest, fixed and record patterns (commits 2a) ──────────────────────
 
 /// `[first, rest @ ..]` binds `first` to the head and `rest` to the tail.
-const LIST_PREFIX_REST_SOURCE: &str = r##"
+const LIST_PREFIX_REST_SOURCE: &str = r#"
 import std.io as Io
 import std.int as Int
 import std.list as List
@@ -3126,7 +3135,7 @@ fn io main () -> Result Unit Text =
         [first, rest @ ..] -> Io.println $"first=${Int.toText first} restLen=${Int.toText (List.length rest)}"
         [] -> Io.println "empty"
     Ok ()
-"##;
+"#;
 
 #[test]
 fn beam_e2e_list_prefix_rest_binds_tail() {
@@ -3142,7 +3151,7 @@ fn beam_e2e_list_prefix_rest_binds_tail() {
 }
 
 /// Fixed `[a, b, c]` binds positionally and matches a length-3 list exactly.
-const LIST_FIXED_SOURCE: &str = r##"
+const LIST_FIXED_SOURCE: &str = r#"
 import std.io as Io
 import std.int as Int
 
@@ -3152,7 +3161,7 @@ fn io main () -> Result Unit Text =
         [a, b, c] -> Io.println $"sum=${Int.toText (a + b + c)}"
         _ -> Io.println "other"
     Ok ()
-"##;
+"#;
 
 #[test]
 fn beam_e2e_list_fixed_binds_positionally() {
@@ -3161,7 +3170,7 @@ fn beam_e2e_list_fixed_binds_positionally() {
 }
 
 /// Record rest `User { name, .. }` matches and binds `name`, ignoring `age`.
-const RECORD_REST_SOURCE: &str = r##"
+const RECORD_REST_SOURCE: &str = r#"
 import std.io as Io
 
 type User = { name: Text, age: Int }
@@ -3171,7 +3180,7 @@ fn io main () -> Result Unit Text =
     match u
         User { name, .. } -> Io.println name
     Ok ()
-"##;
+"#;
 
 #[test]
 fn beam_e2e_record_rest_ignores_other_fields() {
@@ -3185,7 +3194,7 @@ fn beam_e2e_record_rest_ignores_other_fields() {
 // ── Or-pattern BEAM e2e ──────────────────────────────────────────────────────
 
 /// Literal or-pattern `0 | 1 | 2 -> …`: every alternative shares the arm body.
-const OR_PATTERN_LITERAL_SOURCE: &str = r##"
+const OR_PATTERN_LITERAL_SOURCE: &str = r#"
 import std.io as Io
 
 fn classify (n: Int) -> Text =
@@ -3197,7 +3206,7 @@ fn io main () -> Result Unit Text =
     let _ = Io.println (classify 1)
     let _ = Io.println (classify 9)
     Ok ()
-"##;
+"#;
 
 #[test]
 fn beam_e2e_or_pattern_literal_alternatives() {
@@ -3214,7 +3223,7 @@ fn beam_e2e_or_pattern_literal_alternatives() {
 
 /// Binding or-pattern `Plus x | Minus x -> x`: both alternatives bind `x` (same
 /// type), so the shared body can use it regardless of which alternative matched.
-const OR_PATTERN_BINDING_SOURCE: &str = r##"
+const OR_PATTERN_BINDING_SOURCE: &str = r#"
 import std.io as Io
 import std.int as Int
 
@@ -3227,7 +3236,7 @@ fn amount (t: Token) -> Int =
 fn io main () -> Result Unit Text =
     Io.println $"a=${Int.toText (amount (Plus 5))} b=${Int.toText (amount (Minus 7))}"
     Ok ()
-"##;
+"#;
 
 #[test]
 fn beam_e2e_or_pattern_shared_binding() {
@@ -3246,7 +3255,7 @@ fn beam_e2e_or_pattern_shared_binding() {
 
 /// A `$"""..."""` block dedents to the closing margin and evaluates its `${…}`
 /// holes at runtime, producing a value that carries the interior newline.
-const MULTILINE_INTERP_SOURCE: &str = r##"
+const MULTILINE_INTERP_SOURCE: &str = r#"
 import std.io as Io
 import std.int as Int
 
@@ -3258,7 +3267,7 @@ fn io main () -> Result Unit Text =
         """
     Io.println msg
     Ok ()
-"##;
+"#;
 
 #[test]
 fn beam_e2e_multiline_interpolation_dedents_and_evaluates_holes() {

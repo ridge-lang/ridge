@@ -63,7 +63,7 @@ pub fn main_totext_red () -> Text =
 ///
 /// Payload union constructors require resolver-level support for calling them
 /// as functions (e.g. `Wrap 7`), which is completed in a later cut; payload
-/// union ToText rendering is covered by unit tests in `item.rs`.
+/// union `ToText` rendering is covered by unit tests in `item.rs`.
 ///
 /// `Ord` compiles (the derived instance is registered and the IR is emitted
 /// correctly); runtime dispatch of `compare` by name requires class-method
@@ -142,7 +142,7 @@ fn typeclass_deriving_computes_correct_values() {
     if !artefacts.diagnostics.is_empty() {
         eprintln!("COMPILE DIAGNOSTICS:");
         for d in &artefacts.diagnostics {
-            eprintln!("  {:?}", d);
+            eprintln!("  {d:?}");
         }
     }
 
@@ -235,7 +235,7 @@ fn typeclass_deriving_computes_correct_values() {
 ///
 /// Also asserts derived `Eq` on records works correctly at runtime.
 ///
-/// Payload union ToText rendering and Ord payload tiebreak are covered by
+/// Payload union `ToText` rendering and Ord payload tiebreak are covered by
 /// unit tests in `item.rs`; their BEAM e2e requires additional resolver
 /// support that lands in a later cut.
 #[test]
@@ -267,7 +267,7 @@ fn typeclass_deriving_value_rendering_and_ord_payload() {
     if !artefacts.diagnostics.is_empty() {
         eprintln!("COMPILE DIAGNOSTICS:");
         for d in &artefacts.diagnostics {
-            eprintln!("  {:?}", d);
+            eprintln!("  {d:?}");
         }
     }
 

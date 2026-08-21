@@ -15,6 +15,10 @@
 //!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 
+// Each test below is one end-to-end scenario: a Ridge program, a real OTP
+// run, and the assertions on its output. A split by line count would put
+// half a scenario out of sight of the half that explains it.
+#![allow(clippy::too_many_lines)]
 #![cfg(feature = "beam-runtime")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -27,7 +31,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// A program that decodes a `Map Text SqlValue` row into a `User` record.
 ///
 /// `User` derives `Row`. `userRow` builds a well-formed row (note `created_at`,
-/// the snake_cased spelling of the `createdAt` field). `badRow` puts a `Text`
+/// the `snake_cased` spelling of the `createdAt` field). `badRow` puts a `Text`
 /// value in the `id` column, so the `Int` field's `fromSql` fails and `fromRow`
 /// returns `Err` — the `badId` sentinel catches it.
 const SOURCE: &str = r#"

@@ -20,7 +20,7 @@ use std::process::Command;
 
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
-const SOURCE: &str = r#"
+const SOURCE: &str = r"
 import std.query (debugShow)
 
 pub type User = { id: Int, age: Int, active: Bool, signupYear: Int } deriving (Table)
@@ -32,7 +32,7 @@ pub fn adultPred () -> Text = showUserPred (fn u -> u.age >= 18)
 pub fn activeAdultPred () -> Text = showUserPred (fn u -> u.age >= 18 && u.active)
 
 pub fn recentSignup () -> Text = showUserPred (fn u -> u.signupYear >= 2020)
-"#;
+";
 
 fn write_workspace(root: &std::path::Path) {
     let app_src = root.join("app").join("src");

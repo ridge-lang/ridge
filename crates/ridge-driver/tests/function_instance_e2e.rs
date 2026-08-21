@@ -33,7 +33,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 ///   resolves to a concrete `DictPlan::Static`.
 /// - `useRun` is constrained (`where Run a`) and forwards its dict parameter;
 ///   `main_forward` pins `a` to a function type at the call site.
-const SOURCE: &str = r#"
+const SOURCE: &str = r"
 class Run f =
     run (self: f) (x: Int) -> Int
 
@@ -48,7 +48,7 @@ pub fn main_static () -> Int =
 
 pub fn main_forward () -> Int =
     useRun (fn (x: Int) -> Int = x + 1) 41
-"#;
+";
 
 // ── Workspace setup ───────────────────────────────────────────────────────────
 

@@ -535,11 +535,11 @@ pub fn io spawn time main () -> Unit =
 fn dividing_by_zero_is_reported_as_dividing_by_zero() {
     let tw = make_app_workspace(
         "Main",
-        r#"pub fn main () -> Unit =
+        r"pub fn main () -> Unit =
     let d = 0
     let _ = 10 / d
     ()
-"#,
+",
     );
 
     ridge_cmd()
@@ -565,11 +565,11 @@ fn dividing_by_zero_is_reported_as_dividing_by_zero() {
 fn the_runtime_stack_is_one_environment_variable_away() {
     let tw = make_app_workspace(
         "Main",
-        r#"pub fn main () -> Unit =
+        r"pub fn main () -> Unit =
     let d = 0
     let _ = 10 / d
     ()
-"#,
+",
     );
 
     ridge_cmd()
@@ -626,11 +626,11 @@ fn a_program_that_returns_err_is_not_framed_as_a_broken_toolchain() {
 fn a_typed_error_reaches_the_terminal_as_a_sentence() {
     let tw = make_app_workspace(
         "Main",
-        r#"type MyErr = Boom | Fizzle deriving (ToText)
+        r"type MyErr = Boom | Fizzle deriving (ToText)
 
 pub fn main () -> Result Unit MyErr =
     Err Boom
-"#,
+",
     );
 
     ridge_cmd()
@@ -759,13 +759,13 @@ pub fn io main () -> Unit =
 #[test]
 fn narrowing_a_float_past_ints_range_names_the_value_and_the_range() {
     let tw = make_capable_app_workspace(
-        r#"import std.io    as Io
+        r"import std.io    as Io
 import std.int   as Int
 import std.float as Float
 
 pub fn io main () -> Unit =
     Io.println (Int.toText (Float.round (Float.pow 10.0 30.0)))
-"#,
+",
         r#""io""#,
     );
 
@@ -792,12 +792,12 @@ pub fn io main () -> Unit =
 #[test]
 fn abs_of_the_smallest_int_explains_why_there_is_no_answer() {
     let tw = make_capable_app_workspace(
-        r#"import std.io  as Io
+        r"import std.io  as Io
 import std.int as Int
 
 pub fn io main () -> Unit =
     Io.println (Int.toText (Int.abs (0 - 9223372036854775807 - 1)))
-"#,
+",
         r#""io""#,
     );
 
@@ -824,12 +824,12 @@ pub fn io main () -> Unit =
 #[test]
 fn adding_past_the_end_of_int_names_the_operation_and_the_opt_outs() {
     let tw = make_capable_app_workspace(
-        r#"import std.io  as Io
+        r"import std.io  as Io
 import std.int as Int
 
 pub fn io main () -> Unit =
     Io.println (Int.toText (9223372036854775807 + 1))
-"#,
+",
         r#""io""#,
     );
 
@@ -860,13 +860,13 @@ pub fn io main () -> Unit =
 #[test]
 fn a_primitive_passed_to_a_higher_order_function_is_still_checked() {
     let tw = make_capable_app_workspace(
-        r#"import std.io   as Io
+        r"import std.io   as Io
 import std.int  as Int
 import std.list as List
 
 pub fn io main () -> Unit =
     Io.println (Int.toText (List.fold Int.add 0 [9223372036854775807, 1]))
-"#,
+",
         r#""io""#,
     );
 
@@ -890,7 +890,7 @@ pub fn io main () -> Unit =
 #[test]
 fn arithmetic_that_reaches_the_ends_of_the_range_succeeds() {
     let tw = make_capable_app_workspace(
-        r#"import std.io  as Io
+        r"import std.io  as Io
 import std.int as Int
 
 pub fn io main () -> Unit =
@@ -901,7 +901,7 @@ pub fn io main () -> Unit =
     Io.println (Int.toText (Int.wrappingAdd maxVal 1))
     Io.println (Int.toText (Int.saturatingAdd maxVal 1))
     Io.println (Int.toText (Int.rem minVal (0 - 1)))
-"#,
+",
         r#""io""#,
     );
 

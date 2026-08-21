@@ -19,7 +19,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const INNER: &str = "pub type Point = { x: Int, y: Int } deriving (Eq, Encode, Decode)\n";
 
-const MAIN: &str = r#"
+const MAIN: &str = r"
 import app.Inner (Point)
 
 type Shape = { tag: Int, at: Point } deriving (Eq, Encode, Decode)
@@ -46,7 +46,7 @@ pub fn roundtrip_option () -> Int =
     match decode (encode m)
         Ok m2 -> if m2 == m then 11 else -1
         Err _ -> -2
-"#;
+";
 
 fn write_workspace(root: &std::path::Path) {
     let app_src = root.join("app").join("src");

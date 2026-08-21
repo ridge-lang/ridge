@@ -98,23 +98,19 @@ fn boot_v1(ws: &common::TempWorkspace, eval_extra: &str) -> ReloadNode {
     // Erlang string literals treat backslashes as escapes — forward slashes.
     let manifest_fwd = manifest_path.to_string_lossy().replace('\\', "/");
     let eval = format!(
-        "persistent_term:put(ridge_loader_vsn, <<\"{base}\">>),\n\
+        "persistent_term:put(ridge_loader_vsn, <<\"{base_vsn}\">>),\n\
          H = {{ridge_handle, Pid, _}} = ridge_rt:spawn_actor('{beam_mod}', [], []),\n\
          ok = ridge_rt:send_op(H, {{tick}}),\n\
          ok = ridge_rt:send_op(H, {{tick}}),\n\
          2 = ridge_rt:ask(H, {{count}}, 5000),\n\
-         W = fun W() -> case filelib:is_file(\"{manifest}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
+         W = fun W() -> case filelib:is_file(\"{manifest_fwd}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
          W(),\n\
-         R = ridge_loader:apply(\"{manifest}\", <<\"{base}\">>),\n\
+         R = ridge_loader:apply(\"{manifest_fwd}\", <<\"{base_vsn}\">>),\n\
          io:format(\"APPLY=~p~n\", [R]),\n\
          io:format(\"STATE=~p~n\", [sys:get_state(Pid)]),\n\
          io:format(\"ASK=~p~n\", [ridge_rt:ask(H, {{count}}, 5000)]),\n\
          {eval_extra}\n\
          halt(0).",
-        base = base_vsn,
-        beam_mod = beam_mod,
-        manifest = manifest_fwd,
-        eval_extra = eval_extra,
     );
     let child = std::process::Command::new("erl")
         .arg("-noshell")
@@ -368,7 +364,7 @@ fn boot_named_v1(
         .to_path_buf();
     let beam_mod = actor_beam_of(&beam_dir);
     let eval = format!(
-        "persistent_term:put(ridge_loader_vsn, <<\"{base}\">>),\n\
+        "persistent_term:put(ridge_loader_vsn, <<\"{base_vsn}\">>),\n\
          H = {{ridge_handle, Pid, _}} = ridge_rt:spawn_actor('{beam_mod}', [], []),\n\
          ok = ridge_rt:send_op(H, {{tick}}),\n\
          ok = ridge_rt:send_op(H, {{tick}}),\n\
@@ -376,8 +372,6 @@ fn boot_named_v1(
          register(counter_pid, Pid),\n\
          io:format(\"READY~n\"),\n\
          receive infinity -> ok end.",
-        base = base_vsn,
-        beam_mod = beam_mod,
     );
     let child = std::process::Command::new("erl")
         .arg("-name")
@@ -582,7 +576,7 @@ fn spawn_streamed(beam_dir: &std::path::Path, eval: &str) -> StreamedNode {
         .spawn()
         .expect("spawn erl");
     let (tx, rx) = std::sync::mpsc::channel::<String>();
-    let lines: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+    let lines: std::sync::Arc<std::sync::Mutex<Vec<String>>> = std::sync::Arc::default();
     let line_sink = std::sync::Arc::clone(&lines);
     let mut stdout = child.stdout.take().expect("stdout");
     let stdout_thread = std::thread::spawn(move || {
@@ -601,7 +595,7 @@ fn spawn_streamed(beam_dir: &std::path::Path, eval: &str) -> StreamedNode {
             }
         }
     });
-    let stderr: std::sync::Arc<std::sync::Mutex<String>> = Default::default();
+    let stderr: std::sync::Arc<std::sync::Mutex<String>> = std::sync::Arc::default();
     let err_sink = std::sync::Arc::clone(&stderr);
     let mut stderr_pipe = child.stderr.take().expect("stderr");
     let stderr_thread = std::thread::spawn(move || {
@@ -758,17 +752,13 @@ fn reload_migrates_mailbox_record_lazily() {
          H1 = maps:get('Note', '{parent}':'__ridge_record_versions'()),\n\
          ok = sys:suspend(Pid),\n\
          ok = ridge_rt:send_op(H, {{store, #{{'__ridge_v' => {{'{parent}', 'Note', H1}}, text => <<\"hello\">>}}}}),\n\
-         W = fun W() -> case filelib:is_file(\"{manifest}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
+         W = fun W() -> case filelib:is_file(\"{manifest_fwd}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
          W(),\n\
-         R = ridge_loader:apply(\"{manifest}\", <<\"{base}\">>),\n\
+         R = ridge_loader:apply(\"{manifest_fwd}\", <<\"{base}\">>),\n\
          io:format(\"APPLY=~p~n\", [R]),\n\
          io:format(\"GOT=~p~n\", [ridge_rt:ask(H, {{get}}, 5000)]),\n\
          io:format(\"MIGRATED=~p~n\", [ridge_rt:migration_count()]),\n\
          halt(0).",
-        base = base,
-        actor = actor,
-        parent = parent,
-        manifest = manifest_fwd,
     );
     let node = spawn_streamed(&beam_dir, &eval);
     apply_store_edit(&snap, &ws, |src| src.replace("text", "body"));
@@ -815,23 +805,19 @@ fn reload_migrates_record_chain_across_two_reloads() {
          H1 = maps:get('Note', '{parent}':'__ridge_record_versions'()),\n\
          ok = sys:suspend(Pid),\n\
          ok = ridge_rt:send_op(H, {{store, #{{'__ridge_v' => {{'{parent}', 'Note', H1}}, text => <<\"first\">>}}}}),\n\
-         W = fun W() -> case filelib:is_file(\"{manifest}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
-         D = fun D() -> case filelib:is_file(\"{manifest}\") of true -> timer:sleep(50), D(); false -> ok end end,\n\
+         W = fun W() -> case filelib:is_file(\"{manifest_fwd}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
+         D = fun D() -> case filelib:is_file(\"{manifest_fwd}\") of true -> timer:sleep(50), D(); false -> ok end end,\n\
          W(),\n\
-         R1 = ridge_loader:apply(\"{manifest}\", <<\"{base}\">>),\n\
+         R1 = ridge_loader:apply(\"{manifest_fwd}\", <<\"{base}\">>),\n\
          io:format(\"APPLY1=~p~n\", [R1]),\n\
          io:format(\"GOT1=~p~n\", [ridge_rt:ask(H, {{get}}, 5000)]),\n\
          ok = sys:suspend(Pid),\n\
          ok = ridge_rt:send_op(H, {{store, #{{'__ridge_v' => {{'{parent}', 'Note', H1}}, text => <<\"second\">>}}}}),\n\
          D(), W(),\n\
-         R2 = ridge_loader:apply(\"{manifest}\", ridge_loader:current_version()),\n\
+         R2 = ridge_loader:apply(\"{manifest_fwd}\", ridge_loader:current_version()),\n\
          io:format(\"APPLY2=~p~n\", [R2]),\n\
          io:format(\"GOT2=~p~n\", [ridge_rt:ask(H, {{get}}, 5000)]),\n\
          halt(0).",
-        base = base,
-        actor = actor,
-        parent = parent,
-        manifest = manifest_fwd,
     );
     let node = spawn_streamed(&beam_dir, &eval);
     // First reload: text → body.
@@ -878,9 +864,9 @@ fn reload_drops_non_migratable_and_unknown_hash_messages() {
     let eval = format!(
         "persistent_term:put(ridge_loader_vsn, <<\"{base}\">>),\n\
          H = {{ridge_handle, Pid, _}} = ridge_rt:spawn_actor('{actor}', [], []),\n\
-         W = fun W() -> case filelib:is_file(\"{manifest}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
+         W = fun W() -> case filelib:is_file(\"{manifest_fwd}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
          W(),\n\
-         R = ridge_loader:apply(\"{manifest}\", <<\"{base}\">>),\n\
+         R = ridge_loader:apply(\"{manifest_fwd}\", <<\"{base}\">>),\n\
          io:format(\"APPLY=~p~n\", [R]),\n\
          Before = ridge_rt:migration_count(),\n\
          Bad = #{{'__ridge_v' => {{'{parent}', 'Note', 999999999}}, text => <<\"x\">>}},\n\
@@ -890,10 +876,6 @@ fn reload_drops_non_migratable_and_unknown_hash_messages() {
          io:format(\"BEFORE=~p~n\", [Before]),\n\
          io:format(\"MIGRATED=~p~n\", [ridge_rt:migration_count()]),\n\
          halt(0).",
-        base = base,
-        actor = actor,
-        parent = parent,
-        manifest = manifest_fwd,
     );
     let node = spawn_streamed(&beam_dir, &eval);
     apply_store_edit(&snap, &ws, |src| src.replace("text", "body"));
@@ -976,9 +958,9 @@ fn reload_restarts_actor_with_throwing_migrate_hook() {
          \x20           register(reborn, Pn)\n\
          \x20   end\n\
          end),\n\
-         W = fun W() -> case filelib:is_file(\"{manifest}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
+         W = fun W() -> case filelib:is_file(\"{manifest_fwd}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
          W(),\n\
-         R = ridge_loader:apply(\"{manifest}\", <<\"{base}\">>),\n\
+         R = ridge_loader:apply(\"{manifest_fwd}\", <<\"{base}\">>),\n\
          io:format(\"APPLY=~p~n\", [R]),\n\
          timer:sleep(500),\n\
          io:format(\"ALIVE1=~p~n\", [is_process_alive(P1)]),\n\
@@ -989,9 +971,6 @@ fn reload_restarts_actor_with_throwing_migrate_hook() {
          \x20   Pn2 -> io:format(\"REBORN=~p~n\", [sys:get_state(Pn2)])\n\
          end,\n\
          halt(0).",
-        base = base,
-        beam_mod = beam_mod,
-        manifest = manifest_fwd,
     );
     let node = spawn_streamed(&beam_dir, &eval);
     // Additive field + hook that crashes only when count = 2.
@@ -1073,21 +1052,17 @@ fn reload_via_bundle_apply() {
          ok = ridge_rt:send_op(H, {{tick}}),\n\
          ok = ridge_rt:send_op(H, {{tick}}),\n\
          2 = ridge_rt:ask(H, {{count}}, 5000),\n\
-         W = fun W() -> case filelib:is_file(\"{manifest}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
+         W = fun W() -> case filelib:is_file(\"{manifest_fwd}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
          W(),\n\
-         {{ok, MBin}} = file:read_file(\"{manifest}\"),\n\
+         {{ok, MBin}} = file:read_file(\"{manifest_fwd}\"),\n\
          Mf = json:decode(MBin),\n\
-         Bins = [{{M, element(2, file:read_file(\"{beam_dir}/\" ++ binary_to_list(M) ++ \".beam\"))}}\n\
+         Bins = [{{M, element(2, file:read_file(\"{beam_dir_fwd}/\" ++ binary_to_list(M) ++ \".beam\"))}}\n\
          \x20       || M <- maps:get(<<\"modules\">>, Mf)],\n\
          R = ridge_loader:apply_bundle(MBin, Bins, #{{base_vsn => <<\"{base}\">>}}),\n\
          io:format(\"APPLY=~p~n\", [R]),\n\
          io:format(\"STATE=~p~n\", [sys:get_state(Pid)]),\n\
          io:format(\"ASK=~p~n\", [ridge_rt:ask(H, {{count}}, 5000)]),\n\
          halt(0).",
-        base = base,
-        beam_mod = beam_mod,
-        manifest = manifest_fwd,
-        beam_dir = beam_dir_fwd,
     );
     let node = spawn_streamed(&beam_dir, &eval);
     apply_edit_counter(&snap, &ws, &manifest, |src| {
@@ -1198,9 +1173,9 @@ fn reload_purges_old_code_after_quiescence() {
              H = {{ridge_handle, Pid, _}} = ridge_rt:spawn_actor('{beam_mod}', [], []),\n\
              ok = ridge_rt:send_op(H, {{tick}}),\n\
              1 = ridge_rt:ask(H, {{count}}, 5000),\n\
-             W = fun W() -> case filelib:is_file(\"{manifest}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
+             W = fun W() -> case filelib:is_file(\"{manifest_fwd}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
              W(),\n\
-             {{ok, MBin}} = file:read_file(\"{manifest}\"),\n\
+             {{ok, MBin}} = file:read_file(\"{manifest_fwd}\"),\n\
              Mf = json:decode(MBin),\n\
              Bins = [{{M, element(2, file:read_file(\"{beam_dir}/\" ++ binary_to_list(M) ++ \".beam\"))}}\n\
              \x20       || M <- maps:get(<<\"modules\">>, Mf)],\n\
@@ -1211,10 +1186,6 @@ fn reload_purges_old_code_after_quiescence() {
              io:format(\"OLDCODE_LATER=~p~n\", [erlang:check_old_code('{beam_mod}')]),\n\
              io:format(\"ASK=~p~n\", [ridge_rt:ask(H, {{count}}, 5000)]),\n\
              halt(0).",
-            base = base,
-            beam_mod = beam_mod,
-            beam_dir = beam_dir,
-            manifest = manifest_fwd,
         )
     });
     apply_edit_counter(&snap, &ws, &manifest, |src| {
@@ -1261,23 +1232,19 @@ fn reload_reschedules_purge_on_second_apply() {
              \x20   [{{M, element(2, file:read_file(\"{beam_dir}/\" ++ binary_to_list(M) ++ \".beam\"))}}\n\
              \x20    || M <- maps:get(<<\"modules\">>, Mf)]\n\
              end,\n\
-             W = fun W() -> case filelib:is_file(\"{manifest}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
-             D = fun D() -> case filelib:is_file(\"{manifest}\") of true -> timer:sleep(50), D(); false -> ok end end,\n\
+             W = fun W() -> case filelib:is_file(\"{manifest_fwd}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
+             D = fun D() -> case filelib:is_file(\"{manifest_fwd}\") of true -> timer:sleep(50), D(); false -> ok end end,\n\
              W(),\n\
-             {{ok, MBin1}} = file:read_file(\"{manifest}\"),\n\
+             {{ok, MBin1}} = file:read_file(\"{manifest_fwd}\"),\n\
              R1 = ridge_loader:apply_bundle(MBin1, Rd(MBin1), #{{base_vsn => <<\"{base}\">>, purge_after_ms => 60000}}),\n\
              io:format(\"APPLY1=~p~n\", [R1]),\n\
              D(), W(),\n\
-             {{ok, MBin2}} = file:read_file(\"{manifest}\"),\n\
+             {{ok, MBin2}} = file:read_file(\"{manifest_fwd}\"),\n\
              R2 = ridge_loader:apply_bundle(MBin2, Rd(MBin2), #{{base_vsn => ridge_loader:current_version(), purge_after_ms => 60000}}),\n\
              io:format(\"APPLY2=~p~n\", [R2]),\n\
              io:format(\"OLDCODE=~p~n\", [erlang:check_old_code('{beam_mod}')]),\n\
              io:format(\"ASK=~p~n\", [ridge_rt:ask(H, {{count}}, 5000)]),\n\
              halt(0).",
-            base = base,
-            beam_mod = beam_mod,
-            beam_dir = beam_dir,
-            manifest = manifest_fwd,
         )
     });
     // First upgrade: additive field.
@@ -1332,18 +1299,14 @@ fn reload_drop_structured_mode_emits_json() {
         "persistent_term:put(ridge_loader_vsn, <<\"{base}\">>),\n\
          ok = ridge_rt:set_migrate_report(structured),\n\
          H = {{ridge_handle, _Pid, _}} = ridge_rt:spawn_actor('{actor}', [], []),\n\
-         W = fun W() -> case filelib:is_file(\"{manifest}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
+         W = fun W() -> case filelib:is_file(\"{manifest_fwd}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
          W(),\n\
-         R = ridge_loader:apply(\"{manifest}\", <<\"{base}\">>),\n\
+         R = ridge_loader:apply(\"{manifest_fwd}\", <<\"{base}\">>),\n\
          io:format(\"APPLY=~p~n\", [R]),\n\
          Bad = #{{'__ridge_v' => {{'{parent}', 'Note', 999999999}}, text => <<\"x\">>}},\n\
          ok = ridge_rt:send_op(H, {{store, Bad}}),\n\
          io:format(\"GOT=~p~n\", [ridge_rt:ask(H, {{get}}, 5000)]),\n\
          halt(0).",
-        base = base,
-        actor = actor,
-        parent = parent,
-        manifest = manifest_fwd,
     );
     let node = spawn_streamed(&beam_dir, &eval);
     apply_store_edit(&snap, &ws, |src| src.replace("text", "body"));
@@ -1389,7 +1352,7 @@ fn prod_apply_eval(
     format!(
         "{{ok, MBin}} = file:read_file(\"{manifest_fwd}\"),\n\
          Mf = json:decode(MBin),\n\
-         Bins0 = [{{M, element(2, file:read_file(\"{beam_dir}/\" ++ binary_to_list(M) ++ \".beam\"))}}\n\
+         Bins0 = [{{M, element(2, file:read_file(\"{beam_dir_fwd}/\" ++ binary_to_list(M) ++ \".beam\"))}}\n\
          \x20        || M <- maps:get(<<\"modules\">>, Mf)],\n\
          {corrupt}\
          R = rpc:call('{node_name}', ridge_loader, apply_bundle,\n\
@@ -1401,7 +1364,6 @@ fn prod_apply_eval(
          \x20       io:format(\"RIDGE_RELOAD_JSON ~s~n\", [json:encode(Safe)]);\n\
          \x20   Err -> io:format(\"RIDGE_RELOAD_ERR ~p~n\", [Err])\n\
          end.",
-        beam_dir = beam_dir_fwd,
     )
 }
 
@@ -1463,10 +1425,9 @@ fn reload_prod_bundle_over_rpc() {
     assert_eq!(report["actors_migrated"], 1, "{json_line}");
     assert_eq!(report["purge"]["scheduled"], true, "{json_line}");
 
+    let node_name = format!("ridge_prod_ok_{}@127.0.0.1", std::process::id());
     let state_eval = format!(
-        "io:format(\"STATE=~p~n\", [rpc:call('{}', sys, get_state, [rpc:call('{}', erlang, whereis, [counter_pid])])]).",
-        format!("ridge_prod_ok_{}@127.0.0.1", std::process::id()),
-        format!("ridge_prod_ok_{}@127.0.0.1", std::process::id()),
+        "io:format(\"STATE=~p~n\", [rpc:call('{node_name}', sys, get_state, [rpc:call('{node_name}', erlang, whereis, [counter_pid])])])."
     );
     let state = probe("ridge_prod_cookie", &state_eval, 11);
     assert!(state.contains("count => 2"), "state preserved: {state}");
@@ -1490,10 +1451,9 @@ fn reload_prod_bundle_rejects_vsn_mismatch() {
         "stale base version rejected: {out}"
     );
 
+    let node_name = format!("ridge_prod_vsn_{}@127.0.0.1", std::process::id());
     let state_eval = format!(
-        "io:format(\"STATE=~p~n\", [rpc:call('{}', sys, get_state, [rpc:call('{}', erlang, whereis, [counter_pid])])]).",
-        format!("ridge_prod_vsn_{}@127.0.0.1", std::process::id()),
-        format!("ridge_prod_vsn_{}@127.0.0.1", std::process::id()),
+        "io:format(\"STATE=~p~n\", [rpc:call('{node_name}', sys, get_state, [rpc:call('{node_name}', erlang, whereis, [counter_pid])])])."
     );
     let state = probe("ridge_prod_cookie", &state_eval, 21);
     assert!(state.contains("count => 2"), "state untouched: {state}");
@@ -1517,10 +1477,9 @@ fn reload_prod_bundle_rejects_corrupt_beam() {
         "corrupt blob rejected before any load: {out}"
     );
 
+    let node_name = format!("ridge_prod_corrupt_{}@127.0.0.1", std::process::id());
     let state_eval = format!(
-        "io:format(\"STATE=~p~n\", [rpc:call('{}', sys, get_state, [rpc:call('{}', erlang, whereis, [counter_pid])])]).",
-        format!("ridge_prod_corrupt_{}@127.0.0.1", std::process::id()),
-        format!("ridge_prod_corrupt_{}@127.0.0.1", std::process::id()),
+        "io:format(\"STATE=~p~n\", [rpc:call('{node_name}', sys, get_state, [rpc:call('{node_name}', erlang, whereis, [counter_pid])])])."
     );
     let state = probe("ridge_prod_cookie", &state_eval, 31);
     assert!(state.contains("count => 2"), "state untouched: {state}");

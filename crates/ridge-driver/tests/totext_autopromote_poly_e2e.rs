@@ -18,7 +18,7 @@ use std::process::Command;
 
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
-const SOURCE: &str = r##"
+const SOURCE: &str = r#"
 -- `Widget` has ToText ONLY via a bare `pub fn toText` (auto-promoted): no
 -- `instance`, no `deriving`. The promotion still emits a `$inst_ToText_Widget`
 -- dictionary constant, exactly as an explicit instance would.
@@ -32,7 +32,7 @@ pub fn toText (w: Widget) -> Text = Text.concat "W:" w.tag
 pub fn label (x: a) -> Text where ToText a = $"[${x}]"
 
 pub fn probe () -> Text = label (Widget { tag = "ok" })
-"##;
+"#;
 
 fn write_workspace(root: &std::path::Path) {
     let app_src = root.join("app").join("src");

@@ -26,17 +26,17 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 /// The producer module: an opaque newtype that derives `SqlType`, plus the
 /// constructor/accessor helpers a consumer needs (the field itself is opaque).
-const MODELS_SRC: &str = r#"
+const MODELS_SRC: &str = r"
 pub opaque type Money = { cents: Int } deriving (SqlType, Eq, Ord)
 
 pub fn money (n: Int) -> Money = Money { cents = n }
 
 pub fn cents (m: Money) -> Int = m.cents
-"#;
+";
 
 /// The consumer module: imports `Money` and its helpers from another member and
 /// `toSql`/`fromSql` from `std.sql`, then round-trips a value across modules.
-const APP_SRC: &str = r#"
+const APP_SRC: &str = r"
 import models.Models (Money, money, cents)
 import std.sql (toSql, fromSql, SqlValue)
 
@@ -46,7 +46,7 @@ pub fn roundTrip (n: Int) -> Int =
     match fromMoney (toSql (money n))
         Ok m  -> cents m
         Err _ -> 0 - 1
-"#;
+";
 
 // ── Workspace setup ───────────────────────────────────────────────────────────
 

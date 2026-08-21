@@ -103,7 +103,7 @@ pub fn main_nested () -> Text =
 ///
 /// `[1, 2, 3]` must encode to `[1,2,3]`; an empty list pinned to `List Int` ->
 /// `[]`.
-const SOURCE_LIST_INT: &str = r#"
+const SOURCE_LIST_INT: &str = r"
 class Encode a =
     encode (x: a) -> JsonValue
 
@@ -116,7 +116,7 @@ pub fn main_ints () -> Text =
 pub fn main_ints_empty () -> Text =
     let xs : List Int = []
     toJson xs
-"#;
+";
 
 /// Parametric `Encode (List a)` over `Text` — proves the synthesised `Encode Text`
 /// primitive dictionary. `["a", "b"]` → `["a","b"]`.
@@ -227,7 +227,7 @@ pub fn main_text () -> Text =
 /// A nested `List (Option Int)`: the outer `Encode (List a)` dictionary is
 /// applied to the `Encode (Option a)` dictionary, itself applied to the
 /// synthesised `Encode Int`. `[Some 1, None, Some 3]` → `[1,null,3]`.
-const SOURCE_LIST_OPTION_INT: &str = r#"
+const SOURCE_LIST_OPTION_INT: &str = r"
 class Encode a =
     encode (x: a) -> JsonValue
 
@@ -237,7 +237,7 @@ fn toJson (x: a) -> Text where Encode a =
 pub fn main_list_option () -> Text =
     let xs : List (Option Int) = [Some 1, None, Some 3]
     toJson xs
-"#;
+";
 
 /// Parametric `Map Text a` over a primitive value. `{"a": 1}` → `{"a":1}` and the
 /// decode round-trip recovers the map.

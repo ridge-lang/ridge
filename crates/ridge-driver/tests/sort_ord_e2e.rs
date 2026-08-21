@@ -18,7 +18,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 // ── Source ────────────────────────────────────────────────────────────────────
 
-const SOURCE: &str = r#"
+const SOURCE: &str = r"
 import std.list as List
 
 type Ev = Val Int | Tick
@@ -51,7 +51,7 @@ pub fn sortby_int_field () -> Int =
     match s
         []          -> 0 - 1
         [first, ..] -> first.id
-"#;
+";
 
 // ── Workspace setup ───────────────────────────────────────────────────────────
 

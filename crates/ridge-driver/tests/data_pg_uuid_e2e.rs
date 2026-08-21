@@ -158,12 +158,9 @@ fn postgres_uuid_round_trips_a_uuid() {
         eprintln!("erl/erlc not on PATH — skipping postgres_uuid_round_trips_a_uuid");
         return;
     }
-    let url = match std::env::var("RIDGE_TEST_PG_URL") {
-        Ok(u) => u,
-        Err(_) => {
-            eprintln!("RIDGE_TEST_PG_URL not set — skipping postgres_uuid_round_trips_a_uuid");
-            return;
-        }
+    let Ok(url) = std::env::var("RIDGE_TEST_PG_URL") else {
+        eprintln!("RIDGE_TEST_PG_URL not set — skipping postgres_uuid_round_trips_a_uuid");
+        return;
     };
     let parts = parse_pg_url(&url)
         .unwrap_or_else(|| panic!("RIDGE_TEST_PG_URL is not a postgres:// URL: {url}"));

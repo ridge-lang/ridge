@@ -16,7 +16,7 @@ use std::process::Command;
 
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
-const SOURCE: &str = r#"
+const SOURCE: &str = r"
 import std.int as Int
 
 pub type Point = { x: Int, y: Int }
@@ -34,7 +34,7 @@ pub fn sumPoint () -> Text = Int.toText (addCoords (Point { x = 3, y = 4 }))
 pub fn diffed () -> Text = Int.toText (diff (10, 3))
 
 pub fn unboxed () -> Text = Int.toText (unbox (MkBox 42))
-"#;
+";
 
 fn write_workspace(root: &std::path::Path) {
     let app_src = root.join("app").join("src");

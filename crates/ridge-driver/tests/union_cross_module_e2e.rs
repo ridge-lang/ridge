@@ -20,9 +20,9 @@ use std::process::Command;
 
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
-const SHAPES_SRC: &str = r#"
+const SHAPES_SRC: &str = r"
 pub type Color = Red | Green | Blue
-"#;
+";
 
 const APP_SRC: &str = r#"
 import shapes.Shapes (Color, Red, Green, Blue)

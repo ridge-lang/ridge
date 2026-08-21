@@ -14,6 +14,10 @@
 //!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 
+// Each test below is one end-to-end scenario: a Ridge program, a real OTP
+// run, and the assertions on its output. A split by line count would put
+// half a scenario out of sight of the half that explains it.
+#![allow(clippy::too_many_lines)]
 #![cfg(feature = "beam-runtime")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

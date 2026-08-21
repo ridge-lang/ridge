@@ -110,14 +110,7 @@ fn user_module(artefacts: &CompileArtefacts) -> (std::path::PathBuf, String) {
 /// `Coin`, whose `ToText` instance is explicit — the bug this change fixes.
 #[test]
 fn autopromoted_totext_does_not_shadow_other_types_dispatch() {
-    if which::which("erlc").is_err() || which::which("erl").is_err() {
-        eprintln!(
-            "erl/erlc not on PATH — skipping autopromoted_totext_does_not_shadow_other_types_dispatch"
-        );
-        return;
-    }
-
-    const SOURCE: &str = r##"
+    const SOURCE: &str = r#"
 pub type Widget = { tag: Text }
 pub type Coin = { n: Int }
 
@@ -128,7 +121,14 @@ instance ToText Coin =
 
 pub fn describe () -> Text = toText (Coin { n = 1 })
 pub fn showW () -> Text = toText (Widget { tag = "x" })
-"##;
+"#;
+
+    if which::which("erlc").is_err() || which::which("erl").is_err() {
+        eprintln!(
+            "erl/erlc not on PATH — skipping autopromoted_totext_does_not_shadow_other_types_dispatch"
+        );
+        return;
+    }
 
     let dir = tempfile::Builder::new()
         .prefix("ridge-totext-ap-dispatch-e2e-")
@@ -161,12 +161,7 @@ pub fn showW () -> Text = toText (Widget { tag = "x" })
 /// no explicit `instance` at all, must coexist and each dispatch correctly.
 #[test]
 fn two_autopromoted_totext_declarations_coexist() {
-    if which::which("erlc").is_err() || which::which("erl").is_err() {
-        eprintln!("erl/erlc not on PATH — skipping two_autopromoted_totext_declarations_coexist");
-        return;
-    }
-
-    const SOURCE: &str = r##"
+    const SOURCE: &str = r#"
 pub type Widget = { tag: Text }
 pub type Coin = { label: Text }
 
@@ -175,7 +170,12 @@ pub fn toText (c: Coin) -> Text = Text.concat "C:" c.label
 
 pub fn showW () -> Text = toText (Widget { tag = "x" })
 pub fn showC () -> Text = toText (Coin { label = "7" })
-"##;
+"#;
+
+    if which::which("erlc").is_err() || which::which("erl").is_err() {
+        eprintln!("erl/erlc not on PATH — skipping two_autopromoted_totext_declarations_coexist");
+        return;
+    }
 
     let dir = tempfile::Builder::new()
         .prefix("ridge-totext-ap-dispatch-e2e-")

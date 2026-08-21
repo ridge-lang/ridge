@@ -94,6 +94,8 @@ impl Drop for NodeGuard {
 
 /// Boot a named node running two-ticked counter, READY-signalled, blocking.
 fn boot_node(node_name: &str, cookie: &str, beam_dir: &Path, beam_mod: &str) -> NodeGuard {
+    use std::io::BufRead;
+
     let eval = format!(
         "H = {{ridge_handle, Pid, _}} = ridge_rt:spawn_actor('{beam_mod}', [], []),\n\
          ok = ridge_rt:send_op(H, {{tick}}),\n\
@@ -119,7 +121,6 @@ fn boot_node(node_name: &str, cookie: &str, beam_dir: &Path, beam_mod: &str) -> 
         .expect("spawn named erl node");
     // Read until READY (30 s cap). stderr is collected so a boot failure is
     // diagnosable from the panic message.
-    use std::io::BufRead;
     let stdout = child.stdout.take().expect("piped stdout");
     let mut stderr_pipe = child.stderr.take().expect("piped stderr");
     let (err_tx, err_rx) = std::sync::mpsc::channel::<String>();

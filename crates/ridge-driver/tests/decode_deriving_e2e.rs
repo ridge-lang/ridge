@@ -35,7 +35,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// A record-of-primitives type with derived Decode.
 ///
 /// The test redeclares `class Decode a = decode (j: JsonValue) -> Result a Error`
-/// so the resolver's ClassMethodIndex resolves bare `decode j` calls (the same
+/// so the resolver's `ClassMethodIndex` resolves bare `decode j` calls (the same
 /// trick used in `encode_deriving_e2e.rs` for the Encode class).
 const SOURCE_RECORD_PRIMITIVES: &str = r#"
 class Encode a =
@@ -344,7 +344,7 @@ fn decode_derive_record_roundtrip() {
     );
 }
 
-/// Nullary union: `"Admin"` → Ok Admin, `"Superuser"` → Err(unknown_tag).
+/// Nullary union: `"Admin"` → Ok Admin, `"Superuser"` → `Err(unknown_tag)`.
 #[test]
 fn decode_derive_nullary_union() {
     let Some((_dir, _cache, beam_dir, module)) = compile_and_find_module(SOURCE_NULLARY_UNION)

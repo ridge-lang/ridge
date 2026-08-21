@@ -10,7 +10,7 @@ items:
     pub: false
     main: false
     caps: CapabilitySet(0)
-    ret_ty: Con(107)
+    ret_ty: Con(108)
     params: []
     body:
       Construct(n0):
@@ -28,7 +28,7 @@ items:
     ret_ty: Con(0)
     params:
       - name: r
-        ty: Con(107)
+        ty: Con(108)
     body:
       Match(n3):
         scrutinee:

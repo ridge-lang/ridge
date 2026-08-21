@@ -1492,7 +1492,7 @@ import std.io as Io
 import std.int as Int
 import std.time as Time
 import std.actor as Actor
-import std.actor (OneForOne)
+import std.actor (OneForOne, SupError)
 
 actor Counter =
     state count: Int = 0
@@ -1506,7 +1506,7 @@ actor Counter =
     on die (d: Int) =
         count <- 10 / d
 
-fn spawn io time main () -> Result Unit Text =
+fn spawn io time main () -> Result Unit SupError =
     let sup = Actor.supervise OneForOne 3 5000 []?
     let c = Actor.startChild sup (child Counter)?
     c ! bump
@@ -1554,7 +1554,7 @@ import std.io as Io
 import std.int as Int
 import std.time as Time
 import std.actor as Actor
-import std.actor (OneForOne)
+import std.actor (OneForOne, SupError)
 
 actor Counter =
     state count: Int = 0
@@ -1568,7 +1568,7 @@ actor Counter =
     on die (d: Int) =
         count <- 10 / d
 
-fn spawn io time main () -> Result Unit Text =
+fn spawn io time main () -> Result Unit SupError =
     let sup = Actor.supervise OneForOne 3 5000 []?
     let c = Actor.startChild sup (child Counter)?
     c ! die 0
@@ -1609,7 +1609,7 @@ import std.io as Io
 import std.int as Int
 import std.time as Time
 import std.actor as Actor
-import std.actor (OneForAll)
+import std.actor (OneForAll, SupError)
 
 actor Counter =
     state count: Int = 0
@@ -1623,7 +1623,7 @@ actor Counter =
     on die (d: Int) =
         count <- 10 / d
 
-fn spawn io time main () -> Result Unit Text =
+fn spawn io time main () -> Result Unit SupError =
     let sup = Actor.supervise OneForAll 3 5000 []?
     let a = Actor.startChild sup (Actor.childId "a" (child Counter))?
     let b = Actor.startChild sup (Actor.childId "b" (child Counter))?
@@ -1666,7 +1666,7 @@ import std.io as Io
 import std.int as Int
 import std.time as Time
 import std.actor as Actor
-import std.actor (RestForOne)
+import std.actor (RestForOne, SupError)
 
 actor Counter =
     state count: Int = 0
@@ -1680,7 +1680,7 @@ actor Counter =
     on die (d: Int) =
         count <- 10 / d
 
-fn spawn io time main () -> Result Unit Text =
+fn spawn io time main () -> Result Unit SupError =
     -- Phase 1: crashing the FIRST child restarts everything started after
     -- it as well — under rest_for_one that is the whole tail.
     let sup1 = Actor.supervise RestForOne 3 5000 []?
@@ -1734,7 +1734,7 @@ import std.io as Io
 import std.int as Int
 import std.time as Time
 import std.actor as Actor
-import std.actor (OneForOne)
+import std.actor (OneForOne, SupError)
 
 actor Counter =
     state count: Int = 0
@@ -1748,7 +1748,7 @@ actor Counter =
     on die (d: Int) =
         count <- 10 / d
 
-fn spawn io time main () -> Result Unit Text =
+fn spawn io time main () -> Result Unit SupError =
     let sup = Actor.supervise OneForOne 1 60000 []?
     let c = Actor.startChild sup (child Counter)?
     c ! die 0
@@ -1802,7 +1802,7 @@ fn beam_e2e_supervisor_intensity_exhaustion_fails_loudly() {
 const SUPERVISION_DYNAMIC_SOURCE: &str = r#"
 import std.io as Io
 import std.actor as Actor
-import std.actor (OneForOne)
+import std.actor (OneForOne, SupError)
 
 actor Counter =
     state count: Int = 0
@@ -1813,7 +1813,7 @@ actor Counter =
     on get () -> Int =
         count
 
-fn io main () -> Result Unit Text =
+fn io main () -> Result Unit SupError =
     let sup = Actor.supervise OneForOne 3 5000 []?
     let _ = Actor.startChild sup (Actor.childId "a" (child Counter))?
     let _ = Actor.startChild sup (Actor.childId "b" (child Counter))?
@@ -1822,7 +1822,7 @@ fn io main () -> Result Unit Text =
         _ -> Io.println "unexpected-children"
     match Actor.stopChild sup "a"
         Ok _ -> Io.println "stop-a-ok"
-        Err e -> Io.println $"stop-a-failed=${e}"
+        Err _ -> Io.println "stop-a-failed"
     match Actor.whichChildren sup
         [("b", true)] -> Io.println "only-b-left"
         _ -> Io.println "unexpected-after-stop"
@@ -1859,7 +1859,7 @@ import std.io as Io
 import std.int as Int
 import std.time as Time
 import std.actor as Actor
-import std.actor (OneForOne, Noproc, Timeout)
+import std.actor (OneForOne, Noproc, Timeout, SupError)
 
 actor Counter =
     state count: Int = 0
@@ -1877,7 +1877,7 @@ actor Slow =
         Time.sleep 2000
         n
 
-fn spawn io time main () -> Result Unit Text =
+fn spawn io time main () -> Result Unit SupError =
     let sup = Actor.supervise OneForOne 3 5000 []?
     let c = Actor.startChild sup (Actor.childId "c" (child Counter))?
     c ! bump
@@ -1937,7 +1937,7 @@ const SUPERVISION_ASK_STOPPED_SOURCE: &str = r#"
 import std.io as Io
 import std.int as Int
 import std.actor as Actor
-import std.actor (OneForOne)
+import std.actor (OneForOne, SupError)
 
 actor Counter =
     state count: Int = 0
@@ -1948,7 +1948,7 @@ actor Counter =
     on get () -> Int =
         count
 
-fn spawn io time main () -> Result Unit Text =
+fn spawn io time main () -> Result Unit SupError =
     let sup = Actor.supervise OneForOne 3 5000 []?
     let c = Actor.startChild sup (Actor.childId "c" (child Counter))?
     let _ = Actor.stopChild sup "c"?
@@ -1995,7 +1995,7 @@ import std.io as Io
 import std.int as Int
 import std.time as Time
 import std.actor as Actor
-import std.actor (OneForOne)
+import std.actor (OneForOne, SupError)
 
 actor Fragile =
     state n: Int = 0
@@ -2006,7 +2006,7 @@ actor Fragile =
     on die (d: Int) =
         n <- 10 / d
 
-fn spawn io time main () -> Result Unit Text =
+fn spawn io time main () -> Result Unit SupError =
     -- Any use of `?` wraps the body in the propagation try/catch, and an
     -- exception crossing that frame must keep its class and reason: a
     -- previous codegen bug re-raised with an invalid stacktrace and turned
@@ -2054,7 +2054,7 @@ import std.io as Io
 import std.int as Int
 import std.list as List
 import std.actor as Actor
-import std.actor (OneForOne)
+import std.actor (OneForOne, SupError)
 
 actor Seeded =
     state count: Int = 0
@@ -2065,7 +2065,7 @@ actor Seeded =
     on get () -> Int =
         count
 
-fn spawn io main () -> Result Unit Text =
+fn spawn io main () -> Result Unit SupError =
     let sup = Actor.supervise OneForOne 3 5000 [child Seeded (7)]?
     let kids = Actor.whichChildren sup
     Io.println $"kids=${Int.toText (List.length kids)}"
@@ -2097,7 +2097,7 @@ fn beam_e2e_supervisor_static_children_start_with_the_supervisor() {
 const SUPERVISION_STATIC_INIT_CRASH_SOURCE: &str = r#"
 import std.io as Io
 import std.actor as Actor
-import std.actor (OneForOne)
+import std.actor (OneForOne, SupError)
 
 actor Doomed =
     state n: Int = 0
@@ -2105,7 +2105,7 @@ actor Doomed =
     init (d: Int) =
         n <- 10 / d
 
-fn spawn io main () -> Result Unit Text =
+fn spawn io main () -> Result Unit SupError =
     match Actor.supervise OneForOne 3 5000 [child Doomed (0)]
         Ok _ -> Io.println "unexpected-ok"
         Err _ -> Io.println "start-failed"
@@ -2143,7 +2143,7 @@ import std.io as Io
 import std.int as Int
 import std.time as Time
 import std.actor as Actor
-import std.actor (OneForOne, Transient, Noproc, Timeout)
+import std.actor (OneForOne, Transient, Noproc, Timeout, SupError)
 
 actor Counter =
     state count: Int = 0
@@ -2157,7 +2157,7 @@ actor Counter =
     on die (d: Int) =
         count <- 10 / d
 
-fn spawn io time main () -> Result Unit Text =
+fn spawn io time main () -> Result Unit SupError =
     let sup = Actor.supervise OneForOne 3 5000 []?
     let a = Actor.startChild sup (Actor.childId "a" (Actor.childRestart Transient (child Counter)))?
     a ! bump
@@ -2208,7 +2208,7 @@ import std.io as Io
 import std.int as Int
 import std.time as Time
 import std.actor as Actor
-import std.actor (OneForOne, Temporary, Noproc, Timeout)
+import std.actor (OneForOne, Temporary, Noproc, Timeout, SupError)
 
 actor Counter =
     state count: Int = 0
@@ -2222,7 +2222,7 @@ actor Counter =
     on die (d: Int) =
         count <- 10 / d
 
-fn spawn io time main () -> Result Unit Text =
+fn spawn io time main () -> Result Unit SupError =
     let sup = Actor.supervise OneForOne 3 5000 []?
     let c = Actor.startChild sup (Actor.childId "c" (Actor.childRestart Temporary (child Counter)))?
     c ! bump
@@ -2261,7 +2261,7 @@ const TERMINATE_ON_STOP_SOURCE: &str = r#"
 import std.io    as Io
 import std.time  as Time
 import std.actor as Actor
-import std.actor (OneForOne, ExitReason, Normal, NotRunning, Shutdown, Crashed)
+import std.actor (OneForOne, ExitReason, Normal, NotRunning, Shutdown, Crashed, SupError)
 
 actor Worker =
     state n: Int = 0
@@ -2276,12 +2276,12 @@ actor Worker =
             Shutdown -> Io.println "terminate-shutdown"
             Crashed m -> Io.println "terminate-crashed"
 
-fn io time main () -> Result Unit Text =
+fn io time main () -> Result Unit SupError =
     let sup = Actor.supervise OneForOne 3 5000 []?
     let _ = Actor.startChild sup (Actor.childId "w" (child Worker))?
     match Actor.stopChild sup "w"
         Ok _ -> Io.println "stop-ok"
-        Err e -> Io.println $"stop-failed=${e}"
+        Err _ -> Io.println "stop-failed"
     Time.sleep 300
     Io.println "main-done"
     Ok ()
@@ -2305,7 +2305,7 @@ import std.io    as Io
 import std.int   as Int
 import std.time  as Time
 import std.actor as Actor
-import std.actor (OneForOne, ExitReason, Normal, NotRunning, Shutdown, Crashed)
+import std.actor (OneForOne, ExitReason, Normal, NotRunning, Shutdown, Crashed, SupError)
 
 actor Worker =
     state n: Int = 0
@@ -2323,7 +2323,7 @@ actor Worker =
             Shutdown -> Io.println "terminate-shutdown"
             Crashed m -> Io.println "terminate-crashed"
 
-fn io time main () -> Result Unit Text =
+fn io time main () -> Result Unit SupError =
     let sup = Actor.supervise OneForOne 3 5000 []?
     let w = Actor.startChild sup (Actor.childId "w" (child Worker))?
     w ! explode 0
@@ -2473,6 +2473,113 @@ fn beam_e2e_a_crashed_payload_reads_as_a_sentence() {
     assert_eq!(
         payload, "divided by zero",
         "the payload should be that sentence and nothing else; whole output:\n{stdout}"
+    );
+}
+
+/// Every `SupError` variant is a value a program can match.
+///
+/// The supervisor operations answered `Result _ Text`, so telling "no such
+/// child" from "the supervisor is gone" meant comparing strings — and three of
+/// the strings a program could be handed were the names of Erlang atoms
+/// (`not_found`, `supervisor_not_running`). The spec had to write them down,
+/// because they were the whole API.
+const SUP_ERROR_VARIANTS_SOURCE: &str = r#"
+import std.io    as Io
+import std.actor as Actor
+import std.actor (OneForOne, SupError, NoSuchChild, ChildAlreadyRunning, SupervisorNotRunning, Failed)
+
+actor Worker =
+    state n: Int = 0
+
+    on work () -> Unit =
+        n <- n + 1
+
+fn describe (e: SupError) -> Text =
+    match e
+        NoSuchChild -> "no-such-child"
+        ChildAlreadyRunning -> "already-running"
+        SupervisorNotRunning -> "supervisor-gone"
+        Failed m -> $"failed=${m}"
+
+fn spawn io time main () -> Result Unit Text =
+    match Actor.supervise OneForOne 3 5000 []
+        Err e -> Io.println $"supervise=${describe e}"
+        Ok sup ->
+            match Actor.startChild sup (Actor.childId "w" (child Worker))
+                Err e -> Io.println $"first=${describe e}"
+                Ok _ ->
+                    match Actor.startChild sup (Actor.childId "w" (child Worker))
+                        Ok _ -> Io.println "dup=ok"
+                        Err e -> Io.println $"dup=${describe e}"
+                    match Actor.stopChild sup "ghost"
+                        Ok _ -> Io.println "missing=ok"
+                        Err e -> Io.println $"missing=${describe e}"
+    Ok ()
+"#;
+
+#[test]
+fn beam_e2e_supervisor_errors_are_matchable_values() {
+    let (stdout, _) = run_inline_actor_test("SupErrorVariants", SUP_ERROR_VARIANTS_SOURCE);
+    assert!(
+        stdout.contains("dup=already-running"),
+        "an occupied child id must arrive as ChildAlreadyRunning, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("missing=no-such-child"),
+        "an unregistered id must arrive as NoSuchChild, got:\n{stdout}"
+    );
+    // The whole point: no atom name reaches the program as its error text.
+    assert!(
+        !stdout.contains("not_found") && !stdout.contains("supervisor_not_running"),
+        "an Erlang atom name reached the program:\n{stdout}"
+    );
+}
+
+/// A supervisor past its restart intensity is gone, and says so as a variant.
+///
+/// This is the case the first version of the issue called unreachable from
+/// Ridge. It is reachable: an intensity of zero means the first child crash
+/// takes the supervisor with it.
+const SUP_ERROR_DEAD_SOURCE: &str = r#"
+import std.io    as Io
+import std.time  as Time
+import std.actor as Actor
+import std.actor (OneForOne, SupError, NoSuchChild, ChildAlreadyRunning, SupervisorNotRunning, Failed)
+
+actor Boom =
+    state n: Int = 0
+
+    on explode (d: Int) -> Unit =
+        n <- 10 / d
+
+fn describe (e: SupError) -> Text =
+    match e
+        NoSuchChild -> "no-such-child"
+        ChildAlreadyRunning -> "already-running"
+        SupervisorNotRunning -> "supervisor-gone"
+        Failed m -> $"failed=${m}"
+
+fn spawn io time main () -> Result Unit Text =
+    match Actor.supervise OneForOne 0 1000 []
+        Err e -> Io.println $"supervise=${describe e}"
+        Ok sup ->
+            match Actor.startChild sup (Actor.childId "b" (child Boom))
+                Err e -> Io.println $"first=${describe e}"
+                Ok w ->
+                    w ! explode 0
+                    Time.sleep 800
+                    match Actor.stopChild sup "b"
+                        Ok _ -> Io.println "stop=ok"
+                        Err e -> Io.println $"stop=${describe e}"
+    Ok ()
+"#;
+
+#[test]
+fn beam_e2e_a_dead_supervisor_answers_a_variant() {
+    let (stdout, _) = run_inline_actor_test("SupErrorDead", SUP_ERROR_DEAD_SOURCE);
+    assert!(
+        stdout.contains("stop=supervisor-gone"),
+        "a supervisor past its intensity must arrive as SupervisorNotRunning, got:\n{stdout}"
     );
 }
 
@@ -2757,7 +2864,7 @@ fn beam_e2e_watcher_actor_receives_down_in_on_down() {
 const MONITOR_SUPERVISED_RESTART_SOURCE: &str = r#"
 import std.io    as Io
 import std.actor as Actor
-import std.actor (OneForOne, ExitReason, Normal, NotRunning, Shutdown, Crashed)
+import std.actor (OneForOne, ExitReason, Normal, NotRunning, Shutdown, Crashed, SupError)
 
 actor Worker =
     state n: Int = 0
@@ -2765,7 +2872,7 @@ actor Worker =
     on explode (d: Int) -> Unit =
         n <- 10 / d
 
-fn spawn io time main () -> Result Unit Text =
+fn spawn io time main () -> Result Unit SupError =
     let sup = Actor.supervise OneForOne 3 5000 []?
     let w = Actor.startChild sup (Actor.childId "w" (child Worker))?
     let m = Actor.monitor w

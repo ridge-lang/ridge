@@ -214,6 +214,12 @@ const CONSTRUCTOR_EXPORTS: &[(&str, &str)] = &[
     ("std.actor", "Crashed"),
     // The `SendError` variant: same surfacing rule as `ExitReason`'s.
     ("std.actor", "MailboxFull"),
+    // The `SupError` variants: exported so a caller can match which supervisor
+    // operation failed, surfaced by text extraction only through the type name.
+    ("std.actor", "NoSuchChild"),
+    ("std.actor", "ChildAlreadyRunning"),
+    ("std.actor", "SupervisorNotRunning"),
+    ("std.actor", "Failed"),
 ];
 
 /// Compiler-known exports: names the manifest must carry so imports
@@ -381,13 +387,19 @@ fn signature_shape_consistency() {
             .collect();
 
         for (fn_name, ast_param_count) in &pub_fns {
-            // std.actor `supervise`/`childRestart` name the reconciled
-            // `Strategy`/`Restart` unions, so they are seeded via
+            // std.actor `supervise`/`startChild`/`stopChild` all answer the
+            // reconciled `SupError`, and `supervise`/`childRestart` also name
+            // `Strategy`/`Restart`, so they are seeded via
             // `reconciled_fn_scheme` rather than the `stdlib_signature`
             // table this shape check covers. `await` likewise names the
             // reconciled `ExitReason`. `tryAsk` is compiler-known
             // and has no `.ridge` body, so it never appears here.
-            if dotted == "std.actor" && matches!(*fn_name, "supervise" | "childRestart" | "await") {
+            if dotted == "std.actor"
+                && matches!(
+                    *fn_name,
+                    "supervise" | "startChild" | "stopChild" | "childRestart" | "await"
+                )
+            {
                 continue;
             }
             // std.query `orderSql`/`isAscending` reference the reconciled `SortOrder`

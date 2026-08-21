@@ -1719,29 +1719,13 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             // Monitor -> Unit
             Some(mono(ty_fn_pure(vec![ty_monitor(b)], ty_unit(b))))
         }
-        // Typed supervision. Cap-free, like `mailboxSize`. `supervise` and
-        // `childRestart` name the reconciled `Strategy` / `Restart` unions, so
-        // they are seeded via `reconciled_fn_scheme`, not here.
-        (STD_ACTOR, "startChild") => {
-            // forall a. Supervisor a -> ChildSpec a -> Result (Handle a) Text
-            Some(poly(
-                vec![A],
-                ty_fn_pure(
-                    vec![ty_supervisor(b, Type::Var(A)), ty_child_spec(b, Type::Var(A))],
-                    ty_result(b, ty_handle(b, Type::Var(A)), ty_text(b)),
-                ),
-            ))
-        }
-        (STD_ACTOR, "stopChild") => {
-            // forall a. Supervisor a -> Text -> Result Unit Text
-            Some(poly(
-                vec![A],
-                ty_fn_pure(
-                    vec![ty_supervisor(b, Type::Var(A)), ty_text(b)],
-                    ty_result(b, ty_unit(b), ty_text(b)),
-                ),
-            ))
-        }
+        // Typed supervision. Cap-free, like `mailboxSize`. All four of
+        // `supervise` / `startChild` / `stopChild` / `childRestart` name a
+        // reconciled union — `Strategy`, `Restart`, or the `SupError` all three
+        // of them now answer with — so they are seeded via
+        // `reconciled_fn_scheme`, not here. This table is consulted first, so
+        // an entry left behind here would quietly win and hand back the old
+        // `Text`.
         (STD_ACTOR, "whichChildren") => {
             // forall a. Supervisor a -> List (Text, Bool)
             Some(poly(
@@ -2195,7 +2179,14 @@ mod tests {
                             | "NotRunning"
                             | "Shutdown"
                             | "Crashed"
+                            | "SupError"
+                            | "NoSuchChild"
+                            | "ChildAlreadyRunning"
+                            | "SupervisorNotRunning"
+                            | "Failed"
                             | "supervise"
+                            | "startChild"
+                            | "stopChild"
                             | "childRestart"
                             | "await"
                     )

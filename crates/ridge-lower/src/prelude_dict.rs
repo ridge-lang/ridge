@@ -229,8 +229,8 @@ pub fn is_prelude_ord_instance(b: &BuiltinTyCons, class: ClassId, tycon: TyConId
 /// the set and the per-type conversion cannot drift apart: that drift is
 /// exactly what left two admitted types with no arm to render them.
 #[must_use]
-pub fn is_prelude_totext_instance(b: &BuiltinTyCons, class: ClassId, tycon: TyConId) -> bool {
-    class == TOTEXT_CLASS && prelude_totext_target(b, tycon).is_some()
+pub fn is_prelude_totext_instance(ctx: &mut LowerCtx<'_>, class: ClassId, tycon: TyConId) -> bool {
+    class == TOTEXT_CLASS && prelude_totext_target(ctx, tycon).is_some()
 }
 
 /// How a built-in `ToText` value is turned into text.
@@ -243,6 +243,10 @@ enum ToTextTarget {
     Ordering,
     /// `std.<module>.toText`.
     Module(&'static str),
+    /// One of std.actor's four error unions, reached through the private
+    /// bridge named here. They are reconciled rather than built-in, so they
+    /// carry no `BuiltinTyCons` handle and are matched by name.
+    ActorError(&'static str),
 }
 
 /// The conversion for a built-in the prelude registers a `ToText` instance for,
@@ -252,7 +256,18 @@ enum ToTextTarget {
 /// built-in `ToText` instance means adding one arm here and the matching arm in
 /// [`crate::interp::wrap_to_text`], which is what keeps a value rendered through
 /// a dictionary reading the same as one interpolated inline.
-fn prelude_totext_target(b: &BuiltinTyCons, tycon: TyConId) -> Option<ToTextTarget> {
+fn prelude_totext_target(ctx: &mut LowerCtx<'_>, tycon: TyConId) -> Option<ToTextTarget> {
+    for (name, bridge) in [
+        ("AskError", "_askErrorToText"),
+        ("SendError", "_sendErrorToText"),
+        ("ExitReason", "_exitReasonToText"),
+        ("SupError", "_supErrorToText"),
+    ] {
+        if ctx.lookup_tycon_by_name(name) == Some(tycon) {
+            return Some(ToTextTarget::ActorError(bridge));
+        }
+    }
+    let b = ctx.builtins;
     [
         (b.text, ToTextTarget::Identity),
         (b.ordering, ToTextTarget::Ordering),
@@ -291,13 +306,14 @@ pub fn synth_totext_dict(
     }
     // Resolve before touching `ctx`: declining after minting an id would leave a
     // gap in the id sequence for a dictionary that was never emitted.
-    let target = prelude_totext_target(ctx.builtins, tycon)?;
+    let target = prelude_totext_target(ctx, tycon)?;
     let arg = || param("__totext_x".to_string(), span);
     let x = local(ctx, "__totext_x", span);
     let body = match target {
         ToTextTarget::Identity => x,
         ToTextTarget::Ordering => stdlib_call(ctx, "std.list", "_orderingToText", vec![x], span),
         ToTextTarget::Module(module) => stdlib_call(ctx, module, "toText", vec![x], span),
+        ToTextTarget::ActorError(bridge) => stdlib_call(ctx, "std.actor", bridge, vec![x], span),
     };
     let to_text_fn = lambda(ctx, vec![arg()], body, span);
     Some(dict_map(ctx, "toText", to_text_fn, span))

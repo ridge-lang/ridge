@@ -1810,6 +1810,32 @@ pub fn register_stdlib_instances(
             });
     }
 
+    // `ToText` for std.actor's four error unions. Every error the module can
+    // hand a program renders itself, which is what lets one be the error type
+    // of `main` — the entry-point contract requires the instance, and a reader
+    // cannot supply it for a type declared here: no `deriving` of theirs
+    // applies and an instance in their workspace would be an orphan.
+    //
+    // Seeded on the same terms as the `Adapter` instances above: inserted for
+    // user workspaces, a no-op during the stdlib's own build where
+    // actor.ridge's source instances are collected directly.
+    if let Some(totext) = ct.id_by_name("ToText") {
+        for name in ["AskError", "SendError", "ExitReason", "SupError"] {
+            if let Some(&tycon) = reconciled_tycon_names.get(name) {
+                env.instances
+                    .entry((totext, smallvec![tycon]))
+                    .or_insert_with(|| InstanceInfo {
+                        def_module: None,
+                        methods: vec![("toText".to_string(), String::new())],
+                        ctx_constraints: vec![],
+                        head_var_positions: vec![],
+                        origin: InstanceOrigin::Explicit,
+                        span: ds,
+                    });
+            }
+        }
+    }
+
     // `Refinable (Query e a) (e -> Bool)`, `Refinable (Join e f a) (e -> f ->
     // Bool)`, and the same over `LeftJoin` — the unified `filter` instances from
     // std.repo. Each is keyed by the full head tuple: the receiver's reconciled

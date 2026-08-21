@@ -351,18 +351,18 @@ items:
       - name: workerId
         ty: Con(0)
       - name: limiter
-        ty: Con(11) [Con(107)]
-      - name: collector
         ty: Con(11) [Con(108)]
+      - name: collector
+        ty: Con(11) [Con(109)]
     init:
       caps: CapabilitySet(0)
       params:
         - name: id
           ty: Con(0)
         - name: l
-          ty: Con(11) [Con(107)]
-        - name: col
           ty: Con(11) [Con(108)]
+        - name: col
+          ty: Con(11) [Con(109)]
       body:
         Block(n139):
           Assign(n140) -> StateField(workerId):
@@ -586,7 +586,7 @@ items:
                                 caps: CapabilitySet(0)
                                 params:
                                   - name: w
-                                    ty: Con(11) [Con(109)]
+                                    ty: Con(11) [Con(110)]
                                 body:
                                   Send(n225) ! Handler(m0..run):
                                     handle:

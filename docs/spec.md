@@ -1753,8 +1753,14 @@ its callers fail.
 - A dead supervisor fails fast too. `whichChildren` has no error channel,
   so calling it on a dead supervisor exits the caller with
   `ridge_sup_noproc` rather than answering an empty list that would read as
-  "no children"; `startChild` and `stopChild` return
-  `Err "supervisor_not_running"`.
+  "no children"; `startChild` and `stopChild` answer
+  `Err SupervisorNotRunning`.
+- The supervisor operations report failure as `SupError`, not as text. A caller
+  matches `NoSuchChild`, `ChildAlreadyRunning` or `SupervisorNotRunning`, and
+  `Failed` carries whatever the runtime reported for anything else. This is the
+  same shape `?>` and `!` already use (`AskError`, `SendError`): a failure a
+  program is expected to handle is a value it can match, never a string it has
+  to compare.
 
 **`main`'s error type must be able to render itself.** A `main` returning
 `Result a E` requires `E` to have a `ToText` instance; without one the program

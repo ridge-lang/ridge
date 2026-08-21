@@ -1012,6 +1012,10 @@ A tuple meets a position expecting a different number of components.
 
 `?` is applied where the enclosing return type is neither `Result` nor `Option`.
 
+### T059
+
+`main` returns a `Result` whose error type has no `ToText` instance.
+
 ### T101
 
 The `@ffi` arity doesn't match the Ridge parameter count.

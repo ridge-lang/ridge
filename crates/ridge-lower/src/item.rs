@@ -47,8 +47,8 @@ use ridge_ast::{
     Attribute, Body, Expr, Ident, Param, Pattern, Span, Visibility,
 };
 use ridge_ir::{
-    CtorKind, IrConst, IrExpr, IrFfiFn, IrFn, IrItem, IrLit, IrMigration, IrParam, IrPrimitiveFn,
-    SymbolRef,
+    CtorKind, IrArm, IrConst, IrExpr, IrFfiFn, IrFn, IrItem, IrLit, IrMigration, IrParam, IrPat,
+    IrPrimitiveFn, SymbolRef,
 };
 use ridge_resolve::{NodeId, NodeKind};
 use ridge_typecheck::JsonPrim;
@@ -441,6 +441,117 @@ pub fn lower_item(ctx: &mut LowerCtx<'_>, item: &Item) -> Option<IrItem> {
     lower_item_multi(ctx, item).into_iter().next()
 }
 
+/// Rewrite `main`'s body so an `Err` payload leaves as `Text`.
+///
+/// ```text
+/// match <body> {
+///   Ok  __main_ok_N  -> Ok  __main_ok_N
+///   Err __main_err_N -> Err (toText __main_err_N)
+/// }
+/// ```
+///
+/// The shape is `lower_propagate_result`'s: take the `Result` apart and put it
+/// back with one arm rewritten. Conversion goes through the same
+/// `wrap_to_text` every string interpolation uses, so a type that prints inside
+/// `${…}` prints here — one instance, both surfaces.
+///
+/// Returns the body untouched when there is nothing to do: a `main` that
+/// returns no `Result`, or one whose error type is already `Text` (where
+/// `wrap_to_text` is the identity anyway, but skipping keeps the emitted code
+/// free of a `match` that would only rebuild what it took apart).
+fn wrap_main_err_as_text(
+    ctx: &mut LowerCtx<'_>,
+    body: IrExpr,
+    ret_ty: &Type,
+    span: Span,
+) -> IrExpr {
+    let b = ctx.builtins;
+    let Type::Con(tycon, args) = ret_ty else {
+        return body;
+    };
+    if *tycon != b.result || args.len() != 2 {
+        return body;
+    }
+    let err_ty = args[1].clone();
+    if matches!(&err_ty, Type::Con(id, _) if *id == b.text) {
+        return body;
+    }
+
+    let ok_name = ctx.fresh_local("__main_ok");
+    let err_name = ctx.fresh_local("__main_err");
+
+    let ok_arm = {
+        let local_id = ctx.fresh_id(None);
+        let construct_id = ctx.fresh_id(None);
+        IrArm {
+            pat: IrPat::Ctor {
+                sym: SymbolRef::Prelude { name: "Ok".into() },
+                fields: vec![],
+                args: vec![IrPat::Bind {
+                    name: ok_name.clone(),
+                    inner: None,
+                    span,
+                }],
+                span,
+            },
+            when: None,
+            body: IrExpr::Construct {
+                id: construct_id,
+                ctor: SymbolRef::Prelude { name: "Ok".into() },
+                fields: vec![(
+                    "$0".into(),
+                    IrExpr::Local {
+                        id: local_id,
+                        name: ok_name,
+                        span,
+                    },
+                )],
+                span,
+            },
+            span,
+        }
+    };
+
+    let err_arm = {
+        let local_id = ctx.fresh_id(None);
+        let construct_id = ctx.fresh_id(None);
+        let payload = IrExpr::Local {
+            id: local_id,
+            name: err_name.clone(),
+            span,
+        };
+        let as_text = crate::interp::wrap_to_text(ctx, payload, Some(err_ty), span);
+        IrArm {
+            pat: IrPat::Ctor {
+                sym: SymbolRef::Prelude { name: "Err".into() },
+                fields: vec![],
+                args: vec![IrPat::Bind {
+                    name: err_name,
+                    inner: None,
+                    span,
+                }],
+                span,
+            },
+            when: None,
+            body: IrExpr::Construct {
+                id: construct_id,
+                ctor: SymbolRef::Prelude { name: "Err".into() },
+                fields: vec![("$0".into(), as_text)],
+                span,
+            },
+            span,
+        }
+    };
+
+    let id = ctx.fresh_id(None);
+    IrExpr::Match {
+        id,
+        scrutinee: Box::new(body),
+        arms: vec![ok_arm, err_arm],
+        span,
+    }
+}
+
 /// Lower a top-level [`FnDecl`] to an [`IrFn`].
 ///
 /// # Type and capability wiring
@@ -554,6 +665,17 @@ pub fn lower_fn(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrFn {
         .collect();
 
     let is_main = decl.name.text == "main";
+
+    // `main`'s `Err` is converted here, at the one boundary it crosses. The
+    // runner projects the returned value onto stderr and an exit code, and by
+    // then the type is gone — several Ridge shapes share one Erlang shape, so
+    // anything it rendered would be a guess. T059 has already required the
+    // instance to exist; this is what calls it.
+    let body = if is_main {
+        wrap_main_err_as_text(ctx, body, &ret_ty, decl.span)
+    } else {
+        body
+    };
 
     // Read the effective capability set from Phase 4's inferred_caps side-table.
     let caps = ctx.lookup_inferred_caps(decl.span);

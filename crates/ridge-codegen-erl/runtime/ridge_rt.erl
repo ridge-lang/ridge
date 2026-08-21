@@ -35,6 +35,7 @@
     text_split_all/2, text_replace_all/3, text_join/2, text_slice/3,
     text_like/2, like_prefix/1, like_suffix/1, like_contains/1,
     list_fold/3, list_sort_by/2, list_sort_cmp/2, ord_compare_native/2, ordering_to_text/1,
+    actor_error_to_text/1,
     random_int/2, random_choice/1, random_float/0, random_float/1, random_alphanumeric/1, random_seed/1,
     env_get/1, env_all/0, env_all/1, env_set/2,
     proc_run/2,
@@ -1083,6 +1084,29 @@ ord_compare_native(A, B) when A < B -> 'Less';
 ord_compare_native(A, B) when A > B -> 'Greater';
 ord_compare_native(_, _) -> 'Equal'.
 
+%% actor_error_to_text/1 — the `toText` for std.actor's four error unions.
+%%
+%% One function for four types because their wire values are distinct atoms, and
+%% one place because the alternative is the same sentence written twice. Each
+%% says what happened rather than naming the variant: a program that logs the
+%% error prints something a person can read, and a program that wants to branch
+%% matches the variant instead.
+%%
+%% `Crashed` and `Failed` already carry text chosen elsewhere — the crash
+%% description and whatever the supervisor reported — so they pass it through
+%% rather than wrapping it in a second sentence.
+actor_error_to_text('Noproc')               -> <<"the actor is no longer running">>;
+actor_error_to_text('Timeout')              -> <<"no answer arrived within the deadline">>;
+actor_error_to_text('MailboxFull')          -> <<"the mailbox is full">>;
+actor_error_to_text('Normal')               -> <<"stopped normally">>;
+actor_error_to_text('NotRunning')           -> <<"was not running">>;
+actor_error_to_text('Shutdown')             -> <<"was shut down">>;
+actor_error_to_text('NoSuchChild')          -> <<"no child is registered under that id">>;
+actor_error_to_text('ChildAlreadyRunning')  -> <<"a child is already running under that id">>;
+actor_error_to_text('SupervisorNotRunning') -> <<"the supervisor is no longer running">>;
+actor_error_to_text({'Crashed', Msg})       -> Msg;
+actor_error_to_text({'Failed', Msg})        -> Msg.
+
 %% ordering_to_text/1 — the `toText` for the built-in `Ordering`. Renders the
 %% Ordering atom that `ord_compare_native` and a derived `compare` produce, so
 %% interpolating or deriving ToText over an Ordering value prints its name.
@@ -2019,9 +2043,9 @@ start_supervisor(Strategy, Intensity, PeriodMs, ChildSpecs) ->
             {ok, {ridge_sup, SupPid1}};
         {Ref, {error, Reason1}} ->
             demonitor(MonRef, [flush]),
-            {error, sup_error_binary(Reason1)};
+            {error, sup_error_wire(Reason1)};
         {'DOWN', MonRef, process, Starter, DownReason} ->
-            {error, sup_error_binary(DownReason)}
+            {error, sup_error_wire(DownReason)}
     end.
 
 %% start_supervised_child/2 — std.actor.startChild. Starts `Spec` as a
@@ -2037,9 +2061,9 @@ start_supervised_child({ridge_sup, SupPid}, Spec) when is_map(Spec) ->
         {ok, _Pid, _Info} ->
             {ok, sup_handle(SupPid, Normalized)};
         {error, Reason} ->
-            {error, sup_error_binary(Reason)};
+            {error, sup_error_wire(Reason)};
         {'EXIT', {noproc, _}} ->
-            {error, <<"supervisor_not_running">>}
+            {error, sup_error_wire(noproc)}
     end.
 
 %% stop_supervised_child/2 — std.actor.stopChild. Terminates the child AND
@@ -2052,12 +2076,12 @@ stop_supervised_child({ridge_sup, SupPid}, Id) ->
         ok ->
             case supervisor:delete_child(SupPid, Id) of
                 ok                -> {ok, ok};
-                {error, Reason}   -> {error, sup_error_binary(Reason)}
+                {error, Reason}   -> {error, sup_error_wire(Reason)}
             end;
         {error, Reason} ->
-            {error, sup_error_binary(Reason)};
+            {error, sup_error_wire(Reason)};
         {'EXIT', {noproc, _}} ->
-            {error, <<"supervisor_not_running">>}
+            {error, sup_error_wire(noproc)}
     end.
 
 %% which_children/1 — std.actor.whichChildren. Lists the supervisor's
@@ -2130,13 +2154,22 @@ sup_handle(SupPid, Spec) ->
         end,
     {ridge_sup_handle, SupPid, maps:get(id, Spec), Config}.
 
-%% sup_error_binary/1 — render an OTP supervisor error as the human-readable
-%% binary Ridge's `Text` error channel carries.
-sup_error_binary(already_present)       -> <<"child id already present">>;
-sup_error_binary({already_started, _})  -> <<"child already started">>;
-sup_error_binary(not_found)             -> <<"not_found">>;
-sup_error_binary(Reason) ->
-    iolist_to_binary(io_lib:format("~p", [Reason])).
+%% sup_error_wire/1 — map an OTP supervisor error onto `std.actor`'s `SupError`.
+%%
+%% The channel used to be `Text`, which meant a caller could only tell "no such
+%% child" from "the supervisor is gone" by comparing strings — and the spec had
+%% to write the strings down, because the strings were the whole API. Three of
+%% them were the names of Erlang atoms.
+%%
+%% `already_present` and `{already_started, _}` are one variant on purpose: they
+%% differ in whether the occupying child is running, and a caller who wanted
+%% that id gets the same answer either way.
+sup_error_wire(not_found)             -> 'NoSuchChild';
+sup_error_wire(already_present)       -> 'ChildAlreadyRunning';
+sup_error_wire({already_started, _})  -> 'ChildAlreadyRunning';
+sup_error_wire(noproc)                -> 'SupervisorNotRunning';
+sup_error_wire(Reason) ->
+    {'Failed', iolist_to_binary(io_lib:format("~p", [Reason]))}.
 
 %% exit_reason_to_ridge/1 — map an OTP exit reason to Ridge's `ExitReason`
 %% union wire values, delivered to an actor's `terminate` callback and to

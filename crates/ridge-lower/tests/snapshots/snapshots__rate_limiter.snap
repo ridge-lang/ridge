@@ -351,18 +351,18 @@ items:
       - name: workerId
         ty: Con(0)
       - name: limiter
-        ty: Con(11) [Con(107)]
-      - name: collector
         ty: Con(11) [Con(108)]
+      - name: collector
+        ty: Con(11) [Con(109)]
     init:
       caps: CapabilitySet(0)
       params:
         - name: id
           ty: Con(0)
         - name: l
-          ty: Con(11) [Con(107)]
-        - name: col
           ty: Con(11) [Con(108)]
+        - name: col
+          ty: Con(11) [Con(109)]
       body:
         Block(n139):
           Assign(n140) -> StateField(workerId):
@@ -528,86 +528,116 @@ items:
     ret_ty: Con(10) [Con(4), Con(12)]
     params: []
     body:
-      LetIn(n202):
-        pat:
-          Bind: limiter
-        value:
-          Spawn(n203) ActorType(Limiter @ m0):
-            args:
-              Lit(n204): Int(10)
-              Lit(n205): Float(2)
-        body:
-          LetIn(n206):
+      Match(n202):
+        scrutinee:
+          LetIn(n203):
             pat:
-              Bind: collector
+              Bind: limiter
             value:
-              Spawn(n207) ActorType(Collector @ m0):
-                args: []
+              Spawn(n204) ActorType(Limiter @ m0):
+                args:
+                  Lit(n205): Int(10)
+                  Lit(n206): Float(2)
             body:
-              LetIn(n208):
+              LetIn(n207):
                 pat:
-                  Bind: workers
+                  Bind: collector
                 value:
-                  Call(n209):
-                    callee:
-                      Symbol(n210): Stdlib(std.list.map)
-                    args:
-                      -
-                        Lambda(n211):
-                          caps: CapabilitySet(0)
-                          params:
-                            - name: id
-                              ty: Con(0)
-                          body:
-                            Spawn(n212) ActorType(Worker @ m0):
-                              args:
-                                Local(n213): id
-                                Local(n214): limiter
-                                Local(n215): collector
-                      -
-                        Call(n216):
-                          callee:
-                            Symbol(n217): Stdlib(std.list.range)
-                          args:
-                            -
-                              Lit(n218): Int(1)
-                            -
-                              Lit(n219): Int(5)
+                  Spawn(n208) ActorType(Collector @ m0):
+                    args: []
                 body:
-                  Block(n220):
-                    Call(n221):
-                      callee:
-                        Symbol(n222): Stdlib(std.list.forEach)
-                      args:
-                        -
-                          Lambda(n223):
-                            caps: CapabilitySet(0)
-                            params:
-                              - name: w
-                                ty: Con(11) [Con(109)]
-                            body:
-                              Send(n224) ! Handler(m0..run):
-                                handle:
-                                  Local(n225): w
-                        -
-                          Local(n226): workers
-                    Block(n227):
-                      Call(n228):
+                  LetIn(n209):
+                    pat:
+                      Bind: workers
+                    value:
+                      Call(n210):
                         callee:
-                          Symbol(n229): Stdlib(std.time.sleep)
+                          Symbol(n211): Stdlib(std.list.map)
                         args:
                           -
-                            Lit(n230): Int(6000)
-                      Block(n231):
-                        Call(n232):
+                            Lambda(n212):
+                              caps: CapabilitySet(0)
+                              params:
+                                - name: id
+                                  ty: Con(0)
+                              body:
+                                Spawn(n213) ActorType(Worker @ m0):
+                                  args:
+                                    Local(n214): id
+                                    Local(n215): limiter
+                                    Local(n216): collector
+                          -
+                            Call(n217):
+                              callee:
+                                Symbol(n218): Stdlib(std.list.range)
+                              args:
+                                -
+                                  Lit(n219): Int(1)
+                                -
+                                  Lit(n220): Int(5)
+                    body:
+                      Block(n221):
+                        Call(n222):
                           callee:
-                            Symbol(n233): Stdlib(std.io.println)
+                            Symbol(n223): Stdlib(std.list.forEach)
                           args:
                             -
-                              Lit(n234): Text("Done.")
-                        Call(n235):
-                          callee:
-                            Symbol(n236): Prelude(Ok)
-                          args:
+                              Lambda(n224):
+                                caps: CapabilitySet(0)
+                                params:
+                                  - name: w
+                                    ty: Con(11) [Con(110)]
+                                body:
+                                  Send(n225) ! Handler(m0..run):
+                                    handle:
+                                      Local(n226): w
                             -
-                              Lit(n237): Unit
+                              Local(n227): workers
+                        Block(n228):
+                          Call(n229):
+                            callee:
+                              Symbol(n230): Stdlib(std.time.sleep)
+                            args:
+                              -
+                                Lit(n231): Int(6000)
+                          Block(n232):
+                            Call(n233):
+                              callee:
+                                Symbol(n234): Stdlib(std.io.println)
+                              args:
+                                -
+                                  Lit(n235): Text("Done.")
+                            Call(n236):
+                              callee:
+                                Symbol(n237): Prelude(Ok)
+                              args:
+                                -
+                                  Lit(n238): Unit
+        arms:
+          -
+            pat:
+              Ctor: Prelude(Ok)
+                args:
+                  Bind: __main_ok_0
+            body:
+              Construct(n239):
+                ctor: Prelude(Ok)
+                fields:
+                  $0:
+                    Local(n240): __main_ok_0
+          -
+            pat:
+              Ctor: Prelude(Err)
+                args:
+                  Bind: __main_err_1
+            body:
+              Construct(n241):
+                ctor: Prelude(Err)
+                fields:
+                  $0:
+                    Call(n242):
+                      callee:
+                        Symbol(n243): Stdlib(std.error.toText)
+                      args:
+                        -
+                          Local(n244): __main_err_1

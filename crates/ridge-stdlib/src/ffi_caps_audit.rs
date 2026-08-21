@@ -1302,6 +1302,14 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         arity: 1,
         requires_caps: &[],
     },
+    // The toText bridge for std.actor's four error unions. One target, four
+    // Ridge declarations: the types differ, the rendering does not.
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "actor_error_to_text",
+        arity: 1,
+        requires_caps: &[],
+    },
     // ── ridge_rt timestamp (monotonic epoch read) ─────────────────────────────
     FfiAuditEntry {
         beam_module: "ridge_rt",

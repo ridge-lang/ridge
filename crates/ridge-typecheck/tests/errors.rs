@@ -1215,6 +1215,101 @@ pub fn f () -> { name: Int } = { name = \"a\" }
     );
 }
 
+// ── T059: main's error type has to be printable ───────────────────────────────
+
+/// A `main` whose error type cannot render itself is rejected, and the message
+/// names the type and the way out.
+///
+/// `Err` is the documented way for a Ridge program to fail, so this is the
+/// failure path most programs take on purpose — and it used to reach the
+/// terminal as an Erlang atom, quotes included.
+#[test]
+fn main_with_an_unprintable_error_type_is_rejected() {
+    let src = "\
+type MyErr = Boom | Fizzle
+
+pub fn main () -> Result Unit MyErr =
+    Err Boom
+";
+    let (errors, tycons) = run_typecheck_rendered("entry_err", src);
+    let rendered = errors
+        .iter()
+        .find(|e| matches!(e, TypeError::MainErrorNotShowable { .. }))
+        .map(|e| e.render(&tycons))
+        .expect("T059 reported");
+
+    assert!(rendered.contains("MyErr"), "must name the type: {rendered}");
+    assert!(
+        rendered.contains("ToText"),
+        "must name the class: {rendered}"
+    );
+    assert!(
+        rendered.contains("deriving"),
+        "must offer the way out: {rendered}"
+    );
+}
+
+/// `Result Unit Text` is the common case and must stay silent.
+///
+/// The first control: a rule that fired here would reject the shape the spec
+/// documents as the ordinary way to fail.
+#[test]
+fn main_returning_a_text_error_is_accepted() {
+    let src = "\
+pub fn main () -> Result Unit Text =
+    Err \"the input file has no header row\"
+";
+    let (errors, _) = run_typecheck_rendered("entry_text", src);
+    assert!(
+        !errors
+            .iter()
+            .any(|e| matches!(e, TypeError::MainErrorNotShowable { .. })),
+        "Text has a ToText instance; got {errors:?}"
+    );
+}
+
+/// A `main` that returns no `Result` has no error channel to check.
+///
+/// The second control: the rule reads two type arguments out of a `Result`, and
+/// a check that reached for them unconditionally would fire on every other
+/// return type in the language.
+#[test]
+fn main_returning_unit_is_not_a_result_and_is_left_alone() {
+    let src = "\
+pub fn main () -> Unit =
+    ()
+";
+    let (errors, _) = run_typecheck_rendered("entry_unit", src);
+    assert!(
+        !errors
+            .iter()
+            .any(|e| matches!(e, TypeError::MainErrorNotShowable { .. })),
+        "a non-Result main has no error type; got {errors:?}"
+    );
+}
+
+/// A user type that derives `ToText` satisfies the rule.
+///
+/// The third control, and the one that proves the check consults the instance
+/// registry rather than a hardcoded list of blessed types: the same `type`
+/// declaration passes or fails on the `deriving` clause alone.
+#[test]
+fn main_error_type_that_derives_to_text_is_accepted() {
+    let src = "\
+type MyErr = Boom | Fizzle deriving (ToText)
+
+pub fn main () -> Result Unit MyErr =
+    Err Boom
+";
+    let (errors, _) = run_typecheck_rendered("entry_derived", src);
+    assert!(
+        !errors
+            .iter()
+            .any(|e| matches!(e, TypeError::MainErrorNotShowable { .. })),
+        "a derived ToText satisfies the entry contract; got {errors:?}"
+    );
+}
+
 // ── T053 hint completeness ────────────────────────────────────────────────────
 
 /// The hint on `T053` names `Cli.args ()`, which is `env`-gated. A reader who

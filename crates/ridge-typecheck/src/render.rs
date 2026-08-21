@@ -814,6 +814,15 @@ impl TypeError {
                 )
             }
 
+            // ── T059 ──────────────────────────────────────────────────────────
+            Self::MainErrorNotShowable { ty, fix_hint, .. } => {
+                let ty = ty.render_in(tycons, namer);
+                write!(
+                    f,
+                    "`main` cannot report the failure it returns\n  its error type `{ty}` has no `ToText` instance, so a run that ends in `Err` has nothing to print\n  hint: {fix_hint}"
+                )
+            }
+
             // ── T054 ──────────────────────────────────────────────────────────
             Self::FieldAccessOnNonRecord {
                 ty,
@@ -938,6 +947,7 @@ impl HasErrorCode for TypeError {
             | Self::UnsupportedInstanceHead { span, .. }
             | Self::ArithmeticOnNonNumeric { span, .. }
             | Self::MainHasParams { span, .. }
+            | Self::MainErrorNotShowable { span, .. }
             | Self::FieldAccessOnNonRecord { span, .. }
             | Self::MissingConstraint { span, .. }
             | Self::InternalTypeError { span, .. } => *span,
@@ -2034,6 +2044,7 @@ mod tests {
             | TypeError::UnsupportedInstanceHead { .. }
             | TypeError::ArithmeticOnNonNumeric { .. }
             | TypeError::MainHasParams { .. }
+            | TypeError::MainErrorNotShowable { .. }
             | TypeError::FieldAccessOnNonRecord { .. }
             | TypeError::MissingConstraint { .. }
             | TypeError::UnknownTypeName { .. }
@@ -2358,6 +2369,12 @@ mod tests {
                 found: 1,
                 span: sp(),
             },
+            TypeError::MainErrorNotShowable {
+                ty: td(),
+                fix_hint: s(),
+                decl_site: None,
+                span: sp(),
+            },
             TypeError::FieldAccessOnNonRecord {
                 ty: td(),
                 field: s(),
@@ -2434,7 +2451,7 @@ mod tests {
         let mut seen: Vec<&'static str> = one_of_each().iter().map(TypeError::code).collect();
         seen.sort_unstable();
         seen.dedup();
-        assert_eq!(seen.len(), 57, "codes reached: {seen:?}");
+        assert_eq!(seen.len(), 58, "codes reached: {seen:?}");
     }
 
     /// One code, one variant.

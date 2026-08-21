@@ -885,6 +885,42 @@ pub enum TypeError {
         span: Span,
     },
 
+    // ── T059 ─────────────────────────────────────────────────────────────────
+    /// `main` returns a `Result` whose error type cannot be rendered as text.
+    ///
+    /// Returning `Err` is the documented way for a Ridge program to fail, so it
+    /// is the failure path most programs take on purpose. The runner projects
+    /// that value onto stderr and an exit code, and by then the type is gone —
+    /// several Ridge shapes share one Erlang shape, so anything the runtime
+    /// rendered there would be a guess, and it would guess wrong on exactly the
+    /// error types people define for themselves.
+    ///
+    /// So the requirement is a type rule, checked here: `main`'s error type must
+    /// have a `ToText` instance, and the program converts at the boundary. Rust
+    /// settles `fn main() -> Result<(), E>` the same way, with `E: Debug`.
+    ///
+    /// Distinct from `T029 NoInstance`, which fires where a *use* needs an
+    /// instance the author did not provide. This one fires on a signature that
+    /// names no class at all: nothing in `-> Result Unit MyErr` mentions
+    /// `ToText`, and the obligation comes from being the entry point.
+    MainErrorNotShowable {
+        /// Display name of the error type (e.g. `"MyErr"`).
+        ty: TypeDesc,
+        /// Context-specific fix suggestion shown below the main message.
+        fix_hint: String,
+        /// Where the error type is declared: the raw `ModuleId` and the span of
+        /// its `type` declaration. `None` for a type the reader cannot extend —
+        /// a built-in, or one that came from outside the workspace — which is
+        /// the same condition under which `fix_hint` stops offering `deriving`.
+        ///
+        /// Both halves travel together because neither is usable alone: a span
+        /// without its module points into whichever file the reader happens to
+        /// have open.
+        decl_site: Option<(u32, Span)>,
+        /// Source span of the `fn main` declaration.
+        span: Span,
+    },
+
     // ── T054 ─────────────────────────────────────────────────────────────────
     /// A field access `base.field` is applied to a non-record type.
     ///
@@ -1055,6 +1091,7 @@ impl TypeError {
             Self::UnsupportedInstanceHead { .. } => "T051",
             Self::ArithmeticOnNonNumeric { .. } => "T052",
             Self::MainHasParams { .. } => "T053",
+            Self::MainErrorNotShowable { .. } => "T059",
             Self::FieldAccessOnNonRecord { .. } => "T054",
             Self::MissingConstraint { .. } => "T055",
             Self::UnknownTypeName { .. } => "T056",

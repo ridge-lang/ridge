@@ -1,6 +1,5 @@
 ---
 source: crates/ridge-lower/tests/snapshots.rs
-assertion_line: 23
 expression: rendered
 ---
 module: m0
@@ -14,7 +13,7 @@ items:
     ret_ty: Con(2)
     params:
       - name: grid
-        ty: Con(107)
+        ty: Con(108)
       - name: r
         ty: Con(0)
       - name: c
@@ -157,7 +156,7 @@ items:
     ret_ty: Con(0)
     params:
       - name: grid
-        ty: Con(107)
+        ty: Con(108)
       - name: r
         ty: Con(0)
       - name: c
@@ -315,7 +314,7 @@ items:
     ret_ty: Con(2)
     params:
       - name: grid
-        ty: Con(107)
+        ty: Con(108)
       - name: r
         ty: Con(0)
       - name: c
@@ -382,10 +381,10 @@ items:
     pub: false
     main: false
     caps: CapabilitySet(0)
-    ret_ty: Con(107)
+    ret_ty: Con(108)
     params:
       - name: grid
-        ty: Con(107)
+        ty: Con(108)
     body:
       LetIn(n131):
         pat:
@@ -472,7 +471,7 @@ items:
     ret_ty: Con(4)
     params:
       - name: grid
-        ty: Con(107)
+        ty: Con(108)
     body:
       LetIn(n162):
         pat:
@@ -669,7 +668,7 @@ items:
     pub: false
     main: false
     caps: CapabilitySet(0)
-    ret_ty: Con(107)
+    ret_ty: Con(108)
     params:
       - name: r
         ty: Con(0)
@@ -703,7 +702,7 @@ items:
                       Local(n242): c
         body:
           Construct(n243):
-            ctor: Ctor(Record:Grid owner=107)
+            ctor: Ctor(Record:Grid owner=108)
             fields:
               rows:
                 Local(n244): r
@@ -736,14 +735,14 @@ items:
     pub: false
     main: false
     caps: CapabilitySet(0)
-    ret_ty: Con(107)
+    ret_ty: Con(108)
     params:
       - name: targetRow
         ty: Con(0)
       - name: targetCol
         ty: Con(0)
       - name: grid
-        ty: Con(107)
+        ty: Con(108)
     body:
       LetIn(n254):
         pat:
@@ -893,7 +892,7 @@ items:
     pub: false
     main: false
     caps: CapabilitySet(0)
-    ret_ty: Con(107)
+    ret_ty: Con(108)
     params:
       - name: rows
         ty: Con(0)
@@ -966,186 +965,216 @@ items:
     ret_ty: Con(10) [Con(4), Con(12)]
     params: []
     body:
-      LetIn(n329):
-        pat:
-          Bind: args
-        value:
-          Call(n330):
-            callee:
-              Symbol(n331): Stdlib(std.cli.args)
-            args: []
-        body:
-          LetIn(n332):
+      Match(n329):
+        scrutinee:
+          LetIn(n330):
             pat:
-              Bind: generations
+              Bind: args
             value:
-              Call(n333):
+              Call(n331):
                 callee:
-                  Symbol(n334): Stdlib(std.option.withDefault)
-                args:
-                  -
-                    Symbol(n335): Local(defaultGenerations @ m0)
-                  -
-                    Call(n336):
-                      callee:
-                        Symbol(n337): Stdlib(std.option.flatMap)
-                      args:
-                        -
-                          Symbol(n338): Stdlib(std.int.parse)
-                        -
-                          Call(n339):
-                            callee:
-                              Symbol(n340): Stdlib(std.list.head)
-                            args:
-                              -
-                                Local(n341): args
+                  Symbol(n332): Stdlib(std.cli.args)
+                args: []
             body:
-              LetIn(n342):
+              LetIn(n333):
                 pat:
-                  Bind: loop
+                  Bind: generations
                 value:
-                  Lambda(n343):
-                    caps: CapabilitySet(0)
-                    params:
-                      - name: gen
-                        ty: Con(0)
-                      - name: grid
-                        ty: Con(107)
-                    body:
-                      Match(n344):
-                        scrutinee:
-                          Call(n345):
-                            callee:
-                              Symbol(n346): Stdlib(std.op.gt)
-                            args:
+                  Call(n334):
+                    callee:
+                      Symbol(n335): Stdlib(std.option.withDefault)
+                    args:
+                      -
+                        Symbol(n336): Local(defaultGenerations @ m0)
+                      -
+                        Call(n337):
+                          callee:
+                            Symbol(n338): Stdlib(std.option.flatMap)
+                          args:
+                            -
+                              Symbol(n339): Stdlib(std.int.parse)
+                            -
+                              Call(n340):
+                                callee:
+                                  Symbol(n341): Stdlib(std.list.head)
+                                args:
+                                  -
+                                    Local(n342): args
+                body:
+                  LetIn(n343):
+                    pat:
+                      Bind: loop
+                    value:
+                      Lambda(n344):
+                        caps: CapabilitySet(0)
+                        params:
+                          - name: gen
+                            ty: Con(0)
+                          - name: grid
+                            ty: Con(108)
+                        body:
+                          Match(n345):
+                            scrutinee:
+                              Call(n346):
+                                callee:
+                                  Symbol(n347): Stdlib(std.op.gt)
+                                args:
+                                  -
+                                    Local(n348): gen
+                                  -
+                                    Lit(n349): Int(0)
+                            arms:
                               -
-                                Local(n347): gen
-                              -
-                                Lit(n348): Int(0)
-                        arms:
-                          -
-                            pat:
-                              Lit: Bool(true)
-                            body:
-                              Block(n349):
-                                Call(n350):
-                                  callee:
-                                    Symbol(n351): Stdlib(std.io.print)
-                                  args:
-                                    -
-                                      Lit(n352): Text("\u{1b}[2J\u{1b}[H")
-                                Block(n353):
-                                  Call(n354):
-                                    callee:
-                                      Symbol(n355): Stdlib(std.io.println)
-                                    args:
-                                      -
-                                        Call(n356):
-                                          callee:
-                                            Symbol(n357): Stdlib(std.text.concat)
-                                          args:
-                                            -
-                                              Call(n358):
-                                                callee:
-                                                  Symbol(n359): Stdlib(std.text.concat)
-                                                args:
-                                                  -
-                                                    Call(n360):
-                                                      callee:
-                                                        Symbol(n361): Stdlib(std.text.concat)
-                                                      args:
-                                                        -
-                                                          Lit(n362): Text("Generation ")
-                                                        -
-                                                          Call(n363):
-                                                            callee:
-                                                              Symbol(n364): Stdlib(std.int.toText)
-                                                            args:
-                                                              -
-                                                                Call(n365):
-                                                                  callee:
-                                                                    Symbol(n366): Stdlib(std.int.add)
-                                                                  args:
-                                                                    -
-                                                                      Call(n367):
-                                                                        callee:
-                                                                          Symbol(n368): Stdlib(std.int.sub)
-                                                                        args:
-                                                                          -
-                                                                            Local(n369): generations
-                                                                          -
-                                                                            Local(n370): gen
-                                                                    -
-                                                                      Lit(n371): Int(1)
-                                                  -
-                                                    Lit(n372): Text(" / ")
-                                            -
-                                              Call(n373):
-                                                callee:
-                                                  Symbol(n374): Stdlib(std.int.toText)
-                                                args:
-                                                  -
-                                                    Local(n375): generations
-                                  Block(n376):
-                                    Call(n377):
+                                pat:
+                                  Lit: Bool(true)
+                                body:
+                                  Block(n350):
+                                    Call(n351):
                                       callee:
-                                        Symbol(n378): Local(renderGrid @ m0)
+                                        Symbol(n352): Stdlib(std.io.print)
                                       args:
                                         -
-                                          Local(n379): grid
-                                    Block(n380):
-                                      Call(n381):
+                                          Lit(n353): Text("\u{1b}[2J\u{1b}[H")
+                                    Block(n354):
+                                      Call(n355):
                                         callee:
-                                          Symbol(n382): Stdlib(std.time.sleep)
+                                          Symbol(n356): Stdlib(std.io.println)
                                         args:
                                           -
-                                            Lit(n383): Int(200)
-                                      Call(n384):
-                                        callee:
-                                          Local(n385): loop
-                                        args:
-                                          -
-                                            Call(n386):
+                                            Call(n357):
                                               callee:
-                                                Symbol(n387): Stdlib(std.int.sub)
+                                                Symbol(n358): Stdlib(std.text.concat)
                                               args:
                                                 -
-                                                  Local(n388): gen
+                                                  Call(n359):
+                                                    callee:
+                                                      Symbol(n360): Stdlib(std.text.concat)
+                                                    args:
+                                                      -
+                                                        Call(n361):
+                                                          callee:
+                                                            Symbol(n362): Stdlib(std.text.concat)
+                                                          args:
+                                                            -
+                                                              Lit(n363): Text("Generation ")
+                                                            -
+                                                              Call(n364):
+                                                                callee:
+                                                                  Symbol(n365): Stdlib(std.int.toText)
+                                                                args:
+                                                                  -
+                                                                    Call(n366):
+                                                                      callee:
+                                                                        Symbol(n367): Stdlib(std.int.add)
+                                                                      args:
+                                                                        -
+                                                                          Call(n368):
+                                                                            callee:
+                                                                              Symbol(n369): Stdlib(std.int.sub)
+                                                                            args:
+                                                                              -
+                                                                                Local(n370): generations
+                                                                              -
+                                                                                Local(n371): gen
+                                                                        -
+                                                                          Lit(n372): Int(1)
+                                                      -
+                                                        Lit(n373): Text(" / ")
                                                 -
-                                                  Lit(n389): Int(1)
-                                          -
-                                            Call(n390):
-                                              callee:
-                                                Symbol(n391): Local(step @ m0)
-                                              args:
-                                                -
-                                                  Local(n392): grid
-                          -
-                            pat:
-                              Lit: Bool(false)
-                            body:
-                              Return(n393):
-                                Lit(n394): Unit
-                body:
-                  Block(n395):
-                    Call(n396):
+                                                  Call(n374):
+                                                    callee:
+                                                      Symbol(n375): Stdlib(std.int.toText)
+                                                    args:
+                                                      -
+                                                        Local(n376): generations
+                                      Block(n377):
+                                        Call(n378):
+                                          callee:
+                                            Symbol(n379): Local(renderGrid @ m0)
+                                          args:
+                                            -
+                                              Local(n380): grid
+                                        Block(n381):
+                                          Call(n382):
+                                            callee:
+                                              Symbol(n383): Stdlib(std.time.sleep)
+                                            args:
+                                              -
+                                                Lit(n384): Int(200)
+                                          Call(n385):
+                                            callee:
+                                              Local(n386): loop
+                                            args:
+                                              -
+                                                Call(n387):
+                                                  callee:
+                                                    Symbol(n388): Stdlib(std.int.sub)
+                                                  args:
+                                                    -
+                                                      Local(n389): gen
+                                                    -
+                                                      Lit(n390): Int(1)
+                                              -
+                                                Call(n391):
+                                                  callee:
+                                                    Symbol(n392): Local(step @ m0)
+                                                  args:
+                                                    -
+                                                      Local(n393): grid
+                              -
+                                pat:
+                                  Lit: Bool(false)
+                                body:
+                                  Return(n394):
+                                    Lit(n395): Unit
+                    body:
+                      Block(n396):
+                        Call(n397):
+                          callee:
+                            Local(n398): loop
+                          args:
+                            -
+                              Local(n399): generations
+                            -
+                              Call(n400):
+                                callee:
+                                  Symbol(n401): Local(gliderGrid @ m0)
+                                args:
+                                  -
+                                    Lit(n402): Int(20)
+                                  -
+                                    Lit(n403): Int(40)
+                        Call(n404):
+                          callee:
+                            Symbol(n405): Prelude(Ok)
+                          args:
+                            -
+                              Lit(n406): Unit
+        arms:
+          -
+            pat:
+              Ctor: Prelude(Ok)
+                args:
+                  Bind: __main_ok_3
+            body:
+              Construct(n407):
+                ctor: Prelude(Ok)
+                fields:
+                  $0:
+                    Local(n408): __main_ok_3
+          -
+            pat:
+              Ctor: Prelude(Err)
+                args:
+                  Bind: __main_err_4
+            body:
+              Construct(n409):
+                ctor: Prelude(Err)
+                fields:
+                  $0:
+                    Call(n410):
                       callee:
-                        Local(n397): loop
+                        Symbol(n411): Stdlib(std.error.toText)
                       args:
                         -
-                          Local(n398): generations
-                        -
-                          Call(n399):
-                            callee:
-                              Symbol(n400): Local(gliderGrid @ m0)
-                            args:
-                              -
-                                Lit(n401): Int(20)
-                              -
-                                Lit(n402): Int(40)
-                    Call(n403):
-                      callee:
-                        Symbol(n404): Prelude(Ok)
-                      args:
-                        -
-                          Lit(n405): Unit
+                          Local(n412): __main_err_4

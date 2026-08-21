@@ -2288,6 +2288,41 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: false,
             is_anon: false,
         },
+        // `std.actor` — why a supervisor operation failed. Variants lower to
+        // `'NoSuchChild'` / `'ChildAlreadyRunning'` / `'SupervisorNotRunning'`
+        // / `{'Failed', Text}`, which `ridge_rt` returns inside the
+        // `{error, Variant}` tuple. Appended last so it disturbs no earlier
+        // reconciled id.
+        TyConDecl {
+            id: TyConId(base + 46),
+            name: "SupError".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "NoSuchChild".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "ChildAlreadyRunning".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "SupervisorNotRunning".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "Failed".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(b.text, vec![])]),
+                    },
+                ],
+            }),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
         // `std.cli` — the result of parsing argv: long flags with values, bare
         // switches, and everything left over.
         TyConDecl {
@@ -2382,6 +2417,10 @@ pub(crate) fn reconciled_ctor_scheme(
     clippy::too_many_lines,
     reason = "one match arm per reconciled stdlib function; the arms read best kept together"
 )]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "a flat dispatch table, not branching logic: every arm is the same lookup-then-build shape, and splitting it would scatter one lookup across several functions"
+)]
 pub(crate) fn reconciled_fn_scheme(
     module: &str,
     name: &str,
@@ -2458,6 +2497,7 @@ pub(crate) fn reconciled_fn_scheme(
         // it. Cap-free, like `mailboxSize`.
         ("std.actor", "supervise") => {
             let strategy = *reconciled.get("Strategy")?;
+            let sup_error = *reconciled.get("SupError")?;
             let a = TyVid(0);
             Some(Scheme {
                 vars: vec![a],
@@ -2474,8 +2514,58 @@ pub(crate) fn reconciled_fn_scheme(
                         b.result,
                         vec![
                             Type::Con(b.supervisor, vec![Type::Var(a)]),
-                            Type::Con(b.text, vec![]),
+                            Type::Con(sup_error, vec![]),
                         ],
+                    )),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![],
+            })
+        }
+        // std.actor `startChild : ∀a. Supervisor a -> ChildSpec a -> Result (Handle a) SupError`
+        // — starts a dynamic child. Here rather than in the signature table
+        // because it names the reconciled `SupError`.
+        ("std.actor", "startChild") => {
+            let sup_error = *reconciled.get("SupError")?;
+            let a = TyVid(0);
+            Some(Scheme {
+                vars: vec![a],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![
+                        Type::Con(b.supervisor, vec![Type::Var(a)]),
+                        Type::Con(b.child_spec, vec![Type::Var(a)]),
+                    ],
+                    ret: Box::new(Type::Con(
+                        b.result,
+                        vec![
+                            Type::Con(b.handle, vec![Type::Var(a)]),
+                            Type::Con(sup_error, vec![]),
+                        ],
+                    )),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![],
+            })
+        }
+        // std.actor `stopChild : ∀a. Supervisor a -> Text -> Result Unit SupError`
+        // — terminates and deletes a child by id. Same reason as `startChild`.
+        ("std.actor", "stopChild") => {
+            let sup_error = *reconciled.get("SupError")?;
+            let a = TyVid(0);
+            Some(Scheme {
+                vars: vec![a],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![
+                        Type::Con(b.supervisor, vec![Type::Var(a)]),
+                        Type::Con(b.text, vec![]),
+                    ],
+                    ret: Box::new(Type::Con(
+                        b.result,
+                        vec![Type::Con(b.unit, vec![]), Type::Con(sup_error, vec![])],
                     )),
                     caps: CapRow::Concrete(CapabilitySet::PURE),
                 },

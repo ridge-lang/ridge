@@ -163,6 +163,50 @@ fn lower_part(ctx: &mut LowerCtx<'_>, part: &InterpPart, _span: Span) -> IrExpr 
     }
 }
 
+/// The private `toText` bridge for one of std.actor's error unions, if
+/// `tycon_id` names one.
+///
+/// Matched by name rather than through a `BuiltinTyCons` field because these
+/// live in the reconciled block, which the builtins table has no handle on.
+fn actor_error_to_text_fn(ctx: &mut LowerCtx<'_>, tycon_id: TyConId) -> Option<&'static str> {
+    [
+        ("AskError", "_askErrorToText"),
+        ("SendError", "_sendErrorToText"),
+        ("ExitReason", "_exitReasonToText"),
+        ("SupError", "_supErrorToText"),
+    ]
+    .into_iter()
+    .find(|(ty, _)| ctx.lookup_tycon_by_name(ty) == Some(tycon_id))
+    .map(|(_, f)| f)
+}
+
+/// Build `Call(Stdlib { module: "std.actor", name }, [arg])`.
+///
+/// Four names for one Erlang function: Ridge is typed, so each union needs its
+/// own declaration, and they all bridge to the same clause set.
+fn make_actor_error_to_text_call(
+    ctx: &mut LowerCtx<'_>,
+    arg: IrExpr,
+    fn_name: &str,
+    span: Span,
+) -> IrExpr {
+    let sym_id = ctx.fresh_id(None);
+    let call_id = ctx.fresh_id(None);
+    IrExpr::Call {
+        id: call_id,
+        callee: Box::new(IrExpr::Symbol {
+            id: sym_id,
+            sym: SymbolRef::Stdlib {
+                module: "std.actor".into(),
+                name: fn_name.into(),
+            },
+            span,
+        }),
+        args: vec![arg],
+        span,
+    }
+}
+
 /// Attempt to look up the type of an expression from the `node_types` side-table.
 ///
 /// Uses `node_id_map` to resolve the expression's `Span` to a compact sequential
@@ -195,7 +239,12 @@ fn lookup_expr_type(ctx: &LowerCtx<'_>, expr: &Expr) -> Option<Type> {
               together: the first has to sit above the catch-all and the second \
               below it, and they pass through for unrelated reasons"
 )]
-fn wrap_to_text(ctx: &mut LowerCtx<'_>, inner: IrExpr, ty: Option<Type>, span: Span) -> IrExpr {
+pub(crate) fn wrap_to_text(
+    ctx: &mut LowerCtx<'_>,
+    inner: IrExpr,
+    ty: Option<Type>,
+    span: Span,
+) -> IrExpr {
     // Copied out before `ctx` is borrowed mutably by the arms; the table
     // outlives the context, so this is a second shared borrow, not a clone.
     let b = ctx.builtins;
@@ -252,6 +301,18 @@ fn wrap_to_text(ctx: &mut LowerCtx<'_>, inner: IrExpr, ty: Option<Type>, span: S
             } else {
                 ctx.errors.push(LowerError::ToTextLowering { span });
                 inner
+            }
+        }
+
+        // ── std.actor's error unions — the same bridge the dictionary uses ───
+        // The twin of the `prelude_totext_target` arm, and the reason that
+        // table's doc asks for both: a value rendered through a dictionary and
+        // one interpolated inline have to read identically, and they only do
+        // while both routes name the same bridge.
+        Some(Type::Con(tycon_id, _)) if actor_error_to_text_fn(ctx, tycon_id).is_some() => {
+            match actor_error_to_text_fn(ctx, tycon_id) {
+                Some(fn_name) => make_actor_error_to_text_call(ctx, inner, fn_name, span),
+                None => inner,
             }
         }
 

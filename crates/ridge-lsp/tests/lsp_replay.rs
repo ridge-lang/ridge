@@ -4837,6 +4837,93 @@ async fn test_code_action_adds_missing_capability() {
 }
 
 #[tokio::test]
+async fn test_code_action_derives_to_text_for_mains_error_type() {
+    // `main` returns `Result Unit MyErr` and `MyErr` cannot render itself, so
+    // the type checker raises T059. The action is offered on `main` — where the
+    // reader sees the squiggle — and edits the `type`, which is where the
+    // obligation is actually discharged.
+    let src = "type MyErr = Boom | Fizzle\n\npub fn main () -> Result Unit MyErr =\n    Err Boom\n";
+    let (service, _socket, uri) = cap_workspace_fixture(src).await;
+    let server = service.inner();
+
+    let resp = server
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(2, 7),
+                end: Position::new(2, 7),
+            },
+            context: CodeActionContext::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code_action ok")
+        .expect("a quick-fix is offered on `main`");
+
+    let CodeActionOrCommand::CodeAction(action) = &resp[0] else {
+        panic!("expected a CodeAction, got {:?}", resp[0]);
+    };
+    assert_eq!(action.title, "Add `deriving (ToText)` to `MyErr`");
+    assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+
+    // The edit appends the clause at the end of the type declaration — line 0,
+    // just past `Fizzle`.
+    let edits = action
+        .edit
+        .as_ref()
+        .and_then(|e| e.changes.as_ref())
+        .and_then(|c| c.get(&uri))
+        .expect("an edit for this document");
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].new_text, " deriving (ToText)");
+    assert_eq!(edits[0].range.start, Position::new(0, 26));
+    assert_eq!(edits[0].range.end, Position::new(0, 26));
+}
+
+#[tokio::test]
+async fn test_code_action_extends_an_existing_deriving_clause() {
+    // The control for the test above: the same obligation, but the type already
+    // derives something. Appending a second clause would not parse, so the fix
+    // has to grow the list it found rather than write a new one.
+    let src = "type MyErr = Boom | Fizzle deriving (Eq)\n\npub fn main () -> Result Unit MyErr =\n    Err Boom\n";
+    let (service, _socket, uri) = cap_workspace_fixture(src).await;
+    let server = service.inner();
+
+    let resp = server
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(2, 7),
+                end: Position::new(2, 7),
+            },
+            context: CodeActionContext::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code_action ok")
+        .expect("a quick-fix is offered on `main`");
+
+    let CodeActionOrCommand::CodeAction(action) = &resp[0] else {
+        panic!("expected a CodeAction, got {:?}", resp[0]);
+    };
+    let edits = action
+        .edit
+        .as_ref()
+        .and_then(|e| e.changes.as_ref())
+        .and_then(|c| c.get(&uri))
+        .expect("an edit for this document");
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].new_text, ", ToText");
+    // Immediately after `Eq` and inside the parentheses: `Eq` sits at columns
+    // 37-38, so its span ends at 39, one before the closing paren. The result
+    // reads `deriving (Eq, ToText)`.
+    assert_eq!(edits[0].range.start, Position::new(0, 39));
+    assert_eq!(edits[0].range.end, Position::new(0, 39));
+}
+
+#[tokio::test]
 async fn test_code_action_adds_missing_capability_to_terminate() {
     // The terminate callback's body is caps-checked like init's: calling
     // `Io.println` without declaring `io` raises T014, and the quick-fix

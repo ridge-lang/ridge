@@ -67,6 +67,21 @@ pub type AskError = Noproc | Timeout
 -- are not errors — the message is silently dropped, as with `!`.
 pub type SendError = | MailboxFull
 
+-- Why a supervisor operation failed: no child is registered under that id
+-- (`NoSuchChild`), one already is (`ChildAlreadyRunning`), or the supervisor
+-- itself is gone (`SupervisorNotRunning`).
+--
+-- `Failed` is everything else — a child whose own start returned an error, or
+-- a condition Ridge has no variant for — and it carries what the runtime
+-- reported. It is deliberately not named for one path: `stopChild` can fail
+-- for reasons that have nothing to do with starting, and a variant named
+-- `StartFailed` would be wrong on every one of them.
+--
+-- The first three are matched, not compared. Variants lower to
+-- `'NoSuchChild'` / `'ChildAlreadyRunning'` / `'SupervisorNotRunning'` /
+-- `{'Failed', Text}`.
+pub type SupError = NoSuchChild | ChildAlreadyRunning | SupervisorNotRunning | Failed Text
+
 -- Why an actor stopped. Delivered to its `terminate` callback and to
 -- monitor consumers (`await`, `onDown`): the process stopped normally
 -- (`Normal` — e.g. via `Actor.stop`), was already dead when monitored
@@ -79,27 +94,47 @@ pub type SendError = | MailboxFull
 -- `{'Crashed', Text}`; the runtime maps OTP reasons at the boundary.
 pub type ExitReason = Normal | NotRunning | Shutdown | Crashed Text
 
+-- Internal: the `toText` bridges for this module's four error unions. Every
+-- error a program can be handed here renders itself, which is what lets one be
+-- the error type of `main`. Ridge is typed, so each union needs its own
+-- declaration; all four reach the same runtime clause set, which is the one
+-- place the wording lives.
+@ffi("ridge_rt", "actor_error_to_text", 1)
+fn _askErrorToText (e: AskError) -> Text
+
+@ffi("ridge_rt", "actor_error_to_text", 1)
+fn _sendErrorToText (e: SendError) -> Text
+
+@ffi("ridge_rt", "actor_error_to_text", 1)
+fn _exitReasonToText (e: ExitReason) -> Text
+
+@ffi("ridge_rt", "actor_error_to_text", 1)
+fn _supErrorToText (e: SupError) -> Text
+
 -- Start a supervisor over `children`. `intensity` and `period` bound the
 -- restart rate: more than `intensity` restarts within `period` milliseconds
 -- and the supervisor itself terminates. (`period` is expressed in
 -- milliseconds for uniformity with the rest of the surface; OTP tracks it
 -- in whole seconds, so the value is rounded up to the nearest second.)
--- Returns the supervisor reference, or an error text when the supervisor
--- could not start.
+-- Returns the supervisor reference, or `Failed` when it could not start.
 --
 -- Cap-free: the child specs are the proof of intent. See spec §6.4.1.
 @ffi("ridge_rt", "start_supervisor", 4)
-pub fn supervise (strategy: Strategy) (intensity: Int) (period: Int) (children: List (ChildSpec a)) -> Result (Supervisor a) Text
+pub fn supervise (strategy: Strategy) (intensity: Int) (period: Int) (children: List (ChildSpec a)) -> Result (Supervisor a) SupError
 
 -- Start `spec` as a dynamic child of a running supervisor, returning the
--- child actor's handle, or an error text when the child failed to start.
+-- child actor's handle. Fails with `ChildAlreadyRunning` when the id is
+-- taken, `SupervisorNotRunning` when the supervisor is gone, and
+-- `Failed` when the child's own start returned an error.
 @ffi("ridge_rt", "start_supervised_child", 2)
-pub fn startChild (sup: Supervisor a) (spec: ChildSpec a) -> Result (Handle a) Text
+pub fn startChild (sup: Supervisor a) (spec: ChildSpec a) -> Result (Handle a) SupError
 
--- Stop the child registered under `id` (see `childId`). Returns an error
--- text when no such child is running.
+-- Stop the child registered under `id` (see `childId`). Fails with
+-- `NoSuchChild` when no child is registered under it — which is also what a
+-- second `stopChild` on the same id answers, since the first one removes the
+-- registration — and `SupervisorNotRunning` when the supervisor is gone.
 @ffi("ridge_rt", "stop_supervised_child", 2)
-pub fn stopChild (sup: Supervisor a) (id: Text) -> Result Unit Text
+pub fn stopChild (sup: Supervisor a) (id: Text) -> Result Unit SupError
 
 -- Ask the process behind `handle` to stop normally: its `terminate`
 -- callback runs with `Normal`, monitors receive a DOWN with `Normal`, and

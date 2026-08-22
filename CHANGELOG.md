@@ -42,6 +42,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Hovering a built-in type name says what the type is. `Int`, `Text`, `List`
+  and the rest have no declaration for the editor to lift a card from, so a
+  hover came back empty — which reads as the editor not recognising the name
+  rather than as the name being part of the language. The few that a standard
+  library module happens to export were worse off than empty: `Option`,
+  `Result`, `Ordering` and `JsonValue` answered with the bare word under a
+  "stdlib" label, which looks like an answer and carries nothing. Every
+  built-in now cards. The signature line gives the type parameters names, so
+  `Result` reads as `Result value error` rather than as two letters the reader
+  was already looking at, and the card states the property worth knowing where
+  there is one — hovering `Int` gives the range it holds and says that leaving
+  it raises instead of wrapping. A type declared in the workspace still wins
+  over a built-in of the same name, since that is the declaration the reader
+  wrote. Completion in a type position reads the same text, so the two surfaces
+  cannot drift into describing a type differently, and a test walks the
+  compiler's own table of built-ins and fails when one of them arrives without
+  a card.
+
 - `deriving (Encode)` no longer accepts a field it cannot encode. A field type
   with no instance was recorded as "this value is already a `JsonValue`", so
   the derived `encode` handed the raw runtime value to the JSON encoder: a

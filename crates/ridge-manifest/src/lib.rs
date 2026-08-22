@@ -30,7 +30,7 @@ pub mod workspace;
 // ── Flat re-exports (convenience surface) ────────────────────────────────────
 
 pub use error::ManifestError;
-pub use find::find_workspace_root;
+pub use find::{find_workspace_root, WorkspaceRoot};
 pub use globs::{CompiledGlob, GlobError, GlobPattern};
 pub use project::{parse_project, Project, ProjectDependency, ProjectKind};
 pub use workspace::{parse_workspace, ForbidRule, GitRev, SharedDependency, WorkspaceManifest};

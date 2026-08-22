@@ -22,7 +22,6 @@ use ridge_driver::{
     collect_bundle_beams, compile_workspace, manifest_path_for, plan_reload, snapshot_vsn,
     CheckOptions, CompileOptions, EmitArtefacts, Profile, ToolchainError, WorkspaceSnapshot,
 };
-use ridge_manifest::find_workspace_root;
 
 use crate::error::CliError;
 
@@ -86,7 +85,7 @@ pub fn execute(args: &ReloadArgs, cwd: &Path) -> Result<(), CliError> {
         return Err(CliError::AlreadyReported);
     }
 
-    let root = find_workspace_root(cwd).ok_or_else(|| CliError::no_workspace_root(cwd))?;
+    let root = crate::cmd::workspace_root_for(cwd)?;
     let snapshot = args
         .snapshot
         .clone()
@@ -120,7 +119,7 @@ pub fn execute(args: &ReloadArgs, cwd: &Path) -> Result<(), CliError> {
 /// `ridge reload --node` would diff against a build the node never ran
 /// and refuse on a base-version mismatch forever.
 fn execute_apply(args: &ReloadArgs, cwd: &Path) -> Result<(), CliError> {
-    let root = find_workspace_root(cwd).ok_or_else(|| CliError::no_workspace_root(cwd))?;
+    let root = crate::cmd::workspace_root_for(cwd)?;
     let profile = if args.release {
         Profile::Release
     } else {

@@ -18,6 +18,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 use ridge_diagnostics::Diagnostic;
+use ridge_resolve::ManifestError;
 
 use crate::sources::WorkspaceSourceCache;
 
@@ -146,6 +147,11 @@ pub enum CompileError {
     #[error(transparent)]
     Workspace(#[from] WorkspaceError),
 
+    /// The workspace manifest was found, read, and rejected. See
+    /// [`CheckError::WorkspaceManifest`].
+    #[error("{}", render_manifest_errors(.0))]
+    WorkspaceManifest(Vec<ManifestError>),
+
     /// `C010` — the Ridge standard library could not be compiled to BEAM.
     ///
     /// Only fatal when the caller is about to execute what it built
@@ -201,9 +207,13 @@ impl CompileError {
     /// second code for the same failure is how a reader ends up with two
     /// things to search for and one of them useless.
     #[must_use]
-    pub const fn code(&self) -> Option<&'static str> {
+    pub fn code(&self) -> Option<&'static str> {
         Some(match self {
             Self::Workspace(e) => e.code(),
+            // The first error's code; the caller prints them all.
+            Self::WorkspaceManifest(errors) => errors
+                .first()
+                .map_or("M001", ridge_resolve::ManifestError::code),
             Self::StdlibBundleFailed { .. } => "C010",
             Self::Io { .. } => "C012",
             Self::PkgResolutionFailed { .. } => return None,
@@ -230,14 +240,28 @@ pub enum CheckError {
     /// The workspace could not be read — `C001`, `C002` or `C003`.
     #[error(transparent)]
     Workspace(#[from] WorkspaceError),
+
+    /// The workspace manifest was found, read, and rejected.
+    ///
+    /// Separate from [`WorkspaceError::NoWorkspaceRoot`] because the two are
+    /// not the same situation and used to be reported as though they were. A
+    /// manifest that will not parse, or that is missing a required field, is a
+    /// file the reader can open and fix; answering "no workspace manifest
+    /// found" sends them looking for something that is already in front of
+    /// them.
+    #[error("{}", render_manifest_errors(.0))]
+    WorkspaceManifest(Vec<ManifestError>),
 }
 
 impl CheckError {
     /// The stable code for this failure.
     #[must_use]
-    pub const fn code(&self) -> &'static str {
+    pub fn code(&self) -> &'static str {
         match self {
             Self::Workspace(e) => e.code(),
+            // The first error's code: the caller prints them all, and a single
+            // code is only ever used to label the failure as a whole.
+            Self::WorkspaceManifest(errors) => errors.first().map_or("M001", ManifestError::code),
         }
     }
 
@@ -246,6 +270,23 @@ impl CheckError {
     pub const fn no_workspace_root(path: PathBuf) -> Self {
         Self::Workspace(WorkspaceError::NoWorkspaceRoot { path })
     }
+}
+
+// ── Workspace-manifest rejection ──────────────────────────────────────────────
+
+/// Render the manifest errors that stopped discovery, one per line.
+///
+/// Each keeps the code the manifest parser gave it, so `M006` reaches the
+/// reader as `M006` and not as a fatal `C001` about a file that is right there.
+fn render_manifest_errors(errors: &[ManifestError]) -> String {
+    errors
+        .iter()
+        .map(|e| format!("[{}] {e}", e.code()))
+        .collect::<Vec<_>>()
+        .join(
+            "
+",
+        )
 }
 
 // ── CompileDiagnostics payload ────────────────────────────────────────────────
@@ -347,7 +388,7 @@ impl RunError {
     /// [`Self::CompileFailed`] forwards whatever the compile phase answered,
     /// including its `None`.
     #[must_use]
-    pub const fn code(&self) -> Option<&'static str> {
+    pub fn code(&self) -> Option<&'static str> {
         Some(match self {
             Self::CompileFailed(e) => return e.code(),
             Self::Toolchain(e) => e.code(),

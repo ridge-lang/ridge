@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use ridge_diagnostics::Diagnostic;
 use ridge_lower::lower_workspace;
-use ridge_manifest::find_workspace_root;
+use ridge_manifest::{find_workspace_root, WorkspaceRoot};
 use ridge_reload::VersionHistory;
 use ridge_resolve::{
     discover_standalone, discover_workspace, resolve_workspace_with, ModuleId, ResolveError,
@@ -143,8 +143,16 @@ pub fn collect_diagnostics(
 #[allow(clippy::needless_pass_by_value)]
 pub fn check_workspace(options: CheckOptions) -> Result<CheckArtefacts, CheckError> {
     // ── 1. Verify workspace root ──────────────────────────────────────────────
-    let _manifest_dir = find_workspace_root(&options.workspace_root)
-        .ok_or_else(|| CheckError::no_workspace_root(options.workspace_root.clone()))?;
+    // Only a genuinely absent manifest is C001. One that is there and will not
+    // parse falls through to discovery, which parses it and reports what is
+    // wrong with a code and a frame — saying "not found" about a file the
+    // reader is looking at is the bug this guard used to have.
+    if matches!(
+        find_workspace_root(&options.workspace_root),
+        WorkspaceRoot::NotFound
+    ) {
+        return Err(CheckError::no_workspace_root(options.workspace_root));
+    }
 
     // ── 2. Pipeline: discover → resolve → typecheck ───────────────────────────
     let disc = discover_workspace(&options.workspace_root);
@@ -153,9 +161,17 @@ pub fn check_workspace(options: CheckOptions) -> Result<CheckArtefacts, CheckErr
     // before consuming the struct.
     let disc_resolve_errors = disc.resolve_errors;
 
-    let mut ws_graph = disc
-        .graph
-        .ok_or_else(|| CheckError::no_workspace_root(options.workspace_root.clone()))?;
+    // No graph means discovery stopped before it could build one, and the
+    // reason is sitting in `manifest_errors` — a field nothing used to read.
+    // Reporting C001 here threw away a coded, actionable message and replaced
+    // it with a claim that the manifest is missing.
+    let Some(mut ws_graph) = disc.graph else {
+        return Err(if disc.manifest_errors.is_empty() {
+            CheckError::no_workspace_root(options.workspace_root)
+        } else {
+            CheckError::WorkspaceManifest(disc.manifest_errors)
+        });
+    };
     ws_graph.is_stdlib = options.is_stdlib;
 
     let resolved = resolve_workspace_with(ws_graph, options.retain_indices);
@@ -218,8 +234,16 @@ pub fn check_workspace_typed_with_history(
     history: &VersionHistory,
 ) -> Result<CheckTypedArtefacts, CheckError> {
     // ── 1. Verify workspace root ──────────────────────────────────────────────
-    let _manifest_dir = find_workspace_root(&options.workspace_root)
-        .ok_or_else(|| CheckError::no_workspace_root(options.workspace_root.clone()))?;
+    // Only a genuinely absent manifest is C001. One that is there and will not
+    // parse falls through to discovery, which parses it and reports what is
+    // wrong with a code and a frame — saying "not found" about a file the
+    // reader is looking at is the bug this guard used to have.
+    if matches!(
+        find_workspace_root(&options.workspace_root),
+        WorkspaceRoot::NotFound
+    ) {
+        return Err(CheckError::no_workspace_root(options.workspace_root));
+    }
 
     // ── 2. Pipeline: discover → resolve → typecheck ───────────────────────────
     let disc = discover_workspace(&options.workspace_root);
@@ -228,9 +252,17 @@ pub fn check_workspace_typed_with_history(
     // before consuming the struct.
     let disc_resolve_errors = disc.resolve_errors;
 
-    let mut ws_graph = disc
-        .graph
-        .ok_or_else(|| CheckError::no_workspace_root(options.workspace_root.clone()))?;
+    // No graph means discovery stopped before it could build one, and the
+    // reason is sitting in `manifest_errors` — a field nothing used to read.
+    // Reporting C001 here threw away a coded, actionable message and replaced
+    // it with a claim that the manifest is missing.
+    let Some(mut ws_graph) = disc.graph else {
+        return Err(if disc.manifest_errors.is_empty() {
+            CheckError::no_workspace_root(options.workspace_root)
+        } else {
+            CheckError::WorkspaceManifest(disc.manifest_errors)
+        });
+    };
     ws_graph.is_stdlib = options.is_stdlib;
 
     let resolved = resolve_workspace_with(ws_graph, options.retain_indices);
@@ -271,14 +303,30 @@ pub fn check_workspace_typed_with_history(
 /// Fatal errors (`C001`–`C003`) are returned as [`CheckError`].
 #[allow(clippy::needless_pass_by_value)]
 pub fn check_workspace_incremental(options: CheckOptions) -> Result<IncrementalState, CheckError> {
-    let _manifest_dir = find_workspace_root(&options.workspace_root)
-        .ok_or_else(|| CheckError::no_workspace_root(options.workspace_root.clone()))?;
+    // Only a genuinely absent manifest is C001. One that is there and will not
+    // parse falls through to discovery, which parses it and reports what is
+    // wrong with a code and a frame — saying "not found" about a file the
+    // reader is looking at is the bug this guard used to have.
+    if matches!(
+        find_workspace_root(&options.workspace_root),
+        WorkspaceRoot::NotFound
+    ) {
+        return Err(CheckError::no_workspace_root(options.workspace_root));
+    }
 
     let disc = discover_workspace(&options.workspace_root);
     let disc_resolve_errors = disc.resolve_errors;
-    let mut ws_graph = disc
-        .graph
-        .ok_or_else(|| CheckError::no_workspace_root(options.workspace_root.clone()))?;
+    // No graph means discovery stopped before it could build one, and the
+    // reason is sitting in `manifest_errors` — a field nothing used to read.
+    // Reporting C001 here threw away a coded, actionable message and replaced
+    // it with a claim that the manifest is missing.
+    let Some(mut ws_graph) = disc.graph else {
+        return Err(if disc.manifest_errors.is_empty() {
+            CheckError::no_workspace_root(options.workspace_root)
+        } else {
+            CheckError::WorkspaceManifest(disc.manifest_errors)
+        });
+    };
     ws_graph.is_stdlib = options.is_stdlib;
 
     let resolved = resolve_workspace_with(ws_graph, options.retain_indices);

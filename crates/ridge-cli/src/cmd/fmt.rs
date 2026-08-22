@@ -15,7 +15,6 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
-use ridge_manifest::find_workspace_root;
 
 use crate::error::CliError;
 
@@ -124,7 +123,7 @@ pub fn execute(args: &FmtArgs, cwd: &Path) -> Result<(), CliError> {
     // ── filesystem mode ───────────────────────────────────────────────────────
     let files: Vec<PathBuf> = if args.paths.is_empty() {
         // No paths supplied — walk the workspace root.
-        let root = find_workspace_root(cwd).ok_or_else(|| CliError::no_workspace_root(cwd))?;
+        let root = crate::cmd::workspace_root_for(cwd)?;
         let mut v = Vec::new();
         collect_ridge_files(&root, &mut v)?;
         v

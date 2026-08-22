@@ -56,7 +56,7 @@ use ridge_driver::{
     CheckOptions, IncrementalState,
 };
 use ridge_lexer::LineIndex;
-use ridge_manifest::find_workspace_root;
+use ridge_manifest::{find_workspace_root, WorkspaceRoot};
 use ridge_resolve::ModuleId;
 
 use crate::cancel::{Cancel, CancelOnDrop};
@@ -1099,8 +1099,18 @@ impl LanguageServer for RidgeLanguageServer {
             let Ok(path) = uri.to_file_path() else {
                 continue;
             };
-            let Some(root) = find_workspace_root(&path) else {
-                continue;
+            // A manifest that is there and will not parse still names a
+            // workspace to attach to. Skipping the folder is the worst of the
+            // three surfaces: the editor goes quiet and never says why, where
+            // attaching lets the manifest error arrive as a diagnostic like any
+            // other.
+            let root = match find_workspace_root(&path) {
+                WorkspaceRoot::Found(dir) => dir,
+                WorkspaceRoot::Malformed(manifest) => match manifest.parent() {
+                    Some(dir) => dir.to_path_buf(),
+                    None => continue,
+                },
+                WorkspaceRoot::NotFound => continue,
             };
             // Canonicalise only to compare identity; the original path is what the
             // driver compiles, matching the long-standing single-root behaviour.

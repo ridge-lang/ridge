@@ -56,6 +56,23 @@ pub enum CliError {
         rendered: String,
     },
 
+    /// The workspace manifest could not be parsed, so the walk that looks for
+    /// the workspace root had nothing to read.
+    ///
+    /// Reported in place of `C001`, which says no manifest was found and sends
+    /// the reader after a file that is sitting in front of them. The sibling of
+    /// [`Self::MemberManifestInvalid`] one level up: same shape, same reason,
+    /// and the manifest error carries its own `M###` code.
+    ///
+    /// Raised here rather than left to the compile pipeline because not every
+    /// subcommand runs one. `ridge fmt` walks files and never parses the
+    /// manifest, so leaving this to the pipeline turned a wrong message into no
+    /// message at all.
+    WorkspaceManifestInvalid {
+        /// The manifest error, already rendered with its code.
+        rendered: String,
+    },
+
     /// `C011` — `--watch` requested but multiple executable members exist and
     /// `--member` was not specified.
     WatchAmbiguousMember,
@@ -329,7 +346,9 @@ impl CliError {
             Self::ExplainUnknownCode { .. } => "C601",
             Self::Toolchain(e) => e.code(),
             Self::Workspace(e) => e.code(),
-            Self::AlreadyReported | Self::MemberManifestInvalid { .. } => return None,
+            Self::AlreadyReported
+            | Self::MemberManifestInvalid { .. }
+            | Self::WorkspaceManifestInvalid { .. } => return None,
         })
     }
 }
@@ -440,7 +459,10 @@ impl fmt::Display for CliError {
                 f,
                 "C006 NoExecutableMember: workspace has no member with kind = \"app\" or kind = \"service\""
             ),
-            Self::MemberManifestInvalid { rendered } => write!(f, "{rendered}"),
+            // Both carry a message the manifest parser already rendered with
+            // its own code; there is nothing for this layer to add.
+            Self::MemberManifestInvalid { rendered }
+            | Self::WorkspaceManifestInvalid { rendered } => write!(f, "{rendered}"),
             Self::WatchAmbiguousMember => write!(
                 f,
                 "C011 WatchAmbiguousMember: --watch requires --member when the workspace has multiple executable members"
@@ -617,6 +639,7 @@ mod tests {
             | CliError::UnknownMember { .. }
             | CliError::NoExecutableMember
             | CliError::MemberManifestInvalid { .. }
+            | CliError::WorkspaceManifestInvalid { .. }
             | CliError::WatchAmbiguousMember
             | CliError::LibraryNotExecutable { .. }
             | CliError::ObserverNoCookie
@@ -659,6 +682,9 @@ mod tests {
             CliError::UnknownMember { name: "x".into() },
             CliError::NoExecutableMember,
             CliError::MemberManifestInvalid {
+                rendered: "M001 …".into(),
+            },
+            CliError::WorkspaceManifestInvalid {
                 rendered: "M001 …".into(),
             },
             CliError::WatchAmbiguousMember,

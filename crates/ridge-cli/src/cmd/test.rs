@@ -43,7 +43,6 @@ use ridge_driver::{
     CheckOptions, CompileOptions, ModuleMetadata, PrimitiveType, ToolchainError, TypedModule,
     TypedWorkspace, Visibility, WorkspaceGraph,
 };
-use ridge_manifest::find_workspace_root;
 
 use crate::error::CliError;
 use crate::render::{report_diagnostics, report_errors_only, WarningPolicy};
@@ -121,7 +120,7 @@ pub fn execute(args: &TestArgs, cwd: &Path) -> Result<(), CliError> {
     // ── 1. Locate workspace root ──────────────────────────────────────────────
     let workspace_root = match stdlib_ws {
         Some(ref td) => td.path().to_path_buf(),
-        None => find_workspace_root(cwd).ok_or_else(|| CliError::no_workspace_root(cwd))?,
+        None => crate::cmd::workspace_root_for(cwd)?,
     };
 
     // ── 2. Typecheck workspace (no erlc needed yet) ────────────────────────────

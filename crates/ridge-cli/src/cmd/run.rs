@@ -25,7 +25,7 @@ use ridge_driver::{
     compile_workspace, run_workspace, select_entry_beam, CompileOptions, Profile, RunError,
     RunOptions, ToolchainError, WorkspaceSourceCache,
 };
-use ridge_manifest::{find_workspace_root, parse_project, parse_workspace, ProjectKind};
+use ridge_manifest::{parse_project, parse_workspace, ProjectKind};
 
 use crate::error::CliError;
 use crate::render::{render_diagnostics, report_diagnostics};
@@ -118,8 +118,7 @@ pub fn execute(args: &RunArgs, cwd: &Path) -> Result<(), CliError> {
     }
 
     // ── 2. Locate workspace root ──────────────────────────────────────────────
-    let workspace_root =
-        find_workspace_root(cwd).ok_or_else(|| CliError::no_workspace_root(cwd))?;
+    let workspace_root = crate::cmd::workspace_root_for(cwd)?;
 
     // ── 3. Resolve executable member ─────────────────────────────────────────
     let member_name = resolve_executable_member(&workspace_root, args)?;

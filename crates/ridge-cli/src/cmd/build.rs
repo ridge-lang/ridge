@@ -20,7 +20,6 @@ use std::time::Instant;
 use clap::Parser;
 use ridge_codegen_erl::escript::package_escript_from_beam_dir;
 use ridge_driver::{compile_workspace, select_entry_beam, CompileOptions, EmitArtefacts, Profile};
-use ridge_manifest::find_workspace_root;
 
 use crate::error::CliError;
 use crate::render::{report_diagnostics, WarningPolicy};
@@ -99,8 +98,7 @@ impl From<EmitChoice> for EmitArtefacts {
 /// to stderr before returning.
 pub fn execute(args: &BuildArgs, cwd: &Path) -> Result<(), CliError> {
     // ── 1. Locate workspace root ──────────────────────────────────────────────
-    let workspace_root =
-        find_workspace_root(cwd).ok_or_else(|| CliError::no_workspace_root(cwd))?;
+    let workspace_root = crate::cmd::workspace_root_for(cwd)?;
 
     // ── 2. Build options ──────────────────────────────────────────────────────
     let profile = if args.release {

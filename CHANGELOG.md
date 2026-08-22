@@ -42,6 +42,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A workspace manifest that will not parse says what is wrong with it. Every
+  command starts by walking up for the `ridge.toml` that governs the current
+  directory, and that walk gave a manifest it could not read the same answer as
+  a directory with no manifest at all: keep climbing. So a workspace whose own
+  manifest was missing a required field, carried an unknown key, or was not
+  TOML reported `no workspace manifest found`, about a file sitting in front of
+  the reader. The manifest errors were never the problem — discovery raises
+  them with a code and a frame. They had no way out, because the caller looked
+  at the graph, found none, and reported the walk's failure instead of the
+  parser's.
+
+  Worse than the wrong message: where a valid workspace happened to exist
+  further up, the walk climbed past the broken manifest and the command ran
+  against that one, printing a success for a project nobody asked about. The
+  manifest in the directory you are standing in now governs that directory; one
+  further up only governs it if it can be read well enough to say so. A member
+  whose own manifest is broken still finds the workspace above it, so the error
+  still arrives naming the member.
+
+  All eleven subcommands ask one helper where the workspace is, replacing
+  eleven copies of the same line, and the two separate implementations of the
+  upward walk became one — they had drifted to different TOML entry points and
+  different handling of the starting path, which is two answers waiting to
+  disagree about which directory a command runs in.
+
 - Completing a type name offers names a reader can actually write. The list was
   drawn from every type constructor the compiler had interned, and the compiler
   interns more than the language spells: sixteen per-arity dispatch keys that

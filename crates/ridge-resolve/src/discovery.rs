@@ -47,16 +47,26 @@ pub fn discover_workspace(root: &Path) -> DiscoveryResult {
     let mut manifest_errors: Vec<ManifestError> = Vec::new();
     let mut resolve_errors: Vec<ResolveError> = Vec::new();
 
-    // Step 1 — find the workspace root by walking upward.
-    let Some(workspace_root) = find_workspace_root(root) else {
-        resolve_errors.push(ResolveError::MissingWorkspaceManifest {
-            path: root.to_owned(),
-        });
-        return DiscoveryResult {
-            graph: None,
-            manifest_errors,
-            resolve_errors,
-        };
+    // Step 1 — find the workspace root by walking upward. A manifest that is
+    // there and unparseable stops the walk: reporting it as missing sends the
+    // reader after a file in front of them, and climbing past it runs the
+    // command against whatever workspace happens to sit further up. Step 2
+    // parses it below and says what is actually wrong, with a code.
+    let workspace_root = match find_workspace_root(root) {
+        ridge_manifest::WorkspaceRoot::Found(dir) => dir,
+        ridge_manifest::WorkspaceRoot::Malformed(path) => path
+            .parent()
+            .map_or_else(|| root.to_owned(), Path::to_owned),
+        ridge_manifest::WorkspaceRoot::NotFound => {
+            resolve_errors.push(ResolveError::MissingWorkspaceManifest {
+                path: root.to_owned(),
+            });
+            return DiscoveryResult {
+                graph: None,
+                manifest_errors,
+                resolve_errors,
+            };
+        }
     };
 
     // Step 2 — parse the workspace manifest.
@@ -298,33 +308,26 @@ pub fn discover_standalone(files: &[PathBuf]) -> WorkspaceGraph {
 
 // ── Step 1 helpers ────────────────────────────────────────────────────────────
 
-/// Walk upward from `start`, returning the first directory that contains a
-/// `ridge.toml` with a `[workspace]` table.
+/// Walk upward from `start` for the directory whose `ridge.toml` governs it.
 ///
-/// Returns `None` if the filesystem root is reached without finding one.
-pub(crate) fn find_workspace_root(start: &Path) -> Option<PathBuf> {
-    let mut cur = start.canonicalize().ok()?;
-    loop {
-        let candidate = cur.join("ridge.toml");
-        if candidate.is_file() && has_workspace_table(&candidate) {
-            return Some(cur);
+/// Delegates to [`ridge_manifest::find_workspace_root`]. This used to be a
+/// second implementation of the same walk, which had drifted: it probed the
+/// file with `toml::from_str::<toml::Value>` where the other used
+/// `toml::Table`, and it canonicalised the starting path where the other
+/// handled a file path. Two copies of one rule are two answers waiting to
+/// disagree about which directory a command runs in.
+fn find_workspace_root(start: &Path) -> ridge_manifest::WorkspaceRoot {
+    // Canonicalised on the way out because discovery has always answered with a
+    // canonical path and the rest of the graph is keyed on it. The shared walk
+    // does not canonicalise, and changing that here would alter every path the
+    // compiler prints, which belongs to its own change and not to this one.
+    match ridge_manifest::find_workspace_root(start) {
+        ridge_manifest::WorkspaceRoot::Found(dir) => {
+            let canonical = dir.canonicalize().unwrap_or(dir);
+            ridge_manifest::WorkspaceRoot::Found(canonical)
         }
-        if !cur.pop() {
-            return None;
-        }
+        other => other,
     }
-}
-
-/// Lightweight TOML probe: read the file and check for a top-level `workspace`
-/// key without doing a full manifest parse.
-fn has_workspace_table(path: &Path) -> bool {
-    let Ok(src) = std::fs::read_to_string(path) else {
-        return false;
-    };
-    let Ok(value) = toml::from_str::<toml::Value>(&src) else {
-        return false;
-    };
-    value.get("workspace").is_some()
 }
 
 // ── Step 3 helpers ────────────────────────────────────────────────────────────
@@ -779,9 +782,12 @@ root = "{src_root}"
         let dir = TempDir::new().unwrap();
         write_file(dir.path(), "ridge.toml", &workspace_toml(&["projects/*"]));
         let found = find_workspace_root(dir.path());
-        assert!(found.is_some(), "should find workspace root in current dir");
         let canonical_dir = dir.path().canonicalize().unwrap();
-        assert_eq!(found.unwrap(), canonical_dir);
+        assert_eq!(
+            found,
+            ridge_manifest::WorkspaceRoot::Found(canonical_dir),
+            "should find workspace root in current dir"
+        );
     }
 
     // ── find_workspace_root walks upward ─────────────────────────────────────
@@ -793,9 +799,12 @@ root = "{src_root}"
         let sub = dir.path().join("libs").join("mylib");
         fs::create_dir_all(&sub).unwrap();
         let found = find_workspace_root(&sub);
-        assert!(found.is_some(), "should walk upward to find workspace root");
         let canonical_dir = dir.path().canonicalize().unwrap();
-        assert_eq!(found.unwrap(), canonical_dir);
+        assert_eq!(
+            found,
+            ridge_manifest::WorkspaceRoot::Found(canonical_dir),
+            "should walk upward to find workspace root"
+        );
     }
 
     // ── find_workspace_root returns None → R001 ──────────────────────────────

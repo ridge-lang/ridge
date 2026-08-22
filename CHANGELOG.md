@@ -42,6 +42,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Hovering a name where it is declared says what was declared. Every hover
+  path starts from a binding, and a declaration's own name has none — the
+  resolver records uses, and a declaration is not a use of itself — so the one
+  position a reader is most likely to hover, the place they wrote the name to
+  check what they wrote, was the one position that answered nothing. Ten of
+  them: a `type` name, a record field, a union name, a union variant, a
+  `const`, a `fn`, an `actor`, a message handler, a `class` and a class method.
+  Parameters and `state` fields were never affected, because a local's own name
+  is its binding site. Each card is built by the helper that renders the card
+  for a use of the same name, so the two are the same text rather than two
+  descriptions of one declaration that drift apart, and a declaration wins over
+  a built-in that happens to share its name — someone who wrote their own `Set`
+  is asking about theirs.
+
 - Hovering a built-in type name says what the type is. `Int`, `Text`, `List`
   and the rest have no declaration for the editor to lift a card from, so a
   hover came back empty — which reads as the editor not recognising the name

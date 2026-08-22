@@ -42,6 +42,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Completing a type name offers names a reader can actually write. The list was
+  drawn from every type constructor the compiler had interned, and the compiler
+  interns more than the language spells: sixteen per-arity dispatch keys that
+  give a function-type instance head something to key on, and the projection
+  shapes a query chain threads through on its way to a row. Typing `F` in a
+  type position was the worst of it — twenty-three entries came back and six of
+  them were the language, the other seventeen being `Fn0` through `Fn15` and a
+  join shape the compiler fills in. A function type is written `fn a -> b`. The
+  name resolver already knows which names those are, since the did-you-mean
+  suggesters ask it the same question, so completion asks it too rather than
+  keeping a second answer of its own. Hovering them still cards, deliberately:
+  a reader runs into `Rows` in an inferred signature whether or not they would
+  ever type it, and the set of names worth explaining is larger than the set
+  worth proposing.
+
+  A name is also offered once. `Column` and `Parsed` each name two entries in
+  the arena, and both were listed, spelled identically with nothing to tell
+  them apart — a choice a reader has no way to make, since writing the name
+  reaches one of them and never the other. The list now describes the one it
+  reaches.
+
 - Hovering a name where it is declared says what was declared. Every hover
   path starts from a binding, and a declaration's own name has none — the
   resolver records uses, and a declaration is not a use of itself — so the one

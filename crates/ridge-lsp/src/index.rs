@@ -5194,19 +5194,40 @@ impl WorkspaceIndex {
                 // knowing `Map` takes two is what a reader needs mid-annotation,
                 // and the prose on resolve. `def_span` is what tells a built-in
                 // apart from a workspace type that happens to share its name.
+                //
+                // The arena is wider than the set of names a reader can write.
+                // It also holds the per-arity dispatch keys behind function
+                // types and the projection shapes a query chain threads
+                // through, and the name resolver already knows which those are
+                // — the did-you-mean suggesters ask it the same question, so
+                // asking it here keeps one answer instead of two. Hover still
+                // cards them, and that asymmetry is deliberate: hover explains
+                // a name a reader has run into, completion proposes one they
+                // have not written yet.
+                //
+                // A name can also be interned twice, by two different
+                // built-ins. Writing it reaches whichever the arena holds
+                // first, so that is the entry the list describes; a second row
+                // spelled the same gives a reader nothing to choose between.
+                let mut offered: std::collections::HashSet<&str> = std::collections::HashSet::new();
                 for decl in &self.tycons {
-                    if !decl.is_anon && decl.name.starts_with(&prefix) {
-                        let mut candidate = item(decl.name.clone(), CompletionItemKind::CLASS, '0');
-                        if decl.def_span.is_none() {
-                            if let Some(card) = crate::builtin_cards::builtin_card(&decl.name) {
-                                candidate.detail = (card.signature != decl.name)
-                                    .then(|| card.signature.to_owned());
-                                candidate.data =
-                                    Some(serde_json::json!({ "builtin": decl.name.clone() }));
-                            }
-                        }
-                        out.push(candidate);
+                    if decl.is_anon
+                        || !decl.name.starts_with(&prefix)
+                        || ridge_resolve::is_internal_prelude_name(&decl.name)
+                        || !offered.insert(decl.name.as_str())
+                    {
+                        continue;
                     }
+                    let mut candidate = item(decl.name.clone(), CompletionItemKind::CLASS, '0');
+                    if decl.def_span.is_none() {
+                        if let Some(card) = crate::builtin_cards::builtin_card(&decl.name) {
+                            candidate.detail =
+                                (card.signature != decl.name).then(|| card.signature.to_owned());
+                            candidate.data =
+                                Some(serde_json::json!({ "builtin": decl.name.clone() }));
+                        }
+                    }
+                    out.push(candidate);
                 }
             }
             Context::Expr { prefix } => {

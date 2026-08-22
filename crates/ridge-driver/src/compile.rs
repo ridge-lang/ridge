@@ -14,7 +14,7 @@ use ridge_codegen_erl::{
 use ridge_diagnostics::Diagnostic;
 use ridge_ir::{IrItem, IrNodeId, LoweredModule};
 use ridge_lower::lower_workspace;
-use ridge_manifest::find_workspace_root;
+use ridge_manifest::{find_workspace_root, WorkspaceRoot};
 use ridge_resolve::{discover_workspace, resolve_workspace, ModuleId, NodeId, Severity};
 use ridge_typecheck::{typecheck_workspace, typecheck_workspace_with_history};
 
@@ -140,8 +140,15 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
     // Verify the provided root actually contains a workspace manifest.
     // `find_workspace_root` walks up; if the caller passed an exact root we
     // start our search there.
-    let _manifest_dir = find_workspace_root(&options.workspace_root)
-        .ok_or_else(|| CompileError::no_workspace_root(options.workspace_root.clone()))?;
+    // As in `check`: a manifest that is there and unparseable is discovery's to
+    // report, with the code and frame the parser produces. Only an absent one
+    // is C001.
+    if matches!(
+        find_workspace_root(&options.workspace_root),
+        WorkspaceRoot::NotFound
+    ) {
+        return Err(CompileError::no_workspace_root(options.workspace_root));
+    }
 
     // ── 2. Pipeline: discover → resolve → typecheck → lower ──────────────────
     let disc = discover_workspace(&options.workspace_root);
@@ -151,9 +158,15 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
     let disc_resolve_errors = disc.resolve_errors;
 
     // Surface R001 (no workspace manifest) as C001.
-    let mut ws_graph = disc
-        .graph
-        .ok_or_else(|| CompileError::no_workspace_root(options.workspace_root.clone()))?;
+    // See `check`: the reason discovery produced no graph is in
+    // `manifest_errors`, and C001 used to be reported in its place.
+    let Some(mut ws_graph) = disc.graph else {
+        return Err(if disc.manifest_errors.is_empty() {
+            CompileError::no_workspace_root(options.workspace_root)
+        } else {
+            CompileError::WorkspaceManifest(disc.manifest_errors)
+        });
+    };
     ws_graph.is_stdlib = options.is_stdlib;
 
     // ── 2.5. Resolve external dependencies (T8) ──────────────────────────────

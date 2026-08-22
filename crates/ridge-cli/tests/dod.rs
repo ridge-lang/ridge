@@ -307,6 +307,14 @@ fn a_code_carrying_error_prints_its_code_first() {
 /// carries the directory it searched, so building one means saying what was
 /// looked for and where — but a constructor is still cheaper to call than to
 /// think about, and the type system has nothing to say about that.
+///
+/// This used to look three lines back from the construction for the lookup
+/// that justifies it, which encoded the shape those sites happened to have
+/// rather than the rule. Every subcommand now goes through one helper, where
+/// the lookup and the `NotFound` arm sit five lines apart, and a window wide
+/// enough for that would stop catching anything. So the check reads the
+/// enclosing function instead, and adds what the refactor made true: exactly
+/// one place in the crate builds a `C001`.
 #[test]
 fn c001_is_only_constructed_where_a_workspace_root_was_sought() {
     /// Every `.rs` file under `root`, recursively.
@@ -344,10 +352,14 @@ fn c001_is_only_constructed_where_a_workspace_root_was_sought() {
                 continue;
             }
             found += 1;
-            // The construction and the search that justifies it are written
-            // together — `find_workspace_root(..).ok_or(..)` — but the call can
-            // wrap onto an earlier line, so look back a few.
-            let from = i.saturating_sub(3);
+            // Scan back to the start of the enclosing function. A `C001` is
+            // justified when the function it is built in is the one looking for
+            // the workspace root, which is the rule; how many lines apart the
+            // two sit is not.
+            let from = lines[..=i]
+                .iter()
+                .rposition(|l| l.starts_with("fn ") || l.starts_with("pub fn "))
+                .unwrap_or(0);
             let window = lines[from..=i].join("\n");
             if !window.contains("find_workspace_root") {
                 offenders.push(format!(
@@ -363,6 +375,10 @@ fn c001_is_only_constructed_where_a_workspace_root_was_sought() {
     assert!(
         found > 0,
         "no `CliError::no_workspace_root` sites found — this test stopped checking anything"
+    );
+    assert_eq!(
+        found, 1,
+        "every subcommand asks one helper where the workspace is, so one place \n         answers `no workspace manifest found`. A second site is either a \n         subcommand that went around the helper, or a different failure \n         borrowing this code."
     );
     assert!(
         offenders.is_empty(),

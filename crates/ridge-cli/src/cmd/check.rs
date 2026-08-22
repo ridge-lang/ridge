@@ -12,7 +12,6 @@ use std::path::Path;
 
 use clap::Parser;
 use ridge_driver::{check_workspace, CheckArtefacts, CheckOptions};
-use ridge_manifest::find_workspace_root;
 
 use crate::error::CliError;
 use crate::render::{report_diagnostics, WarningPolicy};
@@ -43,8 +42,7 @@ pub struct CheckArgs {
 /// and only fail the check under `--deny-warnings`.
 pub fn execute(args: &CheckArgs, cwd: &Path) -> Result<(), CliError> {
     // ── 1. Locate workspace root ──────────────────────────────────────────────
-    let workspace_root =
-        find_workspace_root(cwd).ok_or_else(|| CliError::no_workspace_root(cwd))?;
+    let workspace_root = crate::cmd::workspace_root_for(cwd)?;
 
     // ── 2. Check options ──────────────────────────────────────────────────────
     let mut opts = CheckOptions::new(workspace_root);

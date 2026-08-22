@@ -73,7 +73,7 @@ use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts, ToolchainError};
-use ridge_manifest::{find_workspace_root, parse_project, parse_workspace, Project, ProjectKind};
+use ridge_manifest::{parse_project, parse_workspace, Project, ProjectKind};
 use ridge_resolve::discover_workspace;
 
 use crate::error::CliError;
@@ -164,8 +164,7 @@ fn execute_add(args: &AddArgs, cwd: &Path) -> Result<(), CliError> {
     validate_migration_name(&args.name)?;
 
     // ── 1. Locate workspace root and target member ───────────────────────────
-    let workspace_root =
-        find_workspace_root(cwd).ok_or_else(|| CliError::no_workspace_root(cwd))?;
+    let workspace_root = crate::cmd::workspace_root_for(cwd)?;
     let project = resolve_target_project(&workspace_root)?;
 
     // ── 2. Require Model.ridge ────────────────────────────────────────────────
@@ -248,8 +247,7 @@ fn run_diff_and_write(
 /// Execute `ridge migrate apply`.
 fn execute_apply(cwd: &Path) -> Result<(), CliError> {
     // ── 1. Locate workspace root and target member ───────────────────────────
-    let workspace_root =
-        find_workspace_root(cwd).ok_or_else(|| CliError::no_workspace_root(cwd))?;
+    let workspace_root = crate::cmd::workspace_root_for(cwd)?;
     let project = resolve_target_project(&workspace_root)?;
 
     // ── 2. Discover the migration modules ─────────────────────────────────────
@@ -307,8 +305,7 @@ fn run_apply(workspace_root: &Path, erl_path: &Path, project_name: &str) -> Resu
 /// Execute `ridge migrate status`.
 fn execute_status(cwd: &Path) -> Result<(), CliError> {
     // ── 1. Locate workspace root and target member ───────────────────────────
-    let workspace_root =
-        find_workspace_root(cwd).ok_or_else(|| CliError::no_workspace_root(cwd))?;
+    let workspace_root = crate::cmd::workspace_root_for(cwd)?;
     let project = resolve_target_project(&workspace_root)?;
 
     // ── 2. Discover the migration modules ─────────────────────────────────────
@@ -371,8 +368,7 @@ fn run_status(
 /// Execute `ridge migrate rollback`.
 fn execute_rollback(args: &RollbackArgs, cwd: &Path) -> Result<(), CliError> {
     // ── 1. Locate workspace root and target member ───────────────────────────
-    let workspace_root =
-        find_workspace_root(cwd).ok_or_else(|| CliError::no_workspace_root(cwd))?;
+    let workspace_root = crate::cmd::workspace_root_for(cwd)?;
     let project = resolve_target_project(&workspace_root)?;
 
     // ── 2. Discover the migration modules ─────────────────────────────────────

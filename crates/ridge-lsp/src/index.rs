@@ -1101,7 +1101,14 @@ impl WorkspaceIndex {
         // inferred for a type position, so `Int` and `List` reach exactly here.
         let (type_str, expr_span) = match &typed {
             Some((s, _, span)) => (s.as_str(), *span),
-            None => return self.builtin_type_hover(mi, uri, offset),
+            None => {
+                // A declaration's own name comes first: someone who wrote
+                // `type Set = …` and hovers it is asking about theirs, and the
+                // built-in card would answer about a different type entirely.
+                return self
+                    .declaration_site_card(mi, offset)
+                    .or_else(|| self.builtin_type_hover(mi, uri, offset));
+            }
         };
         if let Some((_, _, _, id_span)) =
             self.node_at(uri, offset, &[NodeKind::Ident, NodeKind::QualifiedName])
@@ -1217,6 +1224,51 @@ impl WorkspaceIndex {
             format!("{name} : {inferred}")
         };
         render_hover_card(&signature, kind, None)
+    }
+
+    /// The card for a declaration whose own name sits at `offset`, with that
+    /// name's span.
+    ///
+    /// A declaration's name node carries no binding — the resolver records uses,
+    /// and a declaration is not a use of itself — so every path that starts from
+    /// a binding walks past the one position a reader is most likely to hover:
+    /// the place they wrote the name, to check what they wrote. Locals are the
+    /// exception and already work, because a parameter's own name *is* its
+    /// binding site.
+    ///
+    /// The lookup is by name span rather than through the symbol table, for two
+    /// reasons. A symbol's `def_span` covers the whole declaration, so a
+    /// containment test against it would also fire anywhere inside the body.
+    /// And the table has no entry for a class, a class method or a message
+    /// handler, which are declarations a reader hovers just the same.
+    ///
+    /// Every card here is built by the helpers that render the use-site card, so
+    /// hovering `titleOf` where it is declared and hovering a call to it produce
+    /// the same text rather than two descriptions that drift apart.
+    fn declaration_site_card(&self, mi: usize, offset: u32) -> Option<(String, Span)> {
+        use ridge_ast::Item;
+
+        let ast = self.modules.get(mi)?.ast.as_ref()?;
+        let text: &str = self.module_text.get(mi).map_or("", |t| &**t);
+
+        ast.items.iter().find_map(|item| match item {
+            Item::Fn(d) if name_holds(d.name.span, offset) => Some(named_card(
+                &fn_header(text, d),
+                "function",
+                doc_text(d.doc.as_ref()),
+                d.name.span,
+            )),
+            Item::Const(d) if name_holds(d.name.span, offset) => Some(named_card(
+                &const_header(text, d),
+                "constant",
+                doc_text(d.doc.as_ref()),
+                d.name.span,
+            )),
+            Item::Type(d) => type_declaration_card(text, d, offset),
+            Item::Actor(d) => actor_declaration_card(text, d, offset),
+            Item::ClassDecl(d) => class_declaration_card(text, d, offset),
+            _ => None,
+        })
     }
 
     /// The card for a built-in type name written at `offset`, together with the
@@ -7219,6 +7271,173 @@ pub(crate) fn fn_header(text: &str, d: &ridge_ast::decl::FnDecl) -> String {
         s.push_str(slice_span(text, p.span()).trim());
     }
     if let Some(ret) = &d.ret {
+        s.push_str(" -> ");
+        s.push_str(slice_span(text, ret.span()).trim());
+    }
+    s
+}
+
+/// Whether `offset` rests on a declaration's name.
+///
+/// Half-open on purpose: a cursor one past the last character is on whatever
+/// follows the name, not on the name.
+const fn name_holds(name: Span, offset: u32) -> bool {
+    name.start <= offset && offset < name.end
+}
+
+/// A declaration-site card and the span to underline.
+fn named_card(signature: &str, kind: &str, doc: Option<String>, span: Span) -> (String, Span) {
+    (
+        render_hover_card(signature, Some(kind.to_owned()), doc),
+        span,
+    )
+}
+
+/// The card for a `type` declaration's own name, or for a field or constructor
+/// named inside it.
+///
+/// A field and a constructor are written inside the type, and a reader hovering
+/// one wants to know which type owns it — the same thing the use-site card
+/// tells them, in the same words.
+fn type_declaration_card(
+    text: &str,
+    d: &ridge_ast::decl::TypeDecl,
+    offset: u32,
+) -> Option<(String, Span)> {
+    use ridge_ast::decl::{Constructor, TypeBody};
+
+    if name_holds(d.name.span, offset) {
+        return Some(named_card(
+            &type_header(text, d),
+            "type",
+            doc_text(d.doc.as_ref()),
+            d.name.span,
+        ));
+    }
+    let owner = &d.name.text;
+    match &d.body {
+        TypeBody::Record(body) => body.fields.iter().find_map(|f| {
+            name_holds(f.name.span, offset).then(|| {
+                named_card(
+                    &format!("{} : {}", f.name.text, slice_span(text, f.ty.span()).trim()),
+                    &format!("field of `{owner}`"),
+                    None,
+                    f.name.span,
+                )
+            })
+        }),
+        TypeBody::Union(body) => body.alternatives.iter().find_map(|alt| {
+            let (name, span) = match alt {
+                Constructor::Positional { name, span, .. }
+                | Constructor::Record { name, span, .. } => (name, *span),
+            };
+            name_holds(name.span, offset).then(|| {
+                named_card(
+                    slice_span(text, span).trim(),
+                    &format!("constructor of `{owner}`"),
+                    None,
+                    name.span,
+                )
+            })
+        }),
+        TypeBody::Alias(_) => None,
+    }
+}
+
+/// The card for an `actor` declaration's own name, or for one of its message
+/// handlers.
+///
+/// A `state` field is not handled here and does not need to be: it is a local,
+/// so its own name is its binding site and it has always carded.
+fn actor_declaration_card(
+    text: &str,
+    d: &ridge_ast::decl::ActorDecl,
+    offset: u32,
+) -> Option<(String, Span)> {
+    use ridge_ast::decl::ActorMember;
+
+    if name_holds(d.name.span, offset) {
+        return Some(named_card(
+            &format!("actor {}", d.name.text),
+            "actor",
+            doc_text(d.doc.as_ref()),
+            d.name.span,
+        ));
+    }
+    d.members.iter().find_map(|member| {
+        let ActorMember::On(h) = member else {
+            return None;
+        };
+        name_holds(h.name.span, offset).then(|| {
+            named_card(
+                &on_handler_header(text, h),
+                &format!("handler of `{}`", d.name.text),
+                doc_text(h.doc.as_ref()),
+                h.name.span,
+            )
+        })
+    })
+}
+
+/// The card for a `class` declaration's own name, or for one of its methods.
+///
+/// A type variable is deliberately not carded: `a` in `class Tagged a` names no
+/// declaration, so there is nothing to put on a card and a card that said `a`
+/// would be noise where silence is correct.
+fn class_declaration_card(
+    text: &str,
+    d: &ridge_ast::ClassDecl,
+    offset: u32,
+) -> Option<(String, Span)> {
+    if name_holds(d.name.span, offset) {
+        let vars = d
+            .ty_vars
+            .iter()
+            .map(|v| v.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let head = if vars.is_empty() {
+            format!("class {}", d.name.text)
+        } else {
+            format!("class {} {vars}", d.name.text)
+        };
+        return Some(named_card(
+            &head,
+            "class",
+            doc_text(d.doc.as_ref()),
+            d.name.span,
+        ));
+    }
+    d.methods.iter().find_map(|m| {
+        name_holds(m.name.span, offset).then(|| {
+            named_card(
+                &build_signature(text, &m.name.text, &m.params, Some(&m.ret)).label,
+                &format!("method of `{}`", d.name.text),
+                None,
+                m.name.span,
+            )
+        })
+    })
+}
+
+/// The written header of a message handler: `on caps name (a: T) -> R`.
+///
+/// The same shape as [`fn_header`] without a visibility prefix, which a handler
+/// does not carry: reach into an actor is granted by holding its `Handle`, not
+/// per handler.
+pub(crate) fn on_handler_header(text: &str, h: &ridge_ast::decl::OnHandler) -> String {
+    let mut s = String::from("on ");
+    let caps = render_caps_slice(&h.caps);
+    if !caps.is_empty() {
+        s.push_str(&caps);
+        s.push(' ');
+    }
+    s.push_str(&h.name.text);
+    for p in &h.params {
+        s.push(' ');
+        s.push_str(slice_span(text, p.span()).trim());
+    }
+    if let Some(ret) = &h.ret {
         s.push_str(" -> ");
         s.push_str(slice_span(text, ret.span()).trim());
     }

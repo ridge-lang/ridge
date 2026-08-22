@@ -44,6 +44,7 @@
     )
 )]
 
+pub mod builtin_cards;
 pub mod cancel;
 pub mod completion;
 pub mod diagnostics;

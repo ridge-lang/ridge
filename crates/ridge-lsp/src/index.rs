@@ -1096,11 +1096,12 @@ impl WorkspaceIndex {
         // No binding on any enclosing name node. With an inferred type an
         // identifier still cards through it (a record field resolves via its base
         // type in tier 1), and a literal/expression shows the bare fenced type
-        // over its span. Without one — an unresolved type reference — there is
-        // nothing left to show.
+        // over its span. Without one, the last thing worth trying is a built-in
+        // type name: there is no declaration to resolve it to and nothing is
+        // inferred for a type position, so `Int` and `List` reach exactly here.
         let (type_str, expr_span) = match &typed {
             Some((s, _, span)) => (s.as_str(), *span),
-            None => return None,
+            None => return self.builtin_type_hover(mi, uri, offset),
         };
         if let Some((_, _, _, id_span)) =
             self.node_at(uri, offset, &[NodeKind::Ident, NodeKind::QualifiedName])
@@ -1193,6 +1194,18 @@ impl WorkspaceIndex {
             _ => {}
         }
 
+        // Tier 3.5 — a built-in type name. `Option`, `Result`, `Ordering`,
+        // `JsonValue` and `QExpr` are exported by a stdlib module, so they carry
+        // a binding and get this far, but no stdlib entry cards them and tier 4
+        // would show the bare word under an unhelpful "stdlib" label. Below tier
+        // 2 on purpose: a workspace type that shadows a built-in name is the
+        // reader's own declaration, and that is what they should see.
+        if inferred.is_empty() {
+            if let Some(card) = builtin_type_card(name) {
+                return card;
+            }
+        }
+
         // Tier 4 — kind-labelled inferred type (locals, params, constructors, or
         // any name without a reachable decl). A type-position reference reaches
         // here only when it resolved to no workspace/stdlib declaration and thus
@@ -1204,6 +1217,26 @@ impl WorkspaceIndex {
             format!("{name} : {inferred}")
         };
         render_hover_card(&signature, kind, None)
+    }
+
+    /// The card for a built-in type name written at `offset`, together with the
+    /// span to underline. `None` when the text there is not a built-in.
+    ///
+    /// Two shapes arrive here and they need different nodes. A named built-in —
+    /// `List`, `Map`, `Result` — has an `Ident` node covering exactly the name,
+    /// while the `Type` node enclosing it spans the whole application (`List
+    /// Int`), so the ident is the one to read. A primitive has no ident node at
+    /// all: the parser turns those spellings into a primitive type rather than
+    /// into a name, and there the `Type` node's own span is exactly the word.
+    /// Falling back in that order covers both without a special case for either,
+    /// and a span wider than one name simply fails the table lookup.
+    fn builtin_type_hover(&self, mi: usize, uri: &Url, offset: u32) -> Option<(String, Span)> {
+        let span = self
+            .node_at(uri, offset, &[NodeKind::Ident, NodeKind::QualifiedName])
+            .or_else(|| self.node_at(uri, offset, &[NodeKind::Type]))
+            .map(|(_, _, _, span)| span)?;
+        let card = builtin_type_card(self.text_slice(mi, span))?;
+        Some((card, span))
     }
 
     /// The kind label for a hovered binding in the fallback tier: a local told
@@ -5024,12 +5057,24 @@ impl WorkspaceIndex {
     /// (`completionItem/resolve`).
     ///
     /// `data` is the payload the completion list attached to a resolvable item:
-    /// `{ "uri", "name" }` for a workspace symbol, or `{ "stdlib", "name" }` for a
-    /// builtin stdlib export. Returns `(detail, documentation)` rendered from the
-    /// symbol's written header and doc comment — the same material hover shows — or
-    /// `None` when the payload names no resolvable declaration.
+    /// `{ "uri", "name" }` for a workspace symbol, `{ "stdlib", "name" }` for a
+    /// builtin stdlib export, or `{ "builtin" }` for a built-in type. Returns
+    /// `(detail, documentation)` rendered from the symbol's written header and doc
+    /// comment — the same material hover shows — or `None` when the payload names
+    /// no resolvable declaration.
     #[must_use]
     pub fn resolve_completion(&self, data: &serde_json::Value) -> Option<(String, Option<String>)> {
+        // A built-in type. Answered from the same table hover reads, so the two
+        // surfaces cannot drift into saying different things about `Int`.
+        if let Some(name) = data.get("builtin").and_then(serde_json::Value::as_str) {
+            let card = crate::builtin_cards::builtin_card(name)?;
+            let doc = if card.note.is_empty() {
+                card.summary.to_owned()
+            } else {
+                format!("{}\n\n{}", card.summary, card.note)
+            };
+            return Some((card.signature.to_owned(), Some(doc)));
+        }
         // Stdlib export: the payload names a builtin module id and symbol name.
         // The card comes from the process-global stdlib source cache, so it is
         // identical across workspaces — the first index to be asked answers.
@@ -5089,9 +5134,26 @@ impl WorkspaceIndex {
                 out.extend(self.member_completions(mi, byte, &m.imports, &alias, &prefix));
             }
             Context::Type { prefix } => {
+                // A built-in has no declaration behind it, so a plain item here
+                // is a bare word next to workspace types that do resolve to a
+                // signature — and the bare words are `Int`, `Text` and `Result`,
+                // the entries a reader is least likely to already know. They get
+                // the same card hover reads: the parameter names inline, since
+                // knowing `Map` takes two is what a reader needs mid-annotation,
+                // and the prose on resolve. `def_span` is what tells a built-in
+                // apart from a workspace type that happens to share its name.
                 for decl in &self.tycons {
                     if !decl.is_anon && decl.name.starts_with(&prefix) {
-                        out.push(item(decl.name.clone(), CompletionItemKind::CLASS, '0'));
+                        let mut candidate = item(decl.name.clone(), CompletionItemKind::CLASS, '0');
+                        if decl.def_span.is_none() {
+                            if let Some(card) = crate::builtin_cards::builtin_card(&decl.name) {
+                                candidate.detail = (card.signature != decl.name)
+                                    .then(|| card.signature.to_owned());
+                                candidate.data =
+                                    Some(serde_json::json!({ "builtin": decl.name.clone() }));
+                            }
+                        }
+                        out.push(candidate);
                     }
                 }
             }
@@ -7204,6 +7266,25 @@ const fn local_role(kind: Option<LocalKind>) -> &'static str {
         Some(LocalKind::StateField) => "state field",
         _ => "local",
     }
+}
+
+/// The hover card for a built-in type, or `None` when `name` is not one.
+///
+/// The summary and the note are joined into a single doc block so the card has
+/// the same shape as every other one: a fenced signature, an italic kind line,
+/// then the prose under a rule.
+fn builtin_type_card(name: &str) -> Option<String> {
+    let card = crate::builtin_cards::builtin_card(name)?;
+    let doc = if card.note.is_empty() {
+        card.summary.to_owned()
+    } else {
+        format!("{}\n\n{}", card.summary, card.note)
+    };
+    Some(render_hover_card(
+        card.signature,
+        Some("built-in type".to_owned()),
+        Some(doc),
+    ))
 }
 
 /// Render a hover card: the signature in a `ridge` fence, an italic kind line,

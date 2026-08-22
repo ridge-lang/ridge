@@ -1310,6 +1310,39 @@ pub fn ast_type_to_ridge_type(
         });
     }
 
+    /// The head name of a type as the source spells it, for the two shapes
+    /// that have one: a bare name and an application.
+    const fn written_type_head(ast_ty: &ridge_ast::Type) -> Option<(&str, ridge_ast::Span)> {
+        match ast_ty {
+            ridge_ast::Type::Named { name, .. } => Some((name.text.as_str(), name.span)),
+            ridge_ast::Type::App { head, .. } => Some((head.text.as_str(), head.span)),
+            _ => None,
+        }
+    }
+
+    /// A name the compiler minted for itself rather than one a reader writes.
+    ///
+    /// Only the synthetic per-arity function keys qualify. A function type is
+    /// spelled `fn a -> b`, and nothing writes `Fn2` — not ordinary code, not
+    /// the standard library.
+    ///
+    /// The query-builder projection shapes look like they belong here and do
+    /// not. Seven of the eight are named in the method signature of a public
+    /// class — `Ret` in `Projectable` and `Aggregable`, `Rows` in `Fetchable`,
+    /// `InsertShape` in `HasSchema`, one join result in each join class — so
+    /// writing an instance of any of them means spelling one. They are public
+    /// surface whatever their cards say about who writes them.
+    fn is_compiler_own_type_name(n: &str) -> bool {
+        ridge_resolve::is_synthetic_fn_tycon(n)
+    }
+
+    /// Resolve a type name against the arena, which is the fallback for a
+    /// reconciled stdlib type (`Repo`, `Query`, `MemAdapter`) that is interned
+    /// but absent from the per-module name map.
+    ///
+    /// Names the compiler minted for itself are refused before this runs — see
+    /// the guard above the dispatch below — so this scan only ever answers for
+    /// a type a reader could have written.
     fn arena_tycon_by_name(ctx: &InferCtx, n: &str) -> Option<TyConId> {
         ctx.tycon_decls
             .iter()
@@ -1341,6 +1374,20 @@ pub fn ast_type_to_ridge_type(
     }
 
     use ridge_ast::PrimitiveType;
+
+    // Refused here, above the dispatch, rather than on one of the lookups
+    // beneath it: a written name can reach the arena through more than one of
+    // them, so a guard on any single lookup leaves the rest open.
+    //
+    // Only the two shapes that spell a head name are considered, and a type
+    // parameter cannot collide with one: parameters are lower-case and every
+    // key here is not.
+    if let Some((n, span)) = written_type_head(ast_ty) {
+        if is_compiler_own_type_name(n) {
+            unknown_type_name(ctx, n, span);
+            return Type::Error;
+        }
+    }
 
     match ast_ty {
         ridge_ast::Type::Primitive { name, .. } => {

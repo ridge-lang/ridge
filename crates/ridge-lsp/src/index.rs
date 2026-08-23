@@ -4426,10 +4426,10 @@ impl WorkspaceIndex {
         while i < items.len() {
             if matches!(items[i], ridge_ast::Item::Import(_)) {
                 // Fold a maximal run of consecutive imports as one block.
-                let start = item_span(&items[i]).start;
-                let mut end = item_span(&items[i]).end;
+                let start = items[i].span().start;
+                let mut end = items[i].span().end;
                 while i < items.len() && matches!(items[i], ridge_ast::Item::Import(_)) {
-                    end = item_span(&items[i]).end;
+                    end = items[i].span().end;
                     i += 1;
                 }
                 if let Some(fold) =
@@ -4439,7 +4439,7 @@ impl WorkspaceIndex {
                 }
             } else {
                 if let Some(fold) =
-                    self.folding_range_for(mid, item_span(&items[i]), &FoldingRangeKind::Region)
+                    self.folding_range_for(mid, items[i].span(), &FoldingRangeKind::Region)
                 {
                     out.push(fold);
                 }
@@ -4530,7 +4530,7 @@ impl WorkspaceIndex {
         // item" step; trim its parser span-bleed first (see `trim_trailing_ws`).
         if let Some(ast) = self.modules.get(mi).and_then(|m| m.ast.as_ref()) {
             for item in &ast.items {
-                let s = item_span(item);
+                let s = item.span();
                 if brackets(&s) {
                     spans.push(trim_trailing_ws(text, s));
                 }
@@ -7222,19 +7222,6 @@ fn sorted_dedup_items(mut items: Vec<TypeHierarchyItem>) -> Vec<TypeHierarchyIte
     });
     items.dedup();
     items
-}
-
-/// The source span of a top-level item, covering its whole declaration.
-const fn item_span(item: &ridge_ast::Item) -> Span {
-    match item {
-        ridge_ast::Item::Import(d) => d.span,
-        ridge_ast::Item::Const(d) => d.span,
-        ridge_ast::Item::Type(d) => d.span,
-        ridge_ast::Item::Fn(d) => d.span,
-        ridge_ast::Item::Actor(d) => d.span,
-        ridge_ast::Item::ClassDecl(d) => d.span,
-        ridge_ast::Item::InstanceDecl(d) => d.span,
-    }
 }
 
 /// Wrap a declaration head in a Ridge-highlighted markdown code fence.

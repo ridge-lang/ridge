@@ -113,6 +113,8 @@ pub struct ClassDecl {
     /// Method signatures (at least one required).
     pub methods: Vec<MethodSig>,
     /// Span covering the full declaration.
+    /// A doc comment or attribute written above it is not part of this
+    /// span; [`Item::span`](crate::Item::span) covers those as well.
     pub span: Span,
     /// Attached doc comment.
     pub doc: Option<DocComment>,
@@ -159,6 +161,8 @@ pub struct InstanceDecl {
     /// Method definitions (at least one required).
     pub methods: Vec<MethodDef>,
     /// Span covering the full declaration.
+    /// A doc comment or attribute written above it is not part of this
+    /// span; [`Item::span`](crate::Item::span) covers those as well.
     pub span: Span,
     /// Attached doc comment.
     pub doc: Option<DocComment>,

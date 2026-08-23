@@ -1119,7 +1119,13 @@ pub fn is_internal_prelude_name(name: &str) -> bool {
 /// a function type is spelled `fn a -> b`. Offering one as a did-you-mean sends
 /// the reader after a name they cannot use — the same reason the query
 /// constructors above are excluded.
-fn is_synthetic_fn_tycon(name: &str) -> bool {
+///
+/// The type checker refuses these in a type position for the same reason,
+/// and refuses them everywhere rather than outside the standard library
+/// only: unlike the query shapes, no source writes one, the library
+/// included.
+#[must_use]
+pub fn is_synthetic_fn_tycon(name: &str) -> bool {
     matches!(
         name,
         "Fn0"

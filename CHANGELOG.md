@@ -42,6 +42,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The synthetic per-arity keys behind a function type's instance head are no
+  longer accepted in a type position. `Fn2` is one of sixteen, a function type
+  is spelled `fn a -> b`, and no source writes the key — but an annotation
+  could name one, and what it produced was a nominal type nothing inhabits. The
+  mistake then surfaced somewhere else, as a mismatch whose expected side named
+  a type no program can produce. One arity higher, `Fn16`, already answered
+  with `unknown type` and a pointer to `fn a -> b`, so the arity ceiling was
+  the only thing between the good diagnostic and the bad one. Every arity now
+  answers the same way, and the suggestion needs no new table: the
+  foreign-name shorthand list already holds `Fn`, and edit distance reaches it.
+
+  The refusal sits above the dispatch that turns a written type into a type,
+  rather than on one of the lookups beneath it, because a written name can
+  reach the arena through more than one of them.
+
 - A workspace manifest that will not parse says what is wrong with it. Every
   command starts by walking up for the `ridge.toml` that governs the current
   directory, and that walk gave a manifest it could not read the same answer as

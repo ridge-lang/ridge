@@ -1,0 +1,8 @@
+-- expect: T056
+-- `Fn2` is one of the synthetic per-arity constructors that give a function
+-- type's instance head a stable dispatch key. A function type is spelled
+-- `fn a -> b`; the key is the compiler's own bookkeeping and no source ever
+-- writes one. Accepting it produced a nominal type nothing inhabits, so the
+-- mistake surfaced later as a mismatch whose expected side named a type no
+-- program could produce. One arity higher, `Fn16`, already answered this way.
+pub fn annotated_with_a_dispatch_key (x: Fn2 Int Text) -> Int = 1

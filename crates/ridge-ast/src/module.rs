@@ -43,3 +43,42 @@ pub enum Item {
     /// Parsed from 0.2.13 onwards. Semantic passes handle these in later cuts.
     InstanceDecl(InstanceDecl),
 }
+
+impl Item {
+    /// The item's full source extent, first byte to last.
+    ///
+    /// This starts at whatever the source writes above the declaration and
+    /// treats as part of it — a doc comment, a `@test` attribute — not at the
+    /// `fn` / `type` / `const` keyword.  A declaration and the item that holds
+    /// it are different things, and each decl's own `span` field covers the
+    /// narrower one: that is what a diagnostic points at, and widening it
+    /// would move error carets onto doc comments.
+    ///
+    /// Anything reasoning about where an item sits on the page wants this one.
+    /// A formatter that asks the declaration instead reads the attribute as
+    /// belonging to the gap between two items and separates it from the
+    /// function it annotates; folding ranges built the same way leave it
+    /// outside the fold.
+    #[must_use]
+    pub fn span(&self) -> Span {
+        match self {
+            Self::Import(d) => span_with_doc(d.span, d.doc.as_ref()),
+            Self::Const(d) => span_with_doc(d.span, d.doc.as_ref()),
+            Self::Type(d) => span_with_doc(d.span, d.doc.as_ref()),
+            Self::Fn(d) => d
+                .attrs
+                .iter()
+                .fold(span_with_doc(d.span, d.doc.as_ref()), |acc, attr| {
+                    acc.merge(attr.span())
+                }),
+            Self::Actor(d) => span_with_doc(d.span, d.doc.as_ref()),
+            Self::ClassDecl(d) => span_with_doc(d.span, d.doc.as_ref()),
+            Self::InstanceDecl(d) => span_with_doc(d.span, d.doc.as_ref()),
+        }
+    }
+}
+
+/// Extend a declaration's span backwards over its doc comment, if it has one.
+fn span_with_doc(span: Span, doc: Option<&DocComment>) -> Span {
+    doc.map_or(span, |d| span.merge(d.span))
+}

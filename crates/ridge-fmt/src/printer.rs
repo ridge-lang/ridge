@@ -173,8 +173,7 @@ pub fn print(parsed: &ParseResultWithTrivia) -> String {
         .items
         .iter()
         .map(|item| {
-            let span = item_span(item);
-            let (line1, _) = line_map.line_col(span.start);
+            let (line1, _) = line_map.line_col(item.span().start);
             (line1 as usize).saturating_sub(1) // 0-based
         })
         .collect();
@@ -356,21 +355,4 @@ fn find_line_comment_in(line: &str) -> Option<usize> {
         }
     }
     None
-}
-
-/// Return the [`ridge_ast::Span`] of a top-level `Item`.
-fn item_span(item: &Item) -> ridge_ast::Span {
-    match item {
-        Item::Import(d) => d.span,
-        Item::Const(d) => d.span,
-        Item::Type(d) => d.span,
-        Item::Fn(d) => d.span,
-        Item::Actor(d) => d.span,
-        // Like every other item, class/instance bodies are normalised by the
-        // line-level rules (operator spacing, trailing whitespace, comment
-        // reattachment); the printer does not re-emit any item structurally.
-        // Their spans drive blank-line normalisation in the surrounding layout.
-        Item::ClassDecl(d) => d.span,
-        Item::InstanceDecl(d) => d.span,
-    }
 }

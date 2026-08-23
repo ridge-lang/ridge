@@ -40,6 +40,19 @@ pub enum Attribute {
     },
 }
 
+impl Attribute {
+    /// The attribute's span, `@` sigil included.
+    ///
+    /// Kept as a method so a second attribute variant only has to be handled
+    /// here, not at every site that needs to know where an attribute sits.
+    #[must_use]
+    pub const fn span(&self) -> Span {
+        match self {
+            Self::Test { span, .. } => *span,
+        }
+    }
+}
+
 // ── FnBody ────────────────────────────────────────────────────────────────────
 
 /// The body of a function declaration (grammar §4.1).
@@ -107,6 +120,8 @@ pub struct ImportDecl {
     /// - `Some([name, …])` — explicit item list.
     pub items: Option<Vec<Ident>>,
     /// Span covering the entire `import …` declaration.
+    /// A doc comment or attribute written above it is not part of this
+    /// span; [`Item::span`](crate::Item::span) covers those as well.
     pub span: Span,
     /// Attached doc comment (set to `None` in T10; T11 fills this).
     // TODO(T11): doc-comment attachment — set once parse_module peels DocComment tokens.
@@ -147,6 +162,8 @@ pub struct ConstDecl {
     /// The initialising expression.
     pub value: Expr,
     /// Span covering the whole declaration.
+    /// A doc comment or attribute written above it is not part of this
+    /// span; [`Item::span`](crate::Item::span) covers those as well.
     pub span: Span,
     /// Attached doc comment (set to `None` in T10; T11 fills this).
     // TODO(T11): doc-comment attachment.
@@ -192,6 +209,8 @@ pub struct TypeDecl {
     /// (1→2→3) are available in every build.
     pub migrates: Vec<MigrateDecl>,
     /// Span covering the whole declaration.
+    /// A doc comment or attribute written above it is not part of this
+    /// span; [`Item::span`](crate::Item::span) covers those as well.
     pub span: Span,
     /// Attached doc comment (set to `None` in T10; T11 fills this).
     // TODO(T11): doc-comment attachment.
@@ -341,6 +360,8 @@ pub struct FnDecl {
     /// and `Body::Primitive` when `@primitive` does.
     pub body: Body,
     /// Span covering the whole declaration.
+    /// A doc comment or attribute written above it is not part of this
+    /// span; [`Item::span`](crate::Item::span) covers those as well.
     pub span: Span,
     /// Attached doc comment (set to `None` in T10; T11 fills this).
     // TODO(T11): doc-comment attachment.
@@ -413,6 +434,8 @@ pub struct ActorDecl {
     /// The actor's member declarations.
     pub members: Vec<ActorMember>,
     /// Span covering the whole declaration.
+    /// A doc comment or attribute written above it is not part of this
+    /// span; [`Item::span`](crate::Item::span) covers those as well.
     pub span: Span,
     /// Attached doc comment (set to `None` in T10; T11 fills this).
     // TODO(T11): doc-comment attachment.

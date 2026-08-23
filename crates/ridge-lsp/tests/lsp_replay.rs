@@ -7123,6 +7123,63 @@ async fn test_folding_ranges_imports_and_declarations() {
     );
 }
 
+/// A fold over an annotated test starts at the attribute, not below it.
+///
+/// The attribute is written above the declaration and belongs to it, so a fold
+/// that begins at `pub fn` leaves it stranded outside the collapsed region.
+#[tokio::test]
+async fn test_folding_range_over_an_annotated_test_covers_its_attribute() {
+    // 0 pub fn other · 1 blank · 2 @test · 3-4 the annotated function
+    let src = "pub fn other () -> Int = 1\n\n@test \"alpha\"\npub fn t_alpha () -> Result Unit Text =\n  Ok ()\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    let folds = server
+        .folding_range(folding_at(&uri))
+        .await
+        .expect("folding ok")
+        .expect("folds present");
+
+    let regions: Vec<(u32, u32)> = folds
+        .iter()
+        .filter(|f| f.kind == Some(FoldingRangeKind::Region))
+        .map(|f| (f.start_line, f.end_line))
+        .collect();
+    assert!(
+        regions.contains(&(2, 4)),
+        "the annotated test folds from its @test line, got {regions:?}"
+    );
+}
+
+/// A documented declaration folds together with its doc comment.
+///
+/// The function itself is one line, so before the doc comment counted as part
+/// of the item there was nothing here to fold at all.
+#[tokio::test]
+async fn test_folding_range_over_a_documented_declaration_covers_its_doc_comment() {
+    // 0 pub fn other · 1 blank · 2-4 doc comment · 5 the documented function
+    let src =
+        "pub fn other () -> Int = 1\n\n---\nAdds one.\n---\npub fn inc (x: Int) -> Int = x + 1\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    let folds = server
+        .folding_range(folding_at(&uri))
+        .await
+        .expect("folding ok")
+        .expect("folds present");
+
+    let regions: Vec<(u32, u32)> = folds
+        .iter()
+        .filter(|f| f.kind == Some(FoldingRangeKind::Region))
+        .map(|f| (f.start_line, f.end_line))
+        .collect();
+    assert!(
+        regions.contains(&(2, 5)),
+        "the documented function folds from its doc comment, got {regions:?}"
+    );
+}
+
 // ── textDocument/selectionRange ───────────────────────────────────────────────
 
 fn selection_at(uri: &Url, positions: Vec<Position>) -> SelectionRangeParams {

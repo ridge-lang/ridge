@@ -562,6 +562,115 @@ fn test_attr_format_idempotent() {
     assert_idempotent("test_attr", input);
 }
 
+// ── Leading trivia stays attached to its declaration ──────────────────────────
+//
+// The blank-line rule runs over consecutive *pairs* of items, so a file holding
+// a single declaration never exercises it.  Every fixture below therefore puts
+// another declaration above the one under test: without it the rule does not
+// fire and the test cannot fail.
+
+/// A declaration used only to give the item below it a predecessor.
+const PRECEDING: &str = "pub fn other () -> Int = 1\n";
+
+/// `format_source` leaves `input` exactly as it is, and stays there on a second
+/// pass.
+fn assert_canonical(case: &str, input: &str) {
+    let out =
+        format_source(input).unwrap_or_else(|e| panic!("case '{case}': format_source failed: {e}"));
+    assert_eq!(
+        out, input,
+        "case '{case}': formatter rewrote canonical source"
+    );
+    assert_idempotent(case, input);
+}
+
+/// A `@test` attribute below another declaration is not split from its function.
+#[test]
+fn attribute_below_another_declaration_stays_attached() {
+    assert_canonical(
+        "attr after decl",
+        &format!("{PRECEDING}\n@test \"alpha\"\npub fn t_alpha () -> Result Unit Text = Ok ()\n"),
+    );
+}
+
+/// Two annotated tests in a row keep their attributes; the second one is the
+/// case the report opened on.
+#[test]
+fn consecutive_annotated_tests_keep_their_attributes() {
+    assert_canonical(
+        "two annotated tests",
+        "@test \"alpha\"\npub fn t_alpha () -> Result Unit Text = Ok ()\n\n\
+         @test \"beta\"\npub fn t_beta () -> Result Unit Text = Ok ()\n",
+    );
+}
+
+/// A doc comment is leading trivia too, and splitting it would be the same bug
+/// wearing different syntax.
+#[test]
+fn doc_comment_below_another_declaration_stays_attached() {
+    assert_canonical(
+        "doc after decl",
+        &format!("{PRECEDING}\n---\nAdds one.\n---\npub fn inc (x: Int) -> Int = x + 1\n"),
+    );
+}
+
+/// Not only on functions: a documented `type` is the same shape.
+#[test]
+fn doc_comment_above_a_type_stays_attached() {
+    assert_canonical(
+        "doc above type",
+        &format!("{PRECEDING}\n---\nA coordinate.\n---\npub type Point = Int\n"),
+    );
+}
+
+/// A doc comment and an attribute stack, and neither is separated from the
+/// function nor from each other.
+#[test]
+fn doc_comment_and_attribute_together_stay_attached() {
+    assert_canonical(
+        "doc and attr",
+        &format!(
+            "{PRECEDING}\n---\nChecks alpha.\n---\n@test \"alpha\"\n\
+             pub fn t_alpha () -> Result Unit Text = Ok ()\n"
+        ),
+    );
+}
+
+/// The rule still separates two items that are jammed together — and the blank
+/// goes above the attribute, where the boundary between the items actually is.
+#[test]
+fn a_missing_separator_is_injected_above_the_attribute() {
+    let input =
+        format!("{PRECEDING}@test \"alpha\"\npub fn t_alpha () -> Result Unit Text = Ok ()\n");
+    let expected =
+        format!("{PRECEDING}\n@test \"alpha\"\npub fn t_alpha () -> Result Unit Text = Ok ()\n");
+    assert_formats_to("jammed attr", &input, &expected);
+    assert_idempotent("jammed attr", &input);
+}
+
+/// Same for a doc comment: the separator lands above it, not between it and the
+/// declaration it documents.
+#[test]
+fn a_missing_separator_is_injected_above_the_doc_comment() {
+    let input = format!("{PRECEDING}---\nAdds one.\n---\npub fn inc (x: Int) -> Int = x + 1\n");
+    let expected =
+        format!("{PRECEDING}\n---\nAdds one.\n---\npub fn inc (x: Int) -> Int = x + 1\n");
+    assert_formats_to("jammed doc", &input, &expected);
+    assert_idempotent("jammed doc", &input);
+}
+
+/// A run of blank lines above an attribute still collapses to one.
+#[test]
+fn extra_blank_lines_above_an_attribute_still_collapse() {
+    let input = format!(
+        "{PRECEDING}\n\n\n@test \"alpha\"\npub fn t_alpha () -> Result Unit Text = Ok ()\n"
+    );
+    let expected =
+        format!("{PRECEDING}\n@test \"alpha\"\npub fn t_alpha () -> Result Unit Text = Ok ()\n");
+    assert_formats_to("blank run above attr", &input, &expected);
+    assert_idempotent("blank run above attr", &input);
+}
+
 // ── migrate_tests tests ────────────────────────────────────────────────────────
 
 /// A `pub fn test_foo` gains `@test "foo"` above it; the function name is unchanged.

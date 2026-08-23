@@ -42,6 +42,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ridge fmt` no longer separates a declaration from what is written above it.
+  A `@test "…"` attribute and a `---` doc comment are both parsed before the
+  declaration they belong to, so the declaration's own span starts below them.
+  The rule that keeps one blank line between two top-level items read that as
+  the boundary between the items and put the separator there — inside the
+  declaration rather than in front of it, splitting an attribute from its
+  function and a doc comment from whatever it documents. Over this repository's
+  own Ridge sources it fired 219 times across 20 files, every one of them a file
+  the formatter would have made worse.
+
+  An item and the declaration it holds are now two spans instead of one. The
+  declaration keeps the narrow one, which is what an error message points at;
+  the item reaches back over its doc comment and its attributes, which is what
+  anything reasoning about where it sits on the page needs. The editor asked the
+  same question through a second copy of the same seven-line match and got the
+  same wrong answer, so an annotated test folded from its `pub fn` line with the
+  attribute left outside; both now go through one accessor, and a documented
+  one-line declaration folds where before there was nothing to fold.
+
 - The synthetic per-arity keys behind a function type's instance head are no
   longer accepted in a type position. `Fn2` is one of sixteen, a function type
   is spelled `fn a -> b`, and no source writes the key — but an annotation

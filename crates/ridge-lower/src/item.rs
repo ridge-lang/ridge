@@ -48,7 +48,7 @@ use ridge_ast::{
 };
 use ridge_ir::{
     CtorKind, IrArm, IrConst, IrExpr, IrFfiFn, IrFn, IrItem, IrLit, IrMigration, IrParam, IrPat,
-    IrPrimitiveFn, SymbolRef,
+    IrPrimitiveFn, StdlibKind, SymbolRef,
 };
 use ridge_resolve::{NodeId, NodeKind};
 use ridge_typecheck::JsonPrim;
@@ -1118,6 +1118,7 @@ pub fn lower_derived_instance(
                     sym: SymbolRef::Stdlib {
                         module: "std.op".to_string(),
                         name: "eq".to_string(),
+                        kind: StdlibKind::Function,
                     },
                     span: sp,
                 }),
@@ -1689,7 +1690,12 @@ fn delegated_inner_call(
                 id: ctx.fresh_id(None),
                 sym: SymbolRef::Stdlib {
                     module: home.to_owned(),
+                    // A base type's instance takes no sub-dictionary, so its
+                    // generated `$inst_` const is a value and naming it is that
+                    // value. The parametric instances (`Option`, `List`) are the
+                    // ones that are functions, and they are built as calls below.
                     name: format!("$inst_{class_name}_{inner_type_name}"),
+                    kind: StdlibKind::Constant,
                 },
                 span: sp,
             }
@@ -1882,6 +1888,7 @@ fn build_ord_record_body(ctx: &mut LowerCtx<'_>, field_names: &[String], sp: Spa
                 sym: SymbolRef::Stdlib {
                     module: "std.op".to_string(),
                     name: "lt".to_string(),
+                    kind: StdlibKind::Function,
                 },
                 span: sp,
             }),
@@ -1897,6 +1904,7 @@ fn build_ord_record_body(ctx: &mut LowerCtx<'_>, field_names: &[String], sp: Spa
                 sym: SymbolRef::Stdlib {
                     module: "std.op".to_string(),
                     name: "gt".to_string(),
+                    kind: StdlibKind::Function,
                 },
                 span: sp,
             }),
@@ -2416,33 +2424,15 @@ fn build_ord_payload_body(
             span: sp,
         };
 
-        let lt_call = IrExpr::Call {
-            id: ctx.fresh_id(None),
-            callee: Box::new(IrExpr::Symbol {
-                id: ctx.fresh_id(None),
-                sym: SymbolRef::Stdlib {
-                    module: "std.op".to_string(),
-                    name: "lt".to_string(),
-                },
-                span: sp,
-            }),
-            args: vec![a_local.clone(), b_local.clone()],
-            span: sp,
-        };
+        let lt_call = make_stdlib_call(
+            ctx,
+            "std.op",
+            "lt",
+            vec![a_local.clone(), b_local.clone()],
+            sp,
+        );
 
-        let gt_call = IrExpr::Call {
-            id: ctx.fresh_id(None),
-            callee: Box::new(IrExpr::Symbol {
-                id: ctx.fresh_id(None),
-                sym: SymbolRef::Stdlib {
-                    module: "std.op".to_string(),
-                    name: "gt".to_string(),
-                },
-                span: sp,
-            }),
-            args: vec![a_local, b_local],
-            span: sp,
-        };
+        let gt_call = make_stdlib_call(ctx, "std.op", "gt", vec![a_local, b_local], sp);
 
         let gt_match = IrExpr::Match {
             id: ctx.fresh_id(None),
@@ -2555,6 +2545,7 @@ fn build_encode_record_body(
             sym: SymbolRef::Stdlib {
                 module: "std.map".to_string(),
                 name: "fromList".to_string(),
+                kind: StdlibKind::Function,
             },
             span: sp,
         }),
@@ -2699,6 +2690,7 @@ fn build_encode_union_arm_body(
             sym: SymbolRef::Stdlib {
                 module: "std.map".to_string(),
                 name: "fromList".to_string(),
+                kind: StdlibKind::Function,
             },
             span: sp,
         }),
@@ -2795,6 +2787,7 @@ fn make_stdlib_call(
             sym: SymbolRef::Stdlib {
                 module: module.into(),
                 name: name.into(),
+                kind: StdlibKind::Function,
             },
             span: sp,
         }),
@@ -2949,6 +2942,7 @@ fn encode_shape(
                     sym: SymbolRef::Stdlib {
                         module: "std.list".to_string(),
                         name: "map".to_string(),
+                        kind: StdlibKind::Function,
                     },
                     span: sp,
                 }),
@@ -3005,6 +2999,7 @@ fn encode_shape(
                     sym: SymbolRef::Stdlib {
                         module: "std.map".to_string(),
                         name: "map".to_string(),
+                        kind: StdlibKind::Function,
                     },
                     span: sp,
                 }),
@@ -3221,6 +3216,7 @@ fn build_result_variant_object(
             sym: SymbolRef::Stdlib {
                 module: "std.map".to_string(),
                 name: "fromList".to_string(),
+                kind: StdlibKind::Function,
             },
             span: sp,
         }),
@@ -3694,6 +3690,7 @@ fn decode_shape(
                         sym: SymbolRef::Stdlib {
                             module: "std.list".to_string(),
                             name: "head".to_string(),
+                            kind: StdlibKind::Function,
                         },
                         span: sp,
                     }),
@@ -3789,6 +3786,7 @@ fn decode_shape(
                         sym: SymbolRef::Stdlib {
                             module: "std.list".to_string(),
                             name: "head".to_string(),
+                            kind: StdlibKind::Function,
                         },
                         span: sp,
                     }),
@@ -3932,6 +3930,7 @@ fn decode_shape(
                                         sym: SymbolRef::Stdlib {
                                             module: "std.list".to_string(),
                                             name: "head".to_string(),
+                                            kind: StdlibKind::Function,
                                         },
                                         span: sp,
                                     }),
@@ -4075,6 +4074,7 @@ fn decode_shape(
                                     sym: SymbolRef::Stdlib {
                                         module: "std.list".to_string(),
                                         name: "head".to_string(),
+                                        kind: StdlibKind::Function,
                                     },
                                     span: sp,
                                 }),
@@ -4204,6 +4204,7 @@ fn decode_shape(
                             sym: SymbolRef::Stdlib {
                                 module: "std.map".to_string(),
                                 name: "get".to_string(),
+                                kind: StdlibKind::Function,
                             },
                             span: sp,
                         }),
@@ -4247,6 +4248,7 @@ fn decode_shape(
                             sym: SymbolRef::Stdlib {
                                 module: "std.map".to_string(),
                                 name: "get".to_string(),
+                                kind: StdlibKind::Function,
                             },
                             span: sp,
                         }),
@@ -4468,6 +4470,7 @@ fn map_get_call(ctx: &mut LowerCtx<'_>, key: IrExpr, map: IrExpr, sp: Span) -> I
             sym: SymbolRef::Stdlib {
                 module: "std.map".to_string(),
                 name: "get".to_string(),
+                kind: StdlibKind::Function,
             },
             span: sp,
         }),
@@ -4921,6 +4924,7 @@ fn build_optional_from_sql_call(
         sym: SymbolRef::Stdlib {
             module: "std.sql".to_string(),
             name: "$inst_SqlType_Option".to_string(),
+            kind: StdlibKind::Function,
         },
         span: sp,
     };
@@ -4967,6 +4971,7 @@ fn build_sql_type_dict(ctx: &mut LowerCtx<'_>, type_tag: &str, sp: Span) -> IrEx
             sym: SymbolRef::Stdlib {
                 module: "std.sql".to_string(),
                 name: "$inst_SqlType_List".to_string(),
+                kind: StdlibKind::Function,
             },
             span: sp,
         };
@@ -4983,6 +4988,9 @@ fn build_sql_type_dict(ctx: &mut LowerCtx<'_>, type_tag: &str, sp: Span) -> IrEx
             sym: SymbolRef::Stdlib {
                 module: "std.sql".to_string(),
                 name: format!("$inst_SqlType_{type_tag}"),
+                // The `List` branch above applies its element dictionary, so it
+                // is a function; a plain base tag is the value itself.
+                kind: StdlibKind::Constant,
             },
             span: sp,
         }
@@ -5046,6 +5054,7 @@ fn schema_builder_call(ctx: &mut LowerCtx<'_>, name: &str, args: Vec<IrExpr>, sp
             sym: SymbolRef::Stdlib {
                 module: "std.schema".to_string(),
                 name: name.to_string(),
+                kind: StdlibKind::Function,
             },
             span: sp,
         }),
@@ -5403,6 +5412,7 @@ fn build_to_insert_row_body(
             sym: SymbolRef::Stdlib {
                 module: "std.map".to_string(),
                 name: "fromList".to_string(),
+                kind: StdlibKind::Function,
             },
             span: sp,
         }),
@@ -5473,6 +5483,7 @@ fn build_to_row_record_body(
             sym: SymbolRef::Stdlib {
                 module: "std.map".to_string(),
                 name: "fromList".to_string(),
+                kind: StdlibKind::Function,
             },
             span: sp,
         }),
@@ -5516,6 +5527,7 @@ fn build_optional_to_sql_call(
         sym: SymbolRef::Stdlib {
             module: "std.sql".to_string(),
             name: "$inst_SqlType_Option".to_string(),
+            kind: StdlibKind::Function,
         },
         span: sp,
     };
@@ -5615,6 +5627,7 @@ fn build_decode_union_body(
                     sym: SymbolRef::Stdlib {
                         module: "std.op".to_string(),
                         name: "eq".to_string(),
+                        kind: StdlibKind::Function,
                     },
                     span: sp,
                 }),
@@ -5860,6 +5873,7 @@ fn build_union_payload_tag_dispatch(
                 sym: SymbolRef::Stdlib {
                     module: "std.op".to_string(),
                     name: "eq".to_string(),
+                    kind: StdlibKind::Function,
                 },
                 span: sp,
             }),
@@ -6319,6 +6333,7 @@ fn build_list_decode_fold(
             sym: SymbolRef::Stdlib {
                 module: "std.list".to_string(),
                 name: "fold".to_string(),
+                kind: StdlibKind::Function,
             },
             span: sp,
         }),
@@ -6336,6 +6351,7 @@ fn build_list_decode_fold(
             sym: SymbolRef::Stdlib {
                 module: "std.list".to_string(),
                 name: "reverse".to_string(),
+                kind: StdlibKind::Function,
             },
             span: sp,
         }),
@@ -6426,6 +6442,7 @@ fn build_map_decode_fold(
             sym: SymbolRef::Stdlib {
                 module: "std.map".to_string(),
                 name: "toList".to_string(),
+                kind: StdlibKind::Function,
             },
             span: sp,
         }),
@@ -6672,6 +6689,7 @@ fn build_map_decode_fold(
             sym: SymbolRef::Stdlib {
                 module: "std.list".to_string(),
                 name: "fold".to_string(),
+                kind: StdlibKind::Function,
             },
             span: sp,
         }),
@@ -6688,6 +6706,7 @@ fn build_map_decode_fold(
             sym: SymbolRef::Stdlib {
                 module: "std.list".to_string(),
                 name: "reverse".to_string(),
+                kind: StdlibKind::Function,
             },
             span: sp,
         }),
@@ -6705,6 +6724,7 @@ fn build_map_decode_fold(
             sym: SymbolRef::Stdlib {
                 module: "std.map".to_string(),
                 name: "fromList".to_string(),
+                kind: StdlibKind::Function,
             },
             span: sp,
         }),
@@ -7211,7 +7231,7 @@ mod tests {
         match expr {
             IrExpr::Call { callee, args, .. } => {
                 if let IrExpr::Symbol {
-                    sym: SymbolRef::Stdlib { module, name },
+                    sym: SymbolRef::Stdlib { module, name, .. },
                     ..
                 } = callee.as_ref()
                 {
@@ -7374,7 +7394,7 @@ mod tests {
         match expr {
             IrExpr::Call { callee, args, .. } => {
                 if let IrExpr::Symbol {
-                    sym: SymbolRef::Stdlib { module, name },
+                    sym: SymbolRef::Stdlib { module, name, .. },
                     ..
                 } = callee.as_ref()
                 {

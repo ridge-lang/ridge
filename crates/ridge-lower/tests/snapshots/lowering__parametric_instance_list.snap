@@ -19,7 +19,7 @@ items:
     body:
       Call(n0):
         callee:
-          Symbol(n1): Stdlib(std.json.encode)
+          Symbol(n1): Stdlib(fn:std.json.encode)
         args:
           -
             Call(n2):
@@ -59,7 +59,7 @@ items:
                           -
                             Call(n12):
                               callee:
-                                Symbol(n13): Stdlib(std.list.map)
+                                Symbol(n13): Stdlib(fn:std.list.map)
                               args:
                                 -
                                   Lambda(n14):

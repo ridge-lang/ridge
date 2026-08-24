@@ -45,7 +45,7 @@
 
 use ridge_ast::{pattern::FieldPattern, pattern::ListPatElem, Expr, Ident, Pattern, Span};
 use ridge_ir::symbol::CtorKind;
-use ridge_ir::{IrArm, IrExpr, IrLit, IrPat, SymbolRef};
+use ridge_ir::{IrArm, IrExpr, IrLit, IrPat, StdlibKind, SymbolRef};
 use ridge_resolve::{imports::Binding, NodeKind};
 use ridge_types::TyConId;
 
@@ -292,6 +292,7 @@ fn lower_varlen_list_arm(
                 sym: SymbolRef::Stdlib {
                     module: "__slice__".into(),
                     name: "and".into(),
+                    kind: StdlibKind::Function,
                 },
                 span: pat_span,
             }),
@@ -348,6 +349,7 @@ fn build_length_ge_guard(
             sym: SymbolRef::Stdlib {
                 module: "__slice__".into(),
                 name: "length".into(),
+                kind: StdlibKind::Function,
             },
             span,
         }),
@@ -368,6 +370,7 @@ fn build_length_ge_guard(
             sym: SymbolRef::Stdlib {
                 module: "__slice__".into(),
                 name: "ge".into(),
+                kind: StdlibKind::Function,
             },
             span,
         }),
@@ -411,6 +414,7 @@ fn build_decimal_eq_guard(
             sym: SymbolRef::Stdlib {
                 module: "std.decimal".into(),
                 name: "parseStrict".into(),
+                kind: StdlibKind::Function,
             },
             span,
         }),
@@ -430,6 +434,7 @@ fn build_decimal_eq_guard(
             sym: SymbolRef::Stdlib {
                 module: "std.decimal".into(),
                 name: "compare".into(),
+                kind: StdlibKind::Function,
             },
             span,
         }),
@@ -450,6 +455,7 @@ fn build_decimal_eq_guard(
             sym: SymbolRef::Stdlib {
                 module: "std.op".into(),
                 name: "eq".into(),
+                kind: StdlibKind::Function,
             },
             span,
         }),
@@ -494,6 +500,7 @@ fn and_guard(ctx: &mut LowerCtx<'_>, lhs: IrExpr, rhs: IrExpr, span: Span) -> Ir
             sym: SymbolRef::Stdlib {
                 module: "__slice__".into(),
                 name: "and".into(),
+                kind: StdlibKind::Function,
             },
             span,
         }),
@@ -745,6 +752,7 @@ fn build_hd_tl_chain(
                 sym: SymbolRef::Stdlib {
                     module: "__slice__".into(),
                     name: "tl".into(),
+                    kind: StdlibKind::Function,
                 },
                 span,
             }),
@@ -762,6 +770,7 @@ fn build_hd_tl_chain(
             sym: SymbolRef::Stdlib {
                 module: "__slice__".into(),
                 name: "hd".into(),
+                kind: StdlibKind::Function,
             },
             span,
         }),
@@ -782,6 +791,7 @@ fn build_nth_call(ctx: &mut LowerCtx<'_>, n: usize, suffix_ref: &IrExpr, span: S
             sym: SymbolRef::Stdlib {
                 module: "__slice__".into(),
                 name: "nth".into(),
+                kind: StdlibKind::Function,
             },
             span,
         }),
@@ -816,6 +826,7 @@ fn build_nthtail_call(
             sym: SymbolRef::Stdlib {
                 module: "__slice__".into(),
                 name: "minus".into(),
+                kind: StdlibKind::Function,
             },
             span,
         }),
@@ -839,6 +850,7 @@ fn build_nthtail_call(
             sym: SymbolRef::Stdlib {
                 module: "__slice__".into(),
                 name: "nthtail".into(),
+                kind: StdlibKind::Function,
             },
             span,
         }),
@@ -867,6 +879,7 @@ fn build_sublist_call(
             sym: SymbolRef::Stdlib {
                 module: "__slice__".into(),
                 name: "minus".into(),
+                kind: StdlibKind::Function,
             },
             span,
         }),
@@ -891,6 +904,7 @@ fn build_sublist_call(
             sym: SymbolRef::Stdlib {
                 module: "__slice__".into(),
                 name: "sublist".into(),
+                kind: StdlibKind::Function,
             },
             span,
         }),
@@ -918,6 +932,7 @@ fn build_length_call(ctx: &mut LowerCtx<'_>, scrut_ref: &IrExpr, span: Span) -> 
             sym: SymbolRef::Stdlib {
                 module: "__slice__".into(),
                 name: "length".into(),
+                kind: StdlibKind::Function,
             },
             span,
         }),

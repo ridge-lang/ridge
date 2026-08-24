@@ -42,6 +42,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A standard-library function that takes nothing is passed when it is named,
+  not called. `dueDateWith Time.now` handed `dueDateWith` a `Timestamp` and the
+  program stopped with `badfun` — while the same program with a clock written
+  in the file ran, and so did `Time.now ()` called directly. It is the
+  dependency-injection example from the language description that lands here.
+  Every nullary standard-library function was affected: `Cli.args`, `Env.all`,
+  `Random.float`, `Time.epoch`, `Time.monotonic`, `Date.todayUtc`,
+  `TimeOfDay.nowUtc`, `Uuid.nil`, `Uuid.generate`, `Bytes.empty` and
+  `Io.readLine` alongside `Time.now`.
+
+  Code generation was choosing between referencing a symbol and evaluating it
+  from the target's arity, and arity cannot carry that choice: `std.time.now`
+  is `() -> Timestamp` and `std.map.empty` is `Map k v`, and both take nothing.
+  Nor can the declaration, which spells a function of no arguments the same way
+  either way. Only the type checker's scheme separates them, so that is what
+  the symbol now carries into the intermediate representation — beside the mark
+  that already tells a record constructor from a union variant, and for the
+  same reason: it is a fact about the program that every backend needs and none
+  can work out alone. `Map.empty`, `Set.empty` and `List.empty` are still
+  resolved where they are named, which is what their declared types promise.
+
+  Three `std.data` helpers were one parameter wider in their signatures than in
+  their declarations, which is the same fault reached from the other side.
+  `defaultPool`, `defaultRetryPolicy` and `sqliteMemory` each declare no
+  parameter list and were typed as taking a `Unit`, so naming one as a value
+  produced a reference of the declared width that nothing could apply. Their
+  signatures now say what the declarations say. `memAdapter`, which really does
+  declare a `Unit` parameter, is unchanged.
+
+  The standard-library table in the language description said
+  `epoch : Timestamp`. It is `() -> Timestamp`, and always was — `Time.epoch`
+  on its own is a type error.
+
 - Diagnostics name paths the way a person writes them. On Windows every message
   carrying a filesystem path printed it in the extended-length form — ``member
   directory `\\?\C:\work\demo\apps\orphan` has no `ridge.toml` `` — which is

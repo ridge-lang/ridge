@@ -30,7 +30,7 @@
 //! `maps:get`, application per element) is unchanged.
 
 use ridge_ast::Span;
-use ridge_ir::{IrExpr, IrLit, IrParam, SymbolRef};
+use ridge_ir::{IrExpr, IrLit, IrParam, StdlibKind, SymbolRef};
 use ridge_typecheck::JsonPrim;
 use ridge_types::{
     BuiltinTyCons, ClassId, TyConId, Type, DECODE_CLASS, ENCODE_CLASS, ORD_CLASS, TOTEXT_CLASS,
@@ -451,6 +451,7 @@ fn stdlib_call(
             sym: SymbolRef::Stdlib {
                 module: module.to_string(),
                 name: name.to_string(),
+                kind: StdlibKind::Function,
             },
             span,
         }),

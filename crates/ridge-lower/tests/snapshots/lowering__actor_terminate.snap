@@ -21,7 +21,7 @@ items:
         Assign(n0) -> StateField(n):
           Call(n1):
             callee:
-              Symbol(n2): Stdlib(std.int.add)
+              Symbol(n2): Stdlib(fn:std.int.add)
             args:
               -
                 Field(n3).n:
@@ -37,7 +37,7 @@ items:
           Assign(n6) -> StateField(n):
             Call(n7):
               callee:
-                Symbol(n8): Stdlib(std.int.add)
+                Symbol(n8): Stdlib(fn:std.int.add)
               args:
                 -
                   Field(n9).n:

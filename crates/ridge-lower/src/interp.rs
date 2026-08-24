@@ -67,7 +67,7 @@
 )]
 
 use ridge_ast::{expr::InterpPart, Expr, Span};
-use ridge_ir::{IrExpr, IrLit, SymbolRef};
+use ridge_ir::{IrExpr, IrLit, StdlibKind, SymbolRef};
 use ridge_resolve::NodeKind;
 use ridge_typecheck::DictPlan;
 use ridge_types::{TyConId, Type, TOTEXT_CLASS};
@@ -199,6 +199,7 @@ fn make_actor_error_to_text_call(
             sym: SymbolRef::Stdlib {
                 module: "std.actor".into(),
                 name: fn_name.into(),
+                kind: StdlibKind::Function,
             },
             span,
         }),
@@ -542,6 +543,7 @@ pub(crate) fn make_to_text_call(
         sym: SymbolRef::Stdlib {
             module: module.into(),
             name: "toText".into(),
+            kind: StdlibKind::Function,
         },
         span,
     });
@@ -571,6 +573,7 @@ pub(crate) fn make_ordering_to_text_call(
         sym: SymbolRef::Stdlib {
             module: "std.list".into(),
             name: "_orderingToText".into(),
+            kind: StdlibKind::Function,
         },
         span,
     });
@@ -599,6 +602,7 @@ pub(crate) fn make_concat_call(
         sym: SymbolRef::Stdlib {
             module: "std.text".into(),
             name: "concat".into(),
+            kind: StdlibKind::Function,
         },
         span,
     });
@@ -753,6 +757,7 @@ mod tests {
                             SymbolRef::Stdlib {
                                 ref module,
                                 ref name,
+                                ..
                             },
                         ..
                     } => {
@@ -808,6 +813,7 @@ mod tests {
                             SymbolRef::Stdlib {
                                 ref module,
                                 ref name,
+                                ..
                             },
                         ..
                     } => {
@@ -842,6 +848,7 @@ mod tests {
                         SymbolRef::Stdlib {
                             ref module,
                             ref name,
+                            ..
                         },
                     ..
                 } => {
@@ -874,6 +881,7 @@ mod tests {
                         SymbolRef::Stdlib {
                             ref module,
                             ref name,
+                            ..
                         },
                     ..
                 } => {
@@ -929,6 +937,7 @@ mod tests {
                         SymbolRef::Stdlib {
                             ref module,
                             ref name,
+                            ..
                         },
                     ..
                 } => {
@@ -961,6 +970,7 @@ mod tests {
                         SymbolRef::Stdlib {
                             ref module,
                             ref name,
+                            ..
                         },
                     ..
                 } => {
@@ -993,6 +1003,7 @@ mod tests {
                         SymbolRef::Stdlib {
                             ref module,
                             ref name,
+                            ..
                         },
                     ..
                 } => {
@@ -1027,6 +1038,7 @@ mod tests {
                         SymbolRef::Stdlib {
                             ref module,
                             ref name,
+                            ..
                         },
                     ..
                 } => {
@@ -1057,6 +1069,7 @@ mod tests {
                         SymbolRef::Stdlib {
                             ref module,
                             ref name,
+                            ..
                         },
                     ..
                 } => {

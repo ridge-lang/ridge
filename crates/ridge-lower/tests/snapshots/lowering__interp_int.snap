@@ -17,14 +17,14 @@ items:
     body:
       Call(n0):
         callee:
-          Symbol(n1): Stdlib(std.text.concat)
+          Symbol(n1): Stdlib(fn:std.text.concat)
         args:
           -
             Lit(n2): Text("The answer is ")
           -
             Call(n3):
               callee:
-                Symbol(n4): Stdlib(std.int.toText)
+                Symbol(n4): Stdlib(fn:std.int.toText)
               args:
                 -
                   Local(n5): n

@@ -30,7 +30,7 @@
 
 use ridge_ir::{
     AssignTarget, CtorKind, IrActor, IrArm, IrConst, IrExpr, IrFn, IrHandler, IrInit, IrItem,
-    IrLit, IrNodeId, IrParam, IrPat, IrTerminate, IrTimeout, LoweredModule, SymbolRef,
+    IrLit, IrNodeId, IrParam, IrPat, IrTerminate, IrTimeout, LoweredModule, StdlibKind, SymbolRef,
 };
 use ridge_lower::lower_workspace;
 use ridge_resolve::{discover_workspace, resolve_workspace};
@@ -850,7 +850,17 @@ fn render_lit(lit: &IrLit) -> String {
 fn render_sym(sym: &SymbolRef) -> String {
     match sym {
         SymbolRef::Local { name, module } => format!("Local({name} @ m{})", module.0),
-        SymbolRef::Stdlib { module, name } => format!("Stdlib({module}.{name})"),
+        // The kind is rendered for the same reason `ctor_kind` is below: it is
+        // part of what the symbol says, and a snapshot that hides it agrees
+        // just as readily with a wrong answer. `Time.now` and `Map.empty` are
+        // both arity 0 and differ only here.
+        SymbolRef::Stdlib { module, name, kind } => {
+            let kind = match kind {
+                StdlibKind::Function => "fn",
+                StdlibKind::Constant => "value",
+            };
+            format!("Stdlib({kind}:{module}.{name})")
+        }
         SymbolRef::External { module, name } => format!("External({name} @ m{})", module.0),
         SymbolRef::Handler {
             actor_module,

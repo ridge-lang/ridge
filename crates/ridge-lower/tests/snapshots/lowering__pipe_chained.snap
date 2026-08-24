@@ -17,7 +17,7 @@ items:
     body:
       Call(n0):
         callee:
-          Symbol(n1): Stdlib(std.int.add)
+          Symbol(n1): Stdlib(fn:std.int.add)
         args:
           -
             Local(n2): x
@@ -35,7 +35,7 @@ items:
     body:
       Call(n4):
         callee:
-          Symbol(n5): Stdlib(std.int.mul)
+          Symbol(n5): Stdlib(fn:std.int.mul)
         args:
           -
             Local(n6): x
@@ -53,7 +53,7 @@ items:
     body:
       Call(n8):
         callee:
-          Symbol(n9): Stdlib(std.int.sub)
+          Symbol(n9): Stdlib(fn:std.int.sub)
         args:
           -
             Lit(n10): Int(0)

@@ -105,7 +105,7 @@ items:
         value:
           Call(n18):
             callee:
-              Symbol(n19): Stdlib(std.text.split)
+              Symbol(n19): Stdlib(fn:std.text.split)
             args:
               -
                 Lit(n20): Text(" ")
@@ -120,7 +120,7 @@ items:
                 scrutinee:
                   Call(n24):
                     callee:
-                      Symbol(n25): Stdlib(std.list.head)
+                      Symbol(n25): Stdlib(fn:std.list.head)
                     args:
                       -
                         Local(n26): parts
@@ -149,12 +149,12 @@ items:
                     scrutinee:
                       Call(n32):
                         callee:
-                          Symbol(n33): Stdlib(std.list.head)
+                          Symbol(n33): Stdlib(fn:std.list.head)
                         args:
                           -
                             Call(n34):
                               callee:
-                                Symbol(n35): Stdlib(std.list.drop)
+                                Symbol(n35): Stdlib(fn:std.list.drop)
                               args:
                                 -
                                   Lit(n36): Int(1)
@@ -185,12 +185,12 @@ items:
                         scrutinee:
                           Call(n43):
                             callee:
-                              Symbol(n44): Stdlib(std.list.head)
+                              Symbol(n44): Stdlib(fn:std.list.head)
                             args:
                               -
                                 Call(n45):
                                   callee:
-                                    Symbol(n46): Stdlib(std.list.drop)
+                                    Symbol(n46): Stdlib(fn:std.list.drop)
                                   args:
                                     -
                                       Lit(n47): Int(2)
@@ -219,7 +219,7 @@ items:
                         value:
                           Call(n53):
                             callee:
-                              Symbol(n54): Stdlib(std.list.drop)
+                              Symbol(n54): Stdlib(fn:std.list.drop)
                             args:
                               -
                                 Lit(n55): Int(3)
@@ -263,12 +263,12 @@ items:
                                     scrutinee:
                                       Call(n67):
                                         callee:
-                                          Symbol(n68): Stdlib(std.list.head)
+                                          Symbol(n68): Stdlib(fn:std.list.head)
                                         args:
                                           -
                                             Call(n69):
                                               callee:
-                                                Symbol(n70): Stdlib(std.text.split)
+                                                Symbol(n70): Stdlib(fn:std.text.split)
                                               args:
                                                 -
                                                   Lit(n71): Text(":")
@@ -299,7 +299,7 @@ items:
                                         scrutinee:
                                           Call(n78):
                                             callee:
-                                              Symbol(n79): Stdlib(std.int.parse)
+                                              Symbol(n79): Stdlib(fn:std.int.parse)
                                             args:
                                               -
                                                 Local(n80): hourStr
@@ -337,7 +337,7 @@ items:
                                                 message:
                                                   Call(n90):
                                                     callee:
-                                                      Symbol(n91): Stdlib(std.list.fold)
+                                                      Symbol(n91): Stdlib(fn:std.list.fold)
                                                     args:
                                                       -
                                                         Lambda(n92):
@@ -350,12 +350,12 @@ items:
                                                           body:
                                                             Call(n93):
                                                               callee:
-                                                                Symbol(n94): Stdlib(std.text.concat)
+                                                                Symbol(n94): Stdlib(fn:std.text.concat)
                                                               args:
                                                                 -
                                                                   Call(n95):
                                                                     callee:
-                                                                      Symbol(n96): Stdlib(std.text.concat)
+                                                                      Symbol(n96): Stdlib(fn:std.text.concat)
                                                                     args:
                                                                       -
                                                                         Local(n97): a
@@ -381,7 +381,7 @@ items:
     body:
       Call(n102):
         callee:
-          Symbol(n103): Stdlib(std.op.ge)
+          Symbol(n103): Stdlib(fn:std.op.ge)
         args:
           -
             Call(n104):
@@ -416,14 +416,14 @@ items:
         value:
           Call(n112):
             callee:
-              Symbol(n113): Stdlib(std.option.withDefault)
+              Symbol(n113): Stdlib(fn:std.option.withDefault)
             args:
               -
                 Lit(n114): Int(0)
               -
                 Call(n115):
                   callee:
-                    Symbol(n116): Stdlib(std.map.get)
+                    Symbol(n116): Stdlib(fn:std.map.get)
                   args:
                     -
                       Local(n117): k
@@ -432,14 +432,14 @@ items:
         body:
           Call(n119):
             callee:
-              Symbol(n120): Stdlib(std.map.insert)
+              Symbol(n120): Stdlib(fn:std.map.insert)
             args:
               -
                 Local(n121): k
               -
                 Call(n122):
                   callee:
-                    Symbol(n123): Stdlib(std.int.add)
+                    Symbol(n123): Stdlib(fn:std.int.add)
                   args:
                     -
                       Local(n124): current
@@ -459,7 +459,7 @@ items:
     body:
       Call(n127):
         callee:
-          Symbol(n128): Stdlib(std.list.fold)
+          Symbol(n128): Stdlib(fn:std.list.fold)
         args:
           -
             Lambda(n129):
@@ -480,7 +480,7 @@ items:
                     -
                       Local(n134): acc
           -
-            Symbol(n135): Stdlib(std.map.empty)
+            Symbol(n135): Stdlib(value:std.map.empty)
           -
             Local(n136): entries
   - kind: fn
@@ -501,7 +501,7 @@ items:
         value:
           Call(n138):
             callee:
-              Symbol(n139): Stdlib(std.text.padLeft)
+              Symbol(n139): Stdlib(fn:std.text.padLeft)
             args:
               -
                 Lit(n140): Int(2)
@@ -510,7 +510,7 @@ items:
               -
                 Call(n142):
                   callee:
-                    Symbol(n143): Stdlib(std.int.toText)
+                    Symbol(n143): Stdlib(fn:std.int.toText)
                   args:
                     -
                       Local(n144): hour
@@ -521,7 +521,7 @@ items:
             value:
               Call(n146):
                 callee:
-                  Symbol(n147): Stdlib(std.list.fold)
+                  Symbol(n147): Stdlib(fn:std.list.fold)
                 args:
                   -
                     Lambda(n148):
@@ -534,7 +534,7 @@ items:
                       body:
                         Call(n149):
                           callee:
-                            Symbol(n150): Stdlib(std.text.concat)
+                            Symbol(n150): Stdlib(fn:std.text.concat)
                           args:
                             -
                               Local(n151): a
@@ -545,7 +545,7 @@ items:
                   -
                     Call(n154):
                       callee:
-                        Symbol(n155): Stdlib(std.list.map)
+                        Symbol(n155): Stdlib(fn:std.list.map)
                       args:
                         -
                           Lambda(n156):
@@ -558,7 +558,7 @@ items:
                         -
                           Call(n158):
                             callee:
-                              Symbol(n159): Stdlib(std.list.range)
+                              Symbol(n159): Stdlib(fn:std.list.range)
                             args:
                               -
                                 Lit(n160): Int(1)
@@ -567,32 +567,32 @@ items:
             body:
               Call(n162):
                 callee:
-                  Symbol(n163): Stdlib(std.text.concat)
+                  Symbol(n163): Stdlib(fn:std.text.concat)
                 args:
                   -
                     Call(n164):
                       callee:
-                        Symbol(n165): Stdlib(std.text.concat)
+                        Symbol(n165): Stdlib(fn:std.text.concat)
                       args:
                         -
                           Call(n166):
                             callee:
-                              Symbol(n167): Stdlib(std.text.concat)
+                              Symbol(n167): Stdlib(fn:std.text.concat)
                             args:
                               -
                                 Call(n168):
                                   callee:
-                                    Symbol(n169): Stdlib(std.text.concat)
+                                    Symbol(n169): Stdlib(fn:std.text.concat)
                                   args:
                                     -
                                       Call(n170):
                                         callee:
-                                          Symbol(n171): Stdlib(std.text.concat)
+                                          Symbol(n171): Stdlib(fn:std.text.concat)
                                         args:
                                           -
                                             Call(n172):
                                               callee:
-                                                Symbol(n173): Stdlib(std.text.concat)
+                                                Symbol(n173): Stdlib(fn:std.text.concat)
                                               args:
                                                 -
                                                   Lit(n174): Text(" ")
@@ -607,7 +607,7 @@ items:
                         -
                           Call(n179):
                             callee:
-                              Symbol(n180): Stdlib(std.int.toText)
+                              Symbol(n180): Stdlib(fn:std.int.toText)
                             args:
                               -
                                 Local(n181): count
@@ -629,7 +629,7 @@ items:
         value:
           Call(n184):
             callee:
-              Symbol(n185): Stdlib(std.list.sortBy)
+              Symbol(n185): Stdlib(fn:std.list.sortBy)
             args:
               -
                 Construct(n186):
@@ -646,7 +646,7 @@ items:
                         body:
                           Call(n188):
                             callee:
-                              Symbol(n189): Stdlib(std.list._ordCompareNative)
+                              Symbol(n189): Stdlib(fn:std.list._ordCompareNative)
                             args:
                               -
                                 Local(n190): __ord_a
@@ -673,7 +673,7 @@ items:
               -
                 Call(n196):
                   callee:
-                    Symbol(n197): Stdlib(std.map.toList)
+                    Symbol(n197): Stdlib(fn:std.map.toList)
                   args:
                     -
                       Local(n198): histogram
@@ -681,20 +681,20 @@ items:
           Block(n199):
             Call(n200):
               callee:
-                Symbol(n201): Stdlib(std.io.println)
+                Symbol(n201): Stdlib(fn:std.io.println)
               args:
                 -
                   Lit(n202): Text("Hour | Entries")
             Block(n203):
               Call(n204):
                 callee:
-                  Symbol(n205): Stdlib(std.io.println)
+                  Symbol(n205): Stdlib(fn:std.io.println)
                 args:
                   -
                     Lit(n206): Text("-----+---------")
               Call(n207):
                 callee:
-                  Symbol(n208): Stdlib(std.list.forEach)
+                  Symbol(n208): Stdlib(fn:std.list.forEach)
                 args:
                   -
                     Lambda(n209):
@@ -715,7 +715,7 @@ items:
                               body:
                                 Call(n212):
                                   callee:
-                                    Symbol(n213): Stdlib(std.io.println)
+                                    Symbol(n213): Stdlib(fn:std.io.println)
                                   args:
                                     -
                                       Call(n214):
@@ -742,19 +742,19 @@ items:
         value:
           Call(n220):
             callee:
-              Symbol(n221): Stdlib(std.cli.args)
+              Symbol(n221): Stdlib(fn:std.cli.args)
             args: []
         body:
           Match(n222):
             scrutinee:
               Call(n223):
                 callee:
-                  Symbol(n224): Stdlib(std.op.ge)
+                  Symbol(n224): Stdlib(fn:std.op.ge)
                 args:
                   -
                     Call(n225):
                       callee:
-                        Symbol(n226): Stdlib(std.list.length)
+                        Symbol(n226): Stdlib(fn:std.list.length)
                       args:
                         -
                           Local(n227): args
@@ -771,14 +771,14 @@ items:
                     value:
                       Call(n230):
                         callee:
-                          Symbol(n231): Stdlib(std.option.withDefault)
+                          Symbol(n231): Stdlib(fn:std.option.withDefault)
                         args:
                           -
                             Lit(n232): Text("")
                           -
                             Call(n233):
                               callee:
-                                Symbol(n234): Stdlib(std.list.head)
+                                Symbol(n234): Stdlib(fn:std.list.head)
                               args:
                                 -
                                   Local(n235): args
@@ -789,19 +789,19 @@ items:
                         value:
                           Call(n237):
                             callee:
-                              Symbol(n238): Stdlib(std.option.withDefault)
+                              Symbol(n238): Stdlib(fn:std.option.withDefault)
                             args:
                               -
                                 Lit(n239): Text("WARN")
                               -
                                 Call(n240):
                                   callee:
-                                    Symbol(n241): Stdlib(std.list.head)
+                                    Symbol(n241): Stdlib(fn:std.list.head)
                                   args:
                                     -
                                       Call(n242):
                                         callee:
-                                          Symbol(n243): Stdlib(std.list.drop)
+                                          Symbol(n243): Stdlib(fn:std.list.drop)
                                         args:
                                           -
                                             Lit(n244): Int(1)
@@ -814,7 +814,7 @@ items:
                             value:
                               Call(n247):
                                 callee:
-                                  Symbol(n248): Stdlib(std.option.withDefault)
+                                  Symbol(n248): Stdlib(fn:std.option.withDefault)
                                 args:
                                   -
                                     Construct(n249):
@@ -832,7 +832,7 @@ items:
                                 scrutinee:
                                   Call(n254):
                                     callee:
-                                      Symbol(n255): Stdlib(std.fs.lines)
+                                      Symbol(n255): Stdlib(fn:std.fs.lines)
                                     args:
                                       -
                                         Local(n256): path
@@ -846,7 +846,7 @@ items:
                                       Block(n257):
                                         Call(n258):
                                           callee:
-                                            Symbol(n259): Stdlib(std.io.eprintln)
+                                            Symbol(n259): Stdlib(fn:std.io.eprintln)
                                           args:
                                             -
                                               Lit(n260): Text("cannot read log file")
@@ -868,7 +868,7 @@ items:
                                         value:
                                           Call(n265):
                                             callee:
-                                              Symbol(n266): Stdlib(std.list.filter)
+                                              Symbol(n266): Stdlib(fn:std.list.filter)
                                             args:
                                               -
                                                 Lambda(n267):
@@ -888,7 +888,7 @@ items:
                                               -
                                                 Call(n272):
                                                   callee:
-                                                    Symbol(n273): Stdlib(std.list.filterMap)
+                                                    Symbol(n273): Stdlib(fn:std.list.filterMap)
                                                   args:
                                                     -
                                                       Symbol(n274): Local(parseLine @ m0)
@@ -909,12 +909,12 @@ items:
                                               Block(n280):
                                                 Call(n281):
                                                   callee:
-                                                    Symbol(n282): Stdlib(std.io.println)
+                                                    Symbol(n282): Stdlib(fn:std.io.println)
                                                   args:
                                                     -
                                                       Call(n283):
                                                         callee:
-                                                          Symbol(n284): Stdlib(std.text.concat)
+                                                          Symbol(n284): Stdlib(fn:std.text.concat)
                                                         args:
                                                           -
                                                             Lit(n285): Text("Log analysis -- threshold: ")
@@ -923,7 +923,7 @@ items:
                                                 Block(n287):
                                                   Call(n288):
                                                     callee:
-                                                      Symbol(n289): Stdlib(std.io.println)
+                                                      Symbol(n289): Stdlib(fn:std.io.println)
                                                     args:
                                                       -
                                                         Lit(n290): Text("")
@@ -932,7 +932,7 @@ items:
                                                       scrutinee:
                                                         Call(n293):
                                                           callee:
-                                                            Symbol(n294): Stdlib(std.list.length)
+                                                            Symbol(n294): Stdlib(fn:std.list.length)
                                                           args:
                                                             -
                                                               Local(n295): entries
@@ -943,7 +943,7 @@ items:
                                                           body:
                                                             Call(n296):
                                                               callee:
-                                                                Symbol(n297): Stdlib(std.io.println)
+                                                                Symbol(n297): Stdlib(fn:std.io.println)
                                                               args:
                                                                 -
                                                                   Lit(n298): Text("No entries match the given threshold.")
@@ -970,7 +970,7 @@ items:
                   Block(n305):
                     Call(n306):
                       callee:
-                        Symbol(n307): Stdlib(std.io.eprintln)
+                        Symbol(n307): Stdlib(fn:std.io.eprintln)
                       args:
                         -
                           Lit(n308): Text("Usage: log_analyzer <file> <MIN_LEVEL>")

@@ -29,7 +29,7 @@ items:
                 scrutinee:
                   Call(n3):
                     callee:
-                      Symbol(n4): Stdlib(std.op.le)
+                      Symbol(n4): Stdlib(fn:std.op.le)
                     args:
                       -
                         Local(n5): k
@@ -47,7 +47,7 @@ items:
                     body:
                       Call(n8):
                         callee:
-                          Symbol(n9): Stdlib(std.int.add)
+                          Symbol(n9): Stdlib(fn:std.int.add)
                         args:
                           -
                             Call(n10):
@@ -57,7 +57,7 @@ items:
                                 -
                                   Call(n12):
                                     callee:
-                                      Symbol(n13): Stdlib(std.int.sub)
+                                      Symbol(n13): Stdlib(fn:std.int.sub)
                                     args:
                                       -
                                         Local(n14): k
@@ -71,7 +71,7 @@ items:
                                 -
                                   Call(n18):
                                     callee:
-                                      Symbol(n19): Stdlib(std.int.sub)
+                                      Symbol(n19): Stdlib(fn:std.int.sub)
                                     args:
                                       -
                                         Local(n20): k

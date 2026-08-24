@@ -31,7 +31,7 @@ use crate::error::CodegenError;
 use crate::scope::LocalShape;
 use crate::stdlib_map::{self, BridgeTarget};
 use ridge_ast::Span;
-use ridge_ir::SymbolRef;
+use ridge_ir::{StdlibKind, SymbolRef};
 use ridge_resolve::ModuleId;
 use rustc_hash::FxHashMap;
 
@@ -39,31 +39,20 @@ use rustc_hash::FxHashMap;
 /// BEAM target, so the stdlib symbol used as a value behaves as a true
 /// function reference rather than a 0-arg call.
 ///
-/// `lower_symbol` for a `SymbolRef::Stdlib` used as a value previously
-/// emitted `call 'M':'F' ()` — a zero-argument call to the target.  At
-/// runtime that invoked the BEAM function with no arguments, which is `undef`
-/// for every arity-1+ stdlib fn.
+/// `lower_symbol` for a `SymbolRef::Stdlib` used as a value once emitted
+/// `call 'M':'F' ()` — a zero-argument call to the target.  At runtime that
+/// invoked the BEAM function with no arguments, which is `undef` for every
+/// arity-1+ stdlib fn.
 ///
-/// The fix emits `fun (V_X0, ..., V_XN) -> call 'M':'F' (V_X0, ..., V_XN)`,
-/// which is a regular Erlang fun reference of the correct arity that callers
-/// can invoke as `Fun(X1, ..., XN)`.
+/// This emits `fun (V_X0, ..., V_XN) -> call 'M':'F' (V_X0, ..., V_XN)`, a
+/// regular Erlang fun reference of the correct arity that callers invoke as
+/// `Fun(X1, ..., XN)`.  **Arity 0 is not a special case here**: `fun () -> call
+/// 'M':'F' () end` is exactly what `std.time.now` means as a value, and
+/// emitting the call instead is what made `dueDateWith Time.now` hand the
+/// callee a `Timestamp` and fail with `badfun`.  A symbol that is *not* a
+/// function goes to [`stdlib_value_of_const`] instead, and which of the two
+/// applies is [`StdlibKind`], not the arity.
 fn stdlib_value_fn_ref(module: CErlAtom, fn_name: CErlAtom, arity: u32) -> CErlExpr {
-    // 0-arity stdlib fns (e.g. `Map.empty`, `Set.empty`, `List.empty`) are
-    // declared as value constants from the type checker's point of view —
-    // their scheme is the result type, not a `() -> T` fn type.  Emitting a
-    // `fun () -> call M:F () end` thunk here would put a *fun reference* into
-    // value position, which is what the rest of the language then treats as
-    // opaque: state defaults wrap it but never apply, callers that expect the
-    // declared value type crash with `badmap` / `badarg` / etc.  Resolve the
-    // value at the use site by emitting the call directly so the lowered form
-    // matches the declared scheme.
-    if arity == 0 {
-        return CErlExpr::Call {
-            module,
-            fn_name,
-            args: vec![],
-        };
-    }
     let params: Vec<CErlVar> = (0..arity).map(|i| CErlVar(format!("V_X{i}"))).collect();
     let args: Vec<CErlExpr> = params.iter().map(|p| CErlExpr::Var(p.clone())).collect();
     CErlExpr::Fun {
@@ -73,6 +62,26 @@ fn stdlib_value_fn_ref(module: CErlAtom, fn_name: CErlAtom, arity: u32) -> CErlE
             fn_name,
             args,
         }),
+    }
+}
+
+/// Emit the value of a stdlib symbol whose scheme is not a function type.
+///
+/// `Map.empty`, `Set.empty` and `List.empty` are declared values: their scheme
+/// is the result type, and Ridge compiles each to a BEAM function of arity 0
+/// whose result *is* the value.  So is a monomorphic instance-dictionary const
+/// (`$inst_SqlType_Int`).  Naming one is therefore a call, not a reference —
+/// emitting `fun () -> ... end` would put an opaque fun where a map was
+/// expected, and the callers that unwrap it crash with `badmap` / `badarg`.
+///
+/// That "a constant is a 0-arity function" is the BEAM's answer, which is why
+/// it is decided here and not in the IR: another backend may hold the same
+/// constant as a global and emit a load.
+const fn stdlib_value_of_const(module: CErlAtom, fn_name: CErlAtom) -> CErlExpr {
+    CErlExpr::Call {
+        module,
+        fn_name,
+        args: vec![],
     }
 }
 
@@ -99,10 +108,10 @@ fn stdlib_value_checked_int_fn_ref(
             params,
             body: Box::new(crate::int_range::narrow_to_int(*body, label)),
         },
-        // The 0-arity shape, which resolves the value at the use site. No
-        // primitive has arity 0 today; testing it anyway costs nothing and
-        // keeps this total.
-        resolved => crate::int_range::narrow_to_int(resolved, label),
+        // `stdlib_value_fn_ref` answers a `Fun` for every arity, so this arm is
+        // unreachable. Keeping it total costs nothing and means a future change
+        // to the shape above cannot silently drop the range test.
+        other => crate::int_range::narrow_to_int(other, label),
     }
 }
 
@@ -186,16 +195,22 @@ pub(crate) fn lower_symbol(
         // The `Some(_)` arm below is a defensive catch for future `#[non_exhaustive]`
         // BridgeTarget variants; suppress the unreachable-pattern warning inside this crate.
         #[allow(unreachable_patterns)]
-        SymbolRef::Stdlib { module, name } => {
-            match stdlib_map::lookup(module, name) {
-                None => Err(CodegenError::StdlibBridgeMissing {
-                    module: module.clone(),
-                    name: name.clone(),
-                    span,
-                }),
-                // Emit a fun reference that captures the bridge target's arity,
-                // not a 0-arg call.  A 0-arg call produces `undef` whenever a
-                // stdlib fn is passed as a HOF argument.
+        // No `..`: this arm has to consider everything the symbol says, so a
+        // field added later should stop the build here rather than be skipped.
+        SymbolRef::Stdlib { module, name, kind } => {
+            // The bridge says where the symbol lives and how wide it is. What
+            // naming it *means* is not in there and cannot be: `std.time.now`
+            // and `std.map.empty` are both arity 0 and want opposite emissions.
+            // `kind` carries the answer down from the type checker's scheme.
+            let (beam_module, beam_fn, arity, checked_int) = match stdlib_map::lookup(module, name)
+            {
+                None => {
+                    return Err(CodegenError::StdlibBridgeMissing {
+                        module: module.clone(),
+                        name: name.clone(),
+                        span,
+                    })
+                }
                 Some(
                     BridgeTarget::BeamStdlib {
                         module: m,
@@ -208,45 +223,75 @@ pub(crate) fn lower_symbol(
                         arity,
                         ..
                     },
-                ) => Ok(stdlib_value_fn_ref(
+                ) => (
                     CErlAtom((*m).into()),
                     CErlAtom((*fn_name).into()),
                     *arity,
-                )),
+                    false,
+                ),
                 Some(BridgeTarget::BeamStdlibCheckedInt {
                     module: m,
                     fn_name,
                     arity,
-                }) => Ok(stdlib_value_checked_int_fn_ref(
+                }) => (
                     CErlAtom((*m).into()),
                     CErlAtom((*fn_name).into()),
                     *arity,
-                    &crate::int_range::ridge_label(module, name),
-                )),
-                Some(BridgeTarget::RidgeRuntime { fn_name, arity, .. }) => Ok(stdlib_value_fn_ref(
+                    true,
+                ),
+                Some(BridgeTarget::RidgeRuntime { fn_name, arity, .. }) => (
                     CErlAtom("ridge_rt".into()),
                     CErlAtom((*fn_name).into()),
                     *arity,
-                )),
-                // RidgeStdlibLocal — emit a fun reference to the BEAM target
-                // with the recorded arity (same as BeamStdlib above).
+                    false,
+                ),
+                // RidgeStdlibLocal — the BEAM target for a stdlib symbol with an
+                // ordinary Ridge body.
                 Some(BridgeTarget::RidgeStdlibLocal {
                     beam_module,
                     fn_name,
                     arity,
                     ..
-                }) => Ok(stdlib_value_fn_ref(
+                }) => (
                     CErlAtom(beam_module.clone()),
                     CErlAtom(fn_name.clone()),
                     *arity,
-                )),
+                    false,
+                ),
                 // #[non_exhaustive] catch.
-                Some(_) => Err(CodegenError::IrShapeMalformed {
-                    variant: "SymbolRef::Stdlib",
-                    span,
-                    detail: "unrecognised BridgeTarget variant".into(),
-                }),
-            }
+                Some(_) => {
+                    return Err(CodegenError::IrShapeMalformed {
+                        variant: "SymbolRef::Stdlib",
+                        span,
+                        detail: "unrecognised BridgeTarget variant".into(),
+                    })
+                }
+            };
+
+            Ok(match (kind, checked_int) {
+                // A function, at every arity: emit a reference of that width.
+                // Arity 0 is `fn f () -> T`, and referencing it rather than
+                // running it is the whole point of naming it without calling
+                // it. The range test, when there is one, belongs inside the
+                // fun, around the call — outside it would test the fun.
+                (StdlibKind::Function, true) => stdlib_value_checked_int_fn_ref(
+                    beam_module,
+                    beam_fn,
+                    arity,
+                    &crate::int_range::ridge_label(module, name),
+                ),
+                (StdlibKind::Function, false) => stdlib_value_fn_ref(beam_module, beam_fn, arity),
+                // A value: resolve it here, so what lands in value position is
+                // the map / set / list / dictionary the declared type promises.
+                // No primitive is a value today; if one appeared its result
+                // would still owe the range test, and there is no fun to put
+                // it inside, so it goes around the call.
+                (StdlibKind::Constant, true) => crate::int_range::narrow_to_int(
+                    stdlib_value_of_const(beam_module, beam_fn),
+                    &crate::int_range::ridge_label(module, name),
+                ),
+                (StdlibKind::Constant, false) => stdlib_value_of_const(beam_module, beam_fn),
+            })
         }
 
         // External symbols: require arity lookup and external module name
@@ -400,6 +445,7 @@ mod tests {
         let sym = SymbolRef::Stdlib {
             module: "std.int".into(),
             name: "add".into(),
+            kind: StdlibKind::Function,
         };
         let printed = crate::printer::print_expr(
             &lower_symbol(&sym, sp(), &empty_arity(), None).expect("Int.add is a known symbol"),
@@ -421,6 +467,7 @@ mod tests {
         let sym = SymbolRef::Stdlib {
             module: "std.float".into(),
             name: "add".into(),
+            kind: StdlibKind::Function,
         };
         let printed = crate::printer::print_expr(
             &lower_symbol(&sym, sp(), &empty_arity(), None).expect("Float.add is a known symbol"),
@@ -440,6 +487,7 @@ mod tests {
         let sym = SymbolRef::Stdlib {
             module: "std.list".into(),
             name: "map".into(),
+            kind: StdlibKind::Function,
         };
         let result = lower_symbol(&sym, sp(), &empty_arity(), None);
         match result {
@@ -461,17 +509,18 @@ mod tests {
         }
     }
 
+    /// A stdlib symbol whose scheme is not a function type (`Map.empty`,
+    /// `Set.empty`, `List.empty`) must emit the call directly, so what lands in
+    /// value position is the map — not a `fun () -> ...` the rest of the
+    /// language then treats as opaque. `state table: Map Text Text = Map.empty`
+    /// once left a fun in state and the first `maps:to_list(table)` was
+    /// `badmap`.
     #[test]
-    fn symbol_stdlib_zero_arity_emits_direct_call() {
-        // A 0-arity stdlib symbol used as a value (e.g. `Map.empty`,
-        // `Set.empty`, `List.empty`) must emit the call directly so the
-        // produced expression evaluates to the value, not a `fun () -> ...`
-        // thunk that the rest of the language treats as opaque.  Before this
-        // fix, `state table: Map Text Text = Map.empty` left a fun in state
-        // and the first `maps:to_list(table)` blew up with `badmap`.
+    fn symbol_stdlib_constant_emits_direct_call() {
         let sym = SymbolRef::Stdlib {
             module: "std.map".into(),
             name: "empty".into(),
+            kind: StdlibKind::Constant,
         };
         let result = lower_symbol(&sym, sp(), &empty_arity(), None);
         match result {
@@ -482,14 +531,43 @@ mod tests {
             }) => {
                 assert_eq!(module.0, "std.map", "expected BEAM module 'std.map'");
                 assert_eq!(fn_name.0, "empty", "expected BEAM fn 'empty'");
-                assert!(
-                    args.is_empty(),
-                    "0-arity stdlib value-ref must have no args"
-                );
+                assert!(args.is_empty(), "a stdlib constant is called with no args");
             }
             other => panic!(
                 "expected direct Call('std.map':'empty'()), got {other:?} — \
                  a Fun wrapper would put a fun-value in value position and re-introduce the leak"
+            ),
+        }
+    }
+
+    /// The counterpart, so the test above cannot pass by evaluating everything
+    /// of arity 0: a function that takes nothing is a *reference*. This is the
+    /// pair arity alone cannot separate — `std.time.now` is `() -> Timestamp`
+    /// and `std.map.empty` is `Map k v`, and both are 0 wide. Evaluating this
+    /// one is what made `dueDateWith Time.now` fail with `badfun` at run time,
+    /// with no diagnostic to say why.
+    #[test]
+    fn a_nullary_stdlib_fn_of_the_same_arity_is_still_referenced() {
+        let sym = SymbolRef::Stdlib {
+            module: "std.time".into(),
+            name: "now".into(),
+            kind: StdlibKind::Function,
+        };
+        let result = lower_symbol(&sym, sp(), &empty_arity(), None);
+        match result {
+            Ok(CErlExpr::Fun { params, body }) => {
+                assert!(
+                    params.is_empty(),
+                    "a nullary fn reference takes no parameters, got {params:?}"
+                );
+                assert!(
+                    matches!(*body, CErlExpr::Call { ref args, .. } if args.is_empty()),
+                    "the fun body must call the target with no args, got {body:?}"
+                );
+            }
+            other => panic!(
+                "expected a fun of no parameters calling the target, got {other:?} — \
+                 a direct Call here hands the callee a Timestamp where it wanted a clock"
             ),
         }
     }
@@ -500,6 +578,7 @@ mod tests {
         let sym = SymbolRef::Stdlib {
             module: "std.unknown".into(),
             name: "bogus".into(),
+            kind: StdlibKind::Function,
         };
         let result = lower_symbol(&sym, sp(), &empty_arity(), None);
         assert!(

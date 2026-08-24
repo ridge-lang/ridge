@@ -1382,7 +1382,14 @@ fn lower_static_call(
         }
 
         // ── Stdlib call → bridge map lookup. ─────────────────────────────────
-        SymbolRef::Stdlib { module, name } => lower_call_to_stdlib(module, name, args, span, scope),
+        // The kind is deliberately not read here. A call names the target and
+        // supplies its arguments, and that emission is the same whether the
+        // symbol is a function or one of the arity-0 dictionary constants the
+        // dict builder wraps in an argument-less `Call`. Only *naming* a symbol
+        // without calling it has two possible meanings; that is `lower_symbol`.
+        SymbolRef::Stdlib { module, name, .. } => {
+            lower_call_to_stdlib(module, name, args, span, scope)
+        }
 
         // ── External call → qualified cross-module call. ─────────────────────
         // A symbol imported from another user module (or a cross-module instance
@@ -3267,6 +3274,7 @@ mod tests {
                 sym: SymbolRef::Stdlib {
                     module: "std.unknown".into(),
                     name: "bogus".into(),
+                    kind: ridge_ir::StdlibKind::Function,
                 },
                 span: sp(),
             }),
@@ -3291,6 +3299,7 @@ mod tests {
                 sym: SymbolRef::Stdlib {
                     module: "std.io".into(),
                     name: "println".into(),
+                    kind: ridge_ir::StdlibKind::Function,
                 },
                 span: sp(),
             }),
@@ -3810,6 +3819,7 @@ mod tests {
                             sym: SymbolRef::Stdlib {
                                 module: "std.op".into(),
                                 name: "lt".into(),
+                                kind: ridge_ir::StdlibKind::Function,
                             },
                             span: sp(),
                         }),

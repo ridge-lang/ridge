@@ -48,7 +48,7 @@ fn build_ws() -> TempDir {
 
 fn card_at(anchor: &str, skip: usize) -> Option<String> {
     let td = build_ws();
-    let root = fs::canonicalize(td.path()).expect("canonicalize temp root");
+    let root = ridge_manifest::canonicalize(td.path()).expect("canonicalize temp root");
     let opts = CheckOptions::new(root.clone()).with_retain_indices(true);
     let state: IncrementalState = check_workspace_incremental(opts).expect("seed");
     let index = WorkspaceIndex::build(0, &state.typed, &state.resolved, &state.source_cache());
@@ -85,7 +85,7 @@ fn hovering_the_opt_out_says_what_it_answers_instead() {
     assert!(card.is_some(), "sanity: the harness resolves a stdlib card");
 
     let td = build_ws();
-    let root = fs::canonicalize(td.path()).expect("canonicalize temp root");
+    let root = ridge_manifest::canonicalize(td.path()).expect("canonicalize temp root");
     write_file(
         &root,
         "libs/proj/src/Wrap.ridge",

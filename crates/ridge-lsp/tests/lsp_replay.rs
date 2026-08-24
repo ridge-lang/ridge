@@ -8462,7 +8462,7 @@ async fn init_test_workspace(
     // expands Windows 8.3 short names (`RUNNER~1` → `runneradmin`) and resolves
     // the macOS `/var` → `/private/var` symlink. Without this a find-references
     // query off this root misses the index off-Linux.
-    let root = std::fs::canonicalize(dir.path()).expect("canonicalize temp root");
+    let root = ridge_manifest::canonicalize(dir.path()).expect("canonicalize temp root");
     let app_src = root.join("app").join("src");
     std::fs::create_dir_all(&app_src).expect("create temp workspace");
     std::fs::write(
@@ -8828,7 +8828,7 @@ fn write_mini_workspace(ws_name: &str, module: &str, src: &str) -> (PathBuf, Url
     // 8.3 short names (`RUNNER~1` → `runneradmin`) and resolves the macOS
     // `/var` → `/private/var` symlink. `uri_key` normalises drive case and colon
     // encoding but not those, so without this the query would miss off-Linux.
-    let root = std::fs::canonicalize(dir.path()).expect("canonicalize temp root");
+    let root = ridge_manifest::canonicalize(dir.path()).expect("canonicalize temp root");
     let app_src = root.join("app").join("src");
     std::fs::create_dir_all(&app_src).expect("create temp workspace");
     std::fs::write(

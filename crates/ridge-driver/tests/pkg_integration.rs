@@ -62,7 +62,7 @@ fn make_bare_repo_with_tag(tmp: &TempDir, pkg_name: &str, tag: &str) -> PathBuf 
 ///
 /// Matches the `file_url` helper in `crates/ridge-pkg/tests/git_test.rs`.
 fn file_url(path: &Path) -> String {
-    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_owned());
+    let canonical = ridge_manifest::canonicalize(path).unwrap_or_else(|_| path.to_owned());
     let s = canonical.to_string_lossy();
 
     #[cfg(windows)]
@@ -157,7 +157,7 @@ depfoo = {{ git = "{url}", tag = "v1.0" }}
     // becomes `repo`; the second-to-last becomes `owner`.
     //
     // Cache layout: <cache_root>/git/_local/<owner>/<repo>/v1.0/ridge.toml
-    let bare_canonical = bare.canonicalize().unwrap_or_else(|_| bare.clone());
+    let bare_canonical = ridge_manifest::canonicalize(&bare).unwrap_or_else(|_| bare.clone());
 
     // `repo` = last segment without `.git` suffix.
     let repo_raw = bare_canonical

@@ -112,7 +112,10 @@ fn is_declared_entry(graph: &ridge_resolve::WorkspaceGraph, module: ModuleId) ->
         return true;
     };
     meta.file_path == entry
-        || match (meta.file_path.canonicalize(), entry.canonicalize()) {
+        || match (
+            ridge_manifest::canonicalize(&meta.file_path),
+            ridge_manifest::canonicalize(&entry),
+        ) {
             (Ok(a), Ok(b)) => a == b,
             _ => false,
         }

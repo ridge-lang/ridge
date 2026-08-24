@@ -1807,6 +1807,7 @@ dependencies = [
  "globset",
  "ridge-ast",
  "serde",
+ "tempfile",
  "thiserror",
  "toml",
 ]

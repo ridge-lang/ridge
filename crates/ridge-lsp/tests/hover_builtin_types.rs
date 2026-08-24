@@ -62,7 +62,7 @@ fn build_ws(src: &str) -> TempDir {
 /// boundary before the word.
 fn hover(src: &str, name: &str, nth: usize) -> Option<String> {
     let td = build_ws(src);
-    let root = fs::canonicalize(td.path()).expect("canonicalize temp root");
+    let root = ridge_manifest::canonicalize(td.path()).expect("canonicalize temp root");
     let opts = CheckOptions::new(root.clone()).with_retain_indices(true);
     let state: IncrementalState = check_workspace_incremental(opts).expect("seed");
     let index = WorkspaceIndex::build(0, &state.typed, &state.resolved, &state.source_cache());
@@ -173,7 +173,7 @@ fn type_completion_carries_the_builtin_card() {
     // The other half of the same knowledge. Hover and completion read one table,
     // so they cannot drift into describing `Result` differently.
     let td = build_ws(SRC);
-    let root = fs::canonicalize(td.path()).expect("canonicalize temp root");
+    let root = ridge_manifest::canonicalize(td.path()).expect("canonicalize temp root");
     let opts = CheckOptions::new(root.clone()).with_retain_indices(true);
     let state: IncrementalState = check_workspace_incremental(opts).expect("seed");
     let index = WorkspaceIndex::build(0, &state.typed, &state.resolved, &state.source_cache());

@@ -2,3 +2,20 @@
 # plain prose in a doc comment. `".."` keeps clippy's built-in list (GitHub,
 # JavaScript, and the rest) and only adds these on top.
 doc-valid-idents = ["SQLite", ".."]
+
+# On Windows, `std::fs::canonicalize` answers in the extended-length form —
+# a path no one types, that several shells and editors reject, and that Ridge
+# then prints in every diagnostic naming a file.
+#
+# The ban is here rather than in review because a *partial* conversion is worse
+# than none: `M017` decides whether a path dependency escapes the workspace by
+# comparing one canonical path against another, and the two spellings of the
+# same directory do not compare equal. One converted operand turns that check
+# into a report of an escape that did not happen.
+#
+# `ridge_manifest::canonicalize` is the one door, and it carries the only
+# `allow` for this lint in the workspace.
+disallowed-methods = [
+    { path = "std::fs::canonicalize", reason = "use `ridge_manifest::canonicalize`, which spells the answer the way a person writes it" },
+    { path = "std::path::Path::canonicalize", reason = "use `ridge_manifest::canonicalize`, which spells the answer the way a person writes it" },
+]

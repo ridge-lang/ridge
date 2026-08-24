@@ -77,7 +77,7 @@ fn index_for(src: &str) -> (WorkspaceIndex, Url) {
         "[project]\nname = \"proj\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
     );
     write_file(td.path(), "libs/proj/src/Main.ridge", src);
-    let root = fs::canonicalize(td.path()).expect("canonicalize temp root");
+    let root = ridge_manifest::canonicalize(td.path()).expect("canonicalize temp root");
     // The index holds the source text it needs, but the URI must stay
     // resolvable for the length of the test.
     std::mem::forget(td);

@@ -605,7 +605,10 @@ fn check_declared_entries(
 /// does not exist is not the entry module, which is what the caller concludes
 /// anyway.
 fn paths_agree(a: &std::path::Path, b: &std::path::Path) -> bool {
-    match (a.canonicalize(), b.canonicalize()) {
+    match (
+        ridge_manifest::canonicalize(a),
+        ridge_manifest::canonicalize(b),
+    ) {
         (Ok(a), Ok(b)) => a == b,
         _ => false,
     }

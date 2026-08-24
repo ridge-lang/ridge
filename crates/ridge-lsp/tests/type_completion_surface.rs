@@ -64,7 +64,7 @@ fn build_ws(src: &str) -> TempDir {
 /// typed — the widest the list ever gets.
 fn type_position_candidates() -> Vec<CompletionItemData> {
     let td = build_ws(SRC);
-    let root = fs::canonicalize(td.path()).expect("canonicalize temp root");
+    let root = ridge_manifest::canonicalize(td.path()).expect("canonicalize temp root");
     let opts = CheckOptions::new(root.clone()).with_retain_indices(true);
     let state: IncrementalState = check_workspace_incremental(opts).expect("seed");
     let index = WorkspaceIndex::build(0, &state.typed, &state.resolved, &state.source_cache());
@@ -180,7 +180,7 @@ fn a_name_that_is_not_offered_is_still_explained() {
     // name unexplained wherever the compiler puts it on screen.
     let src = "pub fn f (x: Rows) -> Int = 1\n";
     let td = build_ws(src);
-    let root = fs::canonicalize(td.path()).expect("canonicalize temp root");
+    let root = ridge_manifest::canonicalize(td.path()).expect("canonicalize temp root");
     let opts = CheckOptions::new(root.clone()).with_retain_indices(true);
     let state: IncrementalState = check_workspace_incremental(opts).expect("seed");
     let index = WorkspaceIndex::build(0, &state.typed, &state.resolved, &state.source_cache());

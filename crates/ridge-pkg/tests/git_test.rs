@@ -90,16 +90,16 @@ fn make_bare_repo_with_branch(tmp: &TempDir, pkg_name: &str, branch: &str) -> Pa
 
 /// Convert a local path to a `file://` URL (cross-platform).
 fn file_url(path: &Path) -> String {
-    // On Windows, canonicalize() produces \\?\ UNC paths like
-    // \\?\C:\Users\… — we need file:///C:/… for git.
-    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_owned());
+    // `ridge_manifest::canonicalize` has already spelled the answer the way a
+    // person writes it, so there is no extended-length prefix left to strip.
+    // Both copies of this helper used to strip it by hand, and both handled
+    // only the drive form: a UNC share came out as a relative path.
+    let canonical = ridge_manifest::canonicalize(path).unwrap_or_else(|_| path.to_owned());
     let s = canonical.to_string_lossy();
 
     #[cfg(windows)]
     {
-        // Strip the \\?\ prefix that canonicalize adds on Windows.
-        let stripped = s.strip_prefix(r"\\?\").unwrap_or(&s);
-        format!("file:///{}", stripped.replace('\\', "/"))
+        format!("file:///{}", s.replace('\\', "/"))
     }
     #[cfg(not(windows))]
     {
@@ -299,12 +299,12 @@ members = ["a", "b"]
     let mut visited = std::collections::HashSet::new();
 
     // Simulate: a → b (first visit — succeeds).
-    let b_canonical = b_dir.canonicalize().unwrap();
+    let b_canonical = ridge_manifest::canonicalize(&b_dir).unwrap();
     visited.insert(("b".to_owned(), b_canonical));
 
     // Now simulate b → a: a is not in visited yet, so let's add it and then
     // pretend we visit it again.
-    let a_canonical = a_dir.canonicalize().unwrap();
+    let a_canonical = ridge_manifest::canonicalize(&a_dir).unwrap();
     visited.insert(("a".to_owned(), a_canonical));
 
     // Attempt to resolve a's dep on b — but b is already in visited → P206.

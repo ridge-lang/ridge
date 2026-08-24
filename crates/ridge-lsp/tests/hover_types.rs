@@ -77,7 +77,7 @@ fn hover_cards_imported_and_local_type_references() {
     // canonical root joined with its source id. Build the query URIs from that same
     // canonical root so they match on every platform; a raw `TempDir` path diverges
     // from the canonical form on macOS and Windows, and the key lookup would miss.
-    let root = std::fs::canonicalize(td.path()).expect("canonicalize temp root");
+    let root = ridge_manifest::canonicalize(td.path()).expect("canonicalize temp root");
     let opts = CheckOptions::new(root.clone()).with_retain_indices(true);
     let mut state = check_workspace_incremental(opts).expect("seed");
     let idx = index_of(&state);

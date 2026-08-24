@@ -21,9 +21,14 @@
 //! table.  Codes are **stable from 1.0** — from there an assigned code is never
 //! renumbered and a retired number is never reused.
 
+// Test scaffolding may panic on a broken fixture; production paths may not.
+// Same convention as `ridge-resolve`, `ridge-parser` and five other crates.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 pub mod error;
 pub mod find;
 pub mod globs;
+pub mod path;
 pub mod project;
 pub mod workspace;
 
@@ -32,6 +37,7 @@ pub mod workspace;
 pub use error::ManifestError;
 pub use find::{find_workspace_root, WorkspaceRoot};
 pub use globs::{CompiledGlob, GlobError, GlobPattern};
+pub use path::{canonicalize, plain};
 pub use project::{parse_project, Project, ProjectDependency, ProjectKind};
 pub use workspace::{parse_workspace, ForbidRule, GitRev, SharedDependency, WorkspaceManifest};
 

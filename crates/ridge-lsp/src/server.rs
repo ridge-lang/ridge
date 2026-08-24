@@ -1120,7 +1120,7 @@ impl LanguageServer for RidgeLanguageServer {
             };
             // Canonicalise only to compare identity; the original path is what the
             // driver compiles, matching the long-standing single-root behaviour.
-            let key = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+            let key = ridge_manifest::canonicalize(&root).unwrap_or_else(|_| root.clone());
             if seen.insert(key) {
                 roots.push(root);
             }

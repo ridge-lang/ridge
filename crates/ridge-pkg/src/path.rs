@@ -38,11 +38,13 @@ pub fn resolve_path_dep(
     // 1. Resolve path.  We use `join` only — no string concat (§1.3 #5).
     let resolved = project_manifest_dir.join(dep_path);
 
-    // 2. Canonicalise for a stable path in ResolvedDep.  On Windows, this
-    //    produces a UNC path; that is fine for our purposes.
-    let canonical = resolved
-        .canonicalize()
-        .map_err(|_| PkgError::PkgPathManifestMissing {
+    // 2. Canonicalise for a stable path in ResolvedDep.  This value is also
+    //    what `P101` prints when the dependency turns out not to be there, so
+    //    it goes through the shared door rather than `std::fs::canonicalize`:
+    //    on Windows the latter answers in extended-length form and the error
+    //    would name a path the reader cannot paste anywhere.
+    let canonical =
+        ridge_manifest::canonicalize(&resolved).map_err(|_| PkgError::PkgPathManifestMissing {
             path: resolved.clone(),
         })?;
 

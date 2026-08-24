@@ -42,6 +42,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Diagnostics name paths the way a person writes them. On Windows every message
+  carrying a filesystem path printed it in the extended-length form — ``member
+  directory `\\?\C:\work\demo\apps\orphan` has no `ridge.toml` `` — which is
+  not the path in the reader's shell prompt or editor title bar, and which
+  several shells and editors reject outright: the prefix disables path
+  normalisation, so `\\?\C:\work\demo\..\demo` does not resolve. On macOS the
+  same mechanism reported a workspace under `/var` as one under `/private/var`.
+
+  The cause was a single line. Workspace discovery canonicalised the root it
+  had just found, and every path the compiler stores is built by joining onto
+  that root, so the spelling chosen there is the spelling every message uses.
+  Nothing needed it to be canonical: the places that compare paths — `M017`,
+  deciding whether a relative path dependency escapes the workspace; the module
+  walk's cycle guard; the entry-module test — canonicalise both of their own
+  operands, so the root's spelling never entered a comparison. The root is now
+  made absolute and otherwise left as the caller gave it.
+
+  Where a canonical path is still wanted, one function answers and it spells
+  the answer plainly. `std::fs::canonicalize` and `Path::canonicalize` are
+  refused everywhere else in the workspace, which is a correctness measure
+  rather than tidiness: `Path::starts_with` compares components, so a converted
+  operand and an unconverted one naming the same directory do not match. Half a
+  conversion makes the escape check report a dependency that never left, which
+  is worse than no conversion at all.
+
 - An unresolved name that one of the file's own imports exports now says so.
   `import std.actor as Actor` brings the module in under an alias but binds
   none of its exports, so writing `Timeout` was `R010 unresolved identifier`

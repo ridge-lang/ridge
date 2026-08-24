@@ -317,14 +317,22 @@ pub fn discover_standalone(files: &[PathBuf]) -> WorkspaceGraph {
 /// handled a file path. Two copies of one rule are two answers waiting to
 /// disagree about which directory a command runs in.
 fn find_workspace_root(start: &Path) -> ridge_manifest::WorkspaceRoot {
-    // Canonicalised on the way out because discovery has always answered with a
-    // canonical path and the rest of the graph is keyed on it. The shared walk
-    // does not canonicalise, and changing that here would alter every path the
-    // compiler prints, which belongs to its own change and not to this one.
+    // Made absolute, not canonical. Discovery canonicalised the answer until
+    // 0.3.0, and every path the compiler printed was built by joining onto it,
+    // so on Windows every diagnostic naming a file arrived in extended-length
+    // form: `member directory `\\?\C:\work\demo\apps\orphan` has no
+    // `ridge.toml``. That is not a path anyone types, and several shells and
+    // editors reject it.
+    //
+    // Nothing needed it to be canonical. The three places that compare paths
+    // for containment or identity — `M017`'s escape check below, the module
+    // walk's cycle guard, and the entry-module test in `ridge-driver` —
+    // canonicalise both of their own operands, so the root's spelling never
+    // enters the comparison.
     match ridge_manifest::find_workspace_root(start) {
         ridge_manifest::WorkspaceRoot::Found(dir) => {
-            let canonical = dir.canonicalize().unwrap_or(dir);
-            ridge_manifest::WorkspaceRoot::Found(canonical)
+            let absolute = std::path::absolute(&dir).unwrap_or(dir);
+            ridge_manifest::WorkspaceRoot::Found(absolute)
         }
         other => other,
     }
@@ -461,9 +469,8 @@ fn check_path_dependency_escapes(
         .unwrap_or(&project.manifest.manifest_path);
 
     // Canonicalize workspace_root once for comparison.
-    let canonical_ws = workspace_root
-        .canonicalize()
-        .unwrap_or_else(|_| workspace_root.to_owned());
+    let canonical_ws =
+        ridge_manifest::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_owned());
 
     for dep in &project.manifest.dependencies {
         if let ProjectDependency::Path {
@@ -474,7 +481,8 @@ fn check_path_dependency_escapes(
             let resolved = manifest_dir.join(path);
             // Try to canonicalize; fall back to the raw joined path if the
             // target doesn't exist on disk yet.
-            let canonical = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
+            let canonical =
+                ridge_manifest::canonicalize(&resolved).unwrap_or_else(|_| resolved.clone());
             if !canonical.starts_with(&canonical_ws) {
                 errors.push(ManifestError::RelativePathEscapesWorkspace {
                     path: path.to_string_lossy().into_owned(),
@@ -542,7 +550,7 @@ fn walk_src_root_inner(
     }
 
     // Record the canonical form of this directory for cycle detection.
-    let canonical_dir = dir.canonicalize().unwrap_or_else(|_| dir.to_owned());
+    let canonical_dir = ridge_manifest::canonicalize(dir).unwrap_or_else(|_| dir.to_owned());
     if !seen.insert(canonical_dir) {
         // Already visited — skip to avoid symlink loops.
         return;
@@ -707,6 +715,20 @@ kind = "library"
         )
     }
 
+    /// Project manifest with a single relative path dependency.
+    fn project_toml_with_path_dep(name: &str, dep_path: &str) -> String {
+        format!(
+            r#"[project]
+name = "{name}"
+version = "0.1.0"
+kind = "library"
+
+[dependencies]
+other = {{ path = "{dep_path}" }}
+"#
+        )
+    }
+
     /// Project manifest with a custom `src.root`.
     fn project_toml_with_src_root(name: &str, src_root: &str) -> String {
         format!(
@@ -782,10 +804,10 @@ root = "{src_root}"
         let dir = TempDir::new().unwrap();
         write_file(dir.path(), "ridge.toml", &workspace_toml(&["projects/*"]));
         let found = find_workspace_root(dir.path());
-        let canonical_dir = dir.path().canonicalize().unwrap();
+        let absolute_dir = std::path::absolute(dir.path()).unwrap();
         assert_eq!(
             found,
-            ridge_manifest::WorkspaceRoot::Found(canonical_dir),
+            ridge_manifest::WorkspaceRoot::Found(absolute_dir),
             "should find workspace root in current dir"
         );
     }
@@ -799,10 +821,10 @@ root = "{src_root}"
         let sub = dir.path().join("libs").join("mylib");
         fs::create_dir_all(&sub).unwrap();
         let found = find_workspace_root(&sub);
-        let canonical_dir = dir.path().canonicalize().unwrap();
+        let absolute_dir = std::path::absolute(dir.path()).unwrap();
         assert_eq!(
             found,
-            ridge_manifest::WorkspaceRoot::Found(canonical_dir),
+            ridge_manifest::WorkspaceRoot::Found(absolute_dir),
             "should walk upward to find workspace root"
         );
     }
@@ -1333,5 +1355,73 @@ outside = { path = "../../../outside" }
             .collect();
         assert!(fqns.contains(&"acme.Foo"), "fqns: {fqns:?}");
         assert!(fqns.contains(&"acme.foo"), "fqns: {fqns:?}");
+    }
+
+    // ── A diagnostic names the path the caller gave ───────────────────────────
+
+    #[test]
+    fn a_manifest_error_names_the_path_the_caller_gave() {
+        // Discovery canonicalised the workspace root until 0.3.0, and every
+        // path it printed was joined onto that root. On Windows that put an
+        // extended-length prefix in front of every diagnostic naming a file;
+        // on macOS it turned the caller's `/var/...` into `/private/var/...`.
+        // Neither is the path in the reader's shell prompt or editor title.
+        let dir = TempDir::new().unwrap();
+        write_file(dir.path(), "ridge.toml", &workspace_toml(&["apps/*"]));
+        fs::create_dir_all(dir.path().join("apps").join("orphan")).unwrap();
+
+        let result = discover_workspace(dir.path());
+        let Some(m004) = result
+            .manifest_errors
+            .iter()
+            .find(|e| e.code() == "M004")
+            .map(ToString::to_string)
+        else {
+            panic!("expected M004; errors: {:?}", result.manifest_errors)
+        };
+
+        let gave = dir.path().join("apps").join("orphan");
+        assert!(
+            m004.contains(&gave.display().to_string()),
+            "the message must name the path the caller gave\n  gave: {}\n  said: {m004}",
+            gave.display()
+        );
+        assert!(
+            !m004.contains(r"\\?\"),
+            "no extended-length prefix reaches a message: {m004}"
+        );
+    }
+
+    // ── M017 compares two paths, so both have to be spelled the same way ──────
+
+    #[test]
+    fn a_path_dependency_inside_the_workspace_does_not_escape() {
+        // The escape check asks whether one canonical path starts with
+        // another. `Path::starts_with` matches components, so converting the
+        // spelling of one operand and not the other turns this case red — an
+        // escape reported for a dependency that never left.
+        //
+        // Its control is `t16_m017_path_dep_escapes_workspace`, which drives
+        // the same check the other way. Without that pair, a check that has
+        // stopped firing altogether passes this test for the wrong reason.
+        let dir = TempDir::new().unwrap();
+        write_file(dir.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
+        write_file(
+            dir.path(),
+            "libs/app/ridge.toml",
+            &project_toml_with_path_dep("acme.app", "../shared"),
+        );
+        write_file(
+            dir.path(),
+            "libs/shared/ridge.toml",
+            &project_toml("acme.shared"),
+        );
+
+        let result = discover_workspace(dir.path());
+        assert!(
+            !result.manifest_errors.iter().any(|e| e.code() == "M017"),
+            "a dependency inside the workspace does not escape it; errors: {:?}",
+            result.manifest_errors
+        );
     }
 }

@@ -4837,6 +4837,136 @@ async fn test_code_action_adds_missing_capability() {
 }
 
 #[tokio::test]
+async fn test_code_action_imports_a_name_the_module_already_exports() {
+    // `std.actor` is imported and exports `Timeout`, but the import lists
+    // nothing, so the name resolves to nothing (R010). The action is offered on
+    // the identifier — where the squiggle is — and edits the `import` line.
+    let src = "import std.actor as Actor
+
+pub fn describe (e: Int) -> Text =
+    match e
+        Timeout -> \"t\"
+        _ -> \"o\"
+";
+    let (service, _socket, uri) = cap_workspace_fixture(src).await;
+    let server = service.inner();
+
+    let resp = server
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(4, 9),
+                end: Position::new(4, 9),
+            },
+            context: CodeActionContext::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code_action ok")
+        .expect("a quick-fix is offered on the unresolved name");
+
+    assert_eq!(resp.len(), 1, "expected exactly one action, got {resp:?}");
+    let CodeActionOrCommand::CodeAction(action) = &resp[0] else {
+        panic!("expected a CodeAction, got {:?}", resp[0]);
+    };
+    assert_eq!(action.title, "Import `Timeout` from `std.actor`");
+    assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+
+    let edits = action
+        .edit
+        .as_ref()
+        .and_then(|e| e.changes.as_ref())
+        .and_then(|c| c.get(&uri))
+        .expect("an edit for this document");
+    assert_eq!(edits.len(), 1);
+    // The import has no list at all, so one is opened at the end of line 0 —
+    // `import std.actor as Actor` is 25 columns wide.
+    assert_eq!(edits[0].new_text, " (Timeout)");
+    assert_eq!(edits[0].range.start, Position::new(0, 25));
+    assert_eq!(edits[0].range.end, Position::new(0, 25));
+}
+
+#[tokio::test]
+async fn test_code_action_appends_to_an_import_list_that_already_has_one() {
+    // Same fix, other spelling: the import already lists a name, so the edit is
+    // a comma rather than a new pair of parentheses.
+    let src = "import std.actor as Actor (Noproc)
+
+pub fn describe (e: Int) -> Text =
+    match e
+        Timeout -> \"t\"
+        _ -> \"o\"
+";
+    let (service, _socket, uri) = cap_workspace_fixture(src).await;
+    let server = service.inner();
+
+    let resp = server
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(4, 9),
+                end: Position::new(4, 9),
+            },
+            context: CodeActionContext::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code_action ok")
+        .expect("a quick-fix is offered on the unresolved name");
+
+    let CodeActionOrCommand::CodeAction(action) = &resp[0] else {
+        panic!("expected a CodeAction, got {:?}", resp[0]);
+    };
+    let edits = action
+        .edit
+        .as_ref()
+        .and_then(|e| e.changes.as_ref())
+        .and_then(|c| c.get(&uri))
+        .expect("an edit for this document");
+    assert_eq!(edits[0].new_text, ", Timeout");
+    // End of `Noproc`, which starts at column 27.
+    assert_eq!(edits[0].range.start, Position::new(0, 33));
+    assert_eq!(edits[0].range.end, Position::new(0, 33));
+}
+
+#[tokio::test]
+async fn test_no_import_action_for_a_name_no_imported_module_exports() {
+    // The control the two above need: the same shape of file, a name that is
+    // simply not exported anywhere in scope, and no action at all. Without it
+    // an implementation that offered the fix unconditionally would read green.
+    let src = "import std.actor as Actor
+
+pub fn describe (e: Int) -> Text =
+    match e
+        Zzzznope -> \"t\"
+        _ -> \"o\"
+";
+    let (service, _socket, uri) = cap_workspace_fixture(src).await;
+    let server = service.inner();
+
+    let resp = server
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri },
+            range: Range {
+                start: Position::new(4, 9),
+                end: Position::new(4, 9),
+            },
+            context: CodeActionContext::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code_action ok");
+
+    assert!(
+        resp.is_none() || resp.as_ref().is_some_and(Vec::is_empty),
+        "no import action belongs here; got {resp:?}"
+    );
+}
+
+#[tokio::test]
 async fn test_code_action_derives_to_text_for_mains_error_type() {
     // `main` returns `Result Unit MyErr` and `MyErr` cannot render itself, so
     // the type checker raises T059. The action is offered on `main` — where the
@@ -7120,6 +7250,40 @@ async fn test_folding_ranges_imports_and_declarations() {
     assert!(
         !folds.iter().any(|f| f.start_line == 11),
         "single-line const must not fold, got {folds:?}"
+    );
+}
+
+/// An import block stops at the last import, not at the next declaration.
+///
+/// The parser used to end an `import` span at the token that followed it, so
+/// the span reached past the blank lines and over any comment block written
+/// before the next declaration. The editor trims trailing whitespace off a
+/// fold, which hid the blank-line half of that — but a comment is not
+/// whitespace, so the import block folded a header belonging to the item
+/// below. The blank-line fixture in the test above cannot see this; only a
+/// comment between the two can.
+#[tokio::test]
+async fn test_folding_import_block_stops_before_a_following_comment() {
+    // 0 import · 1 import · 2 blank · 3-4 comment block · 5 blank · 6-7 fn
+    let src = "import std.list as L\nimport std.option as O\n\n-- A header for what follows.\n-- Second line of it.\n\npub fn area (x: Int) -> Int =\n  x\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    let folds = server
+        .folding_range(folding_at(&uri))
+        .await
+        .expect("folding ok")
+        .expect("folds present");
+
+    let imports: Vec<&FoldingRange> = folds
+        .iter()
+        .filter(|f| f.kind == Some(FoldingRangeKind::Imports))
+        .collect();
+    assert_eq!(imports.len(), 1, "exactly one import block, got {folds:?}");
+    assert_eq!(
+        (imports[0].start_line, imports[0].end_line),
+        (0, 1),
+        "the import block ends on the last import, not over the comment"
     );
 }
 

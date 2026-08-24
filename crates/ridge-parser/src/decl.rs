@@ -953,6 +953,12 @@ pub(crate) fn parse_import(
     };
 
     // ── Optional `( ImportList )` ─────────────────────────────────────────────
+    // The declaration ends at the last token it owns, so track that as we go.
+    // Reading `cur.span()` after the fact answers with the *next* token, and
+    // the span then reaches all the way to it: the line break, the blank lines
+    // behind it, and any comment block written before the next declaration.
+    // In this repository's own examples that ran to 547 bytes past the import.
+    let mut last_token = alias.as_ref().map_or(path.span, |a| a.span);
     let items = if cur.peek() == &Token::LParen {
         cur.bump(); // consume `(`
         let mut list: Vec<Ident> = Vec::new();
@@ -997,19 +1003,17 @@ pub(crate) fn parse_import(
             }
         }
 
-        let end = cur.expect(&Token::RParen)?;
-        let _ = end;
+        last_token = cur.expect(&Token::RParen)?;
         Some(list)
     } else {
         None
     };
 
-    let end_span = cur.span();
     Ok(ImportDecl {
         path,
         alias,
         items,
-        span: start.merge(end_span),
+        span: start.merge(last_token),
         doc,
     })
 }

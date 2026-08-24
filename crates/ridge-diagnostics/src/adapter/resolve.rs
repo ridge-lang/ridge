@@ -1,6 +1,6 @@
 //! `Diagnostic::from_resolve` adapter for `ridge-resolve::ResolveError`.
 
-use ridge_resolve::{ResolveError, Severity};
+use ridge_resolve::{ExportingImport, ResolveError, Severity};
 
 use crate::diagnostic::{Diagnostic, DiagnosticNote, NoteSeverity, SourceId};
 
@@ -60,8 +60,21 @@ impl Diagnostic {
                     severity: NoteSeverity::Note,
                 });
             }
-            ResolveError::UnresolvedIdent { suggestions, .. }
-            | ResolveError::UnresolvedImportItem { suggestions, .. }
+            ResolveError::UnresolvedIdent {
+                name,
+                suggestions,
+                importable,
+                ..
+            } => {
+                if let Some(message) = unresolved_ident_note(name, suggestions, importable) {
+                    diag.push_note(DiagnosticNote {
+                        span: primary_span,
+                        message,
+                        severity: NoteSeverity::Help,
+                    });
+                }
+            }
+            ResolveError::UnresolvedImportItem { suggestions, .. }
             | ResolveError::UnresolvedQualifiedName { suggestions, .. }
             | ResolveError::UnknownStdlibSymbol { suggestions, .. } => {
                 if let Some(message) = crate::diagnostic::did_you_mean(suggestions) {
@@ -94,6 +107,30 @@ impl Diagnostic {
 
         diag
     }
+}
+
+/// The one help line an `R010` carries.
+///
+/// A module that exports the exact name is a fact; a Levenshtein neighbour is a
+/// guess. The walker does not compute the guess once it holds the fact, so the
+/// two are mutually exclusive by construction and this reads as one note either
+/// way — never two carets drawn at the same span.
+fn unresolved_ident_note(
+    name: &str,
+    suggestions: &[String],
+    importable: &[ExportingImport],
+) -> Option<String> {
+    let sources: Vec<(String, Option<String>)> = importable
+        .iter()
+        .map(|i| {
+            (
+                i.module.clone(),
+                i.insertion.bare_alias().map(str::to_owned),
+            )
+        })
+        .collect();
+    crate::diagnostic::exported_by(name, &sources)
+        .or_else(|| crate::diagnostic::did_you_mean(suggestions))
 }
 
 /// Adapt a `ResolveError::severity` to our `Severity` type (identity, same enum).

@@ -84,7 +84,7 @@ pub mod walker;
 pub use capabilities::check_capabilities;
 pub use decl::{check_reserved_prelude_names, check_stdlib_only_attributes};
 pub use discovery::{derive_module_fqn, discover_standalone, discover_workspace};
-pub use error::{ManifestError, ResolveError, Severity};
+pub use error::{ExportingImport, ImportItemInsertion, ManifestError, ResolveError, Severity};
 pub use forbid::check_forbid_rules;
 pub use globs::GlobPattern;
 pub use imports::{

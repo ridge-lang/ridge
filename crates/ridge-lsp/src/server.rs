@@ -62,8 +62,9 @@ use ridge_resolve::ModuleId;
 use crate::cancel::{Cancel, CancelOnDrop};
 use crate::diagnostics::{source_id_to_uri, to_lsp_diagnostic, uri_key};
 use crate::index::{
-    collect_lex_fixes, collect_nesting_hints, collect_signature_fixes, collect_staircase_fixes,
-    collect_syntax_fixes, collect_uncurry_fixes, diff_tokens, CodeLensConfig, WorkspaceIndex,
+    collect_import_fixes, collect_lex_fixes, collect_nesting_hints, collect_signature_fixes,
+    collect_staircase_fixes, collect_syntax_fixes, collect_uncurry_fixes, diff_tokens,
+    CodeLensConfig, WorkspaceIndex,
 };
 
 /// A workspace's retained incremental engine, shared between the state snapshot
@@ -908,6 +909,11 @@ fn compile_blocking(
         &index.line_indices,
         &index.module_uris,
         &state.resolved.lex_errors,
+    ));
+    index.syntax_fixes.extend(collect_import_fixes(
+        &index.line_indices,
+        &index.module_uris,
+        &state.resolved.errors,
     ));
     index.syntax_fixes.extend(collect_uncurry_fixes(
         &index.line_indices,

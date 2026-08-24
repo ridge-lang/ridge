@@ -120,3 +120,81 @@ fn a_declaration_with_no_leading_trivia_is_unchanged() {
         "no doc, no attrs: the item span is the declaration span"
     );
 }
+
+// ── The other end of the same question ──────────────────────────────────────
+
+/// `import` declarations, and only those, used to end at the *next* token
+/// rather than their own last one — so the span ran past the closing
+/// parenthesis and swallowed the line break behind it, plus any blank lines
+/// after that.  Anything measuring an import's extent read a lie: an editor
+/// asked to fold the import block folded a blank line with it, and a quick-fix
+/// that appends to the item list would have inserted past the `)`.
+#[test]
+fn an_import_span_ends_at_the_declarations_last_token() {
+    let cases: &[(&str, &str)] = &[
+        (
+            "import std.actor
+
+pub fn f () -> Int = 1
+",
+            "import std.actor",
+        ),
+        (
+            "import std.actor as Actor
+
+pub fn f () -> Int = 1
+",
+            "import std.actor as Actor",
+        ),
+        (
+            "import std.actor as Actor ()
+
+pub fn f () -> Int = 1
+",
+            "import std.actor as Actor ()",
+        ),
+        (
+            "import std.actor as Actor (Timeout, Noproc)
+
+pub fn f () -> Int = 1
+",
+            "import std.actor as Actor (Timeout, Noproc)",
+        ),
+    ];
+    for (src, expected) in cases {
+        let texts = item_texts(src);
+        assert_eq!(
+            texts.first().map(String::as_str),
+            Some(*expected),
+            "import span text for {src:?}"
+        );
+    }
+}
+
+/// The byte before an empty item list's span end is its closing parenthesis.
+///
+/// The import quick-fix subtracts one to write inside `()`, which is only sound
+/// because `)` is a single ASCII byte and the span stops on it.  Stated as a
+/// test rather than a comment, because the comment cannot notice when the span
+/// moves.
+#[test]
+fn an_empty_import_list_ends_on_its_closing_parenthesis() {
+    let src = "import std.actor as Actor ()
+
+pub fn f () -> Int = 1
+";
+    let parsed = ridge_parser::parse_module_with_trivia(src);
+    let ends: Vec<usize> = parsed
+        .result
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Import(d) => Some(d.span.end as usize),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ends.len(), 1, "fixture must hold exactly one import");
+    let end = ends[0];
+    assert_eq!(&parsed.normalised_src[end - 1..end], ")");
+}

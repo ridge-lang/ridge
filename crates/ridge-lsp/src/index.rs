@@ -20,8 +20,9 @@ use ridge_lexer::{LineIndex, Span};
 use ridge_parser::ParseError;
 use ridge_resolve::imports::{Binding, ImportResolution, ImportTarget};
 use ridge_resolve::{
-    LocalId, LocalKind, ModuleId, NodeId, NodeIdMap, NodeKind, ProjectKind, ResolvedVisibility,
-    ResolvedWorkspace, ScopeIndex, StdlibModuleId, SymbolKind, SymbolTable, BUILTINS,
+    LocalId, LocalKind, ModuleId, NodeId, NodeIdMap, NodeKind, ProjectKind, ResolveError,
+    ResolvedVisibility, ResolvedWorkspace, ScopeIndex, StdlibModuleId, SymbolKind, SymbolTable,
+    BUILTINS,
 };
 use ridge_typecheck::stdlib_signatures::stdlib_signature;
 use ridge_typecheck::{render_type_with, CapDeclKind, TypeError, TypedWorkspace};
@@ -237,24 +238,29 @@ pub struct SignatureFix {
     pub title: String,
 }
 
-/// A ready-to-apply quick-fix for a "did you mean" syntax diagnostic.
+/// A ready-to-apply quick-fix: one diagnostic, one mechanical text edit.
 ///
-/// The parser detected a form spelled the way another language spells it (a
-/// match guard `if`, or `{ record with … }`) and carries enough structure to
-/// rewrite it into the Ridge form. Spans are already resolved to LSP ranges.
+/// Most are rewrites in place — a form spelled the way another language spells
+/// it (`P034`, `P035`), a character Ridge has no use for (`L016`). One is not:
+/// an `R010` naming a name the file could import edits the `import` line, well
+/// away from the identifier the cursor sits on. That is why the two ranges are
+/// separate rather than one: `decl_range` decides whether the fix is offered,
+/// `edit_range` decides where it lands. Spans are already resolved to LSP
+/// ranges.
 #[derive(Debug, Clone)]
 pub struct SyntaxFix {
-    /// The document the offending syntax lives in.
+    /// The document the diagnostic lives in.
     pub uri: Url,
     /// The diagnostic's own range — a code-action request whose cursor overlaps
     /// this offers the fix.
     pub decl_range: Range,
-    /// The span the edit replaces.
+    /// The span the edit replaces, empty for a pure insertion.
     pub edit_range: Range,
     /// The replacement text.
     pub new_text: String,
-    /// The stable diagnostic code this fix answers (`"P034"`, `"P035"`), used to
-    /// attach the originating diagnostic to the `CodeAction`.
+    /// The stable diagnostic code this fix answers (`"P034"`, `"L016"`,
+    /// `"R010"`), used to attach the originating diagnostic to the
+    /// `CodeAction`.
     pub code: &'static str,
     /// The code-action title shown in the editor.
     pub title: String,
@@ -359,6 +365,63 @@ pub fn collect_lex_fixes(
             code: "L016",
             title: "Remove `;`".to_owned(),
         });
+    }
+    out
+}
+
+/// Build the "add this name to an import you already wrote" quick-fixes.
+///
+/// `R010` carries, for a name that resolved to nothing, the imports in the same
+/// file whose module exports it exactly. Each becomes one action: the cursor
+/// sits on the identifier, the edit lands on the `import` line. The name and
+/// the punctuation around it come from the resolve pass, which is the layer
+/// that knows whether that import already opens a list.
+///
+/// The compiler half of this reports the module in the diagnostic text, so a
+/// user without an editor is not left guessing; this is the keystroke.
+#[must_use]
+pub fn collect_import_fixes(
+    line_indices: &[LineIndex],
+    module_uris: &[Option<Url>],
+    resolve_errors: &[(ModuleId, ResolveError)],
+) -> Vec<SyntaxFix> {
+    let mut out: Vec<SyntaxFix> = Vec::new();
+    for (mid, err) in resolve_errors {
+        let ResolveError::UnresolvedIdent {
+            name,
+            importable,
+            span,
+            ..
+        } = err
+        else {
+            continue;
+        };
+        if importable.is_empty() {
+            continue;
+        }
+        let mi = mid.0 as usize;
+        let (Some(Some(uri)), Some(li)) = (module_uris.get(mi), line_indices.get(mi)) else {
+            continue;
+        };
+        let to_range = |s: Span| {
+            let (sl, sc) = li.byte_to_utf16(s.start);
+            let (el, ec) = li.byte_to_utf16(s.end);
+            Range {
+                start: Position::new(sl, sc),
+                end: Position::new(el, ec),
+            }
+        };
+        let decl_range = to_range(*span);
+        for candidate in importable {
+            out.push(SyntaxFix {
+                uri: uri.clone(),
+                decl_range,
+                edit_range: to_range(candidate.insertion.span()),
+                new_text: candidate.insertion.edit_text(name),
+                code: "R010",
+                title: format!("Import `{name}` from `{}`", candidate.module),
+            });
+        }
     }
     out
 }
@@ -4452,10 +4515,16 @@ impl WorkspaceIndex {
     /// A line-level [`FoldingRange`] for `span`, or `None` when it does not cross
     /// a line boundary (nothing to fold).
     ///
-    /// The parser ends a declaration span at the start of the following token, so
-    /// the raw span trails into the blank lines (and the next item's first line)
-    /// after the declaration. Trailing whitespace is trimmed off the span first,
-    /// so the fold ends on the declaration's own last line of content.
+    /// `class` and `instance` still end their span at the token that follows
+    /// them rather than at their own last one, so the raw span trails into the
+    /// blank lines after the declaration. Trailing whitespace is trimmed off
+    /// first, so the fold ends on the declaration's own last line of content.
+    ///
+    /// The trim only reaches whitespace. A comment block written between two
+    /// declarations is not whitespace, so an over-long span still folds it in
+    /// — which is why the fix for those two belongs in the parser and this is
+    /// a guard, not a solution. `import`, `type`, `const` and `fn` end where
+    /// they should and pass through untouched.
     fn folding_range_for(
         &self,
         mid: ModuleId,

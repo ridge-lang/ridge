@@ -37,6 +37,22 @@ pub struct ImportResolution {
     /// Stub `NodeId(0)` for this pass; T8 fills the authoritative value once
     /// the `NodeIdMap` assigns stable ids to all AST nodes.
     pub decl_node: NodeId,
+    /// The module path exactly as the `import` declaration writes it
+    /// (`std.actor`, `acme.infra.Postgres`).
+    ///
+    /// `None` for the synthetic resolutions the prelude injects: those answer
+    /// to no line of source, so there is nothing to add an item to and nothing
+    /// to name in a diagnostic.
+    pub path: Option<String>,
+    /// True when the importing module and the imported module belong to the
+    /// same project.
+    ///
+    /// A symbol written with no visibility modifier is importable only within
+    /// its own project, and project ids exist in this pass and nowhere
+    /// downstream — so the answer is recorded here rather than re-derived.
+    /// `false` for stdlib and synthetic targets, which have no project and
+    /// whose exports are visible unconditionally.
+    pub same_project: bool,
     /// What the import path resolved to.
     pub target: ImportTarget,
     /// The `as Alias` rename, if present in the source.
@@ -326,9 +342,12 @@ pub fn resolve_imports(
         }
 
         let alias = edge.alias.clone();
+        let same_project = targets_same_project(&target, &module_project, from_project_id);
         if let Some(v) = imports.get_mut(from_idx) {
             v.push(ImportResolution {
                 decl_node: NodeId(0),
+                path: Some(edge.path_dotted.clone()),
+                same_project,
                 target,
                 alias,
                 explicit_items,
@@ -460,6 +479,24 @@ fn check_project_export_visibility(
 /// `"acme.domain"` → `"acme"`. If there is no dot, the whole name is returned.
 fn first_segment(name: &str) -> &str {
     name.split('.').next().unwrap_or(name)
+}
+
+/// Do the importing module and the imported module belong to the same project?
+///
+/// Only a workspace module has a project to compare against: standard-library
+/// exports are visible to every importer, so the question does not arise and
+/// the answer is `false` either way.
+fn targets_same_project(
+    target: &ImportTarget,
+    module_project: &[ProjectId],
+    from_project_id: ProjectId,
+) -> bool {
+    match target {
+        ImportTarget::WorkspaceModule(t) => {
+            module_project.get(t.0 as usize).copied() == Some(from_project_id)
+        }
+        _ => false,
+    }
 }
 
 /// Compute `effective_bindings` and `explicit_items` for one import.
@@ -706,15 +743,53 @@ fn is_symbol_visible(
     from_project_id: ProjectId,
     target_project_id: ProjectId,
 ) -> bool {
+    is_symbol_visible_within(vis, from_project_id == target_project_id)
+}
+
+/// The same rule, asked of what an [`ImportResolution`] knows.
+///
+/// The two project ids decide exactly one thing — whether they are equal — so
+/// a caller holding that answer already can ask directly. Both spellings run
+/// this body: a second copy of the rule is how the suggester and the importer
+/// would drift apart, and then the compiler would name a symbol `R009` refuses.
+const fn is_symbol_visible_within(vis: ResolvedVisibility, same_project: bool) -> bool {
     match vis {
         // `pub` symbols and `pub(internal)` are always accessible within the workspace.
         // For simplicity in T7, NamespaceInternal is treated as same-workspace accessible;
         // T12 refines this to same-namespace only.
         ResolvedVisibility::Pub | ResolvedVisibility::NamespaceInternal => true,
         // `ProjectPrivate` (no modifier) — only accessible within the same project.
-        ResolvedVisibility::ProjectPrivate => from_project_id == target_project_id,
+        ResolvedVisibility::ProjectPrivate => same_project,
         // `FilePrivate` (_foo) — never importable.
         ResolvedVisibility::FilePrivate => false,
+    }
+}
+
+/// Could this `import` declaration have named `item` in its item list?
+///
+/// The question [`resolve_item`] answers once the user has written the name,
+/// asked before they have. One predicate for both directions is what stops the
+/// compiler recommending a name that `R008` or `R009` would then reject.
+///
+/// Answers `false` for an import with no source line: there is nothing to add
+/// an item to.
+#[must_use]
+pub fn import_can_name(ir: &ImportResolution, symbol_tables: &[SymbolTable], item: &str) -> bool {
+    if ir.path.is_none() {
+        return false;
+    }
+    match &ir.target {
+        ImportTarget::BuiltinStdlib(id) => {
+            !is_internal_prelude_name(item)
+                && crate::stdlib_builtin::BUILTINS
+                    .get(id.0 as usize)
+                    .is_some_and(|m| m.exports.contains(&item))
+        }
+        ImportTarget::WorkspaceModule(mid) => symbol_tables
+            .get(mid.0 as usize)
+            .and_then(|t| t.lookup(item))
+            .is_some_and(|e| is_symbol_visible_within(e.visibility, ir.same_project)),
+        ImportTarget::External { .. } | ImportTarget::Unresolved => false,
     }
 }
 
@@ -910,6 +985,8 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
     // which carries its own ModuleAlias target.
     let aliases_ir = ImportResolution {
         decl_node: crate::NodeId(0),
+        path: None,
+        same_project: false,
         target: ImportTarget::BuiltinStdlib(StdlibModuleId(0)), // sentinel
         alias: None,
         explicit_items: None,
@@ -920,6 +997,8 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
     vec![
         ImportResolution {
             decl_node: crate::NodeId(0),
+            path: None,
+            same_project: false,
             target: ImportTarget::BuiltinStdlib(opt_id),
             alias: None,
             explicit_items: None,
@@ -932,6 +1011,8 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
         },
         ImportResolution {
             decl_node: crate::NodeId(0),
+            path: None,
+            same_project: false,
             target: ImportTarget::BuiltinStdlib(res_id),
             alias: None,
             explicit_items: None,
@@ -940,6 +1021,8 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
         },
         ImportResolution {
             decl_node: crate::NodeId(0),
+            path: None,
+            same_project: false,
             target: ImportTarget::BuiltinStdlib(json_id),
             alias: None,
             explicit_items: None,
@@ -957,6 +1040,8 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
         },
         ImportResolution {
             decl_node: crate::NodeId(0),
+            path: None,
+            same_project: false,
             target: ImportTarget::BuiltinStdlib(query_id),
             alias: None,
             explicit_items: None,
@@ -1031,6 +1116,8 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
         },
         ImportResolution {
             decl_node: crate::NodeId(0),
+            path: None,
+            same_project: false,
             target: ImportTarget::BuiltinStdlib(ordering_id),
             alias: None,
             explicit_items: None,
@@ -1593,6 +1680,91 @@ mod tests {
             r009_count >= 1,
             "expected R009; got: {:?}",
             result.resolve_errors
+        );
+    }
+
+    // ── What an import could have named ──────────────────────────────────────
+
+    /// The rule both spellings of the visibility check share, pinned directly.
+    ///
+    /// `is_symbol_visible` and `import_can_name` reach it from opposite
+    /// directions — one holds two project ids, the other holds the answer to
+    /// comparing them — and the whole point of one body is that they cannot
+    /// disagree. Eight cases is the whole truth table.
+    #[test]
+    fn the_visibility_rule_is_one_rule() {
+        for same in [true, false] {
+            assert!(
+                is_symbol_visible_within(ResolvedVisibility::Pub, same),
+                "`pub` is visible either way"
+            );
+            assert!(
+                is_symbol_visible_within(ResolvedVisibility::NamespaceInternal, same),
+                "`pub(internal)` is visible either way"
+            );
+            assert!(
+                !is_symbol_visible_within(ResolvedVisibility::FilePrivate, same),
+                "`_name` is never importable"
+            );
+        }
+        assert!(
+            is_symbol_visible_within(ResolvedVisibility::ProjectPrivate, true),
+            "no modifier is importable inside its own project"
+        );
+        assert!(
+            !is_symbol_visible_within(ResolvedVisibility::ProjectPrivate, false),
+            "no modifier does not cross a project boundary"
+        );
+    }
+
+    /// A name `R009` would reject must never be named as importable.
+    ///
+    /// The suggester and the importer answer through one predicate precisely so
+    /// this cannot drift: `R010` telling a reader to import a symbol the import
+    /// then refuses would be worse than saying nothing. Two directions, because
+    /// a predicate that answers `false` to everything would pass a one-sided
+    /// test — the public sibling in the same module has to come back `true`.
+    #[test]
+    fn a_cross_project_private_symbol_is_not_importable() {
+        let td = TempDir::new().expect("tempdir");
+        write_file(td.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
+        write_file(td.path(), "libs/proj_a/ridge.toml", &project_toml("proj_a"));
+        write_file(td.path(), "libs/proj_a/src/A.ridge", "import proj_b.B\n");
+        let proj_b_toml = "[project]\nname = \"proj_b\"\nversion = \"0.1.0\"\nkind = \"library\"\n\n[project.exports]\npublic = [\"proj_b.**\"]\n";
+        write_file(td.path(), "libs/proj_b/ridge.toml", proj_b_toml);
+        write_file(
+            td.path(),
+            "libs/proj_b/src/B.ridge",
+            "fn private_fn () = ()\npub fn public_fn () = ()\n",
+        );
+
+        let disc = crate::discover_workspace(td.path());
+        let mut ws = disc.graph.expect("graph");
+        let g = crate::build_module_graph(&ws);
+        let symbol_tables: Vec<SymbolTable> = g
+            .modules
+            .iter()
+            .map(|pm| {
+                let (t, _) = collect_symbols(pm.id, &pm.ast);
+                t
+            })
+            .collect();
+        let result = resolve_imports(&mut ws, &g, &symbol_tables);
+
+        let ir = result
+            .imports
+            .iter()
+            .flat_map(|v| v.iter())
+            .find(|r| r.path.as_deref() == Some("proj_b.B"))
+            .expect("the import of proj_b.B resolved");
+        assert!(!ir.same_project, "proj_a and proj_b are different projects");
+        assert!(
+            !import_can_name(ir, &symbol_tables, "private_fn"),
+            "a symbol with no modifier does not cross the project boundary"
+        );
+        assert!(
+            import_can_name(ir, &symbol_tables, "public_fn"),
+            "its `pub` sibling does — otherwise this test proves nothing"
         );
     }
 

@@ -582,6 +582,8 @@ mod tests {
     fn alias_ir(local_name: &str, target: ImportTarget) -> ImportResolution {
         ImportResolution {
             decl_node: NodeId(0),
+            path: None,
+            same_project: false,
             target: target.clone(),
             alias: Some(local_name.to_owned()),
             explicit_items: None,
@@ -602,6 +604,8 @@ mod tests {
         let sid = StdlibModuleId(module_id);
         ImportResolution {
             decl_node: NodeId(0),
+            path: None,
+            same_project: false,
             target: ImportTarget::BuiltinStdlib(sid),
             alias: None,
             explicit_items: None,
@@ -991,6 +995,8 @@ mod tests {
         // Create an IR that maps "Local" to a Local binding (not a module alias).
         let local_ir = ImportResolution {
             decl_node: NodeId(0),
+            path: None,
+            same_project: false,
             target: ImportTarget::Unresolved,
             alias: None,
             explicit_items: None,

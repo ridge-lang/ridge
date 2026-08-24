@@ -842,6 +842,7 @@ mod tests {
             sym: SymbolRef::Stdlib {
                 module: "std.nope".into(),
                 name: "missing".into(),
+                kind: ridge_ir::StdlibKind::Function,
             },
             span: sp(),
         };

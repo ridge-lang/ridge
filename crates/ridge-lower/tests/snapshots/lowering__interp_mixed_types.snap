@@ -21,27 +21,27 @@ items:
     body:
       Call(n0):
         callee:
-          Symbol(n1): Stdlib(std.text.concat)
+          Symbol(n1): Stdlib(fn:std.text.concat)
         args:
           -
             Call(n2):
               callee:
-                Symbol(n3): Stdlib(std.text.concat)
+                Symbol(n3): Stdlib(fn:std.text.concat)
               args:
                 -
                   Call(n4):
                     callee:
-                      Symbol(n5): Stdlib(std.text.concat)
+                      Symbol(n5): Stdlib(fn:std.text.concat)
                     args:
                       -
                         Call(n6):
                           callee:
-                            Symbol(n7): Stdlib(std.text.concat)
+                            Symbol(n7): Stdlib(fn:std.text.concat)
                           args:
                             -
                               Call(n8):
                                 callee:
-                                  Symbol(n9): Stdlib(std.text.concat)
+                                  Symbol(n9): Stdlib(fn:std.text.concat)
                                 args:
                                   -
                                     Lit(n10): Text("User ")
@@ -52,7 +52,7 @@ items:
                       -
                         Call(n13):
                           callee:
-                            Symbol(n14): Stdlib(std.int.toText)
+                            Symbol(n14): Stdlib(fn:std.int.toText)
                           args:
                             -
                               Local(n15): age
@@ -61,7 +61,7 @@ items:
           -
             Call(n17):
               callee:
-                Symbol(n18): Stdlib(std.bool.toText)
+                Symbol(n18): Stdlib(fn:std.bool.toText)
               args:
                 -
                   Local(n19): active

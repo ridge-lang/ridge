@@ -39,7 +39,7 @@ pub use id::IrNodeId;
 pub use item::{IrConst, IrFfiFn, IrFn, IrItem, IrMigration, IrParam, IrPrimitiveFn};
 pub use lit::IrLit;
 pub use pat::IrPat;
-pub use symbol::{CtorKind, SymbolRef};
+pub use symbol::{CtorKind, StdlibKind, SymbolRef};
 pub use workspace::{LoweredModule, LoweredWorkspace};
 
 // Re-export upstream types so consumers of `ridge-ir` can avoid additional deps

@@ -113,7 +113,7 @@ fn is_non_call_symbol(module: &str, name: &str) -> bool {
 fn collect_stdlib_symbols(expr: &IrExpr, out: &mut Vec<(String, String)>) {
     match expr {
         IrExpr::Symbol {
-            sym: SymbolRef::Stdlib { module, name },
+            sym: SymbolRef::Stdlib { module, name, .. },
             ..
         } => {
             out.push((module.clone(), name.clone()));

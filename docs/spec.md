@@ -2124,7 +2124,7 @@ users |> List.map (.email) |> List.filter isValid |> List.take 10
 |--------|-----------|---------|
 | `std.io` | `io` | `print`, `println`, `readLine`, `eprint` |
 | `std.fs` | `fs` | `readFile`, `writeFile`, `append`, `isFile`, `isDir`, `lines`, `readDir`, `mkdir`, `remove`, `removeDir` — fallible operations return `Result _ Error` |
-| `std.time` | `time` | `now : fn time () -> Timestamp`, `epoch : Timestamp`, `fromIso : Text -> Result Timestamp Error`, `diff`, `diffMs`, `sinceMs`, `sleep`, `Duration`, `toIso` |
+| `std.time` | `time` | `now : fn time () -> Timestamp`, `epoch : fn () -> Timestamp`, `fromIso : Text -> Result Timestamp Error`, `diff`, `diffMs`, `sinceMs`, `sleep`, `Duration`, `toIso` |
 | `std.random` | `random` | `int`, `float`, `alphanumeric`, `choice`, `seed` |
 | `std.env` | `env` | `get`, `set`, `all` |
 | `std.cli` | `env` | `args`, `exit` (built on top of env) — the parser `parse`, `flag`, `has`, `positional` is pure and needs no capability |

@@ -28,6 +28,9 @@ pub enum SymbolRef {
         module: String,
         /// The symbol name within the stdlib module.
         name: String,
+        /// Whether naming this symbol references a function or evaluates a
+        /// value. See [`StdlibKind`] — arity cannot answer it.
+        kind: StdlibKind,
     },
     /// A `pub` symbol from another project.
     External {
@@ -94,6 +97,33 @@ pub enum SymbolRef {
         /// The method name (e.g. `"toText"`, `"eq"`, `"compare"`).
         method: String,
     },
+}
+
+/// What naming a stdlib [`SymbolRef`] means.
+///
+/// A stdlib declaration is either a function, so naming it is a reference, or a
+/// value, so naming it is that value. Arity cannot separate the two:
+/// `std.time.now` is `() -> Timestamp` and `std.map.empty` is `Map k v`, and
+/// both take nothing. Codegen read the arity and evaluated every one of them,
+/// so a nullary stdlib function handed to a higher-order function arrived as
+/// its own result and the runtime reported `badfun`.
+///
+/// This rides on the symbol for the same reason [`CtorKind`] does: it is a fact
+/// about the program that every backend needs, and one no backend can work out
+/// on its own — the answer is in the type checker's scheme, which the IR is the
+/// contract for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StdlibKind {
+    /// The symbol's scheme is a function type. Naming it is a reference to the
+    /// function; `Function` with no parameters is `fn f () -> T`.
+    Function,
+    /// The symbol's scheme is the result type, not a function type. Naming it
+    /// is that value, so the reference is evaluated where it appears.
+    ///
+    /// `std.list.empty`, `std.map.empty` and `std.set.empty` are the declared
+    /// ones; the generated instance-dictionary constants of a stdlib typeclass
+    /// (`$inst_SqlType_Int`) are the synthesised ones.
+    Constant,
 }
 
 /// The kind of a constructor `SymbolRef`.

@@ -24,7 +24,7 @@
 )]
 
 use ridge_ast::{expr::BinOp, expr::UnaryOp, Expr, Span};
-use ridge_ir::{IrArm, IrExpr, IrLit, IrPat, SymbolRef};
+use ridge_ir::{IrArm, IrExpr, IrLit, IrPat, StdlibKind, SymbolRef};
 use ridge_resolve::NodeKind;
 use ridge_types::Type;
 
@@ -100,6 +100,7 @@ pub fn lower_binary(
         sym: SymbolRef::Stdlib {
             module: module.into(),
             name: name.into(),
+            kind: StdlibKind::Function,
         },
         span,
     });
@@ -139,6 +140,7 @@ pub fn lower_unary(ctx: &mut LowerCtx<'_>, op: UnaryOp, expr: &Expr, span: Span)
                 sym: SymbolRef::Stdlib {
                     module: neg_module.into(),
                     name: neg_name.into(),
+                    kind: StdlibKind::Function,
                 },
                 span,
             });
@@ -451,6 +453,7 @@ mod tests {
                             SymbolRef::Stdlib {
                                 ref module,
                                 ref name,
+                                ..
                             },
                         ..
                     } => {
@@ -497,6 +500,7 @@ mod tests {
                         SymbolRef::Stdlib {
                             ref module,
                             ref name,
+                            ..
                         },
                     ..
                 } => {
@@ -554,6 +558,7 @@ mod tests {
                             SymbolRef::Stdlib {
                                 ref module,
                                 ref name,
+                                ..
                             },
                         ..
                     } => {
@@ -656,6 +661,7 @@ mod tests {
                         SymbolRef::Stdlib {
                             ref module,
                             ref name,
+                            ..
                         },
                     ..
                 } => {

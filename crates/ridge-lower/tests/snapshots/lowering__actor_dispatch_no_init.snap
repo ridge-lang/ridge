@@ -22,7 +22,7 @@ items:
           Assign(n0) -> StateField(count):
             Call(n1):
               callee:
-                Symbol(n2): Stdlib(std.int.add)
+                Symbol(n2): Stdlib(fn:std.int.add)
               args:
                 -
                   Field(n3).count:

@@ -57,7 +57,7 @@ use ridge_ast::{
     expr::{InterpPart, LambdaParam, QualifiedName, RecordCtor},
     Expr, Ident, Literal, Pattern, Span,
 };
-use ridge_ir::{IrExpr, IrLit, IrParam, IrPat, SymbolRef};
+use ridge_ir::{IrExpr, IrLit, IrParam, IrPat, StdlibKind, SymbolRef};
 use ridge_resolve::{imports::Binding, ModuleId, NodeKind, StdlibModuleId, BUILTINS};
 use ridge_types::{CapRow, TyConId, TyConKind, Type};
 
@@ -1025,11 +1025,19 @@ fn captured_scalar_qlit(ctx: &LowerCtx<'_>, ty: &Type) -> Option<(&'static str, 
 /// (the producer is a stdlib module) routes through the stdlib bridge so its
 /// BEAM atom is the dotted FQN (`'std.sql':sqlInt`); a user-module target keeps
 /// the `ridge_module_<id>` external mangle.
-fn imported_symbol_ref(ctx: &LowerCtx<'_>, module: ModuleId, name: String) -> SymbolRef {
+fn imported_symbol_ref(
+    ctx: &mut LowerCtx<'_>,
+    module: ModuleId,
+    name: String,
+    span: Span,
+) -> SymbolRef {
     if let Some(fqn) = ctx.stdlib_fqn(module) {
+        let fqn = fqn.to_string();
+        let kind = stdlib_kind(ctx, &fqn, &name, span);
         SymbolRef::Stdlib {
-            module: fqn.to_string(),
+            module: fqn,
             name,
+            kind,
         }
     } else {
         SymbolRef::External { module, name }
@@ -1507,6 +1515,7 @@ fn call_query_helper(ctx: &mut LowerCtx<'_>, name: &str, arg: IrExpr, span: Span
         sym: SymbolRef::Stdlib {
             module: "std.query".into(),
             name: name.into(),
+            kind: StdlibKind::Function,
         },
         span,
     };
@@ -1609,6 +1618,7 @@ fn map_to_qlit(
         sym: SymbolRef::Stdlib {
             module: "std.list".into(),
             name: "map".into(),
+            kind: StdlibKind::Function,
         },
         span,
     };
@@ -1973,7 +1983,7 @@ pub(crate) fn build_dict_args(
             (constraints, param_types, ret_ty)
         }
         IrExpr::Symbol {
-            sym: SymbolRef::Stdlib { module, name },
+            sym: SymbolRef::Stdlib { module, name, .. },
             ..
         } => match ctx.reconciled_stdlib_fn_dict_sig(module, name) {
             Some((constraints, param_types, ret)) if !constraints.is_empty() => {
@@ -3273,6 +3283,28 @@ fn class_name_of(ctx: &LowerCtx<'_>, class: ridge_types::ClassId) -> Option<Stri
     ct.get(class).map(|info| info.name.clone())
 }
 
+/// The type part of a generated `$inst_` constant's name.
+///
+/// A single-parameter instance is named after its head type; a multi-parameter
+/// one appends the remaining head constructors, so the reference matches the
+/// `$inst_{Class}_{T0}_{T1}…` constant the instance actually generated. A
+/// constructor the workspace does not know is named positionally rather than
+/// skipped, because a name that silently loses a component would collide with
+/// a different instance.
+fn instance_head_name(ctx: &LowerCtx<'_>, tycon: TyConId, extra_head: &[TyConId]) -> String {
+    let name_of = |t: TyConId| {
+        ctx.workspace
+            .and_then(|ws| ws.tycons.get(t.0 as usize))
+            .map_or_else(|| format!("TyCon{}", t.0), |decl| decl.name.clone())
+    };
+    let mut out = name_of(tycon);
+    for extra in extra_head {
+        out.push('_');
+        out.push_str(&name_of(*extra));
+    }
+    out
+}
+
 /// Convert a resolved [`DictPlan`] to the `IrExpr` that threads the dictionary.
 ///
 /// `class` is the [`ClassId`] the dictionary satisfies — needed to recognise
@@ -3361,18 +3393,10 @@ pub(crate) fn dict_plan_to_expr(
             // A non-parametric instance has no sub-dicts and the bare symbol
             // is the dictionary map.
             let decl = ctx.workspace.and_then(|ws| ws.tycons.get(tycon.0 as usize));
-            let mut type_name =
-                decl.map_or_else(|| format!("TyCon{}", tycon.0), |decl| decl.name.clone());
-            // Multi-parameter instance: append the remaining head constructors so
-            // the reference matches the generated `$inst_{Class}_{T0}_{T1}…` const.
-            for extra in extra_head {
-                let extra_decl = ctx.workspace.and_then(|ws| ws.tycons.get(extra.0 as usize));
-                let extra_name = extra_decl
-                    .map_or_else(|| format!("TyCon{}", extra.0), |decl| decl.name.clone());
-                type_name.push('_');
-                type_name.push_str(&extra_name);
-            }
-            let dict_const_name = format!("$inst_{class_name}_{type_name}");
+            let dict_const_name = format!(
+                "$inst_{class_name}_{}",
+                instance_head_name(ctx, tycon, &extra_head)
+            );
             let id = ctx.fresh_id(None);
 
             // The dictionary const lives in whichever module owns the instance:
@@ -3394,21 +3418,30 @@ pub(crate) fn dict_plan_to_expr(
             // for instances co-located with their type.
             let inst_module = info.def_module;
             let inst_is_cross = inst_module.is_some_and(|m| m != ctx.module_id.0);
+            let unapplied = sub_dicts.is_empty();
+            // Parametric instances apply `sub_dicts` below, so their const is a
+            // function; a monomorphic one is the dictionary value itself.
+            let kind = if unapplied {
+                StdlibKind::Constant
+            } else {
+                StdlibKind::Function
+            };
+            // Either cross-module owner reaches the const the same way, and the
+            // instance's own module wins when both apply.
+            let external = inst_module
+                .filter(|_| inst_is_cross)
+                .or_else(|| producer.filter(|_| is_cross_module));
             let sym = if let Some(home) =
                 stdlib_class_home_module(class_name).filter(|_| tycon_is_builtin)
             {
                 SymbolRef::Stdlib {
                     module: home.to_owned(),
                     name: dict_const_name,
+                    kind,
                 }
-            } else if let Some(m) = inst_module.filter(|_| inst_is_cross) {
+            } else if let Some(m) = external {
                 SymbolRef::External {
                     module: ridge_resolve::ModuleId(m),
-                    name: dict_const_name,
-                }
-            } else if let Some(p) = producer.filter(|_| is_cross_module) {
-                SymbolRef::External {
-                    module: ridge_resolve::ModuleId(p),
                     name: dict_const_name,
                 }
             } else {
@@ -3423,7 +3456,7 @@ pub(crate) fn dict_plan_to_expr(
             // same-module const is usable directly as a value. Parametric
             // instances always apply their sub-dictionaries.
             let emit_as_call = inst_is_cross || is_cross_module;
-            if sub_dicts.is_empty() && !emit_as_call {
+            if unapplied && !emit_as_call {
                 return dict_symbol;
             }
             let call_id = ctx.fresh_id(None);
@@ -3630,6 +3663,56 @@ pub(crate) fn wrap_pattern_params(
 }
 
 // ── B-3 helpers (partial application detection) ──────────────────────────────
+
+/// Whether naming this stdlib symbol references a function or evaluates a value.
+///
+/// Arity cannot answer it, which is the defect this exists to close:
+/// `std.time.now` is `() -> Timestamp` and `std.map.empty` is `Map k v`, and
+/// both take nothing. The declaration cannot answer it either — Ridge writes a
+/// function of no arguments as `fn f -> T` just as readily as `fn f () -> T`,
+/// so the three `empty` constants are spelled exactly like the functions beside
+/// them. Only the checker's scheme separates them.
+///
+/// The declared scheme is asked first, because what a symbol *is* does not vary
+/// by where it is named, and because the type stamped on a reference is not
+/// always there to read: an actor's `state table: Map Text Text = Map.empty`
+/// carries no inferred type on the default expression, and guessing at that
+/// position put a fun where a map belonged.
+///
+/// The stamped type is the second answer, for the reconciled modules whose
+/// schemes are built against types this table cannot name. Neither available is
+/// reported rather than guessed: `Function` breaks `Map.empty` and `Constant`
+/// breaks `Time.now`, and either way the program type-checks and then fails at
+/// run time with nothing to say why.
+fn stdlib_kind(ctx: &mut LowerCtx<'_>, module: &str, name: &str, span: Span) -> StdlibKind {
+    let declared = ridge_resolve::lookup_stdlib(module)
+        .and_then(|m| {
+            ridge_typecheck::stdlib_signatures::stdlib_signature(m.id, name, ctx.builtins)
+        })
+        .map(|scheme| scheme.ty);
+
+    let stamped = || {
+        ctx.node_id_map
+            .as_ref()
+            .and_then(|m| m.get(span, NodeKind::Expr))
+            .and_then(|nid| ctx.node_type(nid).cloned())
+    };
+
+    match declared.or_else(stamped).map(|t| deep_peel_alias(&t)) {
+        Some(Type::Fn { .. }) => StdlibKind::Function,
+        Some(_) => StdlibKind::Constant,
+        None => {
+            ctx.errors.push(LowerError::InternalLoweringError {
+                span,
+                message: format!(
+                    "stdlib symbol `{module}.{name}` has neither a declared scheme nor an \
+                     inferred type, so a function of no arguments cannot be told from a value"
+                ),
+            });
+            StdlibKind::Function
+        }
+    }
+}
 
 /// Look up the resolved `Type` for the callee AST `Expr`.
 ///
@@ -3964,6 +4047,7 @@ fn lower_literal(ctx: &mut LowerCtx<'_>, lit: &Literal) -> IrExpr {
             sym: SymbolRef::Stdlib {
                 module: "std.decimal".to_string(),
                 name: "parseStrict".to_string(),
+                kind: StdlibKind::Function,
             },
             span,
         };
@@ -4106,7 +4190,7 @@ fn lower_ident(ctx: &mut LowerCtx<'_>, ident: &Ident) -> IrExpr {
         }) => {
             // A symbol imported from another module (same project or external).
             let id = ctx.fresh_id(None);
-            let sym = imported_symbol_ref(ctx, *module, ident.text.clone());
+            let sym = imported_symbol_ref(ctx, *module, ident.text.clone(), span);
             IrExpr::Symbol { id, sym, span }
         }
 
@@ -4139,11 +4223,14 @@ fn lower_ident(ctx: &mut LowerCtx<'_>, ident: &Ident) -> IrExpr {
                 }
             } else {
                 let module_name = stdlib_module_name(*stdlib_id);
+                let name = name.clone();
+                let kind = stdlib_kind(ctx, &module_name, &name, span);
                 IrExpr::Symbol {
                     id,
                     sym: SymbolRef::Stdlib {
                         module: module_name,
-                        name: name.clone(),
+                        name,
+                        kind,
                     },
                     span,
                 }
@@ -4394,11 +4481,14 @@ fn lower_qualified(ctx: &mut LowerCtx<'_>, qname: &QualifiedName) -> IrExpr {
         }) => {
             let module_name = stdlib_module_name(*stdlib_id);
             let id = ctx.fresh_id(None);
+            let name = name.clone();
+            let kind = stdlib_kind(ctx, &module_name, &name, span);
             IrExpr::Symbol {
                 id,
                 sym: SymbolRef::Stdlib {
                     module: module_name,
-                    name: name.clone(),
+                    name,
+                    kind,
                 },
                 span,
             }
@@ -4408,7 +4498,7 @@ fn lower_qualified(ctx: &mut LowerCtx<'_>, qname: &QualifiedName) -> IrExpr {
             module, symbol: _, ..
         }) => {
             let id = ctx.fresh_id(None);
-            let sym = imported_symbol_ref(ctx, *module, last_name);
+            let sym = imported_symbol_ref(ctx, *module, last_name, span);
             IrExpr::Symbol { id, sym, span }
         }
 
@@ -5027,15 +5117,34 @@ mod tests {
 
         let mut nid_map = NodeIdMap::default();
         let node_id = nid_map.assign(span, NodeKind::Ident).unwrap();
+        // Phase 4 stamps the resolved type of every expression under
+        // `NodeKind::Expr`, and lowering reads it there to tell a stdlib
+        // function from a stdlib value. Without it this context would be one no
+        // real compilation produces, and the assertion below would be about
+        // scaffolding rather than about `std.int.toText`.
+        let type_id = nid_map.assign(span, NodeKind::Expr).unwrap();
 
         let stdlib_id = StdlibModuleId(0); // "std.int"
-        let mut binding_map: BindingMap = vec![None; (node_id.0 + 1) as usize];
+        let slots = (node_id.0.max(type_id.0) + 1) as usize;
+        let mut binding_map: BindingMap = vec![None; slots];
         binding_map[node_id.0 as usize] = Some(Binding::StdlibSymbol {
             module: stdlib_id,
             name: "toText".into(),
         });
 
-        let mut ctx = LowerCtx::new(ModuleId(0), &[], crate::test_support::builtins());
+        // `toText : Int -> Text` — a function, whatever the operand types are.
+        let mut node_types: Vec<Option<Type>> = vec![None; slots];
+        node_types[type_id.0 as usize] = Some(Type::Fn {
+            params: vec![Type::Tuple(vec![])],
+            ret: Box::new(Type::Tuple(vec![])),
+            caps: CapRow::Concrete(ridge_types::CapabilitySet::PURE),
+        });
+
+        let mut ctx = LowerCtx::new(
+            ModuleId(0),
+            Box::leak(Box::new(node_types)),
+            crate::test_support::builtins(),
+        );
         ctx.attach_bindings(nid_map, Box::leak(Box::new(binding_map)));
 
         let expr = Expr::Ident(Ident {
@@ -5051,7 +5160,7 @@ mod tests {
         );
         match ir {
             IrExpr::Symbol {
-                sym: SymbolRef::Stdlib { module, name },
+                sym: SymbolRef::Stdlib { module, name, .. },
                 ..
             } => {
                 assert_eq!(module, "std.int");

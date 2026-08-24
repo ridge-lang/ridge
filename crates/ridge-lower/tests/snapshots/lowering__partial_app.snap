@@ -19,7 +19,7 @@ items:
     body:
       Call(n0):
         callee:
-          Symbol(n1): Stdlib(std.int.add)
+          Symbol(n1): Stdlib(fn:std.int.add)
         args:
           -
             Local(n2): x
@@ -61,7 +61,7 @@ items:
     body:
       Call(n9):
         callee:
-          Symbol(n10): Stdlib(std.list.map)
+          Symbol(n10): Stdlib(fn:std.list.map)
         args:
           -
             Lambda(n11):

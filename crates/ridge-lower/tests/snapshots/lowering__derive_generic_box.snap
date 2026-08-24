@@ -19,7 +19,7 @@ items:
     body:
       Call(n0):
         callee:
-          Symbol(n1): Stdlib(std.json.encode)
+          Symbol(n1): Stdlib(fn:std.json.encode)
         args:
           -
             Call(n2):
@@ -96,7 +96,7 @@ items:
                     -
                       Call(n21):
                         callee:
-                          Symbol(n22): Stdlib(std.map.fromList)
+                          Symbol(n22): Stdlib(fn:std.map.fromList)
                         args:
                           -
                             ListLit(n23):
@@ -144,7 +144,7 @@ items:
                           scrutinee:
                             Call(n36):
                               callee:
-                                Symbol(n37): Stdlib(std.map.get)
+                                Symbol(n37): Stdlib(fn:std.map.get)
                               args:
                                 -
                                   Lit(n38): Text("val")

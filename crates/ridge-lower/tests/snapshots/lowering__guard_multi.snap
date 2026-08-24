@@ -21,7 +21,7 @@ items:
         scrutinee:
           Call(n1):
             callee:
-              Symbol(n2): Stdlib(std.op.gt)
+              Symbol(n2): Stdlib(fn:std.op.gt)
             args:
               -
                 Local(n3): x
@@ -36,7 +36,7 @@ items:
                 scrutinee:
                   Call(n6):
                     callee:
-                      Symbol(n7): Stdlib(std.op.gt)
+                      Symbol(n7): Stdlib(fn:std.op.gt)
                     args:
                       -
                         Local(n8): y
@@ -49,7 +49,7 @@ items:
                     body:
                       Call(n10):
                         callee:
-                          Symbol(n11): Stdlib(std.int.add)
+                          Symbol(n11): Stdlib(fn:std.int.add)
                         args:
                           -
                             Local(n12): x

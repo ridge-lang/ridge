@@ -62,7 +62,7 @@ items:
               -
                 Call(n11):
                   callee:
-                    Symbol(n12): Stdlib(std.int.add)
+                    Symbol(n12): Stdlib(fn:std.int.add)
                   args:
                     -
                       Local(n13): h

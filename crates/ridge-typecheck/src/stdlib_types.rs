@@ -2835,7 +2835,7 @@ pub(crate) fn reconciled_fn_scheme(
                 constraints: vec![],
             })
         }
-        // std.data `sqliteMemory : Unit -> SqliteConfig` — the pure preset for the
+        // std.data `sqliteMemory : () -> SqliteConfig` — the pure preset for the
         // in-memory database. Returns the reconciled `SqliteConfig`.
         ("std.data", "sqliteMemory") => {
             let config = *reconciled.get("SqliteConfig")?;
@@ -2844,7 +2844,12 @@ pub(crate) fn reconciled_fn_scheme(
                 cap_vars: vec![],
                 row_vars: vec![],
                 ty: Type::Fn {
-                    params: vec![Type::Con(b.unit, vec![])],
+                    // No parameter list in the declaration, so no parameter
+                    // here. Claiming one `Unit` made the signature one wider
+                    // than the function it describes: passing the name as a
+                    // value emitted a reference of the declared width, and
+                    // applying it was `badarity`.
+                    params: vec![],
                     ret: Box::new(Type::Con(config, vec![])),
                     caps: CapRow::Concrete(CapabilitySet::PURE),
                 },
@@ -2874,7 +2879,7 @@ pub(crate) fn reconciled_fn_scheme(
                 constraints: vec![],
             })
         }
-        // std.data `defaultPool : Unit -> PoolConfig` — the pure pool baseline.
+        // std.data `defaultPool : () -> PoolConfig` — the pure pool baseline.
         // Returns the reconciled `PoolConfig`.
         ("std.data", "defaultPool") => {
             let pool = *reconciled.get("PoolConfig")?;
@@ -2883,7 +2888,12 @@ pub(crate) fn reconciled_fn_scheme(
                 cap_vars: vec![],
                 row_vars: vec![],
                 ty: Type::Fn {
-                    params: vec![Type::Con(b.unit, vec![])],
+                    // No parameter list in the declaration, so no parameter
+                    // here. Claiming one `Unit` made the signature one wider
+                    // than the function it describes: passing the name as a
+                    // value emitted a reference of the declared width, and
+                    // applying it was `badarity`.
+                    params: vec![],
                     ret: Box::new(Type::Con(pool, vec![])),
                     caps: CapRow::Concrete(CapabilitySet::PURE),
                 },
@@ -2920,7 +2930,7 @@ pub(crate) fn reconciled_fn_scheme(
                 constraints: vec![],
             })
         }
-        // std.data `defaultRetryPolicy : Unit -> RetryPolicy` — the pure retry
+        // std.data `defaultRetryPolicy : () -> RetryPolicy` — the pure retry
         // baseline (three attempts, 50 ms doubling to two seconds).
         ("std.data", "defaultRetryPolicy") => {
             let retry_policy = *reconciled.get("RetryPolicy")?;
@@ -2929,7 +2939,12 @@ pub(crate) fn reconciled_fn_scheme(
                 cap_vars: vec![],
                 row_vars: vec![],
                 ty: Type::Fn {
-                    params: vec![Type::Con(b.unit, vec![])],
+                    // No parameter list in the declaration, so no parameter
+                    // here. Claiming one `Unit` made the signature one wider
+                    // than the function it describes: passing the name as a
+                    // value emitted a reference of the declared width, and
+                    // applying it was `badarity`.
+                    params: vec![],
                     ret: Box::new(Type::Con(retry_policy, vec![])),
                     caps: CapRow::Concrete(CapabilitySet::PURE),
                 },

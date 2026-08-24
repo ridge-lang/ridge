@@ -28,6 +28,93 @@ use ridge_ast::{Capability, Span};
 
 use crate::ModuleId;
 
+// ── ExportingImport ───────────────────────────────────────────────────────────
+
+/// An `import` already written in the file whose module exports a name the
+/// file did not bring into scope.
+///
+/// Produced for `R010` when the unresolved identifier matches an export
+/// exactly. The name itself is not repeated here — it is the error's `name`,
+/// and one spelling of it is enough.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportingImport {
+    /// The module path as the `import` declaration writes it, e.g. `std.actor`.
+    pub module: String,
+    /// Where the name goes, and what has to be written around it.
+    pub insertion: ImportItemInsertion,
+}
+
+/// Where a name is added to an `import` declaration, and what the edit writes.
+///
+/// The three spellings of an import need three different edits, and pairing
+/// each offset with the text that belongs at it is what stops a caller from
+/// writing a comma where a parenthesis goes. Every variant carries a
+/// zero-width [`Span`] at the insertion point.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImportItemInsertion {
+    /// `import std.actor as Actor`, or the bare `import std.list` — no item
+    /// list yet, so one is opened at the end of the declaration.
+    OpenList {
+        /// Insertion point: the end of the declaration.
+        at: Span,
+        /// The last path segment, when the import is the bare form.
+        ///
+        /// `import std.list` binds the module under `list` implicitly, and
+        /// that binding holds only while there is no item list — so opening
+        /// one would silently take it away, and every `list.f` already
+        /// written in the file with it. The edit writes the alias out
+        /// (`as list (map)`) instead of dropping it.
+        bare_alias: Option<String>,
+    },
+    /// `import std.actor as Actor ()` — an item list that names nothing.
+    /// Write `Name` just inside the closing parenthesis.
+    FillEmptyList(Span),
+    /// `import std.actor as Actor (Noproc)` — write `, Name` at the end of
+    /// the last name already listed.
+    AppendToList(Span),
+}
+
+impl ImportItemInsertion {
+    /// The zero-width span the edit is applied at.
+    #[must_use]
+    pub const fn span(&self) -> Span {
+        match self {
+            Self::OpenList { at, .. } | Self::FillEmptyList(at) | Self::AppendToList(at) => *at,
+        }
+    }
+
+    /// The alias this edit has to write out, when the import is the bare form.
+    ///
+    /// A diagnostic that says "add it to the item list" is wrong for that one
+    /// spelling, because the list is what takes the binding away.
+    #[must_use]
+    pub fn bare_alias(&self) -> Option<&str> {
+        match self {
+            Self::OpenList {
+                bare_alias: Some(alias),
+                ..
+            } => Some(alias),
+            _ => None,
+        }
+    }
+
+    /// The exact text to insert at [`Self::span`] to import `name`.
+    #[must_use]
+    pub fn edit_text(&self, name: &str) -> String {
+        match self {
+            Self::OpenList {
+                bare_alias: Some(alias),
+                ..
+            } => format!(" as {alias} ({name})"),
+            Self::OpenList {
+                bare_alias: None, ..
+            } => format!(" ({name})"),
+            Self::FillEmptyList(_) => name.to_owned(),
+            Self::AppendToList(_) => format!(", {name}"),
+        }
+    }
+}
+
 // ── Severity ──────────────────────────────────────────────────────────────────
 
 /// Diagnostic severity for a [`ResolveError`].
@@ -168,7 +255,17 @@ pub enum ResolveError {
         /// The unresolved identifier.
         name: String,
         /// Up to three Levenshtein-close candidates visible at the error site.
+        ///
+        /// Empty whenever `importable` is not: a module that exports this
+        /// exact name is the answer, and a guess at what else the user might
+        /// have meant only competes with it.
         suggestions: Vec<String>,
+        /// Imports already in this file whose module exports this exact name.
+        ///
+        /// Non-empty means the name is real and reachable — what is missing is
+        /// the import's item list, which is a different fix from a typo and
+        /// gets a different message.
+        importable: Vec<ExportingImport>,
         /// Span of the identifier.
         span: Span,
     },
@@ -605,6 +702,7 @@ mod tests {
         let err = ResolveError::UnresolvedIdent {
             name: "missing".into(),
             suggestions: vec![],
+            importable: vec![],
             span: sp(),
         };
         assert_eq!(err.code(), "R010");
@@ -723,6 +821,7 @@ mod tests {
         let err = ResolveError::UnresolvedIdent {
             name: "y".into(),
             suggestions: vec![],
+            importable: vec![],
             span: sp(),
         };
         assert_eq!(err.severity(), Severity::Error);

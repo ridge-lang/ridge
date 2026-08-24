@@ -36,7 +36,7 @@ use ridge_ast::{
 use ridge_lexer::Span;
 
 use crate::{
-    error::ResolveError,
+    error::{ExportingImport, ImportItemInsertion, ResolveError},
     imports::{Binding, EffectiveBinding, ImportResolution},
     node_id::{NodeIdMap, NodeKind},
     qualified,
@@ -50,6 +50,40 @@ use crate::{
 /// Render a sorted set of names as a comma-separated list for diagnostics.
 fn join_names(names: &std::collections::BTreeSet<String>) -> String {
     names.iter().cloned().collect::<Vec<_>>().join(", ")
+}
+
+// ── Import-list insertion point ─────────────────────────────────────────────
+
+/// Where a new name goes in this import's item list, and what is written
+/// around it.
+///
+/// The byte offsets come straight from the tokens the parser recorded: the end
+/// of the last listed name, or the end of the declaration itself.
+/// `ImportDecl::span` ends at the declaration's last token, so for
+/// `import m ()` the byte before it is the closing parenthesis — one ASCII
+/// byte wide, which is what makes that subtraction safe.
+///
+/// The bare form needs its implicit alias written out, because that binding
+/// holds only while the import lists nothing; see
+/// [`ImportItemInsertion::OpenList`].
+fn import_item_insertion(ir: &ImportResolution) -> Option<ImportItemInsertion> {
+    Some(match ir.explicit_items.as_deref() {
+        None => ImportItemInsertion::OpenList {
+            at: Span::point(ir.span.end),
+            bare_alias: match (&ir.alias, ir.path.as_deref()) {
+                (None, Some(path)) => Some(last_path_segment(path).to_owned()),
+                _ => None,
+            },
+        },
+        Some([]) => ImportItemInsertion::FillEmptyList(Span::point(ir.span.end.checked_sub(1)?)),
+        Some(items) => ImportItemInsertion::AppendToList(Span::point(items.last()?.span.end)),
+    })
+}
+
+/// The last dot-separated segment of a module path, which is the name a bare
+/// `import` binds the module under.
+fn last_path_segment(path: &str) -> &str {
+    path.rsplit('.').next().unwrap_or(path)
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -181,12 +215,7 @@ impl ScopeWalker<'_> {
         } else if let Some(binding) = self.resolve_class_method(name, span) {
             binding
         } else {
-            let suggestions = self.r010_suggestions(name);
-            self.errors.push(ResolveError::UnresolvedIdent {
-                name: name.clone(),
-                suggestions,
-                span,
-            });
+            self.push_unresolved_ident(name, span);
             Binding::Error
         };
 
@@ -504,21 +533,11 @@ impl ScopeWalker<'_> {
                 }
             } else {
                 // Name exists but is not an actor.
-                let suggestions = self.r010_suggestions(&actor.text);
-                self.errors.push(ResolveError::UnresolvedIdent {
-                    name: actor.text.clone(),
-                    suggestions,
-                    span: actor.span,
-                });
+                self.push_unresolved_ident(&actor.text, actor.span);
                 Binding::Error
             }
         } else {
-            let suggestions = self.r010_suggestions(&actor.text);
-            self.errors.push(ResolveError::UnresolvedIdent {
-                name: actor.text.clone(),
-                suggestions,
-                span: actor.span,
-            });
+            self.push_unresolved_ident(&actor.text, actor.span);
             Binding::Error
         }
     }
@@ -569,6 +588,84 @@ impl ScopeWalker<'_> {
                         .get(module.0 as usize)
                         .is_some_and(|m| m.name == "std.actor")
         )
+    }
+
+    /// Emit the `R010` for a name that resolved to nothing.
+    ///
+    /// The only place an `UnresolvedIdent` is built. Five sites reach it — a
+    /// bare identifier, two actor-name paths, a constructor pattern, a record
+    /// constructor — and each owes the error the same two answers: which
+    /// already-imported module exports this exact name, and, failing that,
+    /// what the user might have meant instead. Assembling the error at the
+    /// call site is how one of those answers goes missing on the sixth site,
+    /// so no call site assembles it.
+    fn push_unresolved_ident(&mut self, name: &str, span: Span) {
+        let importable = self.exporting_imports(name);
+        // An exact export is a fact; a Levenshtein neighbour is a guess, and a
+        // guess printed next to the fact only competes with it. Same rule
+        // `well_known_type_shorthand` follows — and the guess is not merely
+        // dropped from the render, it is never computed.
+        let suggestions = if importable.is_empty() {
+            self.r010_suggestions(name)
+        } else {
+            Vec::new()
+        };
+        self.errors.push(ResolveError::UnresolvedIdent {
+            name: name.to_owned(),
+            suggestions,
+            importable,
+            span,
+        });
+    }
+
+    /// The imports already written in this file whose module exports `name`.
+    ///
+    /// Exact matches only. The point is not to guess what the user meant but
+    /// to say that what they wrote exists and the import list is what is
+    /// short — a claim that is either true or not worth making. A near miss
+    /// inside some other module is a different and much noisier feature.
+    ///
+    /// Ordered by the imports' order in source, deduplicated by module, and
+    /// capped: a name exported by four imported modules is a fact about the
+    /// workspace, not a hint.
+    ///
+    /// Deliberately scoped to modules the file already imports. A name exported
+    /// by a module nobody imported gets nothing — that fix adds a line rather
+    /// than a word, and searching every module in the workspace for every
+    /// unresolved name is how the equivalent in other languages ends up
+    /// offering a page of candidates from unrelated packages. Worth revisiting
+    /// the day someone reports the unimported case, or the day an
+    /// add-the-import-line action exists to attach it to.
+    fn exporting_imports(&self, name: &str) -> Vec<ExportingImport> {
+        let mut out: Vec<ExportingImport> = Vec::new();
+        for ir in self.module_imports {
+            let Some(path) = ir.path.as_deref() else {
+                continue;
+            };
+            // Already in scope through this import: then an unresolved use of
+            // it is not the import list's fault, and saying so would send the
+            // reader to a line that already reads correctly.
+            if ir.effective_bindings.iter().any(|eb| eb.local_name == name) {
+                continue;
+            }
+            if out.iter().any(|e: &ExportingImport| e.module == path) {
+                continue;
+            }
+            if !crate::imports::import_can_name(ir, self.all_symbol_tables, name) {
+                continue;
+            }
+            let Some(insertion) = import_item_insertion(ir) else {
+                continue;
+            };
+            out.push(ExportingImport {
+                module: path.to_owned(),
+                insertion,
+            });
+            if out.len() == crate::suggest::MAX_RESULTS {
+                break;
+            }
+        }
+        out
     }
 
     /// Build "did you mean?" candidates for an `R010 UnresolvedIdent` (T13).
@@ -775,12 +872,7 @@ impl ScopeWalker<'_> {
                     self.stamp(name.span, NodeKind::Ident, b);
                 } else {
                     // R010: unknown constructor name in pattern.
-                    let suggestions = self.r010_suggestions(&name.text);
-                    self.errors.push(ResolveError::UnresolvedIdent {
-                        name: name.text.clone(),
-                        suggestions,
-                        span: name.span,
-                    });
+                    self.push_unresolved_ident(&name.text, name.span);
                     self.stamp(name.span, NodeKind::Ident, Binding::Error);
                 }
 
@@ -1271,12 +1363,7 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
                         } else if let Some(local) = self.scope.lookup_local(&ctor_ident.text) {
                             Binding::Local(local.id)
                         } else {
-                            let suggestions = self.r010_suggestions(&ctor_ident.text);
-                            self.errors.push(ResolveError::UnresolvedIdent {
-                                name: ctor_ident.text.clone(),
-                                suggestions,
-                                span: ctor_ident.span,
-                            });
+                            self.push_unresolved_ident(&ctor_ident.text, ctor_ident.span);
                             Binding::Error
                         };
                         self.check_opaque_use(
@@ -2392,6 +2479,176 @@ mod tests {
         assert!(
             r017_count >= 1,
             "fixture must fire R017; errors: {errors:?}"
+        );
+    }
+
+    // ── R010 names the module that already exports the name ─────────────────
+
+    /// The `importable` payload of the one `R010` raised for `name`.
+    fn importable_for(src: &str, name: &str) -> Vec<ExportingImport> {
+        let (_, errors, _imports, _nid) = full_resolve_single(src);
+        let found: Vec<&ResolveError> = errors
+            .iter()
+            .filter(|e| matches!(e, ResolveError::UnresolvedIdent { name: n, .. } if n == name))
+            .collect();
+        assert_eq!(
+            found.len(),
+            1,
+            "expected exactly one R010 for `{name}`: {errors:?}"
+        );
+        match found[0] {
+            ResolveError::UnresolvedIdent {
+                importable,
+                suggestions,
+                ..
+            } => {
+                assert!(
+                    importable.is_empty() || suggestions.is_empty(),
+                    "a fact and a guess must not both be offered: {importable:?} / {suggestions:?}"
+                );
+                importable.clone()
+            }
+            other => panic!("not an R010: {other:?}"),
+        }
+    }
+
+    /// The byte offset an insertion lands at, whatever its spelling.
+    fn insert_at(src: &str, name: &str) -> (String, ImportItemInsertion) {
+        let found = importable_for(src, name);
+        assert_eq!(found.len(), 1, "expected one exporting import: {found:?}");
+        (found[0].module.clone(), found[0].insertion.clone())
+    }
+
+    /// The issue's own case: the module is imported, the name is exported, the
+    /// item list is what is missing — and nothing said so.
+    #[test]
+    fn r010_names_an_imported_module_that_exports_the_name() {
+        let src = "import std.actor as Actor
+
+fn f e =
+    match e
+        Timeout -> 1
+        _ -> 2
+";
+        let (module, insertion) = insert_at(src, "Timeout");
+        assert_eq!(module, "std.actor");
+        // No item list at all, so one is opened at the end of the declaration.
+        assert!(
+            matches!(
+                &insertion,
+                ImportItemInsertion::OpenList {
+                    at,
+                    bare_alias: None
+                } if at.start == 25
+            ),
+            "expected an opened list at byte 25, got {insertion:?}"
+        );
+        assert_eq!(insertion.edit_text("Timeout"), " (Timeout)");
+    }
+
+    /// The bare form binds the module under its last segment, and only while
+    /// it lists nothing. Opening a list has to write that binding out or the
+    /// fix silently removes it — along with every `list.f` already in the file.
+    #[test]
+    fn opening_a_list_on_a_bare_import_keeps_the_alias_it_was_binding() {
+        let src = "import std.list\n\nfn g xs = map (fn x -> x) xs\n";
+        let (module, insertion) = insert_at(src, "map");
+        assert_eq!(module, "std.list");
+        assert!(
+            matches!(
+                &insertion,
+                ImportItemInsertion::OpenList {
+                    bare_alias: Some(a),
+                    ..
+                } if a == "list"
+            ),
+            "expected the bare alias to be carried, got {insertion:?}"
+        );
+        assert_eq!(insertion.edit_text("map"), " as list (map)");
+    }
+
+    /// The same name, an import that already lists something else.
+    #[test]
+    fn r010_appends_to_an_import_list_that_already_exists() {
+        let src = "import std.actor as Actor (Noproc)
+
+fn f e =
+    match e
+        Timeout -> 1
+        _ -> 2
+";
+        let (module, insertion) = insert_at(src, "Timeout");
+        assert_eq!(module, "std.actor");
+        assert!(
+            matches!(insertion, ImportItemInsertion::AppendToList(s) if s.start == 33),
+            "expected an append at the end of `Noproc` (byte 33), got {insertion:?}"
+        );
+        assert_eq!(insertion.edit_text("Timeout"), ", Timeout");
+    }
+
+    /// The unusual spelling: a list that names nothing.
+    #[test]
+    fn r010_fills_an_import_list_that_names_nothing() {
+        let src = "import std.actor as Actor ()
+
+fn f e =
+    match e
+        Timeout -> 1
+        _ -> 2
+";
+        let (module, insertion) = insert_at(src, "Timeout");
+        assert_eq!(module, "std.actor");
+        assert!(
+            matches!(insertion, ImportItemInsertion::FillEmptyList(s) if s.start == 27),
+            "expected a fill just inside `)` (byte 27), got {insertion:?}"
+        );
+        assert_eq!(insertion.edit_text("Timeout"), "Timeout");
+    }
+
+    /// The control the three above need. A typo of an in-scope name is still a
+    /// typo: no module is named, and the Levenshtein guess survives.
+    #[test]
+    fn a_typo_of_an_in_scope_name_still_gets_its_guess_and_no_module() {
+        let src = "import std.actor as Actor
+
+fn f counter = countr
+";
+        let (_, errors, _imports, _nid) = full_resolve_single(src);
+        let (importable, suggestions) = errors
+            .iter()
+            .find_map(|e| match e {
+                ResolveError::UnresolvedIdent {
+                    name,
+                    importable,
+                    suggestions,
+                    ..
+                } if name == "countr" => Some((importable.clone(), suggestions.clone())),
+                _ => None,
+            })
+            .expect("expected R010 for `countr`");
+        assert!(
+            importable.is_empty(),
+            "no module exports `countr`: {importable:?}"
+        );
+        assert!(
+            suggestions.contains(&"counter".to_owned()),
+            "the guess must survive: {suggestions:?}"
+        );
+    }
+
+    /// A name the prelude injects must never be reported as importable: the
+    /// synthetic resolutions carry no source line, so there is nothing to edit.
+    #[test]
+    fn a_synthetic_prelude_import_is_never_offered() {
+        let src = "fn f e =
+    match e
+        Timeout -> 1
+        _ -> 2
+";
+        let found = importable_for(src, "Timeout");
+        assert!(
+            found.is_empty(),
+            "std.actor is not imported here: {found:?}"
         );
     }
 

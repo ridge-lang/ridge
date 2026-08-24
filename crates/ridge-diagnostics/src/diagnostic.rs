@@ -153,6 +153,48 @@ pub fn did_you_mean(suggestions: &[String]) -> Option<String> {
     }
 }
 
+/// Phrase "this name exists, you just have not imported it" as one line.
+///
+/// Distinct from [`did_you_mean`] on purpose: that one offers a guess at what
+/// the user meant, this one reports a fact about a module they already import.
+/// The two never appear together — a certainty does not want a guess beside it.
+///
+/// `sources` pairs each module with the alias the fix has to write out, when
+/// there is one. That second half is not decoration: a bare `import std.list`
+/// binds the module under `list` only while it lists nothing, so telling that
+/// reader to "add it to the item list" is telling them to delete a binding
+/// they may be using. Where the exact spelling is known it is shown instead of
+/// described, and where several modules qualify no mechanism is prescribed at
+/// all — the editor's quick-fix carries the precise edit for each.
+///
+/// Returns `None` for an empty list.
+#[must_use]
+pub fn exported_by(name: &str, sources: &[(String, Option<String>)]) -> Option<String> {
+    let (list, tail) = match sources {
+        [] => return None,
+        [(module, Some(alias))] => (
+            format!("`{module}`"),
+            format!("write that import as `{module} as {alias} ({name})`"),
+        ),
+        [(module, None)] => (
+            format!("`{module}`"),
+            "add it to that import's item list".to_owned(),
+        ),
+        [rest @ .., last] => {
+            let head = rest
+                .iter()
+                .map(|(m, _)| format!("`{m}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            (
+                format!("{head} and `{}`", last.0),
+                "add it to one of those imports".to_owned(),
+            )
+        }
+    };
+    Some(format!("`{name}` is exported by {list}; {tail}"))
+}
+
 /// Return the text after a leading `hint:` / `help:` marker, if present.
 ///
 /// Only matches at the very start of the line: a marker that appears further
@@ -453,6 +495,34 @@ mod tests {
         let parts = d.message_parts();
         assert!(parts.helps.is_empty(), "helps were: {:?}", parts.helps);
         assert!(parts.note.unwrap().contains("hint: nested, not a help"));
+    }
+
+    #[test]
+    fn an_importable_name_names_its_module() {
+        assert_eq!(exported_by("Timeout", &[]), None);
+        assert_eq!(
+            exported_by("Timeout", &[("std.actor".to_owned(), None)]).unwrap(),
+            "`Timeout` is exported by `std.actor`; add it to that import's item list"
+        );
+        assert_eq!(
+            exported_by(
+                "map",
+                &[("std.list".to_owned(), None), ("std.map".to_owned(), None)]
+            )
+            .unwrap(),
+            "`map` is exported by `std.list` and `std.map`; add it to one of those imports"
+        );
+    }
+
+    /// The bare form of an import is the one case where "add it to the item
+    /// list" is wrong advice: the list would replace the alias the bare form
+    /// binds. The message shows the spelling instead of describing an edit.
+    #[test]
+    fn a_bare_import_is_told_what_to_write_not_what_to_add() {
+        assert_eq!(
+            exported_by("map", &[("std.list".to_owned(), Some("list".to_owned()))]).unwrap(),
+            "`map` is exported by `std.list`; write that import as `std.list as list (map)`"
+        );
     }
 
     #[test]

@@ -40,7 +40,7 @@ Module {
                 items: None,
                 span: Span {
                     start: 383,
-                    end: 409,
+                    end: 408,
                 },
                 doc: Some(
                     DocComment {
@@ -89,7 +89,7 @@ Module {
                 items: None,
                 span: Span {
                     start: 409,
-                    end: 437,
+                    end: 436,
                 },
                 doc: None,
             },
@@ -130,7 +130,7 @@ Module {
                 items: None,
                 span: Span {
                     start: 437,
-                    end: 464,
+                    end: 463,
                 },
                 doc: None,
             },
@@ -209,7 +209,7 @@ Module {
                 ),
                 span: Span {
                     start: 464,
-                    end: 529,
+                    end: 528,
                 },
                 doc: None,
             },
@@ -250,7 +250,7 @@ Module {
                 items: None,
                 span: Span {
                     start: 529,
-                    end: 559,
+                    end: 558,
                 },
                 doc: None,
             },
@@ -291,7 +291,7 @@ Module {
                 items: None,
                 span: Span {
                     start: 559,
-                    end: 589,
+                    end: 588,
                 },
                 doc: None,
             },
@@ -348,7 +348,7 @@ Module {
                 ),
                 span: Span {
                     start: 589,
-                    end: 1181,
+                    end: 634,
                 },
                 doc: None,
             },

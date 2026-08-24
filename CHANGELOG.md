@@ -42,6 +42,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An unresolved name that one of the file's own imports exports now says so.
+  `import std.actor as Actor` brings the module in under an alias but binds
+  none of its exports, so writing `Timeout` was `R010 unresolved identifier`
+  with nothing after it — no `did you mean`, no mention of the module sitting
+  two lines above that exports exactly that name. The two sibling diagnostics
+  already searched a module's exports, because both are told which module to
+  look in; `R010` is the case where the module has to be found, and it is the
+  case a reader actually hits. The error now reads `` `Timeout` is exported by
+  `std.actor`; add it to that import's item list ``, for standard-library and
+  workspace modules alike, and the language server offers the edit as a
+  quick-fix on the identifier — appending to the import's item list where it
+  has one, opening a list where it does not, rather than adding a second
+  import line.
+
+  Only an exact match is reported. A near miss inside another module is a
+  guess, and this is not: the claim is that the name exists and the import list
+  is short, which is either true or not worth making. Where the fact is
+  available the near-miss guess is not computed at all, so the two never
+  compete for the same line. Visibility is decided by the predicate the import
+  resolver itself uses, so a name the compiler names here is one the import
+  would accept — a file-private `_helper` in a sibling module is still not
+  offered.
+
+- An `import` declaration's span ran to the *next* declaration instead of
+  ending at its own last token. It read the cursor position once too late, and
+  what came back was whatever token followed — so the span swallowed the line
+  break, the blank lines behind it, and any comment block written before the
+  next declaration. In this repository's own examples the last import of a file
+  was between 34 and 547 bytes too long, one of them covering a three-line
+  comment header that belongs to the actor below it.
+
+  Folding an import block in the editor folded that header with it: over two
+  imports followed by a two-line comment the block collapsed lines 0 to 4
+  instead of 0 to 1. Blank lines alone never showed the fault, because the
+  editor trims trailing whitespace off a fold before using it — a comment is
+  not whitespace, and that is the case the guard cannot reach. `R013` also
+  underlined past the import it was reporting. `type`, `const` and `fn` end
+  where they should; `class` and `instance` have the same defect and are left
+  for their own change.
+
 - `ridge fmt` no longer separates a declaration from what is written above it.
   A `@test "…"` attribute and a `---` doc comment are both parsed before the
   declaration they belong to, so the declaration's own span starts below them.

@@ -212,6 +212,8 @@ mod tests {
     fn ws_import(target_id: u32, span: Span) -> ImportResolution {
         ImportResolution {
             decl_node: NodeId(0),
+            path: Some(format!("ws.m{target_id}")),
+            same_project: true,
             target: ImportTarget::WorkspaceModule(ModuleId(target_id)),
             alias: None,
             explicit_items: None,
@@ -224,6 +226,10 @@ mod tests {
     fn std_import(stdlib_id: u32, span: Span) -> ImportResolution {
         ImportResolution {
             decl_node: NodeId(0),
+            path: crate::BUILTINS
+                .get(stdlib_id as usize)
+                .map(|m| m.name.to_owned()),
+            same_project: false,
             target: ImportTarget::BuiltinStdlib(StdlibModuleId(stdlib_id)),
             alias: None,
             explicit_items: None,
@@ -236,6 +242,8 @@ mod tests {
     fn unresolved_import(span: Span) -> ImportResolution {
         ImportResolution {
             decl_node: NodeId(0),
+            path: Some("nope.missing".to_owned()),
+            same_project: false,
             target: ImportTarget::Unresolved,
             alias: None,
             explicit_items: None,

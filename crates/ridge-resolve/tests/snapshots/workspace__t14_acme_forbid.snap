@@ -8,14 +8,14 @@ WorkspaceSnapshot {
         "acme.infra.Postgres",
     ],
     errors: [
-        "R013: ForbidViolation importer=\"acme.domain.RegisterUser\" target=\"acme.infra.Postgres\" rule=\"from = \\\"acme.domain.**\\\" to = \\\"acme.infra.**\\\"\" span=0..34",
+        "R013: ForbidViolation importer=\"acme.domain.RegisterUser\" target=\"acme.infra.Postgres\" rule=\"from = \\\"acme.domain.**\\\" to = \\\"acme.infra.**\\\"\" span=0..32",
     ],
     forbid_violations: [
         ForbidViolationView {
             importer: "acme.domain.RegisterUser",
             target: "acme.infra.Postgres",
             rule: "from = \"acme.domain.**\" to = \"acme.infra.**\"",
-            span: "0..34",
+            span: "0..32",
         },
     ],
     import_summary: {

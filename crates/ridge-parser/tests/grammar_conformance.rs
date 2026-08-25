@@ -273,11 +273,15 @@ fn ops (a: Int) (b: Int) (xs: List Int) -> Bool =
 ",
     ),
     (
-        &["Expr12", "AskExpr", "QualifiedName"],
+        &["Expr12", "AskExpr", "AskTimeout", "QualifiedName"],
         "\
 fn dotted (h: Handle Counter) (u: User) -> Unit =
     let name = u.profile.name
     let reply = h ?> get name
+    let bounded = h ?> count timeout 1000
+    let derived = h ?> count timeout (2 * 500)
+    let named = h ?> count timeout Cfg.retryMs
+    let forever = h ?> count timeout never
     h ! ping ()
 ",
     ),

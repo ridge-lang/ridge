@@ -577,6 +577,118 @@ async fn test_diagnostic_resolves_to_real_span_without_open_doc() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+// ── Ask-timeout operand: the editor stops squiggling a well-formed program ───
+
+/// The `timeout` postfix on `?>` used to fire only when its operand opened on a
+/// bare name or a number, so `timeout (250 * 2)` was collected as two positional
+/// arguments instead. The editor then carried two squiggles on a program that is
+/// correct: an unresolved-identifier marker on the reader's own keyword, and an
+/// arity mismatch on a handler that takes nothing.
+///
+/// The control in the same fixture is what makes the empty assertion mean
+/// something: swap the operand for a `Text` and exactly one `T026` must appear.
+/// Without it, "no diagnostics" would also be the answer for a workspace that
+/// never compiled.
+#[tokio::test]
+async fn test_ask_timeout_operand_publishes_no_diagnostics() {
+    use ridge_driver::{check_workspace, CheckOptions};
+
+    fn workspace_with(operand: &str, tag: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "ridge_lsp_ask_timeout_{tag}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let app_src = root.join("app").join("src");
+        std::fs::create_dir_all(&app_src).expect("create temp workspace");
+        std::fs::write(
+            root.join("ridge.toml"),
+            "[workspace]\nname = \"ask-ws\"\nversion = \"0.1.0\"\nmembers = [\"app\"]\n",
+        )
+        .expect("write workspace manifest");
+        std::fs::write(
+            root.join("app").join("ridge.toml"),
+            "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"library\"\nentry = \"src/Main.ridge\"\n\n[capabilities]\nallow = [\"spawn\", \"time\"]\n",
+        )
+        .expect("write project manifest");
+        std::fs::write(
+            app_src.join("Main.ridge"),
+            format!(
+                "actor Store =\n    state items: Int = 0\n\n    on count () -> Int =\n        items\n\npub fn spawn time f () -> Int =\n    let s = spawn Store\n    s ?> count timeout {operand}\n"
+            ),
+        )
+        .expect("write source");
+        root
+    }
+
+    let good = workspace_with("(250 * 2)", "good");
+    let artefacts =
+        check_workspace(CheckOptions::new(good.clone())).expect("workspace checks without fatal");
+    assert!(
+        artefacts.diagnostics.is_empty(),
+        "a parenthesised timeout operand must publish nothing, got {:?}",
+        artefacts
+            .diagnostics
+            .iter()
+            .map(|d| d.code)
+            .collect::<Vec<_>>()
+    );
+    let _ = std::fs::remove_dir_all(&good);
+
+    // Control: the same fixture with an ill-typed operand must still report, so
+    // the assertion above cannot be passing on an empty run.
+    let bad = workspace_with("\"soon\"", "bad");
+    let artefacts =
+        check_workspace(CheckOptions::new(bad.clone())).expect("workspace checks without fatal");
+    let codes: Vec<&str> = artefacts.diagnostics.iter().map(|d| d.code).collect();
+    assert_eq!(
+        codes,
+        vec!["T026"],
+        "a Text operand must report exactly one T026, got {codes:?}"
+    );
+    let _ = std::fs::remove_dir_all(&bad);
+}
+
+/// A name inside the timeout operand has to carry a binding, or hover, go-to
+/// definition and rename all stop at the `timeout` keyword.
+///
+/// This is a guard, not a regression witness: the same source used to parse as
+/// two positional arguments, and `base` carried a binding either way, so the
+/// test would have passed before the fix too. What it pins is that the resolver
+/// still walks into `AskTimeout::Millis` now that the operand can hold more
+/// than a bare name — the shape where dropping that walk would go unnoticed,
+/// because an unvisited node reports nothing rather than reporting wrongly.
+#[tokio::test]
+async fn test_hover_inside_a_parenthesised_ask_timeout() {
+    let line8 = "    s ?> count timeout (base * 2)";
+    let src = concat!(
+        "actor Store =\n",
+        "    state items: Int = 0\n",
+        "\n",
+        "    on count () -> Int =\n",
+        "        items\n",
+        "\n",
+        "pub fn spawn time f () -> Int =\n",
+        "    let base = 250\n",
+        "    s ?> count timeout (base * 2)\n",
+    );
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    let col = u32::try_from(line8.find("base").expect("base use") + 1).expect("offset fits u32");
+    let md = hover_markdown(
+        server
+            .hover(hover_at(&uri, 8, col))
+            .await
+            .expect("hover ok"),
+    )
+    .expect("hover inside the timeout operand returns markup");
+    assert!(
+        md.contains("base"),
+        "hover inside the timeout operand should name the local, got {md:?}"
+    );
+}
+
 // ── Debounce test: rapid didChange flurries trigger exactly one compile ────────
 
 #[tokio::test]

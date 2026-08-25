@@ -42,6 +42,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The `timeout` clause on an ask takes any operator expression, not only a bare
+  name or a number. Whether the contextual `timeout` was read as the keyword
+  turned on the *kind* of the token after it, and that list had two entries, so
+  `timeout 1000` and `timeout ms` worked while `timeout (base * 2)`,
+  `timeout Cfg.retryMs`, `timeout "soon"` and `timeout -1` did not. Six of the
+  broken spellings quietly became two positional arguments, and the reader was
+  told that their keyword was an undefined variable and that a handler taking
+  nothing had been handed two things; three more failed to parse outright and
+  took the rest of the file down with them. Nine of the fifteen operand shapes
+  that were enumerated did not work.
+
+  The lookahead now asks the question the postfix parser goes on to answer —
+  does an operator expression begin at the next token? — so the trigger and the
+  operand grammar are one set rather than two lists kept in step by hand. A
+  `timeout` with nothing an expression could begin at after it is still an
+  ordinary argument, as it was. The single form that now needs parentheses is a
+  keyword-led expression, `timeout (if fast then 100 else 5000)`: inside a
+  bracket the lexer emits no newline, so a `let` or a `return` written after
+  `timeout` could not be told from the start of the next statement. The
+  language grammar states the clause and the shape of its operand, neither of
+  which it had ever described.
+
 - A name that is in scope but is not a value says so, once, wherever it is
   written. `List`, `Text`, `Map` and the eleven other module aliases the
   prelude puts in every module — along with every alias an `import ... as`

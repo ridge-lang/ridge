@@ -889,7 +889,8 @@ Expr11        ::= Expr12 { Expr12 }
 
 (* Level 12: field access, ask ?>, send !, and atoms  (left) *)
 Expr12        ::= ExprAtom { "." LOWER_IDENT }
-               |  ExprAtom "?>" IDENT { ExprAtom }   (* ask: handle ?> msgName args  D045 *)
+               |  ExprAtom "?>" IDENT { ExprAtom } [ AskTimeout ]
+                                                      (* ask *)
                |  ExprAtom "!" ExprAtom               (* send: handle ! msgName        D044 *) ;
 
 (* Note on "?>" and "!":
@@ -1052,13 +1053,29 @@ SpawnExpr     ::= "spawn" UPPER_IDENT { Expr } ;
 
 (* AskExpr sends a request to an actor handle and awaits a reply.
    The handle is an arbitrary Expr; the message name is an IDENT; optional
-   positional args follow as zero or more ExprAtom.                         *)
-AskExpr       ::= Expr "?>" IDENT { ExprAtom } ;
+   positional args follow as zero or more ExprAtom.
+
+   An optional trailing AskTimeout bounds the wait. "timeout" and "never" are
+   contextual keywords: both keep their ordinary identifier meaning everywhere
+   else, and a "timeout" with nothing an expression could begin at after it
+   (end of input, a NEWLINE, a closing bracket) is read as a positional
+   argument rather than the keyword.
+
+   The operand is Expr1 — the top of the operator ladder, not Expr. A
+   keyword-led form has to be parenthesised, because inside a bracket the
+   lexer emits no NEWLINE and a "let" or "return" could not be told from the
+   start of the next statement.                                             *)
+AskExpr       ::= Expr "?>" IDENT { ExprAtom } [ AskTimeout ] ;
+AskTimeout    ::= "timeout" ( "never" | Expr1 ) ;
 
 (* Examples:
      cache ?> get key
      counter ?> increment
-     myActor ?> compute 1 2 3                                               *)
+     myActor ?> compute 1 2 3
+     counter ?> count timeout 1000
+     counter ?> count timeout (base * 2)
+     counter ?> count timeout never
+     counter ?> count timeout (if fast then 100 else 5000)                  *)
 
 
 (* === 6.21  Propagate (?) postfix operator === *)

@@ -327,33 +327,28 @@ fn parse_expr_bp(cur: &mut Cursor<'_>, min_bp: u8) -> Result<Expr, ParseError> {
                         if cur.no_layout_arm && ctrl::is_match_arm_start(cur) {
                             break;
                         }
-                        // Two-token lookahead: stop before `timeout <never|literal>`
-                        // to let the contextual keyword handling below consume it.
-                        // This prevents `timeout` from being mis-parsed as an arg.
+                        // Two-token lookahead: stop before a `timeout` that
+                        // opens the postfix clause, so the contextual-keyword
+                        // handling below consumes it instead of collecting it as
+                        // an argument.
                         //
-                        // Trigger: current token is `timeout` AND the following
-                        // token is either `never` (another lower ident) or a numeric
-                        // literal (IntDec/IntBin/IntOct/IntHex/Float).  Both are
-                        // unambiguous — `never` can only be the `timeout never`
-                        // form; numeric literals cannot be the first token of the
-                        // next statement when preceded by the contextual `timeout`.
-                        if matches!(cur.peek(), Token::LowerIdent(s) if s == "timeout") {
-                            let next = cur.peek_n(1);
-                            let is_timeout_postfix = matches!(
-                                next,
-                                Some(
-                                    Token::LowerIdent(_)
-                                        | Token::IntDec(_)
-                                        | Token::IntBin(_)
-                                        | Token::IntOct(_)
-                                        | Token::IntHex(_)
-                                        | Token::Float(_)
-                                        | Token::DecimalLit(_)
-                                )
-                            );
-                            if is_timeout_postfix {
-                                break;
-                            }
+                        // The trigger asks exactly the question the postfix
+                        // parser goes on to answer — does an operator expression
+                        // begin at the next token? — so both halves accept the
+                        // same set by construction: the trigger through
+                        // `can_start_pratt_expr`, the operand through
+                        // `parse_expr_pratt`.  A hand-written list of two token
+                        // kinds stood here before, which admitted `timeout 1000`
+                        // but not `timeout (1000)`, `timeout "soon"` or
+                        // `timeout Cfg.ms`.
+                        //
+                        // When nothing can begin an expression after it — end of
+                        // input, a newline, `)` — `timeout` stays an ordinary
+                        // argument, which `parse_ask_timeout_as_arg_ident` pins.
+                        if matches!(cur.peek(), Token::LowerIdent(s) if s == "timeout")
+                            && cur.peek_n(1).is_some_and(can_start_pratt_expr)
+                        {
+                            break;
                         }
                         args.push(parse_expr_atom12(cur)?);
                     }
@@ -371,8 +366,16 @@ fn parse_expr_bp(cur: &mut Cursor<'_>, min_bp: u8) -> Result<Expr, ParseError> {
                             cur.bump(); // consume contextual `never`
                             Some(AskTimeout::Never)
                         } else {
-                            // Parse a full expression for the millisecond count.
-                            let ms_expr = parse_expr(cur)?;
+                            // The operand is an operator expression (grammar
+                            // `Expr1`), not a statement-level one: a keyword-led
+                            // form such as `if c then a else b` has to be
+                            // parenthesised.  Holding it at this level is what
+                            // lets the trigger above be decidable — `parse_expr`
+                            // would also accept `let`, `return` and an assignment
+                            // tail, none of which can be told from the start of
+                            // the next statement in a bracket-suppressed match
+                            // arm, where there are no `Newline` tokens to look at.
+                            let ms_expr = parse_expr_pratt(cur)?;
                             Some(AskTimeout::Millis(Box::new(ms_expr)))
                         }
                     } else {
@@ -538,6 +541,51 @@ pub(crate) fn parse_expr_atom12(cur: &mut Cursor<'_>) -> Result<Expr, ParseError
     }
 
     Ok(base)
+}
+
+// ── can_start_pratt_expr ──────────────────────────────────────────────────────
+
+/// Whether an operator expression can begin at `tok` — the start set of
+/// [`parse_expr_pratt`], which is unary `-` plus every start of
+/// [`parse_expr_atom`].
+///
+/// This is deliberately **not** either `can_start_arg_atom`. Note the "either":
+/// two private functions carry that name, and they do not accept the same set.
+/// The one below in this file gates juxtaposition arguments; the one in
+/// `actor_ops` gates ask and spawn arguments and additionally leaves out `fn`,
+/// `spawn` and a raw string. Both answer "is this the start of an argument
+/// atom?", which is a narrower question than the one here — "does an operator
+/// expression begin?" — so this predicate tracks `parse_expr_atom`'s dispatch
+/// rather than either of them, and `pratt_start_set_matches_parser` pins it to
+/// the parser in both directions.
+pub(crate) const fn can_start_pratt_expr(tok: &Token) -> bool {
+    matches!(
+        tok,
+        // Unary minus — the only prefix operator (`parse_expr_bp`).
+        Token::Minus
+        // Literals.
+        | Token::IntDec(_)
+        | Token::IntBin(_)
+        | Token::IntOct(_)
+        | Token::IntHex(_)
+        | Token::Float(_)
+        | Token::DecimalLit(_)
+        | Token::KwTrue
+        | Token::KwFalse
+        | Token::TextLit(_)
+        | Token::RawTextLit(_)
+        | Token::InterpStart
+        // Names.
+        | Token::LowerIdent(_)
+        | Token::UpperIdent(_)
+        // Bracketed and braced forms.
+        | Token::LParen
+        | Token::LBrack
+        | Token::LBrace
+        // Keyword-led atoms.
+        | Token::KwFn
+        | Token::KwSpawn
+    )
 }
 
 // ── parse_expr_atom ───────────────────────────────────────────────────────────
@@ -1323,6 +1371,96 @@ mod tests {
         parse_e(src)
             .err()
             .unwrap_or_else(|| panic!("parse_expr({src:?}) expected Err, got Ok"))
+    }
+
+    // ── can_start_pratt_expr ↔ parse_expr_pratt ───────────────────────────────
+    //
+    // `can_start_pratt_expr` is a lookahead standing in for the parser: the `?>`
+    // timeout postfix asks it about the token after `timeout` and then parses
+    // the operand with `parse_expr_pratt`. Let the two drift and the defect it
+    // was written to close comes straight back — a token the predicate rejects
+    // and the parser would have accepted becomes a silently mis-read positional
+    // argument rather than the timeout operand.
+    //
+    // So pin them together in both directions: every fragment the predicate
+    // accepts must parse, and every fragment it rejects must fail. Checking only
+    // one direction would let a predicate that answers `true` for everything
+    // pass.
+    #[test]
+    fn pratt_start_set_matches_parser() {
+        const ACCEPTED: &[&str] = &[
+            "-1",
+            "42",
+            "0b101",
+            "0o17",
+            "0xFF",
+            "1.5",
+            "19.99m",
+            "true",
+            "false",
+            "\"soon\"",
+            "r\"soon\"",
+            "$\"x\"",
+            "ms",
+            "Cfg",
+            "(1000)",
+            "[1]",
+            "{ a = 1 }",
+            "fn x -> x",
+            "spawn Counter",
+        ];
+        const REJECTED: &[&str] = &[
+            "_",
+            "!x",
+            "if c then a else b",
+            "let x = 1",
+            "var x = 1",
+            "match v",
+            "try f",
+            "guard c",
+            "return x",
+            "for x",
+            "while c",
+            "in",
+            "+ 1",
+            "* 2",
+            ")",
+            "]",
+            "}",
+            ",",
+            "->",
+            "|",
+        ];
+        // Both halves have to stay populated, or the loop below proves nothing.
+        assert!(
+            ACCEPTED.len() >= 19 && REJECTED.len() >= 20,
+            "the table shrank: {} accepted / {} rejected",
+            ACCEPTED.len(),
+            REJECTED.len()
+        );
+
+        let rows = ACCEPTED
+            .iter()
+            .map(|src| (*src, true))
+            .chain(REJECTED.iter().map(|src| (*src, false)));
+        for (src, expected) in rows {
+            let toks = lex(src);
+            let first = &toks
+                .first()
+                .unwrap_or_else(|| panic!("{src:?} lexed to no tokens"))
+                .0;
+            assert_eq!(
+                can_start_pratt_expr(first),
+                expected,
+                "can_start_pratt_expr({first:?}) for {src:?}"
+            );
+            let mut cur = Cursor::new(&toks);
+            let parsed = parse_expr_pratt(&mut cur).is_ok();
+            assert_eq!(
+                parsed, expected,
+                "parse_expr_pratt disagrees with the predicate on {src:?}:                  predicate says {expected}, parser says {parsed}"
+            );
+        }
     }
 
     // ── Literal tests ─────────────────────────────────────────────────────────

@@ -53,9 +53,57 @@ use crate::unify::unify;
 /// (which parses as a type alias).
 const HINT_TYPE_AS_CTOR: &str = "it names a type, not a value constructor; a single-variant union needs a leading `|` and a constructor name distinct from the type, e.g. `type T = | Mk Int`";
 
+/// A module alias reaches a module's exports, and not every export is a
+/// constructor. Naming a type through one is the common way to land here.
+const HINT_QUALIFIED_NOT_CTOR: &str =
+    "the module exports this name, but it is not a value constructor — a type name cannot be used as a value";
+
 /// Guidance for a record-style union variant used in a pattern, which is not
 /// yet matchable.
 const HINT_RECORD_VARIANT: &str = "record-style union variants can't be matched yet; give the variant positional fields, or use a standalone record type";
+
+/// The value scheme of a union variant declared anywhere the arena can see,
+/// built from the owning declaration rather than looked up in the environment.
+///
+/// The environment holds what the current module has in scope: its own
+/// constructors, and whatever an import list named. A constructor reached
+/// through a module alias is in neither, so reading the environment alone left
+/// the type checker with nothing for `L.Red` — and the miss was absorbed, so an
+/// annotation contradicting the constructor went unreported while the lower
+/// pass built the right value from the resolver's binding.
+///
+/// Record-payload variants return `None`: those are built with record syntax
+/// and a function scheme does not model them.
+fn user_variant_scheme(ctx: &InferCtx, name: &str) -> Option<Scheme> {
+    use ridge_types::VariantPayload;
+
+    ctx.tycon_decls.iter().find_map(|decl| {
+        let TyConKind::Union(schema) = &decl.kind else {
+            return None;
+        };
+        let variant = schema.variants.iter().find(|v| v.name == name)?;
+        let params = match &variant.kind {
+            VariantPayload::Nullary => vec![],
+            VariantPayload::Positional(tys) => tys.clone(),
+            VariantPayload::Record(_) => return None,
+        };
+        let ret = Type::Con(
+            decl.id,
+            schema.params.iter().map(|&p| Type::Var(p)).collect(),
+        );
+        Some(Scheme {
+            vars: schema.params.clone(),
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: Type::Fn {
+                params,
+                ret: Box::new(ret),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            },
+            constraints: vec![],
+        })
+    })
+}
 
 /// True if `name` is a variant of some user-defined union in scope.
 fn is_user_union_variant(ctx: &InferCtx, name: &str) -> bool {
@@ -1076,6 +1124,40 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 RecordCtor::Bare(id) => id.text.as_str(),
                 RecordCtor::Qualified(qn) => qn.segments.last().map_or("", |s| s.text.as_str()),
             };
+            // `seed_stdlib_env` binds a module's exports under their dotted
+            // names, so `Actor.Timeout` is in scope as `"Actor.Timeout"` and not
+            // as `"Timeout"` unless an import list also named it. Ask for the
+            // whole name first and fall back to the last segment, which is what
+            // the qualified-name arm does — reading only the last segment left
+            // the type checker with nothing, and `Type::Error` unifies with
+            // whatever the context wanted, so a wrong annotation went unreported
+            // while the lower pass built the right value from the binding.
+            let dotted: Option<String> = match constructor {
+                RecordCtor::Bare(_) => None,
+                RecordCtor::Qualified(qn) => Some(
+                    qn.segments
+                        .iter()
+                        .map(|s| s.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join("."),
+                ),
+            };
+            let lookup_ctor = |ctx: &InferCtx| -> Option<Scheme> {
+                if let Some(scheme) = dotted
+                    .as_deref()
+                    .and_then(|d| ctx.env.lookup(d))
+                    .or_else(|| ctx.env.lookup(ctor_name))
+                {
+                    return Some(scheme.clone());
+                }
+                // Only for the qualified spelling: a bare name the environment
+                // does not hold is an `R010` and stays the resolver's report,
+                // and widening the search would type a name the reader has not
+                // brought into scope.
+                dotted
+                    .as_ref()
+                    .and_then(|_| user_variant_scheme(ctx, ctor_name))
+            };
 
             // ── Record-payload union variant: `Login { userId = 1, at = t }`. ─────
             // Routed before the env/record fallbacks below, which bind the variant
@@ -1098,7 +1180,7 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             // ── Path (b): bare ctor with no fields — try env / prelude first.
             if fields.is_empty() {
                 // Try local env (covers user-defined ctor schemes seeded by collect_user_tycons).
-                if let Some(scheme) = ctx.env.lookup(ctor_name).cloned() {
+                if let Some(scheme) = lookup_ctor(ctx) {
                     let ty = instantiate(ctx, &scheme);
                     // Nullary constructor auto-apply: if the instantiated type is a
                     // zero-param function `Fn{params:[], ret:T}`, return `T` directly.
@@ -1187,10 +1269,24 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                         infer_expr(ctx, b, value);
                     }
                 }
-                ctx.env
-                    .lookup(ctor_name)
-                    .cloned()
-                    .map_or(Type::Error, |scheme| instantiate(ctx, &scheme))
+                if let Some(scheme) = lookup_ctor(ctx) {
+                    return instantiate(ctx, &scheme);
+                }
+                // Silence is only right for a bare name, where an unknown one is
+                // already an `R010`. A qualified name that got this far is the
+                // opposite case: the resolver found it — as an export of the
+                // module it was asked for — and it is simply not a constructor.
+                // Nobody else is going to say so, and staying quiet here let
+                // `Actor.AskError` type as anything and reach a backend as an
+                // empty map.
+                if matches!(constructor, RecordCtor::Qualified(_)) {
+                    ctx.errors.push(TypeError::NotAConstructor {
+                        name: ctor_name.to_string(),
+                        hint: HINT_QUALIFIED_NOT_CTOR.to_string(),
+                        span: *span,
+                    });
+                }
+                Type::Error
             }
         }
 
@@ -1438,6 +1534,10 @@ pub fn infer_pattern(ctx: &mut InferCtx, b: &BuiltinTyCons, pat: &Pattern, expec
         //   fields: None  → positional constructor pattern → T9 (unions.rs)
         //   fields: Some  → record-body constructor pattern → records.rs
         Pattern::Constructor {
+            // The module path the constructor was written through does not
+            // change what it is: resolution has already walked it, and `name`
+            // is the constructor either way.
+            qualifier: _,
             name,
             fields,
             has_rest,

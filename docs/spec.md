@@ -665,6 +665,12 @@ alias binds the module and nothing inside it, so a union's constructors
 have to be listed to be written unqualified — `Noproc` and `Timeout`
 above are the variants of `std.actor`'s `AskError`.
 
+Reaching a constructor through the alias needs no item list:
+`Actor.Timeout` names the same constructor as a listed `Timeout`, in
+expression and pattern position alike, and with a payload the argument
+follows as usual (`Pg.Column name`). Listing the item is what lets the
+bare spelling be written; it is not what makes the constructor reachable.
+
 See [§8](#8-project--workspace-model) for the full visibility model.
 
 ### 3.12. Guard clauses

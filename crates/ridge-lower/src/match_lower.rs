@@ -1853,6 +1853,7 @@ mod tests {
         let mut ctx = ctor_binding_ctx(ctor_span, 0, false);
 
         let ctor_pat = Pattern::Constructor {
+            qualifier: None,
             name: Ident {
                 text: "Some".into(),
                 span: ctor_span,
@@ -1930,6 +1931,7 @@ mod tests {
         };
 
         let ctor_pat = Pattern::Constructor {
+            qualifier: None,
             name: Ident {
                 text: "User".into(),
                 span: ctor_span,
@@ -1982,6 +1984,7 @@ mod tests {
         };
 
         let ctor_pat = Pattern::Constructor {
+            qualifier: None,
             name: Ident {
                 text: "Login".into(),
                 span: ctor_span,

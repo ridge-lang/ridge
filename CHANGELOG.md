@@ -42,6 +42,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A constructor written through its module alias means the constructor.
+  `Actor.Timeout`, `L.Red`, `Query.Asc` — the spelling every module alias
+  already implies — was not implemented, and the six routes through it failed
+  six different ways. Two of them gave no diagnostic at all: a variant with a
+  payload compiled to a call to a function that was never generated and stopped
+  the program with `undef`, and a nullary variant written with a record body
+  compiled to an empty map that type-checked as its union and then matched none
+  of its own constructors. The rest reported: a type mismatch against
+  `() -> AskError`, an unresolved backend symbol, and an internal-check failure
+  telling the reader they had found a compiler bug.
+
+  All of it came from one split. A qualified path followed by `{` was treated
+  as a constructor and anything else as a plain name, so every brace-less
+  constructor took the path that knows about functions and nothing about
+  constructors. The split is now made on what the last segment is — upper-case
+  is a constructor, which is the rule the bare spelling has always used — and
+  the two spellings produce the same node from there down. Name resolution
+  gained the matching half: a constructor reached through an alias resolves to
+  the constructor, carrying the variant index and the record-versus-union flag
+  that the empty map came from missing.
+
+  Pattern position works too, where the spelling did not parse at all before.
+  `Actor.Timeout` and `L.Blue n` are match patterns now, and so is a record
+  body through the alias.
+
+  The type checker was not checking any of it. A constructor's scheme is looked
+  up by name, module exports are seeded under their dotted names, and a
+  constructor from another workspace module is under neither — so the lookup
+  missed, and the miss was absorbed on the grounds that an unknown name is
+  already reported elsewhere. An absorbed miss types as an error value, which
+  unifies with whatever the surrounding code asked for, so `Actor.Timeout` in a
+  slot declared `Int` compiled clean while the backend built an `AskError`.
+  Qualified constructors are now looked up under their whole name and, failing
+  that, read off the declaration; both spellings report the mismatch. The same
+  silence covered a name reached through an alias that is not a constructor at
+  all — a type name, say, which every module exports — and that is now `T044`
+  rather than an empty map.
+
+  Two things that are not the qualified spelling came out with it. Matching a
+  record type imported from another module — `Point { x, .. }`, no alias
+  involved — stopped the compile with an internal check, because a record's
+  auto-constructor shares its type's name and has no symbol entry of its own;
+  the same-module case had always been handled and the imported one had not.
+  And the language description now says outright that a constructor is
+  reachable through its alias: listing it in an import is what lets the bare
+  name be written, not what makes the constructor reachable.
+
 - A standard-library function that takes nothing is passed when it is named,
   not called. `dueDateWith Time.now` handed `dueDateWith` a `Timestamp` and the
   program stopped with `badfun` — while the same program with a clock written

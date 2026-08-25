@@ -42,6 +42,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A name that is in scope but is not a value says so, once, wherever it is
+  written. `List`, `Text`, `Map` and the eleven other module aliases the
+  prelude puts in every module — along with every alias an `import ... as`
+  introduces — used to be accepted as value expressions and compiled to an
+  empty map. A function declared `-> Int` returning `List` passed every
+  check and handed its caller `#{}`, so the failure surfaced far from its
+  cause and in a different shape each time: `invalid arithmetic` from
+  `List + 1`, `badarg` from printing one, or nothing at all when the caller
+  ignored the value. These are now `R030`, whose help line names the
+  qualified call to write instead.
+
+  The same mistake spelled in lower case reported an internal error. The
+  bare form of `import` binds the last segment of the path, which is lower
+  case for every module in the standard library, and a qualified name has to
+  begin with an upper-case one — so `import std.list` bound a name that the
+  syntax could not use, and using it said `L999 internal`. It is the same
+  `R030`, and because the use site is a field access the compiler knows what
+  was being reached for: `list.length` is answered with "import the module
+  `as List` and write `List.length`", not with a placeholder.
+
+  Type names got the third answer. `Option` and `Result` were accepted in
+  value position exactly like the aliases, while a union's own type name —
+  `Color` from `type Color = Red | Green`, and the prelude's `JsonValue`,
+  `Ordering` and `QExpr` — reported `T999 internal type error ... This is a
+  compiler bug. Please report it.` for an ordinary program. Both are now
+  `T044`, naming the type's constructors so the reader can pick one. An
+  `opaque` type is the exception and keeps the general wording, because
+  `R025` rejects its constructors and recommending one would be advice that
+  cannot be taken.
+
 - A constructor written through its module alias means the constructor.
   `Actor.Timeout`, `L.Red`, `Query.Asc` — the spelling every module alias
   already implies — was not implemented, and the six routes through it failed

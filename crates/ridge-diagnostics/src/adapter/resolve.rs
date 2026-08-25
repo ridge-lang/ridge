@@ -74,6 +74,13 @@ impl Diagnostic {
                     });
                 }
             }
+            ResolveError::ModuleAsValue { name, member, .. } => {
+                diag.push_note(DiagnosticNote {
+                    span: primary_span,
+                    message: module_as_value_note(name, member.as_deref()),
+                    severity: NoteSeverity::Help,
+                });
+            }
             ResolveError::UnresolvedImportItem { suggestions, .. }
             | ResolveError::UnresolvedQualifiedName { suggestions, .. }
             | ResolveError::UnknownStdlibSymbol { suggestions, .. } => {
@@ -131,6 +138,32 @@ fn unresolved_ident_note(
         .collect();
     crate::diagnostic::exported_by(name, &sources)
         .or_else(|| crate::diagnostic::did_you_mean(suggestions))
+}
+
+/// The help line an `R030` carries, which differs by how the alias is spelled
+/// and by whether the use site said what it wanted from the module.
+///
+/// A lower-case alias — what the bare form of `import` binds, since every
+/// standard-library path ends in a lower-case segment — cannot prefix a
+/// qualified name at all, so telling the reader to write one would be advice
+/// they cannot take. For that spelling the fix is at the import, and the note
+/// says so.
+///
+/// `member` is the name reached off the alias (`length` in `list.length`).
+/// Naming it is what makes the line a fix rather than a description.
+fn module_as_value_note(name: &str, member: Option<&str>) -> String {
+    let reach = member.unwrap_or("someExport");
+    let first = name.chars().next();
+    if first.is_some_and(char::is_uppercase) {
+        return format!("reach what the module exports with a qualified name: `{name}.{reach}`");
+    }
+    let upper: String = first.map_or_else(
+        || name.to_owned(),
+        |c| c.to_uppercase().chain(name.chars().skip(1)).collect(),
+    );
+    format!(
+        "a qualified name begins with an upper-case name, so `{name}` can never prefix one — import the module `as {upper}` and write `{upper}.{reach}`"
+    )
 }
 
 /// Adapt a `ResolveError::severity` to our `Severity` type (identity, same enum).

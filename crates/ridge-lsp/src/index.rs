@@ -264,6 +264,12 @@ pub struct SyntaxFix {
     pub code: &'static str,
     /// The code-action title shown in the editor.
     pub title: String,
+    /// Further edits the same action applies, in the same document.
+    ///
+    /// A fix that changes only part of what is wrong leaves the reader with a
+    /// program that still does not compile, so an action whose repair spans two
+    /// places carries both here rather than being offered as half of itself.
+    pub extra_edits: Vec<(Range, String)>,
 }
 
 /// Build the "did you mean" syntax quick-fixes for one compile.
@@ -302,6 +308,7 @@ pub fn collect_syntax_fixes(
                     decl_range: range,
                     edit_range: range,
                     new_text: "when".to_owned(),
+                    extra_edits: Vec::new(),
                     code: "P034",
                     title: "Replace `if` with `when`".to_owned(),
                 }
@@ -320,6 +327,7 @@ pub fn collect_syntax_fixes(
                     decl_range: prim,
                     edit_range: to_range(open_brace.merge(*span)),
                     new_text: format!("{record} with {{"),
+                    extra_edits: Vec::new(),
                     code: "P035",
                     title: format!("Rewrite as `{record} with {{ … }}`"),
                 }
@@ -362,6 +370,7 @@ pub fn collect_lex_fixes(
             decl_range: range,
             edit_range: range,
             new_text: String::new(),
+            extra_edits: Vec::new(),
             code: "L016",
             title: "Remove `;`".to_owned(),
         });
@@ -418,10 +427,84 @@ pub fn collect_import_fixes(
                 decl_range,
                 edit_range: to_range(candidate.insertion.span()),
                 new_text: candidate.insertion.edit_text(name),
+                extra_edits: Vec::new(),
                 code: "R010",
                 title: format!("Import `{name}` from `{}`", candidate.module),
             });
         }
+    }
+    out
+}
+
+/// Build the quick-fix that answers an `R030` at a lower-case module alias.
+///
+/// Only that spelling has a mechanical answer. An upper-case alias is already
+/// usable, and what belongs in its place depends on what the reader wanted
+/// from the module, which no edit can guess. A lower-case one cannot prefix a
+/// qualified name at all, so the repair is fixed: the import gains an
+/// upper-case alias and the use site switches to it.
+///
+/// Both edits or none. Amending only the import leaves `list.length` still
+/// naming a module, and rewriting only the use site names an alias nothing
+/// bound — either half on its own hands back a program that does not compile,
+/// which is worse than offering nothing.
+#[must_use]
+pub fn collect_module_alias_fixes(
+    line_indices: &[LineIndex],
+    module_uris: &[Option<Url>],
+    resolve_errors: &[(ModuleId, ResolveError)],
+) -> Vec<SyntaxFix> {
+    let mut out: Vec<SyntaxFix> = Vec::new();
+    for (mid, err) in resolve_errors {
+        let ResolveError::ModuleAsValue {
+            name,
+            member,
+            import_span,
+            span,
+        } = err
+        else {
+            continue;
+        };
+        // A field access is what makes the repair complete: the member is
+        // what tells us the use site becomes `List.length` rather than a bare
+        // `List`, which would still name a module.
+        let (Some(import_span), Some(member)) = (import_span, member) else {
+            continue;
+        };
+        let mut chars = name.chars();
+        let Some(first) = chars.next() else {
+            continue;
+        };
+        if first.is_uppercase() {
+            continue;
+        }
+        let upper: String = first.to_uppercase().chain(chars).collect();
+        let mi = mid.0 as usize;
+        let (Some(Some(uri)), Some(li)) = (module_uris.get(mi), line_indices.get(mi)) else {
+            continue;
+        };
+        let to_range = |s: Span| {
+            let (sl, sc) = li.byte_to_utf16(s.start);
+            let (el, ec) = li.byte_to_utf16(s.end);
+            Range {
+                start: Position::new(sl, sc),
+                end: Position::new(el, ec),
+            }
+        };
+        let (il, ic) = li.byte_to_utf16(import_span.end);
+        let after_import = Range {
+            start: Position::new(il, ic),
+            end: Position::new(il, ic),
+        };
+        out.push(SyntaxFix {
+            uri: uri.clone(),
+            decl_range: to_range(*span),
+            edit_range: to_range(*span),
+            new_text: upper.clone(),
+            extra_edits: vec![(after_import, format!(" as {upper}"))],
+            code: "R030",
+            title: format!("Import the module `as {upper}` and write `{upper}.{member}`"),
+        });
     }
     out
 }
@@ -512,6 +595,7 @@ pub fn collect_uncurry_fixes(
             decl_range: to_range(*span),
             edit_range: to_range(lam_span),
             new_text: format!("fn {params_str} -> {body_str}"),
+            extra_edits: Vec::new(),
             code: "T003",
             title: format!("Uncurry to `fn {params_str} -> …`"),
         });
@@ -794,6 +878,7 @@ pub fn collect_staircase_fixes(
                 }),
                 edit_range: to_range(rw.if_span),
                 new_text,
+                extra_edits: Vec::new(),
                 code: NESTING_HINT_CODE,
                 title: "Flatten to a `guard` chain".to_owned(),
             });

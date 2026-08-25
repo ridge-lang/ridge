@@ -58,6 +58,11 @@ const HINT_TYPE_AS_CTOR: &str = "it names a type, not a value constructor; a sin
 const HINT_QUALIFIED_NOT_CTOR: &str =
     "the module exports this name, but it is not a value constructor — a type name cannot be used as a value";
 
+/// Guidance for a type name written where a value belongs — a module's type,
+/// a built-in union, or a user union named instead of one of its variants.
+const HINT_TYPE_NOT_VALUE: &str =
+    "it names a type, not a value; write one of its constructors instead";
+
 /// Guidance for a record-style union variant used in a pattern, which is not
 /// yet matchable.
 const HINT_RECORD_VARIANT: &str = "record-style union variants can't be matched yet; give the variant positional fields, or use a standalone record type";
@@ -111,6 +116,52 @@ fn is_user_union_variant(ctx: &InferCtx, name: &str) -> bool {
         matches!(&decl.kind, ridge_types::TyConKind::Union(schema)
             if schema.variants.iter().any(|v| v.name == name))
     })
+}
+
+/// The prelude names that name a module rather than a value.
+///
+/// Read from the resolver's own prelude table so the two cannot drift: a
+/// module alias added there drops out of this set without anyone remembering
+/// to edit it. `R030` is what reports these, and this set is what keeps the
+/// type checker from reporting them a second time.
+fn prelude_module_aliases() -> &'static rustc_hash::FxHashSet<String> {
+    static SET: std::sync::LazyLock<rustc_hash::FxHashSet<String>> =
+        std::sync::LazyLock::new(|| {
+            ridge_resolve::prelude_resolutions()
+                .iter()
+                .flat_map(|r| &r.effective_bindings)
+                .filter(|eb| matches!(eb.binding, ridge_resolve::Binding::ModuleAlias { .. }))
+                .map(|eb| eb.local_name.clone())
+                .collect()
+        });
+    &SET
+}
+
+/// Phrase the fix for a type name written where a value belongs.
+///
+/// Naming the variants is the useful half: `Color` on its own tells the reader
+/// nothing, while `Red` or `Green` tells them what to write. An `opaque` type is
+/// the exception — its constructors are not the caller's to write, `R025`
+/// rejects them, and recommending one would be advice that cannot be taken.
+fn type_not_value_hint(decl: &ridge_types::TyConDecl) -> String {
+    if decl.opaque {
+        return HINT_TYPE_NOT_VALUE.to_string();
+    }
+    let TyConKind::Union(schema) = &decl.kind else {
+        return HINT_TYPE_NOT_VALUE.to_string();
+    };
+    let names: Vec<String> = schema
+        .variants
+        .iter()
+        .map(|v| format!("`{}`", v.name))
+        .collect();
+    if names.is_empty() {
+        return HINT_TYPE_NOT_VALUE.to_string();
+    }
+    format!(
+        "it names a type, not a value; write one of its constructors — {}",
+        names.join(", ")
+    )
 }
 
 /// If `name` is a record-payload variant of some user-defined union in scope,
@@ -1177,6 +1228,45 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 );
             }
 
+            // A prelude type name is not a value. `Option` and `Result` sit in
+            // the prelude's tycon map and not its value map, so nothing below
+            // reports them: they are not constructors, and not a tycon this
+            // module declared. They reached the fall-through and were absorbed
+            // as `Type::Error` — which unifies with anything, so nothing
+            // downstream objected either — and left for a backend as an empty
+            // map.
+            //
+            // The check runs before the environment lookups because one of them
+            // answers for these names, which is how the silence survived.
+            //
+            // Only the field-less spelling: a name with fields is a record
+            // construction, and whether it names a constructible type is the
+            // existing path's question, not this one's.
+            //
+            // Module aliases are excluded: `R030` already reports those, and
+            // two layers reporting one name draws two carets at it. The set is
+            // read from the resolver's own prelude table rather than written out
+            // again here, so an alias added there needs no edit here.
+            if fields.is_empty()
+                && matches!(constructor, RecordCtor::Bare(_))
+                && !prelude_module_aliases().contains(ctor_name)
+                && crate::prelude::lookup_prelude_tycon(b, ctor_name).is_some()
+            {
+                let hint = crate::prelude::lookup_prelude_tycon(b, ctor_name)
+                    .and_then(|id| ctx.tycon_decls.get(id.0 as usize))
+                    .cloned()
+                    .map_or_else(
+                        || HINT_TYPE_NOT_VALUE.to_string(),
+                        |d| type_not_value_hint(&d),
+                    );
+                ctx.errors.push(TypeError::NotAConstructor {
+                    name: ctor_name.to_string(),
+                    hint,
+                    span: *span,
+                });
+                return Type::Error;
+            }
+
             // ── Path (b): bare ctor with no fields — try env / prelude first.
             if fields.is_empty() {
                 // Try local env (covers user-defined ctor schemes seeded by collect_user_tycons).
@@ -1230,11 +1320,19 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                             if let Some(scheme) = ctx.env.lookup(ctor_name).cloned() {
                                 instantiate(ctx, &scheme)
                             } else {
-                                emit_internal(
-                                    ctx,
-                                    format!("union ctor '{ctor_name}' not in env"),
-                                    *span,
-                                )
+                                // The name is the union's own type name, not one
+                                // of its variants — `Color`, never `Red`. A
+                                // variant is not a tycon, so it never reaches
+                                // this branch; the only way here is a program
+                                // that wrote the type where a value belongs.
+                                // That is not a compiler bug, and `T999` used to
+                                // tell the reader it was.
+                                ctx.errors.push(TypeError::NotAConstructor {
+                                    name: ctor_name.to_string(),
+                                    hint: type_not_value_hint(&d),
+                                    span: *span,
+                                });
+                                Type::Error
                             }
                         } else {
                             // The name resolves to a type (e.g. an alias), not a

@@ -199,7 +199,19 @@ impl ScopeWalker<'_> {
     /// 3. Import effective bindings.
     /// 4. Class method index (lowest precedence — locals and top-level fns shadow methods).
     /// 5. Miss → R010.
+    ///
+    /// The work is in [`Self::resolve_ident_reaching`]; this is the spelling for
+    /// a use site that reaches for nothing in particular.
     fn resolve_ident(&mut self, id: &Ident) {
+        self.resolve_ident_reaching(id, None);
+    }
+
+    /// `resolve_ident`, told which member the use site reached for.
+    ///
+    /// `member` is `Some` only from a field access, where the base turning
+    /// out to be a module alias means the reader wrote a qualified call the
+    /// syntax could not read as one.
+    fn resolve_ident_reaching(&mut self, id: &Ident, member: Option<&str>) {
         let name = &id.text;
         let span = id.span;
 
@@ -218,8 +230,54 @@ impl ScopeWalker<'_> {
             self.push_unresolved_ident(name, span);
             Binding::Error
         };
+        let binding = self.reject_module_as_value(binding, name, span, member);
 
         self.stamp(span, NodeKind::Ident, binding);
+    }
+
+    /// A module alias names a module and never a value, so reject it wherever a
+    /// value is expected and hand back `Binding::Error`.
+    ///
+    /// Both spellings arrive here. A lower-case alias — what the bare form of
+    /// `import` binds — is an `Expr::Ident`; an upper-case one is the zero-field
+    /// record the parser builds for any upper-case name. Catching them in one
+    /// place is what keeps the two from drifting to different answers, and
+    /// returning `Binding::Error` is what keeps lowering from meeting an alias
+    /// in value position at all.
+    fn reject_module_as_value(
+        &mut self,
+        binding: Binding,
+        name: &str,
+        span: Span,
+        member: Option<&str>,
+    ) -> Binding {
+        if matches!(binding, Binding::ModuleAlias { .. }) {
+            self.errors.push(ResolveError::ModuleAsValue {
+                name: name.to_owned(),
+                member: member.map(str::to_owned),
+                import_span: self.alias_import_span(name),
+                span,
+            });
+            return Binding::Error;
+        }
+        binding
+    }
+
+    /// The span of the `import` that introduced `name` as a module alias.
+    ///
+    /// `None` when no line of source did — the prelude's resolutions carry no
+    /// path, and there is nothing to amend on a declaration that was never
+    /// written.
+    fn alias_import_span(&self, name: &str) -> Option<Span> {
+        self.module_imports
+            .iter()
+            .find(|ir| {
+                ir.path.is_some()
+                    && ir.effective_bindings.iter().any(|eb| {
+                        eb.local_name == name && matches!(eb.binding, Binding::ModuleAlias { .. })
+                    })
+            })
+            .map(|ir| ir.span)
     }
 
     /// Try to resolve `name` as a class method via the workspace method index.
@@ -1289,6 +1347,22 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
                 self.resolve_ident(id);
             }
 
+            Expr::FieldAccess { base, field, .. } => {
+                // Same walk as the default, except that an `Ident` base is
+                // resolved knowing which member follows it. That only matters
+                // when the base turns out to be a module alias: `list.length`
+                // is a qualified call the parser could not read as one, since
+                // a qualified name needs an upper-case head, and the member is
+                // what lets R030 answer with `List.length` instead of a
+                // placeholder.
+                if let Expr::Ident(id) = base.as_ref() {
+                    self.resolve_ident_reaching(id, Some(field.text.as_str()));
+                } else {
+                    self.visit_expr(base);
+                }
+                self.visit_ident(field);
+            }
+
             Expr::Qualified(qn) => {
                 // Qualified name use-site (Io.println, List.map, etc.).
                 self.resolve_qualified(qn);
@@ -1386,6 +1460,12 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
                             self.push_unresolved_ident(&ctor_ident.text, ctor_ident.span);
                             Binding::Error
                         };
+                        let ctor_binding = self.reject_module_as_value(
+                            ctor_binding,
+                            &ctor_ident.text,
+                            ctor_ident.span,
+                            None,
+                        );
                         self.check_opaque_use(
                             &ctor_binding,
                             &ctor_ident.text,
@@ -2168,18 +2248,80 @@ mod tests {
 
     #[test]
     fn t21_module_alias_resolves() {
-        let src = "import std.list as List\nfn f = List\n";
-        let (bindings, errors, _, _) = full_resolve_single(src);
+        // The alias used where an alias belongs — as the prefix of a
+        // qualified name.
+        //
+        // This test used to read `fn f = List`, the alias in value position,
+        // which is what R030 now rejects. It passed only because that
+        // spelling stamps the alias on the use site; a correct program never
+        // does, so the assertion moved to where an alias actually lives —
+        // the import's effective bindings. `Txt` rather than `List` because
+        // the prelude supplies `List` on its own, and an assertion the
+        // prelude satisfies would hold with the import deleted.
+        let src = "import std.text as Txt\nfn f s = Txt.trim s\n";
+        let (_, errors, imports, _) = full_resolve_single(src);
         let alias_count = count_errors(
             &errors,
-            |e| matches!(e, ResolveError::UnresolvedIdent { name, .. } if name == "List"),
+            |e| matches!(e, ResolveError::UnresolvedIdent { name, .. } if name == "Txt"),
         );
         assert_eq!(
             alias_count, 0,
-            "List alias must be visible; errors: {errors:?}"
+            "Txt alias must be visible; errors: {errors:?}"
         );
-        let ma_count = count_binding(&bindings, |b| matches!(b, Binding::ModuleAlias { .. }));
-        assert!(ma_count >= 1, "expected ModuleAlias for List");
+        assert!(alias_bound(&imports, "Txt"), "expected ModuleAlias for Txt");
+
+        // Control: with the import gone the binding goes with it. Without
+        // this the assertion above would also pass on a prelude name.
+        let (_, _, bare, _) = full_resolve_single("fn f s = s\n");
+        assert!(
+            !alias_bound(&bare, "Txt"),
+            "Txt must come from the import, not from the prelude"
+        );
+    }
+
+    /// True when some import in `imports` binds `name` as a module alias.
+    fn alias_bound(imports: &ImportResolutionResult, name: &str) -> bool {
+        imports.imports.iter().flatten().any(|r| {
+            r.effective_bindings.iter().any(|eb| {
+                eb.local_name == name && matches!(eb.binding, Binding::ModuleAlias { .. })
+            })
+        })
+    }
+
+    // ── Test 21b: R030 — a module alias is not a value ────────────────────────
+
+    #[test]
+    fn t21b_module_alias_is_not_a_value() {
+        // Both spellings of the same mistake. The upper-case one parses as a
+        // zero-field record, the lower-case one as a plain ident, and before
+        // R030 they gave two different wrong answers: silence and an internal
+        // lowering error.
+        for src in [
+            "import std.list as List\nfn f = List\n",
+            "import std.list\nfn f xs = list.length xs\n",
+        ] {
+            let (_, errors, _, _) = full_resolve_single(src);
+            let r030 = count_errors(&errors, |e| matches!(e, ResolveError::ModuleAsValue { .. }));
+            assert_eq!(r030, 1, "expected exactly one R030 for {src:?}: {errors:?}");
+            // Not an unknown name: the alias resolved, it just is not a value.
+            let r010 = count_errors(&errors, |e| {
+                matches!(e, ResolveError::UnresolvedIdent { .. })
+            });
+            assert_eq!(r010, 0, "R030 must not double-report as R010: {errors:?}");
+        }
+    }
+
+    // ── Test 21c: the prefix of a qualified name is still fine ────────────────
+
+    #[test]
+    fn t21c_alias_as_qualified_prefix_is_not_rejected() {
+        // The control for 21b: R030 fires on the alias in value position and
+        // nowhere else. Without this, narrowing R030 to nothing would still
+        // pass 21b.
+        let src = "import std.list as List\nfn f xs = List.length xs\n";
+        let (_, errors, _, _) = full_resolve_single(src);
+        let r030 = count_errors(&errors, |e| matches!(e, ResolveError::ModuleAsValue { .. }));
+        assert_eq!(r030, 0, "qualified use must not be rejected: {errors:?}");
     }
 
     // ── Test 22: guard else pushes scope ─────────────────────────────────────

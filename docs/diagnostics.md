@@ -780,6 +780,10 @@ A `type` or union constructor reuses a name the prelude keeps in scope everywher
 
 An actor declares a singleton member (`init`, `mailbox`, `terminate`, or `onDown`) more than once.
 
+### R030
+
+A module alias was used where a value is expected; an alias names a module and nothing inside it.
+
 ### R999
 
 Two AST nodes were assigned the same `NodeId` (signals a compiler bug, not a user error).

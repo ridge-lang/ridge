@@ -356,6 +356,8 @@ Every Ridge module has a set of names in scope without any `import` declaration.
 | `Decimal` | `std.decimal` | `ModuleAlias` | Enables `Decimal.fromText`, `Decimal.round`, … |
 | `Uuid` | `std.uuid` | `ModuleAlias` | Enables `Uuid.generate`, `Uuid.fromText`, … |
 | `Bytes` | `std.bytes` | `ModuleAlias` | Enables `Bytes.fromHex`, `Bytes.generate`, … |
+| `Date` | `std.date` | `ModuleAlias` | Enables `Date.fromYmd`, `Date.toIso`, … |
+| `Time` | `std.timeofday` | `ModuleAlias` | Enables `Time.fromHms`, `Time.toIso`, … |
 | `Error` | `std.error` | `ModuleAlias` | Enables `Error.toText` |
 | `Bool` | `std.bool` | `ModuleAlias` | Enables `Bool.not`, … |
 | `Text` | `std.text` | `ModuleAlias` | Enables `Text.padLeft`, `Text.split`, … |
@@ -363,6 +365,12 @@ Every Ridge module has a set of names in scope without any `import` declaration.
 | `Map` | `std.map` | `ModuleAlias` | Enables `Map.empty`, `Map.insert`, … |
 | `Set` | `std.set` | `ModuleAlias` | Enables `Set.fromList`, `Set.union`, … |
 | `Json` | `std.json` | `ModuleAlias` | Enables `Json.encode`, `Json.decode` |
+
+A `ModuleAlias` name is the module, not a value: `List` reaches `List.map`,
+and writing `List` on its own is an error (`R030`). The same holds for an
+alias an `import ... as` introduces. A `StdlibSymbol` row naming a type —
+`Option`, `Result` — is a type name for the same reason: its constructors
+(`Some`, `None`, `Ok`, `Err`) are the values.
 
 Capability-bearing modules (`std.io`, `std.fs`, `std.net.http`, `std.time`, `std.random`, `std.env`, `std.cli`, `std.proc`) are **not** in the prelude and require an explicit `import` declaration.  This keeps every side-effecting dependency visible at the import level.
 

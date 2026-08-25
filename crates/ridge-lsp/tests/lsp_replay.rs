@@ -1823,33 +1823,62 @@ async fn test_definition_into_qualified_class_method() {
 
 #[tokio::test]
 async fn test_definition_into_stdlib_module_alias() {
-    // A bare reference to the alias `L` in value position carries the
-    // `ModuleAlias` binding (the qualified `L.map` form binds the whole name as a
-    // stdlib symbol instead). Go-to-def on that bare `L` resolves to the stdlib
-    // module file at its start. The body has a type error — a module is not a
-    // value — but the retained index still stamps the resolved binding.
-    let line1 = "pub fn run = L";
-    let (service, _socket, uri) = hover_fixture("import std.list as L\npub fn run = L\n").await;
+    // Go-to-def anywhere in `L.map` resolves to `map` in the stdlib module.
+    //
+    // This test used to point at a bare `L` in value position, and said so:
+    // the body had a type error, and the module binding was reachable only
+    // because that invalid spelling stamped the alias on the use site. It is
+    // `R030` now, so the program no longer compiles and the stamp is gone
+    // with it.
+    //
+    // Reaching the *module* from the valid spelling would take a second stamp
+    // on the leading segment. That was tried and reverted: the signature-help
+    // path asks for the binding at the callee span's start, which for `L.map`
+    // is exactly where `L` begins, so the narrower stamp answered in place of
+    // the qualified name and three editor features lost their callee. Teaching
+    // the position lookup to prefer the wider span is a change to a rule every
+    // consumer shares, and it does not belong to a diagnostics fix.
+    //
+    // So what is asserted here is what the compiler does: the qualified name
+    // answers as a whole, about its member.
+    let line1 = "pub fn run xs = L.map (fn x -> x) xs";
+    let (service, _socket, uri) =
+        hover_fixture("import std.list as L\npub fn run xs = L.map (fn x -> x) xs\n").await;
     let server = service.inner();
 
-    let col = u32::try_from(line1.rfind('L').expect("alias use")).expect("offset fits u32");
+    let col = u32::try_from(line1.find('L').expect("alias use")).expect("offset fits u32");
     let resp = server
         .goto_definition(goto_at(&uri, 1, col))
         .await
         .expect("ok");
-    let loc = scalar_location(resp).expect("definition of stdlib module alias");
+    let loc = scalar_location(resp).expect("definition of the qualified name");
     let path = loc
         .uri
         .to_file_path()
         .expect("definition uri is a file path");
     assert!(
         path.ends_with("list.ridge"),
-        "module-alias definition must land in list.ridge, got {path:?}"
+        "the qualified name must land in list.ridge, got {path:?}"
     );
-    assert_eq!(loc.range.start.line, 0, "module alias points at file start");
+    // Not the file start: that would mean the module answered, which is the
+    // behaviour this test used to assert and no longer holds.
+    assert!(
+        loc.range.start.line > 0 || loc.range.start.character > 0,
+        "the member answers, not the module file start, got {:?}",
+        loc.range.start
+    );
+
+    // The member half answers the same way — the whole name is one binding.
+    let member_col =
+        u32::try_from(line1.find("map").expect("member use")).expect("offset fits u32");
+    let resp = server
+        .goto_definition(goto_at(&uri, 1, member_col))
+        .await
+        .expect("ok");
+    let member_loc = scalar_location(resp).expect("definition of `map`");
     assert_eq!(
-        loc.range.start.character, 0,
-        "module alias points at file start"
+        member_loc.range.start, loc.range.start,
+        "both halves of the qualified name resolve to the one binding"
     );
 }
 
@@ -4885,6 +4914,93 @@ pub fn describe (e: Int) -> Text =
     assert_eq!(edits[0].new_text, " (Timeout)");
     assert_eq!(edits[0].range.start, Position::new(0, 25));
     assert_eq!(edits[0].range.end, Position::new(0, 25));
+}
+
+#[tokio::test]
+async fn test_code_action_repairs_a_lower_case_module_alias() {
+    // The bare form of `import` binds `list`, and a qualified name cannot
+    // begin with a lower-case name, so the alias can never be used (R030).
+    //
+    // The repair is in two places at once: the import gains an upper-case
+    // alias and the use site switches to it. One action carries both, because
+    // either edit alone hands back a program that still does not compile —
+    // an import nothing uses, or a name nothing bound.
+    let src = "import std.list\n\npub fn f (xs: List Int) -> Int = list.length xs\n";
+    let (service, _socket, uri) = cap_workspace_fixture(src).await;
+    let server = service.inner();
+
+    let resp = server
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(2, 34),
+                end: Position::new(2, 34),
+            },
+            context: CodeActionContext::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code_action ok")
+        .expect("a quick-fix is offered on the alias");
+
+    assert_eq!(resp.len(), 1, "expected exactly one action, got {resp:?}");
+    let CodeActionOrCommand::CodeAction(action) = &resp[0] else {
+        panic!("expected a CodeAction, got {:?}", resp[0]);
+    };
+    assert_eq!(
+        action.title,
+        "Import the module `as List` and write `List.length`"
+    );
+    assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+
+    let edits = action
+        .edit
+        .as_ref()
+        .and_then(|e| e.changes.as_ref())
+        .and_then(|c| c.get(&uri))
+        .expect("an edit for this document");
+    assert_eq!(edits.len(), 2, "half the repair is not a repair: {edits:?}");
+    // The use site: `list` becomes `List`, four columns in from 34.
+    assert_eq!(edits[0].new_text, "List");
+    assert_eq!(edits[0].range.start, Position::new(2, 33));
+    assert_eq!(edits[0].range.end, Position::new(2, 37));
+    // The import: `import std.list` is 15 columns wide, and the alias goes
+    // at its end.
+    assert_eq!(edits[1].new_text, " as List");
+    assert_eq!(edits[1].range.start, Position::new(0, 15));
+    assert_eq!(edits[1].range.end, Position::new(0, 15));
+}
+
+#[tokio::test]
+async fn test_no_code_action_for_an_upper_case_module_alias() {
+    // The control. An upper-case alias is already usable, so what belongs in
+    // its place depends on what the reader wanted from the module — which no
+    // edit can guess. Offering a fix here would be guessing, and this is what
+    // keeps the test above from passing on an action offered indiscriminately.
+    let src = "pub fn f () -> Int = List\n";
+    let (service, _socket, uri) = cap_workspace_fixture(src).await;
+    let server = service.inner();
+
+    let resp = server
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(0, 22),
+                end: Position::new(0, 22),
+            },
+            context: CodeActionContext::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code_action ok");
+
+    let offered = resp.unwrap_or_default();
+    assert!(
+        offered.is_empty(),
+        "no mechanical repair exists for an upper-case alias: {offered:?}"
+    );
 }
 
 #[tokio::test]

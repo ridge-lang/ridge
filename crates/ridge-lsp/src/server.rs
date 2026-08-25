@@ -62,9 +62,9 @@ use ridge_resolve::ModuleId;
 use crate::cancel::{Cancel, CancelOnDrop};
 use crate::diagnostics::{source_id_to_uri, to_lsp_diagnostic, uri_key};
 use crate::index::{
-    collect_import_fixes, collect_lex_fixes, collect_nesting_hints, collect_signature_fixes,
-    collect_staircase_fixes, collect_syntax_fixes, collect_uncurry_fixes, diff_tokens,
-    CodeLensConfig, WorkspaceIndex,
+    collect_import_fixes, collect_lex_fixes, collect_module_alias_fixes, collect_nesting_hints,
+    collect_signature_fixes, collect_staircase_fixes, collect_syntax_fixes, collect_uncurry_fixes,
+    diff_tokens, CodeLensConfig, WorkspaceIndex,
 };
 
 /// A workspace's retained incremental engine, shared between the state snapshot
@@ -911,6 +911,11 @@ fn compile_blocking(
         &state.resolved.lex_errors,
     ));
     index.syntax_fixes.extend(collect_import_fixes(
+        &index.line_indices,
+        &index.module_uris,
+        &state.resolved.errors,
+    ));
+    index.syntax_fixes.extend(collect_module_alias_fixes(
         &index.line_indices,
         &index.module_uris,
         &state.resolved.errors,
@@ -2210,15 +2215,24 @@ impl LanguageServer for RidgeLanguageServer {
         // answers) into a `CodeAction` literal, or a `Command` bridge for clients
         // without literal support. Shared by capability (`T014`) and syntax
         // (`P034`/`P035`) quick-fixes.
-        let build_action = |title: &str, edit_range, new_text: &str, code: &str, decl_range| {
+        let build_action = |title: &str,
+                            edit_range,
+                            new_text: &str,
+                            code: &str,
+                            decl_range,
+                            extra: &[(Range, String)]| {
+            let mut edits = vec![TextEdit {
+                range: edit_range,
+                new_text: new_text.to_owned(),
+            }];
+            // A repair that spans two places travels as one action, so the
+            // reader never lands on the half-applied program.
+            edits.extend(extra.iter().map(|(range, text)| TextEdit {
+                range: *range,
+                new_text: text.clone(),
+            }));
             let mut changes = HashMap::new();
-            changes.insert(
-                uri.clone(),
-                vec![TextEdit {
-                    range: edit_range,
-                    new_text: new_text.to_owned(),
-                }],
-            );
+            changes.insert(uri.clone(), edits);
             let edit = WorkspaceEdit {
                 changes: Some(changes),
                 ..WorkspaceEdit::default()
@@ -2266,6 +2280,7 @@ impl LanguageServer for RidgeLanguageServer {
                     &fix.new_text,
                     fix.code,
                     fix.decl_range,
+                    &[],
                 )
             })
             .collect();
@@ -2284,6 +2299,7 @@ impl LanguageServer for RidgeLanguageServer {
                         &fix.new_text,
                         fix.code,
                         fix.decl_range,
+                        &fix.extra_edits,
                     )
                 }),
         );

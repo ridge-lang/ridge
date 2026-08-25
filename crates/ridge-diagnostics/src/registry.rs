@@ -1262,6 +1262,12 @@ pub const REGISTRY: &[CodeEntry] = &[
         summary: "An actor declares a singleton member (`init`, `mailbox`, `terminate`, or `onDown`) more than once.",
     },
     CodeEntry {
+        code: "R030",
+        variants: &["ModuleAsValue"],
+        owner: "ridge-resolve",
+        summary: "A module alias was used where a value is expected; an alias names a module and nothing inside it.",
+    },
+    CodeEntry {
         code: "R999",
         variants: &["InternalNodeIdCollision"],
         owner: "ridge-resolve",

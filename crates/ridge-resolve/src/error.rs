@@ -523,6 +523,32 @@ pub enum ResolveError {
         span: Span,
     },
 
+    /// R030 — a module name was used where a value is expected. A module alias
+    /// binds the module and nothing inside it, so the alias itself is not a
+    /// value. `List`, `Text`, and every name an `import ... as` introduces all
+    /// name a module, and reaching what one exports takes a qualified name.
+    ///
+    /// The alias is still bound, so this is not an unknown name (`R010`). It is
+    /// a name in scope being asked for something it cannot be.
+    #[error("`{name}` names a module, not a value")]
+    ModuleAsValue {
+        /// The alias as written at the use site.
+        name: String,
+        /// The member reached off the alias, when the use site was a field
+        /// access — `length` in `list.length`. Carrying it is what lets the
+        /// help line name `List.length` rather than a placeholder, which is
+        /// the whole difference between advice and a description.
+        member: Option<String>,
+        /// Span of the `import` that introduced the alias, when a line of
+        /// source did. `None` for the prelude, whose resolutions answer to no
+        /// line and so have nothing to amend. An editor needs this because
+        /// the fix for the lower-case spelling is at the import, while the
+        /// diagnostic is at the use.
+        import_span: Option<Span>,
+        /// Span of the offending use.
+        span: Span,
+    },
+
     /// R999 — two AST nodes were assigned the same `NodeId` (signals a
     /// compiler bug, not a user error).
     #[error("internal error: NodeId collision in `{node_kind}`")]
@@ -572,6 +598,7 @@ impl ResolveError {
             Self::OrPatternBindingMismatch { .. } => "R027",
             Self::ReservedName { .. } => "R028",
             Self::DuplicateActorMember { .. } => "R029",
+            Self::ModuleAsValue { .. } => "R030",
             Self::InternalNodeIdCollision { .. } => "R999",
         }
     }
@@ -625,6 +652,7 @@ impl ResolveError {
             | Self::OpaqueConstruct { span, .. }
             | Self::OpaquePattern { span, .. }
             | Self::OrPatternBindingMismatch { span, .. }
+            | Self::ModuleAsValue { span, .. }
             | Self::InternalNodeIdCollision { span, .. }
             | Self::DuplicateDeclaration {
                 second_span: span, ..

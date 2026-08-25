@@ -294,11 +294,23 @@ fn resolve_in_target(
         ImportTarget::WorkspaceModule(mid) => {
             if let Some(table) = all_symbol_tables.get(mid.0 as usize) {
                 if let Some(sym) = table.lookup(last_text) {
-                    return Binding::ImportedSymbol {
+                    // A constructor has to be named as a constructor, not as a
+                    // cross-module symbol: `ImportedSymbol` carries neither
+                    // `is_record` nor `variant`, and without them the lower pass
+                    // reads `variant == 0` as "record" and builds an empty map.
+                    // `Alias.Ctor` used to take that route and miscompiled in
+                    // silence, while the bare name — which has always been
+                    // rewritten here — was correct.
+                    return crate::imports::constructor_binding_for(
+                        all_symbol_tables,
+                        *mid,
+                        sym.id,
+                    )
+                    .unwrap_or(Binding::ImportedSymbol {
                         module: *mid,
                         symbol: sym.id,
                         via_import: NodeId(0),
-                    };
+                    });
                 }
                 // Module-scoped class method: `M.method` resolves to a class
                 // method when `method`'s class is declared in module `M`. Class

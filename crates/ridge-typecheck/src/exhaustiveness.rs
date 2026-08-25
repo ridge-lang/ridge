@@ -1685,6 +1685,7 @@ mod tests {
     fn ctor_arm(name: &str, args: Vec<Pattern>) -> MatchArm {
         MatchArm {
             pattern: Pattern::Constructor {
+                qualifier: None,
                 name: make_ident(name),
                 fields: None,
                 has_rest: false,
@@ -1718,6 +1719,7 @@ mod tests {
     fn record_ctor_arm(name: &str) -> MatchArm {
         MatchArm {
             pattern: Pattern::Constructor {
+                qualifier: None,
                 name: make_ident(name),
                 fields: Some(vec![]),
                 has_rest: false,

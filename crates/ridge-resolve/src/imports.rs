@@ -25,6 +25,7 @@ use crate::{
     error::{ManifestError, ResolveError},
     manifest::{Project, ProjectDependency, SharedDependency, WorkspaceManifest},
     stdlib_builtin::{lookup_stdlib, StdlibModuleId},
+    symbol::SymbolKind,
     visibility::ResolvedVisibility,
     ModuleId, ModuleMetadata, NodeId, ProjectId, SymbolId, SymbolTable, WorkspaceGraph,
 };
@@ -215,6 +216,75 @@ pub enum Binding {
 
     /// Name resolution failed; a diagnostic has been emitted.
     Error,
+}
+
+/// Rewrite a workspace-module symbol reference to a [`Binding::Constructor`]
+/// when the symbol it names is a constructor.
+///
+/// Every route to a constructor declared in another workspace module has to go
+/// through this, because a plain [`Binding::ImportedSymbol`] does not carry
+/// `is_record` or `variant`. Without them the lower pass falls back to reading
+/// `variant == 0` as "record", which turns the first variant of every union
+/// into an empty map — the bug `is_record` was added to end. The bare-name
+/// route has always called this; the module-qualified route did not, and
+/// reproduced exactly that miscompile for `Alias.Ctor`.
+///
+/// Returns `None` when the symbol is not a constructor, so the caller keeps
+/// whatever binding it already had.
+#[must_use]
+pub fn constructor_binding_for(
+    all_symbol_tables: &[SymbolTable],
+    module: ModuleId,
+    symbol: SymbolId,
+) -> Option<Binding> {
+    let entry = all_symbol_tables
+        .get(module.0 as usize)
+        .and_then(|t| t.entries.get(symbol.0 as usize))?;
+    match entry.kind {
+        SymbolKind::Constructor {
+            owner_type,
+            variant,
+            is_record,
+            owner_module,
+            ..
+        } => Some(Binding::Constructor {
+            owner_type,
+            variant,
+            is_record,
+            owner_module,
+        }),
+        _ => None,
+    }
+}
+
+/// The record auto-constructor binding for a symbol that names a record type
+/// in another module, for use where a record body makes the intent explicit.
+///
+/// A record type's auto-constructor shares the type's name and gets no symbol
+/// entry of its own, so [`constructor_binding_for`] cannot see it — a lookup
+/// returns the `Type` entry. The same-module path has always had this case;
+/// without it for imported types, `Point { x, .. }` in a pattern reached the
+/// lower pass as a plain symbol and stopped the compile with an internal
+/// error.
+///
+/// Only call this where a record body is present: a bare name that happens to
+/// be a type is not a constructor, and answering here would turn a diagnostic
+/// into a silent record construction.
+#[must_use]
+pub fn record_body_constructor_for(
+    all_symbol_tables: &[SymbolTable],
+    module: ModuleId,
+    symbol: SymbolId,
+) -> Option<Binding> {
+    let entry = all_symbol_tables
+        .get(module.0 as usize)
+        .and_then(|t| t.entries.get(symbol.0 as usize))?;
+    matches!(entry.kind, SymbolKind::Type { .. }).then(|| Binding::Constructor {
+        owner_type: entry.id,
+        variant: 0,
+        is_record: true,
+        owner_module: module,
+    })
 }
 
 /// Aggregated result of running import resolution over the entire workspace.

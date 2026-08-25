@@ -3,7 +3,7 @@
 //! Patterns appear in `let` bindings, `match` arms, and lambda parameters
 //! (D052).  All pattern forms carry a [`Span`] for diagnostics.
 
-use crate::{Ident, Literal, Span};
+use crate::{expr::QualifiedName, Ident, Literal, Span};
 
 // ── FieldPattern ──────────────────────────────────────────────────────────────
 
@@ -102,7 +102,16 @@ pub enum Pattern {
     /// required here; a bare `{ … }` is a [`Pattern::Record`] instead, which
     /// has been legal since 0.2.12.
     Constructor {
-        /// Constructor name (upper-case identifier).
+        /// The module path the constructor was reached through, for the
+        /// qualified spelling `L.Red` — `None` for the bare `Red`.
+        ///
+        /// `name` is the constructor name either way, so everything that wants
+        /// the tag, the variant or the arity reads `name` and is unaffected by
+        /// the spelling. Only name resolution needs the path, to walk the
+        /// module-alias chain instead of searching the importing module.
+        qualifier: Option<QualifiedName>,
+        /// Constructor name (upper-case identifier). For a qualified pattern
+        /// this is the last segment — the constructor name proper.
         name: Ident,
         /// Record-body field patterns.  `Some(…)` iff the `{ … }` form was
         /// used; `None` for the positional form.

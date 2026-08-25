@@ -961,6 +961,7 @@ mod tests {
         let arms = vec![
             MatchArm {
                 pattern: Pattern::Constructor {
+                    qualifier: None,
                     name: id("Some"),
                     fields: None,
                     has_rest: false,
@@ -980,6 +981,7 @@ mod tests {
             },
             MatchArm {
                 pattern: Pattern::Constructor {
+                    qualifier: None,
                     name: id("None"),
                     fields: None,
                     has_rest: false,

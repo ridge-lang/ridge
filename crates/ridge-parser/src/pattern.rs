@@ -392,12 +392,26 @@ fn parse_inline_record_pattern(cur: &mut Cursor<'_>) -> Result<Pattern, ParseErr
 fn parse_constructor_pattern(cur: &mut Cursor<'_>) -> Result<Pattern, ParseError> {
     let start_span = cur.span();
 
-    let name_text = match cur.bump() {
-        Token::UpperIdent(s) => s.clone(),
-        _ => unreachable!("precondition: current token is UpperIdent"),
+    // A dotted head is the constructor reached through its module alias:
+    // `L.Red`, `Actor.Timeout`. The last segment is the constructor name, so
+    // everything downstream reads `name` exactly as it does for the bare
+    // spelling and only resolution consults the path.
+    let (qualifier, name) = if cur.peek_n(1) == Some(&Token::Dot) {
+        let qn = crate::expr::parse_qualified_name(cur)?;
+        let last = qn
+            .segments
+            .last()
+            .cloned()
+            .unwrap_or_else(|| Ident::new(String::new(), qn.span));
+        (Some(qn), last)
+    } else {
+        let name_text = match cur.bump() {
+            Token::UpperIdent(s) => s.clone(),
+            _ => unreachable!("precondition: current token is UpperIdent"),
+        };
+        (None, Ident::new(name_text, start_span))
     };
-    let name = Ident::new(name_text, start_span);
-    let mut end_span = start_span;
+    let mut end_span = name.span;
 
     // Check for the record-body form `{ … }`.
     if cur.peek() == &Token::LBrace {
@@ -406,6 +420,7 @@ fn parse_constructor_pattern(cur: &mut Cursor<'_>) -> Result<Pattern, ParseError
         let rbrace_span = cur.expect(&Token::RBrace)?;
         end_span = rbrace_span;
         return Ok(Pattern::Constructor {
+            qualifier,
             name,
             fields: Some(fields),
             has_rest,
@@ -423,6 +438,7 @@ fn parse_constructor_pattern(cur: &mut Cursor<'_>) -> Result<Pattern, ParseError
     }
 
     Ok(Pattern::Constructor {
+        qualifier,
         name,
         fields: None,
         has_rest: false,
@@ -841,6 +857,76 @@ mod tests {
             assert_eq!(name.text, "None");
             assert!(fields.is_none(), "expected fields=None");
             assert!(args.is_empty(), "expected no positional args");
+        } else {
+            unreachable!("expected Constructor, got {result:?}");
+        }
+    }
+
+    // ── qualified constructor ───────────────────────────────────────────
+
+    #[test]
+    fn parse_pattern_qualified_constructor() {
+        // `Actor.Timeout` in a match arm used to stop at P001 on the dot, so
+        // the spelling that works in an expression had no pattern at all.
+        let result = parse_pat("Actor.Timeout");
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        if let Ok(Pattern::Constructor {
+            qualifier,
+            name,
+            args,
+            ..
+        }) = result
+        {
+            // The name is the constructor, not the path: everything after
+            // resolution reads it exactly as it reads the bare spelling.
+            assert_eq!(name.text, "Timeout");
+            let qn = qualifier.expect("the module path is kept for resolution");
+            assert_eq!(
+                qn.segments
+                    .iter()
+                    .map(|s| s.text.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["Actor", "Timeout"]
+            );
+            assert!(args.is_empty(), "expected no positional args");
+        } else {
+            unreachable!("expected Constructor, got {result:?}");
+        }
+    }
+
+    #[test]
+    fn parse_pattern_qualified_constructor_binds_its_payload() {
+        let result = parse_pat("L.Blue n");
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        if let Ok(Pattern::Constructor {
+            qualifier,
+            name,
+            args,
+            ..
+        }) = result
+        {
+            assert_eq!(name.text, "Blue");
+            assert!(qualifier.is_some(), "the path is kept");
+            // The argument must land on the constructor, not be swallowed by
+            // the dotted-name scan.
+            assert_eq!(args.len(), 1);
+            assert!(
+                matches!(&args[0], Pattern::Var { name, .. } if name.text == "n"),
+                "expected Var(n) arg, got {:?}",
+                args[0]
+            );
+        } else {
+            unreachable!("expected Constructor, got {result:?}");
+        }
+    }
+
+    #[test]
+    fn parse_pattern_bare_constructor_has_no_qualifier() {
+        // The control: without a dot there is no path, so a reader of
+        // `qualifier` can tell the two spellings apart.
+        let result = parse_pat("Some x");
+        if let Ok(Pattern::Constructor { qualifier, .. }) = result {
+            assert!(qualifier.is_none(), "a bare constructor carries no path");
         } else {
             unreachable!("expected Constructor, got {result:?}");
         }

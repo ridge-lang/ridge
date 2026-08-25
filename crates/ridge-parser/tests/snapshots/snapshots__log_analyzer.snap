@@ -615,6 +615,7 @@ Module {
                                     arms: [
                                         MatchArm {
                                             pattern: Constructor {
+                                                qualifier: None,
                                                 name: Ident {
                                                     text: "Info",
                                                     span: Span {
@@ -647,6 +648,7 @@ Module {
                                         },
                                         MatchArm {
                                             pattern: Constructor {
+                                                qualifier: None,
                                                 name: Ident {
                                                     text: "Warn",
                                                     span: Span {
@@ -679,6 +681,7 @@ Module {
                                         },
                                         MatchArm {
                                             pattern: Constructor {
+                                                qualifier: None,
                                                 name: Ident {
                                                     text: "Error",
                                                     span: Span {
@@ -4509,6 +4512,7 @@ Module {
                                     arms: [
                                         MatchArm {
                                             pattern: Constructor {
+                                                qualifier: None,
                                                 name: Ident {
                                                     text: "Err",
                                                     span: Span {
@@ -4623,6 +4627,7 @@ Module {
                                         },
                                         MatchArm {
                                             pattern: Constructor {
+                                                qualifier: None,
                                                 name: Ident {
                                                     text: "Ok",
                                                     span: Span {

@@ -442,25 +442,22 @@ impl ScopeWalker<'_> {
         let Binding::ImportedSymbol { module, symbol, .. } = binding else {
             return None;
         };
-        let entry = self
-            .all_symbol_tables
-            .get(module.0 as usize)
-            .and_then(|t| t.entries.get(symbol.0 as usize))?;
-        match entry.kind {
-            SymbolKind::Constructor {
-                owner_type,
-                variant,
-                is_record,
-                owner_module,
-                ..
-            } => Some(Binding::Constructor {
-                owner_type,
-                variant,
-                is_record,
-                owner_module,
-            }),
-            _ => None,
+        crate::imports::constructor_binding_for(self.all_symbol_tables, *module, *symbol)
+    }
+
+    /// A record body names a constructor even when the symbol behind the name
+    /// is the record type itself — the auto-constructor has no entry of its
+    /// own. Applied only when a body is present, so a bare type name still
+    /// resolves to the type and still reports.
+    fn record_body_fallback(&self, binding: Binding, has_record_body: bool) -> Binding {
+        if !has_record_body {
+            return binding;
         }
+        let Binding::ImportedSymbol { module, symbol, .. } = &binding else {
+            return binding;
+        };
+        crate::imports::record_body_constructor_for(self.all_symbol_tables, *module, *symbol)
+            .unwrap_or(binding)
     }
 
     /// O3 gate: a constructor of an opaque type may only build or match a value
@@ -803,12 +800,34 @@ impl ScopeWalker<'_> {
                 self.add_local_binding(name, kind);
             }
             Pattern::Constructor {
-                name, fields, args, ..
+                qualifier,
+                name,
+                fields,
+                args,
+                ..
             } => {
                 // Constructor name at a use-site in a pattern: stamp as Constructor
                 // lookup or ModuleSymbol.  We only do a best-effort here —
                 // look up `name` in the current module's symbol table.
-                if let Some(sym) = self.my_table.and_then(|t| t.lookup(&name.text)) {
+                if let Some(qn) = qualifier {
+                    // Reached through a module alias — the importing module's
+                    // table is the wrong place to look, so walk the alias chain
+                    // instead. Same resolution the expression spelling gets, so
+                    // `L.Red` means one thing in both positions.
+                    let b = qualified::resolve_qualified_record_constructor(
+                        qn,
+                        self.module_id,
+                        self.my_table,
+                        self.all_symbol_tables,
+                        self.module_imports,
+                        self.class_method_index,
+                        self.errors,
+                    );
+                    let b = self.record_body_fallback(b, fields.is_some());
+                    self.check_opaque_use(&b, &name.text, qn.span, true);
+                    self.stamp(name.span, NodeKind::Ident, b.clone());
+                    self.stamp(qn.span, NodeKind::QualifiedName, b);
+                } else if let Some(sym) = self.my_table.and_then(|t| t.lookup(&name.text)) {
                     match &sym.kind {
                         SymbolKind::Constructor {
                             owner_type,
@@ -868,6 +887,7 @@ impl ScopeWalker<'_> {
                     let b = self
                         .imported_constructor_binding(&eb.binding)
                         .unwrap_or_else(|| eb.binding.clone());
+                    let b = self.record_body_fallback(b, fields.is_some());
                     self.check_opaque_use(&b, &name.text, name.span, true);
                     self.stamp(name.span, NodeKind::Ident, b);
                 } else {
@@ -1375,7 +1395,7 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
                         self.stamp(ctor_ident.span, NodeKind::Ident, ctor_binding);
                     }
                     RecordCtor::Qualified(qn) => {
-                        // Qualified record constructor: Http.Response { ... }
+                        // Qualified constructor: `Http.Response { … }`, `L.Red`.
                         // Delegate to resolve_qualified_record_constructor which walks the
                         // module-alias chain and verifies the final segment is a Constructor.
                         let binding = qualified::resolve_qualified_record_constructor(
@@ -1387,9 +1407,21 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
                             self.class_method_index,
                             self.errors,
                         );
-                        let ctor_name = qn.segments.last().map_or("", |s| s.text.as_str());
+                        let last = qn.segments.last();
+                        let ctor_name = last.map_or("", |s| s.text.as_str());
                         self.check_opaque_use(&binding, ctor_name, qn.span, false);
-                        self.stamp(qn.span, NodeKind::Ident, binding);
+                        // Two keys, one binding. The lower pass looks the
+                        // constructor up under `Ident` at the last segment —
+                        // the constructor name proper, which is also where the
+                        // bare spelling stamps — while anything working from a
+                        // cursor offset wants the whole name. This used to
+                        // stamp `Ident` at the full span, so the lower found
+                        // nothing and fell back to "record, variant 0": correct
+                        // by luck for a record, an empty map for a union
+                        // variant.
+                        let name_span = last.map_or(qn.span, |s| s.span);
+                        self.stamp(name_span, NodeKind::Ident, binding.clone());
+                        self.stamp(qn.span, NodeKind::QualifiedName, binding);
                     }
                 }
                 for fi in fields {

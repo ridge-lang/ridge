@@ -1166,6 +1166,7 @@ Module {
                                             arms: [
                                                 MatchArm {
                                                     pattern: Constructor {
+                                                        qualifier: None,
                                                         name: Ident {
                                                             text: "Some",
                                                             span: Span {
@@ -1226,6 +1227,7 @@ Module {
                                                 },
                                                 MatchArm {
                                                     pattern: Constructor {
+                                                        qualifier: None,
                                                         name: Ident {
                                                             text: "None",
                                                             span: Span {
@@ -3187,6 +3189,7 @@ Module {
                                                                             arms: [
                                                                                 MatchArm {
                                                                                     pattern: Constructor {
+                                                                                        qualifier: None,
                                                                                         name: Ident {
                                                                                             text: "Some",
                                                                                             span: Span {
@@ -3250,6 +3253,7 @@ Module {
                                                                                 },
                                                                                 MatchArm {
                                                                                     pattern: Constructor {
+                                                                                        qualifier: None,
                                                                                         name: Ident {
                                                                                             text: "None",
                                                                                             span: Span {

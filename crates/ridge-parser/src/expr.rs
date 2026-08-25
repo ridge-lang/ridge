@@ -634,50 +634,9 @@ pub(crate) fn parse_expr_atom(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> 
         // ── Spawn expression `spawn UPPER_IDENT arg*` ────────────────────────
         Token::KwSpawn => actor_ops::parse_spawn(cur),
 
-        // ── `UPPER_IDENT`: qualified name, record construct, or bare ctor ─────
-        //
-        // T8 (Phase 4 §3.8): A qualified path followed by `{` is a qualified
-        // record constructor: `Http.Response { ... }`.
-        // All other qualified paths (e.g. `List.map`) remain `Expr::Qualified`.
-        Token::UpperIdent(_) => {
-            if cur.peek_n(1) == Some(&Token::Dot) {
-                // Could be: qualified name OR qualified record constructor.
-                // Parse the qualified name first, then check for `{`.
-                let qn = parse_qualified_name(cur)?;
-                if cur.peek() == &Token::LBrace {
-                    // Qualified record construction: Http.Response { ... }
-                    let ctor = RecordCtor::Qualified(qn);
-                    actor_ops::parse_record_construct(cur, ctor)
-                } else {
-                    // Regular qualified name in expression position.
-                    Ok(Expr::Qualified(qn))
-                }
-            } else if cur.peek_n(1) == Some(&Token::LBrace) {
-                // Record construction: User { ... }
-                let ctor_span = cur.span();
-                let ctor_text = match cur.bump() {
-                    Token::UpperIdent(s) => s.clone(),
-                    _ => unreachable!("peeked UpperIdent above"),
-                };
-                let constructor = RecordCtor::Bare(Ident::new(ctor_text, ctor_span));
-                actor_ops::parse_record_construct(cur, constructor)
-            } else {
-                // Bare constructor in expression position — treat as zero-arg
-                // record construct with empty fields (e.g. `None`, `True`).
-                // Grammar §6.18: Record { constructor, fields: [] }.
-                let ctor_span = cur.span();
-                let ctor_text = match cur.bump() {
-                    Token::UpperIdent(s) => s.clone(),
-                    _ => unreachable!("peeked UpperIdent above"),
-                };
-                let constructor = RecordCtor::Bare(Ident::new(ctor_text, ctor_span));
-                Ok(Expr::Record {
-                    fields: vec![],
-                    span: ctor_span,
-                    constructor,
-                })
-            }
-        }
+        // An upper-case name in expression position is a constructor or a
+        // qualified name; the shapes are involved enough to read on their own.
+        Token::UpperIdent(_) => parse_upper_ident_atom(cur),
 
         // ── Constructor-less record literal `{ field = val, … }` ─────────────
         //
@@ -984,6 +943,74 @@ fn parse_list_inner(cur: &mut Cursor<'_>, start_span: ridge_ast::Span) -> Result
     })
 }
 
+// ── Upper-case atom ──────────────────────────────────────────────────────────
+
+/// Parse an upper-case name in expression position: a qualified name, a
+/// record construction, or a bare constructor.
+///
+/// A qualified path is a constructor reference when its last segment is
+/// upper-case — `Actor.Timeout`, `Http.Response { … }` — and a plain
+/// qualified name otherwise: `List.map`. The last segment's case is the
+/// same discriminator the bare branch below already uses, and it is the
+/// language's rule: constructors are upper-case, functions are not.
+///
+/// The split used to be made on a following `{` instead, which put every
+/// brace-less constructor on the qualified-name path. That path has no
+/// notion of a constructor, so `Actor.Timeout` came back typed
+/// `() -> AskError` and `L.Blue 3` reached the backend as a call to a
+/// function nobody generated.
+fn parse_upper_ident_atom(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
+    if cur.peek_n(1) == Some(&Token::Dot) {
+        let qn = parse_qualified_name(cur)?;
+        let last_is_ctor = qn
+            .segments
+            .last()
+            .is_some_and(|s| s.text.starts_with(char::is_uppercase));
+        if cur.peek() == &Token::LBrace {
+            // Qualified record construction: Http.Response { ... }
+            let ctor = RecordCtor::Qualified(qn);
+            actor_ops::parse_record_construct(cur, ctor)
+        } else if last_is_ctor {
+            // Qualified constructor named as a value: `Actor.Timeout`.
+            // Same node the bare spelling produces, so it takes the
+            // constructor path from here down.
+            let span = qn.span;
+            Ok(Expr::Record {
+                fields: vec![],
+                span,
+                constructor: RecordCtor::Qualified(qn),
+            })
+        } else {
+            // Regular qualified name in expression position.
+            Ok(Expr::Qualified(qn))
+        }
+    } else if cur.peek_n(1) == Some(&Token::LBrace) {
+        // Record construction: User { ... }
+        let ctor_span = cur.span();
+        let ctor_text = match cur.bump() {
+            Token::UpperIdent(s) => s.clone(),
+            _ => unreachable!("peeked UpperIdent above"),
+        };
+        let constructor = RecordCtor::Bare(Ident::new(ctor_text, ctor_span));
+        actor_ops::parse_record_construct(cur, constructor)
+    } else {
+        // Bare constructor in expression position — treat as zero-arg
+        // record construct with empty fields (e.g. `None`, `True`).
+        // Grammar §6.18: Record { constructor, fields: [] }.
+        let ctor_span = cur.span();
+        let ctor_text = match cur.bump() {
+            Token::UpperIdent(s) => s.clone(),
+            _ => unreachable!("peeked UpperIdent above"),
+        };
+        let constructor = RecordCtor::Bare(Ident::new(ctor_text, ctor_span));
+        Ok(Expr::Record {
+            fields: vec![],
+            span: ctor_span,
+            constructor,
+        })
+    }
+}
+
 // ── Qualified name ────────────────────────────────────────────────────────────
 
 /// Parse a qualified dotted name (grammar §6.15).
@@ -992,7 +1019,7 @@ fn parse_list_inner(cur: &mut Cursor<'_>, start_span: ridge_ast::Span) -> Result
 ///
 /// Precondition: `cur.peek()` is `Token::UpperIdent` and `cur.peek_n(1)` is
 /// `Token::Dot`.
-fn parse_qualified_name(cur: &mut Cursor<'_>) -> Result<QualifiedName, ParseError> {
+pub(crate) fn parse_qualified_name(cur: &mut Cursor<'_>) -> Result<QualifiedName, ParseError> {
     let start_span = cur.span();
 
     let first_text = match cur.bump() {

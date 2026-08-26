@@ -26,6 +26,52 @@ struct ReloadNode {
     #[allow(dead_code)]
     base_vsn: String,
     manifest_path: std::path::PathBuf,
+    /// Filled by a reader thread; read through [`take_stderr`].
+    stderr: std::sync::Arc<std::sync::Mutex<String>>,
+    /// Joined before the buffer above is read, so a late write is not missed.
+    stderr_thread: Option<std::thread::JoinHandle<()>>,
+}
+
+/// Drain a child's stderr in the background.
+///
+/// `spawn_streamed` does the same further down, for the same reason: nothing
+/// reads these pipes until the node is finished, so a node that fills the pipe
+/// buffer would block on the write while the test waits for a line that can no
+/// longer come.
+fn drain_stderr(
+    child: &mut std::process::Child,
+) -> (
+    std::sync::Arc<std::sync::Mutex<String>>,
+    Option<std::thread::JoinHandle<()>>,
+) {
+    let sink: std::sync::Arc<std::sync::Mutex<String>> = std::sync::Arc::default();
+    let Some(mut pipe) = child.stderr.take() else {
+        return (sink, None);
+    };
+    let handle = {
+        let sink = std::sync::Arc::clone(&sink);
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut buf = String::new();
+            let _ = pipe.read_to_string(&mut buf);
+            if let Ok(mut guard) = sink.lock() {
+                *guard = buf;
+            }
+        })
+    };
+    (sink, Some(handle))
+}
+
+/// The node's stderr, once its reader has finished.
+///
+/// Call only after the child has exited: until the pipe closes the reader sits
+/// in `read_to_string`, and joining it would wait for a node that is still
+/// running.
+fn take_stderr(node: &mut ReloadNode) -> String {
+    if let Some(t) = node.stderr_thread.take() {
+        let _ = t.join();
+    }
+    node.stderr.lock().map(|g| g.clone()).unwrap_or_default()
 }
 
 impl Drop for ReloadNode {
@@ -112,7 +158,7 @@ fn boot_v1(ws: &common::TempWorkspace, eval_extra: &str) -> ReloadNode {
          {eval_extra}\n\
          halt(0).",
     );
-    let child = std::process::Command::new("erl")
+    let mut child = std::process::Command::new("erl")
         .arg("-noshell")
         .arg("-pa")
         .arg(&beam_dir)
@@ -122,11 +168,14 @@ fn boot_v1(ws: &common::TempWorkspace, eval_extra: &str) -> ReloadNode {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn erl");
+    let (stderr, stderr_thread) = drain_stderr(&mut child);
     ReloadNode {
         child,
         old_snapshot,
         base_vsn,
         manifest_path,
+        stderr,
+        stderr_thread,
     }
 }
 
@@ -191,11 +240,7 @@ fn join(mut node: ReloadNode) -> String {
         use std::io::Read;
         let _ = so.read_to_string(&mut stdout);
     }
-    let mut stderr = String::new();
-    if let Some(mut se) = node.child.stderr.take() {
-        use std::io::Read;
-        let _ = se.read_to_string(&mut stderr);
-    }
+    let stderr = take_stderr(&mut node);
     assert!(
         !killed,
         "node did not finish within 60s\nstdout:\n{stdout}\nstderr:\n{stderr}"
@@ -373,7 +418,10 @@ fn boot_named_v1(
          io:format(\"READY~n\"),\n\
          receive infinity -> ok end.",
     );
-    let child = std::process::Command::new("erl")
+    // Piped, not null. A named node that dies during boot writes the reason
+    // here and nowhere else; discarding it at spawn is why a failed
+    // `await_ready` could only ever say that the line did not arrive.
+    let mut child = std::process::Command::new("erl")
         .arg("-name")
         .arg(node_name)
         .arg("-setcookie")
@@ -384,21 +432,29 @@ fn boot_named_v1(
         .arg("-eval")
         .arg(eval)
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn named erl node");
+    let (stderr, stderr_thread) = drain_stderr(&mut child);
     (
         ReloadNode {
             child,
             old_snapshot,
             base_vsn,
             manifest_path,
+            stderr,
+            stderr_thread,
         },
         beam_dir,
     )
 }
 
 /// Read the node's stdout until the READY line (30 s cap).
+///
+/// This takes the child's stdout handle and never gives it back, so a test that
+/// calls this and later calls [`join`] would read an empty stdout there. No
+/// test does both today; the alternative is handing the pipe back out of the
+/// reader thread, which is a larger change than the hazard currently earns.
 fn await_ready(node: &mut ReloadNode) {
     use std::io::BufRead;
     let stdout = node.child.stdout.take().expect("piped stdout");
@@ -411,14 +467,92 @@ fn await_ready(node: &mut ReloadNode) {
             }
         }
     });
-    let deadline = std::time::Duration::from_secs(30);
+    // A budget for the whole wait, not for each line: passing it straight to
+    // `recv_timeout` restarts it on every line the node prints, so a node that
+    // says anything at all every few seconds is waited on forever.
+    let budget = std::time::Duration::from_secs(30);
+    let start = std::time::Instant::now();
+    let mut seen: Vec<String> = Vec::new();
     loop {
-        match rx.recv_timeout(deadline) {
+        let Some(left) = budget.checked_sub(start.elapsed()) else {
+            panic!(
+                "{}",
+                ready_report(node, &seen, start.elapsed(), "no READY line arrived")
+            );
+        };
+        match rx.recv_timeout(left.min(std::time::Duration::from_millis(200))) {
             Ok(line) if line.trim() == "READY" => return,
-            Ok(_) => {}
-            Err(e) => panic!("node never printed READY: {e}"),
+            Ok(line) => seen.push(line),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!(
+                    "{}",
+                    ready_report(
+                        node,
+                        &seen,
+                        start.elapsed(),
+                        "the node's stdout reached end of file"
+                    )
+                );
+            }
         }
     }
+}
+
+/// What the node did, for an `await_ready` that never got its line.
+///
+/// The counterpart of [`node_report`] for [`ReloadNode`], which streams its
+/// stdout rather than collecting it. `join` next door already reports stdout and
+/// stderr when a node overruns; this one used to report neither, so a node that
+/// died during boot said only "node never printed READY: Disconnected".
+fn ready_report(
+    node: &mut ReloadNode,
+    seen: &[String],
+    waited: std::time::Duration,
+    what: &str,
+) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let status = loop {
+        match node.child.try_wait() {
+            Ok(Some(s)) => break Some(s),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            _ => break None,
+        }
+    };
+    // Only read stderr once the child is gone: until the pipe closes the
+    // reader thread is still in `read_to_string`, and joining it would wait for
+    // a node that has not finished.
+    let stderr = if status.is_some() {
+        take_stderr(node)
+    } else {
+        String::new()
+    };
+    let status = status.map_or_else(
+        || "still running".to_owned(),
+        |s| {
+            s.code()
+                .map_or_else(|| format!("{s}"), |c| format!("exit code {c}"))
+        },
+    );
+    let block = |text: &str, empty: &str| {
+        if text.trim().is_empty() {
+            format!("    {empty}")
+        } else {
+            text.lines()
+                .map(|l| format!("    {l}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    };
+    format!(
+        "waiting for the node's READY line: {what} after {waited:.1?}\n  \
+         node: {status}\n  stdout ({} line(s)):\n{}\n  stderr:\n{}",
+        seen.len(),
+        block(&seen.join("\n"), "(none)"),
+        block(&stderr, "(empty)"),
+    )
 }
 
 /// Run a short-lived probe node against the named dev node and return its
@@ -616,21 +750,102 @@ fn spawn_streamed(beam_dir: &std::path::Path, eval: &str) -> StreamedNode {
     }
 }
 
-/// Wait (bounded) for a stdout line starting with `prefix`; returns the line.
-fn wait_marker(node: &StreamedNode, prefix: &str, timeout: std::time::Duration) -> String {
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        match node.rx.recv_timeout(std::time::Duration::from_millis(200)) {
-            Ok(line) if line.starts_with(prefix) => return line,
-            Ok(_) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "node produced no `{prefix}` marker within {timeout:?}"
-                );
+/// Everything the node produced, rendered as a failure a reader can act on.
+///
+/// A node that dies inside its `-eval` is not silent. `erl -noshell` prints the
+/// raised term and a stack trace to stderr and exits non-zero, and
+/// [`StreamedNode`] already captures both — so a message that says only that
+/// stdout closed throws away the answer and sends the reader hunting for a race
+/// in the test. Which is worse on CI than locally, because the job is gone.
+fn node_report(
+    node: &mut StreamedNode,
+    prefix: &str,
+    waited: std::time::Duration,
+    what: &str,
+) -> String {
+    // Reap the child first, so the status is real rather than "still running"
+    // for a process that exited a millisecond ago. Bounded, because a node that
+    // genuinely is alive must not turn a failure message into a hang.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let status = loop {
+        match node.child.try_wait() {
+            Ok(Some(s)) => break Some(s),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
             }
+            _ => break None,
+        }
+    };
+    // Join the readers only once the child is gone: while it holds the pipes
+    // open `read_to_string` has not returned, and the join would never finish.
+    if status.is_some() {
+        if let Some(t) = node.stdout_thread.take() {
+            let _ = t.join();
+        }
+        if let Some(t) = node.stderr_thread.take() {
+            let _ = t.join();
+        }
+    }
+    let lines = node.lines.lock().map(|g| g.clone()).unwrap_or_default();
+    let stderr = node.stderr.lock().map(|g| g.clone()).unwrap_or_default();
+    let status = status.map_or_else(
+        || "still running".to_owned(),
+        |s| {
+            s.code()
+                .map_or_else(|| format!("{s}"), |c| format!("exit code {c}"))
+        },
+    );
+    let indent = |text: &str, empty: &str| {
+        if text.trim().is_empty() {
+            format!("    {empty}")
+        } else {
+            text.lines()
+                .map(|l| format!("    {l}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    };
+    format!(
+        "waiting for the `{prefix}` marker: {what} after {waited:.1?}\n  \
+         node: {status}\n  stdout ({} line(s)):\n{}\n  stderr:\n{}",
+        lines.len(),
+        indent(&lines.join("\n"), "(none)"),
+        indent(&stderr, "(empty)"),
+    )
+}
+
+/// Wait (bounded) for a stdout line starting with `prefix`; returns the line.
+///
+/// The deadline is checked on every pass rather than only when the channel goes
+/// quiet: a node printing something else steadily would otherwise never reach
+/// it, and the wait would be unbounded in exactly the case it exists to bound.
+fn wait_marker(node: &mut StreamedNode, prefix: &str, timeout: std::time::Duration) -> String {
+    let start = std::time::Instant::now();
+    loop {
+        let Some(left) = timeout.checked_sub(start.elapsed()) else {
+            panic!(
+                "{}",
+                node_report(node, prefix, start.elapsed(), "the marker never arrived")
+            );
+        };
+        // Bind before matching so the borrow of `node.rx` is over by the time
+        // an arm needs `&mut node`.
+        let got = node
+            .rx
+            .recv_timeout(left.min(std::time::Duration::from_millis(200)));
+        match got {
+            Ok(line) if line.starts_with(prefix) => return line,
+            Ok(_) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                panic!("node's stdout closed before the `{prefix}` marker")
+                panic!(
+                    "{}",
+                    node_report(
+                        node,
+                        prefix,
+                        start.elapsed(),
+                        "the node's stdout reached end of file"
+                    )
+                );
             }
         }
     }
@@ -819,10 +1034,10 @@ fn reload_migrates_record_chain_across_two_reloads() {
          io:format(\"GOT2=~p~n\", [ridge_rt:ask(H, {{get}}, 5000)]),\n\
          halt(0).",
     );
-    let node = spawn_streamed(&beam_dir, &eval);
+    let mut node = spawn_streamed(&beam_dir, &eval);
     // First reload: text → body.
     apply_store_edit(&snap_v1, &ws, |src| src.replace("text", "body"));
-    wait_marker(&node, "GOT1=", std::time::Duration::from_secs(60));
+    wait_marker(&mut node, "GOT1=", std::time::Duration::from_secs(60));
     // Rebase: the on-disk snapshot is v2's now. Clear the manifest so the
     // node's deletion-poll re-arms, then apply the second edit (body → title).
     let snap_v2: WorkspaceSnapshot = serde_json::from_str(
@@ -1221,7 +1436,7 @@ fn reload_reschedules_purge_on_second_apply() {
     let ws = common::make_counter_workspace();
     let manifest = manifest_path_for(&ws.path, "debug");
     let manifest_fwd = manifest.to_string_lossy().replace('\\', "/");
-    let (snap_v1, _beam_dir, node) = boot_counter_streamed(&ws, |base, beam_mod, beam_dir| {
+    let (snap_v1, _beam_dir, mut node) = boot_counter_streamed(&ws, |base, beam_mod, beam_dir| {
         format!(
             "persistent_term:put(ridge_loader_vsn, <<\"{base}\">>),\n\
              H = {{ridge_handle, _Pid, _}} = ridge_rt:spawn_actor('{beam_mod}', [], []),\n\
@@ -1254,7 +1469,7 @@ fn reload_reschedules_purge_on_second_apply() {
             "state count: Int = 0\n    state step: Int = 2",
         )
     });
-    wait_marker(&node, "APPLY1=", std::time::Duration::from_secs(60));
+    wait_marker(&mut node, "APPLY1=", std::time::Duration::from_secs(60));
     // Rebase and second upgrade: plain body change.
     let snap_v2: WorkspaceSnapshot = serde_json::from_str(
         &std::fs::read_to_string(snapshot_path_for(&ws.path, "debug")).expect("v2 snapshot"),

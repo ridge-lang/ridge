@@ -26,7 +26,10 @@ use ridge_resolve::{
 };
 use ridge_typecheck::stdlib_signatures::stdlib_signature;
 use ridge_typecheck::{render_type_with, CapDeclKind, TypeError, TypedWorkspace};
-use ridge_types::{BuiltinTyCons, CapabilitySet, TyConArena, TyConDecl, TyConId, TyConKind, Type};
+use ridge_types::{
+    BuiltinTyCons, CapabilitySet, RigidId, Subst, TyConArena, TyConDecl, TyConId, TyConKind, Type,
+    UnionVariant, VariantPayload,
+};
 use tower_lsp::lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CodeLens, Command,
     CompletionItemKind, Diagnostic, DiagnosticSeverity, DocumentHighlight, DocumentHighlightKind,
@@ -1358,6 +1361,16 @@ impl WorkspaceIndex {
             _ => {}
         }
 
+        // Tier 3.4 — a constructor, carded from the declaration rather than from
+        // whatever type happens to be inferred where it was written. Below tier
+        // 3 so a stdlib declaration that shares a name with some union's variant
+        // still answers as itself, and above tier 3.5 for the same reason that
+        // tier 3.5 sits below tier 2: a workspace type that shadows a built-in
+        // name is the reader's own declaration, auto-constructor included.
+        if let Some(card) = self.constructor_card(binding) {
+            return card;
+        }
+
         // Tier 3.5 — a built-in type name. `Option`, `Result`, `Ordering`,
         // `JsonValue` and `QExpr` are exported by a stdlib module, so they carry
         // a binding and get this far, but no stdlib entry cards them and tier 4
@@ -1381,6 +1394,127 @@ impl WorkspaceIndex {
             format!("{name} : {inferred}")
         };
         render_hover_card(&signature, kind, None)
+    }
+
+    /// The card for a constructor, built from its own declaration.
+    ///
+    /// A constructor is the one declaration kind whose use sites were carded
+    /// from ambient inference rather than from what was written, and inside a
+    /// `match` pattern that reads badly: no node in a pattern carries a type, so
+    /// the narrowest one that does is the enclosing `match` — and its type, the
+    /// arm's result, was attributed to the constructor's name. `Timeout` in a
+    /// pattern carded as `Text` because the arm returned `Text`. Nothing about a
+    /// name depends on whether it is being built or destructured, so the
+    /// declaration is the only thing this reads and the position never enters
+    /// into it.
+    ///
+    /// Source text is preferred wherever there is any: it is what the reader
+    /// wrote, and it is byte-for-byte what the declaration site itself shows, so
+    /// the two cannot drift into describing one constructor two ways. Only the
+    /// prelude and built-in unions — `Option`, `Result`, `JsonValue`,
+    /// `AskError`, … — have no source in the workspace, and those rebuild the
+    /// variant from the `TyCon` arena instead.
+    ///
+    /// `None` for any binding that is not a constructor, so the caller falls
+    /// through to the tiers below unchanged.
+    fn constructor_card(&self, binding: Option<&Binding>) -> Option<String> {
+        match binding? {
+            Binding::Constructor {
+                owner_type,
+                variant,
+                is_record,
+                owner_module,
+            } => {
+                // A record's auto-constructor is not a separate declaration: it
+                // is spelled exactly like its type and declared by writing the
+                // type. Carding it as the type is what keeps `Point` saying one
+                // thing in `type Point = { … }` and in `Point { … }`.
+                if *is_record {
+                    let (header, kind, doc) =
+                        self.decl_header_and_doc(*owner_module, *owner_type)?;
+                    return Some(render_hover_card(&header, Some(kind.to_owned()), doc));
+                }
+                self.workspace_constructor_card(*owner_module, *owner_type, *variant)
+            }
+            // A standard-library or prelude constructor arrives as a plain
+            // exported name; whether it is one is decided by looking for it.
+            Binding::StdlibSymbol { name, .. } => self.builtin_constructor_card(name),
+            _ => None,
+        }
+    }
+
+    /// The card for union variant `variant` of the type `owner_type` declares,
+    /// read from the declaring module's own source.
+    ///
+    /// `None` when that module's AST is not indexed or the declaration is not a
+    /// union — the same silence [`Self::decl_header_and_doc`] answers with, and
+    /// for the same reason: a card invented where the source could not be read
+    /// is a card that can disagree with it.
+    fn workspace_constructor_card(
+        &self,
+        module: ModuleId,
+        owner_type: ridge_resolve::SymbolId,
+        variant: u32,
+    ) -> Option<String> {
+        let def_span = self.symbol_def_span(module, owner_type)?;
+        let mi = module.0 as usize;
+        let ast = self.modules.get(mi)?.ast.as_ref()?;
+        let text: &str = self.module_text.get(mi).map_or("", |t| &**t);
+        ast.items.iter().find_map(|item| match item {
+            ridge_ast::Item::Type(d) if span_encloses(d.span, def_span) => {
+                let (signature, kind) = constructor_signature(text, d, variant as usize)?;
+                Some(render_hover_card(&signature, Some(kind), None))
+            }
+            _ => None,
+        })
+    }
+
+    /// The card for a constructor declared outside the workspace: a variant of a
+    /// prelude or built-in union (`Some`, `Err`, `JList`, `Timeout`, …).
+    ///
+    /// These have no source to slice — the prelude unions are registered in
+    /// Rust, and the standard library is compiled ahead of the workspace — so
+    /// the variant is rebuilt from the `TyCon` arena, which carries the same
+    /// names and the same payloads.
+    ///
+    /// The search is by name, and is confined to types no workspace module
+    /// declares. That confinement is the whole safety argument: a user union
+    /// that reuses a built-in variant's name resolves to a
+    /// [`Binding::Constructor`] and never reaches here, and within the built-in
+    /// set the variant names are unique — a property
+    /// `builtin_variant_names_are_unambiguous` keeps true rather than assumes.
+    fn builtin_constructor_card(&self, ctor: &str) -> Option<String> {
+        let (owner, schema, variant) = self.builtin_variant(ctor)?;
+        let signature = render_variant(&self.tycons, schema.params.as_slice(), variant);
+        Some(render_hover_card(
+            &signature,
+            Some(format!("constructor of `{}`", owner.name)),
+            None,
+        ))
+    }
+
+    /// The built-in or prelude union that declares a variant named `ctor`, with
+    /// that union's schema and the variant itself.
+    ///
+    /// A type carrying the `u32::MAX` module sentinel is as much a built-in as
+    /// one carrying no module at all — the sentinel means "declared somewhere no
+    /// user module can be" — so both are normalised here the way
+    /// `ridge-typecheck`'s cross-module table normalises them.
+    fn builtin_variant(
+        &self,
+        ctor: &str,
+    ) -> Option<(&TyConDecl, &ridge_types::UnionSchema, &UnionVariant)> {
+        self.tycons
+            .iter()
+            .filter(|d| d.def_module_raw.filter(|m| *m != u32::MAX).is_none())
+            .find_map(|d| match &d.kind {
+                TyConKind::Union(schema) => schema
+                    .variants
+                    .iter()
+                    .find(|v| v.name == ctor)
+                    .map(|v| (d, schema, v)),
+                _ => None,
+            })
     }
 
     /// The card for a declaration whose own name sits at `offset`, with that
@@ -7520,22 +7654,121 @@ fn type_declaration_card(
                 )
             })
         }),
-        TypeBody::Union(body) => body.alternatives.iter().find_map(|alt| {
-            let (name, span) = match alt {
-                Constructor::Positional { name, span, .. }
-                | Constructor::Record { name, span, .. } => (name, *span),
+        TypeBody::Union(body) => body.alternatives.iter().enumerate().find_map(|(idx, alt)| {
+            let name = match alt {
+                Constructor::Positional { name, .. } | Constructor::Record { name, .. } => name,
             };
-            name_holds(name.span, offset).then(|| {
-                named_card(
-                    slice_span(text, span).trim(),
-                    &format!("constructor of `{owner}`"),
-                    None,
-                    name.span,
-                )
-            })
+            if !name_holds(name.span, offset) {
+                return None;
+            }
+            // Rendered by the same function the use site renders through, so a
+            // constructor cannot be described one way where it is declared and
+            // another way where it is written.
+            let (signature, kind) = constructor_signature(text, d, idx)?;
+            Some(named_card(&signature, &kind, None, name.span))
         }),
         TypeBody::Alias(_) => None,
     }
+}
+
+/// The written form of union variant `idx` of `d`, and the kind line naming the
+/// type it belongs to.
+///
+/// The signature is the variant's own source text, so the two places a
+/// constructor is carded — where it is declared and where it is written — are
+/// rendered by one function and cannot drift apart. `None` when `d` is not a
+/// union or has no `idx`-th variant.
+fn constructor_signature(
+    text: &str,
+    d: &ridge_ast::decl::TypeDecl,
+    idx: usize,
+) -> Option<(String, String)> {
+    use ridge_ast::decl::{Constructor, TypeBody};
+
+    let TypeBody::Union(body) = &d.body else {
+        return None;
+    };
+    let span = match body.alternatives.get(idx)? {
+        Constructor::Positional { span, .. } | Constructor::Record { span, .. } => *span,
+    };
+    Some((
+        slice_span(text, span).trim().to_owned(),
+        format!("constructor of `{}`", d.name.text),
+    ))
+}
+
+/// Rebuild a union variant in declaration syntax from the `TyCon` arena: the
+/// variant name followed by its payload types, or by its inline record shape.
+///
+/// `params` are the owning union's type-parameter slots. Each is substituted for
+/// a rigid named by its position — `a` for the first, `b` for the second — before
+/// anything is rendered, which is what makes the letters mean the same thing in
+/// every payload of every variant. Rendering a payload on its own would letter
+/// each one from `a` again, so `Ok a` and `Err a` would print identically for
+/// two different parameters of `Result`: the one card shape this whole change
+/// exists to stop.
+///
+/// A payload that renders to more than one word is parenthesised, so
+/// `JList (List JsonValue)` reads as one argument rather than two.
+fn render_variant(tycons: &[TyConDecl], params: &[ridge_types::TyVid], v: &UnionVariant) -> String {
+    let subst = positional_rigids(params);
+    let render = |ty: &Type| {
+        let rendered = render_type_with(&subst.apply_to_ty(ty), tycons);
+        if rendered.contains(' ') {
+            format!("({rendered})")
+        } else {
+            rendered
+        }
+    };
+    match &v.kind {
+        VariantPayload::Nullary => v.name.clone(),
+        VariantPayload::Positional(tys) => std::iter::once(v.name.clone())
+            .chain(tys.iter().map(render))
+            .collect::<Vec<_>>()
+            .join(" "),
+        VariantPayload::Record(schema) => {
+            let fields: Vec<String> = schema
+                .record_fields()
+                .iter()
+                .map(|f| {
+                    format!(
+                        "{}: {}",
+                        f.name,
+                        render_type_with(&subst.apply_to_ty(&f.ty), tycons)
+                    )
+                })
+                .collect();
+            format!("{} {{ {} }}", v.name, fields.join(", "))
+        }
+    }
+}
+
+/// A substitution sending each of `params` to a rigid variable named for its
+/// position: `a`, `b`, `c`, ….
+///
+/// A rigid prints the name it carries, so the letters survive being rendered one
+/// payload at a time. Past the twenty-sixth slot the letter would start
+/// repeating; no union comes near that, and a slot beyond it is simply left
+/// unsubstituted rather than given a name that lies.
+fn positional_rigids(params: &[ridge_types::TyVid]) -> Subst {
+    let mut subst = Subst::empty();
+    for (i, v) in params.iter().enumerate().take(26) {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "i < 26 by the take above, so the byte add cannot overflow"
+        )]
+        let name = char::from(b'a' + i as u8).to_string();
+        #[allow(clippy::cast_possible_truncation, reason = "i < 26 by the take above")]
+        let id = RigidId(i as u32);
+        subst.ty.insert(
+            *v,
+            Type::Rigid {
+                id,
+                name: name.into(),
+            },
+        );
+    }
+    subst
 }
 
 /// The card for an `actor` declaration's own name, or for one of its message

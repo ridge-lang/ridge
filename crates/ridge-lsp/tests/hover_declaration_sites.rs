@@ -54,6 +54,13 @@ actor Counter =
 
     on bump () -> Unit =
         count <- count + 1
+
+pub fn newest () -> Status = Draft
+
+pub fn label (s: Status) -> Text =
+    match s
+        Draft -> \"draft\"
+        Live -> \"live\"
 ";
 
 fn write_file(dir: &Path, rel: &str, content: &str) {
@@ -143,6 +150,36 @@ fn a_record_field_cards_the_same_at_its_declaration_and_at_a_use() {
         "expected the field card, got: {decl}"
     );
     assert_eq!(decl, usage, "one field must not have two descriptions");
+}
+
+#[test]
+fn a_constructor_cards_the_same_at_its_declaration_and_at_both_kinds_of_use() {
+    let (index, uri) = index_for(SRC);
+    let decl = hover_in(&index, &uri, SRC, "Draft | Live", 1).expect("the declaration should card");
+    // `= Draft` would have matched the declaration itself (`Status = Draft |
+    // Live`) and quietly compared it with itself; the trailing newline is what
+    // makes this the use.
+    let built = hover_in(&index, &uri, SRC, "Draft\n", 0)
+        .expect("a constructor used as a value should card");
+    let matched = hover_in(&index, &uri, SRC, "Draft -> ", 1)
+        .expect("a constructor in a pattern should card");
+
+    assert!(
+        decl.contains("Draft") && decl.contains("constructor of `Status`"),
+        "expected the constructor card, got: {decl}"
+    );
+    assert_eq!(
+        decl, built,
+        "one constructor must not have two descriptions"
+    );
+    // The position a name is written in does not change what the name is. This
+    // is the assertion #601 was about: the pattern used to report the arm's
+    // result type, which was `Text` here and would have been whatever the arm
+    // returned anywhere else.
+    assert_eq!(
+        built, matched,
+        "building a value and destructuring one name one constructor"
+    );
 }
 
 #[test]

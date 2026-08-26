@@ -15,24 +15,27 @@ use ridge_typecheck::typecheck_workspace;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// A temporary directory that cleans itself up on drop.
+///
+/// Unique per instance: `id` labels the directory, it does not name it, so two
+/// tests passing the same `id` still get a directory each. A fixed name is
+/// shared by every test that writes it, and under the runner CI and
+/// `scripts/gate.sh` both use, every test is its own process — see the note in
+/// `crates/ridge-lower/tests/common/mod.rs` for the measurement.
 pub struct TempWorkspace {
     pub path: PathBuf,
+    /// Owns the directory; removed when this value is dropped.
+    _dir: tempfile::TempDir,
 }
 
 impl TempWorkspace {
     pub fn new(id: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("ridge_codegen_erl_test_{id}"));
-        if path.exists() {
-            let _ = fs::remove_dir_all(&path);
-        }
-        fs::create_dir_all(&path).expect("create temp workspace dir");
-        Self { path }
-    }
-}
-
-impl Drop for TempWorkspace {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("ridge_codegen_erl_test_{id}_"))
+            .tempdir()
+            .expect("create temp workspace dir");
+        let path = dir.path().to_owned();
+        Self { path, _dir: dir }
     }
 }
 

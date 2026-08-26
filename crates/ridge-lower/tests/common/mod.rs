@@ -52,26 +52,38 @@ pub fn write_file(dir: &Path, relative_path: &str, content: &str) {
 }
 
 /// A temporary directory that cleans itself up on drop.
+///
+/// The directory is unique per instance, so `id` is a label and not the path:
+/// two tests may pass the same one and still get a directory each. That is the
+/// whole point. A fixed name under the OS temp dir is shared by every test that
+/// names it, and this helper creates the directory and removes it on drop, so
+/// two tests holding the same name delete each other's fixture mid-run. Under a
+/// runner that gives each test its own process — which is what CI and
+/// `scripts/gate.sh` use — that is not rare: it reproduced 27 times in 30 runs.
+///
+/// The failure never mentions the fixture. It arrives as "workspace graph must
+/// be present" or an empty module list, which reads like a defect in the code
+/// under test.
 pub struct TempWorkspace {
     /// The root path of the temp workspace.
     pub path: PathBuf,
+    /// Owns the directory; removed when this value is dropped.
+    _dir: tempfile::TempDir,
 }
 
 impl TempWorkspace {
     /// Create a new temp workspace under the OS temp dir.
+    ///
+    /// `id` becomes part of the directory name so a fixture left behind by a
+    /// crashed run can still be traced back to its test; uniqueness comes from
+    /// the random suffix, never from `id`.
     pub fn new(id: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("ridge_lower_test_{id}"));
-        if path.exists() {
-            let _ = fs::remove_dir_all(&path);
-        }
-        fs::create_dir_all(&path).expect("create temp workspace dir");
-        Self { path }
-    }
-}
-
-impl Drop for TempWorkspace {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("ridge_lower_test_{id}_"))
+            .tempdir()
+            .expect("create temp workspace dir");
+        let path = dir.path().to_owned();
+        Self { path, _dir: dir }
     }
 }
 

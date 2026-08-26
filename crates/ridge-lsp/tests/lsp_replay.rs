@@ -514,7 +514,13 @@ async fn test_diagnostic_resolves_to_real_span_without_open_doc() {
     // Build a hermetic single-member workspace whose only module has a T001 on
     // line 2. Driving the driver directly (no `did_open`) is exactly what the
     // publish loop does for a file the editor has not opened.
-    let root = std::env::temp_dir().join(format!("ridge_lsp_span_{}", std::process::id()));
+    // A directory of its own, not a name derived from the pid: the pid is the
+    // same for every test in a binary the moment a second one wants a fixture.
+    let dir = tempfile::Builder::new()
+        .prefix("ridge-lsp-span-")
+        .tempdir()
+        .expect("temp dir");
+    let root = dir.path().to_owned();
     let app_src = root.join("app").join("src");
     std::fs::create_dir_all(&app_src).expect("create temp workspace");
     std::fs::write(
@@ -593,12 +599,15 @@ async fn test_diagnostic_resolves_to_real_span_without_open_doc() {
 async fn test_ask_timeout_operand_publishes_no_diagnostics() {
     use ridge_driver::{check_workspace, CheckOptions};
 
-    fn workspace_with(operand: &str, tag: &str) -> std::path::PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "ridge_lsp_ask_timeout_{tag}_{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
+    // The directory is returned, not the path, so the caller's binding is what
+    // keeps it alive and dropping it is what removes it. A pid-derived name is
+    // shared by every test in the binary, and this one wants two at once.
+    fn workspace_with(operand: &str, tag: &str) -> tempfile::TempDir {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("ridge-lsp-ask-timeout-{tag}-"))
+            .tempdir()
+            .expect("temp dir");
+        let root = dir.path().to_owned();
         let app_src = root.join("app").join("src");
         std::fs::create_dir_all(&app_src).expect("create temp workspace");
         std::fs::write(
@@ -618,12 +627,12 @@ async fn test_ask_timeout_operand_publishes_no_diagnostics() {
             ),
         )
         .expect("write source");
-        root
+        dir
     }
 
     let good = workspace_with("(250 * 2)", "good");
-    let artefacts =
-        check_workspace(CheckOptions::new(good.clone())).expect("workspace checks without fatal");
+    let artefacts = check_workspace(CheckOptions::new(good.path().to_owned()))
+        .expect("workspace checks without fatal");
     assert!(
         artefacts.diagnostics.is_empty(),
         "a parenthesised timeout operand must publish nothing, got {:?}",
@@ -633,20 +642,18 @@ async fn test_ask_timeout_operand_publishes_no_diagnostics() {
             .map(|d| d.code)
             .collect::<Vec<_>>()
     );
-    let _ = std::fs::remove_dir_all(&good);
 
     // Control: the same fixture with an ill-typed operand must still report, so
     // the assertion above cannot be passing on an empty run.
     let bad = workspace_with("\"soon\"", "bad");
-    let artefacts =
-        check_workspace(CheckOptions::new(bad.clone())).expect("workspace checks without fatal");
+    let artefacts = check_workspace(CheckOptions::new(bad.path().to_owned()))
+        .expect("workspace checks without fatal");
     let codes: Vec<&str> = artefacts.diagnostics.iter().map(|d| d.code).collect();
     assert_eq!(
         codes,
         vec!["T026"],
         "a Text operand must report exactly one T026, got {codes:?}"
     );
-    let _ = std::fs::remove_dir_all(&bad);
 }
 
 /// A name inside the timeout operand has to carry a binding, or hover, go-to

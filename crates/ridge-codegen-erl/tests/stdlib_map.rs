@@ -16,62 +16,13 @@ use ridge_ir::{
     IrActor, IrConst, IrExpr, IrFn, IrHandler, IrInit, IrItem, IrTimeout, LoweredWorkspace,
     SymbolRef,
 };
-use ridge_lower::lower_workspace;
-use ridge_resolve::{discover_workspace, resolve_workspace};
-use ridge_typecheck::typecheck_workspace;
 use std::fs;
-use std::path::{Path, PathBuf};
+
+mod common;
+
+use common::{make_workspace, run_pipeline, TempWorkspace};
 
 // ── Pipeline helpers ──────────────────────────────────────────────────────────
-
-struct TempWorkspace {
-    path: PathBuf,
-}
-
-impl TempWorkspace {
-    fn new(id: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("ridge_codegen_erl_test_{id}"));
-        if path.exists() {
-            let _ = fs::remove_dir_all(&path);
-        }
-        fs::create_dir_all(&path).expect("create temp workspace dir");
-        Self { path }
-    }
-}
-
-impl Drop for TempWorkspace {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
-
-fn write_file(dir: &Path, relative_path: &str, content: &str) {
-    let full = dir.join(relative_path);
-    if let Some(parent) = full.parent() {
-        fs::create_dir_all(parent).expect("create dirs");
-    }
-    fs::write(&full, content).expect("write file");
-}
-
-fn make_workspace(id: &str, module_name: &str, source: &str) -> TempWorkspace {
-    let tw = TempWorkspace::new(id);
-    write_file(
-        &tw.path,
-        "ridge.toml",
-        "[workspace]\nname = \"test-ws\"\nversion = \"0.1.0\"\nmembers = [\"apps/*\"]\n",
-    );
-    write_file(
-        &tw.path,
-        "apps/demo/ridge.toml",
-        "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
-    );
-    write_file(
-        &tw.path,
-        &format!("apps/demo/src/{module_name}.ridge"),
-        source,
-    );
-    tw
-}
 
 fn load_example_workspace(example_name: &str) -> TempWorkspace {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -83,14 +34,6 @@ fn load_example_workspace(example_name: &str) -> TempWorkspace {
         example_name,
         &src,
     )
-}
-
-fn run_pipeline(workspace_path: &Path) -> LoweredWorkspace {
-    let disc = discover_workspace(workspace_path);
-    let ws_graph = disc.graph.expect("workspace graph must be present");
-    let resolved = resolve_workspace(ws_graph);
-    let typecheck_result = typecheck_workspace(&resolved);
-    lower_workspace(&typecheck_result.typed, &resolved).workspace
 }
 
 // ── Stdlib symbol walker ──────────────────────────────────────────────────────
@@ -262,28 +205,28 @@ fn assert_bridge_covers(example_name: &str, ws: &LoweredWorkspace) {
 #[test]
 fn stdlib_bridge_covers_log_analyzer() {
     let tw = load_example_workspace("log_analyzer");
-    let ws = run_pipeline(&tw.path);
+    let ws = run_pipeline(&tw.path).lowered;
     assert_bridge_covers("log_analyzer", &ws);
 }
 
 #[test]
 fn stdlib_bridge_covers_url_shortener() {
     let tw = load_example_workspace("url_shortener");
-    let ws = run_pipeline(&tw.path);
+    let ws = run_pipeline(&tw.path).lowered;
     assert_bridge_covers("url_shortener", &ws);
 }
 
 #[test]
 fn stdlib_bridge_covers_game_of_life() {
     let tw = load_example_workspace("game_of_life");
-    let ws = run_pipeline(&tw.path);
+    let ws = run_pipeline(&tw.path).lowered;
     assert_bridge_covers("game_of_life", &ws);
 }
 
 #[test]
 fn stdlib_bridge_covers_rate_limiter() {
     let tw = load_example_workspace("rate_limiter");
-    let ws = run_pipeline(&tw.path);
+    let ws = run_pipeline(&tw.path).lowered;
     assert_bridge_covers("rate_limiter", &ws);
 }
 
@@ -328,7 +271,7 @@ pub fn empty_map () -> Map Text Text =
     Map.empty ()
 ";
     let tw = make_workspace("zero_arity_paren", "empty_map", src);
-    let ws = run_pipeline(&tw.path);
+    let ws = run_pipeline(&tw.path).lowered;
     let mut opts = CodegenOptions::default();
     opts.out_root = tw.path.join("target_codegen");
     opts.profile = BuildProfile::Debug;
@@ -362,7 +305,7 @@ pub fn ok () -> Response =
     respond 200 "hello"
 "#;
     let tw = make_workspace("respond_two_arg", "ok", src);
-    let ws = run_pipeline(&tw.path);
+    let ws = run_pipeline(&tw.path).lowered;
     let mut opts = CodegenOptions::default();
     opts.out_root = tw.path.join("target_codegen");
     opts.profile = BuildProfile::Debug;

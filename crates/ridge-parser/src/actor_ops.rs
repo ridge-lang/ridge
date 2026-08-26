@@ -1369,14 +1369,14 @@ mod tests {
 
     // ── T0-P4: timeout does not bind to the arg identifier `timeout` ──────────────
     //
-    // Verifies that when `timeout` IS used as an arg (not followed by `never` or
-    // a numeric literal), it is treated as a positional argument, not a keyword.
-    // Specifically: `store ?> shorten timeout` → Ask { args: [Ident("timeout")],
+    // Verifies that a `timeout` with nothing an expression could begin at after
+    // it is a positional argument, not the contextual keyword. Specifically:
+    // `store ?> shorten timeout` → Ask { args: [Ident("timeout")],
     // timeout: None }.
     #[test]
     fn parse_ask_timeout_as_arg_ident() {
-        // `timeout` is followed by EOF (not `never` or a literal), so the
-        // 2-token lookahead does NOT treat it as the contextual keyword.
+        // `timeout` is followed by EOF, which cannot start an operator
+        // expression, so the 2-token lookahead leaves it as an argument.
         let e = ok("store ?> shorten timeout");
         if let Expr::Ask {
             message,
@@ -1404,6 +1404,136 @@ mod tests {
         } else {
             panic!("expected Ask, got {e:?}");
         }
+    }
+
+    // ── the `timeout` operand may open on any expression token ────────────────
+    //
+    // The lookahead that decides whether the contextual `timeout` is the keyword
+    // used to be a hand-written list of two token kinds, so `timeout 1000`
+    // parsed while `timeout (1000)` silently became two positional arguments:
+    // the reader was told their keyword was an undefined variable and that a
+    // nullary handler had been handed two arguments. Every row below opens on a
+    // different token kind, and each must reach `AskTimeout::Millis` having
+    // collected no positional arguments.
+    #[test]
+    fn parse_ask_timeout_operand_opens_on_any_expression_token() {
+        use ridge_ast::AskTimeout;
+
+        const OPERANDS: &[&str] = &[
+            // Already accepted before this rule: a number or a bare name.
+            "1000",
+            "0x3E8",
+            "0b1111101000",
+            "0o1750",
+            "1.5",
+            "19m",
+            "ms",
+            "ms + 100",
+            "cfg.retryMs",
+            // Rejected before it, each for want of one token kind.
+            "(1000)",
+            "(base * 2)",
+            "Cfg.retryMs",
+            "Cfg",
+            "\"soon\"",
+            "r\"soon\"",
+            "$\"1000\"",
+            "true",
+            "false",
+            "[1]",
+            "{ ms = 1 }",
+            "-1",
+            "fn x -> x",
+            "spawn Counter",
+        ];
+        // A table that quietly shrinks stops testing what it claims to.
+        assert!(
+            OPERANDS.len() >= 23,
+            "the operand table shrank to {}",
+            OPERANDS.len()
+        );
+
+        for operand in OPERANDS {
+            let src = format!("store ?> count timeout {operand}");
+            let e = ok(&src);
+            let Expr::Ask { args, timeout, .. } = e else {
+                panic!("expected Ask for {src:?}, got {e:?}");
+            };
+            assert!(
+                args.is_empty(),
+                "{src:?} must collect no positional args, got {args:?}"
+            );
+            assert!(
+                matches!(timeout, Some(AskTimeout::Millis(_))),
+                "{src:?} must reach AskTimeout::Millis, got {timeout:?}"
+            );
+        }
+    }
+
+    // ── `timeout` before a token no expression can begin at stays an arg ──────
+    //
+    // The companion to `parse_ask_timeout_as_arg_ident`, which pins the
+    // end-of-input case. `)` is the shape that actually turns up in source, and
+    // it is the reason the trigger asks about the *next* token rather than
+    // firing on `timeout` by position.
+    #[test]
+    fn parse_ask_timeout_stays_an_arg_before_a_close_paren() {
+        let e = ok("(store ?> shorten timeout)");
+        let Expr::Paren { inner, .. } = e else {
+            panic!("expected Paren, got {e:?}");
+        };
+        let Expr::Ask { args, timeout, .. } = *inner else {
+            panic!("expected Ask inside the parens, got {inner:?}");
+        };
+        assert!(
+            matches!(args.as_slice(), [Expr::Ident(id)] if id.text == "timeout"),
+            "`timeout` before `)` must stay a positional arg, got {args:?}"
+        );
+        assert!(
+            timeout.is_none(),
+            "`timeout` before `)` must not fire the postfix, got {timeout:?}"
+        );
+    }
+
+    // ── the widened trigger holds inside a bracket-suppressed match arm ───────
+    //
+    // The narrow two-token list was justified by this context: inside brackets
+    // the lexer emits no `Newline`, so a trailing argument atom cannot be told
+    // from the start of the next statement. That reason is real, and it is why
+    // the operand is parsed at `parse_expr_pratt` rather than `parse_expr` —
+    // `let`, `return` and an assignment tail stay out of the operand grammar.
+    // What the reason never justified was rejecting `(`, so pin the arm case.
+    #[test]
+    fn parse_ask_timeout_in_a_bracket_suppressed_match_arm() {
+        use ridge_ast::AskTimeout;
+
+        let e = ok("(match flag true -> store ?> count timeout (1000) false -> 0)");
+        let Expr::Paren { inner, .. } = e else {
+            panic!("expected Paren, got {e:?}");
+        };
+        let Expr::Match { arms, .. } = *inner else {
+            panic!("expected Match inside the parens, got {inner:?}");
+        };
+        assert_eq!(arms.len(), 2, "expected 2 arms, got {arms:?}");
+        let Expr::Ask {
+            ref args,
+            ref timeout,
+            ..
+        } = arms[0].body
+        else {
+            panic!(
+                "expected the first arm body to be an Ask, got {:?}",
+                arms[0].body
+            );
+        };
+        assert!(
+            args.is_empty(),
+            "the arm's ask must collect no positional args, got {args:?}"
+        );
+        assert!(
+            matches!(timeout, Some(AskTimeout::Millis(_))),
+            "the arm's ask must carry a Millis timeout, got {timeout:?}"
+        );
     }
 
     // ── parse_child_spec_no_args ──────────────────────────────────────────────

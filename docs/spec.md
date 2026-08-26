@@ -886,7 +886,8 @@ LambdaExpr    = "fn" { Param } "->" [ Type "=" ] Expr .
 
 SpawnExpr     = "spawn" UpperIdent { Expr } .
 SendExpr      = Expr "!" Expr .
-AskExpr       = Expr "?>" Expr .
+AskExpr       = Expr "?>" Ident { ExprAtom } [ AskTimeout ] .
+AskTimeout    = "timeout" ( "never" | Expr ) .
 ```
 
 Note: The full normative grammar lives in `docs/grammar.ebnf`. The productions above are illustrative selections; consult that file for the complete specification.
@@ -1468,7 +1469,10 @@ Operations that produce additional effects beyond the actor itself still
 carry their capabilities:
 
 - `actor ?> msg [timeout T]` — ask. Requires `time` for the timeout
-  primitive (not for the actor access).
+  primitive (not for the actor access). `T` is an operator expression, so
+  `timeout (base * 2)` and `timeout Cfg.retryMs` are as good as `timeout 1000`;
+  a keyword-led form such as `if` needs parentheses. `timeout` and `never`
+  stay ordinary identifiers everywhere else.
 - `spawn ActorName` — requires `spawn` capability. Produces the handle.
 
 The principle generalises: any future actor-local primitive that takes a

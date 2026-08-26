@@ -6,15 +6,15 @@
 //! whatever the bare spelling answers *in the same position* — the editor is
 //! where a reader finds out that the two spellings mean one thing.
 //!
-//! Every assertion pairs the two spellings rather than pinning a string, and
-//! two of the things they are paired against are known to be wrong for both:
-//! hovering a constructor in a *pattern* reports the match arm's result type
-//! rather than the constructor's, and go-to-definition on a standard-library
-//! constructor lands nowhere because its declaration has no workspace URI.
-//! Both are older than this change and filed separately. Pinning a literal
-//! here would either bake one in or fail for a reason that has nothing to do
-//! with the spelling — so the go-to-definition test uses a workspace module,
-//! where a definition genuinely exists and the assertion can fail.
+//! Every assertion pairs the two spellings rather than pinning a string. When
+//! this was written, two of the things they were paired against were known to
+//! be wrong for both spellings: hovering a constructor in a *pattern* reported
+//! the match arm's result type, and go-to-definition on a standard-library
+//! constructor landed nowhere because its declaration has no workspace URI.
+//! The first is fixed and the pattern assertion below now pins what the card
+//! says; the second is still open, so the go-to-definition test uses a
+//! workspace module, where a definition genuinely exists and the assertion can
+//! fail.
 
 #![allow(
     clippy::unwrap_used,
@@ -158,6 +158,16 @@ fn a_qualified_constructor_cards_like_the_bare_one_in_a_pattern() {
     assert_eq!(
         qualified, bare,
         "matching a constructor through an alias and matching it bare are one thing"
+    );
+    assert!(
+        bare.contains("constructor of `AskError`"),
+        "and the thing they say is the constructor's own declaration, got: {bare}"
+    );
+    let in_expression =
+        hover_nth(&index, &uri, "Timeout", EXPR_BARE).expect("bare `Timeout` should card");
+    assert_eq!(
+        bare, in_expression,
+        "a constructor does not change meaning between being matched and being built"
     );
 }
 

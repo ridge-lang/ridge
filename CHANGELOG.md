@@ -42,6 +42,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Hovering a constructor says what that constructor is, wherever it is written.
+  Inside a `match` pattern the editor reported the arm's result type instead:
+  `Timeout` carded as `Text` because the arm returned `Text`, and would have
+  carded as whatever some other arm returned. Nothing written in a pattern
+  carries a type of its own, so the nearest thing that did was the `match`
+  expression, and its type was attributed to the name under the cursor. A
+  confident wrong answer is worse here than no answer at all — hover is where a
+  reader goes because they are unsure, and nothing about the card said the
+  editor did not know.
+
+  The card is now read from the declaration, so the position it is written in
+  cannot change it. A constructor that carries something says so, and the type
+  it belongs to is named on the card. One declared in a workspace module shows
+  the text its author wrote, which is byte for byte what hovering the
+  declaration itself shows; the prelude and built-in unions have no Ridge source
+  anywhere, so `Some`, `Err`, `JList` and the rest are rebuilt from the
+  compiler's own type table — with each of a union's parameters keeping its own
+  letter, so `Ok` and `Err` no longer read as though they carried the same one.
+  Building a value and matching one now produce the same card, as do the bare
+  and module-qualified spellings of one name.
+
 - A millisecond count outside what the platform can wait for no longer kills the
   program. Every wait on this backend is a `receive ... after`, whose argument is
   a 32-bit millisecond count, while `Int` is 64-bit and signed — so a program

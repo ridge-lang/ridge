@@ -67,7 +67,12 @@ pub fn diffMs (a: Timestamp) (b: Timestamp) -> Int
 pub fn time sinceMs (t: Timestamp) -> Int
 
 -- Pause the current process for the given number of milliseconds.
-@ffi("timer", "sleep", 1)
+--
+-- A count below zero is a pause that has already elapsed and returns at
+-- once; a count above what the platform can wait for pauses for the
+-- longest it can express (about 49 days). Neither is an error, and neither
+-- reaches `timer:sleep/1`, which raises on both.
+@ffi("ridge_rt", "sleep", 1)
 pub fn time sleep (ms: Int) -> Unit
 
 -- Format a Timestamp as an ISO-8601 text representation.

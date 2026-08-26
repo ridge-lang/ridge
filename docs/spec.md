@@ -1473,6 +1473,14 @@ carry their capabilities:
   `timeout (base * 2)` and `timeout Cfg.retryMs` are as good as `timeout 1000`;
   a keyword-led form such as `if` needs parentheses. `timeout` and `never`
   stay ordinary identifiers everywhere else.
+
+  `T` counts milliseconds forward from now. `0` gives up at once. A negative
+  count is a deadline already in the past and behaves as `0`; a count larger
+  than the platform can wait for waits the longest it can express. Neither is
+  an error at run time, and the same rule covers `Actor.tryAsk`, `Actor.await`
+  and `Time.sleep`, which take the same count. A negative *literal* is
+  rejected outright (`T060`): it is never what an author meant, and `never` is
+  the spelling for a wait with no deadline.
 - `spawn ActorName` — requires `spawn` capability. Produces the handle.
 
 The principle generalises: any future actor-local primitive that takes a

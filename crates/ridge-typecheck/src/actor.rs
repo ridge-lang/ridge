@@ -22,7 +22,7 @@
 //! The handler's own caps NEVER flow into the caller (Model B encapsulation).
 //! T13 (`caps_infer.rs`) implements this; T15 verifies it is not regressed.
 
-use ridge_ast::{AskTimeout, Expr, Ident, Span};
+use ridge_ast::{AskTimeout, Expr, Ident, Literal, Span, UnaryOp};
 use ridge_types::{ActorSchema, BuiltinTyCons, CapabilitySet, TyConId, TyConKind, Type};
 
 use crate::ctx::InferCtx;
@@ -192,27 +192,113 @@ pub fn infer_ask(
 
     // Step 5 — type-check optional timeout (Phase 6 T0, OQ-E001).
     //
-    // `timeout never` carries no expression — no type constraint.
-    // `timeout <expr>` requires `expr: Int` (T026 AskTimeoutNotInt).
-    // The inner expression is a regular sub-expression that gets inferred
-    // and entered into the node_types side-table via the usual infer path.
+    // `timeout never` carries no expression — no constraint to check.
     if let Some(AskTimeout::Millis(ms_expr)) = timeout {
-        let ms_ty = infer_expr(ctx, b, ms_expr);
-        let int_ty = Type::Con(b.int, vec![]);
-        // T026: the timeout expression must unify with Int.
-        // `unify` returns `Err(TypeError)` on failure; we push T026 in that case.
-        // Code T026 is allocated here (see crate::error — T001..T025 were prior).
-        if unify(ctx, &ms_ty, &int_ty).is_err() {
-            let found_ty = ctx.ty_desc(&ms_ty);
-            ctx.errors.push(TypeError::AskTimeoutNotInt {
-                found: found_ty,
-                span: ms_expr.span(),
-            });
-        }
+        check_ask_timeout(ctx, b, ms_expr);
     }
 
     // Step 6 — return handler's ret type.
     ret_ty
+}
+
+// ── Ask timeout ───────────────────────────────────────────────────────────────
+
+/// Check the millisecond expression of an ask timeout.
+///
+/// Both spellings that carry one arrive here: the `timeout <ms>` clause of `?>`
+/// and the third argument of `Actor.tryAsk`. They used to carry a copy of this
+/// each, which is the shape where a rule ends up on one of them — the check
+/// below is new, and adding it in two places is how it would have been added to
+/// one.
+///
+/// Two things are checked:
+///
+/// - the expression is an `Int` (`T026`), and
+/// - it is not a negative literal (`T060`).
+///
+/// The second is a value check, which a type checker with no refinement types
+/// cannot express as a type. It lives here anyway because this is where the
+/// timeout expression is, and because a reader who writes `timeout -1` should
+/// hear about it while looking at their own source rather than from a crash.
+/// A value the program *computes* is out of reach at compile time and is
+/// normalised by the runtime instead (`normalise_timeout/1`).
+fn check_ask_timeout(ctx: &mut InferCtx, b: &BuiltinTyCons, ms_expr: &Expr) {
+    let ms_ty = infer_expr(ctx, b, ms_expr);
+    let int_ty = Type::Con(b.int, vec![]);
+    // T026: the timeout expression must unify with Int.
+    // `unify` returns `Err(TypeError)` on failure; we push T026 in that case.
+    if unify(ctx, &ms_ty, &int_ty).is_err() {
+        let found_ty = ctx.ty_desc(&ms_ty);
+        ctx.errors.push(TypeError::AskTimeoutNotInt {
+            found: found_ty,
+            span: ms_expr.span(),
+        });
+        // A timeout that is not a number cannot also be a negative number, and
+        // one diagnostic per mistake is the point of stopping here.
+        return;
+    }
+    if let Some(literal) = negative_int_literal(ms_expr) {
+        ctx.errors.push(TypeError::AskTimeoutNegative {
+            literal,
+            span: ms_expr.span(),
+        });
+    }
+}
+
+/// The source text of a negative integer literal, if that is what `e` is.
+///
+/// There is no negative literal token: `-1` parses as unary negation applied to
+/// `1`, so the shape to recognise is `Neg` over one of the four integer
+/// literals. The digits are read only to tell a nonzero magnitude from `-0`,
+/// which denotes zero and is not a deadline in the past. The value itself is
+/// never needed — reconstructing it here would be a second integer parser that
+/// has to keep agreeing with the one in lowering, and the text the reader wrote
+/// is the better thing to quote back at them anyway.
+///
+/// Parentheses are stripped on the way in, at both ends. `Expr::Paren` is a
+/// real node rather than a formatting detail, and one of the two spellings this
+/// check serves cannot be written without it: `Actor.tryAsk h m (-1)` is a
+/// juxtaposition, so the argument has to be bracketed. A version of this that
+/// did not look through `Paren` fired on `?>` alone and read as if it covered
+/// both — which is the failure the shared function above exists to prevent,
+/// arriving one level down.
+fn negative_int_literal(e: &Expr) -> Option<String> {
+    let mut e = e;
+    while let Expr::Paren { inner, .. } = e {
+        e = inner.as_ref();
+    }
+    let Expr::Unary {
+        op: UnaryOp::Neg,
+        expr,
+        ..
+    } = e
+    else {
+        return None;
+    };
+    let mut operand = expr.as_ref();
+    while let Expr::Paren { inner, .. } = operand {
+        operand = inner.as_ref();
+    }
+    let Expr::Literal(lit) = operand else {
+        return None;
+    };
+    let (Literal::IntDec { raw, .. }
+    | Literal::IntBin { raw, .. }
+    | Literal::IntOct { raw, .. }
+    | Literal::IntHex { raw, .. }) = lit
+    else {
+        return None;
+    };
+    let digits = raw
+        .strip_prefix("0b")
+        .or_else(|| raw.strip_prefix("0B"))
+        .or_else(|| raw.strip_prefix("0o"))
+        .or_else(|| raw.strip_prefix("0O"))
+        .or_else(|| raw.strip_prefix("0x"))
+        .or_else(|| raw.strip_prefix("0X"))
+        .unwrap_or(raw);
+    let nonzero = digits.chars().any(|c| c.is_ascii_hexdigit() && c != '0');
+    nonzero.then(|| format!("-{raw}"))
 }
 
 // ── Spawn ─────────────────────────────────────────────────────────────────────
@@ -487,16 +573,10 @@ pub fn infer_tryask(
         span,
     );
 
-    // Step 5 — the timeout must be an `Int` (T026), as in `?>`'s `timeout <ms>`.
-    let timeout_ty = infer_expr(ctx, b, timeout_expr);
-    let int_ty = Type::Con(b.int, vec![]);
-    if unify(ctx, &timeout_ty, &int_ty).is_err() {
-        let found_ty = ctx.ty_desc(&timeout_ty);
-        ctx.errors.push(TypeError::AskTimeoutNotInt {
-            found: found_ty,
-            span: timeout_expr.span(),
-        });
-    }
+    // Step 5 — the same timeout rules as `?>`'s `timeout <ms>`, through the
+    // same function: the two spellings reach one `gen_server:call`, so a rule
+    // that holds for one holds for the other.
+    check_ask_timeout(ctx, b, timeout_expr);
 
     // Step 6 — `Result reply AskError`. AskError is the `std.actor` union,
     // interned into the reconciled stdlib block before module inference.
@@ -1674,6 +1754,174 @@ mod tests {
             "Ask return type must still be Int even when timeout is maltyped; got {ty:?}"
         );
         ctx.env.pop_frame();
+    }
+
+    // ── T060: ask_timeout_negative ──────────────────────────────────────────
+    //
+    // `?> handler() timeout -1` names a deadline already in the past. The value
+    // is an `Int`, so `T026` has nothing to say about it and the mistake used
+    // to reach `gen_server:call/3`, where OTP's guard fails and the reporter
+    // prints the whole message — arguments included.
+    #[test]
+    fn ask_timeout_negative_literal_t060() {
+        use ridge_ast::{AskTimeout, Literal, UnaryOp};
+
+        let (mut arena, b) = make_builtins();
+        let counter_id = register_counter(&mut arena, &b);
+
+        let mut ctx = InferCtx::for_tests();
+        ctx.env.push_frame();
+        bind_actor_handle(&mut ctx, "counter", counter_id);
+
+        let handle = Expr::Ident(id("counter"));
+        let message = id("getCount");
+        // `-1` is negation applied to `1`; there is no negative literal token.
+        let negative = AskTimeout::Millis(Box::new(Expr::Unary {
+            op: UnaryOp::Neg,
+            expr: Box::new(Expr::Literal(Literal::IntDec {
+                raw: "1".to_string(),
+                span: ds(),
+            })),
+            span: ds(),
+        }));
+
+        let ty = infer_ask(
+            &mut ctx,
+            &b,
+            &handle,
+            &message,
+            &[],
+            Some(&negative),
+            ds(),
+            &arena,
+        );
+
+        let t060 = ctx.errors.iter().filter(|e| e.code() == "T060").count();
+        assert_eq!(
+            t060,
+            1,
+            "expected exactly 1 T060; got {} errors: {:?}",
+            ctx.errors.len(),
+            ctx.errors
+        );
+        // Pinned rather than left implicit: the value *is* an `Int`, so a T026
+        // beside it would mean the two checks had started answering the same
+        // question.
+        assert_eq!(
+            ctx.errors.iter().filter(|e| e.code() == "T026").count(),
+            0,
+            "a negative Int is still an Int; got {:?}",
+            ctx.errors
+        );
+        assert!(
+            matches!(ty, Type::Con(i, _) if i == b.int),
+            "the handler's return type survives a bad timeout; got {ty:?}"
+        );
+        ctx.env.pop_frame();
+    }
+
+    // What counts as a negative literal, in both directions.
+    //
+    // The rejected half is the half that matters. `-0` denotes zero and is not
+    // a deadline in the past; a parenthesised `(-1)` is the only spelling
+    // `Actor.tryAsk` accepts, so a check that stopped at `Paren` would cover
+    // one of the two callers and read as if it covered both — which it did,
+    // until this table said otherwise.
+    #[test]
+    fn negative_int_literal_reads_the_shapes_that_are_negative() {
+        use ridge_ast::{Literal, UnaryOp};
+
+        fn lit(raw: &str) -> Expr {
+            Expr::Literal(Literal::IntDec {
+                raw: raw.to_string(),
+                span: ds(),
+            })
+        }
+        fn hex(raw: &str) -> Expr {
+            Expr::Literal(Literal::IntHex {
+                raw: raw.to_string(),
+                span: ds(),
+            })
+        }
+        fn bin(raw: &str) -> Expr {
+            Expr::Literal(Literal::IntBin {
+                raw: raw.to_string(),
+                span: ds(),
+            })
+        }
+        fn oct(raw: &str) -> Expr {
+            Expr::Literal(Literal::IntOct {
+                raw: raw.to_string(),
+                span: ds(),
+            })
+        }
+        fn neg(e: Expr) -> Expr {
+            Expr::Unary {
+                op: UnaryOp::Neg,
+                expr: Box::new(e),
+                span: ds(),
+            }
+        }
+        fn paren(e: Expr) -> Expr {
+            Expr::Paren {
+                inner: Box::new(e),
+                span: ds(),
+            }
+        }
+
+        let accepted: Vec<(Expr, &str)> = vec![
+            (neg(lit("1")), "-1"),
+            (neg(lit("1_000")), "-1_000"),
+            (neg(hex("0x10")), "-0x10"),
+            (neg(bin("0b1")), "-0b1"),
+            (neg(oct("0o7")), "-0o7"),
+            (paren(neg(lit("1"))), "-1"),
+            (paren(paren(neg(lit("5")))), "-5"),
+            (neg(paren(lit("1"))), "-1"),
+            // Zero digits under a nonzero radix prefix: the `0x` is not what
+            // makes it nonzero, and reading it as a digit would call `-0x0`
+            // negative.
+            (neg(hex("0x0F")), "-0x0F"),
+        ];
+        let rejected: Vec<Expr> = vec![
+            lit("1"),
+            lit("0"),
+            neg(lit("0")),
+            neg(lit("0_0")),
+            neg(hex("0x0")),
+            neg(bin("0b0")),
+            neg(oct("0o0")),
+            paren(neg(lit("0"))),
+            Expr::Ident(id("ms")),
+            neg(Expr::Ident(id("ms"))),
+            neg(Expr::Literal(Literal::Float {
+                raw: "1.5".to_string(),
+                span: ds(),
+            })),
+        ];
+        assert!(
+            accepted.len() >= 9 && rejected.len() >= 11,
+            "the tables lost entries: {} accepted, {} rejected",
+            accepted.len(),
+            rejected.len()
+        );
+
+        for (e, expected) in &accepted {
+            assert_eq!(
+                negative_int_literal(e).as_deref(),
+                Some(*expected),
+                "expected a negative literal reading `{expected}`; got {:?}",
+                negative_int_literal(e)
+            );
+        }
+        for e in &rejected {
+            assert_eq!(
+                negative_int_literal(e),
+                None,
+                "expected no negative literal; got {:?}",
+                negative_int_literal(e)
+            );
+        }
     }
 
     // ── child (ChildSpec) ──────────────────────────────────────────────────────

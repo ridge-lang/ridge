@@ -1616,6 +1616,12 @@ pub const REGISTRY: &[CodeEntry] = &[
         summary: "`main` returns a `Result` whose error type has no `ToText` instance.",
     },
     CodeEntry {
+        code: "T060",
+        variants: &["AskTimeoutNegative"],
+        owner: "ridge-typecheck",
+        summary: "An ask timeout is written as a negative literal.",
+    },
+    CodeEntry {
         code: "T101",
         variants: &["FfiArityMismatch"],
         owner: "ridge-stdlib",

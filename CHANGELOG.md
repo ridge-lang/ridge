@@ -42,6 +42,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A millisecond count outside what the platform can wait for no longer kills the
+  program. Every wait on this backend is a `receive ... after`, whose argument is
+  a 32-bit millisecond count, while `Int` is 64-bit and signed — so a program
+  could always name a duration nothing can wait for, in either direction, and
+  four surfaces died on one: the `timeout` clause of `?>`, `Actor.tryAsk`,
+  `Actor.await` and `Time.sleep`. `Actor.tryAsk` was the worst of the four:
+  returning rather than raising is the whole of its contract, and it raised.
+
+  Two of them leaked while they died. The guard that fails is inside
+  `gen_server:call/3`, and the term reporting it carries that call's argument
+  list — which is the entire message, every argument the handler was sent. An
+  ask carrying a password printed the password. The count is now brought into
+  range before anything waits on it, so the message never reaches an error term
+  at all. A negative count is a deadline already in the past and behaves as `0`;
+  a count above the ceiling waits the longest the platform can express. Both
+  then follow the paths that already existed: `?>` reports a missed deadline in
+  Ridge's own words, `tryAsk` returns its `Err`, `await` returns `None`, and
+  `sleep` returns.
+
+  A negative *literal* is a different thing and is now refused where the author
+  can see it (`T060`), with an editor action that replaces it with `0`. The
+  habit it usually comes from is the `-1 means forever` convention of older
+  APIs, so the message names `timeout never` — the thing that author was
+  reaching for, and the opposite of what `-1` was about to do. The entry below
+  lists `timeout -1` among the spellings that began parsing; it parses, and then
+  says this.
+
+  The type rules for a timeout now live in one function instead of a copy each
+  on `?>` and `Actor.tryAsk`, which is why the new one covers both.
+
 - The `timeout` clause on an ask takes any operator expression, not only a bare
   name or a number. Whether the contextual `timeout` was read as the keyword
   turned on the *kind* of the token after it, and that list had two entries, so

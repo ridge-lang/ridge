@@ -11,7 +11,7 @@
     fs_read_dir/1,
     cli_args/0, cli_args/1,
     time_now/0, time_now/1, time_epoch/0, time_epoch/1,
-    time_diff_ms/2, time_diff/2, duration_from_millis/1,
+    time_diff_ms/2, time_diff/2, duration_from_millis/1, sleep/1,
     mono_now/0, mono_now/1, mono_elapsed/1, mono_since/2,
     time_from_iso/1, time_since_ms/1, time_iso/1,
     time_to_micros/1, time_from_micros/1,
@@ -1767,20 +1767,67 @@ resolve_handle_pid({ridge_sup_handle, SupPid, ChildId, _Config}) ->
             end
     end.
 
+%% The ceiling on a millisecond count. Every wait on this platform is a
+%% `receive ... after`, and its argument is a 32-bit millisecond count:
+%% `gen_server:call/3`, `timer:sleep/1` and every `after` clause inherit the
+%% same bound. Ridge's `Int` is 64-bit and signed, so a program can name a
+%% duration the platform cannot wait for, in both directions.
+-define(MAX_TIMEOUT_MS, 4294967295).
+
+%% normalise_timeout/1 — bring a user-supplied millisecond count into the range
+%% the platform accepts, before anything is asked to wait for it.
+%%
+%% A negative count is a deadline already in the past, so it behaves as zero:
+%% `ask` reports the same missed deadline it reports for `timeout 0`, `try_ask`
+%% returns the same `{error, 'Timeout'}`, `await_down` returns the same `none`.
+%% A count above the ceiling waits the longest the platform can express; the
+%% difference between 49 days and a century is not observable, and a program
+%% that eventually says "no answer" is easier to debug than one that hangs.
+%% `infinity` is the timeout `?> ... timeout never` lowers to and passes through.
+%%
+%% Running *before* the call is the point of it. An out-of-range count that
+%% reaches `gen_server:call/3` raises `function_clause` out of `gen:call/4`,
+%% whose argument list holds the whole message — every argument the handler was
+%% sent — and the crash reporter prints that term verbatim. A literal negative
+%% is rejected at compile time (T060); this is what covers a computed one.
+%%
+%% The last clause passes anything else through unchanged: the type checker
+%% guarantees an `Int`, and a value that is somehow neither should fail the way
+%% it failed before rather than be quietly reshaped here.
+normalise_timeout(infinity) ->
+    infinity;
+normalise_timeout(Ms) when is_integer(Ms), Ms < 0 ->
+    0;
+normalise_timeout(Ms) when is_integer(Ms), Ms > ?MAX_TIMEOUT_MS ->
+    ?MAX_TIMEOUT_MS;
+normalise_timeout(Ms) ->
+    Ms.
+
+%% sleep/1 — target of the stdlib `Time.sleep` fn. A thin wrapper over
+%% `timer:sleep/1` for one reason: the millisecond count is normalised first, so
+%% `Time.sleep (-1)` returns immediately instead of dying with `timeout_value`.
+sleep(Ms) ->
+    timer:sleep(normalise_timeout(Ms)).
+
 %% ask/3 — synchronous request/response. Bounded mailbox policies do not
 %% apply: ask is a request/response primitive, not a backpressure surface.
 %% Timeout exit is re-raised as a structured error for Ridge source
 %% attribution; a dead target (already dead at resolution, or dying between
 %% resolution and the call) raises the structured `ridge_ask_noproc` reason
 %% instead of the raw `exit:{noproc,_}` gen_server:call would surface.
+%%
+%% The deadline reported is the normalised one, because that is the one that
+%% was actually waited: a message naming a duration nothing waited for would be
+%% the second wrong answer rather than a better one.
 ask(Handle, Msg, Timeout) ->
+    Deadline = normalise_timeout(Timeout),
     case resolve_handle_pid(Handle) of
         {ok, Pid} ->
-            try gen_server:call(Pid, Msg, Timeout) of
+            try gen_server:call(Pid, Msg, Deadline) of
                 Reply -> Reply
             catch
                 exit:{timeout, _} ->
-                    erlang:error({ridge_rt_ask_timeout, Msg, Timeout});
+                    erlang:error({ridge_rt_ask_timeout, Msg, Deadline});
                 exit:{noproc, _} ->
                     exit(ridge_ask_noproc)
             end;
@@ -1796,7 +1843,7 @@ ask(Handle, Msg, Timeout) ->
 try_ask(Handle, Msg, Timeout) ->
     case resolve_handle_pid(Handle) of
         {ok, Pid} ->
-            try gen_server:call(Pid, Msg, Timeout) of
+            try gen_server:call(Pid, Msg, normalise_timeout(Timeout)) of
                 Reply -> {ok, Reply}
             catch
                 exit:{noproc, _}  -> {error, 'Noproc'};
@@ -1831,7 +1878,7 @@ await_down(Ref, TimeoutMs) ->
     receive
         {'DOWN', Ref, process, _Pid, Reason} ->
             {some, exit_reason_to_ridge(Reason)}
-    after TimeoutMs ->
+    after normalise_timeout(TimeoutMs) ->
         erlang:demonitor(Ref, [flush]),
         none
     end.

@@ -212,13 +212,22 @@ pub struct WorkspaceIndex {
     pub syntax_fixes: Vec<SyntaxFix>,
 }
 
-/// A ready-to-apply quick-fix that edits a declaration's signature.
+/// A ready-to-apply quick-fix for a type error.
 ///
-/// For `T014`/`T018` the edit inserts the missing capabilities before the
+/// Most edit a declaration's signature, which is what the name records: for
+/// `T014`/`T018` the edit inserts the missing capabilities before the
 /// declaration's name (or after the `init` keyword); for `T019` it replaces
 /// the `init` block's capability tokens with the subset that stays within the
 /// actor's boundary; for `T055` it writes the `where` clause the signature is
-/// short. Spans are already resolved to LSP ranges.
+/// short; for `T059` it adds `deriving (ToText)`.
+///
+/// `T060` is the first that edits an expression instead — it replaces a
+/// negative ask timeout with `0`. The name is now narrower than the type, and
+/// is left alone deliberately: `SyntaxFix` next door is the same pair of ranges
+/// reached from a parse error rather than a type error, and the two want
+/// merging under one name rather than a third one invented here.
+///
+/// Spans are already resolved to LSP ranges.
 #[derive(Debug, Clone)]
 pub struct SignatureFix {
     /// The document the function lives in.
@@ -6273,6 +6282,29 @@ pub fn collect_signature_fixes(
                 if let Some(t) = find_type_decl(module, *decl_span) {
                     push_deriving_to_text_fix(&mut out, uri, li, *span, t);
                 }
+            }
+
+            // The whole fix is in the diagnostic: the span is the timeout
+            // expression, and `0` is the value the runtime would have used for
+            // it anyway. No declaration is looked up because none is involved —
+            // this is the one arm here that edits an expression.
+            //
+            // `0` rather than `never`: it is the meaning a negative count
+            // already has, and it is the only one of the two that both
+            // spellings accept. `Actor.tryAsk` takes an `Int`, so writing
+            // `never` into its third argument would replace a diagnostic with a
+            // different one. The sentence names `never` for the reader who
+            // wanted it; an action that can be wrong is worse than a sentence.
+            TypeError::AskTimeoutNegative { literal, span } => {
+                let range = span_to_range(li, *span);
+                out.push(SignatureFix {
+                    uri: uri.clone(),
+                    decl_range: range,
+                    edit_range: range,
+                    new_text: "0".to_owned(),
+                    code: "T060",
+                    title: format!("Replace `{literal}` with `0`"),
+                });
             }
 
             TypeError::CapabilityNotDeclared {

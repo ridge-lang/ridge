@@ -1064,7 +1064,12 @@ SpawnExpr     ::= "spawn" UPPER_IDENT { Expr } ;
    The operand is Expr1 — the top of the operator ladder, not Expr. A
    keyword-led form has to be parenthesised, because inside a bracket the
    lexer emits no NEWLINE and a "let" or "return" could not be told from the
-   start of the next statement.                                             *)
+   start of the next statement.
+
+   The grammar admits any Expr1; which values are meaningful is not a grammar
+   question. A negative literal is rejected by the type checker (T060) and an
+   out-of-range value computed at run time is normalised, both described in
+   the spec rather than here.                                                *)
 AskExpr       ::= Expr "?>" IDENT { ExprAtom } [ AskTimeout ] ;
 AskTimeout    ::= "timeout" ( "never" | Expr1 ) ;
 

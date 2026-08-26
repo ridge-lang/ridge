@@ -1020,6 +1020,10 @@ A tuple meets a position expecting a different number of components.
 
 `main` returns a `Result` whose error type has no `ToText` instance.
 
+### T060
+
+An ask timeout is written as a negative literal.
+
 ### T101
 
 The `@ffi` arity doesn't match the Ridge parameter count.

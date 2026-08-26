@@ -437,6 +437,33 @@ pub enum TypeError {
         span: Span,
     },
 
+    // ── T060 ─────────────────────────────────────────────────────────────────
+    /// An ask timeout is written as a negative literal.
+    ///
+    /// A timeout is a deadline measured forward from now, so a negative one is
+    /// a deadline already in the past. The runtime treats a computed negative
+    /// as exactly that — the ask gives up at once, the same as `timeout 0` —
+    /// but a *literal* negative is not a value that arrived from somewhere; it
+    /// is what the author typed, and it is worth saying so where they can see
+    /// it.
+    ///
+    /// The reason it is usually typed at all is the `-1 means forever`
+    /// convention of `Thread.sleep`-era APIs (.NET's `Timeout.Infinite`,
+    /// Java's, and `gen_server`'s own `infinity` in a different spelling).
+    /// Ridge spells that `timeout never`, so the hint names it: the reader who
+    /// wrote `-1` on that habit gets the word they were reaching for rather
+    /// than a number that means the opposite of what they wanted.
+    ///
+    /// Not expressible as a type — Ridge has no refinement types, and `Int` is
+    /// the honest type of the expression. It is a value check that lives beside
+    /// the type check because that is where the expression is.
+    AskTimeoutNegative {
+        /// The literal as written, including its sign — `"-1"`, `"-0x10"`.
+        literal: String,
+        /// Source span of the timeout expression.
+        span: Span,
+    },
+
     // ── T027 ─────────────────────────────────────────────────────────────────
     /// An actor declares `mailbox bounded N drop oldest`.
     ///
@@ -1064,6 +1091,7 @@ impl TypeError {
             Self::RowVariableLeak { .. } => "T024",
             Self::SpawnArityMismatch { .. } => "T025",
             Self::AskTimeoutNotInt { .. } => "T026",
+            Self::AskTimeoutNegative { .. } => "T060",
             Self::MailboxPolicyDropOldestNotShipped { .. } => "T027",
             Self::IncompleteRecordPattern { .. } => "T028",
             Self::NoInstance { .. } => "T029",

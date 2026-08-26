@@ -704,6 +704,12 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
     },
     FfiAuditEntry {
         beam_module: "ridge_rt",
+        fn_name: "sleep",
+        arity: 1,
+        requires_caps: &[Capability::Time],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
         fn_name: "time_iso",
         arity: 1,
         requires_caps: &[],

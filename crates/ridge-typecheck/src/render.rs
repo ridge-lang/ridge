@@ -474,6 +474,14 @@ impl TypeError {
                 )
             }
 
+            // ── T060 ──────────────────────────────────────────────────────────
+            Self::AskTimeoutNegative { literal, .. } => {
+                write!(
+                    f,
+                    "ask timeout cannot be negative\n  `{literal}` is a deadline already in the past, so the ask would give up before it started\n  hint: `0` gives up at once; to wait with no deadline at all, ask with `?> handler() timeout never`"
+                )
+            }
+
             // ── T027 ──────────────────────────────────────────────────────────
             Self::MailboxPolicyDropOldestNotShipped { actor, .. } => {
                 write!(
@@ -915,6 +923,7 @@ impl HasErrorCode for TypeError {
             | Self::RowVariableLeak { span, .. }
             | Self::SpawnArityMismatch { span, .. }
             | Self::AskTimeoutNotInt { span, .. }
+            | Self::AskTimeoutNegative { span, .. }
             | Self::MailboxPolicyDropOldestNotShipped { span, .. }
             | Self::IncompleteRecordPattern { span, .. }
             | Self::NoInstance { span, .. }
@@ -2017,6 +2026,7 @@ mod tests {
             | TypeError::RowVariableLeak { .. }
             | TypeError::SpawnArityMismatch { .. }
             | TypeError::AskTimeoutNotInt { .. }
+            | TypeError::AskTimeoutNegative { .. }
             | TypeError::MailboxPolicyDropOldestNotShipped { .. }
             | TypeError::IncompleteRecordPattern { .. }
             | TypeError::NoInstance { .. }
@@ -2209,6 +2219,10 @@ mod tests {
             },
             TypeError::AskTimeoutNotInt {
                 found: td(),
+                span: sp(),
+            },
+            TypeError::AskTimeoutNegative {
+                literal: s(),
                 span: sp(),
             },
             TypeError::MailboxPolicyDropOldestNotShipped {
@@ -2451,7 +2465,7 @@ mod tests {
         let mut seen: Vec<&'static str> = one_of_each().iter().map(TypeError::code).collect();
         seen.sort_unstable();
         seen.dedup();
-        assert_eq!(seen.len(), 58, "codes reached: {seen:?}");
+        assert_eq!(seen.len(), 59, "codes reached: {seen:?}");
     }
 
     /// One code, one variant.

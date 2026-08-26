@@ -5028,6 +5028,116 @@ pub fn describe (e: Int) -> Text =
     assert_eq!(edits[0].range.end, Position::new(0, 25));
 }
 
+/// The source both tests below use, and the one line either of them cares
+/// about.
+///
+/// `-1` sits at columns 29..31 of the last line. Written out because two tests
+/// share it: one asks for the action, the other pastes the action's own result
+/// back in and asks whether the diagnostic went with it.
+const ASK_TIMEOUT_NEGATIVE_SRC: &str = "actor Vault =
+    state opened: Int = 0
+
+    on unlock (pin: Int) -> Int =
+        opened + pin
+
+pub fn spawn time open () -> Int =
+    let v = spawn Vault
+    v ?> unlock 4242 timeout -1
+";
+
+#[tokio::test]
+async fn test_code_action_replaces_a_negative_ask_timeout_with_zero() {
+    // A deadline already in the past (T060). The action replaces the literal
+    // rather than editing a signature, which is the first of its kind in this
+    // collector — the whole edit is in the diagnostic's own span.
+    //
+    // `0` and not `never`: `0` is what a negative count already means at run
+    // time, and it is the only replacement both spellings accept —
+    // `Actor.tryAsk` takes an `Int`, so an action offering `never` would be
+    // wrong for half its callers. The sentence names `never` for the reader who
+    // was reaching for it.
+    let (service, _socket, uri) =
+        cap_workspace_fixture_allow(ASK_TIMEOUT_NEGATIVE_SRC, "[\"spawn\", \"time\"]").await;
+    let server = service.inner();
+
+    let resp = server
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(8, 29),
+                end: Position::new(8, 29),
+            },
+            context: CodeActionContext::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code_action ok")
+        .expect("a quick-fix is offered on the negative timeout");
+
+    assert_eq!(resp.len(), 1, "expected exactly one action, got {resp:?}");
+    let CodeActionOrCommand::CodeAction(action) = &resp[0] else {
+        panic!("expected a CodeAction, got {:?}", resp[0]);
+    };
+    assert_eq!(action.title, "Replace `-1` with `0`");
+    assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+
+    let edits = action
+        .edit
+        .as_ref()
+        .and_then(|e| e.changes.as_ref())
+        .and_then(|c| c.get(&uri))
+        .expect("an edit for this document");
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].new_text, "0");
+    assert_eq!(edits[0].range.start, Position::new(8, 29));
+    assert_eq!(edits[0].range.end, Position::new(8, 31));
+}
+
+#[test]
+fn a_negative_ask_timeout_fix_leaves_nothing_behind() {
+    // The other half of judging a quick-fix: apply what it recommends and ask
+    // again. An action can be offered, be well-formed, land exactly where it
+    // says, and still leave the reader with a squiggle — nothing in the test
+    // above would notice.
+    use ridge_driver::{check_workspace, CheckOptions};
+
+    let fixed = ASK_TIMEOUT_NEGATIVE_SRC.replace("timeout -1", "timeout 0");
+    assert_ne!(
+        fixed, ASK_TIMEOUT_NEGATIVE_SRC,
+        "the edit under test did not apply — the fixture drifted out from under it"
+    );
+
+    // A directory of its own per run. A fixed name under `temp_dir()` is shared
+    // with every other process running this suite, and a sibling deleting it
+    // mid-test is a failure that reads like a real one.
+    let root = tempfile::Builder::new()
+        .prefix("ridge-lsp-ask-timeout-fix-")
+        .tempdir()
+        .expect("temp dir");
+    let app_src = root.path().join("app").join("src");
+    std::fs::create_dir_all(&app_src).expect("create temp workspace");
+    std::fs::write(
+        root.path().join("ridge.toml"),
+        "[workspace]\nname = \"ask-fix-ws\"\nversion = \"0.1.0\"\nmembers = [\"app\"]\n",
+    )
+    .expect("write workspace manifest");
+    std::fs::write(
+        root.path().join("app").join("ridge.toml"),
+        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"library\"\nentry = \"src/Main.ridge\"\n\n[capabilities]\nallow = [\"spawn\", \"time\"]\n",
+    )
+    .expect("write project manifest");
+    std::fs::write(app_src.join("Main.ridge"), &fixed).expect("write source");
+
+    let artefacts = check_workspace(CheckOptions::new(root.path().to_path_buf()))
+        .expect("workspace checks without a fatal error");
+    let codes: Vec<&str> = artefacts.diagnostics.iter().map(|d| d.code).collect();
+    assert!(
+        codes.is_empty(),
+        "the recommended fix must leave a clean file; got {codes:?}"
+    );
+}
+
 #[tokio::test]
 async fn test_code_action_repairs_a_lower_case_module_alias() {
     // The bare form of `import` binds `list`, and a qualified name cannot

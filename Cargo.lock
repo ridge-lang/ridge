@@ -1772,6 +1772,7 @@ dependencies = [
  "ridge-types",
  "rustc-hash",
  "smallvec",
+ "tempfile",
 ]
 
 [[package]]

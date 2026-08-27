@@ -155,8 +155,9 @@ pub fn nearest_type_shorthand(name: &str) -> Option<&'static str> {
 /// Compute up to [`MAX_RESULTS`] "did you mean?" suggestions for `target`.
 ///
 /// Returns the candidates with Damerau-Levenshtein distance ≤ [`MAX_DISTANCE`],
-/// sorted by `(distance, name)`.  If `candidates` yields more than
-/// [`CANDIDATE_CAP`] entries the function returns an empty `Vec` (cost cap).
+/// sorted by `(distance, name)`, each name at most once.  If `candidates`
+/// yields more than [`CANDIDATE_CAP`] entries the function returns an empty
+/// `Vec` (cost cap).
 ///
 /// `candidates` is consumed lazily; the cost cap is checked while collecting.
 ///
@@ -194,6 +195,16 @@ where
 
     // Stable order: closest first; alphabetical break for ties.
     scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    // One name, one suggestion. A candidate list can hold the same name twice —
+    // the arena interns `Parsed` along two paths, and did the same for `Column`
+    // (#585) — and `did you mean `Column`, `Column`?` asks the reader to choose
+    // between a word and itself. Deduping here rather than at each of the
+    // callers is what makes it a property: every suggester in the compiler goes
+    // through this function, so none of them has to remember. Equal names sort
+    // adjacent (same name, same distance), so this drops exactly the repeats,
+    // and it runs before the truncate so a repeat cannot spend a slot a real
+    // second-best candidate would have had.
+    scored.dedup_by(|a, b| a.1 == b.1);
     scored.truncate(MAX_RESULTS);
     scored.into_iter().map(|(_, s)| s).collect()
 }
@@ -309,6 +320,29 @@ mod tests {
         // "mapp" vs "map" = 1, vs "max" = 2, vs "empty" = 5.
         let out = suggest("mapp", s(&["map", "max", "empty"]));
         // Closest first, alphabetical tiebreak.
+        assert_eq!(out, vec!["map".to_owned(), "max".to_owned()]);
+    }
+
+    // ── suggest: a repeated candidate ─────────────────────────────────────────
+
+    #[test]
+    fn suggest_offers_a_name_once() {
+        // The compiler's own type arena holds two entries named `Parsed`, and
+        // held two named `Column` before they were told apart (#585), so a
+        // candidate list built from it can carry the same word twice. Offering
+        // it twice asks the reader to choose between a word and itself.
+        // `Colum` is one edit from `Column` and two from `Colour`, so the
+        // repeat is what the closest-first order puts a second copy of.
+        let out = suggest("Colum", s(&["Column", "Column", "Colour"]));
+        assert_eq!(out, vec!["Column".to_owned(), "Colour".to_owned()]);
+    }
+
+    #[test]
+    fn a_repeat_does_not_spend_a_results_slot() {
+        // Deduping after the truncate would look identical on the test above
+        // and silently cost a real candidate here: three copies of `map` would
+        // fill all MAX_RESULTS slots and `max` would never be reached.
+        let out = suggest("mapp", s(&["map", "map", "map", "max"]));
         assert_eq!(out, vec!["map".to_owned(), "max".to_owned()]);
     }
 

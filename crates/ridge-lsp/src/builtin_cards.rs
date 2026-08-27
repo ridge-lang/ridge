@@ -323,11 +323,11 @@ pub static CARDS: &[(&str, BuiltinCard)] = &[
     ),
     // ── Schema descriptors, produced by deriving ─────────────────────────────
     (
-        "Column",
+        "ColumnRef",
         BuiltinCard {
-            signature: "Column entity value",
+            signature: "ColumnRef entity value",
             summary: "A typed reference to one column, from `deriving (Table)`.",
-            note: "`name` and `table` are readable from it.",
+            note: "`name` and `table` are readable from it. It is not `std.migrate`'s `Column`: that one is a column *definition* — a base type and the schema modifiers — while this one points at a column that already exists.",
         },
     ),
     (

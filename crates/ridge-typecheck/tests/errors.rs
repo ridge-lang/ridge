@@ -2508,3 +2508,36 @@ fn expected_and_found_are_never_reversed() {
         wrong.join("\n  ")
     );
 }
+
+// ── One word, one type ────────────────────────────────────────────────────────
+
+/// A mismatch between two different types never spells them the same way.
+///
+/// `Column` named two types: the opaque column of a migration, and the typed
+/// column reference `deriving (Table)` produces. Neither carries a defining
+/// module, so a mismatch between them rendered `expected Column, got Column`
+/// and the renderer had nothing left to tell them apart with — there was no
+/// message to write. The second one is `ColumnRef` now (#585).
+///
+/// The pair is pinned rather than only asserted different, because the halves
+/// fail in different ways: an `expected` that stopped saying `Column` would
+/// mean a bare name had drifted off the type `std.migrate` publishes, and a
+/// `found` that lost its arguments would mean the mirror had stopped carrying
+/// which entity and which value type the column belongs to.
+#[test]
+fn a_mismatch_between_the_two_column_types_names_them_apart() {
+    let src = "import std.migrate (Column)
+
+               pub type User = { id: Int } deriving (Table)
+
+               pub fn f () -> Column = userCols.id
+";
+    let (errors, tycons) = run_typecheck_rendered("two_columns", src);
+    let pair = first_mismatch_pair(&errors, &tycons)
+        .unwrap_or_else(|| panic!("expected a mismatch, got {errors:?}"));
+    assert_eq!(
+        (pair.0.as_str(), pair.1.as_str()),
+        ("Column", "ColumnRef User Int"),
+        "a reader cannot act on a message that names both types with one word"
+    );
+}

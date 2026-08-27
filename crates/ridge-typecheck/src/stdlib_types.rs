@@ -5016,4 +5016,57 @@ mod tests {
             assert!(matches!(arena.get(id).kind, TyConKind::Record(_)));
         }
     }
+
+    /// Inside the block the compiler registers for itself, a name means one
+    /// type.
+    ///
+    /// Every by-name lookup over the arena — the fallback that resolves a
+    /// written type annotation, the did-you-mean candidate list, the
+    /// type-position completion list, the built-in hover cards — answers with
+    /// the first entry it finds and cannot know a second one existed. So a
+    /// repeated name is not a tidiness problem: it silently decides which of
+    /// two types every one of those surfaces describes, and it renders a
+    /// mismatch between them as `expected X, got X`, which a reader cannot act
+    /// on. That was `Column` (#585), now `ColumnRef` and `Column`.
+    ///
+    /// The assertion is an equality, not an emptiness, so it reports in both
+    /// directions: a new collision fails here, next to the table that would
+    /// have introduced it, and so does removing the one that is left — at
+    /// which point the exception below is dead text and should go with it.
+    ///
+    /// User types are not in scope. A workspace is free to declare its own
+    /// `Set`, and the name resolver looks those up through the module's own
+    /// map before it ever reaches the arena scan.
+    #[test]
+    fn a_compiler_registered_name_means_one_type() {
+        let (mut arena, b) = builtins();
+        let _ = intern_stdlib_types(&mut arena, &b);
+
+        let mut seen: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+        for decl in arena.all() {
+            *seen.entry(decl.name.as_str()).or_default() += 1;
+        }
+        assert!(
+            seen.len() > 50,
+            "the sweep found almost no names — it is broken, not the arena"
+        );
+        let repeated: Vec<&str> = seen
+            .into_iter()
+            .filter(|&(_, n)| n > 1)
+            .map(|(name, _)| name)
+            .collect();
+
+        // `Parsed` is the one that is left, and it is a different shape of
+        // problem: both entries carry the same three fields, so it is one type
+        // registered along two paths rather than two types under one name. It
+        // produces no wrong answer — every lookup lands on an entry that says
+        // the same thing — only a duplicate every consumer of the arena steps
+        // over. Removing it is worth doing on its own, because dropping an
+        // entry shifts every id after it.
+        assert_eq!(
+            repeated,
+            vec!["Parsed"],
+            "a name the compiler registers twice decides, silently, which type              every by-name lookup over the arena answers with"
+        );
+    }
 }

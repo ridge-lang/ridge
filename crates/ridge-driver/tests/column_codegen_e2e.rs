@@ -24,7 +24,7 @@ const SCHEMA: &str = r"
 pub type User = { id: Int, email: Text, age: Int } deriving (Table)
 ";
 
-/// The generated mirror type-checks: `userCols.<field>` is a `Column User <T>`
+/// The generated mirror type-checks: `userCols.<field>` is a `ColumnRef User <T>`
 /// whose `.name` is `Text`, and the table-metadata value exists.
 #[test]
 fn column_mirror_typechecks() {

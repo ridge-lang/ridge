@@ -3,8 +3,10 @@
 //! The arena the list is drawn from holds more than that. It also holds the
 //! sixteen per-arity dispatch keys behind function types and the projection
 //! shapes the query builder threads through a chain — names the compiler writes
-//! for itself. And it can hold one name twice, because two different built-ins
-//! were interned under it.
+//! for itself. And it can still hold one name twice: `Parsed` is registered
+//! along two paths, so the list keeps the first row for a repeated name and
+//! drops the rest, since two rows spelled the same give a reader nothing to
+//! choose between.
 //!
 //! Hover keeps carding those names, and that asymmetry is the point: hover
 //! explains what a reader has already run into, completion proposes what they
@@ -156,18 +158,37 @@ fn a_name_is_offered_once() {
 }
 
 #[test]
-fn the_surviving_entry_is_the_one_the_name_resolves_to() {
-    // `Column` is interned twice: the typed column reference behind
-    // `deriving (Table)`, and the opaque column of a migration. Writing the bare
-    // name reaches the first, so that is the one the list must describe. Without
-    // this, collapsing the pair could keep either and still look tidy.
+fn the_two_column_types_are_two_rows() {
+    // `Column` used to name both the typed column reference behind
+    // `deriving (Table)` and the opaque column of a migration. One row survived
+    // the dedupe above and described whichever the arena happened to hold
+    // first, so a reader who meant the other could not ask for it and was not
+    // told it existed. They are two names now, and this is what says so.
     let items = type_position_candidates();
-    let column: Vec<&CompletionItemData> = items.iter().filter(|i| i.label == "Column").collect();
-    assert_eq!(column.len(), 1, "Column should be offered once");
+    let offered = |label: &str| -> Vec<&CompletionItemData> {
+        items.iter().filter(|i| i.label == label).collect()
+    };
+
+    let column = offered("Column");
+    assert_eq!(column.len(), 1, "`Column` should be offered once");
+    let column_ref = offered("ColumnRef");
+    assert_eq!(column_ref.len(), 1, "`ColumnRef` should be offered once");
+
+    // The card's own signature, so the row says what the two parameters are for
+    // rather than leaving a reader to guess at `ColumnRef e a`.
+    assert_eq!(
+        column_ref[0].detail.as_deref(),
+        Some("ColumnRef entity value"),
+        "the built-in row should carry its parameter-named signature"
+    );
+    // `Column` is a reconciled `std.migrate` type, and none of those carry a
+    // completion detail — `Repo`, `Query`, `Migration` and `SortOrder` are all
+    // bare rows too. Pinned so this reads as the shape of that whole family
+    // rather than as something the rename took away.
     assert_eq!(
         column[0].detail.as_deref(),
-        Some("Column entity value"),
-        "the entry should describe the type the bare name actually reaches"
+        None,
+        "a reconciled stdlib type is a bare row here; hover is where its          declaration is read"
     );
 }
 

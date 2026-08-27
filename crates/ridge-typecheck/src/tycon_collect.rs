@@ -217,7 +217,7 @@ pub fn collect_user_tycons(
 /// `Table`.
 ///
 /// For an entity `User`, this interns a `UserCols` record type — one
-/// `Column User T` field per entity field `f: T` — and registers two value
+/// `ColumnRef User T` field per entity field `f: T` — and registers two value
 /// schemes so user code referencing them type-checks:
 ///
 /// - `userCols  : UserCols`     — the column mirror
@@ -225,7 +225,7 @@ pub fn collect_user_tycons(
 ///
 /// Name resolution has already reserved the three names (see
 /// [`ridge_ast::column_mirror`]); this fills in their types. Lowering emits the
-/// values. `Column`/`Table` are compiler builtins ([`BuiltinTyCons`]), so user
+/// values. `ColumnRef`/`Table` are compiler builtins ([`BuiltinTyCons`]), so user
 /// code never imports or names them.
 ///
 /// Idempotent: on an incremental re-check the arena already holds the mirror
@@ -245,7 +245,7 @@ pub fn synth_table_mirrors(
 ) {
     use ridge_ast::column_mirror as cm;
 
-    let column_id = b.column;
+    let column_id = b.column_ref;
     let table_id = b.table;
 
     let mono = |ty: Type| Scheme {
@@ -271,7 +271,7 @@ pub fn synth_table_mirrors(
         };
         let entity_ty = Type::Con(entity_id, vec![]);
 
-        // Mirror each entity field `f: T` as `f: Column Entity T`. The schema was
+        // Mirror each entity field `f: T` as `f: ColumnRef Entity T`. The schema was
         // built by pass 2 of `collect_user_tycons`, so it is available here.
         let mirror_fields: Vec<RecordField> = {
             let TyConKind::Record(schema) = &arena.get(entity_id).kind else {

@@ -302,7 +302,7 @@ fn lower_type_migrations(ctx: &mut LowerCtx<'_>, decl: &ridge_ast::TypeDecl) -> 
         .collect()
 }
 
-/// - `userCols  = { id = Column { name = "id", table = "users" }, … }`
+/// - `userCols  = { id = ColumnRef { name = "id", table = "users" }, … }`
 /// - `userTable = { name = "users", columns = ["id", …] }`
 ///
 /// Records lower to BEAM maps, so each value is an `IrExpr::Construct` over a
@@ -325,9 +325,9 @@ fn lower_table_mirrors(ctx: &mut LowerCtx<'_>, decl: &ridge_ast::TypeDecl) -> Ve
     let span = decl.span;
     let is_pub = matches!(decl.vis, Visibility::Pub);
 
-    // userCols = { <field> = Column { name = "<col>", table = "<table>" }, … }.
+    // userCols = { <field> = ColumnRef { name = "<col>", table = "<table>" }, … }.
     // The mirror field keeps the entity's field name (so `userCols.createdAt`
-    // works); the Column carries the SQL column name.
+    // works); the ColumnRef carries the SQL column name.
     let cols_fields: Vec<(String, IrExpr)> = rec
         .fields
         .iter()
@@ -339,7 +339,7 @@ fn lower_table_mirrors(ctx: &mut LowerCtx<'_>, decl: &ridge_ast::TypeDecl) -> Ve
             let table_v = synth_text(ctx, &table, span);
             let column_val = synth_record(
                 ctx,
-                "Column",
+                "ColumnRef",
                 vec![("name".to_owned(), name_v), ("table".to_owned(), table_v)],
                 span,
             );

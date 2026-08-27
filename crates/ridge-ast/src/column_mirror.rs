@@ -6,7 +6,7 @@
 //! ```text
 //! pub type User = { id: Int, email: Text } deriving (Table, Schema)
 //! -- Table generates a user-visible column mirror:
-//! type UserCols  = { id: Column User Int, email: Column User Text }
+//! type UserCols  = { id: ColumnRef User Int, email: ColumnRef User Text }
 //! let  userCols  : UserCols  = { id = .., email = .. }
 //! let  userTable : Table User = { name = "users", columns = ["id", "email"] }
 //! -- Schema synthesizes a HasSchema instance (like Row), reached by type:

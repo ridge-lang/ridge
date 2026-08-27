@@ -42,6 +42,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A type mismatch names two types with two words. `Column` was the name of two
+  of them — the opaque column of a migration that `std.migrate` publishes, and
+  the typed column reference `deriving (Table)` produces — and neither carries
+  a defining module, so a mismatch between them rendered `expected Column, got
+  Column`. There was no message left to write: the renderer had been handed two
+  types that spell the same and nothing to tell them apart with. A reader whose
+  import list named `intCol` but not `Column` saw that, and the fix — adding the
+  type to the import — was the one thing the message could not have suggested.
+
+  A written name reaches whichever entry the compiler's type table holds first,
+  which quietly decided more than the message. A bare `Column` meant the column
+  reference, so reading a field off it compiled where the same read through an
+  import was correctly refused; *did you mean `Column`, `Column`?* offered a
+  reader the choice between a word and itself; and the type-position completion
+  list showed the name once and described whichever of the two came first.
+
+  The column reference is spelled `ColumnRef e a` now, so `Column` means the
+  type the standard library documents and each of those surfaces answers about
+  the type the reader named. `ColumnRef` was never documented under the old
+  spelling and nothing in the standard library or the examples wrote it — it is
+  produced by `deriving (Table)` and read through `userCols.<field>` — but an
+  annotation that named one follows the rename. Two smaller guards came with
+  it: no suggester offers the same name twice, whatever the candidate list
+  holds, and the type table is checked for a repeated name where it is built,
+  so the next collision fails a test instead of reaching a message.
+
 - Hovering a constructor says what that constructor is, wherever it is written.
   Inside a `match` pattern the editor reported the arm's result type instead:
   `Timeout` carded as `Text` because the arm returned `Text`, and would have

@@ -3880,15 +3880,60 @@ pub fn setup (conn: Postgres) -> Result (List Text) DbError =
 fn migrate_column_is_opaque_cross_module() {
     // `Column` is opaque: reading its representation from user code is rejected, so
     // the only way to build one is through the typed declarators and modifier steps.
+    //
+    // The code is named rather than counting any error at all. Until `Column`
+    // stopped naming two types (#585), the annotation could resolve to the
+    // non-opaque column reference behind `deriving (Table)` instead — under
+    // which `c.name` is a legal read and the rejection here would have had to
+    // come from somewhere else entirely.
     let main = r"
 import std.migrate (Column)
 
 fn leak (c: Column) -> Text = c.name
 ";
     let errors = typecheck_one(main);
+    assert_eq!(
+        count_code(&errors, "T036"),
+        1,
+        "reading an opaque Column's field from user code must be rejected as T036; got {errors:?}"
+    );
+}
+
+#[test]
+fn a_bare_column_is_the_one_std_migrate_publishes() {
+    // Two types were interned as `Column`, and a written name reaches whichever
+    // the arena holds first — which was the column reference behind
+    // `deriving (Table)`, not the one the standard library documents. So this
+    // read of an opaque field compiled clean, and the annotation in the test
+    // below quietly meant a type its author had not imported and could not have
+    // named (#585).
+    let errors = typecheck_one(
+        "fn leak (c: Column) -> Text = c.name
+",
+    );
+    assert_eq!(
+        count_code(&errors, "T036"),
+        1,
+        "a bare `Column` should mean the opaque type `std.migrate` publishes; got {errors:?}"
+    );
+}
+
+#[test]
+fn a_migrate_column_annotation_needs_no_second_name() {
+    // The reported program. `intCol` returns `std.migrate`'s `Column`, and the
+    // return annotation says so — but the annotation resolved to the other
+    // `Column`, and the mismatch between them rendered `expected Column, got
+    // Column`. Adding `Column` to the import list was the fix, which the
+    // message did not say and could not have said.
+    let main = r#"
+import std.migrate (intCol)
+
+pub fn f () -> Column = intCol "id"
+"#;
+    let errors = typecheck_one(main);
     assert!(
-        !errors.is_empty(),
-        "reading an opaque Column's field from user code must be rejected; got no errors"
+        errors.is_empty(),
+        "the annotation and the value are one type; got {errors:?}"
     );
 }
 

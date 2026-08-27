@@ -112,19 +112,26 @@ pub struct BuiltinTyCons {
     /// the variants. The matching `pub type SqlValue` in `sql.ridge` is what the
     /// stdlib's own compilation sees.
     pub sql_value: TyConId,
-    /// `Column e a` — a typed column reference produced by `deriving (Table)`.
+    /// `ColumnRef e a` — a typed column reference produced by `deriving (Table)`.
     ///
     /// `e` (entity) and `a` (value type) are phantom parameters that keep
     /// columns of different tables and types from mixing; the carried data is
     /// `{ name: Text, table: Text }`. Registered as a `TyConKind::Record` so
-    /// `col.name` is typeable. Compiler-internal: user code never names it
-    /// directly, it only appears in a generated column mirror.
-    pub column: TyConId,
+    /// `col.name` is typeable.
+    ///
+    /// A *reference* to a column, which is why it is not called `Column`:
+    /// `std.migrate` publishes a `Column` of its own — a column *definition*,
+    /// carrying a base type and the schema modifiers. Both were interned under
+    /// the one name, and a mismatch between them read `expected Column, got
+    /// Column`, which a reader cannot act on (#585). A name reaches whichever
+    /// entry the arena holds first, so the collision also decided, silently,
+    /// which of the two every by-name lookup answered with.
+    pub column_ref: TyConId,
     /// `Table e` — table metadata produced by `deriving (Table)`.
     ///
     /// `e` (entity) is phantom; the data is `{ name: Text, columns: List Text }`
     /// (the table name and ordered column names). Compiler-internal, like
-    /// [`Self::column`].
+    /// [`Self::column_ref`].
     pub table: TyConId,
     /// `FieldSchema` — one entry in a [`Self::schema`] descriptor produced by
     /// `deriving (Schema)`.
@@ -141,7 +148,7 @@ pub struct BuiltinTyCons {
     /// entity name, its SQL table name, and the per-field descriptors. Used as
     /// the introspection source for `OpenAPI` generation and migration diffing.
     /// Arity 0 (uniform across entities) so a `List Schema` collects every
-    /// model. Compiler-internal, like [`Self::column`].
+    /// model. Compiler-internal, like [`Self::column_ref`].
     pub schema: TyConId,
     /// `QExpr` — the reified expression tree a quoted predicate is captured as.
     ///
@@ -822,13 +829,13 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
-        // Column e a — typed column reference from `deriving (Table)`. Phantom
-        // `e`/`a` (arity 2) are unused by the fields, so a use site's argument
-        // substitution leaves `name`/`table` as `Text`. Non-opaque: `col.name`
-        // is readable from user code.
-        let column = arena.intern(TyConDecl {
+        // ColumnRef e a — typed column reference from `deriving (Table)`.
+        // Phantom `e`/`a` (arity 2) are unused by the fields, so a use site's
+        // argument substitution leaves `name`/`table` as `Text`. Non-opaque:
+        // `col.name` is readable from user code.
+        let column_ref = arena.intern(TyConDecl {
             id: TyConId(0),
-            name: "Column".to_string(),
+            name: "ColumnRef".to_string(),
             arity: 2,
             kind: TyConKind::Record(RecordSchema::new(
                 vec![TyVid(0), TyVid(1)],
@@ -1642,7 +1649,7 @@ impl BuiltinTyCons {
             html,
             secure_cookie,
             sql_value,
-            column,
+            column_ref,
             table,
             field_schema,
             schema,
@@ -1757,7 +1764,7 @@ mod tests {
             html,
             secure_cookie,
             sql_value,
-            column,
+            column_ref,
             table,
             field_schema,
             schema,
@@ -1806,7 +1813,7 @@ mod tests {
             (html, "Html"),
             (secure_cookie, "SecureCookie"),
             (sql_value, "SqlValue"),
-            (column, "Column"),
+            (column_ref, "ColumnRef"),
             (table, "Table"),
             (field_schema, "FieldSchema"),
             (schema, "Schema"),
@@ -1859,7 +1866,7 @@ mod tests {
     fn arena_len_is_61() {
         // 15 original builtins + Ordering + JsonValue + the std.net.http taint
         // wrappers Sql / Html / SecureCookie + std.sql's SqlValue + the
-        // column-codegen builtins Column / Table + the schema-codegen builtins
+        // column-codegen builtins ColumnRef / Table + the schema-codegen builtins
         // FieldSchema / Schema + the quotation builtins QExpr / Quote (27 total)
         // + the 16 synthetic function-type constructors Fn/0 … Fn/15 + Ret/1 +
         // Rows/1 + JoinCond/2 + the four join-result extractors (Join/Left/Right/Full)
@@ -1894,14 +1901,14 @@ mod tests {
     }
 
     #[test]
-    fn column_is_record_arity_2() {
+    fn column_ref_is_record_arity_2() {
         let (arena, b) = make_arena_with_builtins();
-        let decl = arena.get(b.column);
-        assert_eq!(decl.name, "Column");
+        let decl = arena.get(b.column_ref);
+        assert_eq!(decl.name, "ColumnRef");
         assert_eq!(decl.arity, 2);
         assert!(!decl.opaque);
         let TyConKind::Record(schema) = &decl.kind else {
-            panic!("Column should be a record");
+            panic!("ColumnRef should be a record");
         };
         let fields: Vec<&str> = schema
             .record_fields()

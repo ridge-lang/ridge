@@ -1147,8 +1147,10 @@ fn typecheck_module_inner(
     // Step A1: Column codegen — synthesize the `deriving (Table)` mirrors (the
     // `<Entity>Cols` type plus the `<entity>Cols` / `<entity>Table` values)
     // before the snapshot, so field access on a mirror resolves and fn/const
-    // bodies that reference the values type-check. Runs after the import merge so
-    // `Column`/`Table` from std.sql are resolvable.
+    // bodies that reference the values type-check. Runs after the import merge,
+    // which is the last write to `ctx.user_tycon_names` — the map this reads
+    // each entity's own name out of. The mirror's own two constructors are
+    // compiler built-ins and are in hand whatever a module imports.
     crate::tycon_collect::synth_table_mirrors(ast, id, arena, b, global_tycon_names, &mut ctx);
     // `deriving (Schema)` derives a `HasSchema` instance (see
     // `derive::generate_schema`), reached by type, and synthesizes the insert

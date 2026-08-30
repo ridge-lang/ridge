@@ -6,6 +6,8 @@
 -- human-readable form.
 -- No filesystem paths as literals in 0.1.0.
 
+import std.text as Text
+
 -- Read the entire contents of a file as Text.
 -- Returns Ok(contents) or Err(error) on failure.
 -- Bridges via ridge_rt:fs_read/1 so the Err side is a structured Error
@@ -32,8 +34,17 @@ pub fn fs isFile (path: Text) -> Bool
 
 -- Read a file and split its contents into a list of lines.
 -- Returns Ok(lines) or Err(error) on failure.
-@ffi("ridge_rt", "fs_lines", 1)
-pub fn fs lines (path: Text) -> Result (List Text) Error
+--
+-- Defined as `Text.lines` over `readFile` on purpose, so that
+-- `Fs.lines path` and `Text.lines (readFile path)` cannot answer differently
+-- for the same bytes.  What counts as a line is language semantics, not a
+-- property of the file system, so it lives in std.text and is stated once.
+-- See std.text.lines for the exact rule (both "\n" and "\r\n" end a line,
+-- the final terminator is optional, an empty file has no lines).
+pub fn fs lines (path: Text) -> Result (List Text) Error =
+    match readFile path
+        Err e       -> Err e
+        Ok contents -> Ok (Text.lines contents)
 
 -- List the immediate entries (file and subdirectory names) of a directory.
 -- Returns Ok(names) or Err(error) on failure.  Names are bare basenames;

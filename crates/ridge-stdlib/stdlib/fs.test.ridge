@@ -1,11 +1,20 @@
 -- Private FFI bridges for std.fs test suite.
--- These replicate fs.ridge and env.ridge FFI declarations in local scope because
--- cross-module calls are unsupported (T17+ deferred).
+-- These bridge the raw BEAM builtins that fs.ridge and env.ridge wrap, so a
+-- test can compare std.fs against the primitive underneath it.
+--
+-- Tests of `lines` go through the published `Fs.lines` instead: the replaced
+-- test bound `ridge_rt:fs_lines/1` directly, so it exercised the FFI rather
+-- than the function std.fs publishes (see #614).
+--
 -- Several tests require both `fs` and `env` capabilities (dual-cap);
 -- capability syntax: `pub fn fs env test_name ()`.
 -- The fs error channel is the standard `Error` record; its `code` and
 -- `message` fields are readable on the Err branch (see
 -- readFile_missing_error_fields_readable).
+
+import std.fs as Fs
+import std.text as Text
+
 @ffi("ridge_rt", "fs_read", 1)
 fn _readFile (path: Text) -> Result Text Error
 
@@ -17,9 +26,6 @@ fn _isFile (path: Text) -> Bool
 
 @ffi("filelib", "is_dir", 1)
 fn _isDir (path: Text) -> Bool
-
-@ffi("ridge_rt", "fs_lines", 1)
-fn _fsLines (path: Text) -> Result (List Text) Error
 
 @ffi("ridge_rt", "fs_mkdir", 1)
 fn _mkdir (path: Text) -> Result Unit Error
@@ -94,20 +100,90 @@ pub fn fs test_isFile_false_for_missing () -> Result Unit Text =
         Err "fs.isFile should be false for nonexistent path"
     else Ok ()
 
--- fs.lines of a single-line file returns a list with 1 element.
--- Note: Ridge "\n" literals are raw 2-byte sequences, so we test a
--- simpler case: a file with no newlines returns exactly 1 line.
-@test "lines_splits_on_newline"
-pub fn fs env test_lines_splits_on_newline () -> Result Unit Text =
-    let path = _tmpPath "lines-test"
-    match _writeFile path "hello"
+-- Read a file through Fs.lines and report its lines joined with "|", so a
+-- test asserts the content and not only how many pieces came back.
+fn fs _linesOf (path: Text) -> Result Text Text =
+    match Fs.lines path
+        Err _ -> Err "fs.lines failed"
+        Ok ls -> Ok (Text.join "|" ls)
+
+fn fs env _writeThenLines (name: Text) (content: Text) -> Result Text Text =
+    let path = _tmpPath name
+    match _writeFile path content
+        Err _ -> Err "writeFile failed"
+        Ok _  -> _linesOf path
+
+-- A well-formed text file ends with a newline; that newline terminates the
+-- last line and must not add an empty one after it.
+@test "lines_trailing_newline_adds_no_phantom_line"
+pub fn fs env test_lines_trailing_newline_adds_no_phantom_line () -> Result Unit Text =
+    match _writeThenLines "lines-trailing-nl" "a\nb\nc\n"
+        Err e -> Err e
+        Ok joined ->
+            if joined == "a|b|c" then Ok ()
+            else Err "fs.lines of a file ending in a newline should be a|b|c"
+
+-- The final newline is optional: the same file with and without it reads the
+-- same.  Read back through Fs.lines both ways rather than trusting one.
+@test "lines_final_terminator_is_optional"
+pub fn fs env test_lines_final_terminator_is_optional () -> Result Unit Text =
+    match _writeThenLines "lines-with-nl" "a\nb\nc\n"
+        Err e -> Err e
+        Ok withNl ->
+            match _writeThenLines "lines-no-nl" "a\nb\nc"
+                Err e2 -> Err e2
+                Ok without ->
+                    if withNl == without then Ok ()
+                    else Err "fs.lines should read the same with and without a final newline"
+
+-- A CRLF file reads as the same lines as an LF one.  The stray carriage
+-- return is invisible to a length check, so this asserts the text.
+@test "lines_crlf_file_reads_as_lf"
+pub fn fs env test_lines_crlf_file_reads_as_lf () -> Result Unit Text =
+    match _writeThenLines "lines-crlf" "a\r\nb\r\n"
+        Err e -> Err e
+        Ok joined ->
+            if joined == "a|b" then Ok ()
+            else Err "fs.lines of a CRLF file should be a|b with no carriage return"
+
+-- Blank lines inside the file are lines and must survive.
+@test "lines_keeps_interior_blank_lines"
+pub fn fs env test_lines_keeps_interior_blank_lines () -> Result Unit Text =
+    match _writeThenLines "lines-blank" "a\n\nb\n"
+        Err e -> Err e
+        Ok joined ->
+            if joined == "a||b" then Ok ()
+            else Err "fs.lines should keep an interior blank line: a||b"
+
+-- An empty file has no lines.  Joining cannot tell [] from [""], so count.
+@test "lines_empty_file_has_no_lines"
+pub fn fs env test_lines_empty_file_has_no_lines () -> Result Unit Text =
+    let path = _tmpPath "lines-empty"
+    match _writeFile path ""
         Err _ -> Err "writeFile failed"
         Ok _ ->
-            match _fsLines path
+            match Fs.lines path
                 Err _ -> Err "fs.lines failed"
                 Ok ls ->
-                    if _listLength ls == 1 then Ok ()
-                    else Err "fs.lines of single-line file should return 1 element"
+                    if _listLength ls == 0 then Ok ()
+                    else Err "fs.lines of an empty file should be []"
+
+-- Fs.lines and Text.lines over readFile must not answer differently for the
+-- same bytes.  This is the property the one-definition fix exists to hold.
+@test "lines_agrees_with_text_lines_over_readFile"
+pub fn fs env test_lines_agrees_with_text_lines_over_readFile () -> Result Unit Text =
+    let path = _tmpPath "lines-agreement"
+    match _writeFile path "a\r\nb\n\nc\n"
+        Err _ -> Err "writeFile failed"
+        Ok _ ->
+            match Fs.lines path
+                Err _ -> Err "fs.lines failed"
+                Ok viaFs ->
+                    match _readFile path
+                        Err _ -> Err "readFile failed"
+                        Ok contents ->
+                            if Text.join "|" viaFs == Text.join "|" (Text.lines contents) then Ok ()
+                            else Err "Fs.lines and Text.lines over readFile disagree"
 
 -- fs.mkdir creates a directory, and fs.removeDir deletes it.
 @test "mkdir_then_isDir_then_removeDir"

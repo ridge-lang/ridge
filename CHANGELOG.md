@@ -42,6 +42,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Reading a file line by line now answers what a reader would count. `std.fs`'s
+  `lines` split the file on `\n` and returned the pieces, which is not the same
+  thing: a file ending in a newline came back with an empty line appended, and a
+  file written with CRLF kept a carriage return on every line. The only shape it
+  read correctly was the one whose last line carries no terminator — which is
+  the shape a well-formed text file does not have.
+
+  Both failures were quiet ones. The extra line matched no predicate, so a
+  program that filters never saw it while a program that counts, sums, or
+  indexes from the end was wrong by one and said so with confidence. The stray
+  `\r` survived `==`, `startsWith` and a pattern match, and printed identically
+  in most terminals. `wc` in the test corpus had already given up on the
+  function and counts its lines itself.
+
+  Underneath the off-by-one sat the defect that produced it: `lines` was written
+  twice. `std.text.lines` stripped the carriage return but carried the same
+  phantom line, so `Fs.lines path` and `Text.lines (readFile path)` answered
+  differently for identical bytes, and a caller had to know which of the two it
+  was holding to know what it had. The rule is stated once now, in `std.text`,
+  and `std.fs.lines` is `Text.lines` over `readFile`, so the two cannot drift
+  apart again. What counts as a line is semantics of the language rather than a
+  property of a file system or of one runtime, so `ridge_rt:fs_lines/1` left the
+  BEAM runtime along with it.
+
+  The rule is the one `str::lines` (Rust), `str.splitlines` (Python) and
+  `bufio.Scanner` (Go) already agree on. Both `\n` and `\r\n` end a line; the
+  final terminator is optional, so `"a\nb"` and `"a\nb\n"` are the same two
+  lines; an empty file has no lines rather than one empty one. Blank lines
+  inside the file are lines and survive — only the one terminator at the very
+  end is dropped. A carriage return that is not followed by a newline stays
+  data, which is where Rust draws the line and Python does not.
+
+  The two tests covering this each wrote a fixture containing no newline and
+  asserted the result had one element — the single input a raw split reads
+  correctly — so neither could have failed whichever way `lines` behaved, and
+  the one in `std.fs` bound the runtime function directly rather than the
+  function the module publishes. They are replaced by thirteen that exercise the
+  shapes above through the published functions.
+
 - A type mismatch names two types with two words. `Column` was the name of two
   of them — the opaque column of a migration that `std.migrate` publishes, and
   the typed column reference `deriving (Table)` produces — and neither carries

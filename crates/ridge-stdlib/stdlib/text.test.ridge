@@ -1,5 +1,12 @@
 -- Private helpers for std.text test suite.
--- FFI bridges + pure-Ridge helpers replicate text.ridge (T17+ deferred).
+-- FFI bridges to the raw BEAM builtins, plus pure-Ridge helpers, so a test can
+-- compare std.text against the primitive it wraps.
+--
+-- Tests of `lines` call the real `Text.lines` rather than a local copy: this
+-- suite used to replicate the implementation, and a test that exercises a copy
+-- reports on the copy (see #614 — the replaced test could not fail).
+import std.text as Text
+
 @ffi("erlang", "byte_size", 1)
 fn _byteSize (s: Text) -> Int
 
@@ -50,23 +57,6 @@ fn _splitAny (seps: List Text) (s: Text) -> List Text = _splitAnyAcc seps [s]
 
 @ffi("binary", "part", 3)
 fn _binaryPart (s: Text) (start: Int) (len: Int) -> Text
-
-fn _stripTrailingCr (s: Text) -> Text =
-    let n = _byteSize s
-    if n > 0 then
-        let last = _binaryPart s (n - 1) 1
-        if last == "\r" then _binaryPart s 0 (n - 1)
-        else s
-    else s
-
-fn _stripCrAll (xs: List Text) -> List Text =
-    match xs
-        [] -> []
-        x :: rest -> _stripTrailingCr x :: _stripCrAll rest
-
-fn _lines (s: Text) -> List Text =
-    let parts = _split "\n" s
-    _stripCrAll parts
 
 @ffi("string", "trim", 1)
 fn _trim (s: Text) -> Text
@@ -270,13 +260,70 @@ pub fn test_splitAny_multiple_seps () -> Result Unit Text =
     if _listLength parts == 3 then Ok ()
     else Err "Text.splitAny multiple seps should return 3 parts"
 
-@test "lines_single_segment"
-pub fn test_lines_single_segment () -> Result Unit Text =
-    let ls = _lines "hello"
-    if _listLength ls == 1 then
-        if _listHead ls == Some "hello" then Ok ()
-        else Err "Text.lines hello should have head hello"
-    else Err "Text.lines hello should have 1 line"
+-- A trailing newline *ends* the last line; it does not start an empty one.
+@test "lines_trailing_newline_adds_no_phantom_line"
+pub fn test_lines_trailing_newline_adds_no_phantom_line () -> Result Unit Text =
+    let ls = Text.lines "a\nb\nc\n"
+    if _listLength ls == 3 && _join "|" ls == "a|b|c" then Ok ()
+    else Err "Text.lines \"a\\nb\\nc\\n\" should be 3 lines a|b|c"
+
+-- The final terminator is optional: with and without it are the same lines.
+@test "lines_final_terminator_is_optional"
+pub fn test_lines_final_terminator_is_optional () -> Result Unit Text =
+    let withNl = Text.lines "a\nb\nc\n"
+    let without = Text.lines "a\nb\nc"
+    if _join "|" withNl == _join "|" without && _listLength without == 3 then Ok ()
+    else Err "Text.lines should answer the same with and without a final newline"
+
+-- A CRLF file reads as the same lines as an LF one, with no carriage return
+-- left behind.  A length check alone cannot see the stray \r, so compare text.
+@test "lines_crlf_reads_as_lf"
+pub fn test_lines_crlf_reads_as_lf () -> Result Unit Text =
+    let ls = Text.lines "a\r\nb\r\n"
+    if _listLength ls == 2 && _join "|" ls == "a|b" then Ok ()
+    else Err "Text.lines of a CRLF text should be 2 lines a|b with no \\r"
+
+-- An empty text has no lines — [] rather than [""], matching Rust's
+-- str::lines and Python's splitlines.
+@test "lines_empty_text_has_no_lines"
+pub fn test_lines_empty_text_has_no_lines () -> Result Unit Text =
+    if _listLength (Text.lines "") == 0 then Ok ()
+    else Err "Text.lines of empty text should be []"
+
+-- A lone newline is one empty line, not zero: the terminator ends a line that
+-- happens to be empty.  This is the case that separates "drop one terminator"
+-- from "drop every trailing empty".
+@test "lines_lone_newline_is_one_empty_line"
+pub fn test_lines_lone_newline_is_one_empty_line () -> Result Unit Text =
+    let ls = Text.lines "\n"
+    if _listLength ls == 1 && _join "|" ls == "" then Ok ()
+    else Err "Text.lines of a lone newline should be one empty line"
+
+-- Blank lines *inside* the text are lines and must survive.  A fix that
+-- filtered empties instead of dropping one terminator would break here.
+@test "lines_keeps_interior_blank_lines"
+pub fn test_lines_keeps_interior_blank_lines () -> Result Unit Text =
+    let ls = Text.lines "a\n\nb\n"
+    if _listLength ls == 3 && _join "|" ls == "a||b" then Ok ()
+    else Err "Text.lines should keep an interior blank line: a||b"
+
+-- A carriage return that is not followed by a newline is data, not a line
+-- ending (Rust's rule; Python's splitlines differs).  Asserted so that
+-- widening the rule later has to be a deliberate change to this test.
+@test "lines_lone_cr_is_data_not_a_terminator"
+pub fn test_lines_lone_cr_is_data_not_a_terminator () -> Result Unit Text =
+    let ls = Text.lines "a\rb"
+    if _listLength ls == 1 && _join "|" ls == "a\rb" then Ok ()
+    else Err "Text.lines should treat a lone carriage return as data"
+
+-- The case that separates "strip the terminator's carriage return" from
+-- "strip every trailing carriage return": nothing terminated this text, so
+-- the "\r" is the last byte of the line rather than half of a "\r\n".
+@test "lines_trailing_cr_without_newline_is_kept"
+pub fn test_lines_trailing_cr_without_newline_is_kept () -> Result Unit Text =
+    let ls = Text.lines "a\r"
+    if _listLength ls == 1 && _join "|" ls == "a\r" then Ok ()
+    else Err "Text.lines should keep a trailing carriage return with no newline after it"
 
 @test "trim_removes_whitespace"
 pub fn test_trim_removes_whitespace () -> Result Unit Text =

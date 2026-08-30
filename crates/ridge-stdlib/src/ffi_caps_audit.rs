@@ -1145,12 +1145,6 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
     },
     FfiAuditEntry {
         beam_module: "ridge_rt",
-        fn_name: "fs_lines",
-        arity: 1,
-        requires_caps: &[Capability::Fs],
-    },
-    FfiAuditEntry {
-        beam_module: "ridge_rt",
         fn_name: "proc_run",
         arity: 2,
         requires_caps: &[Capability::Proc],

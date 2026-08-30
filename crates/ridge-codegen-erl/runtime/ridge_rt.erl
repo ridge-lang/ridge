@@ -6,7 +6,7 @@
 -export([
     println/1, print/1, eprintln/1,
     read_line/0, read_line/1,
-    fs_lines/1, fs_read/1, fs_write/2, fs_append/2,
+    fs_read/1, fs_write/2, fs_append/2,
     fs_mkdir/1, fs_remove/1, fs_remove_dir/1,
     fs_read_dir/1,
     cli_args/0, cli_args/1,
@@ -96,11 +96,11 @@ read_line(_Unit) ->
 
 %% --- File-system ---
 
-fs_lines(Path) ->
-    case file:read_file(Path) of
-        {ok, Bin}  -> {ok, binary:split(Bin, <<"\n">>, [global])};
-        {error, R} -> fs_error(R)
-    end.
+%% std.fs.lines is no longer an FFI: it is `Text.lines` over `fs_read/1`, in
+%% Ridge.  A raw `binary:split` on <<"\n">> is not a line reader -- it made a
+%% trailing newline add a phantom empty line and left \r on every line of a
+%% CRLF file (#614) -- and "what counts as a line" is language semantics that
+%% must not differ per backend.
 
 %% fs_read/1 — std.fs.readFile
 %% Reads an entire file as a binary.  Returns Ridge Result shape.

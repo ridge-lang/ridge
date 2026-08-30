@@ -8,8 +8,10 @@ Prints line count and byte count for the file.  Word count is omitted because
 Text.split does not split globally, so splitting on spaces to count words is
 not yet reliable.
 
-Uses Fs.lines (which bridges through ridge_rt:fs_lines and correctly splits
-on actual newlines), not Fs.readFile + Text.lines (which is broken).
+Uses Fs.lines, which reads a file as the lines a reader would count: the
+trailing newline ends the last line rather than adding an empty one after it,
+and a CRLF file loses its carriage returns.  Fs.readFile + Text.lines is the
+same function reached the other way round and answers identically.
 ---
 
 import std.io as Io

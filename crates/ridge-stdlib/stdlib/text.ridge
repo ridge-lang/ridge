@@ -87,14 +87,48 @@ fn _appendLists (xs: List a) (ys: List a) -> List a =
         []          -> ys
         x :: rest   -> x :: _appendLists rest ys
 
--- Split into lines on "\n"; strip trailing "\r" from each segment.
+-- Split text into lines the way a text file is written: both "\n" and
+-- "\r\n" end a line, and the final line ending is optional -- "a\nb" and
+-- "a\nb\n" are the same two lines, because a trailing terminator ends the
+-- last line rather than starting an empty one after it.  An empty text has
+-- no lines at all.
+--
+-- This is what `str::lines` (Rust), `str.splitlines` (Python) and
+-- `bufio.Scanner` (Go) all agree on, and what makes `length (lines s)` the
+-- number of lines a reader would count.
+--
+-- Blank lines *inside* the text are kept: "a\n\nb\n" is three lines, the
+-- middle one empty.  Only the one terminator at the very end is dropped.
+--
+-- A lone "\r" is not a line ending here -- it stays as data inside its line.
+-- Rust draws the same line; Python's `splitlines` additionally breaks on
+-- "\r", "\v", "\f" and more.  Revisit if reading classic Mac OS (pre-X)
+-- files ever becomes a real need; until then the narrower rule is the one
+-- that cannot corrupt a line that legitimately contains a carriage return.
 pub fn lines (s: Text) -> List Text =
-    let parts = split "\n" s
-    _stripCrAll parts
+    if s == "" then []
+    else _stripCrAll (split "\n" (_dropFinalTerminator s))
 
+-- Drop a single trailing line terminator ("\r\n" or "\n") -- the one that
+-- *ends* the last line, as opposed to a separator between two lines.
+-- Exactly one: "a\n\n" keeps its middle blank line and yields ["a", ""].
+fn _dropFinalTerminator (s: Text) -> Text =
+    let n = byteSize s
+    if n > 0 && _binaryPart s (n - 1) 1 == "\n" then
+        if n > 1 && _binaryPart s (n - 2) 1 == "\r" then _binaryPart s 0 (n - 2)
+        else _binaryPart s 0 (n - 1)
+    else s
+
+-- Strip the carriage return that was part of a "\r\n" terminator, and only
+-- that one.  Once the final terminator is gone, every remaining "\n" separates
+-- two lines, so each segment except the last was "\n"-terminated and a "\r" at
+-- its end belonged to that terminator.  The last segment is terminated by
+-- nothing, so a "\r" at its end is data: `lines "a\r"` is one line "a\r", the
+-- same answer Rust's str::lines gives.
 fn _stripCrAll (xs: List Text) -> List Text =
     match xs
         []          -> []
+        x :: []     -> [x]
         x :: rest   -> _stripTrailingCr x :: _stripCrAll rest
 
 -- Raw binary:part/3 bridge (private).

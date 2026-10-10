@@ -21,6 +21,7 @@
 -- compiler's builtin table:
 --   JNull | JBool Bool | JInt Int | JFloat Float | JText Text
 --   | JList (List JsonValue) | JObject (Map Text JsonValue)
+--   | JObjectFields (List (Text, JsonValue))
 -- The variants lower to the lowercase-snake BEAM atoms (json_null,
 -- {json_int, N}, ...) that the json_encode/1 bridge below walks; self-
 -- referential variants (JList, JObject) nest the same tagged-tuple tree.

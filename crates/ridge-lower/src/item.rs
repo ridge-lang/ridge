@@ -1272,7 +1272,7 @@ pub fn lower_derived_instance(
             field_shapes,
         } => {
             // encode (x: T) -> JsonValue
-            //   = JObject(std.map.fromList([(<<"f">>, encode_shape(x.f)), ...]))
+            //   = JObjectFields([(field, encode_shape(x.field)), ...])
             let body = build_encode_record_body(ctx, field_names, field_shapes, sp);
             let params = vec![IrParam {
                 name: "x".to_string(),
@@ -2486,12 +2486,85 @@ fn build_ord_payload_body(
 
 // ── Derived Encode body builders ──────────────────────────────────────────────
 
+/// Give object decoders a map view without changing nested values or other variants.
+pub(crate) fn json_object_map_view(ctx: &mut LowerCtx<'_>, value: IrExpr, sp: Span) -> IrExpr {
+    let pairs = ctx.fresh_local("__json_fields");
+    let other = ctx.fresh_local("__json_value");
+    let map = IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Stdlib {
+                module: "std.map".to_string(),
+                name: "fromList".to_string(),
+                kind: StdlibKind::Function,
+            },
+            span: sp,
+        }),
+        args: vec![IrExpr::Local {
+            id: ctx.fresh_id(None),
+            name: pairs.clone(),
+            span: sp,
+        }],
+        span: sp,
+    };
+    let object = IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Prelude {
+                name: "JObject".to_string(),
+            },
+            span: sp,
+        }),
+        args: vec![map],
+        span: sp,
+    };
+    IrExpr::Match {
+        id: ctx.fresh_id(None),
+        scrutinee: Box::new(value),
+        arms: vec![
+            ridge_ir::IrArm {
+                pat: ridge_ir::IrPat::Ctor {
+                    sym: SymbolRef::Prelude {
+                        name: "JObjectFields".to_string(),
+                    },
+                    fields: vec![],
+                    args: vec![ridge_ir::IrPat::Bind {
+                        name: pairs,
+                        inner: None,
+                        span: sp,
+                    }],
+                    span: sp,
+                },
+                when: None,
+                body: object,
+                span: sp,
+            },
+            ridge_ir::IrArm {
+                pat: ridge_ir::IrPat::Bind {
+                    name: other.clone(),
+                    inner: None,
+                    span: sp,
+                },
+                when: None,
+                body: IrExpr::Local {
+                    id: ctx.fresh_id(None),
+                    name: other,
+                    span: sp,
+                },
+                span: sp,
+            },
+        ],
+        span: sp,
+    }
+}
+
 /// Build the `encode` body for a derived `Encode` on a record type.
 ///
-/// Emits `JObject(std.map.fromList([(<<"field">>, encode_shape(x.field)), ...]))`.
-/// Binary `Text` keys are required for the `JObject` representation
-/// (maps in `ridge_rt` use binary keys for JSON objects).
-/// An empty record encodes to `JObject(fromList([]))` = `{}`.
+/// Emits `JObjectFields([(field, encode_shape(x.field)), ...])` in declaration
+/// order, keeping that order in the target-neutral JSON value.
+/// An empty record encodes to `JObjectFields([])` = `{}`.
 fn build_encode_record_body(
     ctx: &mut LowerCtx<'_>,
     field_names: &[String],
@@ -2532,38 +2605,23 @@ fn build_encode_record_body(
         })
         .collect();
 
-    // std.map.fromList(pairs_list) → the Erlang map.
+    // Preserve declaration order in the JSON value itself.
     let pairs_list = IrExpr::ListLit {
         id: ctx.fresh_id(None),
         elems: pairs,
         span: sp,
     };
-    let from_list_call = IrExpr::Call {
-        id: ctx.fresh_id(None),
-        callee: Box::new(IrExpr::Symbol {
-            id: ctx.fresh_id(None),
-            sym: SymbolRef::Stdlib {
-                module: "std.map".to_string(),
-                name: "fromList".to_string(),
-                kind: StdlibKind::Function,
-            },
-            span: sp,
-        }),
-        args: vec![pairs_list],
-        span: sp,
-    };
-
-    // JObject(the_map)
+    // JObjectFields(pairs_list)
     IrExpr::Call {
         id: ctx.fresh_id(None),
         callee: Box::new(IrExpr::Symbol {
             id: ctx.fresh_id(None),
             sym: SymbolRef::Prelude {
-                name: "JObject".to_string(),
+                name: "JObjectFields".to_string(),
             },
             span: sp,
         }),
-        args: vec![from_list_call],
+        args: vec![pairs_list],
         span: sp,
     }
 }
@@ -3630,7 +3688,7 @@ fn decode_shape(
             };
             IrExpr::Match {
                 id: ctx.fresh_id(None),
-                scrutinee: Box::new(json_expr),
+                scrutinee: Box::new(json_object_map_view(ctx, json_expr, sp)),
                 arms: vec![ok_arm, wild_arm],
                 span: sp,
             }
@@ -4414,7 +4472,7 @@ fn decode_shape(
             let _ = (ok_inner, err_inner, tag_local_2, vals_opt);
             IrExpr::Match {
                 id: ctx.fresh_id(None),
-                scrutinee: Box::new(json_expr),
+                scrutinee: Box::new(json_object_map_view(ctx, json_expr, sp)),
                 arms: vec![ok_jobj_arm, wild_obj_arm],
                 span: sp,
             }
@@ -4645,10 +4703,13 @@ fn build_decode_record_body(
     };
     IrExpr::Match {
         id: ctx.fresh_id(None),
-        scrutinee: Box::new(IrExpr::Local {
-            id: ctx.fresh_id(None),
-            name: "j".to_string(),
-            span: sp,
+        scrutinee: Box::new({
+            let value = IrExpr::Local {
+                id: ctx.fresh_id(None),
+                name: "j".to_string(),
+                span: sp,
+            };
+            json_object_map_view(ctx, value, sp)
         }),
         arms: vec![jobject_arm, wild_arm],
         span: sp,
@@ -5825,10 +5886,13 @@ fn build_decode_union_body(
 
     IrExpr::Match {
         id: ctx.fresh_id(None),
-        scrutinee: Box::new(IrExpr::Local {
-            id: ctx.fresh_id(None),
-            name: "j".to_string(),
-            span: sp,
+        scrutinee: Box::new({
+            let value = IrExpr::Local {
+                id: ctx.fresh_id(None),
+                name: "j".to_string(),
+                span: sp,
+            };
+            json_object_map_view(ctx, value, sp)
         }),
         arms: vec![jtext_arm, jobject_arm, wild_arm],
         span: sp,

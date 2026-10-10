@@ -1518,6 +1518,7 @@ pub(crate) fn json_ctor_tag(name: &str) -> Option<(&'static str, bool)> {
         "JText" => ("json_text", true),
         "JList" => ("json_list", true),
         "JObject" => ("json_object", true),
+        "JObjectFields" => ("json_object_fields", true),
         _ => return None,
     })
 }

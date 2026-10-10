@@ -1383,7 +1383,23 @@ json_encode({json_list, Items}) ->
     Joined  = join_binaries(Encoded, <<",">>),
     <<"[", Joined/binary, "]">>;
 json_encode({json_object, M}) ->
-    Pairs = maps:to_list(M),
+    json_encode_object(maps:to_list(M));
+json_encode({json_object_fields, Fields}) ->
+    %% Last value wins, first position survives. No duplicate keys are emitted.
+    Values = maps:from_list(Fields),
+    case map_size(Values) =:= length(Fields) of
+        true -> json_encode_object(Fields);
+        false ->
+            {KeysRev, _} = lists:foldl(fun({K, _}, {Keys, Seen}) ->
+                case maps:is_key(K, Seen) of
+                    true -> {Keys, Seen};
+                    false -> {[K | Keys], Seen#{K => true}}
+                end
+            end, {[], #{}}, Fields),
+            json_encode_object([{K, maps:get(K, Values)} || K <- lists:reverse(KeysRev)])
+    end.
+
+json_encode_object(Pairs) ->
     Encoded = [begin
         K2 = json_encode({json_text, K}),
         V2 = json_encode(V),
@@ -1478,6 +1494,7 @@ json_as_list({json_list, L}) -> {some, L};
 json_as_list(_)              -> none.
 
 json_as_object({json_object, M}) -> {some, M};
+json_as_object({json_object_fields, Fields}) -> {some, maps:from_list(Fields)};
 json_as_object(_)                -> none.
 
 json_is_null(json_null) -> true;

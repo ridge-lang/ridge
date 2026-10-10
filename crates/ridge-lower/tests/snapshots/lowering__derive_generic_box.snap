@@ -91,25 +91,20 @@ items:
               body:
                 Call(n19):
                   callee:
-                    Symbol(n20): Prelude(JObject)
+                    Symbol(n20): Prelude(JObjectFields)
                   args:
                     -
-                      Call(n21):
-                        callee:
-                          Symbol(n22): Stdlib(fn:std.map.fromList)
-                        args:
-                          -
-                            ListLit(n23):
-                              Tuple(n24):
-                                Lit(n25): Text("val")
-                                Call(n26):
-                                  callee:
-                                    Field(n27).encode:
-                                      Local(n28): $dict_Encode_0
-                                  args:
-                                    -
-                                      Field(n29).val:
-                                        Local(n30): x
+                      ListLit(n21):
+                        Tuple(n22):
+                          Lit(n23): Text("val")
+                          Call(n24):
+                            callee:
+                              Field(n25).encode:
+                                Local(n26): $dict_Encode_0
+                            args:
+                              -
+                                Field(n27).val:
+                                  Local(n28): x
   - kind: fn
     name: $inst_Decode_Box
     pub: true
@@ -120,19 +115,44 @@ items:
       - name: $dict_Decode_0
         ty: Error
     body:
-      Construct(n31):
+      Construct(n29):
         ctor: Ctor(Record:$inst_Decode_Box owner=none)
         fields:
           decode:
-            Lambda(n32):
+            Lambda(n30):
               caps: CapabilitySet(0)
               params:
                 - name: j
                   ty: Error
               body:
-                Match(n33):
+                Match(n31):
                   scrutinee:
-                    Local(n34): j
+                    Match(n32):
+                      scrutinee:
+                        Local(n33): j
+                      arms:
+                        -
+                          pat:
+                            Ctor: Prelude(JObjectFields)
+                              args:
+                                Bind: __json_fields_4
+                          body:
+                            Call(n34):
+                              callee:
+                                Symbol(n35): Prelude(JObject)
+                              args:
+                                -
+                                  Call(n36):
+                                    callee:
+                                      Symbol(n37): Stdlib(fn:std.map.fromList)
+                                    args:
+                                      -
+                                        Local(n38): __json_fields_4
+                        -
+                          pat:
+                            Bind: __json_value_5
+                          body:
+                            Local(n39): __json_value_5
                   arms:
                     -
                       pat:
@@ -140,16 +160,16 @@ items:
                           args:
                             Bind: __dec_rec_m_0
                       body:
-                        Match(n35):
+                        Match(n40):
                           scrutinee:
-                            Call(n36):
+                            Call(n41):
                               callee:
-                                Symbol(n37): Stdlib(fn:std.map.get)
+                                Symbol(n42): Stdlib(fn:std.map.get)
                               args:
                                 -
-                                  Lit(n38): Text("val")
+                                  Lit(n43): Text("val")
                                 -
-                                  Local(n39): __dec_rec_m_0
+                                  Local(n44): __dec_rec_m_0
                           arms:
                             -
                               pat:
@@ -157,15 +177,15 @@ items:
                                   args:
                                     Bind: __dec_jv_val_2
                               body:
-                                Match(n40):
+                                Match(n45):
                                   scrutinee:
-                                    Call(n41):
+                                    Call(n46):
                                       callee:
-                                        Field(n42).decode:
-                                          Local(n43): $dict_Decode_0
+                                        Field(n47).decode:
+                                          Local(n48): $dict_Decode_0
                                       args:
                                         -
-                                          Local(n44): __dec_jv_val_2
+                                          Local(n49): __dec_jv_val_2
                                   arms:
                                     -
                                       pat:
@@ -177,51 +197,51 @@ items:
                                           ctor: Prelude(Ok)
                                           fields:
                                             $0:
-                                              Construct(n45):
+                                              Construct(n50):
                                                 ctor: Ctor(Record:Box owner=108)
                                                 fields:
                                                   val:
-                                                    Local(n46): __dec_f_val_1
+                                                    Local(n51): __dec_f_val_1
                                     -
                                       pat:
                                         Ctor: Prelude(Err)
                                           args:
                                             Bind: __dec_err_3
                                       body:
-                                        Return(n47):
-                                          Construct(n48):
+                                        Return(n52):
+                                          Construct(n53):
                                             ctor: Prelude(Err)
                                             fields:
                                               $0:
-                                                Local(n49): __dec_err_3
+                                                Local(n54): __dec_err_3
                             -
                               pat:
                                 Wild
                               body:
-                                Return(n50):
-                                  Construct(n51):
+                                Return(n55):
+                                  Construct(n56):
                                     ctor: Prelude(Err)
                                     fields:
                                       $0:
-                                        Construct(n52):
+                                        Construct(n57):
                                           ctor: Ctor(Record:Error owner=12)
                                           fields:
                                             code:
-                                              Lit(n53): Text("decode.missing_field")
+                                              Lit(n58): Text("decode.missing_field")
                                             message:
-                                              Lit(n54): Text("missing field \"val\"")
+                                              Lit(n59): Text("missing field \"val\"")
                     -
                       pat:
                         Wild
                       body:
-                        Construct(n55):
+                        Construct(n60):
                           ctor: Prelude(Err)
                           fields:
                             $0:
-                              Construct(n56):
+                              Construct(n61):
                                 ctor: Ctor(Record:Error owner=12)
                                 fields:
                                   code:
-                                    Lit(n57): Text("decode.expected_object")
+                                    Lit(n62): Text("decode.expected_object")
                                   message:
-                                    Lit(n58): Text("expected a JSON object for type Box")
+                                    Lit(n63): Text("expected a JSON object for type Box")

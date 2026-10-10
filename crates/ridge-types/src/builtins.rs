@@ -92,7 +92,8 @@ pub struct BuiltinTyCons {
     /// `JsonValue` — the JSON value tree (§3.17).
     ///
     /// `JNull | JBool Bool | JInt Int | JFloat Float | JText Text
-    ///  | JList (List JsonValue) | JObject (Map Text JsonValue)`.
+    ///  | JList (List JsonValue) | JObject (Map Text JsonValue)
+    ///  | JObjectFields (List (Text, JsonValue))`.
     ///
     /// Registered as a prelude union so any module can build and match JSON
     /// values without importing `std.json`. The variants lower to the
@@ -633,6 +634,16 @@ impl BuiltinTyCons {
                         kind: VariantPayload::Positional(vec![Type::Con(
                             map,
                             vec![Type::Con(text, vec![]), Type::Con(json_value_self, vec![])],
+                        )]),
+                    },
+                    UnionVariant {
+                        name: "JObjectFields".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(
+                            list,
+                            vec![Type::Tuple(vec![
+                                Type::Con(text, vec![]),
+                                Type::Con(json_value_self, vec![]),
+                            ])],
                         )]),
                     },
                 ],
@@ -2126,7 +2137,7 @@ mod tests {
     }
 
     #[test]
-    fn json_value_is_union_with_seven_variants() {
+    fn json_value_is_union_with_ordered_object_variant() {
         let (arena, b) = make_arena_with_builtins();
         let decl = arena.get(b.json_value);
         assert_eq!(decl.name, "JsonValue");
@@ -2135,7 +2146,16 @@ mod tests {
             let names: Vec<&str> = schema.variants.iter().map(|v| v.name.as_str()).collect();
             assert_eq!(
                 names,
-                vec!["JNull", "JBool", "JInt", "JFloat", "JText", "JList", "JObject"]
+                vec![
+                    "JNull",
+                    "JBool",
+                    "JInt",
+                    "JFloat",
+                    "JText",
+                    "JList",
+                    "JObject",
+                    "JObjectFields"
+                ]
             );
             // JNull is nullary; JList/JObject are self-referential.
             assert!(matches!(schema.variants[0].kind, VariantPayload::Nullary));

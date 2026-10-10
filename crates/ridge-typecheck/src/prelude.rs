@@ -24,7 +24,7 @@
 //! `Json` has no `TyConId` entry here; the property test (test 6) skips it.
 //!
 //! `JsonValue` (distinct from `Json`) **is** a prelude union `TyCon` —
-//! `b.json_value` — with the seven `J*` constructors in the value map, so any
+//! `b.json_value` — with the `J*` constructors in the value map, so any
 //! module can build and match JSON values without importing `std.json`.
 //!
 //! # Stability variables
@@ -260,6 +260,14 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
         "JList".to_string(),
         json_ctor(Some(ty_con(b.list, vec![json_ty.clone()]))),
     );
+    // JObjectFields : List (Text, JsonValue) -> JsonValue
+    values.insert(
+        "JObjectFields".to_string(),
+        json_ctor(Some(ty_con(
+            b.list,
+            vec![Type::Tuple(vec![ty_con(b.text, vec![]), json_ty.clone()])],
+        ))),
+    );
     // JObject : (Map Text JsonValue) -> JsonValue
     values.insert(
         "JObject".to_string(),
@@ -477,6 +485,7 @@ pub fn get_prelude_union_schema(b: &BuiltinTyCons, id: TyConId) -> ridge_types::
     } else if id == b.json_value {
         // JsonValue = JNull | JBool Bool | JInt Int | JFloat Float | JText Text
         //           | JList (List JsonValue) | JObject (Map Text JsonValue)
+        //           | JObjectFields (List (Text, JsonValue))
         // Mirror of BuiltinTyCons::allocate; payloads name the concrete
         // builtin TyConIds (JsonValue is monomorphic, no schema params).
         UnionSchema {
@@ -514,6 +523,16 @@ pub fn get_prelude_union_schema(b: &BuiltinTyCons, id: TyConId) -> ridge_types::
                     kind: VariantPayload::Positional(vec![Type::Con(
                         b.map,
                         vec![Type::Con(b.text, vec![]), Type::Con(b.json_value, vec![])],
+                    )]),
+                },
+                UnionVariant {
+                    name: "JObjectFields".to_string(),
+                    kind: VariantPayload::Positional(vec![Type::Con(
+                        b.list,
+                        vec![Type::Tuple(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(b.json_value, vec![]),
+                        ])],
                     )]),
                 },
             ],

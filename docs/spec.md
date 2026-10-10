@@ -1278,12 +1278,12 @@ A generic type — one with a type parameter, such as `type Box a = { val: a } d
 
 The decoding rules mirror the encoding rules above:
 
-- **Record** → expects a `JObject`. Each declared field is looked up in the JSON object by name; a missing field short-circuits with `Err { code = "decode.missing_field", … }`. A field value of the wrong JSON kind short-circuits with `Err { code = "decode.expected_int"` (or `"decode.expected_string"`, etc.), … }`.
+- **Record** → expects `JObject` or `JObjectFields`. Each declared field is looked up in the JSON object by name; a missing field short-circuits with `Err { code = "decode.missing_field", … }`. A field value of the wrong JSON kind short-circuits with `Err { code = "decode.expected_int"` (or `"decode.expected_string"`, etc.), … }`.
 - **Nullary union constructor** → expects `JText "CtorName"`. An unknown tag short-circuits with `Err { code = "decode.unknown_tag", … }`.
-- **Payload union constructor** → expects a `JObject` with `"tag"` and `"values"` keys. The tag string selects the constructor; the `values` array must have exactly as many elements as the constructor expects (`decode.bad_arity` otherwise).
+- **Payload union constructor** → expects `JObject` or `JObjectFields` with `"tag"` and `"values"` keys. The tag string selects the constructor; the `values` array must have exactly as many elements as the constructor expects (`decode.bad_arity` otherwise).
 - **`Option T`** → `JNull` decodes to `None`; any other JSON value is decoded as `T` and wrapped in `Some`.
 - **`List T`** → expects a `JArray`. Each element is decoded individually; the first failure short-circuits (fail-fast, not accumulate-all).
-- **`Map Text T`** → expects a `JObject`. Each value is decoded individually; the first failure short-circuits.
+- **`Map Text T`** → expects `JObject` or `JObjectFields`. Each value is decoded individually; the first failure short-circuits.
 
 Decoding is fail-fast: the first error encountered is immediately returned. Use `Err` values from the `Error` record (`{ code: Text, message: Text }`) to inspect what went wrong. A generic type derives a constrained `Decode` instance the same way `Encode` does, so `type Box a = { val: a } deriving (Encode, Decode)` round-trips over any element type that itself has both instances.
 
@@ -2191,7 +2191,30 @@ pub type JsonValue =
     | JText Text
     | JList (List JsonValue)
     | JObject (Map Text JsonValue)
+    | JObjectFields (List (Text, JsonValue))
 ```
+
+`JObject` keeps the map-based constructor and map payload. `JObjectFields`
+stores an explicit sequence of fields; derived record `Encode` uses it to
+preserve declaration order, recursively. Record literal assignment order does
+not change that order. `Json.asObject` accepts either variant and returns the
+same map view; derived `Decode` accepts either representation too.
+
+For `JObjectFields`, `Json.asObject` materializes a map from the field
+sequence. Reuse the returned map for repeated lookups instead of converting
+the same object each time.
+
+For duplicate keys in `JObjectFields`, serialization keeps the first position
+and the last value, emitting each key once; its map view also keeps the last
+value. Matching `JObjectFields fields` exposes the supplied sequence. The
+variants remain distinct values: an explicit sequence is not silently replaced
+by a map. Parsed JSON and map-derived encoding use `JObject`; neither promises
+declaration order.
+
+**Migration:** exhaustive `JsonValue` matches must include `JObjectFields`.
+Code matching the result of derived record encoding should handle that variant
+or use `Json.asObject` for a map view. Existing `JObject` construction and
+`JObject` pattern payloads retain their signatures.
 
 It is the canonical intermediate representation between Ridge values and JSON text. `Json.decode` produces a `JsonValue`; `Json.encode` consumes one. Derived `Encode`/`Decode` methods convert between user types and `JsonValue` (§5.6.4), so the typical flow is `T → JsonValue → Text` on the way out and `Text → JsonValue → T` on the way in. Building a `JsonValue` by hand is also supported — pattern-match and construct its variants directly when a value's shape is dynamic.
 

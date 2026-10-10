@@ -272,6 +272,7 @@ pub fn resolve_prelude_ctor(b: &BuiltinTyCons, name: &str) -> Option<(TyConId, u
         "JText" => Some((b.json_value, 4)),
         "JList" => Some((b.json_value, 5)),
         "JObject" => Some((b.json_value, 6)),
+        "JObjectFields" => Some((b.json_value, 7)),
         _ => None,
     }
 }

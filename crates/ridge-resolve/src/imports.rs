@@ -975,7 +975,7 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
         },
     };
     // JsonValue (§3.17) is a prelude union like Option/Result: the type name and
-    // its seven `J*` constructors are in scope in every module. The constructors
+    // its `J*` constructors are in scope in every module. The constructors
     // lower to the lowercase-snake BEAM atoms `ridge_rt:json_*` produces.
     let json_binding = |name: &str| EffectiveBinding {
         local_name: name.to_string(),
@@ -1105,6 +1105,7 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
                 json_binding("JText"),
                 json_binding("JList"),
                 json_binding("JObject"),
+                json_binding("JObjectFields"),
             ],
             span: synth_span,
         },
@@ -2380,9 +2381,10 @@ mod tests {
                 "JFloat",
                 "JText",
                 "JList",
-                "JObject"
+                "JObject",
+                "JObjectFields"
             ],
-            "std.json prelude must bind the type name and seven constructors"
+            "std.json prelude must bind the type name and JSON constructors"
         );
     }
 
@@ -2425,11 +2427,11 @@ mod tests {
     }
 
     // Prelude test 5: 1-module workspace with NO user imports → 6 prelude IRs,
-    // 82 total bindings (6 from option/result prelude + 8 from json prelude +
-    // 51 from quotation prelude + 4 from the Ordering prelude + 13 module aliases).
+    // 84 total bindings (6 from option/result prelude + 9 from json prelude +
+    // 51 from quotation prelude + 4 from the Ordering prelude + 14 module aliases).
     #[test]
     fn prelude_injected_when_no_user_imports() {
-        // An empty module has no imports → all 83 prelude bindings should appear.
+        // An empty module has no imports → all prelude bindings should appear.
         let (_td, result) = resolve_single("");
         let module_imports = result.imports.first().expect("module 0");
         // Exactly 6 prelude IRs (option + result + json + quotation constructors,
@@ -2445,8 +2447,8 @@ mod tests {
             .map(|ir| ir.effective_bindings.len())
             .sum();
         assert_eq!(
-            total_bindings, 83,
-            "expected 83 total prelude bindings (6 option/result + 8 json + 51 quotation + 4 ordering + 14 module aliases); got {total_bindings}"
+            total_bindings, 84,
+            "expected 84 total prelude bindings (6 option/result + 9 json + 51 quotation + 4 ordering + 14 module aliases); got {total_bindings}"
         );
     }
 

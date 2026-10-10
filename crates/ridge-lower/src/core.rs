@@ -400,7 +400,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
                     if matches!(
                         name.as_str(),
                         "Ok" | "Err" | "Some" | "None"
-                            | "JNull" | "JBool" | "JInt" | "JFloat" | "JText" | "JList" | "JObject"
+                            | "JNull" | "JBool" | "JInt" | "JFloat" | "JText" | "JList" | "JObject" | "JObjectFields"
                     )
             ) {
                 if ir_fields.is_empty() {
@@ -4215,6 +4215,7 @@ fn lower_ident(ctx: &mut LowerCtx<'_>, ident: &Ident) -> IrExpr {
                     | "JText"
                     | "JList"
                     | "JObject"
+                    | "JObjectFields"
             ) {
                 IrExpr::Symbol {
                     id,

@@ -12,6 +12,7 @@
 //! snapshot even while a newer compile is in flight.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -2262,6 +2263,7 @@ impl WorkspaceIndex {
         match binding {
             Binding::StdlibSymbol { module, name } => {
                 crate::stdlib_defs::stdlib_fn_signature(*module, name)
+                    .or_else(|| self.builtin_constructor_signature(name))
             }
             Binding::ClassMethod { class_name, method } => {
                 crate::stdlib_defs::stdlib_class_method_signature(class_name, method)
@@ -2273,6 +2275,37 @@ impl WorkspaceIndex {
             }
             _ => None,
         }
+    }
+
+    fn builtin_constructor_signature(&self, name: &str) -> Option<SignatureSig> {
+        let (owner, schema, variant) = self.builtin_variant(name)?;
+        let VariantPayload::Positional(types) = &variant.kind else {
+            return None;
+        };
+        let subst = positional_rigids(&schema.params);
+        let mut label = name.to_string();
+        let mut params = Vec::new();
+        for (i, ty) in types.iter().enumerate() {
+            label.push(' ');
+            let start = utf16_len(&label);
+            write!(
+                label,
+                "(arg{i}: {})",
+                render_type_with(&subst.apply_to_ty(ty), &self.tycons)
+            )
+            .ok()?;
+            params.push([start, utf16_len(&label)]);
+        }
+        label.push_str(" -> ");
+        label.push_str(&owner.name);
+        for parameter in &schema.params {
+            label.push(' ');
+            label.push_str(&render_type_with(
+                &subst.apply_to_ty(&Type::Var(*parameter)),
+                &self.tycons,
+            ));
+        }
+        Some(SignatureSig { label, params })
     }
 
     /// Build the signature of a workspace top-level `fn` from its declaration.
@@ -5430,8 +5463,14 @@ impl WorkspaceIndex {
         if let Some(id) = data.get("stdlib").and_then(serde_json::Value::as_u64) {
             let name = data.get("name")?.as_str()?;
             let module = StdlibModuleId(u32::try_from(id).ok()?);
-            let card = crate::stdlib_defs::stdlib_symbol_card(module, name)?;
-            return Some((card.header, card.doc));
+            if let Some(card) = crate::stdlib_defs::stdlib_symbol_card(module, name) {
+                return Some((card.header, card.doc));
+            }
+            let (owner, schema, variant) = self.builtin_variant(name)?;
+            return Some((
+                render_variant(&self.tycons, &schema.params, variant),
+                Some(format!("constructor of `{}`", owner.name)),
+            ));
         }
         let uri = Url::parse(data.get("uri")?.as_str()?).ok()?;
         let name = data.get("name")?.as_str()?;
@@ -5546,13 +5585,7 @@ impl WorkspaceIndex {
                         ));
                     }
                 }
-                for imp in &m.imports {
-                    if let Some(alias) = &imp.alias {
-                        if alias.starts_with(&prefix) {
-                            out.push(item(alias.clone(), CompletionItemKind::MODULE, '2'));
-                        }
-                    }
-                }
+                self.append_import_completions(&m.imports, &prefix, &mut out);
                 // Hard keywords and contextual ones (`child`) are both offered
                 // here; rename consults only the hard set.
                 for kw in KEYWORDS.iter().chain(CONTEXTUAL_KEYWORDS) {
@@ -5563,6 +5596,67 @@ impl WorkspaceIndex {
             }
         }
         Some(out)
+    }
+
+    fn append_import_completions(
+        &self,
+        imports: &[ImportResolution],
+        prefix: &str,
+        out: &mut Vec<CompletionItemData>,
+    ) {
+        let mut offered: std::collections::HashSet<String> = out
+            .iter()
+            .map(|candidate| candidate.label.clone())
+            .collect();
+        let constructors: std::collections::HashMap<_, _> = self
+            .tycons
+            .iter()
+            .filter(|decl| {
+                decl.def_module_raw
+                    .filter(|module| *module != u32::MAX)
+                    .is_none()
+            })
+            .filter_map(|decl| match &decl.kind {
+                TyConKind::Union(schema) => Some(schema),
+                _ => None,
+            })
+            .flat_map(|schema| {
+                schema
+                    .variants
+                    .iter()
+                    .map(move |variant| (variant.name.as_str(), (schema, variant)))
+            })
+            .collect();
+        for imp in imports {
+            if let Some(alias) = &imp.alias {
+                if alias.starts_with(prefix) {
+                    out.push(item(alias.clone(), CompletionItemKind::MODULE, '2'));
+                    offered.insert(alias.clone());
+                }
+            }
+            for imported in &imp.effective_bindings {
+                let Binding::StdlibSymbol { module, name } = &imported.binding else {
+                    continue;
+                };
+                if !imported.local_name.starts_with(prefix)
+                    || offered.contains(&imported.local_name)
+                {
+                    continue;
+                }
+                let Some((schema, variant)) = constructors.get(name.as_str()) else {
+                    continue;
+                };
+                let mut candidate = item(
+                    imported.local_name.clone(),
+                    CompletionItemKind::ENUM_MEMBER,
+                    '2',
+                );
+                candidate.detail = Some(render_variant(&self.tycons, &schema.params, variant));
+                candidate.data = Some(serde_json::json!({ "stdlib": module.0, "name": name }));
+                offered.insert(imported.local_name.clone());
+                out.push(candidate);
+            }
+        }
     }
 
     /// Field-name completions for `value.` where the value ending just before the

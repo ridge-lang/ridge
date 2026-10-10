@@ -111,8 +111,8 @@ pub enum DerivedMethodBody {
         variants: Vec<(String, usize, Option<Vec<String>>)>,
     },
 
-    /// `encode` body for a record type.  Encodes to a `JObject` whose keys are
-    /// the field names (binary `Text`) and whose values are structurally-encoded
+    /// `encode` body for a record type.  Encodes to a `JObjectFields` whose keys are
+    /// the field names (`Text`) and whose values are structurally-encoded
     /// fields in declaration order.
     DerivedEncodeRecord {
         /// Field names in declaration order.
@@ -135,7 +135,7 @@ pub enum DerivedMethodBody {
         variants: Vec<(String, Vec<FieldShape>, Option<Vec<String>>)>,
     },
 
-    /// `decode` body for a record type.  Expects a `JObject`; reads each
+    /// `decode` body for a record type. Accepts either object variant; reads each
     /// declared field via `Map.get`, decodes it according to its shape, and
     /// assembles `Ok(T { f1 = v1, … })`.  Missing field or wrong JSON kind
     /// short-circuits to `Err`.
@@ -148,7 +148,7 @@ pub enum DerivedMethodBody {
     },
 
     /// `decode` body for a union type.  Dispatches on the JSON shape:
-    /// `JText s` → nullary ctor lookup; `JObject m` → payload ctor via
+    /// `JText s` → nullary ctor lookup; either object variant → payload ctor via
     /// `"tag"`/`"values"` keys.  Unknown tag or bad arity → `Err`.
     DerivedDecodeUnion {
         /// `(ctor_name, payload_shapes, record_field_names)` in declaration order.
@@ -437,7 +437,7 @@ pub enum FieldShape {
     Lst(Box<Self>),
     /// `Map Text T`.
     /// Encode: `JObject(std.map.map (\_k v -> encode_shape(T, v)) m)`.
-    /// Decode: expect `JObject`; fold-decode each value, short-circuit on first `Err`.
+    /// Decode: accept either object variant; fold-decode values, stopping at the first `Err`.
     MapText(Box<Self>),
     /// `Result T E` — adjacently-tagged union shape `{"tag":"Ok"|"Err","values":[…]}`.
     Res(Box<Self>, Box<Self>),
@@ -1206,7 +1206,7 @@ fn generate_ord(body: &TypeBody) -> (DerivedMethodBody, Vec<Constraint>) {
 
 /// Generate `derive Encode`.
 ///
-/// Records encode to a `JObject` whose keys are the field names (binary `Text`)
+/// Records encode to a `JObjectFields` whose keys are the field names (`Text`)
 /// and values are structurally-encoded fields in declaration order.
 /// Union variants encode as follows:
 /// - Nullary → `JText "CtorName"` (bare JSON string — the DX-idiomatic form).
@@ -1310,12 +1310,12 @@ fn generate_encode(
 
 /// Generate `derive Decode`.
 ///
-/// Records decode from a `JObject`; each field is looked up with `Map.get`,
+/// Records decode from either object variant; each field is looked up with `Map.get`,
 /// decoded according to its [`FieldShape`], and assembled into `Ok(T { … })`.
 /// A missing key or wrong JSON kind short-circuits to `Err`.
 ///
 /// Union variants dispatch on the JSON shape: `JText s` → nullary ctor;
-/// `JObject m` → payload ctor via `"tag"`/`"values"` keys.  Unknown tag or
+/// either object variant → payload ctor via `"tag"`/`"values"` keys. Unknown tag or
 /// bad arity → `Err`.
 ///
 /// Returns `Err(TypeError::NoInstance/T029)` for the same var-boundary cases

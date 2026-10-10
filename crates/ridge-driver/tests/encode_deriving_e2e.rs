@@ -26,6 +26,7 @@
 #![cfg(feature = "beam-runtime")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::fmt::Write as _;
 use std::process::Command;
 
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
@@ -376,4 +377,114 @@ fn encode_derive_nullary_union() {
         stdout.contains("main_editor=\"Editor\""),
         "Editor must encode to \"Editor\"\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
+}
+
+#[test]
+fn encode_preserves_declared_object_order_and_object_views() {
+    let mut source = String::from(
+        r#"
+type ZA = { z: Int, a: Int } deriving (Encode, Decode, Eq)
+type AZ = { a: Int, z: Int } deriving (Encode, Decode, Eq)
+type Nested = { z: ZA, a: Option ZA, xs: List ZA } deriving (Encode, Decode, Eq)
+type Empty = {} deriving (Encode)
+type Single = { z: Int } deriving (Encode)
+type Event = Changed Int | Idle deriving (Encode, Decode, Eq)
+type Mixed = { m: Map Text Int, r: Result Int Text } deriving (Encode, Decode, Eq)
+
+pub fn opposite () -> Text =
+    let za = ZA { a = 2, z = 1 }
+    let az = AZ { z = 1, a = 2 }
+    $"${Json.encode (encode za)}|${Json.encode (encode az)}"
+
+pub fn nested () -> Text =
+    let v = ZA { z = 1, a = 2 }
+    let n = Nested { z = v, a = Some v, xs = [v] }
+    let back: Result Nested Error = decode (encode n)
+    $"${Json.encode (encode n)}|${back == Ok n}"
+
+pub fn small () -> Text =
+    $"${Json.encode (encode (Empty {}))}|${Json.encode (encode (Single { z = 1 }))}"
+
+pub fn duplicates () -> Text =
+    Json.encode (JObjectFields [("z", JInt 1), ("a", JInt 2), ("z", JInt 3)])
+
+pub fn views () -> Bool =
+    let old = JObject (Map.fromList [("z", JInt 1), ("a", JInt 2)])
+    let ordered = JObjectFields [("z", JInt 1), ("a", JInt 2)]
+    let backOld: Result ZA Error = decode old
+    let backOrdered: Result ZA Error = decode ordered
+    let resultJson = JObjectFields [("tag", JText "Ok"), ("values", JList [JInt 7])]
+    let backEvent: Result Event Error = decode (JObjectFields [("tag", JText "Changed"), ("values", JList [JInt 7])])
+    let backMixed: Result Mixed Error = decode (JObjectFields [("m", ordered), ("r", resultJson)])
+    let patternLength = match ordered
+        JObjectFields fields -> List.length fields
+        _ -> 0
+    let oldPatternLength = match old
+        JObject fields -> Map.length fields
+        _ -> 0
+    let duplicateView = Json.asObject (JObjectFields [("z", JInt 1), ("a", JInt 2), ("z", JInt 3)])
+    Json.asObject old == Json.asObject ordered && backOld == backOrdered && backOrdered == Ok (ZA { z = 1, a = 2 }) && patternLength == 2 && oldPatternLength == 2 && duplicateView == Some (Map.fromList [("z", JInt 3), ("a", JInt 2)]) && backEvent == Ok (Changed 7) && backMixed == Ok (Mixed { m = Map.fromList [("z", 1), ("a", 2)], r = Ok 7 })
+"#,
+    );
+    let fields = (0..40)
+        .rev()
+        .map(|i| format!("k{i}: Int"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let values = (0..40)
+        .map(|i| format!("k{i} = {i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    write!(source, "\ntype Large = {{ {fields} }} deriving (Encode)\npub fn large () -> Text = Json.encode (encode (Large {{ {values} }}))\n")
+        .expect("write generated record fixture");
+    let Some((_dir, _cache, beam_dir, module)) = compile_and_find_module(&source) else {
+        eprintln!("erl/erlc not on PATH — skipping ordered JSON regression");
+        return;
+    };
+    let expr = format!("io:format(\"~s~n~s~n~s~n~s~n~p~n~s~n\", [{module}:opposite(), {module}:nested(), {module}:small(), {module}:duplicates(), {module}:views(), {module}:large()]), halt().");
+    let (stdout, stderr) = run_erl(&beam_dir, &expr);
+    let large = (0..40)
+        .rev()
+        .map(|i| format!("\"k{i}\":{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let expected = format!(concat!(
+        "{{\"z\":1,\"a\":2}}|{{\"a\":2,\"z\":1}}\n",
+        "{{\"z\":{{\"z\":1,\"a\":2}},\"a\":{{\"z\":1,\"a\":2}},\"xs\":[{{\"z\":1,\"a\":2}}]}}|true\n",
+        "{{}}|{{\"z\":1}}\n{{\"z\":3,\"a\":2}}\ntrue\n{{{}}}\n"), large);
+    assert_eq!(stdout.replace("\r\n", "\n"), expected, "stderr: {stderr}");
+}
+
+#[test]
+fn ordered_object_decodes_through_the_result_instance() {
+    let source = r#"
+pub fn check () -> Bool =
+    let ordered = JObjectFields [("tag", JText "Ok"), ("values", JList [JInt 7])]
+    let back: Result (Result Int Text) Error = decode ordered
+    back == Ok (Ok 7)
+"#;
+    let Some((_dir, _cache, beam_dir, module)) = compile_and_find_module(source) else {
+        eprintln!("erl/erlc not on PATH — skipping ordered Result decoding regression");
+        return;
+    };
+    let expr = format!("io:format(\"~p~n\", [{module}:check()]), halt().");
+    let (stdout, stderr) = run_erl(&beam_dir, &expr);
+    assert_eq!(stdout.trim(), "true", "stderr: {stderr}");
+}
+
+#[test]
+fn ordered_object_decodes_through_the_map_instance() {
+    let source = r#"
+pub fn check () -> Bool =
+    let ordered = JObjectFields [("z", JInt 1), ("a", JInt 2)]
+    let back: Result (Map Text Int) Error = decode ordered
+    back == Ok (Map.fromList [("z", 1), ("a", 2)])
+"#;
+    let Some((_dir, _cache, beam_dir, module)) = compile_and_find_module(source) else {
+        eprintln!("erl/erlc not on PATH — skipping ordered Map decoding regression");
+        return;
+    };
+    let expr = format!("io:format(\"~p~n\", [{module}:check()]), halt().");
+    let (stdout, stderr) = run_erl(&beam_dir, &expr);
+    assert_eq!(stdout.trim(), "true", "stderr: {stderr}");
 }

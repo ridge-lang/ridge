@@ -1249,7 +1249,7 @@ fn lower_constructor_pattern(
             // For anything else fall through to the error arm below.
             match prelude_name.as_str() {
                 "Some" | "None" | "Ok" | "Err" | "JNull" | "JBool" | "JInt" | "JFloat"
-                | "JText" | "JList" | "JObject" => {
+                | "JText" | "JList" | "JObject" | "JObjectFields" => {
                     let sym = SymbolRef::Prelude { name: prelude_name };
                     let ir_args: Vec<IrPat> =
                         args.iter().map(|a| lower_pattern_full(ctx, a)).collect();

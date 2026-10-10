@@ -81,7 +81,10 @@ pub fn matchedJson (j: JsonValue) -> Int =
     match j
         JList _ -> 1
         JObject _ -> 2
+        JObjectFields _ -> 3
         _ -> 0
+
+pub fn builtOrdered () -> JsonValue = JObjectFields [("z", JInt 1)]
 
 pub fn builtRecord () -> Point = Point { px = 1, py = 2 }
 
@@ -269,6 +272,54 @@ fn a_payload_of_more_than_one_word_is_parenthesised() {
         object.contains("JObject (Map Text JsonValue)"),
         "got: {object}"
     );
+}
+
+#[test]
+fn ordered_object_constructor_cards_in_values_and_patterns() {
+    let (index, uri) = build_index();
+    let value = hover(&index, &uri, "JObjectFields [(", 0).expect("ordered constructor in value");
+    let pattern =
+        hover(&index, &uri, "JObjectFields _", 0).expect("ordered constructor in pattern");
+    assert_eq!(value, pattern);
+    assert!(
+        value.contains("JObjectFields")
+            && value.contains("List")
+            && value.contains("Text")
+            && value.contains("JsonValue"),
+        "{value}"
+    );
+    let at = SRC.find("JObjectFields [(").unwrap();
+    let line = SRC[..at].matches('\n').count() as u32;
+    let col = (at - SRC[..at].rfind('\n').map_or(0, |p| p + 1)) as u32;
+    let items = index.completions_at(&uri, line, col + 7);
+    assert!(
+        items.iter().any(|item| item.label == "JObjectFields"),
+        "ordered constructor must complete"
+    );
+    let ordered = items
+        .iter()
+        .find(|item| item.label == "JObjectFields")
+        .unwrap();
+    let data = ordered
+        .data
+        .as_ref()
+        .expect("constructor completion resolve payload");
+    let (resolved, _) = index
+        .resolve_completion(data)
+        .expect("constructor completion resolves");
+    assert!(resolved.contains("JObjectFields") && resolved.contains("JsonValue"));
+    let signature = index
+        .signature_help_at(&uri, line, col + 14, false)
+        .expect("ordered constructor signature");
+    assert!(signature.signatures[0].label.contains("JObjectFields"));
+    let at = SRC.find("Ok 1").unwrap();
+    let line = SRC[..at].matches('\n').count() as u32;
+    let col = (at - SRC[..at].rfind('\n').map_or(0, |p| p + 1)) as u32;
+    let signature = index
+        .signature_help_at(&uri, line, col + 3, false)
+        .expect("generic constructor signature");
+    assert!(signature.signatures[0].label.contains("arg0: a"));
+    assert!(signature.signatures[0].label.ends_with("Result a b"));
 }
 
 #[test]

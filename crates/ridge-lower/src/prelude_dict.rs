@@ -1046,7 +1046,7 @@ fn decode_map_lambda(ctx: &mut LowerCtx<'_>, val_dict: IrExpr, span: Span) -> Ir
     let j = local(ctx, "__dec_j", span);
     let body = IrExpr::Match {
         id: ctx.fresh_id(None),
-        scrutinee: Box::new(j),
+        scrutinee: Box::new(crate::item::json_object_map_view(ctx, j, span)),
         arms: vec![ok_arm, wild_arm],
         span,
     };
@@ -1295,7 +1295,7 @@ fn decode_result_lambda(
     let j = local(ctx, "__dec_j", span);
     let body = IrExpr::Match {
         id: ctx.fresh_id(None),
-        scrutinee: Box::new(j),
+        scrutinee: Box::new(crate::item::json_object_map_view(ctx, j, span)),
         arms: vec![ok_arm, wild_arm],
         span,
     };

@@ -218,7 +218,7 @@ pub static CARDS: &[(&str, BuiltinCard)] = &[
         "JsonValue",
         BuiltinCard {
             signature: "JsonValue",
-            summary: "A JSON document as a value: `JNull`, `JBool`, `JInt`, `JFloat`, `JText`, `JList`, or `JObject`.",
+            summary: "A JSON document as a value: `JNull`, `JBool`, `JInt`, `JFloat`, `JText`, `JList`, `JObject`, or ordered `JObjectFields`.",
             note: "In scope everywhere, so JSON can be built and matched without an import.",
         },
     ),

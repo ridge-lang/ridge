@@ -279,6 +279,13 @@ fn run_erl(beam_dir: &std::path::Path, expr: &str) -> (String, String) {
         .arg(expr)
         .output()
         .expect("run erl");
+    assert!(
+        output.status.success(),
+        "erl failed: {}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     (
         String::from_utf8_lossy(&output.stdout).into_owned(),
         String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -435,5 +442,107 @@ fn decode_derive_record_with_list_and_option() {
     assert!(
         stdout.contains("rt_empty=ok"),
         "Empty profile round-trip must succeed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+/// Parametric return-directed decoders must select their full payload type at
+/// each call, independently of other Decode instances used in the module.
+#[test]
+fn decode_combined_parametric_payloads_dispatch() {
+    let source = r#"
+type Entry = { value: Int } deriving (Decode, Eq)
+type Event = Number Int | Empty deriving (Decode, Eq)
+type Box a = { value: a } deriving (Decode, Eq)
+
+pub fn sameFunction () -> Bool =
+    let ints: Result (Map Text Int) Error = decode (JObject (Map.fromList [("k", JInt 7)]))
+    let texts: Result (Map Text Text) Error = decode (JObjectFields [("k", JText "seven")])
+    let ok: Result (Result Int Text) Error = decode (JObjectFields [("tag", JText "Ok"), ("values", JList [JInt 7])])
+    let err: Result (Result Text Int) Error = decode (JObject (Map.fromList [("tag", JText "Err"), ("values", JList [JInt 8])]))
+    let entry: Result Entry Error = decode (JObjectFields [("value", JInt 9)])
+    let event: Result Event Error = decode (JObjectFields [("tag", JText "Number"), ("values", JList [JInt 10])])
+    let boxed: Result (Box Int) Error = decode (JObjectFields [("value", JInt 11)])
+    let list: Result (List Int) Error = decode (JList [JInt 12])
+    let option: Result (Option Text) Error = decode (JText "thirteen")
+    ints == Ok (Map.fromList [("k", 7)]) && texts == Ok (Map.fromList [("k", "seven")]) && ok == Ok (Ok 7) && err == Ok (Err 8) && entry == Ok (Entry { value = 9 }) && event == Ok (Number 10) && boxed == Ok (Box { value = 11 }) && list == Ok [12] && option == Ok (Some "thirteen")
+
+fn mapOnly () -> Result (Map Text Int) Error =
+    decode (JObject (Map.fromList [("k", JInt 7)]))
+
+fn resultOnly () -> Result (Result Int Text) Error =
+    decode (JObject (Map.fromList [("tag", JText "Ok"), ("values", JList [JInt 8])]))
+
+pub fn separateFunctions () -> Bool =
+    mapOnly () == Ok (Map.fromList [("k", 7)]) && resultOnly () == Ok (Ok 8)
+
+pub fn nested () -> Bool =
+    let json = JObjectFields [("k", JObjectFields [("tag", JText "Ok"), ("values", JList [JList [JInt 3, JInt 4]])])]
+    let back: Result (Map Text (Result (List Int) Text)) Error = decode json
+    back == Ok (Map.fromList [("k", Ok [3, 4])])
+
+fn decodeAs (j: JsonValue) -> Result a Error where Decode a = decode j
+
+fn decodeWithConcrete (j: JsonValue) (witness: a) -> (Result a Error, Result Int Error) where Decode a =
+    let generic: Result a Error = decode j
+    let concrete: Result Int Error = decode (JInt 19)
+    (generic, concrete)
+
+fn decodeList (j: JsonValue) (witness: a) -> Result (List a) Error where Decode a = decode j
+
+pub fn forwarding () -> Bool =
+    let ints: Result (Map Text Int) Error = decodeAs (JObjectFields [("k", JInt 7)])
+    let texts: Result (Map Text Text) Error = decodeAs (JObjectFields [("k", JText "seven")])
+    ints == Ok (Map.fromList [("k", 7)]) && texts == Ok (Map.fromList [("k", "seven")])
+
+pub fn concreteInGeneric () -> Bool =
+    decodeWithConcrete (JText "text") "witness" == (Ok "text", Ok 19)
+
+pub fn genericContainer () -> Bool =
+    decodeList (JList [JText "text"]) "witness" == Ok ["text"]
+
+pub fn piped () -> Bool =
+    let map: Result (Map Text Int) Error = JObjectFields [("k", JInt 7)] |> decode
+    let result: Result (Result Int Text) Error = JObjectFields [("tag", JText "Ok"), ("values", JList [JInt 8])] |> decode
+    map == Ok (Map.fromList [("k", 7)]) && result == Ok (Ok 8)
+
+pub fn methodsAsValues () -> Bool =
+    let mapRead: JsonValue -> Result (Map Text Int) Error = decode
+    let resultRead: JsonValue -> Result (Result Int Text) Error = decode
+    mapRead (JObjectFields [("k", JInt 7)]) == Ok (Map.fromList [("k", 7)]) && resultRead (JObjectFields [("tag", JText "Ok"), ("values", JList [JInt 8])]) == Ok (Ok 8)
+
+fn valueWithConcrete (j: JsonValue) (witness: a) -> (Result a Error, Result Int Error) where Decode a =
+    let genericRead: JsonValue -> Result a Error = decode
+    let concreteRead: JsonValue -> Result Int Error = decode
+    (genericRead j, concreteRead (JInt 19))
+
+pub fn valuesInGeneric () -> Bool =
+    valueWithConcrete (JText "text") "witness" == (Ok "text", Ok 19)
+
+pub fn invalidPayload () -> Text =
+    let back: Result (Map Text Int) Error = decode (JObjectFields [("k", JText "wrong")])
+    match back
+        Ok _ -> "unexpected success"
+        Err e -> e.code
+"#;
+    let Some((_dir, _cache, beam_dir, module)) = compile_and_find_module(source) else {
+        eprintln!("erl/erlc not on PATH — skipping combined Decode regression");
+        return;
+    };
+    let expr = format!(
+        "io:format(\"same=~p~nseparate=~p~nnested=~p~nforward=~p~nconcrete=~p~ncontainer=~p~npipe=~p~nvalues=~p~ngenericValues=~p~ninvalid=~s~n\", \
+         [{module}:sameFunction(), {module}:separateFunctions(), {module}:nested(), \
+          {module}:forwarding(), {module}:concreteInGeneric(), {module}:genericContainer(), \
+          {module}:piped(), {module}:methodsAsValues(), {module}:valuesInGeneric(), \
+          {module}:invalidPayload()]), halt()."
+    );
+    let (stdout, stderr) = run_erl(&beam_dir, &expr);
+    assert_eq!(
+        stdout.replace("\r\n", "\n"),
+        concat!(
+            "same=true\nseparate=true\nnested=true\nforward=true\n",
+            "concrete=true\ncontainer=true\npipe=true\nvalues=true\ngenericValues=true\n",
+            "invalid=decode.expected_int\n"
+        ),
+        "stderr: {stderr}"
     );
 }

@@ -2884,10 +2884,10 @@ pub(crate) fn try_lower_classmethod_call(
     // when the class variable cannot be found by AST scan.
     let mut pin_ty = classmethod_pin_type(ctx, cid, &method, args);
     // Where the pin came from, decided here while both paths are still in view.
-    // The argument scan locates the class variable; the return-type recovery
-    // below does not, and a method that dispatches on its arguments must not be
-    // resolved from whatever head its result happens to have.
-    let located = pin_ty.is_some();
+    // The argument scan locates the class variable. Return-type recovery only
+    // does so for Decode's reserved signature; other recovered heads remain
+    // guesses and must not override a dictionary supplied by the caller.
+    let mut located = pin_ty.is_some();
 
     let is_stdlib_class = stdlib_class_home_module(&class_name).is_some();
     // The prelude classes carry registered instances (like stdlib classes) but
@@ -2911,6 +2911,10 @@ pub(crate) fn try_lower_classmethod_call(
     // once two `Decode` instances exist in a module.
     if pin_ty.is_none() && (is_stdlib_class || is_prelude_class) {
         pin_ty = classmethod_pin_from_return(ctx, cid, span);
+        // Decode's reserved signature locates its class variable in the first
+        // Result argument. A concrete payload must outrank an unrelated Decode
+        // dictionary supplied to the enclosing generic function.
+        located = cid == ridge_types::DECODE_CLASS && pin_ty.is_some();
     }
 
     // Still unpinned: defer to the generic dict-arg path, which threads the
@@ -2969,15 +2973,26 @@ pub(crate) fn try_lower_classmethod_call(
     })
 }
 
+/// The type decoded by `Decode.decode : JsonValue -> Result a Error`.
+/// Keep the complete payload, including container arguments and variables.
+fn decode_payload_type(ctx: &LowerCtx<'_>, return_type: &Type) -> Option<Type> {
+    match deep_peel_alias(return_type) {
+        Type::Con(head, args) if head == ctx.builtins.result && args.len() == 2 => {
+            Some(deep_peel_alias(&args[0]))
+        }
+        _ => None,
+    }
+}
+
 /// Derive a pin type for a class method whose class variable is in the return
 /// type rather than the argument list — stdlib `fromSql (v: SqlValue) -> Result
 /// a Error` or the prelude `decode (v: JsonValue) -> Result a Error`.
 ///
-/// Reads the inferred return type of the call expression at `call_span`, then
-/// searches the registered instances for this class to find one whose tycon
-/// appears in that return type. Returns `Some(concrete_type)` when exactly one
-/// instance is a candidate; `None` when the return type is unavailable or no
-/// registered instance matches.
+/// Decode's reserved signature selects the full payload of `Result a Error`,
+/// including parametric and variable types. Other classes search the direct
+/// nullary arguments of the inferred return type for a unique instance head,
+/// then try a forwarded constraint variable. Returns `None` when no pin can be
+/// recovered from the inferred type of the call at `call_span`.
 fn classmethod_pin_from_return(
     ctx: &LowerCtx<'_>,
     class: ridge_types::ClassId,
@@ -2990,6 +3005,15 @@ fn classmethod_pin_from_return(
         .and_then(|m| m.get(call_span, NodeKind::Expr))
         .and_then(|nid| ctx.node_type(nid).cloned())
         .map(|t| deep_peel_alias(&t))?;
+
+    // Decode dispatches on `a` in `Result a Error`, including its entire type
+    // spine. Looking only for nullary instance heads loses `Map Text Int` and
+    // `Result Int Text`; a module-wide fallback then becomes ambiguous as soon
+    // as another Decode instance is used. A variable payload is equally exact:
+    // resolve_dict_arg forwards the dictionary for that variable.
+    if class == ridge_types::DECODE_CLASS {
+        return decode_payload_type(ctx, &call_type);
+    }
 
     // The dispatch type sits at the top of the return: a bare return is itself
     // the dispatch type, and a wrapped one carries it as a direct type argument
@@ -4342,32 +4366,36 @@ fn lower_ident(ctx: &mut LowerCtx<'_>, ident: &Ident) -> IrExpr {
                 .and_then(|ct| ct.id_by_name(class_name));
 
             let dict_expr = if let Some(cid) = class_id {
-                // A bare class-method reference carries no call arguments here to
-                // pin the constraint by type; the surrounding call applies the
-                // result. With no pinning type, `resolve_dict_arg` forwards an
-                // enclosing dict param or falls back to the sole Static plan.
-                //
-                // When the enclosing fn carries several constraints for this class,
-                // the method's instantiated type at this use — stamped under
-                // `NodeKind::Expr` for the ident span — singles out which constraint
-                // variable applies, so the right incoming dict is forwarded instead
-                // of always the first.
-                let pin = ctx
+                let method_type = ctx
                     .node_id_map
                     .as_ref()
                     .and_then(|m| m.get(span, NodeKind::Expr))
-                    .and_then(|nid| ctx.node_type(nid).cloned())
-                    .and_then(|t| pin_method_dict_var(ctx, cid, &t));
-                // A bare reference has no argument to pin anything: the pin here
-                // is a constraint variable, read to pick which incoming dict to
-                // forward, never a type that settles the call on its own.
+                    .and_then(|nid| ctx.node_type(nid).cloned());
+                // A Decode value carries its dispatch type in the return of its
+                // instantiated function type, just as a call carries it in its
+                // result. Other methods only use the type to distinguish incoming
+                // variables; a guessed head must not override the caller's dict.
+                let decode_pin = method_type.as_ref().and_then(|ty| {
+                    if cid == ridge_types::DECODE_CLASS {
+                        if let Type::Fn { ret, .. } = deep_peel_alias(ty) {
+                            return decode_payload_type(ctx, &ret);
+                        }
+                    }
+                    None
+                });
+                let located = decode_pin.is_some();
+                let pin = decode_pin.or_else(|| {
+                    method_type
+                        .as_ref()
+                        .and_then(|ty| pin_method_dict_var(ctx, cid, ty))
+                });
                 resolve_dict_arg(
                     ctx,
                     cid,
                     class_name,
                     ConstraintPin {
                         ty: pin.as_ref(),
-                        located: false,
+                        located,
                     },
                     0,
                     false,

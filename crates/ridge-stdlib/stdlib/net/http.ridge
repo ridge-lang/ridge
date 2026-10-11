@@ -71,6 +71,14 @@ pub fn net delete (url: Text) -> Result Response Error =
 -- The bound port is registered under the name `ridge_http_server` via
 -- ridge_rt so tests can retrieve it via ridge_rt:http_port/0.
 -- Returns Unit (blocks in the accept loop until the process is killed).
+-- Handlers receive a complete body framed by Content-Length (in UTF-8 bytes).
+-- Requests without Content-Length have an empty body. Identical repeated
+-- lengths are accepted; invalid/conflicting lengths or length plus transfer
+-- encoding return 400 without calling the handler. Transfer encoding alone
+-- is currently unsupported and returns 501.
+-- The server allows at most 64 KiB of request line plus headers (431), 8 MiB
+-- of body (413), and five seconds to receive the entire request (408).
+-- A connection closed before the complete request never calls the handler.
 -- Requires the `net` capability.
 @ffi("ridge_rt", "http_listen", 2)
 pub fn net listen (port: Int) (handler: fn net Request -> Response) -> Unit

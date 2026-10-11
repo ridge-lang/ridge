@@ -1555,9 +1555,8 @@ http_accept_loop(LSock, Handler) ->
 
 %% Internal: read the request from one socket, call the handler, write back.
 http_handle_connection(Sock, Handler) ->
-    case http_recv_all(Sock, <<>>) of
-        {ok, Raw} ->
-            Request = http_parse_request(Raw),
+    case http_recv_request(Sock) of
+        {ok, Request} ->
             Response =
                 try Handler(Request)
                 catch _:_ ->
@@ -1567,51 +1566,172 @@ http_handle_connection(Sock, Handler) ->
             RespBin = http_build_response(Response),
             gen_tcp:send(Sock, RespBin),
             gen_tcp:close(Sock);
+        {error, {http, Status, Message}} ->
+            gen_tcp:send(Sock, http_build_response(#{status => Status, body => Message})),
+            gen_tcp:close(Sock);
         {error, _} ->
             gen_tcp:close(Sock)
     end.
 
-%% Internal: read all available data from the socket with a short timeout.
-http_recv_all(Sock, Acc) ->
-    case gen_tcp:recv(Sock, 0, 5000) of
-        {ok, Data} ->
-            %% Stop once we have a blank-line-terminated request.
-            Buf = <<Acc/binary, Data/binary>>,
-            case binary:match(Buf, <<"\r\n\r\n">>) of
-                nomatch -> http_recv_all(Sock, Buf);
-                _       -> {ok, Buf}
-            end;
-        {error, timeout} when Acc =/= <<>> ->
-            {ok, Acc};
-        {error, Reason} ->
-            {error, Reason}
+%% Internal: frame one request before exposing it to a handler. Header chunks
+%% are scanned once and joined only when complete. Any prefetched body octets
+%% count toward Content-Length; an exact receive obtains the remainder.
+%% The deadline covers the entire request, rather than restarting on each read.
+-define(HTTP_MAX_HEADERS, 65536).
+-define(HTTP_MAX_BODY, 8388608).
+-define(HTTP_REQUEST_TIMEOUT, 5000).
+
+http_recv_request(Sock) ->
+    Deadline = erlang:monotonic_time(millisecond) + ?HTTP_REQUEST_TIMEOUT,
+    try
+        {Head, InitialBody} = http_recv_head(Sock, Deadline, [], 0, <<>>),
+        [Line | Headers] = binary:split(Head, <<"\r\n">>, [global]),
+        http_no_line_breaks(Line),
+        {Method, Path} = http_request_line(<<Line/binary, "\r\n">>),
+        Length = http_parse_framing(Headers, undefined, false),
+        Available = byte_size(InitialBody),
+        Body = case Available >= Length of
+            true -> binary:part(InitialBody, 0, Length);
+            false ->
+                Remaining = http_recv(Sock, Length - Available, Deadline),
+                <<InitialBody/binary, Remaining/binary>>
+        end,
+        {ok, #{method => Method, path => Path, body => Body}}
+    catch
+        throw:{http_error, Status, Message} -> {error, {http, Status, Message}};
+        throw:{http_transport_error, Reason} -> {error, Reason}
     end.
 
-%% Internal: parse a raw HTTP/1.x request binary into a Ridge Request map.
-%% Ridge records compile to atom-keyed maps, so the Request wire shape is
-%% #{method => Bin, path => Bin, body => Bin}.
-http_parse_request(Raw) ->
-    Lines = binary:split(Raw, <<"\r\n">>, [global]),
-    {Method, Path, Body} =
-        case Lines of
-            [RequestLine | Rest] ->
-                Parts = binary:split(RequestLine, <<" ">>, [global]),
-                M = case Parts of [Meth | _] -> string:uppercase(Meth); _ -> <<"GET">> end,
-                P = case Parts of [_, Pth | _] -> Pth; _ -> <<"/">> end,
-                %% Find body after blank line separator.
-                B = http_extract_body(Rest),
-                {M, P, B};
-            _ ->
-                {<<"GET">>, <<"/">>, <<>>}
-        end,
-    #{method => Method, path => Path, body => Body}.
+%% Keep header chunks without recopying the growing prefix. Only the last
+%% three octets can start a terminator that finishes in the next chunk.
+http_recv_head(Sock, Deadline, Chunks, Size, Tail) ->
+    Data = http_recv(Sock, 0, Deadline),
+    Search = <<Tail/binary, Data/binary>>,
+    case binary:match(Search, <<"\r\n\r\n">>) of
+        nomatch ->
+            Total = Size + byte_size(Data),
+            case Total >= ?HTTP_MAX_HEADERS of
+                true -> http_reject(431, <<"HTTP request headers exceed 64 KiB">>);
+                false -> ok
+            end,
+            Keep = min(3, byte_size(Search)),
+            NextTail = binary:part(Search, byte_size(Search) - Keep, Keep),
+            http_recv_head(Sock, Deadline, [Data | Chunks], Total, NextTail);
+        {Position, 4} ->
+            Take = Position + 4 - byte_size(Tail),
+            case Size + Take > ?HTTP_MAX_HEADERS of
+                true -> http_reject(431, <<"HTTP request headers exceed 64 KiB">>);
+                false -> ok
+            end,
+            Prefix = binary:part(Data, 0, Take),
+            Head = iolist_to_binary(lists:reverse([Prefix | Chunks])),
+            Body = binary:part(Data, Take, byte_size(Data) - Take),
+            {Head, Body}
+    end.
 
-%% Internal: extract the body from the lines after the headers.
-http_extract_body([]) -> <<>>;
-http_extract_body([<<>> | Rest]) ->
-    iolist_to_binary(lists:join(<<"\r\n">>, Rest));
-http_extract_body([_ | Rest]) ->
-    http_extract_body(Rest).
+http_parse_framing([<<>>, <<>>], Length, TransferEncoding) ->
+    case {TransferEncoding, Length} of
+        {true, undefined} -> http_reject(501, <<"HTTP transfer encoding is not supported">>);
+        {true, _} -> http_reject(400, <<"Ambiguous HTTP request framing">>);
+        {false, undefined} -> 0;
+        {false, N} -> N
+    end;
+http_parse_framing([Line | Rest], Length, TransferEncoding) ->
+    http_no_line_breaks(Line),
+    case binary:split(Line, <<":">>) of
+        [Name, Value] ->
+            case http_is_token(Name) of
+                false -> http_reject(400, <<"Invalid HTTP header name">>);
+                true -> ok
+            end,
+            case string:lowercase(Name) of
+                <<"content-length">> ->
+                    Next = http_content_lengths(binary:split(Value, <<",">>, [global]), Length),
+                    http_parse_framing(Rest, Next, TransferEncoding);
+                <<"transfer-encoding">> -> http_parse_framing(Rest, Length, true);
+                _ -> http_parse_framing(Rest, Length, TransferEncoding)
+            end;
+        _ -> http_reject(400, <<"Invalid HTTP header">>)
+    end;
+http_parse_framing(_, _, _) -> http_reject(400, <<"Invalid HTTP headers">>).
+
+http_no_line_breaks(Text) ->
+    case binary:match(Text, [<<"\r">>, <<"\n">>]) of
+        nomatch -> ok;
+        _ -> http_reject(400, <<"HTTP header lines require CRLF">>)
+    end.
+
+http_reject(Status, Message) ->
+    throw({http_error, Status, Message}).
+
+http_recv(Sock, Length, Deadline) ->
+    Remaining = Deadline - erlang:monotonic_time(millisecond),
+    case Remaining > 0 of
+        false -> http_reject(408, <<"HTTP request deadline exceeded">>);
+        true ->
+            case gen_tcp:recv(Sock, Length, Remaining) of
+                {ok, Data} -> Data;
+                {error, timeout} -> http_reject(408, <<"HTTP request deadline exceeded">>);
+                {error, emsgsize} -> http_reject(431, <<"HTTP request headers exceed 64 KiB">>);
+                {error, Reason} -> throw({http_transport_error, Reason})
+            end
+    end.
+
+http_request_line(Line) ->
+    Text = binary:part(Line, 0, byte_size(Line) - 2),
+    case binary:split(Text, <<" ">>, [global]) of
+        [Method, Path, Version] when Path =/= <<>>,
+                (Version =:= <<"HTTP/1.0">> orelse Version =:= <<"HTTP/1.1">>) ->
+            case http_is_token(Method) of
+                true -> {string:uppercase(Method), Path};
+                false -> http_reject(400, <<"Invalid HTTP method">>)
+            end;
+        _ -> http_reject(400, <<"Invalid HTTP request line">>)
+    end.
+
+http_is_token(<<>>) -> false;
+http_is_token(Text) ->
+    lists:all(fun(C) ->
+        (C >= $a andalso C =< $z) orelse (C >= $A andalso C =< $Z)
+        orelse (C >= $0 andalso C =< $9) orelse lists:member(C, "!#$%&'*+-.^_`|~")
+    end, binary_to_list(Text)).
+
+http_content_lengths([], Length) -> Length;
+http_content_lengths([Value | Rest], Length) ->
+    Digits = http_trim_ows(Value),
+    case Digits =/= <<>> andalso lists:all(fun(C) -> C >= $0 andalso C =< $9 end,
+                                         binary_to_list(Digits)) of
+        false -> http_reject(400, <<"Invalid HTTP Content-Length">>);
+        true -> ok
+    end,
+    Significant = http_trim_zeroes(Digits),
+    case byte_size(Significant) > 7 of
+        true -> http_reject(413, <<"HTTP request body exceeds 8 MiB">>);
+        false -> ok
+    end,
+    N = binary_to_integer(Significant),
+    case N > ?HTTP_MAX_BODY of
+        true -> http_reject(413, <<"HTTP request body exceeds 8 MiB">>);
+        false -> ok
+    end,
+    case Length =:= undefined orelse Length =:= N of
+        true -> http_content_lengths(Rest, N);
+        false -> http_reject(400, <<"Conflicting HTTP Content-Length values">>)
+    end.
+
+http_trim_zeroes(<<"0", Rest/binary>>) when Rest =/= <<>> -> http_trim_zeroes(Rest);
+http_trim_zeroes(Text) -> Text.
+
+http_trim_ows(<<C, Rest/binary>>) when C =:= $\s; C =:= $\t -> http_trim_ows(Rest);
+http_trim_ows(Text) -> http_trim_ows_right(Text).
+
+http_trim_ows_right(<<>>) -> <<>>;
+http_trim_ows_right(Text) ->
+    case binary:last(Text) of
+        C when C =:= $\s; C =:= $\t ->
+            http_trim_ows_right(binary:part(Text, 0, byte_size(Text) - 1));
+        _ -> Text
+    end.
 
 %% Internal: build an HTTP/1.0 response binary from a Ridge Response record.
 %% Ridge records compile to atom-keyed maps, so the Response wire shape is
@@ -1652,7 +1772,11 @@ http_status_text(201) -> <<"Created">>;
 http_status_text(204) -> <<"No Content">>;
 http_status_text(400) -> <<"Bad Request">>;
 http_status_text(404) -> <<"Not Found">>;
+http_status_text(408) -> <<"Request Timeout">>;
+http_status_text(413) -> <<"Content Too Large">>;
+http_status_text(431) -> <<"Request Header Fields Too Large">>;
 http_status_text(500) -> <<"Internal Server Error">>;
+http_status_text(501) -> <<"Not Implemented">>;
 http_status_text(_)   -> <<"Unknown">>.
 
 %% --- HTTP client (§3.18) ---
@@ -1689,7 +1813,7 @@ http_client_ensure_started() ->
 %% also a map.  Earlier versions of these helpers emitted tagged tuples
 %% (`{response_record, S, B}` / `{error_record, C, M}`), which crashed user
 %% code with `badmap` the moment it touched `r.status` or `e.message` — the
-%% same shape mismatch fixed for the server path in `http_parse_request`/
+%% same shape mismatch fixed for the server path in `http_recv_request`/
 %% `http_build_response`.
 http_client_format_ok(Status, RespBody) ->
     BodyBin = iolist_to_binary(RespBody),

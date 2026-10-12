@@ -1793,6 +1793,7 @@ dependencies = [
  "ridge-typecheck",
  "ridge-types",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
  "tower",

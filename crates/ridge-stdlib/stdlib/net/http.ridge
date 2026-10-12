@@ -5,7 +5,7 @@
 -- Server strategy: @ffi to ridge_rt:http_listen/2 which drives the
 -- accept loop on a gen_tcp socket.
 --
--- Scope guard (§1.2): TLS, custom headers, query strings deferred to 0.2.0.
+-- Client custom headers and query strings remain outside this API.
 --
 -- Request  { method: Text, path: Text, body: Text }
 -- Response { status: Int,  body: Text }
@@ -16,6 +16,35 @@ pub type Request = { method: Text, path: Text, body: Text }
 
 -- An HTTP response produced by a handler or returned by a client call.
 pub type Response = { status: Int, body: Text }
+
+-- A server response with validated metadata. Construct it with withoutHeaders
+-- or withHeaders; opaque fields prevent bypassing header validation.
+pub opaque type ResponseWithHeaders = { status: Int, body: Text, headers: List (Text, Text) }
+
+-- Adapt an existing response for listenWithHeaders, preserving its status/body.
+pub fn withoutHeaders (response: Response) -> ResponseWithHeaders =
+    ResponseWithHeaders { status = response.status, body = response.body, headers = [] }
+
+@ffi("ridge_rt", "http_validate_response_headers", 1)
+fn rawValidateResponseHeaders (headers: List (Text, Text)) -> Result Unit Error
+
+-- Attach response headers, rejecting invalid names/values and conflicting
+-- framing or security headers. Location and Content-Type occur at most once;
+-- other fields, including Set-Cookie, may repeat. Names ignore ASCII case.
+-- At most 100 headers and 64 KiB of serialized header bytes are accepted.
+-- A name is at most 256 bytes; an individual value is at most 8 KiB.
+-- Values must be ASCII without controls (horizontal tab is allowed).
+-- A caller Content-Type replaces the default text/plain value.
+pub fn withHeaders (headers: List (Text, Text)) (response: Response) -> Result ResponseWithHeaders Error =
+    match rawValidateResponseHeaders headers
+        Err error -> Err error
+        Ok _ -> Ok (ResponseWithHeaders { status = response.status, body = response.body, headers = headers })
+
+-- Start a server whose handlers return validated response metadata.
+-- Existing handlers can wrap their responses with withoutHeaders. Callback
+-- capabilities flow to the caller, in addition to the required net capability.
+@ffi("ridge_rt", "http_listen", 2)
+pub fn net listenWithHeaders (port: Int) (handler: fn Request -> ResponseWithHeaders) -> Unit
 
 -- ── Raw FFI helpers (private) ─────────────────────────────────────────────────
 --

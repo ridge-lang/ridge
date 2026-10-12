@@ -9,7 +9,7 @@ only require `time` for the implicit ask timeout (Model B, §6.4).
 import std.io       as Io
 import std.list     as List
 import std.map      as Map
-import std.net.http as Http (Request, Response, listen, respond)
+import std.net.http as Http (Request, Response, ResponseWithHeaders, listen, respond)
 import std.option   as Option
 import std.random   as Random
 import std.text     (split, trim, startsWith)
@@ -69,16 +69,19 @@ fn notFound (body: Text) -> Response =
     Response { status = 404, body = body }
 
 fn redirect (url: Text) -> Response =
-    -- 302 Found; in a real impl the Location header would also be set.
-    -- Assumption: Response has an optional `headers: Map Text Text` field;
-    -- we set it inline here.
+    -- The handler attaches the destination as Location after validation.
     Response { status = 302, body = $"Redirecting to ${url}" }
 
 fn badRequest (body: Text) -> Response =
     Response { status = 400, body = body }
 
+fn redirectWithHeaders (url: Text) -> ResponseWithHeaders =
+    match (Http.withHeaders [("Location", url)] (redirect url))
+        Ok response -> response
+        Err _ -> Http.withoutHeaders (badRequest "Invalid redirect destination")
+
 -- ── Main: spawn Store + start HTTP server ──────────────────────────────────
--- NOTE: Http.listen accepts a port and a handler fn io time (Request -> Response),
+-- Http.listenWithHeaders accepts a port and a handler returning ResponseWithHeaders,
 -- blocking until the server shuts down.
 -- main returns Result Unit Error.
 fn spawn net io time main () -> Result Unit Error =
@@ -86,25 +89,25 @@ fn spawn net io time main () -> Result Unit Error =
     Io.println "URL shortener listening on :8080"
 
     -- ask operator changed from ? to ?>.
-    Http.listen 8080 (fn (req: Request) -> Response =
+    Http.listenWithHeaders 8080 (fn (req: Request) -> ResponseWithHeaders =
         match (req.method, req.path)
 
             -- POST /shorten  body = raw URL
             ("POST", "/shorten") ->
                 let url = trim req.body
-                guard (url != "") else return (badRequest "URL body is required")
+                guard (url != "") else return (Http.withoutHeaders (badRequest "URL body is required"))
                 let code = store ?> shorten url
-                okText $"http://localhost:8080/${code}"
+                Http.withoutHeaders (okText $"http://localhost:8080/${code}")
 
             -- GET /:code  — redirect or 404
             ("GET", path) when path != "/" ->
                 let code = extractCode path |> Option.withDefault ""
-                guard (code != "") else return (notFound "Not found")
+                guard (code != "") else return (Http.withoutHeaders (notFound "Not found"))
                 let target = store ?> lookup code
                 match target
-                    Some url -> redirect url
-                    None -> notFound $"No URL found for code '${code}'"
+                    Some url -> redirectWithHeaders url
+                    None -> Http.withoutHeaders (notFound $"No URL found for code '${code}'")
 
             -- Catch-all
-            _ -> notFound "Not found")
+            _ -> Http.withoutHeaders (notFound "Not found"))
     Ok ()

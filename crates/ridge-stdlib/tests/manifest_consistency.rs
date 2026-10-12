@@ -387,6 +387,17 @@ fn signature_shape_consistency() {
             .collect();
 
         for (fn_name, ast_param_count) in &pub_fns {
+            // The response metadata API names reconciled ResponseWithHeaders,
+            // so its signatures come from reconciled_fn_scheme. Compiler tests
+            // exercise all three functions, their types and callback capabilities.
+            if dotted == "std.net.http"
+                && matches!(
+                    *fn_name,
+                    "withoutHeaders" | "withHeaders" | "listenWithHeaders"
+                )
+            {
+                continue;
+            }
             // std.actor `supervise`/`startChild`/`stopChild` all answer the
             // reconciled `SupError`, and `supervise`/`childRestart` also name
             // `Strategy`/`Restart`, so they are seeded via

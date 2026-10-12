@@ -12,9 +12,9 @@
 //! # Cache layout
 //!
 //! Sources are written under
-//! `<temp-dir>/ridge-lsp/stdlib/<compiler-version>/<relative-path>`. Namespacing
-//! by compiler version keeps a stale layout from a previous build from shadowing
-//! the current one, and the path is derived entirely from the fixed builtin
+//! `<temp-dir>/ridge-lsp/stdlib/<compiler-version>/<source-digest>/<relative-path>`. Namespacing
+//! by compiler version and embedded-source digest keeps an earlier build with
+//! the same version from shadowing the current one. Paths come from the fixed builtin
 //! table — no user-controlled component, so there is no path-traversal surface.
 //! Only the embedded (non-secret) stdlib text is written. The cache path is
 //! stable across calls so an editor can re-navigate to the same location.
@@ -25,6 +25,7 @@
 //! Each module is parsed at most once: its declaration spans are computed lazily
 //! the first time it is navigated into and stored in a process-global map.
 
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -142,11 +143,42 @@ fn module_cache() -> &'static Mutex<HashMap<u32, StdlibModuleDef>> {
 }
 
 /// Root directory the stdlib sources are materialised into.
+fn source_digest(sources: &[(&str, &str)]) -> String {
+    let mut digest = Sha256::new();
+    for (path, source) in sources {
+        digest.update(path.len().to_le_bytes());
+        digest.update(path.as_bytes());
+        digest.update(source.len().to_le_bytes());
+        digest.update(source.as_bytes());
+    }
+    format!("{:x}", digest.finalize())
+}
+
 fn cache_root() -> PathBuf {
-    std::env::temp_dir()
-        .join("ridge-lsp")
-        .join("stdlib")
-        .join(env!("CARGO_PKG_VERSION"))
+    static ROOT: OnceLock<PathBuf> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        std::env::temp_dir()
+            .join("ridge-lsp")
+            .join("stdlib")
+            .join(env!("CARGO_PKG_VERSION"))
+            .join(source_digest(ridge_stdlib::STDLIB_SOURCES))
+    })
+    .clone()
+}
+
+fn materialise_sources(root: &std::path::Path, sources: &[(&str, &str)]) {
+    for (relative, source) in sources {
+        let path = root.join(relative);
+        if std::fs::read(&path).is_ok_and(|bytes| bytes == source.as_bytes()) {
+            continue;
+        }
+        if let Some(parent) = path.parent() {
+            if std::fs::create_dir_all(parent).is_err() {
+                continue;
+            }
+        }
+        let _ = std::fs::write(path, source);
+    }
 }
 
 /// Ensure the embedded stdlib sources have been written to the cache directory.
@@ -158,9 +190,9 @@ fn ensure_materialised() {
     static DONE: OnceLock<()> = OnceLock::new();
     DONE.get_or_init(|| {
         let root = cache_root();
-        // Tolerate the directory (and files within) already existing from an
-        // earlier run; `write_stdlib_sources_to` overwrites file contents.
-        let _ = ridge_stdlib::write_stdlib_sources_to(&root);
+        // Matching read-only copies are reusable; a partial cache must not stop
+        // the remaining modules from being materialised.
+        materialise_sources(&root, ridge_stdlib::STDLIB_SOURCES);
         mark_sources_read_only(&root);
     });
 }
@@ -600,6 +632,17 @@ pub fn stdlib_location(module: StdlibModuleId, name: &str) -> Option<Location> {
     // `class` declaration, the same target the unqualified form reaches.
     let class = class_of_module_method(module, name)?;
     stdlib_class_method_location(class, name)
+}
+
+/// A registered stdlib type's owning module and source-derived card.
+pub(crate) fn stdlib_type_card(name: &str) -> Option<(StdlibModuleId, StdlibCard)> {
+    BUILTINS
+        .iter()
+        .filter(|module| module.exports.contains(&name))
+        .find_map(|module| {
+            let card = stdlib_symbol_card(module.id, name)?;
+            (card.kind == "type").then_some((module.id, card))
+        })
 }
 
 /// The hover card (header + role + doc) of a stdlib symbol `name` in `module`.
@@ -1051,5 +1094,45 @@ mod tests {
             let end = usize::try_from(range[1]).expect("offset fits usize");
             assert_eq!(&sig.label[start..end], frag);
         }
+    }
+    #[test]
+    fn same_version_sources_have_distinct_complete_read_only_caches() {
+        let directory = tempfile::tempdir().unwrap();
+        let version = directory.path().join("same-version");
+        let old = [("net/http.ridge", "old response API")];
+        let current = [
+            ("net/http.ridge", "new response API"),
+            ("text.ridge", "text API"),
+        ];
+        let old_root = version.join(source_digest(&old));
+        let current_root = version.join(source_digest(&current));
+        assert_ne!(old_root, current_root);
+        assert_ne!(
+            source_digest(&old),
+            source_digest(&[("other.ridge", "old response API")])
+        );
+        materialise_sources(&old_root, &old);
+        mark_sources_read_only(&old_root);
+        materialise_sources(&current_root, &current[..1]);
+        mark_sources_read_only(&current_root);
+        // The first file is already read-only; it must not block the missing one.
+        materialise_sources(&current_root, &current);
+        mark_sources_read_only(&current_root);
+        assert_eq!(
+            std::fs::read_to_string(old_root.join("net/http.ridge")).unwrap(),
+            "old response API"
+        );
+        assert_eq!(
+            std::fs::read_to_string(current_root.join("net/http.ridge")).unwrap(),
+            "new response API"
+        );
+        assert_eq!(
+            std::fs::read_to_string(current_root.join("text.ridge")).unwrap(),
+            "text API"
+        );
+        assert!(std::fs::metadata(current_root.join("net/http.ridge"))
+            .unwrap()
+            .permissions()
+            .readonly());
     }
 }

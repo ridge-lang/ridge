@@ -21,6 +21,7 @@ path = "src/main.rs"
 tower-lsp        = { version = "0.20" }
 tokio            = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "time", "sync"] }
 serde_json       = { version = "1" }
+sha2             = "0.10"
 tracing          = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ridge-driver     = { path = "../ridge-driver" }

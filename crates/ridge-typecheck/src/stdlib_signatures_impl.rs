@@ -2079,10 +2079,28 @@ mod tests {
         reason = "one skip-guard block per reconciled stdlib module; the guards read best kept together"
     )]
     fn every_builtins_export_resolves_to_some_scheme() {
-        let b = builtins();
+        let mut arena = ridge_types::TyConArena::new();
+        let b = BuiltinTyCons::allocate(&mut arena);
+        let reconciled = crate::stdlib_types::intern_stdlib_types(&mut arena, &b);
         let mut missing: Vec<(&str, &str)> = Vec::new();
         for module in BUILTINS {
             for &name in module.exports {
+                // This API uses a reconciled opaque type rather than a static
+                // signature. Check its actual registration instead of a stub.
+                if module.name == "std.net.http" && name == "ResponseWithHeaders" {
+                    let id = reconciled.get(name).expect("registered response metadata type");
+                    assert!(arena.get(*id).opaque);
+                    continue;
+                }
+                if module.name == "std.net.http"
+                    && matches!(name, "withoutHeaders" | "withHeaders" | "listenWithHeaders")
+                {
+                    let scheme = crate::stdlib_types::reconciled_fn_scheme(
+                        module.name, name, &reconciled, &b, None,
+                    ).expect("registered response metadata signature");
+                    assert!(matches!(scheme.ty, Type::Fn { .. }));
+                    continue;
+                }
                 // std.sql's `SqlType`/`Row` classes, their methods (`toSql`/
                 // `fromSql`/`dbType`/`fromRow`/`toRow`/`rowColumns`, seeded via
                 // `seed_sql_codec_schemes` rather than this signature table), and the

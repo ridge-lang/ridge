@@ -45,7 +45,7 @@
     json_list/1, json_object/1,
     json_as_int/1, json_as_float/1, json_as_bool/1, json_as_text/1,
     json_as_list/1, json_as_object/1, json_is_null/1,
-    http_listen/2, http_port/0, http_build_response/1,
+    http_listen/2, http_port/0, http_build_response/1, http_validate_response_headers/1,
     http_get/1, http_post/2, http_put/2, http_delete/1,
     ask/3, send/2, send_op/2, send_fn/2, mailbox_size/1, spawn_actor/3,
     start_supervisor/4, start_supervised_child/2, stop_supervised_child/2,
@@ -1746,9 +1746,22 @@ http_trim_ows_right(Text) ->
 %% one year. `includeSubDomains` and `preload` are deliberately omitted —
 %% they are deployment-policy decisions that depend on whether the
 %% operator owns every subdomain, so committing to them by default would
-%% be wrong as often as it is right. Per-response override is deferred to
-%% a future cut once Response gains a headers field.
-http_build_response(#{status := Status, body := Body}) when is_integer(Status) ->
+%% be wrong as often as it is right. Response metadata cannot override these
+%% security headers.
+http_build_response(#{status := Status, body := Body} = Response) when is_integer(Status) ->
+    Headers = maps:get(headers, Response, []),
+    case Headers of
+        [] -> http_build_plain_response(Status, Body);
+        _ ->
+            case http_validate_response_headers(Headers) of
+                {ok, ok} -> http_build_valid_response(Status, Body, Headers);
+                {error, _} -> http_build_plain_response(500, <<"Invalid response headers">>)
+            end
+    end;
+http_build_response(_) ->
+    http_build_plain_response(500, <<"Invalid response">>).
+
+http_build_plain_response(Status, Body) ->
     BodyBin = iolist_to_binary(Body),
     StatusText = http_status_text(Status),
     iolist_to_binary([
@@ -1760,16 +1773,69 @@ http_build_response(#{status := Status, body := Body}) when is_integer(Status) -
         <<"Connection: close\r\n">>,
         <<"\r\n">>,
         BodyBin
-    ]);
-http_build_response(Other) ->
-    %% Fallback for unexpected shapes.
-    http_build_response(#{status => 500,
-        body => iolist_to_binary(io_lib:format("bad response: ~p", [Other]))}).
+    ]).
+
+http_build_valid_response(Status, Body, Headers) ->
+    BodyBin = iolist_to_binary(Body),
+    ContentType = case lists:any(fun({Name, _}) -> http_lower_name(Name) =:= <<"content-type">> end, Headers) of
+        true -> [];
+        false -> <<"Content-Type: text/plain\r\n">>
+    end,
+    Extra = [[Name, <<": ">>, Value, <<"\r\n">>] || {Name, Value} <- Headers],
+    StatusText = http_status_text(Status),
+    iolist_to_binary([
+        <<"HTTP/1.0 ">>, integer_to_binary(Status), <<" ">>, StatusText, <<"\r\n">>,
+        ContentType,
+        Extra,
+        <<"Content-Length: ">>, integer_to_binary(byte_size(BodyBin)), <<"\r\n">>,
+        <<"Content-Security-Policy: default-src 'self'\r\n">>,
+        <<"Strict-Transport-Security: max-age=31536000\r\n">>,
+        <<"Connection: close\r\n">>,
+        <<"\r\n">>,
+        BodyBin
+    ]).
+
+%% Pure validation, repeated at emission so foreign callers cannot bypass it.
+http_validate_response_headers(Headers) when is_list(Headers) ->
+    case http_response_headers_valid(Headers, 0, 0, #{}) of
+        true -> {ok, ok};
+        false -> {error, mk_error(<<"invalid_http_headers">>, <<"Invalid response headers">>)}
+    end;
+http_validate_response_headers(_) ->
+    {error, mk_error(<<"invalid_http_headers">>, <<"Invalid response headers">>)}.
+
+http_response_headers_valid([], _, _, _) -> true;
+http_response_headers_valid([{Name, Value} | Rest], Count, Bytes, Seen)
+        when is_binary(Name), is_binary(Value), Count < 100,
+             byte_size(Name) > 0, byte_size(Name) =< 256, byte_size(Value) =< 8192 ->
+    Lower = http_lower_name(Name),
+    Size = Bytes + byte_size(Name) + byte_size(Value) + 4,
+    Reserved = lists:member(Lower, [<<"content-length">>, <<"transfer-encoding">>,
+        <<"connection">>, <<"trailer">>, <<"upgrade">>, <<"keep-alive">>,
+        <<"proxy-connection">>, <<"content-security-policy">>, <<"strict-transport-security">>]),
+    Single = Lower =:= <<"location">> orelse Lower =:= <<"content-type">>,
+    case byte_size(Name) > 0 andalso byte_size(Name) =< 256
+        andalso Size =< 65536 andalso byte_size(Value) =< 8192
+        andalso http_is_token(Name) andalso http_response_header_value(Value)
+        andalso not Reserved andalso not (Single andalso maps:is_key(Lower, Seen)) of
+        true -> http_response_headers_valid(Rest, Count + 1, Size, maps:put(Lower, true, Seen));
+        false -> false
+    end;
+http_response_headers_valid(_, _, _, _) -> false.
+
+http_response_header_value(<<>>) -> true;
+http_response_header_value(<<C, Rest/binary>>) when C =:= 9; C >= 32, C =< 126 ->
+    http_response_header_value(Rest);
+http_response_header_value(_) -> false.
+
+http_lower_name(Name) ->
+    << <<(case C of X when X >= $A, X =< $Z -> X + 32; X -> X end)>> || <<C>> <= Name >>.
 
 %% Internal: map common status codes to reason phrases.
 http_status_text(200) -> <<"OK">>;
 http_status_text(201) -> <<"Created">>;
 http_status_text(204) -> <<"No Content">>;
+http_status_text(302) -> <<"Found">>;
 http_status_text(400) -> <<"Bad Request">>;
 http_status_text(404) -> <<"Not Found">>;
 http_status_text(408) -> <<"Request Timeout">>;

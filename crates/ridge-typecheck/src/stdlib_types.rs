@@ -2354,6 +2354,38 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: false,
             is_anon: false,
         },
+        TyConDecl {
+            id: TyConId(base + 47),
+            name: "ResponseWithHeaders".to_string(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![
+                    RecordField {
+                        name: "status".to_string(),
+                        ty: Type::Con(b.int, vec![]),
+                    },
+                    RecordField {
+                        name: "body".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "headers".to_string(),
+                        ty: Type::Con(
+                            b.list,
+                            vec![Type::Tuple(vec![
+                                Type::Con(b.text, vec![]),
+                                Type::Con(b.text, vec![]),
+                            ])],
+                        ),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
+            is_anon: false,
+        },
     ]
 }
 
@@ -2429,6 +2461,57 @@ pub(crate) fn reconciled_fn_scheme(
     classes: Option<&ClassTable>,
 ) -> Option<Scheme> {
     match (module, name) {
+        ("std.net.http", "withoutHeaders" | "withHeaders" | "listenWithHeaders") => {
+            let response = Type::Con(*reconciled.get("Response")?, vec![]);
+            let metadata = Type::Con(*reconciled.get("ResponseWithHeaders")?, vec![]);
+            let (params, ret, caps, cap_vars) = match name {
+                "withoutHeaders" => (
+                    vec![response],
+                    metadata,
+                    CapRow::Concrete(CapabilitySet::PURE),
+                    vec![],
+                ),
+                "withHeaders" => (
+                    vec![
+                        Type::Con(
+                            b.list,
+                            vec![Type::Tuple(vec![
+                                Type::Con(b.text, vec![]),
+                                Type::Con(b.text, vec![]),
+                            ])],
+                        ),
+                        response,
+                    ],
+                    Type::Con(b.result, vec![metadata, Type::Con(b.error, vec![])]),
+                    CapRow::Concrete(CapabilitySet::PURE),
+                    vec![],
+                ),
+                _ => (
+                    vec![
+                        Type::Con(b.int, vec![]),
+                        Type::Fn {
+                            params: vec![Type::Con(*reconciled.get("Request")?, vec![])],
+                            ret: Box::new(metadata),
+                            caps: CapRow::Var(CapVid(0)),
+                        },
+                    ],
+                    Type::Con(b.unit, vec![]),
+                    CapRow::Concrete(CapabilitySet::singleton(Capability::Net)),
+                    vec![CapVid(0)],
+                ),
+            };
+            Some(Scheme {
+                vars: vec![],
+                cap_vars,
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params,
+                    ret: Box::new(ret),
+                    caps,
+                },
+                constraints: vec![],
+            })
+        }
         // std.list `sort : ∀a where Ord a. List a -> List a` and
         // `sortBy : ∀a b (c) where Ord b. (fn c (a -> b)) -> List a -> List a`.
         // Sorting dispatches through the element/key type's Ord, so the lowering

@@ -4502,11 +4502,16 @@ impl WorkspaceIndex {
 
     /// Location of the `type` declaration for tycon `raw` — its name span when
     /// the declaring module's AST is available, else the whole-declaration
-    /// span. `None` for a built-in (no source span) or a type whose module
+    /// span. Registered stdlib types use their embedded declaration. `None`
+    /// for a type without a source declaration or a type whose module
     /// carries no URI.
     fn tycon_location(&self, raw: u32) -> Option<Location> {
         let decl = self.tycons.iter().find(|d| d.id.0 == raw)?;
-        let owner = ModuleId(decl.def_module_raw?);
+        let Some(owner_raw) = decl.def_module_raw else {
+            let (module, _) = crate::stdlib_defs::stdlib_type_card(&decl.name)?;
+            return crate::stdlib_defs::stdlib_location(module, &decl.name);
+        };
+        let owner = ModuleId(owner_raw);
         let span = self
             .modules
             .get(owner.0 as usize)
@@ -5561,6 +5566,13 @@ impl WorkspaceIndex {
                                 (card.signature != decl.name).then(|| card.signature.to_owned());
                             candidate.data =
                                 Some(serde_json::json!({ "builtin": decl.name.clone() }));
+                        } else if let Some((module, card)) =
+                            crate::stdlib_defs::stdlib_type_card(&decl.name)
+                        {
+                            candidate.detail = Some(card.header);
+                            candidate.data = Some(
+                                serde_json::json!({ "stdlib": module.0, "name": decl.name.clone() }),
+                            );
                         }
                     }
                     out.push(candidate);

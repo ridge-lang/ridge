@@ -1167,6 +1167,12 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         arity: 2,
         requires_caps: &[Capability::Net],
     },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "http_validate_response_headers",
+        arity: 1,
+        requires_caps: &[],
+    },
     // ── ridge_rt HTTP client helpers (§3.18 / OQ-S005 / D121) ────────────────
     FfiAuditEntry {
         beam_module: "ridge_rt",

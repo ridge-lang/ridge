@@ -1,12 +1,13 @@
 ---
 source: crates/ridge-typecheck/tests/snapshots.rs
+assertion_line: 245
 expression: snap
 ---
 TypecheckSnapshot {
     errors: [],
     module_count: 1,
-    tycon_count: 109,
-    node_types_populated: 180,
-    schemes_populated: 7,
-    inferred_caps_real_keys: 7,
+    tycon_count: 110,
+    node_types_populated: 215,
+    schemes_populated: 8,
+    inferred_caps_real_keys: 8,
 }

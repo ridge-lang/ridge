@@ -181,14 +181,20 @@ fn the_two_column_types_are_two_rows() {
         Some("ColumnRef entity value"),
         "the built-in row should carry its parameter-named signature"
     );
-    // `Column` is a reconciled `std.migrate` type, and none of those carry a
-    // completion detail — `Repo`, `Query`, `Migration` and `SortOrder` are all
-    // bare rows too. Pinned so this reads as the shape of that whole family
-    // rather than as something the rename took away.
+    // Reconciled types carry their source declaration and a resolvable card,
+    // so the migration column stays distinct from the typed column reference.
     assert_eq!(
         column[0].detail.as_deref(),
-        None,
-        "a reconciled stdlib type is a bare row here; hover is where its          declaration is read"
+        Some("pub opaque type Column = { name: Text, ty: Text, nullable: Bool, primaryKey: Bool, unique: Bool }"),
+        "the reconciled row should describe its actual declaration"
+    );
+    let migrate = ridge_resolve::BUILTINS
+        .iter()
+        .find(|module| module.name == "std.migrate")
+        .unwrap();
+    assert_eq!(
+        column[0].data,
+        Some(serde_json::json!({ "stdlib": migrate.id.0, "name": "Column" }))
     );
 }
 

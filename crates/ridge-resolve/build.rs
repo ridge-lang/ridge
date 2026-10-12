@@ -438,6 +438,10 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // net/http.ridge.
             "Request",
             "Response",
+            "ResponseWithHeaders",
+            "withoutHeaders",
+            "withHeaders",
+            "listenWithHeaders",
             "Html",
             "SecureCookie",
             "get",
@@ -1283,7 +1287,10 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
 /// types' construction, pattern matching, and field access to the declaring
 /// stdlib module (taint wrappers and opaque codec values).
 const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
-    ("std.net.http", &["Html", "SecureCookie"]),
+    (
+        "std.net.http",
+        &["Html", "SecureCookie", "ResponseWithHeaders"],
+    ),
     ("std.sql", &["Sql", "SqlValue"]),
     ("std.data", &["MemAdapter", "Postgres", "Sqlite"]),
     (

@@ -43,6 +43,7 @@ use rustc_hash::FxHashSet;
 
 use crate::ctx::InferCtx;
 use crate::error::{TypeDesc, TypeError};
+use crate::flow::Flow;
 use crate::instantiate::{generalise, generalise_with_env, instantiate, monoscheme};
 use crate::prelude::lookup_prelude;
 use crate::render::emit_internal;
@@ -219,7 +220,20 @@ fn find_record_variant(
 // OQ-PHASE45-001: single infer_expr_outer shim; write-back is uniform across all shapes.
 // OQ-PHASE45-004: Block and Try use their dedicated NodeKind for the write-back key.
 pub fn infer_expr(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type {
-    let ty = infer_expr_inner(ctx, b, expr);
+    let ty = infer_region(ctx, |ctx| {
+        let ty = infer_expr_inner(ctx, b, expr);
+        ctx.flow = match expr {
+            // Only a checked return boundary can supply this value constraint.
+            // Keep the existing Unit behavior when no return target is present.
+            Expr::Return { .. } if ctx.current_fn_ret.is_some() => ctx.flow.then(Flow::RETURN),
+            Expr::Propagate { .. } => ctx.flow.then(Flow::PROPAGATE),
+            Expr::Try { .. } => ctx.flow.capture(),
+            // Evaluating a function value/declaration does not run its body.
+            Expr::Lambda { .. } | Expr::InnerFn { .. } => Flow::NEXT,
+            _ => ctx.flow,
+        };
+        ty
+    });
     // Write back the shallow-resolved type for this expression position.
     // Expr::Block and Expr::Try use NodeKind::Block / NodeKind::Try respectively
     // so that try_block::resolve_block_type can look up the block's type.
@@ -236,6 +250,21 @@ pub fn infer_expr(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type {
         }
     }
     ty
+}
+
+/// Infer a region once, preserving its flow independently of the value type.
+/// A region without a continuation imposes no value constraint on its caller.
+/// Its operand errors and effects have already been checked before this point.
+fn infer_region(ctx: &mut InferCtx, infer: impl FnOnce(&mut InferCtx) -> Type) -> Type {
+    let outer = std::mem::take(&mut ctx.flow);
+    let ty = infer(ctx);
+    let flow = std::mem::replace(&mut ctx.flow, outer);
+    ctx.flow = outer.then(flow);
+    if flow.falls_through || ty.is_error() {
+        ty
+    } else {
+        Type::Var(ctx.fresh_tyvid())
+    }
 }
 
 #[expect(
@@ -687,20 +716,22 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 ctx.errors.push(attach_span(e, *span));
             }
 
+            let cond_flow = std::mem::take(&mut ctx.flow);
             let then_ty = infer_expr(ctx, b, then_branch);
-            match else_branch {
-                Some(else_expr) => {
-                    let else_ty = infer_expr(ctx, b, else_expr);
-                    if let Err(e) = unify(ctx, &then_ty, &else_ty) {
-                        ctx.errors.push(attach_span(e, *span));
-                        return Type::Error;
-                    }
-                    ctx.shallow_resolve(&then_ty)
+            let then_flow = std::mem::take(&mut ctx.flow);
+            if let Some(else_expr) = else_branch {
+                let else_ty = infer_expr(ctx, b, else_expr);
+                let else_flow = std::mem::take(&mut ctx.flow);
+                ctx.flow = cond_flow.then(then_flow.either(else_flow));
+                if let Err(e) = unify(ctx, &then_ty, &else_ty) {
+                    ctx.errors.push(attach_span(e, *span));
+                    return Type::Error;
                 }
-                None => {
-                    // No else branch — result is Unit.
-                    Type::Con(b.unit, vec![])
-                }
+                ctx.shallow_resolve(&then_ty)
+            } else {
+                ctx.flow = cond_flow.then(then_flow.either(Flow::NEXT));
+                // No else branch — result is Unit.
+                Type::Con(b.unit, vec![])
             }
         }
 
@@ -711,6 +742,8 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             span,
         } => {
             let scrutinee_ty = infer_expr(ctx, b, scrutinee);
+            let scrutinee_flow = std::mem::take(&mut ctx.flow);
+            let mut branch_flow = Flow::RETURN;
             let result_var = Type::Var(ctx.fresh_tyvid());
 
             for arm in arms {
@@ -727,16 +760,21 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 }
 
                 let arm_ty = infer_expr(ctx, b, &arm.body);
+                let arm_flow = std::mem::take(&mut ctx.flow);
+                branch_flow = branch_flow.either(arm_flow);
                 // `unify` reports its first argument as *expected*. The type
                 // the earlier arms settled on is what this arm had to meet,
                 // so it goes first; passing the arm first said the two the
                 // other way round.
-                if let Err(e) = unify(ctx, &result_var, &arm_ty) {
-                    ctx.errors.push(attach_span(e, arm.span));
+                if arm_flow.falls_through {
+                    if let Err(e) = unify(ctx, &result_var, &arm_ty) {
+                        ctx.errors.push(attach_span(e, arm.span));
+                    }
                 }
                 ctx.env.pop_frame();
             }
 
+            ctx.flow = scrutinee_flow.then(branch_flow);
             // T12: exhaustiveness + redundancy check runs after per-arm body
             // type-check with the deep-resolved scrutinee type.
             let resolved_scrutinee = ctx.deep_resolve(&scrutinee_ty);
@@ -777,7 +815,8 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                     ctx.errors.push(attach_span(e, *span));
                 }
             }
-            // `return` itself has type Unit (control never flows past it).
+            // The inference region records that control cannot flow past this
+            // expression; this placeholder is never a fallthrough value.
             Type::Con(b.unit, vec![])
         }
 
@@ -1142,7 +1181,10 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             if let Err(e) = unify(ctx, &cond_ty, &bool_ty) {
                 ctx.errors.push(attach_span(e, *span));
             }
+            let cond_flow = std::mem::take(&mut ctx.flow);
             infer_block(ctx, b, else_branch);
+            let else_flow = std::mem::take(&mut ctx.flow);
+            ctx.flow = cond_flow.then(Flow::NEXT.either(else_flow));
             // Guard expression type is Unit.
             Type::Con(b.unit, vec![])
         }
@@ -1495,20 +1537,27 @@ fn build_arena_from_ctx(ctx: &InferCtx) -> ridge_types::TyConArena {
 /// Each statement except the last is typed and checked for `T022
 /// DiscardedResult`: if a non-last statement's type is not `Unit`
 /// and the statement is not a `let`/`var` binding, `T022` is emitted.
-/// The block's type is the type of its final statement.
+/// A reachable block end has the type of its final statement. Returning paths
+/// constrain the enclosing return target instead of supplying a block value.
 /// An empty `stmts` vec is a parser-level error (`P014 EmptyBlock`);
 /// `infer_block` returns `Unit` defensively.
 pub fn infer_block(ctx: &mut InferCtx, b: &BuiltinTyCons, block: &Block) -> Type {
-    if block.stmts.is_empty() {
-        return Type::Con(b.unit, vec![]);
-    }
+    infer_region(ctx, |ctx| {
+        if block.stmts.is_empty() {
+            return Type::Con(b.unit, vec![]);
+        }
 
-    let n = block.stmts.len();
-    for stmt in &block.stmts[..n - 1] {
-        let stmt_ty = infer_expr(ctx, b, stmt);
-        crate::pipe_propagate::check_discarded_result(ctx, b, stmt, &stmt_ty);
-    }
-    infer_expr(ctx, b, &block.stmts[n - 1])
+        let n = block.stmts.len();
+        for stmt in &block.stmts[..n - 1] {
+            let stmt_ty = infer_expr(ctx, b, stmt);
+            // There is no discarded value on paths that leave the region.
+            if ctx.flow.falls_through {
+                crate::pipe_propagate::check_discarded_result(ctx, b, stmt, &stmt_ty);
+            }
+        }
+        // Infer even an unreachable tail: its own type errors remain errors.
+        infer_expr(ctx, b, &block.stmts[n - 1])
+    })
 }
 
 /// Infers pattern variable types and binds them in the current scope frame.
@@ -1888,7 +1937,15 @@ fn infer_binary(
     span: Span,
 ) -> Type {
     let lhs_ty = infer_expr(ctx, b, lhs);
+    let lhs_flow = std::mem::take(&mut ctx.flow);
     let rhs_ty = infer_expr(ctx, b, rhs);
+    let rhs_flow = std::mem::take(&mut ctx.flow);
+    let rhs_flow = if matches!(op, BinOp::And | BinOp::Or) {
+        rhs_flow.either(Flow::NEXT)
+    } else {
+        rhs_flow
+    };
+    ctx.flow = lhs_flow.then(rhs_flow);
 
     match op {
         // Arithmetic `+ - * / % **`: unify operands, then reject concrete
@@ -3501,8 +3558,8 @@ mod tests {
         };
 
         let ty = infer_expr(&mut ctx, &b, &ret_expr);
-        // Return itself has type Unit.
-        assert!(matches!(ty, Type::Con(id, _) if id == b.unit));
+        // A return has no fallthrough value to constrain its caller.
+        assert!(matches!(ty, Type::Var(_)));
         // No errors — the return value (Int) unifies with the declared ret (Int).
         assert!(ctx.errors.is_empty(), "errors: {:?}", ctx.errors);
         ctx.env.pop_frame();

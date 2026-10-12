@@ -27,6 +27,7 @@ pub mod ctx;
 pub mod derive;
 pub mod error;
 pub mod exhaustiveness;
+mod flow;
 pub mod infer;
 pub mod instantiate;
 pub mod interp;

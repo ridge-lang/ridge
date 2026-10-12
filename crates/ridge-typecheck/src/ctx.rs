@@ -317,6 +317,9 @@ pub struct InferCtx {
     /// return value's type with this, not with `Result`/`Option`).
     pub current_fn_ret: Option<Type>,
 
+    /// Flow of the current inference region; nested regions save and restore it.
+    pub(crate) flow: crate::flow::Flow,
+
     /// The propagation target type for `?` operators (T10).
     ///
     /// - Inside a `try { … }` block, this is set to the try-expression's
@@ -588,6 +591,7 @@ impl InferCtx {
             current_caps: CapabilitySet::PURE,
             errors: Vec::new(),
             current_fn_ret: None,
+            flow: crate::flow::Flow::NEXT,
             current_propagate_target: None,
             user_tycon_names: FxHashMap::default(),
             tycon_origins: crate::cross_module::TyConOrigins::default(),

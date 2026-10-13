@@ -81,10 +81,10 @@ impl Diagnostic {
                     severity: NoteSeverity::Help,
                 });
             }
-            ResolveError::UnresolvedImportItem { suggestions, .. }
-            | ResolveError::UnresolvedQualifiedName { suggestions, .. }
-            | ResolveError::UnknownStdlibSymbol { suggestions, .. } => {
-                if let Some(message) = crate::diagnostic::did_you_mean(suggestions) {
+            ResolveError::UnresolvedImportItem { .. }
+            | ResolveError::UnresolvedQualifiedName { .. }
+            | ResolveError::UnknownStdlibSymbol { .. } => {
+                if let Some(message) = qualified_name_note(e) {
                     diag.push_note(DiagnosticNote {
                         span: primary_span,
                         message,
@@ -113,6 +113,25 @@ impl Diagnostic {
         }
 
         diag
+    }
+}
+
+/// Exact scope knowledge takes precedence over a spelling guess.
+fn qualified_name_note(error: &ResolveError) -> Option<String> {
+    match error {
+        ResolveError::UnknownStdlibSymbol {
+            name,
+            already_in_scope: true,
+            ..
+        } => Some(format!(
+            "`{name}` is already in scope; write `{name}` without the prefix"
+        )),
+        ResolveError::UnresolvedImportItem { suggestions, .. }
+        | ResolveError::UnresolvedQualifiedName { suggestions, .. }
+        | ResolveError::UnknownStdlibSymbol { suggestions, .. } => {
+            crate::diagnostic::did_you_mean(suggestions)
+        }
+        _ => None,
     }
 }
 

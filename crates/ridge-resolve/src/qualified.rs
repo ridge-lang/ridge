@@ -129,7 +129,8 @@ pub fn resolve_qualified_name(
                 resolve_in_target(
                     &target,
                     qn,
-                    &all_segs,
+                    my_table,
+                    module_imports,
                     all_symbol_tables,
                     class_method_index,
                     errors,
@@ -161,19 +162,7 @@ pub fn resolve_qualified_name(
                     }
                     // Miss — R014 with stdlib-export suggestions (internal
                     // prelude names excluded — see `is_internal_prelude_name`).
-                    let suggestions = suggest::suggest(
-                        last_text,
-                        m.exports
-                            .iter()
-                            .filter(|s| !crate::imports::is_internal_prelude_name(s))
-                            .map(|s| (*s).to_owned()),
-                    );
-                    errors.push(ResolveError::UnknownStdlibSymbol {
-                        module: m.name.to_owned(),
-                        name: last_text.clone(),
-                        suggestions,
-                        span: last_seg.span,
-                    });
+                    errors.push(unknown_stdlib_symbol(m, last_seg, my_table, module_imports));
                 }
                 Binding::Error
             }
@@ -248,6 +237,42 @@ fn find_import_binding<'a>(
         .find(|eb| eb.local_name == name)
 }
 
+/// Prefer an exact name the reader can already use to a guessed spelling.
+/// Effective bindings reflect imports that replace a prelude name; consulting
+/// the prelude's original list would give advice about a binding no longer there.
+fn unknown_stdlib_symbol(
+    module: &crate::stdlib_builtin::BuiltinStdlibModule,
+    name: &ridge_ast::Ident,
+    my_table: Option<&SymbolTable>,
+    module_imports: &[ImportResolution],
+) -> ResolveError {
+    let already_in_scope = name.text.starts_with(char::is_uppercase)
+        && !crate::imports::is_internal_prelude_name(&name.text)
+        && my_table.is_none_or(|table| table.lookup(&name.text).is_none())
+        && find_import_binding(&name.text, module_imports).is_some_and(|eb| {
+            matches!(&eb.binding, Binding::StdlibSymbol { name: bound, .. } if bound == &name.text)
+        });
+    let suggestions = if already_in_scope {
+        Vec::new()
+    } else {
+        suggest::suggest(
+            &name.text,
+            module
+                .exports
+                .iter()
+                .filter(|s| !crate::imports::is_internal_prelude_name(s))
+                .map(|s| (*s).to_owned()),
+        )
+    };
+    ResolveError::UnknownStdlibSymbol {
+        module: module.name.to_owned(),
+        name: name.text.clone(),
+        already_in_scope,
+        suggestions,
+        span: name.span,
+    }
+}
+
 /// Resolve the last segment in a module-alias target (step 2).
 ///
 /// `External` and `Unresolved` targets are silent (`Binding::Error` no
@@ -255,7 +280,8 @@ fn find_import_binding<'a>(
 fn resolve_in_target(
     target: &ImportTarget,
     qn: &QualifiedName,
-    all_segs: &[String],
+    my_table: Option<&SymbolTable>,
+    module_imports: &[ImportResolution],
     all_symbol_tables: &[SymbolTable],
     class_method_index: Option<&ClassMethodIndex>,
     errors: &mut Vec<ResolveError>,
@@ -275,19 +301,7 @@ fn resolve_in_target(
                 }
                 // Unknown stdlib symbol — R014 with suggestions (internal
                 // prelude names excluded — see `is_internal_prelude_name`).
-                let suggestions = suggest::suggest(
-                    last_text,
-                    m.exports
-                        .iter()
-                        .filter(|s| !crate::imports::is_internal_prelude_name(s))
-                        .map(|s| (*s).to_owned()),
-                );
-                errors.push(ResolveError::UnknownStdlibSymbol {
-                    module: m.name.to_owned(),
-                    name: last_text.clone(),
-                    suggestions,
-                    span: last_seg.span,
-                });
+                errors.push(unknown_stdlib_symbol(m, last_seg, my_table, module_imports));
             }
             Binding::Error
         }
@@ -339,7 +353,7 @@ fn resolve_in_target(
                 // target module are visible at the qualified-use site.
                 let suggestions = qualified_member_suggestions(table, qn, last_text);
                 errors.push(ResolveError::UnresolvedQualifiedName {
-                    segments: all_segs.to_vec(),
+                    segments: qn.segments.iter().map(|s| s.text.clone()).collect(),
                     suggestions,
                     span: qn.span,
                 });
@@ -347,7 +361,7 @@ fn resolve_in_target(
             }
             // Defensive: target module index out of bounds.
             errors.push(ResolveError::UnresolvedQualifiedName {
-                segments: all_segs.to_vec(),
+                segments: qn.segments.iter().map(|s| s.text.clone()).collect(),
                 suggestions: Vec::new(),
                 span: qn.span,
             });

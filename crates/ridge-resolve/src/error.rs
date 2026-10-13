@@ -336,6 +336,8 @@ pub enum ResolveError {
         module: String,
         /// The name that was not found.
         name: String,
+        /// The exact stdlib name is available without a prefix in this module.
+        already_in_scope: bool,
         /// Up to three Levenshtein-close candidates from the same stdlib module.
         suggestions: Vec<String>,
         /// Span of the reference.

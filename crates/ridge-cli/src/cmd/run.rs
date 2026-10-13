@@ -25,10 +25,15 @@ use ridge_driver::{
     compile_workspace, run_workspace, select_entry_beam, CompileOptions, Profile, RunError,
     RunOptions, ToolchainError, WorkspaceSourceCache,
 };
-use ridge_manifest::{parse_project, parse_workspace, ProjectKind};
+use ridge_manifest::{parse_workspace, ProjectKind};
+use ridge_resolve::discover_project_members;
 
 use crate::error::CliError;
 use crate::render::{render_diagnostics, report_diagnostics};
+
+#[cfg(test)]
+#[path = "run_member_tests.rs"]
+mod member_tests;
 
 // ── Argument struct ───────────────────────────────────────────────────────────
 
@@ -159,139 +164,57 @@ pub fn execute(args: &RunArgs, cwd: &Path) -> Result<(), CliError> {
 
 // ── Member resolution ─────────────────────────────────────────────────────────
 
-/// Resolve which workspace member to run.
+/// Resolve which declared workspace member to run.
 ///
-/// - If `--member` is given: validate it exists and is executable.
-/// - Otherwise: find the unique executable member, erroring on 0 or >1.
+/// An explicit member must be executable. Without one, select the first
+/// executable member in discovery order; watch mode requires a unique member.
 fn resolve_executable_member(workspace_root: &Path, args: &RunArgs) -> Result<String, CliError> {
-    // Collect all project manifests under apps/*.
-    let executable_members = collect_executable_members(workspace_root);
+    let manifest_path = workspace_root.join("ridge.toml");
+    let src = std::fs::read_to_string(&manifest_path).map_err(|error| {
+        CliError::WorkspaceManifestInvalid {
+            rendered: format!("{}: {error}", manifest_path.display()),
+        }
+    })?;
+    let workspace = parse_workspace(&src, &manifest_path).map_err(|error| {
+        CliError::WorkspaceManifestInvalid {
+            rendered: format!("[{}] {error}", error.code()),
+        }
+    })?;
+    let projects = discover_project_members(workspace_root, &workspace).map_err(|errors| {
+        CliError::MemberManifestInvalid {
+            rendered: errors
+                .iter()
+                .map(|error| format!("[{}] {error}", error.code()))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        }
+    })?;
 
     if let Some(ref name) = args.member {
-        // Validate the named member exists and is executable.
-        let all_members = collect_all_members(workspace_root);
-        if !all_members.iter().any(|m| m == name) {
-            return Err(CliError::UnknownMember { name: name.clone() });
-        }
-        if !executable_members.iter().any(|m| m == name) {
-            // It exists but is not an app/service.
+        let project = projects
+            .iter()
+            .find(|project| project.manifest.name == *name)
+            .ok_or_else(|| CliError::UnknownMember { name: name.clone() })?;
+        if !matches!(
+            project.manifest.kind,
+            ProjectKind::App | ProjectKind::Service
+        ) {
             return Err(CliError::LibraryNotExecutable { name: name.clone() });
         }
         return Ok(name.clone());
     }
 
-    // No --member specified.
-    match executable_members.len() {
-        // A member whose manifest does not parse is skipped by the collector,
-        // so "no executable member" is also what a typo in `ridge.toml` looks
-        // like from here. Say which it is, or `run` sends the reader to the
-        // `kind` key on a manifest that already declares it.
-        0 => Err(first_member_manifest_error(workspace_root)
-            .map_or(CliError::NoExecutableMember, |rendered| {
-                CliError::MemberManifestInvalid { rendered }
-            })),
-        1 => Ok(executable_members.into_iter().next().unwrap_or_default()),
-        _ if args.watch => Err(CliError::WatchAmbiguousMember),
-        _ => {
-            // For plain run (and observer), pick the first one arbitrarily
-            // and let the driver handle it.  The spec does not say to error
-            // here for plain run.
-            Ok(executable_members.into_iter().next().unwrap_or_default())
-        }
+    let mut executable = projects.into_iter().filter(|project| {
+        matches!(
+            project.manifest.kind,
+            ProjectKind::App | ProjectKind::Service
+        )
+    });
+    let first = executable.next().ok_or(CliError::NoExecutableMember)?;
+    if args.watch && executable.next().is_some() {
+        return Err(CliError::WatchAmbiguousMember);
     }
-}
-
-/// The first member manifest that fails to parse, rendered with its `M###`
-/// code, searching the same places [`collect_members_with_filter`] does and in
-/// the same order.
-fn first_member_manifest_error(workspace_root: &Path) -> Option<String> {
-    let apps_dir = workspace_root.join("apps");
-    if let Ok(entries) = std::fs::read_dir(&apps_dir) {
-        // read_dir order is not defined, so sort to keep the reported error
-        // stable across runs and platforms.
-        let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
-        paths.sort();
-        for path in paths {
-            let manifest_path = path.join("ridge.toml");
-            let Ok(src) = std::fs::read_to_string(&manifest_path) else {
-                continue;
-            };
-            if let Err(e) = parse_project(&src, &manifest_path) {
-                return Some(format!("[{}] {e}", e.code()));
-            }
-        }
-    }
-
-    let root_manifest = workspace_root.join("ridge.toml");
-    let src = std::fs::read_to_string(&root_manifest).ok()?;
-    let ws = parse_workspace(&src, &root_manifest).ok()?;
-    if !ws.members_globs.iter().any(|p| p == ".") {
-        return None;
-    }
-    parse_project(&src, &root_manifest)
-        .err()
-        .map(|e| format!("[{}] {e}", e.code()))
-}
-
-/// Collect the names of all members under `<workspace_root>/apps/`.
-fn collect_all_members(workspace_root: &Path) -> Vec<String> {
-    collect_members_with_filter(workspace_root, |_| true)
-}
-
-/// Collect the names of members with `kind = "app"` or `kind = "service"`.
-fn collect_executable_members(workspace_root: &Path) -> Vec<String> {
-    collect_members_with_filter(workspace_root, |kind| {
-        matches!(kind, ProjectKind::App | ProjectKind::Service)
-    })
-}
-
-/// Walk `<workspace_root>/apps/*/ridge.toml` AND honour `[workspace].members`
-/// containing `"."` (the single-project layout produced by `ridge new`), then
-/// return member names that pass the `filter` predicate applied to their
-/// [`ProjectKind`].
-///
-/// Two layouts are supported:
-/// - **Multi-project**: `<workspace_root>/apps/<name>/ridge.toml` per member.
-/// - **Single-project**: `<workspace_root>/ridge.toml` carries BOTH the
-///   `[workspace]` and `[project]` tables; `[workspace].members = ["."]`.
-fn collect_members_with_filter<F>(workspace_root: &Path, filter: F) -> Vec<String>
-where
-    F: Fn(ProjectKind) -> bool,
-{
-    let mut names = Vec::new();
-
-    // Multi-project layout: walk <workspace_root>/apps/*/ridge.toml.
-    let apps_dir = workspace_root.join("apps");
-    if let Ok(entries) = std::fs::read_dir(&apps_dir) {
-        for entry in entries.flatten() {
-            let manifest_path = entry.path().join("ridge.toml");
-            let Ok(src) = std::fs::read_to_string(&manifest_path) else {
-                continue;
-            };
-            let Ok(proj) = parse_project(&src, &manifest_path) else {
-                continue;
-            };
-            if filter(proj.kind) {
-                names.push(proj.name);
-            }
-        }
-    }
-
-    // Single-project layout: workspace root manifest doubles as a project.
-    let root_manifest = workspace_root.join("ridge.toml");
-    if let Ok(src) = std::fs::read_to_string(&root_manifest) {
-        if let Ok(ws) = parse_workspace(&src, &root_manifest) {
-            if ws.members_globs.iter().any(|p| p == ".") {
-                if let Ok(proj) = parse_project(&src, &root_manifest) {
-                    if filter(proj.kind) && !names.contains(&proj.name) {
-                        names.push(proj.name);
-                    }
-                }
-            }
-        }
-    }
-
-    names
+    Ok(first.manifest.name)
 }
 
 // ── Plain run ─────────────────────────────────────────────────────────────────

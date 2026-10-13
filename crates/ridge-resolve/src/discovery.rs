@@ -94,61 +94,7 @@ pub fn discover_workspace(root: &Path) -> DiscoveryResult {
         }
     };
 
-    // Step 3 — expand member globs to concrete project directories.
-    let member_dirs = expand_member_globs(
-        &workspace_root,
-        &workspace_manifest.members_globs,
-        &mut manifest_errors,
-    );
-
-    // Step 4 — parse each member's project manifest; collect projects.
-    let mut projects = Vec::new();
-    let mut project_name_seen: std::collections::HashMap<String, PathBuf> =
-        std::collections::HashMap::new();
-
-    for member_dir in &member_dirs {
-        let proj_manifest_path = member_dir.join("ridge.toml");
-        if !proj_manifest_path.is_file() {
-            manifest_errors.push(ManifestError::MemberWithoutProjectManifest {
-                member_dir: member_dir.clone(),
-            });
-            continue;
-        }
-
-        let Ok(proj_toml) = std::fs::read_to_string(&proj_manifest_path) else {
-            manifest_errors.push(ManifestError::MemberWithoutProjectManifest {
-                member_dir: member_dir.clone(),
-            });
-            continue;
-        };
-
-        // Workspace project counts are bounded well below u32::MAX in practice.
-        #[allow(clippy::cast_possible_truncation)]
-        let project_id = ProjectId(projects.len() as u32);
-        let project = match parse_project_manifest(&proj_toml, &proj_manifest_path, project_id) {
-            Ok(p) => p,
-            Err(e) => {
-                manifest_errors.push(e);
-                continue;
-            }
-        };
-
-        // M010 — duplicate project name.
-        if let Some(first_path) = project_name_seen.get(&project.manifest.name) {
-            manifest_errors.push(ManifestError::DuplicateProjectName {
-                name: project.manifest.name.clone(),
-                first: first_path.clone(),
-                second: proj_manifest_path.clone(),
-            });
-            continue;
-        }
-        project_name_seen.insert(project.manifest.name.clone(), proj_manifest_path.clone());
-
-        // M017 — check path dependencies for workspace escapes.
-        check_path_dependency_escapes(&project, &workspace_root, &mut manifest_errors);
-
-        projects.push(project);
-    }
+    let projects = discover_projects(&workspace_root, &workspace_manifest, &mut manifest_errors);
 
     // Step 5 — walk each project's src_root, derive FQNs, collect ModuleMetadata.
     let mut modules: Vec<ModuleMetadata> = Vec::new();
@@ -204,6 +150,90 @@ pub fn discover_workspace(root: &Path) -> DiscoveryResult {
         manifest_errors,
         resolve_errors,
     }
+}
+
+/// Discover declared project members without walking their source trees.
+///
+/// Uses the same member expansion and manifest validation as workspace discovery.
+///
+/// # Errors
+///
+/// Returns all member manifest errors instead of selecting from a partial workspace.
+pub fn discover_project_members(
+    workspace_root: &Path,
+    workspace_manifest: &crate::WorkspaceManifest,
+) -> Result<Vec<crate::Project>, Vec<ManifestError>> {
+    let mut errors = Vec::new();
+    let projects = discover_projects(workspace_root, workspace_manifest, &mut errors);
+    if errors.is_empty() {
+        Ok(projects)
+    } else {
+        Err(errors)
+    }
+}
+
+fn discover_projects(
+    workspace_root: &Path,
+    workspace_manifest: &crate::WorkspaceManifest,
+    manifest_errors: &mut Vec<ManifestError>,
+) -> Vec<crate::Project> {
+    // Step 3 — expand member globs to concrete project directories.
+    let member_dirs = expand_member_globs(
+        workspace_root,
+        &workspace_manifest.members_globs,
+        manifest_errors,
+    );
+
+    // Step 4 — parse each member's project manifest; collect projects.
+    let mut projects = Vec::new();
+    let mut project_name_seen: std::collections::HashMap<String, PathBuf> =
+        std::collections::HashMap::new();
+
+    for member_dir in &member_dirs {
+        let proj_manifest_path = member_dir.join("ridge.toml");
+        if !proj_manifest_path.is_file() {
+            manifest_errors.push(ManifestError::MemberWithoutProjectManifest {
+                member_dir: member_dir.clone(),
+            });
+            continue;
+        }
+
+        let Ok(proj_toml) = std::fs::read_to_string(&proj_manifest_path) else {
+            manifest_errors.push(ManifestError::MemberWithoutProjectManifest {
+                member_dir: member_dir.clone(),
+            });
+            continue;
+        };
+
+        // Workspace project counts are bounded well below u32::MAX in practice.
+        #[allow(clippy::cast_possible_truncation)]
+        let project_id = ProjectId(projects.len() as u32);
+        let project = match parse_project_manifest(&proj_toml, &proj_manifest_path, project_id) {
+            Ok(p) => p,
+            Err(e) => {
+                manifest_errors.push(e);
+                continue;
+            }
+        };
+
+        // M010 — duplicate project name.
+        if let Some(first_path) = project_name_seen.get(&project.manifest.name) {
+            manifest_errors.push(ManifestError::DuplicateProjectName {
+                name: project.manifest.name.clone(),
+                first: first_path.clone(),
+                second: proj_manifest_path.clone(),
+            });
+            continue;
+        }
+        project_name_seen.insert(project.manifest.name.clone(), proj_manifest_path.clone());
+
+        // M017 — check path dependencies for workspace escapes.
+        check_path_dependency_escapes(&project, workspace_root, manifest_errors);
+
+        projects.push(project);
+    }
+
+    projects
 }
 
 /// Build a synthetic [`WorkspaceGraph`] for a set of standalone `.ridge` files

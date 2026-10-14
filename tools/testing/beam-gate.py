@@ -304,7 +304,7 @@ def build(args):
     cmd.run('grouped-clippy', ['cargo', 'clippy', '--manifest-path', str(harness / 'Cargo.toml'), '--target-dir', str(repo / 'target'), '--all-targets'] + common + ['--', '-D', 'warnings'])
     unchanged(repo, frozen)
     write_json(work / 'plan.json', {
-        'schema': 1, 'repo': str(repo), 'selected': selected, 'common': common,
+        'schema': 1, 'repo': str(repo), 'target': triple, 'selected': selected, 'common': common,
         'rows': phase_rows, 'non_pg_config': str(non_pg), 'catalog_reused': reusable,
         'source_hashes': hashes, 'policy_hash': source_hash(repo / 'tools/testing/driver-groups.json'),
         'tool_hash': source_hash(Path(__file__)), 'config_hash': source_hash(repo / '.config/nextest.toml'),
@@ -336,6 +336,11 @@ def run(args):
     results = {}
     for label, selection in plan['selected'].items():
         config = repo / '.config/nextest.toml' if label == 'retained' else Path(plan['non_pg_config'])
+        listed = cmd.run(label + '-run-list', ['cargo', 'nextest', 'list'] + selection + plan['common'] + ['--config-file', str(config), '--message-format', 'json'])
+        listing = json.loads(listed)
+        native_listing(listing, plan['target'])
+        parity(inventories(listing, label == 'grouped'), plan['rows'][label])
+        write_json(work / (label + '-run-inventory.json'), listing)
         stdout = cmd.run(label + '-run', ['cargo', 'nextest', 'run'] + selection + plan['common'] + ['--config-file', str(config), '--no-fail-fast', '--status-level', 'all', '--success-output', 'immediate'])
         stderr = (work / (label + '-run.stderr')).read_text(encoding='utf-8')
         results[label] = completion(stdout + '\n' + stderr, plan['rows'][label], args.require_postgres)

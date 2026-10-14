@@ -38,7 +38,7 @@ pub type Item = { id: Int, blob: Bytes } deriving (Row, Schema)
 fn bh (s: Text) -> Bytes =
     match Bytes.fromHex s
         Ok b  -> b
-        Err _ -> Bytes.empty ()
+        Err _ -> Bytes.empty
 
 fn pgConfig () -> PostgresConfig =
     PostgresConfig { host = "__PG_HOST__", port = __PG_PORT__, database = "__PG_DATABASE__", user = "__PG_USER__", password = "__PG_PASSWORD__", sslMode = "__PG_SSLMODE__" }

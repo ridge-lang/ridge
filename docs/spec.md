@@ -2132,6 +2132,12 @@ Rules:
 | `std.result` | Result helpers | `map`, `mapErr`, `flatMap`, `withDefault`, `isOk`, `isErr`, `discard` |
 | `std.test` | Test assertions | `ensure`, `assertEq`, `assertNe`, `assertTrue`, `assertFalse`, `assertOk`, `assertErr`, `assertSome`, `assertNone` |
 
+`List.empty`, `Map.empty`, `Set.empty`, and `Bytes.empty` are pure values.
+Use them without an argument list, for example `Bytes.length Bytes.empty`.
+Migrate the former spelling `Bytes.empty ()` by removing `()`. When an API
+expects a factory, pass an explicit zero-argument function, for example
+`fn emptyBytes () -> Bytes = Bytes.empty`.
+
 *Note:* `length` is **reserved** for future codepoint-aware semantics. `byteSize` returns the byte count under UTF-8 encoding; character/grapheme counting will arrive with `length` in a later release.
 
 **Convention:** in every stdlib function, the "main data" argument comes **last**, so pipes compose naturally:

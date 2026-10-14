@@ -26,6 +26,8 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
+import std.bytes (empty)
+
 -- `Bytes` is a prelude primitive and `std.bytes` is aliased as `Bytes` with no
 -- import, the same as `Int`/`Float`/`Uuid`.
 
@@ -33,7 +35,7 @@ const SOURCE: &str = r#"
 fn bh (s: Text) -> Bytes =
     match Bytes.fromHex s
         Ok b  -> b
-        Err _ -> Bytes.empty ()
+        Err _ -> Bytes.empty
 
 -- parse then render: a canonical hex string comes back unchanged.
 pub fn roundTrip () -> Text = Bytes.toHex (bh "deadbeef")
@@ -54,7 +56,21 @@ pub fn utf8Hex () -> Text = Bytes.toHex (Bytes.fromUtf8 "AB")
 pub fn lenBytes () -> Text = Int.toText (Bytes.length (bh "deadbeef"))
 
 -- the empty byte string has length zero.
-pub fn emptyLen () -> Text = Int.toText (Bytes.length (Bytes.empty ()))
+pub fn emptyLen () -> Text = Int.toText (Bytes.length (Bytes.empty))
+
+-- Empty bytes remain a value when bound locally or imported selectively.
+pub fn boundEmpty () -> Text =
+    let value = Bytes.empty
+    Bytes.toHex (Bytes.concat value (Bytes.fromUtf8 "A"))
+
+pub fn selectedEmpty () -> Text = Int.toText (Bytes.length empty)
+
+-- Callers that need a factory can pass an explicit zero-argument function.
+fn emptyFactory () -> Bytes = Bytes.empty
+
+fn invokeFactory (factory: fn () -> Bytes) -> Bytes = factory ()
+
+pub fn factoryEmpty () -> Text = Int.toText (Bytes.length (invokeFactory emptyFactory))
 
 -- concat joins end to end: two bytes plus three bytes is five.
 pub fn concatLen () -> Text =
@@ -173,6 +189,9 @@ fn bytes_module_runs_on_beam() {
          io:format(\"utf8Hex=~s~n\",[{module}:utf8Hex()]), \
          io:format(\"lenBytes=~s~n\",[{module}:lenBytes()]), \
          io:format(\"emptyLen=~s~n\",[{module}:emptyLen()]), \
+         io:format(\"boundEmpty=~s~n\",[{module}:boundEmpty()]), \
+         io:format(\"selectedEmpty=~s~n\",[{module}:selectedEmpty()]), \
+         io:format(\"factoryEmpty=~s~n\",[{module}:factoryEmpty()]), \
          io:format(\"concatLen=~s~n\",[{module}:concatLen()]), \
          io:format(\"lessThan=~s~n\",[{module}:lessThan()]), \
          io:format(\"prefixLess=~s~n\",[{module}:prefixLess()]), \
@@ -210,6 +229,15 @@ fn bytes_module_runs_on_beam() {
         ("utf8Hex=4142", "the bytes of \"AB\" render as hex 4142"),
         ("lenBytes=4", "length counts bytes, not hex characters"),
         ("emptyLen=0", "the empty byte string has length zero"),
+        (
+            "boundEmpty=41",
+            "binding empty preserves concatenation identity",
+        ),
+        (
+            "selectedEmpty=0",
+            "a selectively imported empty is a byte string",
+        ),
+        ("factoryEmpty=0", "an explicit factory remains a function"),
         ("concatLen=5", "concat joins two and three bytes into five"),
         ("lessThan=lt", "ordering compares byte by byte"),
         (

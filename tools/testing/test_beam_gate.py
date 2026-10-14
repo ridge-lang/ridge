@@ -1,5 +1,6 @@
 """Controls for inventory loss, unavailable services and generated configuration."""
 import importlib.util
+import io
 from pathlib import Path
 import tempfile
 import tomllib
@@ -12,6 +13,13 @@ spec.loader.exec_module(gate)
 
 class InventoryControls(unittest.TestCase):
     rows = [('fixture', 'active', False), ('fixture', 'ignored', True)]
+
+    def test_nextest_unicode_can_be_printed_from_windows_legacy_console(self):
+        buffer = io.BytesIO()
+        stream = io.TextIOWrapper(buffer, encoding='cp1252')
+        gate.utf8_output(stream)
+        print('─ Summary ✓', file=stream, flush=True)
+        self.assertEqual(buffer.getvalue().decode('utf-8'), '─ Summary ✓\n')
 
     def test_parity_both_directions_and_ignored_states(self):
         gate.parity(self.rows, self.rows)

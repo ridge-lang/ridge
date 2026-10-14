@@ -8,10 +8,15 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import time
 import tomllib
 
 REPO = Path(__file__).resolve().parents[2]
+
+
+def utf8_output(stream):
+    stream.reconfigure(encoding='utf-8', errors='backslashreplace')
 
 
 def read_json(path):
@@ -354,6 +359,8 @@ def run(args):
 
 
 def main():
+    for stream in (sys.stdout, sys.stderr):
+        utf8_output(stream)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('phase', choices=['build', 'run'])
     parser.add_argument('--work', type=Path, default=REPO / 'target/beam-gate')

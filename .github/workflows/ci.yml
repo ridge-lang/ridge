@@ -120,6 +120,16 @@ jobs:
         if: steps.changes.outputs.code == 'true'
         run: cargo build --workspace --locked
 
+      - name: Install Python for test tooling
+        if: steps.changes.outputs.code == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check BEAM gate tooling
+        if: steps.changes.outputs.code == 'true'
+        run: python -m unittest discover -s tools/testing -p test_beam_gate.py -v
+
       - name: Run tests
         if: steps.changes.outputs.code == 'true'
         run: cargo test --workspace --no-fail-fast --locked
@@ -151,6 +161,25 @@ jobs:
       - name: Run clippy (every feature)
         if: steps.changes.outputs.code == 'true'
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      # Linux inventories are checked in the OTP matrix below. Audit the other
+      # native platforms too; their catalogs cannot be inferred from Linux.
+      - name: Install cargo-nextest for native inventory audit
+        if: matrix.os != 'linux' && steps.changes.outputs.code == 'true'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Audit grouped BEAM inventory
+        if: matrix.os != 'linux' && steps.changes.outputs.code == 'true'
+        run: python tools/testing/beam-gate.py build --inventory-only --work "${{ runner.temp }}/ridge-beam-gate"
+
+      - name: Retain native inventory evidence
+        if: always() && matrix.os != 'linux' && steps.changes.outputs.code == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: beam-inventory-${{ matrix.os }}
+          path: ${{ runner.temp }}/ridge-beam-gate/*.json
 
   # The BEAM end-to-end suites are gated behind the `beam-runtime` feature: they
   # compile each example through the full pipeline, invoke erlc/erl on the
@@ -217,6 +246,12 @@ jobs:
         with:
           tool: cargo-nextest
 
+      - name: Install Python for test tooling
+        if: steps.changes.outputs.code == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Install Erlang/OTP
         if: steps.changes.outputs.code == 'true'
         uses: erlef/setup-beam@v1
@@ -234,12 +269,13 @@ jobs:
           key: ${{ runner.os }}-cargo-beam-${{ matrix.otp }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-beam-${{ matrix.otp }}-
 
-      # Compile the test binaries in their own step, so the run step's time is the
-      # test-run cost alone rather than build-plus-run in one number. nextest reuses
-      # what this builds, so the run below only executes.
+      # Keep native compilation/listing separate from execution. Compatible
+      # driver sources share two harnesses; context-sensitive sources retain
+      # their Cargo targets. Missing or stale platform catalogs trigger an
+      # original-vs-grouped native inventory audit before any test can run.
       - name: Build BEAM e2e test binaries
         if: steps.changes.outputs.code == 'true'
-        run: cargo build -p ridge-codegen-erl -p ridge-driver -p ridge-cli --tests --features beam-runtime --locked
+        run: python tools/testing/beam-gate.py build --work "${{ runner.temp }}/ridge-beam-gate"
 
       # Bring up a TLS-enabled Postgres so the std.data Postgres adapter e2e can
       # exercise the real wire protocol — SSL upgrade and SCRAM-SHA-256 auth
@@ -306,7 +342,14 @@ jobs:
         if: steps.changes.outputs.code == 'true'
         env:
           RIDGE_TEST_PG_URL: "postgres://postgres:postgres@localhost:5432/ridge_test?sslmode=require"
-        run: cargo nextest run -p ridge-codegen-erl -p ridge-driver -p ridge-cli --features beam-runtime --no-fail-fast --locked
+        run: python tools/testing/beam-gate.py run --work "${{ runner.temp }}/ridge-beam-gate" --require-postgres
+
+      - name: Retain BEAM gate evidence
+        if: always() && steps.changes.outputs.code == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: beam-gate-otp-${{ matrix.otp }}
+          path: ${{ runner.temp }}/ridge-beam-gate/*.json
 
       # Compile the whole standard library from its own source and run its
       # `.test.ridge` suite on BEAM (`ridge test --stdlib`). This is the only lane

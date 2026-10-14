@@ -252,7 +252,9 @@ fn unknown_stdlib_symbol(
         && find_import_binding(&name.text, module_imports).is_some_and(|eb| {
             matches!(&eb.binding, Binding::StdlibSymbol { name: bound, .. } if bound == &name.text)
         });
-    let suggestions = if already_in_scope {
+    let replacement_constructor =
+        crate::stdlib_builtin::retired_json_constructor(module.name, &name.text);
+    let suggestions = if already_in_scope || replacement_constructor.is_some() {
         Vec::new()
     } else {
         suggest::suggest(
@@ -268,6 +270,7 @@ fn unknown_stdlib_symbol(
         module: module.name.to_owned(),
         name: name.text.clone(),
         already_in_scope,
+        replacement_constructor,
         suggestions,
         span: name.span,
     }

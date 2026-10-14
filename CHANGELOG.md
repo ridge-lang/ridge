@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `std.json` no longer exports the construction wrappers `jNull`, `jBool`,
+  `jInt`, `jFloat`, `jText`, `jList`, or `jObject`. Use the prelude constructors
+  `JNull`, `JBool`, `JInt`, `JFloat`, `JText`, `JList`, and `JObject` directly.
+  Replace `Json.jNull ()` with `JNull`; the other constructors take the same
+  payload as their former wrappers. The `Json.as*` accessors and `Json.isNull`
+  remain available as conveniences alongside pattern matching.
+
 - Arithmetic is a primitive of the language rather than a call into the host.
   `Int.add` and its ten siblings used to be declared `@ffi("erlang", "+", 2)`,
   which put the name of one runtime in the shared table every code generator

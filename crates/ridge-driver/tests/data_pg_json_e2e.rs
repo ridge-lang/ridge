@@ -64,7 +64,7 @@ pub fn db setup () -> Result (Repo Item Postgres) DbError =
                     match Raw.exec conn "CREATE TABLE ridge_pg_json (id serial, doc jsonb)" []
                         Err e -> Err e
                         Ok _  ->
-                            match Repo.insert (ItemInsert { doc = Json.jList [Json.jInt 7, Json.jText "q"] }) r
+                            match Repo.insert (ItemInsert { doc = JList [JInt 7, JText "q"] }) r
                                 Err e -> Err e
                                 Ok _  -> Ok r
 

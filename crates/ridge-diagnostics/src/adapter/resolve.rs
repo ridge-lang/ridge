@@ -121,6 +121,25 @@ fn qualified_name_note(error: &ResolveError) -> Option<String> {
     match error {
         ResolveError::UnknownStdlibSymbol {
             name,
+            replacement_constructor: Some(constructor),
+            ..
+        }
+        | ResolveError::UnresolvedImportItem {
+            name,
+            replacement_constructor: Some(constructor),
+            ..
+        } => {
+            let nullary = if *constructor == "JNull" {
+                "; remove the `()` argument"
+            } else {
+                ""
+            };
+            Some(format!(
+                "`{name}` was removed; use the prelude constructor `{constructor}` without a module prefix or selective import{nullary}; rename any binding that shadows `{constructor}` first"
+            ))
+        }
+        ResolveError::UnknownStdlibSymbol {
+            name,
             already_in_scope: true,
             ..
         } => Some(format!(

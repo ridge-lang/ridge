@@ -1684,7 +1684,7 @@ pub(crate) fn lower_call_to_stdlib(
     };
 
     // Drop a single `Unit` literal arg when the bridge target is 0-arity so
-    // user code like `Map.empty ()` or `Json.jNull ()` lowers as a 0-arg call
+    // user code like `Map.empty ()` lowers as a 0-arg call
     // (mirrors the local-fn shim from PR #71 on Ridge-side calls).
     // Without this, the parser-supplied `[Unit]` argument list trips every
     // per-variant arity check below with `expects 0 args, got 1`.

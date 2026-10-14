@@ -231,6 +231,8 @@ pub enum ResolveError {
         name: String,
         /// The module that was searched.
         module: String,
+        /// Prelude constructor replacing a retired JSON helper, if any.
+        replacement_constructor: Option<&'static str>,
         /// Up to three Levenshtein-close exported-item names from `module`,
         /// pre-filtered for visibility from the importing project.
         suggestions: Vec<String>,
@@ -338,6 +340,8 @@ pub enum ResolveError {
         name: String,
         /// The exact stdlib name is available without a prefix in this module.
         already_in_scope: bool,
+        /// Prelude constructor replacing a retired JSON helper, if any.
+        replacement_constructor: Option<&'static str>,
         /// Up to three Levenshtein-close candidates from the same stdlib module.
         suggestions: Vec<String>,
         /// Span of the reference.

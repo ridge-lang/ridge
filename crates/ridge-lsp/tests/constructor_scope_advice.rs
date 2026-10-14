@@ -93,7 +93,7 @@ fn typo_keeps_near_spelling_and_unavailable_or_shadowed_names_get_no_bare_advice
     for (source, expected) in [
         ("import std.actor as Actor\npub fn f () -> AskError = Actor.Timeuot\n", Some("Timeout")),
         ("import std.sql as Sql\npub fn f () -> Int = Sql.SqlInt 3\n", None),
-        ("import std.json as Json\nimport std.text as JInt\npub fn f () -> JsonValue = Json.JInt 3\n", Some("jInt")),
+        ("import std.json as Json\nimport std.text as JInt\npub fn f () -> JsonValue = Json.JInt 3\n", None),
         ("import std.text as Text\npub fn f () -> Int = Text.QAdd\n", None),
     ] {
         let dir = workspace(source);

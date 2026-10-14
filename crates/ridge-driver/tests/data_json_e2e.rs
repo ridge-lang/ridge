@@ -36,7 +36,7 @@ pub type Doc = { id: Int, label: Text, body: JsonValue } deriving (Row, Schema)
 
 -- A small nested JSON value: [<n>, "z"]. A list keeps the encoded order deterministic,
 -- so the round-trip is exact without depending on map key order.
-fn doc (n: Int) -> JsonValue = Json.jList [Json.jInt n, Json.jText "z"]
+fn doc (n: Int) -> JsonValue = JList [JInt n, JText "z"]
 
 pub fn db setup () -> Result (Repo Doc MemAdapter) DbError =
     let r: Repo Doc MemAdapter = Repo.repo (memAdapter ()) "docs"

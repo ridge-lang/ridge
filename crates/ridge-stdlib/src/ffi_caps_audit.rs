@@ -1400,49 +1400,6 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         arity: 1,
         requires_caps: &[],
     },
-    // ── ridge_rt JSON constructors (pure value building) ──────────────────────
-    FfiAuditEntry {
-        beam_module: "ridge_rt",
-        fn_name: "json_null",
-        arity: 1,
-        requires_caps: &[],
-    },
-    FfiAuditEntry {
-        beam_module: "ridge_rt",
-        fn_name: "json_bool",
-        arity: 1,
-        requires_caps: &[],
-    },
-    FfiAuditEntry {
-        beam_module: "ridge_rt",
-        fn_name: "json_int",
-        arity: 1,
-        requires_caps: &[],
-    },
-    FfiAuditEntry {
-        beam_module: "ridge_rt",
-        fn_name: "json_float",
-        arity: 1,
-        requires_caps: &[],
-    },
-    FfiAuditEntry {
-        beam_module: "ridge_rt",
-        fn_name: "json_text",
-        arity: 1,
-        requires_caps: &[],
-    },
-    FfiAuditEntry {
-        beam_module: "ridge_rt",
-        fn_name: "json_list",
-        arity: 1,
-        requires_caps: &[],
-    },
-    FfiAuditEntry {
-        beam_module: "ridge_rt",
-        fn_name: "json_object",
-        arity: 1,
-        requires_caps: &[],
-    },
     // ── ridge_rt JSON accessors (pure value inspection) ───────────────────────
     FfiAuditEntry {
         beam_module: "ridge_rt",

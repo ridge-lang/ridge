@@ -62,6 +62,25 @@ pub fn lookup_stdlib(name: &str) -> Option<&'static BuiltinStdlibModule> {
     BUILTINS.iter().find(|m| m.name == name)
 }
 
+/// Migration target for a retired JSON construction helper. This does not
+/// assert that the constructor's prelude binding survives local shadowing.
+#[must_use]
+pub fn retired_json_constructor(module: &str, name: &str) -> Option<&'static str> {
+    if module != "std.json" {
+        return None;
+    }
+    match name {
+        "jNull" => Some("JNull"),
+        "jBool" => Some("JBool"),
+        "jInt" => Some("JInt"),
+        "jFloat" => Some("JFloat"),
+        "jText" => Some("JText"),
+        "jList" => Some("JList"),
+        "jObject" => Some("JObject"),
+        _ => None,
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

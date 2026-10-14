@@ -2218,6 +2218,13 @@ or use `Json.asObject` for a map view. Existing `JObject` construction and
 
 It is the canonical intermediate representation between Ridge values and JSON text. `Json.decode` produces a `JsonValue`; `Json.encode` consumes one. Derived `Encode`/`Decode` methods convert between user types and `JsonValue` (§5.6.4), so the typical flow is `T → JsonValue → Text` on the way out and `Text → JsonValue → T` on the way in. Building a `JsonValue` by hand is also supported — pattern-match and construct its variants directly when a value's shape is dynamic.
 
+**JSON construction migration:** the former `std.json` wrappers `jNull`,
+`jBool`, `jInt`, `jFloat`, `jText`, `jList`, and `jObject` have been removed.
+Use the prelude constructors directly: `Json.jNull ()` becomes `JNull`,
+`Json.jInt n` becomes `JInt n`, and the other payload wrappers become their
+corresponding `J*` constructors. No import is needed to construct or match a
+`JsonValue`. The `Json.as*` accessors and `Json.isNull` remain convenience APIs.
+
 ### 9.5. Additional modules
 
 | Module | Purpose | Status |

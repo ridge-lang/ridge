@@ -697,6 +697,7 @@ fn resolve_item(
                         name: item_name.to_owned(),
                         module: path_dotted.to_owned(),
                         suggestions: Vec::new(),
+                        replacement_constructor: None,
                         span: import_span,
                     }),
                 );
@@ -713,6 +714,7 @@ fn resolve_item(
                         name: item_name.to_owned(),
                         module: path_dotted.to_owned(),
                         suggestions,
+                        replacement_constructor: None,
                         span: import_span,
                     }),
                 );
@@ -760,7 +762,11 @@ fn resolve_item(
                 // always visible to every importer (no per-project restriction).
                 // Internal prelude names are excluded — see
                 // `is_internal_prelude_name`.
+                let replacement_constructor = builtin.and_then(|m| {
+                    crate::stdlib_builtin::retired_json_constructor(m.name, item_name)
+                });
                 let suggestions = builtin
+                    .filter(|_| replacement_constructor.is_none())
                     .map(|m| {
                         crate::suggest::suggest(
                             item_name,
@@ -777,6 +783,7 @@ fn resolve_item(
                         name: item_name.to_owned(),
                         module: path_dotted.to_owned(),
                         suggestions,
+                        replacement_constructor,
                         span: import_span,
                     }),
                 )

@@ -54,65 +54,12 @@ pub fn encodeBool (b: Bool) -> Text =
 pub fn encodeText (s: Text) -> Text =
     Text.concat (Text.concat "\"" s) "\""
 
--- ── JsonValue constructors via FFI shims. ────────────────────────────────────
---
--- Cross-module resolution of type-variant constructors (e.g. `Json.JInt 42`)
--- is deferred to 0.2.0: the resolver returns `Binding::StdlibSymbol`, the
--- lower has no path for StdlibSymbol-as-non-prelude-constructor, and the
--- json_encode wire format uses lowercase-snake atoms (`json_int`) that
--- wouldn't match the constructor names anyway.
---
--- These shims let user code construct JsonValue trees today by routing
--- through `ridge_rt:json_*` wrappers that emit the exact tuple shape
--- `json_encode/1` consumes.  Decoded values from `Json.decode` are
--- already in this shape, so user-constructed and decoded values round-trip
--- through `Json.encode` interchangeably.
+-- JsonValue construction uses the prelude variants shown above. They are
+-- available without an import, in expressions and match patterns.
 
-@ffi("ridge_rt", "json_null", 1)
-pub fn jNull (_unit: Unit) -> JsonValue
-
-@ffi("ridge_rt", "json_bool", 1)
-pub fn jBool (b: Bool) -> JsonValue
-
-@ffi("ridge_rt", "json_int", 1)
-pub fn jInt (n: Int) -> JsonValue
-
-@ffi("ridge_rt", "json_float", 1)
-pub fn jFloat (f: Float) -> JsonValue
-
-@ffi("ridge_rt", "json_text", 1)
-pub fn jText (s: Text) -> JsonValue
-
-@ffi("ridge_rt", "json_list", 1)
-pub fn jList (xs: List JsonValue) -> JsonValue
-
-@ffi("ridge_rt", "json_object", 1)
-pub fn jObject (m: Map Text JsonValue) -> JsonValue
-
--- ── JsonValue accessors. ─────────────────────────────────────────────────────
---
--- Cross-module pattern matching on `JsonValue` variants (`JInt`, `JObject`,
--- etc.) from user code is still deferred (see the comment above on
--- constructor resolution), so a `JsonValue` returned from `decode` cannot
--- be destructured with `match` from outside this module.  These accessors
--- give callers an `Option`-shaped escape hatch: each one pattern-matches
--- the wire-format tuple in `ridge_rt` and surfaces `Some V` when the
--- variant matches, or `None` otherwise.  `isNull` returns a `Bool` because
--- the null variant has no payload.
---
--- Decode flow:
---   match Json.decode text
---       Err _ -> ...
---       Ok v  ->
---           match Json.asObject v
---               None -> ...                       -- top-level wasn't an object
---               Some m ->
---                   match Map.get "id" m
---                       None -> ...               -- missing field
---                       Some idVal ->
---                           match Json.asInt idVal
---                               None -> ...       -- field wasn't an int
---                               Some id -> ...    -- use id
+-- JsonValue accessors provide a convenient alternative to pattern matching.
+-- Each returns Some of the payload when the variant matches, or None
+-- otherwise. isNull checks the payload-free null variant.
 
 @ffi("ridge_rt", "json_as_int", 1)
 pub fn asInt (v: JsonValue) -> Option Int

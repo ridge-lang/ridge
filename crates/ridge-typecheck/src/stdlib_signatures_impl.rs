@@ -1801,8 +1801,8 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             ty_result(b, ty_json_value(b), ty_error(b)),
         ))),
 
-        // The remaining std.json surface (the pure encode helpers, the FFI
-        // construction shims, and the accessor companions) is still stubbed —
+        // The remaining std.json surface (the pure encode helpers and
+        // accessor companions) is still stubbed —
         // see the shared stub arm below.
         //
         // ── std.net.http (partial stubs) ──────────────────────────────────────
@@ -1823,12 +1823,8 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         | (STD_CLI, "Parsed")
         | (STD_JSON,
            "encodeInt" | "encodeBool" | "encodeText"
-           // JsonValue construction shims (FFI bridges to ridge_rt:json_*).
-           // The first-class `J*` constructors are prelude-typed; these shims
-           // remain for callers that already use them.
-           | "jNull" | "jBool" | "jInt" | "jFloat" | "jText" | "jList" | "jObject"
            // JsonValue accessor companions — peel one variant off a decoded
-           // JsonValue as an Option-shaped escape hatch.
+           // JsonValue as a convenient Option-shaped view.
            | "asInt" | "asFloat" | "asBool" | "asText" | "asList" | "asObject" | "isNull")
         | (STD_NET_HTTP,
            "get" | "post" | "put" | "delete" | "respond" | "Request" | "Response"

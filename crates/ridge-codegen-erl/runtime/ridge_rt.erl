@@ -40,9 +40,6 @@
     env_get/1, env_all/0, env_all/1, env_set/2,
     proc_run/2,
     json_encode/1, json_decode/1,
-    json_null/0, json_null/1,
-    json_bool/1, json_int/1, json_float/1, json_text/1,
-    json_list/1, json_object/1,
     json_as_int/1, json_as_float/1, json_as_bool/1, json_as_text/1,
     json_as_list/1, json_as_object/1, json_is_null/1,
     http_listen/2, http_port/0, http_build_response/1, http_validate_response_headers/1,
@@ -1332,23 +1329,6 @@ proc_run_collect(Port, Acc, Deadline) ->
     end.
 
 %% --- JSON (§3.17) ---
-
-%% JsonValue constructor shims.
-%%
-%% Cross-module constructor resolution for user-defined `pub type` variants
-%% is a 0.2.0 design item.  Until then these FFI shims let user code
-%% build JsonValue trees in the exact wire format `json_encode/1` consumes
-%% (lowercase-snake tag atoms with the documented payload positions).
-%% Each shim is intentionally trivial — pure construction, no validation —
-%% so the BEAM never observes a malformed JsonValue from user input.
-json_null() -> json_null.
-json_null(_Unit) -> json_null().
-json_bool(B) -> {json_bool, B}.
-json_int(N) -> {json_int, N}.
-json_float(F) -> {json_float, F}.
-json_text(S) -> {json_text, S}.
-json_list(L) -> {json_list, L}.
-json_object(M) -> {json_object, M}.
 
 %% json_encode/1 — std.json.encode
 %% Recursively encodes a JsonValue tagged-tuple tree to a JSON binary.

@@ -408,20 +408,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "encodeInt",
             "encodeBool",
             "encodeText",
-            // JsonValue construction shims (FFI bridges to
-            // ridge_rt:json_* — see crates/ridge-stdlib/stdlib/json.ridge).
-            // Cross-module `pub type` variant resolution lands in 0.2.0;
-            // until then these are the supported constructor surface.
-            "jNull",
-            "jBool",
-            "jInt",
-            "jFloat",
-            "jText",
-            "jList",
-            "jObject",
-            // JsonValue accessor companions — destructure a JsonValue
-            // returned from `decode` without needing cross-module variant
-            // pattern matching (deferred).  See json.ridge for usage.
+            // Convenient payload accessors; the prelude variants also
+            // support direct pattern matching.
             "asInt",
             "asFloat",
             "asBool",

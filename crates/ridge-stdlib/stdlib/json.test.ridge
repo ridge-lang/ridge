@@ -1,16 +1,35 @@
 -- Private FFI bridges for std.json test suite.
--- These replicate json.ridge FFI declarations in local scope because cross-module
--- calls are unsupported (T17+ deferred).
+-- Local bridges let this suite exercise the codec and accessors in its own module.
 --
--- NOTE: JsonValue constructors (JNull, JBool, etc.) use a custom BEAM wire
--- format set up by ridge_rt.erl. Re-declaring `pub type JsonValue` locally
--- produces a different wire format and cannot be used to pass values to
--- ridge_rt:json_encode. All encode tests derive values via decode round-trips.
+-- JsonValue and its constructors are prelude symbols. These tests use them
+-- directly, alongside values obtained from decode round-trips.
 @ffi("ridge_rt", "json_encode", 1)
 fn _encode (v: JsonValue) -> Text
 
 @ffi("ridge_rt", "json_decode", 1)
 fn _decode (s: Text) -> Result JsonValue Error
+
+@test "prelude_json_construction"
+pub fn test_prelude_json_construction () -> Result Unit Text =
+    if _encode JNull != "null" then Err "JNull must encode null"
+    else if _encode (JBool true) != "true" then Err "JBool must encode a boolean"
+    else if _encode (JInt 3) != "3" then Err "JInt must encode an integer"
+    else if _encode (JFloat 1.25) != "1.25" then Err "JFloat must encode a float"
+    else if _encode (JText "x") != "\"x\"" then Err "JText must encode a string"
+    else if _encode (JList [JInt 3]) != "[3]" then Err "JList must encode an array"
+    else
+        match _decode "{}"
+            Ok (JObject fields) ->
+                if _encode (JObject fields) == "{}" then Ok ()
+                else Err "JObject must encode an object"
+            _ -> Err "decoded object must expose the prelude constructor payload"
+
+@test "prelude_json_matching"
+pub fn test_prelude_json_matching () -> Result Unit Text =
+    match _decode "3"
+        Ok (JInt n) ->
+            if n == 3 then Ok () else Err "decoded integer payload changed"
+        _ -> Err "decoded JSON must match the prelude constructor"
 
 -- Pure helpers.
 @ffi("erlang", "iolist_to_binary", 1)
@@ -94,9 +113,8 @@ pub fn test_encodeText_quotes () -> Result Unit Text =
 
 -- ── Accessor smoke tests ─────────────────────────────────────────────────────
 --
--- The accessors are the workaround for the cross-module variant-constructor
--- gap: a decoded JsonValue cannot be pattern-matched from outside this
--- module, so `asInt`/`asText`/etc. peel a single layer.  These tests cover
+-- The accessors are a convenient alternative to matching the prelude
+-- JsonValue variants directly. These tests cover
 -- the happy path (matching variant → Some) and the mismatch path (other
 -- variant → None) for each accessor, via decode → as* so the wire format
 -- is exercised end-to-end.
@@ -213,7 +231,7 @@ pub fn test_asObject_on_object_returns_some () -> Result Unit Text =
                 None -> Err "asObject on a json object should return Some"
 
 -- Round-trip the documented decode-then-walk pattern from json.ridge's
--- top-of-section example: extract an integer field from a JSON object.
+-- accessor surface: inspect a JSON object returned by decode.
 @test "decode_then_extract_int_field"
 pub fn test_decode_then_extract_int_field () -> Result Unit Text =
     match _decode "{\"id\":42}"
@@ -222,8 +240,6 @@ pub fn test_decode_then_extract_int_field () -> Result Unit Text =
             match _asObject v
                 None -> Err "outer should be an object"
                 Some m ->
-                    -- Stdlib calls are still cross-module-restricted so we
-                    -- inline the Map.get equivalent via the FFI bridge.
-                    -- For the test we just confirm the object has one entry.
+                    -- Confirm that the decoded value is an object rather than null.
                     if _isNull v then Err "object was misread as null"
                     else Ok ()

@@ -249,9 +249,10 @@ def build(args):
     common = ['--features', 'beam-runtime', '--locked']
     metadata = json.loads(cmd.run('driver-targets', ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked']))
     driver_targets(metadata, repo, policy)
+    target_dir = metadata['target_directory']
     selected = {
         'retained': ['-p', 'ridge-driver', '--lib'] + [x for n in policy['retained'] for x in ('--test', n)],
-        'grouped': ['--manifest-path', str(harness / 'Cargo.toml'), '--target-dir', str(repo / 'target')] + [x for n in policy['groups'] for x in ('--test', n)],
+        'grouped': ['--manifest-path', str(harness / 'Cargo.toml'), '--target-dir', target_dir] + [x for n in policy['groups'] for x in ('--test', n)],
         'other': ['-p', 'ridge-codegen-erl', '-p', 'ridge-cli'],
     }
     if args.inventory_only:
@@ -301,7 +302,7 @@ def build(args):
     if needed:
         write_json(work / 'inventory-candidate.json', contract | {'cases': sorted(reference)})
         print('Native parity verified. Review inventory-candidate.json before adding a reusable catalog.', flush=True)
-    cmd.run('grouped-clippy', ['cargo', 'clippy', '--manifest-path', str(harness / 'Cargo.toml'), '--target-dir', str(repo / 'target'), '--all-targets'] + common + ['--', '-D', 'warnings'])
+    cmd.run('grouped-clippy', ['cargo', 'clippy', '--manifest-path', str(harness / 'Cargo.toml'), '--target-dir', target_dir, '--all-targets'] + common + ['--', '-D', 'warnings'])
     unchanged(repo, frozen)
     write_json(work / 'plan.json', {
         'schema': 1, 'repo': str(repo), 'target': triple, 'selected': selected, 'common': common,

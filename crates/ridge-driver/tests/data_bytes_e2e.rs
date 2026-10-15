@@ -43,7 +43,7 @@ pub type Doc = { id: Int, label: Text, blob: Bytes } deriving (Row, Schema)
 fn bh (s: Text) -> Bytes =
     match Bytes.fromHex s
         Ok b  -> b
-        Err _ -> Bytes.empty ()
+        Err _ -> Bytes.empty
 
 fn optBytesText (o: Option Bytes) -> Text =
     match o

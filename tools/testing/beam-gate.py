@@ -243,9 +243,12 @@ class Commands:
             result = subprocess.run(command, cwd=self.repo, stdout=out, stderr=err)
         self.steps.append({'phase': label, 'command': args, 'exit': result.returncode, 'wall_seconds': time.monotonic() - start})
         write_json(self.work / 'commands.json', self.steps)
-        print(err_path.read_text(encoding='utf-8', errors='replace')[-3000:], end='', flush=True)
         if result.returncode:
+            for path in (out_path, err_path):
+                print('\n--- ' + path.name + ' ---', flush=True)
+                print(path.read_text(encoding='utf-8', errors='replace'), end='', flush=True)
             raise subprocess.CalledProcessError(result.returncode, command)
+        print(err_path.read_text(encoding='utf-8', errors='replace')[-3000:], end='', flush=True)
         return out_path.read_text(encoding='utf-8')
 
 

@@ -1,6 +1,9 @@
 """Controls for inventory loss, unavailable services and generated configuration."""
 import importlib.util
+import contextlib
 import io
+import subprocess
+import sys
 from pathlib import Path
 import tempfile
 import tomllib
@@ -56,6 +59,22 @@ workspace = true
 
 class InventoryControls(unittest.TestCase):
     rows = [('fixture', 'active', False), ('fixture', 'ignored', True)]
+
+    def test_failed_command_preserves_initial_diagnostic_and_exit_code(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            command = [sys.executable, '-c',
+                       "import sys; print('failure stdout'); "
+                       "sys.stderr.write('initial assertion\\n' + 'x' * 6000); sys.exit(23)"]
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output), self.assertRaises(subprocess.CalledProcessError) as failed:
+                gate.Commands(work, work, []).run('failed', command)
+            self.assertEqual(failed.exception.returncode, 23)
+            self.assertIn('failure stdout', output.getvalue())
+            self.assertIn('initial assertion\n' + 'x' * 6000, output.getvalue())
+            self.assertEqual((work / 'failed.stdout').read_text(), 'failure stdout\n')
+            self.assertEqual((work / 'failed.stderr').read_text(), 'initial assertion\n' + 'x' * 6000)
+            self.assertEqual(gate.read_json(work / 'commands.json')[0]['exit'], 23)
 
     def test_nextest_unicode_can_be_printed_from_windows_legacy_console(self):
         buffer = io.BytesIO()

@@ -179,7 +179,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: beam-inventory-${{ matrix.os }}
-          path: ${{ runner.temp }}/ridge-beam-gate/*.json
+          path: |
+            ${{ runner.temp }}/ridge-beam-gate/*.json
+            ${{ runner.temp }}/ridge-beam-gate/*.stdout
+            ${{ runner.temp }}/ridge-beam-gate/*.stderr
 
   # The BEAM end-to-end suites are gated behind the `beam-runtime` feature: they
   # compile each example through the full pipeline, invoke erlc/erl on the
@@ -349,7 +352,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: beam-gate-otp-${{ matrix.otp }}
-          path: ${{ runner.temp }}/ridge-beam-gate/*.json
+          path: |
+            ${{ runner.temp }}/ridge-beam-gate/*.json
+            ${{ runner.temp }}/ridge-beam-gate/*.stdout
+            ${{ runner.temp }}/ridge-beam-gate/*.stderr
 
       # Compile the whole standard library from its own source and run its
       # `.test.ridge` suite on BEAM (`ridge test --stdlib`). This is the only lane

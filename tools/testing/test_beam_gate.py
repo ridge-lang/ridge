@@ -11,6 +11,49 @@ gate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gate)
 
 
+def mini_repository(base):
+    repo = base / 'josé'
+    driver = repo / 'crates/ridge-driver'
+    (driver / 'tests').mkdir(parents=True)
+    (driver / 'src').mkdir()
+    (driver / 'src/lib.rs').write_text('', encoding='utf-8')
+    (repo / 'Cargo.toml').write_text('''[workspace]
+resolver = "2"
+members = ["crates/*"]
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+[workspace.dependencies]
+[workspace.lints.rust]
+unsafe_code = "deny"
+[workspace.lints.clippy]
+unwrap_used = "warn"
+[profile.test]
+debug = 2
+overflow-checks = true
+[profile.dev.build-override]
+opt-level = 1
+''', encoding='utf-8')
+    (repo / 'Cargo.lock').write_text('version = 4\n', encoding='utf-8')
+    (driver / 'Cargo.toml').write_text('''[package]
+name = "ridge-driver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+[dependencies]
+[features]
+beam-runtime = []
+[lints]
+workspace = true
+''', encoding='utf-8')
+    (driver / 'tests/grouped.rs').write_text('#[test]\nfn original_assertion() { assert_eq!(2 + 2, 4); }\n', encoding='utf-8')
+    (driver / 'tests/retained.rs').write_text('', encoding='utf-8')
+    policy = {'groups': {'analysis': ['grouped']}, 'retained': ['retained']}
+    package = {'version': '0.1.0', 'edition': '2021', 'rust_version': '1.88'}
+    return repo, policy, package
+
+
 class InventoryControls(unittest.TestCase):
     rows = [('fixture', 'active', False), ('fixture', 'ignored', True)]
 
@@ -89,9 +132,50 @@ class InventoryControls(unittest.TestCase):
         metadata['packages'][0]['targets'].append(target('directory/main'))
         with self.assertRaises(ValueError):
             gate.driver_targets(metadata, gate.REPO, policy)
+        metadata['packages'][0]['targets'][-1] = {'kind': ['custom-build']}
+        with self.assertRaises(ValueError):
+            gate.driver_targets(metadata, gate.REPO, policy)
 
 
 class GenerationControls(unittest.TestCase):
+    @staticmethod
+    def workspace_metadata():
+        values = tomllib.loads((gate.REPO / 'Cargo.toml').read_text(encoding='utf-8'))['workspace']['package']
+        return {'version': values['version'], 'edition': values['edition'], 'rust_version': values['rust-version']}
+
+    def test_rust_literals_use_rust_escapes_and_preserve_unicode(self):
+        for value, expected in [('é', '"é"'), ('\\', r'"\\"'), ('"', r'"\""'),
+                                ('\n', r'"\n"'), ('\r', r'"\r"'), ('\t', r'"\t"'),
+                                ('\x08', r'"\u{8}"'), ('\x7f', r'"\u{7f}"')]:
+            with self.subTest(value=repr(value)):
+                self.assertEqual(gate.rust_string(value), expected)
+
+    def test_unpreserved_profile_and_lint_contexts_fail_explicitly(self):
+        root = {'workspace': {'lints': {'rust': {}, 'clippy': {}}}}
+        driver = {'lints': {'workspace': True}}
+        gate.manifest_contract(root, driver)
+        for changed_root, changed_driver in [
+                (root | {'profile': {'test': {'package': {'ridge-driver': {'debug': 0}}}}}, driver),
+                (root | {'workspace': {'lints': {'rust': {}, 'clippy': {}, 'rustdoc': {}}}}, driver),
+                (root, {'lints': {'rust': {'unsafe_code': 'forbid'}}})]:
+            with self.assertRaises(ValueError):
+                gate.manifest_contract(changed_root, changed_driver)
+
+    def test_global_profiles_survive_and_unicode_path_is_a_rust_literal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo, policy, package = mini_repository(base)
+            harness, _ = gate.prepare(repo, base / 'harness-work', policy, package)
+            manifest = tomllib.loads((harness / 'Cargo.toml').read_text(encoding='utf-8'))
+            self.assertEqual(manifest['profile']['test'], {'debug': 2, 'overflow-checks': True})
+            self.assertEqual(manifest['profile']['dev']['build-override'], {'opt-level': 1})
+            wrapper = (harness / 'tests/analysis.rs').read_text(encoding='utf-8')
+            self.assertIn('josé', wrapper)
+            self.assertNotIn(r'\u00e9', wrapper)
+            (repo / 'crates/ridge-driver/clippy.toml').write_text('', encoding='utf-8')
+            with self.assertRaises(ValueError):
+                gate.prepare(repo, base / 'local-clippy-work', policy, package)
+
     def test_source_hash_is_checkout_independent_and_changes_on_content(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'fixture.rs'
@@ -119,7 +203,7 @@ class GenerationControls(unittest.TestCase):
     def test_real_manifest_profiles_and_effective_clippy_config_survive(self):
         policy = gate.read_json(gate.REPO / 'tools/testing/driver-groups.json')
         with tempfile.TemporaryDirectory() as tmp:
-            harness, hashes = gate.prepare(gate.REPO, Path(tmp), policy)
+            harness, hashes = gate.prepare(gate.REPO, Path(tmp), policy, self.workspace_metadata())
             manifest = tomllib.loads((harness / 'Cargo.toml').read_text(encoding='utf-8'))
             original = tomllib.loads((gate.REPO / 'Cargo.toml').read_text(encoding='utf-8'))
             self.assertEqual(manifest['workspace']['lints'], original['workspace']['lints'])
@@ -129,6 +213,14 @@ class GenerationControls(unittest.TestCase):
             config = gate.project_config(gate.REPO, Path(tmp))
             self.assertEqual(tomllib.loads(config.read_text())['test-groups']['postgres']['max-threads'], 1)
             self.assertNotIn('overrides', tomllib.loads(config.read_text()).get('profile', {}).get('default', {}))
+
+    def test_effective_package_metadata_takes_precedence_over_workspace_defaults(self):
+        policy = gate.read_json(gate.REPO / 'tools/testing/driver-groups.json')
+        metadata = {'version': '9.9.9', 'edition': '2024', 'rust_version': '1.85'}
+        with tempfile.TemporaryDirectory() as tmp:
+            harness, _ = gate.prepare(gate.REPO, Path(tmp), policy, metadata)
+            package = tomllib.loads((harness / 'Cargo.toml').read_text(encoding='utf-8'))['package']
+            self.assertEqual((package['version'], package['edition'], package['rust-version']), ('9.9.9', '2024', '1.85'))
 
     def test_new_or_context_sensitive_fixture_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:

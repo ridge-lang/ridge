@@ -23,6 +23,12 @@ configurations, stdlib self-compilation and LSP acceptance remain separate CI
 steps. Grouped harnesses also inherit workspace lints, profiles, locked registry
 versions and the effective Clippy configuration, and receive their own lint pass.
 
+Cargo metadata supplies the driver's effective package version, edition,
+minimum Rust version and target directory. Driver build scripts, package-specific
+profile overrides, driver-specific lint settings and driver-local Clippy files
+require a generator review instead of silently changing the compilation context.
+Generated Rust paths support Unicode and use Rust's own string escape syntax.
+
 ## Native inventory review
 
 `driver-groups.json` partitions every driver integration source exactly once.

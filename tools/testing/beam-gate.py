@@ -60,6 +60,23 @@ def relocate(raw, base):
                   lambda m: 'path = ' + json.dumps((base / m[1]).resolve().as_posix()), raw)
 
 
+def rust_string(value):
+    escapes = {'\\': r'\\', '"': r'\"', '\n': r'\n', '\r': r'\r', '\t': r'\t'}
+    body = ''.join(escapes[c] if c in escapes else
+                   f'\\u{{{ord(c):x}}}' if ord(c) < 32 or ord(c) == 127 else c
+                   for c in value)
+    return '"' + body + '"'
+
+
+def manifest_contract(root, original):
+    if any(profile.get('package') for profile in root.get('profile', {}).values()):
+        raise ValueError('Package-specific profiles need a grouped workspace review')
+    if original.get('lints') != {'workspace': True}:
+        raise ValueError('Driver-specific lints need a grouped workspace review')
+    if set(root['workspace']['lints']) - {'rust', 'clippy'}:
+        raise ValueError('Additional workspace lint tools need a generator review')
+
+
 def partition(repo, policy):
     sources = {p.stem: p for p in (repo / 'crates/ridge-driver/tests').glob('*.rs')}
     grouped = [n for names in policy['groups'].values() for n in names]
@@ -79,12 +96,15 @@ def partition(repo, policy):
     return sources, grouped
 
 
-def prepare(repo, work, policy):
+def prepare(repo, work, policy, package):
     sources, grouped = partition(repo, policy)
     driver = repo / 'crates/ridge-driver'
     root_raw = (repo / 'Cargo.toml').read_text(encoding='utf-8')
     raw = (driver / 'Cargo.toml').read_text(encoding='utf-8')
     root, original = tomllib.loads(root_raw), tomllib.loads(raw)
+    manifest_contract(root, original)
+    if any((driver / name).exists() for name in ('clippy.toml', '.clippy.toml')):
+        raise ValueError('Driver-local Clippy configuration needs a generator review')
     allowed = {'package', 'dependencies', 'dev-dependencies', 'features', 'lints'}
     if set(original) - allowed or set(original['features']) != {'beam-runtime'}:
         raise ValueError('Driver manifest topology changed; review generated workspace')
@@ -95,8 +115,9 @@ def prepare(repo, work, policy):
     harness = work / 'harness'
     (harness / 'tests').mkdir(parents=True)
     manifest = '[package]\nname = "ridge-grouped-driver-gate"\npublish = false\nautotests = false\n'
-    for key in ('version', 'edition', 'rust-version'):
-        manifest += key + ' = ' + json.dumps(root['workspace']['package'][key]) + '\n'
+    for key, metadata_key in [('version', 'version'), ('edition', 'edition'), ('rust-version', 'rust_version')]:
+        if package.get(metadata_key) is not None:
+            manifest += key + ' = ' + json.dumps(package[metadata_key]) + '\n'
     manifest += '[workspace]\nresolver = ' + json.dumps(root['workspace']['resolver']) + '\n'
     for name in ('workspace.dependencies', 'workspace.lints.rust', 'workspace.lints.clippy'):
         contents = section(root_raw, name)
@@ -110,7 +131,7 @@ def prepare(repo, work, policy):
     for group, names in policy['groups'].items():
         if not re.fullmatch(r'[a-z][a-z0-9_]*', group):
             raise ValueError('Invalid group name')
-        wrapper = ''.join('#[path = ' + json.dumps(sources[n].as_posix()) + ']\nmod ' + n + ';\n' for n in names)
+        wrapper = ''.join('#[path = ' + rust_string(sources[n].as_posix()) + ']\nmod ' + n + ';\n' for n in names)
         (harness / 'tests' / (group + '.rs')).write_text(wrapper, encoding='utf-8')
         manifest += '\n[[test]]\nname = ' + json.dumps(group) + '\npath = "tests/' + group + '.rs"\n'
     (harness / 'Cargo.toml').write_text(manifest, encoding='utf-8')
@@ -151,12 +172,13 @@ def driver_targets(metadata, repo, policy):
             if target.get('required-features') or not target.get('test', True):
                 raise ValueError('Driver target feature/test policy changed')
             actual[target['name']] = Path(target['src_path']).resolve()
-        elif target['kind'] not in (['lib'], ['custom-build']):
+        elif target['kind'] != ['lib']:
             raise ValueError('Unexpected driver target kind: ' + repr(target['kind']))
     expected = {n: (repo / 'crates/ridge-driver/tests' / (n + '.rs')).resolve()
                 for n in policy['retained'] + [n for names in policy['groups'].values() for n in names]}
     if actual != expected:
         raise ValueError('Cargo driver targets differ from reviewed source partition')
+    return packages[0]
 
 
 def parity(actual, expected):
@@ -239,8 +261,6 @@ def build(args):
     work.mkdir(parents=True, exist_ok=False)
     frozen = freeze(repo)
     policy = read_json(repo / 'tools/testing/driver-groups.json')
-    harness, hashes = prepare(repo, work, policy)
-    non_pg = project_config(repo, work)
     cmd = Commands(repo, work, prefix_from(args))
     rust_info = cmd.run('rust-info', ['rustc', '-vV'])
     triple = re.search(r'(?m)^host: (.+)$', rust_info)[1]
@@ -253,8 +273,10 @@ def build(args):
         raise ValueError('Cross-target execution is unsupported: ' + configured_target)
     common = ['--features', 'beam-runtime', '--locked']
     metadata = json.loads(cmd.run('driver-targets', ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked']))
-    driver_targets(metadata, repo, policy)
+    package = driver_targets(metadata, repo, policy)
     target_dir = metadata['target_directory']
+    harness, hashes = prepare(repo, work, policy, package)
+    non_pg = project_config(repo, work)
     selected = {
         'retained': ['-p', 'ridge-driver', '--lib'] + [x for n in policy['retained'] for x in ('--test', n)],
         'grouped': ['--manifest-path', str(harness / 'Cargo.toml'), '--target-dir', target_dir] + [x for n in policy['groups'] for x in ('--test', n)],

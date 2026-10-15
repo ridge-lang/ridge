@@ -52,6 +52,10 @@ workspace = true
 ''', encoding='utf-8')
     (driver / 'tests/grouped.rs').write_text('#[test]\nfn original_assertion() { assert_eq!(2 + 2, 4); }\n', encoding='utf-8')
     (driver / 'tests/retained.rs').write_text('', encoding='utf-8')
+    for name in ('ridge-codegen-erl', 'ridge-cli'):
+        root = repo / 'crates' / name
+        root.mkdir()
+        (root / 'Cargo.toml').write_text('[package]\nname = "' + name + '"\n[features]\nbeam-runtime = []\n', encoding='utf-8')
     policy = {'groups': {'analysis': ['grouped']}, 'retained': ['retained']}
     package = {'version': '0.1.0', 'edition': '2021', 'rust_version': '1.88'}
     return repo, policy, package
@@ -140,12 +144,12 @@ class InventoryControls(unittest.TestCase):
             gate.native_listing(data, 'other')
 
     def test_incremental_reference_never_reuses_changed_or_other_platform_sources(self):
-        contract = {'schema': 1, 'target': 'native', 'features': ['beam-runtime'], 'sources': {'stable': 'same', 'changed': 'new', 'added': 'new'}}
+        contract = {'schema': 2, 'target': 'native', 'features': ['beam-runtime'], 'packages': list(gate.BEAM_PACKAGES), 'sources': {'stable': 'same', 'changed': 'new', 'added': 'new'}}
         catalog = contract | {'sources': {'stable': 'same', 'changed': 'old'}, 'cases': [('stable', 'kept', False), ('changed', 'old', False)]}
         needed, rows = gate.catalog_reference(catalog, contract, False)
         self.assertEqual(needed, ['added', 'changed'])
         self.assertEqual(rows, [('stable', 'kept', False)])
-        for other in [catalog | {'target': 'foreign'}, catalog | {'features': []}, {}]:
+        for other in [catalog | {'target': 'foreign'}, catalog | {'features': []}, catalog | {'packages': ['ridge-driver']}, catalog | {'schema': 1}, {}]:
             needed, rows = gate.catalog_reference(other, contract, False)
             self.assertEqual(needed, ['added', 'changed', 'stable'])
             self.assertEqual(rows, [])
@@ -166,6 +170,47 @@ class InventoryControls(unittest.TestCase):
 
 
 class GenerationControls(unittest.TestCase):
+    def test_joint_roots_and_dev_dependencies_are_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, _, _ = mini_repository(Path(tmp))
+            cli = repo / 'crates/ridge-cli/Cargo.toml'
+            cli.write_text(cli.read_text() + '[dev-dependencies]\nhelper = { version = "1", features = ["unicode"] }\n', encoding='utf-8')
+            dependencies = tomllib.loads(gate.context_dependencies(repo))['dev-dependencies']
+            for name in gate.BEAM_PACKAGES:
+                self.assertEqual(dependencies[name]['features'], ['beam-runtime'])
+                self.assertEqual(dependencies[name]['path'], (repo / 'crates' / name).as_posix())
+            self.assertEqual(dependencies['helper'], {'version': '1', 'features': ['unicode']})
+            codegen = repo / 'crates/ridge-codegen-erl/Cargo.toml'
+            codegen.write_text(codegen.read_text() + '[dev-dependencies]\nhelper = "2"\n', encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'Conflicting dev dependency'):
+                gate.context_dependencies(repo)
+
+    def test_target_dev_dependencies_require_review(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, _, _ = mini_repository(Path(tmp))
+            path = repo / 'crates/ridge-cli/Cargo.toml'
+            path.write_text(path.read_text() + '[target.\'cfg(unix)\'.dev-dependencies]\nhelper = "1"\n', encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'Target-specific'):
+                gate.context_dependencies(repo)
+
+    def test_joint_selection_excludes_only_grouped_driver_targets(self):
+        packages = [{'name': name, 'targets': [{'name': name + '_case', 'kind': ['test']}]} for name in gate.BEAM_PACKAGES]
+        packages[1]['targets'] += [{'name': 'grouped', 'kind': ['test']}, {'name': 'retained', 'kind': ['test']}]
+        metadata = {'packages': packages}
+        policy = {'groups': {'runtime': ['grouped']}, 'retained': ['retained', 'ridge-driver_case']}
+        selection = gate.original_selection(metadata, policy)
+        self.assertEqual(selection[:6], gate.joint_packages())
+        tests = [selection[i + 1] for i, arg in enumerate(selection) if arg == '--test']
+        self.assertEqual(set(tests), {'retained', *(name + '_case' for name in gate.BEAM_PACKAGES)})
+        packages[0]['targets'].append({'name': 'grouped', 'kind': ['test']})
+        with self.assertRaisesRegex(ValueError, 'shares another package'):
+            gate.original_selection(metadata, policy)
+
+    def test_multi_root_tree_keeps_every_root_and_rejects_unexpected_text(self):
+        self.assertEqual(gate.feature_graph('a v1|first\n\nb v1|second\n'), {'a v1': ['first'], 'b v1': ['second']})
+        with self.assertRaises(ValueError):
+            gate.feature_graph('a v1|first\nnot a tree\n')
+
     @staticmethod
     def workspace_metadata():
         values = tomllib.loads((gate.REPO / 'Cargo.toml').read_text(encoding='utf-8'))['workspace']['package']

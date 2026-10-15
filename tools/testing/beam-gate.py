@@ -13,6 +13,57 @@ import time
 import tomllib
 
 REPO = Path(__file__).resolve().parents[2]
+BEAM_PACKAGES = ('ridge-codegen-erl', 'ridge-driver', 'ridge-cli')
+
+
+def joint_packages():
+    return [arg for name in BEAM_PACKAGES for arg in ('-p', name)]
+
+
+def context_dependencies(repo):
+    """Activate the selected roots and their dev dependencies in the harness."""
+    dependencies = {}
+    for name in BEAM_PACKAGES:
+        base = repo / 'crates' / name
+        manifest = tomllib.loads((base / 'Cargo.toml').read_text(encoding='utf-8'))
+        if any('dev-dependencies' in table for table in manifest.get('target', {}).values()):
+            raise ValueError('Target-specific dev dependencies need a context review')
+        entries = manifest.get('dev-dependencies', {}) | {
+            name: {'path': str(base.resolve().as_posix()), 'features': ['beam-runtime']}}
+        for dependency, value in entries.items():
+            value = {'version': value} if isinstance(value, str) else value.copy()
+            if 'path' in value:
+                value['path'] = (base / value['path']).resolve().as_posix()
+            if dependency in dependencies and dependencies[dependency] != value:
+                # The root's feature is already activated by joint selection.
+                before, after = dependencies[dependency].copy(), value.copy()
+                before.pop('features', None)
+                after.pop('features', None)
+                if dependency not in BEAM_PACKAGES or before != after:
+                    raise ValueError('Conflicting dev dependency needs a context review: ' + dependency)
+                value['features'] = sorted(set(value.get('features', [])) | set(dependencies[dependency].get('features', [])))
+            dependencies[dependency] = value
+    def inline(value):
+        return '{ ' + ', '.join(json.dumps(k) + ' = ' + json.dumps(v) for k, v in value.items()) + ' }'
+    return '\n[dev-dependencies]\n' + ''.join(name + ' = ' + inline(value) + '\n' for name, value in sorted(dependencies.items()))
+
+
+def original_selection(metadata, policy):
+    """Select retained targets without changing Cargo's joint feature context."""
+    grouped = {n for names in policy['groups'].values() for n in names}
+    tests = set()
+    packages = {p['name']: p for p in metadata['packages'] if p['name'] in BEAM_PACKAGES}
+    if set(packages) != set(BEAM_PACKAGES):
+        raise ValueError('Missing BEAM gate package')
+    for name, package in packages.items():
+        for target in package['targets']:
+            if target['kind'] == ['test'] and (name != 'ridge-driver' or target['name'] not in grouped):
+                if target.get('required-features') or not target.get('test', True):
+                    raise ValueError('Original target feature/test policy needs a review')
+                tests.add(target['name'])
+    if tests & grouped:
+        raise ValueError('A grouped driver target shares another package target name')
+    return joint_packages() + ['--lib', '--bins'] + [arg for name in sorted(tests) for arg in ('--test', name)]
 
 
 def utf8_output(stream):
@@ -138,6 +189,8 @@ def prepare(repo, work, policy, package):
     for name in ('clippy.toml', '.clippy.toml', 'Cargo.lock'):
         if (repo / name).exists():
             shutil.copyfile(repo / name, harness / name)
+    with (harness / 'Cargo.toml').open('a', encoding='utf-8') as output:
+        output.write(context_dependencies(repo))
     return harness, {n: source_hash(sources[n]) for n in sorted(grouped)}
 
 
@@ -213,6 +266,8 @@ def feature_graph(body):
     body = re.sub(r'\x1b\[[0-9;]*m', '', body)
     graph = {}
     for line in body.splitlines():
+        if not line.strip():
+            continue
         if '|' not in line:
             raise ValueError('Unexpected cargo tree output: ' + line)
         package, features = line.removesuffix(' (*)').split('|', 1)
@@ -222,7 +277,7 @@ def feature_graph(body):
 
 
 def catalog_reference(catalog, contract, audit):
-    compatible = not audit and all(catalog.get(k) == contract[k] for k in ('schema', 'target', 'features'))
+    compatible = not audit and all(catalog.get(k) == contract.get(k) for k in ('schema', 'target', 'features', 'packages'))
     reused = {n for n, h in contract['sources'].items() if compatible and catalog.get('sources', {}).get(n) == h}
     needed = sorted(set(contract['sources']) - reused)
     rows = [tuple(row) for row in catalog.get('cases', []) if row[0] in reused]
@@ -282,9 +337,8 @@ def build(args):
     harness, hashes = prepare(repo, work, policy, package)
     non_pg = project_config(repo, work)
     selected = {
-        'retained': ['-p', 'ridge-driver', '--lib'] + [x for n in policy['retained'] for x in ('--test', n)],
+        'original': original_selection(metadata, policy),
         'grouped': ['--manifest-path', str(harness / 'Cargo.toml'), '--target-dir', target_dir] + [x for n in policy['groups'] for x in ('--test', n)],
-        'other': ['-p', 'ridge-codegen-erl', '-p', 'ridge-cli'],
     }
     if args.inventory_only:
         selected = {'grouped': selected['grouped']}
@@ -297,7 +351,7 @@ def build(args):
     if not registry(harness / 'Cargo.lock') <= original_registry:
         raise ValueError('Generated dependency versions drifted from Cargo.lock')
     graphs = {}
-    for name, selection in [('original', ['-p', 'ridge-driver']), ('grouped', ['--manifest-path', str(harness / 'Cargo.toml')])]:
+    for name, selection in [('original', joint_packages()), ('grouped', ['--manifest-path', str(harness / 'Cargo.toml')])]:
         body = cmd.run(name + '-features', ['cargo', 'tree'] + selection + ['--features', 'beam-runtime', '--locked', '--target', triple, '--edges', 'normal,build,dev', '--prefix', 'none', '--format', '{p}|{f}'])
         graphs[name] = feature_graph(body)
     write_json(work / 'features.json', graphs)
@@ -305,7 +359,7 @@ def build(args):
         raise ValueError('Selected dependency feature graphs differ; inspect features.json')
     phase_rows = {}
     for label, selection in selected.items():
-        config = repo / '.config/nextest.toml' if label == 'retained' else non_pg
+        config = repo / '.config/nextest.toml' if label == 'original' else non_pg
         body = cmd.run(label + '-list', ['cargo', 'nextest', 'list'] + selection + common + ['--config-file', str(config), '--message-format', 'json'])
         listing = json.loads(body)
         native_listing(listing, triple)
@@ -313,18 +367,20 @@ def build(args):
         phase_rows[label] = inventories(listing, label == 'grouped')
         if not phase_rows[label]:
             raise ValueError('Empty phase: ' + label)
-    contract = {'schema': 1, 'target': triple, 'features': ['beam-runtime'], 'sources': hashes}
+    contract = {'schema': 2, 'target': triple, 'features': ['beam-runtime'], 'packages': list(BEAM_PACKAGES), 'sources': hashes}
     catalog_path = repo / 'tools/testing/inventories' / (triple + '.json')
     catalog = read_json(catalog_path) if catalog_path.exists() else {}
     needed, reference = catalog_reference(catalog, contract, args.audit)
     reusable = not needed
     if needed:
-        selection = ['-p', 'ridge-driver'] + [x for n in needed for x in ('--test', n)]
+        selection = joint_packages() + ['--lib', '--bins'] + [x for n in needed for x in ('--test', n)]
         body = cmd.run('original-grouped-list', ['cargo', 'nextest', 'list'] + selection + common + ['--config-file', str(non_pg), '--message-format', 'json'])
         listing = json.loads(body)
         native_listing(listing, triple)
         write_json(work / 'original-grouped-inventory.json', listing)
-        reference += inventories(listing)
+        audited = {key: suite for key, suite in listing['rust-suites'].items()
+                   if suite['package-name'] == 'ridge-driver' and suite['kind'] == 'test' and suite['binary-name'] in needed}
+        reference += inventories(listing | {'rust-suites': audited})
     parity(phase_rows['grouped'], reference)
     write_json(work / 'inventory-audit.json', {
         'original_sources': needed, 'reused_sources': sorted(set(hashes) - set(needed)),
@@ -367,7 +423,7 @@ def run(args):
     cmd = Commands(repo, work, prefix_from(args))
     results = {}
     for label, selection in plan['selected'].items():
-        config = repo / '.config/nextest.toml' if label == 'retained' else Path(plan['non_pg_config'])
+        config = repo / '.config/nextest.toml' if label == 'original' else Path(plan['non_pg_config'])
         listed = cmd.run(label + '-run-list', ['cargo', 'nextest', 'list'] + selection + plan['common'] + ['--config-file', str(config), '--message-format', 'json'])
         listing = json.loads(listed)
         native_listing(listing, plan['target'])

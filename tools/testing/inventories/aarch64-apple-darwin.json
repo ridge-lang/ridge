@@ -1,0 +1,828 @@
+{
+  "cases": [
+    [
+      "ask_timeout_range_e2e",
+      "a_negative_ask_deadline_reports_without_the_payload",
+      false
+    ],
+    [
+      "ask_timeout_range_e2e",
+      "an_out_of_range_wait_is_normalised_at_every_surface",
+      false
+    ],
+    [
+      "builtin_totext_dict_e2e",
+      "a_builtin_totext_dictionary_exists_as_a_value",
+      false
+    ],
+    [
+      "bytes_e2e",
+      "bytes_module_runs_on_beam",
+      false
+    ],
+    [
+      "code_change_e2e",
+      "sys_change_code_preserves_actor_state",
+      false
+    ],
+    [
+      "computed_column_e2e",
+      "computed_column_renders_and_computes",
+      false
+    ],
+    [
+      "cross_module_derived_codec_e2e",
+      "nested_imported_field_codec_roundtrips",
+      false
+    ],
+    [
+      "crypto_bridge_e2e",
+      "constant_time_eq_bridges_to_beam",
+      false
+    ],
+    [
+      "data_adapter_e2e",
+      "in_memory_adapter_roundtrips_on_beam",
+      false
+    ],
+    [
+      "data_array_e2e",
+      "array_codec_runs_on_beam",
+      false
+    ],
+    [
+      "data_bytes_e2e",
+      "bytes_codec_runs_on_beam",
+      false
+    ],
+    [
+      "data_date_e2e",
+      "date_codec_runs_on_beam",
+      false
+    ],
+    [
+      "data_decimal_agg_e2e",
+      "decimal_aggregates_run_on_beam",
+      false
+    ],
+    [
+      "data_decimal_e2e",
+      "decimal_codec_runs_on_beam",
+      false
+    ],
+    [
+      "data_interval_e2e",
+      "interval_codec_runs_on_beam",
+      false
+    ],
+    [
+      "data_json_e2e",
+      "json_codec_runs_on_beam",
+      false
+    ],
+    [
+      "data_migrate_e2e",
+      "migrations_apply_track_and_are_idempotent_on_beam",
+      false
+    ],
+    [
+      "data_migrate_source_e2e",
+      "fk_creates_are_topologically_ordered",
+      false
+    ],
+    [
+      "data_migrate_source_e2e",
+      "generated_modules_compile_on_beam",
+      false
+    ],
+    [
+      "data_migrate_source_e2e",
+      "index_flag_flips_diff_to_create_and_drop_index",
+      false
+    ],
+    [
+      "data_migrate_source_e2e",
+      "source_renderer_round_trips_on_beam",
+      false
+    ],
+    [
+      "data_query_e2e",
+      "query_surface_runs_on_beam",
+      false
+    ],
+    [
+      "data_raw_e2e",
+      "raw_sql_on_the_memory_store_errors_clearly_on_beam",
+      false
+    ],
+    [
+      "data_repo_e2e",
+      "repo_surface_runs_on_beam",
+      false
+    ],
+    [
+      "data_sqlite_e2e",
+      "sqlite_adapter_roundtrips_on_beam",
+      false
+    ],
+    [
+      "data_time_e2e",
+      "time_codec_runs_on_beam",
+      false
+    ],
+    [
+      "data_timestamp_e2e",
+      "timestamp_codec_runs_on_beam",
+      false
+    ],
+    [
+      "data_tx_e2e",
+      "transactions_commit_rollback_and_nest_on_beam",
+      false
+    ],
+    [
+      "data_uuid_e2e",
+      "uuid_codec_runs_on_beam",
+      false
+    ],
+    [
+      "data_write_e2e",
+      "write_path_runs_on_beam",
+      false
+    ],
+    [
+      "db_error_e2e",
+      "db_error_classifies_on_beam",
+      false
+    ],
+    [
+      "db_error_e2e",
+      "to_db_error_lifts_raw_error_on_beam",
+      false
+    ],
+    [
+      "decimal_e2e",
+      "decimal_module_runs_on_beam",
+      false
+    ],
+    [
+      "decimal_match_pattern_e2e",
+      "decimal_literal_patterns_match_by_value",
+      false
+    ],
+    [
+      "decode_deriving_e2e",
+      "decode_combined_parametric_payloads_dispatch",
+      false
+    ],
+    [
+      "decode_deriving_e2e",
+      "decode_derive_nullary_union",
+      false
+    ],
+    [
+      "decode_deriving_e2e",
+      "decode_derive_record_of_primitives",
+      false
+    ],
+    [
+      "decode_deriving_e2e",
+      "decode_derive_record_roundtrip",
+      false
+    ],
+    [
+      "decode_deriving_e2e",
+      "decode_derive_record_with_list_and_option",
+      false
+    ],
+    [
+      "decode_deriving_e2e",
+      "decode_two_return_directed_instances_dispatch",
+      false
+    ],
+    [
+      "deriving_row_e2e",
+      "deriving_row_decodes_record_on_beam",
+      false
+    ],
+    [
+      "dict_arg_concrete_e2e",
+      "a_concrete_call_gets_its_own_dictionary_not_the_callers",
+      false
+    ],
+    [
+      "encode_deriving_e2e",
+      "encode_derive_nested_user_type",
+      false
+    ],
+    [
+      "encode_deriving_e2e",
+      "encode_derive_nullary_union",
+      false
+    ],
+    [
+      "encode_deriving_e2e",
+      "encode_derive_record_of_primitives",
+      false
+    ],
+    [
+      "encode_deriving_e2e",
+      "encode_derive_record_with_list_and_option",
+      false
+    ],
+    [
+      "encode_deriving_e2e",
+      "encode_preserves_declared_object_order_and_object_views",
+      false
+    ],
+    [
+      "encode_deriving_e2e",
+      "ordered_object_decodes_through_the_map_instance",
+      false
+    ],
+    [
+      "encode_deriving_e2e",
+      "ordered_object_decodes_through_the_result_instance",
+      false
+    ],
+    [
+      "function_instance_e2e",
+      "function_instance_dispatch_computes_correct_values",
+      false
+    ],
+    [
+      "gap_a_e2e",
+      "parametric_encode_list_color",
+      false
+    ],
+    [
+      "gap_a_e2e",
+      "parametric_encode_list_int",
+      false
+    ],
+    [
+      "gap_a_e2e",
+      "parametric_encode_list_text",
+      false
+    ],
+    [
+      "gap_a_e2e",
+      "parametric_encode_nested_list",
+      false
+    ],
+    [
+      "gap_a_e2e",
+      "parametric_generic_box_roundtrip",
+      false
+    ],
+    [
+      "gap_a_e2e",
+      "parametric_list_decode_failures",
+      false
+    ],
+    [
+      "gap_a_e2e",
+      "parametric_list_option_int",
+      false
+    ],
+    [
+      "gap_a_e2e",
+      "parametric_map_text_int_roundtrip",
+      false
+    ],
+    [
+      "gap_a_e2e",
+      "parametric_option_int_roundtrip",
+      false
+    ],
+    [
+      "gap_a_e2e",
+      "parametric_option_two_element_types",
+      false
+    ],
+    [
+      "gap_a_e2e",
+      "parametric_result_int_text_roundtrip",
+      false
+    ],
+    [
+      "implicit_row_e2e",
+      "implicit_row_decodes_record_on_beam",
+      false
+    ],
+    [
+      "incremental",
+      "adding_an_instance_deep_recompiles_and_matches_full",
+      false
+    ],
+    [
+      "incremental",
+      "body_edit_in_a_typeclass_module_stays_incremental",
+      false
+    ],
+    [
+      "incremental",
+      "body_edit_in_deriving_schema_definer_matches_full",
+      false
+    ],
+    [
+      "incremental",
+      "body_edit_recompiles_only_the_edited_module",
+      false
+    ],
+    [
+      "incremental",
+      "body_edit_with_quoted_predicate_over_import_matches_full",
+      false
+    ],
+    [
+      "incremental",
+      "check_workspace_incremental_tracks_buffer_text_and_diagnostics",
+      false
+    ],
+    [
+      "incremental",
+      "deriving_change_deep_recompiles_and_matches_full",
+      false
+    ],
+    [
+      "incremental",
+      "edit_that_introduces_a_type_error_matches_full",
+      false
+    ],
+    [
+      "incremental",
+      "surface_edit_recompiles_the_reverse_dependency_closure",
+      false
+    ],
+    [
+      "inline_record_e2e",
+      "inline_record_types_compute_correct_values",
+      false
+    ],
+    [
+      "inner_fn_polymorphic_e2e",
+      "an_inner_fn_runs_at_two_types_and_carries_its_dictionary",
+      false
+    ],
+    [
+      "interp_prelude_totext_e2e",
+      "interpolating_a_bare_prelude_method_result_renders",
+      false
+    ],
+    [
+      "interp_prelude_totext_e2e",
+      "interpolating_an_ordering_value_renders_its_name",
+      false
+    ],
+    [
+      "interp_rich_scalars_e2e",
+      "interpolation_renders_decimal_and_uuid_on_beam",
+      false
+    ],
+    [
+      "json_value_e2e",
+      "json_value_construct_encode_and_match",
+      false
+    ],
+    [
+      "monotonic_e2e",
+      "monotonic_clock_runs_on_beam",
+      false
+    ],
+    [
+      "multi_param_typeclass_e2e",
+      "a_where_constrained_fn_forwards_a_multi_param_dictionary",
+      false
+    ],
+    [
+      "multi_param_typeclass_e2e",
+      "multi_param_instances_dispatch_by_full_head_tuple",
+      false
+    ],
+    [
+      "newtype_cross_module_e2e",
+      "newtype_sqltype_roundtrip_across_modules_survives_beam",
+      false
+    ],
+    [
+      "newtype_deriving_e2e",
+      "newtype_sqltype_roundtrip_survives_beam",
+      false
+    ],
+    [
+      "nullary_stdlib_call_e2e",
+      "nullary_stdlib_fn_called_from_user_code_runs",
+      false
+    ],
+    [
+      "nullary_stdlib_value_e2e",
+      "a_nullary_stdlib_fn_passed_as_a_value_is_referenced_not_called",
+      false
+    ],
+    [
+      "open_record_e2e",
+      "open_record_types_compute_correct_values",
+      false
+    ],
+    [
+      "or_pattern_semantics",
+      "or_pattern_binding_mismatch_fires_r027",
+      false
+    ],
+    [
+      "or_pattern_semantics",
+      "or_pattern_binding_type_mismatch_fires_t001",
+      false
+    ],
+    [
+      "or_pattern_semantics",
+      "or_pattern_covering_all_variants_is_exhaustive",
+      false
+    ],
+    [
+      "or_pattern_semantics",
+      "or_pattern_missing_variant_fires_t016",
+      false
+    ],
+    [
+      "or_pattern_semantics",
+      "well_formed_or_pattern_has_no_semantic_diagnostics",
+      false
+    ],
+    [
+      "param_shadow_e2e",
+      "param_shadowing_top_level_fn_runs_on_beam",
+      false
+    ],
+    [
+      "parametric_ambiguous_e2e",
+      "ambiguous_empty_list_element_emits_t030",
+      false
+    ],
+    [
+      "parametric_ambiguous_e2e",
+      "ambiguous_option_element_emits_t030",
+      false
+    ],
+    [
+      "parametric_ambiguous_e2e",
+      "pinned_option_element_checks_clean",
+      false
+    ],
+    [
+      "parametric_ambiguous_e2e",
+      "promised_signature_var_at_an_element_position_checks_clean",
+      false
+    ],
+    [
+      "parametric_ambiguous_e2e",
+      "unpromised_signature_var_at_an_element_position_is_t055_not_t030",
+      false
+    ],
+    [
+      "pattern_param_e2e",
+      "destructuring_params_bind_and_run",
+      false
+    ],
+    [
+      "pkg_integration",
+      "compile_workspace_with_git_tag_dep_populates_cache",
+      false
+    ],
+    [
+      "prelude_method_clean_api_e2e",
+      "clean_api_encode_no_class_decl",
+      false
+    ],
+    [
+      "prelude_method_clean_api_e2e",
+      "clean_api_roundtrip_no_class_decl",
+      false
+    ],
+    [
+      "qualified_constructor_e2e",
+      "a_module_qualified_constructor_builds_what_the_bare_one_builds",
+      false
+    ],
+    [
+      "qualified_workspace_classmethod_e2e",
+      "qualified_workspace_classmethod_dispatch_survives_beam",
+      false
+    ],
+    [
+      "query_plan_sql_e2e",
+      "query_plan_compiles_to_parameterized_sql",
+      false
+    ],
+    [
+      "query_sql_compile_e2e",
+      "quoted_predicate_compiles_to_parameterized_sql",
+      false
+    ],
+    [
+      "quotation_capture_e2e",
+      "quoted_predicate_round_trips_to_a_reified_tree",
+      false
+    ],
+    [
+      "record_variant_e2e",
+      "record_variant_types_compute_correct_values",
+      false
+    ],
+    [
+      "rigid_element_dict_e2e",
+      "a_forwarded_element_dictionary_is_the_one_the_caller_promised",
+      false
+    ],
+    [
+      "scalar_codec_roundtrip_e2e",
+      "every_builtin_scalar_roundtrips_through_the_derived_codec",
+      false
+    ],
+    [
+      "schema_ddl_e2e",
+      "schema_ddl_renders_on_beam",
+      false
+    ],
+    [
+      "schema_descriptor_e2e",
+      "schema_descriptor_builds_and_reads_on_beam",
+      false
+    ],
+    [
+      "schema_insert_omit_e2e",
+      "identity_omit_runs_on_beam",
+      false
+    ],
+    [
+      "schema_instance_e2e",
+      "has_schema_instance_dispatches_by_type_on_beam",
+      false
+    ],
+    [
+      "seq_aggregate_e2e",
+      "seq_aggregate_folds_on_beam",
+      false
+    ],
+    [
+      "seq_count_e2e",
+      "seq_count_reduces_on_beam",
+      false
+    ],
+    [
+      "seq_every_e2e",
+      "seq_every_tests_on_beam",
+      false
+    ],
+    [
+      "seq_from_e2e",
+      "seq_from_round_trips_on_beam",
+      false
+    ],
+    [
+      "seq_groupby_e2e",
+      "seq_groupby_summarizes_on_beam",
+      false
+    ],
+    [
+      "seq_orderby_paging_e2e",
+      "seq_orderby_and_paging_on_beam",
+      false
+    ],
+    [
+      "seq_select_e2e",
+      "seq_select_projects_on_beam",
+      false
+    ],
+    [
+      "seq_setops_e2e",
+      "seq_set_operations_on_beam",
+      false
+    ],
+    [
+      "sort_ord_e2e",
+      "sort_orders_by_ord_instance",
+      false
+    ],
+    [
+      "sql_qualified_classmethod_e2e",
+      "qualified_sql_classmethod_dispatch_survives_beam",
+      false
+    ],
+    [
+      "sql_type_roundtrip_e2e",
+      "sql_type_roundtrip_survives_beam",
+      false
+    ],
+    [
+      "sqlite_ddl_e2e",
+      "sqlite_ddl_renders_on_beam",
+      false
+    ],
+    [
+      "stdlib_last_mile_e2e",
+      "last_mile_combinators_compute_correct_values",
+      false
+    ],
+    [
+      "stdlib_union_import_e2e",
+      "imported_stdlib_union_constructs_and_matches_on_beam",
+      false
+    ],
+    [
+      "syntax_guidance_diagnostics",
+      "canonical_spellings_emit_no_guidance_codes",
+      false
+    ],
+    [
+      "syntax_guidance_diagnostics",
+      "if_match_guard_surfaces_p034",
+      false
+    ],
+    [
+      "syntax_guidance_diagnostics",
+      "let_in_surfaces_p033",
+      false
+    ],
+    [
+      "syntax_guidance_diagnostics",
+      "record_update_braces_surfaces_p035",
+      false
+    ],
+    [
+      "totext_autopromote_dispatch_e2e",
+      "autopromoted_totext_does_not_shadow_other_types_dispatch",
+      false
+    ],
+    [
+      "totext_autopromote_dispatch_e2e",
+      "two_autopromoted_totext_declarations_coexist",
+      false
+    ],
+    [
+      "totext_autopromote_poly_e2e",
+      "polymorphic_totext_on_autopromoted_type_dispatches",
+      false
+    ],
+    [
+      "typeclass_deriving_e2e",
+      "typeclass_deriving_computes_correct_values",
+      false
+    ],
+    [
+      "typeclass_deriving_e2e",
+      "typeclass_deriving_value_rendering_and_ord_payload",
+      false
+    ],
+    [
+      "typeclass_dict_e2e",
+      "method_invocation_by_name_computes_correct_values",
+      false
+    ],
+    [
+      "typeclass_dict_e2e",
+      "method_invocation_distinct_instances_dispatch_by_argument",
+      false
+    ],
+    [
+      "typeclass_dict_e2e",
+      "typeclass_dict_passing_computes_correct_values",
+      false
+    ],
+    [
+      "union_cross_module_e2e",
+      "imported_workspace_union_ctor_matches_in_patterns_on_beam",
+      false
+    ],
+    [
+      "uuid_e2e",
+      "uuid_module_runs_on_beam",
+      false
+    ],
+    [
+      "view_ddl_e2e",
+      "query_plan_compiles_to_create_view",
+      false
+    ],
+    [
+      "view_migration_sqlite_e2e",
+      "create_view_migration_runs_on_sqlite",
+      false
+    ],
+    [
+      "wave1_syntax_diagnostics",
+      "wave1_forms_produce_no_lex_or_parse_diagnostics",
+      false
+    ],
+    [
+      "with_closure_e2e",
+      "record_with_shapes_compute_correct_values",
+      false
+    ]
+  ],
+  "features": [
+    "beam-runtime"
+  ],
+  "packages": [
+    "ridge-codegen-erl",
+    "ridge-driver",
+    "ridge-cli"
+  ],
+  "schema": 2,
+  "sources": {
+    "ask_timeout_range_e2e": "d8338e238f9a1756a9456c169eca29c2c516a857679eaec4916ac7ffb3e3e914",
+    "builtin_totext_dict_e2e": "c9af5b20ca9eceed91edcc73836454b4575b9315826aa03e77e502bc401df190",
+    "bytes_e2e": "271bb5dd5fbb2c5bcc0c29758ebd0ec1b25a0761ec3282c5a1cc81d9eb3cdf8f",
+    "code_change_e2e": "d75ed2dbce10737ad3122a86a9c5bf6817e92f8c9c33f61b3fe4354a9d20f56c",
+    "computed_column_e2e": "ed3a69b8e90de8d6c19e28f6041789aa1738e77e7f1a4d41ccef35be7b1bd1ec",
+    "cross_module_derived_codec_e2e": "34a26f7e930259cfed917ac39a0e74e6a9e88d2a84d54ff54f600685896a0ddf",
+    "crypto_bridge_e2e": "a5180dc4f1f59e8d2bfaa1c312e1ac023be7caf0f7ba053ed69c4a6fe38aa854",
+    "data_adapter_e2e": "d9f4056bb8adc9e67f1004166e3f218f88e703c3ea0191acc8fbb8b3cf2fa50c",
+    "data_array_e2e": "46f779a5547f73ddaa77b9f6f1cda34f71badcc56bd47115404dcce156db9c63",
+    "data_bytes_e2e": "0ab037d84f8914d3763909706e0535ab52a8191fed99717341883429a677fff4",
+    "data_date_e2e": "b7ab0d21d8fe0f5c8531e7a4c96366d0f8194bc79da2daf0aaba34f77aa5fc54",
+    "data_decimal_agg_e2e": "66c90fe0cf59e9c58bacb91cc0406d908735030ec742b8744197c560b0cb1a51",
+    "data_decimal_e2e": "5b72aa4a12d2560230109a0ca2e08980672059fef0f6e1d27cf5b6465127e131",
+    "data_interval_e2e": "e809352b6113bfa0656ee3d2dcf1620f4b1dc288bc518229615cd9ea2c12ecfa",
+    "data_json_e2e": "5f69adacb6357794959dac29d84d015c96493d885ab9a8e4d2cf58ba23c35d09",
+    "data_migrate_e2e": "f0b6abd86f2cb52370e799a251b46c5cfdc559a220d5ace1c28868f4af054cac",
+    "data_migrate_source_e2e": "a10865aa95a9b9c96572c559e07d87495740d46d123e8be91dfaa86a84bc1c3c",
+    "data_query_e2e": "89d43a966b0cc40bd2555f231a65f201dc245d4260e1154c99d7bdb1e5730041",
+    "data_raw_e2e": "25775d33299c7a8e576d1fa6d496a26ad9e7707a06fcb465082dbba9a951874b",
+    "data_repo_e2e": "333fd09632f9052ec14a6d65025144173498359c3d517c1143520f739aecc232",
+    "data_sqlite_e2e": "4e60e142837956ecb10f5f763f69d593f828379738fe0e2eb2d8fa069599e824",
+    "data_time_e2e": "e8bcaf644e99ca042e2d55f4bd0a2142367f48692f17f57e3c0faf3c5234f4a2",
+    "data_timestamp_e2e": "ceaf1f19e26485974e71084ccc373aeb062cc2b69c42b94c6b5e7ef5253c6519",
+    "data_tx_e2e": "8c75e9757e72d128c331963fa30f06cd51eda674a9a3f1086d31a2bac9199dd0",
+    "data_uuid_e2e": "70aad04d3319a3c1baead80d1b224717cb09aebd6a9656f914a5eac633602272",
+    "data_write_e2e": "91532eb40e64a349bba77573188647d4176288211052a3d46dbddddce04bb6f8",
+    "db_error_e2e": "f3a387e6558bed3f0de2732d397a7c03e65fe74e9cc440853731bcb12cde1adb",
+    "decimal_e2e": "d16dcff3c16d41ec086a032d9562157a0e1d9097c57f1a356983ae52d15f2351",
+    "decimal_match_pattern_e2e": "e0b2887dda26be76d0954357ef539ef4295644067d41383f434609cec03567dc",
+    "decode_deriving_e2e": "7a1b13ac103ef697e9b54ff48978171e838b4f486a5938cd47af76e3939743a0",
+    "deriving_row_e2e": "1077d41469f9759c4c01ab99fac43b3ae4d770a730f4c0ba544a93791e08e038",
+    "dict_arg_concrete_e2e": "63ae8ca6bf60d901629b326b08826d5cc54de80201f07c12b7b283dde4fc012f",
+    "encode_deriving_e2e": "e6e92fee520a12132d8e08ac86ddabd4b2a1c6bede4e0d46dd9d5309f69d6312",
+    "function_instance_e2e": "4f0faf8a73107c3b195178e87ca6311b34ca93395f873b9ccfc42eadc55fcb66",
+    "gap_a_e2e": "b716b3ee073e1df30e209933d9e787b96bbe7fce387dcdec3166fa594a340d44",
+    "implicit_row_e2e": "a1ded4e5fd27e4c29e987a3f8830d27459b0012b1c206f35072d256d3e1e7eae",
+    "incremental": "b21a350d8c73f065db2a378a9d4a70a2498455dc1959768415d1d55fc454f1e6",
+    "inline_record_e2e": "1848d9f378ce704431df58d510332e4c625087d7e49266db7ec322700cd571df",
+    "inner_fn_polymorphic_e2e": "f81131d7f39268b4d7585f9b8fb84d7d1f3d1bce92a88df6478c3df1877d4fbf",
+    "interp_prelude_totext_e2e": "fc1cd3c98e0d14a4e6ee4999b0673abacbc240cd9e806fea8a6c81915ad24da7",
+    "interp_rich_scalars_e2e": "eab60c37f33528844d8431519169eea0511441ea9b24d77bfffcfe61e5112e5e",
+    "json_value_e2e": "a7401baff70da65d3a2d9749250c5a1e7c7d8f6bec0aa33a640965db00ed4569",
+    "monotonic_e2e": "7bf75d9f4d0c2ef69d324a27eeb348fb98cf330959a18f4823b0057a92dc9080",
+    "multi_param_typeclass_e2e": "388f5a2e7efdae0c571ad6548dc5c9d3de722ff646b753f5d1a1cdb82e9dec34",
+    "newtype_cross_module_e2e": "24196209631c9bab2c1f60c76de87cbdaabf8a27553b52007ee7c972da6af9a8",
+    "newtype_deriving_e2e": "44e830b3db493b70b0a164b25e2431d2535210c66d9185fad5ac1a0e7c278687",
+    "nullary_stdlib_call_e2e": "4ee7d532370521ba9fb44d9d5bcacee8cac663574ccbbfc84eee3a855be59b98",
+    "nullary_stdlib_value_e2e": "816772a34de96e3fefd544d27a0f7f0d72f0cd0e1951b8302a099ec588f4724e",
+    "open_record_e2e": "32510abf96f69de833db614bc1e6666a8f5450eb902995dcf6c05214291e27ab",
+    "or_pattern_semantics": "3308f47a74f225d061096143413f1f2db9fb8e37aa2abf7e5f578ef94a054deb",
+    "param_shadow_e2e": "504c450c2a4df2705197390839104378a16e1ba8ef31f8095af31d884c4aa41c",
+    "parametric_ambiguous_e2e": "a177c78ee36832a32e95096bb67c8b372331b1d89f22c29fc03c3434425cabb9",
+    "pattern_param_e2e": "968d4c8955ae73705047c9c193d18d9314c57ef89e09a43eb05027e1cba0a532",
+    "pkg_integration": "a5c17b86e0ee2af8b617d99ecfac406203337b079dd3070a9e78126e09b1a6fc",
+    "prelude_method_clean_api_e2e": "e493ffcf56f62c417a4e066a1865263db3fbd60d6196baefca96f5bd96b33a69",
+    "qualified_constructor_e2e": "f5f6b2bbafd6934c939ede73e0ba066fd5a6e9e252fa2319cb6ae1bc944e7ed4",
+    "qualified_workspace_classmethod_e2e": "8c8543fb3224aed16240018dae913304f86045de69efa4aaacbf3036a1f95c04",
+    "query_plan_sql_e2e": "8f91a5d57a84afcb1463d0ebf26c736cfcc869c560e527ad27b42d8f8ca87d2a",
+    "query_sql_compile_e2e": "2a34af2ea30d3a65c7a80f9178791c22a72299b87d53e115a6f1b785cf2c2d53",
+    "quotation_capture_e2e": "1daa8d1216edc817303f3be7702fc2c6a06d84d95e5731dbe3e85369084f4625",
+    "record_variant_e2e": "5565f4f931f30940b36b505a035dccb021932d1e5c00f31d4d7558acf81dba3f",
+    "rigid_element_dict_e2e": "891ed541e71c6425cec6f9b432b1795adfa59862f9eb0938ee06a8eeba235332",
+    "scalar_codec_roundtrip_e2e": "2589375e4ed618e13955a76489c38ffe3d6d0775701d6990beb33adad6c3a52f",
+    "schema_ddl_e2e": "55c7b644eaafd8d0ac0f57e24b5455b7b5c883af2781646bff080c81f25bbdb6",
+    "schema_descriptor_e2e": "c7aadaec11f37b2e44268473ecd523ef26d158fe1d5b666dcdc8e29c4f2be9fe",
+    "schema_insert_omit_e2e": "7f67985ac18804a937e074f27f705f875bb452680afcedd74026b9f4c19a6068",
+    "schema_instance_e2e": "2171f0d9e95323d9d08260b8af1cf4c97f225eb974c4826a2461df465abfeced",
+    "seq_aggregate_e2e": "96b52df3554a10aa7337ebeecac83e56c10e814b2595043bce0bf29ae8225bcb",
+    "seq_count_e2e": "90a6b546c6a75f30ffe3761e9df97d046cf61a2bfddfd192c646b835885b83fb",
+    "seq_every_e2e": "1088842a37ae19e307659a876046eaf984421cd25fc79895a0bc849f895ffc22",
+    "seq_from_e2e": "106cfb428ff8286535dcbd049c17b31a8c3c9d596c2ec588b305e694df20e9f5",
+    "seq_groupby_e2e": "9c11369518fccf53b2834ad08529f905a57d0982f2b6c88c09324307a9c6f86c",
+    "seq_orderby_paging_e2e": "48fdde71c045664f82c40b2139109b634f5d9cc9c52c519d9f1b93de7a71bf88",
+    "seq_select_e2e": "d9649e6dcbdb85dbc94d5dfb3cfc19cd157b6caf69606a001384ca2659b6520e",
+    "seq_setops_e2e": "e281df3a18b815ad98040eef29df65c7476f947c4ddf81e00cc849693a5e4161",
+    "sort_ord_e2e": "aa87db5f111c3c7241ee61061c01559030f1d03cfc84ac0e9ef14cb75e9fe386",
+    "sql_qualified_classmethod_e2e": "c6017ae0c2dd79e453270577b01dd50fa9a203aedb08d882d739038e6055eb59",
+    "sql_type_roundtrip_e2e": "57b0cc8fbe7513884d2fffe68e211cd16fa7542d00ada08b32aafa7aa2bb9ae2",
+    "sqlite_ddl_e2e": "03c9e32111e80296770b5cc38ce72e1fa613ba1584a5b2a1b0dcdabfb6b5c153",
+    "stdlib_last_mile_e2e": "a37c52a1a796cd6664b8beffe167b7ab3afe0392eba2a789b95f043ccce6cf31",
+    "stdlib_union_import_e2e": "702d63acf5ead68ac806223fd27f5770e4d6a8706c2ce6d6997c7a1a3f400021",
+    "syntax_guidance_diagnostics": "20d6acf1e3204b6cc86c403fee724aee5a2d366197a31d3b87736246bbf61944",
+    "totext_autopromote_dispatch_e2e": "dc8f188a55a711307f14574982a1670d222d650cdb99d3e6a73bf455023571da",
+    "totext_autopromote_poly_e2e": "3706774f4ed1b77d124c93e9b23605c906efa165d7ebf6697ab0315afa568100",
+    "typeclass_deriving_e2e": "e97fdedd40e87972a87da4f7126a6bd958e40b853257f8200f4d493f45cc6ca9",
+    "typeclass_dict_e2e": "7b8bf7a83b583b8037524e77cfff70bb0680e6951aad72d31fc9ba7cb1810784",
+    "union_cross_module_e2e": "5c146dfc3757d753d83ff18496fbc17f19e0cae9df5d5b2e8f094ea621da514e",
+    "uuid_e2e": "dbaf41bf7ffc29a4b8510e26b610183f7b8f5e3030002c888e8f3db339f9bb75",
+    "view_ddl_e2e": "18a2e23ca26e94160cd50552b234b5f9f86adb42099c746a6ec6ef5851bfde5c",
+    "view_migration_sqlite_e2e": "de24c0643ae505f8d901a3995a11ce6f2e9d388a43e7500712c39d7ab9e5f81d",
+    "wave1_syntax_diagnostics": "23f22f99992a70def7df7112866325b255a618929bfee9d8cc82c258db5f64b0",
+    "with_closure_e2e": "e8cbe346127d360990a35a0bbdc737c222b02d63af044b1beeed2d68fd8f1f3d"
+  },
+  "target": "aarch64-apple-darwin"
+}

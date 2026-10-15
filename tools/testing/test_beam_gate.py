@@ -105,6 +105,15 @@ class InventoryControls(unittest.TestCase):
         self.assertEqual(original, grouped)
         self.assertNotEqual(original, gate.feature_graph('dependency v1|a\n'))
 
+    def test_colored_duplicate_markers_are_not_dependency_features(self):
+        original = gate.feature_graph('dependency v1|a,b\nempty v1|\n')
+        marker = ' \x1b[33m\x1b[2m(*)\x1b[39m\x1b[22m'
+        colored = ('ridge-grouped-driver-gate v1|beam-runtime\n'
+                   'dependency v1|a,b\ndependency v1|a,b' + marker + '\n'
+                   'empty v1|' + marker + '\n')
+        self.assertEqual(original, gate.feature_graph(colored))
+        self.assertNotEqual(original, gate.feature_graph(colored.replace('a,b', 'a')))
+
     def test_cross_target_listing_rejected(self):
         data = {'rust-build-meta': {'target-platforms': [{'triple': 'native'}]}}
         gate.native_listing(data, 'native')

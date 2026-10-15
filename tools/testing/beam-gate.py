@@ -210,6 +210,7 @@ def project_config(repo, work):
 
 
 def feature_graph(body):
+    body = re.sub(r'\x1b\[[0-9;]*m', '', body)
     graph = {}
     for line in body.splitlines():
         if '|' not in line:

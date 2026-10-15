@@ -30,6 +30,8 @@ struct ReloadNode {
     stderr: std::sync::Arc<std::sync::Mutex<String>>,
     /// Joined before the buffer above is read, so a late write is not missed.
     stderr_thread: Option<std::thread::JoinHandle<()>>,
+    stdout: std::sync::Arc<std::sync::Mutex<String>>,
+    stdout_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 /// Drain a child's stderr in the background.
@@ -149,6 +151,7 @@ fn boot_v1(ws: &common::TempWorkspace, eval_extra: &str) -> ReloadNode {
          ok = ridge_rt:send_op(H, {{tick}}),\n\
          ok = ridge_rt:send_op(H, {{tick}}),\n\
          2 = ridge_rt:ask(H, {{count}}, 5000),\n\
+         io:format(\"READY~n\"),\n\
          W = fun W() -> case filelib:is_file(\"{manifest_fwd}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
          W(),\n\
          R = ridge_loader:apply(\"{manifest_fwd}\", <<\"{base_vsn}\">>),\n\
@@ -169,14 +172,18 @@ fn boot_v1(ws: &common::TempWorkspace, eval_extra: &str) -> ReloadNode {
         .spawn()
         .expect("spawn erl");
     let (stderr, stderr_thread) = drain_stderr(&mut child);
-    ReloadNode {
+    let mut node = ReloadNode {
         child,
         old_snapshot,
         base_vsn,
         manifest_path,
         stderr,
         stderr_thread,
-    }
+        stdout: std::sync::Arc::default(),
+        stdout_thread: None,
+    };
+    await_ready(&mut node);
+    node
 }
 
 /// Edit source, recompile, plan (writes the manifest the node polls for).
@@ -235,7 +242,10 @@ fn join(mut node: ReloadNode) -> String {
     // The child exited (or was killed): the pipes are at EOF. Read what is
     // left straight from the handles — `wait_with_output` would move
     // `child` out, which the Drop guard forbids.
-    let mut stdout = String::new();
+    if let Some(reader) = node.stdout_thread.take() {
+        let _ = reader.join();
+    }
+    let mut stdout = node.stdout.lock().map(|s| s.clone()).unwrap_or_default();
     if let Some(mut so) = node.child.stdout.take() {
         use std::io::Read;
         let _ = so.read_to_string(&mut stdout);
@@ -444,6 +454,8 @@ fn boot_named_v1(
             manifest_path,
             stderr,
             stderr_thread,
+            stdout: std::sync::Arc::default(),
+            stdout_thread: None,
         },
         beam_dir,
     )
@@ -451,22 +463,23 @@ fn boot_named_v1(
 
 /// Read the node's stdout until the READY line (30 s cap).
 ///
-/// This takes the child's stdout handle and never gives it back, so a test that
-/// calls this and later calls [`join`] would read an empty stdout there. No
-/// test does both today; the alternative is handing the pipe back out of the
-/// reader thread, which is a larger change than the hazard currently earns.
+/// Keep draining and retaining stdout after READY so `join` sees the full run.
 fn await_ready(node: &mut ReloadNode) {
     use std::io::BufRead;
     let stdout = node.child.stdout.take().expect("piped stdout");
     let (tx, rx) = std::sync::mpsc::channel::<String>();
-    std::thread::spawn(move || {
+    let sink = std::sync::Arc::clone(&node.stdout);
+    node.stdout_thread = Some(std::thread::spawn(move || {
         for line in std::io::BufReader::new(stdout).lines() {
             let Ok(line) = line else { return };
-            if tx.send(line).is_err() {
-                return;
+            if let Ok(mut out) = sink.lock() {
+                out.push_str(&line);
+                out.push('\n');
             }
+            // The readiness receiver is dropped after READY; keep draining.
+            let _ = tx.send(line);
         }
-    });
+    }));
     // A budget for the whole wait, not for each line: passing it straight to
     // `recv_timeout` restarts it on every line the node prints, so a node that
     // says anything at all every few seconds is waited on forever.
@@ -696,8 +709,16 @@ struct StreamedNode {
     stderr_thread: Option<std::thread::JoinHandle<()>>,
 }
 
+impl Drop for StreamedNode {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 /// Spawn an anonymous `-noshell` node running `eval`, streaming stdout and
-/// collecting stderr in the background.
+/// collecting stderr in the background. Return only after the eval confirms
+/// that its v1 actors, state and queued messages are ready for recompilation.
 fn spawn_streamed(beam_dir: &std::path::Path, eval: &str) -> StreamedNode {
     let mut child = std::process::Command::new("erl")
         .arg("-noshell")
@@ -740,14 +761,16 @@ fn spawn_streamed(beam_dir: &std::path::Path, eval: &str) -> StreamedNode {
             *guard = buf;
         }
     });
-    StreamedNode {
+    let mut node = StreamedNode {
         child,
         rx,
         lines,
         stderr,
         stdout_thread: Some(stdout_thread),
         stderr_thread: Some(stderr_thread),
-    }
+    };
+    wait_marker(&mut node, "READY", std::time::Duration::from_secs(30));
+    node
 }
 
 /// Everything the node produced, rendered as a failure a reader can act on.
@@ -951,6 +974,20 @@ fn reload_migrates_mailbox_record_lazily() {
         eprintln!("erl/erlc not on PATH — skipping reload_migrates_mailbox_record_lazily");
         return;
     }
+    assert_mailbox_record_migration(0);
+}
+
+#[test]
+fn reload_migrates_mailbox_record_after_delayed_startup() {
+    if !otp_available() {
+        eprintln!("erl/erlc not on PATH - skipping delayed mailbox migration");
+        return;
+    }
+    // A slow VM must still load v1 before the host replaces its beam files.
+    assert_mailbox_record_migration(5000);
+}
+
+fn assert_mailbox_record_migration(startup_delay_ms: u64) {
     let ws = common::make_store_workspace();
     let (snap, beam_dir) = compile_store_v1(&ws);
     let base = snapshot_vsn(&snap);
@@ -962,11 +999,13 @@ fn reload_migrates_mailbox_record_lazily() {
     // loader's suspend+resume leaves the actor running, so the queued cast is
     // delivered to the NEW handle_cast, which migrates it at receive.
     let eval = format!(
-        "persistent_term:put(ridge_loader_vsn, <<\"{base}\">>),\n\
+        "timer:sleep({startup_delay_ms}),\n\
+         persistent_term:put(ridge_loader_vsn, <<\"{base}\">>),\n\
          H = {{ridge_handle, Pid, _}} = ridge_rt:spawn_actor('{actor}', [], []),\n\
          H1 = maps:get('Note', '{parent}':'__ridge_record_versions'()),\n\
          ok = sys:suspend(Pid),\n\
          ok = ridge_rt:send_op(H, {{store, #{{'__ridge_v' => {{'{parent}', 'Note', H1}}, text => <<\"hello\">>}}}}),\n\
+         io:format(\"READY~n\"),\n\
          W = fun W() -> case filelib:is_file(\"{manifest_fwd}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
          W(),\n\
          R = ridge_loader:apply(\"{manifest_fwd}\", <<\"{base}\">>),\n\
@@ -1020,6 +1059,7 @@ fn reload_migrates_record_chain_across_two_reloads() {
          H1 = maps:get('Note', '{parent}':'__ridge_record_versions'()),\n\
          ok = sys:suspend(Pid),\n\
          ok = ridge_rt:send_op(H, {{store, #{{'__ridge_v' => {{'{parent}', 'Note', H1}}, text => <<\"first\">>}}}}),\n\
+         io:format(\"READY~n\"),\n\
          W = fun W() -> case filelib:is_file(\"{manifest_fwd}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
          D = fun D() -> case filelib:is_file(\"{manifest_fwd}\") of true -> timer:sleep(50), D(); false -> ok end end,\n\
          W(),\n\
@@ -1079,6 +1119,7 @@ fn reload_drops_non_migratable_and_unknown_hash_messages() {
     let eval = format!(
         "persistent_term:put(ridge_loader_vsn, <<\"{base}\">>),\n\
          H = {{ridge_handle, Pid, _}} = ridge_rt:spawn_actor('{actor}', [], []),\n\
+         io:format(\"READY~n\"),\n\
          W = fun W() -> case filelib:is_file(\"{manifest_fwd}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
          W(),\n\
          R = ridge_loader:apply(\"{manifest_fwd}\", <<\"{base}\">>),\n\
@@ -1173,6 +1214,7 @@ fn reload_restarts_actor_with_throwing_migrate_hook() {
          \x20           register(reborn, Pn)\n\
          \x20   end\n\
          end),\n\
+         io:format(\"READY~n\"),\n\
          W = fun W() -> case filelib:is_file(\"{manifest_fwd}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
          W(),\n\
          R = ridge_loader:apply(\"{manifest_fwd}\", <<\"{base}\">>),\n\
@@ -1267,6 +1309,7 @@ fn reload_via_bundle_apply() {
          ok = ridge_rt:send_op(H, {{tick}}),\n\
          ok = ridge_rt:send_op(H, {{tick}}),\n\
          2 = ridge_rt:ask(H, {{count}}, 5000),\n\
+         io:format(\"READY~n\"),\n\
          W = fun W() -> case filelib:is_file(\"{manifest_fwd}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
          W(),\n\
          {{ok, MBin}} = file:read_file(\"{manifest_fwd}\"),\n\
@@ -1388,6 +1431,7 @@ fn reload_purges_old_code_after_quiescence() {
              H = {{ridge_handle, Pid, _}} = ridge_rt:spawn_actor('{beam_mod}', [], []),\n\
              ok = ridge_rt:send_op(H, {{tick}}),\n\
              1 = ridge_rt:ask(H, {{count}}, 5000),\n\
+             io:format(\"READY~n\"),\n\
              W = fun W() -> case filelib:is_file(\"{manifest_fwd}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
              W(),\n\
              {{ok, MBin}} = file:read_file(\"{manifest_fwd}\"),\n\
@@ -1447,6 +1491,7 @@ fn reload_reschedules_purge_on_second_apply() {
              \x20   [{{M, element(2, file:read_file(\"{beam_dir}/\" ++ binary_to_list(M) ++ \".beam\"))}}\n\
              \x20    || M <- maps:get(<<\"modules\">>, Mf)]\n\
              end,\n\
+             io:format(\"READY~n\"),\n\
              W = fun W() -> case filelib:is_file(\"{manifest_fwd}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
              D = fun D() -> case filelib:is_file(\"{manifest_fwd}\") of true -> timer:sleep(50), D(); false -> ok end end,\n\
              W(),\n\
@@ -1514,6 +1559,7 @@ fn reload_drop_structured_mode_emits_json() {
         "persistent_term:put(ridge_loader_vsn, <<\"{base}\">>),\n\
          ok = ridge_rt:set_migrate_report(structured),\n\
          H = {{ridge_handle, _Pid, _}} = ridge_rt:spawn_actor('{actor}', [], []),\n\
+         io:format(\"READY~n\"),\n\
          W = fun W() -> case filelib:is_file(\"{manifest_fwd}\") of true -> ok; false -> timer:sleep(50), W() end end,\n\
          W(),\n\
          R = ridge_loader:apply(\"{manifest_fwd}\", <<\"{base}\">>),\n\

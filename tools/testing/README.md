@@ -60,7 +60,9 @@ To add or update a catalog:
 3. Copy the reviewed candidate to `inventories/<target-triple>.json` in the same
    change. CI verifies its sources, target, feature and actual grouped identities.
 
-CI uploads JSON evidence and unapproved candidates for each platform/OTP job.
+CI uploads JSON evidence, unapproved candidates and complete command stdout/stderr
+for each platform/OTP job. Failed commands also print both streams in full so
+the initial assertion remains visible even when later tests produce long output.
 Never manufacture a catalog by editing counts or reusing a different platform.
 The dependency graph comparison is target-specific and rejects feature drift
 between the selected original driver and the generated package.

@@ -19,7 +19,7 @@ class InventoryControls(unittest.TestCase):
         stream = io.TextIOWrapper(buffer, encoding='cp1252')
         gate.utf8_output(stream)
         print('─ Summary ✓', file=stream, flush=True)
-        self.assertEqual(buffer.getvalue().decode('utf-8'), '─ Summary ✓\n')
+        self.assertEqual(buffer.getvalue().decode('utf-8').splitlines(), ['─ Summary ✓'])
 
     def test_parity_both_directions_and_ignored_states(self):
         gate.parity(self.rows, self.rows)

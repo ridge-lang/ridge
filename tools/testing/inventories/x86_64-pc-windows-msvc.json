@@ -724,18 +724,23 @@
   "features": [
     "beam-runtime"
   ],
-  "schema": 1,
+  "packages": [
+    "ridge-codegen-erl",
+    "ridge-driver",
+    "ridge-cli"
+  ],
+  "schema": 2,
   "sources": {
     "ask_timeout_range_e2e": "d8338e238f9a1756a9456c169eca29c2c516a857679eaec4916ac7ffb3e3e914",
     "builtin_totext_dict_e2e": "c9af5b20ca9eceed91edcc73836454b4575b9315826aa03e77e502bc401df190",
-    "bytes_e2e": "5d20191dc59073522f16979cd89601913050bd9ca5156c7eefb846e7963c655e",
+    "bytes_e2e": "271bb5dd5fbb2c5bcc0c29758ebd0ec1b25a0761ec3282c5a1cc81d9eb3cdf8f",
     "code_change_e2e": "d75ed2dbce10737ad3122a86a9c5bf6817e92f8c9c33f61b3fe4354a9d20f56c",
     "computed_column_e2e": "ed3a69b8e90de8d6c19e28f6041789aa1738e77e7f1a4d41ccef35be7b1bd1ec",
     "cross_module_derived_codec_e2e": "34a26f7e930259cfed917ac39a0e74e6a9e88d2a84d54ff54f600685896a0ddf",
     "crypto_bridge_e2e": "a5180dc4f1f59e8d2bfaa1c312e1ac023be7caf0f7ba053ed69c4a6fe38aa854",
     "data_adapter_e2e": "d9f4056bb8adc9e67f1004166e3f218f88e703c3ea0191acc8fbb8b3cf2fa50c",
     "data_array_e2e": "46f779a5547f73ddaa77b9f6f1cda34f71badcc56bd47115404dcce156db9c63",
-    "data_bytes_e2e": "2791e36dfd48dc966439585d60b2bb4eebe0c85beb834d9c916e1fd946fbc2b1",
+    "data_bytes_e2e": "0ab037d84f8914d3763909706e0535ab52a8191fed99717341883429a677fff4",
     "data_date_e2e": "b7ab0d21d8fe0f5c8531e7a4c96366d0f8194bc79da2daf0aaba34f77aa5fc54",
     "data_decimal_agg_e2e": "66c90fe0cf59e9c58bacb91cc0406d908735030ec742b8744197c560b0cb1a51",
     "data_decimal_e2e": "5b72aa4a12d2560230109a0ca2e08980672059fef0f6e1d27cf5b6465127e131",

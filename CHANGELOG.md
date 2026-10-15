@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `Bytes.empty` is now a value, consistent with `List.empty`, `Map.empty`, and
+  `Set.empty`. Replace `Bytes.empty ()` with `Bytes.empty`; the result remains
+  an empty byte string and requires no capability. If a caller needs an
+  empty-byte-string factory, pass an explicit zero-argument function whose
+  body is `Bytes.empty`.
+
 - `std.json` no longer exports the construction wrappers `jNull`, `jBool`,
   `jInt`, `jFloat`, `jText`, `jList`, or `jObject`. Use the prelude constructors
   `JNull`, `JBool`, `JInt`, `JFloat`, `JText`, `JList`, and `JObject` directly.

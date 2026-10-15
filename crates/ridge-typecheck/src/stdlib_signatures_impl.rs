@@ -395,7 +395,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             vec![ty_bytes(b)],
             ty_result(b, ty_text(b), ty_error(b)),
         ))),
-        (STD_BYTES, "empty") => Some(mono(ty_fn_pure(vec![], ty_bytes(b)))),
+        (STD_BYTES, "empty") => Some(mono(ty_bytes(b))),
         // `generate` draws fresh random bytes, so it carries the `random` capability.
         (STD_BYTES, "generate") => {
             use ridge_ast::Capability;

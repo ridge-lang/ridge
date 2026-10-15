@@ -175,11 +175,15 @@ class GenerationControls(unittest.TestCase):
             repo, _, _ = mini_repository(Path(tmp))
             cli = repo / 'crates/ridge-cli/Cargo.toml'
             cli.write_text(cli.read_text() + '[dev-dependencies]\nhelper = { version = "1", features = ["unicode"] }\n', encoding='utf-8')
-            dependencies = tomllib.loads(gate.context_dependencies(repo))['dev-dependencies']
-            for name in gate.BEAM_PACKAGES:
-                self.assertEqual(dependencies[name]['features'], ['beam-runtime'])
-                self.assertEqual(dependencies[name]['path'], (repo / 'crates' / name).as_posix())
-            self.assertEqual(dependencies['helper'], {'version': '1', 'features': ['unicode']})
+            alias = Path(tmp) / 'alias'
+            alias.mkdir()
+            for source in (repo, alias / '..' / repo.name):
+                with self.subTest(source=source):
+                    dependencies = tomllib.loads(gate.context_dependencies(source))['dev-dependencies']
+                    for name in gate.BEAM_PACKAGES:
+                        self.assertEqual(dependencies[name]['features'], ['beam-runtime'])
+                        self.assertEqual(dependencies[name]['path'], (source / 'crates' / name).resolve().as_posix())
+                    self.assertEqual(dependencies['helper'], {'version': '1', 'features': ['unicode']})
             codegen = repo / 'crates/ridge-codegen-erl/Cargo.toml'
             codegen.write_text(codegen.read_text() + '[dev-dependencies]\nhelper = "2"\n', encoding='utf-8')
             with self.assertRaisesRegex(ValueError, 'Conflicting dev dependency'):

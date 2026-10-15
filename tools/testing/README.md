@@ -12,9 +12,10 @@ python tools/testing/beam-gate.py run --work target/beam-check-1 --require-postg
 Use a new work directory for each build. The build writes its native inventory,
 dependency feature comparison, commands and generated workspace there. The run
 uses that plan, checks that source and generated configuration have not changed,
-then executes retained driver tests, grouped driver tests, and CLI/codegen tests
-with nextest's process-per-test isolation. The original Postgres group keeps its
-concurrency limit of one. Set `RIDGE_TEST_PG_URL` to a TLS-enabled fixture using
+then executes the grouped fixtures and the original driver, CLI and codegen
+targets retained in the plan, using nextest's process-per-test isolation. The
+original Postgres group keeps its concurrency limit of one. Set
+`RIDGE_TEST_PG_URL` to a TLS-enabled fixture using
 the schema in `.github/workflows/ci.yml`. `--require-postgres` rejects service
 guard skips; without it a local run records unavailable database coverage.
 
@@ -65,7 +66,13 @@ for each platform/OTP job. Failed commands also print both streams in full so
 the initial assertion remains visible even when later tests produce long output.
 Never manufacture a catalog by editing counts or reusing a different platform.
 The dependency graph comparison is target-specific and rejects feature drift
-between the selected original driver and the generated package.
+between the original joint codegen/driver/CLI selection and the generated package.
+The harness includes those roots and their development dependencies; retained
+original targets keep the same joint selection. Native audits also select root
+libraries and binaries so development dependencies remain active when only some
+integration targets need listing. Catalog schema 2 records this joint context;
+catalogs from the previous selection of the driver alone require a fresh native
+audit.
 
 ## Local command coordination
 

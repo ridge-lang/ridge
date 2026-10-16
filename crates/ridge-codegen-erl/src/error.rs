@@ -149,7 +149,8 @@ pub enum CodegenError {
     },
     /// `E004` — `erlc` rejected the emitted `.core` (with stderr surfaced).
     ErlcRejectedInput {
-        /// The `.core` file that was passed to `erlc`.
+        /// The rejected `.core` or runtime `.erl` file. For an unrepeatable
+        /// runtime batch failure, the source directory identifies the set.
         core_path: PathBuf,
         /// `erlc` stderr output verbatim.
         stderr: String,

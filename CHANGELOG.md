@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Builds compile stale bundled runtime shims together, reducing repeated compiler
+  startup for fresh output directories. Current outputs retain their modification
+  times, and rejected shims still report the individual source file.
+
 - `Bytes.empty` is now a value, consistent with `List.empty`, `Map.empty`, and
   `Set.empty`. Replace `Bytes.empty ()` with `Bytes.empty`; the result remains
   an empty byte string and requires no capability. If a caller needs an

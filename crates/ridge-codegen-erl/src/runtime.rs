@@ -257,86 +257,29 @@ pub fn compile_runtime(erlc_path: &Path, out_root: &Path) -> Result<PathBuf, Cod
         io_err: e.to_string(),
     })?;
 
-    // ── Compile ridge_rt.erl ──────────────────────────────────────────────────
-    compile_runner_if_stale(
+    // One compiler process for the stale set, in the original runner order.
+    // The optional bench and REPL runners still compile only on request.
+    compile_runners_if_stale(
         erlc_path,
         out_root,
         &beam_out_dir,
-        "ridge_rt.erl",
-        "ridge_rt.beam",
-    )?;
-    let rt_beam_path = beam_out_dir.join("ridge_rt.beam");
-
-    // ── Compile ridge_test_runner.erl (T9) ────────────────────────────────────
-    compile_runner_if_stale(
-        erlc_path,
-        out_root,
-        &beam_out_dir,
-        "ridge_test_runner.erl",
-        "ridge_test_runner.beam",
+        &[
+            ("ridge_rt.erl", "ridge_rt.beam"),
+            ("ridge_test_runner.erl", "ridge_test_runner.beam"),
+            ("ridge_main_runner.erl", "ridge_main_runner.beam"),
+            ("ridge_pg.erl", "ridge_pg.beam"),
+            ("ridge_sup.erl", "ridge_sup.beam"),
+            ("ridge_loader.erl", "ridge_loader.beam"),
+            #[cfg(feature = "beam-runtime")]
+            ("ridge_sqlite.erl", "ridge_sqlite.beam"),
+        ],
     )?;
 
-    // ── Compile ridge_main_runner.erl (0.2.2 main() Err projection) ───────────
-    compile_runner_if_stale(
-        erlc_path,
-        out_root,
-        &beam_out_dir,
-        "ridge_main_runner.erl",
-        "ridge_main_runner.beam",
-    )?;
-
-    // ── Compile ridge_pg.erl (PostgreSQL client for the std.data adapter) ─────
-    compile_runner_if_stale(
-        erlc_path,
-        out_root,
-        &beam_out_dir,
-        "ridge_pg.erl",
-        "ridge_pg.beam",
-    )?;
-
-    // ── Compile ridge_sup.erl (OTP supervisor callback) ───────────────────────
-    compile_runner_if_stale(
-        erlc_path,
-        out_root,
-        &beam_out_dir,
-        "ridge_sup.erl",
-        "ridge_sup.beam",
-    )?;
-
-    // ── Compile ridge_loader.erl (hot code upgrade orchestrator) ─────────────
-    compile_runner_if_stale(
-        erlc_path,
-        out_root,
-        &beam_out_dir,
-        "ridge_loader.erl",
-        "ridge_loader.beam",
-    )?;
-
-    // ── Compile ridge_sqlite.erl + write the baked NIF (SQLite runtime) ───────
+    // Install the same baked NIF after compilation succeeds, even on a no-op.
     #[cfg(feature = "beam-runtime")]
-    install_sqlite_runtime(erlc_path, out_root, &beam_out_dir)?;
+    write_bytes_if_changed(&beam_out_dir.join(sqlite_nif_filename()), SQLITE_NIF_BYTES)?;
 
-    Ok(rt_beam_path)
-}
-
-/// Compile `ridge_sqlite.erl` and write the baked NIF object beside it, so
-/// `erl -pa <beam_dir>` loads the glue and its `-on_load` finds the native
-/// object as a real file next to the `.beam`.
-#[cfg(feature = "beam-runtime")]
-fn install_sqlite_runtime(
-    erlc_path: &Path,
-    out_root: &Path,
-    beam_out_dir: &Path,
-) -> Result<(), CodegenError> {
-    compile_runner_if_stale(
-        erlc_path,
-        out_root,
-        beam_out_dir,
-        "ridge_sqlite.erl",
-        "ridge_sqlite.beam",
-    )?;
-    let nif_path = beam_out_dir.join(sqlite_nif_filename());
-    write_bytes_if_changed(&nif_path, SQLITE_NIF_BYTES)
+    Ok(beam_out_dir.join("ridge_rt.beam"))
 }
 
 /// The on-disk name `erlang:load_nif` resolves for the SQLite bridge: BEAM
@@ -390,35 +333,339 @@ fn compile_runner_if_stale(
     erl_name: &str,
     beam_name: &str,
 ) -> Result<(), CodegenError> {
-    let erl_path = out_root.join("runtime").join(erl_name);
-    let beam_path = beam_out_dir.join(beam_name);
+    compile_runners_if_stale(erlc_path, out_root, beam_out_dir, &[(erl_name, beam_name)])
+}
 
-    if !erl_path.exists() || !beam_is_stale(&erl_path, &beam_path) {
+/// Select the same missing/outdated outputs as the individual runner path.
+fn compile_runners_if_stale(
+    erlc_path: &Path,
+    out_root: &Path,
+    beam_out_dir: &Path,
+    runners: &[(&str, &str)],
+) -> Result<(), CodegenError> {
+    let runtime_dir = out_root.join("runtime");
+    let sources: Vec<_> = runners
+        .iter()
+        .filter_map(|(erl_name, beam_name)| {
+            let source = runtime_dir.join(erl_name);
+            (source.exists() && beam_is_stale(&source, &beam_out_dir.join(beam_name)))
+                .then_some(source)
+        })
+        .collect();
+
+    compile_runner_sources(&runtime_dir, &sources, |inputs| {
+        std::process::Command::new(erlc_path)
+            .arg("-o")
+            .arg(beam_out_dir)
+            .args(inputs)
+            .output()
+            .map_err(|_| CodegenError::ErlcNotFound {
+                searched_paths: vec![],
+            })
+    })
+}
+
+/// Fast success path; on failure retain the individual input's diagnostic.
+fn compile_runner_sources(
+    runtime_dir: &Path,
+    sources: &[PathBuf],
+    mut compile: impl FnMut(&[PathBuf]) -> Result<std::process::Output, CodegenError>,
+) -> Result<(), CodegenError> {
+    if sources.is_empty() {
+        return Ok(());
+    }
+    let output = compile(sources)?;
+    if output.status.success() {
         return Ok(());
     }
 
-    let output = std::process::Command::new(erlc_path)
-        .arg("-o")
-        .arg(beam_out_dir)
-        .arg(&erl_path)
-        .output()
-        .map_err(|_| CodegenError::ErlcNotFound {
-            searched_paths: vec![],
-        })?;
-
-    if !output.status.success() {
-        return Err(CodegenError::ErlcRejectedInput {
-            core_path: erl_path,
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            exit_code: output.status.code().unwrap_or(-1),
-        });
+    if sources.len() > 1 {
+        // Do not re-check staleness: a failed batch can have written a prefix
+        // of its outputs. Retry the original set to identify the rejected file
+        // without parsing compiler text or blaming the first input by default.
+        for source in sources {
+            let retry = compile(std::slice::from_ref(source))?;
+            if !retry.status.success() {
+                return Err(runner_rejection(source, &retry));
+            }
+        }
     }
-    Ok(())
+
+    // A transient batch failure must remain a failure even if every retry
+    // succeeds. In that case the rejected input is the set, not a known file.
+    let rejected = match sources {
+        [source] => source.as_path(),
+        _ => runtime_dir,
+    };
+    Err(runner_rejection(rejected, &output))
+}
+
+/// Preserve the existing error code, compiler stderr and exit status.
+fn runner_rejection(source: &Path, output: &std::process::Output) -> CodegenError {
+    CodegenError::ErlcRejectedInput {
+        core_path: source.to_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        exit_code: output.status.code().unwrap_or(-1),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Controlled compiler results keep failure-path coverage independent of OTP.
+    fn compiler_output(success: bool, stderr: &str) -> std::process::Output {
+        #[cfg(unix)]
+        use std::os::unix::process::ExitStatusExt;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt;
+        #[cfg(unix)]
+        let status = std::process::ExitStatus::from_raw(if success { 0 } else { 9 << 8 });
+        #[cfg(windows)]
+        let status = std::process::ExitStatus::from_raw(if success { 0 } else { 9 });
+        std::process::Output {
+            status,
+            stdout: Vec::new(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn runtime_batch_empty_and_success_launch_only_required_commands() {
+        let runtime = Path::new("runtime with spaces");
+        compile_runner_sources(runtime, &[], |_| panic!("empty set launched erlc")).unwrap();
+        let sources = vec![runtime.join("a.erl"), runtime.join("b.erl")];
+        let mut calls = Vec::new();
+        compile_runner_sources(runtime, &sources, |inputs| {
+            calls.push(inputs.to_vec());
+            Ok(compiler_output(true, ""))
+        })
+        .unwrap();
+        assert_eq!(
+            calls,
+            vec![sources],
+            "one call must contain the complete set"
+        );
+    }
+
+    #[test]
+    fn runtime_batch_retries_in_order_and_reports_rejected_source() {
+        let runtime = Path::new("runtime");
+        let sources = vec![
+            runtime.join("a.erl"),
+            runtime.join("b.erl"),
+            runtime.join("c.erl"),
+        ];
+        for bad in 0..sources.len() {
+            let mut calls = Vec::new();
+            let error = compile_runner_sources(runtime, &sources, |inputs| {
+                calls.push(inputs.to_vec());
+                if inputs.len() > 1 {
+                    Ok(compiler_output(false, "batch rejected"))
+                } else {
+                    Ok(compiler_output(
+                        inputs[0] != sources[bad],
+                        "individual rejection",
+                    ))
+                }
+            })
+            .unwrap_err();
+            let CodegenError::ErlcRejectedInput {
+                core_path,
+                stderr,
+                exit_code,
+            } = error
+            else {
+                panic!("expected compiler rejection");
+            };
+            assert_eq!(core_path, sources[bad]);
+            assert_eq!(stderr, "individual rejection");
+            assert_eq!(exit_code, 9);
+            let expected: Vec<_> = std::iter::once(sources.clone())
+                .chain(sources[..=bad].iter().map(|p| vec![p.clone()]))
+                .collect();
+            assert_eq!(calls, expected, "must stop at the first rejected input");
+        }
+    }
+
+    #[test]
+    fn runtime_batch_does_not_hide_unrepeatable_failure() {
+        let runtime = Path::new("runtime");
+        let sources = vec![runtime.join("a.erl"), runtime.join("b.erl")];
+        let mut calls = Vec::new();
+        let error = compile_runner_sources(runtime, &sources, |inputs| {
+            calls.push(inputs.to_vec());
+            Ok(compiler_output(inputs.len() == 1, "original batch failure"))
+        })
+        .unwrap_err();
+        let CodegenError::ErlcRejectedInput {
+            core_path,
+            stderr,
+            exit_code,
+        } = error
+        else {
+            panic!("expected original batch failure");
+        };
+        assert_eq!(core_path, runtime, "no individual file was rejected");
+        assert_eq!(stderr, "original batch failure");
+        assert_eq!(exit_code, 9);
+        assert_eq!(
+            calls,
+            vec![
+                sources.clone(),
+                vec![sources[0].clone()],
+                vec![sources[1].clone()]
+            ]
+        );
+    }
+
+    #[test]
+    fn runtime_single_runner_and_spawn_errors_stay_failures() {
+        let runtime = Path::new("runtime");
+        let sources = vec![runtime.join("only.erl")];
+        let mut calls = 0;
+        let error = compile_runner_sources(runtime, &sources, |_| {
+            calls += 1;
+            Ok(compiler_output(false, "single rejection"))
+        })
+        .unwrap_err();
+        assert_eq!(calls, 1, "a singleton must not be retried");
+        assert!(
+            matches!(error, CodegenError::ErlcRejectedInput { core_path, .. } if core_path == sources[0])
+        );
+        let error = compile_runner_sources(runtime, &sources, |_| {
+            Err(CodegenError::ErlcNotFound {
+                searched_paths: Vec::new(),
+            })
+        })
+        .unwrap_err();
+        assert!(matches!(error, CodegenError::ErlcNotFound { .. }));
+    }
+
+    #[cfg(feature = "beam-runtime")]
+    #[test]
+    fn runtime_batch_matches_single_outputs_and_preserves_current_files() {
+        use std::collections::BTreeMap;
+        let tmp = tempfile::Builder::new()
+            .prefix("ridge runtime batch ")
+            .tempdir()
+            .unwrap();
+        let erlc = which::which("erlc").expect("beam-runtime requires erlc");
+        install_runtime(tmp.path()).unwrap();
+        let beam = tmp.path().join("beam");
+        compile_runtime(&erlc, tmp.path()).unwrap();
+        let baseline = tmp.path().join("individual");
+        std::fs::create_dir(&baseline).unwrap();
+        let names = [
+            "ridge_rt",
+            "ridge_test_runner",
+            "ridge_main_runner",
+            "ridge_pg",
+            "ridge_sup",
+            "ridge_loader",
+            "ridge_sqlite",
+        ];
+        for name in names {
+            let output = std::process::Command::new(&erlc)
+                .arg("-o")
+                .arg(&baseline)
+                .arg(tmp.path().join("runtime").join(format!("{name}.erl")))
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{name}: {output:?}");
+            assert_eq!(
+                std::fs::read(beam.join(format!("{name}.beam"))).unwrap(),
+                std::fs::read(baseline.join(format!("{name}.beam"))).unwrap(),
+                "{name}"
+            );
+        }
+        let snapshot = || -> BTreeMap<_, _> {
+            std::fs::read_dir(&beam)
+                .unwrap()
+                .map(|entry| {
+                    let path = entry.unwrap().path();
+                    (
+                        path.file_name().unwrap().to_owned(),
+                        (
+                            std::fs::read(&path).unwrap(),
+                            std::fs::metadata(&path).unwrap().modified().unwrap(),
+                        ),
+                    )
+                })
+                .collect()
+        };
+        let before = snapshot();
+        let missing_compiler = tmp.path().join("no-such-erlc");
+        install_runtime(tmp.path()).unwrap();
+        compile_runtime(&missing_compiler, tmp.path()).expect("current set must not launch erlc");
+        assert_eq!(
+            snapshot(),
+            before,
+            "current beams and NIF must retain bytes and mtimes"
+        );
+        let nif = beam.join(sqlite_nif_filename());
+        assert_eq!(std::fs::read(&nif).unwrap(), SQLITE_NIF_BYTES);
+        std::fs::remove_file(&nif).unwrap();
+        compile_runtime(&missing_compiler, tmp.path())
+            .expect("missing NIF is restored without erlc");
+        assert_eq!(std::fs::read(nif).unwrap(), SQLITE_NIF_BYTES);
+
+        let before = snapshot();
+        std::fs::remove_file(beam.join("ridge_pg.beam")).unwrap();
+        compile_runtime(&erlc, tmp.path()).unwrap();
+        let after = snapshot();
+        for (name, state) in &before {
+            if name != "ridge_pg.beam" {
+                assert_eq!(
+                    after.get(name),
+                    Some(state),
+                    "unselected output {name:?} changed"
+                );
+            }
+        }
+        assert_eq!(
+            after[std::ffi::OsStr::new("ridge_pg.beam")].0,
+            before[std::ffi::OsStr::new("ridge_pg.beam")].0
+        );
+    }
+
+    #[cfg(feature = "beam-runtime")]
+    #[test]
+    fn runtime_batch_attributes_real_syntax_errors() {
+        let erlc = which::which("erlc").expect("beam-runtime requires erlc");
+        for bad in 0..3 {
+            let tmp = tempfile::tempdir().unwrap();
+            let runtime = tmp.path().join("runtime");
+            let beam = tmp.path().join("beam");
+            std::fs::create_dir(&runtime).unwrap();
+            std::fs::create_dir(&beam).unwrap();
+            let names = [
+                ("a.erl", "a.beam"),
+                ("b.erl", "b.beam"),
+                ("c.erl", "c.beam"),
+            ];
+            for (index, (source, _)) in names.iter().enumerate() {
+                let name = Path::new(source).file_stem().unwrap().to_str().unwrap();
+                let body = if index == bad {
+                    format!("-module({name}).\ninvalid syntax !!!\n")
+                } else {
+                    format!("-module({name}).\n-export([value/0]).\nvalue() -> ok.\n")
+                };
+                std::fs::write(runtime.join(source), body).unwrap();
+            }
+            let error = compile_runners_if_stale(&erlc, tmp.path(), &beam, &names).unwrap_err();
+            assert!(
+                matches!(error, CodegenError::ErlcRejectedInput { core_path, exit_code, .. } if core_path == runtime.join(names[bad].0) && exit_code != 0)
+            );
+            for (index, (_, output)) in names.iter().enumerate() {
+                assert_eq!(
+                    beam.join(output).exists(),
+                    index < bad,
+                    "partial output {output}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn install_runtime_writes_ridge_loader_source() {

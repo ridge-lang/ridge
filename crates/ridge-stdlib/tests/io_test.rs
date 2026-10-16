@@ -1,11 +1,7 @@
-//! Track-A tests for `std.io` — 5 public functions.
+//! Module-level compilation and discovery checks for `std.io`.
 //!
-//! Each test asserts that `io.ridge` compiles through the T4 build pipeline
-//! and that the module appears in the build summary.
-//!
-//! Tests serialize around a process-level mutex because `build_all` writes to
-//! a temp directory keyed by process ID — parallel invocations within the same
-//! test binary would race on the same path.
+//! These checks compile the library and confirm module discovery.
+//! They do not exercise individual function behavior.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -44,31 +40,7 @@ fn assert_io_ridge_discovered() {
 }
 
 #[test]
-fn std_io_print_compiles() {
-    assert_std_io_built();
-    assert_io_ridge_discovered();
-}
-
-#[test]
-fn std_io_println_compiles() {
-    assert_std_io_built();
-    assert_io_ridge_discovered();
-}
-
-#[test]
-fn std_io_eprint_compiles() {
-    assert_std_io_built();
-    assert_io_ridge_discovered();
-}
-
-#[test]
-fn std_io_eprintln_compiles() {
-    assert_std_io_built();
-    assert_io_ridge_discovered();
-}
-
-#[test]
-fn std_io_read_line_compiles() {
+fn std_io_module_builds_and_is_discovered() {
     assert_std_io_built();
     assert_io_ridge_discovered();
 }

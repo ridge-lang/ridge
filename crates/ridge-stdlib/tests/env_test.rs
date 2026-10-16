@@ -1,11 +1,7 @@
-//! Track-A tests for `std.env` — 3 public functions.
+//! Module-level compilation and discovery checks for `std.env`.
 //!
-//! Each test asserts that `env.ridge` compiles through the T4 build pipeline
-//! and that the module appears in the build summary.
-//!
-//! Tests serialize around a process-level mutex because `build_all` writes to
-//! a temp directory keyed by process ID — parallel invocations within the same
-//! test binary would race on the same path.
+//! These checks compile the library and confirm module discovery.
+//! They do not exercise individual function behavior.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -44,19 +40,7 @@ fn assert_env_ridge_discovered() {
 }
 
 #[test]
-fn std_env_get_compiles() {
-    assert_std_env_built();
-    assert_env_ridge_discovered();
-}
-
-#[test]
-fn std_env_set_compiles() {
-    assert_std_env_built();
-    assert_env_ridge_discovered();
-}
-
-#[test]
-fn std_env_all_compiles() {
+fn std_env_module_builds_and_is_discovered() {
     assert_std_env_built();
     assert_env_ridge_discovered();
 }

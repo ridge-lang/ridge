@@ -1,13 +1,7 @@
-//! Track-A tests for `std.int` — 12 public functions.
+//! Module-level compilation and discovery checks for `std.int`.
 //!
-//! Each test asserts that:
-//! 1. `build_all` succeeds (i.e., `int.ridge` compiles through T4 pipeline), AND
-//! 2. `summary.modules_built` contains `"std.int"`, AND
-//! 3. `discover()` finds the `int.ridge` file.
-//!
-//! Tests serialize around a process-level mutex because `build_all` writes to
-//! a temp directory keyed by process ID — parallel invocations within the same
-//! test binary would race on the same path.
+//! These checks compile the library and confirm module discovery.
+//! They do not exercise individual function behavior.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -46,73 +40,7 @@ fn assert_int_ridge_discovered() {
 }
 
 #[test]
-fn std_int_to_text_compiles() {
-    assert_std_int_built();
-    assert_int_ridge_discovered();
-}
-
-#[test]
-fn std_int_parse_compiles() {
-    assert_std_int_built();
-    assert_int_ridge_discovered();
-}
-
-#[test]
-fn std_int_abs_compiles() {
-    assert_std_int_built();
-    assert_int_ridge_discovered();
-}
-
-#[test]
-fn std_int_min_compiles() {
-    assert_std_int_built();
-    assert_int_ridge_discovered();
-}
-
-#[test]
-fn std_int_max_compiles() {
-    assert_std_int_built();
-    assert_int_ridge_discovered();
-}
-
-#[test]
-fn std_int_add_compiles() {
-    assert_std_int_built();
-    assert_int_ridge_discovered();
-}
-
-#[test]
-fn std_int_sub_compiles() {
-    assert_std_int_built();
-    assert_int_ridge_discovered();
-}
-
-#[test]
-fn std_int_mul_compiles() {
-    assert_std_int_built();
-    assert_int_ridge_discovered();
-}
-
-#[test]
-fn std_int_div_compiles() {
-    assert_std_int_built();
-    assert_int_ridge_discovered();
-}
-
-#[test]
-fn std_int_neg_compiles() {
-    assert_std_int_built();
-    assert_int_ridge_discovered();
-}
-
-#[test]
-fn std_int_wrapping_add_compiles() {
-    assert_std_int_built();
-    assert_int_ridge_discovered();
-}
-
-#[test]
-fn std_int_saturating_add_compiles() {
+fn std_int_module_builds_and_is_discovered() {
     assert_std_int_built();
     assert_int_ridge_discovered();
 }

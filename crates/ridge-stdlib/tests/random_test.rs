@@ -1,11 +1,7 @@
-//! Track-A tests for `std.random` — 5 public functions.
+//! Module-level compilation and discovery checks for `std.random`.
 //!
-//! Each test asserts that `random.ridge` compiles through the T4 build pipeline
-//! and that the module appears in the build summary.
-//!
-//! Tests serialize around a process-level mutex because `build_all` writes to
-//! a temp directory keyed by process ID — parallel invocations within the same
-//! test binary would race on the same path.
+//! These checks compile the library and confirm module discovery.
+//! They do not exercise individual function behavior.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -44,31 +40,7 @@ fn assert_random_ridge_discovered() {
 }
 
 #[test]
-fn std_random_int_compiles() {
-    assert_std_random_built();
-    assert_random_ridge_discovered();
-}
-
-#[test]
-fn std_random_float_compiles() {
-    assert_std_random_built();
-    assert_random_ridge_discovered();
-}
-
-#[test]
-fn std_random_alphanumeric_compiles() {
-    assert_std_random_built();
-    assert_random_ridge_discovered();
-}
-
-#[test]
-fn std_random_choice_compiles() {
-    assert_std_random_built();
-    assert_random_ridge_discovered();
-}
-
-#[test]
-fn std_random_seed_compiles() {
+fn std_random_module_builds_and_is_discovered() {
     assert_std_random_built();
     assert_random_ridge_discovered();
 }

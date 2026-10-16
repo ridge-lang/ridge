@@ -1,14 +1,7 @@
-//! Track-A tests for `std.net.http` — 10 public functions.
+//! Module-level compilation and discovery checks for `std.net.http`.
 //!
-//! Each test asserts that `net/http.ridge` compiles through the T4 build pipeline
-//! and that the module appears in the build summary / discover output.
-//!
-//! Tests serialize around a process-level mutex because `build_all` writes to
-//! a temp directory keyed by process ID — parallel invocations within the same
-//! test binary would race on the same path.
-//!
-//! §3.18 / OQ-S005 / D121: client functions use `ridge_rt` http helpers;
-//! server function uses `ridge_rt:http_listen/2` (`gen_tcp` accept loop).
+//! These checks compile the library and confirm module discovery.
+//! They do not exercise individual function behavior.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -46,84 +39,10 @@ fn assert_net_http_ridge_discovered() {
     );
 }
 
-// ── Per-function compile tests (§3.18) ───────────────────────────────────────
+// Module compilation and discovery.
 
-/// `net.get` compiles successfully and module is discovered.
 #[test]
-fn std_net_http_get_compiles() {
-    assert_std_net_http_built();
-    assert_net_http_ridge_discovered();
-}
-
-/// `net.post` compiles successfully and module is discovered.
-#[test]
-fn std_net_http_post_compiles() {
-    assert_std_net_http_built();
-    assert_net_http_ridge_discovered();
-}
-
-/// `net.put` compiles successfully and module is discovered.
-#[test]
-fn std_net_http_put_compiles() {
-    assert_std_net_http_built();
-    assert_net_http_ridge_discovered();
-}
-
-/// `net.delete` compiles successfully and module is discovered.
-#[test]
-fn std_net_http_delete_compiles() {
-    assert_std_net_http_built();
-    assert_net_http_ridge_discovered();
-}
-
-/// `net.listen` compiles successfully and module is discovered.
-#[test]
-fn std_net_http_listen_compiles() {
-    assert_std_net_http_built();
-    assert_net_http_ridge_discovered();
-}
-
-/// `respond` compiles successfully and module is discovered.
-#[test]
-fn std_net_http_respond_compiles() {
-    assert_std_net_http_built();
-    assert_net_http_ridge_discovered();
-}
-
-// ── Record-type tests ─────────────────────────────────────────────────────────
-
-/// `Request` record type is declared in `net/http.ridge` and the module builds.
-#[test]
-fn std_net_http_request_record_compiles() {
-    assert_std_net_http_built();
-    assert_net_http_ridge_discovered();
-}
-
-/// `Response` record type is declared in `net/http.ridge` and the module builds.
-#[test]
-fn std_net_http_response_record_compiles() {
-    assert_std_net_http_built();
-    assert_net_http_ridge_discovered();
-}
-
-/// `Html` newtype + the `html` factory function compile through the build pipeline.
-#[test]
-fn std_net_http_html_newtype_compiles() {
-    assert_std_net_http_built();
-    assert_net_http_ridge_discovered();
-}
-
-/// `SecureCookie` record + the `secureCookie` factory function compile through
-/// the build pipeline.
-#[test]
-fn std_net_http_secure_cookie_record_compiles() {
-    assert_std_net_http_built();
-    assert_net_http_ridge_discovered();
-}
-
-/// `secureCookieHeader` serializer compiles through the build pipeline.
-#[test]
-fn std_net_http_secure_cookie_header_compiles() {
+fn std_net_http_module_builds_and_is_discovered() {
     assert_std_net_http_built();
     assert_net_http_ridge_discovered();
 }

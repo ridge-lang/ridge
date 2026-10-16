@@ -13,7 +13,7 @@
 //!
 //! | Test                        | Gate       |
 //! |-----------------------------|------------|
-//! | `g4_test_count_floor`       | G4 / §11.2 |
+//! | `required_modules_are_discovered_and_built` | Module coverage |
 //! | `g5_path_b_dominance`       | G5 / §11.2 |
 //! | `artefacts_count_matches_plan` | §11.4   |
 //! | `dod_doc_link`              | G7, G8 (CI)|
@@ -51,6 +51,7 @@
 
 use std::path::Path;
 
+use ridge_stdlib::build_driver::{build_all, discover};
 use ridge_stdlib::codegen_ffi_targets::extract_all_stdlib_decls;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -58,11 +59,6 @@ use ridge_stdlib::codegen_ffi_targets::extract_all_stdlib_decls;
 /// Locate the `stdlib/` directory relative to `CARGO_MANIFEST_DIR`.
 fn stdlib_dir() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib")
-}
-
-/// Locate the `tests/` directory relative to `CARGO_MANIFEST_DIR`.
-fn tests_dir() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests")
 }
 
 /// Recursively collect files matching a predicate under `dir`, in sorted order.
@@ -94,70 +90,69 @@ where
     }
 }
 
-// ── G4 / §11.2 — test count floor ────────────────────────────────────────────
+// Module coverage is a property of build results, not a count of test names.
 
-/// G4 (§11.2): Every public stdlib function has ≥ 1 Track-A Rust test passing.
-///
-/// This test asserts two things:
-///
-/// 1. At least 17 `*_test.rs` module test files exist in `tests/` — one per
-///    stdlib module (`int, float, bool, option, result, text, list, map, set,
-///    io, fs, time, random, env, cli, proc, json, net_http`).
-/// 2. The aggregate `#[test]` annotation count across those files is ≥ 151 —
-///    the floor per §11.2 G4 (151 after `proc.exec` removed by OQ-S007/D123).
-///
-/// Files excluded from both counts (they are infrastructure, not module tests):
-/// `manifest_consistency.rs`, `test_ridge_smoke.rs`, `dod.rs`, `build_driver_smoke.rs`.
-///
-/// Reference: §11.2 G4, OQ-S007 / D123.
+fn missing_modules<'a>(required: &[&'a str], observed: &[&str]) -> Vec<&'a str> {
+    required
+        .iter()
+        .copied()
+        .filter(|module| !observed.contains(module))
+        .collect()
+}
+
+/// The modules covered by the module integration targets must be discovered
+/// and pass the real build pipeline. Function behavior has separate Ridge tests.
 #[test]
-fn g4_test_count_floor() {
-    const EXCLUDED: &[&str] = &[
-        "manifest_consistency.rs",
-        "test_ridge_smoke.rs",
-        "dod.rs",
-        "build_driver_smoke.rs",
+fn required_modules_are_discovered_and_built() {
+    const REQUIRED: &[&str] = &[
+        "std.actor",
+        "std.bool",
+        "std.cli",
+        "std.crypto",
+        "std.env",
+        "std.float",
+        "std.fs",
+        "std.int",
+        "std.io",
+        "std.json",
+        "std.list",
+        "std.map",
+        "std.net.http",
+        "std.option",
+        "std.proc",
+        "std.random",
+        "std.result",
+        "std.set",
+        "std.text",
+        "std.time",
     ];
-    const MIN_MODULE_TEST_FILES: usize = 17;
-    const MIN_TRACK_A_TESTS: usize = 151;
-
-    let tests = tests_dir();
-
-    // Collect *_test.rs files, excluding infrastructure files.
-    let module_test_files: Vec<std::path::PathBuf> = collect_files(&tests, |p| {
-        let file_name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        // Must end with _test.rs and not be in the excluded list.
-        file_name.ends_with("_test.rs") && !EXCLUDED.contains(&file_name)
-    });
-
-    // Assert floor: ≥ 17 module test files (one per stdlib module).
-    // §11.4 specifies 18 modules; net_http is the 18th.  We assert ≥ 17 to
-    // allow for one module being covered by an alternate naming convention.
+    let dir = stdlib_dir();
+    let modules = discover(&dir);
+    let discovered: Vec<&str> = modules.iter().map(|module| module.name.as_str()).collect();
+    let missing = missing_modules(REQUIRED, &discovered);
     assert!(
-        module_test_files.len() >= MIN_MODULE_TEST_FILES,
-        "G4 §11.2: expected ≥ {MIN_MODULE_TEST_FILES} module *_test.rs files, \
-         found {}.\n  files: {:#?}",
-        module_test_files.len(),
-        module_test_files
+        missing.is_empty(),
+        "required modules not discovered: {missing:?}"
     );
 
-    // Count #[test] annotations across all module test files.
-    // Simple text scan — no regex dependency needed; matches codebase precedent.
-    let mut total_test_count: usize = 0;
-    for path in &module_test_files {
-        let src = std::fs::read_to_string(path)
-            .unwrap_or_else(|e| panic!("G4 §11.2: could not read {}: {e}", path.display()));
-        total_test_count += src.matches("#[test]").count();
-    }
-
-    // Assert floor: ≥ 151 Track-A tests (floor per G4 / §11.2).
-    // 151 after proc.exec was removed per OQ-S007 / D123.
+    let summary = build_all(&dir).unwrap_or_else(|error| panic!("stdlib build failed: {error}"));
+    let built: Vec<&str> = summary.modules_built.iter().map(String::as_str).collect();
+    let missing = missing_modules(REQUIRED, &built);
     assert!(
-        total_test_count >= MIN_TRACK_A_TESTS,
-        "G4 §11.2: expected ≥ {MIN_TRACK_A_TESTS} #[test] annotations across \
-         module test files, found {total_test_count}. \
-         Every public stdlib function must have ≥ 1 Track-A test."
+        missing.is_empty(),
+        "required modules not built: {missing:?}"
     );
+}
+
+#[test]
+fn module_coverage_reports_missing_names() {
+    let required = ["std.bool", "std.list"];
+    assert!(missing_modules(&required, &["std.list", "std.bool", "std.extra"]).is_empty());
+    assert_eq!(
+        missing_modules(&required, &["std.bool", "std.extra"]),
+        ["std.list"]
+    );
+    assert_eq!(missing_modules(&required, &[]), required);
 }
 
 // ── G5 / §11.2 — path-B dominance ────────────────────────────────────────────

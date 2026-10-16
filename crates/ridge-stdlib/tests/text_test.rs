@@ -1,11 +1,7 @@
-//! Track-A tests for `std.text` — 19 public functions.
+//! Module-level compilation and discovery checks for `std.text`.
 //!
-//! Each test asserts that `text.ridge` compiles through the T4 build pipeline
-//! and that the module appears in the build summary.
-//!
-//! Tests serialize around a process-level mutex because `build_all` writes to
-//! a temp directory keyed by process ID — parallel invocations within the same
-//! test binary would race on the same path.
+//! These checks compile the library and confirm module discovery.
+//! They do not exercise individual function behavior.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -44,115 +40,7 @@ fn assert_text_ridge_discovered() {
 }
 
 #[test]
-fn std_text_byte_size_compiles() {
-    assert_std_text_built();
-    assert_text_ridge_discovered();
-}
-
-#[test]
-fn std_text_length_compiles() {
-    assert_std_text_built();
-    assert_text_ridge_discovered();
-}
-
-#[test]
-fn std_text_join_compiles() {
-    assert_std_text_built();
-    assert_text_ridge_discovered();
-}
-
-#[test]
-fn std_text_slice_compiles() {
-    assert_std_text_built();
-    assert_text_ridge_discovered();
-}
-
-#[test]
-fn std_text_concat_compiles() {
-    assert_std_text_built();
-    assert_text_ridge_discovered();
-}
-
-#[test]
-fn std_text_split_compiles() {
-    assert_std_text_built();
-    assert_text_ridge_discovered();
-}
-
-#[test]
-fn std_text_split_n_compiles() {
-    assert_std_text_built();
-    assert_text_ridge_discovered();
-}
-
-#[test]
-fn std_text_split_any_compiles() {
-    assert_std_text_built();
-    assert_text_ridge_discovered();
-}
-
-#[test]
-fn std_text_lines_compiles() {
-    assert_std_text_built();
-    assert_text_ridge_discovered();
-}
-
-#[test]
-fn std_text_trim_compiles() {
-    assert_std_text_built();
-    assert_text_ridge_discovered();
-}
-
-#[test]
-fn std_text_to_upper_compiles() {
-    assert_std_text_built();
-    assert_text_ridge_discovered();
-}
-
-#[test]
-fn std_text_to_lower_compiles() {
-    assert_std_text_built();
-    assert_text_ridge_discovered();
-}
-
-#[test]
-fn std_text_starts_with_compiles() {
-    assert_std_text_built();
-    assert_text_ridge_discovered();
-}
-
-#[test]
-fn std_text_ends_with_compiles() {
-    assert_std_text_built();
-    assert_text_ridge_discovered();
-}
-
-#[test]
-fn std_text_contains_compiles() {
-    assert_std_text_built();
-    assert_text_ridge_discovered();
-}
-
-#[test]
-fn std_text_replace_compiles() {
-    assert_std_text_built();
-    assert_text_ridge_discovered();
-}
-
-#[test]
-fn std_text_pad_left_compiles() {
-    assert_std_text_built();
-    assert_text_ridge_discovered();
-}
-
-#[test]
-fn std_text_pad_right_compiles() {
-    assert_std_text_built();
-    assert_text_ridge_discovered();
-}
-
-#[test]
-fn std_text_is_empty_compiles() {
+fn std_text_module_builds_and_is_discovered() {
     assert_std_text_built();
     assert_text_ridge_discovered();
 }

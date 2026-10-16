@@ -1,11 +1,7 @@
-//! Track-A tests for `std.set` — 10 public functions.
+//! Module-level compilation and discovery checks for `std.set`.
 //!
-//! Each test asserts that `set.ridge` compiles through the T4 build pipeline
-//! and that the module appears in the build summary.
-//!
-//! Tests serialize around a process-level mutex because `build_all` writes to
-//! a temp directory keyed by process ID — parallel invocations within the same
-//! test binary would race on the same path.
+//! These checks compile the library and confirm module discovery.
+//! They do not exercise individual function behavior.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -44,61 +40,7 @@ fn assert_set_ridge_discovered() {
 }
 
 #[test]
-fn std_set_empty_compiles() {
-    assert_std_set_built();
-    assert_set_ridge_discovered();
-}
-
-#[test]
-fn std_set_from_list_compiles() {
-    assert_std_set_built();
-    assert_set_ridge_discovered();
-}
-
-#[test]
-fn std_set_to_list_compiles() {
-    assert_std_set_built();
-    assert_set_ridge_discovered();
-}
-
-#[test]
-fn std_set_insert_compiles() {
-    assert_std_set_built();
-    assert_set_ridge_discovered();
-}
-
-#[test]
-fn std_set_remove_compiles() {
-    assert_std_set_built();
-    assert_set_ridge_discovered();
-}
-
-#[test]
-fn std_set_contains_compiles() {
-    assert_std_set_built();
-    assert_set_ridge_discovered();
-}
-
-#[test]
-fn std_set_union_compiles() {
-    assert_std_set_built();
-    assert_set_ridge_discovered();
-}
-
-#[test]
-fn std_set_intersect_compiles() {
-    assert_std_set_built();
-    assert_set_ridge_discovered();
-}
-
-#[test]
-fn std_set_difference_compiles() {
-    assert_std_set_built();
-    assert_set_ridge_discovered();
-}
-
-#[test]
-fn std_set_size_compiles() {
+fn std_set_module_builds_and_is_discovered() {
     assert_std_set_built();
     assert_set_ridge_discovered();
 }

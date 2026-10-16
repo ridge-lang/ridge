@@ -1,16 +1,7 @@
-//! Track-A tests for `std.json` — 5 public functions.
+//! Module-level compilation and discovery checks for `std.json`.
 //!
-//! Each test asserts that `json.ridge` compiles through the T4 build pipeline
-//! and that the module appears in the build summary.
-//!
-//! Parametric round-trip coverage: one test per public function (encode,
-//! decode, encodeInt, encodeBool, encodeText) plus one test per `JsonValue`
-//! arm (`JNull`, `JBool`, `JInt`, `JFloat`, `JText`, `JList`, `JObject`) — all asserting
-//! compilation succeeds and the module is discovered (§3.17 / §3.19 note).
-//!
-//! Tests serialize around a process-level mutex because `build_all` writes to
-//! a temp directory keyed by process ID — parallel invocations within the same
-//! test binary would race on the same path.
+//! These checks compile the library and confirm module discovery.
+//! They do not exercise individual function behavior.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -51,31 +42,7 @@ fn assert_json_ridge_discovered() {
 // ── Per-function tests (§3.17) ─────────────────────────────────────────────
 
 #[test]
-fn std_json_encode_compiles() {
-    assert_std_json_built();
-    assert_json_ridge_discovered();
-}
-
-#[test]
-fn std_json_decode_compiles() {
-    assert_std_json_built();
-    assert_json_ridge_discovered();
-}
-
-#[test]
-fn std_json_encode_int_compiles() {
-    assert_std_json_built();
-    assert_json_ridge_discovered();
-}
-
-#[test]
-fn std_json_encode_bool_compiles() {
-    assert_std_json_built();
-    assert_json_ridge_discovered();
-}
-
-#[test]
-fn std_json_encode_text_compiles() {
+fn std_json_module_builds_and_is_discovered() {
     assert_std_json_built();
     assert_json_ridge_discovered();
 }
@@ -86,45 +53,3 @@ fn std_json_encode_text_compiles() {
 // The "round-trip" property (encode then decode = original) is validated at
 // the BEAM runtime layer; these Track-A tests assert compile-level coverage
 // of each JsonValue constructor arm.
-
-#[test]
-fn std_json_jnull_arm_compiles() {
-    assert_std_json_built();
-    assert_json_ridge_discovered();
-}
-
-#[test]
-fn std_json_jbool_arm_compiles() {
-    assert_std_json_built();
-    assert_json_ridge_discovered();
-}
-
-#[test]
-fn std_json_jint_arm_compiles() {
-    assert_std_json_built();
-    assert_json_ridge_discovered();
-}
-
-#[test]
-fn std_json_jfloat_arm_compiles() {
-    assert_std_json_built();
-    assert_json_ridge_discovered();
-}
-
-#[test]
-fn std_json_jtext_arm_compiles() {
-    assert_std_json_built();
-    assert_json_ridge_discovered();
-}
-
-#[test]
-fn std_json_jlist_arm_compiles() {
-    assert_std_json_built();
-    assert_json_ridge_discovered();
-}
-
-#[test]
-fn std_json_jobject_arm_compiles() {
-    assert_std_json_built();
-    assert_json_ridge_discovered();
-}

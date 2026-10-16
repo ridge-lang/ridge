@@ -1,11 +1,7 @@
-//! Track-A tests for `std.map` — 14 public functions.
+//! Module-level compilation and discovery checks for `std.map`.
 //!
-//! Each test asserts that `map.ridge` compiles through the T4 build pipeline
-//! and that the module appears in the build summary.
-//!
-//! Tests serialize around a process-level mutex because `build_all` writes to
-//! a temp directory keyed by process ID — parallel invocations within the same
-//! test binary would race on the same path.
+//! These checks compile the library and confirm module discovery.
+//! They do not exercise individual function behavior.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -44,85 +40,7 @@ fn assert_map_ridge_discovered() {
 }
 
 #[test]
-fn std_map_empty_compiles() {
-    assert_std_map_built();
-    assert_map_ridge_discovered();
-}
-
-#[test]
-fn std_map_from_list_compiles() {
-    assert_std_map_built();
-    assert_map_ridge_discovered();
-}
-
-#[test]
-fn std_map_to_list_compiles() {
-    assert_std_map_built();
-    assert_map_ridge_discovered();
-}
-
-#[test]
-fn std_map_insert_compiles() {
-    assert_std_map_built();
-    assert_map_ridge_discovered();
-}
-
-#[test]
-fn std_map_remove_compiles() {
-    assert_std_map_built();
-    assert_map_ridge_discovered();
-}
-
-#[test]
-fn std_map_get_compiles() {
-    assert_std_map_built();
-    assert_map_ridge_discovered();
-}
-
-#[test]
-fn std_map_contains_compiles() {
-    assert_std_map_built();
-    assert_map_ridge_discovered();
-}
-
-#[test]
-fn std_map_keys_compiles() {
-    assert_std_map_built();
-    assert_map_ridge_discovered();
-}
-
-#[test]
-fn std_map_values_compiles() {
-    assert_std_map_built();
-    assert_map_ridge_discovered();
-}
-
-#[test]
-fn std_map_map_compiles() {
-    assert_std_map_built();
-    assert_map_ridge_discovered();
-}
-
-#[test]
-fn std_map_filter_compiles() {
-    assert_std_map_built();
-    assert_map_ridge_discovered();
-}
-
-#[test]
-fn std_map_size_compiles() {
-    assert_std_map_built();
-    assert_map_ridge_discovered();
-}
-
-#[test]
-fn std_map_merge_compiles() {
-    assert_std_map_built();
-    assert_map_ridge_discovered();
-}
-
-#[test]
-fn std_map_update_compiles() {
+fn std_map_module_builds_and_is_discovered() {
     assert_std_map_built();
     assert_map_ridge_discovered();
 }

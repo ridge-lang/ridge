@@ -1,11 +1,7 @@
-//! Track-A tests for `std.time` — 9 public functions.
+//! Module-level compilation and discovery checks for `std.time`.
 //!
-//! Each test asserts that `time.ridge` compiles through the T4 build pipeline
-//! and that the module appears in the build summary.
-//!
-//! Tests serialize around a process-level mutex because `build_all` writes to
-//! a temp directory keyed by process ID — parallel invocations within the same
-//! test binary would race on the same path.
+//! These checks compile the library and confirm module discovery.
+//! They do not exercise individual function behavior.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -44,55 +40,7 @@ fn assert_time_ridge_discovered() {
 }
 
 #[test]
-fn std_time_now_compiles() {
-    assert_std_time_built();
-    assert_time_ridge_discovered();
-}
-
-#[test]
-fn std_time_epoch_compiles() {
-    assert_std_time_built();
-    assert_time_ridge_discovered();
-}
-
-#[test]
-fn std_time_from_iso_compiles() {
-    assert_std_time_built();
-    assert_time_ridge_discovered();
-}
-
-#[test]
-fn std_time_diff_compiles() {
-    assert_std_time_built();
-    assert_time_ridge_discovered();
-}
-
-#[test]
-fn std_time_diff_ms_compiles() {
-    assert_std_time_built();
-    assert_time_ridge_discovered();
-}
-
-#[test]
-fn std_time_since_ms_compiles() {
-    assert_std_time_built();
-    assert_time_ridge_discovered();
-}
-
-#[test]
-fn std_time_sleep_compiles() {
-    assert_std_time_built();
-    assert_time_ridge_discovered();
-}
-
-#[test]
-fn std_time_parse_compiles() {
-    assert_std_time_built();
-    assert_time_ridge_discovered();
-}
-
-#[test]
-fn std_time_iso_compiles() {
+fn std_time_module_builds_and_is_discovered() {
     assert_std_time_built();
     assert_time_ridge_discovered();
 }

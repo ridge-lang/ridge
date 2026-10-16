@@ -1,11 +1,7 @@
-//! Track-A tests for `std.fs` — 5 public functions.
+//! Module-level compilation and discovery checks for `std.fs`.
 //!
-//! Each test asserts that `fs.ridge` compiles through the T4 build pipeline
-//! and that the module appears in the build summary.
-//!
-//! Tests serialize around a process-level mutex because `build_all` writes to
-//! a temp directory keyed by process ID — parallel invocations within the same
-//! test binary would race on the same path.
+//! These checks compile the library and confirm module discovery.
+//! They do not exercise individual function behavior.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -44,31 +40,7 @@ fn assert_fs_ridge_discovered() {
 }
 
 #[test]
-fn std_fs_read_file_compiles() {
-    assert_std_fs_built();
-    assert_fs_ridge_discovered();
-}
-
-#[test]
-fn std_fs_write_file_compiles() {
-    assert_std_fs_built();
-    assert_fs_ridge_discovered();
-}
-
-#[test]
-fn std_fs_append_compiles() {
-    assert_std_fs_built();
-    assert_fs_ridge_discovered();
-}
-
-#[test]
-fn std_fs_exists_compiles() {
-    assert_std_fs_built();
-    assert_fs_ridge_discovered();
-}
-
-#[test]
-fn std_fs_lines_compiles() {
+fn std_fs_module_builds_and_is_discovered() {
     assert_std_fs_built();
     assert_fs_ridge_discovered();
 }

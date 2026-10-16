@@ -22,6 +22,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
+#[path = "common/server.rs"]
+mod server;
 
 use assert_cmd::Command;
 use common::make_workspace;
@@ -85,16 +87,53 @@ fn run_log_analyzer() {
 #[cfg(feature = "beam-runtime")]
 #[test]
 fn run_url_shortener() {
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = reservation.local_addr().unwrap();
     let tw = make_example_app_workspace("url_shortener");
-    let output = ridge_cmd()
-        .arg("run")
-        .current_dir(&tw.path)
-        .output()
-        .expect("ridge run spawn failed");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !stderr.contains("C001") && !stderr.contains("C006"),
-        "unexpected workspace-level error.\nstderr: {stderr}"
+    // Correlate the response with this fixture even if another process takes
+    // the ephemeral port between releasing it and the server binding it.
+    let expected_body = format!(
+        "Not found {}",
+        tw.path.file_name().unwrap().to_string_lossy()
+    );
+    let source = common::read_example("url_shortener");
+    assert_eq!(source.matches("Http.listenWithHeaders 8080").count(), 1);
+    assert_eq!(source.matches("notFound \"Not found\"").count(), 2);
+    let source = source.replace("8080", &address.port().to_string()).replace(
+        "notFound \"Not found\"",
+        &format!("notFound \"{expected_body}\""),
+    );
+    write_file(&tw.path, "apps/demo/src/url_shortener.ridge", &source);
+    let mut command = std::process::Command::new(assert_cmd::cargo::cargo_bin("ridge"));
+    command.arg("run").current_dir(&tw.path);
+    drop(reservation);
+    let started = Instant::now();
+    let mut server = server::Server::spawn(command).expect("spawn ridge run server");
+    // Include cold stdlib compilation in the startup budget; readiness ends
+    // the wait immediately. The product's execution deadline is unchanged.
+    let response = server.wait_for_response(address, &expected_body, Duration::from_secs(120));
+    let diagnostics = server.diagnostics();
+    let cleanup = server.stop();
+    assert!(response.is_ok(), "{response:?}\n{diagnostics}");
+    cleanup.expect("clean up CLI server process tree");
+    // The listener belongs to the runtime descendant, not the CLI leader.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if TcpListener::bind(address).is_ok() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "server listener leaked at {address}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    eprintln!(
+        "server HTTP response and cleanup completed in {:?}",
+        started.elapsed()
     );
 }
 

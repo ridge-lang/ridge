@@ -240,6 +240,9 @@ pub struct RigidInfo {
     pub span: ridge_ast::Span,
     /// The classes the signature promises for this variable.
     pub givens: Vec<ridge_types::ClassId>,
+    /// Full promised heads: membership in the same class at two positions does
+    /// not imply that those positions form a promised conversion pair.
+    pub given_constraints: Vec<ridge_types::Constraint>,
     /// Whether every parameter and the return type carry an annotation.
     ///
     /// Only a complete signature is held to `T055`. Leaving a parameter or the
@@ -420,6 +423,12 @@ pub struct InferCtx {
     /// Pre-typeclass code never adds to this list; the solver is a no-op when
     /// it is empty, so unconstrained modules are completely unaffected.
     pub deferred_constraints: Vec<ridge_types::Constraint>,
+    /// Exact conversion constraint per `?` or explicit `errorFrom` use site.
+    /// Its fresh variables identify the solver plan without guessing an instance.
+    pub error_from_sites: FxHashMap<ridge_ast::Span, Vec<ridge_types::Constraint>>,
+    /// Propagations whose destination is still an inference variable. Resolve
+    /// after the surrounding body's expected type has reached that variable.
+    pub pending_error_propagations: Vec<(Type, Type, ridge_ast::Span)>,
 
     /// The signature variables under check, by the identity they were minted
     /// with.
@@ -603,6 +612,8 @@ impl InferCtx {
             anon_records: AnonRecordTable::default(),
             demanded_rows: FxHashSet::default(),
             deferred_constraints: Vec::new(),
+            error_from_sites: FxHashMap::default(),
+            pending_error_propagations: Vec::new(),
             rigids: FxHashMap::default(),
             monomorphic_in_scc: FxHashMap::default(),
             dict_resolution_accum: rustc_hash::FxHashMap::default(),

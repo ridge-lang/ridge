@@ -26,6 +26,7 @@ pub mod cross_module;
 pub mod ctx;
 pub mod derive;
 pub mod error;
+mod error_conversion;
 pub mod exhaustiveness;
 mod flow;
 pub mod infer;
@@ -233,21 +234,23 @@ pub struct TypedModule {
     /// Per-constraint dictionary resolution plan produced by the constraint
     /// solver.
     ///
-    /// Keyed by `(ClassId, TyVid)` — uniquely identifies one deferred
-    /// constraint at one instantiation site. The lowering pass reads this map
+    /// Keyed by the complete constraint, including every type argument at
+    /// its instantiation site. The lowering pass reads this map
     /// to emit dictionary arguments at constrained call sites.
     ///
     /// Empty for modules that contain no constrained functions (the common
     /// pre-typeclass case).
     pub dict_resolution: DictResolution,
+    /// Exact dictionary constraint for each implicit or explicit error conversion.
+    pub error_from_sites: FxHashMap<ridge_ast::Span, Vec<ridge_types::Constraint>>,
     /// Quoted lambdas captured during inference, keyed by the lambda's span.
     ///
     /// The lowering pass reads this to reify a quoted body into a `QExpr` tree
     /// instead of a closure. Empty for any module that uses no quotation.
     pub quoted_lambdas: FxHashMap<ridge_ast::Span, crate::quote::QuoteInfo>,
-    /// Per parametric `instance` declaration, the REAL inference [`TyVid`] of
-    /// each `where`-clause constraint's head variable, indexed in `where`-clause
-    /// order (one entry per constraint). Keyed by the `InstanceDecl` span.
+    /// Per parametric `instance` declaration, the real inference [`TyVid`] tuple
+    /// of each `where` constraint, in written parameter order. The outer list
+    /// follows constraint order and is keyed by the `InstanceDecl` span.
     ///
     /// Produced by [`crate::scc::infer_instance_methods`], which type-checks
     /// instance method bodies (so `node_types` carry real variables) and records
@@ -256,7 +259,7 @@ pub struct TypedModule {
     /// of positional sentinels, so a class-method call on the left vs. the right
     /// entity of a multi-`Row` instance forwards the matching dictionary rather
     /// than always the first. Empty for modules with no parametric instances.
-    pub instance_dict_constraints: FxHashMap<ridge_ast::Span, Vec<TyVid>>,
+    pub instance_dict_constraints: FxHashMap<ridge_ast::Span, Vec<Vec<TyVid>>>,
 }
 
 // ── Entry points ──────────────────────────────────────────────────────────────
@@ -445,6 +448,7 @@ pub fn typecheck_workspace_with_history(
                 inferred_caps: FxHashMap::default(),
                 match_witnesses: FxHashMap::default(),
                 dict_resolution: FxHashMap::default(),
+                error_from_sites: FxHashMap::default(),
                 quoted_lambdas: FxHashMap::default(),
                 instance_dict_constraints: FxHashMap::default(),
             });
@@ -574,6 +578,7 @@ fn empty_module_result(module_id: ModuleId) -> ModuleTypecheckResult {
             inferred_caps: FxHashMap::default(),
             match_witnesses: FxHashMap::default(),
             dict_resolution: FxHashMap::default(),
+            error_from_sites: FxHashMap::default(),
             quoted_lambdas: FxHashMap::default(),
             instance_dict_constraints: FxHashMap::default(),
         },
@@ -1443,6 +1448,31 @@ fn typecheck_module_inner(
     let instance_dict_constraints =
         crate::scc::infer_instance_methods(&mut ctx, b, ast, ct, ie, !is_stdlib);
 
+    // Conversion sites outside ordinary function SCCs (for example a try
+    // expression in an actor body) still require a checked dictionary. Keep
+    // unrelated legacy deferred constraints on their existing path.
+    if !ctx.pending_error_propagations.is_empty()
+        || ctx
+            .deferred_constraints
+            .iter()
+            .any(|c| c.class == ridge_types::ERROR_FROM_CLASS)
+    {
+        let (conversions, other): (Vec<_>, Vec<_>) = std::mem::take(&mut ctx.deferred_constraints)
+            .into_iter()
+            .partition(|c| c.class == ridge_types::ERROR_FROM_CLASS);
+        ctx.deferred_constraints = conversions;
+        let (_, plans) = crate::solve::solve_constraints(
+            &mut ctx,
+            ie,
+            ct,
+            &rustc_hash::FxHashSet::default(),
+            ridge_ast::Span::point(0),
+            Some(b),
+        );
+        ctx.dict_resolution_accum.extend(plans);
+        ctx.deferred_constraints = other;
+    }
+
     // Step E: Actor encapsulation checks + mailbox config validation.
     for item in &ast.items {
         if let Item::Actor(ad) = item {
@@ -1518,7 +1548,8 @@ fn typecheck_module_inner(
         inferred_caps,
         match_witnesses: FxHashMap::default(), // T17: populated by infer_expr
         dict_resolution, // populated by the constraint solver when classes are used
-        quoted_lambdas,  // populated by the quotation checker when quotes are used
+        error_from_sites: std::mem::take(&mut ctx.error_from_sites),
+        quoted_lambdas, // populated by the quotation checker when quotes are used
         instance_dict_constraints, // populated by Step D3 (infer_instance_methods)
     };
 
@@ -2465,8 +2496,31 @@ fn seed_summarizable_scheme(
     );
 }
 
-/// Seed type-environment schemes for the five prelude class methods (`toText`,
-/// `eq`, `compare`, `encode`, `decode`) so that bare calls are typed with a
+/// Seed the two-parameter prelude conversion method.
+fn seed_error_from_method_scheme(ctx: &mut crate::ctx::InferCtx) {
+    let source = ctx.fresh_tyvid();
+    let target = ctx.fresh_tyvid();
+    ctx.env.bind(
+        "errorFrom".to_owned(),
+        ridge_types::Scheme {
+            vars: vec![source, target],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: ridge_types::Type::Fn {
+                params: vec![ridge_types::Type::Var(source)],
+                ret: Box::new(ridge_types::Type::Var(target)),
+                caps: ridge_types::CapRow::Concrete(ridge_types::CapabilitySet::PURE),
+            },
+            constraints: vec![ridge_types::Constraint::new(
+                ridge_types::ERROR_FROM_CLASS,
+                smallvec::smallvec![source, target],
+            )],
+        },
+    );
+}
+
+/// Seed type-environment schemes for the prelude class methods (`toText`,
+/// `eq`, `compare`, `encode`, `decode`, `errorFrom`) so that bare calls are typed with a
 /// concrete return type without an inline `class` redeclaration.
 ///
 /// The prelude class registry (`register_prelude_classes`) leaves each method's
@@ -2499,6 +2553,8 @@ fn seed_prelude_class_method_schemes(
         CapRow, CapabilitySet, Constraint, Scheme, Type, DECODE_CLASS, ENCODE_CLASS, EQ_CLASS,
         ORD_CLASS, TOTEXT_CLASS,
     };
+
+    seed_error_from_method_scheme(ctx);
 
     // ── toText :: ∀a. a → Text where ToText a ────────────────────────────────
     {

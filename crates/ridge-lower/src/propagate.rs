@@ -124,35 +124,57 @@ fn lower_propagate_result(ctx: &mut LowerCtx<'_>, inner: &Expr, span: Span) -> I
         let local_id = ctx.fresh_id(None);
         let construct_id = ctx.fresh_id(None);
         let return_id = ctx.fresh_id(None);
+        let error = IrExpr::Local {
+            id: local_id,
+            name: e_name.clone(),
+            span,
+        };
+        let error = if ctx
+            .error_from_sites
+            .is_some_and(|sites| sites.contains_key(&span))
+        {
+            let callee = error_from_method(ctx, span);
+            IrExpr::Call {
+                id: ctx.fresh_id(None),
+                callee: Box::new(callee),
+                args: vec![error],
+                span,
+            }
+        } else {
+            error
+        };
+        let value = Box::new(IrExpr::Construct {
+            id: construct_id,
+            ctor: SymbolRef::Prelude { name: "Err".into() },
+            fields: vec![("$0".into(), error)],
+            span,
+        });
+        let exit = if ctx.in_result_scope() {
+            IrExpr::ResultExit {
+                id: return_id,
+                value,
+                span,
+            }
+        } else {
+            IrExpr::Return {
+                id: return_id,
+                value,
+                span,
+            }
+        };
         IrArm {
             pat: IrPat::Ctor {
                 sym: SymbolRef::Prelude { name: "Err".into() },
                 fields: vec![],
                 args: vec![IrPat::Bind {
-                    name: e_name.clone(),
+                    name: e_name,
                     inner: None,
                     span,
                 }],
                 span,
             },
             when: None,
-            body: IrExpr::Return {
-                id: return_id,
-                value: Box::new(IrExpr::Construct {
-                    id: construct_id,
-                    ctor: SymbolRef::Prelude { name: "Err".into() },
-                    fields: vec![(
-                        "$0".into(),
-                        IrExpr::Local {
-                            id: local_id,
-                            name: e_name,
-                            span,
-                        },
-                    )],
-                    span,
-                }),
-                span,
-            },
+            body: exit,
             span,
         }
     };
@@ -163,6 +185,50 @@ fn lower_propagate_result(ctx: &mut LowerCtx<'_>, inner: &Expr, span: Span) -> I
         arms: vec![ok_arm, err_arm],
         span,
     }
+}
+
+/// Project the method from this use site's solved dictionary. Never guess a
+/// same-class instance: a source error can have several valid destinations.
+pub(crate) fn error_from_method(ctx: &mut LowerCtx<'_>, span: Span) -> IrExpr {
+    let constraint = ctx
+        .error_from_sites
+        .and_then(|sites| sites.get(&span))
+        .and_then(|cs| cs.first())
+        .cloned();
+    let dictionary = error_from_dictionary(ctx, constraint.as_ref(), span);
+    IrExpr::Field {
+        id: ctx.fresh_id(None),
+        base: Box::new(dictionary),
+        field: "errorFrom".to_owned(),
+        span,
+    }
+}
+
+/// Resolve a checked conversion at its original instantiation site, including
+/// dictionaries passed into ordinary generic functions.
+pub(crate) fn error_from_dictionary(
+    ctx: &mut LowerCtx<'_>,
+    constraint: Option<&ridge_types::Constraint>,
+    span: Span,
+) -> IrExpr {
+    let plan = constraint.and_then(|c| {
+        ctx.workspace
+            .and_then(|ws| ws.modules.get(ctx.module_id.0 as usize))
+            .and_then(|module| module.dict_resolution.get(c))
+            .cloned()
+    });
+    let Some(plan) = plan else {
+        ctx.errors.push(LowerError::InternalLoweringError {
+            span,
+            message: "missing checked error conversion dictionary".to_owned(),
+        });
+        return IrExpr::Lit {
+            id: ctx.fresh_id(None),
+            value: IrLit::Unit,
+            span,
+        };
+    };
+    crate::core::dict_plan_to_expr(ctx, ridge_types::ERROR_FROM_CLASS, plan, "ErrorFrom", span)
 }
 
 // ── Option context ────────────────────────────────────────────────────────────

@@ -376,6 +376,32 @@ Capability-bearing modules (`std.io`, `std.fs`, `std.net.http`, `std.time`, `std
 
 #### Option and Result
 
+For `Result`, postfix `?` first unifies the operand's error type with the
+enclosing propagation scope's error type. When they unify, propagation passes
+the error through unchanged. Otherwise it requires a direct instance of the
+two-parameter prelude class:
+
+```ridge
+class ErrorFrom e f =
+    errorFrom (x: e) -> f
+```
+
+This class is provided by the compiler and cannot be redeclared.
+
+On `Err e`, the operator returns `Err (errorFrom e)` from that scope; on `Ok a`,
+it produces `a` without calling the conversion. The operand is evaluated once.
+A failed speculative unification does not constrain either type before the
+conversion is checked. A generic function declares `where ErrorFrom e f` when
+it propagates from error `e` to error `f`.
+Both positions in a generic `where` constraint are type variables. Conversion
+methods are pure and cannot consume capabilities.
+
+There is no functional dependency between the two parameters: the same source
+error may convert to different destination errors. Instances are not chained
+automatically. This conversion applies only at `Result` propagation sites;
+ordinary returns and match arms still require matching types. `Option`
+propagation retains its existing behavior. No reflexive instance is needed.
+
 ```ridge
 -- ? propagates None or Err upward
 fn getUserEmail (userId: Int) -> Result Text Error =
@@ -389,10 +415,16 @@ fn fs net processOrder (orderId: Int) -> Result OrderResult Error =
         let order = fetchOrder orderId ?
         let user = fetchUser order.userId ?
         let payment = chargeCard user.card order.total ?
-        Ok { order = order, payment = payment }
+        OrderResult { order = order, payment = payment }
 ```
 
-`try { ... }` is a **value-producing expression**: it yields `Result`/`Option`. An unused non-`Unit` result produces a compiler warning (`discarded_result`). To explicitly discard, use `Result.discard : Result a e -> Unit` or `Option.discard : Option a -> Unit` from the stdlib, or use `match`. Ridge has no monadic do-notation — `try` + `?` is the idiomatic chaining mechanism.
+`try` is a value-producing expression of type `Result a e`. Normal completion
+wraps its final payload in `Ok`; `?` exits the nearest propagation scope with
+`Err`. Nested functions establish their own propagation scope. An explicit
+`return` still exits the current function, and unrelated runtime exceptions
+remain exceptions. Assignments to enclosing mutable locals that execute before
+an exit remain visible afterwards; statements following that exit do not run.
+Use `Result.discard` or `match` to explicitly discard a Result.
 
 ### 3.8. Capabilities (effects)
 

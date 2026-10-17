@@ -1189,6 +1189,16 @@ impl WorkspaceIndex {
         let mid = self.module_id_for(uri)?;
         let mi = mid.0 as usize;
         let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
+        if let Some((name, span)) = self.class_name_at(mi, offset) {
+            if self.find_workspace_class(&name).is_none() {
+                if let Some((header, doc)) = crate::prelude_defs::card(&name) {
+                    return Some((
+                        render_hover_card(&header, Some("class".to_owned()), doc),
+                        span,
+                    ));
+                }
+            }
+        }
 
         // The inferred type lives on the narrowest expression-like node (idents
         // do not carry a written-back type). A type-position reference — `Book`
@@ -1350,6 +1360,11 @@ impl WorkspaceIndex {
                 }
             }
             Some(Binding::ClassMethod { class_name, method }) => {
+                if class_name == "ErrorFrom" {
+                    if let Some((header, doc)) = crate::prelude_defs::card(method) {
+                        return render_hover_card(&header, Some("class method".to_owned()), doc);
+                    }
+                }
                 if let Some((header, doc)) =
                     crate::stdlib_defs::stdlib_class_method_card(class_name, method)
                 {
@@ -1757,6 +1772,13 @@ impl WorkspaceIndex {
         let mid = self.module_id_for(uri)?;
         let mi = mid.0 as usize;
         let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
+        if let Some((name, _)) = self.class_name_at(mi, offset) {
+            if self.find_workspace_class(&name).is_none() {
+                if let Some(location) = crate::prelude_defs::location(&name) {
+                    return Some(location);
+                }
+            }
+        }
 
         // A record field use (`user.age`) carries no binding on its name node;
         // it resolves through the base expression's type to the field's
@@ -1811,7 +1833,12 @@ impl WorkspaceIndex {
                 // A stdlib verb (`filter`, `joinOn`, …) resolves into the
                 // materialised stdlib source; a class declared in the workspace
                 // resolves to the method signature in that `class` declaration.
-                crate::stdlib_defs::stdlib_class_method_location(class_name, method)
+                (class_name == "ErrorFrom")
+                    .then(|| crate::prelude_defs::location(method))
+                    .flatten()
+                    .or_else(|| {
+                        crate::stdlib_defs::stdlib_class_method_location(class_name, method)
+                    })
                     .or_else(|| self.workspace_class_method_location(class_name, method))
             }
             // The bare `(.field)` accessor shorthand (owner type unknown) and
@@ -2025,11 +2052,12 @@ impl WorkspaceIndex {
         // Only a class-name token (in a `class` decl or an `instance` head) is an
         // anchor; on a method name the scan returns `Some((_, Some(_)))`, which
         // is rejected here.
-        let (class, None) = self.class_target_in_ast(mi, offset)? else {
-            return None;
-        };
-        let (cmi, decl) = self.find_workspace_class(&class)?;
-        Some(vec![self.class_hierarchy_item(cmi, decl)?])
+        let (class, _) = self.class_name_at(mi, offset)?;
+        if let Some((cmi, decl)) = self.find_workspace_class(&class) {
+            Some(vec![self.class_hierarchy_item(cmi, decl)?])
+        } else {
+            Some(vec![crate::prelude_defs::hierarchy_item(&class)?])
+        }
     }
 
     /// Resolve a `typeHierarchy/supertypes` request from an item's `data`. A
@@ -2045,8 +2073,13 @@ impl WorkspaceIndex {
                 if let Some(item) = self.class_hierarchy_item(cmi, decl) {
                     items.push(item);
                 }
+            } else if let Some(item) = crate::prelude_defs::hierarchy_item(&class) {
+                items.push(item);
             }
         } else {
+            if crate::prelude_defs::hierarchy_item(&class).is_some() {
+                return Some(Vec::new());
+            }
             let (_, decl) = self.find_workspace_class(&class)?;
             for sup in &decl.superclasses {
                 if let Some((smi, sdecl)) = self.find_workspace_class(&sup.class.text) {
@@ -2266,7 +2299,10 @@ impl WorkspaceIndex {
                     .or_else(|| self.builtin_constructor_signature(name))
             }
             Binding::ClassMethod { class_name, method } => {
-                crate::stdlib_defs::stdlib_class_method_signature(class_name, method)
+                crate::prelude_defs::signature(class_name, method)
+                    .or_else(|| {
+                        crate::stdlib_defs::stdlib_class_method_signature(class_name, method)
+                    })
                     .or_else(|| self.workspace_class_method_signature(class_name, method))
             }
             Binding::ModuleSymbol { module, symbol }
@@ -2515,8 +2551,9 @@ impl WorkspaceIndex {
                 Some((ty, MOD_DEFAULT_LIBRARY))
             }
             Binding::ClassMethod { class_name, method } => {
-                let stdlib =
-                    crate::stdlib_defs::stdlib_class_method_signature(class_name, method).is_some();
+                let stdlib = crate::stdlib_defs::stdlib_class_method_signature(class_name, method)
+                    .is_some()
+                    || crate::prelude_defs::signature(class_name, method).is_some();
                 Some((TT_METHOD, if stdlib { MOD_DEFAULT_LIBRARY } else { 0 }))
             }
             Binding::FieldAccessor { .. } => Some((TT_PROPERTY, 0)),
@@ -2952,7 +2989,11 @@ impl WorkspaceIndex {
                     .or_else(|| self.symbol_def_span(*owner_module, *owner_type))?;
                 self.location_in(*owner_module, span)
             }
-            ReferentKey::Stdlib(..) | ReferentKey::ClassMethod(..) => None,
+            ReferentKey::ClassMethod(class, method) => {
+                crate::prelude_defs::signature(class, method)?;
+                crate::prelude_defs::location(method)
+            }
+            ReferentKey::Stdlib(..) => None,
         }
     }
 
@@ -5451,6 +5492,9 @@ impl WorkspaceIndex {
     /// no resolvable declaration.
     #[must_use]
     pub fn resolve_completion(&self, data: &serde_json::Value) -> Option<(String, Option<String>)> {
+        if let Some(name) = data.get("prelude").and_then(serde_json::Value::as_str) {
+            return crate::prelude_defs::card(name);
+        }
         // A built-in type. Answered from the same table hover reads, so the two
         // surfaces cannot drift into saying different things about `Int`.
         if let Some(name) = data.get("builtin").and_then(serde_json::Value::as_str) {
@@ -5505,7 +5549,21 @@ impl WorkspaceIndex {
         let m = self.modules.get(mi)?;
 
         let mut out: Vec<CompletionItemData> = Vec::new();
-        match detect_context(src, offset) {
+        let context = detect_context(src, offset);
+        if let Context::Expr { prefix } | Context::Type { prefix } = &context {
+            if "ErrorFrom".starts_with(prefix)
+                && src[..offset]
+                    .rsplit('\n')
+                    .next()
+                    .is_some_and(|line| line.contains("where ") || line.contains("instance "))
+            {
+                let mut candidate = item("ErrorFrom".to_owned(), CompletionItemKind::CLASS, '1');
+                candidate.detail = crate::prelude_defs::card("ErrorFrom").map(|card| card.0);
+                candidate.data = Some(serde_json::json!({"prelude":"ErrorFrom"}));
+                out.push(candidate);
+            }
+        }
+        match context {
             Context::None => {}
             Context::PipelineMember { alias, prefix } => {
                 // `x |> Alias.partial` — the alias's stdlib exports whose LAST
@@ -5598,6 +5656,15 @@ impl WorkspaceIndex {
                     }
                 }
                 self.append_import_completions(&m.imports, &prefix, &mut out);
+                if "errorFrom".starts_with(&prefix)
+                    && !out.iter().any(|candidate| candidate.label == "errorFrom")
+                {
+                    let mut candidate =
+                        item("errorFrom".to_owned(), CompletionItemKind::FUNCTION, '2');
+                    candidate.detail = crate::prelude_defs::card("errorFrom").map(|card| card.0);
+                    candidate.data = Some(serde_json::json!({"prelude": "errorFrom"}));
+                    out.push(candidate);
+                }
                 // Hard keywords and contextual ones (`child`) are both offered
                 // here; rename consults only the hard set.
                 for kw in KEYWORDS.iter().chain(CONTEXTUAL_KEYWORDS) {
@@ -6741,19 +6808,8 @@ pub fn collect_signature_fixes(
                     out.push(fix);
                 }
             }
-            TypeError::MissingConstraint {
-                decl,
-                class,
-                ty_var,
-                span,
-                ..
-            } => {
-                if let Some(f) = find_fn(module, *span) {
-                    // The quick-fix writes the constraint into the signature,
-                    // so it needs the variable as the reader sees it.
-                    let ty_var = ty_var.render(&typed.tycons);
-                    push_constraint_fix(&mut out, uri, li, f, decl, class, &ty_var);
-                }
+            TypeError::MissingConstraint { .. } => {
+                push_missing_constraint_fix(&mut out, uri, li, module, typed, err);
             }
             _ => {}
         }
@@ -6772,6 +6828,50 @@ pub fn collect_signature_fixes(
         ))
     });
     out
+}
+
+/// Place a missing constraint only where its variables can be written legally.
+fn push_missing_constraint_fix(
+    out: &mut Vec<SignatureFix>,
+    uri: &Url,
+    li: &LineIndex,
+    module: &ridge_typecheck::TypedModule,
+    typed: &TypedWorkspace,
+    error: &TypeError,
+) {
+    let TypeError::MissingConstraint {
+        decl,
+        class,
+        ty_var,
+        span,
+        ..
+    } = error
+    else {
+        return;
+    };
+    let ty_var = ty_var.render(&typed.tycons);
+    // Where clauses accept variable names, not concrete type terms.
+    if !constraint_uses_variables(&ty_var) {
+        return;
+    }
+    if let Some(f) = find_fn(module, *span) {
+        push_constraint_fix(out, uri, li, f, decl, class, &ty_var);
+    } else if let Some(instance) = module.ast.items.iter().find_map(|item| match item {
+        ridge_ast::Item::InstanceDecl(instance) if instance.span == *span => Some(instance),
+        _ => None,
+    }) {
+        push_instance_constraint_fix(out, uri, li, instance, class, &ty_var);
+    }
+}
+
+/// Check whether a rendered constraint contains only variable names.
+fn constraint_uses_variables(variables: &str) -> bool {
+    variables.split_whitespace().all(|variable| {
+        variable
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_lowercase() || ch == '_')
+    })
 }
 
 /// `true` when `inner` lies inside `outer` (byte-span containment).
@@ -6923,6 +7023,39 @@ fn push_constraint_fix(
         new_text,
         code: "T055",
         title: format!("Add `{class} {ty_var}` to `{decl_name}`"),
+    });
+}
+
+/// A missing promise in a conversion body belongs to the instance's context.
+fn push_instance_constraint_fix(
+    out: &mut Vec<SignatureFix>,
+    uri: &Url,
+    li: &LineIndex,
+    decl: &ridge_ast::InstanceDecl,
+    class: &str,
+    vars: &str,
+) {
+    let head_vars = ridge_typecheck::collect::flatten_head_arg_names(&decl.head);
+    if !vars
+        .split_whitespace()
+        .all(|var| head_vars.contains(&Some(var)))
+    {
+        return;
+    }
+    let (byte, new_text) = if let Some(last) = decl.constraints.last() {
+        (last.span.end, format!(", {class} {vars}"))
+    } else if let Some(last) = decl.head.last() {
+        (last.span().end, format!(" where {class} {vars}"))
+    } else {
+        return;
+    };
+    out.push(SignatureFix {
+        uri: uri.clone(),
+        decl_range: span_to_range(li, decl.span),
+        edit_range: point_range(li, byte),
+        new_text,
+        code: "T055",
+        title: format!("Add `{class} {vars}` to this instance"),
     });
 }
 

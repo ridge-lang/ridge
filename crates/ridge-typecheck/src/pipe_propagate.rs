@@ -152,8 +152,8 @@ pub fn infer_propagate(ctx: &mut InferCtx, b: &BuiltinTyCons, inner: &Expr, span
         if matches!(ctx.shallow_resolve(&target_ty), Type::Var(_)) {
             let resolved_inner = ctx.shallow_resolve(&inner_ty);
             let forced = match &resolved_inner {
-                Type::Con(id, args) if *id == b.result => {
-                    let err_ty = args.get(1).cloned().unwrap_or(Type::Error);
+                Type::Con(id, _) if *id == b.result => {
+                    let err_ty = Type::Var(ctx.fresh_tyvid());
                     Some(Type::Con(
                         b.result,
                         vec![Type::Var(ctx.fresh_tyvid()), err_ty],
@@ -186,12 +186,12 @@ pub fn infer_propagate(ctx: &mut InferCtx, b: &BuiltinTyCons, inner: &Expr, span
                     Ok(()) => {
                         // Unify the error slots.
                         let err_type = args.get(1).cloned().unwrap_or(Type::Error);
-                        if let Err(e) = unify(ctx, &beta, &err_type) {
-                            ctx.errors.push(attach_span(e, span));
-                            Type::Error
+                        if matches!(ctx.shallow_resolve(&err_type), Type::Var(_)) {
+                            ctx.pending_error_propagations.push((beta, err_type, span));
                         } else {
-                            ctx.shallow_resolve(&alpha)
+                            constrain_error_types(ctx, &beta, &err_type, span);
                         }
+                        ctx.shallow_resolve(&alpha)
                     }
                     Err(e) => {
                         // Inner does not unify with Result _ _ — regular
@@ -238,6 +238,35 @@ pub fn infer_propagate(ctx: &mut InferCtx, b: &BuiltinTyCons, inner: &Expr, span
         });
         Type::Error
     }
+}
+
+/// Apply propagation requirements after expected types have reached inferred
+/// `try` and lambda return slots, before solving classes or generalising.
+pub(crate) fn finish_error_propagations(ctx: &mut InferCtx) {
+    for (source, target, span) in std::mem::take(&mut ctx.pending_error_propagations) {
+        constrain_error_types(ctx, &source, &target, span);
+    }
+}
+
+/// Equality wins; a failed speculative equality leaves no partial bindings.
+fn constrain_error_types(ctx: &mut InferCtx, source_ty: &Type, target_ty: &Type, span: Span) {
+    if crate::unify::try_unify(ctx, source_ty, target_ty) {
+        return;
+    }
+    let source = ctx.fresh_tyvid();
+    let target = ctx.fresh_tyvid();
+    let bindings = unify(ctx, &Type::Var(source), source_ty)
+        .and_then(|()| unify(ctx, &Type::Var(target), target_ty));
+    if let Err(error) = bindings {
+        ctx.errors.push(attach_span(error, span));
+        return;
+    }
+    let conversion = ridge_types::Constraint::new(
+        ridge_types::ERROR_FROM_CLASS,
+        smallvec::smallvec![source, target],
+    );
+    ctx.deferred_constraints.push(conversion.clone());
+    ctx.error_from_sites.insert(span, vec![conversion]);
 }
 
 // ── Try block ─────────────────────────────────────────────────────────────────

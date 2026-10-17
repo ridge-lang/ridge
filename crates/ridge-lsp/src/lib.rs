@@ -50,6 +50,7 @@ pub mod completion;
 pub mod diagnostics;
 pub mod format;
 pub mod index;
+mod prelude_defs;
 pub mod server;
 pub mod span_recovery;
 pub mod stdlib_defs;

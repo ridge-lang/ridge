@@ -190,6 +190,12 @@ pub fn print_lit(l: &CErlLit) -> String {
 #[must_use]
 pub fn print_expr(e: &CErlExpr) -> String {
     match e {
+        CErlExpr::BindTuple { .. } => "<unresolved tuple binding>".into(),
+        CErlExpr::PrimOp { name, args } => format!(
+            "primop {} ({})",
+            print_atom(name),
+            args.iter().map(print_expr).collect::<Vec<_>>().join(", ")
+        ),
         CErlExpr::Lit(l) => print_lit(l),
         CErlExpr::Var(v) => print_var(v),
         CErlExpr::Fun { params, body } => {

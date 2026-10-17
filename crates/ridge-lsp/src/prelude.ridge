@@ -1,0 +1,5 @@
+-- Converts an error to the enclosing Result's error type during propagation.
+-- A matching instance is required only when the error types do not unify.
+-- Conversions are direct: there is no automatic chaining between instances.
+class ErrorFrom e f =
+    errorFrom (x: e) -> f

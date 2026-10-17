@@ -183,9 +183,10 @@ fn contains_non_bif_call(expr: &CErlExpr) -> bool {
         }
 
         // `apply` indirects through a fun reference; never legal in a guard.
-        CErlExpr::Apply { .. } => true,
+        CErlExpr::Apply { .. } | CErlExpr::PrimOp { .. } => true,
 
         CErlExpr::Fun { body, .. } => contains_non_bif_call(body),
+        CErlExpr::BindTuple { value, .. } => contains_non_bif_call(value),
         CErlExpr::Let { value, body, .. } => {
             contains_non_bif_call(value) || contains_non_bif_call(body)
         }
@@ -434,10 +435,9 @@ pub(crate) fn lower_expr_in_scope(
             if name == "__state" {
                 return Ok(crate::init::state_expr(scope.actor_state_idx));
             }
-            let mangled = name_to_erl_var(name);
             let var = match scope.current_index(name) {
-                Some(idx) => ssa_var(&mangled, idx),
-                None => CErlVar(mangled),
+                Some(_) => scope.mutable_value(scope.mutable_key(name)),
+                None => CErlVar(name_to_erl_var(name)),
             };
             Ok(CErlExpr::Var(var))
         }
@@ -553,14 +553,19 @@ pub(crate) fn lower_expr_in_scope(
 
         // §4.7 — VarIn: introduce the var-bound local at SSA index 0.
         IrExpr::VarIn {
-            name, value, body, ..
+            id,
+            name,
+            value,
+            body,
+            ..
         } => {
-            let mangled = name_to_erl_var(name);
-            let idx = scope.bump(name); // always returns 0 for a fresh name
             let lowered_value = lower_expr_in_scope(value, scope)?;
+            let previous = scope.enter_mutable(name, id.0);
+            let var = scope.mutable_value(scope.mutable_key(name));
             let lowered_body = lower_expr_in_scope(body, scope)?;
+            scope.leave_mutable(name, previous);
             Ok(CErlExpr::Let {
-                var: ssa_var(&mangled, idx),
+                var,
                 value: Box::new(lowered_value),
                 body: Box::new(lowered_body),
             })
@@ -588,6 +593,12 @@ pub(crate) fn lower_expr_in_scope(
         IrExpr::Return { value, .. } => {
             let lowered_value = lower_expr_in_scope(value, scope)?;
             Ok(lower_return(lowered_value))
+        }
+        IrExpr::ResultScope { id, body, .. } => crate::result_scope::lower(body, id.0, scope),
+        IrExpr::ResultExit { value, .. } => {
+            let value = lower_expr_in_scope(value, scope)?;
+            let value = crate::result_scope::pack_exit(value, scope);
+            Ok(crate::return_::lower_result_exit(value))
         }
 
         // §4.10 — Block: sequence via Do, with Assign-as-Let promotion.
@@ -840,16 +851,16 @@ fn lower_block_stmts(
                     value,
                     ..
                 } => {
-                    let mangled = name_to_erl_var(name);
                     // Lower the RHS against the pre-assignment scope. `x <- x + 1`
                     // must read the current SSA version of `x`, not the one the
                     // binder is about to introduce, so the value is lowered before
                     // the bump; only the binder advances the index.
                     let lowered_value = lower_expr_in_scope(value, scope)?;
-                    let new_idx = scope.bump(name);
+                    scope.bump(name);
+                    let var = scope.mutable_value(scope.mutable_key(name));
                     let lowered_rest = lower_block_stmts(rest, scope, span)?;
                     Ok(CErlExpr::Let {
-                        var: ssa_var(&mangled, new_idx),
+                        var,
                         value: Box::new(lowered_value),
                         body: Box::new(lowered_rest),
                     })
@@ -1178,9 +1189,8 @@ pub(crate) fn lower_lambda(
     body: &IrExpr,
     outer_scope: &LocalScope,
 ) -> Result<CErlExpr, CodegenError> {
-    // Fresh scope — lambda body is in a new variable scope.  Outer var-bound
-    // SSA indices do not flow into the lambda body (Erlang funs are closures
-    // over names, not over SSA slots).
+    // The function has its own mutation scope and captures the enclosing
+    // bindings at their current SSA versions. Parameters shadow those captures.
     // The fn-arity table IS inherited so that SymbolRef::Local values inside
     // lambda bodies (e.g. `List.map f items` where `f` is a local fn) resolve.
     // own_module_beam_name is also inherited so that `spawn` expressions inside
@@ -1194,6 +1204,7 @@ pub(crate) fn lower_lambda(
     // registered in the outer handler scope must still be recognised as
     // letrec-local (not parent-module) from inside any nested lambda.
     let mut lambda_scope = LocalScope::with_arity_arc(std::sync::Arc::clone(&outer_scope.fn_arity));
+    lambda_scope.inherit_mutable_captures(outer_scope, params);
     lambda_scope
         .own_module_beam_name
         .clone_from(&outer_scope.own_module_beam_name);

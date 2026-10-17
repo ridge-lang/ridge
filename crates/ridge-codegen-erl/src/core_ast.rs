@@ -86,6 +86,13 @@ pub enum CErlExpr {
         /// Argument expressions.
         args: Vec<CErlExpr>,
     },
+    /// Core primitive operation, including re-raising an opaque catch stack.
+    PrimOp {
+        /// Core operation name.
+        name: CErlAtom,
+        /// Arguments in evaluation order.
+        args: Vec<CErlExpr>,
+    },
     /// Primary local-fn reference: `'fname'/3`.
     LocalFnRef {
         /// The local function name atom.
@@ -101,6 +108,16 @@ pub enum CErlExpr {
         value: Box<CErlExpr>,
         /// The body expression in which `var` is in scope.
         body: Box<CErlExpr>,
+    },
+    /// Intermediate tuple binding whose variables enclose its consumer.
+    /// Eliminated before printing; its value is the first bound variable.
+    BindTuple {
+        /// Result binding, also the expression's value.
+        result: CErlVar,
+        /// Updated mutable SSA variables.
+        state: Vec<CErlVar>,
+        /// Tuple-producing expression.
+        value: Box<CErlExpr>,
     },
     /// `letrec` for recursive lets (only inner-fn recursion uses this).
     ///

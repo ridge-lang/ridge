@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `try` returns a Result, wraps normal payloads in `Ok`, and contains local
+  propagation without intercepting function returns. Executed assignments to
+  enclosing mutable locals remain visible after the block.
+
+- Result propagation with `?` can use a direct `ErrorFrom source destination`
+  instance when the error types differ. Matching error types pass through
+  unchanged, and ordinary Result returns are not implicitly converted.
+
 - Builds compile stale bundled runtime shims together, reducing repeated compiler
   startup for fresh output directories. Current outputs retain their modification
   times, and rejected shims still report the individual source file.

@@ -1970,9 +1970,9 @@ pub(crate) fn build_dict_args(
     // pins a constraint variable that appears only in the result.
     let (constraints, param_types, ret_ty) = match callee {
         IrExpr::Symbol {
-            sym: SymbolRef::Local { name, .. },
+            sym: SymbolRef::Local { name, module },
             ..
-        } => {
+        } if *module == ctx.module_id => {
             let name = name.clone();
             let constraints = ctx.lookup_fn_constraints(&name).to_vec();
             if constraints.is_empty() {
@@ -1981,6 +1981,16 @@ pub(crate) fn build_dict_args(
             let param_types = ctx.lookup_fn_param_types(&name).to_vec();
             let ret_ty = ctx.lookup_fn_ret_type(&name);
             (constraints, param_types, ret_ty)
+        }
+        IrExpr::Symbol {
+            sym: SymbolRef::Local { name, module } | SymbolRef::External { name, module },
+            ..
+        } => {
+            let Some((constraints, params, ret)) = imported_dict_signature(ctx, *module, name)
+            else {
+                return vec![];
+            };
+            (constraints, params, Some(ret))
         }
         IrExpr::Symbol {
             sym: SymbolRef::Stdlib { module, name, .. },
@@ -2043,6 +2053,23 @@ pub(crate) fn build_dict_args(
             n
         };
         let call_needs_multiple = class_total.get(&c.class).copied().unwrap_or(0) > 1;
+        if c.class == ridge_types::ERROR_FROM_CLASS {
+            let callee_span = match callee {
+                IrExpr::Symbol { span, .. } | IrExpr::Local { span, .. } => *span,
+                _ => span,
+            };
+            let constraint = ctx
+                .error_from_sites
+                .and_then(|sites| sites.get(&callee_span))
+                .and_then(|constraints| constraints.get(occurrence))
+                .cloned();
+            dict_args.push(crate::propagate::error_from_dictionary(
+                ctx,
+                constraint.as_ref(),
+                span,
+            ));
+            continue;
+        }
 
         // The concrete type the constraint variable was unified to at this call
         // site: walk the scheme's parameter (and return) types in lockstep with
@@ -2080,6 +2107,23 @@ pub(crate) fn build_dict_args(
     }
 
     dict_args
+}
+
+/// Read an imported function's dictionary contract from its producing module.
+fn imported_dict_signature(
+    ctx: &LowerCtx<'_>,
+    module: ridge_resolve::ModuleId,
+    name: &str,
+) -> Option<(Vec<ridge_types::Constraint>, Vec<Type>, Type)> {
+    let scheme = ctx
+        .workspace?
+        .module_schemes
+        .get(module.0 as usize)?
+        .get(name)?;
+    let Type::Fn { params, ret, .. } = &scheme.ty else {
+        return None;
+    };
+    Some((scheme.constraints.clone(), params.clone(), (**ret).clone()))
 }
 
 /// Peel transparent alias wrappers from a type, leaving the underlying shape.
@@ -2426,8 +2470,8 @@ fn single_static_plan_for_class(
         .workspace
         .and_then(|ws| ws.modules.get(ctx.module_id.0 as usize))?;
     let mut found: Option<&ridge_typecheck::DictPlan> = None;
-    for ((cid, _), plan) in &tmod.dict_resolution {
-        if *cid == class && matches!(plan, ridge_typecheck::DictPlan::Static { .. }) {
+    for (constraint, plan) in &tmod.dict_resolution {
+        if constraint.class == class && matches!(plan, ridge_typecheck::DictPlan::Static { .. }) {
             match found {
                 None => found = Some(plan),
                 // Several call sites that resolve the SAME instance each register
@@ -2476,8 +2520,8 @@ fn stored_static_plan_for_receiver(
     // receiver that carries no comparable spine at all.
     let mut spine_fallback: Option<&DictPlan> = None;
     let mut any_fallback: Option<&DictPlan> = None;
-    for ((cid, _), plan) in &tmod.dict_resolution {
-        if *cid != class {
+    for (constraint, plan) in &tmod.dict_resolution {
+        if constraint.class != class {
             continue;
         }
         let DictPlan::Static { tycon: t, .. } = plan else {
@@ -2872,6 +2916,10 @@ pub(crate) fn try_lower_classmethod_call(
     span: Span,
 ) -> Option<IrExpr> {
     let (class_name, method) = classmethod_binding(ctx, callee)?;
+    if class_name == "ErrorFrom" && method == "errorFrom" {
+        // Bare method values and calls share the exact solver-site path.
+        return None;
+    }
     let cid = ctx
         .class_table
         .or_else(|| ctx.workspace.map(|ws| &ws.class_table))
@@ -4343,6 +4391,9 @@ fn lower_ident(ctx: &mut LowerCtx<'_>, ident: &Ident) -> IrExpr {
         }
 
         Some(Binding::ClassMethod { class_name, method }) => {
+            if class_name == "ErrorFrom" && method == "errorFrom" {
+                return crate::propagate::error_from_method(ctx, span);
+            }
             // Lower a bare class method reference to a dictionary projection.
             //
             // Two sub-cases, mirroring the `toText` dispatch in interp.rs:

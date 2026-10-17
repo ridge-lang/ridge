@@ -38,6 +38,12 @@ type ActorModuleCache = FxHashMap<String, ModuleId>;
 /// class method such as `Row`'s `fromRow`).
 type FnConstraintCache = FxHashMap<String, (Vec<Constraint>, Vec<Type>, Type)>;
 
+/// A propagation target and its exit boundary always enter and leave together.
+struct PropagationScope {
+    ty: Type,
+    is_result_scope: bool,
+}
+
 /// Per-module state threaded through all Phase 5 lowering rules.
 ///
 /// One `LowerCtx` is created per module, lives for the duration of
@@ -64,7 +70,7 @@ pub struct LowerCtx<'tw> {
     /// Pushed when entering an `Option`/`Result`-returning scope; popped on
     /// exit.  An empty stack when a `?` operator is encountered triggers a
     /// defensive [`LowerError::PropagateOutsideScope`] (L103) (§4.2/§4.3).
-    pub propagation_scope_stack: Vec<Type>,
+    propagation_scope_stack: Vec<PropagationScope>,
     /// `true` when the lowerer is inside an actor handler or `init` body.
     ///
     /// Flips the `Assign` target classification to `StateField` vs. `Local`
@@ -158,7 +164,9 @@ pub struct LowerCtx<'tw> {
     /// on one head variable forwards the matching dictionary by variable rather
     /// than always the first same-class one. `None` for unit tests; empty for
     /// modules with no parametric instances.
-    pub instance_dict_constraints: Option<&'tw FxHashMap<Span, Vec<ridge_types::TyVid>>>,
+    pub instance_dict_constraints: Option<&'tw FxHashMap<Span, Vec<Vec<ridge_types::TyVid>>>>,
+    /// Per-use conversion constraints, keyed by the original source span.
+    pub error_from_sites: Option<&'tw FxHashMap<Span, Vec<ridge_types::Constraint>>>,
     /// Lazy name→`TyConId` cache populated on first call to
     /// [`LowerCtx::lookup_tycon_by_name`].
     tycon_name_cache: Option<TyConNameCache>,
@@ -279,6 +287,7 @@ impl<'tw> LowerCtx<'tw> {
             inferred_caps: None,
             quoted_lambdas: None,
             instance_dict_constraints: None,
+            error_from_sites: None,
             tycon_name_cache: None,
             class_table: None,
             instance_env: None,
@@ -379,7 +388,7 @@ impl<'tw> LowerCtx<'tw> {
     /// by real variable rather than positional sentinel.
     pub const fn attach_instance_dict_constraints(
         &mut self,
-        table: &'tw FxHashMap<Span, Vec<ridge_types::TyVid>>,
+        table: &'tw FxHashMap<Span, Vec<Vec<ridge_types::TyVid>>>,
     ) {
         self.instance_dict_constraints = Some(table);
     }
@@ -779,7 +788,25 @@ impl<'tw> LowerCtx<'tw> {
     /// Called when entering any `Option`- or `Result`-returning scope where
     /// `?` desugaring is valid (§4.2).
     pub fn push_propagation_scope(&mut self, ty: Type) {
-        self.propagation_scope_stack.push(ty);
+        self.propagation_scope_stack.push(PropagationScope {
+            ty,
+            is_result_scope: false,
+        });
+    }
+
+    /// Enter a value-producing Result scope, distinct from a function return.
+    pub(crate) fn push_result_scope(&mut self, ty: Type) {
+        self.propagation_scope_stack.push(PropagationScope {
+            ty,
+            is_result_scope: true,
+        });
+    }
+
+    /// Whether propagation exits a local Result scope rather than a function.
+    pub(crate) fn in_result_scope(&self) -> bool {
+        self.propagation_scope_stack
+            .last()
+            .is_some_and(|scope| scope.is_result_scope)
     }
 
     /// Pop the top propagation scope.
@@ -788,7 +815,7 @@ impl<'tw> LowerCtx<'tw> {
     /// already empty.  The caller is responsible for emitting
     /// [`LowerError::PropagateOutsideScope`] (L103) when `None` is returned.
     pub fn pop_propagation_scope(&mut self) -> Option<Type> {
-        self.propagation_scope_stack.pop()
+        self.propagation_scope_stack.pop().map(|scope| scope.ty)
     }
 
     /// Peek at the current expected return type without popping.
@@ -797,7 +824,7 @@ impl<'tw> LowerCtx<'tw> {
     /// scope).
     #[must_use]
     pub fn current_propagation_scope(&self) -> Option<&Type> {
-        self.propagation_scope_stack.last()
+        self.propagation_scope_stack.last().map(|scope| &scope.ty)
     }
 
     /// Consume the context and return the accumulated `LoweredModule`.

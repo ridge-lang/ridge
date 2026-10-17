@@ -93,6 +93,10 @@ impl LocalShape {
 pub(crate) struct LocalScope {
     /// `base_mangled_name → current_ssa_index`.
     table: FxHashMap<String, u32>,
+    /// Source names rebound by a nested mutable declaration.
+    mutable_aliases: FxHashMap<String, String>,
+    /// Mutable locals transported by the nearest Result scope.
+    pub(crate) result_scope_vars: Vec<Vec<String>>,
     /// Module-level fn/const table: `name → what it is`.
     /// Shared (Arc) so that clone (e.g. for match arms, lambda scopes) is cheap.
     pub(crate) fn_arity: Arc<FxHashMap<String, LocalShape>>,
@@ -206,6 +210,8 @@ impl LocalScope {
     pub(crate) fn new() -> Self {
         Self {
             table: FxHashMap::default(),
+            mutable_aliases: FxHashMap::default(),
+            result_scope_vars: Vec::new(),
             fn_arity: Arc::new(FxHashMap::default()),
             actor_parent: None,
             letrec_locals: Arc::new(FxHashSet::default()),
@@ -223,6 +229,8 @@ impl LocalScope {
     pub(crate) fn with_arity(fn_arity: FxHashMap<String, LocalShape>) -> Self {
         Self {
             table: FxHashMap::default(),
+            mutable_aliases: FxHashMap::default(),
+            result_scope_vars: Vec::new(),
             fn_arity: Arc::new(fn_arity),
             actor_parent: None,
             letrec_locals: Arc::new(FxHashSet::default()),
@@ -244,6 +252,8 @@ impl LocalScope {
     ) -> Self {
         Self {
             table: FxHashMap::default(),
+            mutable_aliases: FxHashMap::default(),
+            result_scope_vars: Vec::new(),
             fn_arity: Arc::new(fn_arity),
             actor_parent: None,
             letrec_locals: Arc::new(FxHashSet::default()),
@@ -261,6 +271,8 @@ impl LocalScope {
     pub(crate) fn with_arity_arc(fn_arity: Arc<FxHashMap<String, LocalShape>>) -> Self {
         Self {
             table: FxHashMap::default(),
+            mutable_aliases: FxHashMap::default(),
+            result_scope_vars: Vec::new(),
             fn_arity,
             actor_parent: None,
             letrec_locals: Arc::new(FxHashSet::default()),
@@ -284,6 +296,8 @@ impl LocalScope {
     ) -> Self {
         Self {
             table: FxHashMap::default(),
+            mutable_aliases: FxHashMap::default(),
+            result_scope_vars: Vec::new(),
             fn_arity: Arc::new(fn_arity),
             actor_parent: Some((parent_module_id, Arc::from(parent_beam_name))),
             letrec_locals: Arc::new(FxHashSet::default()),
@@ -300,12 +314,74 @@ impl LocalScope {
         }
     }
 
+    /// Allocate a binding distinct from every version in an inner scope.
+    pub(crate) fn join_index(&mut self, name: &str, inner: &Self) -> u32 {
+        let next = inner.table.get(name).copied().unwrap_or(0);
+        let entry = self.table.entry(name.to_owned()).or_insert(0);
+        *entry = (*entry).max(next);
+        let index = *entry;
+        *entry += 1;
+        index
+    }
+
+    /// Resolve a source name to its lexical mutable binding.
+    pub(crate) fn mutable_key<'a>(&'a self, name: &'a str) -> &'a str {
+        self.mutable_aliases.get(name).map_or(name, String::as_str)
+    }
+
+    /// BEAM variable base for one lexical binding, distinct for shadowed locals.
+    pub(crate) fn mutable_base(key: &str) -> String {
+        key.strip_prefix('#').map_or_else(
+            || crate::expr::name_to_erl_var(key),
+            |id| format!("MutableShadow{id}"),
+        )
+    }
+
+    /// Read a lexical binding without resolving a later shadow of its name.
+    pub(crate) fn mutable_value(&self, key: &str) -> CErlVar {
+        ssa_var(
+            &Self::mutable_base(key),
+            self.table.get(key).copied().unwrap_or(1).saturating_sub(1),
+        )
+    }
+
+    /// Introduce a mutable binding, giving shadows their own identity.
+    pub(crate) fn enter_mutable(&mut self, name: &str, id: u32) -> Option<String> {
+        let previous = self.mutable_aliases.get(name).cloned();
+        if self.current_index(name).is_some() {
+            self.mutable_aliases
+                .insert(name.to_owned(), format!("#{id}"));
+        }
+        self.bump(name);
+        previous
+    }
+
+    /// Restore name lookup after the declaration's continuation has been lowered.
+    pub(crate) fn leave_mutable(&mut self, name: &str, previous: Option<String>) {
+        if let Some(key) = previous {
+            self.mutable_aliases.insert(name.to_owned(), key);
+        } else {
+            self.mutable_aliases.remove(name);
+        }
+    }
+
+    /// Capture the current versions by value; parameters start new bindings.
+    pub(crate) fn inherit_mutable_captures(&mut self, outer: &Self, params: &[ridge_ir::IrParam]) {
+        self.table.clone_from(&outer.table);
+        self.mutable_aliases.clone_from(&outer.mutable_aliases);
+        for param in params {
+            self.mutable_aliases.remove(&param.name);
+            self.table.remove(&param.name);
+        }
+    }
+
     /// Introduce or increment the SSA index for `name`.
     ///
     /// - First call: inserts at index `0` and returns `0`.
     /// - Subsequent calls: increments and returns the new index.
     pub(crate) fn bump(&mut self, name: &str) -> u32 {
-        let entry = self.table.entry(name.to_owned()).or_insert(0);
+        let key = self.mutable_key(name).to_owned();
+        let entry = self.table.entry(key).or_insert(0);
         // For the first bump (introducing the VarIn binding), index is 0.
         // For re-assignments, the stored value is already the previous index;
         // increment it before returning.
@@ -333,7 +409,7 @@ impl LocalScope {
     /// Return the current SSA index for `name`, or `None` if the name is not
     /// tracked (i.e. it is a let-bound or param local, not a `var`).
     pub(crate) fn current_index(&self, name: &str) -> Option<u32> {
-        self.table.get(name).map(|next| {
+        self.table.get(self.mutable_key(name)).map(|next| {
             // `next` is the *next* index to be returned by `bump`.
             // `current` = next - 1 (the last index that was returned).
             next.saturating_sub(1)

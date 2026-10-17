@@ -1,22 +1,8 @@
-//! `try { ... }` block desugaring rule — §4.3.
+//! Lower a value-producing `try` expression to a neutral Result scope.
 //!
-//! Converts `Expr::Try { block, span }` to a plain continuation-form block.
-//! The `Try` boundary **disappears** after lowering — it was only a propagation-
-//! scope marker for `?` inside the block (§4.3 design note).
-//!
-//! # Scope protocol
-//!
-//! 1. Push the try block's inferred return type as the propagation scope.
-//! 2. Lower the block body via `fold_block_to_continuation`.
-//! 3. Pop the scope.
-//!
-//! The block's return type is obtained from `ctx.node_types` via the `node_id_map`
-//! (Option A, T3).  If the type cannot be resolved (no `node_id_map` attached,
-//! or `node_types` slot is `None`) `Type::Error` is pushed as the scope sentinel —
-//! any `?` inside will then fall through to its `InternalLoweringError` arm.
-//!
-//! An empty block body emits `L105` (`EmptyTryBlock`) and returns a `Unit` stub
-//! without touching the scope stack.
+//! The complete Try node has type Result; its block has the payload type.
+//! Propagation exits this scope, while explicit return still exits the function.
+//! Empty blocks produce a diagnostic and a defensive Unit stub.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![cfg_attr(
@@ -35,13 +21,7 @@ use crate::error::LowerError;
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-/// Lower `Expr::Try { block, span }` to a continuation-form block.
-///
-/// The try boundary is erased; only the propagation-scope push/pop remains as
-/// a lowering-time side effect (§4.3).
-///
-/// Never panics on any input — all error paths push a diagnostic and return a
-/// structurally valid `IrExpr`.
+/// Preserve the Result boundary while lowering the block to continuation form.
 pub fn lower_try(ctx: &mut LowerCtx<'_>, block: &Block, span: Span) -> IrExpr {
     // ── L105: empty block (defensive) ────────────────────────────────────────
     if block.stmts.is_empty() {
@@ -56,35 +36,29 @@ pub fn lower_try(ctx: &mut LowerCtx<'_>, block: &Block, span: Span) -> IrExpr {
 
     // ── Resolve the try block's return type for the propagation scope ─────────
     //
-    // Prefer: look up the block's NodeId via `(block.span, NodeKind::Block)`.
+    // Look up the complete expression via `(span, NodeKind::Try)`.
     // Fallback: `Type::Error` — the inner `?` site will emit L999.
-    let scope_ty = resolve_block_type(ctx, block.span);
+    let scope_ty = resolve_try_type(ctx, span);
 
     // ── Push scope, lower body, pop scope ─────────────────────────────────────
-    ctx.push_propagation_scope(scope_ty);
+    ctx.push_result_scope(scope_ty);
     let lowered = fold_block_to_continuation(ctx, &block.stmts, span);
     ctx.pop_propagation_scope();
 
-    lowered
+    IrExpr::ResultScope {
+        id: ctx.fresh_id(None),
+        body: Box::new(lowered),
+        span,
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Attempt to resolve the inferred type of a `try` block.
-///
-/// Looks up the block's `NodeId` via `node_id_map.get(block_span, NodeKind::Block)`
-/// (populated by Phase 4.5 T1), then reads its type from `ctx.node_types`.
-/// Falls back to `Type::Error` when no `node_id_map` is attached, the span has
-/// no stamp, or `node_types` has no entry for this `NodeId`.
-///
-/// When the fallback fires, any `?` inside the `try` block falls through to
-/// `L999 InternalLoweringError` rather than producing incorrect Match arms.
-///
-/// PHASE45-T1+T3 (OQ-PHASE45-004): block-type lookup wired via `NodeKind::Block`.
-fn resolve_block_type(ctx: &LowerCtx<'_>, block_span: Span) -> Type {
+/// Read the Result type of the whole Try node, rather than the block payload.
+fn resolve_try_type(ctx: &LowerCtx<'_>, try_span: Span) -> Type {
     ctx.node_id_map
         .as_ref()
-        .and_then(|m| m.get(block_span, NodeKind::Block))
+        .and_then(|m| m.get(try_span, NodeKind::Try))
         .and_then(|nid| ctx.node_type(nid).cloned())
         .unwrap_or(Type::Error)
 }
@@ -135,10 +109,10 @@ mod tests {
     #[test]
     fn try_block_single_stmt_no_errors_scope_empty_after() {
         let mut ctx = fresh_ctx();
-        // Push a Result scope so resolve_block_type falls back gracefully.
+        // Push a Result scope so resolve_try_type falls back gracefully.
         // (In real usage the node_id_map would look this up; here we inject it
         //  manually by pre-pushing the scope via lower_try indirectly — but
-        //  lower_try calls resolve_block_type which will return Type::Error when
+        //  lower_try calls resolve_try_type which will return Type::Error when
         //  no node_id_map is attached; that's fine for this test.)
         let span = sp_at(0, 10);
         let block = unit_block(span);
@@ -158,12 +132,16 @@ mod tests {
             "propagation scope must be empty after lower_try"
         );
 
-        // Result is the lowered Unit expression.
+        // The scope remains explicit so the backend wraps the Unit payload in Ok.
         match ir {
-            IrExpr::Lit {
-                value: IrLit::Unit, ..
-            } => {}
-            other => panic!("expected Lit Unit for single-Unit block, got {other:?}"),
+            IrExpr::ResultScope { body, .. } => assert!(matches!(
+                *body,
+                IrExpr::Lit {
+                    value: IrLit::Unit,
+                    ..
+                }
+            )),
+            other => panic!("expected ResultScope for single-Unit block, got {other:?}"),
         }
     }
 
@@ -182,7 +160,7 @@ mod tests {
         let span = sp_at(0, 20);
 
         // Manually push a Result scope — this simulates what lower_try would do
-        // after resolve_block_type returns the real type.
+        // after resolve_try_type returns the real type.
         ctx.push_propagation_scope(result_ty());
 
         // Lower the inner Propagate directly (as lower_try would do via fold_block).
@@ -246,7 +224,7 @@ mod tests {
 
     // ── T7-try-4: lower_try with Option scope type injected via try ───────────
     //
-    // lower_try pushes whatever resolve_block_type returns. When node_id_map is
+    // lower_try pushes whatever resolve_try_type returns. When node_id_map is
     // absent it returns Type::Error. We verify the scope is still popped cleanly
     // and no L105 is emitted for a non-empty block.
 
@@ -256,7 +234,7 @@ mod tests {
         let span = sp_at(0, 5);
         let block = unit_block(span);
 
-        // With no node_id_map, resolve_block_type → Type::Error.
+        // With no node_id_map, resolve_try_type → Type::Error.
         let _ir = lower_try(&mut ctx, &block, span);
 
         // No L105 (non-empty block).
@@ -273,9 +251,8 @@ mod tests {
     // ── T7-try-5: lower_try with multi-stmt block — scope popped, no L105 ──────
     //
     // Verify that a multi-statement try block lowers without L105 and the scope
-    // is correctly popped.  resolve_block_type currently returns Type::Error
-    // (NodeKind::Block is not yet in the NodeKind enum), so any inner `?` would
-    // hit L999 — but this test has no inner `?`, so no error is expected.
+    // is correctly popped. This isolated context has no typed node table;
+    // the runtime tests cover propagation with a fully inferred Result type.
 
     #[test]
     fn try_block_multi_stmt_no_l105_scope_popped() {
@@ -298,8 +275,10 @@ mod tests {
             "scope must be popped after lower_try"
         );
 
-        // IR is a Block (two stmts folded).
-        match ir {
+        let IrExpr::ResultScope { body, .. } = ir else {
+            panic!("try must preserve its Result boundary");
+        };
+        match *body {
             IrExpr::Block { stmts, .. } => {
                 assert_eq!(stmts.len(), 2, "expected 2 stmts in folded block");
             }

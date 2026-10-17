@@ -838,7 +838,7 @@ impl ClassMethodIndex {
     /// Build a `ClassMethodIndex` by scanning every module's top-level items.
     ///
     /// Iterates `(ast)` pairs in source order, collecting user-declared class
-    /// method names.  Before the scan the five prelude classes are seeded via
+    /// method names.  Before the scan the prelude classes are seeded via
     /// [`Self::seed_prelude`] so that bare calls to their methods resolve
     /// without the caller having to redeclare the class in source:
     ///
@@ -889,7 +889,7 @@ impl ClassMethodIndex {
         index
     }
 
-    /// Seed the five built-in prelude class methods so they resolve without a
+    /// Seed the built-in prelude class methods so they resolve without a
     /// source-level `class` declaration.
     ///
     /// Mirrors `register_prelude_classes` in `ridge-typecheck`.  Entries use the
@@ -901,6 +901,7 @@ impl ClassMethodIndex {
             ("compare", "Ord", 2),
             ("encode", "Encode", 1),
             ("decode", "Decode", 1),
+            ("errorFrom", "ErrorFrom", 1),
         ];
         for &(method, class, arity) in prelude {
             self.entries
@@ -1541,13 +1542,13 @@ mod tests {
         })
     }
 
-    // Test 16: ClassMethodIndex — empty module still seeds all 5 prelude methods.
+    // Test 16: ClassMethodIndex — empty module still seeds all prelude methods.
     #[test]
     fn t16_class_method_index_prelude_seeded() {
         let m = empty_module();
         let idx = ClassMethodIndex::build(&[&m]);
 
-        // All five prelude methods must be present.
+        // All prelude methods must be present.
         let (cls, arity) = idx.lookup("toText").expect("toText missing");
         assert_eq!(cls, "ToText");
         assert_eq!(arity, 1);

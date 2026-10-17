@@ -95,17 +95,17 @@ pub struct FunDepIdx {
 
 /// Workspace-level class registry: name → [`ClassId`] + [`ClassInfo`].
 ///
-/// [`ClassId`]s are allocated sequentially. The five prelude classes
-/// (`ToText`, `Eq`, `Ord`, `Encode`, `Decode`) have fixed ids reserved by the
+/// [`ClassId`]s are allocated sequentially. The prelude classes
+/// (`ToText`, `Eq`, `Ord`, `Encode`, `Decode`, `ErrorFrom`) have fixed ids reserved by the
 /// constants in [`ridge_types`]: `TOTEXT_CLASS=0`, `EQ_CLASS=1`, `ORD_CLASS=2`,
-/// `ENCODE_CLASS=3`, `DECODE_CLASS=4`.
+/// `ENCODE_CLASS=3`, `DECODE_CLASS=4`, `ERROR_FROM_CLASS=5`.
 #[derive(Debug, Default)]
 pub struct ClassTable {
     /// Id → class information.
     classes: FxHashMap<ClassId, ClassInfo>,
     /// Name → id index for O(1) name lookup.
     by_name: FxHashMap<String, ClassId>,
-    /// Next id to allocate (starts at 3, below that are prelude constants).
+    /// Next id to allocate (starts at 6, below that are prelude constants).
     next_id: u32,
     /// Functional dependencies per class, by position. Empty for the classes
     /// that declare none (every prelude/stdlib class). Populated by collect.
@@ -119,7 +119,7 @@ impl ClassTable {
         Self {
             classes: FxHashMap::default(),
             by_name: FxHashMap::default(),
-            next_id: 5, // 0..=4 reserved for prelude constants (ToText/Eq/Ord/Encode/Decode)
+            next_id: 6, // 0..=5 reserved for prelude classes
             fundeps: FxHashMap::default(),
         }
     }
@@ -127,8 +127,8 @@ impl ClassTable {
     /// Interns a class name, returning its [`ClassId`].
     ///
     /// If the name already exists the existing id is returned unchanged
-    /// (idempotent). New names are allocated sequentially starting from 5;
-    /// ids 0–4 are reserved for the prelude constants and must be registered
+    /// (idempotent). New names are allocated sequentially starting from 6;
+    /// ids 0–5 are reserved for the prelude constants and must be registered
     /// explicitly via [`ClassTable::insert_with_id`].
     #[must_use]
     pub fn intern(&mut self, name: &str) -> ClassId {
@@ -367,6 +367,11 @@ pub struct InstanceEnv {
     /// AST-collected instances; absent for prelude/derived ones, whose classes
     /// carry no fundeps.
     pub head_asts: FxHashMap<(ClassId, InstanceHead), Vec<AstType>>,
+    /// Positions of every variable in each written context constraint, indexed
+    /// by the declaring module and instance span. Positions refer to the
+    /// flattened head arguments. Prelude/derived unary contexts use the
+    /// existing `InstanceInfo::head_var_positions` projection.
+    pub context_arg_positions: FxHashMap<(u32, Span), Vec<Vec<usize>>>,
 }
 
 impl InstanceEnv {
@@ -376,6 +381,7 @@ impl InstanceEnv {
         Self {
             instances: FxHashMap::default(),
             head_asts: FxHashMap::default(),
+            context_arg_positions: FxHashMap::default(),
         }
     }
 
@@ -486,7 +492,7 @@ impl InstanceEnv {
 // ── Prelude class registration ────────────────────────────────────────────────
 
 /// Registers the built-in prelude classes (`ToText`, `Eq`, `Ord`, `Encode`,
-/// `Decode`) into `class_table` at their reserved [`ClassId`]s (0–4).
+/// `Decode`, `ErrorFrom`) into `class_table` at their reserved [`ClassId`]s (0–5).
 ///
 /// Must be called once before the workspace collect pass so that user-declared
 /// class and instance items can reference these classes by name.
@@ -495,6 +501,22 @@ impl InstanceEnv {
 /// `crates/ridge-stdlib/stdlib/codec.ridge`, which is the canonical source for
 /// humans; a consistency test keeps the two in sync.
 pub fn register_prelude_classes(ct: &mut ClassTable) {
+    ct.insert_with_id(
+        ridge_types::ERROR_FROM_CLASS,
+        ClassInfo {
+            name: "ErrorFrom".to_owned(),
+            arity: 2,
+            method_sigs: vec![MethodSig {
+                name: "errorFrom".to_owned(),
+                arity: 1,
+                ast_param_types: vec![],
+                ast_ret_type: None,
+                class_ty_vars: Vec::new(),
+            }],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
     // ToText (id=0) — no superclasses; one method: toText
     ct.insert_with_id(
         TOTEXT_CLASS,

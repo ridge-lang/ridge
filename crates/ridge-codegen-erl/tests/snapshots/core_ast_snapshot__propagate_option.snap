@@ -609,12 +609,9 @@ CErlModule {
                                                             ),
                                                         ),
                                                     ),
-                                                    body: Call {
-                                                        module: CErlAtom(
-                                                            "erlang",
-                                                        ),
-                                                        fn_name: CErlAtom(
-                                                            "raise",
+                                                    body: PrimOp {
+                                                        name: CErlAtom(
+                                                            "raw_raise",
                                                         ),
                                                         args: [
                                                             Lit(
@@ -629,8 +626,10 @@ CErlModule {
                                                                     "V_OtherErr",
                                                                 ),
                                                             ),
-                                                            Lit(
-                                                                Nil,
+                                                            Var(
+                                                                CErlVar(
+                                                                    "V_ExcStk",
+                                                                ),
                                                             ),
                                                         ],
                                                     },
@@ -651,12 +650,9 @@ CErlModule {
                                                 ),
                                             ),
                                         ),
-                                        body: Call {
-                                            module: CErlAtom(
-                                                "erlang",
-                                            ),
-                                            fn_name: CErlAtom(
-                                                "raise",
+                                        body: PrimOp {
+                                            name: CErlAtom(
+                                                "raw_raise",
                                             ),
                                             args: [
                                                 Var(
@@ -669,8 +665,10 @@ CErlModule {
                                                         "V_ExcValue",
                                                     ),
                                                 ),
-                                                Lit(
-                                                    Nil,
+                                                Var(
+                                                    CErlVar(
+                                                        "V_ExcStk",
+                                                    ),
                                                 ),
                                             ],
                                         },

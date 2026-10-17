@@ -632,6 +632,20 @@ impl Renderer {
                 self.render_expr(value);
                 self.indent -= 1;
             }
+            IrExpr::ResultScope { id, body, .. } => {
+                let nid = self.render_node_id(*id);
+                self.push(&format!("ResultScope({nid}):"));
+                self.indent += 1;
+                self.render_expr(body);
+                self.indent -= 1;
+            }
+            IrExpr::ResultExit { id, value, .. } => {
+                let nid = self.render_node_id(*id);
+                self.push(&format!("ResultExit({nid}):"));
+                self.indent += 1;
+                self.render_expr(value);
+                self.indent -= 1;
+            }
             IrExpr::Send {
                 id,
                 handle,

@@ -26,7 +26,8 @@ pub mod witness;
 pub use builtins::{fn_tycon_name, BuiltinTyCons, FN_ARITY_COUNT};
 pub use capability_set::CapabilitySet;
 pub use constraint::{
-    ClassId, Constraint, DECODE_CLASS, ENCODE_CLASS, EQ_CLASS, ORD_CLASS, TOTEXT_CLASS,
+    ClassId, Constraint, DECODE_CLASS, ENCODE_CLASS, EQ_CLASS, ERROR_FROM_CLASS, ORD_CLASS,
+    TOTEXT_CLASS,
 };
 pub use history::{VersionEntry, VersionHistory};
 pub use scheme::Scheme;

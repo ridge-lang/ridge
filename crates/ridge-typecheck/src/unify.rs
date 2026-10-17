@@ -28,6 +28,28 @@ use ridge_types::{CapRow, Row, RowTail, RowVid, TyConDecl, TyConId, TyConKind, T
 use crate::ctx::{CapValue, CapVidKey, InferCtx, RowValue, RowVidKey, TyValue, TyVidKey};
 use crate::error::{TypeDesc, TypeError};
 
+/// Attempt equality without retaining partial bindings on failure.
+///
+/// Equality remains the first choice at a Result propagation site. A failed
+/// structural comparison may already have bound earlier fields, rows or effects;
+/// none of those bindings belong to the subsequent conversion constraint.
+pub(crate) fn try_unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> bool {
+    let types = ctx.tyvids.snapshot();
+    let caps = ctx.capvids.snapshot();
+    let rows = ctx.rowvids.snapshot();
+    if unify(ctx, a, b).is_ok() {
+        ctx.tyvids.commit(types);
+        ctx.capvids.commit(caps);
+        ctx.rowvids.commit(rows);
+        true
+    } else {
+        ctx.tyvids.rollback_to(types);
+        ctx.capvids.rollback_to(caps);
+        ctx.rowvids.rollback_to(rows);
+        false
+    }
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Unifies two [`Type`]s, updating `ctx` in place.
@@ -931,6 +953,46 @@ mod tests {
 
     fn make_ctx() -> InferCtx {
         InferCtx::for_tests()
+    }
+
+    #[test]
+    fn speculative_equality_rolls_back_types_effects_and_rows() {
+        let mut ctx = make_ctx();
+        let ty = ctx.fresh_tyvid();
+        let cap = ctx.fresh_capvid();
+        let row = ctx.fresh_rowvid();
+        let int = Type::Con(ctx.builtins.int, vec![]);
+        let boolean = Type::Con(ctx.builtins.bool, vec![]);
+        let function = |caps| Type::Fn {
+            params: vec![],
+            ret: Box::new(int.clone()),
+            caps,
+        };
+        let left = Type::Tuple(vec![
+            Type::Var(ty),
+            function(CapRow::Var(cap)),
+            Type::record(vec![], RowTail::Open(row)),
+            int.clone(),
+        ]);
+        let right = Type::Tuple(vec![
+            boolean.clone(),
+            function(CapRow::Concrete(CapabilitySet::PURE)),
+            Type::record(vec![("value".to_owned(), boolean.clone())], RowTail::Closed),
+            boolean,
+        ]);
+        assert!(!try_unify(&mut ctx, &left, &right));
+        assert!(matches!(ctx.shallow_resolve(&Type::Var(ty)), Type::Var(v) if v == ty));
+        assert_eq!(
+            ctx.shallow_resolve_caps(&CapRow::Var(cap)),
+            CapRow::Var(cap)
+        );
+        let (fields, tail) = ctx.resolve_row(&[], &RowTail::Open(row));
+        assert!(fields.is_empty());
+        assert!(matches!(tail, RowTail::Open(v) if v == row));
+        assert!(try_unify(&mut ctx, &Type::Var(ty), &int));
+        assert!(
+            matches!(ctx.shallow_resolve(&Type::Var(ty)), Type::Con(id, args) if id == ctx.builtins.int && args.is_empty())
+        );
     }
 
     // ─────────────────────────────────────────────────────────────────────────

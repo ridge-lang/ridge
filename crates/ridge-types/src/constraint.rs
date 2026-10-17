@@ -18,12 +18,13 @@ use crate::ty::TyVid;
 /// Opaque to `ridge-types`; the name-to-id mapping lives in
 /// `ridge-typecheck::class_env::ClassTable`.
 ///
-/// Five fixed ids are reserved for the prelude classes:
+/// Fixed ids are reserved for the prelude classes:
 /// - `0` — `ToText`
 /// - `1` — `Eq`
 /// - `2` — `Ord`
 /// - `3` — `Encode`
 /// - `4` — `Decode`
+/// - `5` — `ErrorFrom`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ClassId(pub u32);
 
@@ -37,6 +38,8 @@ pub const ORD_CLASS: ClassId = ClassId(2);
 pub const ENCODE_CLASS: ClassId = ClassId(3);
 /// Reserved `ClassId` for the built-in `Decode` class (`JsonValue -> Result a Error`).
 pub const DECODE_CLASS: ClassId = ClassId(4);
+/// Reserved class for explicit conversion at Result propagation sites.
+pub const ERROR_FROM_CLASS: ClassId = ClassId(5);
 
 // ── Constraint ────────────────────────────────────────────────────────────────
 

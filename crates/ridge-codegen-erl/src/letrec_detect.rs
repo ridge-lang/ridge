@@ -44,10 +44,12 @@ pub(crate) fn body_references_local(body: &IrExpr, target_name: &str) -> bool {
             body_references_local(callee, target_name)
                 || args.iter().any(|a| body_references_local(a, target_name))
         }
-        IrExpr::Lambda { body, .. } => body_references_local(body, target_name),
-        IrExpr::Return { value, .. } | IrExpr::Assign { value, .. } => {
-            body_references_local(value, target_name)
+        IrExpr::Lambda { body, .. } | IrExpr::ResultScope { body, .. } => {
+            body_references_local(body, target_name)
         }
+        IrExpr::Return { value, .. }
+        | IrExpr::ResultExit { value, .. }
+        | IrExpr::Assign { value, .. } => body_references_local(value, target_name),
         IrExpr::Construct { fields, .. } => fields
             .iter()
             .any(|(_, v)| body_references_local(v, target_name)),

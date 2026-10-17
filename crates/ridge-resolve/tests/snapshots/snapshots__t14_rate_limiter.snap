@@ -1,16 +1,18 @@
 ---
 source: crates/ridge-resolve/tests/snapshots.rs
+assertion_line: 1119
 expression: snap
 ---
 ResolvedSnapshot {
     errors: [],
-    nid_count: 464,
-    stamped_bindings: 121,
+    nid_count: 484,
+    stamped_bindings: 129,
     binding_kind_counts: {
         "ActorName": 3,
-        "Local": 97,
+        "Local": 101,
         "ModuleSymbol": 1,
-        "StdlibSymbol": 20,
+        "StdlibSymbol": 23,
+        "Unknown": 1,
     },
     import_aliases: [
         "<bare> -> BuiltinStdlib(0)",

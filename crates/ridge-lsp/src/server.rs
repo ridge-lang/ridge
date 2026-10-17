@@ -933,6 +933,7 @@ fn compile_blocking(
         &index.module_text,
         &state.typed,
     ));
+    add_ask_fixes(&mut index, state);
     let index = Arc::new(index);
 
     // Pre-populate every module's URI so a now-clean file gets its stale
@@ -962,6 +963,16 @@ fn compile_blocking(
         index,
         diagnostics_by_file: by_file.into_iter().collect(),
     })
+}
+
+fn add_ask_fixes(index: &mut WorkspaceIndex, state: &IncrementalState) {
+    let fixes = crate::ask_migration::collect_ask_fixes(
+        index,
+        &state.typed,
+        &state.resolved,
+        &state.type_errors,
+    );
+    index.syntax_fixes.extend(fixes);
 }
 
 /// The workspace module a document URI maps to. Compares through [`uri_key`] so

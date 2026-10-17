@@ -80,6 +80,17 @@ fn redirectWithHeaders (url: Text) -> ResponseWithHeaders =
         Ok response -> response
         Err _ -> Http.withoutHeaders (badRequest "Invalid redirect destination")
 
+fn time shortenResponse (store: Handle Store) (url: Text) -> ResponseWithHeaders =
+    match store ?> shorten url
+        Ok code -> Http.withoutHeaders (okText $"http://localhost:8080/${code}")
+        Err error -> Http.withoutHeaders (Response { status = 503, body = toText error })
+
+fn time lookupResponse (store: Handle Store) (code: Text) -> ResponseWithHeaders =
+    match store ?> lookup code
+        Ok (Some url) -> redirectWithHeaders url
+        Ok None -> Http.withoutHeaders (notFound $"No URL found for code '${code}'")
+        Err error -> Http.withoutHeaders (Response { status = 503, body = toText error })
+
 -- ── Main: spawn Store + start HTTP server ──────────────────────────────────
 -- Http.listenWithHeaders accepts a port and a handler returning ResponseWithHeaders,
 -- blocking until the server shuts down.
@@ -88,7 +99,7 @@ fn spawn net io time main () -> Result Unit Error =
     let store = spawn Store
     Io.println "URL shortener listening on :8080"
 
-    -- ask operator changed from ? to ?>.
+    -- Translate request failures into an HTTP response inside the callback.
     Http.listenWithHeaders 8080 (fn (req: Request) -> ResponseWithHeaders =
         match (req.method, req.path)
 
@@ -96,17 +107,13 @@ fn spawn net io time main () -> Result Unit Error =
             ("POST", "/shorten") ->
                 let url = trim req.body
                 guard (url != "") else return (Http.withoutHeaders (badRequest "URL body is required"))
-                let code = store ?> shorten url
-                Http.withoutHeaders (okText $"http://localhost:8080/${code}")
+                return (shortenResponse store url)
 
             -- GET /:code  — redirect or 404
             ("GET", path) when path != "/" ->
                 let code = extractCode path |> Option.withDefault ""
                 guard (code != "") else return (Http.withoutHeaders (notFound "Not found"))
-                let target = store ?> lookup code
-                match target
-                    Some url -> redirectWithHeaders url
-                    None -> Http.withoutHeaders (notFound $"No URL found for code '${code}'")
+                return (lookupResponse store code)
 
             -- Catch-all
             _ -> Http.withoutHeaders (notFound "Not found"))

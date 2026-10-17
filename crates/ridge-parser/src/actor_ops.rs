@@ -1152,6 +1152,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn ask_propagation_wraps_the_request_including_its_deadline() {
+        use ridge_ast::AskTimeout;
+        for source in [
+            "counter ?> getCount ?",
+            "counter ?> increment 4 ?",
+            "counter ?> getCount timeout 1000 ?",
+            "counter ?> getCount timeout (base + 1) ?",
+            "counter ?> getCount timeout base |> clamp ?",
+            "counter ?> getCount timeout never ?",
+        ] {
+            let e = ok(source);
+            let Expr::Propagate { inner, span } = e else {
+                panic!("expected propagation of the ask for {source:?}, got {e:?}");
+            };
+            assert_eq!(span.end as usize, source.len());
+            let Expr::Ask { timeout, .. } = inner.as_ref() else {
+                panic!("expected an ask inside propagation for {source:?}");
+            };
+            if let Some(AskTimeout::Millis(deadline)) = timeout {
+                assert!(!matches!(deadline.as_ref(), Expr::Propagate { .. }));
+            }
+        }
+    }
+
     // ── parse_pipe_chain_from_t6 ──────────────────────────────────────
 
     #[test]

@@ -263,7 +263,7 @@ fn prelude_totext_target(ctx: &mut LowerCtx<'_>, tycon: TyConId) -> Option<ToTex
         ("ExitReason", "_exitReasonToText"),
         ("SupError", "_supErrorToText"),
     ] {
-        if ctx.lookup_tycon_by_name(name) == Some(tycon) {
+        if ctx.lookup_stdlib_tycon(name) == Some(tycon) {
             return Some(ToTextTarget::ActorError(bridge));
         }
     }

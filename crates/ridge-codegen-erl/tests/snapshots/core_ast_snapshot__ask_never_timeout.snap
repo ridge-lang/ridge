@@ -1,5 +1,6 @@
 ---
 source: crates/ridge-codegen-erl/tests/core_ast_snapshot.rs
+assertion_line: 41
 expression: "&cerl_module"
 ---
 CErlModule {
@@ -90,89 +91,242 @@ CErlModule {
                 params: [],
                 body: Let {
                     var: CErlVar(
-                        "V_C",
+                        "V_Anf2",
                     ),
                     value: Let {
                         var: CErlVar(
-                            "V_Anf0",
+                            "V_C",
                         ),
-                        value: ListLit(
-                            [
-                                Lit(
-                                    Int(
-                                        0,
-                                    ),
-                                ),
-                            ],
-                        ),
-                        body: Call {
-                            module: CErlAtom(
-                                "ridge_rt",
+                        value: Let {
+                            var: CErlVar(
+                                "V_Anf0",
                             ),
-                            fn_name: CErlAtom(
-                                "spawn_actor",
-                            ),
-                            args: [
-                                Lit(
-                                    Atom(
-                                        CErlAtom(
-                                            "ridge_module_0_counter",
+                            value: ListLit(
+                                [
+                                    Lit(
+                                        Int(
+                                            0,
                                         ),
                                     ),
+                                ],
+                            ),
+                            body: Call {
+                                module: CErlAtom(
+                                    "ridge_rt",
                                 ),
-                                Var(
-                                    CErlVar(
-                                        "V_Anf0",
+                                fn_name: CErlAtom(
+                                    "spawn_actor",
+                                ),
+                                args: [
+                                    Lit(
+                                        Atom(
+                                            CErlAtom(
+                                                "ridge_module_0_counter",
+                                            ),
+                                        ),
                                     ),
+                                    Var(
+                                        CErlVar(
+                                            "V_Anf0",
+                                        ),
+                                    ),
+                                    Lit(
+                                        Nil,
+                                    ),
+                                ],
+                            },
+                        },
+                        body: Let {
+                            var: CErlVar(
+                                "V_Anf1",
+                            ),
+                            value: Tuple(
+                                [
+                                    Lit(
+                                        Atom(
+                                            CErlAtom(
+                                                "get_count",
+                                            ),
+                                        ),
+                                    ),
+                                ],
+                            ),
+                            body: Call {
+                                module: CErlAtom(
+                                    "ridge_rt",
                                 ),
-                                Lit(
-                                    Nil,
+                                fn_name: CErlAtom(
+                                    "try_ask",
                                 ),
-                            ],
+                                args: [
+                                    Var(
+                                        CErlVar(
+                                            "V_C",
+                                        ),
+                                    ),
+                                    Var(
+                                        CErlVar(
+                                            "V_Anf1",
+                                        ),
+                                    ),
+                                    Lit(
+                                        Atom(
+                                            CErlAtom(
+                                                "infinity",
+                                            ),
+                                        ),
+                                    ),
+                                ],
+                            },
                         },
                     },
-                    body: Let {
-                        var: CErlVar(
-                            "V_Anf1",
+                    body: Case {
+                        scrutinee: Var(
+                            CErlVar(
+                                "V_Anf2",
+                            ),
                         ),
-                        value: Tuple(
-                            [
-                                Lit(
+                        clauses: [
+                            CErlClause {
+                                pattern: Tuple(
+                                    [
+                                        Lit(
+                                            Atom(
+                                                CErlAtom(
+                                                    "ok",
+                                                ),
+                                            ),
+                                        ),
+                                        Var(
+                                            CErlVar(
+                                                "V_MainOk0",
+                                            ),
+                                        ),
+                                    ],
+                                ),
+                                guard: Lit(
                                     Atom(
                                         CErlAtom(
-                                            "get_count",
+                                            "true",
                                         ),
                                     ),
                                 ),
-                            ],
-                        ),
-                        body: Call {
-                            module: CErlAtom(
-                                "ridge_rt",
-                            ),
-                            fn_name: CErlAtom(
-                                "ask",
-                            ),
-                            args: [
-                                Var(
-                                    CErlVar(
-                                        "V_C",
-                                    ),
+                                body: Tuple(
+                                    [
+                                        Lit(
+                                            Atom(
+                                                CErlAtom(
+                                                    "ok",
+                                                ),
+                                            ),
+                                        ),
+                                        Var(
+                                            CErlVar(
+                                                "V_MainOk0",
+                                            ),
+                                        ),
+                                    ],
                                 ),
-                                Var(
-                                    CErlVar(
-                                        "V_Anf1",
-                                    ),
+                            },
+                            CErlClause {
+                                pattern: Tuple(
+                                    [
+                                        Lit(
+                                            Atom(
+                                                CErlAtom(
+                                                    "error",
+                                                ),
+                                            ),
+                                        ),
+                                        Var(
+                                            CErlVar(
+                                                "V_MainErr1",
+                                            ),
+                                        ),
+                                    ],
                                 ),
-                                Lit(
+                                guard: Lit(
                                     Atom(
                                         CErlAtom(
-                                            "infinity",
+                                            "true",
                                         ),
                                     ),
                                 ),
-                            ],
-                        },
+                                body: Let {
+                                    var: CErlVar(
+                                        "V_Anf3",
+                                    ),
+                                    value: Call {
+                                        module: CErlAtom(
+                                            "ridge_rt",
+                                        ),
+                                        fn_name: CErlAtom(
+                                            "actor_error_to_text",
+                                        ),
+                                        args: [
+                                            Var(
+                                                CErlVar(
+                                                    "V_MainErr1",
+                                                ),
+                                            ),
+                                        ],
+                                    },
+                                    body: Tuple(
+                                        [
+                                            Lit(
+                                                Atom(
+                                                    CErlAtom(
+                                                        "error",
+                                                    ),
+                                                ),
+                                            ),
+                                            Var(
+                                                CErlVar(
+                                                    "V_Anf3",
+                                                ),
+                                            ),
+                                        ],
+                                    ),
+                                },
+                            },
+                            CErlClause {
+                                pattern: Var(
+                                    CErlVar(
+                                        "CaseUnmatched4",
+                                    ),
+                                ),
+                                guard: Lit(
+                                    Atom(
+                                        CErlAtom(
+                                            "true",
+                                        ),
+                                    ),
+                                ),
+                                body: PrimOp {
+                                    name: CErlAtom(
+                                        "match_fail",
+                                    ),
+                                    args: [
+                                        Tuple(
+                                            [
+                                                Lit(
+                                                    Atom(
+                                                        CErlAtom(
+                                                            "case_clause",
+                                                        ),
+                                                    ),
+                                                ),
+                                                Var(
+                                                    CErlVar(
+                                                        "CaseUnmatched4",
+                                                    ),
+                                                ),
+                                            ],
+                                        ),
+                                    ],
+                                },
+                            },
+                        ],
                     },
                 },
             },

@@ -524,18 +524,14 @@ allow = [{allow}]
     tw
 }
 
-/// Asking a stopped actor names what happened and what to do instead.
-///
-/// The reason travelled as `exit:ridge_ask_noproc` — an atom that appears in no
-/// documentation — over a stack through the runtime's own source files. None of
-/// that is the reader's, and the one thing that was theirs, the remedy, was the
-/// part missing.
+/// An explicitly propagated ask error uses its text, without runtime internals.
 #[cfg(feature = "beam-runtime")]
 #[test]
-fn asking_a_stopped_actor_names_the_fault_and_the_remedy() {
+fn propagating_a_stopped_actor_error_uses_its_text() {
     let tw = make_capable_app_workspace(
         r#"import std.io    as Io
 import std.actor as Actor
+import std.actor (AskError)
 
 actor Worker =
     state n: Int = 0
@@ -543,11 +539,12 @@ actor Worker =
     on ping (x: Int) -> Int =
         n + x
 
-pub fn io spawn time main () -> Unit =
+pub fn io spawn time main () -> Result Unit AskError =
     let w = spawn Worker
     let _ = Actor.stop w
-    let r = w ?> ping 1
+    let _ = w ?> ping 1 ?
     Io.println "unreachable"
+    Ok ()
 "#,
         r#""io", "spawn", "time""#,
     );
@@ -556,14 +553,47 @@ pub fn io spawn time main () -> Unit =
         .arg("run")
         .current_dir(&tw.path)
         .assert()
-        .failure()
+        .code(1)
+        .stdout(contains("unreachable").not())
         .stderr(
-            contains("asked an actor that is no longer running")
-                .and(contains("Actor.tryAsk"))
+            contains("the actor is no longer running")
+                .and(contains("Actor.tryAsk").not())
                 .and(contains("ridge_ask_noproc").not())
                 .and(contains("ridge_rt").not())
                 .and(contains("stack:").not()),
         );
+}
+
+/// Handling the Result lets the caller continue after an unavailable target.
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn a_stopped_actor_error_can_be_handled_and_execution_continues() {
+    let tw = make_capable_app_workspace(
+        r#"import std.io as Io
+import std.actor as Actor
+import std.actor (Noproc)
+
+actor Worker =
+    on ping (x: Int) -> Int = x
+
+pub fn io spawn time main () -> Unit =
+    let w = spawn Worker
+    let _ = Actor.stop w
+    match w ?> ping 1
+        Err Noproc -> Io.println "handled"
+        _ -> Io.println "unexpected reply"
+    Io.println "continued"
+"#,
+        r#""io", "spawn", "time""#,
+    );
+    let result = ridge_cmd()
+        .arg("run")
+        .current_dir(&tw.path)
+        .assert()
+        .success()
+        .stderr("");
+    let stdout = String::from_utf8_lossy(&result.get_output().stdout);
+    assert_eq!(stdout.replace("\r\n", "\n"), "handled\ncontinued\n");
 }
 
 /// `badarith` covers every arithmetic fault OTP has, so the reason alone cannot

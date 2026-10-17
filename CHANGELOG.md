@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Actor asks (`?>`) return `Result reply AskError`. A missing target or a
+  missed deadline is an error value; append `?` to propagate it from a Result
+  scope, or match it explicitly. The editor offers propagation repairs for
+  compatible Result scopes. See [the migration guide](docs/ask-migration.md).
+
+- `main` renders its typed error after propagation and explicit early returns,
+  so those exits use the same `ToText` instance as a normally returned `Err`.
+
 - `try` returns a Result, wraps normal payloads in `Ok`, and contains local
   propagation without intercepting function returns. Executed assignments to
   enclosing mutable locals remain visible after the block.

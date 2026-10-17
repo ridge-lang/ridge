@@ -268,6 +268,17 @@ pub enum IrExpr {
         span: Span,
     },
 
+    /// Finish a function body as a value before an outer transformation runs.
+    /// Normal completion and Return both supply the scope's value. Nested
+    /// lambdas own their returns, and unrelated exceptions remain exceptions.
+    FunctionScope {
+        /// The IR-side node identifier.
+        id: IrNodeId,
+        /// The function body whose returns are completed here.
+        body: Box<Self>,
+        /// Source span.
+        span: Span,
+    },
     /// A value-producing Result boundary: normal completion wraps its payload
     /// in Ok, and `ResultExit` supplies an already constructed Result.
     ResultScope {
@@ -322,10 +333,12 @@ pub enum IrExpr {
     },
 
     /// `handle ?> message args [timeout <ms|never>]` — sync request-reply
+    /// returning `Result reply AskError`. A handler's own Result remains the
+    /// success payload; transport failures never become caller exceptions.
     /// (spec §7.2; timeout field added by Phase 6 T0, OQ-E001).
     ///
     /// `timeout: None` means "use the runtime default (5000 ms per OQ-E001)".
-    /// The result type is the handler's return type.
+    /// The success payload type is the handler's return type.
     Ask {
         /// The IR-side node identifier.
         id: IrNodeId,
@@ -369,7 +382,7 @@ pub enum IrExpr {
     },
 
     /// `tryAsk handle message timeoutMs` — the compiler-known
-    /// `std.actor.tryAsk`. Typed like `?>` but the result is
+    /// `std.actor.tryAsk`. Like `?>`, its result is
     /// `Result reply AskError`; lowers to `ridge_rt:try_ask/3`.
     TryAsk {
         /// The IR-side node identifier.

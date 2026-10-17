@@ -153,10 +153,23 @@ fn has_non_tail_return_inner(expr: &IrExpr, in_tail: bool) -> bool {
             has_non_tail_return_inner(head, false) || has_non_tail_return_inner(tail, false)
         }
 
-        IrExpr::Send { handle, args, .. }
-        | IrExpr::Ask { handle, args, .. }
-        | IrExpr::TryAsk { handle, args, .. }
-        | IrExpr::ActorSend { handle, args, .. } => {
+        IrExpr::Ask {
+            handle,
+            args,
+            timeout,
+            ..
+        }
+        | IrExpr::TryAsk {
+            handle,
+            args,
+            timeout,
+            ..
+        } => {
+            has_non_tail_return_inner(handle, false)
+                || args.iter().any(|a| has_non_tail_return_inner(a, false))
+                || matches!(timeout, Some(ridge_ir::IrTimeout::Millis(e)) if has_non_tail_return_inner(e, false))
+        }
+        IrExpr::Send { handle, args, .. } | IrExpr::ActorSend { handle, args, .. } => {
             has_non_tail_return_inner(handle, false)
                 || args.iter().any(|a| has_non_tail_return_inner(a, false))
         }
@@ -166,7 +179,7 @@ fn has_non_tail_return_inner(expr: &IrExpr, in_tail: bool) -> bool {
         }
 
         // Atoms (Lit, Local, Symbol) and future variants: no sub-expressions
-        // that can be Return.
+        // that can be Return. Lambda and FunctionScope own their returns.
         _ => false,
     }
 }

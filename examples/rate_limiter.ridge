@@ -91,8 +91,11 @@ actor Worker =
                 return (collector ! report allowed denied)
             let delayMs = Random.int 0 50  -- 0–50 ms random delay
             Time.sleep delayMs
-            -- ask operator changed from ? to ?>.
-            let granted = limiter ?> allow ()
+            let granted = match limiter ?> allow ()
+                Ok allowed -> allowed
+                Err error ->
+                    Io.println $"Limiter unavailable: ${toText error}"
+                    false
             if granted then
                 sendRequests (remaining - 1) (allowed + 1) denied
             else

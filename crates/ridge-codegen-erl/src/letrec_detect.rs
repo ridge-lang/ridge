@@ -44,9 +44,9 @@ pub(crate) fn body_references_local(body: &IrExpr, target_name: &str) -> bool {
             body_references_local(callee, target_name)
                 || args.iter().any(|a| body_references_local(a, target_name))
         }
-        IrExpr::Lambda { body, .. } | IrExpr::ResultScope { body, .. } => {
-            body_references_local(body, target_name)
-        }
+        IrExpr::Lambda { body, .. }
+        | IrExpr::ResultScope { body, .. }
+        | IrExpr::FunctionScope { body, .. } => body_references_local(body, target_name),
         IrExpr::Return { value, .. }
         | IrExpr::ResultExit { value, .. }
         | IrExpr::Assign { value, .. } => body_references_local(value, target_name),
@@ -60,10 +60,23 @@ pub(crate) fn body_references_local(body: &IrExpr, target_name: &str) -> bool {
         IrExpr::Cons { head, tail, .. } => {
             body_references_local(head, target_name) || body_references_local(tail, target_name)
         }
-        IrExpr::Send { handle, args, .. }
-        | IrExpr::Ask { handle, args, .. }
-        | IrExpr::TryAsk { handle, args, .. }
-        | IrExpr::ActorSend { handle, args, .. } => {
+        IrExpr::Ask {
+            handle,
+            args,
+            timeout,
+            ..
+        }
+        | IrExpr::TryAsk {
+            handle,
+            args,
+            timeout,
+            ..
+        } => {
+            body_references_local(handle, target_name)
+                || args.iter().any(|a| body_references_local(a, target_name))
+                || matches!(timeout, Some(ridge_ir::IrTimeout::Millis(e)) if body_references_local(e, target_name))
+        }
+        IrExpr::Send { handle, args, .. } | IrExpr::ActorSend { handle, args, .. } => {
             body_references_local(handle, target_name)
                 || args.iter().any(|a| body_references_local(a, target_name))
         }

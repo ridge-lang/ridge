@@ -44,6 +44,7 @@
     )
 )]
 
+pub mod ask_migration;
 pub mod builtin_cards;
 pub mod cancel;
 pub mod completion;

@@ -1,5 +1,6 @@
 ---
 source: crates/ridge-codegen-erl/tests/core_ast_snapshot.rs
+assertion_line: 41
 expression: "&cerl_module"
 ---
 CErlModule {
@@ -199,6 +200,43 @@ CErlModule {
                                                     ),
                                                 ],
                                             },
+                                        },
+                                    },
+                                    CErlClause {
+                                        pattern: Var(
+                                            CErlVar(
+                                                "CaseUnmatched2",
+                                            ),
+                                        ),
+                                        guard: Lit(
+                                            Atom(
+                                                CErlAtom(
+                                                    "true",
+                                                ),
+                                            ),
+                                        ),
+                                        body: PrimOp {
+                                            name: CErlAtom(
+                                                "match_fail",
+                                            ),
+                                            args: [
+                                                Tuple(
+                                                    [
+                                                        Lit(
+                                                            Atom(
+                                                                CErlAtom(
+                                                                    "case_clause",
+                                                                ),
+                                                            ),
+                                                        ),
+                                                        Var(
+                                                            CErlVar(
+                                                                "CaseUnmatched2",
+                                                            ),
+                                                        ),
+                                                    ],
+                                                ),
+                                            ],
                                         },
                                     },
                                 ],

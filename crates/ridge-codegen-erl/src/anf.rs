@@ -58,7 +58,9 @@
 // unreachable with the current variant set but required for forward safety.
 #![allow(unreachable_patterns)]
 
-use crate::core_ast::{CErlAtom, CErlClause, CErlExpr, CErlFn, CErlModule, CErlVar};
+use crate::core_ast::{
+    CErlAtom, CErlClause, CErlExpr, CErlFn, CErlLit, CErlModule, CErlPat, CErlVar,
+};
 
 // ── Atomicity predicate ───────────────────────────────────────────────────────
 
@@ -185,10 +187,35 @@ fn normalise_expr(expr: CErlExpr, anf: &mut Anf) -> CErlExpr {
         CErlExpr::Case { scrutinee, clauses } => {
             let normal_scrutinee = normalise_expr(*scrutinee, anf);
             let (scrutinee_expr, bindings) = hoist_single(normal_scrutinee, anf);
-            let normal_clauses = clauses
+            let mut normal_clauses: Vec<_> = clauses
                 .into_iter()
                 .map(|c| normalise_clause(c, anf))
                 .collect();
+            // Core produced by the host frontend includes a match_fail arm.
+            // Leaving it implicit can give BEAM's validator an ambiguous try
+            // state when a case result crosses a catch and evaluation resumes.
+            if !normal_clauses.iter().any(|clause| {
+                matches!(clause.pattern, CErlPat::Var(_) | CErlPat::Wild)
+                    && matches!(&clause.guard, CErlExpr::Lit(CErlLit::Atom(a)) if a.0 == "true")
+            }) {
+                // Source variables are emitted with the V_ prefix.
+                let unmatched = CErlVar(format!("CaseUnmatched{}", anf.next));
+                anf.next += 1;
+                // match_fail is a Core protocol primitive: the host requires
+                // this tagged data constructor here, rather than an ANF var.
+                let body = CErlExpr::PrimOp {
+                    name: CErlAtom("match_fail".into()),
+                    args: vec![CErlExpr::Tuple(vec![
+                        CErlExpr::Lit(CErlLit::Atom(CErlAtom("case_clause".into()))),
+                        CErlExpr::Var(unmatched.clone()),
+                    ])],
+                };
+                normal_clauses.push(CErlClause {
+                    pattern: CErlPat::Var(unmatched),
+                    guard: CErlExpr::Lit(CErlLit::Atom(CErlAtom("true".into()))),
+                    body,
+                });
+            }
             let case = CErlExpr::Case {
                 scrutinee: Box::new(scrutinee_expr),
                 clauses: normal_clauses,

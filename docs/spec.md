@@ -472,11 +472,11 @@ actor Counter =
         count
 
 -- Spawning returns a Handle
-fn spawn main () =
+fn spawn time main () =
     let c = spawn Counter
     c ! increment                -- send (fire-and-forget)
     c ! increment
-    let n = c ?> get             -- ask (synchronous reply)
+    let reply = c ?> get         -- Result Int AskError
     ...
 ```
 
@@ -918,7 +918,7 @@ LambdaExpr    = "fn" { Param } "->" [ Type "=" ] Expr .
 
 SpawnExpr     = "spawn" UpperIdent { Expr } .
 SendExpr      = Expr "!" Expr .
-AskExpr       = Expr "?>" Ident { ExprAtom } [ AskTimeout ] .
+AskExpr       = Expr "?>" Ident { ExprAtom } [ AskTimeout ] [ "?" ] .
 AskTimeout    = "timeout" ( "never" | Expr ) .
 ```
 
@@ -1476,7 +1476,7 @@ actor Cache =
 -- NOT `fs`, even though the handler uses it.
 fn spawn time main () =
     let cache = spawn Cache
-    let v = cache ?> get "k"
+    let reply = cache ?> get "k" -- Result (Option Text) AskError
     ...
 ```
 
@@ -1608,7 +1608,18 @@ The compiler unifies `c` with the callback's inferred capability set at each use
 Each actor is a lightweight process — a BEAM process on the production target. A native backend would map actors to green threads under an M:N scheduler.
 
 - **`actor ! msg`** (send): asynchronous, returns immediately, returns `Unit`. No capability required beyond having the handle. Delivery is not guaranteed if the program ends first — see §7.2.2.
-- **`actor ?> msg`** (ask): synchronous from caller's perspective, blocks the calling process until reply. Requires `time` in the caller (for the timeout), nothing else.
+- **`actor ?> msg`** (ask): synchronous from the caller's perspective. Returns
+  `Result reply AskError`: `Ok reply` on success, `Err Timeout` when the
+  deadline passes, and `Err Noproc` when the target is unavailable before
+  replying, including when it stops during the request. `AskError` is the
+  nominal union from `std.actor`; importing it is required only to name it in
+  source. The caller requires `time` for the timeout, nothing else.
+  `actor ?> msg args timeout ms ?` propagates the ask's error in the nearest
+  Result scope, with the same direct `ErrorFrom` conversion as any other `?`.
+  The suffix belongs to the complete ask, including its timeout; propagation
+  inside a computed timeout must be parenthesised. A handler returning its own
+  `Result` produces `Result (Result value handlerError) AskError`; the outer
+  transport error and inner application error stay distinct.
 - Each actor processes one message at a time, FIFO.
 - Actor state is private; no direct access from outside.
 - Message send is one-way; ask is implemented as send + await reply with a reference.
@@ -1618,7 +1629,7 @@ A dead actor is not a silent one. The runtime reports the crash, and
 `Actor.mailboxSize` reads `None` through a handle whose actor is gone
 (§6.4.1), so a program can tell the difference between an idle actor and
 an absent one. Sending to a dead actor is a no-op rather than an error;
-asking one raises in the caller, since an ask has no answer to give.
+asking one returns `Err Noproc`, since there is no target to answer.
 
 #### §7.2.2. Delivery and program termination
 
@@ -1647,12 +1658,13 @@ neither is new machinery — they are the ordering guarantee above, used
 deliberately:
 
 ```
-  c ?> ping 1             -- barrier; the actor stays alive
+  let reply = c ?> ping 1 -- Ok confirms the barrier; handle Err explicitly
   Actor.stop c            -- barrier; the actor terminates afterwards
 ```
 
-Both return only after every earlier send from this process has been
-handled. `?>` is the one to reach for mid-program; `Actor.stop` is the one
+An `Ok` reply from `?>` proves every earlier send from this process was
+handled. An ask error provides no delivery guarantee. `Actor.stop` returns
+when the actor is down. `?>` is the one to reach for mid-program; `Actor.stop` is the one
 to reach for at the end, when the actor has no more work to do.
 
 The barrier is per actor and per sender. Sending to two actors and
@@ -1798,16 +1810,15 @@ first).
 **Failure semantics.** Supervision changes who restarts a process, not how
 its callers fail.
 
-- `Actor.tryAsk handle msg timeoutMs` is the `Result`-returning ask. It is
+- `Actor.tryAsk handle msg timeoutMs` is the function spelling of ask. It is
   typed like `?>` — the message checked against the actor's handlers, the
-  reply taken from the handler — and absorbs `time` the same way, but the
+  reply taken from the handler — and absorbs `time` the same way. The
   outcome is explicit: `Ok reply`, `Err Noproc` when the target does not
   exist (stopped, never started, or down for restart), or `Err Timeout`
   when the deadline passes. `Noproc` and `Timeout` are the variants of
   `std.actor`'s `AskError` union.
-- `?>` on a target that does not exist fails fast: the caller exits with
-  the structured `ridge_ask_noproc` reason rather than a raw runtime exit.
-  Callers that want to handle the absence match on `tryAsk` instead.
+- `?>` and `tryAsk` on a target that does not exist return `Err Noproc`
+  immediately. Neither spelling raises a caller exception for an ask failure.
 - A dead supervisor fails fast too. `whichChildren` has no error channel,
   so calling it on a dead supervisor exits the caller with
   `ridge_sup_noproc` rather than answering an empty list that would read as

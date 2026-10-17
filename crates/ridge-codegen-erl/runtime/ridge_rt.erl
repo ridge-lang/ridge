@@ -2022,8 +2022,8 @@ ask(Handle, Msg, Timeout) ->
             exit(ridge_ask_noproc)
     end.
 
-%% try_ask/3 — target of the stdlib `Actor.tryAsk` fn. The
-%% Result-returning sibling of ask/3: instead of raising, a dead target
+%% try_ask/3 — target of `?>` and the stdlib `Actor.tryAsk` fn.
+%% Instead of raising, an unavailable target
 %% reads as `{error, 'Noproc'}` and a missed deadline as
 %% `{error, 'Timeout'}` — the verbatim atoms Ridge's `AskError` union
 %% variants lower to.
@@ -2034,7 +2034,11 @@ try_ask(Handle, Msg, Timeout) ->
                 Reply -> {ok, Reply}
             catch
                 exit:{noproc, _}  -> {error, 'Noproc'};
-                exit:{timeout, _} -> {error, 'Timeout'}
+                exit:{timeout, _} -> {error, 'Timeout'};
+                %% A target can stop or crash after handle resolution. Only
+                %% failures attributed to this call become transport errors;
+                %% errors in evaluating the caller's operands stay outside.
+                exit:{_, {gen_server, call, _}} -> {error, 'Noproc'}
             end;
         dead ->
             {error, 'Noproc'}

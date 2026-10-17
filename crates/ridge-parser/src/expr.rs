@@ -359,10 +359,13 @@ fn parse_expr_bp(cur: &mut Cursor<'_>, min_bp: u8) -> Result<Expr, ParseError> {
                     // This ensures the postfix only fires immediately after the `?>`
                     // expression and cannot bind to a `timeout` identifier in any
                     // other syntactic position.
+                    let mut propagate_end = None;
+                    let mut timeout_end = None;
                     let timeout = if matches!(cur.peek(), Token::LowerIdent(s) if s == "timeout") {
                         cur.bump(); // consume contextual `timeout`
                                     // Next: either `never` (contextual ident) or an expression.
                         if matches!(cur.peek(), Token::LowerIdent(s) if s == "never") {
+                            timeout_end = Some(cur.span());
                             cur.bump(); // consume contextual `never`
                             Some(AskTimeout::Never)
                         } else {
@@ -376,20 +379,31 @@ fn parse_expr_bp(cur: &mut Cursor<'_>, min_bp: u8) -> Result<Expr, ParseError> {
                             // the next statement in a bracket-suppressed match
                             // arm, where there are no `Newline` tokens to look at.
                             let ms_expr = parse_expr_pratt(cur)?;
+                            // A trailing `?` propagates the ask, not its
+                            // deadline. A parenthesised deadline keeps its own
+                            // propagation, as does every nested operand.
+                            let ms_expr = match ms_expr {
+                                Expr::Propagate { inner, span } => {
+                                    propagate_end = Some(span);
+                                    *inner
+                                }
+                                other => other,
+                            };
                             Some(AskTimeout::Millis(Box::new(ms_expr)))
                         }
                     } else {
                         None
                     };
 
-                    let end_span = timeout
-                        .as_ref()
-                        .and_then(|t| {
-                            if let AskTimeout::Millis(e) = t {
-                                Some(e.span())
-                            } else {
-                                None
-                            }
+                    let end_span = timeout_end
+                        .or_else(|| {
+                            timeout.as_ref().and_then(|t| {
+                                if let AskTimeout::Millis(e) = t {
+                                    Some(e.span())
+                                } else {
+                                    None
+                                }
+                            })
                         })
                         .or_else(|| args.last().map(Expr::span))
                         .unwrap_or(msg_span);
@@ -401,6 +415,19 @@ fn parse_expr_bp(cur: &mut Cursor<'_>, min_bp: u8) -> Result<Expr, ParseError> {
                         timeout,
                         span,
                     };
+                    // Ask is still single-site; only its Result propagation
+                    // may follow without parentheses.
+                    if propagate_end.is_none() && matches!(cur.peek(), Token::Question) {
+                        propagate_end = Some(cur.span());
+                        cur.bump();
+                    }
+                    if let Some(end) = propagate_end {
+                        let span = lhs.span().merge(end);
+                        lhs = Expr::Propagate {
+                            inner: Box::new(lhs),
+                            span,
+                        };
+                    }
                     break; // single-site — stop here
                 }
                 Token::Bang => {

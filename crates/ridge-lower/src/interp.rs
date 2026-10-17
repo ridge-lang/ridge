@@ -176,7 +176,7 @@ fn actor_error_to_text_fn(ctx: &mut LowerCtx<'_>, tycon_id: TyConId) -> Option<&
         ("SupError", "_supErrorToText"),
     ]
     .into_iter()
-    .find(|(ty, _)| ctx.lookup_tycon_by_name(ty) == Some(tycon_id))
+    .find(|(ty, _)| ctx.lookup_stdlib_tycon(ty) == Some(tycon_id))
     .map(|(_, f)| f)
 }
 

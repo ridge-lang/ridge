@@ -4,7 +4,7 @@ assertion_line: 23
 expression: rendered
 ---
 module: m0
-items_count: 11
+items_count: 13
 items:
   - kind: const
     name: alphabet
@@ -373,6 +373,193 @@ items:
                         -
                           Lit(n103): Text("Invalid redirect destination")
   - kind: fn
+    name: shortenResponse
+    pub: false
+    main: false
+    caps: CapabilitySet(8)
+    ret_ty: Con(108)
+    params:
+      - name: store
+        ty: Con(11) [Con(109)]
+      - name: url
+        ty: Con(3)
+    body:
+      Match(n104):
+        scrutinee:
+          Ask(n105) ?> Handler(m0..shorten):
+            handle:
+              Local(n106): store
+            args:
+              Local(n107): url
+        arms:
+          -
+            pat:
+              Ctor: Prelude(Ok)
+                args:
+                  Bind: code
+            body:
+              Call(n108):
+                callee:
+                  Symbol(n109): Stdlib(fn:std.net.http.withoutHeaders)
+                args:
+                  -
+                    Call(n110):
+                      callee:
+                        Symbol(n111): Local(okText @ m0)
+                      args:
+                        -
+                          Call(n112):
+                            callee:
+                              Symbol(n113): Stdlib(fn:std.text.concat)
+                            args:
+                              -
+                                Lit(n114): Text("http://localhost:8080/")
+                              -
+                                Local(n115): code
+          -
+            pat:
+              Ctor: Prelude(Err)
+                args:
+                  Bind: error
+            body:
+              Call(n116):
+                callee:
+                  Symbol(n117): Stdlib(fn:std.net.http.withoutHeaders)
+                args:
+                  -
+                    Construct(n118):
+                      ctor: Ctor(Record:Response owner=105)
+                      fields:
+                        status:
+                          Lit(n119): Int(503)
+                        body:
+                          Call(n120):
+                            callee:
+                              Field(n121).toText:
+                                Construct(n122):
+                                  ctor: Ctor(Record:$synth_dict_toText owner=none)
+                                  fields:
+                                    toText:
+                                      Lambda(n123):
+                                        caps: CapabilitySet(0)
+                                        params:
+                                          - name: __totext_x
+                                            ty: Error
+                                        body:
+                                          Call(n124):
+                                            callee:
+                                              Symbol(n125): Stdlib(fn:std.actor._askErrorToText)
+                                            args:
+                                              -
+                                                Local(n126): __totext_x
+                            args:
+                              -
+                                Local(n127): error
+  - kind: fn
+    name: lookupResponse
+    pub: false
+    main: false
+    caps: CapabilitySet(8)
+    ret_ty: Con(108)
+    params:
+      - name: store
+        ty: Con(11) [Con(109)]
+      - name: code
+        ty: Con(3)
+    body:
+      Match(n128):
+        scrutinee:
+          Ask(n129) ?> Handler(m0..lookup):
+            handle:
+              Local(n130): store
+            args:
+              Local(n131): code
+        arms:
+          -
+            pat:
+              Ctor: Prelude(Ok)
+                args:
+                  Ctor: Prelude(Some)
+                    args:
+                      Bind: url
+            body:
+              Call(n132):
+                callee:
+                  Symbol(n133): Local(redirectWithHeaders @ m0)
+                args:
+                  -
+                    Local(n134): url
+          -
+            pat:
+              Ctor: Prelude(Ok)
+                args:
+                  Ctor: Prelude(None)
+            body:
+              Call(n135):
+                callee:
+                  Symbol(n136): Stdlib(fn:std.net.http.withoutHeaders)
+                args:
+                  -
+                    Call(n137):
+                      callee:
+                        Symbol(n138): Local(notFound @ m0)
+                      args:
+                        -
+                          Call(n139):
+                            callee:
+                              Symbol(n140): Stdlib(fn:std.text.concat)
+                            args:
+                              -
+                                Call(n141):
+                                  callee:
+                                    Symbol(n142): Stdlib(fn:std.text.concat)
+                                  args:
+                                    -
+                                      Lit(n143): Text("No URL found for code '")
+                                    -
+                                      Local(n144): code
+                              -
+                                Lit(n145): Text("'")
+          -
+            pat:
+              Ctor: Prelude(Err)
+                args:
+                  Bind: error
+            body:
+              Call(n146):
+                callee:
+                  Symbol(n147): Stdlib(fn:std.net.http.withoutHeaders)
+                args:
+                  -
+                    Construct(n148):
+                      ctor: Ctor(Record:Response owner=105)
+                      fields:
+                        status:
+                          Lit(n149): Int(503)
+                        body:
+                          Call(n150):
+                            callee:
+                              Field(n151).toText:
+                                Construct(n152):
+                                  ctor: Ctor(Record:$synth_dict_toText owner=none)
+                                  fields:
+                                    toText:
+                                      Lambda(n153):
+                                        caps: CapabilitySet(0)
+                                        params:
+                                          - name: __totext_x
+                                            ty: Error
+                                        body:
+                                          Call(n154):
+                                            callee:
+                                              Symbol(n155): Stdlib(fn:std.actor._askErrorToText)
+                                            args:
+                                              -
+                                                Local(n156): __totext_x
+                            args:
+                              -
+                                Local(n157): error
+  - kind: fn
     name: main
     pub: false
     main: true
@@ -380,43 +567,43 @@ items:
     ret_ty: Con(10) [Con(4), Con(12)]
     params: []
     body:
-      Match(n104):
+      Match(n158):
         scrutinee:
-          LetIn(n105):
+          LetIn(n159):
             pat:
               Bind: store
             value:
-              Spawn(n106) ActorType(Store @ m0):
+              Spawn(n160) ActorType(Store @ m0):
                 args: []
             body:
-              Block(n107):
-                Call(n108):
+              Block(n161):
+                Call(n162):
                   callee:
-                    Symbol(n109): Stdlib(fn:std.io.println)
+                    Symbol(n163): Stdlib(fn:std.io.println)
                   args:
                     -
-                      Lit(n110): Text("URL shortener listening on :8080")
-                Block(n111):
-                  Call(n112):
+                      Lit(n164): Text("URL shortener listening on :8080")
+                Block(n165):
+                  Call(n166):
                     callee:
-                      Symbol(n113): Stdlib(fn:std.net.http.listenWithHeaders)
+                      Symbol(n167): Stdlib(fn:std.net.http.listenWithHeaders)
                     args:
                       -
-                        Lit(n114): Int(8080)
+                        Lit(n168): Int(8080)
                       -
-                        Lambda(n115):
+                        Lambda(n169):
                           caps: CapabilitySet(0)
                           params:
                             - name: req
                               ty: Con(104)
                           body:
-                            Match(n116):
+                            Match(n170):
                               scrutinee:
-                                Tuple(n117):
-                                  Field(n118).method:
-                                    Local(n119): req
-                                  Field(n120).path:
-                                    Local(n121): req
+                                Tuple(n171):
+                                  Field(n172).method:
+                                    Local(n173): req
+                                  Field(n174).path:
+                                    Local(n175): req
                               arms:
                                 -
                                   pat:
@@ -424,217 +611,152 @@ items:
                                       Lit: Text("POST")
                                       Lit: Text("/shorten")
                                   body:
-                                    LetIn(n122):
+                                    LetIn(n176):
                                       pat:
                                         Bind: url
                                       value:
-                                        Call(n123):
+                                        Call(n177):
                                           callee:
-                                            Symbol(n124): Stdlib(fn:std.text.trim)
+                                            Symbol(n178): Stdlib(fn:std.text.trim)
                                           args:
                                             -
-                                              Field(n125).body:
-                                                Local(n126): req
+                                              Field(n179).body:
+                                                Local(n180): req
                                       body:
-                                        Match(n127):
+                                        Match(n181):
                                           scrutinee:
-                                            Call(n128):
+                                            Call(n182):
                                               callee:
-                                                Symbol(n129): Stdlib(fn:std.op.ne)
+                                                Symbol(n183): Stdlib(fn:std.op.ne)
                                               args:
                                                 -
-                                                  Local(n130): url
+                                                  Local(n184): url
                                                 -
-                                                  Lit(n131): Text("")
+                                                  Lit(n185): Text("")
                                           arms:
                                             -
                                               pat:
                                                 Lit: Bool(true)
                                               body:
-                                                LetIn(n132):
-                                                  pat:
-                                                    Bind: code
-                                                  value:
-                                                    Ask(n133) ?> Handler(m0..shorten):
-                                                      handle:
-                                                        Local(n134): store
-                                                      args:
-                                                        Local(n135): url
-                                                  body:
-                                                    Call(n136):
-                                                      callee:
-                                                        Symbol(n137): Stdlib(fn:std.net.http.withoutHeaders)
-                                                      args:
-                                                        -
-                                                          Call(n138):
-                                                            callee:
-                                                              Symbol(n139): Local(okText @ m0)
-                                                            args:
-                                                              -
-                                                                Call(n140):
-                                                                  callee:
-                                                                    Symbol(n141): Stdlib(fn:std.text.concat)
-                                                                  args:
-                                                                    -
-                                                                      Lit(n142): Text("http://localhost:8080/")
-                                                                    -
-                                                                      Local(n143): code
+                                                Return(n186):
+                                                  Call(n187):
+                                                    callee:
+                                                      Symbol(n188): Local(shortenResponse @ m0)
+                                                    args:
+                                                      -
+                                                        Local(n189): store
+                                                      -
+                                                        Local(n190): url
                                             -
                                               pat:
                                                 Lit: Bool(false)
                                               body:
-                                                Return(n144):
-                                                  Call(n145):
+                                                Return(n191):
+                                                  Call(n192):
                                                     callee:
-                                                      Symbol(n146): Stdlib(fn:std.net.http.withoutHeaders)
+                                                      Symbol(n193): Stdlib(fn:std.net.http.withoutHeaders)
                                                     args:
                                                       -
-                                                        Call(n147):
+                                                        Call(n194):
                                                           callee:
-                                                            Symbol(n148): Local(badRequest @ m0)
+                                                            Symbol(n195): Local(badRequest @ m0)
                                                           args:
                                                             -
-                                                              Lit(n149): Text("URL body is required")
+                                                              Lit(n196): Text("URL body is required")
                                 -
                                   pat:
                                     Tuple:
                                       Lit: Text("GET")
                                       Bind: path
                                   when:
-                                    Call(n150):
+                                    Call(n197):
                                       callee:
-                                        Symbol(n151): Stdlib(fn:std.op.ne)
+                                        Symbol(n198): Stdlib(fn:std.op.ne)
                                       args:
                                         -
-                                          Local(n152): path
+                                          Local(n199): path
                                         -
-                                          Lit(n153): Text("/")
+                                          Lit(n200): Text("/")
                                   body:
-                                    LetIn(n154):
+                                    LetIn(n201):
                                       pat:
                                         Bind: code
                                       value:
-                                        Call(n155):
+                                        Call(n202):
                                           callee:
-                                            Symbol(n156): Stdlib(fn:std.option.withDefault)
+                                            Symbol(n203): Stdlib(fn:std.option.withDefault)
                                           args:
                                             -
-                                              Lit(n157): Text("")
+                                              Lit(n204): Text("")
                                             -
-                                              Call(n158):
+                                              Call(n205):
                                                 callee:
-                                                  Symbol(n159): Local(extractCode @ m0)
+                                                  Symbol(n206): Local(extractCode @ m0)
                                                 args:
                                                   -
-                                                    Local(n160): path
+                                                    Local(n207): path
                                       body:
-                                        Match(n161):
+                                        Match(n208):
                                           scrutinee:
-                                            Call(n162):
+                                            Call(n209):
                                               callee:
-                                                Symbol(n163): Stdlib(fn:std.op.ne)
+                                                Symbol(n210): Stdlib(fn:std.op.ne)
                                               args:
                                                 -
-                                                  Local(n164): code
+                                                  Local(n211): code
                                                 -
-                                                  Lit(n165): Text("")
+                                                  Lit(n212): Text("")
                                           arms:
                                             -
                                               pat:
                                                 Lit: Bool(true)
                                               body:
-                                                LetIn(n166):
-                                                  pat:
-                                                    Bind: target
-                                                  value:
-                                                    Ask(n167) ?> Handler(m0..lookup):
-                                                      handle:
-                                                        Local(n168): store
-                                                      args:
-                                                        Local(n169): code
-                                                  body:
-                                                    Match(n170):
-                                                      scrutinee:
-                                                        Local(n171): target
-                                                      arms:
-                                                        -
-                                                          pat:
-                                                            Ctor: Prelude(Some)
-                                                              args:
-                                                                Bind: url
-                                                          body:
-                                                            Call(n172):
-                                                              callee:
-                                                                Symbol(n173): Local(redirectWithHeaders @ m0)
-                                                              args:
-                                                                -
-                                                                  Local(n174): url
-                                                        -
-                                                          pat:
-                                                            Ctor: Prelude(None)
-                                                          body:
-                                                            Call(n175):
-                                                              callee:
-                                                                Symbol(n176): Stdlib(fn:std.net.http.withoutHeaders)
-                                                              args:
-                                                                -
-                                                                  Call(n177):
-                                                                    callee:
-                                                                      Symbol(n178): Local(notFound @ m0)
-                                                                    args:
-                                                                      -
-                                                                        Call(n179):
-                                                                          callee:
-                                                                            Symbol(n180): Stdlib(fn:std.text.concat)
-                                                                          args:
-                                                                            -
-                                                                              Call(n181):
-                                                                                callee:
-                                                                                  Symbol(n182): Stdlib(fn:std.text.concat)
-                                                                                args:
-                                                                                  -
-                                                                                    Lit(n183): Text("No URL found for code '")
-                                                                                  -
-                                                                                    Local(n184): code
-                                                                            -
-                                                                              Lit(n185): Text("'")
+                                                Return(n213):
+                                                  Call(n214):
+                                                    callee:
+                                                      Symbol(n215): Local(lookupResponse @ m0)
+                                                    args:
+                                                      -
+                                                        Local(n216): store
+                                                      -
+                                                        Local(n217): code
                                             -
                                               pat:
                                                 Lit: Bool(false)
                                               body:
-                                                Return(n186):
-                                                  Call(n187):
+                                                Return(n218):
+                                                  Call(n219):
                                                     callee:
-                                                      Symbol(n188): Stdlib(fn:std.net.http.withoutHeaders)
+                                                      Symbol(n220): Stdlib(fn:std.net.http.withoutHeaders)
                                                     args:
                                                       -
-                                                        Call(n189):
+                                                        Call(n221):
                                                           callee:
-                                                            Symbol(n190): Local(notFound @ m0)
+                                                            Symbol(n222): Local(notFound @ m0)
                                                           args:
                                                             -
-                                                              Lit(n191): Text("Not found")
+                                                              Lit(n223): Text("Not found")
                                 -
                                   pat:
                                     Wild
                                   body:
-                                    Call(n192):
+                                    Call(n224):
                                       callee:
-                                        Symbol(n193): Stdlib(fn:std.net.http.withoutHeaders)
+                                        Symbol(n225): Stdlib(fn:std.net.http.withoutHeaders)
                                       args:
                                         -
-                                          Call(n194):
+                                          Call(n226):
                                             callee:
-                                              Symbol(n195): Local(notFound @ m0)
+                                              Symbol(n227): Local(notFound @ m0)
                                             args:
                                               -
-                                                Lit(n196): Text("Not found")
-                  Call(n197):
+                                                Lit(n228): Text("Not found")
+                  Call(n229):
                     callee:
-                      Symbol(n198): Prelude(Ok)
+                      Symbol(n230): Prelude(Ok)
                     args:
                       -
-                        Lit(n199): Unit
+                        Lit(n231): Unit
         arms:
           -
             pat:
@@ -642,24 +764,24 @@ items:
                 args:
                   Bind: __main_ok_1
             body:
-              Construct(n200):
+              Construct(n232):
                 ctor: Prelude(Ok)
                 fields:
                   $0:
-                    Local(n201): __main_ok_1
+                    Local(n233): __main_ok_1
           -
             pat:
               Ctor: Prelude(Err)
                 args:
                   Bind: __main_err_2
             body:
-              Construct(n202):
+              Construct(n234):
                 ctor: Prelude(Err)
                 fields:
                   $0:
-                    Call(n203):
+                    Call(n235):
                       callee:
-                        Symbol(n204): Stdlib(fn:std.error.toText)
+                        Symbol(n236): Stdlib(fn:std.error.toText)
                       args:
                         -
-                          Local(n205): __main_err_2
+                          Local(n237): __main_err_2

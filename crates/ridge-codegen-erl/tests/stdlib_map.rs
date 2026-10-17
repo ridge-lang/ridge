@@ -67,7 +67,9 @@ fn collect_stdlib_symbols(expr: &IrExpr, out: &mut Vec<(String, String)>) {
                 collect_stdlib_symbols(a, out);
             }
         }
-        IrExpr::Lambda { body, .. } | IrExpr::ResultScope { body, .. } => {
+        IrExpr::Lambda { body, .. }
+        | IrExpr::ResultScope { body, .. }
+        | IrExpr::FunctionScope { body, .. } => {
             collect_stdlib_symbols(body, out);
         }
         IrExpr::LetIn { value, body, .. } | IrExpr::VarIn { value, body, .. } => {

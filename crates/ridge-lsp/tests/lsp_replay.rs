@@ -623,7 +623,7 @@ async fn test_ask_timeout_operand_publishes_no_diagnostics() {
         std::fs::write(
             app_src.join("Main.ridge"),
             format!(
-                "actor Store =\n    state items: Int = 0\n\n    on count () -> Int =\n        items\n\npub fn spawn time f () -> Int =\n    let s = spawn Store\n    s ?> count timeout {operand}\n"
+                "actor Store =\n    state items: Int = 0\n\n    on count () -> Int =\n        items\n\npub fn spawn time f () =\n    let s = spawn Store\n    s ?> count timeout {operand}\n"
             ),
         )
         .expect("write source");
@@ -5047,7 +5047,7 @@ const ASK_TIMEOUT_NEGATIVE_SRC: &str = "actor Vault =
     on unlock (pin: Int) -> Int =
         opened + pin
 
-pub fn spawn time open () -> Int =
+pub fn spawn time open () =
     let v = spawn Vault
     v ?> unlock 4242 timeout -1
 ";

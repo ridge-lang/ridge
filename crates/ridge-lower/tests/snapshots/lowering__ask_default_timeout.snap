@@ -1,5 +1,6 @@
 ---
 source: crates/ridge-lower/tests/lowering.rs
+assertion_line: 44
 expression: rendered
 ---
 module: m0
@@ -33,17 +34,47 @@ items:
     pub: false
     main: true
     caps: CapabilitySet(0)
-    ret_ty: Con(0)
+    ret_ty: Con(10) [Con(0), Con(98)]
     params: []
     body:
-      LetIn(n4):
-        pat:
-          Bind: c
-        value:
-          Spawn(n5) ActorType(Counter @ m0):
-            args:
-              Lit(n6): Int(0)
-        body:
-          Ask(n7) ?> Handler(m0..get_count):
-            handle:
-              Local(n8): c
+      Match(n4):
+        scrutinee:
+          LetIn(n5):
+            pat:
+              Bind: c
+            value:
+              Spawn(n6) ActorType(Counter @ m0):
+                args:
+                  Lit(n7): Int(0)
+            body:
+              Ask(n8) ?> Handler(m0..get_count):
+                handle:
+                  Local(n9): c
+        arms:
+          -
+            pat:
+              Ctor: Prelude(Ok)
+                args:
+                  Bind: __main_ok_0
+            body:
+              Construct(n10):
+                ctor: Prelude(Ok)
+                fields:
+                  $0:
+                    Local(n11): __main_ok_0
+          -
+            pat:
+              Ctor: Prelude(Err)
+                args:
+                  Bind: __main_err_1
+            body:
+              Construct(n12):
+                ctor: Prelude(Err)
+                fields:
+                  $0:
+                    Call(n13):
+                      callee:
+                        Symbol(n14): Stdlib(fn:std.actor._askErrorToText)
+                      args:
+                        -
+                          Local(n15): __main_err_1

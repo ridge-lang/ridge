@@ -889,7 +889,7 @@ Expr11        ::= Expr12 { Expr12 }
 
 (* Level 12: field access, ask ?>, send !, and atoms  (left) *)
 Expr12        ::= ExprAtom { "." LOWER_IDENT }
-               |  ExprAtom "?>" IDENT { ExprAtom } [ AskTimeout ]
+               |  ExprAtom "?>" IDENT { ExprAtom } [ AskTimeout ] [ "?" ]
                                                       (* ask *)
                |  ExprAtom "!" ExprAtom               (* send: handle ! msgName        D044 *) ;
 
@@ -1070,7 +1070,10 @@ SpawnExpr     ::= "spawn" UPPER_IDENT { Expr } ;
    question. A negative literal is rejected by the type checker (T060) and an
    out-of-range value computed at run time is normalised, both described in
    the spec rather than here.                                                *)
-AskExpr       ::= Expr "?>" IDENT { ExprAtom } [ AskTimeout ] ;
+(* The optional trailing ? propagates the complete Result-returning ask,
+   including its timeout. To propagate inside the timeout operand instead,
+   parenthesise that operand. A second ask still needs parentheses. *)
+AskExpr       ::= Expr "?>" IDENT { ExprAtom } [ AskTimeout ] [ "?" ] ;
 AskTimeout    ::= "timeout" ( "never" | Expr1 ) ;
 
 (* Examples:

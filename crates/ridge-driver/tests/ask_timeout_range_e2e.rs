@@ -34,20 +34,26 @@ const SECRET: &str = "hunter2-correct-horse";
 
 const SOURCE: &str = r#"
 import std.actor as Actor
+import std.actor (AskError)
 import std.time as Time
 
 actor Vault =
     state opened: Int = 0
 
-    on unlock (secret: Text) (pin: Int) -> Int =
+    on time unlock (secret: Text) (pin: Int) -> Int =
+        Time.sleep 10
         opened + pin
 
--- A deadline already in the past, computed rather than written. `?>` raises on
--- a missed deadline, so this one is read from the runner's stderr.
-pub fn spawn time askNegative () -> Int =
+-- A computed deadline already in the past is a Result error. The runner must
+-- report it without the request's arguments.
+pub fn spawn time askNegative () -> Result Int AskError =
     let v = spawn Vault
     let ms = 0 - 1
     v ?> unlock "hunter2-correct-horse" 4242 timeout ms
+
+pub fn spawn time main () -> Result Unit AskError =
+    let _ = askNegative () ?
+    Ok ()
 
 -- `tryAsk` promises a `Result` instead of a raise. It used to die anyway, which
 -- is the one failure its whole contract exists to rule out.
@@ -60,7 +66,7 @@ pub fn spawn time tryAskNegative () -> Text =
 
 -- Above the ceiling the wait is capped, so a handler that replies at once still
 -- replies rather than the program dying with `timeout_value`.
-pub fn spawn time askHuge () -> Int =
+pub fn spawn time askHuge () -> Result Int AskError =
     let v = spawn Vault
     let ms = 9223372036854775000 + 807
     v ?> unlock "hunter2-correct-horse" 4242 timeout ms
@@ -100,15 +106,25 @@ fn write_workspace(root: &std::path::Path) {
 fn build(dir: &std::path::Path, cache: &std::path::Path) -> (std::path::PathBuf, String) {
     let artefacts = compile_workspace(
         CompileOptions::new(dir.to_path_buf())
-            .with_emit(EmitArtefacts::Beam)
+            .with_emit(EmitArtefacts::Both)
             .with_cache_root(cache.to_path_buf()),
     )
     .expect("compile to BEAM");
 
     assert!(
         artefacts.diagnostics.is_empty(),
-        "no compile errors expected; got {:?}",
-        artefacts.diagnostics
+        "no compile errors expected; got {:?}\n{}",
+        artefacts.diagnostics,
+        if artefacts.diagnostics.is_empty() {
+            String::new()
+        } else {
+            artefacts
+                .core_files
+                .iter()
+                .filter_map(|p| std::fs::read_to_string(p).ok())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
     );
 
     let beam_dir = artefacts
@@ -174,7 +190,7 @@ fn a_negative_ask_deadline_reports_without_the_payload() {
         .arg("ridge_main_runner")
         .arg("run")
         .arg(&module)
-        .arg("askNegative")
+        .arg("main")
         .arg("-s")
         .arg("init")
         .arg("stop")
@@ -189,7 +205,7 @@ fn a_negative_ask_deadline_reports_without_the_payload() {
     // never happened, or the reason changed shape, this fails rather than
     // leaving "the secret is absent" true for the wrong reason.
     assert!(
-        both.contains("no answer to `unlock`"),
+        both.contains("no answer arrived within the deadline"),
         "expected the missed-deadline report in Ridge's voice\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
@@ -223,14 +239,10 @@ fn an_out_of_range_wait_is_normalised_at_every_surface() {
     write_workspace(dir.path());
     let (beam_dir, module) = build(dir.path(), cache.path());
 
-    // `askNegative` is read through its reason rather than its return: the
-    // deadline in the raised term is the one that was actually waited, so
-    // `{deadline,0}` says both that it did not die in `gen:call/4` and that the
-    // negative count arrived as an already-passed deadline.
+    // A computed negative deadline becomes an immediate Result error. No
+    // runtime exception or payload-bearing reason crosses the boundary.
     let expr = format!(
-        "Neg = try {module}:askNegative() of V -> {{returned, V}} \
-           catch error:{{ridge_rt_ask_timeout, _, D}} -> {{deadline, D}}; C:R -> {{other, C, R}} end, \
-         io:format(\"askNegative=~p~n\",[Neg]), \
+        "io:format(\"askNegative=~p~n\",[{module}:askNegative()]), \
          io:format(\"tryAskNegative=~s~n\",[{module}:tryAskNegative()]), \
          io:format(\"askHuge=~p~n\",[{module}:askHuge()]), \
          io:format(\"awaitNegative=~s~n\",[{module}:awaitNegative()]), \
@@ -251,7 +263,7 @@ fn an_out_of_range_wait_is_normalised_at_every_surface() {
 
     for (probe, why) in [
         (
-            "askNegative={deadline,0}",
+            "askNegative={error,'Timeout'}",
             "a computed negative deadline arrives as an already-passed one, not as a guard failure in gen:call/4",
         ),
         (
@@ -259,7 +271,7 @@ fn an_out_of_range_wait_is_normalised_at_every_surface() {
             "`tryAsk` returns its Result instead of raising, which is the whole of its contract",
         ),
         (
-            "askHuge=4242",
+            "askHuge={ok,4242}",
             "a count above the platform's ceiling waits the longest it can express, and the handler still replies",
         ),
         (

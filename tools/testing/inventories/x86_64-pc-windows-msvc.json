@@ -536,6 +536,16 @@
       false
     ],
     [
+      "recoverable_ask_e2e",
+      "ask_returns_results_and_propagates_only_transport_errors",
+      false
+    ],
+    [
+      "recoverable_ask_e2e",
+      "main_renders_direct_propagated_and_explicit_error_returns",
+      false
+    ],
+    [
       "rigid_element_dict_e2e",
       "a_forwarded_element_dictionary_is_the_one_the_caller_promised",
       false
@@ -741,7 +751,7 @@
   ],
   "schema": 2,
   "sources": {
-    "ask_timeout_range_e2e": "d8338e238f9a1756a9456c169eca29c2c516a857679eaec4916ac7ffb3e3e914",
+    "ask_timeout_range_e2e": "706a133225fb03641e63e42e9c021e3646a8c6c6e1c377c6d25147701ef3fe49",
     "builtin_totext_dict_e2e": "c9af5b20ca9eceed91edcc73836454b4575b9315826aa03e77e502bc401df190",
     "bytes_e2e": "271bb5dd5fbb2c5bcc0c29758ebd0ec1b25a0761ec3282c5a1cc81d9eb3cdf8f",
     "code_change_e2e": "d75ed2dbce10737ad3122a86a9c5bf6817e92f8c9c33f61b3fe4354a9d20f56c",
@@ -803,6 +813,7 @@
     "query_sql_compile_e2e": "2a34af2ea30d3a65c7a80f9178791c22a72299b87d53e115a6f1b785cf2c2d53",
     "quotation_capture_e2e": "1daa8d1216edc817303f3be7702fc2c6a06d84d95e5731dbe3e85369084f4625",
     "record_variant_e2e": "5565f4f931f30940b36b505a035dccb021932d1e5c00f31d4d7558acf81dba3f",
+    "recoverable_ask_e2e": "1a086a5971368d1d0b5ee26f1990ede04f6979bf71bbb43fd294550a62c77ff6",
     "rigid_element_dict_e2e": "891ed541e71c6425cec6f9b432b1795adfa59862f9eb0938ee06a8eeba235332",
     "scalar_codec_roundtrip_e2e": "2589375e4ed618e13955a76489c38ffe3d6d0775701d6990beb33adad6c3a52f",
     "schema_ddl_e2e": "55c7b644eaafd8d0ac0f57e24b5455b7b5c883af2781646bff080c81f25bbdb6",

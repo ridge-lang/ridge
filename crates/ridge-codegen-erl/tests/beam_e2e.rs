@@ -1493,6 +1493,16 @@ import std.int as Int
 import std.time as Time
 import std.actor as Actor
 import std.actor (OneForOne, SupError)
+import std.actor (AskError)
+
+type TestError = | TestFailure Text deriving (ToText)
+
+instance ErrorFrom SupError TestError =
+    errorFrom (error: SupError) -> TestError = TestFailure (toText error)
+
+instance ErrorFrom AskError TestError =
+    errorFrom (error: AskError) -> TestError = TestFailure (toText error)
+
 
 actor Counter =
     state count: Int = 0
@@ -1506,18 +1516,18 @@ actor Counter =
     on die (d: Int) =
         count <- 10 / d
 
-fn spawn io time main () -> Result Unit SupError =
+fn spawn io time main () -> Result Unit TestError =
     let sup = Actor.supervise OneForOne 3 5000 []?
     let c = Actor.startChild sup (child Counter)?
     c ! bump
     c ! bump
-    let n1 = c ?> get timeout 2000
+    let n1 = c ?> get timeout 2000 ?
     Io.println $"before=${Int.toText n1}"
     c ! die 0
     -- The restart is asynchronous: give the supervisor a moment to bring the
     -- replacement up before asking through the same handle again.
     Time.sleep 500
-    let n2 = c ?> get timeout 2000
+    let n2 = c ?> get timeout 2000 ?
     Io.println $"after=${Int.toText n2}"
     Io.println "main-still-running"
     Ok ()
@@ -1555,6 +1565,16 @@ import std.int as Int
 import std.time as Time
 import std.actor as Actor
 import std.actor (OneForOne, SupError)
+import std.actor (AskError)
+
+type TestError = | TestFailure Text deriving (ToText)
+
+instance ErrorFrom SupError TestError =
+    errorFrom (error: SupError) -> TestError = TestFailure (toText error)
+
+instance ErrorFrom AskError TestError =
+    errorFrom (error: AskError) -> TestError = TestFailure (toText error)
+
 
 actor Counter =
     state count: Int = 0
@@ -1568,13 +1588,13 @@ actor Counter =
     on die (d: Int) =
         count <- 10 / d
 
-fn spawn io time main () -> Result Unit SupError =
+fn spawn io time main () -> Result Unit TestError =
     let sup = Actor.supervise OneForOne 3 5000 []?
     let c = Actor.startChild sup (child Counter)?
     c ! die 0
     Time.sleep 500
     Io.println "main-ran-past-child-crash"
-    let n = c ?> get timeout 2000
+    let n = c ?> get timeout 2000 ?
     Io.println $"child-back=${Int.toText n}"
     Ok ()
 "#;
@@ -1610,6 +1630,16 @@ import std.int as Int
 import std.time as Time
 import std.actor as Actor
 import std.actor (OneForAll, SupError)
+import std.actor (AskError)
+
+type TestError = | TestFailure Text deriving (ToText)
+
+instance ErrorFrom SupError TestError =
+    errorFrom (error: SupError) -> TestError = TestFailure (toText error)
+
+instance ErrorFrom AskError TestError =
+    errorFrom (error: AskError) -> TestError = TestFailure (toText error)
+
 
 actor Counter =
     state count: Int = 0
@@ -1623,20 +1653,20 @@ actor Counter =
     on die (d: Int) =
         count <- 10 / d
 
-fn spawn io time main () -> Result Unit SupError =
+fn spawn io time main () -> Result Unit TestError =
     let sup = Actor.supervise OneForAll 3 5000 []?
     let a = Actor.startChild sup (Actor.childId "a" (child Counter))?
     let b = Actor.startChild sup (Actor.childId "b" (child Counter))?
     a ! bump
     a ! bump
     b ! bump
-    let na = a ?> get timeout 2000
-    let nb = b ?> get timeout 2000
+    let na = a ?> get timeout 2000 ?
+    let nb = b ?> get timeout 2000 ?
     Io.println $"pre=${Int.toText na},${Int.toText nb}"
     a ! die 0
     Time.sleep 500
-    let ra = a ?> get timeout 2000
-    let rb = b ?> get timeout 2000
+    let ra = a ?> get timeout 2000 ?
+    let rb = b ?> get timeout 2000 ?
     Io.println $"post=${Int.toText ra},${Int.toText rb}"
     Ok ()
 "#;
@@ -1667,6 +1697,16 @@ import std.int as Int
 import std.time as Time
 import std.actor as Actor
 import std.actor (RestForOne, SupError)
+import std.actor (AskError)
+
+type TestError = | TestFailure Text deriving (ToText)
+
+instance ErrorFrom SupError TestError =
+    errorFrom (error: SupError) -> TestError = TestFailure (toText error)
+
+instance ErrorFrom AskError TestError =
+    errorFrom (error: AskError) -> TestError = TestFailure (toText error)
+
 
 actor Counter =
     state count: Int = 0
@@ -1680,7 +1720,7 @@ actor Counter =
     on die (d: Int) =
         count <- 10 / d
 
-fn spawn io time main () -> Result Unit SupError =
+fn spawn io time main () -> Result Unit TestError =
     -- Phase 1: crashing the FIRST child restarts everything started after
     -- it as well — under rest_for_one that is the whole tail.
     let sup1 = Actor.supervise RestForOne 3 5000 []?
@@ -1691,8 +1731,8 @@ fn spawn io time main () -> Result Unit SupError =
     b1 ! bump
     a1 ! die 0
     Time.sleep 500
-    let p1a = a1 ?> get timeout 2000
-    let p1b = b1 ?> get timeout 2000
+    let p1a = a1 ?> get timeout 2000 ?
+    let p1b = b1 ?> get timeout 2000 ?
     Io.println $"p1-post=${Int.toText p1a},${Int.toText p1b}"
     -- Phase 2: crashing the SECOND child leaves the earlier one alone.
     let sup2 = Actor.supervise RestForOne 3 5000 []?
@@ -1703,8 +1743,8 @@ fn spawn io time main () -> Result Unit SupError =
     b2 ! bump
     b2 ! die 0
     Time.sleep 500
-    let p2a = a2 ?> get timeout 2000
-    let p2b = b2 ?> get timeout 2000
+    let p2a = a2 ?> get timeout 2000 ?
+    let p2b = b2 ?> get timeout 2000 ?
     Io.println $"p2-post=${Int.toText p2a},${Int.toText p2b}"
     Ok ()
 "#;
@@ -1735,6 +1775,16 @@ import std.int as Int
 import std.time as Time
 import std.actor as Actor
 import std.actor (OneForOne, SupError)
+import std.actor (AskError)
+
+type TestError = | TestFailure Text deriving (ToText)
+
+instance ErrorFrom SupError TestError =
+    errorFrom (error: SupError) -> TestError = TestFailure (toText error)
+
+instance ErrorFrom AskError TestError =
+    errorFrom (error: AskError) -> TestError = TestFailure (toText error)
+
 
 actor Counter =
     state count: Int = 0
@@ -1748,12 +1798,12 @@ actor Counter =
     on die (d: Int) =
         count <- 10 / d
 
-fn spawn io time main () -> Result Unit SupError =
+fn spawn io time main () -> Result Unit TestError =
     let sup = Actor.supervise OneForOne 1 60000 []?
     let c = Actor.startChild sup (child Counter)?
     c ! die 0
     Time.sleep 500
-    let n = c ?> get timeout 2000
+    let n = c ?> get timeout 2000 ?
     Io.println $"back-once=${Int.toText n}"
     c ! die 0
     Time.sleep 500
@@ -1938,6 +1988,16 @@ import std.io as Io
 import std.int as Int
 import std.actor as Actor
 import std.actor (OneForOne, SupError)
+import std.actor (AskError)
+
+type TestError = | TestFailure Text deriving (ToText)
+
+instance ErrorFrom SupError TestError =
+    errorFrom (error: SupError) -> TestError = TestFailure (toText error)
+
+instance ErrorFrom AskError TestError =
+    errorFrom (error: AskError) -> TestError = TestFailure (toText error)
+
 
 actor Counter =
     state count: Int = 0
@@ -1948,23 +2008,20 @@ actor Counter =
     on get () -> Int =
         count
 
-fn spawn io time main () -> Result Unit SupError =
+fn spawn io time main () -> Result Unit TestError =
     let sup = Actor.supervise OneForOne 3 5000 []?
     let c = Actor.startChild sup (Actor.childId "c" (child Counter))?
     let _ = Actor.stopChild sup "c"?
-    -- The child is gone: ask has no answer to give, so it raises the
-    -- structured ridge_ask_noproc reason in the caller instead of surfacing
-    -- a raw gen_server exit.
-    let n = c ?> get timeout 1000
+    -- The child is gone: propagate the ask's Noproc value to main's error
+    -- channel. The runner reports that value without an actor-call exception.
+    let n = c ?> get timeout 1000 ?
     Io.println $"should-not-reach=${Int.toText n}"
     Ok ()
 "#;
 
 /// Asking a stopped supervised child with `?>` must fail fast and say so:
-/// the caller crashes with a cause a reader can act on rather than hanging,
-/// surfacing an opaque `exit:{noproc,_}`, or naming the internal reason the
-/// runtime raises. The `Err`-returning alternative for callers that want
-/// to handle the absence is `tryAsk` (previous test).
+/// the caller returns an error the runner can explain, rather than hanging
+/// or exposing a runtime exit. Both ask spellings have this Result contract.
 #[test]
 fn beam_e2e_ask_on_stopped_child_fails_loudly() {
     let (beam_dir, module, _td) =
@@ -1975,7 +2032,7 @@ fn beam_e2e_ask_on_stopped_child_fails_loudly() {
         "expected a non-zero exit (ask on a stopped child), got 0\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
     );
     assert!(
-        stderr.contains("asked an actor that is no longer running"),
+        stderr.contains("the actor is no longer running"),
         "expected the crash to name the cause, got:\n{stderr}"
     );
     assert!(
@@ -1996,6 +2053,16 @@ import std.int as Int
 import std.time as Time
 import std.actor as Actor
 import std.actor (OneForOne, SupError)
+import std.actor (AskError)
+
+type TestError = | TestFailure Text deriving (ToText)
+
+instance ErrorFrom SupError TestError =
+    errorFrom (error: SupError) -> TestError = TestFailure (toText error)
+
+instance ErrorFrom AskError TestError =
+    errorFrom (error: AskError) -> TestError = TestFailure (toText error)
+
 
 actor Fragile =
     state n: Int = 0
@@ -2006,25 +2073,20 @@ actor Fragile =
     on die (d: Int) =
         n <- 10 / d
 
-fn spawn io time main () -> Result Unit SupError =
-    -- Any use of `?` wraps the body in the propagation try/catch, and an
-    -- exception crossing that frame must keep its class and reason: a
-    -- previous codegen bug re-raised with an invalid stacktrace and turned
-    -- the crash into a silent `badarg` return with exit code 0.
+fn spawn io time main () -> Result Unit TestError =
+    -- Supervision and ask have distinct errors, converted to main's local
+    -- error type. Neither propagation path may silently return success.
     let _ = Actor.supervise OneForOne 3 5000 []?
     let f = spawn Fragile
     f ! die 0
     Time.sleep 300
-    let n = f ?> get timeout 1000
+    let n = f ?> get timeout 1000 ?
     Io.println $"should-not-reach=${Int.toText n}"
     Ok ()
 "#;
 
-/// `?>` on a dead actor must stop the caller and say why, even
-/// when the calling function uses `?` somewhere in its body — the
-/// propagation wrapper around such bodies used to swallow the exit and
-/// report success. This is the plain-handle twin of the stopped-child case
-/// above: same structured reason, no supervisor involved.
+/// A propagated ask error on a dead plain handle must reach main's Result
+/// error channel, just as it does for the stopped supervised child.
 #[test]
 fn beam_e2e_ask_on_dead_plain_actor_fails_loudly() {
     let (beam_dir, module, _td) = compile_inline_actor_test("AskDeadPlain", ASK_DEAD_PLAIN_SOURCE);
@@ -2034,7 +2096,7 @@ fn beam_e2e_ask_on_dead_plain_actor_fails_loudly() {
         "expected a non-zero exit (ask on a dead actor), got 0\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
     );
     assert!(
-        stderr.contains("asked an actor that is no longer running"),
+        stderr.contains("the actor is no longer running"),
         "expected the crash to name the cause, got:\n{stderr}"
     );
     assert!(
@@ -2144,6 +2206,16 @@ import std.int as Int
 import std.time as Time
 import std.actor as Actor
 import std.actor (OneForOne, Transient, Noproc, Timeout, SupError)
+import std.actor (AskError)
+
+type TestError = | TestFailure Text deriving (ToText)
+
+instance ErrorFrom SupError TestError =
+    errorFrom (error: SupError) -> TestError = TestFailure (toText error)
+
+instance ErrorFrom AskError TestError =
+    errorFrom (error: AskError) -> TestError = TestFailure (toText error)
+
 
 actor Counter =
     state count: Int = 0
@@ -2157,7 +2229,7 @@ actor Counter =
     on die (d: Int) =
         count <- 10 / d
 
-fn spawn io time main () -> Result Unit SupError =
+fn spawn io time main () -> Result Unit TestError =
     let sup = Actor.supervise OneForOne 3 5000 []?
     let a = Actor.startChild sup (Actor.childId "a" (Actor.childRestart Transient (child Counter)))?
     a ! bump
@@ -2175,7 +2247,7 @@ fn spawn io time main () -> Result Unit SupError =
     b ! bump
     b ! die 0
     Time.sleep 500
-    let n = b ?> get timeout 2000
+    let n = b ?> get timeout 2000 ?
     Io.println $"crash-restarted=${Int.toText n}"
     Ok ()
 "#;
@@ -2306,6 +2378,16 @@ import std.int   as Int
 import std.time  as Time
 import std.actor as Actor
 import std.actor (OneForOne, ExitReason, Normal, NotRunning, Shutdown, Crashed, SupError)
+import std.actor (AskError)
+
+type TestError = | TestFailure Text deriving (ToText)
+
+instance ErrorFrom SupError TestError =
+    errorFrom (error: SupError) -> TestError = TestFailure (toText error)
+
+instance ErrorFrom AskError TestError =
+    errorFrom (error: AskError) -> TestError = TestFailure (toText error)
+
 
 actor Worker =
     state n: Int = 0
@@ -2323,12 +2405,12 @@ actor Worker =
             Shutdown -> Io.println "terminate-shutdown"
             Crashed m -> Io.println "terminate-crashed"
 
-fn io time main () -> Result Unit SupError =
+fn io time main () -> Result Unit TestError =
     let sup = Actor.supervise OneForOne 3 5000 []?
     let w = Actor.startChild sup (Actor.childId "w" (child Worker))?
     w ! explode 0
     Time.sleep 500
-    let n = w ?> get ()
+    let n = w ?> get () ?
     Io.println $"handle-replied=${Int.toText n}"
     Ok ()
 "#;
@@ -2815,6 +2897,8 @@ fn beam_e2e_monitor_dead_handle_reports_not_running() {
 /// Async delivery: a watcher actor's `onDown` member receives the DOWN and
 /// mutates its state.
 const WATCHER_SOURCE: &str = r#"
+import std.actor (AskError)
+
 import std.io    as Io
 import std.int   as Int
 import std.time  as Time
@@ -2840,14 +2924,14 @@ actor Watcher =
     onDown (m: Monitor) (reason: ExitReason) =
         deaths <- deaths + 1
 
-fn spawn io time main () -> Result Unit Text =
+fn spawn io time main () -> Result Unit AskError =
     let w = spawn Worker
     let watcher = spawn Watcher
     watcher ! watch w
     Time.sleep 300
     w ! explode 0
     Time.sleep 500
-    let n = watcher ?> count ()
+    let n = watcher ?> count () ?
     Io.println $"deaths=${Int.toText n}"
     Ok ()
 "#;
@@ -3372,6 +3456,8 @@ fn beam_e2e_local_var_reassignment() {
 // waited, not that the handler happened to win the race.
 
 const ASK_BARRIER_SOURCE: &str = r#"
+import std.actor (AskError)
+
 import std.io as Io
 import std.time as Time
 
@@ -3382,11 +3468,11 @@ actor Worker =
         Io.println $"handled: ${msg}"
     on ping (n: Int) -> Int = n
 
-fn spawn io time main () -> Result Unit Text =
+fn spawn io time main () -> Result Unit AskError =
     let w = spawn Worker
     w ! slow "one"
     w ! slow "two"
-    let _ = w ?> ping 1
+    let _ = w ?> ping 1 ?
     Io.println "done"
     Ok ()
 "#;

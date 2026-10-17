@@ -432,6 +432,19 @@ impl<'tw> LowerCtx<'tw> {
             .unwrap_or(CapabilitySet::PURE)
     }
 
+    /// Look up a compiler-reconciled stdlib type without following a user's
+    /// namesake. The stdlib's own build takes its declarations from source.
+    pub(crate) fn lookup_stdlib_tycon(&mut self, name: &str) -> Option<TyConId> {
+        let ws = self.workspace?;
+        ws.stdlib_tycons.get(name).copied().or_else(|| {
+            if ws.stdlib_tycons.is_empty() && self.module_fqn.starts_with("std.") {
+                self.lookup_tycon_by_name(name)
+            } else {
+                None
+            }
+        })
+    }
+
     /// Looks up a `TyConId` by name from the workspace's tycon list.
     ///
     /// On the first call the lookup builds a name→`TyConId` cache from

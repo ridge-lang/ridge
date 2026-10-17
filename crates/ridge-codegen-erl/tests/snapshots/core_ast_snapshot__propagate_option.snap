@@ -202,16 +202,53 @@ CErlModule {
                                             },
                                         },
                                     },
+                                    CErlClause {
+                                        pattern: Var(
+                                            CErlVar(
+                                                "CaseUnmatched2",
+                                            ),
+                                        ),
+                                        guard: Lit(
+                                            Atom(
+                                                CErlAtom(
+                                                    "true",
+                                                ),
+                                            ),
+                                        ),
+                                        body: PrimOp {
+                                            name: CErlAtom(
+                                                "match_fail",
+                                            ),
+                                            args: [
+                                                Tuple(
+                                                    [
+                                                        Lit(
+                                                            Atom(
+                                                                CErlAtom(
+                                                                    "case_clause",
+                                                                ),
+                                                            ),
+                                                        ),
+                                                        Var(
+                                                            CErlVar(
+                                                                "CaseUnmatched2",
+                                                            ),
+                                                        ),
+                                                    ],
+                                                ),
+                                            ],
+                                        },
+                                    },
                                 ],
                             },
                         },
                         body: Let {
                             var: CErlVar(
-                                "V_Anf8",
+                                "V_Anf9",
                             ),
                             value: Let {
                                 var: CErlVar(
-                                    "V_Anf2",
+                                    "V_Anf3",
                                 ),
                                 value: Call {
                                     module: CErlAtom(
@@ -236,7 +273,7 @@ CErlModule {
                                 body: Case {
                                     scrutinee: Var(
                                         CErlVar(
-                                            "V_Anf2",
+                                            "V_Anf3",
                                         ),
                                     ),
                                     clauses: [
@@ -248,7 +285,7 @@ CErlModule {
                                             ),
                                             guard: Let {
                                                 var: CErlVar(
-                                                    "V_Anf3",
+                                                    "V_Anf4",
                                                 ),
                                                 value: Call {
                                                     module: CErlAtom(
@@ -272,7 +309,7 @@ CErlModule {
                                                 },
                                                 body: Let {
                                                     var: CErlVar(
-                                                        "V_Anf4",
+                                                        "V_Anf5",
                                                     ),
                                                     value: Call {
                                                         module: CErlAtom(
@@ -304,12 +341,12 @@ CErlModule {
                                                         args: [
                                                             Var(
                                                                 CErlVar(
-                                                                    "V_Anf3",
+                                                                    "V_Anf4",
                                                                 ),
                                                             ),
                                                             Var(
                                                                 CErlVar(
-                                                                    "V_Anf4",
+                                                                    "V_Anf5",
                                                                 ),
                                                             ),
                                                         ],
@@ -330,7 +367,7 @@ CErlModule {
                                             ),
                                             guard: Let {
                                                 var: CErlVar(
-                                                    "V_Anf5",
+                                                    "V_Anf6",
                                                 ),
                                                 value: Call {
                                                     module: CErlAtom(
@@ -354,7 +391,7 @@ CErlModule {
                                                 },
                                                 body: Let {
                                                     var: CErlVar(
-                                                        "V_Anf6",
+                                                        "V_Anf7",
                                                     ),
                                                     value: Call {
                                                         module: CErlAtom(
@@ -386,12 +423,12 @@ CErlModule {
                                                         args: [
                                                             Var(
                                                                 CErlVar(
-                                                                    "V_Anf5",
+                                                                    "V_Anf6",
                                                                 ),
                                                             ),
                                                             Var(
                                                                 CErlVar(
-                                                                    "V_Anf6",
+                                                                    "V_Anf7",
                                                                 ),
                                                             ),
                                                         ],
@@ -419,7 +456,7 @@ CErlModule {
                                             ),
                                             body: Let {
                                                 var: CErlVar(
-                                                    "V_Anf7",
+                                                    "V_Anf8",
                                                 ),
                                                 value: Tuple(
                                                     [
@@ -460,7 +497,7 @@ CErlModule {
                                                     args: [
                                                         Var(
                                                             CErlVar(
-                                                                "V_Anf7",
+                                                                "V_Anf8",
                                                             ),
                                                         ),
                                                     ],
@@ -481,7 +518,7 @@ CErlModule {
                                     ),
                                     Var(
                                         CErlVar(
-                                            "V_Anf8",
+                                            "V_Anf9",
                                         ),
                                     ),
                                 ],

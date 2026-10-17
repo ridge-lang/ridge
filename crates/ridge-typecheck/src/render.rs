@@ -32,6 +32,31 @@ use ridge_resolve::Severity;
 use crate::ctx::InferCtx;
 use crate::error::{CapDeclKind, TypeDesc, TypeError};
 
+fn ask_migration_hint(desc: &TypeDesc, tycons: &[ridge_types::TyConDecl]) -> bool {
+    let TypeDesc::Ty(ty) = desc else { return false };
+    let ridge_types::Type::Con(result, args) = ty.as_ref() else {
+        return false;
+    };
+    if !tycons
+        .iter()
+        .any(|d| d.id == *result && d.name == "Result" && d.def_module_raw.is_none())
+    {
+        return false;
+    }
+    matches!(args.get(1), Some(ridge_types::Type::Con(error, _))
+        if tycons.iter().any(|d| d.id == *error && d.name == "AskError" && d.def_module_raw.is_none()))
+}
+
+const ASK_MIGRATION_HINT: &str = "an ask returns `Result reply AskError`; match `Ok`/`Err`, or append `?` in a Result scope with a compatible error type";
+
+fn write_type_hint(f: &mut String, hint: Option<&str>) -> fmt::Result {
+    use fmt::Write as _;
+    if let Some(hint) = hint {
+        write!(f, "\n  hint: {hint}")?;
+    }
+    Ok(())
+}
+
 // ── Display helpers ───────────────────────────────────────────────────────────
 
 /// How a `T003` opens, given a callee that may not have a name.
@@ -148,13 +173,16 @@ impl TypeError {
                 hint,
                 ..
             } => {
+                let ask_hint =
+                    ask_migration_hint(expected, tycons) || ask_migration_hint(found, tycons);
                 let expected = expected.render_in(tycons, namer);
                 let found = found.render_in(tycons, namer);
                 write!(f, "type mismatch\n  expected {expected}, got {found}")?;
-                if let Some(h) = hint {
-                    write!(f, "\n  hint: {h}")?;
-                }
-                Ok(())
+                write_type_hint(
+                    f,
+                    hint.as_deref()
+                        .or_else(|| ask_hint.then_some(ASK_MIGRATION_HINT)),
+                )
             }
 
             // ── T002 ──────────────────────────────────────────────────────────
@@ -165,13 +193,16 @@ impl TypeError {
                 found,
                 ..
             } => {
+                let ask_hint =
+                    ask_migration_hint(expected, tycons) || ask_migration_hint(found, tycons);
                 let expected = expected.render_in(tycons, namer);
                 let found = found.render_in(tycons, namer);
                 write!(
                     f,
                     "type mismatch in call to `{callee}`\n  argument {n}: expected {expected}, got {found}",
                     n = arg_index + 1,
-                )
+                )?;
+                write_type_hint(f, ask_hint.then_some(ASK_MIGRATION_HINT))
             }
 
             // ── T003 ──────────────────────────────────────────────────────────

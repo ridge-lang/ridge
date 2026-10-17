@@ -179,7 +179,15 @@ pub fn collect_workspace_gated(
     // registered and this call becomes a no-op for those keys. For user
     // workspaces, the source-level declarations are absent and all four entries
     // are inserted here so the constraint solver can discharge them.
-    register_stdlib_instances(&mut instance_env, &class_table, b, user_tycon_names);
+    // Source declarations may reuse a stdlib type's short name. Intrinsic
+    // instances belong to the compiler's nominal type, not that namesake.
+    let mut stdlib_instance_names = user_tycon_names.clone();
+    for (name, id) in &mut stdlib_instance_names {
+        if let Some(compiler_id) = origins.resolve_compiler_name(name) {
+            *id = compiler_id;
+        }
+    }
+    register_stdlib_instances(&mut instance_env, &class_table, b, &stdlib_instance_names);
 
     // Step 4b: Synthesise instances for every `TypeDecl` that has a
     // `deriving (…)` clause. Derived instances are registered into the same

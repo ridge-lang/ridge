@@ -1,7 +1,7 @@
 //! §4.17–§4.19 — Lower `IrExpr::Send`, `IrExpr::Ask`, `IrExpr::Spawn`.
 //!
 //! All three actor-messaging primitives are routed through `ridge_rt` wrappers
-//! per resolved **OQ-E004** (§8.2): `ridge_rt:send_op/2`, `ridge_rt:ask/3`,
+//! per resolved **OQ-E004** (§8.2): `ridge_rt:send_op/2`, `ridge_rt:try_ask/3`,
 //! and `ridge_rt:spawn_actor/3`.  This one-hop indirection is the seam where
 //! future telemetry and tracing hooks land without recompiling user code.
 //!
@@ -24,7 +24,7 @@
 //! ```ignore
 //! handle ?> handler arg1 ... argN [timeout <ms|never>]
 //! ```
-//! → `call 'ridge_rt':'ask' (HandleExpr, {handler_tag, Arg1, ..., ArgN}, TimeoutMs)`
+//! → `call 'ridge_rt':'try_ask' (HandleExpr, {handler_tag, Arg1, ..., ArgN}, TimeoutMs)`
 //!
 //! Timeout resolution (per resolved OQ-E001 §8):
 //! - `timeout: None`             → `5000`           (BEAM convention)
@@ -89,9 +89,9 @@ pub(crate) fn lower_send(
 
 // ── §4.18 Ask ──────────────────────────────────────────────────────────────────
 
-/// Lower `IrExpr::Ask` to `call 'ridge_rt':'ask' (Handle, {Tag, A1, ..., AN}, Timeout)`.
+/// Lower `IrExpr::Ask` to `call 'ridge_rt':'try_ask' (Handle, {Tag, A1, ..., AN}, Timeout)`.
 ///
-/// Per resolved **OQ-E004** (§8.2): all `?>` asks route through `ridge_rt:ask/3`.
+/// Both ask spellings use the same Result-returning runtime operation.
 /// Per resolved **OQ-E001** (§8.2): default timeout is `5000` ms.
 ///
 /// Timeout table:
@@ -110,32 +110,7 @@ pub(crate) fn lower_ask(
     span: Span,
     scope: &mut LocalScope,
 ) -> Result<CErlExpr, CodegenError> {
-    let handle_expr = lower_expr_in_scope(handle, scope)?;
-    let msg_tuple = build_message_tuple(message, args, span, scope)?;
-
-    // §4.18 timeout resolution (OQ-E001).
-    let timeout_expr = match timeout {
-        // No explicit timeout → runtime default 5000 ms.
-        None => CErlExpr::Lit(CErlLit::Int(5000)), // OQ-E001: 5000 ms default
-        // `timeout never` → Erlang `infinity`.
-        Some(IrTimeout::Never) => CErlExpr::Lit(CErlLit::Atom(CErlAtom("infinity".into()))),
-        // `timeout <expr>` → lower the expression (typecheck guarantees `e: Int`).
-        Some(IrTimeout::Millis(e)) => lower_expr_in_scope(e, scope)?,
-        // IrTimeout is #[non_exhaustive]; catch future variants defensively.
-        Some(_) => {
-            return Err(CodegenError::IrShapeMalformed {
-                variant: "IrTimeout",
-                span,
-                detail: "unrecognised IrTimeout variant — no lowering arm defined".into(),
-            });
-        }
-    };
-
-    Ok(CErlExpr::Call {
-        module: CErlAtom("ridge_rt".into()),
-        fn_name: CErlAtom("ask".into()),
-        args: vec![handle_expr, msg_tuple, timeout_expr],
-    })
+    lower_try_ask(handle, message, args, timeout, span, scope)
 }
 
 // ── §4.19 Spawn ────────────────────────────────────────────────────────────────
@@ -249,7 +224,7 @@ pub(crate) fn lower_child_spec(
 /// `call 'ridge_rt':'try_ask' (Handle, {Tag, A1, ..., AN}, Timeout)`.
 ///
 /// `ridge_rt:try_ask/3` performs the same request-reply as
-/// `ridge_rt:ask/3` but returns `{ok, Reply} | {error, noproc | timeout}` —
+/// `ridge_rt:ask/3` but returns `{ok, Reply} | {error, 'Noproc' | 'Timeout'}` —
 /// Ridge's `Result reply AskError` representation — instead of raising.
 pub(crate) fn lower_try_ask(
     handle: &IrExpr,
@@ -553,7 +528,7 @@ mod tests {
                 args: call_args,
             } => {
                 assert_eq!(module.0, "ridge_rt");
-                assert_eq!(fn_name.0, "ask");
+                assert_eq!(fn_name.0, "try_ask");
                 assert_eq!(call_args.len(), 3, "ask/3 expects handle + msg + timeout");
                 assert!(
                     matches!(&call_args[2], CErlExpr::Lit(CErlLit::Int(5000))),

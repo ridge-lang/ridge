@@ -437,6 +437,43 @@ CErlModule {
                                                     ),
                                                 ),
                                             },
+                                            CErlClause {
+                                                pattern: Var(
+                                                    CErlVar(
+                                                        "CaseUnmatched8",
+                                                    ),
+                                                ),
+                                                guard: Lit(
+                                                    Atom(
+                                                        CErlAtom(
+                                                            "true",
+                                                        ),
+                                                    ),
+                                                ),
+                                                body: PrimOp {
+                                                    name: CErlAtom(
+                                                        "match_fail",
+                                                    ),
+                                                    args: [
+                                                        Tuple(
+                                                            [
+                                                                Lit(
+                                                                    Atom(
+                                                                        CErlAtom(
+                                                                            "case_clause",
+                                                                        ),
+                                                                    ),
+                                                                ),
+                                                                Var(
+                                                                    CErlVar(
+                                                                        "CaseUnmatched8",
+                                                                    ),
+                                                                ),
+                                                            ],
+                                                        ),
+                                                    ],
+                                                },
+                                            },
                                         ],
                                     },
                                 },
@@ -461,6 +498,43 @@ CErlModule {
                                         0,
                                     ),
                                 ),
+                            },
+                            CErlClause {
+                                pattern: Var(
+                                    CErlVar(
+                                        "CaseUnmatched9",
+                                    ),
+                                ),
+                                guard: Lit(
+                                    Atom(
+                                        CErlAtom(
+                                            "true",
+                                        ),
+                                    ),
+                                ),
+                                body: PrimOp {
+                                    name: CErlAtom(
+                                        "match_fail",
+                                    ),
+                                    args: [
+                                        Tuple(
+                                            [
+                                                Lit(
+                                                    Atom(
+                                                        CErlAtom(
+                                                            "case_clause",
+                                                        ),
+                                                    ),
+                                                ),
+                                                Var(
+                                                    CErlVar(
+                                                        "CaseUnmatched9",
+                                                    ),
+                                                ),
+                                            ],
+                                        ),
+                                    ],
+                                },
                             },
                         ],
                     },

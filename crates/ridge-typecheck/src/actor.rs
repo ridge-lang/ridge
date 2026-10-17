@@ -126,7 +126,7 @@ pub fn infer_send(
 /// Step 4: pairwise-unify args against `handler.params`.
 /// Step 5: if `timeout == Some(Millis(e))`, constrain `e: Int` (T026).
 ///         `Never` carries no expression — no new constraint.
-/// Step 6: returns `handler.ret` (the handler's declared return type).
+/// Step 6: returns `Result handler.ret AskError`.
 /// Capability contribution: `{time}` (T13 already handles).
 #[allow(clippy::too_many_arguments)] // T0: timeout added to the protocol-level Ask inference
 pub fn infer_ask(
@@ -197,8 +197,34 @@ pub fn infer_ask(
         check_ask_timeout(ctx, b, ms_expr);
     }
 
-    // Step 6 — return handler's ret type.
-    ret_ty
+    ask_result_type(ctx, b, ret_ty, arena.all())
+        .unwrap_or_else(|| emit_internal(ctx, "ask: std.actor.AskError is not registered", span))
+}
+
+/// Both ask spellings use the same nominal error type, even when a user
+/// declares another union called `AskError` or does not import `std.actor`.
+fn ask_result_type(
+    ctx: &InferCtx,
+    b: &BuiltinTyCons,
+    reply: Type,
+    decls: &[ridge_types::TyConDecl],
+) -> Option<Type> {
+    let error_id = ctx
+        .tycon_origins
+        .resolve_compiler_name("AskError")
+        .or_else(|| {
+            decls
+                .iter()
+                .find(|d| {
+                    d.name == "AskError"
+                        && matches!(&d.kind, TyConKind::Union(_))
+                        && (d.def_module_raw.is_none()
+                            || d.def_module_raw
+                                .is_some_and(|m| ctx.tycon_origins.module_name(m) == "std.actor"))
+                })
+                .map(|d| d.id)
+        });
+    error_id.map(|id| Type::Con(b.result, vec![reply, Type::Con(id, vec![])]))
 }
 
 // ── Ask timeout ───────────────────────────────────────────────────────────────
@@ -480,7 +506,7 @@ fn qualified_name_string(q: &ridge_ast::QualifiedName) -> String {
 /// `tryAsk handle message timeoutMs` is typed like the `?>` operator — the
 /// message is checked against the handle's `on` handlers (T015 on a miss,
 /// T003/T001 on payload mismatch) and the timeout must be an `Int` (T026) —
-/// but the overall expression type is `Result reply AskError`: the runtime
+/// and the overall expression type is `Result reply AskError`: the runtime
 /// (`ridge_rt:try_ask/3`) returns `{error, Noproc | Timeout}`
 /// instead of raising.
 ///
@@ -578,22 +604,8 @@ pub fn infer_tryask(
     // that holds for one holds for the other.
     check_ask_timeout(ctx, b, timeout_expr);
 
-    // Step 6 — `Result reply AskError`. AskError is the `std.actor` union,
-    // interned into the reconciled stdlib block before module inference.
-    let Some(ask_error_id) = ctx
-        .tycon_decls
-        .iter()
-        .find(|d| d.name == "AskError" && matches!(&d.kind, TyConKind::Union(_)))
-        .map(|d| d.id)
-    else {
-        return emit_internal(
-            ctx,
-            "tryAsk: 'AskError' union not found in arena — stdlib reconciliation \
-             should have registered it",
-            span,
-        );
-    };
-    Type::Con(b.result, vec![ret_ty, Type::Con(ask_error_id, vec![])])
+    ask_result_type(ctx, b, ret_ty, &ctx.tycon_decls)
+        .unwrap_or_else(|| emit_internal(ctx, "ask: std.actor.AskError is not registered", span))
 }
 
 // ── Actor.send ──────────────────────────────────────────────────────────────────
@@ -1021,6 +1033,7 @@ mod tests {
     fn make_builtins() -> (TyConArena, BuiltinTyCons) {
         let mut arena = TyConArena::new();
         let b = BuiltinTyCons::allocate(&mut arena);
+        register_ask_error(&mut arena, &mut InferCtx::for_tests());
         (arena, b)
     }
 
@@ -1270,8 +1283,9 @@ mod tests {
             ctx.errors
         );
         assert!(
-            matches!(ty, Type::Con(id, _) if id == b.int),
-            "Ask on getCount must return Int, got {ty:?}"
+            matches!(&ty, Type::Con(id, args) if *id == b.result
+                && matches!(args.first(), Some(Type::Con(reply, _)) if *reply == b.int)),
+            "Ask on getCount must return Result Int AskError, got {ty:?}"
         );
         ctx.env.pop_frame();
     }
@@ -1747,11 +1761,12 @@ mod tests {
             ctx.errors.len(),
             ctx.errors
         );
-        // The return type should still be Int (getCount's declared return).
+        // The return type still carries Int (getCount's declared return).
         // (T026 does not short-circuit handler return type inference.)
         assert!(
-            matches!(ty, Type::Con(id, _) if id == b.int),
-            "Ask return type must still be Int even when timeout is maltyped; got {ty:?}"
+            matches!(&ty, Type::Con(id, args) if *id == b.result
+                && matches!(args.first(), Some(Type::Con(reply, _)) if *reply == b.int)),
+            "Ask return type must still be Result Int AskError when timeout is maltyped; got {ty:?}"
         );
         ctx.env.pop_frame();
     }
@@ -1814,7 +1829,8 @@ mod tests {
             ctx.errors
         );
         assert!(
-            matches!(ty, Type::Con(i, _) if i == b.int),
+            matches!(&ty, Type::Con(id, args) if *id == b.result
+                && matches!(args.first(), Some(Type::Con(reply, _)) if *reply == b.int)),
             "the handler's return type survives a bad timeout; got {ty:?}"
         );
         ctx.env.pop_frame();
@@ -2092,6 +2108,15 @@ mod tests {
     /// it in the `Result reply AskError` it builds.
     fn register_ask_error(arena: &mut TyConArena, ctx: &mut InferCtx) -> TyConId {
         use ridge_types::{UnionSchema, UnionVariant, VariantPayload};
+        if let Some(id) = arena
+            .all()
+            .iter()
+            .find(|d| d.name == "AskError")
+            .map(|d| d.id)
+        {
+            ctx.tycon_decls = arena.all().to_vec();
+            return id;
+        }
         let id = arena.intern(TyConDecl {
             id: ridge_types::TyConId(0), // overwritten by intern
             name: "AskError".to_string(),

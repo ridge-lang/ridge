@@ -594,6 +594,15 @@ pub(crate) fn lower_expr_in_scope(
             let lowered_value = lower_expr_in_scope(value, scope)?;
             Ok(lower_return(lowered_value))
         }
+        IrExpr::FunctionScope { body, .. } => {
+            if crate::return_::has_non_tail_return(body) {
+                let body = lower_expr_in_scope(body, scope)?;
+                Ok(crate::return_::wrap_with_return_catch(body))
+            } else {
+                let body = crate::return_::elide_tail_returns(body);
+                lower_expr_in_scope(&body, scope)
+            }
+        }
         IrExpr::ResultScope { id, body, .. } => crate::result_scope::lower(body, id.0, scope),
         IrExpr::ResultExit { value, .. } => {
             let value = lower_expr_in_scope(value, scope)?;
@@ -726,7 +735,7 @@ pub(crate) fn lower_expr_in_scope(
             ..
         } => lower_send(handle, message, args, *span, scope),
 
-        // §4.18 — Ask (`?>`): route through ridge_rt:ask/3, 5000 ms default (OQ-E001, OQ-E004).
+        // Ask (`?>`): Result transport through ridge_rt:try_ask/3, 5000 ms default.
         IrExpr::Ask {
             handle,
             message,

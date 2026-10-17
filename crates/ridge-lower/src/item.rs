@@ -464,6 +464,7 @@ fn wrap_main_err_as_text(
     body: IrExpr,
     ret_ty: &Type,
     span: Span,
+    source: &Body,
 ) -> IrExpr {
     let b = ctx.builtins;
     let Type::Con(tycon, args) = ret_ty else {
@@ -476,6 +477,15 @@ fn wrap_main_err_as_text(
     if matches!(&err_ty, Type::Con(id, _) if *id == b.text) {
         return body;
     }
+
+    // Finish the source function before crossing its textual exit boundary.
+    // A match around the raw body is insufficient: `return` and propagation
+    // leave that match and would be caught only outside the conversion.
+    let body = if has_function_exit(source) {
+        close_return_boundary(ctx, body, span)
+    } else {
+        body
+    };
 
     let ok_name = ctx.fresh_local("__main_ok");
     let err_name = ctx.fresh_local("__main_err");
@@ -548,6 +558,33 @@ fn wrap_main_err_as_text(
         id,
         scrutinee: Box::new(body),
         arms: vec![ok_arm, err_arm],
+        span,
+    }
+}
+
+fn has_function_exit(body: &Body) -> bool {
+    struct Finder(bool);
+    impl<'ast> ridge_ast::visit::Visit<'ast> for Finder {
+        fn visit_expr(&mut self, e: &'ast Expr) {
+            match e {
+                Expr::Lambda { .. } | Expr::InnerFn { .. } => {}
+                Expr::Return { .. } | Expr::Propagate { .. } | Expr::Guard { .. } => self.0 = true,
+                _ if !self.0 => ridge_ast::visit::walk_expr(self, e),
+                _ => {}
+            }
+        }
+    }
+    let mut finder = Finder(false);
+    if let Body::Expr(e) = body {
+        ridge_ast::visit::Visit::visit_expr(&mut finder, e);
+    }
+    finder.0
+}
+
+fn close_return_boundary(ctx: &mut LowerCtx<'_>, body: IrExpr, span: Span) -> IrExpr {
+    IrExpr::FunctionScope {
+        id: ctx.fresh_id(None),
+        body: Box::new(body),
         span,
     }
 }
@@ -672,7 +709,7 @@ pub fn lower_fn(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrFn {
     // anything it rendered would be a guess. T059 has already required the
     // instance to exist; this is what calls it.
     let body = if is_main {
-        wrap_main_err_as_text(ctx, body, &ret_ty, decl.span)
+        wrap_main_err_as_text(ctx, body, &ret_ty, decl.span, &decl.body)
     } else {
         body
     };

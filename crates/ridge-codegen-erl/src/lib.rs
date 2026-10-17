@@ -33,8 +33,10 @@ pub(crate) mod messaging;
 pub mod module;
 pub(crate) mod pat;
 pub(crate) mod record_meta;
+pub(crate) mod result_scope;
 pub(crate) mod return_;
 pub(crate) mod scope;
+pub(crate) mod scope_bind;
 pub(crate) mod symbol;
 
 pub use core_ast::*;

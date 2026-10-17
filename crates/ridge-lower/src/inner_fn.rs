@@ -193,9 +193,6 @@ fn dict_sig(ctx: &LowerCtx<'_>, decl: &FnDecl) -> Option<(Vec<Constraint>, Vec<T
         .get(ctx.module_id.0 as usize)?
         .schemes
         .get(&nid)?;
-    if scheme.constraints.is_empty() {
-        return None;
-    }
     let (params, ret) = match &scheme.ty {
         Type::Fn { params, ret, .. } => (params.clone(), (**ret).clone()),
         _ => (Vec::new(), Type::Error),
@@ -209,6 +206,9 @@ fn push_dict_scope(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> bool {
     let Some((constraints, params, ret)) = dict_sig(ctx, decl) else {
         return false;
     };
+    if constraints.is_empty() {
+        return false;
+    }
     ctx.inner_fn_dict_sigs
         .push((decl.name.text.clone(), constraints, params, ret));
     true
@@ -276,7 +276,16 @@ fn build_lambda(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrExpr {
             .extend(constraints.iter().cloned());
     }
 
+    // A local function establishes its own return boundary even when the
+    // enclosing expression is a value-producing try scope.
+    let ret = sig
+        .as_ref()
+        .map(|(_, _, ret)| ret.clone())
+        .or_else(|| decl.ret.as_ref().map(|ty| lower_ast_type(ctx, ty)))
+        .unwrap_or(Type::Error);
+    ctx.push_propagation_scope(ret);
     let body = lower_expr(ctx, body_expr);
+    ctx.pop_propagation_scope();
     let body = Box::new(wrap_pattern_params(ctx, body, pattern_entries));
 
     ctx.current_fn_constraints = saved_constraints;

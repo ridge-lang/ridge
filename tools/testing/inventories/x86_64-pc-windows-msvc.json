@@ -246,6 +246,11 @@
       false
     ],
     [
+      "error_conversion_e2e",
+      "error_conversion_preserves_values_and_dispatches_by_both_types",
+      false
+    ],
+    [
       "function_instance_e2e",
       "function_instance_dispatch_computes_correct_values",
       false
@@ -666,6 +671,11 @@
       false
     ],
     [
+      "try_result_e2e",
+      "try_wraps_values_and_catches_only_its_own_propagation",
+      false
+    ],
+    [
       "typeclass_deriving_e2e",
       "typeclass_deriving_computes_correct_values",
       false
@@ -764,6 +774,7 @@
     "deriving_row_e2e": "1077d41469f9759c4c01ab99fac43b3ae4d770a730f4c0ba544a93791e08e038",
     "dict_arg_concrete_e2e": "63ae8ca6bf60d901629b326b08826d5cc54de80201f07c12b7b283dde4fc012f",
     "encode_deriving_e2e": "e6e92fee520a12132d8e08ac86ddabd4b2a1c6bede4e0d46dd9d5309f69d6312",
+    "error_conversion_e2e": "3dadceb744bd294c46689c294f82c1d25bd0ce94663207cdd56f2e4e311e0ae8",
     "function_instance_e2e": "4f0faf8a73107c3b195178e87ca6311b34ca93395f873b9ccfc42eadc55fcb66",
     "gap_a_e2e": "b716b3ee073e1df30e209933d9e787b96bbe7fce387dcdec3166fa594a340d44",
     "implicit_row_e2e": "a1ded4e5fd27e4c29e987a3f8830d27459b0012b1c206f35072d256d3e1e7eae",
@@ -815,6 +826,7 @@
     "syntax_guidance_diagnostics": "20d6acf1e3204b6cc86c403fee724aee5a2d366197a31d3b87736246bbf61944",
     "totext_autopromote_dispatch_e2e": "dc8f188a55a711307f14574982a1670d222d650cdb99d3e6a73bf455023571da",
     "totext_autopromote_poly_e2e": "3706774f4ed1b77d124c93e9b23605c906efa165d7ebf6697ab0315afa568100",
+    "try_result_e2e": "9b925d1f928700961c2254af81026e5a9786cd45e49d03acb5633638fb686efe",
     "typeclass_deriving_e2e": "e97fdedd40e87972a87da4f7126a6bd958e40b853257f8200f4d493f45cc6ca9",
     "typeclass_dict_e2e": "7b8bf7a83b583b8037524e77cfff70bb0680e6951aad72d31fc9ba7cb1810784",
     "union_cross_module_e2e": "5c146dfc3757d753d83ff18496fbc17f19e0cae9df5d5b2e8f094ea621da514e",

@@ -484,6 +484,16 @@ fn collect_instance_decls(
         // Adapter a`).
         let (ctx_constraints, head_var_positions) =
             build_ctx_constraints(&decl.constraints, &decl.head, ct, user_tycon_names);
+        match context_arg_positions(decl, ct) {
+            Ok(positions) => {
+                env.context_arg_positions
+                    .insert((module_id, decl.span), positions);
+            }
+            Err(error) => {
+                errors.push(error);
+                continue;
+            }
+        }
 
         let info = InstanceInfo {
             def_module: Some(module_id),
@@ -1053,12 +1063,14 @@ fn head_arg_name(ty: &ridge_ast::Type) -> Option<&str> {
 }
 
 /// Flatten every head atom's type arguments into one positional list of their
-/// variable names (`None` for a non-variable argument). Each `App`/`List`
+/// variable names (`None` for a non-variable argument).
+///
+/// Each `App`/`List`
 /// contributes its arguments, each `Fn` its parameters then its return — the
 /// same order the solver uses when it flattens the resolved head types. A
 /// single-atom head yields exactly that atom's arguments, so single-parameter
 /// contexts keep the positions they had before multi-parameter contexts existed.
-fn flatten_head_arg_names(head_atoms: &[ridge_ast::Type]) -> Vec<Option<&str>> {
+pub fn flatten_head_arg_names(head_atoms: &[ridge_ast::Type]) -> Vec<Option<&str>> {
     use ridge_ast::Type as AstType;
     let mut out = Vec::new();
     for atom in head_atoms {
@@ -1173,11 +1185,49 @@ fn build_ctx_constraints(
         // Store a sentinel constraint. The TyVid(0) is never used directly
         // by the solver; it reads head_var_positions to find the correct
         // concrete type at solve time.
-        ctx_constraints.push(Constraint::single(class_id, TyVid(0)));
+        ctx_constraints.push(Constraint::new(
+            class_id,
+            std::iter::repeat_n(TyVid(0), wc.ty_vars.len()).collect(),
+        ));
         head_var_positions.push(pos);
     }
 
     (ctx_constraints, head_var_positions)
+}
+
+/// Project every parameter of a written context, rather than only its source.
+fn context_arg_positions(
+    decl: &ridge_ast::InstanceDecl,
+    classes: &ClassTable,
+) -> Result<Vec<Vec<usize>>, TypeError> {
+    let head_args = flatten_head_arg_names(&decl.head);
+    let mut positions = Vec::new();
+    for constraint in &decl.constraints {
+        let Some(class) = classes
+            .id_by_name(&constraint.class.text)
+            .and_then(|id| classes.get(id))
+        else {
+            continue;
+        };
+        let projected: Option<Vec<_>> = constraint
+            .ty_vars
+            .iter()
+            .map(|v| {
+                head_args
+                    .iter()
+                    .position(|name| *name == Some(v.text.as_str()))
+            })
+            .collect();
+        let Some(projected) = projected.filter(|p| p.len() == class.arity) else {
+            return Err(TypeError::UnsupportedInstanceHead {
+                class: decl.class.text.clone(),
+                reason: format!("context {} needs {} variables, each present in the instance head's type arguments", constraint.class.text, class.arity),
+                span: constraint.span,
+            });
+        };
+        positions.push(projected);
+    }
+    Ok(positions)
 }
 
 /// Returns `true` when the AST type represents `Text`.

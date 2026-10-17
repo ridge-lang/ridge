@@ -104,6 +104,15 @@ pub fn check_reserved_prelude_names(module: &Module, is_stdlib: bool) -> Vec<Res
     let reserved = reserved_prelude_names();
     let mut errors = Vec::new();
     for item in &module.items {
+        if let Item::ClassDecl(decl) = item {
+            if decl.name.text == "ErrorFrom" {
+                errors.push(ResolveError::ReservedName {
+                    name: decl.name.text.clone(),
+                    kind: "class",
+                    span: decl.name.span,
+                });
+            }
+        }
         let Item::Type(d) = item else { continue };
 
         if reserved.contains(&d.name.text) {
@@ -136,6 +145,15 @@ pub fn check_reserved_prelude_names(module: &Module, is_stdlib: bool) -> Vec<Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compiler_conversion_class_cannot_be_redefined() {
+        let parsed = ridge_parser::parse_source("class ErrorFrom a =\n    wrong (x: a) -> a\n");
+        let errors = check_reserved_prelude_names(&parsed.module, false);
+        assert!(
+            matches!(errors.as_slice(), [ResolveError::ReservedName { name, kind: "class", .. }] if name == "ErrorFrom")
+        );
+    }
 
     #[test]
     fn no_errors_when_module_is_stdlib() {

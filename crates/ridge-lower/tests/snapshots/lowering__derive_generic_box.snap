@@ -13,7 +13,7 @@ items:
     caps: CapabilitySet(0)
     ret_ty: Con(3)
     params:
-      - name: $dict_Encode_66
+      - name: $dict_Encode_68
         ty: Error
       - name: x
         ty: Error
@@ -26,7 +26,7 @@ items:
             Call(n2):
               callee:
                 Field(n3).encode:
-                  Local(n4): $dict_Encode_66
+                  Local(n4): $dict_Encode_68
               args:
                 -
                   Local(n5): x

@@ -268,10 +268,28 @@ pub enum IrExpr {
         span: Span,
     },
 
-    /// Early return (verbatim per spec §16.3).
-    ///
-    /// `return e` lowers to `Return { value: lower(e) }`. **No implicit
-    /// `Ok`/`Err`/`Some`/`None` wrapping.**
+    /// A value-producing Result boundary: normal completion wraps its payload
+    /// in Ok, and `ResultExit` supplies an already constructed Result.
+    ResultScope {
+        /// The IR-side node identifier.
+        id: IrNodeId,
+        /// Produces an Ok payload normally, or exits through `ResultExit`.
+        body: Box<Self>,
+        /// Source span.
+        span: Span,
+    },
+    /// Exit the nearest `ResultScope` with an already constructed Result.
+    /// Distinct from Return, which exits the current function.
+    ResultExit {
+        /// The IR-side node identifier.
+        id: IrNodeId,
+        /// The Result value supplied to the nearest scope.
+        value: Box<Self>,
+        /// Source span.
+        span: Span,
+    },
+    /// Exit the current function with the given value, without implicit
+    /// Ok/Err/Some/None wrapping. A `ResultScope` does not intercept this exit.
     Return {
         /// The IR-side node identifier.
         id: IrNodeId,

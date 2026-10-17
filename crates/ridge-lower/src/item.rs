@@ -788,8 +788,8 @@ pub fn lower_instance(ctx: &mut LowerCtx<'_>, decl: &InstanceDecl) -> Vec<IrItem
     };
 
     // Build the implicit dictionary parameters for a parametric instance, one
-    // per `where` constraint. Each is named `$dict_{CtxClass}_{var}` where `var`
-    // is the constraint head variable's real inference `TyVid`, recorded by the
+    // per `where` constraint. Its name includes the complete tuple of real
+    // inference variables, recorded by the
     // typecheck's instance-body inference (keyed by the `InstanceDecl` span,
     // indexed in `where` order). The matching `current_fn_constraints` entry (set
     // below) carries that same `TyVid`, so the Forward path in method-body
@@ -810,16 +810,30 @@ pub fn lower_instance(ctx: &mut LowerCtx<'_>, decl: &InstanceDecl) -> Vec<IrItem
             .class_table
             .and_then(|ct| ct.id_by_name(&ctx_class_name));
         #[allow(clippy::cast_possible_truncation)]
-        let tyvid = real_vars
-            .and_then(|v| v.get(i).copied())
-            .unwrap_or(ridge_types::TyVid(i as u32));
+        let vars: smallvec::SmallVec<[ridge_types::TyVid; 1]> =
+            real_vars.and_then(|v| v.get(i)).map_or_else(
+                || {
+                    cc.ty_vars
+                        .iter()
+                        .enumerate()
+                        .map(|(slot, _)| ridge_types::TyVid((i + slot) as u32))
+                        .collect()
+                },
+                |vars| vars.iter().copied().collect(),
+            );
+        let name = class_id.map_or_else(
+            || format!("$dict_{ctx_class_name}_{i}"),
+            |class| {
+                ridge_types::Constraint::new(class, vars.clone()).dict_param_name(&ctx_class_name)
+            },
+        );
         dict_params.push(IrParam {
-            name: format!("$dict_{ctx_class_name}_{}", tyvid.0),
+            name,
             ty: Type::Error, // untyped in IR — dicts are plain BEAM maps
             span: cc.span,
         });
         if let Some(class) = class_id {
-            body_constraints.push(ridge_types::Constraint::single(class, tyvid));
+            body_constraints.push(ridge_types::Constraint::new(class, vars));
         }
     }
     let is_parametric = !dict_params.is_empty();
@@ -929,7 +943,10 @@ fn lower_instance_method(
     // for a parametric instance the body additionally references the enclosing
     // `$inst_` fn's dict params (set in `current_fn_constraints`), captured by
     // the method's closure.
+    let ret_ty = lower_ast_type(ctx, &method.ret);
+    ctx.push_propagation_scope(ret_ty.clone());
     let raw_body = lower_expr(ctx, &method.body);
+    ctx.pop_propagation_scope();
 
     let mut params: Vec<IrParam> = Vec::with_capacity(method.params.len());
     let mut pattern_entries: Vec<(String, &Pattern, Span)> = Vec::new();
@@ -969,7 +986,6 @@ fn lower_instance_method(
     }
 
     // Non-parametric: private top-level fn referenced as `fun fn_name/arity`.
-    let ret_ty = lower_ast_type(ctx, &method.ret);
     let fn_name = format!("{class_name}__{type_name}__{method_name}");
     let method_fn = IrFn {
         name: fn_name.clone(),

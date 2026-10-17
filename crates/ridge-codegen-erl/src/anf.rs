@@ -108,7 +108,7 @@ fn normalise_fn(f: &mut CErlFn, anf: &mut Anf) {
         &mut f.body,
         CErlExpr::Lit(crate::core_ast::CErlLit::Atom(CErlAtom("ok".into()))),
     );
-    f.body = normalise_expr(body, anf);
+    f.body = normalise_expr(crate::scope_bind::resolve(body), anf);
 }
 
 // ── Expression normalisation ──────────────────────────────────────────────────
@@ -121,6 +121,10 @@ fn normalise_fn(f: &mut CErlFn, anf: &mut Anf) {
 // reason: cohesive lowering pass, splitting hurts readability
 fn normalise_expr(expr: CErlExpr, anf: &mut Anf) -> CErlExpr {
     match expr {
+        CErlExpr::PrimOp { name, args } => {
+            let (bindings, args) = hoist_args(args, anf);
+            wrap_bindings(bindings.into_iter(), CErlExpr::PrimOp { name, args })
+        }
         // Fun: normalise the body.
         CErlExpr::Fun { params, body } => CErlExpr::Fun {
             params,

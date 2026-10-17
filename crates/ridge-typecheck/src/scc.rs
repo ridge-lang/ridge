@@ -384,6 +384,7 @@ pub(crate) fn mint_rigids(
                 decl: decl.name.text.clone(),
                 span: decl.span,
                 givens: Vec::new(),
+                given_constraints: Vec::new(),
                 complete,
             },
         );
@@ -740,9 +741,11 @@ pub fn typecheck_module_decls(
                 // Record the promise, so a requirement the body raises on this
                 // variable is met by the caller's dictionary instead of being
                 // hunted for among the instances of a type nobody has picked.
-                for tv in &tys {
+                let constraint = Constraint::new(class_id, tys);
+                for tv in &constraint.tys {
                     if let Some(info) = ctx.rigids.get_mut(&RigidId(tv.0)) {
                         info.givens.push(class_id);
+                        info.given_constraints.push(constraint.clone());
                     }
                 }
                 // Still deferred, and on the same variables as before. A
@@ -750,7 +753,6 @@ pub fn typecheck_module_decls(
                 // or not the body ever exercises it, and these variables are
                 // untouched by unification, so this travels the existing
                 // free-variable path and is retained exactly as it was.
-                let constraint = Constraint::new(class_id, tys);
                 declared_constraints.push(constraint.clone());
                 ctx.deferred_constraints.push(constraint);
             }
@@ -1001,8 +1003,8 @@ pub fn infer_instance_methods(
     class_table: &ClassTable,
     instance_env: &InstanceEnv,
     record_errors: bool,
-) -> FxHashMap<Span, Vec<TyVid>> {
-    let mut recorded: FxHashMap<Span, Vec<TyVid>> = FxHashMap::default();
+) -> FxHashMap<Span, Vec<Vec<TyVid>>> {
+    let mut recorded: FxHashMap<Span, Vec<Vec<TyVid>>> = FxHashMap::default();
     let err_snapshot = ctx.errors.len();
     // Instance bodies own their deferred constraints; restore the module list after.
     let saved_deferred = std::mem::take(&mut ctx.deferred_constraints);
@@ -1011,6 +1013,11 @@ pub fn infer_instance_methods(
         let Item::InstanceDecl(decl) = item else {
             continue;
         };
+        let conversion =
+            class_table.id_by_name(&decl.class.text) == Some(ridge_types::ERROR_FROM_CLASS);
+        if conversion {
+            crate::error_conversion::check_method_set(ctx, decl);
+        }
 
         // One shared TyVid per head/`where` type variable, allocated before any
         // body so a head variable reads the same way in the receiver type, the
@@ -1027,22 +1034,28 @@ pub fn infer_instance_methods(
             }
         }
 
-        // The real head-variable TyVid of each `where` constraint's first
-        // variable, one entry per constraint in source order so the index aligns
+        // The real head-variable tuple of each `where` constraint, one entry
+        // per constraint in source order so the index aligns
         // with `decl.constraints` in the lowering. The sentinel `TyVid(i)` is the
         // fallback (matching the lowering's positional default) for a variable
         // not found in the head — which a well-formed parametric instance never
         // hits, but keeps the index alignment exact.
         #[allow(clippy::cast_possible_truncation)]
-        let head_vars: Vec<TyVid> = decl
+        let head_vars: Vec<Vec<TyVid>> = decl
             .constraints
             .iter()
             .enumerate()
             .map(|(i, c)| {
                 c.ty_vars
-                    .first()
-                    .and_then(|tv| tyvar_map.get(tv.text.as_str()).copied())
-                    .unwrap_or(TyVid(i as u32))
+                    .iter()
+                    .enumerate()
+                    .map(|(slot, tv)| {
+                        tyvar_map
+                            .get(tv.text.as_str())
+                            .copied()
+                            .unwrap_or(TyVid((i + slot) as u32))
+                    })
+                    .collect()
             })
             .collect();
 
@@ -1063,7 +1076,7 @@ pub fn infer_instance_methods(
             collect_tyvars_from_ast_type(&method.ret, &mut method_map, ctx);
 
             let user_tycon_names = ctx.user_tycon_names.clone();
-            let param_types: Vec<Type> = method
+            let mut param_types: Vec<Type> = method
                 .params
                 .iter()
                 .map(|p| match p {
@@ -1073,8 +1086,19 @@ pub fn infer_instance_methods(
                     }
                 })
                 .collect();
-            let ret_ty =
+            let mut ret_ty =
                 ast_type_to_ridge_type(b, ctx, &method.ret, &user_tycon_names, &method_map);
+            if conversion {
+                crate::error_conversion::prepare_method(
+                    ctx,
+                    b,
+                    decl,
+                    class_table,
+                    &method_map,
+                    &mut param_types,
+                    &mut ret_ty,
+                );
+            }
 
             ctx.env.push_frame();
             let saved_ret = ctx.current_fn_ret.take();
@@ -1109,6 +1133,16 @@ pub fn infer_instance_methods(
                 });
             }
 
+            if conversion {
+                crate::caps_check::check_caps_decl(
+                    ctx,
+                    b,
+                    &method.name.text,
+                    Some(CapabilitySet::PURE),
+                    &method.body,
+                    method.span,
+                );
+            }
             ctx.current_fn_ret = saved_ret;
             ctx.env.pop_frame();
         }
@@ -1116,7 +1150,7 @@ pub fn infer_instance_methods(
         // Drain the bodies' deferred constraints. The dictionary plan is unused
         // (the lowering forwards via `current_fn_constraints`); this resolves the
         // body unifications so the recorded variables and `node_types` agree.
-        let _ = solve_constraints(
+        let (_, method_plans) = solve_constraints(
             ctx,
             instance_env,
             class_table,
@@ -1124,6 +1158,7 @@ pub fn infer_instance_methods(
             decl.span,
             Some(b),
         );
+        ctx.dict_resolution_accum.extend(method_plans);
 
         if !head_vars.is_empty() {
             recorded.insert(decl.span, head_vars);
@@ -1133,7 +1168,7 @@ pub fn infer_instance_methods(
     // Deep-resolve the recorded variables against the now-complete union-find,
     // matching the resolution `node_types` receives at module end.
     for vars in recorded.values_mut() {
-        for tyvid in vars.iter_mut() {
+        for tyvid in vars.iter_mut().flatten() {
             if let Type::Var(rep) = ctx.deep_resolve(&Type::Var(*tyvid)) {
                 *tyvid = rep;
             }

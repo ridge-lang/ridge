@@ -127,12 +127,12 @@ pub enum DictPlan {
 /// Per-call-site dictionary resolution plan, keyed by the constraint itself.
 ///
 /// This map is produced by [`solve_constraints`] and attached to the typed
-/// module for the lowering pass (which is implemented in a later release).
-/// The key is `(ClassId, TyVid_after_fresh_remap)` — uniquely identifies one
-/// deferred constraint at one instantiation site.
+/// module for the lowering pass. All class arguments participate in identity:
+/// two constraints at the same instantiation may share a source variable but
+/// require different destination dictionaries.
 ///
 /// The lowering pass iterates this map and emits dict arguments at call sites.
-pub type DictResolution = FxHashMap<(ClassId, TyVid), DictPlan>;
+pub type DictResolution = FxHashMap<Constraint, DictPlan>;
 
 // ── Main entry point ──────────────────────────────────────────────────────────
 
@@ -170,6 +170,7 @@ pub fn solve_constraints(
     scc_span: Span,
     builtins: Option<&BuiltinTyCons>,
 ) -> (Vec<Constraint>, DictResolution) {
+    crate::pipe_propagate::finish_error_propagations(ctx);
     // Drain the deferred list. We process it as a work queue so that recursive
     // superclass / ctx_constraint requirements can be appended and processed in
     // the same pass.
@@ -284,6 +285,7 @@ fn dispatch_constraint(
                 &resolved_con,
                 work,
                 visited,
+                retained,
                 dict_resolution,
             );
         }
@@ -319,7 +321,7 @@ fn dispatch_constraint(
                 }
                 // Record a Forward plan keyed by the resolved TyVid.
                 dict_resolution
-                    .entry((c.class, v))
+                    .entry(resolved_c.clone())
                     .or_insert(DictPlan::Forward(resolved_c));
             }
         }
@@ -360,6 +362,7 @@ fn dispatch_constraint(
                     &resolved_con,
                     work,
                     visited,
+                    retained,
                     dict_resolution,
                 );
             } else {
@@ -497,6 +500,48 @@ fn dispatch_multi_constraint(
         .get(c.class)
         .map_or("?", |info| info.name.as_str());
 
+    if c.class == ridge_types::ERROR_FROM_CLASS {
+        let rigid = resolved.iter().find_map(|ty| match ty {
+            Type::Rigid { id, .. } => ctx.rigids.get(id).filter(|info| info.complete),
+            _ => None,
+        });
+        if let Some(info) = rigid {
+            let required: Option<Vec<TyVid>> = resolved
+                .iter()
+                .map(|ty| match ty {
+                    Type::Rigid { id, .. } => Some(TyVid(id.0)),
+                    Type::Var(v) => Some(*v),
+                    _ => None,
+                })
+                .collect();
+            let variables_only = required.is_some();
+            let promised = required.is_some_and(|required| {
+                info.given_constraints.iter().any(|given| {
+                    given.class == c.class && given.tys.as_slice() == required.as_slice()
+                })
+            });
+            if !promised {
+                let head = resolved
+                    .iter()
+                    .map(|ty| crate::render::render_type_with(ty, &ctx.tycon_decls))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                ctx.errors.push(TypeError::MissingConstraint {
+                    decl: info.decl.clone(),
+                    class: class_name.to_owned(),
+                    fix_hint: if variables_only {
+                        format!("add `where {class_name} {head}` to the signature")
+                    } else {
+                        "generic ErrorFrom constraints require type variables in both positions; generalise the helper or pass an explicit conversion function".into()
+                    },
+                    ty_var: TypeDesc::Text(head),
+                    span: info.span,
+                });
+                return;
+            }
+        }
+    }
+
     // A promise the signature does not make cannot be repaired further down:
     // no instance lookup and no fundep can supply a dictionary for a type the
     // caller has not chosen. Report and stop, before the head-tuple lookup
@@ -598,7 +643,7 @@ fn dispatch_multi_constraint(
         let info = info.clone();
         let extra_head: SmallVec<[TyConId; 1]> = matched_head.iter().skip(1).copied().collect();
         let tycon = matched_head[0];
-        let key = (c.class, c.tys[0]);
+        let key = c.clone();
         // Idempotent: a second constraint converging on the same instance must
         // not re-resolve the context sub-dictionaries (which would re-report any
         // missing-instance diagnostic).
@@ -608,8 +653,15 @@ fn dispatch_multi_constraint(
         // Resolve the instance's context constraints (`instance C (T a) (U b)
         // where D a`) against the resolved head atoms, threading their resolved
         // sub-dictionaries into the plan. Empty for a context-free instance.
-        let args =
-            resolve_ctx_dict_args_multi(ctx, instance_env, class_table, scc_span, &info, &resolved);
+        let args = resolve_ctx_dict_args_multi(
+            ctx,
+            instance_env,
+            class_table,
+            scc_span,
+            &info,
+            &resolved,
+            retained,
+        );
         dict_resolution.insert(
             key,
             DictPlan::Static {
@@ -637,8 +689,11 @@ fn dispatch_multi_constraint(
                 retained.push(resolved_c.clone());
             }
             dict_resolution
-                .entry((c.class, head_vars[0]))
-                .or_insert(DictPlan::Forward(resolved_c));
+                .entry(resolved_c.clone())
+                .or_insert_with(|| DictPlan::Forward(resolved_c.clone()));
+            // Preserve the exact instantiation-site key as well as the
+            // canonical constraint key used for generalisation.
+            dict_resolution.insert(c.clone(), DictPlan::Forward(resolved_c));
         }
         return;
     }
@@ -930,6 +985,7 @@ fn discharge_concrete(
     resolved_con: &Type,
     work: &mut Vec<Constraint>,
     visited: &mut FxHashSet<(ClassId, TyConId)>,
+    retained: &mut Vec<Constraint>,
     dict_resolution: &mut DictResolution,
 ) {
     let key = (c.class, tyconid);
@@ -980,6 +1036,7 @@ fn discharge_concrete(
                                 &expanded,
                                 work,
                                 visited,
+                                retained,
                                 dict_resolution,
                             );
                             return;
@@ -1030,13 +1087,14 @@ fn discharge_concrete(
                 scc_span,
                 &inst_info,
                 resolved_con,
+                retained,
             );
 
             // Record the static resolution plan for the lowering pass.
             // Include the concrete TyConId so the lowering pass can look up
             // the type name without re-resolving the instance.
             dict_resolution
-                .entry((c.class, c.sole_ty()))
+                .entry(c.clone())
                 .or_insert_with(|| DictPlan::Static {
                     class: c.class,
                     info: Box::new(inst_info.clone()),
@@ -1094,63 +1152,20 @@ fn resolve_ctx_dict_args(
     scc_span: Span,
     inst_info: &InstanceInfo,
     resolved_con: &Type,
+    retained: &mut Vec<Constraint>,
 ) -> Vec<DictPlan> {
-    if inst_info.head_var_positions.is_empty() {
-        return Vec::new();
-    }
-
-    let con_args: Vec<Type> = match resolved_con {
-        Type::Con(_, args) => args.clone(),
-        // Project a function type into positional "type arguments": the
-        // parameter types followed by the return type (`[p₀ … pₙ, ret]`). This
-        // lets a parametric function instance (`instance Handler (fn a -> R)
-        // where Handler a`) pull an element dictionary from a head position via
-        // `head_var_positions` — the identical mechanism `List a` / `Result a e`
-        // use for their type arguments.
-        Type::Fn { params, ret, .. } => {
-            let mut projected = params.clone();
-            projected.push((**ret).clone());
-            projected
-        }
-        _ => Vec::new(),
-    };
-
-    let mut args: Vec<DictPlan> = Vec::with_capacity(inst_info.ctx_constraints.len());
-    for (ctx_c, &pos) in inst_info
-        .ctx_constraints
-        .iter()
-        .zip(inst_info.head_var_positions.iter())
-    {
-        // The concrete element type at this head argument position.
-        let arg_ty = con_args.get(pos).cloned().unwrap_or(Type::Error);
-        let resolved_arg = ctx.deep_resolve(&arg_ty);
-        let plan = resolve_dict_plan(
-            ctx,
-            instance_env,
-            class_table,
-            scc_span,
-            ctx_c.class,
-            &resolved_arg,
-        );
-        args.push(plan);
-    }
-    args
+    resolve_ctx_dict_args_multi(
+        ctx,
+        instance_env,
+        class_table,
+        scc_span,
+        inst_info,
+        std::slice::from_ref(resolved_con),
+        retained,
+    )
 }
 
-/// Resolve the ordered sub-dictionary plans for a **multi-parameter** instance's
-/// context constraints (`instance Projectable (Query e a) (fn e -> s) where
-/// Adapter a`).
-///
-/// The single-parameter [`resolve_ctx_dict_args`] indexes one resolved head
-/// type's arguments. Here the head spans several atoms, so the resolved atoms
-/// are flattened into one positional list — each `Con` contributes its type
-/// arguments, each `Fn` its parameters then its return — exactly the order
-/// `collect::flatten_head_arg_names` used when it recorded `head_var_positions`.
-/// Each context constraint is then resolved against the concrete type at its
-/// recorded position.
-///
-/// Returns an empty vec for a context-free instance (`head_var_positions`
-/// empty), so the caller records a plain `DictPlan::Static { args: [] }`.
+/// Resolve complete context heads against all flattened instance arguments.
 fn resolve_ctx_dict_args_multi(
     ctx: &mut InferCtx,
     instance_env: &InstanceEnv,
@@ -1158,12 +1173,9 @@ fn resolve_ctx_dict_args_multi(
     scc_span: Span,
     inst_info: &InstanceInfo,
     resolved_atoms: &[Type],
+    retained: &mut Vec<Constraint>,
 ) -> Vec<DictPlan> {
-    if inst_info.head_var_positions.is_empty() {
-        return Vec::new();
-    }
-
-    let mut flat: Vec<Type> = Vec::new();
+    let mut flat = Vec::new();
     for atom in resolved_atoms {
         match atom {
             Type::Con(_, args) => flat.extend(args.iter().cloned()),
@@ -1174,34 +1186,104 @@ fn resolve_ctx_dict_args_multi(
             _ => {}
         }
     }
-
-    let mut args: Vec<DictPlan> = Vec::with_capacity(inst_info.ctx_constraints.len());
-    for (ctx_c, &pos) in inst_info
+    let positions = inst_info.def_module.and_then(|module| {
+        instance_env
+            .context_arg_positions
+            .get(&(module, inst_info.span))
+    });
+    inst_info
         .ctx_constraints
         .iter()
-        .zip(inst_info.head_var_positions.iter())
-    {
-        // The sentinel resolves to the determined predicate's return type — the
-        // last flattened element — so a constraint over a composite terminal's
-        // variable-arity result (`SqlType n`, `Row s`) lands on `n`/`s` whatever
-        // the join depth. A fixed index reads its own flattened position.
-        let arg_ty = if pos == crate::class_env::PREDICATE_RETURN_POS {
-            flat.last().cloned().unwrap_or(Type::Error)
-        } else {
-            flat.get(pos).cloned().unwrap_or(Type::Error)
-        };
-        let resolved_arg = ctx.deep_resolve(&arg_ty);
-        let plan = resolve_dict_plan(
-            ctx,
-            instance_env,
-            class_table,
-            scc_span,
-            ctx_c.class,
-            &resolved_arg,
-        );
-        args.push(plan);
+        .enumerate()
+        .filter_map(|(index, constraint)| {
+            let slots = positions
+                .and_then(|all| all.get(index))
+                .cloned()
+                .or_else(|| {
+                    inst_info
+                        .head_var_positions
+                        .get(index)
+                        .copied()
+                        .map(|pos| vec![pos])
+                });
+            let types: Option<Vec<_>> = slots.as_ref().and_then(|slots| {
+                slots
+                    .iter()
+                    .map(|pos| {
+                        let arg = if *pos == crate::class_env::PREDICATE_RETURN_POS {
+                            flat.last()
+                        } else {
+                            flat.get(*pos)
+                        }?;
+                        Some(ctx.deep_resolve(arg))
+                    })
+                    .collect()
+            });
+            let Some(types) = types.filter(|types| types.len() == constraint.tys.len()) else {
+                ctx.errors.push(TypeError::UnsupportedInstanceHead {
+                    class: class_table
+                        .get(constraint.class)
+                        .map_or("?", |c| c.name.as_str())
+                        .to_owned(),
+                    reason: "the instance context cannot be projected from its head arguments"
+                        .into(),
+                    span: inst_info.span,
+                });
+                return None;
+            };
+            resolve_context_head(
+                ctx,
+                instance_env,
+                class_table,
+                scc_span,
+                constraint.class,
+                &types,
+                retained,
+            )
+        })
+        .collect()
+}
+
+/// Keep recursive context plans private, while returning their polymorphic
+/// requirements for generalisation. Publishing child entries in the caller's
+/// plan map could confuse a container dictionary with its element dictionary.
+fn resolve_context_head(
+    ctx: &mut InferCtx,
+    instances: &InstanceEnv,
+    classes: &ClassTable,
+    span: Span,
+    class: ClassId,
+    types: &[Type],
+    retained: &mut Vec<Constraint>,
+) -> Option<DictPlan> {
+    if let [ty] = types {
+        return Some(resolve_dict_plan(
+            ctx, instances, classes, span, class, ty, retained,
+        ));
     }
-    args
+    let mut vars = SmallVec::new();
+    for ty in types {
+        let var = ctx.fresh_tyvid();
+        if unify(ctx, &Type::Var(var), ty).is_err() {
+            return None;
+        }
+        vars.push(var);
+    }
+    let constraint = Constraint::new(class, vars);
+    let mut plans = DictResolution::default();
+    let builtins = ctx.builtins;
+    dispatch_multi_constraint(
+        ctx,
+        instances,
+        classes,
+        &FxHashSet::default(),
+        span,
+        &constraint,
+        retained,
+        &mut plans,
+        Some(&builtins),
+    );
+    plans.remove(&constraint)
 }
 
 /// Resolve a `(class, concrete-or-var type)` pair into a [`DictPlan`] without
@@ -1224,6 +1306,7 @@ fn resolve_dict_plan(
     scc_span: Span,
     class: ClassId,
     resolved: &Type,
+    retained: &mut Vec<Constraint>,
 ) -> DictPlan {
     // Placeholder for the "no resolution" cases. The top-level worklist still
     // enqueues the corresponding constraint and emits any T029 diagnostic, so
@@ -1258,6 +1341,7 @@ fn resolve_dict_plan(
                                     scc_span,
                                     class,
                                     &expanded,
+                                    retained,
                                 );
                             }
                         }
@@ -1308,6 +1392,7 @@ fn resolve_dict_plan(
                 scc_span,
                 &inst_info,
                 resolved,
+                retained,
             );
             DictPlan::Static {
                 class,
@@ -1317,7 +1402,7 @@ fn resolve_dict_plan(
                 args,
             }
         }
-        Type::Var(v) => DictPlan::Forward(Constraint::single(class, *v)),
+        Type::Var(v) => forward_context(class, *v, retained, true),
         // A signature variable in an element position. Promised, it behaves
         // exactly like a variable the caller will pin: the dictionary comes in
         // as a parameter, so this forwards the abstraction target reserved when
@@ -1353,12 +1438,26 @@ fn resolve_dict_plan(
             // Forward the target either way. With the diagnostic already
             // recorded, a plan that spells the right name keeps the ambiguity
             // walk from adding a second, wrong explanation of the same mistake.
-            DictPlan::Forward(Constraint::single(class, TyVid(id.0)))
+            forward_context(class, TyVid(id.0), retained, promised)
         }
         // Other shapes are ill-typed for a class head; a diagnostic fires on
         // the normal path. Use a Forward placeholder so the plan is total.
         _ => forward_placeholder(),
     }
+}
+
+/// Retain valid requirements while keeping diagnosed plans well named.
+fn forward_context(
+    class: ClassId,
+    var: TyVid,
+    retained: &mut Vec<Constraint>,
+    valid: bool,
+) -> DictPlan {
+    let requirement = Constraint::single(class, var);
+    if valid && !retained.contains(&requirement) {
+        retained.push(requirement.clone());
+    }
+    DictPlan::Forward(requirement)
 }
 
 /// Satisfy a class requirement on a signature variable, or report `T055`.
@@ -1396,7 +1495,7 @@ fn discharge_promised(
             retained.push(resolved_c.clone());
         }
         dict_resolution
-            .entry((class, v))
+            .entry(resolved_c.clone())
             .or_insert(DictPlan::Forward(resolved_c));
         return;
     }
@@ -1603,6 +1702,7 @@ mod tests {
                 decl: decl.to_owned(),
                 span: dummy_span(),
                 givens,
+                given_constraints: Vec::new(),
                 complete: true,
             },
         );
@@ -1650,11 +1750,11 @@ mod tests {
         );
         assert!(
             matches!(
-                dict_res.get(&(ORD_CLASS, target)),
+                dict_res.get(&Constraint::single(ORD_CLASS, target)),
                 Some(DictPlan::Forward(_))
             ),
             "expected a Forward plan, got {:?}",
-            dict_res.get(&(ORD_CLASS, target))
+            dict_res.get(&Constraint::single(ORD_CLASS, target))
         );
     }
 
@@ -1810,7 +1910,10 @@ mod tests {
             "both positions carry their reserved abstraction targets"
         );
         assert!(matches!(
-            dict_res.get(&(demo, TyVid(4))),
+            dict_res.get(&Constraint::new(
+                demo,
+                smallvec::smallvec![TyVid(4), TyVid(5)]
+            )),
             Some(DictPlan::Forward(_))
         ));
     }
@@ -1886,7 +1989,7 @@ mod tests {
         );
         assert!(retained.is_empty(), "case (a): no retained constraints");
         // A Static dict plan must be recorded.
-        let plan = dict_res.get(&(TOTEXT_CLASS, a));
+        let plan = dict_res.get(&Constraint::single(TOTEXT_CLASS, a));
         assert!(
             matches!(plan, Some(DictPlan::Static { .. })),
             "case (a): expected Static plan, got {plan:?}"
@@ -1952,7 +2055,7 @@ mod tests {
         assert_eq!(retained.len(), 1, "case (b): must retain the constraint");
         assert_eq!(retained[0], Constraint::single(TOTEXT_CLASS, a));
         // A Forward plan must be recorded.
-        let plan = dict_res.get(&(TOTEXT_CLASS, a));
+        let plan = dict_res.get(&Constraint::single(TOTEXT_CLASS, a));
         assert!(
             matches!(plan, Some(DictPlan::Forward(_))),
             "case (b): expected Forward plan, got {plan:?}"
@@ -2264,7 +2367,7 @@ mod tests {
         assert!(retained.is_empty(), "all constraints must be discharged");
 
         // A Static plan for the outer Encode (List _) constraint must exist.
-        let outer_plan = dict_res.get(&(ENCODE_CLASS, a));
+        let outer_plan = dict_res.get(&Constraint::single(ENCODE_CLASS, a));
         assert!(
             matches!(outer_plan, Some(DictPlan::Static { tycon, .. }) if *tycon == list_tycon),
             "outer plan must be Static for List; got {outer_plan:?}"
@@ -2344,7 +2447,7 @@ mod tests {
             solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span(), Some(&b));
 
         assert!(ctx.errors.is_empty(), "no errors; got {:?}", ctx.errors);
-        match dict_res.get(&(demo, q)) {
+        match dict_res.get(&Constraint::new(demo, smallvec::smallvec![q, p])) {
             Some(DictPlan::Static { tycon, args, .. }) => {
                 assert_eq!(*tycon, box_tycon, "outer plan keyed on the first head atom");
                 assert_eq!(args.len(), 1, "one context sub-dict (Encode a)");

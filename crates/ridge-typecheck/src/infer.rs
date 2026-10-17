@@ -289,7 +289,17 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             // 1. Check local env first.
             if let Some(scheme) = ctx.env.lookup(name) {
                 let scheme = scheme.clone();
-                return instantiate(ctx, &scheme);
+                let start = ctx.deferred_constraints.len();
+                let ty = instantiate(ctx, &scheme);
+                let conversions: Vec<_> = ctx.deferred_constraints[start..]
+                    .iter()
+                    .filter(|c| c.class == ridge_types::ERROR_FROM_CLASS)
+                    .cloned()
+                    .collect();
+                if !conversions.is_empty() {
+                    ctx.error_from_sites.insert(id.span, conversions);
+                }
+                return ty;
             }
             // 2. Check implicit prelude (Some, None, Ok, Err, etc.)
             if let Some(scheme) = lookup_prelude(b, name) {
@@ -416,7 +426,18 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 let arena = build_arena_from_ctx(ctx);
                 return crate::actor::infer_actor_send(ctx, b, callee, args, *span, &arena);
             }
+            let constraint_start = ctx.deferred_constraints.len();
             let callee_ty = infer_expr(ctx, b, callee);
+            if matches!(callee.as_ref(), Expr::Ident(_) | Expr::Qualified(_)) {
+                let conversions: Vec<_> = ctx.deferred_constraints[constraint_start..]
+                    .iter()
+                    .filter(|c| c.class == ridge_types::ERROR_FROM_CLASS)
+                    .cloned()
+                    .collect();
+                if !conversions.is_empty() {
+                    ctx.error_from_sites.insert(callee.span(), conversions);
+                }
+            }
             // Quotation: a lambda flowing into a `Quote (e -> _)` parameter is
             // captured as an expression tree, not checked as an ordinary
             // function. Peek the callee's parameter types so each such lambda is
@@ -1046,12 +1067,14 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 if tys.len() != c.ty_vars.len() {
                     continue;
                 }
-                for tv in &tys {
+                let constraint = ridge_types::Constraint::new(class_id, tys);
+                for tv in &constraint.tys {
                     if let Some(info) = ctx.rigids.get_mut(&ridge_types::RigidId(tv.0)) {
                         info.givens.push(class_id);
+                        info.given_constraints.push(constraint.clone());
                     }
                 }
-                declared_constraints.push(ridge_types::Constraint::new(class_id, tys));
+                declared_constraints.push(constraint);
             }
 
             let fn_ty = to_rigid.apply_to_ty(&declared_ty);
@@ -1104,6 +1127,7 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             }
 
             let fn_ty_for_generalise = fn_ty;
+            let signature_constraints = scheme.constraints.clone();
             ctx.env.bind(name.clone(), scheme);
 
             // Infer the body in a new scope.
@@ -1123,6 +1147,7 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             // Set the return type context.
             let saved_ret = ctx.current_fn_ret.take();
             ctx.current_fn_ret = Some(ret_ty_declared.clone());
+            let saved_propagate = ctx.current_propagate_target.take();
 
             // Inner fns always have Body::Expr; the body-less forms are
             // top-level stdlib only.
@@ -1150,18 +1175,20 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             }
 
             ctx.current_fn_ret = saved_ret;
+            ctx.current_propagate_target = saved_propagate;
             ctx.env.pop_frame();
 
             // Generalise against the environment as it was before this fn
             // entered it, and rebind. Reading the environment here instead
             // would find the fn's own variables in it and quantify nothing.
-            let generalised = generalise_with_env(
+            let mut generalised = generalise_with_env(
                 ctx,
                 &fn_ty_for_generalise,
                 &env_snap_ty,
                 &env_snap_cap,
                 &env_snap_row,
             );
+            generalised.constraints = signature_constraints;
             ctx.env.bind(name, generalised);
 
             // Cap-subset check is T14; T6/T7 just return Unit (the inner-fn

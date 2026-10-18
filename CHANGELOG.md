@@ -75,6 +75,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Ask and spawn arguments accept raw text, lambdas and nested spawn expressions
+  just like function calls. An unparenthesised control expression after an ask's
+  `timeout` now reports the required parentheses at that expression.
+
 - Reading a file line by line now answers what a reader would count. `std.fs`'s
   `lines` split the file on `\n` and returned the pieces, which is not the same
   thing: a file ending in a newline came back with an empty line appended, and a

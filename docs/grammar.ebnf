@@ -887,6 +887,13 @@ Expr11        ::= Expr12 { Expr12 }
                (* zero-or-more additional arguments; Expr12 { Expr12 } where
                   the first Expr12 is the function and the rest are args.   *) ;
 
+(* Call, ask and spawn arguments share the same atom-start rule, including
+   raw text, lambdas and spawn expressions. Field access stays with its atom.
+   Anonymous records and control forms need parentheses as arguments:
+   f ({ a = 1 }), f (if ready then 1 else 2).
+   Lambdas and nested spawn expressions collect their own bodies/arguments;
+   use parentheses to delimit them before a further outer argument or timeout. *)
+
 (* Level 12: field access, ask ?>, send !, and atoms  (left) *)
 Expr12        ::= ExprAtom { "." LOWER_IDENT }
                |  ExprAtom "?>" IDENT { ExprAtom } [ AskTimeout ] [ "?" ]
@@ -1037,7 +1044,7 @@ WithExpr      ::= Expr "with" "{" FieldInit { "," FieldInit } [ "," ] "}" ;
 (* D061: SpawnExpr may pass positional arguments that correspond to the
    actor's init handler parameters.  Alignment with the init signature is
    a semantic (type-checker) constraint.                                     *)
-SpawnExpr     ::= "spawn" UPPER_IDENT { Expr } ;
+SpawnExpr     ::= "spawn" UPPER_IDENT { ExprAtom } ;
 
 (* Note: "spawn" is both a keyword (spawn expression) and a capability
    keyword (fn spawn …).  The parser disambiguates:
@@ -1065,6 +1072,10 @@ SpawnExpr     ::= "spawn" UPPER_IDENT { Expr } ;
    keyword-led form has to be parenthesised, because inside a bracket the
    lexer emits no NEWLINE and a "let" or "return" could not be told from the
    start of the next statement.
+   Outside flat match-arm bodies, an unparenthesised control form immediately
+   after "timeout" is diagnosed at that form rather than as an indentation error.
+   In a flat arm the keyword may start the next statement after an ordinary
+   argument named "timeout"; parentheses make a control-form operand explicit.
 
    The grammar admits any Expr1; which values are meaningful is not a grammar
    question. A negative literal is rejected by the type checker (T060) and an

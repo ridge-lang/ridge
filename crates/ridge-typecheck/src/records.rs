@@ -23,52 +23,9 @@ use ridge_types::{BuiltinTyCons, RecordSchema, TyConId, TyVid, Type};
 
 use crate::ctx::InferCtx;
 use crate::error::{TypeDesc, TypeError};
+use crate::projections::substitute_schema as subst_type;
 use crate::render::emit_internal;
 use crate::unify::unify;
-
-// ── Substitution helper ───────────────────────────────────────────────────────
-
-/// Apply a param→fresh-var substitution to a type.
-///
-/// `params[i]` is the schema `TyVid`; `args[i]` is the fresh `Type::Var(TyVid)`
-/// allocated during instantiation.  Every `Type::Var(v)` where `v` equals one
-/// of the params is replaced by the corresponding arg.
-fn subst_type(ty: &Type, params: &[TyVid], args: &[Type]) -> Type {
-    match ty {
-        Type::Var(v) => params
-            .iter()
-            .position(|p| p == v)
-            .map_or_else(|| ty.clone(), |pos| args[pos].clone()),
-        Type::Con(id, sub_args) => {
-            let new_sub = sub_args
-                .iter()
-                .map(|a| subst_type(a, params, args))
-                .collect();
-            Type::Con(*id, new_sub)
-        }
-        Type::Tuple(ts) => {
-            let new_ts = ts.iter().map(|t| subst_type(t, params, args)).collect();
-            Type::Tuple(new_ts)
-        }
-        Type::Fn {
-            params: ps,
-            ret,
-            caps,
-        } => Type::Fn {
-            params: ps.iter().map(|p| subst_type(p, params, args)).collect(),
-            ret: Box::new(subst_type(ret, params, args)),
-            caps: caps.clone(),
-        },
-        // Alias: walk body but preserve wrapper for diagnostic names.
-        Type::Alias { name, body } => Type::Alias {
-            name: *name,
-            body: Box::new(subst_type(body, params, args)),
-        },
-        Type::Error => Type::Error,
-        // Non-exhaustive wildcard: future Type variants returned as-is.
-        _ => ty.clone(),
-    }
-}
 
 // ── Did-you-mean helpers ──────────────────────────────────────────────────────
 
@@ -139,7 +96,7 @@ pub fn infer_record_construction(
 
     // Step 4: for each declared field, find matching init or report missing.
     for decl_field in schema.record_fields() {
-        let field_ty_subst = subst_type(&decl_field.ty, &params, &fresh_args);
+        let field_ty_subst = subst_type(ctx, span, &decl_field.ty, &params, &fresh_args);
 
         match fields.iter().find(|fi| fi.name.text == decl_field.name) {
             None => {
@@ -278,7 +235,7 @@ pub fn infer_field_access(
                     .iter()
                     .find(|f| f.name == field_name.text);
                 if let Some(f) = field_entry {
-                    return subst_type(&f.ty, &params, args);
+                    return subst_type(ctx, field_span, &f.ty, &params, args);
                 }
                 let suggestions = field_suggestions(&field_name.text, schema);
                 ctx.errors.push(TypeError::UnknownField {
@@ -416,7 +373,7 @@ pub fn infer_record_with(
             .iter()
             .find(|f| f.name == fi.name.text)
         {
-            let field_ty_subst = subst_type(&decl_field.ty, &params, &args);
+            let field_ty_subst = subst_type(ctx, fi.span, &decl_field.ty, &params, &args);
             let value_ty = match &fi.value {
                 Some(val_expr) => crate::infer::infer_expr(ctx, b, val_expr),
                 None => {
@@ -605,7 +562,7 @@ pub fn infer_record_pattern(
             .iter()
             .find(|f| f.name == fp.name.text)
         {
-            subst_type(&f.ty, &params, &fresh_args)
+            subst_type(ctx, fp.span, &f.ty, &params, &fresh_args)
         } else {
             ctx.errors.push(TypeError::UnknownField {
                 record: record_name.to_string(),
@@ -687,7 +644,7 @@ pub fn infer_record_variant_construction(
 
     // Each declared field: find its initialiser or report it missing.
     for decl_field in record_schema.record_fields() {
-        let field_ty = subst_type(&decl_field.ty, union_params, &fresh_args);
+        let field_ty = subst_type(ctx, span, &decl_field.ty, union_params, &fresh_args);
         match fields.iter().find(|fi| fi.name.text == decl_field.name) {
             None => ctx.errors.push(TypeError::MissingField {
                 record: variant_name.to_string(),
@@ -757,7 +714,7 @@ pub fn infer_record_variant_pattern(
             .iter()
             .find(|f| f.name == fp.name.text)
         {
-            subst_type(&f.ty, union_params, &fresh_args)
+            subst_type(ctx, fp.span, &f.ty, union_params, &fresh_args)
         } else {
             ctx.errors.push(TypeError::UnknownField {
                 record: variant_name.to_string(),

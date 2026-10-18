@@ -1622,6 +1622,12 @@ pub const REGISTRY: &[CodeEntry] = &[
         summary: "An ask timeout is written as a negative literal.",
     },
     CodeEntry {
+        code: "T061",
+        variants: &["InvalidTypeProjection"],
+        owner: "ridge-typecheck",
+        summary: "A type-level projection is applied outside its reduction domain.",
+    },
+    CodeEntry {
         code: "T101",
         variants: &["FfiArityMismatch"],
         owner: "ridge-stdlib",

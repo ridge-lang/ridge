@@ -167,44 +167,44 @@ pub struct BuiltinTyCons {
     /// See [`Self::fn_tycon_id`] / [`FN_ARITY_COUNT`].
     pub fns: [TyConId; FN_ARITY_COUNT],
     /// `Ret/1` — the return-type extractor. `Ret p` reduces to the return of a
-    /// concrete function `p`. Internal: it appears only in Rust-seeded schemes,
-    /// never in surface syntax.
+    /// concrete function `p`. It can be written in annotations and shared class
+    /// signatures; an open function shape remains deferred.
     pub ret: TyConId,
     /// `Rows/1` — the row-shape extractor for the decode terminals. `Rows q`
-    /// reduces to the row a query/join receiver decodes into. Internal; the
+    /// reduces to the row a sequence or query/join receiver decodes into. The
     /// reduction reads the reconciled receiver ids from the context.
     pub rows: TyConId,
     /// `JoinCond/2` — the join-condition shape extractor. `JoinCond q f` reduces
     /// to the curried condition `joinOn` accepts over receiver `q` and new right
-    /// entity `f`. Internal; the reduction reads the reconciled receiver ids from
+    /// entity `f`. The reduction reads the reconciled receiver ids from
     /// the context.
     pub joincond: TyConId,
     /// `JoinResult/2` — the join-result extractor. `JoinResult q f` reduces to the
     /// type `joinOn` produces from receiver `q` and new right entity `f` (a binary
-    /// `Join` from a query, the nested `Joined` from a composite). Internal; the
+    /// `Join` from a query, the nested `Joined` from a composite). The
     /// reduction reads the reconciled receiver ids from the context.
     pub joinresult: TyConId,
     /// `LeftJoinResult/2` — the LEFT outer-join result extractor. `LeftJoinResult
     /// q f` reduces to the type `leftJoinOn` produces from receiver `q` and the
     /// new right entity `f` (a binary `LeftJoin` from a query, the nested
-    /// `LeftJoined` from a composite). Internal; the reduction reads the
+    /// `LeftJoined` from a composite). The reduction reads the
     /// reconciled receiver ids from the context.
     pub left_joinresult: TyConId,
     /// `RightJoinResult/2` — the RIGHT outer-join result extractor. `RightJoinResult
     /// q f` reduces to the type `rightJoinOn` produces (a binary `RightJoin` from a
-    /// query, the nested `RightJoined` from a composite). Internal; reads the
+    /// query, the nested `RightJoined` from a composite). The reduction reads the
     /// reconciled receiver ids from the context.
     pub right_joinresult: TyConId,
     /// `FullJoinResult/2` — the FULL outer-join result extractor. `FullJoinResult q
     /// f` reduces to the type `fullJoinOn` produces (a binary `FullJoin` from a
-    /// query, the nested `FullJoined` from a composite). Internal; reads the
+    /// query, the nested `FullJoined` from a composite). The reduction reads the
     /// reconciled receiver ids from the context.
     pub full_joinresult: TyConId,
     /// `InsertShape/1` — the insert-input shape extractor. `InsertShape e`
     /// reduces to the record a typed insert accepts for `e` — the entity minus
     /// its database-generated columns (a synthesized `<Entity>Insert` companion,
-    /// or `e` itself when none). Internal; the reduction reads the per-entity
-    /// shape table from the context and is invertible.
+    /// or `e` itself when none). The entity must have `HasSchema`; the reduction
+    /// reads the per-entity shape table from the context and is invertible.
     pub insert_shape: TyConId,
     /// `Decimal` — an arbitrary-precision base-10 number. A primitive like
     /// `Int`/`Float`. The value/DDL wiring lives in `std.decimal` and

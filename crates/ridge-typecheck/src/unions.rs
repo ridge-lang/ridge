@@ -19,54 +19,13 @@
 //!   payload arity.
 
 use ridge_ast::{Pattern, Span};
-use ridge_types::{BuiltinTyCons, TyConId, TyVid, Type, UnionSchema, VariantPayload};
+use ridge_types::{BuiltinTyCons, TyConId, Type, UnionSchema, VariantPayload};
 
 use crate::ctx::InferCtx;
 use crate::error::TypeError;
+use crate::projections::substitute_schema as subst_type;
 use crate::render::emit_internal;
 use crate::unify::unify;
-
-// ── Substitution helper (mirrors records.rs) ──────────────────────────────────
-
-/// Apply a param→fresh-var substitution to a type.
-///
-/// `params[i]` is the schema `TyVid`; `args[i]` is the fresh `Type::Var(TyVid)`.
-/// Every `Type::Var(v)` where `v` equals one of the params is replaced by the
-/// corresponding arg.
-fn subst_type(ty: &Type, params: &[TyVid], args: &[Type]) -> Type {
-    match ty {
-        Type::Var(v) => params
-            .iter()
-            .position(|p| p == v)
-            .map_or_else(|| ty.clone(), |pos| args[pos].clone()),
-        Type::Con(id, sub_args) => {
-            let new_sub = sub_args
-                .iter()
-                .map(|a| subst_type(a, params, args))
-                .collect();
-            Type::Con(*id, new_sub)
-        }
-        Type::Tuple(ts) => {
-            let new_ts = ts.iter().map(|t| subst_type(t, params, args)).collect();
-            Type::Tuple(new_ts)
-        }
-        Type::Fn {
-            params: ps,
-            ret,
-            caps,
-        } => Type::Fn {
-            params: ps.iter().map(|p| subst_type(p, params, args)).collect(),
-            ret: Box::new(subst_type(ret, params, args)),
-            caps: caps.clone(),
-        },
-        Type::Alias { name, body } => Type::Alias {
-            name: *name,
-            body: Box::new(subst_type(body, params, args)),
-        },
-        Type::Error => Type::Error,
-        _ => ty.clone(),
-    }
-}
 
 // ── infer_variant_construction ────────────────────────────────────────────────
 
@@ -131,7 +90,7 @@ pub fn infer_variant_construction(
             }
             for (arg_expr, field_ty) in arg_exprs.iter().zip(field_tys.iter()) {
                 let arg_ty = crate::infer::infer_expr(ctx, b, arg_expr);
-                let expected_ty = subst_type(field_ty, &params, &fresh_args);
+                let expected_ty = subst_type(ctx, arg_expr.span(), field_ty, &params, &fresh_args);
                 if let Err(e) = unify(ctx, &arg_ty, &expected_ty) {
                     ctx.errors.push(attach_span(e, arg_expr.span()));
                 }
@@ -230,7 +189,7 @@ pub fn infer_variant_pattern(
                 return;
             }
             for (sub_pat, field_ty) in sub_patterns.iter().zip(field_tys.iter()) {
-                let concrete_ty = subst_type(field_ty, &params, &fresh_args);
+                let concrete_ty = subst_type(ctx, span, field_ty, &params, &fresh_args);
                 crate::infer::infer_pattern(ctx, b, sub_pat, &concrete_ty);
             }
         }

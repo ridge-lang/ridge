@@ -427,6 +427,7 @@ pub(crate) fn self_binding_from_signature(
     let mut vars: Vec<TyVid> = tyvar_map.values().copied().collect();
     vars.sort_unstable_by_key(|v| v.0);
     Scheme {
+        projections: None,
         vars,
         cap_vars: Vec::new(),
         row_vars: Vec::new(),
@@ -524,6 +525,7 @@ fn write_back_schemes(
     env_snap_cap: &FxHashSet<CapVid>,
     env_snap_row: &FxHashSet<RowVid>,
     retained_constraints: &[Constraint],
+    recursive: bool,
     class_table: &ClassTable,
     instance_env: &InstanceEnv,
 ) {
@@ -531,8 +533,19 @@ fn write_back_schemes(
     for &did in scc {
         let decl = decls[did.0];
         if let Some(fn_ty) = scc_fn_types.remove(&did) {
+            let exported_ty = abstract_rigids(&fn_ty);
             let mut scheme =
-                generalise_with_env(ctx, &fn_ty, env_snap_ty, env_snap_cap, env_snap_row);
+                generalise_with_env(ctx, &exported_ty, env_snap_ty, env_snap_cap, env_snap_row);
+            if recursive && signature_is_complete(decl) {
+                crate::projections::check_recursive_contract(
+                    ctx,
+                    class_table,
+                    instance_env,
+                    &fn_ty,
+                    &scheme,
+                    decl.span,
+                );
+            }
             // Attach retained constraints whose TyVid ended up in this scheme's
             // generalised variable set. Constraints over vars not in `scheme.vars`
             // escaped to an outer scope and were already reported as T030 by the
@@ -638,6 +651,8 @@ pub fn typecheck_module_decls(
 
     // 2. Process each SCC.
     for scc in &sccs {
+        let outer_projection_start = ctx.projection_scope_start;
+        ctx.projection_scope_start = ctx.projection_sites.len();
         // ── Snapshot env free vars BEFORE adding SCC monomorphic bindings ──────
         // HM correctness: we must NOT count the SCC's own fresh TyVids as "in
         // env" when generalising.  Snapshot now; use this for step (c).
@@ -922,10 +937,8 @@ pub fn typecheck_module_decls(
         // is the one reserved when each was minted, which is what lets the
         // dictionary a constraint forwards and the parameter lowering declares
         // for it spell the same name.
-        let scc_fn_types: FxHashMap<DeclId, Type> = scc_fn_types
-            .into_iter()
-            .map(|(did, ty)| (did, abstract_rigids(&ty)))
-            .collect();
+        // Writeback checks formation promises against these rigids before
+        // abstracting each function for export.
 
         // ── Steps c+d: generalise and write back schemes ──────────────────────
         // OQ-PHASE45-003: top-level decl schemes only (no let-bound locals).
@@ -939,9 +952,11 @@ pub fn typecheck_module_decls(
             &env_snap_cap,
             &env_snap_row,
             &retained,
+            scc.len() > 1 || scc.iter().any(|did| graph.adj[did.0].contains(did)),
             class_table,
             instance_env,
         );
+        ctx.projection_scope_start = outer_projection_start;
     }
 
     // The signature variables have done their job. Note that clearing this is
@@ -1634,6 +1649,7 @@ mod tests {
 
         // Bind a scheme with that free var in the body (not in vars — unsolved).
         let scheme = Scheme {
+            projections: None,
             vars: vec![], // NOT generalised
             cap_vars: vec![],
             row_vars: vec![],

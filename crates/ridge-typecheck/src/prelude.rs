@@ -71,6 +71,7 @@ fn ty_fn_pure(params: Vec<Type>, ret: Type) -> Type {
 #[inline]
 fn poly1(var: TyVid, ty: Type) -> Scheme {
     Scheme {
+        projections: None,
         vars: vec![var],
         cap_vars: vec![],
         row_vars: vec![],
@@ -83,6 +84,7 @@ fn poly1(var: TyVid, ty: Type) -> Scheme {
 #[inline]
 fn poly2(v0: TyVid, v1: TyVid, ty: Type) -> Scheme {
     Scheme {
+        projections: None,
         vars: vec![v0, v1],
         cap_vars: vec![],
         row_vars: vec![],
@@ -202,6 +204,7 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     // Ordering constructors — nullary, so each has type `() -> Ordering`.
     let ordering_ty = ty_con(b.ordering, vec![]);
     let scheme_less = Scheme {
+        projections: None,
         vars: vec![],
         cap_vars: vec![],
         row_vars: vec![],
@@ -209,6 +212,7 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
         constraints: vec![],
     };
     let scheme_equal = Scheme {
+        projections: None,
         vars: vec![],
         cap_vars: vec![],
         row_vars: vec![],
@@ -216,6 +220,7 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
         constraints: vec![],
     };
     let scheme_greater = Scheme {
+        projections: None,
         vars: vec![],
         cap_vars: vec![],
         row_vars: vec![],
@@ -236,6 +241,7 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
 
     let json_ty = ty_con(b.json_value, vec![]);
     let json_ctor = |param: Option<Type>| Scheme {
+        projections: None,
         vars: vec![],
         cap_vars: vec![],
         row_vars: vec![],
@@ -315,6 +321,7 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
 
     let qexpr_ty = ty_con(b.q_expr, vec![]);
     let q_ctor = |params: Vec<Type>| Scheme {
+        projections: None,
         vars: vec![],
         cap_vars: vec![],
         row_vars: vec![],
@@ -565,7 +572,7 @@ mod tests {
     // ── Test 1: Some scheme exact shape ──────────────────────────────────────
     //
     // `Some : ∀ a. (a) -> Option a`
-    // Scheme { vars: [TyVid(0)], cap_vars: [], ty: Fn { params: [Var(0)],
+    // Scheme { projections: None, vars: [TyVid(0)], cap_vars: [], ty: Fn { params: [Var(0)],
     //          ret: Con(option, [Var(0)]), caps: Concrete(PURE) } }
 
     #[test]

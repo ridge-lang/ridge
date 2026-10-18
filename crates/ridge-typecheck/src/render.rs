@@ -541,6 +541,13 @@ impl TypeError {
             }
 
             // ── T029 ──────────────────────────────────────────────────────────
+            Self::InvalidTypeProjection {
+                projection, detail, ..
+            } => {
+                let projection = projection.render_in(tycons, namer);
+                write!(f, "invalid type projection `{projection}`\n  {detail}")
+            }
+
             Self::NoInstance {
                 class,
                 ty,
@@ -958,6 +965,7 @@ impl HasErrorCode for TypeError {
             | Self::MailboxPolicyDropOldestNotShipped { span, .. }
             | Self::IncompleteRecordPattern { span, .. }
             | Self::NoInstance { span, .. }
+            | Self::InvalidTypeProjection { span, .. }
             | Self::UnknownTypeName { span, .. }
             | Self::TupleWidthMismatch { span, .. }
             | Self::AmbiguousConstraint { span, .. }
@@ -2061,6 +2069,7 @@ mod tests {
             | TypeError::MailboxPolicyDropOldestNotShipped { .. }
             | TypeError::IncompleteRecordPattern { .. }
             | TypeError::NoInstance { .. }
+            | TypeError::InvalidTypeProjection { .. }
             | TypeError::AmbiguousConstraint { .. }
             | TypeError::OrphanInstance { .. }
             | TypeError::OverlappingInstance { .. }
@@ -2410,6 +2419,11 @@ mod tests {
                 found: TypeDesc::Text("Bool".to_owned()),
                 span: sp(),
             },
+            TypeError::InvalidTypeProjection {
+                projection: td(),
+                detail: s(),
+                span: sp(),
+            },
             TypeError::MainHasParams {
                 found: 1,
                 span: sp(),
@@ -2496,7 +2510,15 @@ mod tests {
         let mut seen: Vec<&'static str> = one_of_each().iter().map(TypeError::code).collect();
         seen.sort_unstable();
         seen.dedup();
-        assert_eq!(seen.len(), 59, "codes reached: {seen:?}");
+        let expected: Vec<_> = ridge_diagnostics::REGISTRY
+            .iter()
+            .filter(|entry| entry.owner == "ridge-typecheck")
+            .map(|entry| entry.code)
+            .collect();
+        assert_eq!(
+            seen, expected,
+            "every registered type-checker code needs a rendering witness"
+        );
     }
 
     /// One code, one variant.

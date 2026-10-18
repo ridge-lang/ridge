@@ -16,7 +16,7 @@
 //!     free_in_env = free_ty_vars(env)
 //!     vars        = free_in_ty - free_in_env
 //!     cap_vars    = free_cap_vars(ty) - free_cap_vars(env)
-//!     Scheme { vars, cap_vars, ty }
+//!     Scheme { vars, cap_vars, ty, projections }
 //! ```
 
 use ridge_types::{CapRow, CapVid, Constraint, RowTail, RowVid, Scheme, TyVid, Type};
@@ -68,7 +68,7 @@ pub fn instantiate(ctx: &mut InferCtx, scheme: &Scheme) -> Type {
     let mut ty_idx = 0usize;
     let mut cap_idx = 0usize;
     let mut row_idx = 0usize;
-    let instantiated = scheme.instantiate(
+    let (instantiated, projections) = scheme.instantiate_with_projections(
         &mut || {
             let v = fresh_tyvids[ty_idx];
             ty_idx += 1;
@@ -113,6 +113,10 @@ pub fn instantiate(ctx: &mut InferCtx, scheme: &Scheme) -> Type {
         }
     }
 
+    let span = ctx.projection_use_span.unwrap_or(ridge_ast::Span::point(0));
+    for projection in projections {
+        crate::projections::remember_type(ctx, &projection, span);
+    }
     instantiated
 }
 
@@ -177,8 +181,17 @@ pub fn generalise_with_env(
     let ty_resolved = ctx.resolve_for_export(ty);
 
     // 2. Free vars in the resolved type.
-    let (free_ty, free_cap) = collect_free_vars(&ty_resolved);
-    let free_row = collect_free_row_vars(&ty_resolved);
+    let (mut free_ty, mut free_cap) = collect_free_vars(&ty_resolved);
+    let mut free_row = collect_free_row_vars(&ty_resolved);
+    let projections = crate::projections::for_export(ctx, &free_ty);
+    if let Some(requirements) = &projections {
+        for requirement in requirements.iter() {
+            let (ty_vars, cap_vars) = collect_free_vars(requirement);
+            free_ty.extend(ty_vars);
+            free_cap.extend(cap_vars);
+            free_row.extend(collect_free_row_vars(requirement));
+        }
+    }
 
     // 3. Generalise over vars that are not in the environment.
     let mut vars: Vec<TyVid> = free_ty.difference(free_in_env_ty).copied().collect();
@@ -191,6 +204,7 @@ pub fn generalise_with_env(
     row_vars.sort_by_key(|r| r.0);
 
     Scheme {
+        projections,
         vars,
         cap_vars,
         row_vars,
@@ -355,6 +369,7 @@ mod tests {
         let mut ctx = InferCtx::for_tests();
         let a = TyVid(0);
         let scheme = Scheme {
+            projections: None,
             vars: vec![a],
             cap_vars: vec![],
             row_vars: vec![],
@@ -376,6 +391,7 @@ mod tests {
         let a = TyVid(0);
         // forall a. a -> a
         let scheme = Scheme {
+            projections: None,
             vars: vec![a],
             cap_vars: vec![],
             row_vars: vec![],
@@ -429,6 +445,7 @@ mod tests {
         let a = TyVid(0);
         let b = TyVid(1);
         let scheme = Scheme {
+            projections: None,
             vars: vec![a, b],
             cap_vars: vec![],
             row_vars: vec![],
@@ -459,6 +476,7 @@ mod tests {
         let c = CapVid(0);
         // forall a {c}. fn c a -> a
         let scheme = Scheme {
+            projections: None,
             vars: vec![a],
             cap_vars: vec![c],
             row_vars: vec![],

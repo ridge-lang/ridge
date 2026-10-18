@@ -35,6 +35,7 @@ pub mod interp;
 mod migrate;
 pub mod pipe_propagate;
 pub mod prelude;
+mod projections;
 pub mod quote;
 pub mod records;
 pub mod render;
@@ -57,6 +58,7 @@ pub use derive::{
     FieldShape, JsonPrim, SchemaColumnSpec, TextCodec,
 };
 pub use error::{CapDeclKind, TypeError};
+pub use projections::contracts_equal as projection_contracts_equal;
 pub use render::{emit_internal, emit_internal_strict, render_type_with};
 pub use ridge_resolve::Severity;
 pub use ridge_types::BuiltinTyCons;
@@ -675,11 +677,13 @@ pub fn typecheck_module_incremental(
         .cloned()
         .unwrap_or_default();
 
-    // Cross-module value schemes are not re-seeded on the incremental path: a
-    // body edit that calls an imported workspace fn resolves the reference
-    // through the retained resolver state, and any change to the callee's own
-    // signature lands on the surface-hash (deep) path instead.
-    let no_imported_schemes = FxHashMap::default();
+    // Import the checked schemes, including formation requirements retained
+    // before normalisation. Resolving a name alone cannot recover these.
+    let imported_schemes = crate::cross_module::imported_value_schemes(
+        &rm.imports,
+        &symbol_tables,
+        &typed_ws.module_schemes,
+    );
     // The prior arena holds every workspace type, so a name→id map over it lets
     // class-method signatures resolve cross-module type references (e.g. a
     // stdlib class whose methods mention a type from its own module).
@@ -708,7 +712,7 @@ pub fn typecheck_module_incremental(
         rm.node_ids.clone(),
         &rm.imports,
         &imported_tycons,
-        &no_imported_schemes,
+        &imported_schemes,
         &global_tycon_names,
         &typed_ws.stdlib_tycons,
         &own_tycon_ids,
@@ -818,6 +822,7 @@ fn typecheck_actor_bodies(
     use ridge_types::TyConKind;
 
     let monoscheme = |ty: ridge_types::Type| Scheme {
+        projections: None,
         vars: vec![],
         cap_vars: vec![],
         row_vars: vec![],
@@ -1360,6 +1365,7 @@ fn typecheck_module_inner(
             use crate::infer::infer_expr;
             let ty = infer_expr(&mut ctx, b, &c.value);
             let scheme = ridge_types::Scheme {
+                projections: None,
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -1496,6 +1502,8 @@ fn typecheck_module_inner(
             }
         }
     }
+
+    crate::projections::finish(&mut ctx, ct, ie, arena);
 
     // Note: detect_unsolved_type_vars (T023) is already called by
     // typecheck_module_decls internally. No need to repeat here.
@@ -1721,6 +1729,10 @@ fn seed_class_method_schemes(
                 class_tyvids.push(ctx.fresh_tyvid());
             }
 
+            // Only this module owns diagnostics on a class signature. Imported
+            // signatures retain their types, but their spans belong to another
+            // source file; concrete uses are checked at the use site instead.
+            let projection_start = ctx.projection_sites.len();
             // Convert AST param types to Ridge types, substituting class_ty_var.
             let param_types: Vec<Type> = sig
                 .ast_param_types
@@ -1730,6 +1742,9 @@ fn seed_class_method_schemes(
 
             // Convert AST return type.
             let ret_type = ast_type_to_ridge_type(b, ctx, ast_ret, &sig_tycon_names, &tyvar_map);
+            if class_info.def_module != ctx.current_module_raw {
+                ctx.projection_sites.truncate(projection_start);
+            }
 
             let fn_ty = Type::Fn {
                 params: param_types,
@@ -1742,6 +1757,7 @@ fn seed_class_method_schemes(
             let constraint_tys: smallvec::SmallVec<[ridge_types::TyVid; 1]> =
                 class_tyvids.iter().copied().collect();
             let scheme = Scheme {
+                projections: None,
                 vars: class_tyvids,
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -1788,6 +1804,7 @@ fn seed_refinable_scheme(
     ctx.env.bind(
         "filter".to_owned(),
         Scheme {
+            projections: None,
             vars: vec![q, p],
             cap_vars: vec![],
             row_vars: vec![],
@@ -1841,6 +1858,7 @@ fn seed_projectable_scheme(
         ctx.env.bind(
             name.to_owned(),
             Scheme {
+                projections: None,
                 vars: vec![q, p],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -1893,6 +1911,7 @@ fn seed_orderable_scheme(
     ctx.env.bind(
         "orderBy".to_owned(),
         Scheme {
+            projections: None,
             vars: vec![q, p],
             cap_vars: vec![],
             row_vars: vec![],
@@ -1960,6 +1979,7 @@ fn seed_aggregable_scheme(
         ctx.env.bind(
             name.to_owned(),
             Scheme {
+                projections: None,
                 vars: vec![q, p],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2014,6 +2034,7 @@ fn seed_fetchable_scheme(
         ctx.env.bind(
             name.to_owned(),
             Scheme {
+                projections: None,
                 vars: vec![q],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2068,6 +2089,7 @@ fn seed_joinable_scheme(
     ctx.env.bind(
         "joinOn".to_owned(),
         Scheme {
+            projections: None,
             vars: vec![q, f, a],
             cap_vars: vec![],
             row_vars: vec![],
@@ -2119,6 +2141,7 @@ fn seed_leftjoinable_scheme(
     ctx.env.bind(
         "leftJoinOn".to_owned(),
         Scheme {
+            projections: None,
             vars: vec![q, f, a],
             cap_vars: vec![],
             row_vars: vec![],
@@ -2164,6 +2187,7 @@ fn seed_rightjoinable_scheme(
     ctx.env.bind(
         "rightJoinOn".to_owned(),
         Scheme {
+            projections: None,
             vars: vec![q, f, a],
             cap_vars: vec![],
             row_vars: vec![],
@@ -2209,6 +2233,7 @@ fn seed_fulljoinable_scheme(
     ctx.env.bind(
         "fullJoinOn".to_owned(),
         Scheme {
+            projections: None,
             vars: vec![q, f, a],
             cap_vars: vec![],
             row_vars: vec![],
@@ -2258,6 +2283,7 @@ fn seed_pageable_scheme(
         ctx.env.bind(
             name.to_owned(),
             Scheme {
+                projections: None,
                 vars: vec![q],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2308,6 +2334,7 @@ fn seed_countable_scheme(
         ctx.env.bind(
             name.to_owned(),
             Scheme {
+                projections: None,
                 vars: vec![q],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2350,6 +2377,7 @@ fn seed_combinable_scheme(
         ctx.env.bind(
             name.to_owned(),
             Scheme {
+                projections: None,
                 vars: vec![q],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2395,6 +2423,7 @@ fn seed_every_scheme(
     ctx.env.bind(
         "every".to_owned(),
         Scheme {
+            projections: None,
             vars: vec![q, p],
             cap_vars: vec![],
             row_vars: vec![],
@@ -2432,6 +2461,7 @@ fn seed_groupable_scheme(
     ctx.env.bind(
         "groupBy".to_owned(),
         Scheme {
+            projections: None,
             vars: vec![q, p],
             cap_vars: vec![],
             row_vars: vec![],
@@ -2487,6 +2517,7 @@ fn seed_summarizable_scheme(
     ctx.env.bind(
         "runGroups".to_owned(),
         Scheme {
+            projections: None,
             vars: vec![q],
             cap_vars: vec![],
             row_vars: vec![],
@@ -2503,6 +2534,7 @@ fn seed_error_from_method_scheme(ctx: &mut crate::ctx::InferCtx) {
     ctx.env.bind(
         "errorFrom".to_owned(),
         ridge_types::Scheme {
+            projections: None,
             vars: vec![source, target],
             cap_vars: vec![],
             row_vars: vec![],
@@ -2554,6 +2586,13 @@ fn seed_prelude_class_method_schemes(
         ORD_CLASS, TOTEXT_CLASS,
     };
 
+    let method_scheme = |a, ty, class| {
+        let mut scheme = Scheme::mono(ty);
+        scheme.vars = vec![a];
+        scheme.constraints = vec![Constraint::single(class, a)];
+        scheme
+    };
+
     seed_error_from_method_scheme(ctx);
 
     // ── toText :: ∀a. a → Text where ToText a ────────────────────────────────
@@ -2564,16 +2603,8 @@ fn seed_prelude_class_method_schemes(
             ret: Box::new(Type::Con(b.text, vec![])),
             caps: CapRow::Concrete(CapabilitySet::PURE),
         };
-        ctx.env.bind(
-            "toText".to_owned(),
-            Scheme {
-                vars: vec![a],
-                cap_vars: vec![],
-                row_vars: vec![],
-                ty: fn_ty,
-                constraints: vec![Constraint::single(TOTEXT_CLASS, a)],
-            },
-        );
+        ctx.env
+            .bind("toText".to_owned(), method_scheme(a, fn_ty, TOTEXT_CLASS));
     }
 
     // ── eq :: ∀a. a → a → Bool where Eq a ────────────────────────────────────
@@ -2584,16 +2615,8 @@ fn seed_prelude_class_method_schemes(
             ret: Box::new(Type::Con(b.bool, vec![])),
             caps: CapRow::Concrete(CapabilitySet::PURE),
         };
-        ctx.env.bind(
-            "eq".to_owned(),
-            Scheme {
-                vars: vec![a],
-                cap_vars: vec![],
-                row_vars: vec![],
-                ty: fn_ty,
-                constraints: vec![Constraint::single(EQ_CLASS, a)],
-            },
-        );
+        ctx.env
+            .bind("eq".to_owned(), method_scheme(a, fn_ty, EQ_CLASS));
     }
 
     // ── compare :: ∀a. a → a → Ordering where Ord a ──────────────────────────
@@ -2604,16 +2627,8 @@ fn seed_prelude_class_method_schemes(
             ret: Box::new(Type::Con(b.ordering, vec![])),
             caps: CapRow::Concrete(CapabilitySet::PURE),
         };
-        ctx.env.bind(
-            "compare".to_owned(),
-            Scheme {
-                vars: vec![a],
-                cap_vars: vec![],
-                row_vars: vec![],
-                ty: fn_ty,
-                constraints: vec![Constraint::single(ORD_CLASS, a)],
-            },
-        );
+        ctx.env
+            .bind("compare".to_owned(), method_scheme(a, fn_ty, ORD_CLASS));
     }
 
     // ── encode :: ∀a. a → JsonValue where Encode a ───────────────────────────
@@ -2624,16 +2639,8 @@ fn seed_prelude_class_method_schemes(
             ret: Box::new(Type::Con(b.json_value, vec![])),
             caps: CapRow::Concrete(CapabilitySet::PURE),
         };
-        ctx.env.bind(
-            "encode".to_owned(),
-            Scheme {
-                vars: vec![a],
-                cap_vars: vec![],
-                row_vars: vec![],
-                ty: fn_ty,
-                constraints: vec![Constraint::single(ENCODE_CLASS, a)],
-            },
-        );
+        ctx.env
+            .bind("encode".to_owned(), method_scheme(a, fn_ty, ENCODE_CLASS));
     }
 
     // ── decode :: ∀a. JsonValue → Result a Error where Decode a ─────────────
@@ -2647,16 +2654,8 @@ fn seed_prelude_class_method_schemes(
             )),
             caps: CapRow::Concrete(CapabilitySet::PURE),
         };
-        ctx.env.bind(
-            "decode".to_owned(),
-            Scheme {
-                vars: vec![a],
-                cap_vars: vec![],
-                row_vars: vec![],
-                ty: fn_ty,
-                constraints: vec![Constraint::single(DECODE_CLASS, a)],
-            },
-        );
+        ctx.env
+            .bind("decode".to_owned(), method_scheme(a, fn_ty, DECODE_CLASS));
     }
 }
 
@@ -2696,6 +2695,7 @@ fn seed_sql_codec_schemes(
         ctx.env.bind(
             "toSql".to_owned(),
             Scheme {
+                projections: None,
                 vars: vec![a],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2718,6 +2718,7 @@ fn seed_sql_codec_schemes(
         ctx.env.bind(
             "fromSql".to_owned(),
             Scheme {
+                projections: None,
                 vars: vec![a],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2740,6 +2741,7 @@ fn seed_sql_codec_schemes(
         ctx.env.bind(
             "dbType".to_owned(),
             Scheme {
+                projections: None,
                 vars: vec![a],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2768,6 +2770,7 @@ fn seed_sql_codec_schemes(
         ctx.env.bind(
             "fromRow".to_owned(),
             Scheme {
+                projections: None,
                 vars: vec![a],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2791,6 +2794,7 @@ fn seed_sql_codec_schemes(
         ctx.env.bind(
             "toRow".to_owned(),
             Scheme {
+                projections: None,
                 vars: vec![a],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2813,6 +2817,7 @@ fn seed_sql_codec_schemes(
         ctx.env.bind(
             "rowColumns".to_owned(),
             Scheme {
+                projections: None,
                 vars: vec![a],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2845,6 +2850,7 @@ fn seed_sql_codec_schemes(
             ctx.env.bind(
                 "appendRow".to_owned(),
                 Scheme {
+                    projections: None,
                     vars: vec![a],
                     cap_vars: vec![],
                     row_vars: vec![],
@@ -2867,6 +2873,7 @@ fn seed_sql_codec_schemes(
             ctx.env.bind(
                 "all".to_owned(),
                 Scheme {
+                    projections: None,
                     vars: vec![a],
                     cap_vars: vec![],
                     row_vars: vec![],
@@ -2922,6 +2929,7 @@ fn seed_sql_codec_schemes(
             ctx.env.bind(
                 "get".to_owned(),
                 Scheme {
+                    projections: None,
                     vars: vec![a],
                     cap_vars: vec![],
                     row_vars: vec![],
@@ -2945,6 +2953,7 @@ fn seed_sql_codec_schemes(
             ctx.env.bind(
                 "delete".to_owned(),
                 Scheme {
+                    projections: None,
                     vars: vec![a, e],
                     cap_vars: vec![],
                     row_vars: vec![],
@@ -2975,6 +2984,7 @@ fn seed_sql_codec_schemes(
             ctx.env.bind(
                 "updateRows".to_owned(),
                 Scheme {
+                    projections: None,
                     vars: vec![a, e],
                     cap_vars: vec![],
                     row_vars: vec![],
@@ -3000,6 +3010,7 @@ fn seed_sql_codec_schemes(
             ctx.env.bind(
                 method.to_owned(),
                 Scheme {
+                    projections: None,
                     vars: vec![a],
                     cap_vars: vec![],
                     row_vars: vec![],

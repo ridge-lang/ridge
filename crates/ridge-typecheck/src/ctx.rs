@@ -357,6 +357,19 @@ pub struct InferCtx {
     /// module is checked without a class registry.
     pub class_ids: FxHashMap<String, ridge_types::ClassId>,
 
+    /// Original projection applications and their source sites, checked after
+    /// inference without losing them to normalisation.
+    pub(crate) projection_sites: Vec<crate::projections::Site>,
+    /// Ordinary dictionary resolution also proves its class's type domain.
+    /// Pure formation proofs suspend capture to avoid generating their own work.
+    pub(crate) capture_projection_domains: bool,
+    /// First site in the active SCC, including its nested let bindings.
+    pub(crate) projection_scope_start: usize,
+    /// Restored at expression exit so instantiation retains the actual use site.
+    pub(crate) projection_use_span: Option<ridge_ast::Span>,
+    /// Alias heads known before their bodies are built (including forward uses).
+    pub(crate) projection_aliases: FxHashSet<TyConId>,
+
     /// Snapshot of all `TyConDecls` in the arena at the start of module inference
     /// (T17 pipeline wiring).
     ///
@@ -605,6 +618,11 @@ impl InferCtx {
             user_tycon_names: FxHashMap::default(),
             tycon_origins: crate::cross_module::TyConOrigins::default(),
             class_ids: FxHashMap::default(),
+            projection_sites: Vec::new(),
+            capture_projection_domains: true,
+            projection_scope_start: 0,
+            projection_use_span: None,
+            projection_aliases: FxHashSet::default(),
             tycon_decls: Vec::new(),
             node_id_map: None,
             node_types_accum: Vec::new(),

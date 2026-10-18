@@ -1074,6 +1074,27 @@ that one value has no absolute value inside the type.
 
 ### 5.3. Type inference algorithm
 
+**Type projections.** `Ret p` extracts the result of a function type. `Rows q`
+extracts the row of a sequence or query/join receiver. `JoinCond q f` and the
+four join-result projections extract the corresponding join shapes.
+`InsertShape e` extracts an entity's insert input and requires a `HasSchema e`
+instance; the identity case is valid for an entity without generated columns,
+not for an arbitrary type.
+
+These names are available in annotations and class/instance signatures. An
+application with an unsupported concrete receiver is rejected where it is
+written, including inside aliases and nested annotations. An application over
+an open type variable remains deferred; when a generic signature is specialized,
+its concrete projection applications must satisfy the same rules. Formation
+requirements survive normalization in polymorphic schemes and are rechecked at
+their uses. Extracting a type does not itself call a class method or introduce a
+runtime dictionary.
+
+A complete signature used within a recursive declaration group must cover its
+body's formation requirements through projections in that signature or applicable
+class promises. A missing promise is reported on the declaration; annotate the
+receiver or state the required constraint before using the signature recursively.
+
 Algorithm W (Damas-Hindley-Milner) with union-find, generalization at `let`, instantiation at use sites, and the occurs check. Capability sets are inferred in a second pass: the set of a function is the union of capabilities used in its body. If a declared signature is present, the inferred set must be a subset; otherwise, a compile error.
 
 #### Complete signatures

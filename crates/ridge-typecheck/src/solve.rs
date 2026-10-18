@@ -175,8 +175,26 @@ pub fn solve_constraints(
     // superclass / ctx_constraint requirements can be appended and processed in
     // the same pass.
     let initial: Vec<Constraint> = std::mem::take(&mut ctx.deferred_constraints);
-    let mut work: Vec<Constraint> = initial;
+    solve_work(
+        ctx,
+        instance_env,
+        class_table,
+        env_snap_ty,
+        scc_span,
+        builtins,
+        initial,
+    )
+}
 
+fn solve_work(
+    ctx: &mut InferCtx,
+    instance_env: &InstanceEnv,
+    class_table: &ClassTable,
+    env_snap_ty: &FxHashSet<TyVid>,
+    scc_span: Span,
+    builtins: Option<&BuiltinTyCons>,
+    mut work: Vec<Constraint>,
+) -> (Vec<Constraint>, DictResolution) {
     let mut retained: Vec<Constraint> = Vec::new();
     let mut dict_resolution: DictResolution = FxHashMap::default();
 
@@ -186,6 +204,7 @@ pub fn solve_constraints(
     let mut visited: FxHashSet<(ClassId, TyConId)> = FxHashSet::default();
 
     while let Some(c) = work.pop() {
+        let error_start = ctx.errors.len();
         if c.tys.len() == 1 {
             // Single-parameter constraint — the established case (a)/(b)/(c) path.
             let resolved = ctx.deep_resolve(&Type::Var(c.sole_ty()));
@@ -216,9 +235,107 @@ pub fn solve_constraints(
                 builtins,
             );
         }
+        if ctx.errors.len() == error_start {
+            crate::projections::remember_class_domain(ctx, class_table, &c, scc_span);
+        }
     }
 
     (retained, dict_resolution)
+}
+
+/// Check a formation requirement without consuming module work or
+/// demanding runtime dictionaries merely because an annotation names a type.
+#[must_use]
+pub(crate) fn check_projection_requirement(
+    ctx: &mut InferCtx,
+    instance_env: &InstanceEnv,
+    class_table: &ClassTable,
+    class: ClassId,
+    resolved: &Type,
+    span: Span,
+) -> Vec<TypeError> {
+    check_formation_requirement(ctx, instance_env, class_table, class, resolved, span, None)
+}
+
+pub(crate) fn check_promised_projection_requirement(
+    ctx: &mut InferCtx,
+    instance_env: &InstanceEnv,
+    class_table: &ClassTable,
+    class: ClassId,
+    resolved: &Type,
+    span: Span,
+    promised: &FxHashSet<TyVid>,
+) -> Vec<TypeError> {
+    check_formation_requirement(
+        ctx,
+        instance_env,
+        class_table,
+        class,
+        resolved,
+        span,
+        Some(promised),
+    )
+}
+
+fn check_formation_requirement(
+    ctx: &mut InferCtx,
+    instance_env: &InstanceEnv,
+    class_table: &ClassTable,
+    class: ClassId,
+    resolved: &Type,
+    span: Span,
+    promised: Option<&FxHashSet<TyVid>>,
+) -> Vec<TypeError> {
+    // Only the proof's own variables may be reconciled by instance matching.
+    // Ordinary formation defers rigids too. A recursive-contract proof keeps
+    // them so it can check the declaration's promises. Both modes freshen every
+    // unbound type, capability and row variable before instance matching.
+    let ty = if promised.is_some() {
+        ctx.deep_resolve(resolved)
+    } else {
+        ctx.resolve_for_export(resolved)
+    };
+    let mut specimen = ridge_types::Scheme::mono(ty);
+    let (vars, caps) = crate::instantiate::collect_free_vars(&specimen.ty);
+    specimen.vars = vars.into_iter().collect();
+    specimen.cap_vars = caps.into_iter().collect();
+    specimen.row_vars = crate::instantiate::collect_free_row_vars(&specimen.ty)
+        .into_iter()
+        .collect();
+    let open =
+        !specimen.vars.is_empty() || !specimen.cap_vars.is_empty() || !specimen.row_vars.is_empty();
+    specimen.vars.sort_by_key(|v| v.0);
+    specimen.cap_vars.sort_by_key(|v| v.0);
+    specimen.row_vars.sort_by_key(|v| v.0);
+    let resolved = crate::instantiate::instantiate(ctx, &specimen);
+    let prior_demands = std::mem::take(&mut ctx.demanded_rows);
+    let error_start = ctx.errors.len();
+    let key = ctx.tyvids.new_key(crate::ctx::TyValue(Some(resolved)));
+    let b = ctx.builtins;
+    let empty = FxHashSet::default();
+    let capture = std::mem::replace(&mut ctx.capture_projection_domains, false);
+    let (retained, plans) = solve_work(
+        ctx,
+        instance_env,
+        class_table,
+        &empty,
+        span,
+        Some(&b),
+        vec![Constraint::single(class, TyVid(key.0))],
+    );
+    ctx.capture_projection_domains = capture;
+    if (promised.is_some() || !open) && ctx.errors.len() == error_start && !retained.is_empty() {
+        report_ambiguous_element_dicts(
+            ctx,
+            class_table,
+            &plans,
+            promised.unwrap_or(&empty),
+            &empty,
+            span,
+        );
+    }
+    ctx.demanded_rows = prior_demands;
+    ctx.errors.split_off(error_start)
 }
 
 // ── Internal dispatch ─────────────────────────────────────────────────────────
@@ -231,7 +348,7 @@ pub fn solve_constraints(
 /// on it is relying on the class declaration, not on an unwritten constraint,
 /// so testing membership of the written list alone asks the author to repeat
 /// what the class already says.
-fn givens_cover(givens: &[ClassId], class: ClassId, class_table: &ClassTable) -> bool {
+pub(crate) fn givens_cover(givens: &[ClassId], class: ClassId, class_table: &ClassTable) -> bool {
     // Breadth-first over the superclass edges. `seen` is not an optimisation:
     // a class declared as its own ancestor would otherwise spin here instead
     // of being reported by whoever validates the declaration.
@@ -1045,23 +1162,7 @@ fn discharge_concrete(
                 }
             }
             // T029 — no instance for this (class, type) pair.
-            let ty_name = crate::render::render_type_with(
-                &ridge_types::Type::Con(tyconid, Vec::new()),
-                &ctx.tycon_decls,
-            );
-            let fix_hint = build_fix_hint(
-                class_name,
-                tyconid,
-                &ty_name,
-                &ctx.tycon_decls,
-                &ctx.builtins,
-            );
-            ctx.errors.push(TypeError::NoInstance {
-                class: class_name.to_string(),
-                ty: TypeDesc::Text(ty_name),
-                span: scc_span,
-                fix_hint,
-            });
+            report_missing_instance(ctx, class_table, c.class, tyconid, resolved_con, scc_span);
         }
 
         Some(inst_info) => {
@@ -1118,8 +1219,8 @@ fn discharge_concrete(
 
             // The instance's context constraints are NOT enqueued onto the
             // worklist. For a parametric instance the sub-dictionary plans were
-            // already computed by `resolve_ctx_dict_args` (which recurses through
-            // `resolve_dict_plan`) and attached to the Static plan's `args`. Any
+            // already computed by `resolve_ctx_dict_args` using private
+            // worklists and attached to the Static plan's `args`. Any
             // missing-element-instance diagnostic (T029) is raised there.
             //
             // Enqueuing them here would record extra `dict_resolution` entries
@@ -1131,6 +1232,54 @@ fn discharge_concrete(
             // sub-dicts solely inside the parent plan's `args` avoids that.
         }
     }
+}
+
+/// Report a missing instance using the actual function type when applicable.
+fn report_missing_instance(
+    ctx: &mut InferCtx,
+    class_table: &ClassTable,
+    class: ClassId,
+    tyconid: TyConId,
+    resolved_con: &Type,
+    span: Span,
+) {
+    let class_name = class_table
+        .get(class)
+        .map_or("?", |info| info.name.as_str());
+    let function = matches!(resolved_con, Type::Fn { .. });
+    let ty_name = if function {
+        crate::render::render_type_with(resolved_con, &ctx.tycon_decls)
+    } else {
+        crate::render::render_type_with(
+            &ridge_types::Type::Con(tyconid, Vec::new()),
+            &ctx.tycon_decls,
+        )
+    };
+    let fix_hint = if function {
+        let own_class = class_table
+            .get(class)
+            .and_then(|class| class.def_module)
+            .is_some_and(|module| ctx.current_module_raw == Some(module));
+        if own_class {
+            format!("declare an instance for this function type, or use a type with an existing `{class_name}` instance")
+        } else {
+            format!("use a type with `{class_name}`; a function wrapper you own can define that instance")
+        }
+    } else {
+        build_fix_hint(
+            class_name,
+            tyconid,
+            &ty_name,
+            &ctx.tycon_decls,
+            &ctx.builtins,
+        )
+    };
+    ctx.errors.push(TypeError::NoInstance {
+        class: class_name.to_string(),
+        ty: TypeDesc::Text(ty_name),
+        span,
+        fix_hint,
+    });
 }
 
 /// Resolve the ordered sub-dictionary plans for a parametric instance's
@@ -1244,9 +1393,9 @@ fn resolve_ctx_dict_args_multi(
         .collect()
 }
 
-/// Keep recursive context plans private, while returning their polymorphic
-/// requirements for generalisation. Publishing child entries in the caller's
-/// plan map could confuse a container dictionary with its element dictionary.
+/// Keep context plans private, while returning their polymorphic requirements.
+/// Every head uses the same worklist as an ordinary class requirement, including
+/// functions, aliases, multi-parameter heads and superclass requirements.
 fn resolve_context_head(
     ctx: &mut InferCtx,
     instances: &InstanceEnv,
@@ -1256,208 +1405,34 @@ fn resolve_context_head(
     types: &[Type],
     retained: &mut Vec<Constraint>,
 ) -> Option<DictPlan> {
-    if let [ty] = types {
-        return Some(resolve_dict_plan(
-            ctx, instances, classes, span, class, ty, retained,
-        ));
-    }
-    let mut vars = SmallVec::new();
-    for ty in types {
-        let var = ctx.fresh_tyvid();
-        if unify(ctx, &Type::Var(var), ty).is_err() {
-            return None;
-        }
-        vars.push(var);
-    }
-    let constraint = Constraint::new(class, vars);
-    let mut plans = DictResolution::default();
+    let vars = types
+        .iter()
+        .map(|ty| {
+            let key = ctx.tyvids.new_key(crate::ctx::TyValue(Some(ty.clone())));
+            TyVid(key.0)
+        })
+        .collect();
     let builtins = ctx.builtins;
-    dispatch_multi_constraint(
+    let (requirements, plans) = solve_work(
         ctx,
         instances,
         classes,
         &FxHashSet::default(),
         span,
-        &constraint,
-        retained,
-        &mut plans,
         Some(&builtins),
+        vec![Constraint::new(class, vars)],
     );
-    plans.remove(&constraint)
-}
-
-/// Resolve a `(class, concrete-or-var type)` pair into a [`DictPlan`] without
-/// touching the solver work queue.
-///
-/// This is the recursive core that builds the dict-of-dicts for parametric
-/// instances. It mirrors [`dispatch_constraint`]'s case (a) / case (b)
-/// classification but produces a plan directly rather than enqueuing:
-///
-/// - `Type::Con` with a registered instance → `DictPlan::Static`, recursing on
-///   the instance's own context constraints (so `List (List Int)` nests).
-/// - `Type::Var` → `DictPlan::Forward` (the enclosing scope threads a dict
-///   param; e.g. resolving `Encode a` inside a `where Encode a` body).
-/// - Missing instance / other shapes → a `Forward` placeholder; the missing
-///   instance is reported by the normal worklist path, so no duplicate T029.
-fn resolve_dict_plan(
-    ctx: &mut InferCtx,
-    instance_env: &InstanceEnv,
-    class_table: &ClassTable,
-    scc_span: Span,
-    class: ClassId,
-    resolved: &Type,
-    retained: &mut Vec<Constraint>,
-) -> DictPlan {
-    // Placeholder for the "no resolution" cases. The top-level worklist still
-    // enqueues the corresponding constraint and emits any T029 diagnostic, so
-    // these placeholders never double-report.
-    let forward_placeholder = || DictPlan::Forward(Constraint::single(class, TyVid(0)));
-
-    match resolved {
-        Type::Con(tyconid, _) => {
-            let tyconid = *tyconid;
-            // Clone the instance metadata out first so the immutable borrow on
-            // `instance_env` is released before the recursive call below borrows
-            // `ctx` mutably.
-            let Some(inst_info) = instance_env.get((class, tyconid)).cloned() else {
-                // Before giving up, try expanding a transparent alias so that
-                // `Join e f a` (which has no instances of its own) transparently
-                // dispatches through its expansion `Joined (Query e a) f a`.
-                if let Some(decl) = ctx.tycon_decls.get(tyconid.0 as usize) {
-                    if let TyConKind::Alias { params, body } = &decl.kind {
-                        let params = params.clone();
-                        let body = body.clone();
-                        let con_args = match resolved {
-                            Type::Con(_, args) => args.clone(),
-                            _ => Vec::new(),
-                        };
-                        let expanded = subst_alias(&body, &params, &con_args);
-                        if let Type::Con(expanded_id, _) = &expanded {
-                            if *expanded_id != tyconid {
-                                return resolve_dict_plan(
-                                    ctx,
-                                    instance_env,
-                                    class_table,
-                                    scc_span,
-                                    class,
-                                    &expanded,
-                                    retained,
-                                );
-                            }
-                        }
-                    }
-                }
-                // No instance for this element type → T029. The element type is a
-                // concrete `Type::Con`, so this is a genuine missing-instance
-                // error (e.g. `Encode (List SomeType)` where `SomeType` has no
-                // `Encode` instance). Report it here because the sub-constraint is
-                // no longer enqueued onto the worklist.
-                let class_name = class_table
-                    .get(class)
-                    .map_or("?", |info| info.name.as_str());
-                let ty_name = crate::render::render_type_with(
-                    &ridge_types::Type::Con(tyconid, Vec::new()),
-                    &ctx.tycon_decls,
-                );
-                let fix_hint = build_fix_hint(
-                    class_name,
-                    tyconid,
-                    &ty_name,
-                    &ctx.tycon_decls,
-                    &ctx.builtins,
-                );
-                ctx.errors.push(TypeError::NoInstance {
-                    class: class_name.to_string(),
-                    ty: TypeDesc::Text(ty_name),
-                    span: scc_span,
-                    fix_hint,
-                });
-                return forward_placeholder();
-            };
-            // A structurally-synthesised `Row` instance is emitted only when used.
-            // When `Row` is reached as a nested sub-dictionary — a `Projectable`/
-            // `Fetchable` instance's `Row s` requirement, resolved through this plan
-            // path rather than `discharge_concrete` — the demand must still be
-            // recorded, or the workspace driver never pulls the stashed dictionary
-            // into the emitted set and lowering references an undefined `$inst_Row_*`.
-            if class_table.get(class).map(|info| info.name.as_str())
-                == Some(ridge_ast::column_mirror::ROW_DERIVE)
-            {
-                ctx.demanded_rows.insert(tyconid);
-            }
-            let args = resolve_ctx_dict_args(
-                ctx,
-                instance_env,
-                class_table,
-                scc_span,
-                &inst_info,
-                resolved,
-                retained,
-            );
-            DictPlan::Static {
-                class,
-                info: Box::new(inst_info),
-                tycon: tyconid,
-                extra_head: SmallVec::new(),
-                args,
-            }
+    for requirement in requirements {
+        if !retained.contains(&requirement) {
+            retained.push(requirement);
         }
-        Type::Var(v) => forward_context(class, *v, retained, true),
-        // A signature variable in an element position. Promised, it behaves
-        // exactly like a variable the caller will pin: the dictionary comes in
-        // as a parameter, so this forwards the abstraction target reserved when
-        // the rigid was minted — the same name `discharge_promised` declares,
-        // which is what makes the forwarded constraint and the incoming
-        // `$dict_…` parameter spell alike. Unpromised it is `T055`, not an
-        // ambiguity: nothing here is undetermined, the signature is short a
-        // promise, and "add a type annotation" sends the reader after a fix
-        // that does not exist. Falling through to the placeholder below instead
-        // forwards the sentinel `TyVid(0)`, which the ambiguity walk then reads
-        // as an element nobody can supply.
-        Type::Rigid { id, name } => {
-            let info = ctx.rigids.get(id);
-            let promised =
-                info.is_some_and(|i| givens_cover(&i.givens, class, class_table) || !i.complete);
-            if !promised {
-                let class_name = class_table
-                    .get(class)
-                    .map_or("?", |i| i.name.as_str())
-                    .to_owned();
-                // The variable carries its own origin, so the caret lands on
-                // the declaration that is short a promise.
-                let (decl, span) =
-                    info.map_or_else(|| (String::new(), scc_span), |i| (i.decl.clone(), i.span));
-                ctx.errors.push(TypeError::MissingConstraint {
-                    decl,
-                    class: class_name.clone(),
-                    fix_hint: format!("add `where {class_name} {name}` to the signature"),
-                    ty_var: TypeDesc::Text(name.to_string()),
-                    span,
-                });
-            }
-            // Forward the target either way. With the diagnostic already
-            // recorded, a plan that spells the right name keeps the ambiguity
-            // walk from adding a second, wrong explanation of the same mistake.
-            forward_context(class, TyVid(id.0), retained, promised)
-        }
-        // Other shapes are ill-typed for a class head; a diagnostic fires on
-        // the normal path. Use a Forward placeholder so the plan is total.
-        _ => forward_placeholder(),
     }
-}
-
-/// Retain valid requirements while keeping diagnosed plans well named.
-fn forward_context(
-    class: ClassId,
-    var: TyVid,
-    retained: &mut Vec<Constraint>,
-    valid: bool,
-) -> DictPlan {
-    let requirement = Constraint::single(class, var);
-    if valid && !retained.contains(&requirement) {
-        retained.push(requirement.clone());
-    }
-    DictPlan::Forward(requirement)
+    // This worklist has exactly one root. Other entries are its superclasses;
+    // context-child maps stay private in recursive calls. A variable or rigid
+    // root can be keyed by its canonical variable rather than the fresh key.
+    plans
+        .into_iter()
+        .find_map(|(wanted, plan)| (wanted.class == class).then_some(plan))
 }
 
 /// Satisfy a class requirement on a signature variable, or report `T055`.
@@ -2190,6 +2165,7 @@ mod tests {
         let a = TyVid(99); // a raw index far from any allocated var
                            // forall a. a, with constraint ToText a
         let scheme = Scheme {
+            projections: None,
             vars: vec![a],
             cap_vars: vec![],
             row_vars: vec![],
@@ -2231,6 +2207,7 @@ mod tests {
         let mut ctx = InferCtx::for_tests();
         let a = TyVid(0);
         let scheme = Scheme {
+            projections: None,
             vars: vec![a],
             cap_vars: vec![],
             row_vars: vec![],

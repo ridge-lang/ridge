@@ -7210,6 +7210,7 @@ mod tests {
         // Construct a scheme with one constraint (ClassId=0, TyVid=0).
         let constraint = Constraint::single(ClassId(0), TyVid(0));
         let constrained_scheme = Scheme {
+            projections: None,
             vars: vec![TyVid(0)],
             cap_vars: vec![],
             row_vars: vec![],

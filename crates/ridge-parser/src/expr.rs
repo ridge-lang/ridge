@@ -323,7 +323,7 @@ fn parse_expr_bp(cur: &mut Cursor<'_>, min_bp: u8) -> Result<Expr, ParseError> {
                     // by `okText …` with no Newline separator).
                     let max_args: usize = if cur.no_layout_arm { 1 } else { usize::MAX };
                     let mut args: Vec<Expr> = Vec::new();
-                    while actor_ops::can_start_arg_atom(cur) && args.len() < max_args {
+                    while can_start_arg_atom(cur) && args.len() < max_args {
                         if cur.no_layout_arm && ctrl::is_match_arm_start(cur) {
                             break;
                         }
@@ -332,21 +332,19 @@ fn parse_expr_bp(cur: &mut Cursor<'_>, min_bp: u8) -> Result<Expr, ParseError> {
                         // handling below consumes it instead of collecting it as
                         // an argument.
                         //
-                        // The trigger asks exactly the question the postfix
-                        // parser goes on to answer — does an operator expression
-                        // begin at the next token? — so both halves accept the
-                        // same set by construction: the trigger through
-                        // `can_start_pratt_expr`, the operand through
-                        // `parse_expr_pratt`.  A hand-written list of two token
-                        // kinds stood here before, which admitted `timeout 1000`
-                        // but not `timeout (1000)`, `timeout "soon"` or
-                        // `timeout Cfg.ms`.
+                        // Operator expressions use the same start set as the
+                        // operand parser. Full-expression forms also stop the
+                        // argument list, so the operand reports their required
+                        // parentheses instead of a misleading layout error.
                         //
                         // When nothing can begin an expression after it — end of
                         // input, a newline, `)` — `timeout` stays an ordinary
                         // argument, which `parse_ask_timeout_as_arg_ident` pins.
                         if matches!(cur.peek(), Token::LowerIdent(s) if s == "timeout")
-                            && cur.peek_n(1).is_some_and(can_start_pratt_expr)
+                            && cur.peek_n(1).is_some_and(|token| {
+                                can_start_pratt_expr(token)
+                                    || (!cur.no_layout_arm && needs_timeout_parentheses(token))
+                            })
                         {
                             break;
                         }
@@ -378,6 +376,13 @@ fn parse_expr_bp(cur: &mut Cursor<'_>, min_bp: u8) -> Result<Expr, ParseError> {
                             // tail, none of which can be told from the start of
                             // the next statement in a bracket-suppressed match
                             // arm, where there are no `Newline` tokens to look at.
+                            if needs_timeout_parentheses(cur.peek()) {
+                                return Err(ParseError::Expected {
+                                    span: cur.span(),
+                                    expected: "a parenthesised expression after `timeout`",
+                                    found: cur.peek().to_string(),
+                                });
+                            }
                             let ms_expr = parse_expr_pratt(cur)?;
                             // A trailing `?` propagates the ask, not its
                             // deadline. A parenthesised deadline keeps its own
@@ -576,15 +581,10 @@ pub(crate) fn parse_expr_atom12(cur: &mut Cursor<'_>) -> Result<Expr, ParseError
 /// [`parse_expr_pratt`], which is unary `-` plus every start of
 /// [`parse_expr_atom`].
 ///
-/// This is deliberately **not** either `can_start_arg_atom`. Note the "either":
-/// two private functions carry that name, and they do not accept the same set.
-/// The one below in this file gates juxtaposition arguments; the one in
-/// `actor_ops` gates ask and spawn arguments and additionally leaves out `fn`,
-/// `spawn` and a raw string. Both answer "is this the start of an argument
-/// atom?", which is a narrower question than the one here — "does an operator
-/// expression begin?" — so this predicate tracks `parse_expr_atom`'s dispatch
-/// rather than either of them, and `pratt_start_set_matches_parser` pins it to
-/// the parser in both directions.
+/// This differs from [`can_start_arg_atom`]: an operator expression can also
+/// start with unary minus or an anonymous record. This predicate tracks
+/// `parse_expr_atom`'s dispatch; `pratt_start_set_matches_parser` pins it to the
+/// parser in both directions.
 pub(crate) const fn can_start_pratt_expr(tok: &Token) -> bool {
     matches!(
         tok,
@@ -612,6 +612,23 @@ pub(crate) const fn can_start_pratt_expr(tok: &Token) -> bool {
         // Keyword-led atoms.
         | Token::KwFn
         | Token::KwSpawn
+    )
+}
+
+/// Full-expression forms that require parentheses in a timeout operand.
+/// Use this only outside flat match-arm bodies: there, a keyword can start
+/// the next statement after an ordinary `timeout` argument. A newline also
+/// leaves that identifier untouched.
+const fn needs_timeout_parentheses(tok: &Token) -> bool {
+    matches!(
+        tok,
+        Token::KwIf
+            | Token::KwMatch
+            | Token::KwLet
+            | Token::KwVar
+            | Token::KwTry
+            | Token::KwGuard
+            | Token::KwReturn
     )
 }
 
@@ -1136,16 +1153,18 @@ pub(crate) fn parse_qualified_name(cur: &mut Cursor<'_>) -> Result<QualifiedName
 // ── Juxtaposition / argument-start predicate ─────────────────────────────────
 
 /// Return `true` if the current token can start an `Expr12` atom used as a
-/// call argument in juxtaposition (level 11).
+/// call, ask or spawn argument. Lambdas, spawn expressions and raw strings
+/// share this argument grammar. Parentheses delimit a compound argument.
 ///
 /// Excludes:
 /// - Layout tokens: `Newline`, `Indent`, `Dedent`
 /// - Delimiters that close a context: `)`, `]`, `}`, `,`
 /// - Binary/infix operators
-/// - Keywords that begin statements, not expressions: `fn`, `spawn` (T8)
+/// - Control and statement forms such as `if`, `match`, `let` and `return`
+/// - Anonymous record literals: write `f ({ a = 1 })`
 /// - `Dot` — a bare `.` is not an expression start (field access on LHS)
 /// - `Eof`
-fn can_start_arg_atom(cur: &Cursor<'_>) -> bool {
+pub(crate) fn can_start_arg_atom(cur: &Cursor<'_>) -> bool {
     matches!(
         cur.peek(),
         Token::IntDec(_)
@@ -1398,6 +1417,154 @@ mod tests {
         parse_e(src)
             .err()
             .unwrap_or_else(|| panic!("parse_expr({src:?}) expected Err, got Ok"))
+    }
+
+    #[test]
+    fn call_ask_and_spawn_share_argument_atoms() {
+        for atom in [
+            "42",
+            "0b10",
+            "0o7",
+            "0xF",
+            "1.5",
+            "1.2m",
+            "true",
+            "false",
+            "\"soon\"",
+            "r\"soon\"",
+            "$\"soon\"",
+            "value",
+            "Value",
+            "()",
+            "(1)",
+            "[1]",
+            "fn x -> x",
+            "spawn Worker",
+        ] {
+            for prefix in ["plain", "h ?> tag", "spawn Store"] {
+                let source = format!("{prefix} {atom}");
+                let tokens = lex(&source);
+                let mut cur = Cursor::new(&tokens);
+                let expr = parse_expr(&mut cur).unwrap_or_else(|e| panic!("{source}: {e}"));
+                assert!(
+                    matches!(cur.peek(), Token::Eof | Token::Newline),
+                    "{source}: unconsumed {:?}",
+                    cur.peek()
+                );
+                let args = match expr {
+                    Expr::Call { args, .. } | Expr::Ask { args, .. } | Expr::Spawn { args, .. } => {
+                        args
+                    }
+                    other => panic!("{source}: expected arguments, got {other:?}"),
+                };
+                assert!(matches!(args.as_slice(), [_]), "{source}: {args:?}");
+                let expected = ok(atom);
+                assert_eq!(
+                    std::mem::discriminant(&args[0]),
+                    std::mem::discriminant(&expected),
+                    "{source}: wrong argument kind: {:?}",
+                    args[0]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn keyword_timeout_requires_parentheses_at_the_operand() {
+        let source = "pub fn time read (h: Handle Worker) -> Int =\n    let n = h ?> count timeout if true then 1 else 2\n    4\n";
+        let result = crate::parse_source(source);
+        assert!(!result.errors.is_empty());
+        let error = &result.errors[0];
+        assert_eq!(
+            &source[error.span().start as usize..error.span().end as usize],
+            "if"
+        );
+        assert!(error.to_string().contains("parenthes"), "{error}");
+        assert!(!error.to_string().contains("indented block"), "{error}");
+        let repaired = source.replace(
+            "timeout if true then 1 else 2",
+            "timeout (if true then 1 else 2)",
+        );
+        let result = crate::parse_source(&repaired);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+    }
+
+    #[test]
+    fn timeout_identifier_does_not_consume_the_next_flat_statement() {
+        let source = "(match flag true -> let _ = h ?> count timeout let n = 1 n false -> 0)";
+        let Expr::Paren { inner, .. } = ok(source) else {
+            panic!("expected parens")
+        };
+        let Expr::Match { arms, .. } = *inner else {
+            panic!("expected match")
+        };
+        let Expr::Block(block) = &arms[0].body else {
+            panic!("expected flat block")
+        };
+        let Expr::Let { value, .. } = &block.stmts[0] else {
+            panic!("expected let")
+        };
+        assert!(
+            matches!(&**value, Expr::Ask { args, timeout: None, .. }
+            if matches!(args.as_slice(), [Expr::Ident(name)] if name.text == "timeout")),
+            "timeout must stay an argument before the next statement: {value:?}"
+        );
+        assert!(matches!(&block.stmts[1], Expr::Let { .. }));
+    }
+
+    #[test]
+    fn argument_grouping_and_timeout_boundaries_are_preserved() {
+        for prefix in ["plain", "h ?> tag", "spawn Store"] {
+            for atom in [
+                "({ a = 1 })",
+                "(if true then 1 else 2)",
+                "(-1)",
+                "(spawn Worker 7)",
+                "(fn x -> x + 1)",
+            ] {
+                let source = format!("pub fn value () = {prefix} {atom}\n");
+                let result = crate::parse_source(&source);
+                assert!(result.errors.is_empty(), "{source}: {:?}", result.errors);
+            }
+            for atom in ["{ a = 1 }", "if true then 1 else 2"] {
+                let source = format!("pub fn value () = {prefix} {atom}\n");
+                assert!(!crate::parse_source(&source).errors.is_empty(), "{source}");
+            }
+        }
+        let expr = ok("h ?> register (spawn Worker 7) timeout 1000 ?");
+        let Expr::Propagate { inner, .. } = expr else {
+            panic!("expected ask propagation")
+        };
+        let Expr::Ask {
+            args,
+            timeout: Some(AskTimeout::Millis(ms)),
+            ..
+        } = *inner
+        else {
+            panic!("expected bounded ask")
+        };
+        assert!(
+            matches!(args.as_slice(), [Expr::Paren { inner, .. }] if matches!(**inner, Expr::Spawn { .. }))
+        );
+        assert!(matches!(*ms, Expr::Literal(Literal::IntDec { ref raw, .. }) if raw == "1000"));
+        for body in [
+            "h ?> register spawn Worker",
+            "spawn Parent spawn Worker",
+            "plain spawn Worker",
+        ] {
+            let source = format!("(match flag true -> {body} false -> 0)");
+            let expr = ok(&source);
+            let Expr::Paren { inner, .. } = expr else {
+                panic!("expected parenthesised match")
+            };
+            let Expr::Match { arms, .. } = *inner else {
+                panic!("expected match")
+            };
+            assert!(
+                matches!(arms.as_slice(), [_, arm] if matches!(arm.body, Expr::Literal(Literal::IntDec { ref raw, .. }) if raw == "0")),
+                "{source}: nested spawn consumed the following arm: {arms:?}"
+            );
+        }
     }
 
     // ── can_start_pratt_expr ↔ parse_expr_pratt ───────────────────────────────

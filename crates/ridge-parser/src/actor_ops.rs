@@ -19,7 +19,10 @@ use ridge_ast::{expr::RecordCtor, Expr, FieldInit, Ident, InterpPart, LambdaPara
 use ridge_lexer::Token;
 
 use crate::{
-    ctrl::parse_branch_body_flat, cursor::Cursor, error::ParseError, expr::parse_expr,
+    ctrl::parse_branch_body_flat,
+    cursor::{Cursor, DepthGuard},
+    error::ParseError,
+    expr::parse_expr,
     pattern::parse_pattern_atom,
 };
 
@@ -272,6 +275,10 @@ fn parse_pattern_from_cursor(cur: &mut Cursor<'_>) -> Result<Pattern, ParseError
 ///
 /// Precondition: `cur.peek() == &Token::KwSpawn`.
 pub(crate) fn parse_spawn(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
+    // A spawn argument can itself be a spawn. That descent does not re-enter
+    // Pratt parsing, so it must participate in the shared recursion budget.
+    let guard = DepthGuard::enter(cur)?;
+    let cur = &mut *guard.cur;
     let start = cur.span();
     cur.bump(); // consume `spawn`
 
@@ -294,7 +301,10 @@ pub(crate) fn parse_spawn(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
 
     // Greedily collect argument atoms.
     let mut args: Vec<Expr> = Vec::new();
-    while can_start_arg_atom(cur) {
+    while crate::expr::can_start_arg_atom(cur) {
+        if cur.no_layout_arm && crate::ctrl::is_match_arm_start(cur) {
+            break;
+        }
         args.push(crate::expr::parse_expr_atom12(cur)?);
     }
 
@@ -564,30 +574,6 @@ pub(crate) fn parse_interp_full(cur: &mut Cursor<'_>) -> Result<Expr, ParseError
             }
         }
     }
-}
-
-// ── can_start_arg_atom (re-export for parse_spawn) ────────────────────────────
-
-/// Return `true` if the current token can begin an argument atom for spawn
-/// or ask argument lists (same set as juxtaposition in `expr.rs`).
-pub(crate) fn can_start_arg_atom(cur: &Cursor<'_>) -> bool {
-    matches!(
-        cur.peek(),
-        Token::IntDec(_)
-            | Token::IntBin(_)
-            | Token::IntOct(_)
-            | Token::IntHex(_)
-            | Token::Float(_)
-            | Token::DecimalLit(_)
-            | Token::TextLit(_)
-            | Token::KwTrue
-            | Token::KwFalse
-            | Token::InterpStart
-            | Token::LowerIdent(_)
-            | Token::UpperIdent(_)
-            | Token::LParen
-            | Token::LBrack
-    )
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

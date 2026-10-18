@@ -54,6 +54,25 @@ fn on_big_stack(f: impl FnOnce() + Send + 'static) {
     }
 }
 
+#[test]
+fn nested_spawn_arguments_obey_the_shared_depth_limit() {
+    on_big_stack(|| {
+        for prefix in ["", "h ?> register ", "plain "] {
+            let source = format!(
+                "pub fn value () = {prefix}{}\n",
+                "spawn Worker ".repeat(1024)
+            );
+            let result = parse_source(&source);
+            assert!(
+                result.errors.iter().any(|e| e.code() == "P028"),
+                "expected the depth diagnostic for {prefix:?}, got {:?}",
+                result.errors
+            );
+            check_invariants(&source, &result);
+        }
+    });
+}
+
 // ── Invariants ────────────────────────────────────────────────────────────────
 
 /// Assert the structural invariants every parse must uphold, regardless of how

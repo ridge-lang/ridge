@@ -254,8 +254,8 @@ pub(crate) const MAX_PARSE_DEPTH: u32 = 256;
 /// On creation it increments [`Cursor::recursion_depth`]; on drop it decrements
 /// it, so the counter is restored no matter which `?`/early-return path unwinds
 /// out of the descent. Placed at the head of every recursive entry point
-/// (`parse_expr_bp`, `parse_type`, `parse_pattern`) so all three share one
-/// budget.
+/// (`parse_expr_bp`, `parse_spawn`, `parse_type`, `parse_pattern`) so they share
+/// one budget.
 pub(crate) struct DepthGuard<'a, 't> {
     pub(crate) cur: &'a mut Cursor<'t>,
 }

@@ -19,7 +19,7 @@
 // # Stubs
 //
 // Entries annotated `// TODO: hand-curated stub` return a
-// monomorphic `Scheme { vars: vec![], cap_vars: vec![], ty: Type::Error }`.
+// monomorphic `Scheme { projections: None, vars: vec![], cap_vars: vec![], ty: Type::Error }`.
 // The property test checks that every BUILTINS export resolves to `Some(Scheme)`.
 
 use ridge_resolve::StdlibModuleId;
@@ -219,6 +219,7 @@ fn ty_fn_cap_var(params: Vec<Type>, ret: Type, c: CapVid) -> Type {
 #[inline]
 const fn poly(vars: Vec<TyVid>, ty: Type) -> Scheme {
     Scheme {
+        projections: None,
         vars,
         cap_vars: vec![],
         row_vars: vec![],
@@ -231,6 +232,7 @@ const fn poly(vars: Vec<TyVid>, ty: Type) -> Scheme {
 #[inline]
 const fn poly_cap(vars: Vec<TyVid>, cap_vars: Vec<CapVid>, ty: Type) -> Scheme {
     Scheme {
+        projections: None,
         vars,
         cap_vars,
         row_vars: vec![],
@@ -243,6 +245,7 @@ const fn poly_cap(vars: Vec<TyVid>, cap_vars: Vec<CapVid>, ty: Type) -> Scheme {
 #[inline]
 const fn mono(ty: Type) -> Scheme {
     Scheme {
+        projections: None,
         vars: vec![],
         cap_vars: vec![],
         row_vars: vec![],
@@ -717,6 +720,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         (STD_LIST, "sort") => {
             // forall a where Ord a. List a -> List a
             Some(Scheme {
+                projections: None,
                 vars: vec![A],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -727,6 +731,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         (STD_LIST, "sortBy") => {
             // forall a b c where Ord b. (fn c (a -> b)) -> List a -> List a  (key fn)
             Some(Scheme {
+                projections: None,
                 vars: vec![A, B_VAR],
                 cap_vars: vec![CAP_C],
                 row_vars: vec![],
@@ -1591,6 +1596,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             let rnd_caps = CapabilitySet::singleton(Capability::Random);
             // forall a. List a -> Option a
             Some(Scheme {
+                projections: None,
                 vars: vec![A],
                 cap_vars: vec![],
                 row_vars: vec![],

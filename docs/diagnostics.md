@@ -1024,6 +1024,10 @@ A tuple meets a position expecting a different number of components.
 
 An ask timeout is written as a negative literal.
 
+### T061
+
+A type-level projection is applied outside its reduction domain.
+
 ### T101
 
 The `@ffi` arity doesn't match the Ridge parameter count.

@@ -98,6 +98,7 @@ fn user_variant_scheme(ctx: &InferCtx, name: &str) -> Option<Scheme> {
             schema.params.iter().map(|&p| Type::Var(p)).collect(),
         );
         Some(Scheme {
+            projections: None,
             vars: schema.params.clone(),
             cap_vars: vec![],
             row_vars: vec![],
@@ -220,6 +221,7 @@ fn find_record_variant(
 // OQ-PHASE45-001: single infer_expr_outer shim; write-back is uniform across all shapes.
 // OQ-PHASE45-004: Block and Try use their dedicated NodeKind for the write-back key.
 pub fn infer_expr(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type {
+    let outer_projection_span = ctx.projection_use_span.replace(expr.span());
     let ty = infer_region(ctx, |ctx| {
         let ty = infer_expr_inner(ctx, b, expr);
         ctx.flow = match expr {
@@ -234,6 +236,8 @@ pub fn infer_expr(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type {
         };
         ty
     });
+    ctx.projection_use_span = outer_projection_span;
+    crate::projections::remember_type(ctx, &ty, expr.span());
     // Write back the shallow-resolved type for this expression position.
     // Expr::Block and Expr::Try use NodeKind::Block / NodeKind::Try respectively
     // so that try_block::resolve_block_type can look up the block's type.

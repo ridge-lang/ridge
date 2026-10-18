@@ -176,7 +176,12 @@ impl IncrementalState {
         // Decide what to recompute: just the edited module for a surface-
         // preserving edit, otherwise the edited module plus everything that
         // transitively imports it.
-        let recompute: Vec<ModuleId> = if new_hash == old_hash {
+        let edited_check = typecheck_module_incremental(edited_id, &self.resolved, &self.typed);
+        let formation_changed = !ridge_typecheck::projection_contracts_equal(
+            &self.typed.module_schemes[edited_id.0 as usize],
+            &edited_check.result.name_schemes,
+        );
+        let recompute: Vec<ModuleId> = if new_hash == old_hash && !formation_changed {
             vec![edited_id]
         } else {
             reverse_dep_closure(&self.resolved.graph.deps, edited_id)
@@ -199,14 +204,23 @@ impl IncrementalState {
         // Re-type-check the recomputed set, threading the growing TyCon list
         // through so each module sees the previous ones' interned TyCons.
         let mut fresh_type_errors: Vec<(ModuleId, TypeError)> = Vec::new();
+        let mut edited_check = Some(edited_check);
         for &m in &recompute {
-            let inc = typecheck_module_incremental(m, &self.resolved, &self.typed);
+            let cached = if m == edited_id {
+                edited_check.take()
+            } else {
+                None
+            };
+            let inc = cached
+                .unwrap_or_else(|| typecheck_module_incremental(m, &self.resolved, &self.typed));
             self.typed.tycons = inc.tycons;
             self.typed.anon_records.extend(inc.result.anon_records);
             self.typed
                 .insert_companions
                 .extend(inc.result.insert_companions);
             fresh_type_errors.extend(inc.result.errors.into_iter().map(|e| (m, e)));
+            self.typed.module_schemes[m.0 as usize] = inc.result.name_schemes;
+            self.typed.module_tycon_names[m.0 as usize] = inc.result.tycon_names;
             self.typed.modules[m.0 as usize] = inc.result.typed;
         }
         self.type_errors.retain(|(m, _)| !in_set.contains(m));

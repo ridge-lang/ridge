@@ -1652,6 +1652,7 @@ mod tests {
         // Build `forall a. a -> a`
         let a = ridge_types::TyVid(0);
         let scheme = Scheme {
+            projections: None,
             vars: vec![a],
             cap_vars: vec![],
             row_vars: vec![],

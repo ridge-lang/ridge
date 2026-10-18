@@ -217,7 +217,21 @@ impl Subst {
             row: restricted_row,
         };
 
+        let projections =
+            if restricted.ty.is_empty() && restricted.cap.is_empty() && restricted.row.is_empty() {
+                scheme.projections.clone()
+            } else {
+                scheme.projections.as_ref().map(|requirements| {
+                    std::sync::Arc::new(
+                        requirements
+                            .iter()
+                            .map(|ty| restricted.apply_to_ty(ty))
+                            .collect(),
+                    )
+                })
+            };
         Scheme {
+            projections,
             vars: scheme.vars.clone(),
             cap_vars: scheme.cap_vars.clone(),
             row_vars: scheme.row_vars.clone(),
@@ -402,6 +416,7 @@ mod tests {
         // `forall a. a -> Int` — substituting ?0 := Bool should NOT replace `a`.
         let a = vid(0);
         let scheme = Scheme {
+            projections: None,
             vars: vec![a],
             cap_vars: vec![],
             row_vars: vec![],

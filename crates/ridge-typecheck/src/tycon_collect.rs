@@ -114,6 +114,9 @@ pub fn collect_user_tycons(
                     None => arena.intern(decl),
                 };
                 name_to_id.insert(td.name.text.clone(), id);
+                if matches!(td.body, TypeBody::Alias(_)) {
+                    ctx.projection_aliases.insert(id);
+                }
             }
             Item::Actor(ad) => {
                 let decl = TyConDecl {
@@ -249,6 +252,7 @@ pub fn synth_table_mirrors(
     let table_id = b.table;
 
     let mono = |ty: Type| Scheme {
+        projections: None,
         vars: vec![],
         cap_vars: vec![],
         row_vars: vec![],
@@ -718,7 +722,7 @@ fn resolve_alias_chains(arena: &mut TyConArena, module_raw: u32) -> Vec<Vec<TyCo
             _ => continue,
         };
         let mut visited: Vec<TyConId> = vec![id];
-        let resolved = chase_alias_chain(arena, &original_body, &mut visited);
+        let resolved = chase_alias_chain(arena.all(), &original_body, &mut visited);
         arena.replace_kind(
             id,
             TyConKind::Alias {
@@ -802,6 +806,11 @@ fn collect_alias_refs(arena: &TyConArena, ty: &Type, out: &mut Vec<TyConId>) {
                 collect_alias_refs(arena, e, out);
             }
         }
+        Type::Record { fields, .. } => {
+            for (_, ty) in fields {
+                collect_alias_refs(arena, ty, out);
+            }
+        }
         _ => {}
     }
 }
@@ -859,7 +868,11 @@ fn report_alias_cycle(arena: &TyConArena, cycle: &[TyConId], ctx: &mut InferCtx)
 /// `visited` is a stack of alias ids currently being expanded; if an
 /// alias references itself transitively the chain is left as `Type::Con`
 /// rather than recursing forever.
-fn chase_alias_chain(arena: &TyConArena, ty: &Type, visited: &mut Vec<TyConId>) -> Type {
+pub(crate) fn chase_alias_chain(
+    arena: &[ridge_types::TyConDecl],
+    ty: &Type,
+    visited: &mut Vec<TyConId>,
+) -> Type {
     match ty {
         Type::Con(id, args) => {
             // Recurse into args first so they are themselves chained.
@@ -873,7 +886,7 @@ fn chase_alias_chain(arena: &TyConArena, ty: &Type, visited: &mut Vec<TyConId>) 
                 if let TyConKind::Alias {
                     params: inner_params,
                     body: inner_body,
-                } = &arena.get(*id).kind
+                } = &arena[id.0 as usize].kind
                 {
                     if new_args.len() == inner_params.len() {
                         let subst: FxHashMap<TyVid, Type> = inner_params
@@ -913,6 +926,13 @@ fn chase_alias_chain(arena: &TyConArena, ty: &Type, visited: &mut Vec<TyConId>) 
                 .map(|e| chase_alias_chain(arena, e, visited))
                 .collect(),
         ),
+        Type::Record { fields, tail } => Type::Record {
+            fields: fields
+                .iter()
+                .map(|(name, ty)| (name.clone(), chase_alias_chain(arena, ty, visited)))
+                .collect(),
+            tail: tail.clone(),
+        },
         _ => ty.clone(),
     }
 }
@@ -940,6 +960,13 @@ fn substitute_tyvars(ty: &Type, subst: &FxHashMap<TyVid, Type>) -> Type {
         Type::Alias { name, body } => Type::Alias {
             name: *name,
             body: Box::new(substitute_tyvars(body, subst)),
+        },
+        Type::Record { fields, tail } => Type::Record {
+            fields: fields
+                .iter()
+                .map(|(name, ty)| (name.clone(), substitute_tyvars(ty, subst)))
+                .collect(),
+            tail: tail.clone(),
         },
         _ => ty.clone(),
     }
@@ -1210,6 +1237,7 @@ fn bind_constructor_schemes(
             caps: ridge_types::CapRow::Concrete(CapabilitySet::PURE),
         };
         let scheme = Scheme {
+            projections: None,
             vars: param_vids.clone(),
             cap_vars: vec![],
             row_vars: vec![],
@@ -1229,8 +1257,25 @@ fn bind_constructor_schemes(
     clippy::implicit_hasher,
     reason = "FxHashMap is the canonical hasher for this crate"
 )]
-#[allow(clippy::too_many_lines)]
 pub fn ast_type_to_ridge_type(
+    b: &BuiltinTyCons,
+    ctx: &mut InferCtx,
+    ast_ty: &ridge_ast::Type,
+    names: &FxHashMap<String, TyConId>,
+    param_name_map: &FxHashMap<&str, TyVid>,
+) -> Type {
+    let ty = ast_type_to_ridge_type_inner(b, ctx, ast_ty, names, param_name_map);
+    if matches!(
+        ast_ty,
+        ridge_ast::Type::Named { .. } | ridge_ast::Type::App { .. }
+    ) {
+        crate::projections::remember_head(ctx, &ty, ast_ty.span());
+    }
+    ty
+}
+
+#[allow(clippy::too_many_lines)]
+fn ast_type_to_ridge_type_inner(
     b: &BuiltinTyCons,
     ctx: &mut InferCtx,
     ast_ty: &ridge_ast::Type,

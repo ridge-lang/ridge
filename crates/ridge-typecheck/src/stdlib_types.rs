@@ -2419,6 +2419,7 @@ pub(crate) fn reconciled_ctor_scheme(
             };
             let ret = Type::Con(decl.id, u.params.iter().map(|&p| Type::Var(p)).collect());
             return Some(Scheme {
+                projections: None,
                 vars: u.params.clone(),
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2501,6 +2502,7 @@ pub(crate) fn reconciled_fn_scheme(
                 ),
             };
             Some(Scheme {
+                projections: None,
                 vars: vec![],
                 cap_vars,
                 row_vars: vec![],
@@ -2520,6 +2522,7 @@ pub(crate) fn reconciled_fn_scheme(
         ("std.list", "sort") => {
             let a = TyVid(0);
             Some(Scheme {
+                projections: None,
                 vars: vec![a],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2536,6 +2539,7 @@ pub(crate) fn reconciled_fn_scheme(
             let key_ret = TyVid(1);
             let key_cap = CapVid(0);
             Some(Scheme {
+                projections: None,
                 vars: vec![a, key_ret],
                 cap_vars: vec![key_cap],
                 row_vars: vec![],
@@ -2562,6 +2566,7 @@ pub(crate) fn reconciled_fn_scheme(
         ("std.actor", "await") => {
             let exit_reason = *reconciled.get("ExitReason")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2583,6 +2588,7 @@ pub(crate) fn reconciled_fn_scheme(
             let sup_error = *reconciled.get("SupError")?;
             let a = TyVid(0);
             Some(Scheme {
+                projections: None,
                 vars: vec![a],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2612,6 +2618,7 @@ pub(crate) fn reconciled_fn_scheme(
             let sup_error = *reconciled.get("SupError")?;
             let a = TyVid(0);
             Some(Scheme {
+                projections: None,
                 vars: vec![a],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2638,6 +2645,7 @@ pub(crate) fn reconciled_fn_scheme(
             let sup_error = *reconciled.get("SupError")?;
             let a = TyVid(0);
             Some(Scheme {
+                projections: None,
                 vars: vec![a],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2662,6 +2670,7 @@ pub(crate) fn reconciled_fn_scheme(
             let restart = *reconciled.get("Restart")?;
             let a = TyVid(0);
             Some(Scheme {
+                projections: None,
                 vars: vec![a],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2684,6 +2693,7 @@ pub(crate) fn reconciled_fn_scheme(
             let sort_order = *reconciled.get("SortOrder")?;
             let f = TyVid(0);
             Some(Scheme {
+                projections: None,
                 vars: vec![f],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2707,6 +2717,7 @@ pub(crate) fn reconciled_fn_scheme(
         ("std.decimal", "round") => {
             let rounding = *reconciled.get("RoundingMode")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2728,6 +2739,7 @@ pub(crate) fn reconciled_fn_scheme(
         ("std.decimal", "div") => {
             let rounding = *reconciled.get("RoundingMode")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2754,6 +2766,7 @@ pub(crate) fn reconciled_fn_scheme(
             let db_error = *reconciled.get("DbError")?;
             let db_error_kind = *reconciled.get("DbErrorKind")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2772,6 +2785,7 @@ pub(crate) fn reconciled_fn_scheme(
         ("std.data", "toDbError") => {
             let db_error = *reconciled.get("DbError")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2790,6 +2804,7 @@ pub(crate) fn reconciled_fn_scheme(
         ("std.data", "mkDbError") => {
             let db_error = *reconciled.get("DbError")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2808,6 +2823,7 @@ pub(crate) fn reconciled_fn_scheme(
         ("std.data", "dbErrorConstraint" | "dbErrorColumn" | "dbErrorTable") => {
             let db_error = *reconciled.get("DbError")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2825,6 +2841,7 @@ pub(crate) fn reconciled_fn_scheme(
         ("std.data", "dbErrorIsTransient") => {
             let db_error = *reconciled.get("DbError")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2844,6 +2861,7 @@ pub(crate) fn reconciled_fn_scheme(
         ("std.data", "memAdapter") => {
             let mem_adapter = *reconciled.get("MemAdapter")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2865,6 +2883,7 @@ pub(crate) fn reconciled_fn_scheme(
             let config = *reconciled.get("PostgresConfig")?;
             let db_error = *reconciled.get("DbError")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2888,6 +2907,7 @@ pub(crate) fn reconciled_fn_scheme(
             let config = *reconciled.get("SqliteConfig")?;
             let db_error = *reconciled.get("DbError")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2907,6 +2927,7 @@ pub(crate) fn reconciled_fn_scheme(
         ("std.data", "sqliteFile") => {
             let config = *reconciled.get("SqliteConfig")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2923,6 +2944,7 @@ pub(crate) fn reconciled_fn_scheme(
         ("std.data", "sqliteMemory") => {
             let config = *reconciled.get("SqliteConfig")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2948,6 +2970,7 @@ pub(crate) fn reconciled_fn_scheme(
             let pool = *reconciled.get("PoolConfig")?;
             let db_error = *reconciled.get("DbError")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2967,6 +2990,7 @@ pub(crate) fn reconciled_fn_scheme(
         ("std.data", "defaultPool") => {
             let pool = *reconciled.get("PoolConfig")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -3002,6 +3026,7 @@ pub(crate) fn reconciled_fn_scheme(
         ) => {
             let pool = *reconciled.get("PoolConfig")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -3018,6 +3043,7 @@ pub(crate) fn reconciled_fn_scheme(
         ("std.data", "defaultRetryPolicy") => {
             let retry_policy = *reconciled.get("RetryPolicy")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -3042,6 +3068,7 @@ pub(crate) fn reconciled_fn_scheme(
         ) => {
             let retry_policy = *reconciled.get("RetryPolicy")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -3059,6 +3086,7 @@ pub(crate) fn reconciled_fn_scheme(
         ("std.data", "isolationLevelName") => {
             let isolation = *reconciled.get("IsolationLevel")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -3078,6 +3106,7 @@ pub(crate) fn reconciled_fn_scheme(
             let isolation = *reconciled.get("IsolationLevel")?;
             let pool = *reconciled.get("PoolConfig")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -3096,6 +3125,7 @@ pub(crate) fn reconciled_fn_scheme(
             let isolation = *reconciled.get("IsolationLevel")?;
             let config = *reconciled.get("SqliteConfig")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -3114,6 +3144,7 @@ pub(crate) fn reconciled_fn_scheme(
             let retry_policy = *reconciled.get("RetryPolicy")?;
             let pool = *reconciled.get("PoolConfig")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -3129,6 +3160,7 @@ pub(crate) fn reconciled_fn_scheme(
             let retry_policy = *reconciled.get("RetryPolicy")?;
             let config = *reconciled.get("SqliteConfig")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -3150,6 +3182,7 @@ pub(crate) fn reconciled_fn_scheme(
         ("std.query", "isAscending") => {
             let sort_order = *reconciled.get("SortOrder")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -3233,6 +3266,7 @@ fn reconciled_query_plan_fn_scheme(
         )
     };
     let pure = |params: Vec<Type>| Scheme {
+        projections: None,
         vars: vec![],
         cap_vars: vec![],
         row_vars: vec![],
@@ -3246,6 +3280,7 @@ fn reconciled_query_plan_fn_scheme(
     // A pure function over the reconciled plan that returns `Text` rather than a plan —
     // the inline-literal renderer and the view DDL, which spell a plan out as SQL text.
     let pure_text = |params: Vec<Type>| Scheme {
+        projections: None,
         vars: vec![],
         cap_vars: vec![],
         row_vars: vec![],
@@ -3303,6 +3338,7 @@ fn reconciled_query_plan_fn_scheme(
         // Unlike the builders it does not return a `QueryPlan`, so its scheme is
         // spelled out rather than built through `pure`.
         "planToSql" => Some(Scheme {
+            projections: None,
             vars: vec![],
             cap_vars: vec![],
             row_vars: vec![],
@@ -3320,6 +3356,7 @@ fn reconciled_query_plan_fn_scheme(
         // as `planToSql` with the target dialect made explicit, so a plan can lower to
         // either the Postgres or the SQLite spelling of its aggregates.
         "planToSqlFor" => Some(Scheme {
+            projections: None,
             vars: vec![],
             cap_vars: vec![],
             row_vars: vec![],
@@ -3373,6 +3410,7 @@ fn reconciled_mutation_plan_fn_scheme(
     // A `List Text` — an upsert's conflict and update column names.
     let text_list = || Type::Con(b.list, vec![text()]);
     let pure = |params: Vec<Type>, ret: Type| Scheme {
+        projections: None,
         vars: vec![],
         cap_vars: vec![],
         row_vars: vec![],
@@ -3453,6 +3491,7 @@ fn reconciled_schema_fn_scheme(
             Type::Var(e)
         };
         return Some(Scheme {
+            projections: None,
             vars: vec![e],
             cap_vars: vec![],
             row_vars: vec![],
@@ -3493,6 +3532,7 @@ fn reconciled_schema_fn_scheme(
     // A monomorphic pure builder: `params -> ret`, no quantified vars.
     let mono = |params: Vec<Type>, ret: Type| {
         Some(Scheme {
+            projections: None,
             vars: vec![],
             cap_vars: vec![],
             row_vars: vec![],
@@ -3507,6 +3547,7 @@ fn reconciled_schema_fn_scheme(
     // A pure builder polymorphic in the phantom entity `e`: `∀e. params -> ret`.
     let poly1 = |params: Vec<Type>, ret: Type| {
         Some(Scheme {
+            projections: None,
             vars: vec![e],
             cap_vars: vec![],
             row_vars: vec![],
@@ -3538,6 +3579,7 @@ fn reconciled_schema_fn_scheme(
                 }],
             );
             Some(Scheme {
+                projections: None,
                 vars: vec![e, v],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -3585,6 +3627,7 @@ fn reconciled_schema_fn_scheme(
                 }],
             );
             Some(Scheme {
+                projections: None,
                 vars: vec![e, v],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -3695,6 +3738,7 @@ fn reconciled_schema_fn_scheme(
         "schemaOf" => {
             let has_schema = classes.id_by_name("HasSchema")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![e],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -3718,6 +3762,7 @@ fn reconciled_schema_fn_scheme(
                 vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
             );
             Some(Scheme {
+                projections: None,
                 vars: vec![e],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -3782,6 +3827,7 @@ fn reconciled_migrate_fn_scheme(
     // A monomorphic pure builder: `params -> ret`, no quantified vars or constraints.
     let mono = |params: Vec<Type>, ret: Type| {
         Some(Scheme {
+            projections: None,
             vars: vec![],
             cap_vars: vec![],
             row_vars: vec![],
@@ -3796,6 +3842,7 @@ fn reconciled_migrate_fn_scheme(
     // A pure builder polymorphic in the phantom entity `e`: `∀e. params -> ret`.
     let poly_e = |params: Vec<Type>, ret: Type| {
         Some(Scheme {
+            projections: None,
             vars: vec![e],
             cap_vars: vec![],
             row_vars: vec![],
@@ -3816,6 +3863,7 @@ fn reconciled_migrate_fn_scheme(
         let mut params = vec![Type::Var(a)];
         params.extend(rest);
         Some(Scheme {
+            projections: None,
             vars: vec![a],
             cap_vars: vec![],
             row_vars: vec![],
@@ -3870,6 +3918,7 @@ fn reconciled_migrate_fn_scheme(
             let row = classes.id_by_name("Row")?;
             let has_schema = classes.id_by_name("HasSchema")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![e],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -3980,6 +4029,7 @@ fn reconciled_raw_fn_scheme(
         // query : ∀a e. a -> Text -> List SqlValue -> Result (List e) Error
         //              where Adapter a, Row e
         "query" => Some(Scheme {
+            projections: None,
             vars: vec![e, a],
             cap_vars: vec![],
             row_vars: vec![],
@@ -3993,6 +4043,7 @@ fn reconciled_raw_fn_scheme(
         // queryFirst : ∀a e. a -> Text -> List SqlValue -> Result (Option e) Error
         //                   where Adapter a, Row e
         "queryFirst" => Some(Scheme {
+            projections: None,
             vars: vec![e, a],
             cap_vars: vec![],
             row_vars: vec![],
@@ -4005,6 +4056,7 @@ fn reconciled_raw_fn_scheme(
         }),
         // exec : ∀a. a -> Text -> List SqlValue -> Result Int Error where Adapter a
         "exec" => Some(Scheme {
+            projections: None,
             vars: vec![a],
             cap_vars: vec![],
             row_vars: vec![],
@@ -4073,6 +4125,7 @@ fn reconciled_data_fn_scheme(
     // pure, constrained over `Adapter a` — the verbs touch only the adapter, no decode.
     let scheme = |params: Vec<Type>| {
         Some(Scheme {
+            projections: None,
             vars: vec![e, a],
             cap_vars: vec![],
             row_vars: vec![],
@@ -4209,6 +4262,7 @@ fn reconciled_repo_fn_scheme(
     // Assemble a method scheme: `∀e a. params -> ret`, pure, with `constraints`.
     let method = |params: Vec<Type>, ret: Type, constraints: Vec<Constraint>| {
         Some(Scheme {
+            projections: None,
             vars: vec![e, a],
             cap_vars: vec![],
             row_vars: vec![],
@@ -4234,6 +4288,7 @@ fn reconciled_repo_fn_scheme(
         "from" => {
             let seq_con = *reconciled.get("Seq")?;
             Some(Scheme {
+                projections: None,
                 vars: vec![e],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -4386,6 +4441,7 @@ fn reconciled_repo_fn_scheme(
                 }],
             );
             Some(Scheme {
+                projections: None,
                 vars: vec![e, a, v],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -4482,6 +4538,7 @@ fn reconciled_repo_fn_scheme(
             );
             let setter_e = Type::Con(setter_con, vec![Type::Var(e)]);
             Some(Scheme {
+                projections: None,
                 vars: vec![e, a, v],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -4537,6 +4594,7 @@ fn reconciled_repo_fn_scheme(
                 caps: CapRow::Var(cap_c),
             };
             Some(Scheme {
+                projections: None,
                 vars: vec![a, r],
                 cap_vars: vec![cap_c],
                 row_vars: vec![],
@@ -4563,6 +4621,7 @@ fn reconciled_repo_fn_scheme(
                 caps: CapRow::Var(cap_c),
             };
             Some(Scheme {
+                projections: None,
                 vars: vec![a, r],
                 cap_vars: vec![cap_c],
                 row_vars: vec![],
@@ -4587,6 +4646,7 @@ fn reconciled_repo_fn_scheme(
             retry_caps.insert(Capability::Random);
             let result_re = Type::Con(b.result, vec![Type::Var(r), Type::Var(e)]);
             Some(Scheme {
+                projections: None,
                 vars: vec![e, r],
                 cap_vars: vec![cap_c],
                 row_vars: vec![],
@@ -4625,6 +4685,7 @@ fn reconciled_repo_fn_scheme(
                 caps: CapRow::Var(cap_c),
             };
             Some(Scheme {
+                projections: None,
                 vars: vec![r],
                 cap_vars: vec![cap_c],
                 row_vars: vec![],
@@ -4653,6 +4714,7 @@ fn reconciled_repo_fn_scheme(
                 caps: CapRow::Var(cap_c),
             };
             Some(Scheme {
+                projections: None,
                 vars: vec![a, r],
                 cap_vars: vec![cap_c],
                 row_vars: vec![],
@@ -4673,6 +4735,7 @@ fn reconciled_repo_fn_scheme(
         // `Adapter` dictionary `close` dispatches on. The handle is the proof of
         // access, so releasing it is capability-free like the query methods.
         "disconnect" => Some(Scheme {
+            projections: None,
             vars: vec![a],
             cap_vars: vec![],
             row_vars: vec![],
@@ -4795,6 +4858,7 @@ fn reconciled_repo_fn_scheme(
                 }],
             );
             Some(Scheme {
+                projections: None,
                 vars: vec![q, p],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -4831,6 +4895,7 @@ fn reconciled_repo_fn_scheme(
                 }],
             );
             Some(Scheme {
+                projections: None,
                 vars: vec![q, p, s],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -4861,6 +4926,7 @@ fn reconciled_repo_fn_scheme(
             let repo_f_a = Type::Con(repo_con, vec![Type::Var(f), Type::Var(a)]);
             let join_e_f_a = Type::Con(join_con, vec![Type::Var(e), Type::Var(f), Type::Var(a)]);
             Some(Scheme {
+                projections: None,
                 vars: vec![e, a, f],
                 cap_vars: vec![],
                 row_vars: vec![],

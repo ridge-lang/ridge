@@ -511,6 +511,16 @@ pub enum TypeError {
         fix_hint: String,
     },
 
+    /// A type-level projection is applied outside its reduction domain.
+    InvalidTypeProjection {
+        /// The original application, retained before normalisation.
+        projection: TypeDesc,
+        /// Why this application cannot name a type.
+        detail: String,
+        /// Source annotation or concrete instantiation responsible.
+        span: Span,
+    },
+
     // ── T030 ─────────────────────────────────────────────────────────────────
     /// A class constraint's type variable cannot be resolved to a concrete
     /// type and is not being generalised — it is ambiguous.
@@ -1095,6 +1105,7 @@ impl TypeError {
             Self::MailboxPolicyDropOldestNotShipped { .. } => "T027",
             Self::IncompleteRecordPattern { .. } => "T028",
             Self::NoInstance { .. } => "T029",
+            Self::InvalidTypeProjection { .. } => "T061",
             Self::AmbiguousConstraint { .. } => "T030",
             Self::OrphanInstance { .. } => "T031",
             Self::OverlappingInstance { .. } => "T032",

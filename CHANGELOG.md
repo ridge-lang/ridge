@@ -75,6 +75,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Type annotations reject projections outside their receiver domain, including
+  `Rows Int`, `Ret Int` and `InsertShape Int`. Checks also cover aliases and
+  concrete specializations of generic signatures. The editor reports the error
+  at the annotation or use that introduces it.
+
 - Ask and spawn arguments accept raw text, lambdas and nested spawn expressions
   just like function calls. An unparenthesised control expression after an ask's
   `timeout` now reports the required parentheses at that expression.

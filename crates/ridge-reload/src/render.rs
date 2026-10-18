@@ -161,6 +161,7 @@ mod tests {
             module_fqns: &fqns,
         };
         let scheme = Scheme {
+            projections: None,
             vars: vec![TyVid(0), TyVid(1)],
             cap_vars: vec![],
             row_vars: vec![],

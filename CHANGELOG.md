@@ -75,6 +75,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Parenthesized type annotations preserve generic signature promises, including
+  nested and compound types and local named functions. Invalid bodies are
+  rejected with the same type errors in the compiler and editor.
+
 - Type annotations reject projections outside their receiver domain, including
   `Rows Int`, `Ret Int` and `InsertShape Int`. Checks also cover aliases and
   concrete specializations of generic signatures. The editor reports the error

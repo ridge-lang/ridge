@@ -37,9 +37,8 @@ use crate::{
 ///               | Pattern                    -- bare (any pattern atom)
 /// ```
 ///
-/// Disambiguation from `InnerFn` (deferred to T10): in T8 every `fn` in
-/// expression position is treated as a lambda.  If parsing fails (e.g. a name
-/// without `->` ever appearing), the parser returns a P002 error naturally.
+/// The caller distinguishes an inner named function from a lambda before
+/// invoking this parser, which expects a `->` before the body.
 ///
 /// Precondition: `cur.peek() == &Token::KwFn`.
 pub(crate) fn parse_lambda(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
@@ -509,14 +508,14 @@ fn parse_field_init(cur: &mut Cursor<'_>) -> Result<FieldInit, ParseError> {
 
 // ── parse_interp_full ─────────────────────────────────────────────────────────
 
-/// Parse a full interpolated string `$"…"` with expression holes (T8).
+/// Parse a full interpolated string `$"…"` with expression holes.
 ///
 /// ```text
 /// InterpolatedText ::= InterpStart { InterpText | InterpExprStart Expr InterpExprEnd }
 ///                      InterpEnd ;
 /// ```
 ///
-/// Replaces the T3 `parse_interp_stripped` which only handled the zero-hole case.
+/// Replaces `parse_interp_stripped`, which only handled the zero-hole case.
 /// This version handles holes (`${…}`) by fully parsing the expression inside each
 /// hole via `parse_expr`, producing proper `InterpPart::Expr` nodes.
 ///
@@ -1055,7 +1054,7 @@ mod tests {
         // `w ! run ()` — Send { handle: w, message: Call(run, [Unit]) }
         // OR if juxtaposition applies after Send: Send { handle: w, message: run }
         // then `()` is a separate application.
-        // Per plan §4.5 note: `a ! b c` = Send(a, b) then juxta applies c.
+        // `a ! b c` = Send(a, b) then juxta applies c.
         // So `w ! run` = Send(w, run), then `()` is juxta → Call(Send(w,run), [()]).
         // But wait — Send has lbp/rbp at level 12 (postfix), so after Send is
         // emitted we return to the caller. The juxta loop at level 11 then applies.
@@ -1250,7 +1249,7 @@ mod tests {
         assert_eq!(code, "P001", "expected P001, got {code}");
     }
 
-    // ── T8 new: parse_qualified_record_ctor_basic (Phase 4 §3.8) ────────────────
+    // ── parse_qualified_record_ctor_basic ────────────────
     //
     // Input: `Http.Response { status = 200 }`
     // Expected: Expr::Record {

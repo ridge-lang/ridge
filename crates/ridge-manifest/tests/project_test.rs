@@ -15,7 +15,7 @@ fn pp() -> &'static Path {
     Path::new(DUMMY_PROJ_PATH)
 }
 
-/// T1 §3.11 — happy project #1: library with exports, deps, capabilities.
+/// Happy project #1: library with exports, deps, capabilities.
 #[test]
 fn proj_happy_library() {
     use ridge_ast::Capability;
@@ -36,7 +36,7 @@ fn proj_happy_library() {
     assert!(allow.contains(&Capability::Net));
 }
 
-/// T1 §3.11 — happy project #2: app with entry point.
+/// Happy project #2: app with entry point.
 #[test]
 fn proj_happy_app() {
     let toml = include_str!("fixtures/proj_app.toml");
@@ -51,7 +51,7 @@ fn proj_happy_app() {
         .contains("Main.ridge"));
 }
 
-/// T1 §3.11 — happy project #3: service with entry point.
+/// Happy project #3: service with entry point.
 #[test]
 fn proj_happy_service() {
     let toml = include_str!("fixtures/proj_service.toml");
@@ -60,7 +60,7 @@ fn proj_happy_service() {
     assert!(proj.entry.is_some(), "service must have an entry point");
 }
 
-/// T1 §3.11 — happy project #4: test project (no entry required).
+/// Happy project #4: test project (no entry required).
 #[test]
 fn proj_happy_test_project() {
     let toml = include_str!("fixtures/proj_test.toml");
@@ -73,7 +73,7 @@ fn proj_happy_test_project() {
     );
 }
 
-/// T1 §3.11 — happy project #5: project with public and internal exports.
+/// Happy project #5: project with public and internal exports.
 #[test]
 fn proj_happy_with_exports() {
     let toml = include_str!("fixtures/proj_with_exports.toml");

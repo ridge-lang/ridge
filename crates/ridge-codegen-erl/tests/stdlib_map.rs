@@ -1,4 +1,4 @@
-//! Integration tests for the stdlib bridge map (T7 coverage proof).
+//! Integration tests for the stdlib bridge map.
 //!
 //! Each `stdlib_bridge_covers_*` test runs the full pipeline on one of the
 //! four example programs and asserts that every `SymbolRef::Stdlib(module,
@@ -6,7 +6,7 @@
 //! in `stdlib_map::lookup`.  A failure reports the first offending
 //! `(module, name)` pair.
 //!
-//! §3.4 coverage matrix: all ~50 symbols used by the four examples must
+//! Coverage matrix: all symbols used by the four examples must
 //! map to a `BridgeTarget` (or be handled as an identity shortcut).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -373,11 +373,11 @@ fn stdlib_bridge_covers_fs_directory_surface() {
 
 #[test]
 fn stdlib_bridge_no_perm_for_list_map() {
-    // T11: std.list.map is now served by path B (RidgeStdlibLocal) because
+    // std.list.map is now served by path B (RidgeStdlibLocal) because
     // list.ridge has `@ffi("lists", "map", 2)`.  The BEAM target is the same
     // (lists:map/2), but the variant changed from BeamStdlib to RidgeStdlibLocal.
-    // No arg permutation is applied — the comment from T14 still holds:
-    // Phase 5 delivers IR args in BEAM order (fn, list) for pipe calls.
+    // No arg permutation is applied — the argument-order contract still holds:
+    // lowering delivers IR args in BEAM order (fn, list) for pipe calls.
     match stdlib_map::lookup("std.list", "map") {
         Some(BridgeTarget::RidgeStdlibLocal {
             beam_module,

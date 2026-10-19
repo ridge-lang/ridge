@@ -1,9 +1,9 @@
-//! Field-accessor shorthand lowering `(.name)` — §4.10.
+//! Field-accessor shorthand lowering `(.name)`.
 //!
 //! `Expr::FieldAccessorFn { field }` lowers to an `IrExpr::Lambda` that
 //! takes one parameter and projects the named field from it.
 //!
-//! # Rule (§4.10)
+//! # Rule
 //!
 //! ```text
 //! lower_field_accessor(field, span) =
@@ -20,8 +20,7 @@
 //!     }
 //! ```
 //!
-//! `ty: Type::Error` is a placeholder because `node_types` is not wired yet
-//! (T17).  The correct type is `Fn { params: [record_ty], ret: field_ty, caps: ∅ }`.
+//! `ty: Type::Error` is a placeholder until `node_types` is wired.  The correct type is `Fn { params: [record_ty], ret: field_ty, caps: ∅ }`.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![cfg_attr(
@@ -47,7 +46,7 @@ use crate::ctx::LowerCtx;
 /// # Type placeholder
 ///
 /// The parameter type is `Type::Error` until `ridge-typecheck`'s `node_types`
-/// side-table is wired (T17).
+/// side-table is wired.
 ///
 /// # Capability
 ///
@@ -133,7 +132,7 @@ mod tests {
         }
     }
 
-    // ── T4-fa-1: (.name) lowers to Lambda { params: [__field_arg_0], body: .name } ──
+    // ── (.name) lowers to Lambda { params: [__field_arg_0], body: .name } ──
 
     #[test]
     fn field_accessor_lambda_shape() {
@@ -195,7 +194,7 @@ mod tests {
         );
     }
 
-    // ── T4-fa-2: two successive (.name) calls produce unique counter values ────
+    // ── two successive (.name) calls produce unique counter values ────
     //
     // Verifies that `ctx.fresh_local` increments the shared module counter so
     // that both `__field_arg_0` and `__field_arg_1` are produced.
@@ -222,7 +221,7 @@ mod tests {
         assert_ne!(name0, name1, "each call must produce a distinct name");
     }
 
-    // ── T4-fa-3: field name is faithfully preserved ───────────────────────────
+    // ── field name is faithfully preserved ───────────────────────────
 
     #[test]
     fn field_accessor_field_name_preserved() {

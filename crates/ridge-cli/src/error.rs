@@ -159,7 +159,7 @@ pub enum CliError {
 
     /// `C302` — a `pub fn test_*` function declares the `ffi` capability.
     ///
-    /// FFI tests are not permitted in `ridge test` 0.1.0 (per D017 / §1.3 #9).
+    /// FFI tests are not permitted in `ridge test` 0.1.0.
     TestCapabilityForbidden {
         /// The qualified name of the test function.
         qualified_name: String,

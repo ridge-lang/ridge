@@ -1,4 +1,4 @@
-//! §4.26–§4.27 — Lower `IrItem::Fn` and `IrItem::Const` to `CErlFn`.
+//! Lower `IrItem::Fn` and `IrItem::Const` to `CErlFn`.
 //!
 //! Top-level item lowering is the final piece before module assembly.
 //! Each `IrFn` becomes a quoted Core Erlang function with span/caps annotations;
@@ -6,7 +6,7 @@
 //! value (Core Erlang has no top-level `const` form).
 
 // pub(crate) on items in a pub(crate) module is redundant per clippy; we keep
-// it for explicitness per plan §2.2.
+// it for explicitness
 #![allow(clippy::redundant_pub_crate)]
 // lower_fn is the public API used by unit tests; lower_fn_with_module_name is
 // the production path used by module.rs.  Suppress dead_code for lower_fn.
@@ -31,11 +31,11 @@ use rustc_hash::FxHashMap;
 /// - `anns` → `%% File: <span.start>, Caps: <caps>` annotation.
 /// - `body` → `fun (P1, ..., PN) -> lower_expr(fn_.body) end`.
 ///
-/// ## What is dropped (type erasure, §4.26)
+/// ## What is dropped (type erasure)
 /// `ret_ty`, `params[i].ty`, `scheme` — Core Erlang is dynamically typed.
 /// Future LLVM/WASM-GC backends will consume these from `LoweredModule.node_types`.
 ///
-/// ## `is_main` arity check (§4.26)
+/// ## `is_main` arity check
 /// The BEAM runner invokes the entry point with no arguments, so a canonical
 /// `main` takes exactly 0 parameters. `ridge-typecheck` enforces this upstream
 /// (`T053`); the annotation here is a defensive remnant for IR built outside
@@ -43,10 +43,10 @@ use rustc_hash::FxHashMap;
 /// `%% Warning: main/N arity` annotation is added and lowering continues —
 /// codegen is not failed.
 ///
-/// ## Name quoting (§4.26)
+/// ## Name quoting
 /// Always quote function name in emission for safety.
 ///
-/// ## Caps (§4.26 + §6)
+/// ## Caps
 /// Capabilities are emitted **only** as a `%% Caps: …` `CErlAnn` annotation —
 /// never as runtime code (Model B capability erasure).
 pub(crate) fn lower_fn(
@@ -167,10 +167,10 @@ pub(crate) fn lower_fn_with_module_name(
 /// ```
 ///
 /// Type info is metadata-only: `ty` appears in the annotation but is **not**
-/// emitted as runtime code (type erasure, §4.27).
+/// emitted as runtime code (type erasure).
 ///
 /// Call sites for consts use `call '<own_module>':'<name>' ()` (0-arity call);
-/// that lowering is handled by the call lowering path (§4.27 note).
+/// that lowering is handled by the call lowering path.
 pub(crate) fn lower_const(
     c: &IrConst,
     ws: &LoweredWorkspace,

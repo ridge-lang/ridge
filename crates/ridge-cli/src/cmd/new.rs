@@ -7,7 +7,7 @@
 //! ```
 //!
 //! Creates `<name>/` in the current directory with the canonical layout
-//! (§2.9): `ridge.toml`, `src/Main.ridge`, `README.md`.
+//! containing `ridge.toml`, `src/Main.ridge`, and `README.md`.
 
 use std::path::Path;
 

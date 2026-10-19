@@ -1,4 +1,4 @@
-//! Phase 5 snapshot harness — 16 micro-fixture tests.
+//! lowering snapshot harness — 16 micro-fixture tests.
 //!
 //! Each fixture under `tests/fixtures/lower/*.ridge` is run through the full
 //! pipeline (discover → resolve → typecheck → lower) and the resulting
@@ -145,27 +145,27 @@ fn snap_inner_fn_recursive() {
     snapshot_fixture("inner_fn_recursive");
 }
 
-// ── Ask timeout (Phase 6 T0, OQ-E001) ────────────────────────────────────────
+// ── Ask timeout ────────────────────────────────────────
 
-/// T0-1: `?> handler()` with no timeout postfix → IR `timeout: None` (default).
+/// `?> handler()` with no timeout postfix → IR `timeout: None` (default).
 #[test]
 fn snap_ask_default_timeout() {
     snapshot_fixture("ask_default_timeout");
 }
 
-/// T0-2: `?> handler() timeout 1000` → IR `timeout: Some(Millis(Lit(Int(1000))))`.
+/// `?> handler() timeout 1000` → IR `timeout: Some(Millis(Lit(Int(1000))))`.
 #[test]
 fn snap_ask_explicit_timeout() {
     snapshot_fixture("ask_explicit_timeout");
 }
 
-/// T0-3: `?> handler() timeout never` → IR `timeout: Some(Never)`.
+/// `?> handler() timeout never` → IR `timeout: Some(Never)`.
 #[test]
 fn snap_ask_never_timeout() {
     snapshot_fixture("ask_never_timeout");
 }
 
-// ── Phase 5 followup B-1/B-2/B-3/B-5 micro-fixtures ─────────────────────────
+// ── lowering followup B-1/B-2/B-3/B-5 micro-fixtures ─────────────────────────
 
 /// B-1: Prelude constructors (Ok/Err/Some/None) lower to SymbolRef::Prelude.
 #[test]

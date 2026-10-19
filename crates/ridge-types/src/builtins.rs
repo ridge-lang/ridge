@@ -44,7 +44,7 @@ pub fn fn_tycon_name(arity: usize) -> String {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub struct BuiltinTyCons {
-    /// `Int` — 64-bit signed integer (D029).
+    /// `Int` — 64-bit signed integer.
     pub int: TyConId,
     /// `Float` — IEEE-754 double-precision float.
     pub float: TyConId,
@@ -54,7 +54,7 @@ pub struct BuiltinTyCons {
     pub text: TyConId,
     /// `Unit` — the unit type `()`.
     pub unit: TyConId,
-    /// `Timestamp` — wall-clock time (D048).
+    /// `Timestamp` — wall-clock time.
     pub timestamp: TyConId,
     /// `List a` — an ordered sequence.
     pub list: TyConId,
@@ -66,20 +66,20 @@ pub struct BuiltinTyCons {
     pub option: TyConId,
     /// `Result a e` — a fallible computation.
     pub result: TyConId,
-    /// `Handle a` — a reference to a running actor instance (D061).
+    /// `Handle a` — a reference to a running actor instance.
     pub handle: TyConId,
-    /// `Error { code: Text, message: Text }` — stdlib error record (§3.11, OQ-S007).
+    /// `Error { code: Text, message: Text }` — stdlib error record.
     ///
     /// Used as the `e` parameter of `Result _ Error` returns in `std.io`,
     /// `std.fs`, `std.time`, `std.proc`.  Registered as a `TyConKind::Record`
     /// so that field access (`err.code`, `err.message`) is typeable.
     pub error: TyConId,
-    /// `Duration { ms: Int }` — time difference record (§3.12).
+    /// `Duration { ms: Int }` — time difference record.
     ///
     /// Returned by `std.time.diff`.
     pub duration: TyConId,
     /// `Output { stdout: Text, stderr: Text, exitCode: Int }` — process
-    /// output record (§3.16 / OQ-S007 / D123).
+    /// output record.
     ///
     /// Returned as the `Ok` payload of `std.proc.run`.
     pub proc_output: TyConId,
@@ -89,7 +89,7 @@ pub struct BuiltinTyCons {
     /// union type so any module can match on `Less`, `Equal`, `Greater`
     /// without an explicit import.
     pub ordering: TyConId,
-    /// `JsonValue` — the JSON value tree (§3.17).
+    /// `JsonValue` — the JSON value tree.
     ///
     /// `JNull | JBool Bool | JInt Int | JFloat Float | JText Text
     ///  | JList (List JsonValue) | JObject (Map Text JsonValue)
@@ -464,7 +464,7 @@ impl BuiltinTyCons {
         // ── Handle a — phantom actor-reference type (TyConKind::Builtin) ──────
         //
         // Handle is a 1-arity opaque type; its "schema" is the actor's TyConDecl
-        // (looked up at use sites).  D061: `spawn ActorName args` produces a
+        // (looked up at use sites). `spawn ActorName args` produces a
         // `Handle(ActorTyCon)`.
         let handle = arena.intern(TyConDecl {
             id: TyConId(0),
@@ -488,7 +488,7 @@ impl BuiltinTyCons {
         // The `Text` and `Int` field types reference the `text` and `int` ids
         // allocated above; at this point in `allocate` those ids are valid.
         //
-        // §3.11 / OQ-S007: Error { code: Text, message: Text }
+        // §3.11: Error { code: Text, message: Text }
         let error = arena.intern(TyConDecl {
             id: TyConId(0),
             name: "Error".to_string(),
@@ -528,7 +528,7 @@ impl BuiltinTyCons {
             opaque: false,
             is_anon: false,
         });
-        // §3.16 / OQ-S007 / D123: Output { stdout: Text, stderr: Text, exitCode: Int }
+        // §3.16: Output { stdout: Text, stderr: Text, exitCode: Int }
         let proc_output = arena.intern(TyConDecl {
             id: TyConId(0),
             name: "Output".to_string(),

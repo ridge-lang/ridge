@@ -1,4 +1,4 @@
-//! Guard-expression lowering — §4.4.
+//! Guard-expression lowering.
 //!
 //! # Rule summary
 //!
@@ -120,7 +120,7 @@ pub fn lower_guard_final(
 
 /// Lower a bare `Guard` expression encountered outside any block context.
 ///
-/// This is a Phase 4 invariant violation: `guard` is a block-level statement
+/// This is a type-checker invariant violation: `guard` is a block-level statement
 /// and should never reach `lower_expr` directly.  Emits `L106 BareGuardExpr`
 /// and returns `IrExpr::Lit { Unit }` so the surrounding expression tree
 /// remains structurally valid.
@@ -176,7 +176,7 @@ mod tests {
         }
     }
 
-    // ── T8-g-1: single guard with continuation ────────────────────────────────
+    // ── single guard with continuation ────────────────────────────────
     //
     // Block: [guard true else { 42 }, 99]
     // → Match { scrutinee: Bool(true), arms: [true → Int(99), false → Int(42)] }
@@ -257,7 +257,7 @@ mod tests {
         }
     }
 
-    // ── T8-g-2: multiple guards right-fold ────────────────────────────────────
+    // ── multiple guards right-fold ────────────────────────────────────
     //
     // Block: [guard c1 else { 1 }, guard c2 else { 2 }, 99]
     // → Match(c1, [true → Match(c2, [true → Int(99), false → Int(2)]), false → Int(1)])
@@ -349,7 +349,7 @@ mod tests {
         }
     }
 
-    // ── T8-g-3: guard with multi-stmt else block ──────────────────────────────
+    // ── guard with multi-stmt else block ──────────────────────────────
     //
     // Block: [guard true else { unit; 42 }, unit]
     // The else block has 2 stmts; it becomes an IrExpr::Block inside the false arm.
@@ -399,7 +399,7 @@ mod tests {
         }
     }
 
-    // ── T8-g-4: guard as final statement (no continuation) → true arm = Unit ──
+    // ── guard as final statement (no continuation) → true arm = Unit ──
     #[test]
     fn guard_as_final_stmt_produces_unit_true_arm() {
         let mut ctx = fresh_ctx();
@@ -432,7 +432,7 @@ mod tests {
         }
     }
 
-    // ── T8-g-5: bare guard outside block context emits L106 ──────────────────
+    // ── bare guard outside block context emits L106 ──────────────────
     #[test]
     fn bare_guard_emits_l106() {
         let mut ctx = fresh_ctx();
@@ -463,7 +463,7 @@ mod tests {
         }
     }
 
-    // ── T8-g-6: guard span is preserved on IrExpr::Match ─────────────────────
+    // ── guard span is preserved on IrExpr::Match ─────────────────────
     #[test]
     fn guard_span_preserved_on_match() {
         let mut ctx = fresh_ctx();
@@ -481,7 +481,7 @@ mod tests {
         }
     }
 
-    // ── T8-g-7: guard cond is an ident reference (lower_expr integration) ─────
+    // ── guard cond is an ident reference (lower_expr integration) ─────
     //
     // Uses Expr::Ident as the condition to verify that lower_expr is invoked on
     // the condition (it will emit L999 because no binding map is attached, but

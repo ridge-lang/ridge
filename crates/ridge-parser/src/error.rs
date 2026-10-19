@@ -5,24 +5,24 @@
 //! never renumbered and a retired number is never reused.  Before 1.0 a wrong
 //! code may still be renumbered; otherwise, only append.
 //!
-//! T2 implements the four variants required by §6 T2 and §4.7:
+//! Core syntax and layout errors:
 //! - `P001 Expected`
 //! - `P002 UnexpectedToken`
 //! - `P006 LayoutMismatch`
 //! - `P999 InternalLayoutInvariantViolated`
 //!
-//! T6 adds:
+//! Operator precedence errors:
 //! - `P009 NonAssociativeChain`
 //!
-//! T7 adds:
+//! Block errors:
 //! - `P014 EmptyBlock`
 //!
-//! T10 adds:
+//! Declaration errors:
 //! - `P005 MissingType`
 //! - `P012 TopLevelPatternParam`
 //! - `P013 DeferredFeature`
 //!
-//! T11 adds:
+//! Doc-comment errors:
 //! - `P019 OrphanDocComment`
 //!
 //! Bounded mailboxes add:
@@ -47,9 +47,8 @@
 //! - `P039 MatchBraceBlock`
 //! - `P040 LoopNotSupported`
 //!
-//! Later tasks (T3–T12) will extend this enum; adding variants is
-//! non-breaking because the enum is not `#[non_exhaustive]` — the parser
-//! crate owns all construction sites.
+//! The parser crate owns construction of these errors and extends the enum
+//! as new syntax checks are introduced.
 
 use ridge_ast::Span;
 
@@ -59,7 +58,7 @@ use ridge_ast::Span;
 /// and a stable error code returned by [`ParseError::code`].
 ///
 /// `Display` produces a human-readable message suitable for terminal output.
-/// `ridge-diagnostics` (Phase 3) will later render these with `ariadne`.
+/// `ridge-diagnostics` will later render these with `ariadne`.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ParseError {
     /// P001 — the parser expected a specific token but found something else.
@@ -108,7 +107,7 @@ pub enum ParseError {
     /// P009 — a non-associative operator was chained without parentheses.
     ///
     /// Ridge comparison operators (`==`, `!=`, `<`, `>`, `<=`, `>=`) are
-    /// non-associative (§4.5).  Chaining them — `a == b == c` or `a < b < c`
+    /// non-associative. Chaining them — `a == b == c` or `a < b < c`
     /// — is a parse error.  Users must parenthesise: `(a == b) == c`.
     #[error("non-associative operator `{op}` cannot be chained; add parentheses")]
     NonAssociativeChain {

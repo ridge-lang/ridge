@@ -1,10 +1,10 @@
 //! Stdlib signature table: maps `(StdlibModuleId, symbol-name)` to `Scheme`.
 //!
-//! This file is a generated-output gateway (T10).
+//! This file is a generated-output gateway.
 //
 // The stdlib signature implementation is produced at build time by
 // `crates/ridge-typecheck/build.rs`, which reads
-// `src/stdlib_signatures_impl.rs` (the hand-curated Phase 4 table) and
+// `src/stdlib_signatures_impl.rs` (the hand-curated type-checker table) and
 // copies it to `${OUT_DIR}/stdlib_signatures.rs`.
 //
 // Future tasks (T12+) will make the generation smarter (auto-derived from

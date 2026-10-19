@@ -1,4 +1,4 @@
-//! Workspace `forbid` rule enforcement (plan §4.9).
+//! Workspace `forbid` rule enforcement.
 //!
 //! # Overview
 //!
@@ -10,10 +10,10 @@
 //! The diagnostic is anchored at the offending `ImportDecl`'s span inside the
 //! importing module.  `ResolveError::ForbidViolation::Display` renders the
 //! spec §8.6 multi-line output (file/line of the import, rule text, and
-//! suggestion) in-place.  No separate Phase-6 renderer pass is needed for
+//! suggestion) in-place. No separate renderer pass is needed for
 //! this code.
 //!
-//! # Algorithm (plan §4.9)
+//! # Algorithm
 //!
 //! For each `(importer, target)` edge in `imports`, for each [`ForbidRule`]:
 //! - if `rule.from.matches(importer.fqn) && rule.to.matches(target.fqn)`,
@@ -36,7 +36,7 @@
 //!
 //! # Self-forbid rules
 //!
-//! Per plan §4.9 step 2, a rule whose `from` and `to` patterns both match a
+//! A rule whose `from` and `to` patterns both match a
 //! single edge is reported normally.  In practice, an edge where the
 //! importer's FQN equals the target's FQN is already a `R004 SelfImport`,
 //! and an `R013` may also fire if the user's manifest defined an explicit

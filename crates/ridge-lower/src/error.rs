@@ -20,7 +20,7 @@ use ridge_ast::Span;
 use ridge_resolve::Severity;
 use std::fmt;
 
-// OQ-L002: L### defensive code surface is kept (not removed) so that invariant
+// L### defensive code surface is kept (not removed) so that invariant
 // violations are traceable in production logs, even though they can only fire on
 // malformed upstream output (valid programs never emit them).
 /// Lowering-phase diagnostics (`L###`).
@@ -32,70 +32,70 @@ use std::fmt;
 ///
 /// # Error codes
 ///
-/// | Variant                    | Code   | Rule  |
-/// |---------------------------|--------|-------|
-/// | `MalformedPipeRhs`        | `L101` | §4.1  |
-/// | `UnknownPipeRhsShape`     | `L102` | §4.1  |
-/// | `PropagateOutsideScope`   | `L103` | §4.2  |
-/// | `DoublePropagate`         | `L104` | §4.3  |
-/// | `EmptyTryBlock`           | `L105` | §4.4  |
-/// | `BareGuardExpr`           | `L106` | §4.5  |
-/// | `ToTextLowering`          | `L107` | §4.6  |
-/// | `WithOnNonRecord`         | `L108` | §4.7  |
-/// | `RefutableSliceElement`   | `L109` | §4.8  |
-/// | `IntLiteralOutOfRange`    | `L110` | §4.9  |
-/// | `FloatLiteralNotFinite`   | `L111` | §4.9  |
-/// | `UnsolvedTypeInIR`        | `L997` | §5    |
-/// | `CapVarInIR`              | `L998` | §5    |
-/// | `InternalLoweringError`   | `L999` | §5    |
+/// | Variant                    | Code   |
+/// |---------------------------|--------|
+/// | `MalformedPipeRhs`        | `L101` |
+/// | `UnknownPipeRhsShape`     | `L102` |
+/// | `PropagateOutsideScope`   | `L103` |
+/// | `DoublePropagate`         | `L104` |
+/// | `EmptyTryBlock`           | `L105` |
+/// | `BareGuardExpr`           | `L106` |
+/// | `ToTextLowering`          | `L107` |
+/// | `WithOnNonRecord`         | `L108` |
+/// | `RefutableSliceElement`   | `L109` |
+/// | `IntLiteralOutOfRange`    | `L110` |
+/// | `FloatLiteralNotFinite`   | `L111` |
+/// | `UnsolvedTypeInIR`        | `L997` |
+/// | `CapVarInIR`              | `L998` |
+/// | `InternalLoweringError`   | `L999` |
 #[derive(Debug, Clone)]
 pub enum LowerError {
-    /// `L101` — pipe RHS is not a valid call/section shape (§4.1).
+    /// `L101` — pipe RHS is not a valid call/section shape.
     MalformedPipeRhs {
         /// The span of the offending RHS expression.
         span: Span,
     },
-    /// `L102` — pipe RHS shape could not be classified by the lowerer (§4.1).
+    /// `L102` — pipe RHS shape could not be classified by the lowerer.
     UnknownPipeRhsShape {
         /// The span of the unrecognised RHS expression.
         span: Span,
     },
     /// `L103` — `?`/`try` propagation used outside any `Option`/`Result`-typed
-    /// scope (§4.2). The propagation-scope stack was empty.
+    /// scope. The propagation-scope stack was empty.
     PropagateOutsideScope {
         /// The span of the propagation operator or `try` expression.
         span: Span,
     },
     /// `L104` — two propagation operators nested in a way that is structurally
-    /// ambiguous (§4.3).
+    /// ambiguous.
     DoublePropagate {
         /// The span of the inner (duplicate) propagation operator.
         span: Span,
     },
-    /// `L105` — `try` block with an empty body encountered (§4.4).
+    /// `L105` — `try` block with an empty body encountered.
     EmptyTryBlock {
         /// The span of the empty `try` block.
         span: Span,
     },
     /// `L106` — guard expression (`when`) appears outside a `match` arm, where
-    /// it cannot be desugared (§4.5).
+    /// it cannot be desugared.
     BareGuardExpr {
         /// The span of the bare `when` guard.
         span: Span,
     },
     /// `L107` — string-interpolation `ToText` lowering encountered a node for
-    /// which no `Display` coercion could be synthesised (§4.6).
+    /// which no `Display` coercion could be synthesised.
     ToTextLowering {
         /// The span of the interpolation segment that could not be lowered.
         span: Span,
     },
-    /// `L108` — `with` expression applied to a non-record type (§4.7).
+    /// `L108` — `with` expression applied to a non-record type.
     WithOnNonRecord {
         /// The span of the `with` expression.
         span: Span,
     },
     /// `L109` — a refutable sub-pattern appears in a suffix or middle position
-    /// of a variable-length list slice pattern (§4.8 P026).
+    /// of a variable-length list slice pattern (P026).
     ///
     /// Suffix and middle positions must be irrefutable (a variable or `_`) in
     /// this version.  The pattern at `span` cannot be matched structurally

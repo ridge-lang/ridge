@@ -1,12 +1,12 @@
 //! Exhaustiveness witness types: [`MatchWitness`], [`WitnessPat`], [`WitnessKind`].
 //!
-//! These are the canonical definitions moved here from `ridge-typecheck::lib.rs`
-//! (T1 scaffold). `ridge-typecheck::lib.rs` will re-export from this module.
+//! These are the canonical witness definitions shared with the type checker;
+//! `ridge-typecheck::lib.rs` re-exports them from this module.
 
 // ── MatchWitness ──────────────────────────────────────────────────────────────
 
 /// A witness for a missing or redundant match arm, produced by Maranget's
-/// exhaustiveness algorithm (T12).
+/// exhaustiveness algorithm.
 ///
 /// The `example` field contains a human-readable counter-example pattern;
 /// `kind` distinguishes a coverage gap from a redundant arm.
@@ -34,7 +34,7 @@ pub enum WitnessKind {
 
 /// A pattern example used in exhaustiveness witnesses.
 ///
-/// Rendered by `ridge-typecheck::render` (T16) as a human-readable string;
+/// Rendered by `ridge-typecheck::render` as a human-readable string;
 /// for now each variant carries the minimal structural information needed for
 /// the capped witness set (`MAX_WITNESSES = 3`).
 #[derive(Debug, Clone)]

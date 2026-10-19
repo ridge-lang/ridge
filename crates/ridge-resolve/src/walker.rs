@@ -1,4 +1,4 @@
-//! Intra-module scope walker (T8, plan §4.5).
+//! Intra-module scope walker.
 //!
 //! `ScopeWalker` (private) is a [`ridge_ast::visit::Visit`] implementation that:
 //! 1. Maintains a [`ScopeStack`] while descending into every scope-introducing
@@ -12,13 +12,12 @@
 //!
 //! # Design notes
 //!
-//! - The walker does NOT handle qualified-name resolution beyond the `ModuleAlias`
-//!   case (T9 fills in Result.Ok, Option.Some, etc.).  All other unresolved
-//!   qualified names are left as `Binding::Error` (T9 will emit R012/R014).
-//! - T10 owns capability binding (`Binding::Capability`) and the capability
-//!   list on fn/on/init declarations.  This walker ignores those positions.
-//! - T13 owns Levenshtein suggestions; all `R010` errors emitted here carry
-//!   `suggestions: vec![]`.
+//! - Qualified names delegate to `qualified::resolve_qualified_name`, which
+//!   emits R012/R014 for unresolved qualified names.
+//! - The capability-enforcement pass checks capability lists on fn/on/init
+//!   declarations separately from use-site scope walking.
+//! - Unresolved identifiers use Levenshtein candidates and known prelude
+//!   shorthands to populate suggestions.
 
 use ridge_ast::{
     decl::{
@@ -103,7 +102,7 @@ fn last_path_segment(path: &str) -> &str {
 ///   over the same AST before calling this function.
 /// - `symbol_tables` — one per module, indexed by `ModuleId.0`.  Used for
 ///   module-symbol lookups and qualified-name target resolution.
-/// - `module_imports` — import resolutions for this module (from T7).
+/// - `module_imports` — import resolutions for this module (from import resolution).
 /// - `class_method_index` — optional workspace-scoped index of class method names.
 ///   When provided, bare idents that miss all other lookups are checked against
 ///   the index before emitting R010. Pass `None` in unit tests that do not set
@@ -149,7 +148,7 @@ pub fn resolve_module_uses(
 struct ScopeWalker<'a> {
     /// The module being resolved.
     module_id: ModuleId,
-    /// `NodeId` map built in Phase A.
+    /// `NodeId` map built by node-id assignment.
     node_id_map: &'a NodeIdMap,
     /// Symbol table for the current module (may be None for empty modules).
     my_table: Option<&'a SymbolTable>,
@@ -311,7 +310,7 @@ impl ScopeWalker<'_> {
     /// Resolve a qualified name `Head.tail...` and stamp the binding on the
     /// `QualifiedName`'s span.
     ///
-    /// Delegates entirely to [`qualified::resolve_qualified_name`] (T9).
+    /// Delegates entirely to [`qualified::resolve_qualified_name`].
     fn resolve_qualified(&mut self, qn: &QualifiedName) {
         let span = qn.span;
         let binding = qualified::resolve_qualified_name(
@@ -555,7 +554,7 @@ impl ScopeWalker<'_> {
     ///    the parser, but defensive) → recurse normally.
     ///
     /// Cases 1 and 2 skip resolving the head Ident — handler validation is
-    /// Phase 4's job (it has the actor's `on`-handler list in scope).  This
+    /// the type checker's job (it has the actor's `on`-handler list in scope). This
     /// mirrors how `Expr::Ask { message: Ident }` is silently ignored via
     /// the walker's `visit_ident` no-op.
     fn visit_send_message(&mut self, msg: &Expr) {
@@ -723,7 +722,7 @@ impl ScopeWalker<'_> {
         out
     }
 
-    /// Build "did you mean?" candidates for an `R010 UnresolvedIdent` (T13).
+    /// Build "did you mean?" candidates for an `R010 UnresolvedIdent`.
     ///
     /// Mirrors the [`Self::resolve_ident`] lookup order:
     /// 1. Locals on the scope chain (innermost → outermost).
@@ -734,8 +733,7 @@ impl ScopeWalker<'_> {
     /// that was just rejected.  Visibility is implicit: scope locals belong
     /// to this resolution (always visible); `my_table` symbols are this
     /// module (always visible to itself); import effective bindings were
-    /// already filtered by T7 (no `_private` symbols leak in).  See plan
-    /// §11 risk R14.
+    /// already filtered by import resolution (no `_private` symbols leak in).
     /// Build the suggestion list for an `R010` site.  Levenshtein candidates
     /// from `r010_candidates`, augmented with a well-known prelude-shorthand
     /// (e.g. `not` → `Bool.not`) inserted at the front when the user's name
@@ -1405,7 +1403,7 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
                 fields,
                 ..
             } => {
-                // T8 (Phase 4 §3.8): constructor is now RecordCtor::Bare or RecordCtor::Qualified.
+                // The constructor is RecordCtor::Bare or RecordCtor::Qualified.
                 // Bare form: existing bare-ctor resolution logic unchanged.
                 // Qualified form: new code path via resolve_qualified_record_constructor.
                 match constructor {
@@ -1590,7 +1588,7 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
                 self.visit_expr(handle);
                 // The HEAD of `message` is a handler-name LABEL (BEAM atom),
                 // resolved against the target actor's on-handler list at
-                // type-check time (Phase 4), NOT against the current lexical
+                // type-check time, NOT against the current lexical
                 // scope.  Mirror `Expr::Ask`'s behaviour — Ask has
                 // `message: Ident` and the walker's `visit_ident` no-op
                 // already silently skips it — so Send's head Ident must

@@ -1,4 +1,4 @@
-//! Actor lowering — §4.14 / §8.1.
+//! Actor lowering.
 //!
 //! # Rule summary
 //!
@@ -20,23 +20,23 @@
 //! # State-field classification (R8)
 //!
 //! `ridge-resolve` has no `Binding::StateField` variant — adding one would
-//! violate the upstream-crate constraint in §1.3.  Instead, `lower_actor`
+//! cross the upstream-crate boundary.  Instead, `lower_actor`
 //! populates `ctx.current_state_fields` with the actor's state-field names
 //! before lowering each body.  `block::lower_assign` consults this set to
 //! classify `AssignTarget::StateField` vs `AssignTarget::Local`.
 //!
 //! A save/restore pattern is used around each body so that nested actors
-//! (disallowed by Phase 4, but defensively handled) do not corrupt the
+//! (disallowed by type checking, but defensively handled) do not corrupt the
 //! enclosing state.
 //!
-//! # Deferred wiring (T17)
+//! # Deferred wiring
 //!
 //! - `IrStateField.ty` and `IrHandler.ret_ty` are `Type::Error` placeholders;
-//!   the resolved types live in `node_types` and will be wired in T17.
+//!   the resolved types live in `node_types` and remain to be wired.
 //! - `IrActor.tycon` is a `TyConId(0)` placeholder; authoritative tycon lookup
-//!   is deferred to T17 (see `lookup_actor_tycon`).
+//!   is deferred (see `lookup_actor_tycon`).
 //! - `caps_from_ast` returns `CapabilitySet::PURE`; actual inference wiring
-//!   is T17 (see `inferred_caps` side-table).
+//!   remains deferred (see `inferred_caps` side-table).
 //! - `IrActor.origin` and `IrHandler.origin` are `NodeId(0)` placeholders;
 //!   `ActorDecl` items carry no `NodeId` per the side-table convention.
 
@@ -69,10 +69,10 @@ use crate::ctx::LowerCtx;
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-/// Lower an AST [`ActorDecl`] to a flat [`IrActor`] dispatch shape (§8.1).
+/// Lower an AST [`ActorDecl`] to a flat [`IrActor`] dispatch shape.
 ///
 /// The returned `IrActor` carries placeholder values for fields that require
-/// T17 wiring (`tycon`, field types, capability sets).  See the module-level
+/// Additional wiring (`tycon`, field types, capability sets).  See the module-level
 /// documentation for the full list of deferred items.
 pub fn lower_actor(ctx: &mut LowerCtx<'_>, decl: &ActorDecl) -> IrActor {
     // ── 1. Collect state-field names (used for AssignTarget classification) ────
@@ -228,7 +228,7 @@ fn lower_state_decl(ctx: &mut LowerCtx<'_>, s: &StateDecl) -> IrStateField {
 ///
 /// Uses the declared AST capability list (`InitDecl.caps`) converted to a
 /// `CapabilitySet`.  This is the syntactic declaration, not the inferred set —
-/// `inferred_caps` in Phase 4 only covers top-level `fn` decls, not `init`
+/// `inferred_caps` in the type checker only covers top-level `fn` decls, not `init`
 /// blocks.  Actor init caps are stored in `ActorSchema.init_caps` inside the
 /// `TyConArena`; reading them by name lookup is possible but adds complexity
 /// beyond the scope of this wiring.  The declared set is a faithful 1:1 copy
@@ -800,7 +800,7 @@ mod tests {
         assert_eq!(actor.dispatch[0].message_name, "increment");
         assert_eq!(actor.dispatch[1].message_name, "decrement");
         assert_eq!(actor.dispatch[2].message_name, "get");
-        // All handlers get Type::Error as placeholder (T17 deferred).
+        // All handlers get Type::Error as placeholder (wiring deferred).
         assert!(matches!(actor.dispatch[0].ret_ty, Type::Error));
         assert!(matches!(actor.dispatch[1].ret_ty, Type::Error));
         assert!(matches!(actor.dispatch[2].ret_ty, Type::Error));

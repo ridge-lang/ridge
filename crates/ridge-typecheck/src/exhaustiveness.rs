@@ -1,7 +1,7 @@
-//! Maranget's pattern exhaustiveness and redundancy algorithm (T12).
+//! Maranget's pattern exhaustiveness and redundancy algorithm.
 //!
 //! Entry point: [`check_exhaustiveness`] — called from `infer_expr` after the
-//! per-arm bodies are type-checked (§4.12).
+//! per-arm bodies are type-checked.
 //!
 //! # Algorithm
 //!
@@ -298,7 +298,7 @@ fn positional_variant(
 
 /// Place a record-body pattern's field patterns into the shape's field order.
 ///
-/// A field the pattern leaves out — whether through `..` or through the D053
+/// A field the pattern leaves out — whether through `..` or through the
 /// shorthand, which binds rather than tests — contributes a wildcard.
 fn lift_record_shape(
     shape: &RecordShape,
@@ -1315,7 +1315,7 @@ fn scrutinee_contains_error(ty: &Type) -> bool {
 ///
 /// # Ordering
 ///
-/// Must be called AFTER the per-arm body type-check (§4.12 matiz).
+/// Must be called AFTER the per-arm body type-check.
 pub fn check_exhaustiveness(
     ctx: &mut InferCtx,
     arena: &TyConArena,
@@ -1888,7 +1888,7 @@ mod tests {
 
     // ── Test 5: match_user_union_3_variants_partial ──────────────────────────
     /// `match shape { Circle r -> 1 }` — T016 with witnesses `Rectangle _ _`,
-    /// `Triangle _ _ _`.  (`DoD` test)
+    /// `Triangle _ _ _`, demonstrating the missing variants.
     ///
     /// `Shape = Circle Float | Rectangle Float Float | Triangle Float Float Float`
     #[test]
@@ -1993,7 +1993,7 @@ mod tests {
     }
 
     // ── Test 8: match_redundant_arm_T017 ─────────────────────────────────────
-    /// `match x { _ -> 1; 0 -> 2 }` — T017 on arm 1.  (`DoD` test)
+    /// `match x { _ -> 1; 0 -> 2 }` — T017 on arm 1 because the preceding wildcard already covers it.
     #[test]
     fn match_redundant_arm_t017() {
         let (arena, b) = make_builtins();
@@ -2041,7 +2041,7 @@ mod tests {
     }
 
     // ── Test 10: match_tuple_exhaustive ──────────────────────────────────────
-    /// `match (a, b) { (true, _) -> 1; (false, _) -> 2 }` — no T016.  (`DoD` test)
+    /// `match (a, b) { (true, _) -> 1; (false, _) -> 2 }` — no T016 because the Boolean alternatives cover the tuple.
     #[test]
     fn match_tuple_exhaustive() {
         let (arena, b) = make_builtins();
@@ -2217,7 +2217,7 @@ mod tests {
         }
     }
 
-    // ── List pattern exhaustiveness (D258) ────────────────────────────────────
+    // ── List pattern exhaustiveness ────────────────────────────────────
 
     fn list_arm(pat: Pattern) -> MatchArm {
         MatchArm {

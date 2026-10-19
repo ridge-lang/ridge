@@ -1,4 +1,4 @@
-//! Ridge name-resolution crate. Phase 3.
+//! Ridge name-resolution crate.
 //!
 //! Transforms in-memory [`ridge_ast::Module`]s produced by `ridge-parser`
 //! into a fully-resolved workspace in which every identifier, import, and
@@ -13,11 +13,11 @@
 //! for (mid, err) in &resolved.errors { /* render — mid identifies the source module */ }
 //! ```
 //!
-//! [`resolve_workspace`] orchestrates all resolver passes in plan-spec order.
+//! [`resolve_workspace`] orchestrates all resolver passes in dependency order.
 //! [`resolve_module`] resolves a single module given an already-discovered
 //! workspace (for incremental / LSP use-cases).
 //!
-//! # Phase 3 modules
+//! # Modules
 //!
 //! Error taxonomy and opaque newtype IDs.
 //! [`manifest`] and [`globs`] — workspace/project manifest parsing
@@ -49,7 +49,7 @@
 //! import-alias summary so any drift in resolver behaviour is caught by
 //! `cargo insta test`.
 //! Per-`R###` negative-fixture harness in `tests/errors.rs`
-//! covering every reachable diagnostic from §5.1 of the plan, plus the
+//! covering reachable resolver diagnostics, including the
 //! `R021 ActorStateMissingDefaultOrInit` emitter wired into [`symbol`].
 //! [`resolve_workspace`] + [`resolve_module`] front-door API;
 //! [`ResolvedWorkspace`], [`ResolvedModule`], [`ModuleResolveResult`], and
@@ -120,7 +120,7 @@ pub use walker::resolve_module_uses;
 ///
 /// Produced by [`resolve_module_uses`] (walker pass).  `None` entries
 /// are AST positions that carry no resolvable name (e.g. literal tokens).
-/// Phase 4 (type checker) reads this table to locate every identifier's
+/// The type checker reads this table to locate every identifier's
 /// definition site.
 pub type BindingMap = Vec<Option<imports::Binding>>;
 
@@ -147,7 +147,7 @@ pub struct WorkspaceGraph {
     pub projects: Vec<manifest::Project>,
     /// All modules across all projects, sorted by `fully_qualified_name`.
     ///
-    /// Sorted for snapshot stability (plan §4.1 invariant).
+    /// Sorted for snapshot stability (invariant).
     pub modules: Vec<ModuleMetadata>,
     /// Directed module-dependency edges: `deps[a]` = modules that `a` imports.
     ///
@@ -248,8 +248,8 @@ pub struct WorkspaceResolveResult {
 
 /// The fully-resolved view of one module produced by the resolve pipeline.
 ///
-/// Phase 4 (type checker) reads `symbols`, `imports`, and `bindings` to locate
-/// definition sites; Phase 8 (LSP) reads them for hover / go-to-definition.
+/// The type checker reads `symbols`, `imports`, and `bindings` to locate
+/// definition sites; the LSP reads them for hover / go-to-definition.
 #[derive(Debug)]
 pub struct ResolvedModule {
     /// The module's stable index within the workspace.
@@ -261,7 +261,7 @@ pub struct ResolvedModule {
     /// Scope snapshot after the walker pass.
     ///
     /// Currently empty — the walker's [`scope::ScopeStack`] is discarded after
-    /// use.  TODO(Phase 4): retain for type-checker scope queries.
+    /// use. TODO(type checking): retain for type-checker scope queries.
     pub scopes: ScopeTree,
     /// Node-id–indexed binding side-table produced by the walker.
     pub bindings: BindingMap,
@@ -289,7 +289,7 @@ pub struct ModuleResolveResult {
 /// The fully-resolved workspace produced by [`resolve_workspace`].
 ///
 /// Contains all per-module resolutions, accumulated diagnostics, and the
-/// workspace graph (manifests, projects, dependency edges) for Phase 4 / LSP.
+/// workspace graph (manifests, projects, dependency edges) for type checking and the LSP.
 #[derive(Debug)]
 pub struct ResolvedWorkspace {
     /// All resolved modules, indexed by `ModuleId.0`.
@@ -323,7 +323,7 @@ pub struct ResolvedWorkspace {
 
 /// Resolve an entire workspace, running the full pass sequence.
 ///
-/// Pass sequence (plan §2.2):
+/// Pass sequence:
 /// 1. `collect_symbols` (per module); then `apply_external_exports`
 /// 2. `resolve_imports` (workspace-wide + M013/M015 cross-validation)
 /// 3. `detect_cycles_authoritative` (authoritative cycle detection)

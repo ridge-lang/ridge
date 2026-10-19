@@ -1,9 +1,9 @@
-//! Pipe-forward desugaring rule (`|>`) — §4.1.
+//! Pipe-forward desugaring rule (`|>`).
 //!
 //! Implements the single rule: `lhs |> rhs` → flat `IrExpr::Call` where the
 //! piped `lhs` is appended as the last argument.
 //!
-//! # Rule summary (§4.1)
+//! # Rule summary
 //!
 //! | RHS shape | IR result |
 //! |---|---|
@@ -11,7 +11,7 @@
 //! | `Ident _ \| Qualified _ \| FieldAccess _ \| Lambda _ \| FieldAccessorFn _` | `Call(lower(rhs), [lhs'])` |
 //! | `Paren { inner }` | peel paren, re-dispatch on `inner` |
 //! | `Pipe { .. }` | L101 — parser is left-assoc, this should never fire |
-//! | any other | L102 — defensive; Phase 4 should have rejected |
+//! | any other | L102 — defensive; the type checker should have rejected |
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![cfg_attr(
@@ -37,7 +37,7 @@ use crate::error::LowerError;
 ///   end of the argument list: `Call(callee, args ++ [lhs'])`.
 /// - If `rhs` is a bare callable (`Ident`, `Qualified`, `FieldAccess`,
 ///   `Lambda`, `FieldAccessorFn`), emit `Call(rhs', [lhs'])`.
-/// - `Paren { inner }` is peeled first (paren erasure — §1.3, §4.1).
+/// - `Paren { inner }` is peeled first (paren erasure).
 /// - `Pipe` as RHS (should never occur — parser is left-assoc): emits `L101`
 ///   and returns a `Unit` stub preserving `span`.
 /// - Any other shape: emits `L102` and returns a `Unit` stub.
@@ -144,7 +144,7 @@ pub fn lower_pipe(ctx: &mut LowerCtx<'_>, lhs: &Expr, rhs: &Expr, span: Span) ->
             }
         }
 
-        // ── Unknown RHS shape: defensive — Phase 4 should have rejected ──────
+        // ── Unknown RHS shape: defensive — the type checker should have rejected ──────
         other => {
             let rhs_span = expr_span(other);
             ctx.errors
@@ -179,7 +179,7 @@ fn type_at_span(ctx: &LowerCtx<'_>, span: Span) -> Option<Type> {
 }
 
 /// Peel one or more `Paren { inner }` wrappers from an expression (paren
-/// erasure — §1.3, §4.1).
+/// erasure).
 ///
 /// Returns the innermost non-paren expression.  If `expr` is not a `Paren`
 /// node this returns `expr` unchanged.
@@ -271,7 +271,7 @@ mod tests {
         })
     }
 
-    // ── T4-pipe-1: bare callable RHS (Ident `f`) ─────────────────────────────
+    // ── bare callable RHS (Ident `f`) ─────────────────────────────
     //
     // `xs |> f` → `Call(<f-local>, [xs'])`
     // The ident has no binding in the test scaffold, so lower_ident emits a
@@ -312,7 +312,7 @@ mod tests {
         }
     }
 
-    // ── T4-pipe-2: call RHS — `xs |> f y` → `Call(f, [y, xs])` ─────────────
+    // ── call RHS — `xs |> f y` → `Call(f, [y, xs])` ─────────────
     //
     // Uses integer literals for lhs and arg to avoid binding wiring.
 
@@ -355,7 +355,7 @@ mod tests {
         }
     }
 
-    // ── T4-pipe-3: chained pipe `xs |> f |> g` ───────────────────────────────
+    // ── chained pipe `xs |> f |> g` ───────────────────────────────
     //
     // Left-associative so the AST is `Pipe(Pipe(xs, f), g)`.
     // Inner pipe `xs |> f` lowers first → Call(f, [xs]).
@@ -405,7 +405,7 @@ mod tests {
         }
     }
 
-    // ── T4-pipe-4: paren-wrapped RHS `xs |> (f)` → `Call(f, [xs])` ──────────
+    // ── paren-wrapped RHS `xs |> (f)` → `Call(f, [xs])` ──────────
 
     #[test]
     fn pipe_paren_rhs_peeled() {
@@ -429,7 +429,7 @@ mod tests {
         }
     }
 
-    // ── T4-pipe-5: defensive — Pipe as RHS emits L101 ────────────────────────
+    // ── defensive — Pipe as RHS emits L101 ────────────────────────
 
     #[test]
     fn pipe_rhs_pipe_emits_l101() {
@@ -465,7 +465,7 @@ mod tests {
         }
     }
 
-    // ── T4-pipe-6: defensive — unknown RHS shape emits L102 ──────────────────
+    // ── defensive — unknown RHS shape emits L102 ──────────────────
 
     #[test]
     fn pipe_rhs_unknown_emits_l102() {
@@ -495,7 +495,7 @@ mod tests {
         }
     }
 
-    // ── T4-pipe-7: IrNodeId counter advances correctly across a pipe ──────────
+    // ── IrNodeId counter advances correctly across a pipe ──────────
 
     #[test]
     fn pipe_id_counter_advances() {

@@ -26,7 +26,7 @@ pub enum Visibility {
 ///
 /// Capability lists appear on `fn`, `on`, and `init` declarations.  Checking
 /// that the body actually uses (or does not exceed) the declared capabilities
-/// is a Phase 4 concern; the parser only captures them here.
+/// is a type-checking concern; the parser only captures them here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Capability {
     /// Stdin / stdout / stderr I/O.

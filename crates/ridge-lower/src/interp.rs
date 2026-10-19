@@ -1,4 +1,4 @@
-//! String-interpolation lowering — §4.6.
+//! String-interpolation lowering.
 //!
 //! # Rule summary
 //!
@@ -19,8 +19,8 @@
 //! # `ToText` dispatch
 //!
 //! The inner expression's type is looked up from `ctx.node_types` by `NodeId`.
-//! Because `node_types` is populated by Phase 4 which is deferred,
-//! type information may be absent.  When absent, `L107 ToTextLowering` is
+//! Type information may be absent when the type-checker metadata is unavailable.
+//! When absent, `L107 ToTextLowering` is
 //! emitted defensively and the raw `inner` is returned unwrapped.
 //!
 //! The closed `ToText` set maps `TyConId` to stdlib module:
@@ -57,7 +57,7 @@
 //! - **Adjacent expr holes `$"${a}${b}"`:** parts are
 //!   `[Text "", Expr a, Text "", Expr b, Text ""]`; the fold naturally
 //!   produces `((("" ++ a) ++ "") ++ b) ++ ""`.  Empty strings are NOT
-//!   elided — backends or Phase 7 may optimise.
+//!   elided — backends or stdlib may optimise.
 //! - **`Type::Error` hole:** absorbing — inner returned as-is, no L107.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -122,7 +122,7 @@ pub fn lower_interp_full(ctx: &mut LowerCtx<'_>, parts: &[InterpPart], span: Spa
         }
     });
 
-    // OQ-IR002: binary std.text.concat fold-left — each pair is concat(acc, next).
+    // binary std.text.concat fold-left — each pair is concat(acc, next).
     iter.fold(first, |acc, next| make_concat_call(ctx, acc, next, span))
 }
 
@@ -154,7 +154,7 @@ fn lower_part(ctx: &mut LowerCtx<'_>, part: &InterpPart, _span: Span) -> IrExpr 
             let inner = lower_expr(ctx, expr);
             // Look up the type of this expression from the node_types side-table.
             // The lookup is by NodeId, which is stored in the node_types Vec
-            // indexed by NodeId.0.  When node_types is empty (T17 deferred),
+            // indexed by NodeId.0.  When node_types is empty,
             // the lookup returns None and we emit L107 defensively.
             // Clone the type before the mutable borrow by `wrap_to_text`.
             let ty = lookup_expr_type(ctx, expr);
@@ -212,7 +212,7 @@ fn make_actor_error_to_text_call(
 ///
 /// Uses `node_id_map` to resolve the expression's `Span` to a compact sequential
 /// `NodeId` (the correct index into `ctx.node_types`).  Falls back gracefully to
-/// `None` when the map is absent (T17 deferred) or the span is not found.
+/// `None` when the map is absent or the span is not found.
 ///
 /// **Do not** use `NodeId(span.start)` as a proxy — `node_types` is indexed by
 /// compact sequential `NodeIds` from AST traversal, not by byte offsets.
@@ -469,7 +469,7 @@ fn try_dict_to_text(ctx: &mut LowerCtx<'_>, inner: &IrExpr, span: Span) -> Optio
     })
 }
 
-// OQ-L007: ToText is inserted at lowering time (Phase 5), not at codegen time,
+// ToText is inserted at lowering time, not at codegen time,
 // so that the IR is target-neutral (no implicit coercion knowledge needed downstream).
 
 /// Wrap `arg` in the correct `toText` call for `tycon_id`.
@@ -709,7 +709,7 @@ mod tests {
         ridge_ast::Expr::Unit(sp())
     }
 
-    // ── T9-i-1: single Text part emits a text literal (fast-path via core) ────
+    // ── single Text part emits a text literal (fast-path via core) ────
     //
     // The fast path is in `core::lower_interp`; this test covers the module's
     // behaviour when `parts` has exactly one text part.
@@ -733,7 +733,7 @@ mod tests {
         }
     }
 
-    // ── T9-i-2: two Text parts produce a single concat call ──────────────────
+    // ── two Text parts produce a single concat call ──────────────────
     #[test]
     fn two_text_parts_produce_concat() {
         let mut ctx = fresh_ctx();
@@ -786,7 +786,7 @@ mod tests {
         }
     }
 
-    // ── T9-i-3: Int hole wraps in std.int.toText ──────────────────────────────
+    // ── Int hole wraps in std.int.toText ──────────────────────────────
     //
     // Requires node_types to be populated so the type lookup succeeds.
     #[test]
@@ -828,7 +828,7 @@ mod tests {
         }
     }
 
-    // ── T9-i-4: Float hole wraps in std.float.toText ─────────────────────────
+    // ── Float hole wraps in std.float.toText ─────────────────────────
     #[test]
     fn float_hole_wraps_to_text() {
         let b = crate::test_support::builtins();
@@ -861,7 +861,7 @@ mod tests {
         }
     }
 
-    // ── T9-i-5: Bool hole wraps in std.bool.toText ───────────────────────────
+    // ── Bool hole wraps in std.bool.toText ───────────────────────────
     #[test]
     fn bool_hole_wraps_to_text() {
         let b = crate::test_support::builtins();
@@ -894,7 +894,7 @@ mod tests {
         }
     }
 
-    // ── T9-i-6: Text hole is identity (no wrapper) ───────────────────────────
+    // ── Text hole is identity (no wrapper) ───────────────────────────
     #[test]
     fn text_hole_is_identity() {
         let b = crate::test_support::builtins();
@@ -917,7 +917,7 @@ mod tests {
         }
     }
 
-    // ── T9-i-7: Timestamp hole wraps in std.time.toText ──────────────────────
+    // ── Timestamp hole wraps in std.time.toText ──────────────────────
     #[test]
     fn timestamp_hole_wraps_to_text() {
         let b = crate::test_support::builtins();
@@ -950,7 +950,7 @@ mod tests {
         }
     }
 
-    // ── T9-i-7b: Decimal hole wraps in std.decimal.toText ────────────────────
+    // ── Decimal hole wraps in std.decimal.toText ────────────────────
     #[test]
     fn decimal_hole_wraps_to_text() {
         let b = crate::test_support::builtins();
@@ -983,7 +983,7 @@ mod tests {
         }
     }
 
-    // ── T9-i-7c: Uuid hole wraps in std.uuid.toText ──────────────────────────
+    // ── Uuid hole wraps in std.uuid.toText ──────────────────────────
     #[test]
     fn uuid_hole_wraps_to_text() {
         let b = crate::test_support::builtins();
@@ -1016,7 +1016,7 @@ mod tests {
         }
     }
 
-    // ── T9-i-7d: wrap_to_text_by_tycon dispatches a Decimal field ────────────
+    // ── wrap_to_text_by_tycon dispatches a Decimal field ────────────
     //
     // The derived-instance body builder (`build_to_text_record_body`) renders each
     // field through `wrap_to_text_by_tycon`; a Decimal field must reach
@@ -1051,7 +1051,7 @@ mod tests {
         }
     }
 
-    // ── T9-i-7e: wrap_to_text_by_tycon dispatches a Uuid field ────────────────
+    // ── wrap_to_text_by_tycon dispatches a Uuid field ────────────────
     #[test]
     fn wrap_by_tycon_uuid_dispatches_std_uuid() {
         let b = crate::test_support::builtins();
@@ -1082,7 +1082,7 @@ mod tests {
         }
     }
 
-    // ── T9-i-8: Type::Error hole is absorbing — no wrapper, no L107 ──────────
+    // ── Type::Error hole is absorbing — no wrapper, no L107 ──────────
     #[test]
     fn error_type_hole_is_absorbing() {
         let mut ctx = ctx_with_type_at(0, Type::Error);
@@ -1102,7 +1102,7 @@ mod tests {
         }
     }
 
-    // ── T9-i-9: Unknown type emits L107 ──────────────────────────────────────
+    // ── Unknown type emits L107 ──────────────────────────────────────
     //
     // `List` is outside the set `wrap_to_text` converts. Which type stands in
     // does not matter, only that it is one with no arm.
@@ -1122,7 +1122,7 @@ mod tests {
         assert_eq!(ctx.errors[0].code(), "L107");
     }
 
-    // ── T9-i-10: R3 — left-fold side-effect order (§7.1) ─────────────────────
+    // ── R3 — left-fold side-effect order (§7.1) ─────────────────────
     //
     // `$"${a}${b}"` → parts: [Text "", Expr a, Text "", Expr b, Text ""]
     // Expected IR (left-fold):

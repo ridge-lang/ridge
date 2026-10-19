@@ -1,29 +1,29 @@
-//! §4.3 — Lower `IrExpr::Symbol` / `SymbolRef` to a `CErlExpr`.
+//! Lower `IrExpr::Symbol` / `SymbolRef` to a `CErlExpr`.
 //!
 //! Each `SymbolRef` variant routes to a different Core Erlang shape.
 //! Several variants require arity lookup or stdlib-bridge data that is
-//! assembled in later tasks (T6/T7/T8); those arms return a deferred
+//! assembled by module-level codegen; those arms return a deferred
 //! `IrShapeMalformed` error rather than panicking.
 //!
-//! Fully implemented in T3:
+//! Direct symbol forms:
 //! - `Constructor { fields: [] used-as-value }` → `'<name>'` atom.
 //! - `Prelude { name: "None" }` → `'none'` atom.
 //! - `Handler { .. }` → defensive `IrShapeMalformed` (never a value).
 //! - `ActorType { .. }` → defensive `IrShapeMalformed` (never a value).
 //!
-//! Implemented in T7:
+//! Stdlib symbol form:
 //! - `Stdlib { .. }` → bridge map lookup → 0-arg `Call` to BEAM target.
 //!
-//! Deferred to T8:
+//! Deferred routing that requires module-level arity information:
 //! - `Local`, `External`, `Constructor` (fn-value form), `Prelude`
 //!   (non-None used-as-value).
 
-// T3 helpers are consumed by lower_expr (expr.rs) and wired into the
-// module-level entry points in T8.  Until T8 ships they are only exercised
+// These helpers are consumed by lower_expr (expr.rs) and wired into the
+// module-level entry points during module emission. Until that integration is wired, they are only exercised
 // from within this module's test suite and from expr.rs.
 #![allow(dead_code)]
 // pub(crate) on items in a pub(crate) module is redundant per clippy; we keep
-// it anyway for explicitness per plan §2.2 — suppress the lint here.
+// it anyway for explicitness — suppress the lint here.
 #![allow(clippy::redundant_pub_crate)]
 
 use crate::core_ast::{CErlAtom, CErlExpr, CErlLit, CErlVar};
@@ -118,17 +118,17 @@ fn stdlib_value_checked_int_fn_ref(
 /// Lower a [`SymbolRef`] used as a value expression to a [`CErlExpr`].
 ///
 /// Variants whose lowering requires arity lookup, stdlib mapping, or other
-/// data assembled by later tasks return a deferred `IrShapeMalformed` with a
-/// `"T3: <variant> routing pending T6/T7/T8"` detail message.
+/// data assembled during module emission return a deferred `IrShapeMalformed`
+/// with a detail message describing the missing routing information.
 ///
 /// The `fn_arity` table maps local fn/const names to their arities; it is
-/// built by the module-level lowering pass (T8) and threaded via `LocalScope`.
+/// built by the module-level lowering pass and threaded via `LocalScope`.
 ///
 /// `actor_parent` — when `Some((parent_id, parent_beam_name))` — identifies the
 /// enclosing actor's parent module.  A `SymbolRef::Local { module: parent_id }`
 /// used as a **value** must be emitted as a 0-arg qualified `call` rather than a
 /// `LocalFnRef`, because the actor is a separate BEAM module and `'fnName'/0`
-/// would be `undefined` there (B-6 fix, Phase 6 pass 3).
+/// would be `undefined` there.
 #[allow(clippy::too_many_lines)]
 pub(crate) fn lower_symbol(
     sym: &SymbolRef,
@@ -138,9 +138,9 @@ pub(crate) fn lower_symbol(
 ) -> Result<CErlExpr, CodegenError> {
     match sym {
         // Local fn or const used as a value: look up arity from the module
-        // function table assembled in T8.
+        // module-level function table.
         //
-        // B-6 (Phase 6 pass 3): when `actor_parent` is set and this symbol's
+        // when `actor_parent` is set and this symbol's
         // `module` matches the parent's id, emit a qualified 0-arg `call` so that
         // the value expression works in the actor's separate BEAM module.
         SymbolRef::Local { name, module } => match fn_arity.get(name.as_str()) {
@@ -295,7 +295,7 @@ pub(crate) fn lower_symbol(
         }
 
         // External symbols: require arity lookup and external module name
-        // mangling, assembled in T7/T8.
+        // mangling, assembled during module emission.
         SymbolRef::External { name, .. } => Err(CodegenError::IrShapeMalformed {
             variant: "SymbolRef::External",
             span,
@@ -304,8 +304,8 @@ pub(crate) fn lower_symbol(
             ),
         }),
 
-        // Handler is never a value — Phase 5 ensures handlers only appear
-        // inside Send/Ask.  Any occurrence here is a Phase-5 invariant violation.
+        // Handler is never a value — lowering ensures handlers only appear
+        // inside Send/Ask. Any occurrence here is a lowering invariant violation.
         SymbolRef::Handler { actor, handler, .. } => Err(CodegenError::IrShapeMalformed {
             variant: "SymbolRef::Handler",
             span,
@@ -315,8 +315,8 @@ pub(crate) fn lower_symbol(
             ),
         }),
 
-        // ActorType is never a value — Phase 5 ensures actor types only appear
-        // inside Spawn.  Any occurrence here is a Phase-5 invariant violation.
+        // ActorType is never a value — lowering ensures actor types only appear
+        // inside Spawn. Any occurrence here is a lowering invariant violation.
         SymbolRef::ActorType { name, .. } => Err(CodegenError::IrShapeMalformed {
             variant: "SymbolRef::ActorType",
             span,
@@ -327,9 +327,9 @@ pub(crate) fn lower_symbol(
         }),
 
         // Constructor used as a zero-arg value: emit the bare atom `'<name>'`.
-        // (Phase 5 wraps non-zero-arg constructors in IrExpr::Construct, so the
-        // zero-arg path is the one meaningful case for T3.)
-        // The fn-value form (e.g. `[Some, Some]` mapped over a list) is deferred to T6.
+        // (lowering wraps non-zero-arg constructors in IrExpr::Construct, so the
+        // zero-arg path is the meaningful case here.)
+        // The fn-value form (e.g. `[Some, Some]` mapped over a list) is still deferred.
         //
         // §4.3: "If used as a value with no arg: emit the bare atom '<name>'."
         SymbolRef::Constructor { name, .. } => {
@@ -339,7 +339,7 @@ pub(crate) fn lower_symbol(
         // Prelude symbols used as values (bare, zero-arg):
         //   "None"  → atom `'none'`.
         //   "JNull" → atom `'json_null'` (the nullary JsonValue variant).
-        //   All others: deferred — Phase 5 wraps Ok/Err/Some and the
+        //   All others: deferred — lowering wraps Ok/Err/Some and the
         //   payload-bearing JsonValue variants in Construct/Call.
         SymbolRef::Prelude { name } => match name.as_str() {
             "None" => Ok(CErlExpr::Lit(CErlLit::Atom(CErlAtom("none".into())))),

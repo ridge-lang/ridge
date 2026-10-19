@@ -1,4 +1,4 @@
-//! Closed-list audit table for `@ffi` BEAM targets (§2.7 / §5.6 T3).
+//! Closed-list audit table for `@ffi` BEAM targets.
 //!
 //! Every BEAM `module:name/arity` triplet that Ridge stdlib `@ffi` declarations
 //! may reference must appear in [`AUDIT_TABLE`].  A target absent from the table
@@ -48,10 +48,10 @@ pub fn lookup(module: &str, name: &str, arity: u32) -> Option<&'static FfiAuditE
 /// error — the `lookup` function uses `find` so the first entry wins, but tests
 /// assert uniqueness.
 ///
-/// Capability annotations follow §3: targets in `erlang`, `math`, `binary`,
+/// Capability annotations: targets in `erlang`, `math`, `binary`,
 /// `string`, `lists`, `maps` are pure; `os`, `file`, `filelib`, `timer`,
-/// `calendar`, `rand`, `httpc`, `ridge_rt` carry the capabilities declared per
-/// §3.10–§3.18.
+/// `calendar`, `rand`, `httpc`, `ridge_rt` carry the capabilities declared
+/// by their audit entries below.
 pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
     // ── erlang (pure arithmetic / type ops) ───────────────────────────────────
     FfiAuditEntry {
@@ -1173,7 +1173,7 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         arity: 1,
         requires_caps: &[],
     },
-    // ── ridge_rt HTTP client helpers (§3.18 / OQ-S005 / D121) ────────────────
+    // ── ridge_rt HTTP client helpers (§3.18) ────────────────
     FfiAuditEntry {
         beam_module: "ridge_rt",
         fn_name: "http_get",

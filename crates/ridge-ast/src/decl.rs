@@ -1,4 +1,4 @@
-//! Declaration AST nodes (T10).
+//! Declaration AST nodes.
 //!
 //! Contains all top-level declaration types:
 //! - [`ImportDecl`] / [`ModulePath`] — grammar §2.2
@@ -16,7 +16,7 @@ use crate::{
 
 // ── Attribute ─────────────────────────────────────────────────────────────────
 
-/// A function-level attribute (grammar §4.1, D260).
+/// A function-level attribute (grammar §4.1).
 ///
 /// Attributes are written above a `fn` declaration and control compiler
 /// behaviour without changing the function's type or calling convention.
@@ -84,7 +84,7 @@ pub enum Body {
         module: String,
         /// The function name inside that module (e.g. `"integer_to_binary"`).
         name: String,
-        /// The expected arity (must match the Ridge param count — checked in T3).
+        /// The expected arity (must match the Ridge parameter count).
         arity: u32,
     },
     /// A language primitive declared with `@primitive`.
@@ -123,8 +123,8 @@ pub struct ImportDecl {
     /// A doc comment or attribute written above it is not part of this
     /// span; [`Item::span`](crate::Item::span) covers those as well.
     pub span: Span,
-    /// Attached doc comment (set to `None` in T10; T11 fills this).
-    // TODO(T11): doc-comment attachment — set once parse_module peels DocComment tokens.
+    /// Attached doc comment.
+    // TODO: doc-comment attachment — set once parse_module peels DocComment tokens.
     pub doc: Option<DocComment>,
 }
 
@@ -165,8 +165,8 @@ pub struct ConstDecl {
     /// A doc comment or attribute written above it is not part of this
     /// span; [`Item::span`](crate::Item::span) covers those as well.
     pub span: Span,
-    /// Attached doc comment (set to `None` in T10; T11 fills this).
-    // TODO(T11): doc-comment attachment.
+    /// Attached doc comment.
+    // TODO: doc-comment attachment.
     pub doc: Option<DocComment>,
 }
 
@@ -212,8 +212,8 @@ pub struct TypeDecl {
     /// A doc comment or attribute written above it is not part of this
     /// span; [`Item::span`](crate::Item::span) covers those as well.
     pub span: Span,
-    /// Attached doc comment (set to `None` in T10; T11 fills this).
-    // TODO(T11): doc-comment attachment.
+    /// Attached doc comment.
+    // TODO: doc-comment attachment.
     pub doc: Option<DocComment>,
 }
 
@@ -222,7 +222,7 @@ pub struct TypeDecl {
 pub enum TypeBody {
     /// Record type: `{ field: Type, … }`.
     Record(RecordTypeBody),
-    /// Union type: `| A | B …` or `A | B …` (D054: leading `|` optional).
+    /// Union type: `| A | B …` or `A | B …` (leading `|` optional).
     Union(UnionTypeBody),
     /// Type alias: a bare type expression.
     Alias(Type),
@@ -287,7 +287,7 @@ pub struct FieldDecl {
 
 /// The body of a union type (grammar §3.3 line 376).
 ///
-/// D054: leading `|` is optional; trailing `|` is prohibited; minimum one alternative.
+/// A leading `|` is optional; trailing `|` is prohibited; minimum one alternative.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnionTypeBody {
     /// One or more constructor alternatives.
@@ -344,7 +344,7 @@ pub struct FnDecl {
     pub caps: Vec<Capability>,
     /// The function name (`LOWER_IDENT` or `PRIV_IDENT`).
     pub name: Ident,
-    /// The parameter list (D037: only bare or annotated; no pattern params).
+    /// The parameter list (only bare or annotated; no pattern params).
     pub params: Vec<Param>,
     /// Optional return type after `->`.
     pub ret: Option<Type>,
@@ -363,12 +363,12 @@ pub struct FnDecl {
     /// A doc comment or attribute written above it is not part of this
     /// span; [`Item::span`](crate::Item::span) covers those as well.
     pub span: Span,
-    /// Attached doc comment (set to `None` in T10; T11 fills this).
-    // TODO(T11): doc-comment attachment.
+    /// Attached doc comment.
+    // TODO: doc-comment attachment.
     pub doc: Option<DocComment>,
 }
 
-/// A top-level function parameter (grammar §4.1 line 459, D037).
+/// A top-level function parameter (grammar §4.1 line 459).
 ///
 /// A top-level `Param` is a bare name, an annotated name, or — for an
 /// irrefutable destructure — an annotated pattern.
@@ -437,8 +437,8 @@ pub struct ActorDecl {
     /// A doc comment or attribute written above it is not part of this
     /// span; [`Item::span`](crate::Item::span) covers those as well.
     pub span: Span,
-    /// Attached doc comment (set to `None` in T10; T11 fills this).
-    // TODO(T11): doc-comment attachment.
+    /// Attached doc comment.
+    // TODO: doc-comment attachment.
     pub doc: Option<DocComment>,
 }
 
@@ -473,7 +473,7 @@ pub enum ActorMember {
 ///
 /// ```text
 /// state count: Int = 0
-/// state capacity: Int          -- no default; init block initialises it (D061)
+/// state capacity: Int          -- no default; init block initialises it
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateDecl {
@@ -483,14 +483,14 @@ pub struct StateDecl {
     pub ty: Type,
     /// Optional default expression.
     ///
-    /// `None` is allowed when an `init` block is present (OQ-P006 — the parser
-    /// does not enforce the "either default or init" rule; that is Phase 3).
+    /// `None` is allowed when an `init` block is present. The parser
+    /// does not enforce the "either default or init" rule; name resolution enforces it.
     pub default: Option<Expr>,
     /// Span covering the `state` declaration.
     pub span: Span,
 }
 
-/// An initialisation block (grammar §5.3 line 511, D061).
+/// An initialisation block (grammar §5.3 line 511).
 ///
 /// ```text
 /// init (cap: Int) (rate: Float) =
@@ -626,7 +626,7 @@ pub struct OnHandler {
     pub body: Expr,
     /// Span covering the whole handler.
     pub span: Span,
-    /// Attached doc comment (set to `None` in T10; T11 fills this).
-    // TODO(T11): doc-comment attachment.
+    /// Attached doc comment.
+    // TODO: doc-comment attachment.
     pub doc: Option<DocComment>,
 }

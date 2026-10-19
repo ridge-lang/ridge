@@ -3,14 +3,14 @@
 //! `Cursor` is internal to `ridge-parser`. The public API is [`crate::parse_module`]
 //! and [`crate::parse_source`].
 //!
-//! Design (§4.2 of the Phase 2 Parser Plan):
+//! Cursor invariants:
 //! - Lookahead budget k = 2 (see `peek_n`).
 //! - `peek()` never panics: returns `&Token::Eof` past the end of the slice.
 //! - The lexer always appends an `Eof` token, so `toks` is never truly empty
 //!   during a normal parse.
 
-// `peek_n`, `eat`, and `at_eof` are part of the required Cursor API (§4.2)
-// and will be called in T3+.  Suppress dead_code until all callers exist.
+// `peek_n`, `eat`, and `at_eof` belong to the Cursor API.
+// Suppress dead_code until all callers exist.
 // `pub(crate)` inside a private module is intentional — makes visibility
 // explicit and consistent with the rest of the codebase.
 #![allow(dead_code)]
@@ -115,7 +115,7 @@ impl<'t> Cursor<'t> {
 
     /// Lookahead: return a reference to the token at `pos + n`.
     ///
-    /// Returns `None` if the index is out of bounds.  Per the plan the budget is
+    /// Returns `None` if the index is out of bounds.  The lookahead budget is
     /// k = 2; callers should not use `n > 1` except in the two documented
     /// disambiguation cases.
     pub(crate) fn peek_n(&self, n: usize) -> Option<&'t Token> {

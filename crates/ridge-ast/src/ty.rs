@@ -37,7 +37,7 @@ pub struct RecordTypeField {
 /// - [`Type::Primitive`] — a built-in scalar type such as `Int` or `Bool`.
 /// - [`Type::Named`] — an `UPPER_IDENT` with no type arguments (e.g. `User`).
 /// - [`Type::App`] — a type constructor applied to one or more arguments
-///   (e.g. `Option Int`, `Map k v`).  **Flat** per OQ-P003: `Map k v` is
+///   (e.g. `Option Int`, `Map k v`). **Flat**: `Map k v` is
 ///   `App { head: Map, args: [k, v] }`, never curried.
 /// - [`Type::Tuple`] — a tuple type with ≥ 2 elements (e.g. `(Int, Text)`).
 /// - [`Type::List`] — the `[a]` sugar for `List a`.
@@ -69,7 +69,7 @@ pub enum Type {
     /// A type constructor applied to one or more arguments.
     ///
     /// Grammar §3.4 line 424: `TypeApp ::= UPPER_IDENT { TypeAtom }`.
-    /// Per OQ-P003 the application is **flat** — `Map k v` produces
+    /// The application is **flat** — `Map k v` produces
     /// `App { head: Map, args: [k, v] }`, not nested `App(App(Map, k), v)`.
     App {
         /// The type constructor being applied.

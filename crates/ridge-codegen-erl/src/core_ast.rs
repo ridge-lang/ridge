@@ -1,11 +1,11 @@
 //! Typed Rust model of a subset of Core Erlang (Carlsson 2004) sufficient for 0.1.0.
 //!
 //! This is the IR-of-Core-Erlang — the printer ([`crate::printer`]) walks it to
-//! produce text.  Two-stage emission: IR → `core_ast` → printer string (§3.1).
+//! produce text.  Two-stage emission: IR → `core_ast` → printer string.
 
 // Within an enum definition the variants reference the enum's own name, which
 // clippy::use_self would ask us to write as `Self` — but that is unidiomatic
-// for recursive enum ADTs and not what the plan specifies.
+// for recursive enum ADTs.
 #![allow(clippy::use_self)]
 
 /// A whole Core Erlang module.
@@ -55,7 +55,7 @@ pub struct CErlFn {
     pub body: CErlExpr,
 }
 
-/// A Core Erlang expression.  Mirrors the subset Phase 6 needs.
+/// A Core Erlang expression. Mirrors the subset codegen needs.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum CErlExpr {
@@ -244,7 +244,7 @@ pub enum CErlLit {
     /// `[]` empty list.
     Nil,
     /// `{}` empty tuple — used for `Unit` only if we choose `{}` over `'ok'`
-    /// (we choose `'ok'` per §4 row `IrLit::Unit`).
+    /// (we choose `'ok'` for `IrLit::Unit`).
     EmptyTuple,
 }
 

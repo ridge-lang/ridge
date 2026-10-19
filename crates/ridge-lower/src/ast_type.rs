@@ -1,4 +1,4 @@
-//! AST `Type` → `ridge_types::Type` adapter — private helper for Phase 5.
+//! AST `Type` → `ridge_types::Type` adapter — private helper for lowering.
 //!
 //! Provides a mechanical, 1:1 mapping from the syntactic [`ridge_ast::Type`]
 //! to the semantic [`ridge_types::Type`].  This mapping is intentionally
@@ -22,7 +22,7 @@
 //!
 //! Any variant that cannot be mapped (e.g. a `Type::Var`, or a `Named` whose
 //! name is absent from the workspace) falls back to `Type::Error`.  This is
-//! correct: `Type::Error` is the absorbing sentinel for the Phase 5 IR and
+//! correct: `Type::Error` is the absorbing sentinel for the lowering IR and
 //! prevents cascading L### diagnostics.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -134,7 +134,7 @@ pub(crate) fn lower_ast_type(ctx: &mut LowerCtx<'_>, ast_ty: &ridge_ast::Type) -
 /// Map a [`PrimitiveType`] to its `Type::Con(builtin_id, [])` form.
 ///
 /// Looks up the canonical builtin name in the workspace arena so that the
-/// returned `TyConId` matches the one Phase 4 used.
+/// returned `TyConId` matches the one the type checker used.
 fn lower_primitive(ctx: &mut LowerCtx<'_>, prim: PrimitiveType) -> Type {
     let name = primitive_name(prim);
     ctx.lookup_tycon_by_name(name)

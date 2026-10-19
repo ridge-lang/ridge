@@ -1,4 +1,4 @@
-//! Block-sequencing and let/var continuation lowering rules — §4.9.
+//! Block-sequencing and let/var continuation lowering rules.
 //!
 //! # `lower_block`
 //!
@@ -17,7 +17,7 @@
 //!   `ctx.current_state_fields`, the target is `AssignTarget::StateField`.
 //! - Otherwise, the target is `AssignTarget::Local`.
 //!
-//! # Fold algorithm (§4.9)
+//! # Fold algorithm
 //!
 //! ```text
 //! fold_block_to_continuation([], span)       → Lit Unit           (defensive)
@@ -56,7 +56,7 @@ use crate::inner_fn::{lower_inner_fn_final, lower_inner_fn_with_continuation};
 /// Lower an AST [`Block`] to its [`IrExpr`] equivalent using continuation form.
 ///
 /// Delegates to `fold_block_to_continuation`.  If the block is empty
-/// (defensive — Phase 4 should have rejected empty blocks with `P014`) a
+/// (defensive — the type checker should have rejected empty blocks with `P014`) a
 /// `IrExpr::Lit { Unit }` is returned and no error is emitted (the parse
 /// error already covers this).
 pub fn lower_block(ctx: &mut LowerCtx<'_>, block: &Block) -> IrExpr {
@@ -68,7 +68,7 @@ pub fn lower_block(ctx: &mut LowerCtx<'_>, block: &Block) -> IrExpr {
 /// The `target` must resolve to an `Expr::Ident`.  Any other target shape
 /// is defensive: a `L999` error is pushed and a `Unit` literal is returned.
 ///
-/// Target classification (R8 / §4.14):
+/// Target classification:
 /// - `AssignTarget::StateField` — when `ctx.in_actor_body == true` and the
 ///   ident appears in `ctx.current_state_fields`.  `ridge-resolve` has no
 ///   `Binding::StateField`; the set is populated by `actor_lower`.
@@ -191,11 +191,11 @@ pub fn lower_assign(ctx: &mut LowerCtx<'_>, target: &Expr, value: &Expr, span: S
 
 // ── Core fold ─────────────────────────────────────────────────────────────────
 
-// OQ-L008: the block fold assumes stmts are already flat (pre-flattened by the
+// the block fold assumes stmts are already flat (pre-flattened by the
 // parser); nested Block exprs inside a stmt list are not recursively flattened here.
 /// Right-fold a statement list into continuation form.
 ///
-/// See the module-level documentation for the full algorithm (§4.9).
+/// See the module-level documentation for the full algorithm.
 #[expect(
     clippy::too_many_lines,
     reason = "exhaustive match over all statement shapes with defensive fallbacks (§4.9)"
@@ -207,7 +207,7 @@ pub(crate) fn fold_block_to_continuation(
 ) -> IrExpr {
     match stmts {
         // ── Empty block (defensive) ───────────────────────────────────────────
-        // Phase 4 enforces non-empty blocks (P014); if we see one anyway,
+        // the type checker enforces non-empty blocks (P014); if we see one anyway,
         // return a Unit literal rather than panicking.
         [] => {
             let id = ctx.fresh_id(None);
@@ -219,7 +219,7 @@ pub(crate) fn fold_block_to_continuation(
         }
 
         // ── Single statement — the block's value ──────────────────────────────
-        // Edge case: if the last stmt is a `let` or `var`, Phase 4 types the
+        // Edge case: if the last stmt is a `let` or `var`, the type checker types the
         // block as `Unit`, so we emit the binding with a `Unit` body.
         [Expr::Let {
             pat,
@@ -317,7 +317,7 @@ pub(crate) fn fold_block_to_continuation(
                 name: name.text.clone(),
                 // The resolved type lives in the typecheck side-table (node_types),
                 // not on the AST node.  `Type::Error` is the correct sentinel for
-                // Phase 5 — the codegen will look up the real type from the
+                // lowering — the codegen will look up the real type from the
                 // `LoweredModule.node_types` table indexed by `IrNodeId`.
                 ty: Type::Error,
                 value: Box::new(value_ir),
@@ -647,7 +647,7 @@ mod tests {
 
     // ── Empty block (defensive) → IrShapeMalformed error, no panic ──────────────
     //
-    // Phase 4 rejects empty blocks (P014); we must not panic if one arrives.
+    // the type checker rejects empty blocks (P014); we must not panic if one arrives.
     #[test]
     fn block_empty_defensive_returns_unit() {
         let mut ctx = fresh_ctx();

@@ -119,7 +119,7 @@ impl ImportItemInsertion {
 
 /// Diagnostic severity for a [`ResolveError`].
 ///
-/// Phase 6 (`ridge-diagnostics`) uses this to drive rendering color, exit
+/// `ridge-diagnostics` uses this to drive rendering color, exit
 /// codes, and IDE squiggles.  At resolve time both `Warning` and `Error`
 /// variants are pushed into the same `Vec<ResolveError>`; downstream code
 /// inspects [`ResolveError::severity`] to filter or rank them.
@@ -299,7 +299,7 @@ pub enum ResolveError {
     ///
     /// `Display` renders the spec §8.6 multi-line diagnostic directly:
     /// `file:line` of the offending import, the rule text, the manifest
-    /// provenance, and a fix suggestion.  Phase 8 (LSP) will serialize
+    /// provenance, and a fix suggestion. the LSP will serialize
     /// structured JSON using the individual fields rather than re-parsing
     /// the rendered string.
     #[error(

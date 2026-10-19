@@ -1,7 +1,7 @@
 // build.rs — ridge-typecheck signature generator (T10).
 //
 // Emits `${OUT_DIR}/stdlib_signatures.rs` by reading the implementation from
-// `src/stdlib_signatures_impl.rs` (the hand-curated Phase 4 signature table).
+// `src/stdlib_signatures_impl.rs` (the hand-curated type-checker signature table).
 // The source file `src/stdlib_signatures.rs` delegates to this generated file
 // via `include!(concat!(env!("OUT_DIR"), "/stdlib_signatures.rs"))`.
 //
@@ -11,7 +11,7 @@
 // ridge-typecheck cannot depend on ridge-stdlib (even as build-dep) without
 // creating a Cargo cycle.  This build script performs its own work without
 // depending on ridge-stdlib.  For T10 the generated content is the
-// hand-curated Phase 4 table verbatim — future tasks (T12+) will make the
+// hand-curated type-checker table verbatim — future tasks (T12) will make the
 // generation smarter once a cycle-safe codegen crate is available.
 //
 // T201 / T202 errors: surfaced via eprintln! + process::exit(1) (no panic!

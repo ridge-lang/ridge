@@ -1,6 +1,6 @@
 //! Compilation orchestration for the Ridge compiler.
 //!
-//! `ridge-driver` is the single entry point that CLI, LSP, and the Phase-6
+//! `ridge-driver` is the single entry point that CLI, LSP, and the codegen
 //! BEAM-runtime test harness all consume.  It wires
 //! `ridge-resolve → ridge-typecheck → ridge-lower → ridge-codegen-erl` into
 //! three public functions:
@@ -9,11 +9,11 @@
 //! - [`check_workspace`] — stops after typecheck, no codegen.
 //! - [`run_workspace`] — `compile_workspace` + `erl -s <module> start`.
 //!
-//! # Hard constraints (§1.3)
+//! # Hard constraints
 //!
-//! - No `panic!` / `unwrap` / `expect` on user-input paths (§1.3 #4).
+//! - No `panic!` / `unwrap` / `expect` on user-input paths.
 //!   Every user-reachable error path returns a structured error.
-//! - Cross-platform paths via [`std::path::PathBuf::join`] only (§1.3 #5).
+//! - Cross-platform paths via [`std::path::PathBuf::join`] only.
 //! - Output dir: `<workspace_root>/target/ridge/<profile>/`.
 
 #![warn(missing_docs)]

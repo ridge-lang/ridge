@@ -1,9 +1,8 @@
-//! Hard-coded built-in stdlib manifest. Phase 7 will replace with a
-//! generated table from the real stdlib (see R006).
+//! Built-in stdlib manifest generated from the stdlib declarations (see R006).
 //!
-//! Export lists are derived from spec §9.1–9.2 (lines 1000–1037).
-//! The table is provisional — Phase 7 generates it from the actual stdlib
-//! source.  Adding a missing export here does NOT change language semantics.
+//! See spec §9.1–9.2 for the public stdlib surface. The build script extracts
+//! exports from stdlib source; this table describes those declarations rather
+//! than defining language semantics independently.
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -17,8 +16,7 @@ pub struct StdlibModuleId(pub u32);
 /// A built-in stdlib module: its stable id, dot-separated name, and the list
 /// of exported symbol names.
 ///
-/// Export lists are **best-effort** from spec §9.1–9.2; Phase 7 supersedes
-/// with a generated table from the real stdlib.
+/// Export lists are generated from the real stdlib declarations; see spec §9.1–9.2.
 #[derive(Debug)]
 pub struct BuiltinStdlibModule {
     /// Stable numeric id; equals the module's index in [`BUILTINS`].
@@ -56,7 +54,7 @@ pub static BUILTINS: &[BuiltinStdlibModule] =
 /// Look up a stdlib module by its dot-separated name (e.g. `"std.list"`).
 ///
 /// Linear scan over [`BUILTINS`] — O(N) where N = 21.  Acceptable for the
-/// current table size; Phase 7 may replace with a hash map if N grows.
+/// current table size; a hash map may replace it if N grows.
 #[must_use]
 pub fn lookup_stdlib(name: &str) -> Option<&'static BuiltinStdlibModule> {
     BUILTINS.iter().find(|m| m.name == name)

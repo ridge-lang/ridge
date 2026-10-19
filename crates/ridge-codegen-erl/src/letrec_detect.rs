@@ -1,14 +1,14 @@
-//! Recursive inner-fn detection for `LetIn` → `letrec` promotion (OQ-L012).
+//! Recursive inner-fn detection for `LetIn` → `letrec` promotion.
 //!
-//! Phase 5 emits recursive inner fns as `LetIn(Bind(name, None), Lambda, body)`.
-//! During Phase 6 lowering, the `LetIn` arm calls [`body_references_local`] on
+//! Lowering emits recursive inner fns as `LetIn(Bind(name, None), Lambda, body)`.
+//! During codegen lowering, the `LetIn` arm calls [`body_references_local`] on
 //! the lambda body to decide whether to emit `letrec` (self-referencing) or a
 //! plain `let` (non-recursive).
 
 // letrec_detect is consumed from expr.rs and from the module-level entry points.
 #![allow(dead_code)]
 // pub(crate) on items in a pub(crate) module is redundant per clippy; we keep
-// it for explicitness per plan §2.2.
+// it for explicitness
 #![allow(clippy::redundant_pub_crate)]
 
 use ridge_ir::IrExpr;
@@ -19,9 +19,9 @@ use ridge_ir::IrExpr;
 /// Used by the `LetIn` arm of [`crate::expr::lower_expr_in_scope`] to detect
 /// self-references so it can emit `letrec` instead of `let`.
 ///
-/// Per OQ-L012 (Phase 5): "Phase 5 emits recursive inner fns as
-/// `LetIn(Bind, Lambda)` — the recursion is handled by the binding map".
-/// Phase 6 detects self-reference by walking the lambda body.
+/// Lowering emits recursive inner fns as
+/// `LetIn(Bind, Lambda)` — the recursion is handled by the binding map.
+/// Codegen detects self-reference by walking the lambda body.
 pub(crate) fn body_references_local(body: &IrExpr, target_name: &str) -> bool {
     match body {
         IrExpr::Local { name, .. } => name == target_name,

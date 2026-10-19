@@ -15,7 +15,7 @@ fn wp() -> &'static Path {
     Path::new(DUMMY_WS_PATH)
 }
 
-/// T1 §3.11 — happy workspace #1: single-project workspace.
+/// Happy workspace #1: single-project workspace.
 #[test]
 fn ws_happy_single_project() {
     let toml = include_str!("fixtures/ws_single_project.toml");
@@ -28,7 +28,7 @@ fn ws_happy_single_project() {
     assert!(ws.capabilities_deny.is_empty());
 }
 
-/// T1 §3.11 — happy workspace #2: multi-member glob workspace.
+/// Happy workspace #2: multi-member glob workspace.
 #[test]
 fn ws_happy_multi_member() {
     let toml = include_str!("fixtures/ws_multi_member.toml");
@@ -40,7 +40,7 @@ fn ws_happy_multi_member() {
     assert!(ws.members_globs.contains(&"tests/*".to_owned()));
 }
 
-/// T1 §3.11 — happy workspace #3: workspace with forbid rules.
+/// Happy workspace #3: workspace with forbid rules.
 #[test]
 fn ws_happy_with_forbid_rules() {
     let toml = include_str!("fixtures/ws_with_forbid_rules.toml");
@@ -51,7 +51,7 @@ fn ws_happy_with_forbid_rules() {
     assert!(!ws.forbid_rules[0].from.matches("acme.infra.Baz"));
 }
 
-/// T1 §3.11 — happy workspace #4: workspace with shared dependencies.
+/// Happy workspace #4: workspace with shared dependencies.
 #[test]
 fn ws_happy_with_deps() {
     let toml = include_str!("fixtures/ws_with_deps.toml");
@@ -60,7 +60,7 @@ fn ws_happy_with_deps() {
     assert_eq!(ws.version, "0.2.0");
 }
 
-/// T1 §3.11 — happy workspace #5: workspace with capabilities.deny.
+/// Happy workspace #5: workspace with capabilities.deny.
 #[test]
 fn ws_happy_with_capabilities() {
     use ridge_ast::Capability;

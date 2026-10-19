@@ -1,4 +1,4 @@
-//! Top-level item driver — §10 T11.
+//! Top-level item driver.
 //!
 //! Dispatches over AST [`Item`] variants to produce [`IrItem`]s, then
 //! collects them into the `LoweredModule` that `lower_module` returns.
@@ -10,8 +10,7 @@
 //! - `lower_fn`    — converts a [`FnDecl`] to an [`IrFn`].
 //! - `lower_const` — converts a [`ConstDecl`] to an [`IrConst`].
 //!
-//! Actor lowering is delegated to [`crate::actor_lower::lower_actor`] which was
-//! already implemented in T10.
+//! Actor lowering is delegated to [`crate::actor_lower::lower_actor`].
 //!
 //! # Type / capability / scheme wiring
 //!
@@ -23,7 +22,7 @@
 //! - Record/actor `TyConId`s resolve via
 //!   [`crate::ctx::LowerCtx::lookup_tycon_by_name`].
 //!
-//! Placeholders resolved in the Phase 4.5 sweep (`PHASE45-T3+T4`): bare param
+//! Placeholders resolved in type-metadata recording: bare param
 //! types are now looked up from `node_types`; `IrFn.scheme` is now looked up
 //! from `TypedModule.schemes` keyed by body `NodeId`.
 //!
@@ -593,7 +592,7 @@ fn close_return_boundary(ctx: &mut LowerCtx<'_>, body: IrExpr, span: Span) -> Ir
 ///
 /// # Type and capability wiring
 ///
-/// - `caps` — read from Phase 4's `inferred_caps` side-table via the proxy
+/// - `caps` — read from the type checker's `inferred_caps` side-table via the proxy
 ///   `NodeId(decl.span.start)` (see [`LowerCtx::lookup_inferred_caps`]).
 /// - `ret_ty` — lowered from the declared AST `Type` annotation via
 ///   `lower_ast_type`.  Falls back to `Type::Error` when no annotation is
@@ -601,21 +600,21 @@ fn close_return_boundary(ctx: &mut LowerCtx<'_>, body: IrExpr, span: Span) -> Ir
 /// - `scheme` — looked up from `TypedModule.schemes` keyed by the fn body's
 ///   `NodeId` (resolved via `node_id_map.get(body_span, body_kind)`).  Falls back
 ///   to `Scheme::mono(Type::Error)` when no workspace or scheme entry is present.
-///   PHASE45-T4: scheme lookup wired from TypedModule.schemes.
+///   scheme lookup wired from TypedModule.schemes.
 /// - param `ty` — lowered from the declared AST annotation; for bare (unannotated)
 ///   parameters the type is looked up from `node_types` via `node_id_map`.
-///   PHASE45-T3: bare param types looked up from `node_types` via `node_id_map`.
+///   bare param types looked up from `node_types` via `node_id_map`.
 ///
 /// # Propagation scope
 ///
-/// Per §4.2, the fn's return type is pushed onto `propagation_scope_stack`
+/// The fn's return type is pushed onto `propagation_scope_stack`
 /// before lowering the body, and popped after.
 ///
 /// # `is_main`
 ///
 /// A fn named `"main"` at module top level is marked `is_main = true`.
 pub fn lower_fn(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrFn {
-    // PHASE45-T4: look up the generalised scheme from TypedModule.schemes early
+    // look up the generalised scheme from TypedModule.schemes early
     // so that bare-param types can be extracted from it (see param_to_ir_param).
     // The scheme is keyed by the body's NodeId; the body_kind mirrors the
     // logic in ridge-typecheck/src/scc.rs:309-312 (Block/Try/Expr).
@@ -631,13 +630,13 @@ pub fn lower_fn(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrFn {
     let scheme = lookup_fn_scheme(ctx, expr);
 
     // Resolve ret_ty from the declared annotation when present.
-    // When absent, read the body's inferred type from node_types (PHASE45-T3+OQ-004).
+    // When absent, read the body's inferred type from node_types.
     // The body NodeId is keyed by (body.span(), body_node_kind(body)) — the same
     // logic used by ridge-typecheck/scc.rs to key scheme write-back.
     let ret_ty = if let Some(ast_ty) = &decl.ret {
         lower_ast_type(ctx, ast_ty)
     } else {
-        // PHASE45-T3+OQ-004: read body's inferred return type from node_types.
+        // Read body's inferred return type from node_types.
         let bkind = body_node_kind(expr);
         let bspan = match expr {
             Expr::Block(b) => b.span,
@@ -664,7 +663,7 @@ pub fn lower_fn(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrFn {
     ctx.current_fn_constraints = saved_constraints;
     ctx.pop_propagation_scope();
 
-    // PHASE45-T3: bare-param types are lifted from the scheme's Type::Fn
+    // bare-param types are lifted from the scheme's Type::Fn
     // rather than looked up via NodeKind::Ident (ident spans carry no type).
     //
     // A destructuring param (`(Point { x, y }: Point)`, L9) lowers to a fresh
@@ -714,7 +713,7 @@ pub fn lower_fn(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrFn {
         body
     };
 
-    // Read the effective capability set from Phase 4's inferred_caps side-table.
+    // Read the effective capability set from the type checker's inferred_caps side-table.
     let caps = ctx.lookup_inferred_caps(decl.span);
 
     IrFn {
@@ -6933,7 +6932,7 @@ const fn body_node_kind(body: &Expr) -> NodeKind {
 /// Falls back to `Scheme::mono(Type::Error)` when the workspace is absent, the
 /// module index is out of range, or no scheme entry exists for this body.
 ///
-/// PHASE45-T4: scheme lookup wired from TypedModule.schemes.
+/// scheme lookup wired from TypedModule.schemes.
 fn lookup_fn_scheme(ctx: &LowerCtx<'_>, body: &Expr) -> Scheme {
     let body_kind = body_node_kind(body);
     let body_span = match body {
@@ -6963,7 +6962,7 @@ fn lookup_fn_scheme(ctx: &LowerCtx<'_>, body: &Expr) -> Scheme {
 /// `Type::Error` when the scheme is absent or the Fn shape doesn't match
 /// (test scaffolding).
 ///
-/// PHASE45-T3: bare param type lifted from the enclosing fn's scheme.
+/// bare param type lifted from the enclosing fn's scheme.
 fn param_to_ir_param(
     ctx: &mut LowerCtx<'_>,
     scheme: &Scheme,
@@ -6972,7 +6971,7 @@ fn param_to_ir_param(
 ) -> IrParam {
     match param {
         Param::Bare(ident) => {
-            // PHASE45-T3: lift param type from the enclosing fn's scheme.
+            // lift param type from the enclosing fn's scheme.
             // The scheme's Type::Fn { params } carries the fully-generalised
             // parameter types resolved after SCC constraint solving.
             let ty = if let Type::Fn { params, .. } = &scheme.ty {

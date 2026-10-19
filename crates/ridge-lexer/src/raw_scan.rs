@@ -755,7 +755,7 @@ fn scan_hole_expr(src: &str, start: usize, end: usize) -> (Vec<(RawToken, Span)>
 ///   well-formed token; the caller should still advance to `consumed_end_pos`.
 /// - `open_start` is the byte offset of the opening `"""` (for error spans).
 ///
-/// # Dedent algorithm (D256, §6.1)
+/// # Dedent algorithm
 ///
 /// 1. The character immediately after the opening `"""` must be `\n`; anything
 ///    else is `L013 MultilineStringOpenContent`.
@@ -1159,7 +1159,7 @@ fn scan_interp_body(
 /// so nothing downstream of the lexer needs to distinguish the two openers.
 ///
 /// The text obeys the same dedent rules as a plain triple-quoted string
-/// (`scan_triple_quote_body`, §6.1):
+/// (`scan_triple_quote_body`):
 ///
 /// 1. The byte after the opening `$"""` must be `\n`; content on the opening
 ///    line is `L013 MultilineStringOpenContent`.

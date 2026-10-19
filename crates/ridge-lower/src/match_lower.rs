@@ -1,4 +1,4 @@
-//! `match`-expression and pattern lowering rules — §4.8 / §4.8.1.
+//! `match`-expression and pattern lowering rules.
 //!
 //! # `lower_match`
 //!
@@ -9,7 +9,7 @@
 //!
 //! # `lower_pattern_full`
 //!
-//! Full pattern lowering table (§4.8.1):
+//! Full pattern lowering table:
 //!
 //! | AST pattern | IR pattern |
 //! |---|---|
@@ -168,7 +168,7 @@ fn lower_match_with_varlen(
     // NOT wrap the match in an outer `LetIn`: a match can sit mid-block (with
     // statements after it), and `LetIn` must be continuation-form — wrapping
     // here would place a `LetIn` as a non-final block statement and violate the
-    // Phase 5 IR invariant.
+    // lowering IR invariant.
     let scrutinee_ir = lower_expr(ctx, scrutinee);
 
     let match_id = ctx.fresh_id(None);
@@ -1032,7 +1032,7 @@ pub fn lower_pattern_full(ctx: &mut LowerCtx<'_>, pat: &Pattern) -> IrPat {
         // ── Paren erasure ──────────────────────────────────────────────────────
         Pattern::Paren { inner, .. } => lower_pattern_full(ctx, inner),
 
-        // OQ-L009: As-pattern lowers to Bind { inner: Some(...) } — same variant as
+        // As-pattern lowers to Bind { inner: Some(...) } — same variant as
         // plain variable bindings but with inner populated.
         // ── As-pattern ────────────────────────────────────────────────────────
         // `name @ inner` → Bind { name, inner: Some(lower_pattern_full(inner)) }
@@ -1601,7 +1601,7 @@ mod tests {
         ctx
     }
 
-    // ── T5-match-1: literal pattern arms ─────────────────────────────────────
+    // ── literal pattern arms ─────────────────────────────────────
     //
     // `match n { 1 -> "a", 2 -> "b", _ -> "c" }` produces 3 arms with
     // IrPat::Lit{Int(1)}, IrPat::Lit{Int(2)}, IrPat::Wild.
@@ -1644,7 +1644,7 @@ mod tests {
         }
     }
 
-    // ── T5-match-2: tuple pattern ─────────────────────────────────────────────
+    // ── tuple pattern ─────────────────────────────────────────────
     //
     // arm `(x, _) -> x`: pattern is IrPat::Tuple { elems: [Bind x, Wild] }
 
@@ -1678,7 +1678,7 @@ mod tests {
         }
     }
 
-    // ── T5-match-3: cons pattern ──────────────────────────────────────────────
+    // ── cons pattern ──────────────────────────────────────────────
     //
     // arm `head :: tail -> head`: pattern is IrPat::Cons { head: Bind head, tail: Bind tail }
 
@@ -1717,7 +1717,7 @@ mod tests {
         }
     }
 
-    // ── T5-match-4: as-pattern ────────────────────────────────────────────────
+    // ── as-pattern ────────────────────────────────────────────────
     //
     // arm `x @ _ -> x`: IrPat::Bind { name: "x", inner: Some(Wild) }
 
@@ -1752,7 +1752,7 @@ mod tests {
         }
     }
 
-    // ── T5-match-5: when-guard preserved ─────────────────────────────────────
+    // ── when-guard preserved ─────────────────────────────────────
     //
     // arm `x when true -> x`: arm.when is Some(IrExpr::Lit { Bool(true) })
 
@@ -1842,7 +1842,7 @@ mod tests {
         );
     }
 
-    // ── T5-match-6: constructor positional pattern ────────────────────────────
+    // ── constructor positional pattern ────────────────────────────
     //
     // arm `Some x -> x`: IrPat::Ctor { sym, fields: [], args: [Bind x] }
     // Uses a BindingMap wiring the `Some` ident to Binding::Constructor.

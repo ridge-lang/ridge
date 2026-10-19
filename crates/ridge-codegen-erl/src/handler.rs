@@ -1,7 +1,7 @@
-//! §4.30 — Lower `IrHandler` to `gen_server` callback clauses.
+//! Lower `IrHandler` to `gen_server` callback clauses.
 //!
 //! Each `IrHandler` is emitted as a clause in **both** `handle_call/3` (for `?>`
-//! callers) and `handle_cast/2` (for `!` callers) per resolved **OQ-E005** (§8.2).
+//! callers) and `handle_cast/2` (for `!` callers).
 //! This is because `!` vs `?>` is a call-site decision; the handler shape does not
 //! constrain which direction a caller uses.  BEAM cost is one extra clause per handler.
 //!
@@ -31,14 +31,14 @@
 //! innermost leaf of each arm via `leaf_wrap` threading.  This ensures that
 //! arm-specific `V_State<n>` variables are always in scope when referenced.
 //!
-//! ## State threading (§3.12 + §4.8)
+//! ## State threading
 //!
 //! The state map enters the handler as `V_State` (from the `State` argument).
 //! Any `Assign { target: StateField }` in the body bumps the state SSA index and
 //! emits `maps:put`.  The final state variable is returned in the tuple.
 
 // pub(crate) on items in a pub(crate) module is redundant per clippy; we keep
-// it for explicitness per plan §2.2.
+// it for explicitness
 #![allow(clippy::redundant_pub_crate)]
 // Handler lowering functions are exercised via actor.rs's tests and through the
 // actor module pipeline.  dead_code fires because lower_actor (their sole
@@ -73,13 +73,13 @@ const STATE_ARG_VAR: &str = "V_StateArg";
 ///         <body ending in {'reply', val, V_State_n} at each leaf>
 /// ```
 ///
-/// Per OQ-E005 (§8.2): all handlers appear in `handle_call/3` regardless of
+/// All handlers appear in `handle_call/3` regardless of
 /// their return type, because `!` vs `?>` is a call-site decision.
 ///
 /// `parent_module_id` and `parent_beam_name` are used to emit qualified inter-
 /// module calls for `SymbolRef::Local { module: parent_id }` references that
 /// cross from an actor body into the parent BEAM module (B-6 fix).
-// OQ-E005: emit in both handle_call and handle_cast (plan §4.30 + §8.2).
+// emit in both handle_call and handle_cast.
 pub(crate) fn lower_handler_call_clause(
     handler: &IrHandler,
     fn_arity: &FxHashMap<String, LocalShape>,
@@ -119,13 +119,13 @@ pub(crate) fn lower_handler_call_clause(
 ///         <body ending in {'noreply', V_State_n} at each leaf>
 /// ```
 ///
-/// Per OQ-E005 (§8.2): all handlers appear in `handle_cast/2` regardless of
+/// All handlers appear in `handle_cast/2` regardless of
 /// their return type, because `!` vs `?>` is a call-site decision.
 ///
 /// `parent_module_id` and `parent_beam_name` are used to emit qualified inter-
 /// module calls for `SymbolRef::Local { module: parent_id }` references that
 /// cross from an actor body into the parent BEAM module (B-6 fix).
-// OQ-E005: emit in both handle_call and handle_cast (plan §4.30 + §8.2).
+// emit in both handle_call and handle_cast.
 pub(crate) fn lower_handler_cast_clause(
     handler: &IrHandler,
     fn_arity: &FxHashMap<String, LocalShape>,

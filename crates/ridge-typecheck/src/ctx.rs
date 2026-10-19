@@ -1,12 +1,12 @@
-//! Inference context — per-module mutable state for Algorithm W (T5, T6).
+//! Inference context — per-module mutable state for Algorithm W.
 //!
 //! [`InferCtx`] owns the two `ena` union-find tables (one for type variables,
 //! one for capability-row variables) and provides the core primitives:
 //! fresh-variable allocation and shallow resolution.
 //!
-//! T6 extensions: [`Env`] (scoped type environment), [`Frame`], plus the
-//! higher-level fields `env`, `current_caps`, `errors`, and `current_fn_ret`
-//! added to [`InferCtx`].
+//! [`Env`] and [`Frame`] provide the scoped type environment. The higher-level
+//! fields `env`, `current_caps`, `errors`, and `current_fn_ret` track lexical
+//! bindings, capabilities, diagnostics, and the enclosing return type.
 
 use ena::unify::{InPlaceUnificationTable, NoError, UnifyKey, UnifyValue};
 use ridge_resolve::{NodeIdMap, NodeKind};
@@ -166,7 +166,7 @@ pub struct Frame {
 
 /// Lexically-scoped type environment: a stack of [`Frame`]s.
 ///
-/// The innermost (top) frame is checked first, mirroring Phase 3's `ScopeStack`.
+/// The innermost (top) frame is checked first, mirroring the resolver's `ScopeStack`.
 #[derive(Debug, Default, Clone)]
 pub struct Env {
     /// Stack of frames; the last element is the innermost (active) scope.
@@ -282,7 +282,7 @@ pub struct MonomorphicInScc {
 /// Per-module mutable inference state.
 ///
 /// Owns the two `ena` union-find tables plus the higher-level Algorithm-W
-/// state introduced in T6: lexical type environment, capability tracking,
+/// state: lexical type environment, capability tracking,
 /// error accumulator, and the enclosing-function return type.
 pub struct InferCtx {
     /// The built-in type constructors, as the arena interned them.
@@ -308,7 +308,8 @@ pub struct InferCtx {
     pub env: Env,
     /// Capability set inferred for the *current* enclosing function.
     ///
-    /// T6 uses `CapabilitySet::PURE` as the placeholder (caps inference is T13).
+    /// Expression inference uses `CapabilitySet::PURE` as the placeholder; the
+    /// capability inference pass computes the body contributions.
     /// The value is snapshotted when building a `Type::Fn` for a lambda.
     pub current_caps: CapabilitySet,
     /// Accumulated `T###` diagnostics for the current module.
@@ -323,7 +324,7 @@ pub struct InferCtx {
     /// Flow of the current inference region; nested regions save and restore it.
     pub(crate) flow: crate::flow::Flow,
 
-    /// The propagation target type for `?` operators (T10).
+    /// The propagation target type for `?` operators.
     ///
     /// - Inside a `try { … }` block, this is set to the try-expression's
     ///   synthesised `Result a e` type, overriding `current_fn_ret` for `?`.
@@ -332,7 +333,7 @@ pub struct InferCtx {
     /// - Saved and restored on `try`-block entry/exit so nesting works correctly.
     pub current_propagate_target: Option<Type>,
 
-    /// User-defined `TyCon` name → `TyConId` map (T17 pipeline wiring).
+    /// User-defined `TyCon` name → `TyConId` map.
     ///
     /// Populated by `tycon_collect::collect_user_tycons` before type inference
     /// begins.  Used by `ast_type_to_type` (in `infer.rs`) to resolve named
@@ -370,22 +371,21 @@ pub struct InferCtx {
     /// Alias heads known before their bodies are built (including forward uses).
     pub(crate) projection_aliases: FxHashSet<TyConId>,
 
-    /// Snapshot of all `TyConDecls` in the arena at the start of module inference
-    /// (T17 pipeline wiring).
+    /// Snapshot of all `TyConDecls` in the arena at the start of module inference.
     ///
     /// Used by `infer_expr` (and `records.rs`) to look up record schemas and
     /// union variant lists at construction/access/pattern sites.
     /// Populated from the arena before `typecheck_module_decls` is called.
     pub tycon_decls: Vec<TyConDecl>,
 
-    // ── Phase 4.5 T3/T4/T5 additions ─────────────────────────────────────────
+    // ── Type metadata ─────────────────────────────────────────
     /// Optional reference to the module's `NodeIdMap`, set before inference
     /// begins.  When `Some`, `infer_expr_outer` writes each resolved `Type`
     /// to `node_types_accum` indexed by the expression's `NodeId`.
     ///
     /// `None` when running in contexts without a node-id map (tests, LSP
     /// incremental re-check without prior resolution pass).
-    // OQ-PHASE45-005: span-keyed lookup kept; no NodeId fields on FnDecl/ConstDecl.
+    // span-keyed lookup kept; no NodeId fields on FnDecl/ConstDecl.
     pub node_id_map: Option<NodeIdMap>,
 
     /// Accumulator for per-expression types written back by `infer_expr_outer`.
@@ -400,7 +400,7 @@ pub struct InferCtx {
     /// Keyed by `NodeId` (the decl's own node id looked up via
     /// `node_id_map.get(decl.span, NodeKind::Expr)`).
     /// Moved into `TypedModule.schemes` at module-end.
-    // OQ-PHASE45-003: top-level decl schemes only; let-bound locals excluded.
+    // top-level decl schemes only; let-bound locals excluded.
     pub schemes_accum: FxHashMap<ridge_resolve::NodeId, Scheme>,
 
     /// Map from anonymous record shape to the [`ridge_types::TyConId`] interned
@@ -408,7 +408,7 @@ pub struct InferCtx {
     ///
     /// Populated by `tycon_collect::prescan_inline_records` BEFORE inference
     /// begins.  Read by `ast_type_to_ridge_type` and the `Expr::RecordLit` /
-    /// `Pattern::Record` inference arms (T5).
+    /// `Pattern::Record` inference arms.
     pub anon_records: AnonRecordTable,
 
     /// Records whose `Row` instance was demanded while discharging constraints
@@ -682,11 +682,11 @@ impl InferCtx {
     /// Write back the shallow-resolved type for an expression position to
     /// `node_types_accum`, keyed by the `NodeId` for `(span, kind)`.
     ///
-    /// This is the single write-back helper used by `infer_expr_outer` (T3)
-    /// and `infer_block` / `infer_try` (T3/OQ-PHASE45-004).
+    /// This is the single write-back helper used by `infer_expr_outer`
+    /// and `infer_block` / `infer_try`.
     ///
     /// No-op when `node_id_map` is `None` or the span is not stamped.
-    // OQ-PHASE45-004: shared helper for Expr, Block, and Try write-back.
+    // shared helper for Expr, Block, and Try write-back.
     pub fn write_node_type(&mut self, span: ridge_ast::Span, kind: NodeKind, ty: &Type) {
         let nid = match &self.node_id_map {
             Some(map) => match map.get(span, kind) {

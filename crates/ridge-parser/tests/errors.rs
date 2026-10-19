@@ -1,4 +1,4 @@
-//! Error-recovery fixture tests (T12, §6 T12 `DoD`).
+//! Error-recovery fixture tests.
 //!
 //! Each `.ridge` file under `tests/fixtures/errors/` starts with one or more
 //! `-- expect: PXXX` header lines.  This harness:

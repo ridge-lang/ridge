@@ -1,4 +1,4 @@
-//! `TypeError` — the `T###` diagnostic type for Phase 4 type checking.
+//! `TypeError` — the `T###` diagnostic type for type checking.
 //!
 //! Every variant carries a stable [`TypeError::code`] (e.g. `"T001"`) that
 //! mirrors the `R###`/`M###` convention from earlier phases.
@@ -131,7 +131,7 @@ pub enum CapDeclKind {
 // TypeError enum
 // ---------------------------------------------------------------------------
 
-/// A Phase-4 type-check diagnostic.
+/// A type-checking diagnostic.
 ///
 /// All variants are `#[non_exhaustive]` at the enum level — new variants may be
 /// added in 0.2.0.  `Display` renders the full human-readable message (see
@@ -427,7 +427,7 @@ pub enum TypeError {
     // ── T026 ─────────────────────────────────────────────────────────────────
     /// The expression supplied to `?> ... timeout <expr>` is not `Int`.
     ///
-    /// Allocated by Phase 6 T0 (OQ-E001 narrow exception) — the timeout value
+    /// The timeout value
     /// must be an integer number of milliseconds.  `timeout never` is the
     /// explicit opt-in for an unlimited wait.
     AskTimeoutNotInt {

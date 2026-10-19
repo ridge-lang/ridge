@@ -1,6 +1,6 @@
 //! Output-directory layout — `target/ridge/<profile>/`.
 //!
-//! The canonical layout (§3.3) is:
+//! The canonical layout is:
 //!
 //! ```text
 //! target/ridge/<profile>/

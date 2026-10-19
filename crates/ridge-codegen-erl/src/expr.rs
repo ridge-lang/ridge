@@ -1,27 +1,27 @@
 //! Central dispatch table for lowering `IrExpr` nodes to `CErlExpr`.
 //!
 //! Arms lowered here:
-//! - §4.1  `IrExpr::Lit`       → [`lower_lit`] in `lit.rs`
-//! - §4.2  `IrExpr::Local`     → `CErlExpr::Var` with [`name_to_erl_var`] mangling
-//! - §4.3  `IrExpr::Symbol`    → [`lower_symbol`] router in `symbol.rs`
-//! - §4.4  `IrExpr::Call`      → [`lower_call`]: static `IrExpr::Symbol` callee
+//! - `IrExpr::Lit`       → [`lower_lit`] in `lit.rs`
+//! - `IrExpr::Local`     → `CErlExpr::Var` with [`name_to_erl_var`] mangling
+//! - `IrExpr::Symbol`    → [`lower_symbol`] router in `symbol.rs`
+//! - `IrExpr::Call`      → [`lower_call`]: static `IrExpr::Symbol` callee
 //!   (Constructor dispatch; Prelude dispatch; Stdlib bridge map; Local/External)
 //!   and dynamic callee (anything else → `CErlExpr::Apply`). The `LetIn` recursive
-//!   inner-fn `letrec` path (OQ-L012) is live end-to-end with Lambda lowering.
-//! - §4.5  `IrExpr::Lambda`    → [`lower_lambda`]: `CErlExpr::Fun { params, body }`.
+//!   inner-fn `letrec` path is live end-to-end with Lambda lowering.
+//! - `IrExpr::Lambda`    → [`lower_lambda`]: `CErlExpr::Fun { params, body }`.
 //!   `caps` is erased (Model B capability erasure). Lambda body is lowered in a fresh per-lambda scope.
-//! - §4.6  `IrExpr::LetIn`     → `CErlExpr::Let` or `CErlExpr::Case` (destructuring)
-//! - §4.7  `IrExpr::VarIn`     → `CErlExpr::Let` with SSA-index-0 binding
-//! - §4.8  `IrExpr::Assign`    → handled inline by the Block lowerer
-//! - §4.9  `IrExpr::Return`    → throw form via `return_::lower_return`
-//! - §4.10 `IrExpr::Block`     → `CErlExpr::Do` chain (right-fold)
-//! - §4.11 `IrExpr::Match`     → `CErlExpr::Case`
-//! - §4.12 `IrExpr::Construct` → [`lower_construct`]: `MapLit` (Record) or `Tuple`/`Atom`
-//!   (UnionVariant/Prelude); OQ-CG004 `with` peephole emits `MapUpdate` instead of `MapLit`.
-//! - §4.13 `IrExpr::Field`     → [`lower_field`]: `call 'maps':'get'(Atom, Base)`.
-//! - §4.14 `IrExpr::ListLit`   → `CErlExpr::ListLit`
-//! - §4.15 `IrExpr::Tuple`     → `CErlExpr::Tuple`
-//! - §4.16 `IrExpr::Cons`      → `CErlExpr::Cons`
+//! - `IrExpr::LetIn`     → `CErlExpr::Let` or `CErlExpr::Case` (destructuring)
+//! - `IrExpr::VarIn`     → `CErlExpr::Let` with SSA-index-0 binding
+//! - `IrExpr::Assign`    → handled inline by the Block lowerer
+//! - `IrExpr::Return`    → throw form via `return_::lower_return`
+//! - `IrExpr::Block`     → `CErlExpr::Do` chain (right-fold)
+//! - `IrExpr::Match`     → `CErlExpr::Case`
+//! - `IrExpr::Construct` → [`lower_construct`]: `MapLit` (Record) or `Tuple`/`Atom`
+//!   (UnionVariant/Prelude); `with` peephole emits `MapUpdate` instead of `MapLit`.
+//! - `IrExpr::Field`     → [`lower_field`]: `call 'maps':'get'(Atom, Base)`.
+//! - `IrExpr::ListLit`   → `CErlExpr::ListLit`
+//! - `IrExpr::Tuple`     → `CErlExpr::Tuple`
+//! - `IrExpr::Cons`      → `CErlExpr::Cons`
 //!
 //! All other `IrExpr` variants return a deferred `IrShapeMalformed` error.
 
@@ -29,7 +29,7 @@
 // entry points in the codegen pipeline.
 #![allow(dead_code)]
 // pub(crate) on items in a pub(crate) module is redundant per clippy; we keep
-// it anyway for explicitness per plan §2.2 — suppress the lint here.
+// it anyway for explicitness — suppress the lint here.
 #![allow(clippy::redundant_pub_crate)]
 // lower_expr_in_scope is a linear dispatch table over a large enum; it will
 // always be close to the 100-line limit.  Allow the natural size rather than
@@ -56,13 +56,13 @@ use ridge_ir::{AssignTarget, CtorKind, IrExpr, IrLit, IrParam, IrPat, SymbolRef}
 /// Mangle a Ridge local-variable name into a legal Core Erlang variable name.
 ///
 /// Erlang variables must start with an uppercase letter.  Ridge identifiers
-/// start lowercase (or with underscores for Phase-5-synthesised names).
+/// start lowercase (or with underscores for lowering-synthesised names).
 ///
 /// **Algorithm:**
 /// 1. Strip all leading underscores.
 /// 2. Split the remaining string on `'_'`.
 /// 3. Capitalise the first letter of each non-empty segment, leaving the rest
-///    as-is (preserving any embedded uppercase from Phase-5 synthesised names).
+///    as-is (preserving any embedded uppercase from lowering synthesised names).
 /// 4. Join the capitalised segments (no separator).
 /// 5. Prepend `"V_"`.
 ///
@@ -394,7 +394,7 @@ pub(crate) fn lower_expr(expr: &IrExpr) -> Result<CErlExpr, CodegenError> {
 
 /// Lower an [`IrExpr`] to a [`CErlExpr`], threading the given [`LocalScope`].
 ///
-/// The scope tracks `var`-bound locals (§3.12).  Every SSA-index lookup and
+/// The scope tracks `var`-bound locals.  Every SSA-index lookup and
 /// bump goes through `scope`.
 pub(crate) fn lower_expr_in_scope(
     expr: &IrExpr,
@@ -483,7 +483,7 @@ pub(crate) fn lower_expr_in_scope(
         // ── LetIn, VarIn, Assign, Return, Block, Match ───────────────────────
 
         // §4.6 — LetIn: simple Bind(name, None) → Let; other patterns → Case.
-        // OQ-L012 (Phase 5): recursive inner-fn detection: if value is Lambda
+        // Recursive inner-fn detection: if value is Lambda
         // and the lambda body references the bound name, we emit LetRec.
         // Lambda lowering completes the rec-inner-fn path.
         IrExpr::LetIn {
@@ -494,7 +494,7 @@ pub(crate) fn lower_expr_in_scope(
             } = pat
             {
                 // Simple case: single-name bind, no as-pattern.
-                // Check for recursive inner-fn (OQ-L012) — if value is a
+                // Check for recursive inner-fn — if value is a
                 // Lambda and the lambda body references `name`, we should
                 // emit LetRec rather than Let.
                 if let IrExpr::Lambda {
@@ -572,8 +572,8 @@ pub(crate) fn lower_expr_in_scope(
         }
 
         // §4.8 — Assign: only valid inside a Block (handled by lower_block_stmts).
-        // A standalone Assign (no enclosing Block) is a Phase-5 invariant
-        // violation.  The StateField subcase is deferred to T9.
+        // A standalone Assign (no enclosing Block) is a lowering invariant
+        // violation.  The StateField subcase remains deferred.
         IrExpr::Assign { target, span, .. } => match target {
             AssignTarget::Local { .. } => Err(CodegenError::IrShapeMalformed {
                 variant: "IrExpr::Assign",
@@ -726,7 +726,7 @@ pub(crate) fn lower_expr_in_scope(
         IrExpr::Field {
             base, field, span, ..
         } => lower_field(base, field, *span, scope),
-        // §4.17 — Send (`!`): route through ridge_rt:send_op/2 (OQ-E004).
+        // §4.17 — Send (`!`): route through ridge_rt:send_op/2.
         IrExpr::Send {
             handle,
             message,
@@ -745,7 +745,7 @@ pub(crate) fn lower_expr_in_scope(
             ..
         } => lower_ask(handle, message, args, timeout.as_ref(), *span, scope),
 
-        // §4.19 — Spawn: route through ridge_rt:spawn_actor/3 (OQ-E006).
+        // §4.19 — Spawn: route through ridge_rt:spawn_actor/3.
         IrExpr::Spawn {
             actor, args, span, ..
         } => lower_spawn(actor, args, *span, scope),
@@ -830,10 +830,10 @@ fn state_field_assign_detail(name: &str, scope: &LocalScope) -> String {
     }
 }
 
-/// Lower a `Block`'s statement slice to a right-folded `Do` chain (§4.10).
+/// Lower a `Block`'s statement slice to a right-folded `Do` chain.
 ///
 /// Assign statements are promoted to `Let` bindings (the continuation is the
-/// rest of the block).  Phase 5 invariants:
+/// rest of the block). Lowering invariants:
 ///
 /// - `stmts` must be non-empty.
 /// - `LetIn`/`VarIn` must not appear as Block stmts (they are continuation-form).
@@ -886,7 +886,7 @@ fn lower_block_stmts(
                     detail: state_field_assign_detail(name, scope),
                 }),
 
-                // LetIn/VarIn as a Block stmt: Phase 5 invariant violation.
+                // LetIn/VarIn as a Block stmt: lowering invariant violation.
                 IrExpr::LetIn { span: let_span, .. } | IrExpr::VarIn { span: let_span, .. } => {
                     Err(CodegenError::IrShapeMalformed {
                         variant: "IrExpr::Block",
@@ -913,11 +913,11 @@ fn lower_block_stmts(
 
 // ── §4.12 Construct lowering ─────────────────────────────────────────────────
 
-/// Lower `IrExpr::Construct` to a `CErlExpr` (§4.12).
+/// Lower `IrExpr::Construct` to a `CErlExpr`.
 ///
 /// Dispatch by `ctor`:
 /// - `Constructor { ctor_kind: Record }` → `MapLit` (or `MapUpdate` via the
-///   OQ-CG004 `with` peephole when the field slice encodes a `with` update).
+///   `with` peephole when the field slice encodes a `with` update).
 /// - `Constructor { ctor_kind: UnionVariant }` → `Tuple([Atom name, v1, …])` if
 ///   fields are non-empty; `Lit(Atom name)` if fields are empty.
 /// - `Prelude { name: "Some" | "Ok" | "Err" }` → `Tuple([Atom tag, v0])`.
@@ -1096,7 +1096,7 @@ fn lower_construct(
             }),
         },
 
-        // ── All other SymbolRef variants inside Construct.ctor are Phase-5
+        // ── All other SymbolRef variants inside Construct.ctor are lowering
         // invariant violations: constructors must be Constructor or Prelude. ───
         SymbolRef::Local { .. } => Err(CodegenError::IrShapeMalformed {
             variant: "IrExpr::Construct",
@@ -1134,7 +1134,7 @@ fn lower_construct(
 
 // ── §4.13 Field lowering ──────────────────────────────────────────────────────
 
-/// Lower `IrExpr::Field` to `call 'maps':'get'(Atom key, base)` (§4.13),
+/// Lower `IrExpr::Field` to `call 'maps':'get'(Atom key, base)`,
 /// with a static-resolution peephole for typeclass dictionaries.
 ///
 /// # Static peephole (dictionary lowering)
@@ -1187,7 +1187,7 @@ fn lower_field(
 
 // ── §4.5 Lambda lowering ─────────────────────────────────────────────────────
 
-/// Lower `IrExpr::Lambda` to `CErlExpr::Fun { params, body }` (§4.5).
+/// Lower `IrExpr::Lambda` to `CErlExpr::Fun { params, body }`.
 ///
 /// Each parameter is mangled via [`name_to_erl_var`] and wrapped in a
 /// [`CErlVar`].  The body is lowered in a **fresh per-lambda scope** (Erlang
@@ -1250,7 +1250,7 @@ pub(crate) fn lower_lambda(
 // ── §4.4 Call lowering ────────────────────────────────────────────────────────
 
 /// Lower `IrExpr::Call` to `CErlExpr::Call` (static callee) or
-/// `CErlExpr::Apply` (dynamic callee) per §4.4.
+/// `CErlExpr::Apply` (dynamic callee).
 ///
 /// **Static path** — callee is `IrExpr::Symbol`:
 /// - `Local { name }` → unqualified Apply or qualified cross-module Call.
@@ -1280,10 +1280,10 @@ fn lower_call(
     } else {
         // Dynamic callee: lower it and emit Apply.
         //
-        // B-6 (Phase 6 pass 3): special-case `IrExpr::Local { name }` when we
+        // special-case `IrExpr::Local { name }` when we
         // are in actor-handler context and `name` is a parent-module fn/const.
         //
-        // Phase 5 may emit `IrExpr::Call { callee: IrExpr::Local { name }, args }`
+        // lowering may emit `IrExpr::Call { callee: IrExpr::Local { name }, args }`
         // for a call to a module-level function.  In actor context, the actor and
         // its parent are **separate BEAM modules**, so an unqualified `apply
         // 'fnName'/arity ()` in the actor module fails at load time.  When the
@@ -1341,7 +1341,7 @@ fn lower_static_call(
 ) -> Result<CErlExpr, CodegenError> {
     match sym {
         // ── Local fn-call → apply 'fnName'/arity (args...). ─────────────────
-        // B-6 (Phase 6 pass 3): if the scope carries an actor-parent context and
+        // if the scope carries an actor-parent context and
         // this symbol's `module` matches the parent's `ModuleId`, the symbol lives
         // in the parent BEAM module — emit a qualified `call 'parent':'fn' (args…)`.
         // Actor BEAM modules are separate compilation units and cannot make
@@ -1482,7 +1482,7 @@ fn lower_static_call(
             }
         }
 
-        // ── Record constructor via Call is a Phase-5 invariant violation. ─────
+        // ── Record constructor via Call is a lowering invariant violation. ─────
         SymbolRef::Constructor {
             ctor_kind: CtorKind::Record,
             name,
@@ -1499,7 +1499,7 @@ fn lower_static_call(
         // ── Prelude constructors. ─────────────────────────────────────────────
         SymbolRef::Prelude { name } => lower_prelude_call(name, args, span, scope),
 
-        // ── Handler/ActorType as a Call callee is a Phase-5 invariant violation.
+        // ── Handler/ActorType as a Call callee is a lowering invariant violation.
         SymbolRef::Handler { actor, handler, .. } => Err(CodegenError::IrShapeMalformed {
             variant: "IrExpr::Call",
             span,
@@ -1665,7 +1665,7 @@ const fn bridge_target_arity(target: &stdlib_map::BridgeTarget) -> u32 {
 /// All other symbols are routed through [`stdlib_map::lookup`].  A `None` result
 /// produces `E002 StdlibBridgeMissing`.
 // The `_` arm below is a defensive catch for future `#[non_exhaustive]`
-// BridgeTarget variants added in Phase 7+.  Inside this crate all current
+// BridgeTarget can gain additional stdlib variants. Inside this crate all current
 // variants are exhaustive, so the compiler warns; suppress it here.
 #[allow(unreachable_patterns)]
 pub(crate) fn lower_call_to_stdlib(
@@ -1848,7 +1848,7 @@ pub(crate) fn lower_call_to_stdlib(
             })
         }
 
-        // Phase 7: RidgeStdlibLocal — emit a direct BEAM call (beam_module:fn_name/arity).
+        // stdlib: RidgeStdlibLocal — emit a direct BEAM call (beam_module:fn_name/arity).
         // The Ridge stdlib source declares the arity; enforce it here the same way as BeamStdlib.
         BridgeTarget::RidgeStdlibLocal {
             beam_module,
@@ -1885,7 +1885,7 @@ pub(crate) fn lower_call_to_stdlib(
     }
 }
 
-// ── LetIn recursive inner-fn detection (OQ-L012) ────────────────────────────
+// ── LetIn recursive inner-fn detection ────────────────────────────
 // Moved to letrec_detect.rs; imported at the top of this file.
 
 #[cfg(test)]
@@ -1990,13 +1990,13 @@ mod tests {
 
     #[test]
     fn mangler_prop_ok() {
-        // §4.2 Phase-5-synthesised name: "__prop_ok" → "V_PropOk"
+        // §4.2 lowering-synthesised name: "__prop_ok" → "V_PropOk"
         assert_eq!(name_to_erl_var("__prop_ok"), "V_PropOk");
     }
 
     #[test]
     fn mangler_with_base() {
-        // §4.2 Phase-5-synthesised name: "__with_base" → "V_WithBase"
+        // §4.2 lowering-synthesised name: "__with_base" → "V_WithBase"
         assert_eq!(name_to_erl_var("__with_base"), "V_WithBase");
     }
 
@@ -2668,7 +2668,7 @@ mod tests {
         }
     }
 
-    // ── body_references_local detection (OQ-L012) ────────────────────────────
+    // ── body_references_local detection ────────────────────────────
 
     #[test]
     fn body_references_local_detects_self_ref() {

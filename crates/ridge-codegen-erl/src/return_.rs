@@ -1,4 +1,4 @@
-//! §4.9 — `IrExpr::Return` lowering utilities.
+//! `IrExpr::Return` lowering utilities.
 //!
 //! Three responsibilities:
 //!
@@ -9,14 +9,14 @@
 //!    catches the `{ridge_return, V}` throw.
 //! 4. [`elide_tail_returns`] — rewrite tail-position `Return { value }` nodes
 //!    to just `*value` (returns an owned clone of the IR).
-//! 5. [`lower_fn_body`] — integration point called by T8 item-level emission.
+//! 5. [`lower_fn_body`] — integration point called by item-level emission.
 //!    Routes through elide/wrap based on `has_non_tail_return`.
 
-// T4 helpers consumed by expr.rs and T8.  Until T8 wires the top-level
-// pipeline these items are only exercised from the test suite.
+// These helpers are consumed by expr.rs and item-level emission. Until the top-level
+// pipeline is wired, these items are only exercised from the test suite.
 #![allow(dead_code)]
 // pub(crate) on items in a pub(crate) module is redundant per clippy; we keep
-// it for explicitness per plan §2.2.
+// it for explicitness
 #![allow(clippy::redundant_pub_crate)]
 // lower_fn_body / wrap_with_return_catch contain non-trivial match nesting;
 // suppress the line-count lint for the whole file.
@@ -30,7 +30,7 @@ use ridge_ir::IrExpr;
 
 // ── 1. lower_return ───────────────────────────────────────────────────────────
 
-/// Emit the throw form for a non-tail `Return` (§4.9).
+/// Emit the throw form for a non-tail `Return`.
 ///
 /// Always emits:
 /// ```erlang
@@ -63,7 +63,7 @@ fn lower_control_exit(value: CErlExpr, tag: &str) -> CErlExpr {
 // ── 2. has_non_tail_return ────────────────────────────────────────────────────
 
 /// Walk `body` and return `true` iff any [`IrExpr::Return`] appears **outside**
-/// tail position of its enclosing fn (§4.9).
+/// tail position of its enclosing fn.
 ///
 /// Tail positions (relative to the fn body):
 /// - The body expression itself.
@@ -186,8 +186,7 @@ fn has_non_tail_return_inner(expr: &IrExpr, in_tail: bool) -> bool {
 
 // ── 3. wrap_with_return_catch ─────────────────────────────────────────────────
 
-/// Wrap `body` in a `try/catch` that intercepts `{ridge_return, V}` throws
-/// (§4.9).
+/// Wrap `body` in a `try/catch` that intercepts `{ridge_return, V}` throws.
 ///
 /// ## erlc `+from_core` try/catch constraints
 ///
@@ -475,7 +474,7 @@ fn elide_tail_inner(expr: &IrExpr, in_tail: bool) -> IrExpr {
 
 // ── 5. lower_fn_body ─────────────────────────────────────────────────────────
 
-/// Integration point for item-level fn body lowering (called by T8).
+/// Integration point for item-level fn body lowering.
 ///
 /// - If there are no non-tail `Return` nodes: elide tail `Return`s and lower
 ///   directly — no try/catch wrapper.

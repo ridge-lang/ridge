@@ -1,10 +1,10 @@
-//! Block parsing (grammar §5.3 line 517, plan §4.4).
+//! Block parsing (grammar §5.3 line 517).
 //!
 //! A block is an `INDENT`-delimited sequence of expressions each separated by
 //! `NEWLINE`.  The block value is the last expression; the type checker
-//! (Phase 4) enforces that all prior expressions return `Unit`.
+//! enforces that all prior expressions return `Unit`.
 //!
-//! ## Layout contract (§4.4 verbatim)
+//! ## Layout contract
 //!
 //! ```text
 //! parse_block():
@@ -20,7 +20,7 @@
 //!
 //! **Empty block:** An immediate `DEDENT` after `INDENT` is `P014 EmptyBlock`.
 //!
-//! ## Error recovery (T12, §4.7)
+//! ## Error recovery
 //!
 //! When a statement inside a block fails to parse, `parse_block` recovers by
 //! skipping tokens until the next `NEWLINE` (sibling statement boundary) or
@@ -183,7 +183,7 @@ pub(crate) fn parse_block_recovering(
 
 /// Skip tokens until the next statement boundary inside a block.
 ///
-/// Sync points (§4.7 block-level recovery):
+/// Block-level recovery sync points:
 /// - `NEWLINE` at depth 0 — sibling statement boundary.
 /// - `DEDENT` — end of block.
 /// - `EOF` — unconditional stop.

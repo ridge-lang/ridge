@@ -1,4 +1,4 @@
-//! §3.4 / §3.5 — Static stdlib bridge map (path A) and `BridgeTarget` enum.
+//! Static stdlib bridge map (path A) and `BridgeTarget` enum.
 //!
 //! `lookup(module, name)` is the **only** call site in this crate that produces
 //! BEAM module/function names from Ridge stdlib symbols.  The path-A static map
@@ -20,10 +20,10 @@
 //! ## Arg order note
 //!
 //! `BeamStdlibPerm { perm }` is available for entries where Ridge surface
-//! convention differs from BEAM arg order.  For `map`/`filter`/`forEach`, Phase 5
+//! convention differs from BEAM arg order. For `map`/`filter`/`forEach`, lowering
 //! desugars pipe calls so the IR delivers `(fn, collection)` = BEAM order already.
 //! Those entries therefore use `BeamStdlib` (no permutation) to avoid a
-//! double-swap.  If Phase 5 ever delivers direct-call order `(collection, fn)` for
+//! double-swap. If lowering ever delivers direct-call order `(collection, fn)` for
 //! non-pipe invocations, revisit this.
 
 #![allow(clippy::redundant_pub_crate)]
@@ -33,14 +33,14 @@ use std::sync::OnceLock;
 
 // ── `BridgeTarget` — §3.5 verbatim ───────────────────────────────────────────
 
-/// Codegen target for a Ridge stdlib symbol (§3.5).
+/// Codegen target for a Ridge stdlib symbol.
 ///
-/// `#[non_exhaustive]` so Phase 7 can add `RidgeStdlibLocal` without breaking
-/// Phase 6 callers.
+/// `#[non_exhaustive]` so stdlib can add `RidgeStdlibLocal` without breaking
+/// codegen callers.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum BridgeTarget {
-    /// Path A: BEAM stdlib mod:fn/arity.  Phase 6 emission target.
+    /// Path A: BEAM stdlib mod:fn/arity. codegen emission target.
     BeamStdlib {
         /// BEAM module atom (e.g. `"lists"`, `"erlang"`).
         module: &'static str,
@@ -89,11 +89,11 @@ pub enum BridgeTarget {
         /// Arity.
         arity: u32,
     },
-    /// (Reserved for Phase 7) Compiled Ridge stdlib module.
+    /// Compiled Ridge stdlib module.
     /// Variant gated behind `#[non_exhaustive]`; not emitted in 0.1.0.
     #[doc(hidden)]
     RidgeStdlibLocal {
-        /// BEAM module produced by the Phase 7 stdlib compile.
+        /// BEAM module produced by the stdlib compile.
         beam_module: String,
         /// Function name.
         fn_name: String,
@@ -482,7 +482,7 @@ mod tests {
         assert!(lookup("std.list", "nonexistent").is_none());
     }
 
-    // ── T11: path-B tests (std.list.map, std.io.println, std.int.toText) ────────
+    // ── Path-B tests (std.list.map, std.io.println, std.int.toText) ────────
     //
     // After path-A retirement, these symbols are served by path B
     // (BridgeTarget::RidgeStdlibLocal) from the generated ffi_targets table.
@@ -632,7 +632,7 @@ mod tests {
         }
     }
 
-    // ── T11.5: path-B cat-B coverage tests ───────────────────────────────────
+    // ── Path-B category-B coverage tests ───────────────────────────────────
     //
     // These pure-Ridge stdlib functions (formerly in path-A cat B) are now served
     // by path B with BridgeTarget::RidgeStdlibLocal where beam_module = ridge_module.
@@ -691,7 +691,7 @@ mod tests {
     #[test]
     fn lookup_env_var_returns_none_after_cat_c_retire() {
         // std.env.var was the old cat-C entry; the new API is std.env.get (served
-        // by path B via @ffi).  After T11.5, "var" must not appear anywhere.
+        // by path B via @ffi).  After this API rename, "var" must not appear anywhere.
         assert!(
             lookup("std.env", "var").is_none(),
             "std.env.var must not be in any bridge after T11.5 cat-C retire"
@@ -815,7 +815,7 @@ mod tests {
     #[test]
     fn lookup_time_diff_seconds_returns_none_after_cat_c_retire() {
         // std.time.diffSeconds was the old cat-C entry; renamed to diffMs in
-        // the example sources.  After T11.5 it must not appear in any bridge.
+        // the example sources.  After this rename it must not appear in any bridge.
         assert!(
             lookup("std.time", "diffSeconds").is_none(),
             "std.time.diffSeconds must not be in any bridge after T11.5 cat-C retire"

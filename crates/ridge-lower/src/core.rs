@@ -1,6 +1,6 @@
 //! Core expression and pattern dispatcher (`lower_expr` / `lower_pattern`).
 //!
-//! This module is the central dispatch table for Phase 5 lowering.  Every
+//! This module is the central dispatch table for lowering. Every
 //! `Expr::*` and `Pattern::*` variant has exactly one arm; atom variants
 //! produce correct IR immediately while non-atomic variants are handled by
 //! their dedicated rule modules.
@@ -29,10 +29,10 @@
 //! | `Expr::Record` | `IrExpr::Construct` (tycon via `lookup_tycon_by_name`) |
 //! | `Expr::FieldAccess` | `IrExpr::Field` |
 //! | `Expr::Call` | `IrExpr::Call` |
-//! | `Expr::Spawn` | `IrExpr::Spawn` (actor module via `resolve_actor_module`; OQ-PHASE45-006) |
-//! | `Expr::Send` | `IrExpr::Send` (actor name resolved via binding-map Group B 3.1 path) |
-//! | `Expr::Ask` | `IrExpr::Ask` (actor name resolved via binding-map Group B 3.1 path) |
-// PHASE45-Group-B: Send/Ask handler-name resolution now uses BindingMap-first precedence.
+//! | `Expr::Spawn` | `IrExpr::Spawn` (actor module via `resolve_actor_module`) |
+//! | `Expr::Send` | `IrExpr::Send` (actor name resolved via binding-map precedence) |
+//! | `Expr::Ask` | `IrExpr::Ask` (actor name resolved via binding-map precedence) |
+// Send/Ask handler-name resolution now uses BindingMap-first precedence.
 //!
 //! # `BindingMap` wiring
 //!
@@ -216,11 +216,11 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
         // ── Guard and InnerFn (bare, outside block context) ───────────────────
 
         // `guard cond else { ... }` appearing as a bare expression (not inside
-        // a block fold) is a Phase 4 invariant violation.  Emit L106.
+        // a block fold) is a type-checker invariant violation. Emit L106.
         Expr::Guard { span, .. } => lower_guard_bare(ctx, *span),
 
         // `fn name params = body` appearing as a bare expression (not inside a
-        // block fold) is a Phase 4 invariant violation.  Emit L999.
+        // block fold) is a type-checker invariant violation. Emit L999.
         Expr::InnerFn { decl, span } => lower_inner_fn_bare(ctx, decl, *span),
 
         // ── `with` update desugaring ──────────────────────────────────────────
@@ -270,7 +270,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
         // ── Return ────────────────────────────────────────────────────────────
         //
         // `return e` lowers to `IrExpr::Return { value: lower(e) }`.
-        // Per OQ-L011 (resolved §12): DO NOT wrap in Ok/Some; preserve verbatim.
+        // DO NOT wrap in Ok/Some; preserve verbatim.
         Expr::Return { value, span } => {
             let id = ctx.fresh_id(None);
             let value = Box::new(lower_expr(ctx, value));
@@ -285,7 +285,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
         //
         // `fn Param+ -> Body` lowers to `IrExpr::Lambda`.
         // Anonymous lambdas have no entry in the `inferred_caps` side-table
-        // (Phase 4 only tracks top-level `fn` decls); caps default to PURE.
+        // (the type checker only tracks top-level `fn` decls); caps default to PURE.
         // Bare param types are looked up from node_types via the parent
         // lambda's Type::Fn (see lambda_param_to_ir_param).
         //
@@ -339,7 +339,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
         //
         // `Ctor { field = val, … }` or bare `Ctor` lowers to `IrExpr::Construct`.
         //
-        // B-1 fix (Phase 5 followup): dispatch on the constructor's resolved
+        // B-1 fix (lowering followup): dispatch on the constructor's resolved
         // binding before emitting the IR shape:
         //
         // | Binding                          | Emitted ctor                        |
@@ -385,15 +385,15 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
                 .collect();
 
             // B-1: route to Prelude for the four stdlib prelude constructors.
-            // OQ-PF001 resolved: hard-code the 4-name set inside ridge-lower.
+            // hard-code the 4-name set inside ridge-lower.
             //
             // Two IR shapes are emitted depending on field presence:
             // - No fields (function-style, e.g. `Ok x` parsed as Record + Call):
             //   → `IrExpr::Symbol { Prelude("Ok") }` so that the outer `Call` node
-            //   routes through Phase 6's `lower_prelude_call(args=[x])`.
+            //   routes through codegen's `lower_prelude_call(args=[x])`.
             // - Fields present (record-style, e.g. `Some { value = x }`):
             //   → `IrExpr::Construct { Prelude("Some"), fields=[…] }` handled by
-            //   Phase 6's `lower_construct_expr` (expects exactly 1 field).
+            //   codegen's `lower_construct_expr` (expects exactly 1 field).
             if matches!(
                 &binding,
                 Some(Binding::StdlibSymbol { name, .. })
@@ -555,7 +555,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
         //
         // `f x y z` lowers to `IrExpr::Call` with args in strict L→R order.
         //
-        // B-3 fix (Phase 5 followup): partial-application detection.
+        // B-3 fix (lowering followup): partial-application detection.
         // If the callee's type is `Type::Fn { params, .. }` and
         // `args.len() < params.len()`, we wrap the `Call` in a synthetic
         // `Lambda` that supplies the remaining parameters.
@@ -689,11 +689,11 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
         // ── Spawn actor ───────────────────────────────────────────────────────
         //
         // `spawn Actor arg*` lowers to `IrExpr::Spawn`.
-        // OQ-PHASE45-006: actor module resolved via BindingMap → actor_module_cache
+        // actor module resolved via BindingMap → actor_module_cache
         // → ctx.module_id (three-step precedence; see resolve_actor_module).
         Expr::Spawn { actor, args, span } => {
             let id = ctx.fresh_id(None);
-            // OQ-PHASE45-006: resolve actor module via three-step precedence.
+            // resolve actor module via three-step precedence.
             let actor_module = resolve_actor_module(ctx, actor);
             let args = args.iter().map(|a| lower_expr(ctx, a)).collect();
             IrExpr::Spawn {
@@ -736,7 +736,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
         // and `partner ! finish` as `Send { message: Ident("finish") }`.
         // The lowering peels that off into the IR's `(handler_name, args)` pair.
         //
-        // OQ-PHASE45-006: actor_module falls back to ctx.module_id (same-module
+        // actor_module falls back to ctx.module_id (same-module
         // dominant case). Authoritative cross-module resolution requires the
         // handle's typed binding.
         Expr::Send {
@@ -745,7 +745,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             span,
         } => {
             let id = ctx.fresh_id(None);
-            // OQ-PHASE45-006: actor_module resolved via current-module fallback.
+            // actor_module resolved via current-module fallback.
             // Authoritative lookup requires reading the handle's typed binding
             // (Binding::Local + associated Handle X type).
             let actor_module = ctx.module_id;
@@ -765,9 +765,9 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
                 handle,
                 message: SymbolRef::Handler {
                     actor_module,
-                    // PHASE45-Group-B: Binding::Local carries no type info at resolve
+                    // Binding::Local carries no type info at resolve
                     // time; actor name cannot be recovered from the binding alone.
-                    // OQ-PHASE45-007: stays String::new() — no regression from prior state.
+                    // stays String::new() — no regression from prior state.
                     actor: String::new(),
                     handler: handler_name,
                 },
@@ -779,12 +779,12 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
         // ── Ask actor (synchronous request) ──────────────────────────────────
         //
         // `handle ?> message arg* [timeout <ms|never>]` lowers to `IrExpr::Ask`.
-        // OQ-PHASE45-006: actor_module falls back to ctx.module_id (same-module
+        // actor_module falls back to ctx.module_id (same-module
         // dominant case). Authoritative cross-module resolution requires typed
         // binding access.
         //
-        // Phase 6 T0 (OQ-E001): the `timeout` field is lowered 1:1 from the AST.
-        // Existing Phase 5 `Expr::Ask` nodes (without `timeout`) default to `None`
+        // the `timeout` field is lowered 1:1 from the AST.
+        // Existing lowering `Expr::Ask` nodes (without `timeout`) default to `None`
         // in the AST and produce `timeout: None` in IR — strict additivity preserved.
         Expr::Ask {
             handle,
@@ -794,7 +794,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             span,
         } => {
             let id = ctx.fresh_id(None);
-            // OQ-PHASE45-006: actor_module resolved via current-module fallback.
+            // actor_module resolved via current-module fallback.
             // Authoritative lookup requires reading the handle's typed binding
             // (Binding::Local + associated Handle X type).
             let actor_module = ctx.module_id;
@@ -826,9 +826,9 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
                 handle,
                 message: SymbolRef::Handler {
                     actor_module,
-                    // PHASE45-Group-B: Binding::Local carries no type info at resolve
+                    // Binding::Local carries no type info at resolve
                     // time; actor name cannot be recovered from the binding alone.
-                    // OQ-PHASE45-007: stays String::new() — no regression from prior state.
+                    // stays String::new() — no regression from prior state.
                     actor: String::new(),
                     handler: message.text.clone(),
                 },
@@ -960,7 +960,7 @@ fn qexpr_node(
 /// The resolved type of a captured identifier at `span`, peeled of aliases.
 /// `infer_expr` writes ident node types under `NodeKind::Expr`; the `Ident`
 /// fallback guards against any future wrapper-keying change.
-/// The return type of the lambda at `span`, as Phase 4 inferred it.
+/// The return type of the lambda at `span`, as the type checker inferred it.
 ///
 /// Read from the inferred type rather than the syntactic annotation so it works
 /// for the bare `fn params -> body` form too — the type-checker resolves the
@@ -1884,23 +1884,23 @@ fn unit_lit(ctx: &mut LowerCtx<'_>, span: Span) -> IrExpr {
 /// Lower a single [`Pattern`] node to its [`IrPat`] equivalent.
 ///
 /// Delegates to [`lower_pattern_full`] from `match_lower` for all patterns,
-/// which handles the full lowering table (§4.8.1) including `Constructor`,
+/// which handles the full lowering table including `Constructor`,
 /// `Tuple`, `Cons`, `As`, and `Paren` patterns.
 pub fn lower_pattern(ctx: &mut LowerCtx<'_>, pat: &Pattern) -> IrPat {
     lower_pattern_full(ctx, pat)
 }
 
-// ── Actor-module resolution helper (§3.1 / OQ-PHASE45-006) ──────────────────
+// ── Actor-module resolution helper (§3.1) ──────────────────
 
 /// Resolve an actor ident to its declaring `ModuleId` using the three-step
-/// precedence from plan §3.1 step 3.
+/// precedence described below.
 ///
 /// 1. **`BindingMap` first** — `ctx.binding_map.get(actor_ident.node_id)` →
 ///    `Some(Binding::ActorName { module, .. })` → use that `module`.
 /// 2. **Bare-name cache fallback** — `ctx.lookup_actor_module(&actor_ident.text)`.
 /// 3. **Current module final fallback** — `ctx.module_id`.
 ///
-/// // OQ-PHASE45-006: bare-name cache is a fallback; `BindingMap` is authoritative.
+/// The bare-name cache is a fallback; `BindingMap` is authoritative.
 fn resolve_actor_module(ctx: &mut LowerCtx<'_>, actor_ident: &ridge_ast::Ident) -> ModuleId {
     // Step 1: BindingMap — look up by the ident's NodeId (requires node_id_map).
     let binding_module: Option<ModuleId> = ctx
@@ -3789,7 +3789,7 @@ fn stdlib_kind(ctx: &mut LowerCtx<'_>, module: &str, name: &str, span: Span) -> 
 
 /// Look up the resolved `Type` for the callee AST `Expr`.
 ///
-/// Phase 4's `infer_expr` stamps the resolved type under `NodeKind::Expr` for
+/// The type checker's `infer_expr` stamps the resolved type under `NodeKind::Expr` for
 /// every expression node (line 84 of `infer.rs`: `write_node_type(span, Expr, ty)`).
 /// So we always use `NodeKind::Expr` with the callee's span, regardless of the
 /// concrete AST variant.
@@ -3900,8 +3900,8 @@ fn wrap_partial_application_if_needed(
 ///
 /// The handler name is extracted from the message expression directly; the actor
 /// module is resolved via the three-step `resolve_actor_module` precedence
-/// (`BindingMap` → bare-name cache → current-module fallback) — Group B 3.1.
-// PHASE45-Group-B: handler name extracted from ident; module resolved via BindingMap.
+/// (`BindingMap` → bare-name cache → current-module fallback).
+// handler name extracted from ident; module resolved via BindingMap.
 /// Decompose the message expression of a `Send` into its handler name and
 /// argument list.
 ///
@@ -3984,7 +3984,7 @@ fn lower_tryask_call(
         handle,
         message: SymbolRef::Handler {
             actor_module: ctx.module_id,
-            // Same caveat as `Expr::Ask` (OQ-PHASE45-007): the actor name is
+            // Same caveat as `Expr::Ask`: the actor name is
             // not recoverable from the binding; stays `String::new()`.
             actor: String::new(),
             handler: handler_name,
@@ -4051,7 +4051,7 @@ fn lower_actor_send_call(
         handle,
         message: SymbolRef::Handler {
             actor_module: ctx.module_id,
-            // Same caveat as `Expr::Ask` (OQ-PHASE45-007): the actor name is
+            // Same caveat as `Expr::Ask`: the actor name is
             // not recoverable from the binding; stays `String::new()`.
             actor: String::new(),
             handler: handler_name,
@@ -4089,7 +4089,7 @@ fn record_ctor_name(ctor: &RecordCtor) -> String {
 /// For bare constructors returns the ident's span.
 /// For qualified constructors returns the span of the last segment (the
 /// constructor name proper, not the module prefix). Used by the `BindingMap`
-/// path in record-constructor `TyConId` resolution (§3.2 / OQ-PHASE45-007).
+/// path in record-constructor `TyConId` resolution.
 fn record_ctor_span(ctor: &RecordCtor) -> ridge_ast::Span {
     match ctor {
         RecordCtor::Bare(ident) => ident.span,
@@ -4169,18 +4169,18 @@ fn lower_literal(ctx: &mut LowerCtx<'_>, lit: &Literal) -> IrExpr {
 fn lower_ident(ctx: &mut LowerCtx<'_>, ident: &Ident) -> IrExpr {
     let span = ident.span;
 
-    // B-5 fix (Phase 5 followup): state-field-read precedence rule.
+    // B-5 fix (lowering followup): state-field-read precedence rule.
     //
     // Inside an actor handler/init body, a bare ident that names an actor
     // state field must emit `IrExpr::Field { base: Local("__state"), field }`.
-    // Phase 6's `lower_field` turns that into `maps:get('field', V_State)`.
+    // codegen's `lower_field` turns that into `maps:get('field', V_State)`.
     //
-    // OQ-PF002 resolved: the synthetic base local is "__state" — Phase 6 mangles
+    // the synthetic base local is "__state" — codegen mangles
     // it to V_State via name_to_erl_var("__state") = "V_State".
     //
-    // OQ-PF003 resolved: the state-field name wins unconditionally over all
+    // the state-field name wins unconditionally over all
     // other bindings when in_actor_body == true AND the name is in
-    // current_state_fields. Phase 4 is expected to prevent param/state-field
+    // current_state_fields. The type checker is expected to prevent param/state-field
     // name collision; if it allows the collision, shadowing semantics give the
     // state-field priority (matching the write-side precedence in block.rs).
     if ctx.in_actor_body
@@ -4272,9 +4272,9 @@ fn lower_ident(ctx: &mut LowerCtx<'_>, ident: &Ident) -> IrExpr {
             name,
         }) => {
             let id = ctx.fresh_id(None);
-            // B-1 fix (Phase 5 followup): the closed prelude constructor set
+            // B-1 fix (lowering followup): the closed prelude constructor set
             // (Option/Result plus the seven JsonValue variants) must emit
-            // SymbolRef::Prelude so Phase 6 can emit the correct Erlang
+            // SymbolRef::Prelude so codegen can emit the correct Erlang
             // tuple/atom form. All other stdlib symbols remain Stdlib.
             if matches!(
                 name.as_str(),
@@ -4666,7 +4666,7 @@ fn lower_qualified(ctx: &mut LowerCtx<'_>, qname: &QualifiedName) -> IrExpr {
 ///
 /// Single-part text-only interpolation lowers to a plain text literal.
 /// Any other shape (multiple parts, expression holes) dispatches to
-/// [`lower_interp_full`] from the `interp` module (§4.6).
+/// [`lower_interp_full`] from the `interp` module.
 fn lower_interp(ctx: &mut LowerCtx<'_>, parts: &[InterpPart], span: Span) -> IrExpr {
     if let [InterpPart::Text { raw, .. }] = parts {
         // Single-part, text-only: no fold needed — emit a literal directly.
@@ -5198,7 +5198,7 @@ mod tests {
 
         let mut nid_map = NodeIdMap::default();
         let node_id = nid_map.assign(span, NodeKind::Ident).unwrap();
-        // Phase 4 stamps the resolved type of every expression under
+        // the type checker stamps the resolved type of every expression under
         // `NodeKind::Expr`, and lowering reads it there to tell a stdlib
         // function from a stdlib value. Without it this context would be one no
         // real compilation produces, and the assertion below would be about
@@ -6300,7 +6300,7 @@ mod tests {
     /// B-1 regression guard: bare-ident prelude constructors must no longer
     /// lower to `Constructor { Record }`. When used as a callee with no record
     /// fields (e.g. `Ok x` parsed as `Expr::Record { "Ok", [] }` applied to `x`),
-    /// the emitted node must be `IrExpr::Symbol { Prelude("Ok") }` so that Phase 6's
+    /// the emitted node must be `IrExpr::Symbol { Prelude("Ok") }` so that codegen's
     /// `lower_call` routes through `lower_prelude_call(args=[x])` correctly.
     #[test]
     fn lower_record_prelude_ok() {
@@ -6858,7 +6858,7 @@ mod tests {
 
     /// Build a ctx with a node_type entry for a given callee span.
     ///
-    /// Phase 4 stamps the callee type under `NodeKind::Expr` (not `NodeKind::Ident`),
+    /// The type checker stamps the callee type under `NodeKind::Expr` (not `NodeKind::Ident`),
     /// so we register two NodeIdMap entries for the callee span:
     ///  - `NodeKind::Ident`  → NodeId for the binding (Local binding)
     ///  - `NodeKind::Expr`   → NodeId for the type stamp
@@ -7131,7 +7131,7 @@ mod tests {
     }
 
     /// If `tokens` is a state field AND in_actor_body=true, the state-field
-    /// rule takes priority (OQ-PF003 resolution: state-field wins).
+    /// rule takes priority (resolution: state-field wins).
     #[test]
     fn lower_ident_param_shadows_state_field() {
         use ridge_resolve::LocalId;
@@ -7151,8 +7151,8 @@ mod tests {
         let ir = lower_ident(&mut ctx, &ident);
         assert!(ctx.errors.is_empty(), "errors: {:?}", ctx.errors);
 
-        // OQ-PF003: state-field wins unconditionally inside in_actor_body.
-        // If Phase 4 forbids param/state collision, this case never arises;
+        // state-field wins unconditionally inside in_actor_body.
+        // If the type checker forbids param/state collision, this case never arises;
         // if it allows it, the state-field takes priority.
         match ir {
             IrExpr::Field { field, .. } => {

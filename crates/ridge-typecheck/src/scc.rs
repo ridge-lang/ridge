@@ -1,6 +1,6 @@
-//! SCC-based top-level declaration typechecking (T7).
+//! SCC-based top-level declaration typechecking.
 //!
-//! Implements §4.7 "Mutual recursion (top-level decls)" from the plan:
+//! Checks mutually recursive top-level declarations in dependency order:
 //!
 //! 1. Build a call graph from the module's AST: for each top-level `fn` `d`,
 //!    find all `Ident` references in `d.body` whose names match another
@@ -941,8 +941,8 @@ pub fn typecheck_module_decls(
         // abstracting each function for export.
 
         // ── Steps c+d: generalise and write back schemes ──────────────────────
-        // OQ-PHASE45-003: top-level decl schemes only (no let-bound locals).
-        // OQ-PHASE45-005: span-keyed via body span (same as T5 inferred_caps).
+        // top-level decl schemes only (no let-bound locals).
+        // span-keyed via body span (same as inferred_caps).
         write_back_schemes(
             ctx,
             scc,
@@ -1707,7 +1707,7 @@ mod tests {
         assert!(pos_g < pos_f, "g's SCC must precede f's SCC in topo order");
     }
 
-    // ── Phase 4.5 T4 tests — schemes_accum population ─────────────────────────
+    // ── Scheme tests — schemes_accum population ─────────────────────────
 
     /// Build a `FnDecl` with a unique span at offset `start`.
     fn make_fn_decl_at(name: &str, start: u32, body: Expr) -> FnDecl {
@@ -1729,9 +1729,9 @@ mod tests {
         }
     }
 
-    /// T4-1: monomorphic fn — scheme is in `schemes_accum` after typecheck.
+    /// A monomorphic fn — scheme is in `schemes_accum` after typecheck.
     /// The `NodeIdMap` is set up with the fn *body* span stamped as `NodeKind::Expr`
-    /// (not the decl span) because T4 now keys by body span to match T5's keying.
+    /// (not the decl span) because scheme and capability metadata share the body-span key.
     #[test]
     fn t4_mono_fn_scheme_populated() {
         let (arena, b) = make_builtins();
@@ -1777,7 +1777,7 @@ mod tests {
         );
     }
 
-    /// T4-2: polymorphic fn — generalised scheme recorded in `schemes_accum`,
+    /// A polymorphic fn — generalised scheme recorded in `schemes_accum`,
     /// keyed by the fn body's span (`NodeKind::Expr` for an Ident body).
     #[test]
     fn t4_polymorphic_fn_scheme_populated() {
@@ -1842,8 +1842,8 @@ mod tests {
         );
     }
 
-    /// T4-3: let-bound local inside a fn body — let locals are NOT in `schemes_accum`
-    /// (only top-level decl schemes per OQ-PHASE45-003).
+    /// A let-bound local inside a fn body — let locals are NOT in `schemes_accum`
+    /// (only top-level decl schemes).
     #[test]
     fn t4_let_bound_local_not_in_schemes() {
         let (arena, b) = make_builtins();

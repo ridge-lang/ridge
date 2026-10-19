@@ -46,7 +46,7 @@ impl<'ast> Visit<'ast> for NodeCounter {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 /// Parses `log_analyzer.ridge` and asserts the expression count meets the
-/// empirical minimum of 50 (per T14 definition of done).
+/// empirical minimum of 50.
 #[test]
 fn visit_expr_count_log_analyzer() {
     let result = parse_source(LOG_ANALYZER);

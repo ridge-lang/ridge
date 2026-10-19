@@ -1,11 +1,11 @@
-//! T13 — `.core` text snapshots on the four Ridge examples.
+//! `.core` text snapshots on the four Ridge examples.
 //!
 //! For each example under `examples/<name>.ridge` (repo root), runs the full
 //! pipeline (resolve → typecheck → lower → codegen → print) and snapshots
 //! the resulting Core Erlang text via `insta::assert_snapshot!`.
 //!
 //! `%% File:` and `%% Caps:` annotations must be visible in the snapshot text
-//! (OQ-E011, §3.11).  If an example fails to lower or codegen, the test panics
+//! as provenance and capability comments. If an example fails to lower or codegen, the test panics
 //! with a clear message describing what failed; no `#[ignore]` is used.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

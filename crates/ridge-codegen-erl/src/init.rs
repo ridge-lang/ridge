@@ -1,4 +1,4 @@
-//! §4.29 — Lower `IrInit` and actor state-field initialisation to the
+//! Lower `IrInit` and actor state-field initialisation to the
 //! `gen_server:init/1` callback body.
 //!
 //! The `gen_server` `init/1` callback:
@@ -8,15 +8,15 @@
 //!    `<field> <- <expr>` assignments in the init body.
 //! 4. Returns `{'ok', V_State_final}`.
 //!
-//! ## State-field default initialisation (§4.29)
+//! ## State-field default initialisation
 //!
 //! For state fields whose `IrStateField.default` is `Some(expr)`, the default
 //! expression is evaluated at the top of `init/1`, before the user's init body
 //! runs.  Fields without a default must be assigned in the body; if they are not,
-//! they remain absent from the state map (a Phase-5 invariant that the type
-//! checker enforces — Phase 6 trusts upstream).
+//! they remain absent from the state map (a lowering invariant that the type
+//! checker enforces — codegen trusts upstream).
 //!
-//! ## Actor-state thread (§3.12 + §4.8)
+//! ## Actor-state thread
 //!
 //! The running state map is carried as SSA-suffixed variables `V_State`,
 //! `V_State1`, `V_State2`, … through the init body.  Each
@@ -27,7 +27,7 @@
 //! ```
 //! The final state variable is returned inside `{'ok', V_State_final}`.
 //!
-//! ## B-7 fix — state-varying Match arms (§4.30 + §3.12)
+//! ## B-7 fix — state-varying Match arms
 //!
 //! When a handler body contains a `Match` whose arms produce different numbers
 //! of state mutations (e.g., one arm assigns a state field, another does not),
@@ -38,7 +38,7 @@
 //! `let` bindings where the relevant `V_State<n>` variables are in scope.
 
 // pub(crate) on items in a pub(crate) module is redundant per clippy; we keep
-// it for explicitness per plan §2.2.
+// it for explicitness
 #![allow(clippy::redundant_pub_crate)]
 // Init lowering functions are called from actor.rs (lower_actor → emit_init →
 // lower_init_body).  dead_code fires because lower_actor itself is only reachable
@@ -73,7 +73,7 @@ pub(crate) fn state_expr(idx: u32) -> CErlExpr {
     CErlExpr::Var(state_var(idx))
 }
 
-// ── Init param destructuring (B-4 fix, Phase 6 pass 3) ───────────────────────
+// ── Init param destructuring ───────────────────────
 
 /// Build the nested `CErlPat` for a list of `N` params.
 ///
@@ -83,8 +83,8 @@ pub(crate) fn state_expr(idx: u32) -> CErlExpr {
 /// ```
 ///
 /// This matches the `V_Args` list emitted by `gen_server:start_link/3` when the
-/// actor is spawned via `ridge_rt:spawn_actor/3`.  Phase 5 passes the init params
-/// as a plain Erlang list; Phase 6 must destructure them at the top of `init/1`.
+/// actor is spawned via `ridge_rt:spawn_actor/3`. Lowering passes the init params
+/// as a plain Erlang list; codegen must destructure them at the top of `init/1`.
 fn build_args_list_pattern(params: &[IrParam]) -> CErlPat {
     // Build right-to-left: start with [] and cons each param variable.
     let mut pat = CErlPat::Lit(CErlLit::Nil); // []
@@ -141,7 +141,7 @@ fn wrap_in_args_destructure(params: &[IrParam], inner_expr: CErlExpr) -> CErlExp
 ///
 /// # Errors
 /// Returns `Err(CodegenError::IrShapeMalformed)` if any state field lacks a
-/// default *and* there is no `init` block to set it (defensive — Phase 5 should
+/// default *and* there is no `init` block to set it (defensive — lowering should
 /// have rejected this pattern during type-checking).
 /// Lower the `field => default-expr` map pairs shared by `init/1` and the
 /// `'__ridge_state_defaults'/0` accessor the code loader reads.
@@ -213,9 +213,9 @@ pub(crate) fn lower_init_body(
             let lowered_body =
                 lower_actor_body_stmts_w(&init.body, &mut scope, &mut state_idx, span, ok_wrap)?;
 
-            // B-4 (Phase 6 pass 3): destructure V_Args into the init param names
+            // destructure V_Args into the init param names
             // at the top of `init/1`.  gen_server passes init params as a list
-            // [P1, P2, …]; Phase 5 references them as bare variables V_P1, V_P2, …
+            // [P1, P2, …]; lowering references them as bare variables V_P1, V_P2, …
             // which would be unbound without this destructuring step.
             let inner = CErlExpr::Let {
                 var: state_bind,
@@ -509,7 +509,7 @@ fn lower_expr_in_actor_context_w(
         // LetIn: value is pure (no state assigns); body is the leaf — thread wrap.
         //
         // Recursive inner-fn fix: if the bound value is a Lambda that self-references
-        // the bound name, emit LetRec (same logic as LetIn in expr.rs / OQ-L012).
+        // the bound name, emit LetRec (same logic as LetIn in expr.rs).
         IrExpr::LetIn {
             pat, value, body, ..
         } => {
@@ -573,7 +573,7 @@ fn lower_expr_in_actor_context_w(
         // Recursive inner-fn fix: if `value` is a Lambda whose body references
         // `name` (self-recursive closure), emit `LetRec` instead of `Let` so that
         // `V_Name` is in scope inside the lambda body.  Same logic as the
-        // `LetIn` recursive path in `expr.rs` (OQ-L012).
+        // `LetIn` recursive path in `expr.rs`.
         IrExpr::VarIn {
             name, value, body, ..
         } => {

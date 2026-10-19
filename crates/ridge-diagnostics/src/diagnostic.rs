@@ -259,7 +259,7 @@ fn assert_reader_facing(code: &str, text: &str) {
 ///
 /// # LSP forward-compat
 ///
-/// Every field needed by an LSP `Diagnostic` is present.  T11 (`ridge-lsp`)
+/// Every field needed by an LSP `Diagnostic` is present. `ridge-lsp`
 /// provides the `From<Diagnostic> for lsp_types::Diagnostic` adapter using
 /// the existing `LineMap` byte-offset-to-line-col conversion.
 #[derive(Debug, Clone)]

@@ -1,4 +1,4 @@
-//! Control-flow and binding expression parsers (T7, grammar §§6.1–6.7).
+//! Control-flow and binding expression parsers (grammar §§6.1–6.7).
 //!
 //! This module implements:
 //!
@@ -18,8 +18,7 @@
 //!
 //! When `if`/`else`, match arm bodies, or `guard else` branches encounter an
 //! `INDENT` token, they call `parse_block` and wrap the result in
-//! `Expr::Block`.  This is a T7 plan extension: the plan §3.7 lists `Expr`
-//! variants without a `Block` wrapper, but the branch fields are `Box<Expr>`;
+//! `Expr::Block`. The branch fields are `Box<Expr>`;
 //! multi-statement blocks must therefore be representable as an `Expr`.
 
 #![allow(dead_code)]
@@ -110,7 +109,7 @@ pub(crate) fn parse_if(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
 ///
 /// Precondition: `cur.peek() == &Token::KwMatch`.
 ///
-/// ## Error recovery (T12, §4.7)
+/// ## Error recovery
 ///
 /// If a single match arm fails to parse, tokens are skipped to the next
 /// `NEWLINE` or `DEDENT` and parsing continues with the next arm.

@@ -1,6 +1,6 @@
 //! IR expression nodes — the canonical Ridge Core IR.
-// OQ-IR003: all public IR enums carry #[non_exhaustive] so downstream crates cannot exhaustively match on them.
-// T0 (Phase 6 OQ-E001 narrow exception): IrExpr::Ask gains `timeout: Option<IrTimeout>`.
+// all public IR enums carry #[non_exhaustive] so downstream crates cannot exhaustively match on them.
+// IrExpr::Ask carries `timeout: Option<IrTimeout>`.
 // IrTimeout mirrors AskTimeout (ridge-ast) 1:1.
 
 use crate::id::IrNodeId;
@@ -13,8 +13,7 @@ use ridge_types::{CapabilitySet, Type};
 
 /// Ridge Core IR expression node.
 ///
-/// **Design invariants** (every executor must respect them — see §3 for
-/// rationale and §4 for the rules that produce them):
+/// **Design invariants** (every executor must respect them):
 ///
 /// 1. **No syntactic-sugar variants.** No `Pipe`, no `Propagate`, no `Try`,
 ///    no `Guard`, no `Interp`, no `With`, no `If`. All eight collapse to
@@ -81,9 +80,9 @@ pub enum IrExpr {
         span: Span,
     },
 
-    // OQ-L003: lambda lifting is deferred to Phase 6; Phase 5 emits IrExpr::Lambda as-is.
+    // lambda lifting is deferred to codegen; lowering emits IrExpr::Lambda as-is.
     /// A lambda value — captures its enclosing locals by reference (codegen
-    /// will materialise the closure).  Phase 5 does not lambda-lift.
+    /// will materialise the closure). Lowering does not lambda-lift.
     Lambda {
         /// The IR-side node identifier.
         id: IrNodeId,
@@ -91,7 +90,7 @@ pub enum IrExpr {
         params: Vec<IrParam>,
         /// The lambda body.
         body: Box<Self>,
-        /// Capability set of this lambda (Phase 4 inferred).
+        /// Capability set of this lambda (inferred by the type checker).
         caps: CapabilitySet,
         /// Source span.
         span: Span,
@@ -107,7 +106,7 @@ pub enum IrExpr {
     ///
     /// `with` updates lower to a `Construct` over the *same* `TyCon`,
     /// with field values pulled from the base for un-touched fields and from
-    /// the update for touched fields (§4.5).
+    /// the update for touched fields.
     Construct {
         /// The IR-side node identifier.
         id: IrNodeId,
@@ -184,8 +183,8 @@ pub enum IrExpr {
     },
 
     // ── Control flow ─────────────────────────────────────────────────────────
-    // OQ-L004: decision-tree compilation for pattern-match is deferred to Phase 6;
-    // Phase 5 emits IrExpr::Match with arms in source order, no tree optimisation.
+    // decision-tree compilation for pattern-match is deferred to codegen;
+    // lowering emits IrExpr::Match with arms in source order, no tree optimisation.
     /// The single canonical control form.  All four AST shapes — `if`, `match`,
     /// `guard ... else`, and the `?` propagate — collapse to `Match`.
     /// `arms` is non-empty.  Each arm body is an `IrExpr` (typically a Block).
@@ -210,7 +209,7 @@ pub enum IrExpr {
         span: Span,
     },
 
-    // OQ-L012: IrExpr::LetIn carries no is_recursive flag; recursive inner functions
+    // IrExpr::LetIn carries no is_recursive flag; recursive inner functions
     // lower to LetIn(Bind, Lambda) via inner_fn.rs — the recursion is handled by the
     // binding map, not by a special IR flag.
     /// Local binding in continuation form.
@@ -221,7 +220,7 @@ pub enum IrExpr {
     /// fold right to nested `LetIn`s — the canonical form.
     ///
     /// Continuation form makes the IR semantics of `let` purely expression-level,
-    /// so backends do not need a "statement vs. expression" distinction (§3.4).
+    /// so backends do not need a "statement vs. expression" distinction.
     LetIn {
         /// The IR-side node identifier.
         id: IrNodeId,
@@ -235,7 +234,7 @@ pub enum IrExpr {
         span: Span,
     },
 
-    /// Mutable-binding declaration (D052 — `var` is allowed in fn bodies and
+    /// Mutable-binding declaration (`var` is allowed in fn bodies and
     /// actor init/handler bodies). Lowered shape mirrors `LetIn`.
     VarIn {
         /// The IR-side node identifier.
@@ -255,7 +254,7 @@ pub enum IrExpr {
     /// Mutation of a `var`-bound local or actor state field.
     ///
     /// AST `target <- value` lowers to `Assign { target_kind, value }`
-    /// where `target_kind` distinguishes locals from state fields. Phase 4
+    /// where `target_kind` distinguishes locals from state fields. Type checking
     /// already verified `target` resolves to a mutable binding.
     Assign {
         /// The IR-side node identifier.
@@ -310,7 +309,7 @@ pub enum IrExpr {
         span: Span,
     },
 
-    // OQ-IR001: Call/Send/Ask/Spawn carry no per-call CapabilitySet; capability tracking
+    // Call/Send/Ask/Spawn carry no per-call CapabilitySet; capability tracking
     // is at the fn/handler declaration level only (IrFn.caps / IrHandler.caps).
     // ── Actor messaging — preserved as primitives ────────────────────────────
     /// `handle ! message args` — async one-way, returns Unit (spec §7.2).
@@ -335,9 +334,9 @@ pub enum IrExpr {
     /// `handle ?> message args [timeout <ms|never>]` — sync request-reply
     /// returning `Result reply AskError`. A handler's own Result remains the
     /// success payload; transport failures never become caller exceptions.
-    /// (spec §7.2; timeout field added by Phase 6 T0, OQ-E001).
+    /// (spec §7.2).
     ///
-    /// `timeout: None` means "use the runtime default (5000 ms per OQ-E001)".
+    /// `timeout: None` means "use the runtime default (5000 ms)".
     /// The success payload type is the handler's return type.
     Ask {
         /// The IR-side node identifier.
@@ -423,9 +422,9 @@ pub enum IrExpr {
 
 // ── IrTimeout ─────────────────────────────────────────────────────────────────
 
-/// Optional timeout for a `?>` ask expression (Phase 6 T0, OQ-E001).
+/// Optional timeout for a `?>` ask expression.
 ///
-/// `#[non_exhaustive]` preserves OQ-IR003 — downstream crates cannot
+/// `#[non_exhaustive]` ensures downstream crates cannot
 /// exhaustively match this enum, so new variants can be added in 0.2.0+.
 #[derive(Debug, Clone)]
 #[non_exhaustive]

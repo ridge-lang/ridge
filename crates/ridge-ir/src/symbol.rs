@@ -1,5 +1,5 @@
 //! Symbol references and constructor kinds.
-// OQ-IR003: SymbolRef is #[non_exhaustive] — see expr.rs for rationale.
+// SymbolRef is #[non_exhaustive] — see expr.rs for rationale.
 
 use ridge_resolve::ModuleId;
 use ridge_types::{ClassId, TyConId};
@@ -7,9 +7,9 @@ use ridge_types::{ClassId, TyConId};
 /// Opaque cross-module symbol reference.
 ///
 /// `Local` is a same-module reference (top-level fn / actor). `Stdlib` is a
-/// reference to a stdlib symbol resolved by Phase 3 (`std.list.map`,
+/// reference to a stdlib symbol resolved by name resolution (`std.list.map`,
 /// `std.option.withDefault`, …). `External` is a reference to a `pub`-exported
-/// symbol in a different project (gated by `D076 exported_externally`).
+/// symbol in a different project (gated by `exported_externally`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum SymbolRef {
@@ -20,9 +20,9 @@ pub enum SymbolRef {
         /// The module this symbol belongs to.
         module: ModuleId,
     },
-    // OQ-L006: SymbolRef::Stdlib.module is String (not an interned id) for
+    // SymbolRef::Stdlib.module is String (not an interned id) for
     // debuggability; the stdlib path set is small and never hot-path hashed.
-    /// A stdlib symbol resolved against `BUILTINS` (Phase 3).
+    /// A stdlib symbol resolved against `BUILTINS` (name resolution).
     Stdlib {
         /// The stdlib module path (e.g. `"std.list"`).
         module: String,

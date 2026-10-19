@@ -1,6 +1,6 @@
 //! [`CapabilitySet`] — a compact bit-set over the 10 Ridge capabilities.
 //!
-//! Bit layout (spec §3.5, D017, D035):
+//! Bit layout (spec §3.5):
 //! ```text
 //! bit 0  = io
 //! bit 1  = fs
@@ -12,7 +12,7 @@
 //! bit 7  = spawn
 //! bit 8  = ffi
 //! bit 9  = db
-//! bits 10..15 = reserved (always zero — forward-extension slack under D035)
+//! bits 10..15 = reserved (always zero — forward-extension slack)
 //! ```
 //!
 //! The set fits in a single `u16`; `CapabilitySet(0)` is the **pure** (empty)
@@ -20,11 +20,11 @@
 
 use ridge_ast::Capability;
 
-/// Bit-set over the 10 Ridge capabilities (spec §6.1, D017, D035).
+/// Bit-set over the 10 Ridge capabilities (spec §6.1).
 ///
 /// Bit 0 = io, 1 = fs, 2 = net, 3 = time, 4 = random, 5 = env, 6 = proc,
 /// 7 = spawn, 8 = ffi, 9 = db. Bits 10..15 are reserved (always zero), leaving
-/// the set in a single `u16` with slack for forward extension under D035.
+/// the set in a single `u16` with slack for forward extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CapabilitySet(pub(crate) u16);
 

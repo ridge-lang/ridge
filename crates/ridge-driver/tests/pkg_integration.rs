@@ -1,4 +1,4 @@
-//! T8 — pkg-integration end-to-end test.
+//! Package integration end-to-end test.
 //!
 //! Verifies the G5 contract: `compile_workspace` on a workspace with a git-tag
 //! dependency populates the package cache.  Uses a local bare-repo fixture

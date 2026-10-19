@@ -1,6 +1,6 @@
 //! Workspace discovery: filesystem walk, member expansion, module FQN derivation.
 //!
-//! # Algorithm (§4.1 steps 1, 3, 5, 6, 7)
+//! # Algorithm
 //!
 //! 1. Walk upward from `root` finding the `ridge.toml` that contains a
 //!    `[workspace]` table.  Emit R001 if none is found.

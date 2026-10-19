@@ -32,8 +32,7 @@ use thiserror::Error;
 
 /// Errors produced by the `ridge-fmt` formatter.
 ///
-/// Error codes occupy the `C101`–`C199` namespace (§1.3 #3 of the Phase 8
-/// plan).
+/// Error codes occupy the `C101`–`C199` namespace.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum FormatError {
     /// `C101` — the source could not be parsed.
@@ -64,7 +63,7 @@ impl FormatError {
 ///
 /// This runs before the lexer sees the source so that tab-indented files are
 /// accepted.  The tab-expansion is uniform (every `\t` → `"  "`) rather than
-/// tab-stop-aware, matching the plan's "tabs become two spaces each" rule.
+/// tab-stop-aware: tabs become two spaces each.
 fn expand_tabs(src: &str) -> String {
     if !src.contains('\t') {
         return src.to_string();

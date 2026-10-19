@@ -1,26 +1,26 @@
-//! Capability checking pass (T14).
+//! Capability checking pass.
 //!
-//! Implements the four verification rules from spec §6.3 / §4.14 / §8.2:
+//! Implements the capability checks from spec §6.3:
 //!
-//! - **Rule 1 (pure call check):** If a decl has no declared capabilities,
+//! - **Check 1 (pure call check):** If a decl has no declared capabilities,
 //!   `infer_caps(body)` must be `∅`; else `T014 CapabilityNotDeclared`.
 //!
-//! - **Rule 2 (caller ⊇ callee):** At each call site in the body, look up the
+//! - **Check 2 (caller ⊇ callee):** At each call site in the body, look up the
 //!   callee's caps; if `callee_caps ⊄ enclosing_declared_caps` → `T018`.
 //!
-//! - **Rule 3 (inference + verification):** If a decl carries declared caps,
-//!   `inferred ⊆ declared`; else (file-private, D040), the inferred set becomes
+//! - **Check 3 (inference + verification):** If a decl carries declared caps,
+//!   `inferred ⊆ declared`; else (file-private), the inferred set becomes
 //!   the canonical effective set at all call sites.
 //!
-//! - **Rule 4 (inner-fn subset, D058):** If an inner `fn` declares its own cap
+//! - **Check 4 (inner-fn subset):** If an inner `fn` declares its own cap
 //!   prefix, that prefix ⊆ the enclosing fn's declared/inferred set.
 //!
-//! # D040 — file-private decls
+//! # File-private declarations
 //!
 //! Decls whose name starts with `_` are file-private.  They skip the
-//! declared-vs-inferred check (Rule 3 is a no-op); the inferred set is the
+//! declared-vs-inferred check (Check 3 is a no-op); the inferred set is the
 //! canonical effective set used at every call site.  A caller that doesn't
-//! have the required caps will still get `T018` (Rule 2 applies normally at
+//! have the required caps will still get `T018` (Check 2 applies normally at
 //! the call site in the *caller's* body).
 
 use ridge_ast::{Body, Capability, Expr, Span};
@@ -39,7 +39,7 @@ use crate::error::{CapDeclKind, TypeError};
 /// - `ctx` — inference context (env holds callee schemes for lookup).
 /// - `b` — builtin type-constructor handles.
 /// - `decl_name` — the declaration's name (used in diagnostics and for the
-///   file-private `_`-prefix detection per D040).
+///   file-private `_`-prefix detection).
 /// - `declared` — `Some(cs)` when the decl carries an explicit cap annotation;
 ///   `None` for file-private decls where the inferred set is canonical.
 /// - `body` — the declaration body expression.
@@ -86,8 +86,8 @@ pub fn check_caps_decl_kind(
     // Step 1: Infer caps from the body.
     let inferred = infer_caps(ctx, b, body);
 
-    // Step 2 (Rule 3): If declared is Some, check inferred ⊆ declared.
-    // File-private decls (D040) skip this — declared is always None for them.
+    // Step 2 (Check 3): If declared is Some, check inferred ⊆ declared.
+    // File-private decls skip this — declared is always None for them.
     if let Some(declared_set) = declared {
         if !inferred.is_subset(&declared_set) {
             let missing = inferred.difference(&declared_set);
@@ -102,10 +102,10 @@ pub fn check_caps_decl_kind(
         }
     }
 
-    // Step 3: Effective set — declared if Some, else inferred (D040).
+    // Step 3: Effective set — declared if Some, else inferred.
     let effective = declared.unwrap_or(inferred);
 
-    // Step 4 (Rule 2 + Rule 4): Walk call sites and inner fns in the body.
+    // Step 4 (Check 2 + Check 4): Walk call sites and inner fns in the body.
     check_body(ctx, b, decl_name, effective, body);
 
     effective
@@ -151,7 +151,7 @@ pub fn check_caps_block(
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-/// Returns `true` when `name` is file-private per D040 (starts with `_`).
+/// Returns `true` when `name` is file-private (starts with `_`).
 #[must_use]
 pub fn is_file_private(name: &str) -> bool {
     name.starts_with('_')
@@ -167,8 +167,8 @@ pub fn caps_from_ast_slice(caps: &[Capability]) -> CapabilitySet {
     cs
 }
 
-/// Recursively walk `expr`, applying Rule 2 (call-site subset check) and
-/// Rule 4 (inner-fn subset check) against `enclosing_effective`.
+/// Recursively walk `expr`, applying Check 2 (call-site subset check) and
+/// Check 4 (inner-fn subset check) against `enclosing_effective`.
 ///
 /// This does NOT re-run `infer_caps` — that was already done at the top.
 /// It only needs to find: (a) call sites to check callee caps ⊆ enclosing, and
@@ -192,7 +192,7 @@ fn check_body(
         | Expr::Qualified(_)
         | Expr::FieldAccessorFn { .. } => {}
 
-        // ── Call (Rule 2) ─────────────────────────────────────────────────────
+        // ── Call (Check 2) ─────────────────────────────────────────────────────
         // caps_of_callee returns the capability contribution of this call site.
         // We check that contribution ⊆ enclosing effective set.
         Expr::Call { callee, args, span } => {
@@ -233,8 +233,8 @@ fn check_body(
             check_body(ctx, b, enclosing_name, enclosing_effective, message);
         }
 
-        // ── Ask ({time} contribution per §8.1 / D018 Model B) ────────────────
-        // The Ask expression itself introduces {time}; Rule 2 applies.
+        // ── Ask ({time} contribution per §8.1 / Model B) ────────────────
+        // The Ask expression itself introduces {time}; Check 2 applies.
         Expr::Ask {
             handle, args, span, ..
         } => {
@@ -254,7 +254,7 @@ fn check_body(
             }
         }
 
-        // ── Spawn ({spawn} contribution per §8.1 / D061) ─────────────────────
+        // ── Spawn ({spawn} contribution per §8.1) ─────────────────────
         Expr::Spawn { args, span, .. } => {
             let spawn_caps = CapabilitySet::singleton(ridge_ast::Capability::Spawn);
             if !spawn_caps.is_subset(&enclosing_effective) {
@@ -278,14 +278,14 @@ fn check_body(
             }
         }
 
-        // ── InnerFn (Rule 4 — D058) ───────────────────────────────────────────
+        // ── InnerFn (Check 4) ───────────────────────────────────────────
         // The inner fn's declared caps must be ⊆ the enclosing effective set.
         // After that we recurse into the inner fn's body with its own effective
         // set (so that the inner fn's call sites are also validated).
         Expr::InnerFn { decl, span } => {
             let inner_declared: CapabilitySet = caps_from_ast_slice(&decl.caps);
 
-            // Rule 4: inner declared ⊆ enclosing effective.
+            // Check 4: inner declared ⊆ enclosing effective.
             if !inner_declared.is_subset(&enclosing_effective) {
                 let missing = inner_declared.difference(&enclosing_effective);
                 ctx.errors.push(TypeError::CapabilityNotDeclared {
@@ -441,7 +441,7 @@ fn check_body(
 }
 
 /// Compute the capability contribution of a *call site* (`Expr::Call` callee)
-/// for the T18 per-call-site check.
+/// for the caller-versus-callee capability check.
 ///
 /// This is a deliberately conservative simplification of
 /// `caps_infer::caps_of_callee`: it reads the callee's concrete caps from the
@@ -450,13 +450,14 @@ fn check_body(
 /// the effect arrives only through the callback argument, so this function
 /// reports `PURE` — it under-attributes such call sites.
 ///
-/// That under-attribution is sound because T14 (`caps_infer::infer_caps`),
-/// which *does* resolve HOF caps via D041, is the enforcing pass: a function
+/// That under-attribution is sound because `caps_infer::infer_caps`,
+/// which *does* resolve HOF caps through capability-row instantiation,
+/// is the enforcing pass: a function
 /// whose body leaks a capability through a HOF callback has that capability in
-/// its inferred set and is rejected by T14 unless it declares it.  The
+/// its inferred set and is rejected by declaration capability checking unless it declares it.  The
 /// `cap_d041_hof_callback_leak` fixture locks this invariant in.  A full
-/// reconciliation so T18 attributes HOF call sites precisely is deferred to the
-/// capability audit (it needs the mutable instantiation context that T14 has
+/// reconciliation so the per-call-site check attributes HOF call sites precisely is deferred to the
+/// capability audit (it needs the mutable instantiation context that capability inference has
 /// and this later, immutable pass does not).
 fn call_site_caps(ctx: &InferCtx, callee: &Expr, _args: &[Expr]) -> CapabilitySet {
     match callee {
@@ -816,7 +817,7 @@ mod tests {
     }
 
     // ── T14-7: file_private_decl_skips_declared_check ────────────────────────
-    // D040: decl name starts with `_`, no declared caps, body calls Io → no T014.
+    // decl name starts with `_`, no declared caps, body calls Io → no T014.
     #[test]
     fn file_private_decl_skips_declared_check() {
         let (_arena, b) = make_builtins();
@@ -825,7 +826,7 @@ mod tests {
         bind_mono(&mut ctx, "Io.println", io_println_scheme(&b));
 
         let body = io_call();
-        // File-private: declared = None (D040 — caller passes None for _-prefixed decls).
+        // File-private: declared = None (caller passes None for _-prefixed decls).
         check_caps_decl(&mut ctx, &b, "_helper", None, &body, ds());
 
         // No T014 must be emitted (no declared-vs-inferred check for file-private).
@@ -899,7 +900,7 @@ mod tests {
     }
 
     // ── T14-10: inner_fn_subset_T014 ─────────────────────────────────────────
-    // Outer fn declared `{io}`, inner fn declared `{fs}` → T014 (D058: inner ⊄ outer).
+    // Outer fn declared `{io}`, inner fn declared `{fs}` → T014 (inner ⊄ outer).
     #[test]
     fn inner_fn_subset_t014() {
         let (_arena, b) = make_builtins();

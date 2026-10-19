@@ -1,5 +1,5 @@
 //! IR pattern nodes.
-// OQ-IR003: IrPat is #[non_exhaustive] — see expr.rs for rationale.
+// IrPat is #[non_exhaustive] — see expr.rs for rationale.
 
 use crate::lit::IrLit;
 use crate::symbol::SymbolRef;
@@ -21,7 +21,7 @@ pub enum IrPat {
         /// Source span.
         span: Span,
     },
-    // OQ-L009: IrPat::Bind collapses Var and As patterns into one variant;
+    // IrPat::Bind collapses Var and As patterns into one variant;
     // inner=None for plain variable bindings, inner=Some for `as`-patterns.
     /// Variable binding.  `as` patterns lower to `IrPat::Bind { name, inner }`.
     Bind {
@@ -36,7 +36,7 @@ pub enum IrPat {
     ///
     /// `User { name = n, age }` lowers to
     /// `Ctor { sym, fields: [(name, Bind n), (age, Bind age)] }`.
-    /// Shorthand fields (`{ age }`, D053) are pre-expanded to
+    /// Shorthand fields (`{ age }`) are pre-expanded to
     /// `(age, Bind age)` during lowering — the IR has no shorthand form.
     Ctor {
         /// The constructor symbol.

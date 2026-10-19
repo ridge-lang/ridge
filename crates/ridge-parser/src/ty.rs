@@ -34,7 +34,7 @@
 //!   =>  Fn { params:[Int], ret: Fn { params:[Text], ret: Bool } }
 //! ```
 //!
-//! # OQ-P003 (flat `TypeApp`)
+//! # Flat `TypeApp`
 //!
 //! `Map k v` is `App { head: Map, args: [k, v] }` — not nested
 //! `App(App(Map, k), v)`.  Greedy argument collection happens in
@@ -225,7 +225,7 @@ pub(crate) fn parse_type_atom(cur: &mut Cursor<'_>) -> Result<Type, ParseError> 
 ///
 /// Grammar §3.4 line 424: `TypeApp ::= UPPER_IDENT { TypeAtom }`.
 ///
-/// Per OQ-P003 the application is **flat**: `Map k v` →
+/// The application is **flat**: `Map k v` →
 /// `App { head: Map, args: [k, v] }`.
 ///
 /// If the leading atom is NOT a `Type::Named` (upper-case), no greedy
@@ -353,7 +353,7 @@ fn parse_fn_type(cur: &mut Cursor<'_>) -> Result<Type, ParseError> {
 /// Parse `(…)` — three cases:
 ///
 /// 1. `()` — `Type::Primitive { name: Unit, span }` (grammar treats `()` as
-///    the `Unit` primitive; see grammar §3.4 and T4 spec).
+///    the `Unit` primitive; see grammar §3.4).
 /// 2. `(Type)` — `Type::Paren { inner, span }` (preserved for round-trip).
 /// 3. `(Type, Type, …)` with ≥ 2 elements — `Type::Tuple { elems, span }`.
 ///
@@ -706,12 +706,12 @@ mod tests {
         }
     }
 
-    // ── T7: OQ-P003 — flat two-arg application ───────────────────────────────
+    // ── T7: flat two-arg application ───────────────────────────────
 
     #[test]
     fn parse_type_app_two_args_flat() {
         // `Map k v` → App { head: Map, args: [Var(k), Var(v)] }
-        // OQ-P003 check: NOT App(App(Map, k), v)
+        // Check the flat shape: NOT App(App(Map, k), v)
         let result = parse_ty("Map k v");
         assert!(result.is_ok(), "expected Ok, got {result:?}");
         if let Ok(Type::App { head, args, .. }) = result {

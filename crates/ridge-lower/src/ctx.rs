@@ -1,11 +1,11 @@
 //! Per-module lowering context (`LowerCtx`).
 //!
 //! [`LowerCtx`] is the mutable accumulator threaded through every lowering rule
-//! in Phase 5.  It owns:
+//! in lowering. It owns:
 //! - the fresh-ID counter for IR nodes,
 //! - the AST→IR provenance map (`source_map`),
-//! - the propagation-scope stack for `?`/`try` desugaring (§4.2–§4.3),
-//! - the `in_actor_body` flag for `Assign` target classification (§4.14),
+//! - the propagation-scope stack for `?`/`try` desugaring,
+//! - the `in_actor_body` flag for `Assign` target classification,
 //! - the fresh-local counter for synthetic name generation (R6),
 //! - the accumulated [`LowerError`] vector.
 //!
@@ -27,7 +27,7 @@ type TyConNameCache = FxHashMap<String, TyConId>;
 /// Actor-name–to–`ModuleId` cache, built lazily on first call to
 /// [`LowerCtx::lookup_actor_module`]. Keyed by the actor's source-level name;
 /// on same-name-in-two-modules collisions the lowest `ModuleId.0` wins
-/// (deterministic by module-walk order). // OQ-PHASE45-006
+/// (deterministic by module-walk order).
 type ActorModuleCache = FxHashMap<String, ModuleId>;
 
 /// Per-fn cache of scheme constraints, parameter types, and the return type,
@@ -44,7 +44,7 @@ struct PropagationScope {
     is_result_scope: bool,
 }
 
-/// Per-module state threaded through all Phase 5 lowering rules.
+/// Per-module state threaded through all lowering rules.
 ///
 /// One `LowerCtx` is created per module, lives for the duration of
 /// `lower_module`, and is consumed (or dropped) when the [`LoweredModule`] is
@@ -63,35 +63,34 @@ pub struct LowerCtx<'tw> {
     ///
     /// Accumulated as IR nodes are emitted via [`fresh_id`][Self::fresh_id].
     /// Sparse — synthetic nodes (e.g. interpolation `ToText` calls) have no
-    /// upstream `NodeId` and are absent (§3.7).
+    /// upstream `NodeId` and are absent.
     pub source_map: FxHashMap<IrNodeId, NodeId>,
     /// Stack of expected return types for `?` / `try` propagation desugaring.
     ///
     /// Pushed when entering an `Option`/`Result`-returning scope; popped on
     /// exit.  An empty stack when a `?` operator is encountered triggers a
-    /// defensive [`LowerError::PropagateOutsideScope`] (L103) (§4.2/§4.3).
+    /// defensive [`LowerError::PropagateOutsideScope`] (L103).
     propagation_scope_stack: Vec<PropagationScope>,
     /// `true` when the lowerer is inside an actor handler or `init` body.
     ///
-    /// Flips the `Assign` target classification to `StateField` vs. `Local`
-    /// (R8 / §4.14).
+    /// Flips the `Assign` target classification to `StateField` vs. `Local`.
     pub in_actor_body: bool,
     /// Names of the enclosing actor's state fields, when `in_actor_body == true`.
     ///
     /// `None` outside an actor handler/init body; `Some(set)` while lowering the
     /// body of `init` or an `on` handler.  Used by `lower_assign` to classify
     /// `<-` targets as `AssignTarget::StateField` when the name appears in this
-    /// set (R8 / §4.14 / T10).
+    /// set.
     ///
     /// A save/restore pattern in `actor_lower` ensures nested actors (disallowed
-    /// by Phase 4, but defensively handled) do not corrupt the enclosing state.
+    /// by type checking, but defensively handled) do not corrupt the enclosing state.
     pub current_state_fields: Option<FxHashSet<String>>,
     /// Monotone counter for generating unique synthetic local names (R6).
     ///
     /// Shared across all prefixes within a module so that `__prop_ok_0`,
     /// `__with_base_1`, `__prop_ok_2` are all globally unique within a module.
     pub fresh_local_counter: u32,
-    /// Defensive errors accumulated during lowering (§5.1).
+    /// Defensive errors accumulated during lowering.
     ///
     /// Non-empty only when the upstream `TypedWorkspace` was partial or
     /// contained unsolved type variables.  All variants have `Severity::Error`.
@@ -122,8 +121,8 @@ pub struct LowerCtx<'tw> {
     /// Workspace-level context from `TypedWorkspace`.
     ///
     /// Carries `tycons` (the `TyConDecl` arena) and `builtins` (built-in
-    /// `TyConId` shortcuts).  Required for `with` schema lookup (§4.5) and
-    /// interp `ToText` dispatch (§4.6).  `None` for unit tests that do not wire
+    /// `TyConId` shortcuts).  Required for `with` schema lookup and
+    /// interp `ToText` dispatch.  `None` for unit tests that do not wire
     /// the full pipeline.
     pub workspace: Option<&'tw TypedWorkspace>,
     /// The built-in `TyConId` handles, as the arena assigned them.
@@ -141,14 +140,14 @@ pub struct LowerCtx<'tw> {
     /// `LowerCtx` can be built without a workspace — unit tests do — and
     /// naming `Int` is not something those may get wrong.
     pub builtins: &'tw ridge_types::BuiltinTyCons,
-    /// The current module's `inferred_caps` side-table from Phase 4.
+    /// The current module's `inferred_caps` side-table from type checking.
     ///
     /// Keyed by the proxy `NodeId(span.start)` that `ridge-typecheck` uses for
     /// each top-level `fn` declaration.  See [`LowerCtx::lookup_inferred_caps`]
     /// for the proxy-key contract.  `None` for unit tests that do not run the
     /// full pipeline.
     pub inferred_caps: Option<&'tw FxHashMap<NodeId, CapabilitySet>>,
-    /// The current module's quoted-lambda side-table from Phase 4.
+    /// The current module's quoted-lambda side-table from type checking.
     ///
     /// Keyed by the quoted lambda's span. A present entry means the lambda body
     /// must be reified into a `QExpr` tree (see [`LowerCtx::lookup_quoted`])
@@ -172,7 +171,7 @@ pub struct LowerCtx<'tw> {
     tycon_name_cache: Option<TyConNameCache>,
     /// Lazy actor-name→`ModuleId` cache populated on first call to
     /// [`LowerCtx::lookup_actor_module`]. Built from
-    /// `TypedWorkspace.modules[*].ast.items` (one linear scan). // OQ-PHASE45-006
+    /// `TypedWorkspace.modules[*].ast.items` (one linear scan).
     actor_module_cache: Option<ActorModuleCache>,
     /// Per-module symbol table from the upstream `ResolvedModule`, borrowed
     /// for the duration of `lower_module`.
@@ -182,7 +181,7 @@ pub struct LowerCtx<'tw> {
     /// then resolved to a `TyConId` via [`LowerCtx::lookup_tycon_by_name`].
     ///
     /// `None` for `LowerCtx`s constructed without a `ResolvedModule` (e.g.
-    /// unit tests that pass no `ResolvedModule`). // OQ-PHASE45-007
+    /// unit tests that pass no `ResolvedModule`).
     pub symbol_table: Option<&'tw SymbolTable>,
 
     /// Workspace-level class registry. Used by the lowering pass to resolve
@@ -330,7 +329,7 @@ impl<'tw> LowerCtx<'tw> {
     /// `origin` is the upstream AST [`NodeId`] that produced this IR node.
     /// Pass `None` for purely synthetic nodes (e.g. the `ToText` call inserted
     /// by interpolation lowering) — synthetic nodes are **not** entered into
-    /// `source_map` (§3.7 sparse-map contract).
+    /// `source_map` (sparse-map contract).
     ///
     /// IDs are dense and start at 0 so that `IrNodeId.0` can be used directly
     /// as a `Vec` index into `node_types`.
@@ -368,7 +367,7 @@ impl<'tw> LowerCtx<'tw> {
     /// Attach the current module's `inferred_caps` side-table.
     ///
     /// Called from [`crate::lower_module`] immediately after the `TypedModule`
-    /// is available.  Used by [`Self::lookup_inferred_caps`] to read Phase 4's
+    /// is available. Used by [`Self::lookup_inferred_caps`] to read the type checker's
     /// capability inference results for top-level `fn` declarations.
     pub const fn attach_inferred_caps(&mut self, caps: &'tw FxHashMap<NodeId, CapabilitySet>) {
         self.inferred_caps = Some(caps);
@@ -401,7 +400,7 @@ impl<'tw> LowerCtx<'tw> {
         self.quoted_lambdas.and_then(|q| q.get(&span))
     }
 
-    /// Looks up Phase 4's `inferred_caps` side-table by the proxy `NodeId`
+    /// Looks up the type checker's `inferred_caps` side-table by the proxy `NodeId`
     /// derivation that `ridge-typecheck` uses (`NodeId(span.start)`). This
     /// proxy contract is fragile and shared with upstream — if the upstream
     /// keying changes, this helper must change in lockstep.
@@ -497,7 +496,7 @@ impl<'tw> LowerCtx<'tw> {
     /// scanning every module's `ast.items` in `ModuleId.0` order (a single
     /// linear workspace-wide pass). Subsequent calls are O(1).
     ///
-    /// **Collision policy** (OQ-PHASE45-006): when two modules declare an
+    /// **Collision policy**: when two modules declare an
     /// actor with the same name the *lower* `ModuleId.0` wins (first
     /// encountered in the scan). The `BindingMap` lookup at the call site
     /// (which already carries the disambiguated module) is always preferred
@@ -790,7 +789,7 @@ impl<'tw> LowerCtx<'tw> {
     /// side-table.
     ///
     /// Returns `None` if the table is shorter than `id.0` (which is the case
-    /// during T17-deferred lowering where the table is always empty).
+    /// when the type-table integration is absent and the table is empty).
     #[must_use]
     pub fn node_type(&self, id: NodeId) -> Option<&Type> {
         self.node_types.get(id.0 as usize).and_then(Option::as_ref)
@@ -799,7 +798,7 @@ impl<'tw> LowerCtx<'tw> {
     /// Push `ty` onto the propagation-scope stack.
     ///
     /// Called when entering any `Option`- or `Result`-returning scope where
-    /// `?` desugaring is valid (§4.2).
+    /// `?` desugaring is valid.
     pub fn push_propagation_scope(&mut self, ty: Type) {
         self.propagation_scope_stack.push(PropagationScope {
             ty,

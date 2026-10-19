@@ -1,19 +1,19 @@
-//! Binary and unary operator lowering — §4.11.
+//! Binary and unary operator lowering.
 //!
 //! Implements the static op-to-symbol table for `Expr::Binary` and `Expr::Unary`.
 //!
 //! # Design notes
 //!
 //! - Most binary operators lower to `IrExpr::Call` with a `SymbolRef::Stdlib`
-//!   callee — see §4.11 for the rationale.
+//!   callee.
 //! - `BinOp::Cons` lowers to the dedicated `IrExpr::Cons` variant.
 //! - `&&` and `||` lower to a two-armed `IrExpr::Match`, because they are the
 //!   two operators that must *not* evaluate an operand. A call cannot express
 //!   that: it evaluates its arguments, and normalisation hoists them ahead of
 //!   the call besides. See `lower_short_circuit`.
 //! - Arithmetic type dispatch (`Int` vs `Float` family) requires upstream
-//!   `node_types` wiring (Phase 4 left it empty; not currently scheduled).
-//!   All arithmetic ops default to the Int family; see `op_to_symbol`.
+//!   `node_types` wiring. When operand type metadata is absent, arithmetic
+//!   defaults to the Int family; see `op_to_symbol`.
 //! - `BinOp::Pipe` cannot appear here — the parser emits `Expr::Pipe` for `|>`,
 //!   not `Expr::Binary { op: BinOp::Pipe }`.  A defensive stub is provided.
 
@@ -84,7 +84,7 @@ pub fn lower_binary(
     }
 
     // ── All other ops — lower to stdlib Call ──────────────────────────────────
-    // PHASE45-T3: resolve the LHS type from node_types for type-driven dispatch
+    // resolve the LHS type from node_types for type-driven dispatch
     // (Float vs Int arithmetic; Text vs List concatenation).  RHS is consulted
     // as a fallback when the LHS lookup misses, which happens inside contexts
     // where node_types is not populated for sub-expressions (notably actor
@@ -118,7 +118,7 @@ pub fn lower_binary(
 
 /// Lower `-expr` to `Call(std.int.neg, [expr'])` or `Call(std.float.neg, [expr'])`.
 ///
-/// PHASE45-T3: type-driven dispatch — reads the operand's resolved type from
+/// Type-driven dispatch — reads the operand's resolved type from
 /// `node_types` via `node_id_map`; dispatches to `std.float.neg` when the
 /// operand is `Float`; falls back to `std.int.neg` on miss.
 ///
@@ -126,7 +126,7 @@ pub fn lower_binary(
 pub fn lower_unary(ctx: &mut LowerCtx<'_>, op: UnaryOp, expr: &Expr, span: Span) -> IrExpr {
     match op {
         UnaryOp::Neg => {
-            // PHASE45-T3: resolve the operand type for Float/Int dispatch.
+            // resolve the operand type for Float/Int dispatch.
             let operand_ty = resolve_lhs_type(ctx, expr);
             let (neg_module, neg_name) = if is_float(ctx, &operand_ty) {
                 ("std.float", "neg")
@@ -227,7 +227,7 @@ fn lower_short_circuit(
 /// Called only for non-`Cons` and non-`Pipe` operators (those two are handled
 /// separately by the caller).
 ///
-/// # Type dispatch (PHASE45-T3)
+/// # Type dispatch
 ///
 /// Arithmetic ops (`Add`, `Sub`, `Mul`, `Div`, `Pow`) dispatch to `std.float.*`
 /// when `lhs_ty` resolves to the workspace's `Float` tycon; otherwise they fall
@@ -237,7 +237,7 @@ fn lower_short_circuit(
 fn op_to_symbol(op: BinOp, lhs_ty: &Type, ctx: &LowerCtx<'_>) -> (&'static str, &'static str) {
     match op {
         // ── Arithmetic — Float/Int dispatch via node_types ────────────────────
-        // PHASE45-T3: dispatches to std.float.* when LHS resolves to Float.
+        // dispatches to std.float.* when LHS resolves to Float.
         BinOp::Add => {
             if is_float(ctx, lhs_ty) {
                 ("std.float", "add")
@@ -266,11 +266,11 @@ fn op_to_symbol(op: BinOp, lhs_ty: &Type, ctx: &LowerCtx<'_>) -> (&'static str, 
                 ("std.int", "div")
             }
         }
-        // PHASE45-T3: Mod and Pow are Int-only (no Float counterpart).
+        // Mod and Pow are Int-only (no Float counterpart).
         BinOp::Mod => ("std.int", "mod"),
         BinOp::Pow => ("std.int", "pow"),
 
-        // OQ-L010: polymorphic == and other comparison ops lower to std.op.eq/ne/lt/…
+        // polymorphic == and other comparison ops lower to std.op.eq/ne/lt/…
         // (not type-specific), relying on runtime dispatch for type-directed equality.
         // ── Polymorphic comparison ─────────────────────────────────────────────
         BinOp::Eq => ("std.op", "eq"),
@@ -285,7 +285,7 @@ fn op_to_symbol(op: BinOp, lhs_ty: &Type, ctx: &LowerCtx<'_>) -> (&'static str, 
         BinOp::Or => ("std.bool", "or"),
 
         // ── Concatenation — Text vs List dispatch via node_types ──────────────
-        // PHASE45-T3: dispatches to std.list.concat when LHS resolves to List.
+        // dispatches to std.list.concat when LHS resolves to List.
         BinOp::Concat => {
             if is_list(ctx, lhs_ty) {
                 ("std.list", "concat")
@@ -309,7 +309,7 @@ fn op_to_symbol(op: BinOp, lhs_ty: &Type, ctx: &LowerCtx<'_>) -> (&'static str, 
 /// Used by arithmetic and concat dispatch to determine Float/Int and Text/List
 /// families.  Returns `Type::Error` when no mapping is found.
 ///
-/// PHASE45-T3: type-driven dispatch helper.
+/// Type-driven dispatch helper.
 fn resolve_lhs_type(ctx: &LowerCtx<'_>, expr: &Expr) -> Type {
     ctx.node_id_map
         .as_ref()
@@ -433,7 +433,7 @@ mod tests {
         }
     }
 
-    // ── T4-op-1: Add lowers to std.int.add Call ───────────────────────────────
+    // ── Add lowers to std.int.add Call ───────────────────────────────
 
     #[test]
     fn binary_add_default_int() {
@@ -486,7 +486,7 @@ mod tests {
         );
     }
 
-    // ── T4-op-2: Eq lowers to std.op.eq (polymorphic) ─────────────────────────
+    // ── Eq lowers to std.op.eq (polymorphic) ─────────────────────────
 
     #[test]
     fn binary_eq_polymorphic() {
@@ -513,7 +513,7 @@ mod tests {
         }
     }
 
-    // ── T4-op-3: Cons lowers to IrExpr::Cons ──────────────────────────────────
+    // ── Cons lowers to IrExpr::Cons ──────────────────────────────────
 
     #[test]
     fn binary_cons_emits_cons() {
@@ -532,7 +532,7 @@ mod tests {
                     } => {}
                     ref other => panic!("expected Int(1) as head, got {other:?}"),
                 }
-                // Tail is whatever the stub produces (Unit for now — T5 will fix List).
+                // Tail is whatever the stub produces (Unit for now — List typing remains to be completed).
                 // The structural assertion is: we got IrExpr::Cons, not a Call.
                 let _ = tail;
             }
@@ -540,7 +540,7 @@ mod tests {
         }
     }
 
-    // ── T4-op-4: UnaryOp::Neg lowers to std.int.neg ───────────────────────────
+    // ── UnaryOp::Neg lowers to std.int.neg ───────────────────────────
 
     #[test]
     fn unary_neg_default_int() {
@@ -585,7 +585,7 @@ mod tests {
         );
     }
 
-    // ── T4-op-5: BinOp::Pipe as Binary emits L999 defensive error ────────────
+    // ── BinOp::Pipe as Binary emits L999 defensive error ────────────
 
     #[test]
     fn binary_pipe_binop_emits_internal_error() {
@@ -647,7 +647,7 @@ mod tests {
         }
     }
 
-    // ── T4-op-7: Concat lowers to std.text.concat (default) ──────────────────
+    // ── Concat lowers to std.text.concat (default) ──────────────────
 
     #[test]
     fn binary_concat_default_text() {
@@ -674,7 +674,7 @@ mod tests {
         }
     }
 
-    // ── T4-op-8: Sub span is preserved on the Call node ───────────────────────
+    // ── Sub span is preserved on the Call node ───────────────────────
 
     #[test]
     fn binary_sub_span_preserved() {

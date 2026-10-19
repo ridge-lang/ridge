@@ -10,7 +10,7 @@
 //!    subprocess with a 60-second timeout.
 //! 4. Compare normalised stdout against `tests/expected/<name>.txt`.
 //!
-//! `DoD`: all four tests green ↔ spec §11.3 `DoD` satisfied.
+//! The examples must execute with the expected stdout; deferrals are documented below.
 //!
 //! Example status:
 //! - `log_analyzer`, `game_of_life`, `rate_limiter` — compile and run end to
@@ -43,7 +43,7 @@ use std::time::Duration;
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-/// Hard timeout for each `erl` invocation (60 s per plan §9).
+/// Hard timeout for each `erl` invocation (60 s).
 const ERL_TIMEOUT_SECS: u64 = 60;
 
 /// Directory containing curated expected-output files.
@@ -72,7 +72,7 @@ fn normalise(s: &str) -> String {
 /// system, the killed child may not have fully flushed its write buffer before
 /// `read_to_end` completes.  The resulting panic message may show truncated
 /// stdout/stderr.  This is acceptable for a contributor-facing diagnostic
-/// (§1.3 #10 exemption); hardening to a bounded-timeout drain (e.g. via a
+/// path; hardening to a bounded-timeout drain (e.g. via a
 /// thread + `recv_timeout`) is deferred to a future release alongside the
 /// bounded-server testing work.  Do NOT attempt to add a `sleep` or retry
 /// loop here without a design decision.
@@ -364,7 +364,7 @@ fn beam_e2e_log_analyzer() {
 ///   demonstration.
 ///
 /// These options were considered and declined; they SHALL NOT be
-/// reopened without a new plan-level decision.
+/// reopened without a new explicit design decision.
 #[ignore = "Http.listen blocks BEAM accept loop; testability deferred"]
 #[test]
 fn beam_e2e_url_shortener() {
@@ -3009,7 +3009,7 @@ fn beam_e2e_unmonitor_suppresses_down() {
     assert!(stdout.contains("no-down-after-unmonitor"), "got:\n{stdout}");
 }
 
-// ── Slice pattern BEAM e2e tests (D258) ──────────────────────────────────────
+// ── Slice pattern BEAM e2e tests ──────────────────────────────────────
 
 /// Suffix rest `[.., last]`: print the last element of a list.
 const SLICE_SUFFIX_SOURCE: &str = r#"

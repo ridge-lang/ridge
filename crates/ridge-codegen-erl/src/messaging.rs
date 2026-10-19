@@ -1,11 +1,11 @@
-//! §4.17–§4.19 — Lower `IrExpr::Send`, `IrExpr::Ask`, `IrExpr::Spawn`.
+//! Lower `IrExpr::Send`, `IrExpr::Ask`, `IrExpr::Spawn`.
 //!
 //! All three actor-messaging primitives are routed through `ridge_rt` wrappers
-//! per resolved **OQ-E004** (§8.2): `ridge_rt:send_op/2`, `ridge_rt:try_ask/3`,
+//! `ridge_rt:send_op/2`, `ridge_rt:try_ask/3`,
 //! and `ridge_rt:spawn_actor/3`.  This one-hop indirection is the seam where
 //! future telemetry and tracing hooks land without recompiling user code.
 //!
-//! ## §4.17 Send (`!`)
+//! ## Send (`!`)
 //!
 //! ```ignore
 //! handle ! handler arg1 ... argN
@@ -19,19 +19,19 @@
 //!
 //! Returns `'ok'` (Unit).
 //!
-//! ## §4.18 Ask (`?>`)
+//! ## Ask (`?>`)
 //!
 //! ```ignore
 //! handle ?> handler arg1 ... argN [timeout <ms|never>]
 //! ```
 //! → `call 'ridge_rt':'try_ask' (HandleExpr, {handler_tag, Arg1, ..., ArgN}, TimeoutMs)`
 //!
-//! Timeout resolution (per resolved OQ-E001 §8):
+//! Timeout resolution:
 //! - `timeout: None`             → `5000`           (BEAM convention)
 //! - `timeout: Some(Never)`      → `'infinity'`
 //! - `timeout: Some(Millis(e))`  → `lower_expr(e)`  (typecheck guarantees `e: Int`)
 //!
-//! ## §4.19 Spawn
+//! ## Spawn
 //!
 //! ```ignore
 //! spawn ActorName arg1 ... argN
@@ -45,7 +45,7 @@
 //! target actor is bounded.
 
 // pub(crate) on items in a pub(crate) module is redundant per clippy; we keep
-// it for explicitness per plan §2.2.
+// it for explicitness
 #![allow(clippy::redundant_pub_crate)]
 // lower_send / lower_ask / lower_spawn are called from expr.rs::lower_expr_in_scope
 // which is always reachable; derive_actor_beam_module is also used by messaging tests.
@@ -63,13 +63,13 @@ use ridge_ir::{IrExpr, IrTimeout, SymbolRef};
 /// Lower `IrExpr::Send` to
 /// `call 'ridge_rt':'send_op' (Handle, {Tag, A1, ..., AN})`.
 ///
-/// Per resolved **OQ-E004** (§8.2): all `!` sends route through `ridge_rt`.
+/// All `!` sends route through `ridge_rt`.
 /// The function name moved from `send` to `send_op` when bounded mailboxes
 /// landed — `send_op` honours the policy carried by the handle. The
-/// indirection is the telemetry/tracing seam (plan §3.6).
+/// indirection is the telemetry/tracing seam.
 ///
 /// Returns `'ok'` (Unit) as the expression value.
-// OQ-E004: always route via ridge_rt (plan §4.17 + §8.2).
+// always route via ridge_rt.
 pub(crate) fn lower_send(
     handle: &IrExpr,
     message: &SymbolRef,
@@ -92,7 +92,7 @@ pub(crate) fn lower_send(
 /// Lower `IrExpr::Ask` to `call 'ridge_rt':'try_ask' (Handle, {Tag, A1, ..., AN}, Timeout)`.
 ///
 /// Both ask spellings use the same Result-returning runtime operation.
-/// Per resolved **OQ-E001** (§8.2): default timeout is `5000` ms.
+/// Default timeout is `5000` ms.
 ///
 /// Timeout table:
 /// | IR `timeout` | Emitted Core Erlang |
@@ -100,8 +100,8 @@ pub(crate) fn lower_send(
 /// | `None`                  | `5000`            |
 /// | `Some(Never)`           | `'infinity'`      |
 /// | `Some(Millis(e))`       | `lower_expr(e)`   |
-// OQ-E001: 5000 ms default (plan §4.18 + §8.2).
-// OQ-E004: route via ridge_rt (plan §4.18 + §8.2).
+// 5000 ms default.
+// route via ridge_rt.
 pub(crate) fn lower_ask(
     handle: &IrExpr,
     message: &SymbolRef,
@@ -121,13 +121,13 @@ pub(crate) fn lower_ask(
 /// `ridge_rt:spawn_actor/3` calls `gen_server:start_link/3`, reads the
 /// actor module's `'__ridge_mailbox_config'/0`, and returns the
 /// `{ridge_handle, Pid, MailboxConfig}` handle tuple. Init failure crashes
-/// the spawner per resolved **OQ-E006** (§8.2) — BEAM-crash semantics for
+/// the spawner — BEAM-crash semantics for
 /// init failure.
 ///
-/// # OQ-E006 asymmetry note
+/// # Init-failure asymmetry
 /// Init failure propagates as a BEAM exception rather than a Ridge `Result`.
-/// This is the deliberate language-level asymmetry documented in §4.29 and §8.2.
-// OQ-E006: BEAM-crash on init failure (plan §4.19 + §8.2).
+/// This is a deliberate language-level asymmetry.
+// BEAM-crash on init failure.
 pub(crate) fn lower_spawn(
     actor: &SymbolRef,
     args: &[IrExpr],
@@ -237,7 +237,7 @@ pub(crate) fn lower_try_ask(
     let handle_expr = lower_expr_in_scope(handle, scope)?;
     let msg_tuple = build_message_tuple(message, args, span, scope)?;
 
-    // Same timeout table as `lower_ask` (OQ-E001); `tryAsk`'s surface timeout
+    // Same timeout table as `lower_ask`; `tryAsk`'s surface timeout
     // is a required argument, so `None` is only a defensive fallback.
     let timeout_expr = match timeout {
         None => CErlExpr::Lit(CErlLit::Int(5000)),
@@ -426,7 +426,7 @@ mod tests {
 
     #[test]
     fn send_emits_ridge_rt_send_op() {
-        // Send routes through ridge_rt:send_op/2 per OQ-E004 (bounded mailbox
+        // Send routes through ridge_rt:send_op/2 (bounded mailbox
         // support since 0.2.7).
         let handle = lit_int(42); // placeholder — normally a pid variable
         let message = handler_sym("Counter", "increment");
@@ -512,7 +512,7 @@ mod tests {
 
     #[test]
     fn ask_default_timeout_emits_5000() {
-        // OQ-E001: None timeout → 5000 ms.
+        // None timeout → 5000 ms.
         let handle = lit_unit();
         let message = handler_sym("Store", "get");
         let args = vec![lit_int(1)];
@@ -541,7 +541,7 @@ mod tests {
 
     #[test]
     fn ask_never_timeout_emits_infinity() {
-        // OQ-E001: Some(Never) → 'infinity'.
+        // Some(Never) → 'infinity'.
         let handle = lit_unit();
         let message = handler_sym("Store", "get");
         let timeout = Some(IrTimeout::Never);
@@ -563,7 +563,7 @@ mod tests {
 
     #[test]
     fn ask_explicit_millis_timeout() {
-        // OQ-E001: Some(Millis(e)) → lower_expr(e).
+        // Some(Millis(e)) → lower_expr(e).
         let handle = lit_unit();
         let message = handler_sym("Store", "get");
         let millis_expr = lit_int(2000);
@@ -588,7 +588,7 @@ mod tests {
 
     #[test]
     fn spawn_emits_ridge_rt_spawn_actor() {
-        // Spawn routes through ridge_rt:spawn_actor/3 per OQ-E006.
+        // Spawn routes through ridge_rt:spawn_actor/3.
         let actor = actor_type_sym("Limiter");
         let args = vec![lit_int(100)];
         let mut scope = LocalScope::new();

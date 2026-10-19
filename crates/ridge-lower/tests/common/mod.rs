@@ -2,7 +2,7 @@
 //!
 //! # Pipeline
 //!
-//! [`run_pipeline`] wires together the full Phase 1-5 pipeline:
+//! [`run_pipeline`] wires together the full frontend-to-IR pipeline:
 //! `discover_workspace` → `resolve_workspace` → `typecheck_workspace` →
 //! `lower_workspace`.
 //!
@@ -701,7 +701,7 @@ impl Renderer {
                     self.indent -= 1;
                 }
                 // Render timeout only when Some — None (the default) is omitted
-                // so that existing Phase 5 snapshots remain byte-identical.
+                // so that existing lowering snapshots remain byte-identical.
                 match timeout {
                     None => {}
                     Some(IrTimeout::Never) => {

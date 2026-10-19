@@ -24,10 +24,10 @@ use crate::path::resolve_path_dep;
 pub enum DepKind {
     /// `path = "…"` dependency resolved from the filesystem.
     Path,
-    /// `git = "…", tag = "…"` — pinned tag clone (D152).
+    /// `git = "…", tag = "…"` — pinned tag clone.
     GitTag,
     /// `git = "…", branch = "…"` — floating-branch clone; advisory P204 is
-    /// emitted (D160).
+    /// emitted.
     GitBranch,
     /// `workspace-member = "…"` — named sibling in the same workspace.
     WorkspaceMember,
@@ -194,7 +194,7 @@ fn resolve_one(
             let (source_root, manifest, warnings) =
                 resolve_git_dep(local_name, url, rev, cache_root)?;
 
-            // Emit floating-branch advisories to stderr (D160).
+            // Emit floating-branch advisories to stderr.
             for w in &warnings {
                 eprintln!("{}", w.message());
             }

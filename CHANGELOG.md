@@ -75,6 +75,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Compiler rustdoc explains its constraints directly instead of citing private
+  planning notes, while retaining references to the published grammar and spec.
+
 - Parenthesized type annotations preserve generic signature promises, including
   nested and compound types and local named functions. Invalid bodies are
   rejected with the same type errors in the compiler and editor.

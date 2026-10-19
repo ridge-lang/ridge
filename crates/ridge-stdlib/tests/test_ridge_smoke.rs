@@ -1,11 +1,11 @@
 //! Track-B `.test.ridge` smoke test.
 //!
 //! Asserts that every `<module>.test.ridge` file under `crates/ridge-stdlib/stdlib/`
-//! exists (21 of them — one per stdlib module, per §10 file-count audit)
+//! exists (one per stdlib module)
 //! and that each file **parses without errors**.
 //!
 //! Full execution (compile + run via BEAM child process) is the job of
-//! `ridge test` (Phase 8 T9, shipped); this smoke test only guards the
+//! `ridge test`; this smoke test only guards the
 //! parse-clean invariant via the public single-file `ridge_parser::parse_source`
 //! entry point.
 //!
@@ -88,7 +88,7 @@ fn collect_recursive(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
 /// `stdlib/`.
 ///
 /// A count mismatch means a module was added without its companion `.test.ridge`
-/// (or vice versa), failing the §10 audit-table invariant.
+/// (or vice versa), violating the source/suite pairing invariant.
 ///
 /// Failure message: `T201 TestRgCountMismatch`.
 #[test]

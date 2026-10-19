@@ -1,4 +1,4 @@
-//! `?` propagation desugaring rule — §4.2.
+//! `?` propagation desugaring rule.
 //!
 //! Converts `Expr::Propagate { inner, span }` into an `IrExpr::Match` that
 //! inspects whether the inner value is `Ok`/`Err` (Result context) or
@@ -351,7 +351,7 @@ mod tests {
         Type::Con(b.option, vec![Type::Con(b.int, vec![])])
     }
 
-    // ── T7-prop-1: Result scope → Match with Ok and Err arms ─────────────────
+    // ── Result scope → Match with Ok and Err arms ─────────────────
 
     #[test]
     fn propagate_result_scope_produces_match_ok_err() {
@@ -413,7 +413,7 @@ mod tests {
         }
     }
 
-    // ── T7-prop-2: Option scope → Match with Some and None arms ──────────────
+    // ── Option scope → Match with Some and None arms ──────────────
 
     #[test]
     fn propagate_option_scope_produces_match_some_none() {
@@ -462,7 +462,7 @@ mod tests {
         }
     }
 
-    // ── T7-prop-3: no scope → L103 + Unit stub ───────────────────────────────
+    // ── no scope → L103 + Unit stub ───────────────────────────────
 
     #[test]
     fn propagate_outside_scope_emits_l103() {
@@ -488,7 +488,7 @@ mod tests {
         }
     }
 
-    // ── T7-prop-4: Err arm body is Return { Construct { Err, [($0, Local)] } } ─
+    // ── Err arm body is Return { Construct { Err, [($0, Local)] } } ─
 
     #[test]
     fn propagate_result_err_arm_body_shape() {

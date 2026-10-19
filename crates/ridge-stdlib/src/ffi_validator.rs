@@ -1,6 +1,6 @@
 //! FFI validation: T101–T103 diagnostic checks for `@ffi`-decorated decls.
 //!
-//! [`validate_ffi_decls`] is the public entry point consumed by the T4 build
+//! [`validate_ffi_decls`] is the public entry point consumed by the stdlib build
 //! driver.  It checks every `@ffi` decl in a module against the closed-list
 //! audit table and the declared Ridge signature, and returns a vector of
 //! [`FfiDiag`] values — one per violation.

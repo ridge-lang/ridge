@@ -1,4 +1,4 @@
-//! Qualified-name resolution (plan §4.6).
+//! Qualified-name resolution.
 //!
 //! [`resolve_qualified_name`] is the single public entry point.  The walker
 //! delegates every `Expr::Qualified` here; the walker only stamps the returned
@@ -42,7 +42,7 @@ use crate::{
     ModuleId, NodeId, SymbolId,
 };
 
-// ── Qualified record constructor resolution (T8, Phase 4 §3.8) ───────────────
+// ── Qualified record constructor resolution  ───────────────
 
 /// Resolve a qualified record constructor (`Http.Response { ... }`) and return
 /// its [`Binding`].
@@ -511,7 +511,7 @@ fn replace_member(qn: &QualifiedName, new_member: &str) -> String {
 ///
 /// Visibility: import effective bindings are pre-filtered by import resolution (private items
 /// never make it into [`EffectiveBinding`]); `my_table` symbols are local to
-/// the module, all in scope.  Plan §11 risk R14 is satisfied at the call site.
+/// the module, all in scope; visibility is enforced at the call site.
 ///
 /// The exact head text is excluded from candidates so we don't suggest the
 /// user's own (wrong-kind) name back at them.

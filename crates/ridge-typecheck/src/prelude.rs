@@ -1,8 +1,8 @@
-//! Implicit prelude type bindings (T4).
+//! Implicit prelude type bindings.
 //!
 //! [`prelude_types`] wires the `Scheme`s and `TyConId`s for every name injected
-//! by Phase 3's [`ridge_resolve::prelude_resolutions`].  The two maps it returns are consumed by
-//! T6's inference engine to give types to unqualified prelude references.
+//! by the resolver's [`ridge_resolve::prelude_resolutions`]. The two maps it returns are consumed by
+//! the inference engine to give types to unqualified prelude references.
 //!
 //! # Design
 //!
@@ -18,7 +18,7 @@
 //!
 //! # Note on `Json` vs `JsonValue`
 //!
-//! `Json` is injected by Phase 3 as a `Binding::ModuleAlias` (pointing to
+//! `Json` is injected by name resolution as a `Binding::ModuleAlias` (pointing to
 //! `std.json`), not as a `TyCon` — it is the qualified accessor for module
 //! functions like `Json.encode`.  `BuiltinTyCons` has no `json` field, so
 //! `Json` has no `TyConId` entry here; the property test (test 6) skips it.
@@ -32,7 +32,7 @@
 //! The bound `TyVid`s in each scheme use the same small fixed indices (`0`, `1`)
 //! as the schema-level placeholders in [`BuiltinTyCons::allocate`].  They are
 //! stable generalised slots — not unification variables — and are replaced by
-//! fresh variables at each instantiation call (T6).
+//! fresh variables at each instantiation call.
 
 use ridge_types::{BuiltinTyCons, CapRow, CapabilitySet, Scheme, TyConId, TyVid, Type};
 use rustc_hash::FxHashMap;
@@ -107,7 +107,7 @@ fn poly2(v0: TyVid, v1: TyVid, ty: Type) -> Scheme {
 /// `Int`, `Float`, `Bool`, `Text`, `List`, `Map`, `Set`,
 /// `Option`, `Result`.
 ///
-/// The returned maps are intended to seed the inference context in T6.
+/// The returned maps are intended to seed the inference context.
 #[must_use]
 #[allow(
     clippy::too_many_lines,
@@ -156,7 +156,7 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
 
     // ── TyCon bindings ────────────────────────────────────────────────────────
     //
-    // Every name that Phase 3 injects as a module alias for the pure-data
+    // Every name that name resolution injects as a module alias for the pure-data
     // stdlib modules (Int, Float, Bool, Text, List, Map, Set) maps to the
     // corresponding BuiltinTyCons field so the type system can resolve them.
     //
@@ -448,7 +448,7 @@ pub fn lookup_prelude_tycon(b: &BuiltinTyCons, name: &str) -> Option<TyConId> {
 /// Returns the [`ridge_types::UnionSchema`] for a prelude union `TyCon`
 /// (`Option`, `Result`, or `JsonValue`).
 ///
-/// This is used by T9's pattern-matching dispatch to retrieve the canonical
+/// This is used by the union pattern-matching dispatch to retrieve the canonical
 /// schema for prelude union types without access to a full `TyConArena`.
 ///
 /// # Panics (debug only)

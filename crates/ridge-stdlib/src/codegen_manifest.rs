@@ -1,4 +1,4 @@
-//! Manifest and signature code-generation helpers (T10).
+//! Manifest and signature code-generation helpers.
 //!
 //! This module provides the text-level `.ridge` parser that extracts public
 //! symbol names from stdlib source files.  It is the canonical reference
@@ -7,7 +7,7 @@
 //! of the extraction logic, since those crates cannot depend on `ridge-stdlib`
 //! at build time without creating a circular dependency).
 //!
-//! # Cycle-break rationale (T10 plan deviation note)
+//! # Cycle-break rationale
 //!
 //! The Cargo dependency graph today is:
 //!
@@ -17,7 +17,7 @@
 //!
 //! Making `ridge-resolve` or `ridge-typecheck` depend on `ridge-stdlib` (even
 //! as `[build-dependencies]`) would create a cycle.  The chosen approach
-//! (Option 1 from the task spec) is "per-consumer `build.rs`": each consumer
+//! is "per-consumer `build.rs`": each consumer
 //! crate gets its own `build.rs` that walks the `stdlib/` directory at a
 //! well-known relative path (`../ridge-stdlib/stdlib/`) and does its own
 //! text-level extraction.  No new crate is introduced; no dependency edge is

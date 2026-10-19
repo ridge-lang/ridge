@@ -3,10 +3,10 @@
 //! `E001`–`E099` are codegen errors, `E101`–`E199` are `erlc` toolchain errors.
 //! Severity and recovery guidance is documented per-variant.
 //!
-//! ## Type-erasure allow-list (§3.10)
+//! ## Type-erasure allow-list
 //!
 //! Six `Type::Error` sites are permitted in the lowered IR without triggering
-//! `E007 TypeErasureUnsupportedErrorSite`.  These are Phase-7-stub sites where
+//! `E007 TypeErasureUnsupportedErrorSite`. These are stdlib-stub sites where
 //! the type resolver cannot yet produce a concrete type (e.g. `Response`/`Request`
 //! from `std.net.http`).  See [`AllowedErrorSite`] and [`audit_type_error_at`].
 //!
@@ -21,15 +21,15 @@ use ridge_resolve::ModuleId;
 
 // ── Type-erasure allow-list (§3.10) ──────────────────────────────────────────
 
-/// Structural classifier for the six known Phase-7-stub sites where
+/// Structural classifier for the six known stdlib-stub sites where
 /// `Type::Error` is permitted to appear without triggering `E007`.
 ///
 /// These sites correspond to six `Type::Error` values:
 ///
 /// - **4×** `IrFn.ret_ty == Type::Error` — fns returning `Response`/`Request`
-///   from `std.net.http` (Phase 7 stdlib stub).  All in `url_shortener` examples.
+///   from `std.net.http` (stdlib stub). All in `url_shortener` examples.
 /// - **2×** `IrParam.ty == Type::Error` — params typed `Response`/`Request`
-///   (Phase 7 stdlib stubs).  Same examples.
+///   (stdlib stubs). Same examples.
 /// - **1×** `IrPat::Wild` carrying `Type::Error` — wildcards bind nothing so
 ///   their carried type is meaningless at every wildcard site.
 ///
@@ -47,9 +47,9 @@ use ridge_resolve::ModuleId;
 /// [`ALLOWED_ERROR_SITES`] so tests can exercise the rejection branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AllowedErrorSite {
-    /// `IrFn.ret_ty` — function return type unresolved (Phase 7 stdlib stub).
+    /// `IrFn.ret_ty` — function return type unresolved (stdlib stub).
     FnReturnType,
-    /// `IrParam.ty` — parameter type unresolved (Phase 7 stdlib stub).
+    /// `IrParam.ty` — parameter type unresolved (stdlib stub).
     ParamType,
     /// `IrPat::Wild` — wildcards bind nothing; their carried type is irrelevant.
     WildcardPattern,
@@ -75,7 +75,7 @@ pub const ALLOWED_ERROR_SITES: &[AllowedErrorSite] = &[
 /// caller should apply defensive lowering — e.g. emit `'?<unknown>'` tag).
 ///
 /// Returns `Some(E007)` when the site is **not** in the allow-list, meaning a
-/// `Type::Error` appeared somewhere that Phase 4.5 / Phase 7 stubs do not
+/// `Type::Error` appeared somewhere that typed metadata / stdlib stubs do not
 /// explain.  The caller should push this error into the module error vector and
 /// NOT panic.
 ///
@@ -85,7 +85,7 @@ pub const ALLOWED_ERROR_SITES: &[AllowedErrorSite] = &[
 /// # Note on current coverage
 ///
 /// Codegen does not yet observe `Type::Error` via `node_types[id]` lookups
-/// — most codegen paths erase types structurally (§3.10, type-erasure
+/// — most codegen paths erase types structurally (type-erasure
 /// decision).  The audit call-sites are wired at `IrPat::Wild` (pat.rs)
 /// because that is the only codegen path that explicitly encounters a typed
 /// IR node whose type could legitimately be `Type::Error`.  Other paths use
@@ -124,7 +124,7 @@ pub fn audit_type_error_at(
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum CodegenError {
-    /// `E001` — IR shape malformed (defensive; Phase 5 invariant violated).
+    /// `E001` — IR shape malformed (defensive; lowering invariant violated).
     IrShapeMalformed {
         /// The IR variant name that was malformed.
         variant: &'static str,
@@ -174,7 +174,7 @@ pub enum CodegenError {
         mangled: String,
     },
     /// `E007` — Type-erasure surfaced an unsupported `Type::Error` site outside of
-    /// Phase-7-stub regions (defensive — see §3.10).
+    /// stdlib-stub regions (defensive).
     TypeErasureUnsupportedErrorSite {
         /// Source span.
         span: Span,
@@ -590,7 +590,7 @@ mod tests {
     }
 
     /// The headline is the line a reader takes in first, and on this channel it
-    /// used to be the broken invariant itself — `Phase 5 invariant violated`,
+    /// used to name only the violated lowering invariant,
     /// addressed to whoever wrote the check. The internal vocabulary is worth
     /// keeping, but below, as data for the report.
     #[test]
@@ -624,7 +624,7 @@ mod tests {
 
     // ── audit_type_error_at — allow-list tests ────────────────────────────────
 
-    /// Test 3 (DoD): allowed sites with `Type::Error` must return `None` (no E007).
+    /// Test 3: allowed sites with `Type::Error` must return `None` (no E007).
     #[test]
     fn audit_allows_known_sites() {
         use ridge_types::Type;
@@ -662,7 +662,7 @@ mod tests {
         assert!(result.is_none(), "WildcardPattern must be allowed");
     }
 
-    /// Test 4 (DoD): `Type::Error` at a non-allowed site fires `E007`.
+    /// Test 4: `Type::Error` at a non-allowed site fires `E007`.
     ///
     /// Uses `AllowedErrorSite::SyntheticTestSite` — a `#[cfg(test)]`-only
     /// variant that is deliberately absent from `ALLOWED_ERROR_SITES`.  This

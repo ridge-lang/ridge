@@ -1,4 +1,4 @@
-//! §4.20–§4.25 — Lower `IrPat` to `CErlPat`.
+//! Lower `IrPat` to `CErlPat`.
 //!
 //! Pattern lowering is context-free: each `IrPat` variant maps to a `CErlPat`
 //! without needing a `LocalScope` or other mutable state.  The [`lower_pat`]
@@ -8,7 +8,7 @@
 // These helpers are consumed by expr.rs and are also exercised from the test suite.
 #![allow(dead_code)]
 // pub(crate) on items in a pub(crate) module is redundant per clippy; we keep
-// it for explicitness per plan §2.2.
+// it for explicitness
 #![allow(clippy::redundant_pub_crate)]
 
 use crate::core_ast::{CErlAtom, CErlExpr, CErlLit, CErlPat, CErlVar};
@@ -20,7 +20,7 @@ use ridge_ir::{CtorKind, IrPat, SymbolRef};
 
 /// Lower an [`IrPat`] to a [`CErlPat`].
 ///
-/// Covers all 6 `IrPat` variants per §4.20–§4.25.
+/// Covers all 6 `IrPat` variants.
 ///
 /// The `IrPat::Ctor` arm handles:
 /// - `Constructor { ctor_kind: Record }` → `CErlPat::MapPat` with atom keys.
@@ -84,7 +84,7 @@ pub(crate) fn lower_pat(pat: &IrPat) -> Result<CErlPat, CodegenError> {
     }
 }
 
-/// Lower an `IrPat::Ctor` (§4.23).
+/// Lower an `IrPat::Ctor`.
 fn lower_ctor_pat(
     sym: &SymbolRef,
     fields: &[(String, IrPat)],
@@ -136,7 +136,7 @@ fn lower_ctor_pat(
         SymbolRef::Prelude { name } => lower_prelude_pat(name, args, fields, span),
 
         // Handler / ActorType / Local / Stdlib / External as patterns are
-        // Phase-5 invariant violations.
+        // lowering invariant violations.
         _ => Err(CodegenError::IrShapeMalformed {
             variant: "IrPat::Ctor",
             span,
@@ -145,7 +145,7 @@ fn lower_ctor_pat(
     }
 }
 
-/// Lower a `Prelude`-keyed constructor pattern (§4.23 prelude table).
+/// Lower a `Prelude`-keyed constructor pattern.
 fn lower_prelude_pat(
     name: &str,
     args: &[IrPat],

@@ -93,7 +93,7 @@ pub fn install_runtime(out_root: &Path) -> Result<RuntimeInfo, CodegenError> {
     // piece that changed.
     install_runner_source(&runtime_dir, "ridge_rt.erl", RIDGE_RT_SOURCE)?;
 
-    // Also install ridge_test_runner.erl (T9 test runner bridge).
+    // Also install ridge_test_runner.erl (test runner bridge).
     install_runner_source(
         &runtime_dir,
         "ridge_test_runner.erl",
@@ -242,7 +242,7 @@ pub fn compile_repl_runner(erlc_path: &Path, out_root: &Path) -> Result<PathBuf,
 
 /// Compile the installed `ridge_rt.erl` to `ridge_rt.beam` using `erlc`.
 ///
-/// Also compiles `ridge_test_runner.erl` → `ridge_test_runner.beam` (T9).
+/// Also compiles `ridge_test_runner.erl` → `ridge_test_runner.beam`.
 /// The resulting `.beam` files are placed in `<out_root>/beam/` alongside
 /// user modules.  This ensures `erl -pa <beam_dir>` can find both at runtime.
 ///

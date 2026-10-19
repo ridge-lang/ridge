@@ -6,7 +6,7 @@
 //! ridge init
 //! ```
 //!
-//! Like `ridge new` but operates on the current directory (§3.6).  The
+//! Like `ridge new` but operates on the current directory. The
 //! directory must be empty (only `.git/` and `.gitignore` are tolerated).
 //! The project name is derived from the directory name.
 

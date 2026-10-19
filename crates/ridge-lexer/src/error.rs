@@ -137,7 +137,6 @@ impl LexError {
     /// The letter is not a namespace: `L` also covers lowering, and the two
     /// share the range rather than splitting it.
     ///
-    /// Approved as a frozen-crate additive exception per FROZEN-01 (2026-05-01).
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
@@ -189,7 +188,7 @@ impl LexError {
 mod tests {
     use super::*;
 
-    // ── code() stability tests (FROZEN-01, one per variant) ──────────────────
+    // ── code() stability tests (one per variant) ──────────────────
 
     #[test]
     fn tab_forbidden_code_is_stable() {

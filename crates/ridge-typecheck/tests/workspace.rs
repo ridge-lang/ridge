@@ -1,5 +1,4 @@
-//! T17 — workspace-fixture harness for `ridge-typecheck` (plan §10 T17,
-//! §9.5, §11.3 `DoD` lines 1547–1551).
+//! Workspace-fixture harness for `ridge-typecheck`.
 //!
 //! Runs the full `discover → resolve → typecheck` pipeline on each
 //! committed multi-project workspace under `tests/fixtures/workspace/`:
@@ -11,14 +10,14 @@
 //!   propagation (`{io}`-requiring fn re-used in another project's `pub`
 //!   surface).  Must typecheck cleanly.
 //!
-//! These fixtures verify D076 (`exported_externally` flag) and D077
+//! These fixtures verify the `exported_externally` flag and
 //! (absent `[project.exports].public` defaults) end-to-end.
 //!
 //! Each test also captures an `insta` snapshot of a deterministic
 //! projection (errors / `module_count` / `tycon_count`) so that any drift
 //! in cross-project inference is caught by `cargo insta test`. This
-//! satisfies plan §14.3: "4 example snapshots + 2 workspace snapshots
-//! (6 total)".
+//! covers four example snapshots and two workspace snapshots
+//! (six total).
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
@@ -37,7 +36,7 @@ fn fixture_root(name: &str) -> PathBuf {
 
 /// Deterministic, snapshot-friendly projection of a workspace typecheck
 /// result. Mirrors the shape used by `snapshots.rs::TypecheckSnapshot`
-/// so the 6 Phase 4 snapshots have a uniform format.
+/// so the 6 type-checker snapshots have a uniform format.
 #[allow(dead_code)]
 #[derive(Debug)]
 struct WorkspaceSnapshot {

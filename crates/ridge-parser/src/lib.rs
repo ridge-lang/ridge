@@ -192,8 +192,8 @@ fn parse_module_inner(cur: &mut cursor::Cursor<'_>) -> ParseResult {
 /// point: a `Newline` at bracket-depth 0, or a top-level keyword at column 0,
 /// or `Eof`.
 ///
-/// This is a minimal panic-mode recovery step.  Full recovery (T12) will
-/// implement the complete sync-point set from §4.7.
+/// This is a minimal panic-mode recovery step. Block-level statement recovery
+/// also stops at `Dedent`; see `block::sync_to_next_stmt`.
 fn sync_to_next_item(cur: &mut cursor::Cursor<'_>) {
     loop {
         match cur.peek() {
@@ -274,7 +274,7 @@ pub struct ParseResultWithTrivia {
 /// produce.  The only additional output is the `trivia` vector, which `ridge-fmt`
 /// uses to re-insert comments and blank lines during pretty-printing.
 ///
-/// **Allowed by §1.3 hard constraint #1** — promoted to `pub` for `ridge-fmt`.
+/// Public so `ridge-fmt` can share the parser's layout handling.
 /// This function does NOT change parser semantics.
 #[must_use]
 pub fn parse_module_with_trivia(src: &str) -> ParseResultWithTrivia {

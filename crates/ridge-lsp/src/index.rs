@@ -6539,7 +6539,7 @@ fn referent_key(binding: &Binding, module: ModuleId) -> Option<ReferentKey> {
 ///   `init` keyword.
 /// - `T014` on an inner `fn` (Rule 4: its annotation exceeds the *enclosing*
 ///   effective set) — widen the enclosing top-level `fn` instead; skipped for
-///   file-private enclosing fns, whose annotations are ignored (D040).
+///   file-private enclosing fns, whose annotations are ignored.
 /// - `T018` at a call site — add the missing capabilities to the enclosing
 ///   declaration (a `fn`, an `on` handler, or an `init` block), found by name
 ///   plus span containment.
@@ -6677,7 +6677,7 @@ pub fn collect_signature_fixes(
                 CapDeclKind::InnerFn => {
                     // The inner fn already declares the capabilities; the
                     // resolution is to widen the enclosing fn. File-private
-                    // enclosing fns skip the declared check entirely (D040),
+                    // enclosing fns skip the declared check entirely,
                     // so widening them would change nothing.
                     let enclosing = module.ast.items.iter().find_map(|item| match item {
                         ridge_ast::Item::Fn(f)

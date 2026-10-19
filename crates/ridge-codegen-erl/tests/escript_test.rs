@@ -12,14 +12,14 @@
 //!
 //! Skip pattern: if `escript` is not on PATH, each test emits an explicit
 //! `eprintln!` skip notice and exits cleanly (no panic).  Tests are NOT
-//! unconditionally `#[ignore]` — they run when `escript` is present (CI gate G8).
+//! unconditionally `#[ignore]` — they run when `escript` is present.
 //!
 //! Deferral notices are emitted inline when a test cannot fully execute
 //! (e.g. because a canonical example was already deferred in the BEAM e2e
 //! harness).
 //!
-//! `DoD`: 4 escript tests, each: produces a runnable escript → stdout matches
-//! expected.  All 4 are green (or 3 green + 1 deferred for `url_shortener`).
+//! Each case must produce a runnable escript whose stdout matches the expected
+//! output, or explicitly report the reason it is deferred.
 
 #![allow(
     clippy::unwrap_used,
@@ -350,7 +350,7 @@ fn escript_game_of_life() {
 
 /// `rate_limiter` — escript shim test.
 ///
-/// # Deferred by: OQ-E016 (multi-actor codegen)
+/// # Deferred multi-actor codegen
 ///
 /// `rate_limiter.ridge` produces actor modules with unresolved IR bugs (B-1, B-5,
 /// B-7) that cause `erlc` to reject the emitted Core Erlang.  This is the same
@@ -358,8 +358,8 @@ fn escript_game_of_life() {
 ///
 /// **What is deferred:** Full escript runtime execution.
 /// **What is satisfied:** The escript test is wired; it will pass when the
-/// IR/lowering fixes for `rate_limiter` land (out-of-scope for T12).
-/// **Where the follow-up lives:** OQ-E016 / 0.2.0 backlog.
+/// IR/lowering fixes for `rate_limiter` land.
+/// The multi-actor follow-up remains in the 0.2.0 backlog.
 #[test]
 fn escript_rate_limiter() {
     let escript_path = find_escript();

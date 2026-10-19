@@ -1,10 +1,9 @@
-//! FFI-targets code-generation helper (T11 / T11.5).
+//! FFI-targets code-generation helper.
 //!
-//! This module documents the extraction logic used to generate the
-//! `BridgeTarget::RidgeStdlibLocal` lookup table emitted by per-consumer
-//! build scripts.  It is the canonical reference implementation; each
-//! consumer crate (e.g. `ridge-codegen-erl`) inlines a copy of this logic
-//! in its own `build.rs` to avoid creating a Cargo dependency cycle.
+//! This module provides reference extraction helpers for stdlib function
+//! targets. `crates/ridge-stdlib/build.rs` generates the FFI-target lookup
+//! table, and `ridge-codegen-erl` consumes it through its `ridge-stdlib`
+//! dependency to construct `BridgeTarget::RidgeStdlibLocal` values.
 //!
 //! # What this module exports
 //!
@@ -12,27 +11,24 @@
 //! returns a sorted list of [`FfiDecl`] values: one per `@ffi`-decorated
 //! `pub fn` (or private `fn`) declaration.
 //!
-//! [`extract_all_stdlib_decls`] (T11.5) — like `extract_ffi_decls` but also
+//! [`extract_all_stdlib_decls`] — like `extract_ffi_decls` but also
 //! covers pure-Ridge `pub fn` bodies (no `@ffi`).  For pure-Ridge functions
 //! the `beam_module` is the Ridge dotted module name (e.g. `"std.list"`) and
 //! `beam_fn` is the Ridge function name; `arity` is the count of top-level
 //! `(...)` parameter groups on the signature line.
 //!
-//! # Cycle-break rationale (T11)
+//! # Dependency direction
 //!
 //! The Cargo dependency graph today is:
 //!
 //! ```text
 //! ridge-stdlib  -->  ridge-resolve, ridge-typecheck
-//! ridge-codegen-erl  -->  ridge-ir, ridge-resolve, ridge-types, ridge-ast
+//! ridge-codegen-erl  -->  ridge-stdlib, ridge-ir, ridge-resolve, ridge-types, ridge-ast
 //! ```
 //!
-//! Adding `ridge-codegen-erl` as a dependency of `ridge-stdlib` would create
-//! a cycle (since `ridge-codegen-erl` dev-depends on pipeline crates that
-//! depend on `ridge-resolve` which depends on `ridge-stdlib`).  The chosen
-//! approach (matching T10) is per-consumer `build.rs`: each consumer that
-//! needs the FFI-target table inlines its own text-level extraction.  No new
-//! dependency edge is added to any crate.
+//! `ridge-codegen-erl` depends on `ridge-stdlib`; adding the reverse edge
+//! would create a cycle. Extraction therefore stays in `ridge-stdlib`,
+//! while the codegen crate adapts the generated targets at its own seam.
 //!
 //! # Stable ordering
 //!
@@ -99,9 +95,8 @@ pub const STDLIB_MODULES: &[&str] = &[
 /// Only `pub fn` and private `fn` declarations are matched; other constructs
 /// are ignored.  Only modules listed in [`STDLIB_MODULES`] are scanned.
 ///
-/// **T11.5 note:** Use [`extract_all_stdlib_decls`] to also include pure-Ridge
-/// `pub fn` bodies (no `@ffi`), which is what `ridge-codegen-erl`'s build
-/// script now uses to cover the full path-B table.
+/// Use [`extract_all_stdlib_decls`] to also include pure-Ridge `pub fn`
+/// bodies (no `@ffi`), as required for the full path-B target table.
 ///
 /// # Errors
 ///

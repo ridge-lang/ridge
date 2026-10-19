@@ -266,6 +266,10 @@ Run:
 ridge test
 ```
 
+The summary is `Tests: P passed, F failed, R rejected (Tms)`. Each selected
+test counts once: a test rejected before execution does not also count as
+a failed test. Failures and rejections both make the command exit with status 1.
+
 You should see a passing test summary.
 
 ---

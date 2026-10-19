@@ -2148,6 +2148,8 @@ shape of the world: large database migrations, infrastructure changes
 
 The canonical return type for both forms is `Result Unit Text`: `Ok ()` passes and `Err message` fails. For compatibility, both forms also accept `Bool` with a `C303 BoolTestDeprecated` warning: `true` passes and `false` fails. Tests run in a fresh BEAM child process per test; no shared state leaks between runs. FFI-bearing tests are rejected with a compile-time capability error. When both forms apply to the same function the attribute wins and the test registers once.
 
+**Test results.** The summary is `Tests: P passed, F failed, R rejected (Tms)`. Each selected test belongs to exactly one category: `passed` for a successful execution, `failed` for an attempted test that did not pass (including timeouts and process-start failures), or `rejected` for a test whose signature or capabilities prevent execution. Rejections are not skipped tests and are not also counted as failures. The command exits with status 1 when either `failed` or `rejected` is nonzero. Tests excluded by `--filter` do not enter the summary; if none remain, the command reports that no tests were discovered and exits successfully without a summary.
+
 Prefix discovery and `Bool` returns remain supported but deprecated in 0.3.0. No removal release is scheduled. A future removal requires an explicit compatibility decision and migration guidance; retiring prefix discovery must report unmigrated tests rather than silently omit them.
 
 ### 8.8. Test declaration with `@test`

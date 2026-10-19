@@ -14,12 +14,12 @@
 //! 3. Discover `@test` functions and legacy `pub fn test_*` functions across
 //!    all workspace members. The attribute takes precedence; prefix discovery
 //!    emits `C304 PrefixTestDeprecated`. Classify each:
-//!    - Arity != 0         → `C301 TestArityInvalid` (skip, count as failure).
-//!    - `ffi` cap declared → `C302 TestCapabilityForbidden` (skip, count as failure).
+//!    - Arity != 0         → `C301 TestArityInvalid` (reject before execution).
+//!    - `ffi` cap declared → `C302 TestCapabilityForbidden` (reject before execution).
 //!    - Return type `Bool` → `C303 BoolTestDeprecated` warning (still run).
 //!    - Return type `Result Unit Text` → run.
-//!    - Another return type → `C305 TestReturnTypeInvalid` (skip, count as failure).
-//!    - No return type     → `C306 TestReturnTypeMissing` (skip, count as failure).
+//!    - Another return type → `C305 TestReturnTypeInvalid` (reject before execution).
+//!    - No return type     → `C306 TestReturnTypeMissing` (reject before execution).
 //! 4. Apply `--filter` glob matching against `Module.test_fn_name`.
 //! 5. If no tests survive filtering → print "no tests discovered" and exit 0.
 //! 6. If every surviving test is a validation failure (C301, C302, C305, C306) → report
@@ -30,8 +30,8 @@
 //!    (produces `.beam` files via erlc — requires OTP 26+ on PATH).
 //! 8. Run each surviving canonical/bool test in a fresh BEAM child:
 //!    `erl -pa <beam_dir> -pa <runtime_dir> -s ridge_test_runner run <module> <fn> -s init stop -noshell`
-//! 9. Tally (passed, failed, skipped) and print summary.
-//! 10. Exit 0 if all tests pass (or no tests found); exit 1 on any failure.
+//! 9. Tally the disjoint (passed, failed, rejected) outcomes and print summary.
+//! 10. Exit 0 if all tests pass (or no tests found); exit 1 on any failure or rejection.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -259,13 +259,20 @@ fn resolve_jobs(requested: Option<usize>) -> usize {
     }
 }
 
-/// Per-test slot used to dispatch outcomes back in input order.  `Skip` is
+/// Per-test slot used to dispatch outcomes back in input order. `Rejected` is
 /// any classification that is not actually executed against the BEAM
 /// runner (validation failures); `Runnable` is canonical or bool-deprecated
 /// tests that need a BEAM child.
 enum Slot {
-    Skip,
+    Rejected,
     Runnable,
+}
+
+/// Disjoint results of the selected tests, including validation rejections.
+struct TestSummary {
+    passed: usize,
+    failed: usize,
+    rejected: usize,
 }
 
 /// Run the discovered tests, print per-test results, and exit with the
@@ -288,9 +295,6 @@ fn run_tests_and_report(
     runtime_dir: &Path,
     jobs: usize,
 ) {
-    let mut passed: usize = 0;
-    let mut failed: usize = 0;
-    let mut skipped: usize = 0;
     let mut bool_tests: usize = 0;
 
     let wall_start = Instant::now();
@@ -300,36 +304,20 @@ fn run_tests_and_report(
         .map(|test| match &test.classification {
             // Each rejection is built, not spelled out: the message and its
             // code live once, in `CliError`, where `code()` and `Display` take
-            // the prefix from the same place. The warning arms below already
-            // worked this way; these three were the last hand-written ones.
-            TestClassification::ArityInvalid => reject(
-                &CliError::TestArityInvalid {
-                    qualified_name: test.qualified_name.clone(),
-                },
-                &mut failed,
-                &mut skipped,
-            ),
-            TestClassification::CapabilityForbidden => reject(
-                &CliError::TestCapabilityForbidden {
-                    qualified_name: test.qualified_name.clone(),
-                },
-                &mut failed,
-                &mut skipped,
-            ),
-            TestClassification::ReturnTypeInvalid => reject(
-                &CliError::TestReturnTypeInvalid {
-                    qualified_name: test.qualified_name.clone(),
-                },
-                &mut failed,
-                &mut skipped,
-            ),
-            TestClassification::ReturnTypeMissing => reject(
-                &CliError::TestReturnTypeMissing {
-                    qualified_name: test.qualified_name.clone(),
-                },
-                &mut failed,
-                &mut skipped,
-            ),
+            // the prefix from the same place. The warning arms below use the
+            // same mechanism.
+            TestClassification::ArityInvalid => reject(&CliError::TestArityInvalid {
+                qualified_name: test.qualified_name.clone(),
+            }),
+            TestClassification::CapabilityForbidden => reject(&CliError::TestCapabilityForbidden {
+                qualified_name: test.qualified_name.clone(),
+            }),
+            TestClassification::ReturnTypeInvalid => reject(&CliError::TestReturnTypeInvalid {
+                qualified_name: test.qualified_name.clone(),
+            }),
+            TestClassification::ReturnTypeMissing => reject(&CliError::TestReturnTypeMissing {
+                qualified_name: test.qualified_name.clone(),
+            }),
             TestClassification::BoolDeprecated => {
                 eprintln!(
                     "{}",
@@ -347,21 +335,23 @@ fn run_tests_and_report(
     // Execute the runnable tests with bounded concurrency.  Each worker
     // drains the print queue (input-order cursor) as soon as it finishes,
     // so progress is visible live while output order stays deterministic.
-    // The worker pool also tallies (passed, failed) at print time.
-    let (run_passed, run_failed) =
-        execute_runnable_tests(tests, &slots, erl_path, beam_dir, runtime_dir, jobs.max(1));
-    passed += run_passed;
-    failed += run_failed;
+    // The worker pool counts each execution outcome once; rejections are
+    // derived from the mutually exclusive slots rather than mutable counters.
+    let TestSummary {
+        passed,
+        failed,
+        rejected,
+    } = execute_runnable_tests(tests, &slots, erl_path, beam_dir, runtime_dir, jobs.max(1));
 
     let elapsed_ms = wall_start.elapsed().as_millis();
 
-    println!("Tests: {passed} passed, {failed} failed, {skipped} skipped ({elapsed_ms}ms)");
+    println!("Tests: {passed} passed, {failed} failed, {rejected} rejected ({elapsed_ms}ms)");
 
     if bool_tests > 0 {
         println!("{bool_tests} test(s) returned Bool (deprecated); see migration snippets above.");
     }
 
-    if failed > 0 {
+    if failed > 0 || rejected > 0 {
         process::exit(1);
     }
 }
@@ -370,7 +360,7 @@ fn run_tests_and_report(
 /// pool and reap outcomes back into a slice indexed by the test's position
 /// in the input.
 ///
-/// `Slot::Skip` entries get `None`; runnable entries get `Some(outcome)`.
+/// `Slot::Rejected` entries get `None`; runnable entries get `Some(outcome)`.
 /// Workers also drain the live print queue as soon as their own outcome
 /// is written: each worker walks the input-order cursor forward, printing
 /// every contiguous `Some` outcome it finds and stopping at the first
@@ -384,7 +374,7 @@ fn execute_runnable_tests(
     beam_dir: &Path,
     runtime_dir: &Path,
     jobs: usize,
-) -> (usize, usize) {
+) -> TestSummary {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
@@ -408,7 +398,13 @@ fn execute_runnable_tests(
 
     // Pre-compute the denominator and the width used to align `[N/M]` so
     // every progress line has the same width prefix.
-    let total_runnable: usize = slots.iter().filter(|s| matches!(s, Slot::Runnable)).count();
+    let (total_runnable, rejected) = slots.iter().fold(
+        (0_usize, 0_usize),
+        |(runnable, rejected), slot| match slot {
+            Slot::Runnable => (runnable + 1, rejected),
+            Slot::Rejected => (runnable, rejected + 1),
+        },
+    );
     let width: usize = total_runnable.to_string().len();
 
     std::thread::scope(|scope| {
@@ -498,10 +494,11 @@ fn execute_runnable_tests(
         }
     });
 
-    (
-        passed.load(Ordering::Relaxed),
-        failed.load(Ordering::Relaxed),
-    )
+    TestSummary {
+        passed: passed.load(Ordering::Relaxed),
+        failed: failed.load(Ordering::Relaxed),
+        rejected,
+    }
 }
 
 /// Print one test's progress line with the `[N/M]` prefix aligned to
@@ -547,28 +544,25 @@ enum TestClassification {
     Canonical,
     /// `Bool` return type — accepted but deprecated (C303 warning).
     BoolDeprecated,
-    /// Arity != 0 — C301 error (skip, count as failure).
+    /// Arity != 0 — C301 error (reject before execution).
     ArityInvalid,
-    /// `ffi` capability declared — C302 error (skip, count as failure).
+    /// `ffi` capability declared — C302 error (reject before execution).
     CapabilityForbidden,
     /// A declared return type that is neither `Result Unit Text` nor `Bool` —
-    /// C305 error (skip, count as failure).
+    /// C305 error (reject before execution).
     ReturnTypeInvalid,
-    /// No declared return type — C306 error (skip, count as failure).
+    /// No declared return type — C306 error (reject before execution).
     ReturnTypeMissing,
 }
 
-/// Report a discovered test the runner will not run, and count it.
+/// Report a discovered test the runner will not run.
 ///
 /// `err` renders itself, code included, so the four rejection arms differ only
-/// in which error they build. The counters keep the behaviour the hand-written
-/// arms had: a rejected test raises both, because it is a failure and it did
-/// not run.
-fn reject(err: &CliError, failed: &mut usize, skipped: &mut usize) -> Slot {
+/// in which error they build. The returned slot accounts for the rejection;
+/// it cannot also increment the count of executed failures.
+fn reject(err: &CliError) -> Slot {
     eprintln!("error: {err}");
-    *failed += 1;
-    *skipped += 1;
-    Slot::Skip
+    Slot::Rejected
 }
 
 /// A test function discovered in the workspace.

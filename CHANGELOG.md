@@ -75,6 +75,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ridge test` counts each selected test once in separate passed, failed and
+  rejected categories. Tests rejected before execution no longer also count as
+  failures. Both failures and rejections still cause exit status 1. The third
+  summary field is now `rejected` instead of `skipped`; scripts that parse the
+  summary must update that label.
+
 - Ask documentation now states the default 5000 ms deadline and explains
   explicit deadlines and `timeout never`. Both ask spellings keep their
   recoverable outcomes; `Actor.tryAsk` requires its timeout argument.

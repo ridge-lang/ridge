@@ -23,8 +23,7 @@ use assert_cmd::Command;
 // ── Thresholds ────────────────────────────────────────────────────────────────
 
 /// Floor for the number of stdlib tests that must run and pass. A sanity check
-/// that the suite actually compiled and executed (the `failed == 0` assertion is
-/// the real regression catch); kept well below the current count (~235) so
+/// that the suite actually compiled and executed; kept below the suite size so
 /// legitimate churn does not trip it, but a wholesale failure to compile does.
 const MIN_PASSING: u64 = 200;
 
@@ -39,7 +38,7 @@ const MIN_PASSING: u64 = 200;
 /// 2. Materialise a temporary workspace holding only two TOML manifests;
 ///    the stdlib sources are read in-place via the absolute `src_root`.
 /// 3. Invoke `ridge test` as a subprocess against the temp workspace.
-/// 4. Parse the summary line and assert `passed >= MIN_PASSING` and `failed == 0`.
+/// 4. Require a successful exit and a complete summary with no failures or rejections.
 #[test]
 fn stdlib_e2e_runs_all_tests() {
     // ── 1. Compile + run the embedded stdlib's own test suite on BEAM ─────────
@@ -59,10 +58,16 @@ fn stdlib_e2e_runs_all_tests() {
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
+    assert!(
+        output.status.success(),
+        "stdlib-e2e: ridge test exited with {}.\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+        output.status
+    );
+
     // ── 4. Parse the summary line and assert gate ─────────────────────────────
     // Expected format (per crates/ridge-cli/src/cmd/test.rs summary printer):
-    // "Tests: <P> passed, <F> failed, <S> skipped (<T>ms)"
-    let (passed, failed) = parse_summary(&stdout).unwrap_or_else(|| {
+    // "Tests: <P> passed, <F> failed, <R> rejected (<T>ms)"
+    let (passed, failed, rejected) = parse_summary(&stdout).unwrap_or_else(|| {
         panic!(
             "stdlib-e2e: could not parse summary line from ridge test output.\n\
              --- stdout ---\n{stdout}\n\
@@ -77,6 +82,11 @@ fn stdlib_e2e_runs_all_tests() {
          --- stderr ---\n{stderr}"
     );
 
+    assert_eq!(
+        rejected, 0,
+        "stdlib-e2e: {rejected} test(s) rejected.\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+
     assert!(
         passed >= MIN_PASSING,
         "stdlib-e2e: expected >= {MIN_PASSING} passing tests, got {passed}.\n\
@@ -89,21 +99,41 @@ fn stdlib_e2e_runs_all_tests() {
 
 /// Parse the `ridge test` summary line.
 ///
-/// Looks for `Tests: <P> passed, <F> failed` anywhere in the output.
-/// Returns `Some((passed, failed))` or `None` if no matching line is found.
-fn parse_summary(output: &str) -> Option<(u64, u64)> {
+/// Requires the complete passed/failed/rejected partition and elapsed time.
+fn parse_summary(output: &str) -> Option<(u64, u64, u64)> {
     for line in output.lines() {
         let line = line.trim();
-        // Match: "Tests: N passed, M failed"
         if let Some(rest) = line.strip_prefix("Tests: ") {
-            // rest: "N passed, M failed, K skipped (Tms)"
-            let parts: Vec<&str> = rest.split(',').collect();
-            if parts.len() >= 2 {
-                let passed = parts[0].split_whitespace().next()?.parse().ok()?;
-                let failed = parts[1].split_whitespace().next()?.parse().ok()?;
-                return Some((passed, failed));
-            }
+            let (passed, rest) = rest.split_once(" passed, ")?;
+            let (failed, rest) = rest.split_once(" failed, ")?;
+            let (rejected, elapsed) = rest.split_once(" rejected (")?;
+            elapsed.strip_suffix("ms)")?.parse::<u128>().ok()?;
+            return Some((
+                passed.parse().ok()?,
+                failed.parse().ok()?,
+                rejected.parse().ok()?,
+            ));
         }
     }
     None
+}
+
+#[test]
+fn summary_parser_preserves_rejection_counts() {
+    assert_eq!(
+        parse_summary("progress\nTests: 200 passed, 1 failed, 3 rejected (42ms)\n"),
+        Some((200, 1, 3))
+    );
+}
+
+#[test]
+fn summary_parser_requires_the_complete_partition() {
+    for output in [
+        "Tests: 200 passed, 0 failed, 0 skipped (42ms)",
+        "Tests: 200 passed, 0 failed",
+        "Tests: 200 passed, 0 failed, 0 rejected (unknown)",
+        "notice: no tests discovered",
+    ] {
+        assert_eq!(parse_summary(output), None, "accepted {output}");
+    }
 }

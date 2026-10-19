@@ -75,6 +75,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Ask documentation now states the default 5000 ms deadline and explains
+  explicit deadlines and `timeout never`. Both ask spellings keep their
+  recoverable outcomes; `Actor.tryAsk` requires its timeout argument.
+
 - Test deprecation messages no longer claim removal in releases that still
   accept the deprecated forms. Prefix discovery and `Bool` returns remain
   supported with warnings in 0.3.0; no removal release is scheduled. This

@@ -1522,7 +1522,9 @@ Operations that produce additional effects beyond the actor itself still
 carry their capabilities:
 
 - `actor ?> msg [timeout T]` — ask. Requires `time` for the timeout
-  primitive (not for the actor access). `T` is an operator expression, so
+  primitive (not for the actor access). Omitting `timeout` uses a deadline
+  of 5000 ms (5 seconds). Use `timeout T` to choose a deadline or
+  `timeout never` to wait without one. `T` is an operator expression, so
   `timeout (base * 2)` and `timeout Cfg.retryMs` are as good as `timeout 1000`;
   a keyword-led form such as `if` needs parentheses. `timeout` and `never`
   stay ordinary identifiers everywhere else.
@@ -1635,6 +1637,8 @@ Each actor is a lightweight process — a BEAM process on the production target.
   replying, including when it stops during the request. `AskError` is the
   nominal union from `std.actor`; importing it is required only to name it in
   source. The caller requires `time` for the timeout, nothing else.
+  The default deadline is 5000 ms (5 seconds); `timeout T` overrides it
+  and `timeout never` waits without a deadline.
   `actor ?> msg args timeout ms ?` propagates the ask's error in the nearest
   Result scope, with the same direct `ErrorFrom` conversion as any other `?`.
   The suffix belongs to the complete ask, including its timeout; propagation
@@ -1831,9 +1835,11 @@ first).
 **Failure semantics.** Supervision changes who restarts a process, not how
 its callers fail.
 
-- `Actor.tryAsk handle msg timeoutMs` is the function spelling of ask. It is
-  typed like `?>` — the message checked against the actor's handlers, the
-  reply taken from the handler — and absorbs `time` the same way. The
+- `Actor.tryAsk handle msg timeoutMs` is the function spelling of ask. Its
+  timeout argument is required, in milliseconds; it has no implicit
+  default. It is typed like `?>` — the message checked against the
+  actor's handlers, the reply taken from the handler — and absorbs `time`
+  the same way. The
   outcome is explicit: `Ok reply`, `Err Noproc` when the target does not
   exist (stopped, never started, or down for restart), or `Err Timeout`
   when the deadline passes. `Noproc` and `Timeout` are the variants of

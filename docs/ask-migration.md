@@ -2,7 +2,7 @@
 
 `handle ?> message args` now returns `Result reply AskError`. A deadline or
 an unavailable target is a value the caller handles. `Actor.tryAsk` keeps the
-same contract, with its timeout supplied as a function argument.
+same contract, with its timeout supplied as a required function argument.
 
 For a Result-returning function, import `AskError` when naming its error type
 and propagate with `?`:
@@ -54,6 +54,10 @@ own policy. The editor does not silently unwrap or invent such a fallback.
 A handler returning `Result Int DomainError` makes the ask return
 `Result (Result Int DomainError) AskError`. The first `?` handles transport;
 the handler's Result is still a value to match or propagate separately.
+
+Deadlines are unchanged: an omitted `timeout` uses 5000 ms (5 seconds).
+Use an explicit count to choose another deadline, for example
+`handle ?> message args timeout 1000` for 1000 ms.
 
 `timeout never` removes the deadline; it still returns `Err Noproc` when the
 target is unavailable. An `Ok` reply confirms that earlier messages from this

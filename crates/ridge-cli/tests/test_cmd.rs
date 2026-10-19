@@ -108,7 +108,8 @@ pub fn test_other () -> Result Unit Text = Err \"should not run\"
         .arg("*test_only_this*")
         .current_dir(&tw.path)
         .assert()
-        .success();
+        .success()
+        .stdout(contains("Tests: 1 passed, 0 failed, 0 rejected"));
 }
 
 // ── Test 3: test_failed_test — non-zero exit + stderr (beam-runtime) ──────────
@@ -223,7 +224,7 @@ fn bool_compatibility_preserves_outcomes_with_attributes_and_prefixes() {
         .current_dir(&tw.path)
         .assert()
         .failure()
-        .stdout(contains("Tests: 2 passed, 2 failed, 0 skipped"))
+        .stdout(contains("Tests: 2 passed, 2 failed, 0 rejected"))
         .stdout(contains("ok   Demo.test_prefixPass"))
         .stdout(contains("FAIL Demo.test_prefixFail"))
         .stdout(contains("ok   Demo.attribute passes"))
@@ -266,7 +267,7 @@ fn migrated_tests_keep_names_references_and_discovery() {
         .current_dir(&tw.path)
         .assert()
         .success()
-        .stdout(contains("Tests: 2 passed, 0 failed, 0 skipped"))
+        .stdout(contains("Tests: 2 passed, 0 failed, 0 rejected"))
         .stderr(contains("C304").not());
 
     ridge_cmd()
@@ -276,6 +277,92 @@ fn migrated_tests_keep_names_references_and_discovery() {
         .assert()
         .success();
     assert_eq!(std::fs::read_to_string(&path).unwrap(), migrated);
+}
+
+const REJECTED_TESTS: &str = concat!(
+    "@test \"arity\"\nfn arity (x: Int) -> Result Unit Text = Ok ()\n",
+    "@test \"ffi\"\nfn ffi forbidden () -> Result Unit Text = Ok ()\n",
+    "@test \"wrong\"\nfn wrong () -> Int = 1\n",
+    "@test \"missing\"\nfn missing = Ok ()\n",
+);
+
+/// Every validation rejection counts once and fails without an OTP toolchain.
+#[test]
+fn all_rejections_have_one_outcome_without_otp() {
+    let tw = make_test_workspace("Demo", REJECTED_TESTS);
+    ridge_cmd()
+        .args(["test", "-j", "3"])
+        .env("PATH", "")
+        .current_dir(&tw.path)
+        .assert()
+        .code(1)
+        .stdout(contains("Tests: 0 passed, 0 failed, 4 rejected"))
+        .stdout(contains(" skipped").not())
+        .stderr(contains("C301 TestArityInvalid"))
+        .stderr(contains("C302 TestCapabilityForbidden"))
+        .stderr(contains("C305 TestReturnTypeInvalid"))
+        .stderr(contains("C306 TestReturnTypeMissing"));
+}
+
+/// Canonical and Bool execution outcomes stay separate from validation errors.
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn summary_partitions_executed_and_rejected_tests() {
+    let source = format!(
+        "{}{}",
+        concat!(
+            "@test \"canonical pass\"\nfn passResult () -> Result Unit Text = Ok ()\n",
+            "@test \"canonical failure\"\nfn failResult () -> Result Unit Text = Err \"expected failure\"\n",
+            "@test \"Bool pass\"\nfn passBool () -> Bool = true\n",
+            "@test \"Bool failure\"\nfn failBool () -> Bool = false\n",
+        ),
+        REJECTED_TESTS
+    );
+    let tw = make_test_workspace("Demo", &source);
+    for jobs in ["1", "3"] {
+        ridge_cmd()
+            .args(["test", "-j", jobs])
+            .current_dir(&tw.path)
+            .assert()
+            .code(1)
+            .stdout(contains("Tests: 2 passed, 2 failed, 4 rejected"))
+            .stdout(contains("ok   Demo.canonical pass"))
+            .stdout(contains("FAIL Demo.canonical failure"))
+            .stdout(contains("ok   Demo.Bool pass"))
+            .stdout(contains("FAIL Demo.Bool failure"))
+            .stdout(contains(" skipped").not())
+            .stderr(contains("C301 TestArityInvalid"))
+            .stderr(contains("C302 TestCapabilityForbidden"))
+            .stderr(contains("C303 BoolTestDeprecated"))
+            .stderr(contains("C305 TestReturnTypeInvalid"))
+            .stderr(contains("C306 TestReturnTypeMissing"));
+    }
+}
+
+/// Filtering excludes tests before validation, including the empty selection.
+#[test]
+fn filters_exclude_rejections_from_the_summary() {
+    let tw = make_test_workspace("Demo", REJECTED_TESTS);
+    ridge_cmd()
+        .args(["test", "--filter", "Demo.arity"])
+        .env("PATH", "")
+        .current_dir(&tw.path)
+        .assert()
+        .code(1)
+        .stdout(contains("Tests: 0 passed, 0 failed, 1 rejected"))
+        .stderr(contains("C301 TestArityInvalid"))
+        .stderr(contains("C302").not())
+        .stderr(contains("C305").not())
+        .stderr(contains("C306").not());
+    ridge_cmd()
+        .args(["test", "--filter", "Demo.absent"])
+        .env("PATH", "")
+        .current_dir(&tw.path)
+        .assert()
+        .success()
+        .stdout(contains("notice: no tests discovered"))
+        .stdout(contains("Tests:").not())
+        .stderr(contains("error:").not());
 }
 
 // ── Test 5: test_ffi_rejection — C302 error, exit 1 (un-gated) ───────────────

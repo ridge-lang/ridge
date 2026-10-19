@@ -303,15 +303,15 @@ pub const REGISTRY: &[CodeEntry] = &[
     },
     CodeEntry {
         code: "C301",
-        variants: &["TestArityInvalid"],
-        owner: "ridge-cli",
-        summary: "A `pub fn test_*` function has arity != 0.",
+        variants: &["ArityInvalid"],
+        owner: "ridge-driver",
+        summary: "A discovered test function takes parameters; test functions must take none.",
     },
     CodeEntry {
         code: "C302",
-        variants: &["TestCapabilityForbidden"],
-        owner: "ridge-cli",
-        summary: "A `pub fn test_*` function declares the `ffi` capability.",
+        variants: &["CapabilityForbidden"],
+        owner: "ridge-driver",
+        summary: "A discovered test function declares the `ffi` capability, which the test runner does not permit.",
     },
     CodeEntry {
         code: "C303",
@@ -327,14 +327,14 @@ pub const REGISTRY: &[CodeEntry] = &[
     },
     CodeEntry {
         code: "C305",
-        variants: &["TestReturnTypeInvalid"],
-        owner: "ridge-cli",
-        summary: "A test declares a return type other than `Result Unit Text`.",
+        variants: &["ReturnTypeInvalid"],
+        owner: "ridge-driver",
+        summary: "A test declares a return type the runner cannot use; use `Result Unit Text`.",
     },
     CodeEntry {
         code: "C306",
-        variants: &["TestReturnTypeMissing"],
-        owner: "ridge-cli",
+        variants: &["ReturnTypeMissing"],
+        owner: "ridge-driver",
         summary: "A test declares no return type, so the runner cannot check it.",
     },
     CodeEntry {

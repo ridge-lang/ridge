@@ -75,6 +75,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The editor reports invalid test signatures before execution and offers
+  `Run test` only for tests the runner accepts. Attribute and supported legacy
+  prefix tests share discovery and validation with the CLI, including Bool
+  compatibility. Fixing a signature refreshes its diagnostic and runnable lens.
+
 - `ridge test` counts each selected test once in separate passed, failed and
   rejected categories. Tests rejected before execution no longer also count as
   failures. Both failures and rejections still cause exit status 1. The third

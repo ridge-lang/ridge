@@ -28,6 +28,7 @@ pub mod options;
 pub mod reload;
 pub mod run;
 pub mod sources;
+pub mod test_contract;
 
 // ── Flat re-exports ───────────────────────────────────────────────────────────
 

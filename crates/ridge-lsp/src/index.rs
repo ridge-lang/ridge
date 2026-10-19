@@ -4632,7 +4632,15 @@ impl WorkspaceIndex {
                         }
                     }
                     if cfg.run_test {
-                        if let Some(name) = test_display_name(&f.attrs) {
+                        if let Some(test) =
+                            ridge_driver::test_contract::discover_test(f).filter(|test| {
+                                !matches!(
+                                    test.classification,
+                                    ridge_driver::test_contract::TestClassification::Rejected(_)
+                                )
+                            })
+                        {
+                            let name = test.display_name;
                             if let Some(range) = self.range_in(mid, f.name.span) {
                                 out.push(command_code_lens(
                                     range,
@@ -4677,6 +4685,46 @@ impl WorkspaceIndex {
             }
         }
         Some(out)
+    }
+
+    /// Signature rejections shown even when test code lenses are disabled.
+    ///
+    /// These are editor diagnostics, not general compilation errors: normal
+    /// builds may contain declarations the test runner will refuse to execute.
+    #[must_use]
+    pub(crate) fn test_diagnostics(&self) -> Vec<(Url, tower_lsp::lsp_types::Diagnostic)> {
+        use ridge_driver::test_contract::{discover_test, TestClassification};
+        let mut out = Vec::new();
+        for (uri, mid) in &self.uri_to_module {
+            let mi = mid.0 as usize;
+            let Some(ast) = self.modules.get(mi).and_then(|module| module.ast.as_ref()) else {
+                continue;
+            };
+            for item in &ast.items {
+                let ridge_ast::Item::Fn(function) = item else {
+                    continue;
+                };
+                let Some(test) = discover_test(function) else {
+                    continue;
+                };
+                let TestClassification::Rejected(reason) = test.classification else {
+                    continue;
+                };
+                let diagnostic = ridge_diagnostics::Diagnostic::new(
+                    reason.code(),
+                    ridge_diagnostics::Severity::Error,
+                    function.name.span,
+                    reason.message(&function.name.text).to_string(),
+                    ridge_diagnostics::SourceId::new(uri.as_str()),
+                );
+                let source_text = self.module_text.get(mi).map(AsRef::as_ref);
+                out.push((
+                    uri.clone(),
+                    crate::diagnostics::to_lsp_diagnostic(&diagnostic, uri, source_text),
+                ));
+            }
+        }
+        out
     }
 
     /// Build the "N references" lens for a top-level declaration.
@@ -7731,16 +7779,6 @@ fn command_code_lens(
         }),
         data: None,
     }
-}
-
-/// The display name of the function's first `@test` attribute, if any.
-fn test_display_name(attrs: &[ridge_ast::Attribute]) -> Option<&str> {
-    attrs
-        .iter()
-        .map(|attr| match attr {
-            ridge_ast::Attribute::Test { name, .. } => name.as_str(),
-        })
-        .next()
 }
 
 /// Render a code-lens count as `"1 reference"` / `"N references"`.

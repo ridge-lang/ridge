@@ -272,6 +272,11 @@ a failed test. Failures and rejections both make the command exit with status 1.
 
 You should see a passing test summary.
 
+The editor flags test signatures the runner cannot execute and links their
+errors to the diagnostic reference. With test code lenses enabled, `Run test`
+appears only for accepted tests. Repairing the signature clears the error and
+restores the action, including for supported legacy prefix tests.
+
 ---
 
 ## Flattening conditionals

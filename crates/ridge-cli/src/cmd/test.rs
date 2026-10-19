@@ -40,10 +40,11 @@ use std::time::Instant;
 
 use clap::Parser;
 use ridge_driver::{
-    check_workspace_typed, compile_workspace, AstAttribute, AstCapability, AstItem, AstType,
-    CheckOptions, CompileOptions, ModuleMetadata, PrimitiveType, ToolchainError, TypedModule,
-    TypedWorkspace, Visibility, WorkspaceGraph,
+    check_workspace_typed, compile_workspace, AstItem, CheckOptions, CompileOptions,
+    ModuleMetadata, ToolchainError, TypedModule, TypedWorkspace, WorkspaceGraph,
 };
+
+use ridge_driver::test_contract::{discover_test, TestClassification};
 
 use crate::error::CliError;
 use crate::render::{report_diagnostics, report_errors_only, WarningPolicy};
@@ -301,22 +302,13 @@ fn run_tests_and_report(
 
     let slots: Vec<Slot> = tests
         .iter()
-        .map(|test| match &test.classification {
+        .map(|test| match test.classification {
             // Each rejection is built, not spelled out: the message and its
-            // code live once, in `CliError`, where `code()` and `Display` take
-            // the prefix from the same place. The warning arms below use the
-            // same mechanism.
-            TestClassification::ArityInvalid => reject(&CliError::TestArityInvalid {
+            // code live once in the shared contract; `CliError` delegates
+            // their rendering. The warning arms retain the CLI advisories.
+            TestClassification::Rejected(reason) => reject(&CliError::TestRejected {
                 qualified_name: test.qualified_name.clone(),
-            }),
-            TestClassification::CapabilityForbidden => reject(&CliError::TestCapabilityForbidden {
-                qualified_name: test.qualified_name.clone(),
-            }),
-            TestClassification::ReturnTypeInvalid => reject(&CliError::TestReturnTypeInvalid {
-                qualified_name: test.qualified_name.clone(),
-            }),
-            TestClassification::ReturnTypeMissing => reject(&CliError::TestReturnTypeMissing {
-                qualified_name: test.qualified_name.clone(),
+                reason,
             }),
             TestClassification::BoolDeprecated => {
                 eprintln!(
@@ -537,28 +529,9 @@ fn print_outcome(
 
 // ── Test discovery ────────────────────────────────────────────────────────────
 
-/// Classification of a discovered test function.
-#[derive(Debug, Clone)]
-enum TestClassification {
-    /// `Result Unit Text` return type — canonical test contract.
-    Canonical,
-    /// `Bool` return type — accepted but deprecated (C303 warning).
-    BoolDeprecated,
-    /// Arity != 0 — C301 error (reject before execution).
-    ArityInvalid,
-    /// `ffi` capability declared — C302 error (reject before execution).
-    CapabilityForbidden,
-    /// A declared return type that is neither `Result Unit Text` nor `Bool` —
-    /// C305 error (reject before execution).
-    ReturnTypeInvalid,
-    /// No declared return type — C306 error (reject before execution).
-    ReturnTypeMissing,
-}
-
 /// Report a discovered test the runner will not run.
 ///
-/// `err` renders itself, code included, so the four rejection arms differ only
-/// in which error they build. The returned slot accounts for the rejection;
+/// `err` renders the shared rejection, code included. The returned slot accounts for the rejection;
 /// it cannot also increment the count of executed failures.
 fn reject(err: &CliError) -> Slot {
     eprintln!("error: {err}");
@@ -601,176 +574,28 @@ fn discover_tests(typed: &TypedWorkspace, graph: &WorkspaceGraph) -> Vec<Discove
         for item in &module.ast.items {
             let AstItem::Fn(f) = item else { continue };
 
-            // Check for @test attribute (wins regardless of visibility or name).
-            let test_attr = f
-                .attrs
-                .iter()
-                .map(|a| match a {
-                    AstAttribute::Test { name, .. } => name.as_str(),
-                })
-                .next();
-
-            if let Some(display_name) = test_attr {
-                // Attribute path — any visibility, display name from attribute.
-                let qualified_name = format!("{module_name}.{display_name}");
-                let fn_name = f.name.text.clone();
-
-                if !f.params.is_empty() {
-                    tests.push(DiscoveredTest {
-                        qualified_name,
-                        beam_module: beam_module.clone(),
-                        fn_name,
-                        classification: TestClassification::ArityInvalid,
-                    });
-                    continue;
-                }
-
-                if f.caps.contains(&AstCapability::Ffi) {
-                    tests.push(DiscoveredTest {
-                        qualified_name,
-                        beam_module: beam_module.clone(),
-                        fn_name,
-                        classification: TestClassification::CapabilityForbidden,
-                    });
-                    continue;
-                }
-
-                let classification = match return_type_classification(f.ret.as_ref()) {
-                    ReturnTypeKind::ResultUnitText => TestClassification::Canonical,
-                    ReturnTypeKind::Bool => TestClassification::BoolDeprecated,
-                    ReturnTypeKind::Unsupported => TestClassification::ReturnTypeInvalid,
-                    ReturnTypeKind::Undeclared => TestClassification::ReturnTypeMissing,
-                };
-
-                tests.push(DiscoveredTest {
-                    qualified_name,
-                    beam_module: beam_module.clone(),
-                    fn_name,
-                    classification,
-                });
+            let Some(test) = discover_test(f) else {
                 continue;
-            }
-
-            // Legacy prefix path — only `pub fn test_*`.
-            if f.vis != Visibility::Pub {
-                continue;
-            }
-            if !f.name.text.starts_with("test_") {
-                continue;
-            }
-
-            // Every prefix-matched test earns the deprecation advisory.
-            eprintln!(
-                "{}",
-                crate::error::CliWarning::PrefixTestDeprecated {
-                    module: module_name.clone(),
-                    name: f.name.text.clone(),
-                }
-            );
-
-            let qualified_name = format!("{module_name}.{}", f.name.text);
-            let fn_name = f.name.text.clone();
-
-            if !f.params.is_empty() {
-                tests.push(DiscoveredTest {
-                    qualified_name,
-                    beam_module: beam_module.clone(),
-                    fn_name,
-                    classification: TestClassification::ArityInvalid,
-                });
-                continue;
-            }
-
-            if f.caps.contains(&AstCapability::Ffi) {
-                tests.push(DiscoveredTest {
-                    qualified_name,
-                    beam_module: beam_module.clone(),
-                    fn_name,
-                    classification: TestClassification::CapabilityForbidden,
-                });
-                continue;
-            }
-
-            let classification = match return_type_classification(f.ret.as_ref()) {
-                ReturnTypeKind::ResultUnitText => TestClassification::Canonical,
-                ReturnTypeKind::Bool => TestClassification::BoolDeprecated,
-                ReturnTypeKind::Unsupported => TestClassification::ReturnTypeInvalid,
-                ReturnTypeKind::Undeclared => TestClassification::ReturnTypeMissing,
             };
-
+            if test.legacy_prefix {
+                eprintln!(
+                    "{}",
+                    crate::error::CliWarning::PrefixTestDeprecated {
+                        module: module_name.clone(),
+                        name: f.name.text.clone(),
+                    }
+                );
+            }
             tests.push(DiscoveredTest {
-                qualified_name,
+                qualified_name: format!("{module_name}.{}", test.display_name),
                 beam_module: beam_module.clone(),
-                fn_name,
-                classification,
+                fn_name: f.name.text.clone(),
+                classification: test.classification,
             });
         }
     }
 
     tests
-}
-
-/// How a test function's declared return type maps to the runner contract.
-enum ReturnTypeKind {
-    /// `Result Unit Text` — canonical contract.
-    ResultUnitText,
-    /// `Bool` — transitional; accepted with C303 warning.
-    Bool,
-    /// A declared type that is neither — rejected with C305.
-    Unsupported,
-    /// No declared return type at all — rejected with C306.
-    ///
-    /// Kept apart from [`Self::Unsupported`] because the two want different
-    /// advice: one signature has to change, the other has to be written. They
-    /// used to share an arm that told this case its return type was
-    /// unsupported, which is not true of a signature that declares none.
-    Undeclared,
-}
-
-/// Classify the return type of a test function.
-fn return_type_classification(ret: Option<&AstType>) -> ReturnTypeKind {
-    let Some(ty) = ret else {
-        // Discovery reads the declared signature, not the inferred type.
-        return ReturnTypeKind::Undeclared;
-    };
-
-    match ty {
-        AstType::Primitive {
-            name: PrimitiveType::Bool,
-            ..
-        } => ReturnTypeKind::Bool,
-        AstType::App { head, args, .. } => {
-            // Result Unit Text  →  App { head: "Result", args: [Unit, Text] }
-            if head.text == "Result" && args.len() == 2 && is_unit(&args[0]) && is_text(&args[1]) {
-                ReturnTypeKind::ResultUnitText
-            } else {
-                ReturnTypeKind::Unsupported
-            }
-        }
-        _ => ReturnTypeKind::Unsupported,
-    }
-}
-
-/// Returns `true` if `ty` is the `Unit` primitive.
-const fn is_unit(ty: &AstType) -> bool {
-    matches!(
-        ty,
-        AstType::Primitive {
-            name: PrimitiveType::Unit,
-            ..
-        }
-    )
-}
-
-/// Returns `true` if `ty` is the `Text` primitive.
-const fn is_text(ty: &AstType) -> bool {
-    matches!(
-        ty,
-        AstType::Primitive {
-            name: PrimitiveType::Text,
-            ..
-        }
-    )
 }
 
 // ── Module naming ─────────────────────────────────────────────────────────────

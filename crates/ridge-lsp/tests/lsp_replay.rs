@@ -1717,6 +1717,18 @@ async fn two_member_fixture_with(
     Url,
     Url,
 ) {
+    two_member_fixture_with_caps(app_text, ClientCapabilities::default()).await
+}
+
+async fn two_member_fixture_with_caps(
+    app_text: &str,
+    capabilities: ClientCapabilities,
+) -> (
+    tower_lsp::LspService<RidgeLanguageServer>,
+    tower_lsp::ClientSocket,
+    Url,
+    Url,
+) {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let root = dir.path().to_path_buf();
     std::fs::create_dir_all(root.join("lib").join("src")).expect("lib src");
@@ -1756,7 +1768,7 @@ async fn two_member_fixture_with(
                     uri: root_uri,
                     name: "two-ws".to_owned(),
                 }]),
-                capabilities: ClientCapabilities::default(),
+                capabilities,
                 ..InitializeParams::default()
             })
             .await
@@ -2699,7 +2711,8 @@ async fn test_code_lens_run_and_test() {
 
     // An app project earns a Run lens on `fn main` and a Run-test lens on each
     // `@test` function. Both carry a ready client command — no resolve round-trip.
-    let app_text = "pub fn main -> Int = 0\n@test \"adds one\"\nfn check_add -> Int = 1\n";
+    let app_text =
+        "pub fn main -> Int = 0\n@test \"adds one\"\nfn check_add () -> Result Unit Text = Ok ()\n";
     let (service, _socket, app_uri, _lib_uri) = two_member_fixture_with(app_text).await;
     let index = service
         .inner()
@@ -2760,6 +2773,171 @@ async fn test_code_lens_run_and_test() {
         Some("adds one"),
         "the test filter uses the @test display name"
     );
+}
+
+/// Every rejected signature stays visible as an error, independent of lens opt-in.
+#[tokio::test]
+async fn test_rejected_test_signatures_have_diagnostics_without_run_lenses() {
+    use ridge_lsp::index::{CodeLensConfig, RUN_TEST_COMMAND};
+    let source = concat!(
+        "@test \"ModuleId(0)\"\nfn arity (x: Int) -> Result Unit Text = Ok ()\n",
+        "@test \"ffi\"\nfn ffi forbidden () -> Result Unit Text = Ok ()\n",
+        "@test \"wrong\"\nfn wrong () -> Int = 1\n",
+        "@test \"missing\"\nfn missing = Ok ()\n",
+        "@test \"valid\"\nfn valid () -> Result Unit Text = Ok ()\n",
+        "@test \"compatibility\"\nfn compatibility () -> Bool = true\n",
+        "pub fn test_legacy () -> Result Unit Text = Ok ()\n",
+        "fn test_private () -> Int = 1\n",
+        "@test \"attribute wins\"\npub fn test_both () -> Bool = true\n",
+        "pub fn test_rejected () -> Int = 1\n",
+    );
+    let (service, _socket, uri, _) =
+        two_member_fixture_with_caps(source, pull_caps(true, true)).await;
+    let index = service.inner().workspace_index().await.unwrap();
+    let config = CodeLensConfig {
+        references: false,
+        implementations: false,
+        run: false,
+        run_test: true,
+    };
+    let lenses = index.code_lenses_at(&uri, config).unwrap();
+    let names: std::collections::BTreeSet<_> = lenses
+        .iter()
+        .map(|lens| {
+            let command = lens.command.as_ref().unwrap();
+            assert_eq!(command.command, RUN_TEST_COMMAND);
+            command.arguments.as_ref().unwrap()[1].as_str().unwrap()
+        })
+        .collect();
+    assert_eq!(
+        names,
+        ["valid", "compatibility", "test_legacy", "attribute wins"]
+            .into_iter()
+            .collect()
+    );
+    assert!(index
+        .code_lenses_at(
+            &uri,
+            CodeLensConfig {
+                run_test: false,
+                ..config
+            }
+        )
+        .unwrap()
+        .is_empty());
+
+    let report = service
+        .inner()
+        .diagnostic(DocumentDiagnosticParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            identifier: None,
+            previous_result_id: None,
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .unwrap();
+    let DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(report)) = report
+    else {
+        panic!("expected a full diagnostic report");
+    };
+    let diagnostics = report.full_document_diagnostic_report.items;
+    let expected = [
+        ("C301", 1, "zero parameters"),
+        ("C302", 3, "ffi"),
+        ("C305", 5, "Result Unit Text"),
+        ("C306", 7, "add `-> Result Unit Text`"),
+        ("C305", 16, "Result Unit Text"),
+    ];
+    for (code, line, remedy) in expected {
+        let diagnostic = diagnostics
+            .iter()
+            .find(|d| {
+                d.code == Some(NumberOrString::String(code.to_owned()))
+                    && d.range.start.line == line
+            })
+            .unwrap_or_else(|| panic!("missing {code} at {line}: {diagnostics:?}"));
+        assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
+        assert!(diagnostic.range.end.character > diagnostic.range.start.character);
+        assert!(diagnostic.message.contains(remedy), "{diagnostic:?}");
+        assert!(diagnostic
+            .code_description
+            .as_ref()
+            .unwrap()
+            .href
+            .as_str()
+            .ends_with(&format!("#{}", code.to_lowercase())));
+    }
+    assert_eq!(diagnostics.iter().filter(|d| matches!(&d.code, Some(NumberOrString::String(code)) if ["C301", "C302", "C305", "C306"].contains(&code.as_str()))).count(), expected.len(), "{diagnostics:?}");
+}
+
+/// Repair and regression both replace diagnostics and runnable lenses with the buffer.
+#[tokio::test]
+async fn test_test_signature_edits_refresh_diagnostics_and_run_lenses() {
+    use ridge_lsp::index::CodeLensConfig;
+    let invalid = "@test \"editable\"\nfn editable () -> Int = 1\n";
+    let valid = "@test \"editable\"\nfn editable () -> Result Unit Text = Ok ()\n";
+    let (service, _socket, uri, _) =
+        two_member_fixture_with_caps(invalid, pull_caps(true, true)).await;
+    let server = service.inner();
+    let config = CodeLensConfig {
+        references: false,
+        implementations: false,
+        run: false,
+        run_test: true,
+    };
+    for (version, text, rejected) in [(2, valid, false), (3, invalid, true)] {
+        let previous = server.workspace_index().await.unwrap().generation;
+        server
+            .did_change(DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: uri.clone(),
+                    version,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: text.to_owned(),
+                }],
+            })
+            .await;
+        let mut updated = None;
+        for _ in 0..120 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            let index = server.workspace_index().await.unwrap();
+            if index.generation > previous {
+                updated = Some(index);
+                break;
+            }
+        }
+        let index = updated.expect("edit installed");
+        assert_eq!(
+            index.code_lenses_at(&uri, config).unwrap().is_empty(),
+            rejected
+        );
+        let report = server
+            .diagnostic(DocumentDiagnosticParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                identifier: None,
+                previous_result_id: None,
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            })
+            .await
+            .unwrap();
+        let DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(report)) = report
+        else {
+            panic!("expected a full diagnostic report");
+        };
+        let diagnostics = report.full_document_diagnostic_report.items;
+        assert_eq!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == Some(NumberOrString::String("C305".to_owned()))),
+            rejected,
+            "{diagnostics:?}"
+        );
+    }
 }
 
 #[tokio::test]

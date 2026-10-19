@@ -951,6 +951,10 @@ fn compile_blocking(
         by_file.entry(uri).or_default().push(lsp_diag);
     }
 
+    for (uri, diagnostic) in index.test_diagnostics() {
+        by_file.entry(uri).or_default().push(diagnostic);
+    }
+
     // Style hints computed from the AST (not compile errors): deeply nested
     // `if` staircases in Result/Unit functions get a nudge toward `guard`/`?`.
     for (uri, diag) in collect_nesting_hints(&index.line_indices, &index.module_uris, &state.typed)

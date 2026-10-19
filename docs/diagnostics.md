@@ -122,11 +122,11 @@ The project name is reserved by the Ridge toolchain (`std`, `test`, `core`).
 
 ### C301
 
-A `pub fn test_*` function has arity != 0.
+A discovered test function takes parameters; test functions must take none.
 
 ### C302
 
-A `pub fn test_*` function declares the `ffi` capability.
+A discovered test function declares the `ffi` capability, which the test runner does not permit.
 
 ### C303
 
@@ -138,7 +138,7 @@ A test was found by its `test_` prefix rather than `@test`.
 
 ### C305
 
-A test declares a return type other than `Result Unit Text`.
+A test declares a return type the runner cannot use; use `Result Unit Text`.
 
 ### C306
 

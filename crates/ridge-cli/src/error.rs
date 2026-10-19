@@ -149,40 +149,12 @@ pub enum CliError {
         path: std::path::PathBuf,
     },
 
-    /// `C301` — a `pub fn test_*` function has arity != 0.
-    ///
-    /// Test functions must take zero parameters.
-    TestArityInvalid {
-        /// The qualified name of the test function (e.g. `Demo.test_foo`).
+    /// A test signature rejected by the shared runner/editor contract.
+    TestRejected {
+        /// Qualified name shown in the test report.
         qualified_name: String,
-    },
-
-    /// `C302` — a `pub fn test_*` function declares the `ffi` capability.
-    ///
-    /// FFI tests are not permitted in `ridge test` 0.1.0.
-    TestCapabilityForbidden {
-        /// The qualified name of the test function.
-        qualified_name: String,
-    },
-
-    /// `C305` — a test declares a return type the runner cannot use.
-    ///
-    /// Separate from [`Self::TestReturnTypeMissing`] because the remedy is: the
-    /// annotation is there and has to change, rather than not being there at
-    /// all. Both used to arrive as one untyped message that told the second
-    /// case its return type was unsupported when it had not declared one.
-    TestReturnTypeInvalid {
-        /// The qualified name of the test function.
-        qualified_name: String,
-    },
-
-    /// `C306` — a test declares no return type, so the runner cannot check it.
-    ///
-    /// `ridge test` reads the declared signature, not the inferred type, so an
-    /// unannotated test is rejected rather than accepted on inference.
-    TestReturnTypeMissing {
-        /// The qualified name of the test function.
-        qualified_name: String,
+        /// Stable rejection code and message.
+        reason: ridge_driver::test_contract::TestRejection,
     },
 
     /// `C401` — `<src_root>/migrations/Model.ridge` is missing.
@@ -326,10 +298,7 @@ impl CliError {
             Self::ReservedName { .. } => "C203",
             Self::DirectoryNotEmpty { .. } => "C204",
             Self::CwdUnreadable { .. } => "C205",
-            Self::TestArityInvalid { .. } => "C301",
-            Self::TestCapabilityForbidden { .. } => "C302",
-            Self::TestReturnTypeInvalid { .. } => "C305",
-            Self::TestReturnTypeMissing { .. } => "C306",
+            Self::TestRejected { reason, .. } => reason.code(),
             Self::MigrateModelMissing { .. } => "C401",
             Self::MigrateCompileFailed => "C403",
             Self::MigrateInternal { .. } => "C404",
@@ -528,29 +497,9 @@ impl fmt::Display for CliError {
                     ridge_path.display(),
                 )
             }
-            Self::TestArityInvalid { qualified_name } => write!(
-                f,
-                "C301 TestArityInvalid: '{qualified_name}' must have zero parameters; \
-                 test functions cannot take arguments"
-            ),
-            Self::TestCapabilityForbidden { qualified_name } => write!(
-                f,
-                "C302 TestCapabilityForbidden: '{qualified_name}' declares the 'ffi' capability; \
-                 ffi tests are not permitted in ridge test"
-            ),
-            // Neither message offers `Bool` as an alternative. It is still
-            // accepted, but C303 deprecates it in the same run - pointing a
-            // reader at it here would be one message undoing another.
-            Self::TestReturnTypeInvalid { qualified_name } => write!(
-                f,
-                "C305 TestReturnTypeInvalid: '{qualified_name}' returns a type the test runner \
-                 cannot use; a test must return Result Unit Text"
-            ),
-            Self::TestReturnTypeMissing { qualified_name } => write!(
-                f,
-                "C306 TestReturnTypeMissing: '{qualified_name}' declares no return type; \
-                 add `-> Result Unit Text`"
-            ),
+            Self::TestRejected { qualified_name, reason } => {
+                write!(f, "{} {}", reason.code(), reason.message(qualified_name))
+            }
             Self::MigrateModelMissing { path } => write!(
                 f,
                 "C401 MigrateModelMissing: '{}' was not found; \
@@ -627,6 +576,7 @@ impl std::error::Error for CliError {}
 )]
 mod tests {
     use super::{CliError, ToolchainError, WorkspaceError};
+    use ridge_driver::test_contract::TestRejection;
 
     /// Name every variant, so that adding one stops the crate from compiling
     /// until someone comes back to this file.
@@ -653,10 +603,6 @@ mod tests {
             | CliError::FmtIoError { .. }
             | CliError::FmtCheckFailed { .. }
             | CliError::LegacyRgFile { .. }
-            | CliError::TestArityInvalid { .. }
-            | CliError::TestCapabilityForbidden { .. }
-            | CliError::TestReturnTypeInvalid { .. }
-            | CliError::TestReturnTypeMissing { .. }
             | CliError::MigrateModelMissing { .. }
             | CliError::MigrateCompileFailed
             | CliError::MigrateInternal { .. }
@@ -673,6 +619,12 @@ mod tests {
             | CliError::WatchRestartFailed { .. }
             | CliError::ExplainUnknownCode { .. }
             | CliError::AlreadyReported => {}
+            CliError::TestRejected { reason, .. } => match reason {
+                TestRejection::ArityInvalid
+                | TestRejection::CapabilityForbidden
+                | TestRejection::ReturnTypeInvalid
+                | TestRejection::ReturnTypeMissing => {}
+            },
         }
     }
 
@@ -707,17 +659,21 @@ mod tests {
             CliError::LegacyRgFile {
                 path: "a.rg".into(),
             },
-            CliError::TestArityInvalid {
+            CliError::TestRejected {
                 qualified_name: "M.test_x".into(),
+                reason: TestRejection::ArityInvalid,
             },
-            CliError::TestCapabilityForbidden {
+            CliError::TestRejected {
                 qualified_name: "M.test_x".into(),
+                reason: TestRejection::CapabilityForbidden,
             },
-            CliError::TestReturnTypeInvalid {
+            CliError::TestRejected {
                 qualified_name: "M.test_x".into(),
+                reason: TestRejection::ReturnTypeInvalid,
             },
-            CliError::TestReturnTypeMissing {
+            CliError::TestRejected {
                 qualified_name: "M.test_x".into(),
+                reason: TestRejection::ReturnTypeMissing,
             },
             CliError::MigrateModelMissing {
                 path: "Model.ridge".into(),

@@ -1218,8 +1218,8 @@ pub fn infer_instance_methods(
 /// same variable name (e.g. `a` appearing in both a param and the `where`
 /// clause) maps to the SAME fresh `TyVid` throughout.
 ///
-/// Lower-case single-letter identifiers are treated as type variables; all
-/// others (upper-case or multi-character) are treated as type constructors.
+/// Names beginning with a lower-case character are treated as type variables;
+/// other names are treated as type constructors.
 pub(crate) fn collect_tyvars_from_ast_type<'a>(
     ty: &'a ridge_ast::Type,
     map: &mut rustc_hash::FxHashMap<&'a str, TyVid>,
@@ -1227,9 +1227,8 @@ pub(crate) fn collect_tyvars_from_ast_type<'a>(
 ) {
     match ty {
         ridge_ast::Type::Named { name, .. } => {
-            // Heuristic: a fully-lowercase ident is a type variable (e.g. `a`,
-            // `b`, `key`, `val`). Upper-case or mixed-case names are type
-            // constructors and are not collected here.
+            // A lower-case initial identifies a type variable (e.g. `a`,
+            // `b`, `key`, `val`), matching annotation conversion.
             let n = name.text.as_str();
             let is_tyvar = n.chars().next().is_some_and(char::is_lowercase);
             if is_tyvar {
@@ -1266,13 +1265,15 @@ pub(crate) fn collect_tyvars_from_ast_type<'a>(
         ridge_ast::Type::List { elem, .. } => {
             collect_tyvars_from_ast_type(elem, map, ctx);
         }
+        ridge_ast::Type::Paren { inner, .. } => {
+            collect_tyvars_from_ast_type(inner, map, ctx);
+        }
         ridge_ast::Type::Record { fields, .. } => {
             for f in fields {
                 collect_tyvars_from_ast_type(&f.ty, map, ctx);
             }
         }
-        // Primitive and other forms carry no type variables.
-        _ => {}
+        ridge_ast::Type::Primitive { .. } => {}
     }
 }
 

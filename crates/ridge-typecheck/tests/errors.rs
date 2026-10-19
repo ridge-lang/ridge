@@ -2541,3 +2541,75 @@ fn a_mismatch_between_the_two_column_types_names_them_apart() {
         "a reader cannot act on a message that names both types with one word"
     );
 }
+
+fn check_parenthesized_signature(src: &str) -> Vec<TypeError> {
+    let td = build_single_module_workspace("parenthesized", src);
+    let disc = discover_workspace(td.path());
+    assert!(
+        disc.manifest_errors.is_empty(),
+        "{:?}",
+        disc.manifest_errors
+    );
+    assert!(disc.resolve_errors.is_empty(), "{:?}", disc.resolve_errors);
+    let resolved = resolve_workspace(disc.graph.expect("workspace graph"));
+    assert!(resolved.lex_errors.is_empty(), "{:?}", resolved.lex_errors);
+    assert!(
+        resolved.parse_errors.is_empty(),
+        "{:?}",
+        resolved.parse_errors
+    );
+    assert!(resolved.errors.is_empty(), "{:?}", resolved.errors);
+    typecheck_workspace(&resolved)
+        .errors
+        .into_iter()
+        .map(|(_, e)| e)
+        .collect()
+}
+
+#[test]
+fn parenthesized_signatures_keep_their_generic_promises() {
+    for src in [
+        "pub fn bad (f: fn a -> a) -> Text = f 1\n",
+        "pub fn bad (f: (fn a -> a)) -> Text = f 1\n",
+        "pub fn bad (f: ((fn a -> a))) -> Text = f 1\n",
+        "pub fn bad (x: (a)) -> (a) = 1\n",
+        "pub fn bad (x: List (a)) -> (a) = 1\n",
+        "pub fn bad (x: [(a)]) -> (a) = 1\n",
+        "pub fn bad (x: ((a), Int)) -> (a) = 1\n",
+        "pub fn bad (x: { value: (a) }) -> (a) = 1\n",
+        "type Box a = { value: a }\npub fn bad (x: Box (a)) -> (a) = 1\n",
+        "pub fn main () -> Int =\n    fn bad (f: (fn a -> a)) -> Text = f 1\n    1\n",
+        "pub fn bad (x: (a)) -> (a) = bad 1\n",
+    ] {
+        let errors = check_parenthesized_signature(src);
+        assert!(
+            errors.iter().any(|error| matches!(
+                error,
+                TypeError::TypeMismatch { .. } | TypeError::TypeMismatchInCall { .. }
+            )),
+            "the signature must bind its body: {src}: {errors:?}"
+        );
+    }
+}
+
+#[test]
+fn parenthesized_signatures_preserve_valid_generics_and_inference() {
+    for src in [
+        "pub fn same (x: (a)) -> (a) = x\npub fn integer () -> Int = same 1\npub fn text () -> Text = same \"ok\"\n",
+        "pub fn apply (f: (fn a -> a)) (x: a) -> a = f x\n",
+        "pub fn concrete (f: (fn Int -> Text)) -> Text = f 1\n",
+        "pub fn infer (x: (a)) = 1\n",
+        "pub fn field (x: ({ value: a | r })) -> a = x.value\n",
+        r#"type Box a = { value: a }
+class Keep t =
+    keep (x: t) -> t
+instance Keep (Box (a)) =
+    keep (x: Box (a)) -> Box (a) = x
+pub fn integer () -> Box Int = keep (Box { value = 1 })
+pub fn text () -> Box Text = keep (Box { value = "ok" })
+"#,
+    ] {
+        let errors = check_parenthesized_signature(src);
+        assert!(errors.is_empty(), "{src}: {errors:?}");
+    }
+}

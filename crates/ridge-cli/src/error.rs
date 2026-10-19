@@ -431,7 +431,8 @@ impl fmt::Display for CliWarning {
             Self::PrefixTestDeprecated { module, name } => write!(
                 f,
                 "warning: {c} PrefixTestDeprecated: '{module}.{name}' uses the deprecated `test_` \
-                 prefix; add `@test \"{stem}\"` above the function and remove the prefix in 0.3.0",
+                 prefix for discovery; add `@test \"{stem}\"` above the function; \
+                 the function name can stay unchanged",
                 stem = name.strip_prefix("test_").unwrap_or(name)
             ),
         }
@@ -535,7 +536,7 @@ impl fmt::Display for CliError {
             Self::TestCapabilityForbidden { qualified_name } => write!(
                 f,
                 "C302 TestCapabilityForbidden: '{qualified_name}' declares the 'ffi' capability; \
-                 ffi tests are not permitted in ridge test 0.1.0"
+                 ffi tests are not permitted in ridge test"
             ),
             // Neither message offers `Bool` as an alternative. It is still
             // accepted, but C303 deprecates it in the same run - pointing a

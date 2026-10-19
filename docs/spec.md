@@ -2140,7 +2140,9 @@ shape of the world: large database migrations, infrastructure changes
 1. `@test "<name>"` attribute on any function, regardless of name or visibility (canonical). See §8.8.
 2. `pub fn test_<name> ()` function-name prefix (deprecated, `C304 PrefixTestDeprecated`).
 
-Both forms must return `Result Unit Text`. Tests run in a fresh BEAM child process per test; no shared state leaks between runs. FFI-bearing tests are rejected with a compile-time capability error. When both forms apply to the same function the attribute wins and the test registers once.
+The canonical return type for both forms is `Result Unit Text`: `Ok ()` passes and `Err message` fails. For compatibility, both forms also accept `Bool` with a `C303 BoolTestDeprecated` warning: `true` passes and `false` fails. Tests run in a fresh BEAM child process per test; no shared state leaks between runs. FFI-bearing tests are rejected with a compile-time capability error. When both forms apply to the same function the attribute wins and the test registers once.
+
+Prefix discovery and `Bool` returns remain supported but deprecated in 0.3.0. No removal release is scheduled. A future removal requires an explicit compatibility decision and migration guidance; retiring prefix discovery must report unmigrated tests rather than silently omit them.
 
 ### 8.8. Test declaration with `@test`
 
@@ -2166,12 +2168,14 @@ Rules:
 
 - The argument to `@test` must be a string literal (`P027 TestAttrArgNotString` otherwise).
 - The string is the display name shown by `ridge test`.
-- The function must return `Result Unit Text`.
+- Use `Result Unit Text` for the return type. `Bool` is accepted only for deprecated compatibility, with `C303`; migrate `true` to `Ok ()` and `false` to `Err "<reason>"`.
 - Visibility does not matter — private functions can be tests.
 - When both `@test` and the `test_` prefix apply, the attribute takes precedence and the test registers once.
 - The `test_` prefix convention is deprecated (`C304 PrefixTestDeprecated`).
 
 `ridge fmt --migrate-tests` rewrites prefix-style tests to the `@test` form in place. It inserts `@test "<derived-name>"` above each `pub fn test_<name>` and does not rename the function, so existing references remain valid. The derived name is the function name with its `test_` prefix removed (e.g. `test_empty_list` → `@test "empty_list"`). The rewrite is idempotent: a function already carrying `@test` is left untouched.
+
+This migration changes discovery only: it does not rewrite a `Bool` return type or body. Migrate those to `Result Unit Text` separately.
 
 ---
 

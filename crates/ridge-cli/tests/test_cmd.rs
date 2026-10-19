@@ -202,7 +202,80 @@ fn test_bool_deprecation_warning() {
         .assert()
         .success()
         .stderr(contains("C303 BoolTestDeprecated"))
-        .stdout(contains("Bool acceptance is removed in 0.2.0"));
+        .stdout(contains("1 test(s) returned Bool (deprecated)"))
+        .stdout(contains("removed in").not());
+}
+
+/// Deprecated Bool tests keep pass/fail semantics under either discovery form.
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn bool_compatibility_preserves_outcomes_with_attributes_and_prefixes() {
+    let src = concat!(
+        "pub fn test_prefixPass () -> Bool = true\n",
+        "pub fn test_prefixFail () -> Bool = false\n",
+        "@test \"attribute passes\"\nfn attributePass () -> Bool = true\n",
+        "@test \"attribute fails\"\nfn attributeFail () -> Bool = false\n",
+    );
+    let tw = make_test_workspace("Demo", src);
+
+    ridge_cmd()
+        .args(["test", "-j", "1"])
+        .current_dir(&tw.path)
+        .assert()
+        .failure()
+        .stdout(contains("Tests: 2 passed, 2 failed, 0 skipped"))
+        .stdout(contains("ok   Demo.test_prefixPass"))
+        .stdout(contains("FAIL Demo.test_prefixFail"))
+        .stdout(contains("ok   Demo.attribute passes"))
+        .stdout(contains("FAIL Demo.attribute fails"))
+        .stdout(contains("4 test(s) returned Bool (deprecated)"))
+        .stdout(contains("removed in").not())
+        .stderr(contains("C303 BoolTestDeprecated: 'Demo.test_prefixPass'"))
+        .stderr(contains("C303 BoolTestDeprecated: 'Demo.test_prefixFail'"))
+        .stderr(contains("C303 BoolTestDeprecated: 'Demo.attribute passes'"))
+        .stderr(contains("C303 BoolTestDeprecated: 'Demo.attribute fails'"))
+        .stderr(contains(
+            "replace 'true' with 'Ok ()' and 'false' with 'Err",
+        ));
+}
+
+/// Attribute migration preserves callable names and runs each migrated test once.
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn migrated_tests_keep_names_references_and_discovery() {
+    let src = concat!(
+        "pub fn test_original () -> Result Unit Text = Ok ()\n",
+        "@test \"calls original\"\n",
+        "fn reference () -> Result Unit Text = test_original ()\n",
+    );
+    let tw = make_test_workspace("Demo", src);
+    let path = tw.path.join("apps/demo/src/Demo.ridge");
+    ridge_cmd()
+        .args(["fmt", "--migrate-tests"])
+        .arg(&path)
+        .current_dir(&tw.path)
+        .assert()
+        .success();
+    let migrated = std::fs::read_to_string(&path).unwrap();
+    assert!(migrated.contains("@test \"original\""));
+    assert!(migrated.contains("pub fn test_original"));
+    assert!(migrated.contains("= test_original ()"));
+
+    ridge_cmd()
+        .args(["test", "-j", "1"])
+        .current_dir(&tw.path)
+        .assert()
+        .success()
+        .stdout(contains("Tests: 2 passed, 0 failed, 0 skipped"))
+        .stderr(contains("C304").not());
+
+    ridge_cmd()
+        .args(["fmt", "--migrate-tests"])
+        .arg(&path)
+        .current_dir(&tw.path)
+        .assert()
+        .success();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), migrated);
 }
 
 // ── Test 5: test_ffi_rejection — C302 error, exit 1 (un-gated) ───────────────
@@ -223,7 +296,9 @@ fn test_ffi_rejection() {
         .current_dir(&tw.path)
         .assert()
         .failure()
-        .stderr(contains("C302 TestCapabilityForbidden"));
+        .stderr(contains("C302 TestCapabilityForbidden"))
+        .stderr(contains("ffi tests are not permitted in ridge test"))
+        .stderr(contains("0.1.0").not());
 }
 
 // ── Test 6: test_arity_invalid — C301 error, exit 1 (un-gated) ───────────────
@@ -376,6 +451,9 @@ fn test_legacy_prefix_emits_c304() {
         .assert()
         .failure()
         .stderr(contains("C304 PrefixTestDeprecated"))
+        .stderr(contains("add `@test \"legacy\"` above the function"))
+        .stderr(contains("the function name can stay unchanged"))
+        .stderr(contains("0.3.0").not())
         .stderr(contains("C301 TestArityInvalid"));
 }
 

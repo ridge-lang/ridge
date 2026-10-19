@@ -75,6 +75,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Test deprecation messages no longer claim removal in releases that still
+  accept the deprecated forms. Prefix discovery and `Bool` returns remain
+  supported with warnings in 0.3.0; no removal release is scheduled. This
+  supersedes the earlier promise to remove prefix discovery in 0.3.0.
+  `ridge fmt --migrate-tests` adds `@test` without renaming functions; migrate
+  `Bool` returns to `Result Unit Text` separately. The FFI test restriction
+  also no longer names an obsolete version.
+
 - Compiler rustdoc explains its constraints directly instead of citing private
   planning notes, while retaining references to the published grammar and spec.
 

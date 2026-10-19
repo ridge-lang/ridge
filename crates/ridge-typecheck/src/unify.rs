@@ -1,4 +1,4 @@
-//! Unification algorithm for Ridge type inference (T5).
+//! Unification algorithm for Ridge type inference.
 //!
 //! # Main entry points
 //!
@@ -16,7 +16,7 @@
 //!
 //! # Span note
 //!
-//! `unify` does not carry source spans. Callers in T6/T7 wrap the returned
+//! `unify` does not carry source spans. Expression and declaration inference callers wrap the returned
 //! `TypeError` with a `span` before propagating it to the error accumulator.
 //! Until then the error is constructed with a dummy `Span::point(0)`.
 
@@ -54,7 +54,7 @@ pub(crate) fn try_unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> bool {
 
 /// Unifies two [`Type`]s, updating `ctx` in place.
 ///
-/// # Algorithm (§4.5)
+/// # Algorithm
 ///
 /// Both sides are shallow-resolved first. After resolution the dispatch is:
 ///
@@ -900,7 +900,7 @@ fn omitted_columns(decls: &[TyConDecl], entity_id: TyConId, companion_id: TyConI
 }
 
 /// A zero-offset dummy span used when no source location is available at the
-/// unification layer. Callers in T6/T7 replace this with a real span.
+/// unification layer. Expression and declaration inference callers replace this with a real span.
 const fn dummy_span() -> Span {
     Span::point(0)
 }

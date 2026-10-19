@@ -1,32 +1,31 @@
-//! T14 — End-to-end `DoD` acceptance (§9 / §11.2 verification gates).
+//! Structural stdlib acceptance checks.
 //!
-//! This file is the **`DoD`-level umbrella** for Phase 7.  It asserts structural
-//! facts that, taken together, demonstrate the Phase 7 `DoD` claims.  It does NOT
+//! This file asserts structural stdlib invariants. It does NOT
 //! duplicate work already owned by:
 //!
-//! - `manifest_consistency.rs`   — G2 (bidirectional manifest / signature checks)
-//! - `test_ridge_smoke.rs`       — G1 partial (parse-clean `.test.ridge` files)
+//! - `manifest_consistency.rs`   — bidirectional manifest / signature checks
+//! - `test_ridge_smoke.rs`       — parse-clean `.test.ridge` files
 //! - `crates/ridge-codegen-erl/tests/stdlib_map.rs::build_map_count_is_exactly_6`
-//!   — G3 (path-A retired to exactly 6 `std.op.*` entries)
+//!   — path-A retired to exactly 6 `std.op.*` entries
 //!
-//! ## Gates asserted here
+//! ## Checks and documented external commands
 //!
 //! | Test                        | Gate       |
 //! |-----------------------------|------------|
 //! | `required_modules_are_discovered_and_built` | Module coverage |
-//! | `g5_path_b_dominance`       | G5 / §11.2 |
-//! | `artefacts_count_matches_plan` | §11.4   |
-//! | `dod_doc_link`              | G7, G8 (CI)|
+//! | `g5_path_b_dominance`       | Generated target coverage |
+//! | `artefacts_count_matches_plan` | Source and suite counts |
+//! | `dod_doc_link`              | Documents external lint/doc commands; runs neither |
 //!
-//! ## Architecture note (G5 / path-B) — T14.5.3
+//! ## Generated-target architecture
 //!
-//! After T14.5.3, `crates/ridge-stdlib/build.rs` is the **canonical extractor**
+//! `crates/ridge-stdlib/build.rs` is the **canonical extractor**
 //! for the path-B FFI lookup table.  The generated table is exposed via
-//! `ridge_stdlib::ffi_targets::lookup` (D141).  `ridge-codegen-erl` now
+//! `ridge_stdlib::ffi_targets::lookup`. `ridge-codegen-erl` now
 //! depends on `ridge-stdlib` (regular dep) and adapts the returned
 //! `StdlibFfiTarget` into `BridgeTarget::RidgeStdlibLocal` at the seam.
 //!
-//! The G5 path-B dominance assertion continues to use
+//! The generated-target coverage assertion uses
 //! `ridge_stdlib::codegen_ffi_targets::extract_all_stdlib_decls`, which is
 //! the canonical reference implementation of the extraction logic and remains
 //! the authoritative source for verifying path-B coverage.  Asserting that a
@@ -36,8 +35,7 @@
 //!
 //! Note: `ridge-stdlib` intentionally has no dep on `ridge-codegen-erl`
 //! (that direction would close a cycle).  The dep edge runs one way:
-//! `ridge-codegen-erl → ridge-stdlib` (verified: `cargo tree -p ridge-stdlib
-//! --invert` does not list `ridge-codegen-erl` as a dependent).
+//! `ridge-codegen-erl → ridge-stdlib`.
 
 // Integration tests are allowed to use expect/unwrap/panic freely.
 #![allow(
@@ -157,7 +155,7 @@ fn module_coverage_reports_missing_names() {
 
 // ── G5 / §11.2 — path-B dominance ────────────────────────────────────────────
 
-/// G5 (§11.2): Path-B is active for example symbols — no path-A entry consulted
+/// Path-B is active for example symbols — no path-A entry consulted
 /// for any example symbol except `std.op.*`.
 ///
 /// Asserts that a curated set of stdlib symbols used by the four canonical
@@ -168,18 +166,18 @@ fn module_coverage_reports_missing_names() {
 /// path-A static map.
 ///
 /// `std.op.*` entries are intentionally omitted from this list — they are the
-/// only permanent path-A entries (emitted by `ridge-lower::operators`, D092)
+/// only permanent path-A entries (emitted by `ridge-lower::operators`)
 /// and have no `.ridge` body or `@ffi` annotation.
 ///
-/// ## Architecture note (T14.5.3)
+/// ## Architecture note
 ///
-/// After T14.5.3, `ridge-codegen-erl` depends on `ridge-stdlib` (not the
+/// `ridge-codegen-erl` depends on `ridge-stdlib` (not the
 /// reverse).  `extract_all_stdlib_decls` is the canonical reference extraction
 /// that `crates/ridge-stdlib/build.rs` uses to generate the lookup table.
 /// Asserting that a symbol appears here is equivalent to asserting it would be
 /// served by path B at runtime via `ridge_stdlib::ffi_targets::lookup`.
 ///
-/// Reference: §11.2 G5, T11 / T11.5 / T14.5.3.
+/// The generated target table is shared by the stdlib and codegen crates.
 #[test]
 fn g5_path_b_dominance() {
     // Curated set of example symbols — ~10 representative ones per the plan.
@@ -222,7 +220,7 @@ fn g5_path_b_dominance() {
 
 // ── §11.4 — artefact counts match plan ───────────────────────────────────────
 
-/// §11.4: module `.ridge` files and paired `.test.ridge` BEAM suites under
+/// Module `.ridge` files and paired `.test.ridge` BEAM suites under
 /// `stdlib/`.
 ///
 /// `net/http.ridge` and `net/http.test.ridge` each count toward their total.
@@ -288,21 +286,18 @@ fn artefacts_count_matches_plan() {
 
 // ── G7, G8 — CI gates placeholder ────────────────────────────────────────────
 
-/// G7 / G8 (§11.2): Clippy and cargo-doc gates.
+/// Clippy and cargo-doc checks run outside this test.
 ///
-/// These gates are enforced at the CI / Make level (`azure-pipelines.yml`),
-/// not in-process.  Running `cargo clippy` or `cargo doc` from inside
-/// `cargo test` is an infinite-recursion footgun (the test binary re-invokes
-/// cargo, which re-runs tests, which re-invokes cargo...).
+/// This test is a documentation placeholder and does not run either command.
+/// Build tooling must execute them directly and report their results:
 ///
-/// G7: `cargo clippy -p ridge-stdlib --all-targets -- -D warnings` — green.
-/// G8: `cargo doc -p ridge-stdlib --no-deps` — green (zero broken intra-doc links).
+/// - `cargo clippy -p ridge-stdlib --all-targets -- -D warnings`
+/// - `cargo doc -p ridge-stdlib --no-deps`
 ///
-/// Both gates are added as named steps in `azure-pipelines.yml` (T14 CI
-/// update) so a single failure surfaces the violation traceably.
+/// External check failures must be reported by the build pipeline.
 #[test]
 fn dod_doc_link() {
-    // G7 / G8 enforced at the CI / Make level, not in-process.
+    // Clippy and rustdoc run outside this test process.
     // This test is a structural placeholder so that `dod.rs` owns the gate
     // documentation and a test runner reports it as "passed" alongside the
     // other structural gates.

@@ -1,21 +1,21 @@
 // Integration tests are allowed to use expect/panic (test-only code).
 #![allow(clippy::expect_used, clippy::panic)]
 
-//! §6.1 — Capability erasure audit for emitted Core Erlang snapshots.
+//! Capability erasure audit for emitted Core Erlang snapshots.
 //!
-//! D018 Model B: capabilities are erased at the Core Erlang emission boundary.
+//!  Model B: capabilities are erased at the Core Erlang emission boundary.
 //! The only place capability metadata appears in emitted output is as a
 //! `%% Caps: …` comment on each function — never as runtime code.
 //!
 //! This file enforces that contract at the emission boundary by grepping all
 //! `*.snap` files under `tests/snapshots/` for banned capability tokens.
 //!
-//! ## Current state (T11)
+//! ## Coverage when snapshots are absent
 //!
-//! As of T11, `tests/snapshots/` is empty — the four example `.core` snapshots
-//! are shipped in T13.  The audit therefore passes vacuously today.  Once T13
-//! lands, the `no_capability_token_in_emitted_core_erl` test will cover all
-//! four example snapshots automatically (no changes to this file required).
+//! When `tests/snapshots/` is empty, the audit passes vacuously. Once the
+//! four example `.core` snapshots are present, the
+//! `no_capability_token_in_emitted_core_erl` test covers them automatically
+//! (no changes to this file required).
 //!
 //! ## Banned tokens
 //!
@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 /// Tokens that must never appear in emitted Core Erlang (outside `%% Caps:` comments).
 ///
 /// These are Ridge compiler-internal capability vocabulary terms.  None of them
-/// should survive Phase 6 erasure (D018 Model B).  Note that BEAM-stdlib atoms
+/// should survive codegen erasure (Model B). Note that BEAM-stdlib atoms
 /// like `'io'`, `'file'`, `'inet'` share substrings but are distinct; the audit
 /// does not flag them because the banned tokens here are Ridge-specific compound
 /// forms (e.g. `io_capability`, `Capability::Io`) not BEAM stdlib atoms.
@@ -55,8 +55,7 @@ const BANNED_TOKENS: &[&str] = &[
 
 /// Return all `.snap` files under the given directory tree.
 ///
-/// If the directory does not exist (e.g. before T13 ships the four example
-/// snapshots), returns an empty `Vec` — the audit passes vacuously.
+/// If the directory does not exist, returns an empty `Vec` — the audit passes vacuously.
 fn find_snap_files(snapshots_dir: &Path) -> Vec<PathBuf> {
     if !snapshots_dir.exists() {
         return Vec::new();
@@ -97,19 +96,19 @@ fn snapshots_dir() -> PathBuf {
 
 /// Scan all `*.snap` files under `tests/snapshots/` for banned capability tokens.
 ///
-/// This is the literal enforcement of D018 Model B (§6.1): after Phase 6
+/// This enforces capability erasure: after codegen
 /// erasure, no capability vocabulary token may appear in emitted Core Erlang
 /// outside of `%% Caps:` comment lines.
 ///
-/// **Passes vacuously** until T13 ships the four example `.core` snapshots.
+/// **Passes vacuously** until the four example `.core` snapshots are present.
 /// Once those snapshots are committed, this test automatically covers all of them.
 #[test]
 fn no_capability_token_in_emitted_core_erl() {
     let dir = snapshots_dir();
     let snaps = find_snap_files(&dir);
 
-    // No snapshots yet (pre-T13): pass vacuously.
-    // T13 will add the four example snapshots; no changes to this test needed.
+    // If no snapshots are present, pass vacuously.
+    // Adding the four example snapshots requires no changes to this test.
     for snap in &snaps {
         let content = fs::read_to_string(snap)
             .unwrap_or_else(|e| panic!("cannot read snap {}: {e}", snap.display()));

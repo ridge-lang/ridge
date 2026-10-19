@@ -1,7 +1,6 @@
 //! Shared scaffolder for `ridge new` and `ridge init`.
 //!
-//! Both subcommands produce the canonical single-project workspace layout
-//! (§2.9):
+//! Both subcommands produce the canonical single-project workspace layout:
 //!
 //! ```text
 //! <name>/
@@ -48,7 +47,7 @@ const RESERVED_NAMES: &[&str] = &["std", "test", "core"];
 /// Returns [`CliError::ReservedName`] when the (case-insensitively normalised)
 /// name is `std`, `test`, or `core`.
 ///
-/// Validation order: structural validity → reserved name (per §3.5 spec).
+/// Validation order: structural validity → reserved name.
 pub fn validate_name(name: &str) -> Result<(), CliError> {
     // ── Structural validity ───────────────────────────────────────────────────
     if name.is_empty() {

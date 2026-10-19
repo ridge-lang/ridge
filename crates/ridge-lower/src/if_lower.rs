@@ -1,4 +1,4 @@
-//! `if`-expression lowering rule — §4.7.
+//! `if`-expression lowering rule.
 //!
 //! Converts `Expr::If { cond, then_branch, else_branch }` into an
 //! `IrExpr::Match` over a `Bool` scrutinee with two arms:
@@ -125,7 +125,7 @@ mod tests {
         Expr::Unit(sp())
     }
 
-    // ── T5-if-1: if true then 1 else 2 ───────────────────────────────────────
+    // ── if true then 1 else 2 ───────────────────────────────────────
     //
     // `if true then 1 else 2` lowers to a Match with two arms.
     // arm 0 pattern: IrPat::Lit { Bool(true) }, body: IrExpr::Lit { Int(1) }
@@ -195,7 +195,7 @@ mod tests {
         }
     }
 
-    // ── T5-if-2: if true then () — no else branch ─────────────────────────────
+    // ── if true then () — no else branch ─────────────────────────────
     //
     // The synthesised false-arm body must be `IrExpr::Lit { Unit }`.
 
@@ -225,7 +225,7 @@ mod tests {
         }
     }
 
-    // ── T5-if-3: nested if — if c1 then (if c2 then a else b) else c ─────────
+    // ── nested if — if c1 then (if c2 then a else b) else c ─────────
     //
     // The inner `if` must appear as the then-arm body of the outer `Match`.
 

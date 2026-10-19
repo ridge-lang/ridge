@@ -1,6 +1,6 @@
-//! T17 — per-`T###` fixture harness for `ridge-typecheck` (plan §10 T17, §9.2).
+//! Per-`T###` fixture harness for `ridge-typecheck`.
 //!
-//! Mirrors Phase 3's `crates/ridge-resolve/tests/errors.rs`.  Each fixture file
+//! Mirrors the resolver's `crates/ridge-resolve/tests/errors.rs`. Each fixture file
 //! under `tests/fixtures/typecheck/*.ridge` declares one or more
 //! `-- expect: T###` directives.  [`all_fixtures_pass`] iterates the directory,
 //! builds a synthetic single-module workspace per fixture, runs the full
@@ -117,7 +117,7 @@ fn parse_expects(src: &str) -> Vec<ExpectLine> {
 /// Iterate every `tests/fixtures/typecheck/*.ridge` file, run the typecheck
 /// pipeline, and assert every `-- expect: T###` directive is satisfied.
 ///
-/// `DoD` §9.2: ≥ 25 single-file fixtures; every reachable T### code must have
+/// Coverage requirement: ≥ 25 single-file fixtures; every reachable T### code must have
 /// at least one fixture.
 #[test]
 fn all_fixtures_pass() {
@@ -1398,7 +1398,7 @@ fn record_field_patterns_can_be_exhaustive_on_their_own() {
     );
 }
 
-/// A field pattern that only binds — the D053 shorthand, or `..` — still covers
+/// A field pattern that only binds — the shorthand, or `..` — still covers
 /// the whole record, the way it always did.
 #[test]
 fn binding_only_record_patterns_stay_irrefutable() {

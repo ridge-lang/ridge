@@ -100,10 +100,9 @@ pub fn diag_from_typecheck(
 
 /// Build a [`Diagnostic`] from a [`LowerError`].
 ///
-/// The seventh adapter, and the one that was missing. Phase 5 has always built
-/// diagnostics and nothing ever read them, so an integer literal too large for
-/// `Int` became a silent zero, and the channel the lowering reports its own
-/// invariant violations on reached nobody.
+/// Lowering diagnostics must reach the same reporting path as other errors.
+/// Without this adapter, an integer literal too large for `Int` became a silent
+/// zero, and lowering invariant violations reached nobody.
 ///
 /// It lives here rather than in `ridge-diagnostics` for the same reason the
 /// typecheck and codegen adapters do: `ridge-lower` would otherwise have to

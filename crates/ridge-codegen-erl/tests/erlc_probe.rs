@@ -112,7 +112,7 @@ fn resolve_out_root_uses_profile_subdir() {
     assert_ne!(debug, release);
 }
 
-// ── T10 new tests ─────────────────────────────────────────────────────────────
+// ── Additional tests ─────────────────────────────────────────────────────────────
 
 /// `compile_core` invokes `erlc +from_core` on a valid minimal Core Erlang file
 /// and produces a `.beam` file.

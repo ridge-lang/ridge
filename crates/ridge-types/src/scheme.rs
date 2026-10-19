@@ -9,7 +9,7 @@ use crate::ty::{CapRow, CapVid, RowTail, RowVid, TyVid, Type};
 
 /// A type scheme `∀ vars cap_vars. ty` as produced by generalisation.
 ///
-/// `cap_vars` are [`CapVid`]s generalised over function-typed schemes per D041.
+/// `cap_vars` are [`CapVid`]s generalised over function-typed schemes.
 /// `constraints` carries class constraints over the universally-quantified type
 /// variables, e.g. `∀ a. ToText a => a -> Text`. The constraint solver
 /// populates this field; it is empty for all pre-existing, unconstrained
@@ -18,7 +18,7 @@ use crate::ty::{CapRow, CapVid, RowTail, RowVid, TyVid, Type};
 pub struct Scheme {
     /// Universally-quantified type variables.
     pub vars: Vec<TyVid>,
-    /// Universally-quantified capability-row variables (stdlib HOFs only, D041).
+    /// Universally-quantified capability-row variables (stdlib HOFs only).
     pub cap_vars: Vec<CapVid>,
     /// Universally-quantified record-row variables (open-record polymorphism).
     ///

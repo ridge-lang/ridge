@@ -315,7 +315,7 @@ fn idempotent_17_conditionals() {
 /// then re-parse the formatted output and assert that the AST is structurally
 /// equivalent (no items lost, no new parse errors introduced).
 ///
-/// Per the T5 DoD: if no `.ridge` files are present, this test still verifies
+/// If no `.ridge` files are present, this test still verifies
 /// discovery integrity by asserting `file_count > 0`.
 #[test]
 fn round_trip_examples_and_stdlib() {
@@ -423,7 +423,7 @@ fn round_trip_examples_and_stdlib() {
     }
 }
 
-// ── Idempotency regression on the four canonical Phase 8 examples ────────────
+// ── Idempotency regression on the four canonical tooling examples ────────────
 //
 // Reproducer for the fmt idempotency bug: three consecutive `ridge fmt` passes against
 // `examples/log_analyzer.ridge` produced three distinct outputs because:
@@ -452,7 +452,7 @@ fn format_n_passes(input: &str, n: usize) -> Vec<String> {
     out
 }
 
-/// Asserts that the four canonical Phase 8 examples reach a fixed point in
+/// Asserts that the four canonical tooling examples reach a fixed point in
 /// one `ridge fmt` pass, and that subsequent passes are byte-identical.
 #[test]
 fn idempotent_canonical_examples_three_pass() {

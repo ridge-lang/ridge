@@ -1,4 +1,4 @@
-//! Union variant construction and pattern-destructuring inference (T9).
+//! Union variant construction and pattern-destructuring inference.
 //!
 //! # Entry points
 //!
@@ -29,7 +29,7 @@ use crate::unify::unify;
 
 // ── infer_variant_construction ────────────────────────────────────────────────
 
-/// Infer the type of a union-variant constructor application (§4.9).
+/// Infer the type of a union-variant constructor application.
 ///
 /// # Parameters
 ///
@@ -119,7 +119,7 @@ pub fn infer_variant_construction(
 
 // ── infer_variant_pattern ─────────────────────────────────────────────────────
 
-/// Infer and bind variables from a union-variant pattern (§4.9).
+/// Infer and bind variables from a union-variant pattern.
 ///
 /// # Parameters
 ///

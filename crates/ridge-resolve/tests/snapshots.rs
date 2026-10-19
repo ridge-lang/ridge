@@ -1,11 +1,11 @@
-//! Phase 3 snapshot-test scaffolding (T4 + T8).
+//! Name-resolution snapshots and acceptance tests for canonical examples.
 //!
-//! One test per canonical example program. T14 replaces the plain-assertion
-//! bodies with `insta::assert_debug_snapshot!` on the `ResolvedModule`. For T4
-//! we only assert parseability and graph construction.  T8 adds acceptance
-//! tests that run `assign_node_ids` + `resolve_module_uses` over each example
-//! and assert: no R010/R011 errors, no panic, `bindings.len()` == `node_ids.len()`.
+//! Tests cover parseability, module-graph construction, import resolution,
+//! node-id assignment, and use-site bindings. Snapshot helpers record the
+//! resolved error set, binding counts, and import summary.
 
+//! Acceptance checks require no R010/R011 errors, no panic, and
+//! `bindings.len()` == `node_ids.len()`.
 // Integration tests are allowed to use expect/unwrap/panic freely.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -170,7 +170,7 @@ fn rate_limiter_parses_and_builds_graph() {
 
 // ── T7 acceptance tests: resolve_imports over each example ────────────────────
 
-/// Helper: run the full T7 pipeline over an example.
+/// Helper: run the import-resolution pipeline over an example.
 ///
 /// Returns `(ImportResolutionResult)`.  Panics on setup failure.
 fn resolve_imports_for_example(example_name: &str) -> ridge_resolve::ImportResolutionResult {
@@ -407,7 +407,7 @@ fn t6_acceptance_rate_limiter() {
 
 // ── T8 acceptance tests: resolve_module_uses over each example ─────────────────
 
-/// Helper: run the full T8 pipeline (T7 imports + `assign_node_ids` + `resolve_module_uses`)
+/// Helper: run the use-site resolution pipeline (imports + `assign_node_ids` + `resolve_module_uses`)
 /// over an example.  Returns `(bindings, errors, node_id_count)`.
 fn t8_resolve_for_example(example_name: &str) -> (Vec<Option<Binding>>, Vec<ResolveError>, usize) {
     let td = load_example_into_workspace(example_name);
@@ -698,7 +698,7 @@ const fn t9_known_r012_heads() -> &'static [&'static str] {
     &[]
 }
 
-/// T9 test 1: canonical stdlib qualified names that DO have import aliases
+/// Canonical stdlib qualified names that DO have import aliases
 /// resolve to `StdlibSymbol` bindings; no R014 ("unknown stdlib symbol") fires.
 ///
 /// `log_analyzer` imports `std.io as Io`, `std.list as List`, `std.map as Map`.
@@ -726,7 +726,7 @@ fn t9_acceptance_stdlib_qualified_names_bind() {
     );
 }
 
-/// T9 test 2: R012 errors in the canonical examples are only for known
+/// R012 errors in the canonical examples are only for known
 /// unresolvable qualified-name heads (no import alias, or primitive-type name
 /// used as a module).  No R012 fires for properly-aliased imports.
 ///
@@ -904,7 +904,7 @@ fn t12_acceptance_acme_no_rules_emits_no_r013() {
 
 // ── T14: full-pipeline insta snapshots over the 4 canonical examples ─────────
 //
-// Plan §10 T14 — commit deterministic insta snapshots for every example.  The
+//  T14 — commit deterministic insta snapshots for every example. The
 // snapshot captures a `ResolvedSnapshot` value (errors + per-binding-kind
 // counts + import alias summary) so that any drift in resolver behaviour over
 // the four canonical Ridge programs is caught by `cargo insta test`.
@@ -918,7 +918,7 @@ fn t12_acceptance_acme_no_rules_emits_no_r013() {
 //   Response, listen, respond)` and reference `Request` / `Response` directly.
 // - **`Expr::Send` walker arm** (`src/walker.rs::visit_send_message`,
 //   2026-04-25): the head of a `Send.message` is treated as a handler-name
-//   label (validated against the actor's `on` list by Phase 4) and is not
+//   label (validated against the actor's `on` list by type checking) and is not
 //   resolved against the lexical scope, mirroring how `Expr::Ask` already
 //   silently skips its `message: Ident` field.
 
@@ -990,7 +990,7 @@ fn format_error(e: &ResolveError) -> String {
     format!("{code}: {body}")
 }
 
-/// Run the full T7..T13 pipeline over a single-module example and produce a
+/// Run the full resolver pipeline over a single-module example and produce a
 /// deterministic [`ResolvedSnapshot`].
 fn snapshot_example(example_name: &str) -> ResolvedSnapshot {
     let td = load_example_into_workspace(example_name);

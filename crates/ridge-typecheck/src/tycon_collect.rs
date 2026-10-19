@@ -1,4 +1,4 @@
-//! User-defined `TyCon` collection from a module AST (§4.2, T17 wiring).
+//! User-defined `TyCon` collection from a module AST.
 //!
 //! Walks every `TypeDecl` and `ActorDecl` in a module, converts them to
 //! [`TyConDecl`]s, and interns them in the shared [`TyConArena`].  Also seeds
@@ -7,7 +7,7 @@
 //!
 //! # Two-pass invariant
 //!
-//! This runs BEFORE `typecheck_module_decls` (T7 / T6 Algorithm W).  After
+//! This runs BEFORE `typecheck_module_decls` runs Algorithm W.  After
 //! this pass every top-level type name is resolvable via
 //! `ctx.tycon_names[name]` (or a side-table passed to `ast_type_to_type`).
 //!
@@ -50,7 +50,7 @@ pub struct TyConCollectResult {
 ///
 /// After this call:
 /// - Every user-defined record/union/alias/actor type has a `TyConId` in `arena`.
-/// - Union constructors are bound in `ctx.env` as Schemes (for T6 inference).
+/// - Union constructors are bound in `ctx.env` as Schemes for expression inference.
 /// - `result.user_tycon_names` maps each type name to its `TyConId`.
 ///
 /// # Pass order

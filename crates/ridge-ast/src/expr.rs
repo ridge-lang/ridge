@@ -1,23 +1,22 @@
 //! Expression nodes used throughout the AST.
 //!
-//! T3 added atoms: `Literal`, `Unit`, `Ident`, `Qualified`, `Interp`.
-//! T6 adds the full Pratt expression surface: `Binary`, `Unary`, `Call`,
+//! Atoms: `Literal`, `Unit`, `Ident`, `Qualified`, `Interp`.
+//! Pratt expression forms: `Binary`, `Unary`, `Call`,
 //! `FieldAccess`, `Pipe`, `List`, `Tuple`, `Paren`, `FieldAccessorFn`.
-//! T7 adds control-flow: `If`, `Match`, `Try`, `Guard`, `Return`, `Let`,
+//! Control-flow forms: `If`, `Match`, `Try`, `Guard`, `Return`, `Let`,
 //! `Var`, `Assign`, `Block` (block-as-expression wrapper).
-//! T8 adds actor/lambda forms: `Lambda`, `Record`, `With`, `Ask`, `Send`,
+//! Actor/lambda forms: `Lambda`, `Record`, `With`, `Ask`, `Send`,
 //! `Spawn`, `Propagate`; full `Interp` with expression holes; support types
 //! `FieldInit` and `LambdaParam`.
-//! T10 adds `InnerFn` (D058: fn-as-expression).
-//! T0 (Phase 6 OQ-E001 narrow exception) adds `AskTimeout` and extends
-//! `Expr::Ask` with an optional `timeout: Option<AskTimeout>` field.
+//! `InnerFn` represents a named function used as an expression.
+//! `AskTimeout` extends `Expr::Ask` with an optional `timeout: Option<AskTimeout>` field.
 
 use crate::{decl::FnDecl, Block, Ident, Literal, Pattern, Span, Type};
 
 // ── AskTimeout ────────────────────────────────────────────────────────────────
 
 /// Optional timeout specifier on a `?> handler(args) [timeout <ms|never>]`
-/// expression (Phase 6 T0, OQ-E001 narrow exception).
+/// expression.
 ///
 /// `#[non_exhaustive]` allows adding further variants in 0.2.0+ without a
 /// breaking change for downstream crates that pattern-match on this type.
@@ -28,7 +27,7 @@ pub enum AskTimeout {
     Never,
     /// `timeout <expr>` — wait at most `expr` milliseconds.
     ///
-    /// The expression must have type `Int`; the type-checker (Phase 4)
+    /// The expression must have type `Int`; the type-checker
     /// enforces this via `T026 AskTimeoutNotInt`.
     Millis(Box<Expr>),
 }
@@ -37,13 +36,11 @@ pub enum AskTimeout {
 
 /// The constructor reference in a record-construction expression.
 ///
-/// T8 (Phase 4 task 11, §3.8): `Expr::Record::constructor` was `Ident`; it is
-/// now this enum so that `Http.Response { ... }` can be expressed without a
-/// separate `Expr::QualifiedRecord` variant.  The bare form is unchanged.
+/// This enum represents `Http.Response { ... }` without a separate
+/// `Expr::QualifiedRecord` variant, while retaining the bare constructor form.
 ///
-/// `#[non_exhaustive]` is NOT added here — the two arms are complete for 0.1.0
-/// and the Phase 4 plan (§3.8 hard fence) explicitly states this is the only
-/// record-constructor form.
+/// The two arms cover the record-constructor forms for 0.1.0, so this enum
+/// does not use `#[non_exhaustive]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordCtor {
     /// A bare upper-case constructor name: `User { ... }`.
@@ -63,7 +60,7 @@ pub enum RecordCtor {
 /// - `List.Map.get` → `segments: [Ident("List"), Ident("Map"), Ident("get")]`
 ///
 /// The first segment is always an upper-case identifier; subsequent segments
-/// may be upper- or lower-case.  Name resolution (Phase 3) distinguishes
+/// may be upper- or lower-case. Name resolution distinguishes
 /// module-qualified values from constructor paths; the parser stores them all
 /// uniformly as [`QualifiedName`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,9 +99,8 @@ pub struct MatchArm {
 
 /// A single segment inside an interpolated string `$"..."`.
 ///
-/// In T3 only the `Text` variant is ever emitted.  `Expr` holes are parsed in
-/// T8; the variant is declared here so that T8 can fill it in without a
-/// breaking change.
+/// Text and expression holes have separate variants so consumers can handle
+/// each part without reparsing the original string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InterpPart {
     /// A literal text segment inside the interpolated string.
@@ -115,7 +111,7 @@ pub enum InterpPart {
         /// Source location of this text segment.
         span: Span,
     },
-    /// An expression hole `${…}`.  Never emitted in T3; declared for T8.
+    /// An expression hole `${…}`.
     Expr {
         /// The interpolated expression.
         expr: Box<Expr>,
@@ -128,7 +124,7 @@ pub enum InterpPart {
 
 /// A single field initialiser in a record-construction or `with` expression.
 ///
-/// D053: `value: None` is the shorthand form — `{ age }` is sugar for
+/// `value: None` is the shorthand form — `{ age }` is sugar for
 /// `{ age = age }`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldInit {
@@ -142,9 +138,9 @@ pub struct FieldInit {
 
 // ── LambdaParam ───────────────────────────────────────────────────────────────
 
-/// A single parameter in a lambda expression (grammar §6.16, D052).
+/// A single parameter in a lambda expression (grammar §6.16).
 ///
-/// D052 allows a full `Pattern` as each lambda parameter, optionally with a
+/// Each lambda parameter may be a full `Pattern`, optionally with a
 /// type annotation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LambdaParam {
@@ -174,15 +170,15 @@ impl LambdaParam {
 
 // ── BinOp ─────────────────────────────────────────────────────────────────────
 
-/// Binary operators, ordered by Pratt precedence level (§4.5).
+/// Binary operators, ordered by Pratt precedence level.
 ///
-/// `BinOp::Pipe` is retained in this enum per the plan (§3.7) even though the
+/// `BinOp::Pipe` is retained in this enum even though the
 /// parser emits `Expr::Pipe` as a dedicated variant.  The two representations
 /// are intentional: `Expr::Pipe` avoids a `BinOp::Pipe` arm in every match on
-/// `Expr::Binary`, and `BinOp::Pipe` is kept for completeness per the plan.
+/// `Expr::Binary`, and `BinOp::Pipe` is kept for completeness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
-    // Level 1 — kept per plan §3.7 even though parser emits Expr::Pipe.
+    // Level 1 — kept even though parser emits Expr::Pipe.
     /// `|>` — pipe-forward (see also `Expr::Pipe`).
     #[allow(dead_code)]
     Pipe,
@@ -230,7 +226,7 @@ pub enum BinOp {
 
 // ── UnaryOp ───────────────────────────────────────────────────────────────────
 
-/// Unary operators.  Only negation exists in Ridge 0.1.0 (D044 removed `!`).
+/// Unary operators. Only negation exists in Ridge 0.1.0; `!` is a send operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
     /// Arithmetic negation (`-`).
@@ -241,16 +237,16 @@ pub enum UnaryOp {
 
 /// An expression in Ridge source code.
 ///
-/// T3 atoms are preserved; T6 adds the full Pratt surface (binary/unary
+/// The expression forms include atoms and the full Pratt surface (binary/unary
 /// operators, function application, field access), plus the collection
-/// literals and parenthesised forms required for T6's atom extensions.
+/// literals and parenthesised forms.
 ///
-/// Variants not yet implemented (T7–T8): `Lambda`, `InnerFn`, `Record`, `With`,
+/// Other variants include `Lambda`, `InnerFn`, `Record`, `With`,
 /// `If`, `Match`, `Try`, `Guard`, `Return`, `Let`, `Var`, `Assign`,
 /// `Ask`, `Send`, `Spawn`, `Propagate`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
-    // ── Atoms (T3) ────────────────────────────────────────────────────────────
+    // ── Atoms ────────────────────────────────────────────────────────────
     /// A literal value: integer, float, bool, or text.
     Literal(Literal),
 
@@ -268,8 +264,8 @@ pub enum Expr {
 
     /// An interpolated string `$"..."`.
     ///
-    /// In T3 only zero-hole interpolations are handled (a single
-    /// [`InterpPart::Text`] segment).  Full hole interpolation is T8.
+    /// The parts distinguish literal [`InterpPart::Text`] segments from
+    /// expression holes.
     Interp {
         /// The segments of the interpolated string.
         parts: Vec<InterpPart>,
@@ -277,7 +273,7 @@ pub enum Expr {
         span: Span,
     },
 
-    // ── Collection literals and parenthesised forms (T6) ──────────────────────
+    // ── Collection literals and parenthesised forms ──────────────────────
     /// A list literal `[e₁, e₂, …]`.  May be empty (`[]`).
     List {
         /// The element expressions.
@@ -316,7 +312,7 @@ pub enum Expr {
         span: Span,
     },
 
-    // ── Operators (T6) ───────────────────────────────────────────────────────
+    // ── Operators ───────────────────────────────────────────────────────
     /// A binary operator application.  See [`BinOp`] for the full operator set.
     Binary {
         /// The operator.
@@ -339,7 +335,7 @@ pub enum Expr {
         span: Span,
     },
 
-    // ── Application & suffix (T6) ─────────────────────────────────────────────
+    // ── Application & suffix ─────────────────────────────────────────────
     /// Juxtaposition-as-call: `f x y z` → `Call { callee: f, args: [x, y, z] }`.
     ///
     /// The shape is **flat** (multiple args in one `Call`) — not nested
@@ -367,8 +363,8 @@ pub enum Expr {
     /// Pipe-forward operator `lhs |> rhs`.
     ///
     /// A dedicated variant (rather than `Binary { op: BinOp::Pipe }`) so that
-    /// the T8 desugaring pass can detect pipe nodes without inspecting `BinOp`.
-    /// `BinOp::Pipe` is still present in the enum per plan §3.7.
+    /// the desugaring pass can detect pipe nodes without inspecting `BinOp`.
+    /// `BinOp::Pipe` is still present in the enum.
     Pipe {
         /// The left-hand (input) expression.
         lhs: Box<Self>,
@@ -378,8 +374,8 @@ pub enum Expr {
         span: Span,
     },
 
-    // ── Lambda / actor forms (T8) ─────────────────────────────────────────────
-    /// An anonymous function `fn Param+ -> Body` (grammar §6.16, D052).
+    // ── Lambda / actor forms ─────────────────────────────────────────────
+    /// An anonymous function `fn Param+ -> Body` (grammar §6.16).
     ///
     /// Each parameter is a `LambdaParam` — a full pattern, optionally annotated
     /// with a type (`(pat : Type)`).
@@ -398,7 +394,7 @@ pub enum Expr {
         span: Span,
     },
 
-    /// An inner function expression `fn name params = body` (D058, grammar §6.17).
+    /// An inner function expression `fn name params = body` (grammar §6.17).
     ///
     /// Disambiguated from a lambda by the presence of a lower-case name
     /// immediately after `fn`.  The `FnDecl` produced has `vis: Private` and
@@ -410,12 +406,12 @@ pub enum Expr {
         span: Span,
     },
 
-    /// A record-construction expression `Constructor { field = val, … }` (D051,
-    /// grammar §6.18).
+    /// A record-construction expression `Constructor { field = val, … }`
+    /// (grammar §6.18).
     ///
-    /// Shorthand fields (D053) have `FieldInit::value = None`.
+    /// Shorthand fields have `FieldInit::value = None`.
     ///
-    /// T8 (Phase 4 §3.8): `constructor` is now [`RecordCtor`] to support both
+    /// `constructor` uses [`RecordCtor`] to support both
     /// bare (`User { ... }`) and qualified (`Http.Response { ... }`) forms.
     Record {
         /// The constructor — bare or qualified.
@@ -440,7 +436,7 @@ pub enum Expr {
         span: Span,
     },
 
-    /// A functional update `base with { field = val, … }` (D055, grammar §6.18,
+    /// A functional update `base with { field = val, … }` (grammar §6.18,
     /// Pratt level 5.5).
     ///
     /// Left-associative: `u with {a=1} with {b=2}` = `With { With { u, [a=1] }, [b=2] }`.
@@ -454,9 +450,9 @@ pub enum Expr {
     },
 
     /// An ask operation `handle ?> message arg* [timeout <ms|never>]`
-    /// (D045, grammar §6.20; timeout postfix added by Phase 6 T0, OQ-E001).
+    /// (grammar §6.20).
     ///
-    /// Postfix at Pratt level 12 — single-site per D068.
+    /// Postfix at Pratt level 12 — single-site.
     Ask {
         /// The actor handle expression.
         handle: Box<Self>,
@@ -465,15 +461,15 @@ pub enum Expr {
         /// The message arguments.
         args: Vec<Self>,
         /// Optional timeout specifier — `None` means "use the runtime default
-        /// (5000 ms per resolved OQ-E001)".
+        /// (5000 ms)".
         timeout: Option<AskTimeout>,
         /// Span covering the full ask expression (including any `timeout` postfix).
         span: Span,
     },
 
-    /// A send operation `handle ! message` (D044, grammar §6.18).
+    /// A send operation `handle ! message` (grammar §6.18).
     ///
-    /// Postfix at Pratt level 12 — single-site per D068.
+    /// Postfix at Pratt level 12 — single-site.
     Send {
         /// The actor handle expression.
         handle: Box<Self>,
@@ -483,7 +479,7 @@ pub enum Expr {
         span: Span,
     },
 
-    /// A spawn expression `spawn Actor arg*` (D061, grammar §6.19).
+    /// A spawn expression `spawn Actor arg*` (grammar §6.19).
     Spawn {
         /// The actor type name.
         actor: Ident,
@@ -511,7 +507,7 @@ pub enum Expr {
 
     /// A propagate expression `expr?` (grammar §6.21).
     ///
-    /// Postfix at Pratt level 12 — single-site per D068.
+    /// Postfix at Pratt level 12 — single-site.
     Propagate {
         /// The inner expression whose error is propagated.
         inner: Box<Self>,
@@ -519,7 +515,7 @@ pub enum Expr {
         span: Span,
     },
 
-    // ── Control flow (T7, grammar §§6.3–6.7) ─────────────────────────────────
+    // ── Control flow (grammar §§6.3–6.7) ─────────────────────────────────
     /// `if <cond> then <then-branch> [else <else-branch>]`
     ///
     /// Both branches can be either a single expression or a multi-statement
@@ -546,7 +542,7 @@ pub enum Expr {
     },
 
     /// `try INDENT block DEDENT` — captures a do-block for error propagation
-    /// (D060, grammar §6.5).
+    /// (grammar §6.5).
     Try {
         /// The body block.
         block: Block,
@@ -555,8 +551,8 @@ pub enum Expr {
     },
 
     /// `guard <cond> else <else-branch>` — the else branch is always a
-    /// `Block`.  For single-line forms the block has one stmt (D066,
-    /// grammar §6.6).
+    /// `Block`. For single-line forms the block has one stmt
+    /// (grammar §6.6).
     Guard {
         /// The guard condition.
         cond: Box<Self>,
@@ -576,10 +572,10 @@ pub enum Expr {
         span: Span,
     },
 
-    // ── Bindings (T7, grammar §6.1–6.2) ──────────────────────────────────────
-    /// `let <pat> [: <ty>] = <value>` — immutable binding (D052, grammar §6.1).
+    // ── Bindings (grammar §6.1–6.2) ──────────────────────────────────────
+    /// `let <pat> [: <ty>] = <value>` — immutable binding (grammar §6.1).
     ///
-    /// The pattern may be a full `Pattern` (destructuring allowed per D052).
+    /// The pattern may be a full `Pattern` (destructuring allowed).
     Let {
         /// The binding pattern.
         pat: Pattern,
@@ -609,7 +605,7 @@ pub enum Expr {
     /// `<target> <- <value>` — assignment to a mutable `var` (grammar §6.2).
     ///
     /// The parser accepts any expression as `target` for syntactic simplicity;
-    /// the type checker (Phase 4) will enforce that it resolves to a mutable
+    /// the type checker will enforce that it resolves to a mutable
     /// binding.
     Assign {
         /// The assignment target expression.
@@ -620,14 +616,13 @@ pub enum Expr {
         span: Span,
     },
 
-    // ── Block-as-expression (T7 plan-extension) ───────────────────────────────
+    // ── Block-as-expression ───────────────────────────────
     /// A multi-statement block used as an expression (e.g., as the branch of
     /// an `if` or `match` arm body).
     ///
-    /// **Plan extension (T7):** This variant is not in the original §3.7 enum
-    /// listing, but is required because `If::then_branch` and `If::else_branch`
+    /// This variant is required because `If::then_branch` and `If::else_branch`
     /// are `Box<Expr>`, and multi-statement blocks must be representable as
-    /// expressions.  The plan's `Block` struct (§3.6) cannot appear directly
+    /// expressions. The `Block` struct cannot appear directly
     /// in an `Expr` field without a wrapper.  This variant acts as that wrapper.
     /// Any downstream phase can pattern-match on `Expr::Block` to detect
     /// block positions.

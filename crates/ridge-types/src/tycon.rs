@@ -19,8 +19,8 @@ pub struct TyConId(pub u32);
 /// Storage for all [`TyConDecl`]s allocated during a workspace type-check.
 ///
 /// Built-in `TyCons` are registered first (indices 0..11) by
-/// [`crate::BuiltinTyCons::allocate`] (T3). User-defined `TyCons` are appended
-/// during the workspace pre-pass (T2 / T3 `tycon_collect`).
+/// [`crate::BuiltinTyCons::allocate`]. User-defined `TyCons` are appended
+/// during the workspace type-constructor collection pre-pass.
 ///
 /// # Indexing invariant
 ///
@@ -295,7 +295,7 @@ pub enum VariantPayload {
 pub struct ActorSchema {
     /// Fields in the actor's state record.
     pub state_fields: Vec<RecordField>,
-    /// Init parameters; `None` if the actor has no `init` block (D061).
+    /// Init parameters; `None` if the actor has no `init` block.
     pub init_params: Option<Vec<Type>>,
     /// Capabilities required by the `init` block.
     pub init_caps: CapabilitySet,

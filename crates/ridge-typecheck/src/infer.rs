@@ -1,33 +1,35 @@
-//! Algorithm W core: `infer_expr`, `infer_pattern`, `infer_block` (T6).
+//! Algorithm W core: `infer_expr`, `infer_pattern`, `infer_block`.
 //!
-//! # Scope (T6)
+//! # Scope
 //!
 //! Implements type inference for:
 //! - Literals, identifiers, qualified names
 //! - Lambda, call, let, var, assign
-//! - If, match (without exhaustiveness — T12), block
-//! - Return (verbatim), inner-fn (D058)
+//! - If, match, block
+//! - Return (verbatim), inner-fn
 //! - Pattern: wildcard, var, literal, tuple, as, cons, paren, constructor
 //!
-//! # Deferred to later tasks
+//! # Specialized inference
 //!
-//! - Records, `with`, field-access → T8
-//! - Union variant construction/patterns → T9
-//! - Pipe `|>`, `?` propagate, `try` → T10
-//! - String interpolation → T11
-//! - Match exhaustiveness → T12
-//! - Send, Ask, Spawn → T15
+//! The expression dispatcher delegates specialized operations to these modules:
+//! - Records, `with`, field-access → `records`
+//! - Union variant construction/patterns → `unions`
+//! - Pipe `|>`, `?` propagate, `try` → `pipe_propagate`
+//! - String interpolation → `interp`
+//! - Match exhaustiveness → `exhaustiveness`
+//! - Send, Ask, Spawn → `actor`
 //!
-//! # AST drift (vs. plan §4.6 pseudocode)
+//! # AST representation
 //!
 //! - `Let`/`Var`/`Assign`/`Return` are *statement expressions* inside a Block;
 //!   they carry no `body` continuation field.  The block continuation is the
 //!   remainder of `Block.stmts`.
-//! - `Pattern::Var`    ↔ plan's `Pattern::Ident`
-//! - `Pattern::As`     ↔ plan's `Pattern::Bind`
-//! - No `Pattern::Or` in the AST (plan mentions it; it simply doesn't exist).
+//! - `Pattern::Var` represents a variable pattern.
+//! - `Pattern::As` binds a name to a matched pattern.
+//! - The AST has no or-pattern variant.
 //! - `Pattern::Constructor` covers both record patterns (`fields: Some(...)`)
-//!   and positional-constructor patterns (`fields: None`). T8/T9 handle these.
+//!   and positional-constructor patterns (`fields: None`); the record and union
+//!   inference helpers handle these forms.
 //! - `Expr::Call { callee, args }` is flat multi-arg (not nested).
 //! - `Expr::Lambda { params: Vec<LambdaParam>, body }` — params may carry
 //!   type annotations.
@@ -202,11 +204,10 @@ fn find_record_variant(
 /// Infers the type of `expr` in the current `InferCtx` and writes back the
 /// resolved type to `ctx.node_types_accum` if a `NodeIdMap` is attached.
 ///
-/// This is the public shim (Phase 4.5 T3): it calls `infer_expr_inner` and
+/// This is the public shim: it calls `infer_expr_inner` and
 /// then records the result in `ctx.node_types_accum` keyed by the expression's
 /// `NodeId` (looked up via `NodeKind::Expr` for non-wrapper expressions, or
-/// `NodeKind::Block`/`NodeKind::Try` for block/try expressions per
-/// OQ-PHASE45-004).
+/// `NodeKind::Block`/`NodeKind::Try` for block/try expressions).
 ///
 /// Errors are pushed into `ctx.errors`; the returned type may be
 /// [`Type::Error`] (the absorbing element) if a fatal sub-expression
@@ -214,12 +215,12 @@ fn find_record_variant(
 ///
 /// # Deferred variants
 ///
-/// Several `Expr` variants are not yet handled in T6 (records, unions, pipe,
-/// propagate, try, interp, send/ask/spawn). Those arms push a
-/// `T999 InternalTypeError` noting the deferral task and return
-/// `Type::Error`.
-// OQ-PHASE45-001: single infer_expr_outer shim; write-back is uniform across all shapes.
-// OQ-PHASE45-004: Block and Try use their dedicated NodeKind for the write-back key.
+/// Standalone field-accessor function expressions remain unsupported: their
+/// dispatcher arm emits `T999 InternalTypeError` and returns `Type::Error`.
+/// Record, union, pipe, propagation, try, interpolation, and actor operations
+/// dispatch to their specialized inference helpers.
+// single infer_expr_outer shim; write-back is uniform across all shapes.
+// Block and Try use their dedicated NodeKind for the write-back key.
 pub fn infer_expr(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type {
     let outer_projection_span = ctx.projection_use_span.replace(expr.span());
     let ty = infer_region(ctx, |ctx| {
@@ -577,7 +578,7 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 })
                 .collect();
 
-            // D069: zero-param call convention. `fn f ()` declares `params = []`
+            // zero-param call convention. `fn f ()` declares `params = []`
             // in the AST, producing scheme `∀. Fn { params: [], ret: T }`.
             // At the call site `f ()`, `()` is `Expr::Unit` → `arg_types = [Unit]`.
             // Treat `Fn{params:[]} (Unit)` as a valid zero-arg application of `f`.
@@ -807,7 +808,7 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 use ridge_types::TyConArena;
                 // Reconstruct the full arena from ctx.tycon_decls so user-defined
                 // unions/records are also recognised as closed domains by
-                // ctor_set_for (Phase 4 §4.12).  The TyConIds in scrutinee_ty
+                // ctor_set_for. The TyConIds in scrutinee_ty
                 // refer to this arena, so render_type produces the real type
                 // names rather than `?N` placeholders.
                 let mut full_arena = TyConArena::new();
@@ -973,7 +974,7 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             emit_internal(ctx, "FieldAccessorFn typing deferred to T8", *span)
         }
 
-        // ── InnerFn (D058) ────────────────────────────────────────────────────
+        // ── InnerFn ────────────────────────────────────────────────────
         Expr::InnerFn { decl, span } => {
             // The inner-fn name is bound in the *outer* scope (so the body can
             // recurse), but the params are in an inner scope.
@@ -3195,7 +3196,7 @@ mod tests {
 
     /// Test 11 — `let f = fn x -> x; f 5` types as Int (without generalisation).
     ///
-    /// This is the plan's key `DoD` requirement: even without full generalisation
+    /// The let-binding and call must infer a concrete result: even without full generalisation
     /// the monomorphic let-binding + call sequence must type as Int.
     #[test]
     fn infer_let_then_apply_to_int() {
@@ -3979,7 +3980,7 @@ mod tests {
         ctx.env.pop_frame();
     }
 
-    // ── Phase 4.5 T3: node_types write-back tests ─────────────────────────────
+    // ── node_types write-back tests ─────────────────────────────
 
     fn make_node_id_map_for_expr(span: Span) -> ridge_resolve::NodeIdMap {
         let mut map = ridge_resolve::NodeIdMap::default();
@@ -3989,7 +3990,7 @@ mod tests {
         map
     }
 
-    /// T3-1: literal expression — `node_types_accum` populated with Int type.
+    /// Write-back coverage: literal expression — `node_types_accum` populated with Int type.
     #[test]
     fn t3_literal_node_type_written() {
         let b = make_builtins();
@@ -4016,7 +4017,7 @@ mod tests {
         );
     }
 
-    /// T3-2: ident expression — `node_types_accum` populated with the bound type.
+    /// Write-back coverage: ident expression — `node_types_accum` populated with the bound type.
     #[test]
     fn t3_ident_node_type_written() {
         let b = make_builtins();
@@ -4045,7 +4046,7 @@ mod tests {
         );
     }
 
-    /// T3-3: call expression — `node_types_accum` populated with return type.
+    /// Write-back coverage: call expression — `node_types_accum` populated with return type.
     #[test]
     fn t3_call_node_type_written() {
         use ridge_ast::Span;
@@ -4104,7 +4105,7 @@ mod tests {
         );
     }
 
-    /// T3-4: if-then-else — the if expression's type is written back.
+    /// Write-back coverage: if-then-else — the if expression's type is written back.
     #[test]
     fn t3_if_node_type_written() {
         let b = make_builtins();
@@ -4161,7 +4162,7 @@ mod tests {
         );
     }
 
-    /// T3-5: match expression — the match's result type is written back.
+    /// Write-back coverage: match expression — the match's result type is written back.
     #[test]
     fn t3_match_node_type_written() {
         use ridge_ast::{MatchArm, Pattern};
@@ -4221,7 +4222,7 @@ mod tests {
         );
     }
 
-    /// T3-6: lambda expression — the lambda's Fn type is written back.
+    /// Write-back coverage: lambda expression — the lambda's Fn type is written back.
     #[test]
     fn t3_lambda_node_type_written() {
         let b = make_builtins();

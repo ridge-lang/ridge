@@ -1,7 +1,6 @@
-//! Actor send/ask/spawn type inference and encapsulation check (T15).
+//! Actor send/ask/spawn type inference and encapsulation check.
 //!
-//! Implements §3.7 (Send/Ask handler-name validation) and §4.15 (actor
-//! capability encapsulation) from the Phase-4 plan.
+//! Validates Send/Ask handler names and actor capability encapsulation.
 //!
 //! # Entry points
 //!
@@ -13,14 +12,15 @@
 //!   the union of the members that serve the actor: `on` handlers,
 //!   `terminate` and `onDown`.
 //!
-//! # Capability Model B (§8.4, D018)
+//! # Actor capability contributions
 //!
 //! - `Send` contributes PURE to the caller's cap set.
 //! - `Ask`  contributes `{time}` to the caller's cap set.
 //! - `Spawn` contributes `{spawn}` to the caller's cap set.
 //!
 //! The handler's own caps NEVER flow into the caller (Model B encapsulation).
-//! T13 (`caps_infer.rs`) implements this; T15 verifies it is not regressed.
+//! `caps_infer.rs` computes these contributions; actor inference checks the
+//! operation types and handler access without propagating handler capabilities.
 
 use ridge_ast::{AskTimeout, Expr, Ident, Literal, Span, UnaryOp};
 use ridge_types::{ActorSchema, BuiltinTyCons, CapabilitySet, TyConId, TyConKind, Type};
@@ -33,7 +33,7 @@ use crate::unify::unify;
 
 // ── Send ──────────────────────────────────────────────────────────────────────
 
-/// Type-infer `handle ! message` (§3.7 rule 1-2 + §4.15 rule 1).
+/// Type-infer `handle ! message`.
 ///
 /// 1. Infers `handle`'s type — must resolve to `Type::Con(actor_id, _)` where
 ///    the `actor_id`'s kind is `TyConKind::Actor(schema)`. Otherwise → T020.
@@ -45,7 +45,7 @@ use crate::unify::unify;
 ///    did-you-mean from `ridge_resolve::suggest::suggest`.
 /// 4. Pairwise-unifies args against `handler.params`. Arity mismatch → T003.
 /// 5. Returns `Type::Con(b.unit, [])` (Send is fire-and-forget).
-/// 6. Capability contribution: PURE (T13 already handles, T15 does not re-emit).
+/// 6. Capability contribution: PURE (computed by `caps_infer`, not re-emitted here).
 pub fn infer_send(
     ctx: &mut InferCtx,
     b: &BuiltinTyCons,
@@ -119,15 +119,15 @@ pub fn infer_send(
 
 // ── Ask ───────────────────────────────────────────────────────────────────────
 
-/// Type-infer `handle ?> message args [timeout <ms|never>]`
-/// (§3.7 rule 1, 3 + §4.15 rule 1; timeout type-check added by Phase 6 T0, OQ-E001).
+/// Type-infer `handle ?> message args [timeout <ms|never>]`.
+/// Includes optional timeout type-checking.
 ///
 /// Steps 1-3 identical to `infer_send`.
 /// Step 4: pairwise-unify args against `handler.params`.
 /// Step 5: if `timeout == Some(Millis(e))`, constrain `e: Int` (T026).
 ///         `Never` carries no expression — no new constraint.
 /// Step 6: returns `Result handler.ret AskError`.
-/// Capability contribution: `{time}` (T13 already handles).
+/// Capability contribution: `{time}` (computed by `caps_infer`).
 #[allow(clippy::too_many_arguments)] // T0: timeout added to the protocol-level Ask inference
 pub fn infer_ask(
     ctx: &mut InferCtx,
@@ -190,7 +190,7 @@ pub fn infer_ask(
         span,
     );
 
-    // Step 5 — type-check optional timeout (Phase 6 T0, OQ-E001).
+    // Step 5 — type-check optional timeout.
     //
     // `timeout never` carries no expression — no constraint to check.
     if let Some(AskTimeout::Millis(ms_expr)) = timeout {
@@ -329,7 +329,7 @@ fn negative_int_literal(e: &Expr) -> Option<String> {
 
 // ── Spawn ─────────────────────────────────────────────────────────────────────
 
-/// Type-infer `spawn Actor args` (§3.7 rule 4 + §4.15 rule 1).
+/// Type-infer `spawn Actor args`.
 ///
 /// 1. Looks up `actor_name` (an `Ident`) in `arena` by name.
 ///    If not found / not an actor → T999 (resolver should have caught it).
@@ -338,7 +338,7 @@ fn negative_int_literal(e: &Expr) -> Option<String> {
 ///    Pairwise-unify each arg with its declared init param type.
 /// 4. Returns `Type::Con(actor_id, [])`.
 ///
-/// Capability contribution: `{spawn}` (T13 handles).
+/// Capability contribution: `{spawn}` (computed by `caps_infer`).
 pub fn infer_spawn(
     ctx: &mut InferCtx,
     b: &BuiltinTyCons,
@@ -354,7 +354,7 @@ pub fn infer_spawn(
     };
 
     // Step 4 — return `Handle<actor>` = `Type::Con(b.handle, [Con(actor_id, [])])`.
-    // D061: `spawn ActorName args` produces a `Handle(ActorTyCon)`.
+    // `spawn ActorName args` produces a `Handle(ActorTyCon)`.
     Type::Con(b.handle, vec![Type::Con(actor_id, vec![])])
 }
 
@@ -364,7 +364,7 @@ pub fn infer_spawn(
 ///
 /// The argument list is checked against the actor's `init` params with exactly
 /// the same machinery as `spawn` (T025 on arity mismatch, T001 via `unify` on
-/// payload mismatch). The result is `ChildSpec<actor>` — the D061 analogue of
+/// payload mismatch). The result is `ChildSpec<actor>` — the analogue of
 /// spawn's `Handle(ActorTyCon)` — a **pure value**: no process starts until
 /// the spec reaches `std.actor.supervise`.
 pub fn infer_child_spec(
@@ -1719,7 +1719,7 @@ mod tests {
 
     // ── T0-TC1: ask_timeout_not_int_t026 ────────────────────────────────────────
     //
-    // Phase 6 T0 (OQ-E001): `?> handler() timeout "five seconds"` must emit
+    // `?> handler() timeout "five seconds"` must emit
     // T026 AskTimeoutNotInt because the timeout expression is Text, not Int.
     #[test]
     fn ask_timeout_not_int_t026() {

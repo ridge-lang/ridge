@@ -9,7 +9,7 @@
 //! The binary at `src/main.rs` is a thin shim that parses CLI arguments via
 //! `clap` and dispatches to these `execute` functions.
 //!
-//! # Hard constraints (§1.3)
+//! # Hard constraints
 //!
 //! - No `panic!` / `unwrap` / `expect` on user-input paths.
 //! - Every `pub` item carries rustdoc.

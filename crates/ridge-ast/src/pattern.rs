@@ -1,25 +1,25 @@
 //! Pattern nodes (grammar §7).
 //!
-//! Patterns appear in `let` bindings, `match` arms, and lambda parameters
-//! (D052).  All pattern forms carry a [`Span`] for diagnostics.
+//! Patterns appear in `let` bindings, `match` arms, and lambda parameters.
+//! All pattern forms carry a [`Span`] for diagnostics.
 
 use crate::{expr::QualifiedName, Ident, Literal, Span};
 
 // ── FieldPattern ──────────────────────────────────────────────────────────────
 
-/// A single field binding inside a record pattern (grammar §7.5, D053).
+/// A single field binding inside a record pattern (grammar §7.5).
 ///
 /// ```text
 /// User { name = n, age }
 ///         ^^^^^^^^  ^^^
-///         explicit  shorthand (D053): binds `age` to a local named `age`
+///         explicit  shorthand: binds `age` to a local named `age`
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldPattern {
     /// The field name as it appears in the source.
     pub name: Ident,
     /// `Some(pat)` for an explicit binding `name = pat`; `None` for the
-    /// D053 shorthand form where the field is bound to a variable of the same
+    /// A shorthand form where the field is bound to a variable of the same
     /// name.
     pub pattern: Option<Pattern>,
     /// Span of this field entry.
@@ -28,7 +28,7 @@ pub struct FieldPattern {
 
 // ── ListPatElem ───────────────────────────────────────────────────────────────
 
-/// A single element inside a bracketed list pattern `[…]` (D258).
+/// A single element inside a bracketed list pattern `[…]`.
 ///
 /// ```text
 /// [a, b, rest @ ..]
@@ -95,7 +95,7 @@ pub enum Pattern {
         span: Span,
     },
 
-    /// A constructor pattern (grammar §7.4, D051).
+    /// A constructor pattern (grammar §7.4).
     ///
     /// Covers both positional form (`Some x`) and record-body form
     /// (`User { name }`).  A constructor name (`UPPER_IDENT`) is always
@@ -116,7 +116,7 @@ pub enum Pattern {
         /// Record-body field patterns.  `Some(…)` iff the `{ … }` form was
         /// used; `None` for the positional form.
         fields: Option<Vec<FieldPattern>>,
-        /// Whether a trailing `..` was present in the record-body form (D259).
+        /// Whether a trailing `..` was present in the record-body form.
         ///
         /// Only meaningful when `fields` is `Some`.  When `true`, the pattern
         /// matches any value of the named record type that carries at least the
@@ -178,7 +178,7 @@ pub enum Pattern {
     },
 
     /// A bracketed list pattern `[a, b, c]`, `[a, rest @ ..]`, `[.., last]`,
-    /// or `[first, .., last]` (D258).
+    /// or `[first, .., last]`.
     ///
     /// Preserves the original bracket syntax for faithful round-tripping by
     /// `ridge-fmt`.  Downstream phases desugar this via [`Pattern::desugar_list`]
@@ -345,7 +345,7 @@ impl Pattern {
     }
 
     /// Desugar a `Pattern::List` to the equivalent `Cons`/`ListNil`/`Wildcard`
-    /// tree (D258).
+    /// tree.
     ///
     /// This shared helper is called by type inference, exhaustiveness checking,
     /// and pattern lowering so that those passes reuse the existing

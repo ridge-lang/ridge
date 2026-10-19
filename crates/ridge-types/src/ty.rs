@@ -29,8 +29,8 @@ pub struct TyVid(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RigidId(pub u32);
 
-/// Capability-row variable index — used only for stdlib HOF signatures (D041,
-/// D057). Users cannot introduce these.
+/// Capability-row variable index — used only for stdlib HOF signatures.
+/// Users cannot introduce these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CapVid(pub u32);
 
@@ -92,13 +92,13 @@ fn normalise_fields(fields: &mut Vec<(String, Type)>) {
 /// Capability set carried by a function type.
 ///
 /// In user-written types this is always [`CapRow::Concrete`].
-/// In stdlib HOF signatures it may be [`CapRow::Var`] (D041).
+/// In stdlib HOF signatures it may be [`CapRow::Var`].
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapRow {
     /// A concrete (fully-known) capability set.
     Concrete(CapabilitySet),
-    /// A capability-row variable — only used in stdlib HOF signatures (D041).
+    /// A capability-row variable — only used in stdlib HOF signatures.
     Var(CapVid),
 }
 

@@ -216,7 +216,7 @@ fn fqn_to_module_id(ws: &WorkspaceGraph, path_dotted: &str) -> Option<ModuleId> 
 /// `Vec<usize>` of node indices into `adj`.
 ///
 /// The algorithm is fully iterative (no recursion) to avoid stack-overflow on
-/// deep graphs on Windows with its 1 MiB default thread stack (plan §4.2 risk R1).
+/// deep graphs on Windows with its 1 MiB default thread stack.
 ///
 /// Output is deterministic: SCC order and node order within each SCC depend
 /// only on adjacency order, not on hash-map iteration.
@@ -316,7 +316,7 @@ pub fn tarjan_scc(adj: &[Vec<usize>]) -> Vec<Vec<usize>> {
 /// - `R004 SelfImport`   — one per self-import edge (module importing its own FQN).
 ///
 /// Both are **non-fatal**: this function returns errors that the caller may
-/// accumulate and continue processing (plan §4.2).
+/// accumulate and continue processing.
 #[must_use]
 pub fn detect_cycles(ws: &WorkspaceGraph, g: &ModuleGraph) -> Vec<ResolveError> {
     let adj_mid = build_workspace_adjacency(ws, g);

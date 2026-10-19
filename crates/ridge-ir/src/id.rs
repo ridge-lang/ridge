@@ -1,16 +1,16 @@
 //! IR-level node identifier.
 
-// OQ-IR004: IrNodeId is u32 (dense, fits in Vec index; 4 billion nodes per module is sufficient).
+// IrNodeId is u32 (dense, fits in Vec index; 4 billion nodes per module is sufficient).
 /// IR-level node identifier — stable across lowering, distinct from `NodeId`.
 ///
 /// Each `IrNodeId` is dense and per-module; lowering assigns them sequentially
-/// as nodes are emitted.  The Phase 3 AST-side `NodeId` is *not* reused here
-/// (see D079): a lowering rule can synthesise IR nodes that correspond to no
+/// as nodes are emitted. The name resolution AST-side `NodeId` is *not* reused here
+/// because a lowering rule can synthesise IR nodes that correspond to no
 /// AST node (e.g. the `ToText` call inserted by interpolation lowering), and
 /// several IR nodes can collapse from one AST node (e.g. `try` lowers to
 /// multiple `Match` nodes). `IrNodeId` decouples the IR numbering from the
 /// AST numbering. The original AST `NodeId` is preserved on `IrExpr::origin`
-/// for diagnostic / source-map purposes (D079).
+/// for diagnostic / source-map purposes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct IrNodeId(pub u32);
 

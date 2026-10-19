@@ -1,19 +1,18 @@
-//! Capability inference walker (T13).
+//! Capability inference walker.
 //!
-//! # Design choice: two-pass (Option A)
+//! # Two-pass capability inference
 //!
-//! T6 runs type inference first — all unification (including cap-var binding from
-//! HOF call sites) is complete when this module runs.  T13 is then a separate,
-//! read-only walker over the AST that computes capability contributions using the
-//! §8.1 inference rules table.
+//! The expression inference pass runs first — all unification (including cap-var binding from
+//! HOF call sites) is complete when this module runs. Capability inference is a separate,
+//! read-only walker over the AST that computes capability contributions.
 //!
-//! For HOFs (§8.5, D041), T13 performs its own lightweight instantiation of the
+//! For HOFs, this walker performs its own lightweight instantiation of the
 //! callee's scheme and unifies the cap-var with the concrete capability set
-//! produced by each callback argument.  This is independent of T6's unification
+//! produced by each callback argument.  This is independent of expression inference's unification
 //! table; it uses fresh `CapVids` only for the cap-resolution bookkeeping of this
 //! single call site.
 //!
-//! # Lambda capability isolation (§8.1 rule)
+//! # Lambda capability isolation
 //!
 //! A `Lambda` expression as a *value* contributes PURE to the enclosing decl's
 //! capability set.  The lambda's *body* caps are stored in the lambda's
@@ -22,13 +21,13 @@
 //! in the returned caps, which callers then read back from the env if they call
 //! the lambda).
 //!
-//! # Side-table (D079)
+//! # Side-table
 //!
-//! Callers accumulate results in `InferCtx::current_caps` (already present from
-//! T6 scaffold) or directly return `CapabilitySet` values.  The `TypedModule`
-//! `inferred_caps: FxHashMap<NodeId, CapabilitySet>` field (defined in `lib.rs`)
-//! is the long-term home; T13 currently populates `current_caps` and returns
-//! values from the walker functions.  Full NodeId-keyed population is T14/T17.
+//! Walkers return `CapabilitySet` values, and the inference context tracks
+//! `InferCtx::current_caps`. The module pipeline stores effective declaration
+//! capabilities in the `TypedModule` field
+//! `inferred_caps: FxHashMap<NodeId, CapabilitySet>` (defined in `lib.rs`), using
+//! the function body's `NodeId` and retaining a declaration-span compatibility key.
 
 use ridge_ast::{Block, Capability, Expr};
 use ridge_types::{BuiltinTyCons, CapRow, CapabilitySet, Scheme, Type};
@@ -39,11 +38,11 @@ use crate::unify::unify_caps;
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Walk `expr` and return the union of all capability contributions per §8.1.
+/// Walk `expr` and return the union of all capability contributions.
 ///
-/// This is a read-only pass that runs AFTER type inference (T6) is complete.
+/// This is a read-only pass that runs AFTER type inference is complete.
 /// All `CapRow::Var(v)` in stdlib HOF types are already resolved in `ctx.capvids`
-/// from T6's unify calls.
+/// from the expression inference unification calls.
 #[expect(
     clippy::too_many_lines,
     reason = "exhaustive match over all Expr variants"
@@ -112,11 +111,11 @@ pub fn infer_caps(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Capabil
         }
 
         // ── Ask ───────────────────────────────────────────────────────────────
-        // §8.1 / D018 Model B: Ask absorbs only {time}.
+        // §8.1 / Model B: Ask absorbs only {time}.
         Expr::Ask { .. } => CapabilitySet::singleton(Capability::Time),
 
         // ── Spawn ─────────────────────────────────────────────────────────────
-        // §8.1 / D061: Spawn absorbs only {spawn}.
+        // §8.1: Spawn absorbs only {spawn}.
         Expr::Spawn { .. } => CapabilitySet::singleton(Capability::Spawn),
 
         // ── Try block / Block ──────────────────────────────────────────────────
@@ -236,7 +235,7 @@ pub fn infer_caps_block(ctx: &mut InferCtx, b: &BuiltinTyCons, block: &Block) ->
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 /// Return the concrete capability set that `callee` contributes at a call site,
-/// taking into account the supplied `args` for HOF cap-var resolution (§8.5).
+/// taking into account the supplied `args` for HOF cap-var resolution.
 ///
 /// For stdlib HOFs with `CapRow::Var(c)` on the outer Fn type, this function:
 /// 1. Instantiates the callee's scheme with fresh `CapVids`.
@@ -343,7 +342,7 @@ fn caps_of_expr(ctx: &InferCtx, _b: &BuiltinTyCons, expr: &Expr) -> CapabilitySe
     }
 }
 
-/// Resolve capability set for a HOF call site (§8.5 D041).
+/// Resolve capability set for a HOF call site.
 ///
 /// Given a HOF scheme with `cap_vars` (e.g. `List.forEach`):
 /// 1. Instantiate with fresh `CapVids`.

@@ -1,4 +1,4 @@
-//! §4.1 — Lower `IrLit` to `CErlLit`.
+//! Lower `IrLit` to `CErlLit`.
 //!
 //! Literals are the simplest lowering form: each Ridge literal maps to exactly
 //! one Core Erlang literal without any context requirements.
@@ -7,7 +7,7 @@
 // entry points.  They are also exercised from this module's test suite.
 #![allow(dead_code)]
 // pub(crate) on items in a pub(crate) module is redundant per clippy; we keep
-// it anyway for explicitness per plan §2.2 — suppress the lint here.
+// it anyway for explicitness — suppress the lint here.
 #![allow(clippy::redundant_pub_crate)]
 
 use crate::core_ast::{CErlAtom, CErlLit};
@@ -18,19 +18,19 @@ use ridge_ir::IrLit;
 /// Lower an [`IrLit`] to a [`CErlLit`].
 ///
 /// Returns `Err(CodegenError::IrShapeMalformed)` for non-finite floats
-/// (`NaN`, `Inf`): Phase 4 should have rejected these at compile time, so
+/// (`NaN`, `Inf`): the type checker should have rejected these at compile time, so
 /// seeing them here signals an upstream invariant violation.
 ///
-/// # OQ-E001
+/// # Non-finite literals
 /// IEEE 754 NaN/Infinity: reject at codegen — deferred to a `ridge_rt`
 /// binding (`'$nan'`) in a future release.
 pub(crate) fn lower_lit(lit: &IrLit, span: Span) -> Result<CErlLit, CodegenError> {
     match lit {
         IrLit::Int(n) => Ok(CErlLit::Int(*n)),
         IrLit::Float(f) => {
-            // OQ-E001: NaN and Infinity are not representable as Core Erlang
-            // compile-time literals.  Phase 4 should have rejected them; we
-            // treat their appearance here as a Phase-5 invariant violation.
+            // NaN and Infinity are not representable as Core Erlang
+            // compile-time literals. The type checker should have rejected them; we
+            // treat their appearance here as a lowering invariant violation.
             if f.is_nan() || f.is_infinite() {
                 return Err(CodegenError::IrShapeMalformed {
                     variant: "IrLit::Float",

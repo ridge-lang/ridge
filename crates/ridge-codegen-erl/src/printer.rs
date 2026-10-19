@@ -8,8 +8,8 @@
 //!
 //! - Atoms are always single-quoted: `'name'`.
 //! - Variables are emitted verbatim (must already be uppercase-starting).
-//! - Floats use the `ryu` crate for cross-platform determinism (plan R12).
-//! - Annotations (`CErlAnn`) are deferred to T8; function bodies print without them.
+//! - Floats use the `ryu` crate for cross-platform determinism.
+//! - Annotations (`CErlAnn`) are deferred to item-level emission; function bodies print without them.
 
 use std::fmt::Write as FmtWrite;
 
@@ -62,7 +62,7 @@ pub fn print_module(m: &CErlModule) -> String {
 ///
 /// Each [`CErlAnn`] in `f.anns` is emitted as a comment line (indented 2 spaces)
 /// immediately before the `name/arity =` header, so that `%% File:` and
-/// `%% Caps:` annotations are visible in the `.core` text.  See OQ-E011 (§3.11).
+/// `%% Caps:` annotations are visible in the `.core` text.
 ///
 /// ## `erlc +from_core` annotation wrapper
 ///

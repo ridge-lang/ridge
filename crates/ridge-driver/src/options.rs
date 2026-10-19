@@ -98,7 +98,7 @@ pub struct CompileOptions {
     /// platform-default location (e.g. `~/.ridge/cache` on Linux).  Tests
     /// supply an explicit path pointing at a [`tempfile::TempDir`] so they do
     /// not pollute the user's cache and can assert the cache contents
-    /// deterministically.  (T8 / G5)
+    /// deterministically.
     pub cache_root: Option<PathBuf>,
 
     /// Whether this invocation is about to execute what it builds.

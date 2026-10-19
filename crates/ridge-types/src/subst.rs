@@ -98,7 +98,7 @@ impl Subst {
     ///   wrapper is preserved.
     ///
     /// The function is idempotent on already-applied substitutions (since after
-    /// applying, free `TyVid`s are gone). No occurs-check — that is T5's job.
+    /// applying, free `TyVid`s are gone). No occurs-check — the unification algorithm performs that check.
     #[must_use]
     pub fn apply_to_ty(&self, ty: &Type) -> Type {
         match ty {

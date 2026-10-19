@@ -36,7 +36,7 @@ pub use registry::{
 
 /// Re-export `Severity` from `ridge_resolve` — one canonical type workspace-wide.
 ///
-/// Per FROZEN-03 (approved 2026-05-01): a fork would create silent drift risk
+/// A fork would create silent drift risk
 /// when `ridge_resolve::Severity` adds new variants in the future.
 pub use ridge_resolve::Severity;
 

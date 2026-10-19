@@ -1,13 +1,13 @@
 //! Offside-rule layout post-processor.
 //!
-//! # Algorithm (plan §5)
+//! # Algorithm
 //!
 //! After the raw scan + interpolation pass have produced a linear stream of
 //! `(Token, Span)` pairs (still containing physical `Newline` tokens), this
 //! module inserts `Indent`, `Dedent`, and semantic `Newline` tokens according
 //! to the Ridge offside rule.
 //!
-//! ## Core model (§5.1)
+//! ## Core model
 //!
 //! A **layout stack** of `u32` columns.  Initial state: `[0]` (top-level).
 //!
@@ -19,7 +19,7 @@
 //!    - `col < top` → pop while `top > col`, emit one `Dedent` per pop.
 //!      If after popping `top != col`, that is `InconsistentDedent`.
 //!
-//! ## Bracket suppression (§5.2)
+//! ## Bracket suppression
 //!
 //! While `bracket_depth > 0` (any of `(`, `[`, `{` open), physical newlines
 //! and indentation changes produce **no** `INDENT` or `DEDENT` tokens.
@@ -35,12 +35,12 @@
 //! `${` opens a logical bracket; the matching `}` closes it (tracked by the
 //! interpolation pass which emits `InterpExprEnd` for that `}`).
 //!
-//! ## Blank lines (§5.3)
+//! ## Blank lines
 //!
 //! Lines that contain only whitespace (i.e. a `Newline` with no preceding
 //! real token on that line) do not advance the layout state.
 //!
-//! ## Operator-leading continuation (§5.4)
+//! ## Operator-leading continuation
 //!
 //! A physical newline immediately followed by one of the binary infix
 //! operators (`|>`, `||`, `&&`, `==`, `!=`, `<`, `>`, `<=`, `>=`, `++`,
@@ -50,9 +50,9 @@
 //! style pipe chains.  `=`, `->`, `then`, `else` are NOT in the set; those
 //! introduce new blocks.
 //!
-//! ## Operator-trailing continuation (§5.6)
+//! ## Operator-trailing continuation
 //!
-//! The mirror of §5.4: a physical line that ENDS with one of those binary infix
+//! The mirror of operator-leading continuation: a physical line that ENDS with a binary infix
 //! operators does not end the logical line either, because the operator still
 //! needs a right-hand side.  The following line is merged into it, so
 //!
@@ -65,7 +65,7 @@
 //! demands a continuation, no previously valid program ended a logical line
 //! there, so enabling the merge changes no valid program's shape.
 //!
-//! ## Bracket-leading argument continuation (§5.5)
+//! ## Bracket-leading argument continuation
 //!
 //! A logical line that is more indented than the current block and opens with
 //! `[`, `(`, or `{` is treated as a *continuation argument* of the preceding
@@ -85,7 +85,7 @@
 //! suppressed INDENT could only ever have been a layout error before, so no
 //! previously valid program changes shape.
 //!
-//! ## EOF (§4.6)
+//! ## EOF
 //!
 //! Pop all open stack levels above the sentinel `0`, emitting one `Dedent`
 //! per pop.  Then emit a single `Eof`.
@@ -297,7 +297,7 @@ pub(crate) fn process(tokens: &[(Token, Span)]) -> (Vec<(Token, Span)>, Vec<LexE
 }
 
 /// Returns `true` when `line_tokens` is a bracket-leading argument continuation
-/// of the preceding logical line (§5.5) — it should fold onto that line as
+/// of the preceding logical line — it should fold onto that line as
 /// another call argument instead of opening a fresh INDENT block.
 ///
 /// Three conditions must hold:
@@ -357,7 +357,7 @@ fn line_has_top_level_arrow(line_tokens: &[(Token, Span)]) -> bool {
 /// *after* the pattern, never at the head of a line.  In trailing position the
 /// opposite holds: `pat ->` and `fn x ->` open a block that the following
 /// indented line belongs to, so `->` stays out of [`is_continuation_operator`]
-/// (which drives the trailing-merge in §5.6).
+/// (which drives operator-trailing continuation).
 fn is_leading_continuation_operator(tok: &Token) -> bool {
     is_continuation_operator(tok) || matches!(tok, Token::Arrow)
 }
@@ -675,7 +675,7 @@ mod tests {
         }
     }
 
-    /// A line ending with a binary operator (§5.6) continues on the next line;
+    /// A line ending with a binary operator continues on the next line;
     /// no NEWLINE/INDENT separates the operator from its right-hand side.
     #[test]
     fn trailing_operator_joins_next_line() {

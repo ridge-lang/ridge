@@ -52,7 +52,7 @@ fn std_net_http_module_builds_and_is_discovered() {
 /// `discover` finds `std.net.http` at the `net/` subdirectory path.
 ///
 /// This exercises the `module_path("std.net.http") == "net/http.ridge"` logic
-/// in `build_driver::module_path` (T4 subdirectory handling).
+/// in `build_driver::module_path` (subdirectory handling).
 #[test]
 fn std_net_http_discovered_in_subdirectory() {
     let dir = stdlib_dir();

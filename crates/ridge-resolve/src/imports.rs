@@ -1,4 +1,4 @@
-//! Import resolution (T7) — resolves every `ImportDecl` to a concrete target,
+//! Import resolution — resolves every `ImportDecl` to a concrete target,
 //! applies cross-project visibility, and computes per-import effective bindings.
 //!
 //! ## Bare import semantics
@@ -35,7 +35,7 @@ use crate::{
 /// The resolution of a single `ImportDecl`.
 #[derive(Debug, Clone)]
 pub struct ImportResolution {
-    /// Stub `NodeId(0)` for this pass; T8 fills the authoritative value once
+    /// Stub `NodeId(0)` for this pass; use-site resolution fills the authoritative value once
     /// the `NodeIdMap` assigns stable ids to all AST nodes.
     pub decl_node: NodeId,
     /// The module path exactly as the `import` declaration writes it
@@ -118,9 +118,8 @@ pub struct EffectiveBinding {
 
 /// What a resolved name binds to.
 ///
-/// T8 extends the enum with `Local`, `ModuleSymbol`, `ActorName`,
-/// `Constructor`, and `FieldAccessor` variants for intra-function resolution.
-/// T10 will add `Capability`.
+/// Includes local, module-level, imported, constructor, actor, field-accessor,
+/// and class-method bindings used by name resolution.
 ///
 /// # Stability
 ///
@@ -148,21 +147,21 @@ pub enum Binding {
         /// The symbol within that module's symbol table.
         symbol: SymbolId,
         /// The import declaration that introduced this binding.
-        /// Stub `NodeId(0)` in T7; T8 fills the authoritative id.
+        /// Stub `NodeId(0)` during import resolution; use-site resolution fills the id.
         via_import: NodeId,
     },
     /// An alias for a whole module (`import std.list as List`).
     ///
     /// Use-sites like `List.map` combine this with a second lookup step
-    /// (T9 qualified-name resolution).
+    /// (qualified-name resolution).
     ModuleAlias {
         /// The target the alias points at.
         target: ImportTarget,
         /// The import declaration that introduced this alias.
-        /// Stub `NodeId(0)` in T7; T8 fills the authoritative id.
+        /// Stub `NodeId(0)` during import resolution; use-site resolution fills the id.
         via_import: NodeId,
     },
-    /// A reference to a stdlib symbol whose concrete definition is Phase 7's
+    /// A reference to a stdlib symbol whose concrete definition is stdlib's
     /// responsibility.
     StdlibSymbol {
         /// The stdlib module that exports this symbol.
@@ -304,7 +303,7 @@ pub struct ImportResolutionResult {
 /// Resolve every import in every module of the workspace.
 ///
 /// Mutates [`WorkspaceGraph::deps`] to record authoritative module →
-/// workspace-module dependency edges (superseding the tentative edges from T4).
+/// workspace-module dependency edges (superseding the tentative edges from module-graph construction).
 ///
 /// Also validates `[dependencies]` entries in project manifests for
 /// `M013 UnknownWorkspaceMember` and `M015 WorkspaceDependencyAbsent`.
@@ -317,7 +316,7 @@ pub struct ImportResolutionResult {
 ///    else `Unresolved` + `R006`.
 /// 3. If `WorkspaceModule` and cross-project: check `[project.exports].public`
 ///    / `.internal` → maybe `R007`.
-/// 4. (Step 4 = T12 `R013 ForbidViolation`; skipped here.)
+/// 4. `R013 ForbidViolation` is checked separately by the forbid-rule pass.
 /// 5. Compute effective bindings:
 ///    - `import p as Alias` → `ModuleAlias`.
 ///    - `import p (a, b)` → one binding per item; `R008`/`R009` on errors.
@@ -796,7 +795,7 @@ fn resolve_item(
 }
 
 /// Return every name in `table` that is visible to an importer in
-/// `from_project_id` (T13 helper for R008 suggestions).
+/// `from_project_id` (used for R008 suggestions).
 ///
 /// Filters out `FilePrivate` (`_foo`) symbols and project-restricted
 /// symbols when crossing project boundaries.  Mirrors [`is_symbol_visible`].
@@ -882,7 +881,7 @@ fn last_segment(path: &str) -> &str {
 /// - `WorkspaceMember { member }` → name must match an existing project name.
 /// - `Workspace { local_name }` → `local_name` must exist as a key in
 ///   `WorkspaceManifest::dependencies`.
-/// - `Path` / `Git` dependencies are not re-validated here (T3 handles path).
+/// - `Path` / `Git` dependencies are not re-validated here (manifest discovery handles path dependencies).
 fn validate_project_dependencies(
     project: &Project,
     ws_manifest: &WorkspaceManifest,
@@ -1315,21 +1314,21 @@ pub fn is_synthetic_fn_tycon(name: &str) -> bool {
 // ── detect_cycles_authoritative ───────────────────────────────────────────────
 
 /// Detect import cycles using the **authoritative** `ws.deps` built by
-/// [`resolve_imports`] rather than the tentative edges from T4/T5.
+/// [`resolve_imports`] rather than the tentative edges from module-graph construction.
 ///
 /// Supersedes the tentative-edge cycle check from `detect_cycles` (which used
 /// path-string matching and could miss cycles through unresolved aliases).
 ///
-/// Uses the same [`crate::module_graph::tarjan_scc`] algorithm as T5.
+/// Uses the same [`crate::module_graph::tarjan_scc`] algorithm as the tentative-edge cycle detector.
 ///
 /// # When to call
 ///
 /// Call this **after** [`resolve_imports`] has populated `ws.deps`.  The two
 /// cycle-detection passes are complementary:
 ///
-/// - `detect_cycles` (T5): fast, runs on tentative edges before resolution;
+/// - `detect_cycles`: fast, runs on tentative edges before resolution;
 ///   useful as an early warning.
-/// - `detect_cycles_authoritative` (T7): definitive, runs on resolved edges;
+/// - `detect_cycles_authoritative`: definitive, runs on resolved edges;
 ///   the result is the one carried into diagnostics.
 #[must_use]
 pub fn detect_cycles_authoritative(
@@ -2804,7 +2803,7 @@ mod tests {
     }
 
     /// Workspace-module visibility: `_private` items must NEVER appear in
-    /// suggestions (plan §11 risk R14).
+    /// suggestions.
     #[test]
     fn t13_r008_does_not_leak_file_private_names() {
         let td = TempDir::new().expect("tempdir");

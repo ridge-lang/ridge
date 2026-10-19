@@ -1,4 +1,4 @@
-//! Manifest regression test (§6.2).
+//! Manifest regression test.
 //!
 //! Proves bidirectional consistency between the live stdlib `.ridge` sources and
 //! the generated manifest (`BUILTINS`) and signature table (`stdlib_signature`).
@@ -16,10 +16,10 @@
 //! 4. For every parsed `pub fn`, calls `stdlib_signature` and asserts:
 //!    - Returns `Some` (not `None`)                           → `T202`
 //!    - `params.len()` matches AST param count                 → `T202`
-//!    - Return-type shape loosely matches (see §6.2 §5)       → `T202`
+//!    - Return-type shape loosely matches                    → `T202`
 //!
 //! Entries whose signature body is `Type::Error` are explicitly allowed
-//! (Phase-7 stubs annotated `// TODO Phase 7 (OQ-T012)`).
+//! as stdlib stubs.
 //!
 //! Definitionally ensures that drift between source and
 //! manifest/signature tables causes this test to fail the build.
@@ -27,7 +27,7 @@
 //! ## Note on parse errors
 //!
 //! Several stdlib `.ridge` files use `(_: Unit)` as a thunk-parameter convention.
-//! The current parser (Phase 7) does not support `_` as the name in an
+//! The current parser does not support `_` as the name in an
 //! annotated parameter `(_: Type)` — it fires `P012 TopLevelPatternParam` and
 //! drops those function declarations from the partial AST.  The text-level
 //! extractor (`extract_pub_names_from_source`) handles `(_: Unit)` correctly,
@@ -78,9 +78,9 @@ fn stdlib_dir() -> std::path::PathBuf {
 /// `option.ridge` — the `Option` type is built into the language.  The manifest
 /// lists these to enable qualified resolution (e.g. `std.option.Some`).
 ///
-/// The "formal prelude-re-export declaration mechanism" planned for a future
-/// phase will replace this whitelist with an annotation in the `.ridge` source.
-/// Until then, we skip the manifest→source direction check for these entries.
+/// TODO: replace this whitelist with explicit prelude-re-export annotations
+/// in the `.ridge` source. Until then, skip the manifest→source direction check
+/// for these entries.
 const PRELUDE_REEXPORTS: &[(&str, &str)] = &[
     // std.option: Option, Some, None are prelude constructors / the Option type.
     ("std.option", "Option"),
@@ -335,13 +335,13 @@ fn bidirectional_name_consistency() {
 /// For every `pub fn` in the stdlib AST (those that parse cleanly):
 /// - `stdlib_signature(module_id, name, &b)` must return `Some`.
 /// - The param count must match `FnDecl.params.len()`.
-/// - The return type shape must loosely match (see implementation guide §4).
+/// - The return type shape must loosely match (using the concrete-type shape checks below).
 ///
 /// Functions that fail to parse due to known parser limitations (e.g.
 /// `(_: Unit)` annotated params — `P012 TopLevelPatternParam`) are silently
 /// skipped; the bidirectional name check in Test 1 still holds for them.
 ///
-/// Entries that return `Type::Error` are explicitly skipped (Phase-7 stubs).
+/// Entries that return `Type::Error` are explicitly skipped (stdlib stubs).
 /// Failures panic with `T202 SignatureDrift { module, sym, reason }`.
 #[test]
 #[expect(
@@ -555,7 +555,7 @@ fn signature_shape_consistency() {
                 )
             });
 
-            // 2. Skip Type::Error stubs — these are explicitly allowed in Phase 7.
+            // 2. Skip Type::Error stubs — these are explicitly allowed in stdlib.
             if matches!(scheme.ty, Type::Error) {
                 continue;
             }
@@ -587,7 +587,7 @@ fn signature_shape_consistency() {
             //    If sig_ret is Type::Error, skip (stub for ret type).
             //    Otherwise just verify sig_ret is not Error (it has a real type).
             if matches!(sig_ret, Type::Error) {
-                // Phase-7 stub for return type — skip.
+                // stdlib stub for return type — skip.
                 continue;
             }
 

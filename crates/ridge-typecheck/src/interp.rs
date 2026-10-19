@@ -1,6 +1,6 @@
 //! String-interpolation typing: `ToText` instance-registry dispatch.
 //!
-//! # Spec reference: §4.11 / D038
+//! # Hole typing
 //!
 //! Each `${expr}` hole in an interpolated string must resolve to a type that
 //! has a `ToText` instance in the workspace instance registry. The prelude

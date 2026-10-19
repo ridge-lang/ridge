@@ -1,4 +1,4 @@
-//! §3.12 — `LocalScope`: SSA-suffix table for `var`-bound mutable locals.
+//! `LocalScope`: SSA-suffix table for `var`-bound mutable locals.
 //!
 //! Ridge `var`-bound locals use SSA-suffix renaming to simulate mutation in
 //! Core Erlang (which has no mutable variables).  Each `var n = 0` introduces
@@ -9,11 +9,11 @@
 //! single function.  It is cloned before lowering each `Match` arm so that
 //! pattern-variable bindings in one arm do not bleed into another.
 
-// Exercised from expr.rs (and indirectly T8); until T8 wires the top-level
-// pipeline these are test-only.
+// Exercised from expr.rs (and indirectly item-level emission); until the top-level
+// pipeline is wired, these are test-only.
 #![allow(dead_code)]
 // pub(crate) on items in a pub(crate) module is redundant per clippy; we keep
-// it for explicitness per plan §2.2.
+// it for explicitness
 #![allow(clippy::redundant_pub_crate)]
 
 use crate::core_ast::CErlVar;
@@ -27,29 +27,27 @@ use std::sync::Arc;
 /// bare mangled name, e.g. `V_N`).  Each `Assign { target: Local }` increments
 /// the index and emits a fresh binding `V_N1`, `V_N2`, etc.
 ///
-/// Scoping convention (§3.12 + §4.7):
+/// Scoping convention:
 /// - Index 0 → bare mangled name, e.g. `V_Count` (no numeric suffix).
 /// - Index ≥ 1 → mangled name + decimal suffix, e.g. `V_Count1`, `V_Count2`.
 ///
-/// This matches the §3.12 illustrative example (`N0 / N1 / N2`) in spirit while
-/// matching §4.7's "the `0` suffix is the SSA index" semantics: index 0 is the
-/// initial `VarIn` binding, subsequent assigns increment from 1 onward.
+/// Conceptual versions such as `N0 / N1 / N2` start with the initial
+/// `VarIn` binding at index 0; subsequent assigns increment from 1 onward.
 ///
-/// # OQ annotation
-/// The choice to emit the *bare* name for index 0 (rather than `V_N0`) resolves
-/// the tension between §3.12 (`N0/N1/N2` illustrative) and §4.7 ("0 suffix is
-/// the SSA index").  We choose bare-for-zero because it produces the most
-/// readable Core Erlang output and is consistent with §4.2's un-suffixed naming
-/// for let-bound (non-var) locals.
+/// # SSA naming rationale
+/// The conceptual sequence `N0/N1/N2` identifies successive versions, but
+/// the emitted name for index 0 is the *bare* name rather than `V_N0`.
+/// Omitting the `0` suffix keeps Core Erlang output readable and matches
+/// the un-suffixed naming of let-bound (non-var) locals.
 ///
 /// The `fn_arity` field carries the module's function-arity table so that
-/// `lower_symbol` can resolve `SymbolRef::Local` used as a value (T8 wiring).
+/// `lower_symbol` can resolve `SymbolRef::Local` used as a value.
 /// It is cheap to clone because it is reference-counted.
 ///
 /// The `actor_parent` field, when `Some`, identifies the parent Ridge module and
 /// its BEAM name so that `lower_static_call` can emit qualified inter-module calls
 /// for `SymbolRef::Local { module: parent_id }` references from within actor
-/// handler and init bodies (B-6 fix, Phase 6 pass 3).
+/// handler and init bodies.
 ///
 /// The `letrec_locals` field tracks names that were registered into `fn_arity`
 /// for a handler-local recursive lambda (emitted as `letrec`).  These must NOT
@@ -224,7 +222,7 @@ impl LocalScope {
 
     /// Create a scope seeded with the given fn/const arity table.
     ///
-    /// Used by item-level lowering (T8) so that `SymbolRef::Local` can resolve
+    /// Used by item-level lowering so that `SymbolRef::Local` can resolve
     /// arity when a local fn or const is used as a value expression.
     pub(crate) fn with_arity(fn_arity: FxHashMap<String, LocalShape>) -> Self {
         Self {
@@ -283,7 +281,7 @@ impl LocalScope {
         }
     }
 
-    /// Create a scope for actor body lowering (B-6 fix, Phase 6 pass 3).
+    /// Create a scope for actor body lowering.
     ///
     /// Carries the parent module's `ModuleId` and BEAM name so that
     /// `lower_static_call` can detect cross-module `SymbolRef::Local` references
@@ -424,12 +422,11 @@ impl LocalScope {
 ///
 /// `base_mangled` is the result of [`crate::expr::name_to_erl_var`].
 ///
-/// # SSA suffix scheme (§3.12 + §4.7)
+/// # SSA suffix scheme
 /// Index 0 emits the bare name (no `0` literal suffix) to keep the initial
-/// binding readable.  Index 1, 2, … append the decimal digit directly.  This
-/// reconciles §3.12's illustrative `N0/N1/N2` with §4.7's "the `0` suffix is
-/// the SSA index" statement: both refer to the same scheme with index 0 being
-/// the initial binding.
+/// binding readable. Index 1, 2, … append the decimal digit directly.
+/// The conceptual `N0/N1/N2` sequence starts at the initial binding;
+/// the emitted name simply omits the zero suffix.
 pub(crate) fn ssa_var(base_mangled: &str, idx: u32) -> CErlVar {
     if idx == 0 {
         CErlVar(base_mangled.to_owned())

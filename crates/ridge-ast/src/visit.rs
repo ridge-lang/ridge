@@ -106,7 +106,7 @@ pub trait Visit<'ast> {
         walk_qualified_name(self, q);
     }
 
-    /// Visit a record constructor (T8, Phase 4 §3.8).
+    /// Visit a record constructor.
     ///
     /// Default impl walks both arms: `Bare(ident)` calls [`visit_ident`];
     /// `Qualified(qn)` calls [`visit_qualified_name`].
@@ -346,7 +346,7 @@ pub fn walk_expr<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, e: &'ast Expr) {
             for arg in args {
                 v.visit_expr(arg);
             }
-            // Walk the timeout expression if present (OQ-E001 T0).
+            // Walk the timeout expression if present.
             if let Some(AskTimeout::Millis(ms_expr)) = timeout {
                 v.visit_expr(ms_expr);
             }
@@ -578,7 +578,7 @@ pub fn walk_qualified_name<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, q: &'ast Qu
 
 // ── walk_record_ctor ──────────────────────────────────────────────────────────
 
-/// Walk a [`RecordCtor`] (T8, Phase 4 §3.8).
+/// Walk a [`RecordCtor`].
 ///
 /// - `Bare(ident)` → calls [`Visit::visit_ident`] on the identifier.
 /// - `Qualified(qn)` → calls [`Visit::visit_qualified_name`] on the path.

@@ -28,7 +28,7 @@ fn ridge_cmd() -> Command {
 /// 3. A caret (`^`), dash (`-`), or ariadne box-drawing character (`╰`, `┬`)
 ///    that underlines the error site.
 ///
-/// This was the exact scenario that the pre-T3.5 `eprintln!` fallback could not
+/// This was the exact scenario that the former `eprintln!` fallback could not
 /// produce — it rendered `error: module 0: parse error: expected …` with no
 /// source context.
 #[test]

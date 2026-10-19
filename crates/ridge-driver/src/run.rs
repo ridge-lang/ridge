@@ -20,7 +20,7 @@ use crate::error::{ProcessExitCode, RunError, ToolchainError};
 use crate::options::{CompileOptions, EmitArtefacts, RunOptions};
 use crate::sources::WorkspaceSourceCache;
 
-/// Timeout in seconds for the `erl` child process (60 s per plan §9).
+/// Timeout in seconds for the `erl` child process (60 s).
 const ERL_TIMEOUT_SECS: u64 = 60;
 
 /// Compile and run a Ridge workspace on the BEAM runtime.

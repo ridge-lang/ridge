@@ -562,7 +562,7 @@ fn parse_migrate_section(cur: &mut Cursor<'_>) -> Result<Vec<ridge_ast::MigrateD
 /// Precondition: leading `DocComment` tokens and `Newline` tokens have already
 /// been consumed by the caller (`parse_module`).
 ///
-/// `doc` carries any immediately-preceding doc comment (T10: always `None`).
+/// `doc` carries any immediately-preceding doc comment.
 /// `vis` carries any visibility modifier already parsed by the caller.
 pub(crate) fn parse_item(
     cur: &mut Cursor<'_>,
@@ -1655,7 +1655,7 @@ fn can_start_type_atom(cur: &Cursor<'_>) -> bool {
 /// ```
 ///
 /// Precondition: `cur.peek() == &Token::KwFn`.
-/// `vis` is already parsed by the caller; `doc` is set to `None` in T10.
+/// `vis` is already parsed by the caller; `doc` carries the attached doc comment.
 pub(crate) fn parse_fn_decl(
     cur: &mut Cursor<'_>,
     vis: Visibility,
@@ -2460,7 +2460,7 @@ pub(crate) fn parse_actor_decl(
 ///
 /// This function short-circuits on the first error (original behaviour).
 /// Use [`parse_actor_body_recovering`] when multiple errors should be
-/// collected (T12 recovery path).
+/// collected by the recovery path.
 pub(crate) fn parse_actor_body(cur: &mut Cursor<'_>) -> Result<Vec<ActorMember>, ParseError> {
     let mut errors: Vec<ParseError> = Vec::new();
     let members = parse_actor_body_recovering(cur, &mut errors);
@@ -2468,7 +2468,7 @@ pub(crate) fn parse_actor_body(cur: &mut Cursor<'_>) -> Result<Vec<ActorMember>,
 }
 
 /// Parse the body of an actor, collecting errors into `errors_out` instead of
-/// aborting on the first failure (T12 panic-mode recovery).
+/// aborting on the first failure (panic-mode recovery).
 ///
 /// On member parse failure, tokens are skipped to the next `state`/`init`/`on`
 /// keyword or `DEDENT` (§4.7 actor-body sync points).
@@ -2575,7 +2575,7 @@ fn parse_actor_member(cur: &mut Cursor<'_>) -> Result<ActorMember, ParseError> {
 ///
 /// Grammar: `"state" LOWER_IDENT ":" Type "=" Expr`
 ///
-/// The plan allows `default` to be `None` (OQ-P006 — permissive parse for the
+/// `default` may be `None` (permissive parse for the
 /// case where an `init` block provides the initial value at runtime).
 ///
 /// Precondition: `cur.peek() == &Token::KwState`.
@@ -2602,7 +2602,7 @@ pub(crate) fn parse_state_decl(cur: &mut Cursor<'_>) -> Result<StateDecl, ParseE
 
     let ty = parse_type(cur)?;
 
-    // Optional `= Expr` default (OQ-P006: permissive).
+    // Optional `= Expr` default (permissive).
     let default = if cur.peek() == &Token::Assign {
         cur.bump(); // consume `=`
         Some(parse_branch_body(cur)?)

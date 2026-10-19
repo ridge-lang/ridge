@@ -1,11 +1,11 @@
 //! Ridge Core IR — pure data crate.
 //!
-//! Defines all IR types produced by `ridge-lower` (Phase 5) and consumed by
-//! Phase 6 codegen backends, stdlib lowering, and LSP.
+//! Defines all IR types produced by `ridge-lower` (lowering) and consumed by
+//! codegen backends, stdlib lowering, and LSP.
 //!
 //! This crate has **no transformation logic** — it is a leaf data crate with
 //! zero I/O and zero diagnostic emission.  All types are `#[non_exhaustive]`
-//! where the plan mandates it; every `pub` item carries rustdoc.
+//! where future extension is supported; every `pub` item carries rustdoc.
 //!
 //! # Quick-start
 //!

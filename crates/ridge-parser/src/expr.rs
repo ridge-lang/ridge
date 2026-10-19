@@ -3,12 +3,12 @@
 //! This module implements:
 //!
 //! - [`parse_literal`]     — grammar §6.10 literals.
-//! - [`parse_expr_atom`]   — grammar §6.9 atoms (extended in T6).
+//! - [`parse_expr_atom`]   — grammar §6.9 atoms.
 //! - [`parse_expr_pratt`]  — Pratt core (level 1); internal, no keyword dispatch.
-//! - [`parse_expr`]  — public entry point (T7+): keyword dispatch,
+//! - [`parse_expr`]  — public entry point: keyword dispatch,
 //!   Pratt fallback, assign tail.
 //!
-//! ## Pratt table (§4.5)
+//! ## Pratt table
 //!
 //! | Level | Tokens           | Assoc       | lbp | rbp |
 //! |-------|------------------|-------------|-----|-----|
@@ -25,8 +25,8 @@
 //! | 11    | juxtaposition    | left        | 20  | 21  |
 //! | 12    | `.field`         | postfix     | 22  | n/a |
 
-// These functions are called from tests and will be called from production code
-// in T7+.  Suppress dead_code until all callers are wired in.
+// Suppress dead_code until all production callers are wired in; tests also
+// exercise these helpers.
 #![allow(dead_code)]
 #![allow(clippy::redundant_pub_crate)]
 
@@ -636,17 +636,17 @@ const fn needs_timeout_parentheses(tok: &Token) -> bool {
 
 /// Parse a single atomic expression (grammar §6.9 `ExprAtom`).
 ///
-/// Extended in T6 to handle:
+/// Atomic forms include:
 /// - `()` → `Expr::Unit`
 /// - `(.name)` → `Expr::FieldAccessorFn`
 /// - `(e)` → `Expr::Paren`
 /// - `(e, e, …)` → `Expr::Tuple`
 /// - `[…]` → `Expr::List`
 ///
-/// Forms not yet handled (T7–T8):
+/// Other expression forms:
 /// - `fn` → Lambda / `InnerFn`
 /// - `spawn` → `SpawnExpr`
-/// - Bare `UPPER_IDENT` without dot → Record construction (T8)
+/// - Bare `UPPER_IDENT` without dot → Record construction
 pub(crate) fn parse_expr_atom(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
     let span = cur.span();
 
@@ -1192,7 +1192,7 @@ pub(crate) fn can_start_arg_atom(cur: &Cursor<'_>) -> bool {
 /// Return `Some((lbp, rbp, op))` if the current token is a binary infix
 /// operator, otherwise `None`.
 ///
-/// Binding powers follow §4.5 exactly (see module-level table).
+/// Binding powers follow the module-level table.
 const fn infix_bp(tok: &Token) -> Option<(u8, u8, BinOp)> {
     match tok {
         Token::PipeFwd => Some((1, 2, BinOp::Pipe)),
@@ -1230,7 +1230,7 @@ const fn is_non_assoc(op: BinOp) -> bool {
 ///
 /// Used to decide whether two successive non-assoc ops are at the *same* level
 /// (both would trigger P009) vs different levels (`a == b < c` also triggers).
-/// Per the plan: same-level OR cross-level — all level-4 and level-5 chains
+/// Same-level OR cross-level — all level-4 and level-5 chains
 /// are errors.  We model this by returning the same level ID for both groups.
 const fn non_assoc_level(_op: BinOp) -> u8 {
     // All non-assoc ops (levels 4 and 5) share the same "non-assoc group" —

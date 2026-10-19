@@ -1,4 +1,4 @@
-//! Snapshot tests for the four example Ridge programs (`DoD §12`).
+//! Snapshot tests for the four example Ridge programs.
 #![allow(clippy::missing_const_for_fn)] // token_kind_name cannot be const due to match on &Token
 //!
 //! Each test asserts `errors.is_empty()` then locks the token stream in an

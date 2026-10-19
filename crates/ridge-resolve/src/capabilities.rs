@@ -1,4 +1,4 @@
-//! Capability-keyword binding + project allow/deny enforcement (plan §4.7).
+//! Capability-keyword binding + project allow/deny enforcement.
 //!
 //! # Overview
 //!
@@ -41,7 +41,7 @@
 //! - `FnType::span` for capability-annotated function types in type annotations.
 //!
 //! This points the error at the declaration name rather than the individual
-//! capability keyword.  Phase 4 may refine this if per-cap spans are added to
+//! capability keyword. the type checker may refine this if per-cap spans are added to
 //! the AST.
 //!
 //! # Integration

@@ -1,6 +1,6 @@
 //! Track-A tests for `std.actor` — 1 public function.
 //!
-//! Asserts that `actor.ridge` compiles through the T4 build pipeline and
+//! Asserts that `actor.ridge` compiles through the stdlib build pipeline and
 //! appears in the build summary.
 //!
 //! Tests serialize around a process-level mutex because `build_all` writes to

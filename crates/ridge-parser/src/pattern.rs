@@ -199,7 +199,7 @@ pub(crate) fn parse_pattern_atom(cur: &mut Cursor<'_>) -> Result<Pattern, ParseE
 
         // ── Bracketed list pattern `[…]` ─────────────────────────────────────
         //
-        // Handles the full bracketed list pattern form (D258):
+        // Handles the full bracketed list pattern form:
         //   `[]`              → Pattern::ListNil
         //   `[a, b, c]`       → Pattern::List { elements: [Elem(a), Elem(b), Elem(c)] }
         //   `[a, ..]`         → Pattern::List { elements: [Elem(a), Rest { bind: None }] }
@@ -455,7 +455,7 @@ fn parse_constructor_pattern(cur: &mut Cursor<'_>) -> Result<Pattern, ParseError
 /// The closing `}` is NOT consumed here; the caller handles it.
 ///
 /// Returns `(fields, has_rest)` where `has_rest` is `true` when a trailing
-/// `..` was present (D259 record rest pattern).
+/// `..` was present (record rest pattern).
 fn parse_field_pattern_list(cur: &mut Cursor<'_>) -> Result<(Vec<FieldPattern>, bool), ParseError> {
     let mut fields: Vec<FieldPattern> = Vec::new();
     let mut has_rest = false;
@@ -488,7 +488,7 @@ fn parse_field_pattern_list(cur: &mut Cursor<'_>) -> Result<(Vec<FieldPattern>, 
             if cur.peek() == &Token::RBrace {
                 break;
             }
-            // `..` after a comma — record rest (D259).
+            // `..` after a comma — record rest.
             if cur.peek() == &Token::DotDot {
                 cur.bump(); // consume `..`
                 has_rest = true;
@@ -557,7 +557,7 @@ fn parse_field_pattern(cur: &mut Cursor<'_>) -> Result<FieldPattern, ParseError>
 
 // ── parse_list_pattern_elements (internal) ────────────────────────────────────
 
-/// Parse the element list inside `[…]` (D258).
+/// Parse the element list inside `[…]`.
 ///
 /// Returns `(elements, has_rest)`.  `has_rest` is `true` when at least one
 /// `..` element was present.

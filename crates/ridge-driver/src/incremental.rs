@@ -46,7 +46,7 @@ pub struct IncrementalState {
     pub type_errors: Vec<(ModuleId, TypeError)>,
     /// Lowering errors per module.
     ///
-    /// Phase 5 is where a literal's validated *form* becomes a *value*, so
+    /// Lowering is where a literal's validated *form* becomes a *value*, so
     /// `L110` and `L111` — the two ordinary user errors in the `L1##` range —
     /// can only be raised here. Keeping them on the incremental state is what
     /// lets the editor report them: without it, a check that stops after

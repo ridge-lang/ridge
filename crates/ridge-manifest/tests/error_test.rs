@@ -28,7 +28,7 @@ fn pp() -> &'static Path {
 
 // ── Error fixtures ────────────────────────────────────────────────────────────
 
-/// T1 §3.11 error #1 — M001 TomlParseFailed: malformed TOML syntax.
+/// Error #1 — M001 TomlParseFailed: malformed TOML syntax.
 #[test]
 fn err_m001_toml_syntax() {
     let toml = include_str!("fixtures/err_m001_toml_syntax.toml");
@@ -40,7 +40,7 @@ fn err_m001_toml_syntax() {
     );
 }
 
-/// T1 §3.11 error #2 — M002 MissingWorkspaceTable: no [workspace] key.
+/// Error #2 — M002 MissingWorkspaceTable: no [workspace] key.
 #[test]
 fn err_m002_missing_workspace_table() {
     let toml = include_str!("fixtures/err_m002_missing_workspace_table.toml");
@@ -52,7 +52,7 @@ fn err_m002_missing_workspace_table() {
     );
 }
 
-/// T1 §3.11 error #3 — M003 MissingProjectTable: no [project] key.
+/// Error #3 — M003 MissingProjectTable: no [project] key.
 #[test]
 fn err_m003_missing_project_table() {
     let toml = include_str!("fixtures/err_m003_missing_project_table.toml");
@@ -64,7 +64,7 @@ fn err_m003_missing_project_table() {
     );
 }
 
-/// T1 §3.11 error #4 — M006 MissingRequiredField: workspace missing `name`.
+/// Error #4 — M006 MissingRequiredField: workspace missing `name`.
 #[test]
 fn err_m006_missing_required_field() {
     let toml = include_str!("fixtures/err_m006_missing_field.toml");
@@ -80,7 +80,7 @@ fn err_m006_missing_required_field() {
     );
 }
 
-/// T1 §3.11 error #5 — M005 BadMemberGlob: invalid glob pattern in `members`.
+/// Error #5 — M005 BadMemberGlob: invalid glob pattern in `members`.
 #[test]
 fn err_m005_bad_member_glob() {
     let toml = include_str!("fixtures/err_m005_bad_glob.toml");
@@ -92,7 +92,7 @@ fn err_m005_bad_member_glob() {
     );
 }
 
-/// T1 §3.11 error #6 — M007 InvalidProjectKind: unrecognised `kind` value.
+/// Error #6 — M007 InvalidProjectKind: unrecognised `kind` value.
 #[test]
 fn err_m007_invalid_project_kind() {
     let toml = include_str!("fixtures/err_m007_invalid_kind.toml");
@@ -106,7 +106,7 @@ fn err_m007_invalid_project_kind() {
 
 // ── Bidirectional test ────────────────────────────────────────────────────────
 
-/// T1 §3.11 bidirectional — parse workspace manifest and all member project
+/// Bidirectional — parse workspace manifest and all member project
 /// manifests, then cross-validate that every member has a distinct project name.
 ///
 /// Uses the on-disk fixture workspace at `tests/fixtures/bidir_workspace/`.

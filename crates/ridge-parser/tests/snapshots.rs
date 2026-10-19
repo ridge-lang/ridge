@@ -1,5 +1,5 @@
-//! Snapshot tests for the four example Ridge programs (`DoD §13`) plus the
-//! T2 `@ffi` attribute fixtures.
+//! Snapshot tests for the four example Ridge programs plus the
+//! `@ffi` attribute fixtures.
 //!
 //! Each test asserts `lex_errors.is_empty()` and `errors.is_empty()` then
 //! locks the parsed `Module` in an `insta` snapshot.  Run
@@ -110,9 +110,8 @@ fn snapshot_ffi_minimal() {
 /// pub fn ffi map (f: fn Int -> Int) (xs: [Int]) -> [Int]
 /// ```
 ///
-/// Note: The plan's surface syntax uses cap-variables `[c]` which are generic
-/// capability annotations (`ffi` is the declared capability here).  This
-/// fixture uses `ffi` as the capability prefix per §4.1 CapList.
+/// This fixture uses `ffi` as its declared capability prefix
+/// (grammar §4.1 `FnDecl`).
 #[test]
 fn snapshot_ffi_with_caps() {
     let src =

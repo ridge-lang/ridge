@@ -229,8 +229,7 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
         // Resolve deps: populates the cache for each git/path dep.
         // The resolved paths are not yet threaded into ridge-resolve's import
         // resolver — cache population is the T8 DoD / G5 observable.
-        // Threading resolved paths into the import resolver is deferred (T8
-        // plan §3.9 + OQ-C-future). // T8
+        // Threading resolved paths into the import resolver remains deferred.
         let _resolved_deps =
             ridge_pkg::resolve_dependencies(&workspace_manifest, &project_manifest, &cache_root)?;
     }
@@ -327,7 +326,7 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
         diagnostics.push(diag_from_typecheck(e, sid, &typecheck_result.typed.tycons));
     }
 
-    // Surface lowering errors. Phase 5 runs between the two above, and until
+    // Surface lowering errors. Lowering runs between the two above, and until
     // now was the one phase whose diagnostics nobody collected.
     for (mid, e) in &lower_errors {
         let sid = sources.id_for_module(*mid);

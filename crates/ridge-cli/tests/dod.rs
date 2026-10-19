@@ -1,14 +1,13 @@
-// Test code: relax doc-quoting lint so DoD/G6/G2/etc abbreviations and
-// pipeline stage names ("BuildTestMatrix") read as prose, not back-ticked
+// Test code: relax doc-quoting lint so test and pipeline names
+// read as prose, not back-ticked
 // identifiers.  Mirrors `crates/ridge-parser/tests/errors.rs`.
 #![allow(clippy::doc_markdown)]
 
-//! DoD acceptance — local-loop guard.
+//! Tooling acceptance checks.
 //!
-//! These tests assert the M5 / G2 / G3 / G6 deliverables are in place.
-//! They run as part of `cargo test --workspace` so a developer can validate
-//! DoD locally without waiting for the full Azure DevOps pipeline (Stage 3
-//! `BuildTestMatrix`), which remains the authoritative G2 attestation.
+//! These tests cover local build, check, formatting, and project creation.
+//! They run as part of `cargo test --workspace` to provide local feedback
+//! alongside the full CI pipeline.
 //!
 //! These tests are NOT a substitute for the pipeline:
 //! - They run in-process against the four canonical examples; they do NOT
@@ -37,7 +36,7 @@ fn ridge_cmd() -> Command {
     Command::cargo_bin("ridge").unwrap()
 }
 
-/// The four canonical Phase 8 examples (DoD scope #2 / G6 / §3.16).
+/// The four canonical tooling examples.
 const CANONICAL_EXAMPLES: &[&str] = &[
     "log_analyzer",
     "url_shortener",
@@ -54,15 +53,14 @@ fn repo_root() -> PathBuf {
 // ── Test 1: build / check / fmt --check on each canonical example ────────────
 
 /// `ridge build`, `ridge check`, `ridge fmt`, and `ridge fmt --check` (after
-/// one fmt pass) must each succeed on every one of the four canonical examples
-/// (DoD scope #2 — G3 + G6).
+/// one fmt pass) must each succeed on every one of the four canonical examples.
 ///
 /// `ridge run` is intentionally NOT covered here because it requires `erl` on
-/// PATH; the BuildTestMatrix pipeline stage owns that branch.  `ridge build`
+/// PATH; runtime integration tests cover that branch. `ridge build`
 /// is permissive of `C004 ErlangNotFound` (matching the pattern in
 /// `tests/build.rs`) so the test is robust on a Rust-only CI agent.
 ///
-/// G3 idempotency contract (post-2026-05-07 fmt fix): for any input where `fmt --check`
+/// Formatting idempotency: for any input where `fmt --check`
 /// fails, exactly one `fmt` pass produces output where `fmt --check`
 /// succeeds.  The four canonical examples now reach a fixed point in one
 /// pass; this test asserts that.
@@ -115,7 +113,7 @@ fn dod_examples_build_run_check_fmt_check() {
 // ── Test 2: ridge new smoke test ─────────────────────────────────────────────
 
 /// `ridge new my-app && cd my-app && ridge build` succeeds in a fresh
-/// tempdir (DoD scope #1 / G2 — minus the BEAM execution leg, since `ridge
+/// tempdir (without the BEAM execution leg, since `ridge
 /// run` requires `erl`).
 #[test]
 fn dod_ridge_new_smoke() {
@@ -155,7 +153,7 @@ fn dod_ridge_new_smoke() {
 // ── Test 3: fmt is idempotent on every canonical example ────────────────────
 
 /// `ridge fmt` reaches a byte-identical fixed point in one pass on every one
-/// of the four canonical Phase 8 examples (G3 — full idempotency).
+/// of the four canonical tooling examples (G3 — full idempotency).
 ///
 /// Method: copy each `examples/<name>.ridge` into a tempdir-backed workspace,
 /// run `ridge fmt` once, then run `ridge fmt --check` and assert success.

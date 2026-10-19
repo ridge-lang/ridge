@@ -1,4 +1,4 @@
-//! §2.3 — [`CErlModule`] snapshot tests on Phase 5 micro-fixtures.
+//! [`CErlModule`] snapshot tests on lowering micro-fixtures.
 //!
 //! For each fixture under `crates/ridge-lower/tests/fixtures/lower/*.ridge`,
 //! runs the full pipeline (resolve → typecheck → lower → codegen) and snapshots

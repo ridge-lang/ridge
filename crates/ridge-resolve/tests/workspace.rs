@@ -1,9 +1,8 @@
-//! T14 workspace-level snapshot tests (plan §10 T14, files-touched list
-//! includes `tests/workspace.rs`).
+//! Workspace-level snapshot tests.
 //!
 //! Two synthetic multi-project workspaces (committed on-disk fixtures):
 //! - `acme_happy/`  — no architectural-rule violation; `errors` must be empty.
-//! - `acme_forbid/` — exactly one `R013 ForbidViolation` per plan `DoD`.
+//! - `acme_forbid/` — exactly one `R013 ForbidViolation` for the fixture.
 //!
 //! Fixture trees live under `tests/fixtures/workspace/` and are loaded via
 //! `acme_workspace_path(name)`.  Snapshots live in
@@ -32,13 +31,13 @@ fn acme_workspace_path(name: &str) -> PathBuf {
 // ── Snapshot value type ──────────────────────────────────────────────────────
 
 /// Deterministic, snapshot-friendly view of a multi-project workspace after
-/// the full T7..T13 pipeline + T12 forbid pass.
+/// the full resolver pipeline, including the forbid-rule pass.
 ///
 /// - `module_fqns`: all discovered modules sorted by FQN.
 /// - `errors`: every `R-error` (discovery + import + cycle + forbid) formatted
 ///   `"<R-code>: <body>"` and sorted for cross-platform determinism.
-/// - `forbid_violations`: full structured detail for any `R013` so the `DoD`
-///   "exactly 1 `R013` on `acme_forbid` with the spec §8.6 fields" is reviewable.
+/// - `forbid_violations`: full structured detail for any `R013`, including
+///   the diagnostic fields required by spec §8.6.
 /// - `import_summary`: per-module list of `"importer ⇒ alias -> target"`.
 ///
 /// Fields are consumed by `insta` via the derived `Debug`; suppress the
@@ -172,8 +171,7 @@ fn snapshot_workspace(path: &Path) -> WorkspaceSnapshot {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-/// `acme_happy` — no `forbid` rule, both modules resolve cleanly.  `DoD` §14.4
-/// requires zero R-errors.
+/// `acme_happy` — no `forbid` rule; both modules must resolve without R-errors.
 #[test]
 fn t14_snapshot_acme_happy() {
     let path = acme_workspace_path("acme_happy");
@@ -190,8 +188,8 @@ fn t14_snapshot_acme_happy() {
     insta::assert_debug_snapshot!("t14_acme_happy", snap);
 }
 
-/// `acme_forbid` — one `forbid` rule that the only edge violates.  `DoD` §10 T14
-/// + spec §8.6 require exactly one structured `R013`.
+/// `acme_forbid` — the only import edge violates one `forbid` rule, producing
+/// exactly one structured `R013` with the fields required by spec §8.6.
 #[test]
 fn t14_snapshot_acme_forbid() {
     let path = acme_workspace_path("acme_forbid");

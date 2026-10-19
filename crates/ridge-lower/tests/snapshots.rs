@@ -1,4 +1,4 @@
-//! Phase 5 snapshot tests — four canonical example programs.
+//! lowering snapshot tests — four canonical example programs.
 //!
 //! Each test loads an example from `examples/`, runs the full pipeline, and
 //! asserts the snapshot of the `LoweredModule`.

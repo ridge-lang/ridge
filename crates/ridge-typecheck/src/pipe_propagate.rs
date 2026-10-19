@@ -1,9 +1,9 @@
-//! Typing for `|>` (pipe), `?` (propagate), and `try` blocks (T10).
+//! Typing for `|>` (pipe), `?` (propagate), and `try` blocks.
 //!
-//! # Pipe `|>` (§4.10, D024)
+//! # Pipe `|>`
 //!
 //! `a |> f` is sugar for `f a`.  If `rhs` is a `Call { callee, args }` the `lhs`
-//! is appended as the *last* argument (data-last convention, D024).  Otherwise
+//! is appended as the *last* argument (data-last convention). Otherwise
 //! `rhs` is treated as the callee with `lhs` as its sole argument.
 //!
 //! Implementation choice: **(A) clone-and-dispatch**.  We build a synthetic
@@ -11,7 +11,7 @@
 //! already covers all call-inference logic.  Clone cost is O(sub-tree size) but
 //! acceptable for the small trees typical in Ridge source.
 //!
-//! # Propagate `?` (§4.10, D039)
+//! # Propagate `?`
 //!
 //! Inside a `Result a e`-returning context the inner expression must unify with
 //! `Result alpha beta`, and the beta (error type) must unify with the enclosing
@@ -20,20 +20,20 @@
 //! `Option alpha`.  Outside either context → `T058`.
 //!
 //! The propagation context is `ctx.current_propagate_target` (set by `try` blocks)
-//! falling back to `ctx.current_fn_ret` (set by function-body entry in T6).
+//! falling back to `ctx.current_fn_ret` (set by function-body entry).
 //!
-//! # Try (§4.10, D060)
+//! # Try
 //!
 //! `try { … }` introduces a fresh `Result alpha beta` propagation context.  `?`
 //! operators inside the block propagate into this shape rather than the enclosing
 //! function's return type.  The expression's type is `Result alpha beta` where
 //! `alpha` is unified with the block's final-expression type.
 //!
-//! Default shape: `Result a e` (always — spec D060 does not distinguish a
+//! Default shape: `Result a e` (always — spec does not distinguish a
 //! try-as-Option form; if the body contains Option `?` the unifier will produce
 //! a T001).
 //!
-//! # T022 `DiscardedResult` (§4.10 final paragraph)
+//! # T022 `DiscardedResult`
 //!
 //! Type-based: fires at the end of each non-last statement in `infer_block` when
 //! the statement's type is not `Unit` and not `Type::Error` and the statement is
@@ -96,7 +96,7 @@ pub fn infer_pipe(
             args,
             span: call_span,
         } => {
-            // Append lhs as the last argument — data-last convention (D024).
+            // Append lhs as the last argument — data-last convention.
             let mut new_args = args.clone();
             new_args.push(lhs.clone());
             Expr::Call {
@@ -280,7 +280,7 @@ fn constrain_error_types(ctx: &mut InferCtx, source_ty: &Type, target_ty: &Type,
 /// The try expression's type is `Result alpha beta` where `alpha` is unified
 /// with the block's final expression type.
 ///
-/// Default shape is always `Result a e` (D060 does not define an Option-try
+/// Default shape is always `Result a e` (there is no Option-try
 /// form; an Option `?` inside a Result-try context will produce a T001).
 pub fn infer_try(ctx: &mut InferCtx, b: &BuiltinTyCons, block: &Block, span: Span) -> Type {
     use crate::infer::infer_block;
@@ -902,7 +902,7 @@ mod tests {
     ///
     /// We simulate this by binding a fake "`send_result`" function that returns Unit
     /// (since we can't easily construct `Expr::Send` without a real Handle type).
-    /// The real Send is deferred to T15; we test the T022 exemption via the
+    /// Actor send inference is checked separately; this test exercises the T022 exemption via the
     /// unit-return path.
     #[test]
     fn discarded_send_no_warning() {

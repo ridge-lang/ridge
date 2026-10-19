@@ -75,7 +75,7 @@ pub struct CheckTypedArtefacts {
 ///
 /// Lowering is in that list because two of its diagnostics are ordinary user
 /// errors: a literal's *form* is validated by the lexer and its *value* only in
-/// Phase 5, so `L110` and `L111` cannot be raised any earlier. Leaving them out
+/// lowering, so `L110` and `L111` cannot be raised any earlier. Leaving them out
 /// is what let `ridge check` call an out-of-range literal well-typed while
 /// `ridge run` rejected it.
 #[must_use]
@@ -176,7 +176,7 @@ pub fn check_workspace(options: CheckOptions) -> Result<CheckArtefacts, CheckErr
 
     let resolved = resolve_workspace_with(ws_graph, options.retain_indices);
     let typecheck_result = typecheck_workspace(&resolved);
-    // Phase 5 runs here for its diagnostics alone; the lowered workspace is
+    // lowering runs here for its diagnostics alone; the lowered workspace is
     // discarded because `check` writes no artefacts. Measured at 1-5% of the
     // check it follows.
     let lower_errors = lower_workspace(&typecheck_result.typed, &resolved).errors;

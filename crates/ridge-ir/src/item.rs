@@ -1,5 +1,5 @@
 //! Top-level IR items: functions, constants, and actors (actors are in `actor.rs`).
-// OQ-IR003: IrItem is #[non_exhaustive] — see expr.rs for rationale.
+// IrItem is #[non_exhaustive] — see expr.rs for rationale.
 
 use crate::actor::IrActor;
 use crate::expr::IrExpr;
@@ -79,7 +79,7 @@ pub struct IrFn {
     pub params: Vec<IrParam>,
     /// The function's return type.
     pub ret_ty: Type,
-    /// Phase 4 inferred capability set, post-check.
+    /// Type-checker-inferred capability set, post-check.
     pub caps: CapabilitySet,
     /// Generalised type scheme of the declaration.
     pub scheme: Scheme,
@@ -91,9 +91,9 @@ pub struct IrFn {
     pub span: Span,
     /// Whether this function is `pub`.
     pub is_pub: bool,
-    /// Canonical-main marker (D059).
+    /// Canonical-main marker.
     pub is_main: bool,
-    /// Doc-comment text if any (D067).
+    /// Doc-comment text if any.
     pub doc: Option<String>,
 }
 

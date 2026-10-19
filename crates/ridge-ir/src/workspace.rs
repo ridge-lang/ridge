@@ -6,7 +6,7 @@ use ridge_resolve::{ModuleId, NodeId};
 use ridge_types::{TyConDecl, Type};
 use rustc_hash::FxHashMap;
 
-// OQ-L001: LoweredWorkspace stores modules as a Vec (parallel-value indexed by ModuleId.0),
+// LoweredWorkspace stores modules as a Vec (parallel-value indexed by ModuleId.0),
 // not a HashMap; tycon_count is a plain field, not a method, for zero-cost access.
 /// The workspace-level lowered IR.  Indexed by `ModuleId`.
 #[derive(Debug)]
@@ -15,7 +15,7 @@ pub struct LoweredWorkspace {
     /// One entry per module, indexed by `ModuleId.0`.  May be `None` if the
     /// module's typecheck produced errors and lowering was skipped.
     pub modules: Vec<Option<LoweredModule>>,
-    /// Re-exported reference into `TypedWorkspace.tycons`.  Phase 6 reads both.
+    /// Re-exported reference into `TypedWorkspace.tycons`. Codegen reads both.
     pub tycon_count: u32,
     /// Stable target-module names, indexed by `ModuleId.0`.
     ///
@@ -89,7 +89,7 @@ pub struct LoweredModule {
     /// statement-only nodes (e.g. an `Assign` whose value is `Unit`).
     /// Mirrors `TypedModule.node_types` but on the IR numbering scheme.
     pub node_types: Vec<Option<Type>>,
-    // OQ-L005: per-IR-node source map lives here (IrNodeId → NodeId); sparse because
+    // per-IR-node source map lives here (IrNodeId → NodeId); sparse because
     // synthesised nodes (e.g. ToText calls from interpolation) have no AST origin.
     /// AST → IR node provenance map.  Each entry: `IrNodeId -> NodeId`.
     /// Sparse — synthesised IR nodes (e.g. interpolation-emitted `ToText`
@@ -98,11 +98,11 @@ pub struct LoweredModule {
 }
 
 impl LoweredModule {
-    /// Construct an empty module shell (T2 scaffold; T3+ will populate `items`).
+    /// Construct an empty module shell (lowering populates `items` later).
     ///
     /// `node_type_capacity` sets the length of the `node_types` vec (all `None`),
     /// matching the upstream `TypedModule.node_types` length so index parity is
-    /// maintained when T3+ fills in types.
+    /// maintained when lowering fills in types.
     #[must_use]
     pub fn empty(id: ModuleId, node_type_capacity: usize) -> Self {
         Self {
@@ -115,7 +115,7 @@ impl LoweredModule {
 
     /// Construct from explicit fields.
     ///
-    /// Used by `ridge-lower::lower_module` in T3+ when items and the source map
+    /// Used by `ridge-lower::lower_module` when items and the source map
     /// are fully populated.
     #[must_use]
     pub const fn new(

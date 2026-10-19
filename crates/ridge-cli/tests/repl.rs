@@ -110,8 +110,7 @@ fn the_cli_crate_holds_no_erlang_module() {
 
 /// `ridge repl` accumulates `let` bindings across lines.
 ///
-/// `let x = 5` followed by `x + 1` on the next evaluation resolves to `6`
-/// (§3.8 edge-case-2 / D162).
+/// `let x = 5` followed by `x + 1` on the next evaluation resolves to `6`.
 ///
 /// Input:  `let x = 5\nx + 1\n:q\n`
 /// Expect: stdout contains `6`.
@@ -169,7 +168,7 @@ fn repl_quit_clean() {
 /// `ridge repl` allows capability-bearing expressions.
 ///
 /// `Io.println "hi"` should succeed because the REPL session declares
-/// `allow = ["io", ...]` (§3.8 edge-case-3 / D150) and pre-imports
+/// `allow = ["io",...]` and pre-imports
 /// `import std.io as Io`.
 ///
 /// Input:  `Io.println "hi"\n:q\n`

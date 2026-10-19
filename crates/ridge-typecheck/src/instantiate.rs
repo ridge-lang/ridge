@@ -1,4 +1,4 @@
-//! Scheme instantiation and generalisation (T6/T7).
+//! Scheme instantiation and generalisation.
 //!
 //! # `instantiate`
 //!
@@ -8,7 +8,7 @@
 //!
 //! # `generalise`
 //!
-//! Implements Hindley-Milner let-generalisation (§4.7):
+//! Implements Hindley-Milner let-generalisation:
 //!
 //! ```text
 //! generalise(env, ty):
@@ -29,7 +29,7 @@ use crate::ctx::InferCtx;
 /// Instantiates `scheme` by substituting fresh unification variables for every
 /// bound type- and capability-variable.
 ///
-/// Per §4.6 line 790:
+/// Fresh-variable substitution:
 /// > Replace each `TyVid` in `scheme.vars` with a fresh `TyVid`;
 /// > replace each `CapVid` in `scheme.cap_vars` with a fresh `CapVid`.
 ///
@@ -132,7 +132,7 @@ pub const fn monoscheme(ty: Type) -> Scheme {
 /// Generalises `ty` against the current environment, returning a
 /// polymorphic [`Scheme`].
 ///
-/// Implements §4.7 algorithm:
+/// Generalisation algorithm:
 ///
 /// 1. Deep-resolve `ty` so all union-find chains are followed.
 /// 2. Collect the free [`TyVid`]s / [`CapVid`]s in the resolved type.
@@ -153,7 +153,7 @@ pub fn generalise(ctx: &mut InferCtx, ty: &Type) -> Scheme {
 /// Variant of [`generalise`] that uses a pre-computed env free-var snapshot
 /// instead of reading the current environment.
 ///
-/// This is used by the SCC typechecker (§4.7 mutual recursion): the env free
+/// This is used by the SCC typechecker for mutual recursion: the env free
 /// vars must be snapshotted BEFORE the SCC's monomorphic bindings are added.
 /// Otherwise the SCC's own `TyVids` would appear as "in env" and prevent them
 /// from being generalised.

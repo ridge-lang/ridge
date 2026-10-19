@@ -1,4 +1,4 @@
-//! Ridge Phase 6 codegen engine — IR to Core Erlang.
+//! Ridge codegen engine — IR to Core Erlang.
 //!
 //! Entry points:
 //! - [`codegen_workspace`] — lower a whole [`LoweredWorkspace`] to `.core` files.
@@ -52,7 +52,7 @@ use std::path::PathBuf;
 ///
 /// `modules[i]` is `Some(CodegenModuleResult)` if the matching
 /// `LoweredWorkspace.modules[i]` was `Some(LoweredModule)` AND codegen
-/// succeeded; `None` otherwise.  `CodegenResult` is always returned (Phase 6
+/// succeeded; `None` otherwise. `CodegenResult` is always returned (codegen
 /// emits no fatal pre-aggregated errors); per-module errors are surfaced via
 /// `errors`.
 #[derive(Debug)]
@@ -63,7 +63,7 @@ pub struct CodegenResult {
     /// Aggregated `E###` diagnostics from across all modules (codegen + erlc + layout).
     pub errors: Vec<CodegenError>,
     /// The output-directory root that `output_layout` resolved to
-    /// (e.g. `target/ridge/debug/`).  See §3.3.
+    /// (e.g. `target/ridge/debug/`).
     pub out_root: PathBuf,
 }
 
@@ -140,12 +140,12 @@ pub enum BuildProfile {
 ///    write `.core`, and (if `invoke_erlc`) compile to `.beam`.
 /// 5. Aggregate per-module errors into `CodegenResult.errors`.
 ///
-/// Always returns [`CodegenResult`] — Phase 6 emits no fatal pre-aggregated errors.
+/// Always returns [`CodegenResult`] — codegen emits no fatal pre-aggregated errors.
 /// Per-module errors land in [`CodegenResult::errors`].
 ///
-/// `opts` is taken by value so later tasks can move out of its fields (per plan §2.2).
+/// `opts` is taken by value so later tasks can move out of its fields.
 // `clippy::needless_pass_by_value` fires because `opts` is currently consumed only
-// via field access; the by-value signature is intentional per plan §2.2.
+// via field access; the by-value signature is intentional
 #[allow(clippy::needless_pass_by_value)]
 #[must_use]
 pub fn codegen_workspace(lowered: &LoweredWorkspace, opts: CodegenOptions) -> CodegenResult {
@@ -354,7 +354,7 @@ fn compile_module_if_requested(
 /// Lower a single stdlib module to a `.core` file and optionally a `.beam` file,
 /// using the Ridge fully-qualified name (e.g. `"std.list"`) as the BEAM module atom.
 ///
-/// This is the Phase 8 path for compiling stdlib `.ridge` sources into
+/// Compile stdlib `.ridge` sources into
 /// distributable `.beam` artefacts whose module atom matches the name expected
 /// by `BridgeTarget::RidgeStdlibLocal` callers (e.g. `call 'std.list':head(1)`).
 ///

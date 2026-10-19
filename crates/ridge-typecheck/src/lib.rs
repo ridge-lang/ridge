@@ -144,8 +144,8 @@ pub struct ModuleTypecheckIncremental {
 
 /// The fully type-checked workspace.
 ///
-/// Produced by [`typecheck_workspace`]; consumed by Phase 5 (lowering),
-/// Phase 6 (codegen), and Phase 8 (LSP).
+/// Produced by [`typecheck_workspace`]; consumed by lowering,
+/// codegen, and the LSP.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct TypedWorkspace {
@@ -158,7 +158,7 @@ pub struct TypedWorkspace {
     /// Shape → [`ridge_types::TyConId`] map for anonymous record types.
     ///
     /// Populated by [`crate::tycon_collect::prescan_inline_records`] during
-    /// type-checking and frozen here for Phase 5 (lowering) to resolve
+    /// type-checking and frozen here for lowering to resolve
     /// `Type::Record` AST nodes without re-interning.  Read-only after
     /// `typecheck_workspace` returns.
     pub anon_records: AnonRecordTable,
@@ -1420,8 +1420,8 @@ fn typecheck_module_inner(
     check_main_error_showable(&mut ctx, b, &fn_decls);
 
     // Step D: Capability checking for each fn decl.
-    // OQ-PHASE45-005: span-keyed lookup via fn body's span + NodeKind.
-    // D040: file-private / unannotated / annotated cap handling is inside
+    // span-keyed lookup via fn body's span + NodeKind.
+    // file-private / unannotated / annotated cap handling is inside
     // infer_caps_for_decls; backward-compat dual-insert is also there.
     let inferred_caps = infer_caps_for_decls(&mut ctx, b, &fn_decls);
 
@@ -1508,10 +1508,10 @@ fn typecheck_module_inner(
     // Note: detect_unsolved_type_vars (T023) is already called by
     // typecheck_module_decls internally. No need to repeat here.
 
-    // Phase 4.5 T4: capture generalised schemes for top-level decls BEFORE
+    // capture generalised schemes for top-level decls BEFORE
     // popping the env frame. ctx.schemes_accum was populated by
     // typecheck_module_decls (scc.rs) via write_scheme_if_top_level.
-    // OQ-PHASE45-003: top-level decl schemes only; let-bound locals excluded.
+    // top-level decl schemes only; let-bound locals excluded.
     let schemes = std::mem::take(&mut ctx.schemes_accum);
 
     // Capture the dictionary resolution plan accumulated during SCC solving.
@@ -1520,7 +1520,7 @@ fn typecheck_module_inner(
 
     ctx.env.pop_frame();
 
-    // Phase 4.5 T3: move the node_types accumulator into TypedModule.
+    // move the node_types accumulator into TypedModule.
     // Every expression that was reached by infer_expr has its type recorded here.
     //
     // Resolve each entry deeply now that the union-find is complete. The
@@ -1543,7 +1543,7 @@ fn typecheck_module_inner(
         }
     }
 
-    // Phase 4.5 T5: inferred_caps is now keyed by real NodeIds (or proxy fallback).
+    // inferred_caps is now keyed by real NodeIds (or proxy fallback).
     // The T17 proxy comment is removed; the sweep will update LowerCtx::lookup_inferred_caps.
     // Move the quoted-lambda side-table out for the lowering pass.
     let quoted_lambdas = std::mem::take(&mut ctx.quoted_lambdas_accum);
@@ -3091,14 +3091,14 @@ mod tests {
         typecheck_workspace(&resolved)
     }
 
-    /// T5-1: verify that after typechecking, `inferred_caps` uses real `NodeIds`
+    /// Verify that after typechecking, `inferred_caps` uses real `NodeIds`
     /// that are reachable via the module's `node_id_map`.
     ///
     /// The test creates a fn with a capability-bearing call (Io.println) and
     /// checks that at least one key in `inferred_caps` matches the real `NodeId`
     /// returned by `node_id_map.get(body_span, body_kind)` where `body_kind` is
     /// Block/Try/Expr depending on the body's expression shape.
-    // OQ-PHASE45-005: span-keyed lookup; verify real NodeId is in inferred_caps.
+    // span-keyed lookup; verify real NodeId is in inferred_caps.
     #[test]
     fn t5_inferred_caps_uses_real_node_id() {
         use ridge_ast::{Body, Expr as AstExpr, Item};

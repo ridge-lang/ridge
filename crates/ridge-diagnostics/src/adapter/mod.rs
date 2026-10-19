@@ -20,7 +20,7 @@
 //! depends on all four crates and is the natural meeting point.
 //!
 //! A future refactor (post-0.1.0) could extract `HasErrorCode` into a
-//! leaf trait crate and reunite all six adapters here; see D167.
+//! leaf trait crate and reunite all six adapters here.
 
 pub mod lex;
 pub mod manifest;

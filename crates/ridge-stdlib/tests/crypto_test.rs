@@ -1,7 +1,7 @@
 //! Track-A tests for `std.crypto` — `constantTimeEq` bridged to `crypto:hash_equals/2`.
 //!
 //! `crypto.ridge` is `@ffi`-only. These tests pin two things:
-//!   1. the module compiles through the T4 build pipeline and is discovered, and
+//!   1. the module compiles through the stdlib build pipeline and is discovered, and
 //!   2. its `@ffi` target is present in the generated `ffi_targets` table.
 //!
 //! The second assertion is the regression guard: `std.crypto` lived in the

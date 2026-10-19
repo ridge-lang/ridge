@@ -6,7 +6,7 @@
 use crate::{BuildProfile, CodegenError};
 use std::path::{Path, PathBuf};
 
-/// Minimum supported OTP major version (per plan §3.7 / spec §11.2 line 1189).
+/// Minimum supported OTP major version (spec §11.2 line 1189).
 pub const MIN_OTP_VERSION: u32 = 26;
 
 /// Information about a discovered `erlc` toolchain.

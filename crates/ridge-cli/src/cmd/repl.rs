@@ -11,7 +11,7 @@
 //! brackets balance.  A trailing `\` forces continuation regardless of bracket
 //! state.
 //!
-//! ## Session model (D162)
+//! ## Session model
 //!
 //! Each session maintains an accumulating synthetic Ridge module.  User input
 //! is classified:
@@ -24,7 +24,7 @@
 //! - `:q` → clean exit (code 0).
 //! - `:help` → print help text.
 //!
-//! ## Capabilities (D150, D162)
+//! ## Capabilities
 //!
 //! The REPL session declares
 //! `allow = ["io", "fs", "net", "time", "random", "env", "proc", "spawn"]`
@@ -33,7 +33,7 @@
 //! This is a privileged context — code run in the REPL may perform I/O,
 //! access the filesystem, spawn processes, etc.
 //!
-//! ## Bracket-counting scanner (D162)
+//! ## Bracket-counting scanner
 //!
 //! The scanner reads characters sequentially, tracking:
 //! - Whether it is inside a double-quoted string literal (`"…"`).
@@ -96,7 +96,7 @@ use crate::render::render_diagnostics;
 /// (`ffi` is intentionally excluded).
 #[derive(Debug, Parser)]
 pub struct ReplArgs {
-    // No flags for 0.1.0 — stdin-only mode per D150.
+    // No flags for 0.1.0 — stdin-only mode.
 }
 
 // ── Session state ─────────────────────────────────────────────────────────────
@@ -153,7 +153,7 @@ struct ReplSession {
     /// bindings inside the wrapper function body, so later expressions can
     /// reference earlier names.
     ///
-    /// D162: accumulation strategy — local-binding injection (not top-level
+    /// Accumulation strategy — local-binding injection (not top-level
     /// decls) because Ridge's typechecker does not auto-call zero-arg fns,
     /// which makes the top-level-decl approach produce `T001` type errors
     /// when a binding name appears in arithmetic (e.g. `x + 1` where
@@ -207,7 +207,7 @@ impl ReplSession {
         )
         .map_err(|e| format!("failed to write workspace manifest: {e}"))?;
 
-        // Write project manifest with full capability allowlist (D150, D162).
+        // Write project manifest with full capability allowlist.
         // The [capabilities] table is a top-level section in the project TOML,
         // not nested under [project] — see ridge-manifest src/project.rs.
         std::fs::write(
@@ -255,7 +255,7 @@ impl ReplSession {
     ///    starts with all accumulated `let` bindings (in session order) and
     ///    ends with the current expression.
     ///
-    /// D162 accumulation strategy: accumulated `let x = <v>` bindings are
+    /// Accumulation strategy: accumulated `let x = <v>` bindings are
     /// injected as local `let` bindings inside the wrapper function body.
     /// This avoids the T001 type mismatch that occurs when a zero-arg
     /// top-level function (`pub fn x -> Int = 5`) is referenced by name
@@ -263,13 +263,12 @@ impl ReplSession {
     /// the reference as `fn -> Int`, not `Int`.
     ///
     /// Pre-imports let users write `Io.println "hi"` without an explicit
-    /// `import` statement, matching the "privileged REPL context" documented
-    /// in §3.8 / D150.
+    /// `import` statement in the privileged REPL context.
     fn build_module_source(&self, current_expr: &str, fn_name: &str) -> String {
         let mut src = String::new();
 
         // Standard library pre-imports for the 8 allowed capabilities.
-        // These match the `allow = [...]` list in the project manifest (D150).
+        // These match the `allow = [...]` list in the project manifest.
         src.push_str("import std.io as Io\n");
         src.push_str("import std.fs as Fs\n");
         src.push_str("import std.env as Env\n");
@@ -428,10 +427,10 @@ pub fn execute(_args: &ReplArgs, _cwd: &Path) -> Result<(), CliError> {
             continue;
         }
 
-        // ── Let-binding accumulation (D162) ───────────────────────────────────
+        // ── Let-binding accumulation ───────────────────────────────────
         if let Some(binding) = try_parse_let_binding(trimmed) {
             // Accumulate as a local binding for injection into subsequent
-            // expression functions (D162 local-binding injection strategy).
+            // expression functions (local-binding injection strategy).
             session.accumulated_lets.push((binding.name, binding.value));
             // Let bindings are not evaluated independently — they become
             // available to subsequent expressions in the session.
@@ -526,7 +525,7 @@ fn read_input(stdin: &io::Stdin) -> io::Result<Option<String>> {
     }
 }
 
-// ── Bracket-counting scanner (D162) ──────────────────────────────────────────
+// ── Bracket-counting scanner ──────────────────────────────────────────
 
 /// Compute the net bracket depth of `src` after scanning all characters.
 ///

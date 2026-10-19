@@ -1,4 +1,4 @@
-//! `with`-update expression lowering — §4.5.
+//! `with`-update expression lowering.
 //!
 //! `Expr::With { base, fields, span }` lowers to a partial record update:
 //!

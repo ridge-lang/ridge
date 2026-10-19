@@ -1,8 +1,8 @@
 //! `ridge-manifest` — workspace and project manifest parsing for `ridge.toml`.
 //!
 //! This crate is the canonical parser for Ridge workspace and project manifests.
-//! It is shared between `ridge-resolve` (Phase 3 workspace graph construction)
-//! and `ridge-pkg` (Phase 8 dependency resolution) so that both consumers
+//! It is shared between `ridge-resolve` (workspace graph construction)
+//! and `ridge-pkg` (dependency resolution) so that both consumers
 //! operate on a single, consistent manifest model.
 //!
 //! # Front-door API
@@ -41,10 +41,8 @@ pub use path::{canonicalize, plain};
 pub use project::{parse_project, Project, ProjectDependency, ProjectKind};
 pub use workspace::{parse_workspace, ForbidRule, GitRev, SharedDependency, WorkspaceManifest};
 
-/// Alias for [`Project`] matching the §3.11 plan-spec name `ProjectManifest`.
+/// Alias for [`Project`] under the name `ProjectManifest`.
 ///
-/// The canonical name is [`Project`] (preserved from the existing
-/// `ridge-resolve` parser to enable a clean re-export in T2).  This alias
-/// preserves forward-compatibility with the plan's spec'd name without a
-/// breaking rename in 0.2.0.
+/// [`Project`] remains the canonical name. The alias exposes the longer name
+/// without requiring callers to adopt a breaking rename.
 pub type ProjectManifest = Project;

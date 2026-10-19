@@ -1,4 +1,4 @@
-//! Stdlib environment seeding (T17 pipeline wiring).
+//! Stdlib environment seeding.
 //!
 //! Seeds the [`InferCtx`] environment with:
 //! 1. Prelude constructor schemes (`Some`, `None`, `Ok`, `Err`).
@@ -6,7 +6,7 @@
 //!    e.g. `import std.io as Io` → `"Io.println"` → scheme, `"Io.eprintln"` → scheme, …
 //!
 //! This is the "stdlib wiring" that makes `Expr::Qualified("Io.println")` resolve
-//! to its correct type scheme during T6 inference, instead of falling through to
+//! to its correct type scheme during expression inference, instead of falling through to
 //! the T999 "qualified name unresolved" fallback.
 
 use ridge_resolve::{Binding, BuiltinStdlibModule, ImportResolution, ImportTarget, BUILTINS};

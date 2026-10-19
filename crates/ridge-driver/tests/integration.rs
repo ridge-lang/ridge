@@ -1,4 +1,4 @@
-//! Ridge-driver integration tests — T2 §3.0 test surface (16 tests).
+//! Integration tests for the Ridge driver.
 //!
 //! Test plan:
 //! - compile + check + run on each of the four canonical examples (12 tests).
@@ -76,7 +76,7 @@ fn read_expected(name: &str) -> String {
 
 // ── Tests 1–3: log_analyzer — compile, check, run ────────────────────────────
 
-/// T2-01: compile the `log_analyzer` example with `compile_workspace`.
+/// Compile the `log_analyzer` example with `compile_workspace`.
 #[test]
 fn compile_log_analyzer() {
     let source = read_example("log_analyzer");
@@ -86,7 +86,7 @@ fn compile_log_analyzer() {
     assert!(result.is_ok(), "compile failed: {result:?}");
 }
 
-/// T2-02: check the `log_analyzer` example with `check_workspace`.
+/// Check the `log_analyzer` example with `check_workspace`.
 #[test]
 fn check_log_analyzer() {
     let source = read_example("log_analyzer");
@@ -96,7 +96,7 @@ fn check_log_analyzer() {
     assert!(result.is_ok(), "check returned fatal error: {result:?}");
 }
 
-/// T2-03: run the `log_analyzer` example on the BEAM runtime.
+/// Run the `log_analyzer` example on the BEAM runtime.
 ///
 /// Requires OTP on PATH (`--features beam-runtime`).
 #[test]
@@ -148,7 +148,7 @@ fn run_log_analyzer() {
 
 // ── Tests 4–6: url_shortener ──────────────────────────────────────────────────
 
-/// T2-04: compile the `url_shortener` example.
+/// Compile the `url_shortener` example.
 #[test]
 fn compile_url_shortener() {
     let source = read_example("url_shortener");
@@ -158,7 +158,7 @@ fn compile_url_shortener() {
     assert!(result.is_ok(), "compile failed: {result:?}");
 }
 
-/// T2-05: check the `url_shortener` example.
+/// Check the `url_shortener` example.
 #[test]
 fn check_url_shortener() {
     let source = read_example("url_shortener");
@@ -168,7 +168,7 @@ fn check_url_shortener() {
     assert!(result.is_ok(), "check returned fatal error: {result:?}");
 }
 
-/// T2-06: run the `url_shortener` example on the BEAM runtime.
+/// Run the `url_shortener` example on the BEAM runtime.
 ///
 /// `url_shortener` is a server example: its `main` calls `Http.listen`, which
 /// blocks the BEAM accept loop until the server shuts down, so a
@@ -214,7 +214,7 @@ fn run_url_shortener() {
 
 // ── Tests 7–9: game_of_life ───────────────────────────────────────────────────
 
-/// T2-07: compile the `game_of_life` example.
+/// Compile the `game_of_life` example.
 #[test]
 fn compile_game_of_life() {
     let source = read_example("game_of_life");
@@ -224,7 +224,7 @@ fn compile_game_of_life() {
     assert!(result.is_ok(), "compile failed: {result:?}");
 }
 
-/// T2-08: check the `game_of_life` example.
+/// Check the `game_of_life` example.
 #[test]
 fn check_game_of_life() {
     let source = read_example("game_of_life");
@@ -234,7 +234,7 @@ fn check_game_of_life() {
     assert!(result.is_ok(), "check returned fatal error: {result:?}");
 }
 
-/// T2-09: run the `game_of_life` example on the BEAM runtime.
+/// Run the `game_of_life` example on the BEAM runtime.
 #[test]
 #[cfg(feature = "beam-runtime")]
 fn run_game_of_life() {
@@ -271,7 +271,7 @@ fn run_game_of_life() {
 
 // ── Tests 10–12: rate_limiter ─────────────────────────────────────────────────
 
-/// T2-10: compile the `rate_limiter` example.
+/// Compile the `rate_limiter` example.
 #[test]
 fn compile_rate_limiter() {
     let source = read_example("rate_limiter");
@@ -281,7 +281,7 @@ fn compile_rate_limiter() {
     assert!(result.is_ok(), "compile failed: {result:?}");
 }
 
-/// T2-11: check the `rate_limiter` example.
+/// Check the `rate_limiter` example.
 #[test]
 fn check_rate_limiter() {
     let source = read_example("rate_limiter");
@@ -291,7 +291,7 @@ fn check_rate_limiter() {
     assert!(result.is_ok(), "check returned fatal error: {result:?}");
 }
 
-/// T2-12: run the `rate_limiter` example on the BEAM runtime.
+/// Run the `rate_limiter` example on the BEAM runtime.
 #[test]
 #[cfg(feature = "beam-runtime")]
 fn run_rate_limiter() {
@@ -328,7 +328,7 @@ fn run_rate_limiter() {
 
 // ── Test 13: multi-member workspace ──────────────────────────────────────────
 
-/// T2-13: compile a workspace with two members (`apps/api` and `apps/core`).
+/// Compile a workspace with two members (`apps/api` and `apps/core`).
 ///
 /// Asserts that `compile_workspace` succeeds without a fatal error.
 #[test]
@@ -350,7 +350,7 @@ fn compile_multi_member_workspace() {
 
 // ── Test 14: forbid-rule violation ────────────────────────────────────────────
 
-/// T2-14: compile a workspace with a `[workspace.rules.forbid]` rule that is
+/// Compile a workspace with a `[workspace.rules.forbid]` rule that is
 /// violated.
 ///
 /// The driver returns `Ok(artefacts)` but `artefacts.diagnostics` is non-empty
@@ -411,7 +411,7 @@ fn compile_forbid_rule_violation() {
 
 // ── Test 15: missing Erlang — C004 ErlangNotFound ────────────────────────────
 
-/// T2-15: `run_workspace` when `erl` is not on `PATH` produces `C004 ErlangNotFound`.
+/// `run_workspace` when `erl` is not on `PATH` produces `C004 ErlangNotFound`.
 ///
 /// We mock the PATH by temporarily overriding it to an empty temp directory,
 /// ensuring `which("erl")` fails.  We restore it after the test.
@@ -474,7 +474,7 @@ fn run_missing_erlang() {
 
 // ── Test 16: emit-Core-only mode ──────────────────────────────────────────────
 
-/// T2-16: `compile_workspace` with `emit = EmitArtefacts::Core` produces `.core`
+/// `compile_workspace` with `emit = EmitArtefacts::Core` produces `.core`
 /// files but no `.beam` files.
 #[test]
 fn compile_emit_core_only() {
@@ -620,7 +620,7 @@ fn run_err_main_returns_nonzero_with_stderr() {
     );
 }
 
-/// T2-18: `run_workspace` exits zero when main returns `Ok ()` — happy-path
+/// `run_workspace` exits zero when main returns `Ok ()` — happy-path
 /// sanity check that the runner's pattern-match doesn't break working code.
 #[test]
 #[cfg(feature = "beam-runtime")]
@@ -671,7 +671,7 @@ fn run_reports_the_warnings_it_did_not_stop_on() {
     );
 }
 
-/// T2-19: `run_workspace` exits zero when main returns bare `Unit` — keeps
+/// `run_workspace` exits zero when main returns bare `Unit` — keeps
 /// the pre-runner behaviour for programs that don't opt into the Result
 /// convention (e.g. `fn io main () -> Unit = Io.println "..."`).
 #[test]

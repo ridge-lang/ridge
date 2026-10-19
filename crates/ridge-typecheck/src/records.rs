@@ -1,22 +1,22 @@
-//! Record construction, field-access, and `with`-update inference (T8).
+//! Record construction, field-access, and `with`-update inference.
 //!
 //! # Entry points
 //!
-//! - [`infer_record_construction`] — `Constructor { field = val, … }` (§4.8).
-//! - [`infer_field_access`]        — `expr.field` (§4.8).
-//! - [`infer_record_with`]         — `expr with { field = val, … }` (§4.8).
+//! - [`infer_record_construction`] — `Constructor { field = val, … }`.
+//! - [`infer_field_access`]        — `expr.field`.
+//! - [`infer_record_with`]         — `expr with { field = val, … }`.
 //!
 //! # Design note
 //!
 //! Each function takes the [`RecordSchema`] and [`TyConId`] as explicit
 //! parameters rather than looking them up via a `BindingMap`.  The full
-//! pipeline wiring (T17) wraps these calls after doing the `BindingMap` lookup;
+//! pipeline wraps these calls after doing the `BindingMap` lookup;
 //! the unit tests below construct the schema directly.
 //!
 //! # Did-you-mean
 //!
 //! `T005 UnknownField` uses [`ridge_resolve::suggest::suggest`] with the
-//! schema's field names as candidates (§7, upstream contract).
+//! schema's field names as candidates.
 
 use ridge_ast::{FieldInit, FieldPattern, Ident, Span};
 use ridge_types::{BuiltinTyCons, RecordSchema, TyConId, TyVid, Type};
@@ -32,7 +32,7 @@ use crate::unify::unify;
 /// Generate "did you mean?" suggestions for a field name miss.
 ///
 /// Uses `ridge_resolve::suggest::suggest` with the schema's field names as
-/// candidates.  Per §7 upstream contract, `suggest` is `pub` in
+/// candidates. `suggest` is `pub` in
 /// `ridge_resolve::suggest`.
 fn field_suggestions(field: &str, schema: &RecordSchema) -> Vec<String> {
     let candidates = schema.record_fields().iter().map(|f| f.name.clone());
@@ -41,7 +41,7 @@ fn field_suggestions(field: &str, schema: &RecordSchema) -> Vec<String> {
 
 // ── infer_record_construction ─────────────────────────────────────────────────
 
-/// Infer the type of a record-construction expression (§4.8 construction rule).
+/// Infer the type of a record-construction expression.
 ///
 /// # Parameters
 ///
@@ -163,7 +163,7 @@ fn opaque_field_violation(ctx: &InferCtx, decl: &ridge_types::TyConDecl) -> bool
 
 // ── infer_field_access ────────────────────────────────────────────────────────
 
-/// Infer the type of a field-access expression `base.field` (§4.8).
+/// Infer the type of a field-access expression `base.field`.
 ///
 /// # Parameters
 ///
@@ -188,7 +188,7 @@ pub fn infer_field_access(
     let base_resolved = ctx.deep_resolve(base_ty);
 
     // Absorb: if the base is an unresolved type variable (e.g. a HOF callback
-    // param constrained after body inference, or a Phase-7 stub type) or is
+    // param constrained after body inference, or a stdlib stub type) or is
     // already Error, return Error silently.  T006 fires only for concrete
     // non-record types.
     if matches!(&base_resolved, Type::Var(_) | Type::Error) {
@@ -272,8 +272,8 @@ pub fn infer_field_access(
 
 // ── infer_record_with ─────────────────────────────────────────────────────────
 
-/// Infer the type of a `with`-update expression `base with { field = val, … }`
-/// (§4.8 `with` rule).
+/// Infer the type of a `with`-update expression `base with { field = val, … }`.
+/// Uses the record schema to check the updated fields.
 ///
 /// # Parameters
 ///

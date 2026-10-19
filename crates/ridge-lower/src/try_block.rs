@@ -102,7 +102,7 @@ mod tests {
         }
     }
 
-    // ── T7-try-1: single-stmt try block — no errors, scope popped ────────────
+    // ── single-stmt try block — no errors, scope popped ────────────
     //
     // After lowering the block, the propagation scope stack must be empty.
 
@@ -145,7 +145,7 @@ mod tests {
         }
     }
 
-    // ── T7-try-2: try { e? } — inner ? sees the try scope ────────────────────
+    // ── try { e? } — inner ? sees the try scope ────────────────────
     //
     // Construct an Expr::Try whose block contains a Propagate.  We manually
     // pre-inject the propagation scope via push_propagation_scope before calling
@@ -187,7 +187,7 @@ mod tests {
         assert!(ctx.current_propagation_scope().is_none());
     }
 
-    // ── T7-try-3: empty try {} → L105 + Unit stub ────────────────────────────
+    // ── empty try {} → L105 + Unit stub ────────────────────────────
 
     #[test]
     fn try_block_empty_emits_l105() {
@@ -222,7 +222,7 @@ mod tests {
         );
     }
 
-    // ── T7-try-4: lower_try with Option scope type injected via try ───────────
+    // ── lower_try with Option scope type injected via try ───────────
     //
     // lower_try pushes whatever resolve_try_type returns. When node_id_map is
     // absent it returns Type::Error. We verify the scope is still popped cleanly
@@ -248,7 +248,7 @@ mod tests {
         );
     }
 
-    // ── T7-try-5: lower_try with multi-stmt block — scope popped, no L105 ──────
+    // ── lower_try with multi-stmt block — scope popped, no L105 ──────
     //
     // Verify that a multi-statement try block lowers without L105 and the scope
     // is correctly popped. This isolated context has no typed node table;

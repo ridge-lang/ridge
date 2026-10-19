@@ -1,4 +1,4 @@
-//! "Did you mean X?" suggestion engine (plan §4.10).
+//! "Did you mean X?" suggestion engine.
 //!
 //! Single concern: given a target string (a name the user typed that didn't
 //! resolve) and a set of candidate strings (the in-scope, visibility-filtered
@@ -7,14 +7,14 @@
 //! a hard distance cutoff of [`MAX_DISTANCE`].
 //!
 //! The suggestion engine **does not perform any visibility filtering** of its
-//! own — that is the caller's responsibility (per plan §11 risk R14).  Passing
+//! own — that is the caller's responsibility. Passing
 //! a `_private` or `pub(internal)` name to [`suggest`] would happily surface
 //! it; `imports.rs` / `walker.rs` / `qualified.rs` filter their candidate sets
 //! before calling.
 //!
 //! ## Cost guard
 //!
-//! Per plan §4.10 the cost of running the DP per candidate is capped at
+//! The cost of running the DP per candidate is capped at
 //! [`CANDIDATE_CAP`].  When a callsite would feed more than that many
 //! candidates (e.g., scanning every public symbol of a 1 000-module workspace),
 //! we conservatively skip suggestion generation and return the empty `Vec` —
@@ -26,7 +26,7 @@
 //! ties broken alphabetically — so identical inputs always produce identical
 //! suggestion lists across runs.  Snapshot tests rely on this.
 
-// ── Tunables (plan §4.10) ─────────────────────────────────────────────────────
+// ── Tunables ─────────────────────────────────────────────────────
 
 /// Maximum Damerau-Levenshtein distance for a candidate to qualify.
 ///
@@ -37,13 +37,13 @@ pub const MAX_DISTANCE: usize = 2;
 
 /// Maximum number of suggestions to return.
 ///
-/// Plan §4.10: "keep the ≤ 3 closest" — limiting noise in error renders.
+/// Keep the ≤ 3 closest — limiting noise in error renders.
 pub const MAX_RESULTS: usize = 3;
 
 /// Hard cap on the candidate set size before suggestion generation is skipped.
 ///
-/// Plan §4.10: "Cap the computation at 500 candidates ... beyond that, skip
-/// suggestions".  Keeps per-error cost O(500 × `name_len`²) worst-case.
+/// Cap the computation at 500 candidates; beyond that, skip
+/// suggestions.  Keeps per-error cost O(500 × `name_len`²) worst-case.
 pub const CANDIDATE_CAP: usize = 500;
 
 /// Well-known prelude-shorthand → fully-qualified stdlib form.
@@ -165,7 +165,7 @@ pub fn nearest_type_shorthand(name: &str) -> Option<&'static str> {
 ///
 /// The caller MUST pre-filter `candidates` to names that are visible at the
 /// error site.  This function performs no filtering of its own — passing a
-/// `_private` name will happily surface it.  See plan §11 risk R14.
+/// `_private` name will happily surface it.
 #[must_use]
 pub fn suggest<I>(target: &str, candidates: I) -> Vec<String>
 where
@@ -368,7 +368,7 @@ mod tests {
         }
     }
 
-    // ── suggest: 500-candidate cost cap (plan §4.10 risk R14 guard) ───────────
+    // ── suggest: 500-candidate cost cap (guard) ───────────
 
     #[test]
     fn suggest_skips_when_candidate_set_exceeds_cap() {

@@ -1,4 +1,4 @@
-//! Inner-function lowering — §4.12.
+//! Inner-function lowering.
 //!
 //! # Rule summary
 //!
@@ -24,7 +24,7 @@
 //! ## Recursive inner functions
 //!
 //! When the lambda body references its own name via `Expr::Ident`, the
-//! `BindingMap` (set up by Phase 3) classifies that ident as
+//! `BindingMap` (set up by name resolution) classifies that ident as
 //! `Binding::Local(...)`.  The lowerer does **not** special-case this: it
 //! simply calls `lower_expr` on the body and trusts the binding-map result —
 //! the recursive reference becomes `IrExpr::Local { name: decl.name.text }`.
@@ -48,8 +48,8 @@
 //!
 //! ## Capability placeholder
 //!
-//! `CapabilitySet::PURE` is used as a placeholder until Phase 4's
-//! `inferred_caps` side-table is wired into `LowerCtx` (T17).  This mirrors
+//! `CapabilitySet::PURE` is used as a placeholder until the type checker's
+//! `inferred_caps` side-table is wired into `LowerCtx`.  This mirrors
 //! the approach used in `field_accessor.rs`.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -147,7 +147,7 @@ pub fn lower_inner_fn_final(ctx: &mut LowerCtx<'_>, decl: &FnDecl, ifspan: Span)
 
 /// Lower a bare `InnerFn` expression encountered outside any block context.
 ///
-/// This is a Phase 4 invariant violation: `InnerFn` is a block-level statement
+/// This is a type-checker invariant violation: `InnerFn` is a block-level statement
 /// and should never reach `lower_expr` directly.  Emits `L999` with a clear
 /// message and returns `IrExpr::Lit { Unit }`.
 pub fn lower_inner_fn_bare(ctx: &mut LowerCtx<'_>, decl: &FnDecl, ifspan: Span) -> IrExpr {
@@ -218,7 +218,7 @@ fn push_dict_scope(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> bool {
 ///
 /// # Capability set
 ///
-/// Reads the effective caps from Phase 4's `inferred_caps` side-table via the
+/// Reads the effective caps from the type checker's `inferred_caps` side-table via the
 /// proxy `NodeId(decl.span.start)` (see [`LowerCtx::lookup_inferred_caps`]).
 /// Falls back to `CapabilitySet::PURE` when the table is absent or has no
 /// entry for this span (inner `fn` lambdas are keyed by top-level `fn` spans
@@ -226,7 +226,7 @@ fn push_dict_scope(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> bool {
 fn build_lambda(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrExpr {
     let lambda_id = ctx.fresh_id(None);
 
-    // PHASE45-T3: attempt to lift bare-param types from node_types via the
+    // attempt to lift bare-param types from node_types via the
     // InnerFn expression's Type::Fn.  For InnerFn, node_types stores
     // Type::Unit at (decl.span, NodeKind::Expr) (the expression evaluates to
     // unit); the Type::Fn shape will not match and the lookup falls back to
@@ -311,7 +311,7 @@ fn build_lambda(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrExpr {
 /// practice — but uses the correct structural pattern (same as lambdas in
 /// `crate::core`).
 ///
-/// PHASE45-T3: bare param type lifted from enclosing fn's `Type::Fn` (structural pattern).
+/// bare param type lifted from enclosing fn's `Type::Fn` (structural pattern).
 fn param_to_ir_param(
     ctx: &mut LowerCtx<'_>,
     fn_span: Span,
@@ -320,7 +320,7 @@ fn param_to_ir_param(
 ) -> IrParam {
     match param {
         Param::Bare(ident) => {
-            // PHASE45-T3: look up the fn's Type::Fn from (fn_span, NodeKind::Expr)
+            // look up the fn's Type::Fn from (fn_span, NodeKind::Expr)
             // and extract params[param_idx].  Inner-fn expressions store Type::Unit
             // so this falls back to Type::Error; the structural pattern is correct.
             let ty = ctx
@@ -411,7 +411,7 @@ mod tests {
         }
     }
 
-    // ── T8-if-1: basic inner fn becomes LetIn(Bind, Lambda) ──────────────────
+    // ── basic inner fn becomes LetIn(Bind, Lambda) ──────────────────
     //
     // `fn inner = 42` with continuation [Unit]
     // → LetIn { pat: Bind("inner"), value: Lambda([], Int(42)), body: Unit }
@@ -490,7 +490,7 @@ mod tests {
         }
     }
 
-    // ── T8-if-2: recursive inner fn references self via Local ─────────────────
+    // ── recursive inner fn references self via Local ─────────────────
     //
     // `fn fact n = fact n` where `fact` in the body resolves to Binding::Local.
     // The lowerer trusts the binding map; `fact` in the body becomes
@@ -553,7 +553,7 @@ mod tests {
         }
     }
 
-    // ── T8-if-3: nested inner fns each produce their own LetIn(Lambda) ─────────
+    // ── nested inner fns each produce their own LetIn(Lambda) ─────────
     //
     // Block: [fn outer = (fn inner = 1), 99]
     // Outer: LetIn(Bind outer, Lambda([], LetIn(Bind inner, Lambda([], Int 1), Unit)))
@@ -625,7 +625,7 @@ mod tests {
         }
     }
 
-    // ── T8-if-4: inner fn as final stmt → LetIn with Unit body ───────────────
+    // ── inner fn as final stmt → LetIn with Unit body ───────────────
     #[test]
     fn inner_fn_final_produces_unit_body() {
         let mut ctx = fresh_ctx();
@@ -658,7 +658,7 @@ mod tests {
         }
     }
 
-    // ── T8-if-5: bare inner fn emits L999 ────────────────────────────────────
+    // ── bare inner fn emits L999 ────────────────────────────────────
     #[test]
     fn bare_inner_fn_emits_l999() {
         let mut ctx = fresh_ctx();
@@ -684,7 +684,7 @@ mod tests {
         }
     }
 
-    // ── T8-if-6: params are lowered to IrParam with Type::Error ──────────────
+    // ── params are lowered to IrParam with Type::Error ──────────────
     #[test]
     fn params_lowered_with_type_error_placeholder() {
         let mut ctx = fresh_ctx();

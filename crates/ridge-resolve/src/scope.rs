@@ -1,10 +1,10 @@
-//! Lexical scope stack for intra-module name resolution (plan §3.3 / §4.5).
+//! Lexical scope stack for intra-module name resolution.
 //!
 //! [`ScopeStack`] is a `Vec<Scope>` maintained by the [`crate::walker`] as it
 //! descends into function bodies, lambda expressions, match arms, actor blocks,
 //! etc.  Lookup walks from the innermost scope outward; the first hit wins.
 //!
-//! # Shadowing rules (plan §4.8)
+//! # Shadowing rules
 //!
 //! - Cross-scope shadowing is **permitted**. An inner `let x` hides an outer
 //!   `x` without error.

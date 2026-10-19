@@ -1,14 +1,14 @@
-//! Ridge Phase 5 lowering engine.
+//! Ridge lowering engine.
 //!
 //! Consumes a [`TypedWorkspace`] from `ridge-typecheck` and produces a
-//! target-neutral [`LoweredWorkspace`] (Ridge Core IR). All Phase-5 desugar
-//! rules live in per-rule modules under
-//! this crate; T2 ships only the engine scaffold and [`LowerCtx`].
+//! target-neutral [`LoweredWorkspace`] (Ridge Core IR). All lowering desugar
+//! rules live in per-rule modules under this crate, with [`LowerCtx`]
+//! carrying the per-module context.
 //!
 //! # Entry points
 //!
 //! - [`lower_workspace`] — lower an entire [`TypedWorkspace`] to Core IR.
-//! - [`lower_module`] — lower a single [`TypedModule`] (LSP hot-path; T3+).
+//! - [`lower_module`] — lower a single [`TypedModule`] (LSP hot-path).
 
 #![warn(missing_docs)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -52,12 +52,12 @@ use rustc_hash::FxHashMap;
 /// Iterates over every module in `twork` and calls [`lower_module`]
 /// for each one, collecting the results into a [`LoweredWorkspace`] whose slot
 /// count equals `twork.modules.len()`.  Every slot is `Some(...)` — skipping
-/// error-producing modules is a T3+ concern once the per-module error handling
+/// error-producing modules is deferred until the per-module error handling
 /// policy is wired.
 ///
-/// `rwork` is the resolved workspace produced by Phase 3; it carries the
+/// `rwork` is the resolved workspace produced by name resolution; it carries the
 /// per-module [`ridge_resolve::BindingMap`] tables needed by the `Ident` /
-/// `Qualified` lowering rules (Option A — T3).
+/// `Qualified` lowering rules.
 ///
 /// On an empty workspace (`twork.modules` is empty and `twork.tycons` is empty)
 /// this returns an empty [`LoweredWorkspace`] with `tycon_count == 0`, satisfying
@@ -104,7 +104,7 @@ pub fn lower_workspace(twork: &TypedWorkspace, rwork: &ResolvedWorkspace) -> Low
 /// The errors travel beside the artefact rather than inside it, the way
 /// [`ridge_typecheck::TypecheckResult`] carries its own. They used to live on
 /// the per-module context and be dropped when it was consumed, so every
-/// diagnostic Phase 5 raised — including the channel it reports its own
+/// diagnostic lowering raised — including the channel it reports its own
 /// invariant violations on — was built and thrown away. Returning them here
 /// makes ignoring them a decision a caller has to write down.
 #[derive(Debug)]
@@ -138,17 +138,17 @@ pub fn stdlib_fqns(rwork: &ResolvedWorkspace) -> FxHashMap<ModuleId, String> {
 /// Lower a single typed module to Core IR.
 ///
 /// Constructs a fresh [`LowerCtx`], attaches the resolve-layer binding tables
-/// (Option A — T3), walks all top-level [`ridge_ast::Item`]s via
+/// walks all top-level [`ridge_ast::Item`]s via
 /// [`item::lower_item`], and calls [`LowerCtx::finish_with_items`] to produce a
 /// [`LoweredModule`] whose `items` vector mirrors source order and whose
 /// `node_types` length matches `typed.node_types.len()` (index-parity invariant).
 ///
 /// `ws` carries workspace-level context (tycons, builtins) for `with` schema
-/// lookup (§4.5) and interp `ToText` dispatch (§4.6).
+/// lookup and interp `ToText` dispatch.
 ///
 /// `rmod` is the `ResolvedModule` for this module; when `Some`, the binding
 /// side-tables are attached to the context so that `Ident`/`Qualified` atoms
-/// resolve correctly (§3.2).  `None` is accepted defensively for test scaffolding
+/// resolve correctly.  `None` is accepted defensively for test scaffolding
 /// that does not run the full resolve pipeline.
 #[must_use]
 #[expect(
@@ -172,7 +172,7 @@ pub fn lower_module(
     // through the bridge (dotted FQN atom) instead of the user-module mangle.
     ctx.attach_stdlib_module_fqns(stdlib_fqns);
     // Attach the current module's inferred_caps side-table so that
-    // lookup_inferred_caps can read Phase 4's capability inference results.
+    // lookup_inferred_caps can read the type checker's capability inference results.
     ctx.attach_inferred_caps(&typed.inferred_caps);
     // Attach the quoted-lambda side-table so quoted bodies are reified to QExpr
     // trees instead of lowered to closures.
@@ -191,8 +191,8 @@ pub fn lower_module(
         let (nid_map, _nid_errors) = assign_node_ids(&typed.ast);
         ctx.attach_bindings(nid_map, &rm.bindings);
         // Wire the per-module symbol table for SymbolId → owner-type-name
-        // lookup used by lookup_constructor_tycon (§3.2 / OQ-PHASE45-007).
-        // ResolvedModule.symbols is the SymbolTable built by the T6 collector.
+        // lookup used by lookup_constructor_tycon (§3.2).
+        // ResolvedModule.symbols is the SymbolTable built by the top-level collector.
         ctx.attach_symbol_table(&rm.symbols);
     }
 
@@ -259,7 +259,7 @@ mod tests {
     // cannot construct it here directly.  Instead we verify the structural
     // contract via the constructors we added on ridge-ir.
     //
-    // T3 will add an integration-style smoke test that runs the full
+    // TODO: Add an integration-style smoke test that runs the full
     // resolve → typecheck → lower_workspace pipeline on a trivial Ridge source.
     #[test]
     fn lowered_workspace_empty_constructor() {

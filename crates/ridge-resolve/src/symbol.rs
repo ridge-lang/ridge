@@ -1,4 +1,4 @@
-//! Per-module symbol table built by the T6 top-level collector.
+//! Per-module symbol table built by the top-level collector.
 //!
 //! [`collect_symbols`] walks a parsed [`Module`] with `TopLevelCollector`
 //! (private), populating a [`SymbolTable`] and emitting
@@ -17,11 +17,11 @@
 //! Union constructors with distinct names ARE added to `index` (and can trigger
 //! R005 if they collide with another top-level binding).
 //!
-//! # Export cross-reference (DR-08)
+//! # Export cross-reference
 //!
 //! `[project.exports].public` cross-reference populates the
 //! [`SymbolEntry::exported_externally`] flag via [`apply_external_exports`],
-//! called from [`crate::resolve_workspace`] after T6 collection.
+//! called from [`crate::resolve_workspace`] after symbol collection.
 
 use rustc_hash::FxHashMap;
 
@@ -72,24 +72,24 @@ pub struct SymbolEntry {
     /// layers of spec §8.4, where the manifest selects modules and `pub`
     /// selects symbols within them.
     ///
-    /// Populated by `apply_external_exports` (DR-08 post-pass) in
-    /// [`crate::resolve_workspace`] after T6 symbol collection.  Defaults to
+    /// Populated by `apply_external_exports` (export post-pass) in
+    /// [`crate::resolve_workspace`] after symbol collection.  Defaults to
     /// `false` for symbols that are project-internal or omitted from the export
     /// surface.
     ///
-    /// Phase 4 (type checker) reads this to gate signature export tables and IR
+    /// The type checker reads this to gate signature export tables and IR
     /// codegen boundaries.
     pub exported_externally: bool,
 }
 
 /// The kind of a top-level symbol.
 ///
-/// TODO(T8): may need `decl_node: NodeId` fields on each variant once use-site
-/// lookups are implemented. Deferred so T6 stays minimal.
+/// TODO: consider `decl_node: NodeId` fields on each variant for declaration
+/// lookups. These fields remain deferred.
 ///
 /// # Stability
 ///
-/// Marked `#[non_exhaustive]` — new symbol kinds may be added in Phase 4
+/// Marked `#[non_exhaustive]` — new symbol kinds may be added in type checking
 /// (type aliases, trait items) or later.  Match arms outside this crate must
 /// include a wildcard (`_`) arm.
 #[non_exhaustive]
@@ -208,7 +208,7 @@ impl SymbolTable {
 
 // ── collect_symbols ───────────────────────────────────────────────────────────
 
-/// Run T6's top-level collection over a parsed module.
+/// Run top-level symbol collection over a parsed module.
 ///
 /// Returns the module's [`SymbolTable`] plus any `R005 DuplicateDeclaration`
 /// errors encountered during collection.
@@ -218,7 +218,7 @@ impl SymbolTable {
 /// - Imports are skipped — they do NOT add to the symbol table.
 /// - Constructor/accessor synthesis for record and union types happens inline.
 /// - `[project.exports].public` cross-reference is performed post-collection by
-///   [`apply_external_exports`] (DR-08), called from [`crate::resolve_workspace`]
+///   [`apply_external_exports`], called from [`crate::resolve_workspace`]
 ///   after this function returns.
 #[must_use]
 pub fn collect_symbols(module_id: ModuleId, ast: &Module) -> (SymbolTable, Vec<ResolveError>) {

@@ -58,7 +58,7 @@ pub struct IrActor {
     pub span: Span,
     /// Whether this actor is `pub`.
     pub is_pub: bool,
-    /// Doc-comment text if any (D067).
+    /// Doc-comment text if any.
     pub doc: Option<String>,
 }
 
@@ -98,7 +98,7 @@ pub struct IrStateField {
     /// The field's type.
     pub ty: Type,
     /// `Some` for fields with a literal default expression at decl time;
-    /// `None` for fields that **must** be initialised by `init` (D061).
+    /// `None` for fields that **must** be initialised by `init`.
     /// Lowering preserves the default expression as an IR expression so
     /// codegen can emit it without re-typing.
     pub default: Option<IrExpr>,
@@ -168,6 +168,6 @@ pub struct IrHandler {
     pub origin: NodeId,
     /// Source span of the handler.
     pub span: Span,
-    /// Doc-comment text if any (D067).
+    /// Doc-comment text if any.
     pub doc: Option<String>,
 }

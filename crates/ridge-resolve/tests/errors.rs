@@ -1,13 +1,13 @@
-//! T15 — per-`R###` fixture harness for `ridge-resolve` (plan §10 T15, §9.2).
+//! Per-`R###` fixture harness for `ridge-resolve`.
 //!
-//! Mirrors the Phase 2 parser fixture harness
+//! Mirrors the parser fixture harness
 //! (`crates/ridge-parser/tests/errors.rs`).  Two complementary mechanisms live
 //! here:
 //!
 //! - **Single-file fixtures** under `tests/fixtures/resolve/r###_*.ridge` — each
 //!   declares one or more `-- expect: R### [span=A..B]` headers on the leading
 //!   comment lines.  [`all_fixtures_pass`] iterates the directory, builds a
-//!   synthetic single-module workspace per fixture, runs the full T1..T13
+//!   synthetic single-module workspace per fixture, runs the full resolver
 //!   pipeline, and asserts every expected code appears (and, when given, that
 //!   the listed source range is contained in at least one matching error).
 //!
@@ -30,10 +30,10 @@
 //! - **R999 `InternalNodeIdCollision`** — defensive; signals a parser invariant
 //!   violation, not a user-authored error.
 //!
-//! ## `DoD` §10 T15
+//! ## Coverage
 //!
-//! ≥ 20 tests pass; every reachable `R###` code from §5.1 has at least one
-//! single-file fixture or programmatic test.
+//! Coverage requirement: at least 20 tests pass; every reachable `R###` code
+//! has a single-file fixture or programmatic test.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
@@ -85,13 +85,13 @@ fn build_single_module_workspace(stem: &str, src: &str) -> TempDir {
     td
 }
 
-/// Run the full T1..T13 resolve pipeline over the workspace at `td.path()`
+/// Run the full resolve pipeline over the workspace at `td.path()`
 /// and return every `R###` error produced (across discovery, symbol
 /// collection, import resolution, authoritative cycle detection, walker,
 /// capability check, and forbid rules).
 ///
-/// `M###` manifest errors are not returned; they are out of scope for §10
-/// T15 (per §5.1, only `R###` codes are listed).
+/// `M###` manifest errors are not returned; this harness covers only `R###`
+/// resolver errors.
 fn run_pipeline(td: &TempDir) -> Vec<ResolveError> {
     let disc = discover_workspace(td.path());
     let mut all_errors: Vec<ResolveError> = disc.resolve_errors;
@@ -302,7 +302,7 @@ fn r002_duplicate_module_across_projects() {
 }
 
 /// `R003 CyclicImport` — module `lib.A` imports `lib.B`, `lib.B` imports
-/// `lib.A`.  The authoritative cycle detector (T7 + §4.4) emits one R003.
+/// `lib.A`. The authoritative cycle detector emits one R003.
 #[test]
 fn r003_cyclic_import_two_modules() {
     let td = TempDir::new().unwrap();

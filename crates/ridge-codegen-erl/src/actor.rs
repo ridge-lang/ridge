@@ -1,21 +1,21 @@
-//! §4.28–§4.30 — Lower `IrItem::Actor` to a `gen_server` `CErlModule`.
+//! Lower `IrItem::Actor` to a `gen_server` `CErlModule`.
 //!
 //! Each `IrActor` maps to a **separate** `CErlModule` with the `gen_server`
 //! callback contract.  The caller (`module.rs::lower_module`) is responsible for
 //! collecting the actor modules and returning them alongside the main module.
 //!
-//! ## Emitted `gen_server` callbacks (§4.28)
+//! ## Emitted `gen_server` callbacks
 //!
 //! | Callback | Arity | Source |
 //! |---|---|---|
 //! | `init/1` | 1 | `IrInit` body + state-field defaults |
-//! | `handle_call/3` | 3 | one clause per handler (all handlers, per OQ-E005) |
-//! | `handle_cast/2` | 2 | one clause per handler (all handlers, per OQ-E005) |
+//! | `handle_call/3` | 3 | one clause per handler (all handlers) |
+//! | `handle_cast/2` | 2 | one clause per handler (all handlers) |
 //! | `handle_info/2` | 2 | DOWN routing when `onDown` is present, else stub |
 //! | `terminate/2` | 2 | `IrTerminate` body when present, else stub |
 //! | `code_change/3` | 3 | `{ridge_migrate_hook, FromHash}` → user hook; else `ridge_rt:apply_code_change/2` |
 //!
-//! ## `start_link/N` wrapper (§4.28)
+//! ## `start_link/N` wrapper
 //!
 //! ```erlang
 //! 'start_link'/N = fun (A1, ..., AN) ->
@@ -26,13 +26,13 @@
 //! Exported always.  N = `init.params.len()` (or 0 if no init block and all
 //! state fields have defaults).
 //!
-//! ## Both `?>` and `!` clauses (OQ-E005)
+//! ## Both `?>` and `!` clauses
 //!
-//! Per resolved OQ-E005 (§8.2): every handler appears in **both**
+//! Every handler appears in **both**
 //! `handle_call/3` and `handle_cast/2`.  `!` vs `?>` is a call-site decision;
 //! constraining at codegen would break compilation when one call-site changes.
 //!
-//! ## Actor BEAM module name (§4.28)
+//! ## Actor BEAM module name
 //!
 //! The actor module name follows the same `ridge_` prefix rule:
 //! `ridge_<module_path>_<actor_name_lowercase>`.
@@ -46,7 +46,7 @@
 //! ```
 
 // pub(crate) on items in a pub(crate) module is redundant per clippy; we keep
-// it for explicitness per plan §2.2.
+// it for explicitness
 #![allow(clippy::redundant_pub_crate)]
 // The boilerplate callback fns (handle_info, terminate, code_change) are single-
 // purpose helpers; they never grow beyond one return.
@@ -87,7 +87,7 @@ use std::hash::Hasher;
 /// actor bodies lower correctly; empty in unit tests (legacy fallback).
 ///
 /// # Errors
-/// Returns `Err(CodegenError::IrShapeMalformed)` on Phase-5 invariant violations.
+/// Returns `Err(CodegenError::IrShapeMalformed)` on lowering invariant violations.
 pub(crate) fn lower_actor(
     actor: &IrActor,
     parent_beam_name: &str,
@@ -212,7 +212,7 @@ pub(crate) fn lower_actor(
 
 // ── start_link/N ─────────────────────────────────────────────────────────────
 
-/// Emit the `start_link/N` wrapper function (§4.28).
+/// Emit the `start_link/N` wrapper function.
 ///
 /// ```erlang
 /// 'start_link'/N = fun (A1, ..., AN) ->
@@ -262,7 +262,7 @@ fn emit_start_link(actor_beam_name: &str, n_params: usize) -> Result<CErlFn, Cod
 
 // ── init/1 ────────────────────────────────────────────────────────────────────
 
-/// Emit the `gen_server:init/1` callback (§4.29).
+/// Emit the `gen_server:init/1` callback.
 ///
 /// ```erlang
 /// 'init'/1 = fun (V_Args) ->
@@ -273,10 +273,10 @@ fn emit_start_link(actor_beam_name: &str, n_params: usize) -> Result<CErlFn, Cod
 /// The `Args` parameter is bound as `V_Args`; the init body may destructure it
 /// via pattern matching in the user's init params.
 ///
-/// # Init failure (OQ-E006)
+/// # Init failure
 /// If the init body raises, `gen_server:start_link/3` propagates the failure.
 /// `ridge_rt:spawn_actor/3` re-raises it (BEAM-crash).  This is the deliberate
-/// language-level asymmetry (§4.29).
+/// language-level asymmetry.
 fn emit_init(actor: &IrActor, tables: &CodegenTables) -> Result<CErlFn, CodegenError> {
     // §4.29: the init body lowering handles both the default-map case and the
     // user-body case.
@@ -327,7 +327,7 @@ fn emit_init(actor: &IrActor, tables: &CodegenTables) -> Result<CErlFn, CodegenE
 
 // ── handle_call/3 ─────────────────────────────────────────────────────────────
 
-/// Emit the `gen_server:handle_call/3` callback (§4.30, OQ-E005).
+/// Emit the `gen_server:handle_call/3` callback.
 ///
 /// One clause per handler in `actor.dispatch`, in source order.
 /// Falls through to a default `{stop, unexpected_call, ok}` clause.
@@ -335,9 +335,9 @@ fn emit_init(actor: &IrActor, tables: &CodegenTables) -> Result<CErlFn, CodegenE
 /// message first passes through `ridge_rt:migrate_message/1` and only
 /// `{ok, M}` reaches the handler clauses (see [`wrap_migrated_dispatch`]).
 ///
-/// Per OQ-E005 (§8.2): all handlers emit into `handle_call/3` regardless of
+/// All handlers emit into `handle_call/3` regardless of
 /// return type — `!` vs `?>` is a call-site decision.
-// OQ-E005: emit all handlers in handle_call (plan §4.30 + §8.2).
+// emit all handlers in handle_call.
 fn emit_handle_call(
     actor: &IrActor,
     fn_arity: &FxHashMap<String, LocalShape>,
@@ -381,7 +381,7 @@ fn emit_handle_call(
 
 // ── handle_cast/2 ─────────────────────────────────────────────────────────────
 
-/// Emit the `gen_server:handle_cast/2` callback (§4.30, OQ-E005).
+/// Emit the `gen_server:handle_cast/2` callback.
 ///
 /// One clause per handler in `actor.dispatch`, in source order.
 /// Falls through to a default `{noreply, State}` clause.
@@ -389,9 +389,9 @@ fn emit_handle_call(
 /// message first passes through `ridge_rt:migrate_message/1` and only
 /// `{ok, M}` reaches the handler clauses (see [`wrap_migrated_dispatch`]).
 ///
-/// Per OQ-E005 (§8.2): all handlers emit into `handle_cast/2` regardless of
+/// All handlers emit into `handle_cast/2` regardless of
 /// return type.
-// OQ-E005: emit all handlers in handle_cast (plan §4.30 + §8.2).
+// emit all handlers in handle_cast.
 fn emit_handle_cast(
     actor: &IrActor,
     fn_arity: &FxHashMap<String, LocalShape>,
@@ -1249,7 +1249,7 @@ mod tests {
         assert_eq!(sl.arity, 2, "start_link arity must match init param count");
     }
 
-    // OQ-E005 — Both call and cast clauses present
+    // Both call and cast clauses present
 
     #[test]
     #[allow(clippy::items_after_statements)]

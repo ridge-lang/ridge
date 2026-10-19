@@ -1,4 +1,4 @@
-//! `NodeId` assignment pass (plan §3.2 β).
+//! `NodeId` assignment pass.
 //!
 //! [`NodeIdMap`] is a side-table that stamps a stable [`NodeId`] on every
 //! semantically significant AST position without touching the AST structs.
@@ -71,12 +71,12 @@ pub enum NodeKind {
     /// A block boundary (`Block { stmts, span }`).
     ///
     /// Keyed by `block.span`.  The block's inferred type (= type of its last
-    /// statement expression) is written to `node_types[block_node_id]` by T3.
+    /// statement expression) is written to `node_types[block_node_id]` by type inference.
     ///
     /// **Overlap rule:** `(span, NodeKind::Block)` and `(span, NodeKind::Expr)`
     /// at the same span are different keys — both may coexist when `Expr::Block`
     /// is stamped.
-    // OQ-PHASE45-004: block-level type written to node_types for try_block consumers.
+    // block-level type written to node_types for try_block consumers.
     Block,
 
     /// A `try`-expression boundary (`Expr::Try { block, span }`).
@@ -99,7 +99,7 @@ pub enum NodeKind {
     /// has a unique span (parser invariant; nested expressions have strictly
     /// nested spans).  An `Expr::Ident(id)` stamps both `NodeKind::Ident` and
     /// `NodeKind::Expr` at `id.span`; the different kinds prevent collision.
-    // OQ-PHASE45-001: single Expr variant; finer-grained variants add no semantic value.
+    // single Expr variant; finer-grained variants add no semantic value.
     Expr,
 
     /// A type-position node (in `FnDecl.ret`, `let p: T = v`, `state x: T`,
@@ -115,7 +115,7 @@ pub enum NodeKind {
     /// they are different syntactic locations.  A `NodeKind::Type` stamp and a
     /// `NodeKind::Ident` stamp at the *same* span (e.g. a named type `User` at
     /// its definition site) are distinct keys and do not collide.
-    // OQ-PHASE45-002: added proactively; needed by ridge-lower ast_type.rs:100 in sweep.
+    // AST type nodes are needed by the lowering type adapter.
     Type,
 }
 
@@ -265,11 +265,11 @@ impl<'ast> Visit<'ast> for IdAssigner {
     fn visit_expr(&mut self, e: &'ast Expr) {
         match e {
             // Expr::Block: block boundary is stamped by visit_block via walk_expr.
-            // OQ-PHASE45-004: block-level type keyed by NodeKind::Block, not Expr.
+            // block-level type keyed by NodeKind::Block, not Expr.
             Expr::Block(_) => {}
             // Expr::Try: stamp NodeKind::Try for the try boundary; the inner block
             // gets NodeKind::Block via visit_block; inner stmts get NodeKind::Expr.
-            // OQ-PHASE45-004: Try boundary stamp enables try_block lookup.
+            // Try boundary stamp enables try_block lookup.
             Expr::Try { span, .. } => {
                 self.try_assign(*span, NodeKind::Try);
             }

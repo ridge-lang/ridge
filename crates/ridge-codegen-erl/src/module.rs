@@ -1,18 +1,18 @@
-//! §4.26–§4.27 — Module-level assembly and BEAM module-name mangling.
+//! Module-level assembly and BEAM module-name mangling.
 //!
 //! `lower_module` walks the items of a `LoweredModule`, dispatches to
 //! `item::lower_fn` / `item::lower_const`, and assembles the resulting
 //! `CErlFn`s into a `CErlModule` with the correct exports list.
 //!
-//! `mangle_module_name` implements the BEAM module-name mangling rule
-//! (plan line 405): replace `.` with `_`, prefix `ridge_`, reject collision
+//! `mangle_module_name` implements the BEAM module-name mangling rule:
+//! replace `.` with `_`, prefix `ridge_`, reject collision
 //! with the reserved `ridge_rt` atom (E006).
 
 // pub(crate) on items in a pub(crate) module is redundant per clippy; we keep
-// it for explicitness per plan §2.2.
+// it for explicitness
 #![allow(clippy::redundant_pub_crate)]
-// lower_module_all and lower_module_with_name are called from T10's workspace-
-// level codegen; dead_code fires until T10 wires them.
+// lower_module_all and lower_module_with_name are called from workspace-level
+// codegen; dead_code fires until that integration is wired.
 #![allow(dead_code)]
 
 use crate::actor::lower_actor;
@@ -70,14 +70,14 @@ pub(crate) fn build_external_arity(
     table
 }
 
-// ── Name mangling (plan line 405) ────────────────────────────────────────────
+// ── Name mangling ────────────────────────────────────────────
 
 /// The reserved BEAM module name that must not be produced by mangling.
 const RESERVED_RT: &str = "ridge_rt";
 
 /// Mangle a Ridge module-path slice into a BEAM atom string.
 ///
-/// **Algorithm** (plan line 405):
+/// **Algorithm**:
 /// 1. Join the path segments with `_`.
 /// 2. Prefix `ridge_`.
 /// 3. Reject equality with `ridge_rt` (reserved) → `E006`.
@@ -139,8 +139,8 @@ pub fn beam_name_for_fqn(fqn: &str, module_id: ModuleId) -> Result<String, Codeg
 /// ## Exports
 /// An item is added to `CErlModule.exports` if:
 /// - `IrFn.is_pub == true`, **or**
-/// - `IrFn.is_main == true` (entry-point export, §4.26).
-/// - `IrConst.is_pub == true` (0-arity call form, §4.27).
+/// - `IrFn.is_main == true` (entry-point export).
+/// - `IrConst.is_pub == true` (0-arity call form).
 ///
 /// ## Module name
 /// `module_path` segments are joined and prefixed with `ridge_` via

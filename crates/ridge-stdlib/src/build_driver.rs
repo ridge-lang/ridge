@@ -27,7 +27,7 @@ pub struct TierPlan {
     pub modules: &'static [&'static str],
 }
 
-/// The five stdlib tiers in dependency order (§4.1).
+/// The five stdlib tiers in dependency order.
 ///
 /// Tier 0 — language built-ins — carries no `.ridge` files and is listed for
 /// completeness only; `build_all` skips it.
@@ -150,11 +150,11 @@ pub struct DiscoveredModule {
 
 /// Discover which stdlib modules are present on disk, in tier order.
 ///
-/// For each tier (1–4) and each module name in `TIERS`, checks whether the
+/// For each tier and module name in `TIERS`, checks whether the
 /// corresponding `.ridge` file exists under `stdlib_dir`.  Missing files are
-/// silently skipped — T5+ adds them progressively.
+/// silently skipped.
 ///
-/// Module `std.net.http` lives at `<stdlib_dir>/net/http.ridge` (§11.4 / T9).
+/// Module `std.net.http` lives at `<stdlib_dir>/net/http.ridge`.
 /// All other modules live at `<stdlib_dir>/<last-component>.ridge`.
 #[must_use]
 pub fn discover(stdlib_dir: &Path) -> Vec<DiscoveredModule> {

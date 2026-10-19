@@ -1,8 +1,8 @@
-//! T17 — capability-leak fixture harness for `ridge-typecheck` (plan §10 T17,
-//! §9.4, §11.3 `DoD` line 1547).
+//! Capability-leak fixture harness for `ridge-typecheck`.
 //!
 //! Seven fixtures under `tests/fixtures/capability/*.ridge` each exercise one
-//! decision-tagged capability rule (D018 Model B, D040, D041, D058).  Each
+//! capability rule (Model B, file-private declarations, higher-order
+//! functions, and inner functions). Each
 //! fixture starts with one of two directives:
 //!
 //! - `-- expect: T###` — assert this T-code appears among the emitted errors.
@@ -11,7 +11,7 @@
 //! The harness mirrors the structure of `tests/errors.rs` but supports the
 //! "clean" form so positive (well-typed) capability scenarios are first-class.
 //!
-//! Per `DoD`: all fixtures must be present and the suite must pass.
+//! All fixtures must be present and the suite must pass.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 

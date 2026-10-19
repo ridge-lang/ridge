@@ -243,9 +243,16 @@ fn greeting () -> Result Unit Text =
     else Err "greeting mismatch"
 ```
 
-The `pub fn test_*` naming prefix is deprecated as of 0.2.8 and removed in
-0.3.0. Use `@test` for all new tests; run `ridge fmt --migrate-tests` to
-rewrite any old-style tests automatically.
+Discovery by the `pub fn test_*` naming prefix has been deprecated since 0.2.8
+(`C304`) and remains supported in 0.3.0. Use `@test` for all new tests;
+`ridge fmt --migrate-tests` adds the attribute to old-style tests without
+renaming functions or changing existing references.
+
+Both discovery forms still accept `Bool` returns for compatibility (`C303`):
+`true` passes and `false` fails. Migrate these manually to `Result Unit Text`,
+replacing `true` with `Ok ()` and `false` with `Err "<reason>"`; the formatter
+does not rewrite return types or bodies. Neither deprecated form has a scheduled
+removal release.
 
 A note on `let`: Ridge's `let` is indentation-based and has no `in`
 keyword. The Haskell-style `let … in body` form does not parse. For

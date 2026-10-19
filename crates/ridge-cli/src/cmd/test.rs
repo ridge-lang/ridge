@@ -1,4 +1,4 @@
-//! `ridge test` — discover and run `pub fn test_*` functions in the workspace.
+//! `ridge test` — discover and run tests in the workspace.
 //!
 //! ## Surface
 //!
@@ -11,8 +11,9 @@
 //! 1. Locate workspace root via `ridge_manifest::find_workspace_root`.
 //! 2. Typecheck workspace via `ridge_driver::check_workspace_typed` (no erlc
 //!    needed at this stage).  Render diagnostics and exit non-zero on errors.
-//! 3. Discover every `pub fn test_*` (arity 0) across all workspace members
-//!    and classify each:
+//! 3. Discover `@test` functions and legacy `pub fn test_*` functions across
+//!    all workspace members. The attribute takes precedence; prefix discovery
+//!    emits `C304 PrefixTestDeprecated`. Classify each:
 //!    - Arity != 0         → `C301 TestArityInvalid` (skip, count as failure).
 //!    - `ffi` cap declared → `C302 TestCapabilityForbidden` (skip, count as failure).
 //!    - Return type `Bool` → `C303 BoolTestDeprecated` warning (still run).
@@ -357,10 +358,7 @@ fn run_tests_and_report(
     println!("Tests: {passed} passed, {failed} failed, {skipped} skipped ({elapsed_ms}ms)");
 
     if bool_tests > 0 {
-        println!(
-            "{bool_tests} test(s) returned Bool; see migration snippets above. \
-             Bool acceptance is removed in 0.2.0."
-        );
+        println!("{bool_tests} test(s) returned Bool (deprecated); see migration snippets above.");
     }
 
     if failed > 0 {

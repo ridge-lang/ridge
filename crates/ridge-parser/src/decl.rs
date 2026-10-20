@@ -2152,7 +2152,7 @@ fn parse_class_decl(
         }
     }
 
-    let end_span = cur.span();
+    let end_span = cur.last_content_span().unwrap_or(start);
     cur.expect(&Token::Dedent)?;
 
     Ok(ClassDecl {
@@ -2365,7 +2365,7 @@ fn parse_instance_decl(
         }
     }
 
-    let end_span = cur.span();
+    let end_span = cur.last_content_span().unwrap_or(start);
     cur.expect(&Token::Dedent)?;
 
     Ok(InstanceDecl {

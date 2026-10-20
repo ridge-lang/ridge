@@ -132,6 +132,24 @@ impl<'t> Cursor<'t> {
             .map_or_else(|| Span::point(0), |(_, s)| *s)
     }
 
+    /// Last consumed source token, excluding synthetic layout boundaries.
+    ///
+    /// A `Dedent` may be positioned after comments belonging to the next item.
+    /// Walk back over only the consumed layout suffix, keeping closing brackets
+    /// and other content tokens in the declaration's exclusive endpoint.
+    pub(crate) fn last_content_span(&self) -> Option<Span> {
+        self.toks[..self.pos]
+            .iter()
+            .rev()
+            .find_map(|(token, span)| {
+                (!matches!(
+                    token,
+                    Token::Newline | Token::Indent | Token::Dedent | Token::Eof
+                ))
+                .then_some(*span)
+            })
+    }
+
     /// Advance past the current token and return a reference to it.
     ///
     /// Saturates at the last token (the `Eof` sentinel) — bumping past the end

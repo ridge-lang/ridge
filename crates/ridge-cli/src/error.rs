@@ -389,15 +389,39 @@ impl CliWarning {
 
 impl fmt::Display for CliWarning {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let c = self.code();
-        match self {
-            Self::BoolTestDeprecated { qualified_name } => write!(
+        write!(
+            f,
+            "{}",
+            ridge_diagnostics::terminal::terminal_text(RawCliWarning(self))
+        )
+    }
+}
+
+impl fmt::Display for CliError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let raw = RawCliError(self);
+        if self.code().is_some() {
+            write!(f, "{}", ridge_diagnostics::terminal::terminal_text(raw))
+        } else {
+            // Manifest diagnostics already own their layout and line endings.
+            write!(f, "{raw}")
+        }
+    }
+}
+
+struct RawCliWarning<'a>(&'a CliWarning);
+
+impl fmt::Display for RawCliWarning<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let c = self.0.code();
+        match self.0 {
+            CliWarning::BoolTestDeprecated { qualified_name } => write!(
                 f,
                 "warning: {c} BoolTestDeprecated: '{qualified_name}' returns Bool (deprecated); \
                  migrate: change the return type to Result Unit Text, and replace \
                  'true' with 'Ok ()' and 'false' with 'Err \"<reason>\"'"
             ),
-            Self::PrefixTestDeprecated { module, name } => write!(
+            CliWarning::PrefixTestDeprecated { module, name } => write!(
                 f,
                 "warning: {c} PrefixTestDeprecated: '{module}.{name}' uses the deprecated `test_` \
                  prefix for discovery; add `@test \"{stem}\"` above the function; \
@@ -408,84 +432,86 @@ impl fmt::Display for CliWarning {
     }
 }
 
-impl fmt::Display for CliError {
+struct RawCliError<'a>(&'a CliError);
+
+impl fmt::Display for RawCliError<'_> {
     #[allow(
         clippy::too_many_lines,
         reason = "one match arm per error code; splitting it up would scatter the C-code registry"
     )]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        match self.0 {
             // Forwarded verbatim: the driver owns the wording as well as the code.
-            Self::Workspace(e) => write!(f, "{e}"),
+            CliError::Workspace(e) => write!(f, "{e}"),
             // Never rendered through the top-level handler (main special-cases
             // it), but give it an honest message in case some other caller
             // prints it directly.
-            Self::AlreadyReported => write!(f, "build failed"),
-            Self::UnknownMember { name } => write!(
+            CliError::AlreadyReported => write!(f, "build failed"),
+            CliError::UnknownMember { name } => write!(
                 f,
                 "C005 UnknownMember: workspace has no member named '{name}'"
             ),
-            Self::NoExecutableMember => write!(
+            CliError::NoExecutableMember => write!(
                 f,
                 "C006 NoExecutableMember: workspace has no member with kind = \"app\" or kind = \"service\""
             ),
             // Both carry a message the manifest parser already rendered with
             // its own code; there is nothing for this layer to add.
-            Self::MemberManifestInvalid { rendered }
-            | Self::WorkspaceManifestInvalid { rendered } => write!(f, "{rendered}"),
-            Self::WatchAmbiguousMember => write!(
+            CliError::MemberManifestInvalid { rendered }
+            | CliError::WorkspaceManifestInvalid { rendered } => write!(f, "{rendered}"),
+            CliError::WatchAmbiguousMember => write!(
                 f,
                 "C011 WatchAmbiguousMember: --watch requires --member when the workspace has multiple executable members"
             ),
-            Self::LibraryNotExecutable { name } => write!(
+            CliError::LibraryNotExecutable { name } => write!(
                 f,
                 "C007 LibraryNotExecutable: member '{name}' has kind = \"library\" and cannot be run"
             ),
-            Self::ObserverNoCookie => write!(
+            CliError::ObserverNoCookie => write!(
                 f,
                 "C008 ObserverNoCookie: --observer requires an Erlang cookie; \
                  ~/.erlang.cookie was not found. \
                  Provide one with --cookie <value>"
             ),
-            Self::InvalidProjectName { name } => write!(
+            CliError::InvalidProjectName { name } => write!(
                 f,
                 "C201 InvalidProjectName: '{name}' is not a valid portable project name; \
                  names must be non-empty, must not contain '/', '\\', '..', or non-portable \
                  characters, and must not start with '.'"
             ),
-            Self::DirectoryExists { name } => write!(
+            CliError::DirectoryExists { name } => write!(
                 f,
                 "C202 DirectoryExists: directory '{name}' already exists"
             ),
-            Self::ReservedName { name } => write!(
+            CliError::ReservedName { name } => write!(
                 f,
                 "C203 ReservedName: '{name}' is reserved by the Ridge toolchain"
             ),
-            Self::DirectoryNotEmpty => write!(
+            CliError::DirectoryNotEmpty => write!(
                 f,
                 "C204 DirectoryNotEmpty: the current directory is not empty; \
                  ridge init requires an empty directory \
                  (only .git/ and .gitignore are permitted)"
             ),
-            Self::CwdUnreadable => write!(
+            CliError::CwdUnreadable => write!(
                 f,
                 "C205 CwdUnreadable: could not read the current working directory"
             ),
-            Self::FmtPathNotFound { path } => write!(
+            CliError::FmtPathNotFound { path } => write!(
                 f,
                 "C102 FmtPathNotFound: path '{}' does not exist",
                 path.display()
             ),
-            Self::FmtIoError { path, source } => write!(
+            CliError::FmtIoError { path, source } => write!(
                 f,
                 "C103 FmtIoError: I/O error on '{}': {source}",
                 path.display()
             ),
-            Self::FmtCheckFailed { count } => write!(
+            CliError::FmtCheckFailed { count } => write!(
                 f,
                 "C104 FmtCheckFailed: {count} file(s) would be reformatted"
             ),
-            Self::LegacyRgFile { path } => {
+            CliError::LegacyRgFile { path } => {
                 let ridge_path = path.with_extension("ridge");
                 write!(
                     f,
@@ -497,67 +523,67 @@ impl fmt::Display for CliError {
                     ridge_path.display(),
                 )
             }
-            Self::TestRejected { qualified_name, reason } => {
+            CliError::TestRejected { qualified_name, reason } => {
                 write!(f, "{} {}", reason.code(), reason.message(qualified_name))
             }
-            Self::MigrateModelMissing { path } => write!(
+            CliError::MigrateModelMissing { path } => write!(
                 f,
                 "C401 MigrateModelMissing: '{}' was not found; \
                  create it with `pub fn model () -> List (EntitySchema Unit) = ...`",
                 path.display()
             ),
-            Self::MigrateCompileFailed => write!(
+            CliError::MigrateCompileFailed => write!(
                 f,
                 "C403 MigrateCompileFailed: the model failed to compile; \
                  see the diagnostics above"
             ),
-            Self::MigrateInternal { message } => write!(f, "C404 MigrateInternal: {message}"),
-            Self::MigrateInvalidName { name } => write!(
+            CliError::MigrateInternal { message } => write!(f, "C404 MigrateInternal: {message}"),
+            CliError::MigrateInvalidName { name } => write!(
                 f,
                 "C405 MigrateInvalidName: '{name}' is not a valid migration name; \
                  use only ASCII letters, digits, '_', and '-'"
             ),
-            Self::MigrateEnvMissing { vars } => write!(
+            CliError::MigrateEnvMissing { vars } => write!(
                 f,
                 "C406 MigrateEnvMissing: missing required environment variable(s): {}; \
                  ridge migrate apply/status needs these to connect to the database",
                 vars.join(", ")
             ),
-            Self::MigrateApplyFailed { message } => {
+            CliError::MigrateApplyFailed { message } => {
                 write!(f, "C407 MigrateApplyFailed: {message}")
             }
-            Self::MigrateStatusFailed { message } => {
+            CliError::MigrateStatusFailed { message } => {
                 write!(f, "C408 MigrateStatusFailed: {message}")
             }
-            Self::MigrateRollbackFailed { message } => {
+            CliError::MigrateRollbackFailed { message } => {
                 write!(f, "C409 MigrateRollbackFailed: {message}")
             }
             // Forwarded verbatim: the driver owns the wording as well as the code.
-            Self::Toolchain(e) => write!(f, "{e}"),
-            Self::WatcherStartFailed { message } => write!(
+            CliError::Toolchain(e) => write!(f, "{e}"),
+            CliError::WatcherStartFailed { message } => write!(
                 f,
                 "C501 WatcherStartFailed: could not start the file watcher: {message}"
             ),
-            Self::WatchPathFailed { path, message } => write!(
+            CliError::WatchPathFailed { path, message } => write!(
                 f,
                 "C502 WatchPathFailed: could not watch '{}' for changes: {message}",
                 path.display()
             ),
-            Self::ReplSessionFailed { message } => write!(
+            CliError::ReplSessionFailed { message } => write!(
                 f,
                 "C503 ReplSessionFailed: could not start the REPL session: {message}"
             ),
-            Self::WatchStateCorrupted => write!(
+            CliError::WatchStateCorrupted => write!(
                 f,
                 "C504 WatchStateCorrupted: the watch loop's shared state was left \
                  unusable by a panicking thread; restart the command"
             ),
-            Self::WatchRestartFailed { message } => write!(
+            CliError::WatchRestartFailed { message } => write!(
                 f,
                 "C505 WatchRestartFailed: could not restart after the change, and the \
                  placeholder process would not start either: {message}"
             ),
-            Self::ExplainUnknownCode { code } => write!(
+            CliError::ExplainUnknownCode { code } => write!(
                 f,
                 "C601 ExplainUnknownCode: '{code}' is not a code this compiler emits, \
                  and not one it has retired; `ridge explain --list` prints every code \
@@ -577,6 +603,93 @@ impl std::error::Error for CliError {}
 mod tests {
     use super::{CliError, ToolchainError, WorkspaceError};
     use ridge_driver::test_contract::TestRejection;
+
+    #[test]
+    fn terminal_errors_cover_every_cli_variant_and_preserve_ordinary_messages() {
+        const INPUT: &str = "café\\path\u{1b}[2J\u{9b}2J\n\t\r\0";
+        for mut error in one_of_each() {
+            assert_eq!(error.to_string(), super::RawCliError(&error).to_string());
+            match &mut error {
+                CliError::UnknownMember { name }
+                | CliError::LibraryNotExecutable { name }
+                | CliError::InvalidProjectName { name }
+                | CliError::DirectoryExists { name }
+                | CliError::ReservedName { name }
+                | CliError::MigrateInvalidName { name } => *name = INPUT.into(),
+                CliError::FmtPathNotFound { path }
+                | CliError::LegacyRgFile { path }
+                | CliError::MigrateModelMissing { path } => *path = INPUT.into(),
+                CliError::FmtIoError { path, source } => {
+                    *path = INPUT.into();
+                    *source = INPUT.into();
+                }
+                CliError::TestRejected { qualified_name, .. } => *qualified_name = INPUT.into(),
+                CliError::MigrateInternal { message }
+                | CliError::MigrateApplyFailed { message }
+                | CliError::MigrateStatusFailed { message }
+                | CliError::MigrateRollbackFailed { message }
+                | CliError::WatcherStartFailed { message }
+                | CliError::ReplSessionFailed { message }
+                | CliError::WatchRestartFailed { message } => *message = INPUT.into(),
+                CliError::WatchPathFailed { path, message } => {
+                    *path = INPUT.into();
+                    *message = INPUT.into();
+                }
+                CliError::MigrateEnvMissing { vars } => *vars = vec![INPUT.into()],
+                CliError::ExplainUnknownCode { code } => *code = INPUT.into(),
+                CliError::Workspace(inner) => {
+                    *inner = WorkspaceError::WorkspaceMemberMissing {
+                        member: INPUT.into(),
+                        path: INPUT.into(),
+                    }
+                }
+                CliError::Toolchain(inner) => {
+                    *inner = ToolchainError::SpawnFailed {
+                        binary: "erl",
+                        message: INPUT.into(),
+                    }
+                }
+                CliError::MemberManifestInvalid { rendered }
+                | CliError::WorkspaceManifestInvalid { rendered } => {
+                    *rendered = "[M001] first\n[M006] second".into();
+                    assert_eq!(error.to_string(), "[M001] first\n[M006] second");
+                    continue;
+                }
+                CliError::NoExecutableMember
+                | CliError::WatchAmbiguousMember
+                | CliError::ObserverNoCookie
+                | CliError::DirectoryNotEmpty
+                | CliError::CwdUnreadable
+                | CliError::FmtCheckFailed { .. }
+                | CliError::MigrateCompileFailed
+                | CliError::WatchStateCorrupted
+                | CliError::AlreadyReported => continue,
+            }
+            let rendered = error.to_string();
+            assert!(rendered.chars().all(|c| !c.is_control()), "{rendered:?}");
+            assert!(
+                rendered.contains("café\\path\\u{1b}[2J\\u{9b}2J\\n\\t\\r\\u{0}"),
+                "{rendered:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_errors_escape_both_cli_warning_variants() {
+        for warning in [
+            super::CliWarning::BoolTestDeprecated {
+                qualified_name: "M.\u{1b}[2J".into(),
+            },
+            super::CliWarning::PrefixTestDeprecated {
+                module: "M\u{9b}2J".into(),
+                name: "test_x\n".into(),
+            },
+        ] {
+            let rendered = warning.to_string();
+            assert!(rendered.chars().all(|c| !c.is_control()), "{rendered:?}");
+            assert!(rendered.contains("\\u{"));
+        }
+    }
 
     /// Name every variant, so that adding one stops the crate from compiling
     /// until someone comes back to this file.

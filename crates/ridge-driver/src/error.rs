@@ -17,6 +17,7 @@
 use std::path::PathBuf;
 use thiserror::Error;
 
+use ridge_diagnostics::terminal::terminal_text;
 use ridge_diagnostics::Diagnostic;
 use ridge_resolve::ManifestError;
 
@@ -35,7 +36,7 @@ use crate::sources::WorkspaceSourceCache;
 pub enum WorkspaceError {
     /// `C001` — no `ridge.toml` with a `[workspace]` table was found at or
     /// above the search root.
-    #[error("C001 NoWorkspaceRoot: no workspace manifest found at or above {path}")]
+    #[error("{}", terminal_text(format_args!("C001 NoWorkspaceRoot: no workspace manifest found at or above {}", .path.display())))]
     NoWorkspaceRoot {
         /// The path that was searched from.
         path: PathBuf,
@@ -43,7 +44,7 @@ pub enum WorkspaceError {
 
     /// `C002` — a member listed in `[workspace] members` has no on-disk
     /// directory or no `ridge.toml`.
-    #[error("C002 WorkspaceMemberMissing: workspace member '{member}' not found at {path}")]
+    #[error("{}", terminal_text(format_args!("C002 WorkspaceMemberMissing: workspace member '{}' not found at {}", .member, .path.display())))]
     WorkspaceMemberMissing {
         /// The member name as it appears in the workspace manifest.
         member: String,
@@ -81,7 +82,7 @@ pub enum ToolchainError {
     /// Naming the binary matters: a runtime-only OTP package gives you `erl`
     /// without `erlc`, and "erlang not found" sends the reader off to reinstall
     /// something they already have.
-    #[error("C004 ErlangNotFound: {binary} not found on PATH (install OTP 26+)")]
+    #[error("{}", terminal_text(format_args!("C004 ErlangNotFound: {} not found on PATH (install OTP 26+)", .binary)))]
     ErlangNotFound {
         /// The binary that was probed for, e.g. `"erl"` or `"erlc"`.
         binary: &'static str,
@@ -92,7 +93,7 @@ pub enum ToolchainError {
     /// OTP is on `PATH` — that case is `C004` — but the process would not
     /// start: no permission to execute, a broken install, or the OS refusing
     /// a new process.
-    #[error("C013 BeamSpawnFailed: could not spawn {binary}: {message}")]
+    #[error("{}", terminal_text(format_args!("C013 BeamSpawnFailed: could not spawn {}: {}", .binary, .message)))]
     SpawnFailed {
         /// The binary that failed to start.
         binary: &'static str,
@@ -161,8 +162,8 @@ pub enum CompileError {
     /// launching a program whose stdlib is missing only trades a diagnostic for
     /// an Erlang `undef` crash report.
     #[error(
-        "C010 StdlibBundleFailed: the Ridge standard library could not be compiled to BEAM ({message})\n  \
-         a program calling any Ridge-bodied stdlib function would fail at startup with `undef`"
+        "{}\n  a program calling any Ridge-bodied stdlib function would fail at startup with `undef`",
+        terminal_text(format_args!("C010 StdlibBundleFailed: the Ridge standard library could not be compiled to BEAM ({})", .message))
     )]
     StdlibBundleFailed {
         /// What the stdlib compile reported.
@@ -174,7 +175,7 @@ pub enum CompileError {
     /// A full disk and a read-only output directory both land here, and both
     /// are things the reader fixes outside Ridge — so the code exists mostly so
     /// they can tell this apart from a compile that failed on their source.
-    #[error("C012 DriverIo: {message}")]
+    #[error("{}", terminal_text(format_args!("C012 DriverIo: {}", .message)))]
     Io {
         /// Human-readable description.
         message: String,
@@ -371,7 +372,7 @@ pub enum RunError {
     /// then could not be waited on. Whatever the program did before that is
     /// already on the terminal, which is the difference that matters to the
     /// reader.
-    #[error("C015 BeamWaitFailed: {message}")]
+    #[error("{}", terminal_text(format_args!("C015 BeamWaitFailed: {}", .message)))]
     WaitFailed {
         /// What the OS reported.
         message: String,
@@ -407,3 +408,60 @@ impl RunError {
 /// returned on exit code 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProcessExitCode(pub i32);
+
+#[cfg(test)]
+mod terminal_tests {
+    use super::*;
+
+    #[test]
+    fn terminal_errors_escape_driver_text_through_compile_check_and_run() {
+        const TEXT: &str = "café\\path\u{1b}[2J\u{9b}2J\n\t\r\0";
+        const ESCAPED: &str = "café\\path\\u{1b}[2J\\u{9b}2J\\n\\t\\r\\u{0}";
+        let workspace = || WorkspaceError::WorkspaceMemberMissing {
+            member: TEXT.into(),
+            path: TEXT.into(),
+        };
+        let cases: Vec<Box<dyn std::fmt::Display>> = vec![
+            Box::new(WorkspaceError::NoWorkspaceRoot { path: TEXT.into() }),
+            Box::new(workspace()),
+            Box::new(CheckError::Workspace(workspace())),
+            Box::new(CompileError::Workspace(workspace())),
+            Box::new(RunError::CompileFailed(
+                CompileError::Workspace(workspace()),
+            )),
+            Box::new(ToolchainError::ErlangNotFound { binary: TEXT }),
+            Box::new(ToolchainError::SpawnFailed {
+                binary: TEXT,
+                message: TEXT.into(),
+            }),
+            Box::new(RunError::Toolchain(ToolchainError::SpawnFailed {
+                binary: "erl",
+                message: TEXT.into(),
+            })),
+            Box::new(CompileError::Io {
+                message: TEXT.into(),
+            }),
+            Box::new(RunError::WaitFailed {
+                message: TEXT.into(),
+            }),
+        ];
+        for error in cases {
+            let rendered = error.to_string();
+            assert!(rendered.contains(ESCAPED), "{rendered:?}");
+            assert!(rendered.chars().all(|c| !c.is_control()), "{rendered:?}");
+        }
+    }
+
+    #[test]
+    fn terminal_errors_preserve_trusted_driver_line_break() {
+        let error = CompileError::StdlibBundleFailed {
+            message: "bad\n\u{1b}[2J".into(),
+        };
+        let expected = "C010 StdlibBundleFailed: the Ridge standard library could not be compiled to BEAM (bad\\n\\u{1b}[2J)\n  a program calling any Ridge-bodied stdlib function would fail at startup with `undef`";
+        assert_eq!(error.to_string(), expected);
+        assert_eq!(
+            RunError::CompileFailed(error).to_string(),
+            format!("compile failed: {expected}")
+        );
+    }
+}

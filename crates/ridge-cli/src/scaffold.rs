@@ -148,8 +148,11 @@ pub fn new_project(name: &str, cwd: &Path) -> Result<(), CliError> {
     // ── 3. Create directory tree and write files ──────────────────────────────
     fs::create_dir_all(&project_dir).map_err(|e| {
         eprintln!(
-            "error: could not create directory '{}': {e}",
-            project_dir.display()
+            "error: {}",
+            ridge_diagnostics::terminal::terminal_text(format_args!(
+                "could not create directory '{}': {e}",
+                project_dir.display()
+            ))
         );
         CliError::DirectoryExists {
             name: name.to_owned(),
@@ -157,7 +160,10 @@ pub fn new_project(name: &str, cwd: &Path) -> Result<(), CliError> {
     })?;
 
     write_scaffold(&project_dir, name).map_err(|e| {
-        eprintln!("error: scaffold write failed: {e}");
+        eprintln!(
+            "error: {}",
+            ridge_diagnostics::terminal::terminal_text(format_args!("scaffold write failed: {e}"))
+        );
         CliError::DirectoryExists {
             name: name.to_owned(),
         }
@@ -213,7 +219,10 @@ pub fn init_project(cwd: &Path) -> Result<(), CliError> {
 
     // ── 4. Write scaffold ─────────────────────────────────────────────────────
     write_scaffold(cwd, &name).map_err(|e| {
-        eprintln!("error: scaffold write failed: {e}");
+        eprintln!(
+            "error: {}",
+            ridge_diagnostics::terminal::terminal_text(format_args!("scaffold write failed: {e}"))
+        );
         CliError::CwdUnreadable
     })?;
 

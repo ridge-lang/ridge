@@ -237,7 +237,13 @@ fn execute_format(files: &[PathBuf], migrate: bool) -> Result<(), CliError> {
         let src = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("error: {}: C103 FmtIoError: {e}", path.display());
+                eprintln!(
+                    "error: {}",
+                    ridge_diagnostics::terminal::terminal_text(format_args!(
+                        "{}: C103 FmtIoError: {e}",
+                        path.display()
+                    ))
+                );
                 io_error = true;
                 continue;
             }
@@ -253,7 +259,13 @@ fn execute_format(files: &[PathBuf], migrate: bool) -> Result<(), CliError> {
             Ok(output) => {
                 if src != output {
                     if let Err(e) = std::fs::write(path, output.as_bytes()) {
-                        eprintln!("error: {}: C103 FmtIoError: {e}", path.display());
+                        eprintln!(
+                            "error: {}",
+                            ridge_diagnostics::terminal::terminal_text(format_args!(
+                                "{}: C103 FmtIoError: {e}",
+                                path.display()
+                            ))
+                        );
                         io_error = true;
                     }
                 }

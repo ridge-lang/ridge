@@ -22,6 +22,7 @@ pub mod adapter;
 pub mod diagnostic;
 pub mod registry;
 pub mod render;
+pub mod terminal;
 
 // ── Flat re-exports ───────────────────────────────────────────────────────────
 

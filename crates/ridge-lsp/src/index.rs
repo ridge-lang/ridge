@@ -4930,9 +4930,9 @@ impl WorkspaceIndex {
     /// Collects every level that brackets the offset — each stamped node, the
     /// enclosing top-level declaration, and the whole file — then keeps only a
     /// strictly-nesting chain (each level fully contains the previous one and is
-    /// strictly larger). Building from a strict chain tolerates sibling or
-    /// span-bled entries without ever emitting a parent that fails to contain
-    /// its child, which the protocol forbids.
+    /// strictly larger). Normalize layout margins within the enclosing item
+    /// before ordering candidates, so a block cannot displace that item. The
+    /// strict chain still rejects crossing siblings and duplicate ranges.
     fn selection_chain_at(&self, mid: ModuleId, offset: u32) -> SelectionRange {
         let mi = mid.0 as usize;
         let text: &str = self.module_text.get(mi).map_or("", |t| &**t);
@@ -4941,24 +4941,43 @@ impl WorkspaceIndex {
         // inclusive so the cursor at the end of a token still selects it.
         let brackets = |s: &Span| s.start <= offset && offset <= s.end;
         let mut spans: Vec<Span> = Vec::new();
-        if let Some(spatial) = self.spatial.get(mi) {
+        let ast = self.modules.get(mi).and_then(|m| m.ast.as_ref());
+        let mut enclosing_item: Option<Span> = None;
+        // The item includes its documentation and attributes. Its normalized
+        // extent is also the outer limit for nodes selected inside its body.
+        if let Some(ast) = ast {
+            for item in &ast.items {
+                let s = trim_trailing_ws(text, item.span());
+                if brackets(&s) {
+                    spans.push(s);
+                    if enclosing_item.is_none_or(|prev| s.end - s.start < prev.end - prev.start) {
+                        enclosing_item = Some(s);
+                    }
+                }
+            }
+        }
+        // With an AST, a position outside every item belongs to the file, not
+        // to a preceding block whose layout boundary extends past its item.
+        let spatial = self
+            .spatial
+            .get(mi)
+            .filter(|_| ast.is_none() || enclosing_item.is_some());
+        if let Some(spatial) = spatial {
             spans.extend(
                 spatial
                     .entries
                     .iter()
-                    .filter(|(span, _, _)| brackets(span))
-                    .map(|(span, _, _)| *span),
+                    .filter(|(span, _, _)| {
+                        brackets(span) && enclosing_item.is_none_or(|item| item.start <= span.start)
+                    })
+                    .map(|(span, _, _)| {
+                        let end = enclosing_item.map_or(span.end, |item| span.end.min(item.end));
+                        trim_trailing_ws(text, Span::new(span.start, end))
+                    })
+                    // Trimming can move the end before a cursor in trailing
+                    // whitespace; such a candidate must not enter the chain.
+                    .filter(brackets),
             );
-        }
-        // The enclosing top-level declaration adds an "expand to the whole
-        // item" step; trim its parser span-bleed first (see `trim_trailing_ws`).
-        if let Some(ast) = self.modules.get(mi).and_then(|m| m.ast.as_ref()) {
-            for item in &ast.items {
-                let s = item.span();
-                if brackets(&s) {
-                    spans.push(trim_trailing_ws(text, s));
-                }
-            }
         }
         // The whole file: the guaranteed outermost level, so expand-selection
         // can always step out to the document.

@@ -198,3 +198,51 @@ pub fn f () -> Int = 1
     let end = ends[0];
     assert_eq!(&parsed.normalised_src[end - 1..end], ")");
 }
+
+/// Layout boundaries can sit after comments belonging to the next item.
+/// Check the raw declaration as well as the trivia-inclusive item span.
+fn assert_class_or_instance_end(decl: &str) {
+    for tail in [
+        "",
+        "\n",
+        "\n\n-- A header for the next item.\n-- Still outside the declaration.\n\npub fn next () -> Int = 1\n",
+        "\n\n---\nDocumentation for the next item.\n---\npub fn next () -> Int = 1\n",
+        " -- A trailing comment.\n\n-- Outside at EOF.\n",
+    ] {
+        for newline in ["\n", "\r\n"] {
+            let source = format!("{decl}{tail}").replace('\n', newline);
+            let parsed = ridge_parser::parse_module_with_trivia(&source);
+            assert!(parsed.result.errors.is_empty(), "{source:?}: {:?}", parsed.result.errors);
+            let item = &parsed.result.module.items[0];
+            let span = match item {
+                Item::ClassDecl(class) => Some(class.span),
+                Item::InstanceDecl(instance) => Some(instance.span),
+                _ => None,
+            };
+            let text = &parsed.normalised_src;
+            assert_eq!(span.map(|s| &text[s.start as usize..s.end as usize]), Some(decl), "raw span for {source:?}");
+            assert_eq!(Some(item.span().end), span.map(|s| s.end), "item and declaration share the endpoint");
+        }
+    }
+}
+
+#[test]
+fn class_span_stops_at_its_last_content_token() {
+    for decl in [
+        "class Renderable a =\n    render (x: a) -> Text",
+        "class Renderable a =\n    render (x: a) -> Text\n    width (x: a) -> (Int)",
+    ] {
+        assert_class_or_instance_end(decl);
+    }
+}
+
+#[test]
+fn instance_span_stops_at_its_last_content_token() {
+    for decl in [
+        "instance Renderable Int =\n    render (x: Int) -> Text = \"value\"",
+        "instance Renderable Int =\n    render (x: Int) -> Text =\n        let label = \"value\"\n        label\n    width (x: Int) -> Int = (1)",
+        "instance Renderable Int =\n    render (x: Int) -> Text =\n        let label = \"value\"\n        label",
+    ] {
+        assert_class_or_instance_end(decl);
+    }
+}

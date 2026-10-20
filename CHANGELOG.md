@@ -75,6 +75,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Folding a `class` or `instance` stops at its last content token, leaving
+  comments for the following declaration visible. Source ranges also exclude
+  trailing layout and comments when the final method has a multiline body.
+
 - The editor reports invalid test signatures before execution and offers
   `Run test` only for tests the runner accepts. Attribute and supported legacy
   prefix tests share discovery and validation with the CLI, including Bool

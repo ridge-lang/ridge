@@ -7869,6 +7869,64 @@ async fn test_folding_range_over_a_documented_declaration_covers_its_doc_comment
 
 // ── textDocument/selectionRange ───────────────────────────────────────────────
 
+#[tokio::test]
+async fn test_class_and_instance_folds_leave_following_comments_visible() {
+    let src = "class Renderable a =\n    render (x: a) -> Text\n\n-- Header for the instance.\n-- Still outside the class.\n\ninstance Renderable Int =\n    render (x: Int) -> Text =\n        let label = \"value\"\n        label\n\n-- Header for the function.\n-- Still outside the instance.\n\npub fn next () -> Int =\n    1\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let folds = service
+        .inner()
+        .folding_range(folding_at(&uri))
+        .await
+        .expect("folding ok")
+        .expect("folds present");
+    let regions: Vec<_> = folds
+        .iter()
+        .filter(|f| f.kind == Some(FoldingRangeKind::Region))
+        .map(|f| (f.start_line, f.end_line))
+        .collect();
+    assert_eq!(regions, vec![(0, 1), (6, 9), (14, 15)]);
+
+    // Query the header, where the enclosing item is the relevant selection.
+    // Body-expression expansion is covered separately.
+    let selections = service
+        .inner()
+        .selection_range(selection_at(
+            &uri,
+            vec![Position::new(0, 2), Position::new(6, 2)],
+        ))
+        .await
+        .expect("selection ok")
+        .expect("selections present");
+    for (selection, end) in selections
+        .iter()
+        .zip([Position::new(1, 25), Position::new(9, 13)])
+    {
+        let chain = chain_ranges(selection);
+        assert!(
+            chain.iter().any(|r| r.end == end),
+            "declaration endpoint missing: {chain:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_documented_class_and_instance_folds_keep_their_own_docs() {
+    let src = "---\nRenderable values.\n---\nclass Renderable a =\n    render (x: a) -> Text\n\n---\nInteger rendering.\n---\ninstance Renderable Int =\n    render (x: Int) -> Text = \"value\"\n\n-- Outside both declarations.\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let folds = service
+        .inner()
+        .folding_range(folding_at(&uri))
+        .await
+        .expect("folding ok")
+        .expect("folds present");
+    let regions: Vec<_> = folds
+        .iter()
+        .filter(|f| f.kind == Some(FoldingRangeKind::Region))
+        .map(|f| (f.start_line, f.end_line))
+        .collect();
+    assert_eq!(regions, vec![(0, 4), (6, 10)]);
+}
+
 fn selection_at(uri: &Url, positions: Vec<Position>) -> SelectionRangeParams {
     SelectionRangeParams {
         text_document: TextDocumentIdentifier { uri: uri.clone() },

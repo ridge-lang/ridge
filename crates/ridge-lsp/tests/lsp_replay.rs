@@ -1954,24 +1954,8 @@ async fn test_definition_into_qualified_class_method() {
 
 #[tokio::test]
 async fn test_definition_into_stdlib_module_alias() {
-    // Go-to-def anywhere in `L.map` resolves to `map` in the stdlib module.
-    //
-    // This test used to point at a bare `L` in value position, and said so:
-    // the body had a type error, and the module binding was reachable only
-    // because that invalid spelling stamped the alias on the use site. It is
-    // `R030` now, so the program no longer compiles and the stamp is gone
-    // with it.
-    //
-    // Reaching the *module* from the valid spelling would take a second stamp
-    // on the leading segment. That was tried and reverted: the signature-help
-    // path asks for the binding at the callee span's start, which for `L.map`
-    // is exactly where `L` begins, so the narrower stamp answered in place of
-    // the qualified name and three editor features lost their callee. Teaching
-    // the position lookup to prefer the wider span is a change to a rule every
-    // consumer shares, and it does not belong to a diagnostics fix.
-    //
-    // So what is asserted here is what the compiler does: the qualified name
-    // answers as a whole, about its member.
+    // The valid qualified spelling exposes both the module and its member.
+    // Signature help uses the whole callee separately from these cursor targets.
     let line1 = "pub fn run xs = L.map (fn x -> x) xs";
     let (service, _socket, uri) =
         hover_fixture("import std.list as L\npub fn run xs = L.map (fn x -> x) xs\n").await;
@@ -1982,7 +1966,7 @@ async fn test_definition_into_stdlib_module_alias() {
         .goto_definition(goto_at(&uri, 1, col))
         .await
         .expect("ok");
-    let loc = scalar_location(resp).expect("definition of the qualified name");
+    let loc = scalar_location(resp).expect("definition of the module head");
     let path = loc
         .uri
         .to_file_path()
@@ -1991,15 +1975,12 @@ async fn test_definition_into_stdlib_module_alias() {
         path.ends_with("list.ridge"),
         "the qualified name must land in list.ridge, got {path:?}"
     );
-    // Not the file start: that would mean the module answered, which is the
-    // behaviour this test used to assert and no longer holds.
-    assert!(
-        loc.range.start.line > 0 || loc.range.start.character > 0,
-        "the member answers, not the module file start, got {:?}",
-        loc.range.start
+    assert_eq!(
+        loc.range,
+        Range::new(Position::new(0, 0), Position::new(0, 0))
     );
 
-    // The member half answers the same way — the whole name is one binding.
+    // The member keeps its own definition inside the same module source.
     let member_col =
         u32::try_from(line1.find("map").expect("member use")).expect("offset fits u32");
     let resp = server
@@ -2007,10 +1988,8 @@ async fn test_definition_into_stdlib_module_alias() {
         .await
         .expect("ok");
     let member_loc = scalar_location(resp).expect("definition of `map`");
-    assert_eq!(
-        member_loc.range.start, loc.range.start,
-        "both halves of the qualified name resolve to the one binding"
-    );
+    assert_eq!(member_loc.uri, loc.uri);
+    assert!(member_loc.range.start.line > 0 || member_loc.range.start.character > 0);
 }
 
 #[tokio::test]
@@ -9981,6 +9960,180 @@ async fn test_pull_diagnostics_served_from_cache() {
 /// rename-collision check.
 const ALIAS_APP: &str =
     "import lib.Lib as M\npub type Thing = Int\npub fn one -> Int = M.helper\npub fn two -> Int = M.helper\n";
+
+#[tokio::test]
+async fn test_qualified_module_stdlib_cursor_and_callee_are_distinct() {
+    for (source, row, alias) in [
+        (
+            "import std.list as L\npub fn run f xs = L.map f xs\n",
+            1,
+            "L",
+        ),
+        ("pub fn run f xs = List.map f xs\n", 0, "List"),
+    ] {
+        let line = source.lines().nth(row as usize).unwrap();
+        let head = u32::try_from(line.find(alias).unwrap()).unwrap();
+        let member = head + u32::try_from(alias.len()).unwrap() + 1;
+        let (service, _socket, uri) = hover_fixture(source).await;
+        let server = service.inner();
+        let module = scalar_location(
+            server
+                .goto_definition(goto_at(&uri, row, head))
+                .await
+                .expect("ok"),
+        )
+        .expect("module definition");
+        let function = scalar_location(
+            server
+                .goto_definition(goto_at(&uri, row, member))
+                .await
+                .expect("ok"),
+        )
+        .expect("member definition");
+        assert_eq!(module.uri, function.uri);
+        assert_eq!(
+            module.range,
+            Range::new(Position::new(0, 0), Position::new(0, 0))
+        );
+        assert_ne!(
+            module.range, function.range,
+            "module and member have distinct destinations"
+        );
+
+        let hover = server
+            .hover(hover_at(&uri, row, head))
+            .await
+            .expect("ok")
+            .expect("module hover");
+        assert_eq!(
+            hover.range,
+            Some(Range::new(
+                Position::new(row, head),
+                Position::new(row, member - 1)
+            ))
+        );
+        let card = hover_markdown(Some(hover)).unwrap();
+        assert!(
+            card.contains("std.list") && card.contains("module"),
+            "{card}"
+        );
+        assert!(
+            !card.contains("fn a -> b"),
+            "a module does not have its member's type: {card}"
+        );
+        let card =
+            hover_markdown(server.hover(hover_at(&uri, row, member)).await.expect("ok")).unwrap();
+        assert!(card.contains("map (f: fn a -> b)"), "{card}");
+
+        for col in [head, member, member + 4, member + 6] {
+            let (label, _) = sig_label_active(
+                server
+                    .signature_help(signature_at(&uri, row, col))
+                    .await
+                    .expect("ok"),
+            )
+            .expect("the callee remains map even at the alias's offset");
+            assert_eq!(label, "map (f: fn a -> b) (xs: List a) -> List b");
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_qualified_module_workspace_head_reaches_module_and_member_reaches_function() {
+    let (service, _socket, app, lib) = two_member_fixture_with(ALIAS_APP).await;
+    let server = service.inner();
+    let module = scalar_location(
+        server
+            .goto_definition(goto_at(&app, 2, 20))
+            .await
+            .expect("ok"),
+    )
+    .expect("module");
+    let member = scalar_location(
+        server
+            .goto_definition(goto_at(&app, 2, 22))
+            .await
+            .expect("ok"),
+    )
+    .expect("member");
+    assert_eq!(module.uri, lib);
+    assert_eq!(
+        module.range,
+        Range::new(Position::new(0, 0), Position::new(0, 0))
+    );
+    assert_eq!(member.uri, lib);
+    assert_ne!(member.range, module.range);
+    let hover = server
+        .hover(hover_at(&app, 2, 20))
+        .await
+        .expect("ok")
+        .expect("module hover");
+    assert_eq!(
+        hover.range,
+        Some(Range::new(Position::new(2, 20), Position::new(2, 21)))
+    );
+    let card = hover_markdown(Some(hover)).unwrap();
+    assert!(
+        card.contains("lib.Lib") && card.contains("module"),
+        "{card}"
+    );
+    assert!(!card.contains("helper"), "{card}");
+    let card = hover_markdown(server.hover(hover_at(&app, 2, 22)).await.expect("ok")).unwrap();
+    assert!(card.contains("pub fn helper -> Int"), "{card}");
+}
+
+#[tokio::test]
+async fn test_qualified_module_bare_callee_keeps_signature_help() {
+    let (service, _socket, uri) = hover_fixture("import std.list as L\npub fn run = L.map\n").await;
+    for col in [13, 15, 18] {
+        let (label, active) = sig_label_active(
+            service
+                .inner()
+                .signature_help(signature_at(&uri, 1, col))
+                .await
+                .expect("ok"),
+        )
+        .expect("a bare qualified callee has a signature");
+        assert_eq!(label, "map (f: fn a -> b) (xs: List a) -> List b");
+        assert_eq!(active, 0);
+    }
+}
+
+#[tokio::test]
+async fn test_qualified_module_unknown_member_does_not_hide_its_module() {
+    let (service, _socket, uri) =
+        hover_fixture("import std.list as L\npub fn run = L.noSuchMember\n").await;
+    let server = service.inner();
+    let module = scalar_location(
+        server
+            .goto_definition(goto_at(&uri, 1, 13))
+            .await
+            .expect("ok"),
+    )
+    .expect("known module");
+    assert_eq!(
+        module.range,
+        Range::new(Position::new(0, 0), Position::new(0, 0))
+    );
+    assert!(scalar_location(
+        server
+            .goto_definition(goto_at(&uri, 1, 15))
+            .await
+            .expect("ok")
+    )
+    .is_none());
+    let card = hover_markdown(server.hover(hover_at(&uri, 1, 13)).await.expect("ok"))
+        .expect("module hover");
+    assert!(
+        card.contains("std.list") && card.contains("module"),
+        "{card}"
+    );
+    assert!(server
+        .signature_help(signature_at(&uri, 1, 15))
+        .await
+        .expect("ok")
+        .is_none());
+}
 
 #[tokio::test]
 async fn test_references_module_alias() {

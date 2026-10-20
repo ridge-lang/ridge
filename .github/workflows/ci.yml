@@ -276,6 +276,8 @@ jobs:
       # driver sources share two harnesses; context-sensitive sources retain
       # their Cargo targets. Missing or stale platform catalogs trigger an
       # original-vs-grouped native inventory audit before any test can run.
+      # The same gate also builds and executes the supplementary cli-watch and
+      # Layer B targets in their own feature context, on both OTP versions.
       - name: Build BEAM e2e test binaries
         if: steps.changes.outputs.code == 'true'
         run: python tools/testing/beam-gate.py build --work "${{ runner.temp }}/ridge-beam-gate"

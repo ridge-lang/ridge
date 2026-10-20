@@ -20,6 +20,26 @@ def joint_packages():
     return [arg for name in BEAM_PACKAGES for arg in ('-p', name)]
 
 
+def runtime_surface_selection():
+    # Keep this feature context separate from the reviewed grouped driver graph.
+    return ['-p', 'ridge-cli', '-p', 'ridge-bench', '--test', 'run', '--test', 'layer_b',
+            '--features', 'ridge-cli/cli-watch']
+
+
+def runtime_surface_inventory(listing):
+    required = {('ridge-cli', 'run', 'run_watch_single_cycle'),
+                ('ridge-bench', 'layer_b', 'layer_b_benches_compile_and_report_timings')}
+    targets = {(package, binary) for package, binary, _ in required}
+    active = set()
+    for suite in listing['rust-suites'].values():
+        target = (suite['package-name'], suite['binary-name'])
+        if target not in targets or suite['kind'] != 'test':
+            raise ValueError('Unexpected supplementary runtime target: ' + repr(target))
+        active.update((*target, name) for name, info in suite['testcases'].items() if not info['ignored'])
+    if not required <= active:
+        raise ValueError('Missing or ignored supplementary runtime oracle: ' + repr(required - active))
+
+
 def context_dependencies(repo):
     """Activate the selected roots and their dev dependencies in the harness."""
     dependencies = {}
@@ -339,6 +359,7 @@ def build(args):
     selected = {
         'original': original_selection(metadata, policy),
         'grouped': ['--manifest-path', str(harness / 'Cargo.toml'), '--target-dir', target_dir] + [x for n in policy['groups'] for x in ('--test', n)],
+        'runtime-surfaces': runtime_surface_selection(),
     }
     if args.inventory_only:
         selected = {'grouped': selected['grouped']}
@@ -363,6 +384,8 @@ def build(args):
         body = cmd.run(label + '-list', ['cargo', 'nextest', 'list'] + selection + common + ['--config-file', str(config), '--message-format', 'json'])
         listing = json.loads(body)
         native_listing(listing, triple)
+        if label == 'runtime-surfaces':
+            runtime_surface_inventory(listing)
         write_json(work / (label + '-inventory.json'), listing)
         phase_rows[label] = inventories(listing, label == 'grouped')
         if not phase_rows[label]:
@@ -427,6 +450,8 @@ def run(args):
         listed = cmd.run(label + '-run-list', ['cargo', 'nextest', 'list'] + selection + plan['common'] + ['--config-file', str(config), '--message-format', 'json'])
         listing = json.loads(listed)
         native_listing(listing, plan['target'])
+        if label == 'runtime-surfaces':
+            runtime_surface_inventory(listing)
         parity(inventories(listing, label == 'grouped'), plan['rows'][label])
         write_json(work / (label + '-run-inventory.json'), listing)
         stdout = cmd.run(label + '-run', ['cargo', 'nextest', 'run'] + selection + plan['common'] + ['--config-file', str(config), '--no-fail-fast', '--status-level', 'all', '--success-output', 'immediate'])

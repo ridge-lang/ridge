@@ -24,6 +24,15 @@ configurations, stdlib self-compilation and LSP acceptance remain separate CI
 steps. Grouped harnesses also inherit workspace lints, profiles, locked registry
 versions and the effective Clippy configuration, and receive their own lint pass.
 
+A supplementary `runtime-surfaces` phase runs the complete CLI `run` target with
+`beam-runtime` and `cli-watch`, plus the `ridge-bench` `layer_b` target with
+`beam-runtime`. It lists and rechecks their native inventory and requires the
+watch-cycle and Layer B oracles to be active. Its feature context is separate
+from the original/grouped driver context and its reusable catalogs. The CLI
+`run` target is intentionally exercised in both feature configurations. The slow
+watch stress test remains explicitly ignored. Each phase retains its own command
+timing and execution evidence; inventory-only builds omit this runtime phase.
+
 Cargo metadata supplies the driver's effective package version, edition,
 minimum Rust version and target directory. Driver build scripts, package-specific
 profile overrides, driver-specific lint settings and driver-local Clippy files

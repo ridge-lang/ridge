@@ -15,6 +15,12 @@ pub struct Server {
 }
 
 impl Server {
+    fn parent_status(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
+        // Poll only the leader. JobObject::try_wait drains completion messages
+        // that stop() must retain when it waits for the entire owned tree.
+        self.child.inner_mut().try_wait()
+    }
+
     pub fn spawn(mut command: Command) -> io::Result<Self> {
         let stdout = tempfile::NamedTempFile::new()?;
         let stderr = tempfile::NamedTempFile::new()?;
@@ -44,7 +50,7 @@ impl Server {
     ) -> Result<(), String> {
         let deadline = Instant::now() + timeout;
         loop {
-            if let Some(status) = self.child.try_wait().map_err(|e| e.to_string())? {
+            if let Some(status) = self.parent_status().map_err(|e| e.to_string())? {
                 return Err(format!("server exited before readiness: {status}"));
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -98,7 +104,7 @@ impl Server {
                     {
                         return Err(format!("unexpected HTTP response: {response:?}"));
                     }
-                    if self.child.try_wait().map_err(|e| e.to_string())?.is_some() {
+                    if self.parent_status().map_err(|e| e.to_string())?.is_some() {
                         return Err("server exited while responding".into());
                     }
                     return Ok(());
@@ -120,6 +126,36 @@ impl Server {
             std::fs::read_to_string(self.stdout.path()).unwrap_or_default(),
             std::fs::read_to_string(self.stderr.path()).unwrap_or_default()
         )
+    }
+
+    /// Observe both the program output and its parent's readiness signal.
+    #[cfg(all(feature = "beam-runtime", feature = "cli-watch"))]
+    pub fn wait_for_output(
+        &mut self,
+        stdout_line: &str,
+        stderr_line: &str,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(status) = self.parent_status().map_err(|e| e.to_string())? {
+                return Err(format!("process exited before expected output: {status}"));
+            }
+            let stdout = std::fs::read_to_string(self.stdout.path()).map_err(|e| e.to_string())?;
+            let stderr = std::fs::read_to_string(self.stderr.path()).map_err(|e| e.to_string())?;
+            if stdout.lines().any(|line| line == stdout_line)
+                && stderr.lines().any(|line| line == stderr_line)
+            {
+                return Ok(());
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(format!(
+                    "expected output deadline expired: {stdout_line:?}, {stderr_line:?}"
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(20).min(remaining));
+        }
     }
 
     /// Kill the owned group/job even if its leader has already exited.
@@ -201,6 +237,13 @@ mod tests {
             .parse()
             .unwrap();
         match mode.as_str() {
+            "output" => {
+                println!("owned output");
+                eprintln!("owned readiness");
+                loop {
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+            }
             "exit" => {
                 eprintln!("fixture startup failed");
                 std::process::exit(7);
@@ -265,6 +308,31 @@ mod tests {
             .unwrap_err()
             .contains("readiness deadline"));
         server.stop().unwrap();
+    }
+
+    #[cfg(all(feature = "beam-runtime", feature = "cli-watch"))]
+    #[test]
+    fn output_readiness_requires_the_program_marker_and_a_live_parent() {
+        let address = address();
+        let mut server = Server::spawn(fixture("output", address)).unwrap();
+        server
+            .wait_for_output("owned output", "owned readiness", Duration::from_secs(5))
+            .unwrap();
+        assert!(server
+            .wait_for_output(
+                "edited output",
+                "owned readiness",
+                Duration::from_millis(150)
+            )
+            .unwrap_err()
+            .contains("deadline expired"));
+        server.stop().unwrap();
+        let mut exited = Server::spawn(fixture("exit", address)).unwrap();
+        assert!(exited
+            .wait_for_output("owned output", "owned readiness", Duration::from_secs(5))
+            .unwrap_err()
+            .contains("exited before expected output"));
+        exited.stop().unwrap();
     }
 
     #[test]

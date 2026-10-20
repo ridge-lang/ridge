@@ -6,7 +6,9 @@
 //! whatever the bare spelling answers *in the same position* — the editor is
 //! where a reader finds out that the two spellings mean one thing.
 //!
-//! Every assertion pairs the two spellings rather than pinning a string. When
+//! Constructor assertions pair the two spellings rather than pinning a string.
+//! The alias segment itself identifies the module, separately from the constructor.
+//! When
 //! this was written, two of the things they were paired against were known to
 //! be wrong for both spellings: hovering a constructor in a *pattern* reported
 //! the match arm's result type, and go-to-definition on a standard-library
@@ -172,17 +174,27 @@ fn a_qualified_constructor_cards_like_the_bare_one_in_a_pattern() {
 }
 
 #[test]
-fn the_alias_segment_resolves_as_part_of_the_name() {
+fn the_alias_segment_names_its_module_without_changing_the_constructor() {
     let (_td, index, uri) = build_index();
-    // The binding is stamped over the whole dotted name as well as over the
-    // constructor segment, so a cursor anywhere in `Actor.Timeout` resolves.
+    // Cursor lookup distinguishes the module head from the constructor even
+    // though the whole qualified expression carries the constructor binding.
     // Occurrence 1 of `Actor` is the one in the expression; occurrence 0 is the
     // alias in its own import line, a different node and not this change's
     // business.
-    let on_alias = hover_nth(&index, &uri, "Actor", 1);
+    let on_alias = hover_nth(&index, &uri, "Actor", 1).expect("module alias card");
     assert!(
-        on_alias.is_some_and(|card| card.contains("AskError")),
-        "a cursor on the alias half of `Actor.Timeout` must resolve the name it is part of"
+        on_alias.contains("std.actor") && on_alias.contains("module alias"),
+        "the alias half identifies its module: {on_alias}"
+    );
+    assert!(
+        !on_alias.contains("AskError"),
+        "a module is not its constructor"
+    );
+    let on_member = hover_nth(&index, &uri, "Timeout", EXPR_QUALIFIED).expect("constructor card");
+    assert!(on_member.contains("AskError"), "{on_member}");
+    assert_eq!(
+        Some(on_member),
+        hover_nth(&index, &uri, "Timeout", EXPR_BARE)
     );
 }
 

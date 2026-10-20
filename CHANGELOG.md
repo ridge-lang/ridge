@@ -75,6 +75,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Hovering or navigating the module head of a qualified name such as `L.map`
+  identifies the module, while the member still identifies the function.
+  Signature help continues to describe the qualified callee, including before
+  arguments are written.
+
 - Expanding selection from a declaration body includes its enclosing item,
   including attached documentation and test attributes, before the whole file.
   Block layout margins no longer displace that step; positions outside items

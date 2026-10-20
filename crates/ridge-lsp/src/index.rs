@@ -1200,6 +1200,30 @@ impl WorkspaceIndex {
             }
         }
 
+        let name_binding = self.name_binding_at(mi, offset);
+        if let Some((Binding::ModuleAlias { target, .. }, span)) = name_binding {
+            let module = match target {
+                ImportTarget::WorkspaceModule(mid) => {
+                    self.module_fqns.get(mid.0 as usize)?.as_str()
+                }
+                ImportTarget::BuiltinStdlib(id) => {
+                    ridge_resolve::stdlib_builtin::BUILTINS
+                        .get(id.0 as usize)?
+                        .name
+                }
+                _ => return None,
+            };
+            let alias = self.text_slice(mi, span);
+            return Some((
+                render_hover_card(
+                    &format!("import {module} as {alias}"),
+                    Some("module alias".to_owned()),
+                    None,
+                ),
+                span,
+            ));
+        }
+
         // The inferred type lives on the narrowest expression-like node (idents
         // do not carry a written-back type). A type-position reference — `Book`
         // in `Repo Book Sqlite`, an annotation, or a type-decl name — matches a
@@ -1240,23 +1264,9 @@ impl WorkspaceIndex {
         let type_str = typed.as_ref().map_or("", |(s, _, _)| s.as_str());
         let head_tycon = typed.as_ref().and_then(|(_, h, _)| *h);
 
-        // The binding sits on the narrowest name node that carries one: for
-        // `Mod.item` (e.g. a qualified stdlib verb `Repo.filter`) that is the whole
-        // `QualifiedName`, not the segment ident under the cursor. Walk the
-        // enclosing name nodes outward — exactly as go-to-definition does — and
-        // card the first that is bound.
-        if let Some((binding, span)) = self.spatial.get(mi).and_then(|sp| {
-            sp.enclosing(offset, &[NodeKind::Ident, NodeKind::QualifiedName])
-                .into_iter()
-                .find_map(|(nid, _, span)| {
-                    self.modules
-                        .get(mi)?
-                        .bindings
-                        .get(nid.0 as usize)
-                        .and_then(Option::as_ref)
-                        .map(|binding| (binding, span))
-                })
-        }) {
+        // Use the same cursor referent as navigation. The module-head case
+        // returned above; a member still cards its resolved declaration.
+        if let Some((binding, span)) = name_binding {
             let name = self.text_slice(mi, span);
             return Some((
                 self.hover_markdown(mi, offset, name, Some(binding), type_str, head_tycon),
@@ -1788,16 +1798,8 @@ impl WorkspaceIndex {
             return Some(loc);
         }
 
-        // The binding sits on the narrowest name node that actually carries one:
-        // for `Mod.item` the binding is on the whole `QualifiedName`, not the
-        // segment ident under the cursor.
-        let bindings = &self.modules.get(mi)?.bindings;
-        let binding = self
-            .spatial
-            .get(mi)?
-            .enclosing(offset, &[NodeKind::Ident, NodeKind::QualifiedName])
-            .into_iter()
-            .find_map(|(nid, _, _)| bindings.get(nid.0 as usize).and_then(Option::as_ref))?;
+        // Cursor lookup distinguishes a module head from its qualified member.
+        let binding = self.binding_at(mi, offset)?;
 
         match binding {
             Binding::Local(local_id) => {
@@ -1866,13 +1868,8 @@ impl WorkspaceIndex {
 
         // The referent under the cursor, resolved exactly as go-to-definition
         // picks its binding: the narrowest name node that carries one.
-        let bindings = &self.modules.get(mi)?.bindings;
         let key = self
-            .spatial
-            .get(mi)?
-            .enclosing(offset, &[NodeKind::Ident, NodeKind::QualifiedName])
-            .into_iter()
-            .find_map(|(nid, _, _)| bindings.get(nid.0 as usize).and_then(Option::as_ref))
+            .binding_at(mi, offset)
             .and_then(|b| referent_key(b, mid));
 
         // A referent brought in by a selective import declares locally at its
@@ -2231,7 +2228,7 @@ impl WorkspaceIndex {
             .enclosing_call(mi, offset, src)
             .or_else(|| self.bare_callee(mi, offset, src).map(|s| (s, Vec::new())))?;
 
-        let binding = self.binding_at(mi, callee_span.start)?;
+        let binding = self.binding_for_name_span(mi, callee_span)?;
         let sig = self.signature_for_binding(binding)?;
         let active = active_param(&arg_spans, offset, sig.params.len());
         Some(make_signature_help(sig, active, label_offsets))
@@ -2251,13 +2248,16 @@ impl WorkspaceIndex {
         finder.best.map(|(callee, args, _)| (callee, args))
     }
 
-    /// The span of a callable name under the cursor, or the nearest one ending
-    /// to its left across same-line whitespace. Used when no argument is typed
-    /// yet, so there is no call node to walk.
+    /// The span of a callable name under or ending at the cursor, or the nearest
+    /// one to its left across same-line whitespace. Used when no argument is
+    /// typed yet, so there is no call node to walk.
     fn bare_callee(&self, mi: usize, offset: u32, src: &str) -> Option<Span> {
         let spatial = self.spatial.get(mi)?;
-        if let Some((_, _, span)) =
-            spatial.narrowest_containing(offset, &[NodeKind::Ident, NodeKind::QualifiedName])
+        // A cursor on a segment still identifies the entire qualified callee.
+        // Do not hand structural lookup the alias's narrower identifier span.
+        if let Some((_, _, span)) = spatial
+            .narrowest_containing(offset, &[NodeKind::QualifiedName])
+            .or_else(|| spatial.narrowest_containing(offset, &[NodeKind::Ident]))
         {
             return Some(span);
         }
@@ -2269,23 +2269,67 @@ impl WorkspaceIndex {
             let Some(gap) = src.get(span.end as usize..offset as usize) else {
                 continue;
             };
-            let reachable = !gap.is_empty() && gap.chars().all(|c| c == ' ' || c == '\t');
-            if reachable && best.is_none_or(|b| span.end > b.end) {
+            let reachable = gap.chars().all(|c| c == ' ' || c == '\t');
+            if reachable
+                && best
+                    .is_none_or(|b| span.end > b.end || (span.end == b.end && span.start < b.start))
+            {
                 best = Some(*span);
             }
         }
         best
     }
 
-    /// The binding stamped on the name node enclosing `offset`, if any — the
-    /// shared name lookup behind go-to-definition, references, and signature
-    /// help.
+    /// The referent under the cursor, not the expression beginning there.
+    /// A qualified module head names the alias; its member names the binding
+    /// stamped on the whole qualified expression. Import bindings also cover
+    /// prelude aliases, without adding competing stamps to the resolver.
+    fn name_binding_at(&self, mi: usize, offset: u32) -> Option<(&Binding, Span)> {
+        let view = self.modules.get(mi)?;
+        let names = self
+            .spatial
+            .get(mi)?
+            .enclosing(offset, &[NodeKind::Ident, NodeKind::QualifiedName]);
+        let qualified_start = names
+            .iter()
+            .find_map(|(_, kind, span)| (*kind == NodeKind::QualifiedName).then_some(span.start));
+        for (nid, kind, span) in &names {
+            if let Some(binding) = view.bindings.get(nid.0 as usize).and_then(Option::as_ref) {
+                return Some((binding, *span));
+            }
+            if *kind == NodeKind::Ident && qualified_start == Some(span.start) {
+                let name = self.text_slice(mi, *span);
+                if let Some(binding) = view
+                    .imports
+                    .iter()
+                    .flat_map(|imp| &imp.effective_bindings)
+                    .find(|eb| {
+                        eb.local_name == name && matches!(eb.binding, Binding::ModuleAlias { .. })
+                    })
+                    .map(|eb| &eb.binding)
+                {
+                    return Some((binding, *span));
+                }
+            }
+        }
+        None
+    }
+
     fn binding_at(&self, mi: usize, offset: u32) -> Option<&Binding> {
+        self.name_binding_at(mi, offset).map(|(binding, _)| binding)
+    }
+
+    /// Resolve a syntactically identified name as a whole expression. A callee
+    /// can begin at the same byte as its module alias: cursor lookup would
+    /// answer about the module, not the callable. Require the binding's node to
+    /// cover the entire supplied span and read only resolver stamps here.
+    fn binding_for_name_span(&self, mi: usize, span: Span) -> Option<&Binding> {
         let bindings = &self.modules.get(mi)?.bindings;
         self.spatial
             .get(mi)?
-            .enclosing(offset, &[NodeKind::Ident, NodeKind::QualifiedName])
+            .enclosing(span.start, &[NodeKind::Ident, NodeKind::QualifiedName])
             .into_iter()
+            .filter(|(_, _, candidate)| span.end <= candidate.end)
             .find_map(|(nid, _, _)| bindings.get(nid.0 as usize).and_then(Option::as_ref))
     }
 
@@ -2704,13 +2748,7 @@ impl WorkspaceIndex {
         }
 
         // The binding under the cursor — same lookup as go-to-definition.
-        let bindings = &self.modules.get(mi)?.bindings;
-        let binding = self
-            .spatial
-            .get(mi)?
-            .enclosing(offset, &[NodeKind::Ident, NodeKind::QualifiedName])
-            .into_iter()
-            .find_map(|(nid, _, _)| bindings.get(nid.0 as usize).and_then(Option::as_ref))?;
+        let binding = self.binding_at(mi, offset)?;
         let target = referent_key(binding, mid)?;
 
         self.references_to_key(&target, include_declaration, cancel)
@@ -2902,18 +2940,8 @@ impl WorkspaceIndex {
     fn highlight_target_at(&self, mid: ModuleId, offset: u32) -> Option<(ReferentKey, String)> {
         let mi = mid.0 as usize;
         let spatial = self.spatial.get(mi)?;
-        let view = self.modules.get(mi)?;
 
-        if let Some((binding, span)) = spatial
-            .enclosing(offset, &[NodeKind::Ident, NodeKind::QualifiedName])
-            .into_iter()
-            .find_map(|(nid, _, span)| {
-                view.bindings
-                    .get(nid.0 as usize)
-                    .and_then(Option::as_ref)
-                    .map(|b| (b, span))
-            })
-        {
+        if let Some((binding, span)) = self.name_binding_at(mi, offset) {
             let key = referent_key(binding, mid)?;
             let name_span = self.final_ident_span(mi, span);
             return Some((key, self.text_slice(mi, name_span).to_owned()));
@@ -3222,20 +3250,10 @@ impl WorkspaceIndex {
         let mi = mid.0 as usize;
         let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
         let spatial = self.spatial.get(mi)?;
-        let view = self.modules.get(mi)?;
 
-        // A name node carrying a binding: a use-site, or a local binder (locals
-        // are stamped at their definition site).
-        if let Some((binding, span)) = spatial
-            .enclosing(offset, &[NodeKind::Ident, NodeKind::QualifiedName])
-            .into_iter()
-            .find_map(|(nid, _, span)| {
-                view.bindings
-                    .get(nid.0 as usize)
-                    .and_then(Option::as_ref)
-                    .map(|b| (b, span))
-            })
-        {
+        // Alias-specific rename runs first; this shared cursor query also keeps
+        // an implicit prelude alias from falling through to its member.
+        if let Some((binding, span)) = self.name_binding_at(mi, offset) {
             let key = self.renameable_referent(binding, mid)?;
             let extra = self.record_ctor_key(&key);
             let name_span = self.final_ident_span(mi, span);

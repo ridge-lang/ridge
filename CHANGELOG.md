@@ -75,6 +75,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Expanding selection from a declaration body includes its enclosing item,
+  including attached documentation and test attributes, before the whole file.
+  Block layout margins no longer displace that step; positions outside items
+  fall back to the whole file.
+
 - Folding a `class` or `instance` stops at its last content token, leaving
   comments for the following declaration visible. Source ranges also exclude
   trailing layout and comments when the final method has a multiline body.

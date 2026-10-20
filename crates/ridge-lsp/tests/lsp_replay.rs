@@ -8030,6 +8030,156 @@ async fn test_selection_range_one_result_per_position() {
     }
 }
 
+fn assert_selection_contains_cursor_and_nests(chain: &[Range], cursor: Position) {
+    assert!(!chain.is_empty(), "a selection always has a range");
+    assert!(
+        chain[0].start <= cursor && cursor <= chain[0].end,
+        "cursor {cursor:?} outside {chain:?}"
+    );
+    for pair in chain.windows(2) {
+        let (child, parent) = (pair[0], pair[1]);
+        assert!(
+            parent.start <= child.start && child.end <= parent.end,
+            "crossing ranges: {chain:?}"
+        );
+        assert_ne!(child, parent, "duplicate selection: {chain:?}");
+    }
+}
+
+#[tokio::test]
+async fn test_selection_range_reaches_plain_annotated_and_documented_declarations() {
+    for (source, cursor, declaration) in [
+        (
+            "pub fn t_alpha () -> Result Unit Text =\n  Ok ()\n\npub fn other () -> Int = 1\n",
+            Position::new(1, 3),
+            Range::new(Position::new(0, 4), Position::new(1, 7)),
+        ),
+        (
+            "@test \"alpha\"\npub fn t_alpha () -> Result Unit Text =\n  Ok ()\n\npub fn other () -> Int = 1\n",
+            Position::new(2, 3),
+            Range::new(Position::new(0, 0), Position::new(2, 7)),
+        ),
+        (
+            "---\nAlpha.\n---\n@test \"alpha\"\npub fn t_alpha () -> Result Unit Text =\n  Ok ()\n\npub fn other () -> Int = 1\n",
+            Position::new(5, 3),
+            Range::new(Position::new(0, 0), Position::new(5, 7)),
+        ),
+    ] {
+        let (service, _socket, uri) = hover_fixture(source).await;
+        let ranges = service.inner().selection_range(selection_at(&uri, vec![cursor])).await
+            .expect("selection ok").expect("selection present");
+        assert_eq!(ranges.len(), 1);
+        let chain = chain_ranges(&ranges[0]);
+        assert_selection_contains_cursor_and_nests(&chain, cursor);
+        assert!(chain.contains(&declaration), "declaration {declaration:?} missing: {chain:?}");
+        assert_ne!(chain.last(), Some(&declaration), "the file remains outside the declaration");
+    }
+}
+
+#[tokio::test]
+async fn test_selection_range_trailing_layout_keeps_each_cursor_inside_its_range() {
+    let src = "pub fn t_alpha () -> Result Unit Text =\n  Ok ()\n\npub fn other () -> Int = 1\n";
+    let positions = vec![
+        Position::new(1, 3),
+        Position::new(1, 7),
+        Position::new(2, 0),
+    ];
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let ranges = service
+        .inner()
+        .selection_range(selection_at(&uri, positions.clone()))
+        .await
+        .expect("selection ok")
+        .expect("selections present");
+    assert_eq!(ranges.len(), positions.len());
+    for (selection, cursor) in ranges.iter().zip(positions) {
+        let chain = chain_ranges(selection);
+        assert_selection_contains_cursor_and_nests(&chain, cursor);
+        assert_eq!(
+            chain.last(),
+            Some(&Range::new(Position::new(0, 0), Position::new(4, 0)))
+        );
+        if cursor.line == 2 {
+            assert_eq!(
+                chain.len(),
+                1,
+                "trailing blank line belongs to the file: {chain:?}"
+            );
+        } else {
+            assert!(
+                chain.contains(&Range::new(Position::new(0, 4), Position::new(1, 7))),
+                "{chain:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_selection_range_keeps_instance_body_inside_its_declaration() {
+    let src = "class Renderable a =\n    render (x: a) -> Text\n\n---\nInteger rendering.\n---\ninstance Renderable Int =\n    render (x: Int) -> Text =\n        let label = \"value\"\n        label\n\n-- Header for the next function.\n\npub fn next () -> Int = 1\n";
+    let positions = vec![Position::new(9, 10), Position::new(11, 5)];
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let ranges = service
+        .inner()
+        .selection_range(selection_at(&uri, positions.clone()))
+        .await
+        .expect("selection ok")
+        .expect("selections present");
+    assert_eq!(ranges.len(), positions.len());
+    let declaration = Range::new(Position::new(3, 0), Position::new(9, 13));
+    for (selection, cursor) in ranges.iter().zip(positions) {
+        let chain = chain_ranges(selection);
+        assert_selection_contains_cursor_and_nests(&chain, cursor);
+        if cursor.line == 9 {
+            assert!(chain.contains(&declaration), "instance missing: {chain:?}");
+            assert!(
+                chain.contains(&Range::new(Position::new(8, 8), Position::new(9, 13))),
+                "body missing: {chain:?}"
+            );
+            assert!(
+                chain[..chain.len() - 1]
+                    .iter()
+                    .all(|r| r.end <= declaration.end),
+                "crosses instance: {chain:?}"
+            );
+        } else {
+            assert_eq!(
+                chain.len(),
+                1,
+                "following comment belongs to the file: {chain:?}"
+            );
+        }
+        assert_eq!(
+            chain.last(),
+            Some(&Range::new(Position::new(0, 0), Position::new(14, 0)))
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_selection_range_internal_layout_keeps_cursor_containment() {
+    let src = "pub fn value () -> Int =\n    let n = if True then\n        1\n    else\n        2\n\n    n\n\npub fn other () -> Int = 0\n";
+    let cursor = Position::new(5, 0);
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let ranges = service
+        .inner()
+        .selection_range(selection_at(&uri, vec![cursor]))
+        .await
+        .expect("selection ok")
+        .expect("selection present");
+    assert_eq!(ranges.len(), 1);
+    let chain = chain_ranges(&ranges[0]);
+    assert_selection_contains_cursor_and_nests(&chain, cursor);
+    assert!(
+        chain.contains(&Range::new(Position::new(0, 4), Position::new(6, 5))),
+        "declaration missing: {chain:?}"
+    );
+    assert_eq!(
+        chain.last(),
+        Some(&Range::new(Position::new(0, 0), Position::new(9, 0)))
+    );
+}
+
 #[tokio::test]
 async fn test_selection_range_outside_nodes_yields_file() {
     // The cursor sits in the leading whitespace before `double`, off every

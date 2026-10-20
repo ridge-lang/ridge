@@ -298,8 +298,8 @@ fn run_names_the_broken_manifest_not_c006() {
 
 /// `ridge run --watch` survives a single file-change cycle.
 ///
-/// Writes a `.ridge` file mid-run and asserts a recompile + restart occurs
-/// without a crash or zombie process.
+/// Observe distinct program output before and after editing the source.
+/// The owned process tree is cleaned up even when an assertion fails.
 ///
 /// Requires OTP and `cli-watch` feature.
 #[cfg(all(feature = "beam-runtime", feature = "cli-watch"))]
@@ -307,39 +307,34 @@ fn run_names_the_broken_manifest_not_c006() {
 fn run_watch_single_cycle() {
     use std::time::Duration;
 
-    let tw = make_app_workspace("Main", HELLO_MAIN);
+    let source = |marker: &str| {
+        format!("import std.io as Io\npub fn io main () -> Unit = Io.println \"{marker}\"\n")
+    };
+    let tw = make_capable_app_workspace(&source("watch initial version"), "\"io\"");
+    let mut command = ridge_spawnable_cmd();
+    command.arg("run").arg("--watch").current_dir(&tw.path);
+    let mut watcher = server::Server::spawn(command).expect("spawn owned watcher");
+    let initial = watcher.wait_for_output(
+        "watch initial version",
+        "Watching for changes. Press Ctrl-C to exit.",
+        Duration::from_secs(120),
+    );
+    assert!(initial.is_ok(), "{initial:?}\n{}", watcher.diagnostics());
 
-    // Spawn `ridge run --watch` in the background.
-    let mut child = ridge_spawnable_cmd()
-        .arg("run")
-        .arg("--watch")
-        .current_dir(&tw.path)
-        .spawn()
-        .expect("failed to spawn ridge run --watch");
-
-    // Give the initial compile + launch a moment.
-    std::thread::sleep(Duration::from_secs(3));
-
-    // Touch the source file to trigger a watch event.
     write_file(
         &tw.path,
         "apps/demo/src/Main.ridge",
-        "pub fn main -> Int = 1\n",
+        &source("watch edited version"),
     );
-
-    // Wait for debounce + recompile + relaunch.
-    std::thread::sleep(Duration::from_secs(4));
-
-    // The watch process should still be alive (it should not have crashed).
-    let result = child.try_wait().expect("try_wait failed");
-    assert!(
-        result.is_none(),
-        "ridge run --watch exited prematurely after a file change"
+    let restarted = watcher.wait_for_output(
+        "watch edited version",
+        "Restarted.",
+        Duration::from_secs(120),
     );
-
-    // Kill the watcher cleanly.
-    let _ = child.kill();
-    let _ = child.wait();
+    let diagnostics = watcher.diagnostics();
+    let cleanup = watcher.stop();
+    assert!(restarted.is_ok(), "{restarted:?}\n{diagnostics}");
+    cleanup.expect("clean up watcher process tree");
 }
 
 // ── Test 9: --observer prints connection-info to stderr ───────────────────────

@@ -64,6 +64,36 @@ workspace = true
 class InventoryControls(unittest.TestCase):
     rows = [('fixture', 'active', False), ('fixture', 'ignored', True)]
 
+    def test_supplementary_runtime_oracles_cannot_disappear_or_be_ignored(self):
+        def listing():
+            return {'rust-suites': {
+                'watch': {'package-name': 'ridge-cli', 'binary-name': 'run', 'kind': 'test',
+                          'testcases': {'run_watch_single_cycle': {'ignored': False}, 'watch_stress': {'ignored': True}}},
+                'bench': {'package-name': 'ridge-bench', 'binary-name': 'layer_b', 'kind': 'test',
+                          'testcases': {'layer_b_benches_compile_and_report_timings': {'ignored': False}}},
+            }}
+        gate.runtime_surface_inventory(listing())
+        for target in ('watch', 'bench'):
+            for mutation in ('missing', 'ignored', 'wrong-package'):
+                data = listing()
+                suite = data['rust-suites'][target]
+                if mutation == 'missing':
+                    del data['rust-suites'][target]
+                elif mutation == 'ignored':
+                    for case in suite['testcases'].values():
+                        case['ignored'] = True
+                else:
+                    suite['package-name'] = 'wrong-package'
+                with self.subTest(target=target, mutation=mutation), self.assertRaises(ValueError):
+                    gate.runtime_surface_inventory(data)
+
+    def test_supplementary_selection_keeps_complete_targets_and_watch_feature(self):
+        selection = gate.runtime_surface_selection()
+        self.assertEqual([selection[i + 1] for i, arg in enumerate(selection) if arg == '-p'], ['ridge-cli', 'ridge-bench'])
+        self.assertEqual([selection[i + 1] for i, arg in enumerate(selection) if arg == '--test'], ['run', 'layer_b'])
+        self.assertIn('ridge-cli/cli-watch', selection)
+        self.assertNotIn('-E', selection)
+
     def test_failed_command_preserves_initial_diagnostic_and_exit_code(self):
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)

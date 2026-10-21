@@ -1,0 +1,11 @@
+{
+  "name": "ridge-ci-filter-controls",
+  "private": true,
+  "scripts": {
+    "test": "node --test test_path_filters.cjs"
+  },
+  "devDependencies": {
+    "js-yaml": "4.3.2",
+    "picomatch": "2.3.1"
+  }
+}

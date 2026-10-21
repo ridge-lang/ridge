@@ -38,6 +38,151 @@ fn ridge_cmd() -> Command {
     Command::cargo_bin("ridge").unwrap()
 }
 
+#[test]
+fn standalone_run_requires_main_before_runtime() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("scratch.ridge");
+    std::fs::write(&file, "pub fn answer -> Int = 42\n").unwrap();
+    ridge_cmd()
+        .arg("run")
+        .arg(&file)
+        .assert()
+        .failure()
+        .stderr(contains("M022"))
+        .stderr(contains("scratch.ridge"))
+        .stderr(contains("ridge.toml").not());
+    std::fs::write(&file, "pub fn main (x: Int) -> Int = x\n").unwrap();
+    ridge_cmd()
+        .arg("run")
+        .arg(&file)
+        .assert()
+        .failure()
+        .stderr(contains("T053"));
+}
+
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn standalone_run_and_shorthand_execute_shebang_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("hello world.ridge");
+    std::fs::write(&file, "#!/usr/bin/env ridge\nimport std.io as Io\nfn io main () -> Result Unit Text =\n    Io.println \"standalone-ok\"\n    Ok ()\n").unwrap();
+    ridge_cmd()
+        .arg("run")
+        .arg(&file)
+        .assert()
+        .success()
+        .stdout(contains("standalone-ok"));
+    ridge_cmd()
+        .arg(&file)
+        .assert()
+        .success()
+        .stdout(contains("standalone-ok"));
+    assert!(!dir.path().join("ridge.toml").exists());
+    assert!(!dir.path().join("target").exists());
+    std::fs::write(
+        &file,
+        "fn main () -> Result Unit Text = Err \"script-failed\"\n",
+    )
+    .unwrap();
+    ridge_cmd()
+        .arg(&file)
+        .assert()
+        .failure()
+        .stderr(contains("script-failed"));
+}
+
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn standalone_arguments_reach_program_without_becoming_runtime_flags() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("args.ridge");
+    std::fs::write(&file, "import std.cli as Cli\nfn env main () -> Result Unit Text =\n    if Cli.args () == [\"--release\", \"two words\"] then Ok () else Err \"unexpected arguments\"\n").unwrap();
+    ridge_cmd()
+        .arg("run")
+        .arg(&file)
+        .args(["--", "--release", "two words"])
+        .assert()
+        .success();
+    ridge_cmd()
+        .arg(&file)
+        .args(["--release", "two words"])
+        .assert()
+        .success();
+}
+
+#[cfg(all(unix, feature = "beam-runtime"))]
+#[test]
+fn standalone_shebang_runs_as_an_executable() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("executable.ridge");
+    std::fs::write(
+        &file,
+        "#!/usr/bin/env ridge\nfn main () -> Result Unit Text = Ok ()\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let binary = assert_cmd::cargo::cargo_bin("ridge");
+    let mut paths = vec![binary.parent().unwrap().to_owned()];
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    Command::new(&file)
+        .env("PATH", std::env::join_paths(paths).unwrap())
+        .assert()
+        .success();
+}
+
+#[cfg(all(feature = "beam-runtime", feature = "cli-watch"))]
+#[test]
+fn standalone_watch_recompiles_selected_source() {
+    use std::time::Duration;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("watch.ridge");
+    let source = |marker| {
+        format!("#!/usr/bin/env ridge\nimport std.io as Io\npub fn io main () -> Unit = Io.println \"{marker}\"\n")
+    };
+    std::fs::write(&file, source("loose initial version")).unwrap();
+    let mut command = ridge_spawnable_cmd();
+    command.arg("run").arg(&file).arg("--watch");
+    let mut watcher = server::Server::spawn(command).expect("spawn owned watcher");
+    let initial = watcher.wait_for_output(
+        "loose initial version",
+        "Watching for changes. Press Ctrl-C to exit.",
+        Duration::from_secs(120),
+    );
+    assert!(initial.is_ok(), "{initial:?}\n{}", watcher.diagnostics());
+    std::fs::write(&file, source("loose edited version")).unwrap();
+    let restarted = watcher.wait_for_output(
+        "loose edited version",
+        "Restarted.",
+        Duration::from_secs(120),
+    );
+    let diagnostics = watcher.diagnostics();
+    let cleanup = watcher.stop();
+    assert!(restarted.is_ok(), "{restarted:?}\n{diagnostics}");
+    cleanup.expect("clean up watcher process tree");
+}
+
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn explicit_run_selects_file_in_existing_workspace() {
+    let tw = make_app_workspace("Default", "import std.io as Io\nfn io main () -> Result Unit Text =\n    Io.println \"wrong-entry\"\n    Ok ()\n");
+    write_file(&tw.path, "apps/demo/ridge.toml", "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Default.ridge\"\n[capabilities]\nallow = [\"io\"]\n");
+    write_file(&tw.path, "apps/demo/src/Selected.ridge", "import std.io as Io\nimport demo.Other\nfn io main () -> Result Unit Text =\n    Io.println (Other.message ())\n    Ok ()\n");
+    write_file(
+        &tw.path,
+        "apps/demo/src/Other.ridge",
+        "pub fn message -> Text = \"selected-entry\"\n",
+    );
+    ridge_cmd()
+        .arg("run")
+        .arg(tw.path.join("apps/demo/src/Selected.ridge"))
+        .assert()
+        .success()
+        .stdout(contains("selected-entry").and(contains("wrong-entry").not()));
+}
+
 /// Spawn-friendly variant: `assert_cmd::Command::spawn` became private in 2.x,
 /// so the `--watch` cycle tests need a raw `std::process::Command` built from
 /// the same cargo-bin path. Keeps `ridge_cmd()` available for the assert-based

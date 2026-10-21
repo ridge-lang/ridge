@@ -57,6 +57,9 @@ use ridge_driver::{
 };
 use ridge_lexer::LineIndex;
 use ridge_manifest::{find_workspace_root, WorkspaceRoot};
+
+#[path = "server_files.rs"]
+mod file_context;
 use ridge_resolve::ModuleId;
 
 use crate::cancel::{Cancel, CancelOnDrop};
@@ -72,9 +75,28 @@ use crate::index::{
 type SharedEngine = Arc<StdMutex<Option<IncrementalState>>>;
 
 /// One unit of work for a compile pass: the target workspace's slot index (a
-/// stable handle into [`WorkspaceSnapshot::workspaces`]), its engine, and what to
-/// compile. Snapshotted under the state lock, then handed to a blocking thread.
-type CompileJob = (usize, SharedEngine, CompileTarget);
+/// stable handle into [`WorkspaceSnapshot::workspaces`]), its engine, target and
+/// full-check flag. Snapshotted under the state lock, then handed to a blocking thread.
+type CompileJob = (usize, SharedEngine, CompileTarget, bool);
+
+/// Work not yet installed and delivered, including its disk-refresh obligation.
+#[derive(Clone, Copy)]
+struct PendingCompile {
+    /// Identity used to reject stale results and completion.
+    revision: u64,
+    /// A cancelled full check must still reload its manifests from disk.
+    reseed: bool,
+}
+
+/// A versioned set of jobs and source aliases prepared under the state lock.
+struct CompileBatch {
+    /// Stable workspace slots and their retained engines.
+    jobs: Vec<CompileJob>,
+    /// Original buffer URIs paired with canonical source identities.
+    aliases: Vec<(Url, Url)>,
+    /// Reject results and completion from a superseded batch.
+    revision: u64,
+}
 
 /// Command id for the `workspace/executeCommand` bridge that applies a quick-fix
 /// edit on clients that can't accept a `CodeAction` literal (see [`ClientCaps`]).
@@ -223,23 +245,22 @@ fn parse_code_lens_flags(code_lens: &serde_json::Value) -> CodeLensConfig {
 struct WorkspaceSnapshot {
     /// Every independent Ridge workspace the client opened — one per distinct
     /// `[workspace]` manifest root — each with its own engine and analysis index.
-    /// In standalone mode this holds exactly one workspace whose root is `None`.
-    /// Empty until `initialize` is handled. Fixed for the session: the order and
-    /// membership never change after `initialize`, so a slot index is a stable
-    /// handle for installing a compile result.
+    /// One synthetic slot handles genuinely loose documents alongside real roots.
+    /// Empty until initialization. Inferred contexts append stable slots; closed
+    /// contexts deactivate in place, so an in-flight job never changes owners.
     workspaces: Vec<Workspace>,
+    /// Cached source identities and owning roots for open documents.
+    document_contexts: HashMap<Url, file_context::DocumentContext>,
+    /// Reject ownership lookups superseded by a newer document or reseed event.
+    context_revision: u64,
+    /// Monotonic identity of the most recently prepared compile batch.
+    compile_revision: u64,
     /// Open document contents keyed by `Url` (LSP file URI).
     open_docs: std::collections::HashMap<Url, String>,
     /// Set of file URIs for which we've already emitted the L803 orphan warning.
     /// Reserved for future use (0.2.0 orphan-file warn-once logic).
     #[allow(dead_code)]
     warned_orphan: HashSet<String>,
-    /// True when no `[workspace]` manifest was found at or above any opened
-    /// folder (or no folder was given at all). In this mode the single workspace
-    /// type-checks each open `.ridge` file on its own, so a loose file still gets
-    /// diagnostics, hover, and navigation. Mutually exclusive with a real
-    /// manifest root being present.
-    standalone: bool,
     /// True when the client advertised dynamic registration for type hierarchy.
     /// lsp-types 0.94 has no static `typeHierarchyProvider` server capability,
     /// so `textDocument/prepareTypeHierarchy` is registered dynamically in
@@ -318,6 +339,12 @@ struct CachedSemanticTokens {
 /// compiles and is queried on its own, so names never leak between unrelated
 /// projects, and a request routes to the workspace that owns the document.
 struct Workspace {
+    /// Canonical identity, while `root` preserves a configured path spelling.
+    key: Option<PathBuf>,
+    /// A folder explicitly opened by the client remains active without buffers.
+    configured: bool,
+    /// Inferred slots keep their number but release analysis when closed.
+    active: bool,
     /// The directory holding this workspace's root `ridge.toml` with a
     /// `[workspace]` table. `None` in standalone mode, where the project is
     /// synthesised from the open `.ridge` files instead.
@@ -330,6 +357,83 @@ struct Workspace {
     /// This workspace's most recent completed analysis, or `None` until its first
     /// compile lands. Reads clone the `Arc` and release the lock before querying.
     index: Option<Arc<WorkspaceIndex>>,
+    /// Batch whose analysis or diagnostic delivery has not finished yet.
+    pending_batch: Option<PendingCompile>,
+}
+
+impl WorkspaceSnapshot {
+    /// Recover cancelled work using current buffers while keeping completed
+    /// unrelated contexts warm. A batch stays pending through diagnostic delivery.
+    fn prepare_compile(
+        &mut self,
+        reseed: bool,
+        edits: &mut Vec<(Url, String)>,
+        selection: Option<&HashSet<usize>>,
+    ) -> CompileBatch {
+        self.compile_revision += 1;
+        let revision = self.compile_revision;
+        let pending = self
+            .workspaces
+            .iter()
+            .any(|ws| ws.active && ws.pending_batch.is_some());
+        let jobs: Vec<_> =
+            self.workspaces
+                .iter()
+                .enumerate()
+                .filter(|(slot, ws)| {
+                    selection.is_none_or(|slots| slots.contains(slot) || ws.pending_batch.is_some())
+                })
+                .filter(|(_, ws)| {
+                    reseed
+                        || ws.pending_batch.is_some()
+                        || ws.index.as_ref().is_some_and(|index| {
+                            edits.iter().any(|(uri, _)| index.contains_uri(uri))
+                        })
+                })
+                .filter_map(|(slot, ws)| {
+                    ws.target(&self.open_docs, &self.document_contexts)
+                        .map(|target| {
+                            let full_check = (reseed
+                                && selection.is_none_or(|slots| slots.contains(&slot)))
+                                || ws.pending_batch.is_some_and(|pending| pending.reseed);
+                            (slot, Arc::clone(&ws.engine), target, full_check)
+                        })
+                })
+                .collect();
+        if pending {
+            // An aborted controller may never have applied its queued edits.
+            // Reapply the latest buffers to just the selected or pending jobs.
+            *edits = self
+                .open_docs
+                .iter()
+                .map(|(uri, text)| (uri.clone(), text.clone()))
+                .collect();
+        }
+        let aliases = file_context::aliases(self, edits);
+        for (slot, _, _, reseed) in &jobs {
+            self.workspaces[*slot].pending_batch = Some(PendingCompile {
+                revision,
+                reseed: *reseed,
+            });
+        }
+        CompileBatch {
+            jobs,
+            aliases,
+            revision,
+        }
+    }
+
+    /// A late completion must not clear a newer batch's pending work.
+    fn finish_compile(&mut self, revision: u64) {
+        for ws in &mut self.workspaces {
+            if ws
+                .pending_batch
+                .is_some_and(|pending| pending.revision == revision)
+            {
+                ws.pending_batch = None;
+            }
+        }
+    }
 }
 
 impl std::fmt::Debug for Workspace {
@@ -343,13 +447,29 @@ impl std::fmt::Debug for Workspace {
 }
 
 impl Workspace {
+    /// Results from a closed or replaced engine cannot populate its old slot.
+    fn accepts_result(&self, engine: &SharedEngine, generation: u64) -> bool {
+        self.active
+            && Arc::ptr_eq(&self.engine, engine)
+            && self
+                .index
+                .as_ref()
+                .is_none_or(|index| generation > index.generation)
+    }
+
     /// A fresh workspace for `root` (`None` for standalone), with an unseeded
     /// engine and no analysis yet.
     fn new(root: Option<PathBuf>) -> Self {
         Self {
+            key: root
+                .as_ref()
+                .map(|root| ridge_manifest::canonicalize(root).unwrap_or_else(|_| root.clone())),
+            configured: root.is_some(),
+            active: true,
             root,
             engine: Arc::new(StdMutex::new(None)),
             index: None,
+            pending_batch: None,
         }
     }
 
@@ -357,10 +477,17 @@ impl Workspace {
     /// standalone file set derived from the current open documents. Returns
     /// `None` for a standalone workspace with no open `.ridge` files, where there
     /// is nothing to analyse yet.
-    fn target(&self, open_docs: &HashMap<Url, String>) -> Option<CompileTarget> {
+    fn target(
+        &self,
+        open_docs: &HashMap<Url, String>,
+        contexts: &HashMap<Url, file_context::DocumentContext>,
+    ) -> Option<CompileTarget> {
+        if !self.active {
+            return None;
+        }
         let Some(root) = &self.root else {
             // Standalone: nothing to analyse until at least one `.ridge` is open.
-            let files = standalone_files(open_docs);
+            let files = standalone_files(open_docs, contexts);
             return (!files.is_empty()).then_some(CompileTarget::Standalone(files));
         };
         Some(CompileTarget::Workspace(root.clone()))
@@ -434,12 +561,16 @@ impl RidgeLanguageServer {
     /// read-path primitive for hover, go-to-definition, and completion.
     pub async fn index_for_uri(&self, uri: &Url) -> Option<Arc<WorkspaceIndex>> {
         let snap = self.state.lock().await;
-        snap.workspaces.iter().find_map(|ws| {
-            ws.index
-                .as_ref()
-                .filter(|idx| idx.contains_uri(uri))
-                .cloned()
-        })
+        let owner = snap.document_contexts.get(uri);
+        snap.workspaces
+            .iter()
+            .filter(|ws| owner.is_none_or(|context| ws.key == context.root))
+            .find_map(|ws| {
+                ws.index
+                    .as_ref()
+                    .filter(|idx| idx.contains_uri(uri))
+                    .cloned()
+            })
     }
 
     /// The negotiated client-capability gates (see [`ClientCaps`]). Copied out of
@@ -485,42 +616,34 @@ impl RidgeLanguageServer {
     /// and the analysis index reflect the editor's buffers rather than stale disk
     /// text; an edit is a no-op for a workspace that does not own its document.
     ///
-    /// A reseed recompiles every workspace. An incremental compile only touches
-    /// the workspaces that currently own an edited document, so typing in one
-    /// project never recompiles an unrelated one. Each workspace's heavy work
+    /// A full check selects every active workspace unless explicitly restricted.
+    /// An incremental compile selects edited workspaces and recovers pending work
+    /// from a superseded batch. Completed unrelated contexts stay warm. Each workspace's heavy work
     /// runs on its own blocking thread and installs into its own slot under the
     /// shared generation guard, so a slow compile superseded by a newer one is
     /// discarded.
-    async fn run_compile(&self, reseed: bool, edits: Vec<(Url, String)>) {
-        let compile_handle_arc = Arc::clone(&self.compile_handle);
-        {
-            let mut ch = compile_handle_arc.lock().await;
-            if let Some(handle) = ch.take() {
-                handle.abort();
-            }
+    async fn run_compile(
+        &self,
+        reseed: bool,
+        mut edits: Vec<(Url, String)>,
+        selection: Option<HashSet<usize>>,
+    ) {
+        let mut compile_handle = self.compile_handle.lock().await;
+        if let Some(handle) = compile_handle.take() {
+            handle.abort();
         }
 
-        // Select the workspaces to compile and snapshot each one's engine and
-        // target. A reseed takes them all; an incremental compile takes only the
-        // ones whose current index owns an edited document.
-        let jobs: Vec<CompileJob> = {
-            let snap = self.state.lock().await;
-            snap.workspaces
-                .iter()
-                .enumerate()
-                .filter(|(_, ws)| {
-                    reseed
-                        || ws
-                            .index
-                            .as_ref()
-                            .is_some_and(|idx| edits.iter().any(|(uri, _)| idx.contains_uri(uri)))
-                })
-                .filter_map(|(slot, ws)| {
-                    ws.target(&snap.open_docs)
-                        .map(|target| (slot, Arc::clone(&ws.engine), target))
-                })
-                .collect()
-        };
+        // Snapshot requested and unfinished work, preserving each job's disk
+        // refresh obligation and overlaying the latest open buffers.
+        let CompileBatch {
+            jobs,
+            aliases,
+            revision,
+        } = self
+            .state
+            .lock()
+            .await
+            .prepare_compile(reseed, &mut edits, selection.as_ref());
         if jobs.is_empty() {
             return;
         }
@@ -550,6 +673,7 @@ impl RidgeLanguageServer {
         // Shared across the per-workspace compiles, which each read but never
         // mutate the buffer overlay.
         let edits = Arc::new(edits);
+        let aliases = Arc::new(aliases);
 
         let handle = tokio::spawn(async move {
             // Hold the progress guard for the whole batch: it ends the indicator
@@ -564,11 +688,20 @@ impl RidgeLanguageServer {
             // in one batch after the loop, so the pull model sends a single
             // refresh for the whole compile rather than one per workspace.
             let mut delivered: Vec<(Url, Vec<Diagnostic>)> = Vec::new();
-            for (slot, engine, target) in jobs {
+            for (slot, engine, target, job_reseed) in jobs {
+                let install_engine = Arc::clone(&engine);
                 let gen_counter = Arc::clone(&gen_counter);
                 let edits = Arc::clone(&edits);
+                let aliases = Arc::clone(&aliases);
                 let result = tokio::task::spawn_blocking(move || {
-                    compile_blocking(&engine, &gen_counter, &target, reseed, edits.as_slice())
+                    compile_blocking(
+                        &engine,
+                        &gen_counter,
+                        &target,
+                        job_reseed,
+                        edits.as_slice(),
+                        aliases.as_slice(),
+                    )
                 })
                 .await;
 
@@ -585,11 +718,15 @@ impl RidgeLanguageServer {
                             let mut snap = state_for_install.lock().await;
                             match snap.workspaces.get_mut(slot) {
                                 Some(ws)
-                                    if ws.index.as_ref().is_none_or(|existing| {
-                                        out.generation > existing.generation
-                                    }) =>
+                                    if ws
+                                        .pending_batch
+                                        .is_some_and(|pending| pending.revision == revision)
+                                        && ws.accepts_result(&install_engine, out.generation) =>
                                 {
                                     ws.index = Some(Arc::clone(&out.index));
+                                    if let Some(pending) = &mut ws.pending_batch {
+                                        pending.reseed = false;
+                                    }
                                     true
                                 }
                                 _ => false,
@@ -602,15 +739,59 @@ impl RidgeLanguageServer {
                 }
             }
             deliver_diagnostics(&client, &state_for_install, delivered).await;
+            state_for_install.lock().await.finish_compile(revision);
         });
 
-        let mut ch = compile_handle_arc.lock().await;
-        *ch = Some(handle);
+        *compile_handle = Some(handle);
+    }
+
+    /// Refresh ownership on full checks, including a loose file becoming a project.
+    async fn refresh_document_contexts(&self) -> bool {
+        let (revision, uris) = {
+            let mut snap = self.state.lock().await;
+            snap.context_revision += 1;
+            (
+                snap.context_revision,
+                snap.open_docs.keys().cloned().collect::<Vec<_>>(),
+            )
+        };
+        let contexts = tokio::task::spawn_blocking(move || {
+            uris.into_iter()
+                .map(|uri| {
+                    let context = file_context::DocumentContext::discover(&uri);
+                    (uri, context)
+                })
+                .collect::<Vec<_>>()
+        })
+        .await;
+        let Ok(contexts) = contexts else { return false };
+        let cleared = {
+            let mut snap = self.state.lock().await;
+            if snap.context_revision != revision {
+                return false;
+            }
+            for (uri, context) in contexts {
+                if snap.open_docs.contains_key(&uri) {
+                    snap.document_contexts.insert(uri, context);
+                }
+            }
+            file_context::refresh(&mut snap)
+        };
+        deliver_diagnostics(
+            &self.client,
+            &self.state,
+            cleared.into_iter().map(|uri| (uri, Vec::new())).collect(),
+        )
+        .await;
+        true
     }
 
     /// Reseed the engine from disk and recompile against every open buffer.
     /// Used on open and save, where the on-disk state is authoritative.
     async fn trigger_compile(&self) {
+        if !self.refresh_document_contexts().await {
+            return;
+        }
         let edits: Vec<(Url, String)> = {
             let snap = self.state.lock().await;
             snap.open_docs
@@ -618,7 +799,7 @@ impl RidgeLanguageServer {
                 .map(|(uri, text)| (uri.clone(), text.clone()))
                 .collect()
         };
-        self.run_compile(true, edits).await;
+        self.run_compile(true, edits, None).await;
     }
 
     /// Drain the dirty set and incrementally recompile those files' buffers.
@@ -636,7 +817,7 @@ impl RidgeLanguageServer {
         if edits.is_empty() {
             return;
         }
-        self.run_compile(false, edits).await;
+        self.run_compile(false, edits, None).await;
     }
 
     /// Schedule a debounced incremental compile (250 ms delay).
@@ -707,10 +888,24 @@ impl CompileTarget {
 ///
 /// Sorted so the synthesised project/module ids stay stable across reseeds for
 /// the same file set; non-`file:` URIs and non-`.ridge` documents are dropped.
-fn standalone_files(open_docs: &HashMap<Url, String>) -> Vec<PathBuf> {
+fn standalone_files(
+    open_docs: &HashMap<Url, String>,
+    contexts: &HashMap<Url, file_context::DocumentContext>,
+) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = open_docs
         .keys()
-        .filter_map(|uri| uri.to_file_path().ok())
+        .filter(|uri| {
+            contexts
+                .get(*uri)
+                .is_none_or(|context| context.root.is_none())
+        })
+        .filter_map(|uri| {
+            contexts
+                .get(uri)
+                .map_or(uri, |context| &context.canonical_uri)
+                .to_file_path()
+                .ok()
+        })
         .filter(|p| p.extension().is_some_and(|e| e == "ridge"))
         .collect();
     files.sort();
@@ -855,6 +1050,7 @@ fn compile_blocking(
     target: &CompileTarget,
     reseed: bool,
     edits: &[(Url, String)],
+    aliases: &[(Url, Url)],
 ) -> Result<CompileOutput, CheckError> {
     let mut guard = engine
         .lock()
@@ -893,6 +1089,56 @@ fn compile_blocking(
         &state.typed.tycons,
     );
     let mut index = WorkspaceIndex::build(generation, &state.typed, &state.resolved, &sources);
+    for (alias, canonical) in aliases {
+        index.add_uri_alias(alias, canonical);
+    }
+    add_analysis_fixes(&mut index, state);
+    let index = Arc::new(index);
+
+    // Pre-populate every module's URI so a now-clean file gets its stale
+    // diagnostics cleared, then bucket the current diagnostics by file.
+    let mut by_file: HashMap<Url, Vec<Diagnostic>> = index
+        .uri_to_module
+        .keys()
+        .map(|uri| (uri.clone(), Vec::new()))
+        .collect();
+    for diag in &structured {
+        let source_key = diag.source_id.as_str();
+        let uri = source_id_to_uri(&workspace_root, source_key);
+        let src_text = sources.text(source_key);
+        let lsp_diag = to_lsp_diagnostic(diag, &uri, src_text);
+        by_file.entry(uri).or_default().push(lsp_diag);
+    }
+
+    for (uri, diagnostic) in index.test_diagnostics() {
+        by_file.entry(uri).or_default().push(diagnostic);
+    }
+
+    // Style hints computed from the AST (not compile errors): deeply nested
+    // `if` staircases in Result/Unit functions get a nudge toward `guard`/`?`.
+    for (uri, diag) in collect_nesting_hints(&index.line_indices, &index.module_uris, &state.typed)
+    {
+        by_file.entry(uri).or_default().push(diag);
+    }
+
+    for (alias, canonical) in aliases {
+        if let Some(diagnostics) = by_file
+            .get(canonical)
+            .or_else(|| by_file.get(alias))
+            .cloned()
+        {
+            by_file.insert(alias.clone(), diagnostics);
+        }
+    }
+    Ok(CompileOutput {
+        generation,
+        index,
+        diagnostics_by_file: by_file.into_iter().collect(),
+    })
+}
+
+/// Populate source-based fixes from the same completed analysis.
+fn add_analysis_fixes(index: &mut WorkspaceIndex, state: &IncrementalState) {
     index.signature_fixes = collect_signature_fixes(
         &index.line_indices,
         &index.module_uris,
@@ -933,40 +1179,7 @@ fn compile_blocking(
         &index.module_text,
         &state.typed,
     ));
-    add_ask_fixes(&mut index, state);
-    let index = Arc::new(index);
-
-    // Pre-populate every module's URI so a now-clean file gets its stale
-    // diagnostics cleared, then bucket the current diagnostics by file.
-    let mut by_file: HashMap<Url, Vec<Diagnostic>> = index
-        .uri_to_module
-        .keys()
-        .map(|uri| (uri.clone(), Vec::new()))
-        .collect();
-    for diag in &structured {
-        let source_key = diag.source_id.as_str();
-        let uri = source_id_to_uri(&workspace_root, source_key);
-        let src_text = sources.text(source_key);
-        let lsp_diag = to_lsp_diagnostic(diag, &uri, src_text);
-        by_file.entry(uri).or_default().push(lsp_diag);
-    }
-
-    for (uri, diagnostic) in index.test_diagnostics() {
-        by_file.entry(uri).or_default().push(diagnostic);
-    }
-
-    // Style hints computed from the AST (not compile errors): deeply nested
-    // `if` staircases in Result/Unit functions get a nudge toward `guard`/`?`.
-    for (uri, diag) in collect_nesting_hints(&index.line_indices, &index.module_uris, &state.typed)
-    {
-        by_file.entry(uri).or_default().push(diag);
-    }
-
-    Ok(CompileOutput {
-        generation,
-        index,
-        diagnostics_by_file: by_file.into_iter().collect(),
-    })
+    add_ask_fixes(index, state);
 }
 
 fn add_ask_fixes(index: &mut WorkspaceIndex, state: &IncrementalState) {
@@ -1163,7 +1376,6 @@ impl LanguageServer for RidgeLanguageServer {
         {
             let mut snap = self.state.lock().await;
             snap.workspaces = workspaces;
-            snap.standalone = standalone;
             snap.supports_type_hierarchy = supports_type_hierarchy;
             snap.supports_watched_files = supports_watched_files;
             snap.supports_work_done_progress = supports_work_done_progress;
@@ -1275,10 +1487,20 @@ impl LanguageServer for RidgeLanguageServer {
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri;
         let text = params.text_document.text;
-        {
+        let context = file_context::DocumentContext::discover(&uri);
+        let cleared = {
             let mut snap = self.state.lock().await;
+            snap.context_revision += 1;
             snap.open_docs.insert(uri.clone(), text);
-        }
+            snap.document_contexts.insert(uri, context);
+            file_context::refresh(&mut snap)
+        };
+        deliver_diagnostics(
+            &self.client,
+            &self.state,
+            cleared.into_iter().map(|uri| (uri, Vec::new())).collect(),
+        )
+        .await;
         // Run compile immediately on open.
         self.trigger_compile().await;
     }
@@ -1323,20 +1545,45 @@ impl LanguageServer for RidgeLanguageServer {
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri;
-        let standalone = {
+        let (mut cleared, mut slots) = {
             let mut snap = self.state.lock().await;
+            snap.context_revision += 1;
             snap.open_docs.remove(&uri);
             // Drop the document's cached token stream; a reopened file gets a
             // fresh full result before it can delta again.
             snap.semantic_tokens.remove(&uri_key(&uri));
-            snap.standalone
+            let (cleared, slots) = file_context::close(&mut snap, &uri);
+            (cleared, slots)
         };
         // Clear diagnostics for the closed file.
-        deliver_diagnostics(&self.client, &self.state, vec![(uri, Vec::new())]).await;
-        // In standalone mode the closed file was a synthetic project member, so
-        // rebuild the graph from the remaining open files to drop it.
-        if standalone {
-            self.trigger_compile().await;
+        cleared.push(uri);
+        let cleared: HashSet<_> = cleared.into_iter().collect();
+        deliver_diagnostics(
+            &self.client,
+            &self.state,
+            cleared.into_iter().map(|uri| (uri, Vec::new())).collect(),
+        )
+        .await;
+        if !self.refresh_document_contexts().await {
+            return;
+        }
+        let edits = {
+            let snap = self.state.lock().await;
+            slots.extend(
+                snap.workspaces
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, ws)| ws.active && ws.index.is_none())
+                    .map(|(slot, _)| slot),
+            );
+            snap.open_docs
+                .iter()
+                .map(|(uri, text)| (uri.clone(), text.clone()))
+                .collect()
+        };
+        // Reseed changed inferred contexts; unrelated indexed workspaces stay warm.
+        if !slots.is_empty() {
+            self.run_compile(true, edits, Some(slots)).await;
         }
     }
 

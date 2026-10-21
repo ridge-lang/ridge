@@ -8,7 +8,7 @@
 //!
 //! Calls [`ridge_driver::check_workspace`] and renders any diagnostics.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use ridge_driver::{check_workspace, CheckArtefacts, CheckOptions};
@@ -18,9 +18,12 @@ use crate::render::{report_diagnostics, WarningPolicy};
 
 // ── Argument struct ───────────────────────────────────────────────────────────
 
-/// Type-check the workspace without producing any output files.
+/// Type-check a workspace or source file without producing output files.
 #[derive(Debug, Parser)]
 pub struct CheckArgs {
+    /// Check one .ridge file, retaining any workspace that governs it.
+    #[arg(value_name = "FILE", conflicts_with = "member")]
+    pub file: Option<PathBuf>,
     /// Only check the named workspace member.
     #[arg(long, value_name = "NAME")]
     pub member: Option<String>,
@@ -42,10 +45,24 @@ pub struct CheckArgs {
 /// and only fail the check under `--deny-warnings`.
 pub fn execute(args: &CheckArgs, cwd: &Path) -> Result<(), CliError> {
     // ── 1. Locate workspace root ──────────────────────────────────────────────
-    let workspace_root = crate::cmd::workspace_root_for(cwd)?;
+    let file = args
+        .file
+        .as_ref()
+        .map(|path| crate::cmd::source_file_for(path, cwd))
+        .transpose()?;
+    let workspace_root = match &file {
+        Some(file) => file.parent().unwrap_or(cwd).to_owned(),
+        None => crate::cmd::workspace_root_for(cwd)?,
+    };
 
     // ── 2. Check options ──────────────────────────────────────────────────────
     let mut opts = CheckOptions::new(workspace_root);
+    if let Some(path) = file {
+        opts.source = ridge_driver::SourceInput::File {
+            path,
+            require_main: false,
+        };
+    }
     opts.members = args.member.as_ref().map(|m| vec![m.clone()]);
 
     // ── 3. Type-check ─────────────────────────────────────────────────────────

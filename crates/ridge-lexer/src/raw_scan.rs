@@ -628,7 +628,7 @@ pub(crate) fn scan(src: &str) -> (Vec<(RawToken, Span)>, Vec<LexError>) {
 }
 
 /// Restart scanning from `offset` into `src`, adjusting all spans by `offset`.
-fn scan_from(src: &str, offset: usize) -> (Vec<(RawToken, Span)>, Vec<LexError>) {
+pub(crate) fn scan_from(src: &str, offset: usize) -> (Vec<(RawToken, Span)>, Vec<LexError>) {
     if offset >= src.len() {
         return (Vec::new(), Vec::new());
     }

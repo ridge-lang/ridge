@@ -24,6 +24,7 @@ pub mod compile;
 pub mod diag_adapters;
 pub mod error;
 pub mod incremental;
+pub mod input;
 pub mod options;
 pub mod reload;
 pub mod run;
@@ -42,10 +43,11 @@ pub use compile::{
     EntryModule, SourceMap,
 };
 pub use error::{
-    CheckError, CompileDiagnostics, CompileError, ProcessExitCode, RunError, ToolchainError,
-    WorkspaceError,
+    CheckError, CompileDiagnostics, CompileError, ProcessExitCode, RunError, SourceFileError,
+    ToolchainError, WorkspaceError,
 };
 pub use incremental::IncrementalState;
+pub use input::{file_build_root, validate_source_file, SourceInput};
 pub use options::{CheckOptions, CompileOptions, EmitArtefacts, Profile, RunOptions};
 pub use reload::{
     collect_bundle_beams, load_version_history, manifest_path_for, plan_reload, reload_check,

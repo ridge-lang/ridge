@@ -72,8 +72,12 @@ impl EmitArtefacts {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct CompileOptions {
+    /// Workspace discovery, or an explicitly selected source file.
+    pub source: crate::SourceInput,
     /// Absolute path to the workspace root directory (the directory containing
     /// the root `ridge.toml` with a `[workspace]` table).
+    /// For an explicit source file, this is the artefact root instead;
+    /// [`crate::file_build_root`] provides an isolated cache location.
     pub workspace_root: PathBuf,
 
     /// Optional filter: only compile the named members.  When `None`, every
@@ -124,6 +128,7 @@ impl CompileOptions {
             workspace_root,
             members: None,
             profile: Profile::Debug,
+            source: crate::SourceInput::Workspace,
             emit: EmitArtefacts::Beam,
             cache_root: None,
             is_stdlib: false,
@@ -174,7 +179,10 @@ impl CompileOptions {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct CheckOptions {
+    /// Workspace discovery, or an explicitly selected source file.
+    pub source: crate::SourceInput,
     /// Absolute path to the workspace root directory.
+    /// File selection discovers its context from the source path instead.
     pub workspace_root: PathBuf,
 
     /// Optional filter: only check the named members.  When `None`, every
@@ -209,6 +217,7 @@ impl CheckOptions {
             workspace_root,
             members: None,
             retain_indices: false,
+            source: crate::SourceInput::Workspace,
             is_stdlib: false,
         }
     }
@@ -231,13 +240,17 @@ impl CheckOptions {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct RunOptions {
+    /// Workspace discovery, or an explicitly selected executable source file.
+    pub source: crate::SourceInput,
     /// Absolute path to the workspace root directory.
+    /// For file selection, use [`crate::file_build_root`] for artefacts.
     pub workspace_root: PathBuf,
 
     /// Build profile.
     pub profile: Profile,
 
     /// The entry-point member name (must match a workspace member).
+    /// With file selection, the sole selected entry is used regardless of this name.
     pub main_member: String,
 
     /// The BEAM module name to invoke (passed to `-s <module> <entry_fn>`).
@@ -264,6 +277,7 @@ impl RunOptions {
             workspace_root,
             profile: Profile::Debug,
             main_member,
+            source: crate::SourceInput::Workspace,
             main_module: None,
             entry_fn: None,
             extra_args: Vec::new(),

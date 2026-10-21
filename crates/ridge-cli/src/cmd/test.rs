@@ -58,6 +58,9 @@ use crate::render::{report_diagnostics, report_errors_only, WarningPolicy};
 /// pass / fail per test.
 #[derive(Debug, Parser)]
 pub struct TestArgs {
+    /// Run tests from one .ridge file, retaining its workspace imports and policies.
+    #[arg(value_name = "FILE", conflicts_with_all = ["member", "stdlib"])]
+    pub file: Option<PathBuf>,
     /// Only test the named workspace member.
     #[arg(long, value_name = "NAME")]
     pub member: Option<String>,
@@ -101,6 +104,19 @@ pub struct TestArgs {
 /// Returns a [`CliError`] for workspace-structure problems.  Test failures and
 /// compile errors are handled internally via [`process::exit`].
 pub fn execute(args: &TestArgs, cwd: &Path) -> Result<(), CliError> {
+    let file = args
+        .file
+        .as_ref()
+        .map(|path| crate::cmd::source_file_for(path, cwd))
+        .transpose()?;
+    let source = file
+        .as_ref()
+        .map_or(ridge_driver::SourceInput::Workspace, |path| {
+            ridge_driver::SourceInput::File {
+                path: path.clone(),
+                require_main: false,
+            }
+        });
     // ── 0. --stdlib: materialise the embedded stdlib as its own workspace ──────
     // The tempdir must outlive the whole run, so it is bound here. Only the
     // compiler's own embedded sources are written, so compiling them as the
@@ -122,11 +138,15 @@ pub fn execute(args: &TestArgs, cwd: &Path) -> Result<(), CliError> {
     // ── 1. Locate workspace root ──────────────────────────────────────────────
     let workspace_root = match stdlib_ws {
         Some(ref td) => td.path().to_path_buf(),
-        None => crate::cmd::workspace_root_for(cwd)?,
+        None => match &file {
+            Some(path) => path.parent().unwrap_or(cwd).to_owned(),
+            None => crate::cmd::workspace_root_for(cwd)?,
+        },
     };
 
     // ── 2. Typecheck workspace (no erlc needed yet) ────────────────────────────
     let mut check_opts = CheckOptions::new(workspace_root.clone());
+    check_opts.source = source.clone();
     // Compile the embedded stdlib AS the stdlib: permits @ffi and takes the
     // reconciled types / base codec instances from source. Set only on the
     // internal --stdlib path, never from user-facing input.
@@ -154,7 +174,11 @@ pub fn execute(args: &TestArgs, cwd: &Path) -> Result<(), CliError> {
     }
 
     // ── 3. Discover test functions ─────────────────────────────────────────────
-    let tests = discover_tests(&typed_artefacts.typed, &typed_artefacts.resolved.graph);
+    let tests = discover_tests(
+        &typed_artefacts.typed,
+        &typed_artefacts.resolved.graph,
+        &source,
+    );
 
     if tests.is_empty() {
         println!("notice: no tests discovered");
@@ -203,7 +227,29 @@ pub fn execute(args: &TestArgs, cwd: &Path) -> Result<(), CliError> {
     // The suites run on these artefacts in this same invocation, so a stdlib
     // that failed to bundle has to stop the command rather than surface as a
     // wall of `undef` failures once the BEAM is up.
-    let mut compile_opts = CompileOptions::new(workspace_root.clone()).executing();
+    let workspace_root = match &file {
+        Some(path) => crate::cmd::file_build_root(path)?,
+        None => workspace_root,
+    };
+    let (beam_dir, runtime_dir) = compile_test_workspace(args, &workspace_root, source);
+
+    // ── 8. Locate erl binary ───────────────────────────────────────────────────
+    let erl_path = which::which("erl").map_err(|_| ToolchainError::erl_not_found())?;
+
+    // ── 9. Run tests and tally results ────────────────────────────────────────
+    run_tests_and_report(&tests, &erl_path, &beam_dir, &runtime_dir, jobs);
+    Ok(())
+}
+
+/// Compile already-validated runnable tests and locate their runtime artefacts.
+/// Validation-only failures return before this phase, without requiring OTP.
+fn compile_test_workspace(
+    args: &TestArgs,
+    workspace_root: &Path,
+    source: ridge_driver::SourceInput,
+) -> (PathBuf, PathBuf) {
+    let mut compile_opts = CompileOptions::new(workspace_root.to_owned()).executing();
+    compile_opts.source = source;
     // Same internal stdlib flag as the typecheck pass: the compile re-runs the
     // pipeline, so it must also treat the embedded stdlib as the stdlib.
     compile_opts.is_stdlib = args.stdlib;
@@ -237,12 +283,7 @@ pub fn execute(args: &TestArgs, cwd: &Path) -> Result<(), CliError> {
         |p| p.join("runtime"),
     );
 
-    // ── 8. Locate erl binary ───────────────────────────────────────────────────
-    let erl_path = which::which("erl").map_err(|_| ToolchainError::erl_not_found())?;
-
-    // ── 9. Run tests and tally results ────────────────────────────────────────
-    run_tests_and_report(&tests, &erl_path, &beam_dir, &runtime_dir, jobs);
-    Ok(())
+    (beam_dir, runtime_dir)
 }
 
 /// Resolve the effective number of worker threads.
@@ -564,10 +605,21 @@ struct DiscoveredTest {
 ///
 /// A function that satisfies both conditions is registered exactly once via
 /// the attribute path; `C304` is suppressed for it.
-fn discover_tests(typed: &TypedWorkspace, graph: &WorkspaceGraph) -> Vec<DiscoveredTest> {
+fn discover_tests(
+    typed: &TypedWorkspace,
+    graph: &WorkspaceGraph,
+    source: &ridge_driver::SourceInput,
+) -> Vec<DiscoveredTest> {
     let mut tests = Vec::new();
 
     for module in &typed.modules {
+        if !matches!(source, ridge_driver::SourceInput::Workspace)
+            && !graph.modules.iter().any(|metadata| {
+                metadata.id == module.id && source.selects_path(&metadata.file_path)
+            })
+        {
+            continue;
+        }
         let module_name = module_display_name(module, graph);
         let beam_module = beam_module_name(module, graph);
 

@@ -286,6 +286,10 @@ INTERP_END        ::= '"' | '"""' ;
 
 (* === 1.6  Comments === *)
 
+(* Optional interpreter directive, only at byte zero of a complete source.
+   Retained as trivia; its newline and all subsequent source positions remain. *)
+SHEBANG       ::= "#!" (* any characters to end of first physical line *) ;
+
 (* Line comment: from "--" to end of line.
    Note: "---" that begins a doc comment is matched first (longer prefix).  *)
 LINE_COMMENT  ::= "--" (* any characters to end of line *) ;
@@ -296,7 +300,7 @@ DOC_COMMENT   ::= "---" NEWLINE
                   { (* any line not consisting solely of "---" *) NEWLINE }
                   "---" ;
 
-(* Both comment forms are skipped (not emitted as tokens to the parser)
+(* Comments and the leading shebang are skipped (not emitted as tokens to the parser)
    except that doc comments may be preserved as AST attributes for tooling. *)
 
 

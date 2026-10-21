@@ -32,6 +32,10 @@ const GRAMMAR: &str = include_str!("../../../docs/grammar.ebnf");
 /// grammar productions the source is claimed to exercise.
 const CORPUS: &[(&[&str], &str)] = &[
     (
+        &["SHEBANG"],
+        "#!/usr/bin/env ridge\npub fn answer -> Int = 42\n",
+    ),
+    (
         &[
             "Program",
             "TopLevel",

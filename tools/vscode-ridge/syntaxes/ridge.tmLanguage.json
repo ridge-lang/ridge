@@ -4,6 +4,7 @@
   "scopeName": "source.ridge",
   "fileTypes": ["ridge"],
   "patterns": [
+    { "include": "#shebang" },
     { "include": "#block-comment" },
     { "include": "#line-comment" },
     { "include": "#raw-string" },
@@ -20,6 +21,11 @@
     { "include": "#punctuation" }
   ],
   "repository": {
+    "shebang": {
+      "comment": "Interpreter directive only at the beginning of a complete source.",
+      "match": "\\A#!.*$",
+      "name": "comment.line.shebang.ridge"
+    },
     "block-comment": {
       "comment": "Block/doc comment --- ... ---. Must appear before line-comment to win priority.",
       "begin": "^---\\s*$",

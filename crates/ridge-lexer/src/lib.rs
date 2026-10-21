@@ -74,7 +74,15 @@ pub fn tokenize(src: &str) -> LexOutput {
 
     let line_map = LineMap::new(&normalised);
 
-    let (raw_tokens, mut errors) = raw_scan::scan(&normalised);
+    // An interpreter directive belongs only at the beginning of a complete
+    // source file. Keep the original text and absolute offsets for diagnostics;
+    // scanner restarts inside doc comments/interpolations do not accept it.
+    let (raw_tokens, mut errors) = if normalised.starts_with("#!") {
+        let offset = normalised.find('\n').unwrap_or(normalised.len());
+        raw_scan::scan_from(&normalised, offset)
+    } else {
+        raw_scan::scan(&normalised)
+    };
     let interp_tokens = interpolation::process(raw_tokens, &mut errors);
     let (tokens, layout_errors) = layout::process(&interp_tokens);
     errors.extend(layout_errors);

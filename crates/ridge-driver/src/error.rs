@@ -1,7 +1,7 @@
 //! Structured error types for the `ridge-driver` crate.
 //!
 //! Cross-crate `C0NN` namespace map (verify before allocating new codes):
-//! - `C001`–`C004`, `C010`, `C012`–`C014` — this crate.
+//! - `C001`–`C004`, `C010`, `C012`–`C017` — this crate.
 //! - `C005`–`C008`, `C011` — `ridge-cli` (see `crates/ridge-cli/src/error.rs`).
 //! - `C009` — retired; see [`CompileError::PkgResolutionFailed`].
 //!
@@ -22,6 +22,30 @@ use ridge_diagnostics::Diagnostic;
 use ridge_resolve::ManifestError;
 
 use crate::sources::WorkspaceSourceCache;
+
+/// An explicit file cannot be used as a source input.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum SourceFileError {
+    /// `C017` — the input is unavailable, is not a source, or is outside its workspace's members.
+    #[error("{}", terminal_text(format_args!("C017 InvalidSourceFile: {}: {}", .path.display(), .reason)))]
+    InvalidSourceFile {
+        /// The selected input path.
+        path: PathBuf,
+        /// Why source selection cannot proceed.
+        reason: String,
+    },
+}
+
+impl SourceFileError {
+    /// The stable code for a source-selection failure.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidSourceFile { .. } => "C017",
+        }
+    }
+}
 
 // ── WorkspaceError ────────────────────────────────────────────────────────────
 
@@ -144,6 +168,9 @@ impl ToolchainError {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum CompileError {
+    /// The explicit file input cannot be selected.
+    #[error(transparent)]
+    SourceFile(#[from] SourceFileError),
     /// The workspace could not be read — `C001`, `C002` or `C003`.
     #[error(transparent)]
     Workspace(#[from] WorkspaceError),
@@ -211,6 +238,7 @@ impl CompileError {
     pub fn code(&self) -> Option<&'static str> {
         Some(match self {
             Self::Workspace(e) => e.code(),
+            Self::SourceFile(e) => e.code(),
             // The first error's code; the caller prints them all.
             Self::WorkspaceManifest(errors) => errors
                 .first()
@@ -238,6 +266,9 @@ impl CompileError {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum CheckError {
+    /// The explicit file input cannot be selected.
+    #[error(transparent)]
+    SourceFile(#[from] SourceFileError),
     /// The workspace could not be read — `C001`, `C002` or `C003`.
     #[error(transparent)]
     Workspace(#[from] WorkspaceError),
@@ -260,6 +291,7 @@ impl CheckError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Workspace(e) => e.code(),
+            Self::SourceFile(e) => e.code(),
             // The first error's code: the caller prints them all, and a single
             // code is only ever used to label the failure as a whole.
             Self::WorkspaceManifest(errors) => errors.first().map_or("M001", ManifestError::code),
@@ -422,6 +454,14 @@ mod terminal_tests {
             path: TEXT.into(),
         };
         let cases: Vec<Box<dyn std::fmt::Display>> = vec![
+            Box::new(SourceFileError::InvalidSourceFile {
+                path: TEXT.into(),
+                reason: TEXT.into(),
+            }),
+            Box::new(CheckError::SourceFile(SourceFileError::InvalidSourceFile {
+                path: TEXT.into(),
+                reason: TEXT.into(),
+            })),
             Box::new(WorkspaceError::NoWorkspaceRoot { path: TEXT.into() }),
             Box::new(workspace()),
             Box::new(CheckError::Workspace(workspace())),

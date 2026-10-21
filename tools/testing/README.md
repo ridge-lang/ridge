@@ -1,5 +1,27 @@
 # BEAM gate
 
+## CI path selection controls
+
+Run the workflow selection checks with Node 24 and npm:
+
+```sh
+npm ci --ignore-scripts --prefix tools/testing
+npm test --prefix tools/testing
+```
+
+These controls read the actual CI and Bench workflow filters and evaluate them
+with the glob matcher used by `dorny/paths-filter`. CI runs them in a separate,
+unfiltered job so a broken filter cannot skip its own regression checks.
+Executable example changes activate the workspace and BEAM lanes; dogfood
+changes activate workspace tests, including formatter corpus properties.
+Example/dogfood README and docs-only changes retain their skips. LSP client
+acceptance and Layer A
+benchmarks use their own fixtures and keep their existing selection.
+Selection checks do not execute runtime suites or certify every corpus file;
+the formatter properties sample corpus inputs rather than visiting every file.
+
+## Complete BEAM lane
+
 Python 3.11+, Cargo, cargo-nextest and Erlang/OTP are required. Run from the
 repository root. Individual Cargo integration targets and the default workspace
 tests keep their behavior; grouping is used only by this gate.

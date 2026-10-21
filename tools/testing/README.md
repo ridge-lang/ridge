@@ -24,6 +24,14 @@ configurations, stdlib self-compilation and LSP acceptance remain separate CI
 steps. Grouped harnesses also inherit workspace lints, profiles, locked registry
 versions and the effective Clippy configuration, and receive their own lint pass.
 
+The separate stdlib self-compilation test derives its expected identities from
+the versioned `.ridge` sources, independently of the runner's discovery and
+embedded source table. It reconciles one `ridge test --stdlib` execution with
+that inventory, including multiplicity, progress and summary consistency. Exit
+status, zero failures and rejections, and the existing suite-size floor remain
+required. The `stdlib_e2e` target also runs controls for source discovery,
+omitted, unexpected and repeated identities, and incomplete execution output.
+
 A supplementary `runtime-surfaces` phase runs the complete CLI `run` target with
 `beam-runtime` and `cli-watch`, plus the `ridge-bench` `layer_b` target with
 `beam-runtime`. It lists and rechecks their native inventory and requires the

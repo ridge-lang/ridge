@@ -80,6 +80,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Quoted query constructors resolve their variant positions from the `QExpr`
+  schema, so changing the schema order cannot silently select a different node.
+
 - Hovering or navigating the module head of a qualified name such as `L.map`
   identifies the module, while the member still identifies the function.
   Signature help continues to describe the qualified callee, including before

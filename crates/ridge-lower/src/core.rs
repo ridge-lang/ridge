@@ -61,6 +61,9 @@ use ridge_ir::{IrExpr, IrLit, IrParam, IrPat, StdlibKind, SymbolRef};
 use ridge_resolve::{imports::Binding, ModuleId, NodeKind, StdlibModuleId, BUILTINS};
 use ridge_types::{CapRow, TyConId, TyConKind, Type};
 
+#[cfg(test)]
+mod qexpr_tests;
+
 use crate::ast_type::lower_ast_type;
 use crate::block::{lower_assign, lower_block};
 use crate::ctx::LowerCtx;
@@ -914,7 +917,7 @@ fn reify_quote(
         .collect();
     let mut tree = reify_node(ctx, body, &names);
     if avg_interval {
-        tree = qexpr_node(ctx, "QAggAvgInterval", 40, vec![tree], span);
+        tree = qexpr_node(ctx, "QAggAvgInterval", vec![tree], span);
     }
     let owner_type = Some(ctx.builtins.quote);
     IrExpr::Construct {
@@ -931,13 +934,24 @@ fn reify_quote(
 }
 
 /// Build a `QExpr` union-variant node with positional payloads named `$0`, `$1`.
-fn qexpr_node(
-    ctx: &mut LowerCtx<'_>,
-    name: &str,
-    variant: u32,
-    args: Vec<IrExpr>,
-    span: Span,
-) -> IrExpr {
+fn qexpr_node(ctx: &mut LowerCtx<'_>, name: &str, args: Vec<IrExpr>, span: Span) -> IrExpr {
+    // Resolve only within QExpr: an unrelated stdlib constructor may have the
+    // same name. The schema owns variant order; callers supply only identity.
+    let variant = ctx
+        .workspace
+        .and_then(|ws| ws.tycons.get(ctx.builtins.q_expr.0 as usize))
+        .and_then(|decl| match &decl.kind {
+            TyConKind::Union(schema) => schema.variants.iter().position(|v| v.name == name),
+            _ => None,
+        })
+        .and_then(|index| u32::try_from(index).ok());
+    let Some(variant) = variant else {
+        ctx.errors.push(LowerError::InternalLoweringError {
+            span,
+            message: format!("QExpr constructor `{name}` is missing from its union schema"),
+        });
+        return unit_lit(ctx, span);
+    };
     let fields = args
         .into_iter()
         .enumerate()
@@ -995,24 +1009,24 @@ fn agg_col_is_interval(ctx: &LowerCtx<'_>, span: Span) -> bool {
     matches!(captured_ident_type(ctx, span), Some(Type::Con(id, _)) if id == ctx.builtins.duration)
 }
 
-/// The `QExpr` literal constructor (`name`, `variant`) for a captured scalar's
+/// The `QExpr` literal constructor name for a captured scalar's
 /// resolved type. The quotation checker accepts the same scalar set
 /// (`is_quote_scalar`: Int/Text/Bool/Float/Decimal/Uuid/Timestamp/Bytes/Date/Time),
 /// so a `None` here is an internal invariant violation, not a user error.
-fn captured_scalar_qlit(ctx: &LowerCtx<'_>, ty: &Type) -> Option<(&'static str, u32)> {
+fn captured_scalar_qlit(ctx: &LowerCtx<'_>, ty: &Type) -> Option<&'static str> {
     let b = ctx.builtins;
     match ty {
-        Type::Con(id, _) if *id == b.int => Some(("QLitInt", 1)),
-        Type::Con(id, _) if *id == b.float => Some(("QLitFloat", 4)),
-        Type::Con(id, _) if *id == b.bool => Some(("QLitBool", 3)),
-        Type::Con(id, _) if *id == b.text => Some(("QLitText", 2)),
-        Type::Con(id, _) if *id == b.decimal => Some(("QLitDecimal", 33)),
-        Type::Con(id, _) if *id == b.uuid => Some(("QLitUuid", 34)),
-        Type::Con(id, _) if *id == b.timestamp => Some(("QLitInstant", 35)),
-        Type::Con(id, _) if *id == b.bytes => Some(("QLitBytes", 36)),
-        Type::Con(id, _) if *id == b.date => Some(("QLitDate", 37)),
-        Type::Con(id, _) if *id == b.time => Some(("QLitTime", 38)),
-        Type::Con(id, _) if *id == b.duration => Some(("QLitInterval", 39)),
+        Type::Con(id, _) if *id == b.int => Some("QLitInt"),
+        Type::Con(id, _) if *id == b.float => Some("QLitFloat"),
+        Type::Con(id, _) if *id == b.bool => Some("QLitBool"),
+        Type::Con(id, _) if *id == b.text => Some("QLitText"),
+        Type::Con(id, _) if *id == b.decimal => Some("QLitDecimal"),
+        Type::Con(id, _) if *id == b.uuid => Some("QLitUuid"),
+        Type::Con(id, _) if *id == b.timestamp => Some("QLitInstant"),
+        Type::Con(id, _) if *id == b.bytes => Some("QLitBytes"),
+        Type::Con(id, _) if *id == b.date => Some("QLitDate"),
+        Type::Con(id, _) if *id == b.time => Some("QLitTime"),
+        Type::Con(id, _) if *id == b.duration => Some("QLitInterval"),
         _ => None,
     }
 }
@@ -1086,29 +1100,29 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, params: &[String]) -> IrExpr {
                 _ => None,
             };
             match leaf {
-                Some(1) => qexpr_node(ctx, "QColR", 15, vec![name_lit], *span),
+                Some(1) => qexpr_node(ctx, "QColR", vec![name_lit], *span),
                 Some(i) if i >= 2 => {
                     let idx_lit = IrExpr::Lit {
                         id: ctx.fresh_id(None),
                         value: IrLit::Int(i64::try_from(i).unwrap_or(i64::MAX)),
                         span: *span,
                     };
-                    qexpr_node(ctx, "QColAt", 22, vec![idx_lit, name_lit], *span)
+                    qexpr_node(ctx, "QColAt", vec![idx_lit, name_lit], *span)
                 }
-                Some(_) => qexpr_node(ctx, "QCol", 0, vec![name_lit], *span),
+                Some(_) => qexpr_node(ctx, "QCol", vec![name_lit], *span),
                 // The base is not a quote parameter — a field of a value captured
                 // from the enclosing scope (`link.id`). The checker stamped the
                 // field's scalar type, so bind the whole access as a runtime `QLit*`,
                 // exactly like a captured plain variable, rather than reading it as a
                 // column of the row.
                 None => {
-                    if let Some((name, variant)) = captured_ident_type(ctx, *span)
+                    if let Some(name) = captured_ident_type(ctx, *span)
                         .and_then(|ty| captured_scalar_qlit(ctx, &ty))
                     {
                         let value = lower_expr(ctx, e);
-                        qexpr_node(ctx, name, variant, vec![value], *span)
+                        qexpr_node(ctx, name, vec![value], *span)
                     } else {
-                        qexpr_node(ctx, "QCol", 0, vec![name_lit], *span)
+                        qexpr_node(ctx, "QCol", vec![name_lit], *span)
                     }
                 }
             }
@@ -1118,37 +1132,37 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, params: &[String]) -> IrExpr {
         Expr::Literal(lit) => {
             let span = lit.span();
             let value = lower_expr(ctx, e);
-            let (name, variant) = match lit {
+            let name = match lit {
                 Literal::IntDec { .. }
                 | Literal::IntBin { .. }
                 | Literal::IntOct { .. }
-                | Literal::IntHex { .. } => ("QLitInt", 1),
-                Literal::Float { .. } => ("QLitFloat", 4),
-                Literal::Decimal { .. } => ("QLitDecimal", 33),
-                Literal::Bool { .. } => ("QLitBool", 3),
-                Literal::Text { .. } | Literal::RawText { .. } => ("QLitText", 2),
+                | Literal::IntHex { .. } => "QLitInt",
+                Literal::Float { .. } => "QLitFloat",
+                Literal::Decimal { .. } => "QLitDecimal",
+                Literal::Bool { .. } => "QLitBool",
+                Literal::Text { .. } | Literal::RawText { .. } => "QLitText",
             };
-            qexpr_node(ctx, name, variant, vec![value], span)
+            qexpr_node(ctx, name, vec![value], span)
         }
 
         // A comparison or boolean connective → the matching `QExpr` node.
         Expr::Binary { op, lhs, rhs, span } => {
-            let (name, variant) = match op {
-                BinOp::And => ("QAnd", 5),
-                BinOp::Or => ("QOr", 6),
-                BinOp::Eq => ("QEq", 8),
-                BinOp::Ne => ("QNe", 9),
-                BinOp::Lt => ("QLt", 10),
-                BinOp::Gt => ("QGt", 11),
-                BinOp::Le => ("QLe", 12),
-                BinOp::Ge => ("QGe", 13),
+            let name = match op {
+                BinOp::And => "QAnd",
+                BinOp::Or => "QOr",
+                BinOp::Eq => "QEq",
+                BinOp::Ne => "QNe",
+                BinOp::Lt => "QLt",
+                BinOp::Gt => "QGt",
+                BinOp::Le => "QLe",
+                BinOp::Ge => "QGe",
                 // Arithmetic value nodes — both operands reify recursively, so a
                 // nested `price * qty + 1` builds the matching `QAdd`/`QMul` tree.
-                BinOp::Add => ("QAdd", 26),
-                BinOp::Sub => ("QSub", 27),
-                BinOp::Mul => ("QMul", 28),
-                BinOp::Div => ("QDiv", 29),
-                BinOp::Mod => ("QMod", 30),
+                BinOp::Add => "QAdd",
+                BinOp::Sub => "QSub",
+                BinOp::Mul => "QMul",
+                BinOp::Div => "QDiv",
+                BinOp::Mod => "QMod",
                 _ => {
                     ctx.errors.push(LowerError::InternalLoweringError {
                         span: *span,
@@ -1159,7 +1173,7 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, params: &[String]) -> IrExpr {
             };
             let l = reify_node(ctx, lhs, params);
             let r = reify_node(ctx, rhs, params);
-            qexpr_node(ctx, name, variant, vec![l, r], *span)
+            qexpr_node(ctx, name, vec![l, r], *span)
         }
 
         // A conditional → `QCase <cond> <then> <else>`. The condition and both
@@ -1184,7 +1198,7 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, params: &[String]) -> IrExpr {
                 });
                 unit_lit(ctx, *span)
             };
-            qexpr_node(ctx, "QCase", 31, vec![c, t, e], *span)
+            qexpr_node(ctx, "QCase", vec![c, t, e], *span)
         }
 
         // A predicate helper — `Text.like`/`contains`/`startsWith`/`endsWith` →
@@ -1263,7 +1277,7 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, params: &[String]) -> IrExpr {
                 elems: items,
                 span: *span,
             };
-            qexpr_node(ctx, "QProj", 14, vec![list], *span)
+            qexpr_node(ctx, "QProj", vec![list], *span)
         }
 
         // A variable captured from the enclosing scope → the matching `QLit*`
@@ -1274,11 +1288,11 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, params: &[String]) -> IrExpr {
         // is the variable's value at the point the quote is built.
         Expr::Ident(id) => {
             let span = id.span;
-            if let Some((name, variant)) =
+            if let Some(name) =
                 captured_ident_type(ctx, span).and_then(|ty| captured_scalar_qlit(ctx, &ty))
             {
                 let value = lower_expr(ctx, e);
-                qexpr_node(ctx, name, variant, vec![value], span)
+                qexpr_node(ctx, name, vec![value], span)
             } else {
                 ctx.errors.push(LowerError::InternalLoweringError {
                     span,
@@ -1447,9 +1461,9 @@ fn reify_exists(
         field: "table".to_string(),
         span,
     };
-    let node = qexpr_node(ctx, "QExists", 32, vec![table_ir, corr], span);
+    let node = qexpr_node(ctx, "QExists", vec![table_ir, corr], span);
     if negated {
-        qexpr_node(ctx, "QNot", 7, vec![node], span)
+        qexpr_node(ctx, "QNot", vec![node], span)
     } else {
         node
     }
@@ -1483,7 +1497,7 @@ fn reify_like(
         // `startsWith term` matches the rows a literal `startsWith "…"` would.
         reify_captured_like_pattern(ctx, pat, mode, span)
     };
-    qexpr_node(ctx, "QLike", 24, vec![col_ir, pat_ir], span)
+    qexpr_node(ctx, "QLike", vec![col_ir, pat_ir], span)
 }
 
 /// Build the `QLitText` pattern node for a captured text-match value. The runtime
@@ -1504,7 +1518,7 @@ fn reify_captured_like_pattern(
         LikeMode::Suffix => call_query_helper(ctx, "_likeSuffix", value, span),
         LikeMode::Contains => call_query_helper(ctx, "_likeContains", value, span),
     };
-    qexpr_node(ctx, "QLitText", 2, vec![built], span)
+    qexpr_node(ctx, "QLitText", vec![built], span)
 }
 
 /// Call a one-argument `std.query` helper on a runtime value — the reifier's bridge
@@ -1542,7 +1556,7 @@ fn reify_in(
         elems: items,
         span,
     };
-    qexpr_node(ctx, "QIn", 25, vec![col_ir, list_ir], span)
+    qexpr_node(ctx, "QIn", vec![col_ir, list_ir], span)
 }
 
 /// Reify `List.contains col capturedList`, where `capturedList` is a value from the
@@ -1564,11 +1578,11 @@ fn reify_in_runtime(
     };
     let list_ty = captured_ident_type(ctx, id.span)?;
     let elem_ty = list_elem_type(ctx, &list_ty)?;
-    let (name, variant) = captured_scalar_qlit(ctx, &elem_ty)?;
+    let name = captured_scalar_qlit(ctx, &elem_ty)?;
     let col_ir = reify_node(ctx, col, params);
     let list_ir = lower_expr(ctx, other);
-    let items = map_to_qlit(ctx, name, variant, &elem_ty, list_ir, span);
-    Some(qexpr_node(ctx, "QIn", 25, vec![col_ir, items], span))
+    let items = map_to_qlit(ctx, name, &elem_ty, list_ir, span);
+    Some(qexpr_node(ctx, "QIn", vec![col_ir, items], span))
 }
 
 /// The element type of a `List a`, peeled of aliases. `None` for any other
@@ -1589,7 +1603,6 @@ fn list_elem_type(ctx: &LowerCtx<'_>, ty: &Type) -> Option<Type> {
 fn map_to_qlit(
     ctx: &mut LowerCtx<'_>,
     qlit_name: &str,
-    variant: u32,
     elem_ty: &Type,
     list_ir: IrExpr,
     span: Span,
@@ -1605,7 +1618,7 @@ fn map_to_qlit(
         name: pname,
         span,
     };
-    let body = qexpr_node(ctx, qlit_name, variant, vec![local], span);
+    let body = qexpr_node(ctx, qlit_name, vec![local], span);
     let lambda = IrExpr::Lambda {
         id: ctx.fresh_id(None),
         params: vec![param],
@@ -1649,7 +1662,7 @@ fn build_qlit_text(ctx: &mut LowerCtx<'_>, s: String, span: Span) -> IrExpr {
         value: IrLit::Text(s),
         span,
     };
-    qexpr_node(ctx, "QLitText", 2, vec![lit], span)
+    qexpr_node(ctx, "QLitText", vec![lit], span)
 }
 
 /// Escape the SQL LIKE metacharacters in a literal needle so a `contains`/
@@ -1713,8 +1726,8 @@ fn reify_group_node(ctx: &mut LowerCtx<'_>, e: &Expr, g_name: &str) -> IrExpr {
         // `g.key` → `QGroupKey`; `g.count` → `QAggCount`.
         Expr::FieldAccess { base, field, span } if is_group_base(base, g_name) => {
             match field.text.as_str() {
-                "key" => qexpr_node(ctx, "QGroupKey", 16, vec![], *span),
-                "count" => qexpr_node(ctx, "QAggCount", 17, vec![], *span),
+                "key" => qexpr_node(ctx, "QGroupKey", vec![], *span),
+                "count" => qexpr_node(ctx, "QAggCount", vec![], *span),
                 _ => {
                     ctx.errors.push(LowerError::InternalLoweringError {
                         span: *span,
@@ -1730,19 +1743,19 @@ fn reify_group_node(ctx: &mut LowerCtx<'_>, e: &Expr, g_name: &str) -> IrExpr {
             if let Expr::FieldAccess { base, field, .. } = callee.as_ref() {
                 if is_group_base(base, g_name) {
                     let agg = match field.text.as_str() {
-                        "sum" => Some(("QAggSum", 18)),
+                        "sum" => Some("QAggSum"),
                         "avg" => Some(if agg_col_is_interval(ctx, *span) {
-                            ("QAggAvgInterval", 40)
+                            "QAggAvgInterval"
                         } else {
-                            ("QAggAvg", 19)
+                            "QAggAvg"
                         }),
-                        "min" => Some(("QAggMin", 20)),
-                        "max" => Some(("QAggMax", 21)),
+                        "min" => Some("QAggMin"),
+                        "max" => Some("QAggMax"),
                         _ => None,
                     };
-                    if let (Some((name, variant)), Some(arg)) = (agg, args.first()) {
+                    if let (Some(name), Some(arg)) = (agg, args.first()) {
                         let col = reify_group_agg_col(ctx, arg);
-                        return qexpr_node(ctx, name, variant, vec![col], *span);
+                        return qexpr_node(ctx, name, vec![col], *span);
                     }
                 }
             }
@@ -1757,31 +1770,31 @@ fn reify_group_node(ctx: &mut LowerCtx<'_>, e: &Expr, g_name: &str) -> IrExpr {
         Expr::Literal(lit) => {
             let span = lit.span();
             let value = lower_expr(ctx, e);
-            let (name, variant) = match lit {
+            let name = match lit {
                 Literal::IntDec { .. }
                 | Literal::IntBin { .. }
                 | Literal::IntOct { .. }
-                | Literal::IntHex { .. } => ("QLitInt", 1),
-                Literal::Float { .. } => ("QLitFloat", 4),
-                Literal::Decimal { .. } => ("QLitDecimal", 33),
-                Literal::Bool { .. } => ("QLitBool", 3),
-                Literal::Text { .. } | Literal::RawText { .. } => ("QLitText", 2),
+                | Literal::IntHex { .. } => "QLitInt",
+                Literal::Float { .. } => "QLitFloat",
+                Literal::Decimal { .. } => "QLitDecimal",
+                Literal::Bool { .. } => "QLitBool",
+                Literal::Text { .. } | Literal::RawText { .. } => "QLitText",
             };
-            qexpr_node(ctx, name, variant, vec![value], span)
+            qexpr_node(ctx, name, vec![value], span)
         }
 
         // A `having` comparison or connective → the matching `QExpr` node, its
         // operands reified over the group vocabulary.
         Expr::Binary { op, lhs, rhs, span } => {
-            let (name, variant) = match op {
-                BinOp::And => ("QAnd", 5),
-                BinOp::Or => ("QOr", 6),
-                BinOp::Eq => ("QEq", 8),
-                BinOp::Ne => ("QNe", 9),
-                BinOp::Lt => ("QLt", 10),
-                BinOp::Gt => ("QGt", 11),
-                BinOp::Le => ("QLe", 12),
-                BinOp::Ge => ("QGe", 13),
+            let name = match op {
+                BinOp::And => "QAnd",
+                BinOp::Or => "QOr",
+                BinOp::Eq => "QEq",
+                BinOp::Ne => "QNe",
+                BinOp::Lt => "QLt",
+                BinOp::Gt => "QGt",
+                BinOp::Le => "QLe",
+                BinOp::Ge => "QGe",
                 _ => {
                     ctx.errors.push(LowerError::InternalLoweringError {
                         span: *span,
@@ -1792,7 +1805,7 @@ fn reify_group_node(ctx: &mut LowerCtx<'_>, e: &Expr, g_name: &str) -> IrExpr {
             };
             let l = reify_group_node(ctx, lhs, g_name);
             let r = reify_group_node(ctx, rhs, g_name);
-            qexpr_node(ctx, name, variant, vec![l, r], *span)
+            qexpr_node(ctx, name, vec![l, r], *span)
         }
 
         // A `summarize` projection: `Stats { dept = g.key, … }` → `QProj
@@ -1830,7 +1843,7 @@ fn reify_group_node(ctx: &mut LowerCtx<'_>, e: &Expr, g_name: &str) -> IrExpr {
                 elems: items,
                 span: *span,
             };
-            qexpr_node(ctx, "QProj", 14, vec![list], *span)
+            qexpr_node(ctx, "QProj", vec![list], *span)
         }
 
         other => {

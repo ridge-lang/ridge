@@ -1459,8 +1459,7 @@ impl BuiltinTyCons {
                     // false OR unknown (NULL). The three-valued dual of `QNot` — `QNot`
                     // of a NULL is still NULL, this is TRUE — so `every` can probe for a
                     // row that violates its predicate, an outer join's unmatched side
-                    // (whose columns read NULL) counting as a violation. Appended last so
-                    // the existing variant indices the lowering pass hardcodes stay put.
+                    // (whose columns read NULL) counting as a violation.
                     UnionVariant {
                         name: "QNotTrue".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(q_expr, vec![])]),
@@ -1469,8 +1468,7 @@ impl BuiltinTyCons {
                     // the second a `QLitText` carrying the SQL LIKE pattern (already
                     // escaped and wrapped at reify time for the `contains`/`startsWith`/
                     // `endsWith` forms, passed through verbatim for the raw `like`
-                    // form). Appended after `QNotTrue` so existing variant indices the
-                    // lowering pass hardcodes stay put.
+                    // form).
                     UnionVariant {
                         name: "QLike".to_string(),
                         kind: VariantPayload::Positional(vec![
@@ -1493,9 +1491,7 @@ impl BuiltinTyCons {
                     // comparison nodes these stand for a *value*, not a predicate:
                     // they appear as an operand of a comparison (`price * qty > 100`),
                     // recursively. Both operands share one numeric type (Int or
-                    // Float); `%` is Int-only, matching Postgres. Appended after
-                    // `QIn` so existing variant indices the lowering pass hardcodes
-                    // stay put.
+                    // Float); `%` is Int-only, matching Postgres.
                     UnionVariant {
                         name: "QAdd".to_string(),
                         kind: VariantPayload::Positional(vec![
@@ -1536,9 +1532,7 @@ impl BuiltinTyCons {
                     // boolean condition, the second and third its two branches.
                     // The branches share one type — the value the whole CASE
                     // yields — or are both predicates, making the CASE itself a
-                    // boolean usable in a WHERE. Appended after the arithmetic
-                    // nodes so existing variant indices the lowering pass
-                    // hardcodes stay put.
+                    // boolean usable in a WHERE.
                     UnionVariant {
                         name: "QCase".to_string(),
                         kind: VariantPayload::Positional(vec![
@@ -1554,8 +1548,7 @@ impl BuiltinTyCons {
                     // the outer row (`QCol`) and the inner row (`QColR`) — the same two
                     // sides a join condition names, so the backend probes it through
                     // the existing two-row predicate path. `notExists` wraps it in a
-                    // `QNot`. Appended after `QCase` so existing variant indices the
-                    // lowering pass hardcodes stay put.
+                    // `QNot`.
                     UnionVariant {
                         name: "QExists".to_string(),
                         kind: VariantPayload::Positional(vec![
@@ -1565,56 +1558,48 @@ impl BuiltinTyCons {
                     },
                     // A decimal literal captured in a quoted predicate. Carries a
                     // Decimal, which is interned after this union — hence the
-                    // forward reference. Appended last, like `QExists`, so the
-                    // variant indices the lowering pass hardcodes stay put.
+                    // forward reference.
                     UnionVariant {
                         name: "QLitDecimal".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(decimal, vec![])]),
                     },
                     // A uuid captured in a quoted predicate (a uuid has no literal
                     // syntax, so this only ever holds a captured runtime value).
-                    // Appended last so the variant indices the lowering pass
-                    // hardcodes stay put.
                     UnionVariant {
                         name: "QLitUuid".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(uuid, vec![])]),
                     },
                     // A timestamp captured in a quoted predicate (Timestamp has no
                     // literal syntax either). The renderers move it across
-                    // `SqlInstant` as epoch microseconds. Appended last so the
-                    // hardcoded variant indices stay put.
+                    // `SqlInstant` as epoch microseconds.
                     UnionVariant {
                         name: "QLitInstant".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(timestamp, vec![])]),
                     },
                     // A byte string captured in a quoted predicate (Bytes has no
                     // literal syntax either). The renderers move it across
-                    // `SqlBytes` as canonical hex. Appended last so the hardcoded
-                    // variant indices stay put.
+                    // `SqlBytes` as canonical hex.
                     UnionVariant {
                         name: "QLitBytes".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(bytes, vec![])]),
                     },
                     // A calendar date captured in a quoted predicate (Date has no
                     // literal syntax either). The renderers move it across
-                    // `SqlDate` as ISO text. Appended last so the hardcoded variant
-                    // indices stay put.
+                    // `SqlDate` as ISO text.
                     UnionVariant {
                         name: "QLitDate".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(date, vec![])]),
                     },
                     // A wall-clock time of day captured in a quoted predicate (Time
                     // has no literal syntax either). The renderers move it across
-                    // `SqlTime` as ISO text. Appended last so the hardcoded variant
-                    // indices stay put.
+                    // `SqlTime` as ISO text.
                     UnionVariant {
                         name: "QLitTime".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(time, vec![])]),
                     },
                     // A duration captured in a quoted predicate (Duration has no
                     // literal syntax either). The renderers move it across
-                    // `SqlInterval` as its millisecond span. Appended last so the
-                    // hardcoded variant indices stay put.
+                    // `SqlInterval` as its millisecond span.
                     UnionVariant {
                         name: "QLitInterval".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(duration, vec![])]),
@@ -1624,8 +1609,7 @@ impl BuiltinTyCons {
                     // as `QAggAvg`, but Postgres cannot cast an interval
                     // average to `float8`, so the renderer reads the average's epoch
                     // milliseconds instead. Distinct from `QAggAvg` because the reifier
-                    // knows the column type while the renderer does not. Appended last
-                    // so the hardcoded variant indices stay put.
+                    // knows the column type while the renderer does not.
                     UnionVariant {
                         name: "QAggAvgInterval".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(q_expr, vec![])]),

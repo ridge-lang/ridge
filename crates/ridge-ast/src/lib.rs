@@ -31,6 +31,7 @@ pub mod lit;
 pub mod module;
 pub mod pattern;
 pub mod ty;
+pub mod type_annotation;
 pub mod typeclass;
 pub mod visit;
 
@@ -52,6 +53,7 @@ pub use lit::Literal;
 pub use module::{Item, Module};
 pub use pattern::{FieldPattern, ListPatElem, Pattern};
 pub use ty::{FnType, RecordTypeField, Type};
+pub use type_annotation::TypeAnnotation;
 pub use typeclass::{ClassConstraint, ClassDecl, FunDep, InstanceDecl, MethodDef, MethodSig};
 pub use visit::Visit;
 

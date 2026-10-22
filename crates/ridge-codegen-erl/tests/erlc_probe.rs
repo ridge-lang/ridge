@@ -40,6 +40,7 @@ fn make_const(name: &str, is_pub: bool, value: IrExpr) -> IrConst {
     IrConst {
         name: name.into(),
         ty: Type::Error,
+        type_annotation: None,
         value,
         origin: NodeId(0),
         span: sp(),

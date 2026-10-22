@@ -171,17 +171,19 @@ impl Type {
 /// - **Plain** (`PlainFunctionType`): `caps` is empty, `params` has exactly
 ///   one element (the left-hand side of `->`) — though the parser wraps
 ///   nested arrows in the right-hand `ret` to achieve right-associativity.
-/// - **Cap** (`CapFunctionType`): `caps` is non-empty, `params` holds all
-///   `TypeAtom`s between the capability list and the `->`.
+/// - **Explicit `fn`** (`CapFunctionType`): `caps` may be empty, and `params`
+///   holds the `TypeAtom`s between the capability list and the `->`.
+/// - **Nullary** (`fn () -> T`, optionally with capabilities): `params` is empty.
 ///
-/// In both cases `ret` is the right-hand type (recursively parsed to achieve
+/// In every case `ret` is the right-hand type (recursively parsed to achieve
 /// right-associativity).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FnType {
     /// Capability annotations (empty for plain function types).
     pub caps: Vec<Capability>,
-    /// Parameter type(s).  At least one element; can be more for
-    /// `CapFunctionType` (e.g. `fn io Text Int -> Unit`).
+    /// Parameter types. Empty for `fn () -> T`, distinct from a single `Unit`
+    /// argument. Can contain several for `CapFunctionType`
+    /// (e.g. `fn io Text Int -> Unit`).
     pub params: Vec<Type>,
     /// Return type.  Boxed because `FnType` is used inside `Type`, which
     /// would otherwise be infinitely sized.

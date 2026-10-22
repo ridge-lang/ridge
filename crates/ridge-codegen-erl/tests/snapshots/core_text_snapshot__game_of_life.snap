@@ -53,7 +53,7 @@ module 'ridge_module_0' ['main'/0]
     ( fun (V_Rows, V_Cols) ->
           let V_Anf178 = let V_Anf177 = let V_Anf176 = let V_Anf175 = let V_Anf174 = apply 'makeEmptyGrid'/2 (V_Rows, V_Cols) in apply 'setCell'/3 (0, 1, V_Anf174) in apply 'setCell'/3 (1, 2, V_Anf175) in apply 'setCell'/3 (2, 0, V_Anf176) in apply 'setCell'/3 (2, 1, V_Anf177) in apply 'setCell'/3 (2, 2, V_Anf178)
       -| [] )
-  %% Const: defaultGenerations: Con(TyConId(0), [])
+  %% Const: defaultGenerations: Int
 'defaultGenerations'/0 =
     ( fun () ->
           30

@@ -373,6 +373,7 @@ fn lower_table_mirrors(ctx: &mut LowerCtx<'_>, decl: &ridge_ast::TypeDecl) -> Ve
         IrItem::Const(IrConst {
             name: cm::mirror_value_name(entity),
             ty: Type::Error, // untyped in IR — a plain record/map value
+            type_annotation: None,
             value: cols_value,
             origin: NodeId(0),
             span,
@@ -381,6 +382,7 @@ fn lower_table_mirrors(ctx: &mut LowerCtx<'_>, decl: &ridge_ast::TypeDecl) -> Ve
         IrItem::Const(IrConst {
             name: cm::table_value_name(entity),
             ty: Type::Error,
+            type_annotation: None,
             value: table_value,
             origin: NodeId(0),
             span,
@@ -946,6 +948,7 @@ pub fn lower_instance(ctx: &mut LowerCtx<'_>, decl: &InstanceDecl) -> Vec<IrItem
         let dict_const = IrConst {
             name: dict_name,
             ty: Type::Error, // untyped in IR
+            type_annotation: None,
             value: dict_value,
             origin: NodeId(0),
             span: decl.span,
@@ -1062,6 +1065,7 @@ pub fn lower_const(ctx: &mut LowerCtx<'_>, decl: &ConstDecl) -> IrConst {
     IrConst {
         name: decl.name.text.clone(),
         ty,
+        type_annotation: Some((&decl.ty).into()),
         value,
         // ConstDecl items have no NodeId in the origin side-table; placeholder.
         origin: NodeId(0),
@@ -1541,6 +1545,7 @@ pub fn lower_derived_instance(
     items.push(IrItem::Const(IrConst {
         name: dict_name,
         ty: Type::Error,
+        type_annotation: None,
         value: dict_value,
         origin: NodeId(0),
         span: sp,
@@ -1683,6 +1688,7 @@ fn build_delegated_instance(
     items.push(IrItem::Const(IrConst {
         name: dict_name,
         ty: Type::Error,
+        type_annotation: None,
         value: dict_value,
         origin: NodeId(0),
         span: sp,
@@ -5334,6 +5340,7 @@ fn build_schema_instance(
     items.push(IrItem::Const(IrConst {
         name: dict_name,
         ty: Type::Error,
+        type_annotation: None,
         value: dict_value,
         origin: NodeId(0),
         span: sp,
@@ -5449,6 +5456,7 @@ fn build_row_instance(
     items.push(IrItem::Const(IrConst {
         name: dict_name,
         ty: Type::Error,
+        type_annotation: None,
         value: dict_value,
         origin: NodeId(0),
         span: sp,

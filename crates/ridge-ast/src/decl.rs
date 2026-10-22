@@ -344,7 +344,7 @@ pub struct FnDecl {
     pub caps: Vec<Capability>,
     /// The function name (`LOWER_IDENT` or `PRIV_IDENT`).
     pub name: Ident,
-    /// The parameter list (only bare or annotated; no pattern params).
+    /// The parameter list, including irrefutable destructuring patterns.
     pub params: Vec<Param>,
     /// Optional return type after `->`.
     pub ret: Option<Type>,
@@ -370,15 +370,14 @@ pub struct FnDecl {
 
 /// A top-level function parameter (grammar §4.1 line 459).
 ///
-/// A top-level `Param` is a bare name, an annotated name, or — for an
-/// irrefutable destructure — an annotated pattern.
+/// A named function parameter is a bare name or an irrefutable pattern,
+/// optionally carrying a type annotation.
 ///
-/// Plain `(name: Type)` stays an [`Param::Annotated`]. A parenthesised
+/// Plain `(name: Type)` stays a [`Param::Annotated`]. A parenthesised
 /// pattern carrying a type annotation (`(Json body: Json NewUser)`,
 /// `(Point { x, y }: Point)`) becomes [`Param::PatternAnnotated`]. The pattern
 /// must be irrefutable; refutability is checked in typecheck where the type is
-/// known. An un-annotated pattern is still rejected by `parse_param_top` with
-/// `P012`.
+/// known. An unannotated pattern uses [`Param::Pattern`] and its type is inferred.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Param {
     /// A bare identifier parameter: `x`, `_foo`.
@@ -392,8 +391,14 @@ pub enum Param {
         /// Span covering `( name : Type )`.
         span: Span,
     },
-    /// An annotated destructuring parameter: `(pat : Type)`, where `pat` is a
-    /// pattern other than a bare name (record, single-ctor union, tuple, …).
+    /// An inferred destructuring parameter: `(x, y)`, `(Point { x, y })`, etc.
+    Pattern {
+        /// The destructuring pattern. Must be irrefutable for its inferred type.
+        pat: Pattern,
+        /// Span covering the parameter.
+        span: Span,
+    },
+    /// An annotated destructuring parameter.
     PatternAnnotated {
         /// The destructuring pattern. Must be irrefutable for its type.
         pat: Pattern,
@@ -410,7 +415,9 @@ impl Param {
     pub const fn span(&self) -> Span {
         match self {
             Self::Bare(id) => id.span,
-            Self::Annotated { span, .. } | Self::PatternAnnotated { span, .. } => *span,
+            Self::Annotated { span, .. }
+            | Self::PatternAnnotated { span, .. }
+            | Self::Pattern { span, .. } => *span,
         }
     }
 }

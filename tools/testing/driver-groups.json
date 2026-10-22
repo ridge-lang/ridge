@@ -1,6 +1,7 @@
 {
   "groups": {
     "analysis": [
+      "function_patterns",
       "incremental",
       "or_pattern_semantics",
       "parametric_ambiguous_e2e",

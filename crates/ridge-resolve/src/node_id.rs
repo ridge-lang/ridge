@@ -117,6 +117,10 @@ pub enum NodeKind {
     /// its definition site) are distinct keys and do not collide.
     // AST type nodes are needed by the lowering type adapter.
     Type,
+
+    /// An unannotated named parameter pattern. Its inferred input type is
+    /// retained here for lowering without inventing a source annotation.
+    ParamPattern,
 }
 
 // ── NodeIdMap ─────────────────────────────────────────────────────────────────
@@ -221,6 +225,13 @@ impl IdAssigner {
 }
 
 impl<'ast> Visit<'ast> for IdAssigner {
+    fn visit_param(&mut self, param: &'ast ridge_ast::Param) {
+        if let ridge_ast::Param::Pattern { pat, .. } = param {
+            self.try_assign(pat.span(), NodeKind::ParamPattern);
+        }
+        ridge_ast::visit::walk_param(self, param);
+    }
+
     // Every Ident leaf gets a NodeId (use-sites and definition sites alike).
     fn visit_ident(&mut self, i: &'ast Ident) {
         self.try_assign(i.span, NodeKind::Ident);

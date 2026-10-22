@@ -56,7 +56,8 @@ use ridge_types::{Scheme, Type};
 use crate::actor_lower::lower_actor;
 use crate::ast_type::lower_ast_type;
 use crate::core::{
-    lower_expr, stdlib_class_home_module, synth_destructure_param, wrap_pattern_params,
+    lower_expr, stdlib_class_home_module, synth_destructure_param,
+    synth_inferred_destructure_param, synth_pattern_param, wrap_pattern_params,
 };
 use crate::ctx::LowerCtx;
 
@@ -175,7 +176,7 @@ fn is_auto_promoted_totext(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> bool {
     }
     let param_ty = match &decl.params[0] {
         Param::Annotated { ty, .. } | Param::PatternAnnotated { ty, .. } => ty,
-        Param::Bare(_) => return false,
+        Param::Bare(_) | Param::Pattern { .. } => return false,
     };
     let Some(class_table) = ctx.class_table else {
         return false;
@@ -236,7 +237,7 @@ fn lower_auto_promoted_totext(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> Vec<IrIt
     };
     let Some(param_ty) = decl.params.first().and_then(|p| match p {
         Param::Annotated { ty, .. } | Param::PatternAnnotated { ty, .. } => Some(ty.clone()),
-        Param::Bare(_) => None,
+        Param::Bare(_) | Param::Pattern { .. } => None,
     }) else {
         return vec![];
     };
@@ -674,10 +675,9 @@ pub fn lower_fn(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrFn {
     let mut user_params: Vec<IrParam> = Vec::with_capacity(decl.params.len());
     let mut pattern_entries: Vec<(String, &Pattern, Span)> = Vec::new();
     for (idx, p) in decl.params.iter().enumerate() {
-        if let Param::PatternAnnotated { pat, ty, span } = p {
-            let (ir, synth) = synth_destructure_param(ctx, ty, *span);
+        if let Some((ir, synth, pat, span)) = synth_pattern_param(ctx, p) {
             user_params.push(ir);
-            pattern_entries.push((synth, pat, *span));
+            pattern_entries.push((synth, pat, span));
         } else {
             user_params.push(param_to_ir_param(ctx, &scheme, idx, p));
         }
@@ -1001,10 +1001,11 @@ fn lower_instance_method(
                 ty: lower_ast_type(ctx, ty),
                 span: *span,
             }),
-            Param::PatternAnnotated { pat, ty, span } => {
-                let (ir, synth) = synth_destructure_param(ctx, ty, *span);
-                params.push(ir);
-                pattern_entries.push((synth, pat, *span));
+            Param::PatternAnnotated { .. } | Param::Pattern { .. } => {
+                if let Some((ir, synth, pat, span)) = synth_pattern_param(ctx, p) {
+                    params.push(ir);
+                    pattern_entries.push((synth, pat, span));
+                }
             }
         }
     }
@@ -7002,6 +7003,7 @@ fn param_to_ir_param(
         // records the body wrapper); this arm keeps the synthetic binder correct
         // if it is ever lowered in isolation.
         Param::PatternAnnotated { ty, span, .. } => synth_destructure_param(ctx, ty, *span).0,
+        Param::Pattern { pat, span } => synth_inferred_destructure_param(ctx, pat, *span).0,
     }
 }
 

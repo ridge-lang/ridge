@@ -11,7 +11,7 @@
 //! `Arc`, so a query that cloned the `Arc` always sees a complete, consistent
 //! snapshot even while a newer compile is in flight.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1235,42 +1235,36 @@ impl WorkspaceIndex {
             ));
         }
 
-        // The inferred type lives on the narrowest expression-like node (idents
-        // do not carry a written-back type). A type-position reference — `Book`
+        // The inferred type lives on the narrowest expression-like node, or
+        // on a parameter pattern's binder. A type-position reference — `Book`
         // in `Repo Book Sqlite`, an annotation, or a type-decl name — matches a
         // `Type` node that carries no inferred type; that is not a dead end,
         // because the binding path below cards it from its declaration exactly as
         // go-to-definition resolves the same node. So a missing node type is
         // tolerated, and only becomes fatal when there is also no binding to card.
         let typed = self
-            .node_at(
-                uri,
-                offset,
-                &[
-                    NodeKind::Expr,
-                    NodeKind::Block,
-                    NodeKind::Try,
-                    NodeKind::Type,
-                ],
-            )
-            .and_then(|(_, type_node, _, expr_span)| {
-                let ty = self
-                    .modules
-                    .get(mi)?
-                    .node_types
-                    .get(type_node.0 as usize)?
-                    .as_ref()?;
-                if matches!(ty, ridge_types::Type::Error) {
-                    return None;
-                }
-                // The head tycon of the hovered value, used to recognise an
-                // insert-shape companion (which shares its entity's source span,
-                // so the decl-based tier would otherwise card the entity).
-                let head_tycon = match ty {
-                    ridge_types::Type::Con(id, _) => Some(*id),
-                    _ => None,
-                };
-                Some((render_type_with(ty, &self.tycons), head_tycon, expr_span))
+            .local_binding_type_at(mi, offset)
+            .and_then(|(ty, span)| self.hover_type(ty, span))
+            .or_else(|| {
+                self.node_at(
+                    uri,
+                    offset,
+                    &[
+                        NodeKind::Expr,
+                        NodeKind::Block,
+                        NodeKind::Try,
+                        NodeKind::Type,
+                    ],
+                )
+                .and_then(|(_, type_node, _, expr_span)| {
+                    let ty = self
+                        .modules
+                        .get(mi)?
+                        .node_types
+                        .get(type_node.0 as usize)?
+                        .as_ref()?;
+                    self.hover_type(ty, expr_span)
+                })
             });
         let type_str = typed.as_ref().map_or("", |(s, _, _)| s.as_str());
         let head_tycon = typed.as_ref().and_then(|(_, h, _)| *h);
@@ -1313,6 +1307,23 @@ impl WorkspaceIndex {
         } else {
             Some((fenced_ridge(type_str), expr_span))
         }
+    }
+
+    /// Render a valid hover type and retain its head to recognise insert-shape
+    /// companions without mistaking them for their source entity declaration.
+    fn hover_type(
+        &self,
+        ty: &Type,
+        span: Span,
+    ) -> Option<(String, Option<ridge_types::TyConId>, Span)> {
+        if matches!(ty, Type::Error) {
+            return None;
+        }
+        let head = match ty {
+            Type::Con(id, _) => Some(*id),
+            _ => None,
+        };
+        Some((render_type_with(ty, &self.tycons), head, span))
     }
 
     /// Assemble the markdown shown when hovering an identifier.
@@ -1902,22 +1913,28 @@ impl WorkspaceIndex {
         let mi = mid.0 as usize;
         let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
 
-        let (_, type_node, _, _) = self.node_at(
-            uri,
-            offset,
-            &[
-                NodeKind::Expr,
-                NodeKind::Block,
-                NodeKind::Try,
-                NodeKind::Type,
-            ],
-        )?;
         let ty = self
-            .modules
-            .get(mi)?
-            .node_types
-            .get(type_node.0 as usize)?
-            .as_ref()?;
+            .local_binding_type_at(mi, offset)
+            .map(|(ty, _)| ty)
+            .or_else(|| {
+                self.node_at(
+                    uri,
+                    offset,
+                    &[
+                        NodeKind::Expr,
+                        NodeKind::Block,
+                        NodeKind::Try,
+                        NodeKind::Type,
+                    ],
+                )
+                .and_then(|(_, node, _, _)| {
+                    self.modules
+                        .get(mi)?
+                        .node_types
+                        .get(node.0 as usize)?
+                        .as_ref()
+                })
+            })?;
         let tycon = named_tycon_of(ty)?;
         self.tycon_location(tycon)
     }
@@ -3188,35 +3205,9 @@ impl WorkspaceIndex {
             }
         }
 
-        // Resolve every site to a `Location`, bucket by file, and dedup so an
-        // overlapping declaration/use collapses to one edit.
-        let mut ranges: HashMap<Url, Vec<Range>> = HashMap::new();
-        for (mid, span) in sites {
-            if let Some(loc) = self.location_in(mid, span) {
-                ranges.entry(loc.uri).or_default().push(loc.range);
-            }
-        }
-        let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
-        for (edit_uri, mut rs) in ranges {
-            rs.sort_by(|a, b| {
-                (a.start.line, a.start.character, a.end.line, a.end.character).cmp(&(
-                    b.start.line,
-                    b.start.character,
-                    b.end.line,
-                    b.end.character,
-                ))
-            });
-            rs.dedup();
-            changes.insert(
-                edit_uri,
-                rs.into_iter()
-                    .map(|range| TextEdit {
-                        range,
-                        new_text: new_name.to_owned(),
-                    })
-                    .collect(),
-            );
-        }
+        let Some(changes) = self.binding_rename_changes(sites, new_name, cancel) else {
+            return Ok(None);
+        };
         if changes.is_empty() {
             return Ok(None);
         }
@@ -3225,6 +3216,67 @@ impl WorkspaceIndex {
             document_changes: None,
             change_annotations: None,
         }))
+    }
+
+    /// Preserve field labels when the renamed value shares a shorthand token
+    /// with one. Scan each affected module once and retain name-only ranges.
+    fn binding_rename_changes(
+        &self,
+        sites: Vec<(ModuleId, Span)>,
+        new_name: &str,
+        cancel: &Cancel,
+    ) -> Option<HashMap<Url, Vec<TextEdit>>> {
+        let mut by_module: HashMap<ModuleId, Vec<Span>> = HashMap::new();
+        for (mid, span) in sites {
+            by_module.entry(mid).or_default().push(span);
+        }
+        let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+        for (mid, mut spans) in by_module {
+            if cancel.is_cancelled() {
+                return None;
+            }
+            spans.sort_unstable_by_key(|span| (span.start, span.end));
+            spans.dedup();
+            let mut puns = RecordPuns::default();
+            if let Some(ast) = self
+                .modules
+                .get(mid.0 as usize)
+                .and_then(|view| view.ast.as_deref())
+            {
+                ridge_ast::visit::Visit::visit_module(&mut puns, ast);
+            }
+            for span in spans {
+                if let Some(loc) = self.location_in(mid, span) {
+                    let new_text = if puns.spans.contains(&span) {
+                        format!("{} = {new_name}", self.text_slice(mid.0 as usize, span))
+                    } else {
+                        new_name.to_owned()
+                    };
+                    changes.entry(loc.uri).or_default().push(TextEdit {
+                        range: loc.range,
+                        new_text,
+                    });
+                }
+            }
+        }
+        for edits in changes.values_mut() {
+            edits.sort_by(|a, b| {
+                (
+                    a.range.start.line,
+                    a.range.start.character,
+                    a.range.end.line,
+                    a.range.end.character,
+                )
+                    .cmp(&(
+                        b.range.start.line,
+                        b.range.start.character,
+                        b.range.end.line,
+                        b.range.end.character,
+                    ))
+            });
+            edits.dedup_by(|a, b| a.range == b.range);
+        }
+        Some(changes)
     }
 
     /// The type/AST-directed rename paths that run before the binding-keyed one:
@@ -3546,6 +3598,26 @@ impl WorkspaceIndex {
             .flat_map(|node| &node.locals)
             .find(|entry| entry.id == local_id)
             .map(|entry| entry.def_span)
+    }
+
+    /// A pattern binder retains its component type even without an expression
+    /// at the declaration site. Uses follow the same resolved local identity.
+    fn local_binding_type_at(&self, mi: usize, offset: u32) -> Option<(&Type, Span)> {
+        let (Binding::Local(id), span) = self.name_binding_at(mi, offset)? else {
+            return None;
+        };
+        let definition = self.find_local_def_span(mi, *id)?;
+        let node = self
+            .spatial
+            .get(mi)?
+            .node_for_span_or_inner(definition, NodeKind::Ident)?;
+        let ty = self
+            .modules
+            .get(mi)?
+            .node_types
+            .get(node.0 as usize)?
+            .as_ref()?;
+        (!matches!(ty, Type::Error)).then_some((ty, span))
     }
 
     /// Build a [`Location`] for `span` in module `mid`.
@@ -7596,6 +7668,40 @@ fn type_decl_name_span(ast: &ridge_ast::Module, type_name: &str) -> Option<Span>
         ridge_ast::Item::Type(td) if td.name.text == type_name => Some(td.name.span),
         _ => None,
     })
+}
+
+/// Shorthand tokens play both a field-label and a value/binder role. A value
+/// rename expands them so the field keeps its original name.
+#[derive(Default)]
+struct RecordPuns {
+    spans: HashSet<Span>,
+}
+
+impl<'ast> ridge_ast::visit::Visit<'ast> for RecordPuns {
+    fn visit_field_init(&mut self, field: &'ast ridge_ast::FieldInit) {
+        if field.value.is_none() {
+            self.spans.insert(field.name.span);
+        }
+        ridge_ast::visit::walk_field_init(self, field);
+    }
+
+    fn visit_pattern(&mut self, pattern: &'ast ridge_ast::Pattern) {
+        match pattern {
+            ridge_ast::Pattern::Constructor {
+                fields: Some(fields),
+                ..
+            }
+            | ridge_ast::Pattern::Record { fields, .. } => {
+                for field in fields {
+                    if field.pattern.is_none() {
+                        self.spans.insert(field.name.span);
+                    }
+                }
+            }
+            _ => {}
+        }
+        ridge_ast::visit::walk_pattern(self, pattern);
+    }
 }
 
 /// Finds the narrowest `base.field` access whose `field` name range covers the

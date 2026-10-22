@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Named functions infer irrefutable destructuring parameters such as `(x, y)`
+  and `(Point { x, y })` without a type annotation. Inner functions, instance
+  method implementations and actor parameters use the same rule. Abstract
+  method signatures still require a type annotation on a pattern parameter.
+  Lifecycle callback inputs keep their fixed `Monitor` and `ExitReason` types
+  when annotations are omitted, rejecting incompatible patterns and bodies.
+
 - `--emit core` and `--emit both` show constants' declared type annotations
   in Ridge syntax, preserving aliases and nested types instead of printing
   internal type-constructor indices. Generated constants omit the source type

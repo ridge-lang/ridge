@@ -64,7 +64,10 @@ use rustc_hash::FxHashSet;
 
 use crate::ast_type::lower_ast_type;
 use crate::block::lower_block;
-use crate::core::{lower_expr, synth_destructure_param, wrap_pattern_params};
+use crate::core::{
+    lower_expr, synth_destructure_param, synth_inferred_destructure_param, synth_pattern_param,
+    wrap_pattern_params,
+};
 use crate::ctx::LowerCtx;
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -251,10 +254,9 @@ fn lower_init_decl(
     let mut params: Vec<IrParam> = Vec::with_capacity(i.params.len());
     let mut pattern_entries: Vec<(String, &Pattern, Span)> = Vec::new();
     for (idx, p) in i.params.iter().enumerate() {
-        if let Param::PatternAnnotated { pat, ty, span } = p {
-            let (ir, synth) = synth_destructure_param(ctx, ty, *span);
+        if let Some((ir, synth, pat, span)) = synth_pattern_param(ctx, p) {
             params.push(ir);
-            pattern_entries.push((synth, pat, *span));
+            pattern_entries.push((synth, pat, span));
         } else {
             params.push(param_to_ir_param(ctx, i.span, idx, p));
         }
@@ -293,10 +295,9 @@ fn lower_terminate_decl(
     let mut params: Vec<IrParam> = Vec::with_capacity(t.params.len());
     let mut pattern_entries: Vec<(String, &Pattern, Span)> = Vec::new();
     for (idx, p) in t.params.iter().enumerate() {
-        if let Param::PatternAnnotated { pat, ty, span } = p {
-            let (ir, synth) = synth_destructure_param(ctx, ty, *span);
+        if let Some((ir, synth, pat, span)) = synth_pattern_param(ctx, p) {
             params.push(ir);
-            pattern_entries.push((synth, pat, *span));
+            pattern_entries.push((synth, pat, span));
         } else {
             params.push(param_to_ir_param(ctx, t.span, idx, p));
         }
@@ -335,10 +336,9 @@ fn lower_on_down_decl(
     let mut params: Vec<IrParam> = Vec::with_capacity(d.params.len());
     let mut pattern_entries: Vec<(String, &Pattern, Span)> = Vec::new();
     for (idx, p) in d.params.iter().enumerate() {
-        if let Param::PatternAnnotated { pat, ty, span } = p {
-            let (ir, synth) = synth_destructure_param(ctx, ty, *span);
+        if let Some((ir, synth, pat, span)) = synth_pattern_param(ctx, p) {
             params.push(ir);
-            pattern_entries.push((synth, pat, *span));
+            pattern_entries.push((synth, pat, span));
         } else {
             params.push(param_to_ir_param(ctx, d.span, idx, p));
         }
@@ -388,10 +388,9 @@ fn lower_on_handler(
     let mut params: Vec<IrParam> = Vec::with_capacity(h.params.len());
     let mut pattern_entries: Vec<(String, &Pattern, Span)> = Vec::new();
     for (idx, p) in h.params.iter().enumerate() {
-        if let Param::PatternAnnotated { pat, ty, span } = p {
-            let (ir, synth) = synth_destructure_param(ctx, ty, *span);
+        if let Some((ir, synth, pat, span)) = synth_pattern_param(ctx, p) {
             params.push(ir);
-            pattern_entries.push((synth, pat, *span));
+            pattern_entries.push((synth, pat, span));
         } else {
             params.push(param_to_ir_param(ctx, h.span, idx, p));
         }
@@ -488,6 +487,7 @@ fn param_to_ir_param(
         // also wraps the body); this arm keeps the synthetic binder correct in
         // isolation.
         Param::PatternAnnotated { ty, span, .. } => synth_destructure_param(ctx, ty, *span).0,
+        Param::Pattern { pat, span } => synth_inferred_destructure_param(ctx, pat, *span).0,
     }
 }
 

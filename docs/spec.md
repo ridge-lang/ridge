@@ -326,10 +326,22 @@ match user
 -- Destructuring in let — full patterns including tuples and records
 let (x, y) = point
 let (User { name }, count) = pair           -- tuple with nested record pattern
-fn distance (x1, y1) (x2, y2) = Float.sqrt ((x2-x1)^2 + (y2-y1)^2)
 ```
 
-**Pattern scope rules:** `let` bindings and lambda parameters accept full patterns (tuples, records with shorthand, constructor patterns, wildcards, as-patterns). Top-level `fn` declarations are restricted to `Ident` or `(Ident: Type)` — destructure inside the body via `let` or `match`.
+```ridge
+import std.float as Float
+
+fn distance (x1, y1) (x2, y2) -> Float =
+    let dx = x2 - x1
+    let dy = y2 - y1
+    Float.sqrt (dx * dx + dy * dy)
+```
+
+**Pattern scope rules:** `let` bindings and lambda parameters accept full patterns (tuples, records with shorthand, constructor patterns, wildcards, as-patterns). Named functions also accept parenthesized patterns, with an optional type annotation: `(x, y)`, `(Point { x, y })`, `(MkBox value)`, or `((x, y): (Int, Int))`. Their types are inferred from the pattern and body when the annotation is absent. The pattern must be **irrefutable** for its type: tuples of bindings and single-constructor wrappers are valid; a pattern such as `(Some value)` over `Option a` is rejected because it cannot match `None`. Destructure refutable inputs in the body with an exhaustive `match` instead. This rule also applies to inner functions, instance method implementations and actor parameters. An abstract class method has no body from which to infer a pattern's input type, so its pattern parameters require an explicit annotation.
+
+`terminate` receives `ExitReason`, and `onDown` receives `Monitor` followed by `ExitReason`. These fixed input types constrain their parameter patterns and bodies even when annotations are omitted.
+
+The marker `()` declares a function with no parameters; it does not declare a destructuring pattern or a parameter accepting `Unit`. Use `(_: Unit)` to accept and ignore a `Unit` argument.
 
 `let` is a layout binding: the body follows on subsequent lines at the same indentation, and the value is in scope for the rest of the block. Ridge has no `let … in` expression — the ML-family form is rejected with `P033 LetInNotSupported`.
 

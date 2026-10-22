@@ -76,7 +76,7 @@ fn render() -> String {
 
     out.push_str("# Diagnostic codes\n\n");
     out.push_str(
-        "Every error and warning the compiler reports carries a code — `T031`, `P012`, `C001`.\n\
+        "Every error and warning the compiler reports carries a code — `T031`, `P020`, `C001`.\n\
          The code is the stable handle on that failure: it survives rewording, a search box and a\n\
          CI filter can both match on it, and it is what this page is indexed by.\n\n",
     );

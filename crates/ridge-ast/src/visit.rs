@@ -792,6 +792,7 @@ pub fn walk_on_handler<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, h: &'ast OnHand
 pub fn walk_param<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, p: &'ast Param) {
     match p {
         Param::Bare(id) => v.visit_ident(id),
+        Param::Pattern { pat, .. } => v.visit_pattern(pat),
         Param::Annotated { name, ty, .. } => {
             v.visit_ident(name);
             v.visit_type(ty);

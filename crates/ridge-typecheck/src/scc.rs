@@ -53,7 +53,7 @@ use crate::caps_check::caps_from_ast_slice;
 use crate::class_env::{ClassTable, InstanceEnv};
 use crate::ctx::{InferCtx, RigidInfo};
 use crate::error::{TypeDesc, TypeError};
-use crate::infer::{infer_expr, infer_pattern};
+use crate::infer::infer_expr;
 use crate::instantiate::{collect_free_vars, generalise_with_env, monoscheme};
 use crate::solve::solve_constraints;
 use crate::tycon_collect::ast_type_to_ridge_type;
@@ -705,7 +705,7 @@ pub fn typecheck_module_decls(
                 .params
                 .iter()
                 .map(|p| match p {
-                    Param::Bare(_) => Type::Var(ctx.fresh_tyvid()),
+                    Param::Bare(_) | Param::Pattern { .. } => Type::Var(ctx.fresh_tyvid()),
                     Param::Annotated { ty, .. } | Param::PatternAnnotated { ty, .. } => {
                         ast_type_to_ridge_type(b, ctx, ty, &user_tycon_names, &tyvar_map)
                     }
@@ -834,9 +834,9 @@ pub fn typecheck_module_decls(
                         // against the param type; the pattern must be irrefutable.
                         // Bind first so a pattern-driven annotation (e.g. a tuple
                         // over a type variable) is resolved before the check.
-                        ridge_ast::Param::PatternAnnotated { pat, span, .. } => {
-                            infer_pattern(ctx, b, pat, ty);
-                            crate::exhaustiveness::check_param_irrefutable(ctx, b, pat, ty, *span);
+                        ridge_ast::Param::PatternAnnotated { pat, span, .. }
+                        | ridge_ast::Param::Pattern { pat, span } => {
+                            crate::infer::infer_param_pattern(ctx, b, pat, ty, *span);
                         }
                     }
                 }
@@ -1095,7 +1095,7 @@ pub fn infer_instance_methods(
                 .params
                 .iter()
                 .map(|p| match p {
-                    Param::Bare(_) => Type::Var(ctx.fresh_tyvid()),
+                    Param::Bare(_) | Param::Pattern { .. } => Type::Var(ctx.fresh_tyvid()),
                     Param::Annotated { ty, .. } | Param::PatternAnnotated { ty, .. } => {
                         ast_type_to_ridge_type(b, ctx, ty, &user_tycon_names, &method_map)
                     }
@@ -1127,9 +1127,8 @@ pub fn infer_instance_methods(
                     Param::Annotated { name, .. } => {
                         ctx.env.bind(name.text.clone(), monoscheme(ty.clone()));
                     }
-                    Param::PatternAnnotated { pat, span, .. } => {
-                        infer_pattern(ctx, b, pat, ty);
-                        crate::exhaustiveness::check_param_irrefutable(ctx, b, pat, ty, *span);
+                    Param::PatternAnnotated { pat, span, .. } | Param::Pattern { pat, span } => {
+                        crate::infer::infer_param_pattern(ctx, b, pat, ty, *span);
                     }
                 }
             }

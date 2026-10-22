@@ -19,7 +19,6 @@
 //!
 //! Declaration errors:
 //! - `P005 MissingType`
-//! - `P012 TopLevelPatternParam`
 //! - `P013 DeferredFeature`
 //!
 //! Doc-comment errors:
@@ -127,20 +126,6 @@ pub enum ParseError {
         span: Span,
     },
 
-    /// P012 — a top-level function parameter was a tuple or constructor pattern.
-    ///
-    /// Top-level `fn` parameters must be bare identifiers or annotated
-    /// identifiers only.  Full patterns (tuples, constructors, `@` bindings)
-    /// are only allowed in lambda parameters.  Use a `let` binding in the body
-    /// instead.
-    ///
-    /// Example: `fn foo (x, y) = x` is invalid; write `fn foo pair = let (x, y) = pair …`.
-    #[error("tuple and constructor patterns are not allowed in top-level fn parameters")]
-    TopLevelPatternParam {
-        /// Source location of the invalid pattern parameter.
-        span: Span,
-    },
-
     /// P013 — a language feature is reserved but deferred to a future version.
     ///
     /// Currently: `class`, `instance`, `deriving`, and `trait` are reserved
@@ -173,9 +158,7 @@ pub enum ParseError {
     /// position that expects a plain identifier (a `let` pattern, a `fn`
     /// parameter name, a lambda parameter, …).
     ///
-    /// The historical surfaces were `P002 unexpected token` (let patterns)
-    /// and `P012 TopLevelPatternParam` (fn parameters), both of which read
-    /// as unrelated structural errors and sent users hunting for missing
+    /// Historical structural errors sent users hunting for missing
     /// braces or stray punctuation.  P020 names the cause directly and
     /// hints at the canonical fix: rename the binding.
     #[error("reserved keyword `{keyword}` cannot be used as an identifier in {position}; rename the binding")]
@@ -481,7 +464,6 @@ impl ParseError {
             Self::MissingType { .. } => "P005",
             Self::LayoutMismatch { .. } => "P006",
             Self::NonAssociativeChain { .. } => "P009",
-            Self::TopLevelPatternParam { .. } => "P012",
             Self::DeferredFeature { .. } => "P013",
             Self::EmptyBlock { .. } => "P014",
             Self::OrphanDocComment { .. } => "P019",
@@ -519,7 +501,6 @@ impl ParseError {
             | Self::MissingType { span, .. }
             | Self::LayoutMismatch { span, .. }
             | Self::NonAssociativeChain { span, .. }
-            | Self::TopLevelPatternParam { span }
             | Self::DeferredFeature { span, .. }
             | Self::EmptyBlock { span }
             | Self::OrphanDocComment { span }

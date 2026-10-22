@@ -1019,7 +1019,9 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 .params
                 .iter()
                 .map(|p| match p {
-                    ridge_ast::Param::Bare(_) => Type::Var(ctx.fresh_tyvid()),
+                    ridge_ast::Param::Bare(_) | ridge_ast::Param::Pattern { .. } => {
+                        Type::Var(ctx.fresh_tyvid())
+                    }
                     ridge_ast::Param::Annotated { ty, .. }
                     | ridge_ast::Param::PatternAnnotated { ty, .. } => {
                         crate::tycon_collect::ast_type_to_ridge_type(
@@ -1142,9 +1144,9 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                     ridge_ast::Param::Bare(id) | ridge_ast::Param::Annotated { name: id, .. } => {
                         ctx.env.bind(id.text.clone(), monoscheme(ty.clone()));
                     }
-                    ridge_ast::Param::PatternAnnotated { pat, span, .. } => {
-                        infer_pattern(ctx, b, pat, ty);
-                        crate::exhaustiveness::check_param_irrefutable(ctx, b, pat, ty, *span);
+                    ridge_ast::Param::PatternAnnotated { pat, span, .. }
+                    | ridge_ast::Param::Pattern { pat, span } => {
+                        crate::infer::infer_param_pattern(ctx, b, pat, ty, *span);
                     }
                 }
             }
@@ -1899,6 +1901,70 @@ pub fn infer_pattern(ctx: &mut InferCtx, b: &BuiltinTyCons, pat: &Pattern, expec
                 ctx.env.bind(name, monoscheme(ty));
             }
         }
+    }
+}
+
+/// Bind a named parameter pattern, retain its inferred input type, and require
+/// that every value of that type matches it.
+pub(crate) fn infer_param_pattern(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    pat: &Pattern,
+    ty: &Type,
+    span: Span,
+) {
+    infer_pattern(ctx, b, pat, ty);
+    ctx.write_node_type(pat.span(), NodeKind::ParamPattern, ty);
+    ridge_ast::visit::Visit::visit_pattern(&mut ParamBindingTypes { ctx }, pat);
+    crate::exhaustiveness::check_param_irrefutable(ctx, b, pat, ty, span);
+}
+
+/// Record each binder's own type, excluding constructor names and field labels.
+struct ParamBindingTypes<'ctx> {
+    ctx: &'ctx mut InferCtx,
+}
+
+impl ParamBindingTypes<'_> {
+    fn record(&mut self, name: &ridge_ast::Ident) {
+        if let Some(ty) = self
+            .ctx
+            .env
+            .lookup(&name.text)
+            .map(|scheme| scheme.ty.clone())
+        {
+            self.ctx.write_node_type(name.span, NodeKind::Ident, &ty);
+        }
+    }
+}
+
+impl<'ast> ridge_ast::visit::Visit<'ast> for ParamBindingTypes<'_> {
+    fn visit_pattern(&mut self, pat: &'ast Pattern) {
+        match pat {
+            Pattern::Var { name, .. } | Pattern::As { name, .. } => self.record(name),
+            Pattern::Constructor {
+                fields: Some(fields),
+                ..
+            }
+            | Pattern::Record { fields, .. } => {
+                for field in fields {
+                    if field.pattern.is_none() {
+                        self.record(&field.name);
+                    }
+                }
+            }
+            Pattern::List { elements, .. } => {
+                for element in elements {
+                    if let ridge_ast::ListPatElem::Rest {
+                        bind: Some(name), ..
+                    } = element
+                    {
+                        self.record(name);
+                    }
+                }
+            }
+            _ => {}
+        }
+        ridge_ast::visit::walk_pattern(self, pat);
     }
 }
 

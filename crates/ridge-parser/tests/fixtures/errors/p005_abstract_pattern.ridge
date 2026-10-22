@@ -1,0 +1,4 @@
+-- expect: P005
+-- An abstract method pattern must state its input type.
+class Total a =
+    total (x, y) -> Int

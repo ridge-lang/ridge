@@ -451,7 +451,7 @@ fn method_sig_fingerprint(m: &MethodSig) -> String {
 /// A span-free rendering of a parameter's declared type (`_` when unannotated).
 fn render_param(p: &Param) -> String {
     match p {
-        Param::Bare(_) => "_".to_string(),
+        Param::Bare(_) | Param::Pattern { .. } => "_".to_string(),
         Param::Annotated { ty, .. } | Param::PatternAnnotated { ty, .. } => render_ast_type(ty),
     }
 }

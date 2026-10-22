@@ -23,6 +23,8 @@ pub type Point = { x: Int, y: Int }
 
 type Box = | MkBox Int
 
+fn hygienic (_param_0, y) (_param_1: Int) -> Int = _param_0 + y + _param_1
+
 fn addCoords (Point { x, y }: Point) -> Int = x + y
 
 fn diff ((a, b): (Int, Int)) -> Int = a - b
@@ -34,6 +36,46 @@ pub fn sumPoint () -> Text = Int.toText (addCoords (Point { x = 3, y = 4 }))
 pub fn diffed () -> Text = Int.toText (diff (10, 3))
 
 pub fn unboxed () -> Text = Int.toText (unbox (MkBox 42))
+
+fn inferredRecord (Point { x, y }) -> Int = x + y
+fn inferredTuple (a, b) -> Int = a - b
+fn inferredBox (MkBox n) -> Int = n
+fn nested ((a, b), c) -> Int = a + b + c
+fn combine (a, b) (c, d) -> Int = a + b + c + d
+fn alias (pair @ (x, y)) -> Int =
+    let (a, b) = pair
+    a + b + x + y
+fn recurse (n, total) -> Int =
+    if n <= 0 then total else recurse (n - 1, total + n)
+
+pub fn inferred () -> Text =
+    Int.toText (inferredRecord (Point { x = 3, y = 4 }) + inferredTuple (10, 3) + inferredBox (MkBox 42))
+
+pub fn structured () -> Text =
+    let partial = combine (1, 2)
+    Int.toText (nested ((1, 2), 3) + partial (3, 4) + alias (5, 6) + recurse (3, 0))
+
+pub fn captured () -> Text =
+    let offset = 10
+    fn inner (x, y) -> Int = x + y + offset
+    Int.toText (inner (1, 2))
+
+pub fn hygiene () -> Text = Int.toText (hygienic (2, 3) 9)
+
+actor Counter =
+    state count: Int = 0
+    init (x, y) =
+        count <- x + y
+    on add (x, y) =
+        count <- count + x + y
+    on value () -> Int = count
+    terminate (reason) =
+        let _ = reason
+        ()
+    onDown (monitor) (reason) =
+        let _ = monitor
+        let _ = reason
+        ()
 ";
 
 fn write_workspace(root: &std::path::Path) {
@@ -112,7 +154,12 @@ fn destructuring_params_bind_and_run() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['sumPoint','diffed','unboxed']), halt()."
+         lists:foreach(F,['sumPoint','diffed','unboxed','inferred','structured','captured','hygiene']), \
+         H = ridge_rt:spawn_actor({module}_counter, [{{2,3}}], []), \
+         ok = ridge_rt:send_op(H, {{add, {{4,5}}}}), \
+         14 = ridge_rt:ask(H, {{value}}, 5000), \
+         {{ridge_handle, Pid, _}} = H, ok = gen_server:stop(Pid), \
+         io:format(\"actor=14~n\", []), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -125,6 +172,22 @@ fn destructuring_params_bind_and_run() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    for expected in [
+        "inferred=56",
+        "structured=44",
+        "captured=13",
+        "hygiene=14",
+        "actor=14",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "expected {expected}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+    }
 
     // The record param binds `x`/`y` and the body reads both fields.
     assert!(

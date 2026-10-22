@@ -137,6 +137,11 @@ pub const RETIRED: &[RetiredCode] = &[
         see: Some("P206"),
     },
     RetiredCode {
+        code: "P012",
+        summary: "Rejected unannotated tuple and constructor patterns in named function parameters. Named parameters now infer their pattern types and accept irrefutable destructuring; a pattern that can fail is rejected by the type checker.",
+        see: Some("T043"),
+    },
+    RetiredCode {
         code: "P018",
         summary: "Rejected a record pattern written without a leading constructor name. Bare record patterns became legal in 0.2.12, so the failure it reported stopped being one.",
         see: None,
@@ -864,12 +869,6 @@ pub const REGISTRY: &[CodeEntry] = &[
         variants: &["NonAssociativeChain"],
         owner: "ridge-parser",
         summary: "A non-associative operator was chained without parentheses.",
-    },
-    CodeEntry {
-        code: "P012",
-        variants: &["TopLevelPatternParam"],
-        owner: "ridge-parser",
-        summary: "A top-level function parameter was a tuple or constructor pattern.",
     },
     CodeEntry {
         code: "P013",

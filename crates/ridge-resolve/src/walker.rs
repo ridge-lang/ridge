@@ -386,7 +386,7 @@ impl ScopeWalker<'_> {
     /// type references inside the annotation.
     fn visit_param_type(&mut self, p: &Param) {
         match p {
-            Param::Bare(_) => {}
+            Param::Bare(_) | Param::Pattern { .. } => {}
             Param::Annotated { ty, .. } | Param::PatternAnnotated { ty, .. } => self.visit_type(ty),
         }
     }
@@ -807,7 +807,7 @@ impl ScopeWalker<'_> {
             // A destructuring param binds every variable of its pattern, reusing
             // the same machinery as `let`/`match` patterns. The pattern's
             // irrefutability is enforced later in typecheck.
-            Param::PatternAnnotated { pat, .. } => {
+            Param::PatternAnnotated { pat, .. } | Param::Pattern { pat, .. } => {
                 self.bind_pattern(pat, kind);
             }
         }

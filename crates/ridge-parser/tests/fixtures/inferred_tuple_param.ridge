@@ -1,0 +1,2 @@
+-- An inferred tuple parameter is one argument and binds both components.
+fn f (x, y) = x

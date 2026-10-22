@@ -128,12 +128,13 @@ impl Server {
         )
     }
 
-    /// Observe both the program output and its parent's readiness signal.
+    /// Observe an exact program output line and its parent's readiness marker.
+    /// Runtime children share stderr and may leave an unterminated prefix.
     #[cfg(all(feature = "beam-runtime", feature = "cli-watch"))]
     pub fn wait_for_output(
         &mut self,
         stdout_line: &str,
-        stderr_line: &str,
+        stderr_marker: &str,
         timeout: Duration,
     ) -> Result<(), String> {
         let deadline = Instant::now() + timeout;
@@ -143,15 +144,13 @@ impl Server {
             }
             let stdout = std::fs::read_to_string(self.stdout.path()).map_err(|e| e.to_string())?;
             let stderr = std::fs::read_to_string(self.stderr.path()).map_err(|e| e.to_string())?;
-            if stdout.lines().any(|line| line == stdout_line)
-                && stderr.lines().any(|line| line == stderr_line)
-            {
+            if stdout.lines().any(|line| line == stdout_line) && stderr.contains(stderr_marker) {
                 return Ok(());
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Err(format!(
-                    "expected output deadline expired: {stdout_line:?}, {stderr_line:?}"
+                    "expected output deadline expired: {stdout_line:?}, {stderr_marker:?}"
                 ));
             }
             std::thread::sleep(Duration::from_millis(20).min(remaining));
@@ -237,8 +236,12 @@ mod tests {
             .parse()
             .unwrap();
         match mode.as_str() {
-            "output" => {
+            "output" | "prefixed-output" => {
                 println!("owned output");
+                if mode == "prefixed-output" {
+                    eprint!("Logger - error: ");
+                    io::stderr().flush().unwrap();
+                }
                 eprintln!("owned readiness");
                 loop {
                     std::thread::sleep(Duration::from_secs(1));
@@ -312,12 +315,31 @@ mod tests {
 
     #[cfg(all(feature = "beam-runtime", feature = "cli-watch"))]
     #[test]
+    fn output_readiness_survives_an_unterminated_runtime_message() {
+        let mut server = Server::spawn(fixture("prefixed-output", address())).unwrap();
+        let result =
+            server.wait_for_output("owned output", "owned readiness", Duration::from_secs(5));
+        let diagnostics = server.diagnostics();
+        server.stop().unwrap();
+        assert!(result.is_ok(), "{result:?}\n{diagnostics}");
+    }
+
+    #[cfg(all(feature = "beam-runtime", feature = "cli-watch"))]
+    #[test]
     fn output_readiness_requires_the_program_marker_and_a_live_parent() {
         let address = address();
         let mut server = Server::spawn(fixture("output", address)).unwrap();
         server
             .wait_for_output("owned output", "owned readiness", Duration::from_secs(5))
             .unwrap();
+        assert!(server
+            .wait_for_output(
+                "owned output",
+                "missing readiness",
+                Duration::from_millis(150)
+            )
+            .unwrap_err()
+            .contains("deadline expired"));
         assert!(server
             .wait_for_output(
                 "edited output",

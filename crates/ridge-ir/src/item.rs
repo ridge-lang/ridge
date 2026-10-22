@@ -115,6 +115,9 @@ pub struct IrConst {
     pub name: String,
     /// The constant's type.
     pub ty: Type,
+    /// The declared source type, retained for readable artefact metadata.
+    /// `None` for synthesized constants that have no source annotation.
+    pub type_annotation: Option<ridge_ast::TypeAnnotation>,
     /// The constant's lowered value expression.
     pub value: IrExpr,
     /// AST `ConstDecl` `NodeId` for diagnostics.

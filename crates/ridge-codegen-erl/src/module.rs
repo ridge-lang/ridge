@@ -940,6 +940,7 @@ mod tests {
         IrConst {
             name: name.into(),
             ty: Type::Error,
+            type_annotation: None,
             value,
             origin: NodeId(0),
             span: sp(),

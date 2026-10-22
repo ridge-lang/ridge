@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `--emit core` and `--emit both` show constants' declared type annotations
+  in Ridge syntax, preserving aliases and nested types instead of printing
+  internal type-constructor indices. Generated constants omit the source type
+  annotation because they have no declaration to quote.
+
 - Actor asks (`?>`) return `Result reply AskError`. A missing target or a
   missed deadline is an error value; append `?` to propagate it from a Result
   scope, or match it explicitly. The editor offers propagation repairs for

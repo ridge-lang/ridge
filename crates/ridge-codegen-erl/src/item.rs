@@ -166,8 +166,9 @@ pub(crate) fn lower_fn_with_module_name(
 ///     fun () -> <lower_expr(value)> end
 /// ```
 ///
-/// Type info is metadata-only: `ty` appears in the annotation but is **not**
-/// emitted as runtime code (type erasure).
+/// The declared type spelling is metadata-only: it appears in the annotation
+/// but is **not** emitted as runtime code (type erasure). Synthesized constants
+/// have no source annotation, so only their name is printed.
 ///
 /// Call sites for consts use `call '<own_module>':'<name>' ()` (0-arity call);
 /// that lowering is handled by the call lowering path.
@@ -184,8 +185,12 @@ pub(crate) fn lower_const(
     let lowered_value = lower_expr_in_scope(&c.value, &mut scope)?;
 
     // §4.27: `%% Const: <name>: <ty_metadata_only>` annotation.
-    // The `ty` field is formatted for metadata purposes only — not emitted as code.
-    let const_ann = CErlAnn(format!("%% Const: {}: {:?}", c.name, c.ty));
+    // Source spelling travels through the IR; arena ids are not a display format.
+    // Synthesized constants have no declared type to print.
+    let const_ann = CErlAnn(c.type_annotation.as_ref().map_or_else(
+        || format!("%% Const: {}", c.name),
+        |ty| format!("%% Const: {}: {ty}", c.name),
+    ));
 
     let fun_body = CErlExpr::Fun {
         params: vec![],
@@ -408,6 +413,7 @@ mod tests {
         let c = IrConst {
             name: "max_retries".into(),
             ty: Type::Error,
+            type_annotation: None,
             value: lit_int_expr(3),
             origin: NodeId(0),
             span: sp(),
@@ -419,6 +425,7 @@ mod tests {
         // Must be arity 0.
         assert_eq!(result.arity, 0);
         assert_eq!(result.name.0, "max_retries");
+        assert_eq!(result.anns[0].0, "%% Const: max_retries");
 
         // Body must be a 0-param Fun.
         match &result.body {
@@ -438,6 +445,13 @@ mod tests {
         let c = IrConst {
             name: "timeout_ms".into(),
             ty: Type::Error,
+            type_annotation: Some(
+                (&ridge_ast::Type::Primitive {
+                    name: ridge_ast::PrimitiveType::Int,
+                    span: sp(),
+                })
+                    .into(),
+            ),
             value: lit_int_expr(5000),
             origin: NodeId(0),
             span: sp(),
@@ -446,8 +460,7 @@ mod tests {
         let ws = empty_ws();
         let result = lower_const(&c, &ws, &empty_arity()).unwrap();
 
-        let has_const_ann = result.anns.iter().any(|CErlAnn(s)| s.contains("Const:"));
-        assert!(has_const_ann, "missing %% Const: annotation");
+        assert_eq!(result.anns[0].0, "%% Const: timeout_ms: Int");
     }
 
     #[test]

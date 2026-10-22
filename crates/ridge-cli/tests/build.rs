@@ -18,6 +18,77 @@ fn ridge_cmd() -> Command {
     Command::cargo_bin("ridge").unwrap()
 }
 
+fn const_annotations(source: &str, emit: &str) -> Vec<String> {
+    let tw = make_workspace("Constants", source);
+    ridge_cmd()
+        .args(["build", "--emit", emit])
+        .current_dir(&tw.path)
+        .assert()
+        .success();
+    if emit == "both" {
+        assert!(
+            !walkdir_collect_ext(&tw.path.join("target"), "beam").is_empty(),
+            "--emit both must also compile the runtime artefact"
+        );
+    }
+    let mut annotations: Vec<String> = walkdir_collect_ext(&tw.path.join("target"), "core")
+        .iter()
+        .flat_map(|path| {
+            std::fs::read_to_string(path)
+                .unwrap()
+                .lines()
+                .filter(|line| line.trim_start().starts_with("%% Const:"))
+                .map(|line| line.trim().to_owned())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    annotations.sort();
+    annotations
+}
+
+const TYPED_CONSTANTS: &str = r#"
+type Colour = Red | Green | Blue
+type Caption = Text
+const greeting: Text = "hello"
+const limit: Int = 10
+const fallback: Colour = Red
+const sizes: List Int = [1, 2, 3]
+const pair: (Int, Text) = (1, "a")
+const title: Caption = "heading"
+const nested: List (List Int) = [[1], [2]]
+const deep: List (List (List (List (List (List Int))))) = []
+const produce: fn () -> Int = fn () -> 7
+const unitIdentity: Unit -> Unit = fn (x: Unit) -> x
+"#;
+
+#[test]
+fn build_emit_core_uses_declared_types_without_arena_ids() {
+    let expected = vec![
+        "%% Const: deep: List (List (List (List (List (List Int)))))",
+        "%% Const: fallback: Colour",
+        "%% Const: greeting: Text",
+        "%% Const: limit: Int",
+        "%% Const: nested: List (List Int)",
+        "%% Const: pair: (Int, Text)",
+        "%% Const: produce: fn () -> Int",
+        "%% Const: sizes: List Int",
+        "%% Const: title: Caption",
+        "%% Const: unitIdentity: Unit -> Unit",
+    ];
+    assert_eq!(const_annotations(TYPED_CONSTANTS, "core"), expected);
+    let unrelated = format!("type Shape = Circle | Square\n{TYPED_CONSTANTS}");
+    assert_eq!(const_annotations(&unrelated, "core"), expected);
+}
+
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn build_emit_both_keeps_readable_constant_types() {
+    assert_eq!(
+        const_annotations("const greeting: Text = \"hello\"\n", "both"),
+        vec!["%% Const: greeting: Text"]
+    );
+}
+
 // ── Test 1: ridge build in a single-member workspace ─────────────────────────
 
 /// `ridge build` succeeds in a minimal single-member library workspace.

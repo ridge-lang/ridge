@@ -9,6 +9,10 @@
 //! The binary at `src/main.rs` is a thin shim that parses CLI arguments via
 //! `clap` and dispatches to these `execute` functions.
 //!
+//! Callers constructing `RunArgs`, `CheckArgs` or `TestArgs` directly must set
+//! their optional `file` field; `None` retains workspace discovery. Use
+//! [`Cli::try_parse_invocation_from`] to include the bare-file run shorthand.
+//!
 //! # Hard constraints
 //!
 //! - No `panic!` / `unwrap` / `expect` on user-input paths.
@@ -39,14 +43,41 @@ pub struct Cli {
     pub command: RidgeCommand,
 }
 
+impl Cli {
+    /// Parse an invocation, including `ridge script.ridge [script arguments]`.
+    ///
+    /// The shorthand also supports `#!/usr/bin/env ridge`: arguments following
+    /// the source belong to the program. Explicit subcommands retain their flags.
+    ///
+    /// # Errors
+    /// Returns clap's usual usage or argument error.
+    pub fn try_parse_invocation_from<I, T>(args: I) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        let mut args: Vec<std::ffi::OsString> = args.into_iter().map(Into::into).collect();
+        if args.get(1).is_some_and(|arg| {
+            !arg.to_string_lossy().starts_with('-')
+                && std::path::Path::new(arg)
+                    .extension()
+                    .is_some_and(|ext| ext == "ridge")
+        }) {
+            args.insert(1, "run".into());
+            args.insert(3, "--".into());
+        }
+        <Self as Parser>::try_parse_from(args)
+    }
+}
+
 /// Available `ridge` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum RidgeCommand {
     /// Compile the current workspace.
     Build(cmd::build::BuildArgs),
-    /// Compile and run the current workspace on the BEAM runtime.
+    /// Compile and run a workspace or source file on the BEAM runtime.
     Run(cmd::run::RunArgs),
-    /// Type-check the current workspace without producing any output files.
+    /// Type-check a workspace or source file without producing output files.
     Check(cmd::check::CheckArgs),
     /// Format Ridge source files according to the standard style.
     Fmt(cmd::fmt::FmtArgs),
@@ -54,7 +85,7 @@ pub enum RidgeCommand {
     New(cmd::new::NewArgs),
     /// Scaffold a Ridge project in the current directory.
     Init(cmd::init::InitArgs),
-    /// Discover and run `pub fn test_*` functions in the workspace.
+    /// Discover and run tests in a workspace or source file.
     ///
     /// Compiles the workspace, then runs each test function in a fresh BEAM
     /// child process.  Reports pass / fail per test.  Exit code is 0 if all

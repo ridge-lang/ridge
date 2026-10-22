@@ -18,7 +18,9 @@ use ridge_manifest::{find_workspace_root, WorkspaceRoot};
 use ridge_resolve::{discover_workspace, resolve_workspace, ModuleId, NodeId, Severity};
 use ridge_typecheck::{typecheck_workspace, typecheck_workspace_with_history};
 
-use crate::diag_adapters::{diag_from_codegen, diag_from_lower, diag_from_typecheck};
+use crate::diag_adapters::{
+    diag_from_codegen, diag_from_lower, diag_from_manifest, diag_from_typecheck,
+};
 use crate::error::CompileError;
 use crate::options::{CompileOptions, Profile};
 use crate::sources::WorkspaceSourceCache;
@@ -121,6 +123,70 @@ fn is_declared_entry(graph: &ridge_resolve::WorkspaceGraph, module: ModuleId) ->
         }
 }
 
+/// Populate declared package dependencies for a discovered on-disk workspace.
+/// Standalone graphs have no manifests and do not enter this phase.
+/// Discovery and the package resolver use separate manifest types, so manifests
+/// are read again through `ridge_manifest` before package resolution.
+fn resolve_external_dependencies(
+    graph: &ridge_resolve::WorkspaceGraph,
+    options: &CompileOptions,
+) -> Result<(), CompileError> {
+    let cache_root = match &options.cache_root {
+        Some(p) => p.clone(),
+        None => {
+            ridge_pkg::cache_root().map_err(|e| CompileError::PkgResolutionFailed { source: e })?
+        }
+    };
+
+    // Re-parse the workspace ridge.toml using ridge-manifest types.
+    let workspace_manifest_path = graph.root.join("ridge.toml");
+    let workspace_toml_src =
+        std::fs::read_to_string(&workspace_manifest_path).map_err(|e| CompileError::Io {
+            message: format!("reading workspace manifest: {e}"),
+        })?;
+    let workspace_manifest =
+        ridge_manifest::parse_workspace(&workspace_toml_src, &workspace_manifest_path).map_err(
+            |e| CompileError::PkgResolutionFailed {
+                source: ridge_pkg::PkgError::PkgManifestParseFailed {
+                    path: workspace_manifest_path.clone(),
+                    source: e,
+                },
+            },
+        )?;
+
+    // For each workspace member, resolve its package dependencies.
+    // Projects with no declared deps are skipped to avoid pointless work.
+    for project in &graph.projects {
+        let proj_manifest_path = &project.manifest.manifest_path;
+        let proj_toml_src =
+            std::fs::read_to_string(proj_manifest_path).map_err(|e| CompileError::Io {
+                message: format!(
+                    "reading project manifest {}: {e}",
+                    proj_manifest_path.display()
+                ),
+            })?;
+        let project_manifest = ridge_manifest::parse_project(&proj_toml_src, proj_manifest_path)
+            .map_err(|e| CompileError::PkgResolutionFailed {
+                source: ridge_pkg::PkgError::PkgManifestParseFailed {
+                    path: proj_manifest_path.clone(),
+                    source: e,
+                },
+            })?;
+
+        // Skip projects that declare no deps — no cache work needed.
+        if project_manifest.dependencies.is_empty() {
+            continue;
+        }
+
+        // Resolve deps: populates the cache for each git/path dep.
+        // The resolved paths are not yet threaded into the import resolver;
+        // retain the existing cache-population behavior here.
+        let _resolved_deps =
+            ridge_pkg::resolve_dependencies(&workspace_manifest, &project_manifest, &cache_root)?;
+    }
+    Ok(())
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 /// Compile a Ridge workspace, producing `.beam` and/or `.core` artefacts.
@@ -146,15 +212,17 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
     // As in `check`: a manifest that is there and unparseable is discovery's to
     // report, with the code and frame the parser produces. Only an absent one
     // is C001.
-    if matches!(
-        find_workspace_root(&options.workspace_root),
-        WorkspaceRoot::NotFound
-    ) {
+    if matches!(&options.source, crate::SourceInput::Workspace)
+        && matches!(
+            find_workspace_root(&options.workspace_root),
+            WorkspaceRoot::NotFound
+        )
+    {
         return Err(CompileError::no_workspace_root(options.workspace_root));
     }
 
     // ── 2. Pipeline: discover → resolve → typecheck → lower ──────────────────
-    let disc = discover_workspace(&options.workspace_root);
+    let (disc, standalone) = options.source.discover(&options.workspace_root)?;
 
     // Stash discovery-phase resolve errors (e.g. R023 LegacyRgExtension)
     // before consuming the struct.
@@ -172,68 +240,12 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
     };
     ws_graph.is_stdlib = options.is_stdlib;
 
-    // ── 2.5. Resolve external dependencies (T8) ──────────────────────────────
-    // Populate the package cache so import resolution sees cached dep paths
-    // before the per-project compile.  Re-parse the workspace and per-project
-    // manifests via `ridge_manifest` because `ridge-resolve` and
-    // `ridge-manifest` own independent, parallel manifest types — the Rust types
-    // are distinct even though their shape is identical.  See T8 plan note and
-    // `ridge-manifest/tests/parity_test.rs`. // T8
-    let cache_root = match &options.cache_root {
-        Some(p) => p.clone(),
-        None => {
-            ridge_pkg::cache_root().map_err(|e| CompileError::PkgResolutionFailed { source: e })?
-        }
-    };
-
-    // Re-parse the workspace ridge.toml using ridge-manifest types.
-    let workspace_manifest_path = ws_graph.root.join("ridge.toml");
-    let workspace_toml_src =
-        std::fs::read_to_string(&workspace_manifest_path).map_err(|e| CompileError::Io {
-            message: format!("reading workspace manifest: {e}"),
-        })?;
-    let workspace_manifest =
-        ridge_manifest::parse_workspace(&workspace_toml_src, &workspace_manifest_path).map_err(
-            |e| CompileError::PkgResolutionFailed {
-                source: ridge_pkg::PkgError::PkgManifestParseFailed {
-                    path: workspace_manifest_path.clone(),
-                    source: e,
-                },
-            },
-        )?;
-
-    // For each workspace member, resolve its package dependencies.
-    // Projects with no declared deps are skipped to avoid pointless work.
-    for project in &ws_graph.projects {
-        let proj_manifest_path = &project.manifest.manifest_path;
-        let proj_toml_src =
-            std::fs::read_to_string(proj_manifest_path).map_err(|e| CompileError::Io {
-                message: format!(
-                    "reading project manifest {}: {e}",
-                    proj_manifest_path.display()
-                ),
-            })?;
-        let project_manifest = ridge_manifest::parse_project(&proj_toml_src, proj_manifest_path)
-            .map_err(|e| CompileError::PkgResolutionFailed {
-                source: ridge_pkg::PkgError::PkgManifestParseFailed {
-                    path: proj_manifest_path.clone(),
-                    source: e,
-                },
-            })?;
-
-        // Skip projects that declare no deps — no cache work needed.
-        if project_manifest.dependencies.is_empty() {
-            continue;
-        }
-
-        // Resolve deps: populates the cache for each git/path dep.
-        // The resolved paths are not yet threaded into ridge-resolve's import
-        // resolver — cache population is the T8 DoD / G5 observable.
-        // Threading resolved paths into the import resolver remains deferred.
-        let _resolved_deps =
-            ridge_pkg::resolve_dependencies(&workspace_manifest, &project_manifest, &cache_root)?;
+    // ── 2.5. Resolve external dependencies ───────────────────────────────────
+    // Only on-disk workspaces declare package dependencies. Synthetic standalone
+    // graphs have no manifests to read or package cache to populate.
+    if !standalone {
+        resolve_external_dependencies(&ws_graph, &options)?;
     }
-
     let resolved = resolve_workspace(ws_graph);
     // Read the previous build's snapshot before anything overwrites it: its
     // version history is injected into typechecking so `migrate` hooks can
@@ -298,7 +310,7 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
     // build reports "Compiled 0 module(s)" and exits 0.
     for e in &resolved.manifest_errors {
         let sid = WorkspaceSourceCache::unknown_source_id();
-        diagnostics.push(Diagnostic::from_manifest(e, sid));
+        diagnostics.push(diag_from_manifest(e, sid, standalone));
     }
 
     // Surface lex + parse errors first — they are upstream of every other
@@ -452,7 +464,12 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
         // treating it as one made the alphabetically-first module win over the
         // declared entry. Projects with no declared entry (libraries) keep the
         // has-a-`main` rule.
-        if !is_declared_entry(&resolved.graph, m.id) {
+        if !is_declared_entry(&resolved.graph, m.id)
+            || (!matches!(&options.source, crate::SourceInput::Workspace)
+                && !resolved.graph.modules.iter().any(|module| {
+                    module.id == m.id && options.source.selects_path(&module.file_path)
+                }))
+        {
             continue;
         }
         let Some(beam_module) = beam_by_module.get(&m.id).cloned() else {

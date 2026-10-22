@@ -65,6 +65,7 @@ where
 {
     // ── 1. Compile ────────────────────────────────────────────────────────────
     let compile_opts = CompileOptions {
+        source: options.source.clone(),
         workspace_root: options.workspace_root.clone(),
         members: None,
         profile: options.profile,

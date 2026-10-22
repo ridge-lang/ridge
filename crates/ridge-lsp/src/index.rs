@@ -1158,6 +1158,17 @@ impl WorkspaceIndex {
         self.module_id_for(uri).is_some()
     }
 
+    /// Cache a source alias without duplicating the primary module URI inventory.
+    pub(crate) fn add_uri_alias(&mut self, alias: &Url, canonical: &Url) {
+        if let Some(module) = self
+            .module_id_for(canonical)
+            .or_else(|| self.module_id_for(alias))
+        {
+            self.uri_key_to_module.insert(uri_key(alias), module);
+            self.uri_key_to_module.insert(uri_key(canonical), module);
+        }
+    }
+
     /// Map an LSP document `uri` and a byte `offset` to the narrowest enclosing
     /// node, restricted to the kinds in `prefer`.
     ///

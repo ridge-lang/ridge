@@ -10,8 +10,27 @@ use ridge_codegen_erl::CodegenError;
 use ridge_diagnostics::{Diagnostic, DiagnosticNote, NoteSeverity, SourceId};
 use ridge_ir::Span;
 use ridge_lower::error::LowerError;
+use ridge_manifest::ManifestError;
 use ridge_resolve::Severity;
 use ridge_typecheck::TypeError;
+
+/// Present the selected source rather than a synthetic manifest for loose files.
+pub(crate) fn diag_from_manifest(
+    e: &ManifestError,
+    source_id: SourceId,
+    standalone: bool,
+) -> Diagnostic {
+    if let (true, ManifestError::EntryHasNoMain { entry, .. }) = (standalone, e) {
+        return Diagnostic::new(
+            e.code(),
+            Severity::Error,
+            Span::point(0),
+            format!("source file `{entry}` declares no `main`"),
+            source_id,
+        );
+    }
+    Diagnostic::from_manifest(e, source_id)
+}
 
 // ── TypeError → Diagnostic ────────────────────────────────────────────────────
 

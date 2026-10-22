@@ -53,6 +53,20 @@ if (!grammar) {
   process.exit(1);
 }
 
+// Independently authored scopes: an interpreter directive is trivia only at
+// the start of the document, including interpreter flags that contain `--`.
+const shebang = "#!/usr/bin/env -S ridge run --flag";
+const directive = grammar.tokenizeLine(shebang, vsctm.INITIAL);
+if (directive.tokens.length !== 1 ||
+    !directive.tokens[0].scopes.includes("comment.line.shebang.ridge")) {
+  throw new Error("the complete leading interpreter directive must be a comment");
+}
+const afterCode = grammar.tokenizeLine("pub fn main -> Int = 0", vsctm.INITIAL);
+const misplaced = grammar.tokenizeLine(shebang, afterCode.ruleStack);
+if (misplaced.tokens.some((token) => token.scopes.includes("comment.line.shebang.ridge"))) {
+  throw new Error("a later #! line must not receive the interpreter-directive scope");
+}
+
 // Tokenize the fixture line by line, threading the rule stack so multi-line
 // constructs (block comments, triple strings) resolve correctly. Each
 // meaningful (non-whitespace) token becomes one stable, diffable line:

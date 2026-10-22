@@ -21,6 +21,58 @@ fn ridge_cmd() -> Command {
     Command::cargo_bin("ridge").unwrap()
 }
 
+#[test]
+fn standalone_test_without_cases_needs_no_runtime_or_manifest() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("scratch.ridge");
+    std::fs::write(&file, "#!/usr/bin/env ridge\npub fn value -> Int = 42\n").unwrap();
+    ridge_cmd().arg("test").arg(&file).assert().success();
+    ridge_cmd()
+        .arg("test")
+        .arg(&file)
+        .arg("--stdlib")
+        .assert()
+        .failure();
+    assert!(!dir.path().join("ridge.toml").exists());
+}
+
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn explicit_test_runs_only_selected_files_cases() {
+    let tw = make_test_workspace(
+        "Selected",
+        "@test \"chosen\"\nfn chosen () -> Result Unit Text = Ok ()\n",
+    );
+    write_file(
+        &tw.path,
+        "apps/demo/src/Other.ridge",
+        "@test \"must not run\"\nfn other () -> Result Unit Text = Err \"sibling-ran\"\n",
+    );
+    ridge_cmd()
+        .arg("test")
+        .arg(tw.path.join("apps/demo/src/Selected.ridge"))
+        .arg("--jobs")
+        .arg("2")
+        .assert()
+        .success()
+        .stdout(contains("1 passed, 0 failed").and(contains("sibling-ran").not()));
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("scratch.ridge");
+    std::fs::write(
+        &file,
+        "#!/usr/bin/env ridge\n@test \"chosen\"\nfn chosen () -> Result Unit Text = Ok ()\n",
+    )
+    .unwrap();
+    ridge_cmd()
+        .arg("test")
+        .arg(&file)
+        .arg("--filter")
+        .arg("*chosen*")
+        .assert()
+        .success()
+        .stdout(contains("1 passed, 0 failed"));
+}
+
 /// Build a minimal library workspace with one `.ridge` source file.
 fn make_test_workspace(module_name: &str, source: &str) -> TempWorkspace {
     let tw = TempWorkspace::new();

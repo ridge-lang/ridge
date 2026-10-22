@@ -844,6 +844,12 @@ Syntax rules:
 
 #### Comments
 
+A source file may begin with an interpreter directive (`#!` at byte zero).
+The lexer ignores that first physical line, including any interpreter arguments,
+while preserving subsequent source positions. The formatter retains it. `#!`
+elsewhere is not a comment. A directive does not enable top-level expressions
+or change capability checking.
+
 ```
 -- Line comment
 

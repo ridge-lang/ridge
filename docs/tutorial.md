@@ -124,6 +124,43 @@ grows.
 
 ## Create and run a hello-world project
 
+For a single file, save this as `hello.ridge`:
+
+```ridge
+#!/usr/bin/env ridge
+import std.io as Io
+
+fn io main () -> Result Unit Text =
+    Io.println "Hello, Ridge!"
+    Ok ()
+```
+
+Run `ridge run hello.ridge`, check it with `ridge check hello.ridge`, or execute
+its tests with `ridge test hello.ridge`. `check` and `test` do not require a
+`main`; `run` requires a valid `main` in the selected file. Pass program arguments
+with `ridge run hello.ridge -- arg1 arg2`. The shorthand `ridge hello.ridge arg1`
+also runs it and passes everything after the file to the program.
+
+On Unix, `chmod +x hello.ridge` lets you run `./hello.ridge` using the shebang.
+The shebang must start the file, with no indentation or byte-order mark.
+
+Outside a workspace, the file has access to the standard library and implicit
+prelude. Declare effects on functions as usual; there are no implicit top-level
+effects. Sibling files and external packages are not imported automatically.
+No manifest or build directory is created beside the file; compiled artefacts
+go to a separate cache location for that source path.
+
+Inside an existing workspace, the same commands retain its imports, dependencies
+and capability policies. An excluded file cannot bypass those policies by being
+run explicitly. `test FILE` runs only that file's tests. `--member` and an explicit
+file are mutually exclusive, as are `test FILE` and `--stdlib`.
+
+Loose files also receive diagnostics, hover, navigation and formatting in the
+editor. Within a workspace, editor and CLI analysis use the existing project
+context. The source above can later become a normal project's entry file.
+
+To create a workspace from the start:
+
 ```sh
 ridge new hello
 cd hello

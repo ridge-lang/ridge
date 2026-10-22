@@ -23,7 +23,7 @@ use clap::Parser;
 use ridge_diagnostics::Diagnostic;
 use ridge_driver::{
     compile_workspace, run_workspace, select_entry_beam, CompileOptions, Profile, RunError,
-    RunOptions, ToolchainError, WorkspaceSourceCache,
+    RunOptions, SourceInput, ToolchainError, WorkspaceSourceCache,
 };
 use ridge_manifest::{parse_workspace, ProjectKind};
 use ridge_resolve::discover_project_members;
@@ -37,13 +37,17 @@ mod member_tests;
 
 // ── Argument struct ───────────────────────────────────────────────────────────
 
-/// Compile and run a Ridge workspace on the BEAM runtime.
+/// Compile and run a Ridge workspace or source file on the BEAM runtime.
 ///
 /// The bools are independent clap flags (`--release`, `--watch`, `--reload`,
 /// `--observer`), not state — a state machine would only obscure the CLI.
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Parser)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct RunArgs {
+    /// Run this source file, retaining the workspace that governs it, if any.
+    #[arg(value_name = "FILE", conflicts_with = "member")]
+    pub file: Option<PathBuf>,
+
     /// Only run the named workspace member (must have `kind = "app"` or `kind = "service"`).
     #[arg(long, value_name = "NAME")]
     pub member: Option<String>,
@@ -100,6 +104,13 @@ pub struct RunArgs {
 /// failures are handled internally (exit code is propagated via
 /// [`process::exit`]).
 pub fn execute(args: &RunArgs, cwd: &Path) -> Result<(), CliError> {
+    let mut normalized = args.clone();
+    normalized.file = args
+        .file
+        .as_deref()
+        .map(|path| super::source_file_for(path, cwd))
+        .transpose()?;
+    let args = &normalized;
     // ── 1. Validate --watch feature gate ─────────────────────────────────────
     if args.watch {
         #[cfg(not(feature = "cli-watch"))]
@@ -123,7 +134,10 @@ pub fn execute(args: &RunArgs, cwd: &Path) -> Result<(), CliError> {
     }
 
     // ── 2. Locate workspace root ──────────────────────────────────────────────
-    let workspace_root = crate::cmd::workspace_root_for(cwd)?;
+    let workspace_root = match &args.file {
+        Some(path) => super::file_build_root(path)?,
+        None => crate::cmd::workspace_root_for(cwd)?,
+    };
 
     // ── 3. Resolve executable member ─────────────────────────────────────────
     let member_name = resolve_executable_member(&workspace_root, args)?;
@@ -169,6 +183,10 @@ pub fn execute(args: &RunArgs, cwd: &Path) -> Result<(), CliError> {
 /// An explicit member must be executable. Without one, select the first
 /// executable member in discovery order; watch mode requires a unique member.
 fn resolve_executable_member(workspace_root: &Path, args: &RunArgs) -> Result<String, CliError> {
+    if args.file.is_some() {
+        // File discovery restricts entry_modules to the selected file.
+        return Ok(String::new());
+    }
     let manifest_path = workspace_root.join("ridge.toml");
     let src = std::fs::read_to_string(&manifest_path).map_err(|error| {
         CliError::WorkspaceManifestInvalid {
@@ -219,9 +237,43 @@ fn resolve_executable_member(workspace_root: &Path, args: &RunArgs) -> Result<St
 
 // ── Plain run ─────────────────────────────────────────────────────────────────
 
+/// Keep source selection identical across execution modes and recompilations.
+fn run_source(args: &RunArgs) -> SourceInput {
+    args.file
+        .as_ref()
+        .map_or(SourceInput::Workspace, |path| SourceInput::File {
+            path: path.clone(),
+            require_main: true,
+        })
+}
+
+#[cfg(feature = "cli-watch")]
+/// Watch dependencies in a workspace, or only the selected loose file.
+fn watch_scope(args: &RunArgs, workspace_root: &Path) -> (PathBuf, Option<PathBuf>) {
+    let Some(file) = &args.file else {
+        return (workspace_root.to_owned(), None);
+    };
+    if let ridge_manifest::WorkspaceRoot::Found(root) = ridge_manifest::find_workspace_root(file) {
+        (root, None)
+    } else {
+        (file.parent().unwrap_or(file).to_owned(), Some(file.clone()))
+    }
+}
+
+#[cfg(feature = "cli-watch")]
+/// Parent watches survive atomic replacement; ignore loose-file siblings.
+fn selected_event(event: &notify::Event, file: Option<&Path>) -> bool {
+    file.is_none_or(|file| {
+        event.paths.iter().any(|path| {
+            path == file || ridge_manifest::canonicalize(path).is_ok_and(|path| path == file)
+        })
+    })
+}
+
 /// Execute plain `ridge run` — delegate to `run_workspace`.
 fn execute_plain(args: &RunArgs, workspace_root: PathBuf, member_name: String, profile: Profile) {
     let mut opts = RunOptions::new(workspace_root, member_name);
+    opts.source = run_source(args);
     opts.profile = profile;
     opts.extra_args.clone_from(&args.extra_args);
 
@@ -275,7 +327,8 @@ fn execute_observer(
     let mut compile_opts = CompileOptions::new(workspace_root.to_owned())
         .with_profile(profile)
         .executing();
-    compile_opts.members = Some(vec![member_name.to_owned()]);
+    compile_opts.source = run_source(args);
+    compile_opts.members = args.file.is_none().then(|| vec![member_name.to_owned()]);
     let artefacts = compile_workspace(compile_opts).map_err(|e| {
         eprintln!("error: {e}");
         CliError::AlreadyReported
@@ -316,9 +369,7 @@ fn execute_observer(
         .arg("stop")
         .arg("-noshell");
 
-    for arg in &args.extra_args {
-        cmd.arg(arg);
-    }
+    append_program_args(&mut cmd, &args.extra_args);
 
     let status = cmd
         .status()
@@ -350,6 +401,13 @@ fn erlang_cookie_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".erlang.cookie"))
 }
 
+/// Program flags must not be interpreted as VM flags in any execution mode.
+fn append_program_args(cmd: &mut process::Command, args: &[String]) {
+    if !args.is_empty() {
+        cmd.arg("-extra").args(args);
+    }
+}
+
 // ── Watch mode ────────────────────────────────────────────────────────────────
 
 #[cfg(feature = "cli-watch")]
@@ -377,8 +435,7 @@ fn execute_watch(
     let grace = Duration::from_secs(2);
 
     // ── a. Initial compile ────────────────────────────────────────────────────
-    let (beam_files, entry_module) =
-        compile_for_watch(workspace_root, member_name, profile, &args.extra_args)?;
+    let (beam_files, entry_module) = compile_for_watch(workspace_root, member_name, profile, args)?;
     let beam_dir = beam_dir_from_artefacts(&beam_files);
     let module_name = entry_module.unwrap_or_else(|| module_from_beam(&beam_files[0]));
 
@@ -401,6 +458,7 @@ fn execute_watch(
 
     // Channel to receive notify events.
     let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let (watch_root, watched_file) = watch_scope(args, workspace_root);
 
     let mut watcher: RecommendedWatcher =
         notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
@@ -409,7 +467,7 @@ fn execute_watch(
                 event.kind,
                 EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
             );
-            if !relevant {
+            if !relevant || !selected_event(&event, watched_file.as_deref()) {
                 return;
             }
             // Update last-event timestamp.
@@ -424,9 +482,9 @@ fn execute_watch(
         })?;
 
     watcher
-        .watch(workspace_root, RecursiveMode::Recursive)
+        .watch(&watch_root, RecursiveMode::Recursive)
         .map_err(|e| CliError::WatchPathFailed {
-            path: workspace_root.to_path_buf(),
+            path: watch_root.clone(),
             message: e.to_string(),
         })?;
 
@@ -464,7 +522,7 @@ fn execute_watch(
 
         // ── Recompile ─────────────────────────────────────────────────────────
         let (new_beam_files, new_entry_module) =
-            match compile_for_watch(workspace_root, member_name, profile, &args.extra_args) {
+            match compile_for_watch(workspace_root, member_name, profile, args) {
                 Ok(out) => out,
                 Err(e) => {
                     eprintln!("error: recompile failed: {e}");
@@ -520,10 +578,13 @@ fn compile_for_watch(
     workspace_root: &Path,
     member_name: &str,
     profile: Profile,
-    _extra_args: &[String],
+    args: &RunArgs,
 ) -> Result<(Vec<PathBuf>, Option<String>), CliError> {
-    let mut opts = CompileOptions::new(workspace_root.to_owned()).with_profile(profile);
-    opts.members = Some(vec![member_name.to_owned()]);
+    let mut opts = CompileOptions::new(workspace_root.to_owned())
+        .with_profile(profile)
+        .executing();
+    opts.source = run_source(args);
+    opts.members = args.file.is_none().then(|| vec![member_name.to_owned()]);
     let artefacts = compile_workspace(opts).map_err(|e| {
         eprintln!("error: {e}");
         CliError::AlreadyReported
@@ -569,9 +630,7 @@ fn spawn_beam_child(
         }
     }
 
-    for arg in extra_args {
-        cmd.arg(arg);
-    }
+    append_program_args(&mut cmd, extra_args);
 
     cmd.spawn()
         .map_err(|e| ToolchainError::erl_spawn_failed(&e).into())
@@ -718,8 +777,7 @@ fn execute_reload(
     let node_name = format!("ridge_dev_{}@127.0.0.1", std::process::id());
 
     // ── Initial compile + boot ────────────────────────────────────────────
-    let (beam_files, entry_module) =
-        compile_for_watch(workspace_root, member_name, profile, &args.extra_args)?;
+    let (beam_files, entry_module) = compile_for_watch(workspace_root, member_name, profile, args)?;
     let beam_dir = beam_dir_from_artefacts(&beam_files);
     let module_name = entry_module.unwrap_or_else(|| module_from_beam(&beam_files[0]));
 
@@ -758,13 +816,15 @@ fn execute_reload(
     let last_event: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
     let last_event_clone = Arc::clone(&last_event);
     let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let (watch_root, watched_file) = watch_scope(args, workspace_root);
     let mut watcher: RecommendedWatcher =
         notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
             let Ok(event) = res else { return };
             if !matches!(
                 event.kind,
                 EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
-            ) {
+            ) || !selected_event(&event, watched_file.as_deref())
+            {
                 return;
             }
             if let Ok(mut guard) = last_event_clone.lock() {
@@ -776,9 +836,9 @@ fn execute_reload(
             message: e.to_string(),
         })?;
     watcher
-        .watch(workspace_root, RecursiveMode::Recursive)
+        .watch(&watch_root, RecursiveMode::Recursive)
         .map_err(|e| CliError::WatchPathFailed {
-            path: workspace_root.to_path_buf(),
+            path: watch_root.clone(),
             message: e.to_string(),
         })?;
 
@@ -814,7 +874,7 @@ fn execute_reload(
                 workspace_root,
                 member_name,
                 profile,
-                &args.extra_args,
+                args,
                 &node_name,
                 &cookie,
                 &snap_path,
@@ -825,18 +885,16 @@ fn execute_reload(
         }
 
         // ── Recompile ─────────────────────────────────────────────────────
-        if let Err(e) = compile_for_watch(workspace_root, member_name, profile, &args.extra_args) {
+        if let Err(e) = compile_for_watch(workspace_root, member_name, profile, args) {
             let _ = e; // diagnostics already rendered by compile_for_watch
             eprintln!("compile failed; node keeps running the previous code.");
             continue;
         }
 
         // ── Plan ──────────────────────────────────────────────────────────
-        let plan = match plan_reload(
-            &node_snapshot,
-            CheckOptions::new(workspace_root.to_owned()),
-            &manifest_path,
-        ) {
+        let mut check_options = CheckOptions::new(workspace_root.to_owned());
+        check_options.source = run_source(args);
+        let plan = match plan_reload(&node_snapshot, check_options, &manifest_path) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("reload planning failed: {e}; node keeps running the previous code.");
@@ -928,9 +986,7 @@ fn spawn_reload_node(
         .arg("run_detached")
         .arg(module_name)
         .arg("main");
-    for arg in extra_args {
-        cmd.arg(arg);
-    }
+    append_program_args(&mut cmd, extra_args);
     cmd.spawn()
         .map_err(|e| ToolchainError::erl_spawn_failed(&e).into())
 }
@@ -1017,7 +1073,7 @@ fn restart_node(
     workspace_root: &Path,
     member_name: &str,
     profile: Profile,
-    extra_args: &[String],
+    args: &RunArgs,
     node_name: &str,
     cookie: &str,
     snap_path: &Path,
@@ -1025,8 +1081,7 @@ fn restart_node(
     node_vsn: &mut String,
 ) -> Result<(), CliError> {
     terminate_child(child, grace);
-    let (beam_files, entry_module) =
-        compile_for_watch(workspace_root, member_name, profile, extra_args)?;
+    let (beam_files, entry_module) = compile_for_watch(workspace_root, member_name, profile, args)?;
     let beam_dir = beam_dir_from_artefacts(&beam_files);
     let module_name = entry_module.unwrap_or_else(|| module_from_beam(&beam_files[0]));
     *node_snapshot = read_snapshot(snap_path)?;
@@ -1038,7 +1093,7 @@ fn restart_node(
         node_name,
         cookie,
         node_vsn,
-        extra_args,
+        &args.extra_args,
     )?;
     eprintln!("restarted on current code (vsn {node_vsn}).");
     Ok(())

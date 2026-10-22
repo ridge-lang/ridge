@@ -11,11 +11,11 @@
 
 use std::process;
 
-use clap::Parser;
 use ridge_cli::{cmd, Cli, CliError, RidgeCommand};
 
 fn main() {
-    let cli = Cli::parse();
+    let cli =
+        Cli::try_parse_invocation_from(std::env::args_os()).unwrap_or_else(|error| error.exit());
 
     let cwd = match std::env::current_dir() {
         Ok(p) => p,

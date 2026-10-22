@@ -7161,7 +7161,7 @@ async fn standalone_fixture(
     Url,
 ) {
     let dir = tempfile::TempDir::new().expect("temp dir");
-    let root = dir.path().to_path_buf();
+    let root = ridge_manifest::canonicalize(dir.path()).expect("canonical temp root");
     let file = root.join("scratch.ridge");
     std::fs::write(&file, src).expect("write standalone file");
 
@@ -7262,6 +7262,332 @@ async fn test_standalone_folder_without_workspace_manifest_is_analysed() {
     assert!(
         md.contains("pub fn double (n: Int) -> Int"),
         "enriched signature, got: {md}"
+    );
+}
+
+#[tokio::test]
+async fn test_standalone_shebang_preserves_editor_positions_and_formatting() {
+    let src = "#!/usr/bin/env ridge\npub fn identity (n: Int) -> Int = n\npub fn answer -> Int = identity 42   \n";
+    let (service, _socket, uri) = standalone_fixture(src, false).await;
+    let server = service.inner();
+    let col = u32::try_from(
+        "pub fn answer -> Int = identity 42"
+            .find("identity")
+            .unwrap()
+            + 1,
+    )
+    .unwrap();
+    let md = hover_markdown(
+        server
+            .hover(hover_at(&uri, 2, col))
+            .await
+            .expect("hover ok"),
+    )
+    .expect("shebang source is indexed");
+    assert!(md.contains("pub fn identity (n: Int) -> Int"), "{md}");
+    let definition = server
+        .goto_definition(goto_at(&uri, 2, col))
+        .await
+        .expect("definition ok")
+        .expect("identity has a definition");
+    let GotoDefinitionResponse::Scalar(location) = definition else {
+        panic!("one definition")
+    };
+    assert_eq!(location.uri, uri);
+    assert_eq!(location.range.start.line, 1);
+    let edits = server
+        .formatting(format_params(&uri))
+        .await
+        .expect("formatting ok")
+        .expect("trailing whitespace is removed");
+    assert_eq!(edits[0].new_text, "#!/usr/bin/env ridge\npub fn identity (n: Int) -> Int = n\n\npub fn answer -> Int = identity 42\n");
+}
+
+#[tokio::test]
+async fn test_standalone_open_keeps_existing_workspace_imports_and_policy() {
+    let src = "#!/usr/bin/env ridge\nimport std.io as Io\nimport app.Other\npub fn value -> Int = Other.answer ()\nfn io action () -> Unit = Io.println \"denied\"\n";
+    let (root, uri) = write_mini_workspace("file-owner", "Main.ridge", src);
+    let other = root.join("app/src/Other.ridge");
+    std::fs::write(&other, "pub fn answer -> Int = 42\n").unwrap();
+    let (mut service, socket) = build_test_service();
+    let log = drive_client(socket);
+    let params = InitializeParams {
+        capabilities: pull_caps(true, true),
+        ..InitializeParams::default()
+    };
+    let request = Request::build("initialize")
+        .id(1_i64)
+        .params(serde_json::to_value(params).unwrap())
+        .finish();
+    ServiceExt::ready(&mut service)
+        .await
+        .unwrap()
+        .call(request)
+        .await
+        .unwrap();
+    let server = service.inner();
+    server.initialized(InitializedParams {}).await;
+    server
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "ridge".to_owned(),
+                version: 1,
+                text: src.to_owned(),
+            },
+        })
+        .await;
+    wait_for_refresh(&log).await;
+    let index = server
+        .index_for_uri(&uri)
+        .await
+        .expect("opened file is indexed");
+    assert_eq!(
+        index.uri_to_module.len(),
+        2,
+        "the owning graph includes the imported sibling"
+    );
+    let report = server
+        .diagnostic(DocumentDiagnosticParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            identifier: None,
+            previous_result_id: None,
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("diagnostics");
+    let DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(report)) = report
+    else {
+        panic!("full diagnostics")
+    };
+    let items = report.full_document_diagnostic_report.items;
+    assert!(
+        items
+            .iter()
+            .any(|d| d.code == Some(NumberOrString::String("R016".to_owned()))),
+        "workspace policy is enforced: {items:?}"
+    );
+    assert!(
+        !items
+            .iter()
+            .any(|d| d.code == Some(NumberOrString::String("R006".to_owned()))),
+        "workspace imports resolve: {items:?}"
+    );
+    let col = u32::try_from(
+        "pub fn value -> Int = Other.answer ()"
+            .find("answer")
+            .unwrap()
+            + 1,
+    )
+    .unwrap();
+    let location = scalar_location(server.goto_definition(goto_at(&uri, 3, col)).await.unwrap())
+        .expect("imported definition");
+    assert_eq!(location.uri, Url::from_file_path(other).unwrap());
+}
+
+/// A real pull client with no folder, so inferred contexts exercise protocol delivery.
+async fn file_only_service() -> (LspService<RidgeLanguageServer>, Arc<Mutex<ProgressLog>>) {
+    let (mut service, socket) = build_test_service();
+    let log = drive_client(socket);
+    let params = InitializeParams {
+        capabilities: pull_caps(true, true),
+        ..InitializeParams::default()
+    };
+    let request = Request::build("initialize")
+        .id(1_i64)
+        .params(serde_json::to_value(params).unwrap())
+        .finish();
+    ServiceExt::ready(&mut service)
+        .await
+        .unwrap()
+        .call(request)
+        .await
+        .unwrap();
+    service.inner().initialized(InitializedParams {}).await;
+    (service, log)
+}
+
+/// Open an existing source without changing its URI spelling or buffer contents.
+async fn open_file_buffer(server: &RidgeLanguageServer, uri: &Url, src: &str) {
+    server
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "ridge".to_owned(),
+                version: 1,
+                text: src.to_owned(),
+            },
+        })
+        .await;
+}
+
+/// Read the complete current diagnostic set, avoiding refresh-notification races.
+async fn file_diagnostics(server: &RidgeLanguageServer, uri: &Url) -> Vec<Diagnostic> {
+    let report = server
+        .diagnostic(DocumentDiagnosticParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            identifier: None,
+            previous_result_id: None,
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("diagnostics");
+    let DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(report)) = report
+    else {
+        panic!("full diagnostics")
+    };
+    report.full_document_diagnostic_report.items
+}
+
+#[tokio::test]
+async fn test_standalone_mixed_contexts_close_and_reopen_independently() {
+    let (_, uri_a) = write_mini_workspace("owner-a", "Main.ridge", WIDGET_A_SRC);
+    let (_, uri_b) = write_mini_workspace("owner-b", "Main.ridge", WIDGET_B_SRC);
+    let loose = tempfile::tempdir().unwrap();
+    let file = ridge_manifest::canonicalize(loose.path())
+        .unwrap()
+        .join("scratch.ridge");
+    let src = "pub fn scratch -> Int = 3\n";
+    std::fs::write(&file, src).unwrap();
+    let uri_loose = Url::from_file_path(file).unwrap();
+    let (service, _log) = file_only_service().await;
+    let server = service.inner();
+    for (uri, text) in [
+        (&uri_a, WIDGET_A_SRC),
+        (&uri_b, WIDGET_B_SRC),
+        (&uri_loose, src),
+    ] {
+        open_file_buffer(server, uri, text).await;
+        wait_for_uri_indexed(server, uri).await;
+    }
+    let a = server.index_for_uri(&uri_a).await.unwrap();
+    let b = server.index_for_uri(&uri_b).await.unwrap();
+    let standalone = server.index_for_uri(&uri_loose).await.unwrap();
+    assert!(a.contains_uri(&uri_a) && !a.contains_uri(&uri_b) && !a.contains_uri(&uri_loose));
+    assert!(b.contains_uri(&uri_b) && !b.contains_uri(&uri_a) && !b.contains_uri(&uri_loose));
+    assert!(
+        standalone.contains_uri(&uri_loose)
+            && !standalone.contains_uri(&uri_a)
+            && !standalone.contains_uri(&uri_b)
+    );
+    server
+        .did_close(DidCloseTextDocumentParams {
+            text_document: TextDocumentIdentifier { uri: uri_a.clone() },
+        })
+        .await;
+    assert!(
+        server.index_for_uri(&uri_a).await.is_none(),
+        "closed inferred context is released"
+    );
+    assert!(
+        Arc::ptr_eq(&b, &server.index_for_uri(&uri_b).await.unwrap()),
+        "closing A preserves B's analysis"
+    );
+    assert!(
+        Arc::ptr_eq(
+            &standalone,
+            &server.index_for_uri(&uri_loose).await.unwrap()
+        ),
+        "closing A preserves loose analysis"
+    );
+    open_file_buffer(server, &uri_a, WIDGET_A_SRC).await;
+    wait_for_uri_indexed(server, &uri_a).await;
+    let reopened = server.index_for_uri(&uri_a).await.unwrap();
+    assert!(reopened.contains_uri(&uri_a) && !reopened.contains_uri(&uri_b));
+    assert!(
+        !Arc::ptr_eq(&a, &reopened),
+        "reopen installs a fresh analysis"
+    );
+}
+
+#[tokio::test]
+async fn test_standalone_save_discovers_new_workspace_policy() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = ridge_manifest::canonicalize(dir.path()).unwrap();
+    let folder = root.join("app/src");
+    std::fs::create_dir_all(&folder).unwrap();
+    let src = "#!/usr/bin/env ridge\nimport std.io as Io\npub fn io action () -> Unit = Io.println \"denied\"\n";
+    let file = folder.join("Main.ridge");
+    std::fs::write(&file, src).unwrap();
+    let uri = Url::from_file_path(file).unwrap();
+    let (service, log) = file_only_service().await;
+    let server = service.inner();
+    open_file_buffer(server, &uri, src).await;
+    wait_for_refresh(&log).await;
+    assert!(!file_diagnostics(server, &uri)
+        .await
+        .iter()
+        .any(|d| d.code == Some(NumberOrString::String("R016".to_owned()))));
+    std::fs::write(
+        root.join("ridge.toml"),
+        "[workspace]\nname = \"new-owner\"\nversion = \"0.1.0\"\nmembers = [\"app\"]\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("app/ridge.toml"), "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"library\"\n\n[capabilities]\nallow = []\n").unwrap();
+    server
+        .did_save(DidSaveTextDocumentParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            text: None,
+        })
+        .await;
+    for _ in 0..120 {
+        if file_diagnostics(server, &uri)
+            .await
+            .iter()
+            .any(|d| d.code == Some(NumberOrString::String("R016".to_owned())))
+        {
+            return;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
+    panic!("saving must replace loose-file policy with the newly created workspace's policy");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_standalone_symlink_keeps_workspace_policy_and_unsaved_buffer() {
+    let disk = "pub fn value -> Text = \"disk\"\n";
+    let (_, target) = write_mini_workspace("alias-owner", "Main.ridge", disk);
+    let dir = tempfile::tempdir().unwrap();
+    let alias = ridge_manifest::canonicalize(dir.path())
+        .unwrap()
+        .join("alias.ridge");
+    std::os::unix::fs::symlink(target.to_file_path().unwrap(), &alias).unwrap();
+    let uri = Url::from_file_path(alias).unwrap();
+    let buffer = "#!/usr/bin/env ridge\nimport std.io as Io\npub fn value -> Int = 42\npub fn io action () -> Unit = Io.println \"denied\"\n";
+    let (service, log) = file_only_service().await;
+    let server = service.inner();
+    open_file_buffer(server, &uri, buffer).await;
+    wait_for_refresh(&log).await;
+    let items = file_diagnostics(server, &uri).await;
+    assert!(
+        items
+            .iter()
+            .any(|d| d.code == Some(NumberOrString::String("R016".to_owned()))),
+        "target workspace governs the unsaved alias: {items:?}"
+    );
+    let index = server.index_for_uri(&uri).await.expect("alias is indexed");
+    assert!(
+        index.contains_uri(&target),
+        "both spellings identify the same source"
+    );
+    assert_eq!(
+        index.uri_to_module.len(),
+        1,
+        "aliases do not duplicate primary modules"
+    );
+    let (hover, _) = index
+        .hover_at(&uri, 2, 8)
+        .expect("hover in the unsaved alias");
+    assert!(
+        hover.contains("Int"),
+        "hover uses the buffer rather than Text on disk: {hover}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(target.to_file_path().unwrap()).unwrap(),
+        disk
     );
 }
 

@@ -242,6 +242,12 @@ pub const REGISTRY: &[CodeEntry] = &[
         summary: "The program did not finish within the run timeout.",
     },
     CodeEntry {
+        code: "C017",
+        variants: &["InvalidSourceFile"],
+        owner: "ridge-driver",
+        summary: "The selected source file is unavailable, invalid, or outside its workspace members.",
+    },
+    CodeEntry {
         code: "C101",
         variants: &["FmtSourceUnparseable"],
         owner: "ridge-fmt",

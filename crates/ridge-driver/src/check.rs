@@ -10,8 +10,7 @@ use ridge_lower::lower_workspace;
 use ridge_manifest::{find_workspace_root, WorkspaceRoot};
 use ridge_reload::VersionHistory;
 use ridge_resolve::{
-    discover_standalone, discover_workspace, resolve_workspace_with, ModuleId, ResolveError,
-    ResolvedWorkspace,
+    discover_standalone, resolve_workspace_with, ModuleId, ResolveError, ResolvedWorkspace,
 };
 use ridge_typecheck::{
     typecheck_workspace, typecheck_workspace_with_history, TypeError, TypedWorkspace,
@@ -147,15 +146,17 @@ pub fn check_workspace(options: CheckOptions) -> Result<CheckArtefacts, CheckErr
     // parse falls through to discovery, which parses it and reports what is
     // wrong with a code and a frame — saying "not found" about a file the
     // reader is looking at is the bug this guard used to have.
-    if matches!(
-        find_workspace_root(&options.workspace_root),
-        WorkspaceRoot::NotFound
-    ) {
+    if matches!(&options.source, crate::SourceInput::Workspace)
+        && matches!(
+            find_workspace_root(&options.workspace_root),
+            WorkspaceRoot::NotFound
+        )
+    {
         return Err(CheckError::no_workspace_root(options.workspace_root));
     }
 
     // ── 2. Pipeline: discover → resolve → typecheck ───────────────────────────
-    let disc = discover_workspace(&options.workspace_root);
+    let (disc, _) = options.source.discover(&options.workspace_root)?;
 
     // Stash discovery-phase resolve errors (e.g. R023 LegacyRgExtension)
     // before consuming the struct.
@@ -238,15 +239,17 @@ pub fn check_workspace_typed_with_history(
     // parse falls through to discovery, which parses it and reports what is
     // wrong with a code and a frame — saying "not found" about a file the
     // reader is looking at is the bug this guard used to have.
-    if matches!(
-        find_workspace_root(&options.workspace_root),
-        WorkspaceRoot::NotFound
-    ) {
+    if matches!(&options.source, crate::SourceInput::Workspace)
+        && matches!(
+            find_workspace_root(&options.workspace_root),
+            WorkspaceRoot::NotFound
+        )
+    {
         return Err(CheckError::no_workspace_root(options.workspace_root));
     }
 
     // ── 2. Pipeline: discover → resolve → typecheck ───────────────────────────
-    let disc = discover_workspace(&options.workspace_root);
+    let (disc, _) = options.source.discover(&options.workspace_root)?;
 
     // Stash discovery-phase resolve errors (e.g. R023 LegacyRgExtension)
     // before consuming the struct.
@@ -307,14 +310,16 @@ pub fn check_workspace_incremental(options: CheckOptions) -> Result<IncrementalS
     // parse falls through to discovery, which parses it and reports what is
     // wrong with a code and a frame — saying "not found" about a file the
     // reader is looking at is the bug this guard used to have.
-    if matches!(
-        find_workspace_root(&options.workspace_root),
-        WorkspaceRoot::NotFound
-    ) {
+    if matches!(&options.source, crate::SourceInput::Workspace)
+        && matches!(
+            find_workspace_root(&options.workspace_root),
+            WorkspaceRoot::NotFound
+        )
+    {
         return Err(CheckError::no_workspace_root(options.workspace_root));
     }
 
-    let disc = discover_workspace(&options.workspace_root);
+    let (disc, _) = options.source.discover(&options.workspace_root)?;
     let disc_resolve_errors = disc.resolve_errors;
     // No graph means discovery stopped before it could build one, and the
     // reason is sitting in `manifest_errors` — a field nothing used to read.

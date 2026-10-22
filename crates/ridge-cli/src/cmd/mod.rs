@@ -21,6 +21,22 @@ use ridge_manifest::WorkspaceRoot;
 
 use crate::CliError;
 
+/// Resolve an explicit input once, before choosing its workspace policy.
+pub(super) fn source_file_for(path: &Path, cwd: &Path) -> Result<PathBuf, CliError> {
+    ridge_driver::validate_source_file(&cwd.join(path)).map_err(|error| {
+        eprintln!("error: {error}");
+        CliError::AlreadyReported
+    })
+}
+
+/// Locate the separate per-file artefact cache without creating a manifest.
+pub(super) fn file_build_root(path: &Path) -> Result<PathBuf, CliError> {
+    ridge_driver::file_build_root(path).map_err(|error| {
+        eprintln!("error: {error}");
+        CliError::AlreadyReported
+    })
+}
+
 /// The workspace directory that governs `cwd`.
 ///
 /// Every subcommand starts here, and they used to start with eleven copies of

@@ -15,6 +15,137 @@ fn ridge_cmd() -> Command {
     Command::cargo_bin("ridge").unwrap()
 }
 
+#[test]
+fn standalone_check_accepts_shebang_without_main_or_manifest() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("café con espacios.ridge");
+    std::fs::write(
+        &file,
+        "#!/usr/bin/env ridge\r\npub fn answer -> Int = 42\r\n",
+    )
+    .unwrap();
+    // Discovery follows the source, independently of the invocation directory.
+    ridge_cmd().arg("check").arg(&file).assert().success();
+    assert!(!dir.path().join("ridge.toml").exists());
+    assert!(!dir.path().join("target").exists());
+}
+
+#[test]
+fn standalone_check_rejects_type_errors_and_implicit_sibling_imports() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("scratch.ridge");
+    std::fs::write(&file, "#!/usr/bin/env ridge\npub fn wrong -> Text = 42\n").unwrap();
+    ridge_cmd()
+        .arg("check")
+        .arg(&file)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("T001"));
+    std::fs::write(
+        dir.path().join("Sibling.ridge"),
+        "pub fn answer -> Int = 42\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &file,
+        "import Sibling\npub fn answer -> Int = Sibling.answer ()\n",
+    )
+    .unwrap();
+    ridge_cmd()
+        .arg("check")
+        .arg(&file)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("R006"));
+}
+
+#[test]
+fn standalone_check_rejects_invalid_input_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    for path in [
+        dir.path().join("missing.ridge"),
+        dir.path().join("folder.ridge"),
+        dir.path().join("text.txt"),
+    ] {
+        if path.ends_with("folder.ridge") {
+            std::fs::create_dir(&path).unwrap();
+        }
+        if path.ends_with("text.txt") {
+            std::fs::write(&path, "pub fn x -> Int = 1\n").unwrap();
+        }
+        ridge_cmd()
+            .arg("check")
+            .arg(path)
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains("C017"));
+    }
+}
+
+#[test]
+fn explicit_file_preserves_malformed_manifest_diagnostics() {
+    for manifest in ["ridge.toml", "apps/demo/ridge.toml"] {
+        let tw = make_workspace("Main", "pub fn value -> Int = 42\n");
+        common::write_file(&tw.path, manifest, "[broken\n");
+        ridge_cmd()
+            .arg("check")
+            .arg(tw.path.join("apps/demo/src/Main.ridge"))
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains("M001"));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn explicit_file_symlink_keeps_the_targets_workspace_policy() {
+    let tw = make_workspace(
+        "Main",
+        "import std.io as Io\nfn io main () -> Unit = Io.println \"denied\"\n",
+    );
+    common::write_file(&tw.path, "apps/demo/ridge.toml", "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nkind = \"library\"\n[capabilities]\nallow = []\n");
+    let outside = tempfile::tempdir().unwrap();
+    let alias = outside.path().join("alias.ridge");
+    std::os::unix::fs::symlink(tw.path.join("apps/demo/src/Main.ridge"), &alias).unwrap();
+    ridge_cmd()
+        .arg("check")
+        .arg(&alias)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("R016"));
+}
+
+#[test]
+fn explicit_file_preserves_workspace_imports_and_capability_policy() {
+    let tw = make_workspace(
+        "Main",
+        "import demo.Other\npub fn answer -> Int = Other.answer ()\n",
+    );
+    common::write_file(
+        &tw.path,
+        "apps/demo/src/Other.ridge",
+        "pub fn answer -> Int = 42\n",
+    );
+    let file = tw.path.join("apps/demo/src/Main.ridge");
+    ridge_cmd().arg("check").arg(&file).assert().success();
+    common::write_file(&tw.path, "apps/demo/ridge.toml", "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nkind = \"library\"\n[capabilities]\nallow = []\n");
+    std::fs::write(&file, "import std.io as Io\nfn io main () -> Result Unit Text =\n    Io.println \"denied\"\n    Ok ()\n").unwrap();
+    ridge_cmd()
+        .arg("check")
+        .arg(&file)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("R016"));
+    // A file excluded by the owner cannot escape its policy as a loose script.
+    common::write_file(&tw.path, "outside.ridge", "pub fn x -> Int = 1\n");
+    ridge_cmd()
+        .arg("check")
+        .arg(tw.path.join("outside.ridge"))
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("C017"));
+}
+
 // ── Test 1–4: ridge check on each canonical example ──────────────────────────
 
 /// `ridge check` on the `log_analyzer` example.

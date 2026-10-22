@@ -80,6 +80,10 @@ The runtime started, but the OS stopped reporting on it.
 
 The program did not finish within the run timeout.
 
+### C017
+
+The selected source file is unavailable, invalid, or outside its workspace members.
+
 ### C101
 
 The source could not be parsed.

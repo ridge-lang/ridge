@@ -3,6 +3,24 @@
 use super::*;
 use std::fmt::Write;
 
+#[test]
+fn shorthand_preserves_program_flags_and_subcommand_usage() {
+    use crate::{Cli, RidgeCommand};
+    let cli = Cli::try_parse_invocation_from(["ridge", "script.ridge", "--release", "two words"])
+        .unwrap();
+    let RidgeCommand::Run(args) = cli.command else {
+        panic!("run shorthand")
+    };
+    assert_eq!(args.file.as_deref(), Some(Path::new("script.ridge")));
+    assert!(!args.release);
+    assert_eq!(args.extra_args, ["--release", "two words"]);
+    assert!(Cli::try_parse_invocation_from(["ridge", "unknown"]).is_err());
+    assert!(
+        Cli::try_parse_invocation_from(["ridge", "run", "script.ridge", "--member", "app"])
+            .is_err()
+    );
+}
+
 fn workspace(members: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(

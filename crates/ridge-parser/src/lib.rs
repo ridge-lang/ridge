@@ -229,8 +229,8 @@ fn sync_to_next_item(cur: &mut cursor::Cursor<'_>) {
 /// would otherwise discard.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Trivia {
-    /// A line comment `-- ...` including the `--` prefix, without trailing
-    /// newline.  `span` covers the full comment text (from `--` to end of
+    /// A line comment `-- ...` (or a leading `#!` interpreter directive), without trailing
+    /// newline.  `span` covers the full comment text (from its introducer to end of
     /// line, exclusive of `\n`).
     LineComment {
         /// The raw comment text, e.g. `"-- some remark"`.
@@ -341,7 +341,14 @@ fn extract_trivia(normalised: &str) -> Vec<Trivia> {
         let trimmed = line_text.trim_start();
         let is_doc_marker = trimmed == "---" || trimmed.starts_with("--- ");
 
-        if is_doc_marker {
+        if line_idx == 0 && line_text.starts_with("#!") {
+            trivia.push(Trivia::LineComment {
+                text: line_text.to_owned(),
+                span: ridge_ast::Span::new(0, line_text.len() as u32),
+                line: 0,
+                col: 0,
+            });
+        } else if is_doc_marker {
             in_doc_block = !in_doc_block;
             // The marker line itself: no line-comment trivia, no blank.
         } else if trimmed.is_empty() {

@@ -65,6 +65,10 @@ impl FormatError {
 /// accepted.  The tab-expansion is uniform (every `\t` → `"  "`) rather than
 /// tab-stop-aware: tabs become two spaces each.
 fn expand_tabs(src: &str) -> String {
+    if src.starts_with("#!") {
+        let offset = src.find('\n').unwrap_or(src.len());
+        return format!("{}{}", &src[..offset], expand_tabs(&src[offset..]));
+    }
     if !src.contains('\t') {
         return src.to_string();
     }

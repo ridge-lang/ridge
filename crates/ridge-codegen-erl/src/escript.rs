@@ -276,6 +276,7 @@ pub fn package_escript_from_beam_dir(
     internal_module: &str,
     escript_entry: &str,
 ) -> Result<Vec<u8>, EmitError> {
+    validate_beam_entry(beam_dir, internal_module)?;
     let needs_shim = internal_module != escript_entry;
 
     let shim_beam: Option<(PathBuf, Vec<u8>)> = if needs_shim {
@@ -322,6 +323,68 @@ pub fn package_escript_from_beam_dir(
     )
 }
 
+/// Read exports through OTP's BEAM reader without loading or executing the
+/// module. Paths and names are arguments, never interpolated into Erlang code.
+fn validate_beam_entry(beam_dir: &Path, module: &str) -> Result<(), EmitError> {
+    let path = beam_dir.join(format!("{module}.beam"));
+    if !path.is_file() {
+        return Err(EmitError::MainModuleNotFound {
+            name: module.to_owned(),
+        });
+    }
+    let erl = which::which("erl").map_err(|e| EmitError::Io {
+        detail: format!("cannot inspect escript entry: {e}"),
+    })?;
+    let check = r#"
+        [Path, Name] = init:get_plain_arguments(),
+        case beam_lib:chunks(Path, [exports]) of
+            {ok, {Module, [{exports, Exports}]}} ->
+                case atom_to_list(Module) =:= Name of
+                    false -> halt(3);
+                    true ->
+                        case lists:keyfind(main, 1, Exports) of
+                            {main, A} when A =:= 0; A =:= 1 -> halt(0);
+                            {main, A} -> io:format("~p", [A]), halt(4);
+                            false -> halt(2)
+                        end
+                end;
+            _ -> halt(3)
+        end.
+    "#;
+    let output = std::process::Command::new(erl)
+        .args(["-noshell", "-noinput", "-eval", check, "-extra"])
+        .arg(path)
+        .arg(module)
+        .output()
+        .map_err(|e| EmitError::Io {
+            detail: format!("inspect escript entry: {e}"),
+        })?;
+    match output.status.code() {
+        Some(0) => Ok(()),
+        Some(2) => Err(EmitError::EscriptNeedsEntry {
+            member: module.to_owned(),
+        }),
+        Some(4) => {
+            let arity = String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .parse()
+                .map_err(|e| EmitError::Io {
+                    detail: format!("invalid escript entry arity: {e}"),
+                })?;
+            Err(EmitError::EscriptMainArityInvalid {
+                module: module.to_owned(),
+                arity,
+            })
+        }
+        _ => Err(EmitError::Io {
+            detail: format!(
+                "cannot read BEAM exports for `{module}`: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        }),
+    }
+}
+
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 /// Generate the Erlang source for a thin shim module that bridges escript
@@ -349,20 +412,26 @@ fn build_shim_source(shim_name: &str, internal_module: &str) -> String {
     )
 }
 
-/// Validate that the module named `main` in `modules` exports `main` with
-/// arity ≤ 1.  Ridge `main/0` compiles to BEAM arity 1 (unit arg); `main/1`
-/// (args) also compiles to BEAM arity 1.  Arity ≥ 2 is invalid.
+/// Require an exported `main/0` or `main/1` in the selected module.
+/// Missing entry points and higher arities are rejected before compilation.
 fn validate_main_arity(modules: &[CErlModule], main: &str) -> Result<(), EmitError> {
     let Some(m) = modules.iter().find(|m| m.name.0 == main) else {
         return Ok(());
     };
+    let mut has_main = false;
     for export in &m.exports {
+        has_main |= export.name.0 == "main";
         if export.name.0 == "main" && export.arity > 1 {
             return Err(EmitError::EscriptMainArityInvalid {
                 module: main.to_owned(),
                 arity: export.arity,
             });
         }
+    }
+    if !has_main {
+        return Err(EmitError::EscriptNeedsEntry {
+            member: main.to_owned(),
+        });
     }
     Ok(())
 }

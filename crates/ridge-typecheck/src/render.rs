@@ -229,7 +229,7 @@ impl TypeError {
             Self::MissingField { record, field, .. } => {
                 write!(
                     f,
-                    "missing field in record construction\n  record `{record}` requires field `{field}`"
+                    "missing required record field\n  record `{record}` requires field `{field}`"
                 )
             }
 
@@ -478,7 +478,7 @@ impl TypeError {
             Self::RowVariableLeak { decl, .. } => {
                 write!(
                     f,
-                    "capability row variable leaked in `{decl}`\n  add an explicit capability annotation to pin the row"
+                    "internal capability inference error in `{decl}`\n  a free capability variable remains unresolved\n  This is a compiler bug. Please report it."
                 )
             }
 
@@ -518,25 +518,6 @@ impl TypeError {
                 write!(
                     f,
                     "`drop oldest` mailbox policy is not yet implemented\n  actor `{actor}` declares `mailbox bounded N drop oldest`\n  hint: use `drop newest` (silently drop the incoming message) or `error` (signal failure to the sender) until `drop oldest` ships"
-                )
-            }
-
-            // ── T028 ──────────────────────────────────────────────────────────
-            Self::IncompleteRecordPattern {
-                record,
-                missing_fields,
-                ..
-            } => {
-                write!(
-                    f,
-                    "record pattern is missing fields\n  type `{record}` has fields not covered by this pattern"
-                )?;
-                for field in missing_fields {
-                    write!(f, "\n  missing field: `{field}`")?;
-                }
-                write!(
-                    f,
-                    "\n  hint: add the missing field bindings, or add `..` to ignore the rest"
                 )
             }
 
@@ -963,7 +944,6 @@ impl HasErrorCode for TypeError {
             | Self::AskTimeoutNotInt { span, .. }
             | Self::AskTimeoutNegative { span, .. }
             | Self::MailboxPolicyDropOldestNotShipped { span, .. }
-            | Self::IncompleteRecordPattern { span, .. }
             | Self::NoInstance { span, .. }
             | Self::InvalidTypeProjection { span, .. }
             | Self::UnknownTypeName { span, .. }
@@ -2067,7 +2047,6 @@ mod tests {
             | TypeError::AskTimeoutNotInt { .. }
             | TypeError::AskTimeoutNegative { .. }
             | TypeError::MailboxPolicyDropOldestNotShipped { .. }
-            | TypeError::IncompleteRecordPattern { .. }
             | TypeError::NoInstance { .. }
             | TypeError::InvalidTypeProjection { .. }
             | TypeError::AmbiguousConstraint { .. }
@@ -2267,11 +2246,6 @@ mod tests {
             },
             TypeError::MailboxPolicyDropOldestNotShipped {
                 actor: s(),
-                span: sp(),
-            },
-            TypeError::IncompleteRecordPattern {
-                record: s(),
-                missing_fields: vec![s()],
                 span: sp(),
             },
             TypeError::NoInstance {

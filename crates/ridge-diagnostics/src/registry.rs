@@ -122,6 +122,11 @@ pub fn lookup_retired(code: &str) -> Option<&'static RetiredCode> {
 /// order.
 pub const RETIRED: &[RetiredCode] = &[
     RetiredCode {
+        code: "C002",
+        summary: "Reported a missing workspace member in the driver. Discovery now reports missing literal member directories and member manifests through the shared manifest diagnostic.",
+        see: Some("M004"),
+    },
+    RetiredCode {
         code: "C003",
         summary: "Reported a dependency cycle among workspace members, as a debug-formatted list of the members involved. Cycle detection moved to the package layer, which names the path it found.",
         see: Some("P206"),
@@ -130,6 +135,26 @@ pub const RETIRED: &[RetiredCode] = &[
         code: "C402",
     summary: "Reported that `erl` and `erlc` had to be on PATH before `ridge migrate add` could run. It was `C004` under a second number, and vaguer: it never said which of the two binaries was missing.",
         see: Some("C004"),
+    },
+    RetiredCode {
+        code: "E008",
+        summary: "Reserved for a capability token surviving into generated code. Capabilities are checked statically and the IR carries concrete effect sets; generated capability metadata is intentional, not a runtime permission token.",
+        see: None,
+    },
+    RetiredCode {
+        code: "L108",
+        summary: "Reserved for updating a non-record during lowering. Type checking rejects that condition before lowering.",
+        see: Some("T006"),
+    },
+    RetiredCode {
+        code: "L997",
+        summary: "Reserved for an unsolved type variable in the IR. Non-generalised binding variables are checked after inference; quantified type variables remain valid polymorphic IR metadata.",
+        see: Some("T023"),
+    },
+    RetiredCode {
+        code: "L998",
+        summary: "Reserved for an unresolved capability variable during lowering. Free capability variables are checked at the type-checking boundary; quantified scheme variables are legitimate metadata.",
+        see: Some("T024"),
     },
     RetiredCode {
         code: "M012",
@@ -147,6 +172,26 @@ pub const RETIRED: &[RetiredCode] = &[
         see: None,
     },
     RetiredCode {
+        code: "P025",
+        summary: "Rejected a list rest in suffix or middle position. Those rest positions are supported, so the restriction no longer applies.",
+        see: None,
+    },
+    RetiredCode {
+        code: "P026",
+        summary: "Reserved for a refutable pattern after a list rest. Parsing accepts the pattern; lowering reports unsupported refutable suffix elements.",
+        see: Some("L109"),
+    },
+    RetiredCode {
+        code: "R019",
+        summary: "Reserved for an unknown capability keyword in resolution. Parsed capabilities use a closed enum, so an unknown capability value cannot reach this pass.",
+        see: None,
+    },
+    RetiredCode {
+        code: "R020",
+        summary: "Reserved for a capability list on an unsupported declaration. The grammar and AST declaration types determine where capability annotations can occur.",
+        see: None,
+    },
+    RetiredCode {
         code: "T008",
         summary: "Reported a constructor that is not defined on the expected union type, with a did-you-mean. A name nothing declares is rejected before types exist, carrying the same suggestion; a constructor that exists but belongs elsewhere is a plain mismatch, which names both types and does not call it unknown.",
         see: Some("R010"),
@@ -155,6 +200,11 @@ pub const RETIRED: &[RetiredCode] = &[
         code: "T012",
         summary: "Reported that an interpolated value's type could not be converted to text, on the rule that only built-in types and records of built-in types were allowed. `ToText` became an open class in 0.2.13, so the rule it enforced stopped holding.",
         see: Some("T029"),
+    },
+    RetiredCode {
+        code: "T028",
+        summary: "Reserved for a closed record pattern missing required fields. That condition is reported by the shared missing-field diagnostic; a rest pattern permits omitted fields.",
+        see: Some("T004"),
     },
 ];
 
@@ -167,12 +217,6 @@ pub const REGISTRY: &[CodeEntry] = &[
         variants: &["NoWorkspaceRoot"],
         owner: "ridge-driver",
         summary: "No `ridge.toml` with a `[workspace]` table was found at or above the search root.",
-    },
-    CodeEntry {
-        code: "C002",
-        variants: &["WorkspaceMemberMissing"],
-        owner: "ridge-driver",
-        summary: "A member listed in `[workspace] members` has no on-disk directory or no `ridge.toml`.",
     },
     CodeEntry {
         code: "C004",
@@ -475,12 +519,6 @@ pub const REGISTRY: &[CodeEntry] = &[
         summary: "An unresolved type reached a codegen site that requires a concrete one.",
     },
     CodeEntry {
-        code: "E008",
-        variants: &["CapabilityLeakIntoCoreErl"],
-        owner: "ridge-codegen-erl",
-        summary: "Capability erasure audit found a `Capability` token in emitted Core Erlang.",
-    },
-    CodeEntry {
         code: "E101",
         variants: &["ErlcVersionTooOld"],
         owner: "ridge-codegen-erl",
@@ -673,12 +711,6 @@ pub const REGISTRY: &[CodeEntry] = &[
         summary: "String interpolation reached a value with no `ToText` coercion to synthesise.",
     },
     CodeEntry {
-        code: "L108",
-        variants: &["WithOnNonRecord"],
-        owner: "ridge-lower",
-        summary: "`with` applied to a value whose type is not a record.",
-    },
-    CodeEntry {
         code: "L109",
         variants: &["RefutableSliceElement"],
         owner: "ridge-lower",
@@ -695,18 +727,6 @@ pub const REGISTRY: &[CodeEntry] = &[
         variants: &["FloatLiteralNotFinite"],
         owner: "ridge-lower",
         summary: "A float literal is not a finite number.",
-    },
-    CodeEntry {
-        code: "L997",
-        variants: &["UnsolvedTypeInIR"],
-        owner: "ridge-lower",
-        summary: "An unsolved type variable reached the IR, indicating incomplete typecheck output was passed to the lowerer.",
-    },
-    CodeEntry {
-        code: "L998",
-        variants: &["CapVarInIR"],
-        owner: "ridge-lower",
-        summary: "A capability variable reached the IR.",
     },
     CodeEntry {
         code: "L999",
@@ -917,18 +937,6 @@ pub const REGISTRY: &[CodeEntry] = &[
         variants: &["MultipleRestInListPattern"],
         owner: "ridge-parser",
         summary: "A list pattern contains more than one `..` rest element.",
-    },
-    CodeEntry {
-        code: "P025",
-        variants: &["RestSuffixNotSupported"],
-        owner: "ridge-parser",
-        summary: "Reserved; previously used for suffix/middle rest (now supported).",
-    },
-    CodeEntry {
-        code: "P026",
-        variants: &["RefutableSliceElement"],
-        owner: "ridge-parser",
-        summary: "A suffix or middle element in a list pattern is a refutable sub-pattern (literal, constructor, tuple, …).",
     },
     CodeEntry {
         code: "P027",
@@ -1201,18 +1209,6 @@ pub const REGISTRY: &[CodeEntry] = &[
         summary: "A local binding shadows an actor state field in the same scope.",
     },
     CodeEntry {
-        code: "R019",
-        variants: &["UnknownCapabilityKeyword"],
-        owner: "ridge-resolve",
-        summary: "An unrecognised capability keyword was encountered.",
-    },
-    CodeEntry {
-        code: "R020",
-        variants: &["CapabilityListOnWrongDecl"],
-        owner: "ridge-resolve",
-        summary: "Capabilities were attached to a declaration that does not take them.",
-    },
-    CodeEntry {
         code: "R021",
         variants: &["ActorStateMissingDefaultOrInit"],
         owner: "ridge-resolve",
@@ -1300,7 +1296,7 @@ pub const REGISTRY: &[CodeEntry] = &[
         code: "T004",
         variants: &["MissingField"],
         owner: "ridge-typecheck",
-        summary: "A required field is absent in a record construction expression.",
+        summary: "A required field is absent in a record construction or closed record pattern.",
     },
     CodeEntry {
         code: "T005",
@@ -1408,7 +1404,7 @@ pub const REGISTRY: &[CodeEntry] = &[
         code: "T024",
         variants: &["RowVariableLeak"],
         owner: "ridge-typecheck",
-        summary: "A capability variable escapes into a user-visible type.",
+        summary: "A free capability variable remains unresolved after inference (signals a compiler bug).",
     },
     CodeEntry {
         code: "T025",
@@ -1427,12 +1423,6 @@ pub const REGISTRY: &[CodeEntry] = &[
         variants: &["MailboxPolicyDropOldestNotShipped"],
         owner: "ridge-typecheck",
         summary: "An actor declares `mailbox bounded N drop oldest`.",
-    },
-    CodeEntry {
-        code: "T028",
-        variants: &["IncompleteRecordPattern"],
-        owner: "ridge-typecheck",
-        summary: "A constructor-less record pattern omits fields and has no `..` rest pattern.",
     },
     CodeEntry {
         code: "T029",

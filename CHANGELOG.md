@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Workspace discovery reports missing literal members, and executable builds
+  require an exported entry function. Diagnostic references now distinguish
+  active checks from retired entries while preserving historical lookups.
+
 - Named functions infer irrefutable destructuring parameters such as `(x, y)`
   and `(Point { x, y })` without a type annotation. Inner functions, instance
   method implementations and actor parameters use the same rule. Abstract

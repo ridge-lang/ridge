@@ -28,10 +28,6 @@ Declared by `ridge-cli`, `ridge-driver` and `ridge-fmt`.
 
 No `ridge.toml` with a `[workspace]` table was found at or above the search root.
 
-### C002
-
-A member listed in `[workspace] members` has no on-disk directory or no `ridge.toml`.
-
 ### C004
 
 An OTP binary (`erl`, `erlc`) is not on `PATH`.
@@ -236,10 +232,6 @@ Module name collision (two Ridge modules mangle to the same BEAM module).
 
 An unresolved type reached a codegen site that requires a concrete one.
 
-### E008
-
-Capability erasure audit found a `Capability` token in emitted Core Erlang.
-
 ### E101
 
 `erlc` toolchain version below OTP 26 minimum.
@@ -372,10 +364,6 @@ A `when` guard appears outside a `match` arm, where it cannot be desugared.
 
 String interpolation reached a value with no `ToText` coercion to synthesise.
 
-### L108
-
-`with` applied to a value whose type is not a record.
-
 ### L109
 
 A refutable sub-pattern appears after the variable-length part of a slice pattern.
@@ -387,14 +375,6 @@ An integer literal does not fit in the `Int` range (`i64`).
 ### L111
 
 A float literal is not a finite number.
-
-### L997
-
-An unsolved type variable reached the IR, indicating incomplete typecheck output was passed to the lowerer.
-
-### L998
-
-A capability variable reached the IR.
 
 ### L999
 
@@ -543,14 +523,6 @@ An inline record type `{ … }` in type position is syntactically malformed.
 ### P024
 
 A list pattern contains more than one `..` rest element.
-
-### P025
-
-Reserved; previously used for suffix/middle rest (now supported).
-
-### P026
-
-A suffix or middle element in a list pattern is a refutable sub-pattern (literal, constructor, tuple, …).
 
 ### P027
 
@@ -736,14 +708,6 @@ A capability is declared on a function but the project's `capabilities_allow` li
 
 A local binding shadows an actor state field in the same scope.
 
-### R019
-
-An unrecognised capability keyword was encountered.
-
-### R020
-
-Capabilities were attached to a declaration that does not take them.
-
 ### R021
 
 An actor state type has neither a `default` nor an `init`, so it can never be built.
@@ -806,7 +770,7 @@ Wrong number of arguments at a call site.
 
 ### T004
 
-A required field is absent in a record construction expression.
+A required field is absent in a record construction or closed record pattern.
 
 ### T005
 
@@ -878,7 +842,7 @@ A type variable cannot be resolved — the user must add a type annotation.
 
 ### T024
 
-A capability variable escapes into a user-visible type.
+A free capability variable remains unresolved after inference (signals a compiler bug).
 
 ### T025
 
@@ -891,10 +855,6 @@ The expression supplied to `?> ... timeout <expr>` is not `Int`.
 ### T027
 
 An actor declares `mailbox bounded N drop oldest`.
-
-### T028
-
-A constructor-less record pattern omits fields and has no `..` rest pattern.
 
 ### T029
 
@@ -1050,6 +1010,12 @@ These are no longer reported. They keep their page because the number outlives t
 compiler that emitted it — it is still in logs, in CI filters, and in answers written
 years ago — and a number is never reused, so what it meant then is what it means now.
 
+### C002
+
+Reported a missing workspace member in the driver. Discovery now reports missing literal member directories and member manifests through the shared manifest diagnostic.
+
+See [M004](#m004) instead.
+
 ### C003
 
 Reported a dependency cycle among workspace members, as a debug-formatted list of the members involved. Cycle detection moved to the package layer, which names the path it found.
@@ -1061,6 +1027,28 @@ See [P206](#p206) instead.
 Reported that `erl` and `erlc` had to be on PATH before `ridge migrate add` could run. It was `C004` under a second number, and vaguer: it never said which of the two binaries was missing.
 
 See [C004](#c004) instead.
+
+### E008
+
+Reserved for a capability token surviving into generated code. Capabilities are checked statically and the IR carries concrete effect sets; generated capability metadata is intentional, not a runtime permission token.
+
+### L108
+
+Reserved for updating a non-record during lowering. Type checking rejects that condition before lowering.
+
+See [T006](#t006) instead.
+
+### L997
+
+Reserved for an unsolved type variable in the IR. Non-generalised binding variables are checked after inference; quantified type variables remain valid polymorphic IR metadata.
+
+See [T023](#t023) instead.
+
+### L998
+
+Reserved for an unresolved capability variable during lowering. Free capability variables are checked at the type-checking boundary; quantified scheme variables are legitimate metadata.
+
+See [T024](#t024) instead.
 
 ### M012
 
@@ -1078,6 +1066,24 @@ See [T043](#t043) instead.
 
 Rejected a record pattern written without a leading constructor name. Bare record patterns became legal in 0.2.12, so the failure it reported stopped being one.
 
+### P025
+
+Rejected a list rest in suffix or middle position. Those rest positions are supported, so the restriction no longer applies.
+
+### P026
+
+Reserved for a refutable pattern after a list rest. Parsing accepts the pattern; lowering reports unsupported refutable suffix elements.
+
+See [L109](#l109) instead.
+
+### R019
+
+Reserved for an unknown capability keyword in resolution. Parsed capabilities use a closed enum, so an unknown capability value cannot reach this pass.
+
+### R020
+
+Reserved for a capability list on an unsupported declaration. The grammar and AST declaration types determine where capability annotations can occur.
+
 ### T008
 
 Reported a constructor that is not defined on the expected union type, with a did-you-mean. A name nothing declares is rejected before types exist, carrying the same suggestion; a constructor that exists but belongs elsewhere is a plain mismatch, which names both types and does not call it unknown.
@@ -1089,3 +1095,9 @@ See [R010](#r010) instead.
 Reported that an interpolated value's type could not be converted to text, on the rule that only built-in types and records of built-in types were allowed. `ToText` became an open class in 0.2.13, so the rule it enforced stopped holding.
 
 See [T029](#t029) instead.
+
+### T028
+
+Reserved for a closed record pattern missing required fields. That condition is reported by the shared missing-field diagnostic; a rest pattern permits omitted fields.
+
+See [T004](#t004) instead.

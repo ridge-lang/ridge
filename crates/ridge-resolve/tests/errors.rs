@@ -21,12 +21,6 @@
 //! - **R018** — RESERVED; the former variant was removed (bare imports are
 //!   unambiguous per R001 provisional default accepted 2026-04-25).
 //!   The numeric slot is kept to prevent code reuse.
-//! - **R019 `UnknownCapabilityKeyword`** — defensive; the parser maps every
-//!   recognised keyword to a closed `Capability` enum variant before this
-//!   pass, so R019 is unreachable from real Ridge source (`capabilities.rs`
-//!   rustdoc explicitly states "no test fixture is provided").
-//! - **R020 `CapabilityListOnWrongDecl`** — defensive; the grammar only allows
-//!   capability lists on `fn`/`init`/`on`, and the parser enforces this.
 //! - **R999 `InternalNodeIdCollision`** — defensive; signals a parser invariant
 //!   violation, not a user-authored error.
 //!

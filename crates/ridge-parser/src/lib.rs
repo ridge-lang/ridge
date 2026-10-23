@@ -80,7 +80,7 @@ fn parse_module_inner(cur: &mut cursor::Cursor<'_>) -> ParseResult {
     use decl::{parse_item, parse_visibility};
     use ridge_ast::DocComment;
 
-    let mut errors: Vec<ParseError> = Vec::new();
+    let mut errors = cur.layout_errors();
     let mut items: Vec<ridge_ast::Item> = Vec::new();
 
     // Record the start span for the module.

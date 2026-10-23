@@ -15,17 +15,10 @@
 //!   `capabilities_allow = […]` (whitelist mode) and the capability is not in
 //!   that list.
 //!
-//! - **R019 `UnknownCapabilityKeyword`** — defensive; the `Capability` enum is
-//!   closed (9 variants: `io`, `fs`, `net`, `time`, `random`, `env`, `proc`,
-//!   `spawn`, `ffi`) and the parser maps every recognised keyword to a variant
-//!   before this pass runs.  In 0.1.0 there is no code path in the parser that
-//!   would produce an unrecognised capability, so this variant is unreachable
-//!   from normal input.  **No test fixture is provided.**
-//!
-//! - **R020 `CapabilityListOnWrongDecl`** — defensive; same reasoning as R019.
-//!   The grammar only permits capability lists on `fn`, `init`, and `on`
-//!   declarations; the parser enforces this and will not attach a capability
-//!   list to any other AST node.  **No test fixture is provided.**
+//! Capability names are represented by a closed AST enum, and capability
+//! fields belong only to declaration kinds that support them. The former
+//! resolution diagnostics for unknown names and unsupported declarations are
+//! retained in the retired-code reference.
 //!
 //! # Span choice
 //!

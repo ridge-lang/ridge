@@ -638,10 +638,7 @@ mod tests {
                 CliError::MigrateEnvMissing { vars } => *vars = vec![INPUT.into()],
                 CliError::ExplainUnknownCode { code } => *code = INPUT.into(),
                 CliError::Workspace(inner) => {
-                    *inner = WorkspaceError::WorkspaceMemberMissing {
-                        member: INPUT.into(),
-                        path: INPUT.into(),
-                    }
+                    *inner = WorkspaceError::NoWorkspaceRoot { path: INPUT.into() }
                 }
                 CliError::Toolchain(inner) => {
                     *inner = ToolchainError::SpawnFailed {

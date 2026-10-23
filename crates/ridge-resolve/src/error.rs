@@ -387,23 +387,6 @@ pub enum ResolveError {
     // 2026-04-25: bare `import foo.bar` exposes only a qualified namespace alias).
     // The numeric slot is kept reserved so existing diagnostic consumers that key
     // on "R018" see a gap rather than a repurposed code.
-    /// R019 — an unrecognised capability keyword was encountered.
-    #[error("unknown capability keyword `{text}`")]
-    UnknownCapabilityKeyword {
-        /// The unrecognised text.
-        text: String,
-        /// Span of the keyword.
-        span: Span,
-    },
-
-    /// R020 — a capability list was attached to a declaration that does not
-    /// support capability annotations (e.g. a `type` alias).
-    #[error("capability list not allowed on this declaration")]
-    CapabilityListOnWrongDecl {
-        /// Span of the capability list.
-        span: Span,
-    },
-
     /// R021 — an actor state type has neither a `default` expression nor an
     /// `init` block, which means it can never be constructed.
     #[error("actor `{name}` state must have a `default` value or an `init` block")]
@@ -593,8 +576,6 @@ impl ResolveError {
             Self::CapabilityNotAllowed { .. } => "R016",
             Self::StateFieldShadowedByLocal { .. } => "R017",
             // R018 reserved — slot removed; see module-level rustdoc
-            Self::UnknownCapabilityKeyword { .. } => "R019",
-            Self::CapabilityListOnWrongDecl { .. } => "R020",
             Self::ActorStateMissingDefaultOrInit { .. } => "R021",
             Self::StdlibOnlyAttribute { .. } => "R022",
             Self::LegacyRgExtension { .. } => "R023",
@@ -648,8 +629,6 @@ impl ResolveError {
             | Self::UnknownStdlibSymbol { span, .. }
             | Self::CapabilityDenied { span, .. }
             | Self::CapabilityNotAllowed { span, .. }
-            | Self::UnknownCapabilityKeyword { span, .. }
-            | Self::CapabilityListOnWrongDecl { span }
             | Self::ActorStateMissingDefaultOrInit { span, .. }
             | Self::DuplicateActorMember { span, .. }
             | Self::StdlibOnlyAttribute { span, .. }

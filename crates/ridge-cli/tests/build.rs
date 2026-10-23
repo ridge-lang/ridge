@@ -18,6 +18,20 @@ fn ridge_cmd() -> Command {
     Command::cargo_bin("ridge").unwrap()
 }
 
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn build_bin_rejects_a_library_without_main() {
+    let tw = make_workspace("Library", "pub fn value () -> Int = 1\n");
+    let output = ridge_cmd()
+        .args(["build", "--bin", "demo"])
+        .current_dir(&tw.path)
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("E205"));
+    assert!(!tw.path.join("target/ridge/debug/demo.escript").exists());
+}
+
 fn const_annotations(source: &str, emit: &str) -> Vec<String> {
     let tw = make_workspace("Constants", source);
     ridge_cmd()

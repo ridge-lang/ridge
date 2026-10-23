@@ -189,13 +189,13 @@ pub enum TypeError {
     },
 
     // ── T004 ─────────────────────────────────────────────────────────────────
-    /// A required field is absent in a record construction expression.
+    /// A required field is absent in a record construction or closed pattern.
     MissingField {
-        /// Name of the record type being constructed.
+        /// Name of the record type.
         record: String,
         /// Name of the missing field.
         field: String,
-        /// Source span of the record construction expression.
+        /// Source span of the record construction or pattern.
         span: Span,
     },
 
@@ -403,7 +403,7 @@ pub enum TypeError {
     },
 
     // ── T024 ─────────────────────────────────────────────────────────────────
-    /// A capability variable escapes into a user-visible type.
+    /// A free capability variable remains unresolved after generalisation.
     RowVariableLeak {
         /// Name of the declaration where the leak was detected.
         decl: String,
@@ -477,18 +477,6 @@ pub enum TypeError {
         /// Name of the actor whose mailbox declaration uses the policy.
         actor: String,
         /// Source span of the `mailbox` member.
-        span: Span,
-    },
-
-    // ── T028 ─────────────────────────────────────────────────────────────────
-    /// A constructor-less record pattern omits one or more fields of the
-    /// matched record type and does not include a `..` rest pattern.
-    IncompleteRecordPattern {
-        /// Structural description of the record type being matched.
-        record: String,
-        /// Fields that are present in the type but absent from the pattern.
-        missing_fields: Vec<String>,
-        /// Source span of the record pattern.
         span: Span,
     },
 
@@ -1103,7 +1091,6 @@ impl TypeError {
             Self::AskTimeoutNotInt { .. } => "T026",
             Self::AskTimeoutNegative { .. } => "T060",
             Self::MailboxPolicyDropOldestNotShipped { .. } => "T027",
-            Self::IncompleteRecordPattern { .. } => "T028",
             Self::NoInstance { .. } => "T029",
             Self::InvalidTypeProjection { .. } => "T061",
             Self::AmbiguousConstraint { .. } => "T030",

@@ -1,25 +1,34 @@
 ---
-wc — a minimal wc(1) clone.
-
+wc — a small wc-style file counter.
 Usage:
   ridge run  -- <file>
-
-Prints line count and byte count for the file.  Word count is omitted because
-Text.split does not split globally, so splitting on spaces to count words is
-not yet reliable.
-
+Prints line, word and content byte counts for the file. Words are nonempty
+runs separated by ASCII whitespace.
 Uses Fs.lines, which reads a file as the lines a reader would count: the
 trailing newline ends the last line rather than adding an empty one after it,
 and a CRLF file loses its carriage returns.  Fs.readFile + Text.lines is the
 same function reached the other way round and answers identically.
 ---
-
 import std.io as Io
 import std.fs as Fs
 import std.cli as Cli
 import std.text as Text
 import std.list as List
 import std.option as Option
+
+fn countWords (line: Text) -> Int =
+    -- Fs.lines already separates LF and CRLF line endings.
+    let spaced = line
+        |> Text.replace "\t" " "
+        |> Text.replace "\r" " "
+        |> Text.replace "\u{b}" " "
+        |> Text.replace "\u{c}" " "
+    Text.split " " spaced
+        |> List.fold (fn count word -> if word == "" then count else count + 1) 0
+
+fn countLine (counts: (Int, Int, Int)) (line: Text) -> (Int, Int, Int) =
+    let (nLines, nWords, nBytes) = counts
+    (nLines + 1, nWords + countWords line, nBytes + Text.byteSize line)
 
 fn env io fs main () -> Unit =
     let parsed = Cli.parse (Cli.args ())
@@ -28,13 +37,9 @@ fn env io fs main () -> Unit =
         Some path ->
             match Fs.lines path
                 Ok lns ->
-                    let nLines = List.length lns
-                    -- Workaround: passing Text.byteSize as a bare HOF reference
-                    -- calls erlang:byte_size/0 (no args).  Wrap in fn.
-                    let nBytes = lns
-                        |> List.map (fn s -> Text.byteSize s)
-                        |> List.fold (fn a b -> a + b) 0
+                    let (nLines, nWords, nBytes) = List.fold countLine (0, 0, 0) lns
                     Io.println $"  ${Int.toText nLines} lines"
+                    Io.println $"  ${Int.toText nWords} words"
                     Io.println $"  ${Int.toText nBytes} bytes (content only, newlines stripped)"
                     Io.println $"  ${path}"
                 _ -> Io.println (Text.concat "wc: cannot read " path)

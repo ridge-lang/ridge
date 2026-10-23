@@ -72,6 +72,33 @@ pub(crate) struct Cursor<'t> {
 static EOF_SENTINEL: Token = Token::Eof;
 
 impl<'t> Cursor<'t> {
+    /// Check layout suppression only in completed bracket regions. EOF can
+    /// flush outer dedents after a user leaves a bracket unclosed; those are
+    /// ordinary syntax errors, not violations of the lexer's invariant.
+    pub(crate) fn layout_errors(&self) -> Vec<ParseError> {
+        let mut depth: usize = 0;
+        let mut pending = Vec::new();
+        let mut errors = Vec::new();
+        for (token, span) in self.toks {
+            match token {
+                Token::LParen | Token::LBrack | Token::LBrace | Token::InterpExprStart => {
+                    depth += 1;
+                }
+                Token::RParen | Token::RBrack | Token::RBrace | Token::InterpExprEnd => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        errors.append(&mut pending);
+                    }
+                }
+                Token::Indent | Token::Dedent if depth > 0 => {
+                    pending.push(ParseError::InternalLayoutInvariantViolated { span: *span });
+                }
+                _ => {}
+            }
+        }
+        errors
+    }
+
     /// Construct a new cursor positioned at the beginning of `toks`.
     ///
     /// `toks` should be the output of `ridge_lexer::tokenize`, which always

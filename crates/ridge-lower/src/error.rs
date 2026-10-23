@@ -8,7 +8,7 @@
 //! # Error code namespace
 //!
 //! `L101`–`L199` — desugaring rule violations (pipe, try, with, guard, …).
-//! `L997`–`L999` — internal consistency / catch-all codes.
+//! `L999` — internal consistency / catch-all code.
 //!
 //! # Display format
 //!
@@ -41,12 +41,9 @@ use std::fmt;
 /// | `EmptyTryBlock`           | `L105` |
 /// | `BareGuardExpr`           | `L106` |
 /// | `ToTextLowering`          | `L107` |
-/// | `WithOnNonRecord`         | `L108` |
 /// | `RefutableSliceElement`   | `L109` |
 /// | `IntLiteralOutOfRange`    | `L110` |
 /// | `FloatLiteralNotFinite`   | `L111` |
-/// | `UnsolvedTypeInIR`        | `L997` |
-/// | `CapVarInIR`              | `L998` |
 /// | `InternalLoweringError`   | `L999` |
 #[derive(Debug, Clone)]
 pub enum LowerError {
@@ -89,13 +86,8 @@ pub enum LowerError {
         /// The span of the interpolation segment that could not be lowered.
         span: Span,
     },
-    /// `L108` — `with` expression applied to a non-record type.
-    WithOnNonRecord {
-        /// The span of the `with` expression.
-        span: Span,
-    },
     /// `L109` — a refutable sub-pattern appears in a suffix or middle position
-    /// of a variable-length list slice pattern (P026).
+    /// of a variable-length list slice pattern.
     ///
     /// Suffix and middle positions must be irrefutable (a variable or `_`) in
     /// this version.  The pattern at `span` cannot be matched structurally
@@ -132,18 +124,6 @@ pub enum LowerError {
         /// The raw lexeme as written in the source.
         raw: String,
     },
-    /// `L997` — an unsolved type variable reached the IR, indicating incomplete
-    /// typecheck output was passed to the lowerer.
-    UnsolvedTypeInIR {
-        /// The span of the expression whose type could not be resolved.
-        span: Span,
-    },
-    /// `L998` — a capability variable reached the IR.  Capability polymorphism
-    /// must be resolved before lowering.
-    CapVarInIR {
-        /// The span of the expression whose capability set contained a variable.
-        span: Span,
-    },
     /// `L999` — catch-all internal lowering invariant violation.
     InternalLoweringError {
         /// The span closest to the violation.
@@ -165,12 +145,9 @@ impl LowerError {
             Self::EmptyTryBlock { .. } => "L105",
             Self::BareGuardExpr { .. } => "L106",
             Self::ToTextLowering { .. } => "L107",
-            Self::WithOnNonRecord { .. } => "L108",
             Self::RefutableSliceElement { .. } => "L109",
             Self::IntLiteralOutOfRange { .. } => "L110",
             Self::FloatLiteralNotFinite { .. } => "L111",
-            Self::UnsolvedTypeInIR { .. } => "L997",
-            Self::CapVarInIR { .. } => "L998",
             Self::InternalLoweringError { .. } => "L999",
         }
     }
@@ -186,12 +163,9 @@ impl LowerError {
             | Self::EmptyTryBlock { span }
             | Self::BareGuardExpr { span }
             | Self::ToTextLowering { span }
-            | Self::WithOnNonRecord { span }
             | Self::RefutableSliceElement { span }
             | Self::IntLiteralOutOfRange { span, .. }
             | Self::FloatLiteralNotFinite { span, .. }
-            | Self::UnsolvedTypeInIR { span }
-            | Self::CapVarInIR { span }
             | Self::InternalLoweringError { span, .. } => *span,
         }
     }
@@ -243,9 +217,6 @@ impl fmt::Display for LowerError {
                     "this interpolated value has no `ToText`, so it cannot be rendered"
                 )
             }
-            Self::WithOnNonRecord { .. } => {
-                write!(f, "`with` updates a record, and this value is not one")
-            }
             Self::RefutableSliceElement { .. } => {
                 write!(
                     f,
@@ -261,21 +232,9 @@ impl fmt::Display for LowerError {
             Self::FloatLiteralNotFinite { raw, .. } => {
                 write!(f, "the float literal `{raw}` is not a finite number")
             }
-            // The last three are the compiler admitting a bug in itself. They
-            // name the phase that broke rather than the user's code, because
+            // The fallback reports a bug in the compiler itself. It
+            // names the phase that broke rather than the user's code, because
             // there is nothing the reader can change to avoid them.
-            Self::UnsolvedTypeInIR { .. } => {
-                write!(
-                    f,
-                    "internal: a type variable was still unsolved when lowering ran"
-                )
-            }
-            Self::CapVarInIR { .. } => {
-                write!(
-                    f,
-                    "internal: a capability variable was still unresolved when lowering ran"
-                )
-            }
             Self::InternalLoweringError { message, .. } => {
                 write!(f, "internal: {message}")
             }
@@ -306,7 +265,6 @@ mod tests {
         assert_eq!(LowerError::EmptyTryBlock { span: sp() }.code(), "L105");
         assert_eq!(LowerError::BareGuardExpr { span: sp() }.code(), "L106");
         assert_eq!(LowerError::ToTextLowering { span: sp() }.code(), "L107");
-        assert_eq!(LowerError::WithOnNonRecord { span: sp() }.code(), "L108");
         assert_eq!(
             LowerError::RefutableSliceElement { span: sp() }.code(),
             "L109"
@@ -319,8 +277,6 @@ mod tests {
             .code(),
             "L110"
         );
-        assert_eq!(LowerError::UnsolvedTypeInIR { span: sp() }.code(), "L997");
-        assert_eq!(LowerError::CapVarInIR { span: sp() }.code(), "L998");
         assert_eq!(
             LowerError::InternalLoweringError {
                 span: sp(),

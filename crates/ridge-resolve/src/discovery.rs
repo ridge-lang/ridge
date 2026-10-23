@@ -405,6 +405,17 @@ fn expand_member_globs(
 
     // Compile remaining patterns into a glob set.
     if !non_dot_patterns.is_empty() {
+        // A literal member names a required directory. Keep missing literals
+        // in the discovery input so the shared manifest check reports them.
+        // Wildcards and escaped patterns may legitimately match nothing.
+        for pattern in &non_dot_patterns {
+            if !pattern.contains(['*', '?', '[', ']', '{', '}', '\\']) {
+                let path = workspace_root.join(pattern);
+                if !path.is_dir() {
+                    matched.push(path);
+                }
+            }
+        }
         let mut builder = GlobSetBuilder::new();
         for pat in &non_dot_patterns {
             match FsGlob::new(pat) {
@@ -716,6 +727,21 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(full, content).unwrap();
+    }
+
+    #[test]
+    fn missing_literal_member_is_not_an_empty_glob() {
+        let dir = TempDir::new().unwrap();
+        write_file(dir.path(), "ridge.toml", &workspace_toml(&["missing"]));
+        let result = discover_workspace(dir.path());
+        assert!(result.manifest_errors.iter().any(|error| matches!(
+            error,
+            ManifestError::MemberWithoutProjectManifest { member_dir }
+                if member_dir == &dir.path().join("missing")
+        )));
+
+        write_file(dir.path(), "ridge.toml", &workspace_toml(&["apps/*"]));
+        assert!(discover_workspace(dir.path()).manifest_errors.is_empty());
     }
 
     /// Minimal workspace manifest TOML.

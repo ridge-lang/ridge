@@ -225,36 +225,6 @@ pub enum ParseError {
         span: Span,
     },
 
-    /// P025 — reserved; previously used for suffix/middle rest (now supported).
-    ///
-    /// This variant is kept for wire-format and downstream-tool compatibility
-    /// but is never emitted by the current parser.
-    #[error("rest element position restriction (unused in current version)")]
-    RestSuffixNotSupported {
-        /// Source location.
-        span: Span,
-    },
-
-    /// P026 — a suffix or middle element in a list pattern is a refutable
-    /// sub-pattern (literal, constructor, tuple, …).
-    ///
-    /// Suffix and middle positions — the elements that come after `..` in
-    /// `[.., last]` or `[first, .., last]` — must be irrefutable (a variable
-    /// or `_`) in this version.  Refutable sub-patterns there require runtime
-    /// element extraction that cannot be expressed cleanly as an Erlang case
-    /// clause pattern, so they are rejected with this diagnostic.
-    ///
-    /// Workaround: bind the element to a variable in the slice pattern and
-    /// match further with a nested `match` or a `when` guard.
-    #[error(
-        "refutable patterns are not allowed in suffix or middle positions of a list slice pattern; \
-         use a variable or `_` here"
-    )]
-    RefutableSliceElement {
-        /// Source location of the refutable sub-pattern.
-        span: Span,
-    },
-
     /// P023 — `mailbox bounded N` was given a capacity that is not a positive
     /// `i64` literal.
     ///
@@ -473,8 +443,6 @@ impl ParseError {
             Self::MailboxPolicyMissing { .. } => "P022",
             Self::MailboxBoundInvalid { .. } => "P023",
             Self::MultipleRestInListPattern { .. } => "P024",
-            Self::RestSuffixNotSupported { .. } => "P025",
-            Self::RefutableSliceElement { .. } => "P026",
             Self::TestAttrArgNotString { .. } => "P027",
             Self::ExpressionTooDeep { .. } => "P028",
             Self::MalformedClassDecl { .. } => "P030",
@@ -510,8 +478,6 @@ impl ParseError {
             | Self::MailboxPolicyMissing { span }
             | Self::MailboxBoundInvalid { span, .. }
             | Self::MultipleRestInListPattern { span }
-            | Self::RestSuffixNotSupported { span }
-            | Self::RefutableSliceElement { span }
             | Self::TestAttrArgNotString { span }
             | Self::ExpressionTooDeep { span, .. }
             | Self::MalformedClassDecl { span, .. }

@@ -12,11 +12,11 @@
 //! in both directions — a new one cannot arrive unnoticed, and one that gets
 //! wired up cannot stay on the list.
 //!
-//! # Reading the list is not the same as fixing it
+//! # Construction is not executable reachability
 //!
-//! The entries are three different problems and want three different answers.
-//! Nothing here decides which; the list exists so the count is known and does
-//! not grow quietly.
+//! A construction can enforce an internal invariant or report an external
+//! tool failure without a source-language witness. Behavioral regression tests
+//! establish the affected contracts; this scan guards registry drift.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -27,42 +27,9 @@ use ridge_diagnostics::REGISTRY;
 
 /// Every code no production path builds, and what is known about each.
 ///
-/// Publishing a code a program cannot produce is a documentation bug at best
-/// and, for the last group, a missing check. The reason strings are what a
-/// reader needs before deciding: several of these are recorded nowhere else but
-/// a fixture comment.
-const UNEMITTABLE: &[(&str, &str)] = &[
-    // Shadowed by a namesake. Each of these shares its variant name with a
-    // variant in another crate that *is* constructed, so both read as live
-    // until the two are told apart by owner. #444 holds that no code is
-    // declared by two crates; nothing says the same about variant names.
-    (
-        "L108",
-        "nothing lowers a `with` on a non-record; the name is shared with T006, which is constructed",
-    ),
-    (
-        "P026",
-        "nothing parses a refutable slice element; the name is shared with L109, which is constructed",
-    ),
-    // Defensive invariants: the variant exists, the check that would build it
-    // does not, so the invariant it names is not enforced.
-    ("L997", "no production path checks for an unsolved type in the IR"),
-    ("L998", "no production path checks for a capability variable in the IR"),
-    ("P999", "no production path checks the layout invariant"),
-    ("T024", "no production path checks for a row variable leaking"),
-    (
-        "E008",
-        "no production path checks for a capability token in Core Erlang (E007 next door is wired, via audit_type_error_at)",
-    ),
-    // No fixture, no construction, no comment: whether the check is missing or
-    // the condition became impossible is not recorded anywhere.
-    ("C002", "undetermined"),
-    ("E205", "undetermined"),
-    ("P025", "undetermined"),
-    ("R019", "undetermined"),
-    ("R020", "undetermined"),
-    ("T028", "undetermined"),
-];
+/// The list is empty after reconciliation. Any future exception requires a
+/// reason and remains checked in both directions.
+const UNEMITTABLE: &[(&str, &str)] = &[];
 
 /// Codes whose construction the scan must find, or the scan is broken.
 ///
@@ -573,5 +540,35 @@ fn the_list_is_well_formed() {
     let mut seen = BTreeSet::new();
     for (code, _) in UNEMITTABLE {
         assert!(seen.insert(*code), "{code} is listed twice");
+    }
+}
+
+/// Constructors, patterns, test-only mentions and quoted text are distinct.
+#[test]
+fn scanner_controls_do_not_credit_patterns_or_test_mentions() {
+    for (sample, expected) in [
+        ("fn f() { crate::error::E::Sentinel { span: s }; }", 1),
+        (
+            "fn f() { match e { E::Sentinel { .. } => (), _ => () } }",
+            0,
+        ),
+        (
+            "#[cfg(test)] mod t { fn f() { E::Sentinel { span: s }; } }",
+            0,
+        ),
+        ("// E::Sentinel { span: s };", 0),
+        ("fn f() { let s = \"E::Sentinel { span: s }\"; }", 0),
+    ] {
+        let b = blanked(sample);
+        let regions = test_regions(&b);
+        let actual = paths_in(&b)
+            .into_iter()
+            .filter(|&(start, end)| {
+                &b[start..end] == b"Sentinel"
+                    && !regions.iter().any(|&(a, z)| a <= start && start < z)
+                    && is_construction(&b, start, end)
+            })
+            .count();
+        assert_eq!(actual, expected, "{sample}");
     }
 }

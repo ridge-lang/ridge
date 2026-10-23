@@ -1335,6 +1335,26 @@ pub fn detect_unsolved_type_vars(ctx: &mut InferCtx) {
         // If any free var is out of range (a prelude/stdlib placeholder), skip
         // this scheme entirely — it's a well-formed polymorphic binding.
         let (raw_free, raw_free_cap) = collect_free_vars(&scheme.ty);
+        let bound_caps: FxHashSet<_> = scheme.cap_vars.iter().copied().collect();
+        let leaks_capability = raw_free_cap.iter().any(|cap| {
+            if bound_caps.contains(cap) {
+                return false;
+            }
+            if cap.0 >= capvid_len {
+                return true;
+            }
+            match ctx.shallow_resolve_caps(&ridge_types::CapRow::Var(*cap)) {
+                ridge_types::CapRow::Var(resolved) => !bound_caps.contains(&resolved),
+                ridge_types::CapRow::Concrete(_) => false,
+                _ => true,
+            }
+        });
+        if leaks_capability {
+            ctx.errors.push(TypeError::RowVariableLeak {
+                decl: name.clone(),
+                span: Span::point(0),
+            });
+        }
         let has_oob_ty = raw_free.iter().any(|v| v.0 >= tyvid_len);
         // Skip schemes with CapVids not yet allocated in this ctx.
         // This covers stdlib HOF schemes (e.g. List.map with CapRow::Var(CAP_C))
@@ -1669,6 +1689,49 @@ mod tests {
         );
 
         ctx.env.pop_frame();
+    }
+
+    #[test]
+    fn capability_row_leak_rejects_only_free_capability_variables() {
+        for mode in ["free", "quantified", "resolved", "foreign"] {
+            let mut ctx = InferCtx::for_tests();
+            ctx.env.push_frame();
+            let cap = ctx.fresh_capvid();
+            let mut scheme = Scheme::mono(Type::Fn {
+                params: vec![],
+                ret: Box::new(Type::Con(ctx.builtins.int, vec![])),
+                caps: ridge_types::CapRow::Var(cap),
+            });
+            match mode {
+                "quantified" => scheme.cap_vars.push(cap),
+                "resolved" => crate::unify::unify_caps(
+                    &mut ctx,
+                    &ridge_types::CapRow::Var(cap),
+                    &ridge_types::CapRow::Concrete(ridge_types::CapabilitySet::PURE),
+                )
+                .unwrap(),
+                "foreign" => {
+                    if let Type::Fn { caps, .. } = &mut scheme.ty {
+                        *caps = ridge_types::CapRow::Var(ridge_types::CapVid(5000));
+                    }
+                }
+                _ => {}
+            }
+            ctx.env.bind("callback".to_owned(), scheme);
+            detect_unsolved_type_vars(&mut ctx);
+            let rejected = ctx.errors.iter().any(|error| {
+                matches!(
+                    error,
+                    TypeError::RowVariableLeak { decl, .. } if decl == "callback"
+                )
+            });
+            assert_eq!(
+                rejected,
+                matches!(mode, "free" | "foreign"),
+                "{mode}: {:?}",
+                ctx.errors
+            );
+        }
     }
 
     // ── Test SCC-9 ─────────────────────────────────────────────────────────

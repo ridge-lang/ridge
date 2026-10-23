@@ -1,7 +1,7 @@
 //! Structured error types for the `ridge-driver` crate.
 //!
 //! Cross-crate `C0NN` namespace map (verify before allocating new codes):
-//! - `C001`–`C004`, `C010`, `C012`–`C017` — this crate.
+//! - `C001`, `C004`, `C010`, `C012`–`C017` — this crate.
 //! - `C005`–`C008`, `C011` — `ridge-cli` (see `crates/ridge-cli/src/error.rs`).
 //! - `C009` — retired; see [`CompileError::PkgResolutionFailed`].
 //!
@@ -65,16 +65,6 @@ pub enum WorkspaceError {
         /// The path that was searched from.
         path: PathBuf,
     },
-
-    /// `C002` — a member listed in `[workspace] members` has no on-disk
-    /// directory or no `ridge.toml`.
-    #[error("{}", terminal_text(format_args!("C002 WorkspaceMemberMissing: workspace member '{}' not found at {}", .member, .path.display())))]
-    WorkspaceMemberMissing {
-        /// The member name as it appears in the workspace manifest.
-        member: String,
-        /// The expected on-disk path.
-        path: PathBuf,
-    },
 }
 
 impl WorkspaceError {
@@ -83,7 +73,6 @@ impl WorkspaceError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::NoWorkspaceRoot { .. } => "C001",
-            Self::WorkspaceMemberMissing { .. } => "C002",
         }
     }
 }
@@ -171,7 +160,7 @@ pub enum CompileError {
     /// The explicit file input cannot be selected.
     #[error(transparent)]
     SourceFile(#[from] SourceFileError),
-    /// The workspace could not be read — `C001`, `C002` or `C003`.
+    /// The workspace root could not be found.
     #[error(transparent)]
     Workspace(#[from] WorkspaceError),
 
@@ -269,7 +258,7 @@ pub enum CheckError {
     /// The explicit file input cannot be selected.
     #[error(transparent)]
     SourceFile(#[from] SourceFileError),
-    /// The workspace could not be read — `C001`, `C002` or `C003`.
+    /// The workspace root could not be found.
     #[error(transparent)]
     Workspace(#[from] WorkspaceError),
 
@@ -449,10 +438,7 @@ mod terminal_tests {
     fn terminal_errors_escape_driver_text_through_compile_check_and_run() {
         const TEXT: &str = "café\\path\u{1b}[2J\u{9b}2J\n\t\r\0";
         const ESCAPED: &str = "café\\path\\u{1b}[2J\\u{9b}2J\\n\\t\\r\\u{0}";
-        let workspace = || WorkspaceError::WorkspaceMemberMissing {
-            member: TEXT.into(),
-            path: TEXT.into(),
-        };
+        let workspace = || WorkspaceError::NoWorkspaceRoot { path: TEXT.into() };
         let cases: Vec<Box<dyn std::fmt::Display>> = vec![
             Box::new(SourceFileError::InvalidSourceFile {
                 path: TEXT.into(),

@@ -183,13 +183,6 @@ pub enum CodegenError {
         /// The IR expression variant name.
         ir_variant: &'static str,
     },
-    /// `E008` — Capability erasure audit found a `Capability` token in emitted Core Erlang.
-    CapabilityLeakIntoCoreErl {
-        /// Source span.
-        span: Span,
-        /// The leaked capability token text.
-        leaked_token: String,
-    },
     /// `E101` — `erlc` toolchain version below OTP 26 minimum.
     ErlcVersionTooOld {
         /// The version string `erlc --version` reported.
@@ -228,7 +221,6 @@ impl CodegenError {
             Self::OutputDirNotWritable { .. } => "E005",
             Self::BeamModuleNameCollision { .. } => "E006",
             Self::TypeErasureUnsupportedErrorSite { .. } => "E007",
-            Self::CapabilityLeakIntoCoreErl { .. } => "E008",
             Self::ErlcVersionTooOld { .. } => "E101",
             Self::ErlcUnexpectedOutput { .. } => "E102",
         }
@@ -243,8 +235,7 @@ impl CodegenError {
         match self {
             Self::IrShapeMalformed { span, .. }
             | Self::StdlibBridgeMissing { span, .. }
-            | Self::TypeErasureUnsupportedErrorSite { span, .. }
-            | Self::CapabilityLeakIntoCoreErl { span, .. } => Some(*span),
+            | Self::TypeErasureUnsupportedErrorSite { span, .. } => Some(*span),
             _ => None,
         }
     }
@@ -261,9 +252,7 @@ impl CodegenError {
     pub const fn is_internal(&self) -> bool {
         matches!(
             self,
-            Self::IrShapeMalformed { .. }
-                | Self::TypeErasureUnsupportedErrorSite { .. }
-                | Self::CapabilityLeakIntoCoreErl { .. }
+            Self::IrShapeMalformed { .. } | Self::TypeErasureUnsupportedErrorSite { .. }
         )
     }
 }
@@ -329,11 +318,6 @@ impl std::fmt::Display for CodegenError {
                 f,
                 c,
                 &format!("unerased error type at IR site `{ir_variant}`"),
-            ),
-            Self::CapabilityLeakIntoCoreErl { leaked_token, .. } => internal_failure(
-                f,
-                c,
-                &format!("capability token `{leaked_token}` survived erasure into generated code"),
             ),
             Self::ErlcVersionTooOld { found, minimum } => write!(
                 f,
@@ -430,15 +414,6 @@ mod tests {
     }
 
     #[test]
-    fn capability_leak_into_core_erl_code_is_stable() {
-        let e = CodegenError::CapabilityLeakIntoCoreErl {
-            span: dummy_span(),
-            leaked_token: "io".into(),
-        };
-        assert_eq!(e.code(), "E008");
-    }
-
-    #[test]
     fn erlc_version_too_old_code_is_stable() {
         let e = CodegenError::ErlcVersionTooOld {
             found: "OTP 24".into(),
@@ -498,10 +473,6 @@ mod tests {
                 node: IrNodeId(0),
                 ir_variant: "IrExpr::Call",
             },
-            CodegenError::CapabilityLeakIntoCoreErl {
-                span: dummy_span(),
-                leaked_token: "io".into(),
-            },
             CodegenError::ErlcVersionTooOld {
                 found: "OTP 24".into(),
                 minimum: "OTP 26".into(),
@@ -516,7 +487,21 @@ mod tests {
 
     #[test]
     fn all_variants_constructible() {
-        assert_eq!(one_of_each().len(), 10);
+        let mut actual = std::collections::BTreeSet::new();
+        for error in one_of_each() {
+            assert!(
+                actual.insert(error.code()),
+                "duplicate sample: {}",
+                error.code()
+            );
+        }
+        // CodegenError owns E001-E199; escript EmitError owns E2xx.
+        let expected = ridge_diagnostics::REGISTRY
+            .iter()
+            .filter(|entry| entry.owner == "ridge-codegen-erl" && entry.code < "E200")
+            .map(|entry| entry.code)
+            .collect();
+        assert_eq!(actual, expected);
     }
 
     // ── Display drift checks ──────────────────────────────────────────────────

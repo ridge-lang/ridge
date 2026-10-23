@@ -18,7 +18,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use clap::Parser;
-use ridge_codegen_erl::escript::package_escript_from_beam_dir;
+use ridge_codegen_erl::escript::{package_escript_from_beam_dir, EmitError};
 use ridge_driver::{compile_workspace, select_entry_beam, CompileOptions, EmitArtefacts, Profile};
 
 use crate::error::CliError;
@@ -184,6 +184,16 @@ fn emit_escript_artefact(
     beam_files: &[std::path::PathBuf],
     entry_module: Option<&str>,
 ) -> Result<(), CliError> {
+    let main_module = entry_module.ok_or_else(|| {
+        let error = EmitError::EscriptNeedsEntry {
+            member: member.to_owned(),
+        };
+        eprintln!(
+            "error: {}",
+            ridge_diagnostics::terminal::terminal_text(format_args!("{error}"))
+        );
+        CliError::AlreadyReported
+    })?;
     if beam_files.is_empty() {
         eprintln!("error: no .beam files produced for member '{member}'");
         return Err(CliError::AlreadyReported);
@@ -195,18 +205,14 @@ fn emit_escript_artefact(
         CliError::AlreadyReported
     })?;
 
-    // The escript's boot module is the one that carries `fn main`. Fall back to
-    // the first beam stem only if the entry point could not be identified (a
-    // single-module program, where the first module is the entry by default).
-    let main_module = entry_module
-        .or_else(|| beam_files[0].file_stem().and_then(|s| s.to_str()))
-        .unwrap_or(member);
-
     // Package the escript payload.
     // main_module is the internal BEAM atom (e.g. "ridge_module_0").
     // member is the user-visible escript entry name.
     let payload = package_escript_from_beam_dir(beam_dir, main_module, member).map_err(|e| {
-        eprintln!("error: escript packaging failed: {e}");
+        eprintln!(
+            "error: escript packaging failed: {}",
+            ridge_diagnostics::terminal::terminal_text(format_args!("{e}"))
+        );
         CliError::AlreadyReported
     })?;
 

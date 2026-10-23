@@ -705,8 +705,8 @@ pub(crate) fn parse_visibility(cur: &mut Cursor<'_>) -> Result<Visibility, Parse
 
 /// Parse zero or more capability names (grammar §5.3 `CapList`).
 ///
-/// Capabilities are `LowerIdent` tokens whose text is one of the nine capability
-/// keywords.  Collection stops as soon as a non-capability token is seen.
+/// Accepts capability identifiers and the dedicated `KwSpawn` token.
+/// Collection stops as soon as a non-capability token is seen.
 pub(crate) fn parse_cap_list(cur: &mut Cursor<'_>) -> Vec<Capability> {
     let mut caps = Vec::new();
     while let Some(cap) = peek_capability(cur) {

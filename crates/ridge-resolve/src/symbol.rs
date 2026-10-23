@@ -347,7 +347,7 @@ fn is_auto_promoted_totext(d: &ridge_ast::FnDecl) -> bool {
     // variable (`Type::Var`) never promotes.
     let param_ty = match &d.params[0] {
         Param::Annotated { ty, .. } | Param::PatternAnnotated { ty, .. } => ty,
-        Param::Bare(_) => return false,
+        Param::Bare(_) | Param::Pattern { .. } => return false,
     };
     let param_is_concrete = match peel_paren_ty(param_ty) {
         AstType::Named { name, .. } => name.text != "Ordering",

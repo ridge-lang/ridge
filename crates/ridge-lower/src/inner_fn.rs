@@ -65,7 +65,10 @@ use ridge_types::{Constraint, Type};
 
 use crate::ast_type::lower_ast_type;
 use crate::block::fold_block_to_continuation;
-use crate::core::{lower_expr, synth_destructure_param, wrap_pattern_params};
+use crate::core::{
+    lower_expr, synth_destructure_param, synth_inferred_destructure_param, synth_pattern_param,
+    wrap_pattern_params,
+};
 use crate::ctx::LowerCtx;
 use crate::error::LowerError;
 
@@ -235,10 +238,9 @@ fn build_lambda(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrExpr {
     let mut params: Vec<IrParam> = Vec::with_capacity(decl.params.len());
     let mut pattern_entries: Vec<(String, &Pattern, Span)> = Vec::new();
     for (idx, p) in decl.params.iter().enumerate() {
-        if let Param::PatternAnnotated { pat, ty, span } = p {
-            let (ir, synth) = synth_destructure_param(ctx, ty, *span);
+        if let Some((ir, synth, pat, span)) = synth_pattern_param(ctx, p) {
             params.push(ir);
-            pattern_entries.push((synth, pat, *span));
+            pattern_entries.push((synth, pat, span));
         } else {
             params.push(param_to_ir_param(ctx, decl.span, idx, p));
         }
@@ -350,6 +352,7 @@ fn param_to_ir_param(
         // Destructuring params are handled by `build_lambda` (which also wraps
         // the body); this arm keeps the synthetic binder correct in isolation.
         Param::PatternAnnotated { ty, span, .. } => synth_destructure_param(ctx, ty, *span).0,
+        Param::Pattern { pat, span } => synth_inferred_destructure_param(ctx, pat, *span).0,
     }
 }
 

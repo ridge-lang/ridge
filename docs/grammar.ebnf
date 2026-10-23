@@ -18,7 +18,7 @@
      D049 — IDENT is ASCII-only
      D050 — '..' reserved; no productions in 0.1.0
      D051 — Constructor name always required in record patterns/construction
-     D052 — Full Pattern in let/lambda; top-level Param per D037
+     Named parameter patterns are inferred and must be irrefutable
      D053 — Shorthand field binding in FieldPattern and FieldInit
      D054 — UnionType: optional leading |, trailing | forbidden, min 1 alt
      D055 — WithExpr LHS is arbitrary Expr
@@ -496,19 +496,21 @@ FnDecl        ::= [ Visibility ] "fn" { Capability } FnName { Param } [ "->" Typ
 
 FnName        ::= LOWER_IDENT | PRIV_IDENT ;
 
-(* Top-level function parameters (D037 / D052 / D069):
-   At the top-level fn declaration, Param is a bare name or an annotated
-   name only.  Full patterns (tuples, constructors) are NOT allowed in
-   top-level Param position; use a let-binding in the body instead.
-   Lambda params (see LambdaExpr §6.16) DO allow full Pattern.
+(* Named parameters may be bare names or parenthesized patterns, optionally
+   annotated. Unannotated pattern types are inferred from the pattern/body.
+   A named parameter pattern must be irrefutable for its type; use an
+   exhaustive match in the body when the input pattern can fail.
+   Abstract class method patterns require an annotation (there is no body).
    "()" is the zero-param marker (D069) — used canonically for `main`
    per D059 (e.g. `fn {caps} main () -> Result Unit Error`).  Semantically
    equivalent to omitting params; the parser consumes the token pair and
    produces an empty parameter list.                                        *)
 Param         ::= LOWER_IDENT
                |  PRIV_IDENT
+               |  "_"
                |  "()"                                   (* zero-param marker (D069) *)
-               |  "(" LOWER_IDENT ":" Type ")" ;
+               |  TuplePattern
+               |  "(" Pattern [ ":" Type ] ")" ;
 
 (* Function body: a single expression, possibly in an indented block.       *)
 Body          ::= Expr ;
@@ -990,8 +992,8 @@ QualifiedName ::= UPPER_IDENT "." LOWER_IDENT { "." LOWER_IDENT }
 
 (* === 6.16  Lambda expression === *)
 
-(* D052: Lambda params allow full Pattern (unlike top-level FnDecl Param
-   which is restricted to bare names/annotated names per D037).
+(* Lambda params allow full Pattern. Named function patterns are
+   parenthesized and must be irrefutable for their input type.
    LambdaParam encompasses the full Pattern production.                     *)
 LambdaExpr    ::= "fn" { LambdaParam } "->" [ Type "=" ] Body ;
 
@@ -1317,7 +1319,7 @@ ListConsPattern ::= PatternAtom "::" Pattern ;
 (* numeric base prefixes          -> D046 (0b/0o/0x + _ separators) *)
 (* multi-line / raw strings       -> D047 (deferred to 0.2.0) *)
 (* bare record pattern            -> D051 (constructor name always required) *)
-(* tuple destructure in let/fn    -> D052 (full patterns in let/lambda; D037 for top-level fn) *)
+(* tuple destructure in let/fn    -> supported; named parameters must be irrefutable *)
 (* spawn dual role                -> resolved: position-disambiguated by existing grammar *)
 (* capability variable syntax     -> D057 (compiler-internal only) *)
 (* record shorthand               -> D053 (shorthand { name } supported) *)

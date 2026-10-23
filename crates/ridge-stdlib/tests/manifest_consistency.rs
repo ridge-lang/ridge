@@ -26,14 +26,10 @@
 //!
 //! ## Note on parse errors
 //!
-//! Several stdlib `.ridge` files use `(_: Unit)` as a thunk-parameter convention.
-//! The current parser does not support `_` as the name in an
-//! annotated parameter `(_: Type)` — it fires `P012 TopLevelPatternParam` and
-//! drops those function declarations from the partial AST.  The text-level
-//! extractor (`extract_pub_names_from_source`) handles `(_: Unit)` correctly,
-//! so Test 1 (bidirectional names) is fully accurate.  Test 2 (signature shapes)
-//! silently skips any function that did not parse cleanly — the manifest
-//! coverage check in Test 1 still holds for those functions.
+//! The text-level name check covers every public function, including any
+//! declaration absent from a recovered partial AST. The signature-shape check
+//! covers the function declarations retained by the parser. Annotated wildcard
+//! parameters such as `(_: Unit)` are irrefutable and parse normally.
 
 // Integration tests are allowed to use expect/unwrap/panic freely.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -337,9 +333,8 @@ fn bidirectional_name_consistency() {
 /// - The param count must match `FnDecl.params.len()`.
 /// - The return type shape must loosely match (using the concrete-type shape checks below).
 ///
-/// Functions that fail to parse due to known parser limitations (e.g.
-/// `(_: Unit)` annotated params — `P012 TopLevelPatternParam`) are silently
-/// skipped; the bidirectional name check in Test 1 still holds for them.
+/// Functions absent from a recovered partial AST are covered by the
+/// bidirectional name check in Test 1.
 ///
 /// Entries that return `Type::Error` are explicitly skipped (stdlib stubs).
 /// Failures panic with `T202 SignatureDrift { module, sym, reason }`.

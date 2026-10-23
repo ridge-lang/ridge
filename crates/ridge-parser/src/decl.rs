@@ -14,14 +14,13 @@
 //! - [`parse_init_decl`]    — grammar §5.3.
 //! - [`parse_on_handler`]   — grammar §5.4.
 //! - [`parse_cap_list`]     — `{ Capability }` (zero or more).
-//! - [`parse_param_top`]    — top-level parameter (bare or annotated only).
+//! - [`parse_param_top`]    — named parameter (bare name or parenthesized pattern).
 //!
-//! # Top-level parameter enforcement
+//! # Named parameter patterns
 //!
-//! [`parse_param_top`] rejects tuple/constructor patterns with `P012
-//! TopLevelPatternParam`.  Only `LOWER_IDENT` bare params and
-//! `(LOWER_IDENT : Type)` annotated params are accepted at top-level fn /
-//! on / init position.
+//! [`parse_param_top`] shares parenthesized pattern parsing with lambdas.
+//! Type checking requires named parameter patterns to be irrefutable.
+//! Abstract class method patterns additionally require a type annotation.
 //!
 //! # Doc-comment attachment
 //!
@@ -748,17 +747,8 @@ fn peek_capability(cur: &Cursor<'_>) -> Option<Capability> {
 
 /// Parse a single top-level function parameter.
 ///
-/// At the top-level fn declaration, `Param` is a bare name or an
-/// annotated name only.  Full patterns (tuples, constructors) are **not**
-/// allowed; use a `let` binding in the body instead.
-///
-/// Grammar §4.1 line 459:
-/// ```ebnf
-/// Param ::= LOWER_IDENT | PRIV_IDENT | "(" LOWER_IDENT ":" Type ")" ;
-/// ```
-///
-/// Returns `Err(P012 TopLevelPatternParam)` if the form inside `(…)` is not
-/// `LOWER_IDENT : Type` (e.g. if it is a tuple or constructor pattern).
+/// Bare names and wildcards need no parentheses. Parenthesized patterns may
+/// carry a type annotation; the type checker enforces irrefutability.
 pub(crate) fn parse_param_top(cur: &mut Cursor<'_>) -> Result<Param, ParseError> {
     let span = cur.span();
 
@@ -773,58 +763,31 @@ pub(crate) fn parse_param_top(cur: &mut Cursor<'_>) -> Result<Param, ParseError>
             Ok(Param::Bare(Ident::new(text, span)))
         }
 
-        // ── Parenthesised form: `(name: Type)` or `(pat: Type)` ──────────────
+        // Parenthesised parameters share tuple/annotation disambiguation with lambdas.
         Token::LParen => {
-            let start = cur.span();
-            cur.bump(); // consume `(`
-
-            // A reserved keyword in this position (e.g. `(init: Int)`) is
-            // recognised separately so the user sees the actual cause instead
-            // of a misleading pattern error.
-            if let Some(keyword) = cur.peek().keyword_text() {
-                return Err(ParseError::ReservedKeywordAsIdent {
-                    span: cur.span(),
-                    keyword,
-                    position: "a function parameter",
-                });
-            }
-
-            // Fast path: `(name: Type)` — a bare annotated param. Kept distinct
-            // from the pattern path so the common case stays `Param::Annotated`.
-            if let Token::LowerIdent(name_text) = cur.peek().clone() {
-                if matches!(cur.peek_n(1), Some(Token::Colon)) {
-                    let name_span = cur.span();
-                    cur.bump(); // consume name
-                    cur.bump(); // consume `:`
-                    let ty = parse_type(cur)?;
-                    let end_span = cur.expect(&Token::RParen)?;
-                    return Ok(Param::Annotated {
-                        name: Ident::new(name_text, name_span),
-                        ty,
-                        span: start.merge(end_span),
+            if let Some(keyword) = cur.peek_n(1).and_then(Token::keyword_text) {
+                if matches!(cur.peek_n(2), Some(Token::Colon)) {
+                    cur.bump();
+                    return Err(ParseError::ReservedKeywordAsIdent {
+                        span: cur.span(),
+                        keyword,
+                        position: "a function parameter",
                     });
                 }
             }
-
-            // Otherwise: an irrefutable destructuring param `(pat : Type)`.
-            // Parse a full pattern, then require the `: Type` annotation. The
-            // pattern's irrefutability is checked later in typecheck, where the
-            // type is known. Without the annotation it is the historical
-            // un-annotated pattern param, still rejected with P012.
-            let pat = crate::pattern::parse_pattern(cur)?;
-            if matches!(cur.peek(), Token::Colon) {
-                cur.bump(); // consume `:`
-                let ty = parse_type(cur)?;
-                let end_span = cur.expect(&Token::RParen)?;
-                Ok(Param::PatternAnnotated {
-                    pat,
+            match crate::actor_ops::parse_lambda_param(cur)? {
+                ridge_ast::LambdaParam::Annotated {
+                    pat: ridge_ast::Pattern::Var { name, .. },
                     ty,
-                    span: start.merge(end_span),
-                })
-            } else {
-                Err(ParseError::TopLevelPatternParam {
-                    span: start.merge(cur.span()),
-                })
+                    span,
+                } => Ok(Param::Annotated { name, ty, span }),
+                ridge_ast::LambdaParam::Annotated { pat, ty, span } => {
+                    Ok(Param::PatternAnnotated { pat, ty, span })
+                }
+                ridge_ast::LambdaParam::Pattern(pat) => {
+                    let span = pat.span();
+                    Ok(Param::Pattern { pat, span })
+                }
             }
         }
 
@@ -1935,6 +1898,17 @@ fn parse_method_sig(cur: &mut Cursor<'_>) -> Result<MethodSig, ParseError> {
     }
 
     // Required `->`.
+    // An abstract signature has no body from which a pattern input can be
+    // inferred. Bare names retain the class-variable convention; patterns
+    // must state their input type explicitly.
+    if let Some(Param::Pattern { span, .. }) =
+        params.iter().find(|p| matches!(p, Param::Pattern { .. }))
+    {
+        return Err(ParseError::MissingType {
+            span: *span,
+            context: "an abstract method's pattern parameter",
+        });
+    }
     cur.expect(&Token::Arrow)?;
 
     let ret = parse_type(cur)?;
@@ -3186,30 +3160,16 @@ mod tests {
         assert!(f.ret.is_some());
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // parse_fn_reject_tuple_param_p012
-    // ─────────────────────────────────────────────────────────────────────────
     #[test]
-    fn parse_fn_reject_tuple_param_p012() {
-        let toks = lex("fn foo (x, y) = x");
-        let mut cur = Cursor::new(&toks);
-        let _ = parse_visibility(&mut cur).unwrap();
-        cur.expect(&Token::KwFn).unwrap();
-        // caps
-        let _caps = parse_cap_list(&mut cur);
-        // name
-        let name_span = cur.span();
-        let _name = match cur.peek().clone() {
-            Token::LowerIdent(s) => {
-                cur.bump();
-                Ident::new(s, name_span)
+    fn parse_fn_tuple_pattern_param() {
+        let param = first_param("fn foo (x, y) = x").unwrap();
+        assert!(matches!(
+            param,
+            Param::Pattern {
+                pat: ridge_ast::Pattern::Tuple { .. },
+                ..
             }
-            _ => panic!("expected fn name"),
-        };
-        // try first param — should be P012
-        let result = parse_param_top(&mut cur);
-        assert!(result.is_err(), "expected Err(P012), got {result:?}");
-        assert_eq!(result.unwrap_err().code(), "P012");
+        ));
     }
 
     /// Parse the first parameter of `fn foo <here> = …`.
@@ -3283,11 +3243,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_unannotated_pattern_param_still_p012() {
-        // A pattern param without a type annotation is still rejected.
-        let result = first_param("fn f (Some x) = x");
-        assert!(result.is_err(), "expected Err(P012), got {result:?}");
-        assert_eq!(result.unwrap_err().code(), "P012");
+    fn parse_unannotated_constructor_parameter() {
+        let result = first_param("fn f (Some x) = x").unwrap();
+        assert!(matches!(result, Param::Pattern { .. }));
     }
 
     // ─────────────────────────────────────────────────────────────────────────

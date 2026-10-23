@@ -189,7 +189,7 @@ fn lambda_has_return_type_eq(cur: &Cursor<'_>) -> bool {
 /// Note: the annotated form `(pat : Type)` requires special disambiguation
 /// because the lexer emits `Colon`, which is also used in `Type` parsing.
 /// We peek inside the `(` to check for `Pattern Colon` vs. `Pattern Comma`.
-fn parse_lambda_param(cur: &mut Cursor<'_>) -> Result<LambdaParam, ParseError> {
+pub(crate) fn parse_lambda_param(cur: &mut Cursor<'_>) -> Result<LambdaParam, ParseError> {
     if cur.peek() != &Token::LParen {
         // Non-parenthesised parameter: parse a pattern atom.
         let pat = parse_pattern_atom(cur)?;

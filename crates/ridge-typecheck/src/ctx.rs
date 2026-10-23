@@ -340,6 +340,10 @@ pub struct InferCtx {
     /// types like `Level`, `LogEntry`, etc.
     pub user_tycon_names: FxHashMap<String, TyConId>,
 
+    /// The canonical `std.actor.ExitReason` input of lifecycle callbacks.
+    /// Kept separate from user names so a local homonym cannot replace it.
+    pub(crate) actor_exit_reason: Option<TyConId>,
+
     /// Where each type constructor was declared, and what the compiler's own
     /// types are called.
     ///
@@ -616,6 +620,7 @@ impl InferCtx {
             flow: crate::flow::Flow::NEXT,
             current_propagate_target: None,
             user_tycon_names: FxHashMap::default(),
+            actor_exit_reason: None,
             tycon_origins: crate::cross_module::TyConOrigins::default(),
             class_ids: FxHashMap::default(),
             projection_sites: Vec::new(),

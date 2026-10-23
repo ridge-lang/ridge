@@ -279,7 +279,8 @@ fn collect_class_decls(
                         .map(|p| match p {
                             ridge_ast::decl::Param::Annotated { ty, .. }
                             | ridge_ast::decl::Param::PatternAnnotated { ty, .. } => ty.clone(),
-                            ridge_ast::decl::Param::Bare(_) => ridge_ast::Type::Named {
+                            ridge_ast::decl::Param::Bare(_)
+                            | ridge_ast::decl::Param::Pattern { .. } => ridge_ast::Type::Named {
                                 name: ridge_ast::Ident {
                                     text: bare_fallback.clone(),
                                     span: m.span,
@@ -625,7 +626,7 @@ fn collect_auto_promoted_to_text(
         let param_ty = match &decl.params[0] {
             ridge_ast::decl::Param::Annotated { ty, .. }
             | ridge_ast::decl::Param::PatternAnnotated { ty, .. } => ty,
-            ridge_ast::decl::Param::Bare(_) => continue,
+            ridge_ast::decl::Param::Bare(_) | ridge_ast::decl::Param::Pattern { .. } => continue,
         };
 
         // The parameter type must be a concrete named constructor.
@@ -720,7 +721,7 @@ pub(crate) fn is_auto_promoted_totext(
     let param_ty = match &decl.params[0] {
         ridge_ast::decl::Param::Annotated { ty, .. }
         | ridge_ast::decl::Param::PatternAnnotated { ty, .. } => ty,
-        ridge_ast::decl::Param::Bare(_) => return false,
+        ridge_ast::decl::Param::Bare(_) | ridge_ast::decl::Param::Pattern { .. } => return false,
     };
 
     let Some(totext_id) = ct.id_by_name("ToText") else {

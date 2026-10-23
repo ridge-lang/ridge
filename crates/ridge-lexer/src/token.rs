@@ -191,8 +191,7 @@ impl Token {
     /// Used by the parser to emit `P020 ReservedKeywordAsIdent` diagnostics
     /// when a reserved keyword appears in a position that expects a plain
     /// identifier (e.g. `let init = …` or `fn run (init: Int)`), instead of
-    /// the misleading `P002 unexpected token` / `P012 TopLevelPatternParam`
-    /// fallbacks that those positions otherwise produce.
+    /// a less specific unexpected-token fallback.
     #[must_use]
     pub const fn keyword_text(&self) -> Option<&'static str> {
         match self {

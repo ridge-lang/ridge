@@ -3711,6 +3711,51 @@ pub(crate) fn synth_destructure_param(
     (ir, name)
 }
 
+/// Build a binder from a parameter pattern's inferred type, without inventing
+/// a source annotation. Unit-test contexts may omit the type table.
+pub(crate) fn synth_inferred_destructure_param(
+    ctx: &mut LowerCtx<'_>,
+    pat: &Pattern,
+    span: Span,
+) -> (IrParam, String) {
+    let ty = ctx
+        .node_id_map
+        .as_ref()
+        .and_then(|map| map.get(pat.span(), NodeKind::ParamPattern))
+        .and_then(|nid| ctx.node_type(nid).cloned());
+    if ty.is_none() && ctx.workspace.is_some() {
+        ctx.errors.push(LowerError::InternalLoweringError {
+            span,
+            message: "inferred parameter pattern has no recorded input type".into(),
+        });
+    }
+    let name = ctx.fresh_local("__param");
+    let ir = IrParam {
+        name: name.clone(),
+        ty: ty.unwrap_or(Type::Error),
+        span,
+    };
+    (ir, name)
+}
+
+/// Return the synthetic binder and source pattern for either destructuring form.
+pub(crate) fn synth_pattern_param<'ast>(
+    ctx: &mut LowerCtx<'_>,
+    param: &'ast ridge_ast::Param,
+) -> Option<(IrParam, String, &'ast Pattern, Span)> {
+    match param {
+        ridge_ast::Param::PatternAnnotated { pat, ty, span } => {
+            let (ir, name) = synth_destructure_param(ctx, ty, *span);
+            Some((ir, name, pat, *span))
+        }
+        ridge_ast::Param::Pattern { pat, span } => {
+            let (ir, name) = synth_inferred_destructure_param(ctx, pat, *span);
+            Some((ir, name, pat, *span))
+        }
+        ridge_ast::Param::Bare(_) | ridge_ast::Param::Annotated { .. } => None,
+    }
+}
+
 /// Wrap `body` so each destructuring param binds its pattern via a `match`.
 ///
 /// `entries` pairs each synthetic param name (from [`synth_destructure_param`])

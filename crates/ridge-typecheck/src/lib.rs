@@ -985,7 +985,7 @@ fn validate_actor_callback_signature(
 /// for `Int`/`Text`/…, `?` for anything more complex. `Bare` is a wildcard.
 fn actor_param_annotation_head(param: &ridge_ast::Param) -> Option<String> {
     let ty = match param {
-        ridge_ast::Param::Bare(_) => return None,
+        ridge_ast::Param::Bare(_) | ridge_ast::Param::Pattern { .. } => return None,
         ridge_ast::Param::Annotated { ty, .. } | ridge_ast::Param::PatternAnnotated { ty, .. } => {
             ty
         }
@@ -1039,7 +1039,29 @@ fn check_actor_callback_body(
 
     // Bind the callback parameters (when the schema collected them).
     if let Some(param_tys) = schema_param_tys {
-        for (param, ty) in params.iter().zip(param_tys.iter()) {
+        for (index, (param, ty)) in params.iter().zip(param_tys.iter()).enumerate() {
+            // Lifecycle inputs are supplied by the language, not by a user
+            // call. Constrain them before either the pattern or body infers a
+            // different type. Init parameters are chosen by spawn arguments.
+            let fixed = match (label, index) {
+                ("onDown", 0) => Some(ridge_types::Type::Con(b.monitor, vec![])),
+                ("terminate", 0) | ("onDown", 1) => ctx
+                    .actor_exit_reason
+                    .map(|id| ridge_types::Type::Con(id, vec![])),
+                _ => None,
+            };
+            if let Some(fixed) = fixed {
+                if crate::unify::unify(ctx, &fixed, ty).is_err() {
+                    let expected = ctx.ty_desc(&fixed);
+                    let found = ctx.ty_desc(ty);
+                    ctx.errors.push(crate::error::TypeError::TypeMismatch {
+                        expected,
+                        found,
+                        span: param.span(),
+                        hint: None,
+                    });
+                }
+            }
             bind_actor_param(ctx, b, param, ty, monoscheme);
         }
     }
@@ -1073,9 +1095,9 @@ fn bind_actor_param(
         ridge_ast::Param::Annotated { name, .. } => {
             ctx.env.bind(name.text.clone(), monoscheme(ty.clone()));
         }
-        ridge_ast::Param::PatternAnnotated { pat, span, .. } => {
-            crate::infer::infer_pattern(ctx, b, pat, ty);
-            crate::exhaustiveness::check_param_irrefutable(ctx, b, pat, ty, *span);
+        ridge_ast::Param::PatternAnnotated { pat, span, .. }
+        | ridge_ast::Param::Pattern { pat, span } => {
+            crate::infer::infer_param_pattern(ctx, b, pat, ty, *span);
         }
     }
 }
@@ -1144,6 +1166,10 @@ fn typecheck_module_inner(
         collect_user_tycons(ast, id, arena, b, imported_tycons, own_tycon_ids, &mut ctx);
     // Populate the user_tycon_names map for ast_type_to_type resolution.
     ctx.user_tycon_names = tycon_result.user_tycon_names;
+    ctx.actor_exit_reason = stdlib_tycon_names
+        .get("ExitReason")
+        .copied()
+        .or_else(|| global_tycon_names.get("ExitReason").copied());
     ctx.tycon_origins = tycon_origins.clone();
     // The same for class names, which an inner `fn`'s `where` clause needs and
     // which expression inference cannot reach through a parameter.

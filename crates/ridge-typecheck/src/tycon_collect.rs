@@ -1060,13 +1060,7 @@ fn build_actor_kind_fresh(
                 let params: Vec<Type> = init
                     .params
                     .iter()
-                    .map(|p| match p {
-                        ridge_ast::Param::Bare(_) => Type::Var(ctx.fresh_tyvid()),
-                        ridge_ast::Param::Annotated { ty, .. }
-                        | ridge_ast::Param::PatternAnnotated { ty, .. } => {
-                            ast_type_to_ridge_type(b, ctx, ty, names, &empty_params)
-                        }
-                    })
+                    .map(|p| actor_param_type(p, b, ctx, names, &empty_params))
                     .collect();
                 init_params = Some(params);
                 init_caps = caps_from_ast_slice(&init.caps);
@@ -1075,13 +1069,7 @@ fn build_actor_kind_fresh(
                 let h_params: Vec<Type> = handler
                     .params
                     .iter()
-                    .map(|p| match p {
-                        ridge_ast::Param::Bare(_) => Type::Var(ctx.fresh_tyvid()),
-                        ridge_ast::Param::Annotated { ty, .. }
-                        | ridge_ast::Param::PatternAnnotated { ty, .. } => {
-                            ast_type_to_ridge_type(b, ctx, ty, names, &empty_params)
-                        }
-                    })
+                    .map(|p| actor_param_type(p, b, ctx, names, &empty_params))
                     .collect();
                 let ret_ty = handler.ret.as_ref().map_or_else(
                     || Type::Con(b.unit, vec![]),
@@ -1104,13 +1092,7 @@ fn build_actor_kind_fresh(
                 let params: Vec<Type> = t
                     .params
                     .iter()
-                    .map(|p| match p {
-                        ridge_ast::Param::Bare(_) => Type::Var(ctx.fresh_tyvid()),
-                        ridge_ast::Param::Annotated { ty, .. }
-                        | ridge_ast::Param::PatternAnnotated { ty, .. } => {
-                            ast_type_to_ridge_type(b, ctx, ty, names, &empty_params)
-                        }
-                    })
+                    .map(|p| actor_param_type(p, b, ctx, names, &empty_params))
                     .collect();
                 terminate_params = Some(params);
                 terminate_caps = caps_from_ast_slice(&t.caps);
@@ -1119,13 +1101,7 @@ fn build_actor_kind_fresh(
                 let params: Vec<Type> = d
                     .params
                     .iter()
-                    .map(|p| match p {
-                        ridge_ast::Param::Bare(_) => Type::Var(ctx.fresh_tyvid()),
-                        ridge_ast::Param::Annotated { ty, .. }
-                        | ridge_ast::Param::PatternAnnotated { ty, .. } => {
-                            ast_type_to_ridge_type(b, ctx, ty, names, &empty_params)
-                        }
-                    })
+                    .map(|p| actor_param_type(p, b, ctx, names, &empty_params))
                     .collect();
                 on_down_params = Some(params);
                 on_down_caps = caps_from_ast_slice(&d.caps);
@@ -1143,6 +1119,25 @@ fn build_actor_kind_fresh(
         on_down_caps,
         handlers,
     })
+}
+
+/// Infer or translate one actor member parameter, preserving allocation order
+/// and the annotation's type-variable environment for every callback position.
+fn actor_param_type(
+    param: &ridge_ast::Param,
+    b: &BuiltinTyCons,
+    ctx: &mut InferCtx,
+    names: &FxHashMap<String, TyConId>,
+    type_vars: &FxHashMap<&str, TyVid>,
+) -> Type {
+    match param {
+        ridge_ast::Param::Bare(_) | ridge_ast::Param::Pattern { .. } => {
+            Type::Var(ctx.fresh_tyvid())
+        }
+        ridge_ast::Param::Annotated { ty, .. } | ridge_ast::Param::PatternAnnotated { ty, .. } => {
+            ast_type_to_ridge_type(b, ctx, ty, names, type_vars)
+        }
+    }
 }
 
 /// Build a `UnionVariant` from a `Constructor`.

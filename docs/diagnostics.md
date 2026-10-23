@@ -1,6 +1,6 @@
 # Diagnostic codes
 
-Every error and warning the compiler reports carries a code — `T031`, `P012`, `C001`.
+Every error and warning the compiler reports carries a code — `T031`, `P020`, `C001`.
 The code is the stable handle on that failure: it survives rewording, a search box and a
 CI filter can both match on it, and it is what this page is indexed by.
 
@@ -511,10 +511,6 @@ An `Indent`, `Dedent`, or `Newline` token appeared in a context where the layout
 ### P009
 
 A non-associative operator was chained without parentheses.
-
-### P012
-
-A top-level function parameter was a tuple or constructor pattern.
 
 ### P013
 
@@ -1071,6 +1067,12 @@ See [C004](#c004) instead.
 Reported a dependency cycle among workspace projects while reading manifests. A manifest is read on its own, so the cycle was never visible at that point; the package layer resolves the whole graph and reports it.
 
 See [P206](#p206) instead.
+
+### P012
+
+Rejected unannotated tuple and constructor patterns in named function parameters. Named parameters now infer their pattern types and accept irrefutable destructuring; a pattern that can fail is rejected by the type checker.
+
+See [T043](#t043) instead.
 
 ### P018
 

@@ -32,6 +32,22 @@ use common::{make_app_workspace, make_example_app_workspace, make_mixed_workspac
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 
+#[cfg(feature = "beam-runtime")]
+#[test]
+fn spawn_function_type_callbacks_execute_with_their_declared_capability() {
+    let workspace = make_app_workspace(
+        "Main",
+        "import std.io as Io\nfn spawn increment (n: Int) -> Int = n + 1\nfn spawn apply (callback: fn spawn Int -> Int) (n: Int) -> Int = callback n\npub fn io spawn main () -> Unit = Io.println (toText (apply increment 41))\n",
+    );
+    Command::cargo_bin("ridge")
+        .unwrap()
+        .current_dir(&workspace.path)
+        .arg("run")
+        .assert()
+        .success()
+        .stdout("42\n");
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 fn ridge_cmd() -> Command {

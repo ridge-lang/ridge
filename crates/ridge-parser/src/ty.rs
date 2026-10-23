@@ -9,7 +9,6 @@
 //! - `parse_type_app` — wraps `parse_type_atom` adding greedy argument
 //!   collection for `UPPER_IDENT`-headed applications.
 //! - `parse_fn_type` — handles `fn CAP* Atom+ -> Type` (`CapFunctionType`).
-//! - `peek_capability` — matches a `LOWER_IDENT` against the capability set.
 //!
 //! # Primitive types
 //!
@@ -22,7 +21,8 @@
 //!
 //! The lexer does **not** emit dedicated keyword tokens for `io`, `fs`, `net`,
 //! etc.  These are emitted as `Token::LowerIdent("io")` etc.  The parser
-//! recognises capability words in `peek_capability` by matching the text.
+//! recognises these names and the dedicated `KwSpawn` token using the same
+//! capability-list parser as declarations.
 //!
 //! # Right-associativity of `->`
 //!
@@ -46,11 +46,12 @@
 #![allow(dead_code)]
 #![allow(clippy::redundant_pub_crate)]
 
-use ridge_ast::{Capability, FnType, Ident, PrimitiveType, RecordTypeField, Type};
+use ridge_ast::{FnType, Ident, PrimitiveType, RecordTypeField, Type};
 use ridge_lexer::Token;
 
 use crate::{
     cursor::{Cursor, DepthGuard},
+    decl::parse_cap_list,
     error::ParseError,
 };
 
@@ -282,12 +283,7 @@ fn parse_fn_type(cur: &mut Cursor<'_>) -> Result<Type, ParseError> {
     let start_span = cur.span();
     cur.bump(); // consume `fn`
 
-    // Collect capabilities: LowerIdent tokens in the capability set.
-    let mut caps: Vec<Capability> = Vec::new();
-    while let Some(cap) = peek_capability(cur) {
-        caps.push(cap);
-        cur.bump();
-    }
+    let caps = parse_cap_list(cur);
 
     // `fn () -> T` is the type of a function that takes nothing — the empty
     // parameter list, not a single `Unit`. That is the declaration form
@@ -395,34 +391,6 @@ fn parse_paren_or_tuple(cur: &mut Cursor<'_>) -> Result<Type, ParseError> {
         inner: Box::new(first),
         span: start_span.merge(end_span),
     })
-}
-
-// ── peek_capability (internal) ────────────────────────────────────────────────
-
-/// If the current token is a `LowerIdent` whose text matches a capability
-/// keyword, return the [`Capability`] variant.  Otherwise return `None`.
-///
-/// Does **not** advance the cursor.  Callers must call `cur.bump()` on match.
-///
-/// Capabilities are `LowerIdent` tokens — the lexer does NOT emit dedicated
-/// `KwIo` / `KwFs` / … token variants.
-fn peek_capability(cur: &Cursor<'_>) -> Option<Capability> {
-    match cur.peek() {
-        Token::LowerIdent(s) => match s.as_str() {
-            "io" => Some(Capability::Io),
-            "fs" => Some(Capability::Fs),
-            "net" => Some(Capability::Net),
-            "time" => Some(Capability::Time),
-            "random" => Some(Capability::Random),
-            "env" => Some(Capability::Env),
-            "proc" => Some(Capability::Proc),
-            "spawn" => Some(Capability::Spawn),
-            "ffi" => Some(Capability::Ffi),
-            "db" => Some(Capability::Db),
-            _ => None,
-        },
-        _ => None,
-    }
 }
 
 // ── is_type_atom_start (internal) ─────────────────────────────────────────────
@@ -591,7 +559,7 @@ fn parse_record_type_tail(cur: &mut Cursor<'_>) -> Result<Option<Ident>, ParseEr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ridge_ast::Span;
+    use ridge_ast::{Capability, Span};
     use ridge_lexer::tokenize;
 
     fn lex(src: &str) -> Vec<(Token, Span)> {

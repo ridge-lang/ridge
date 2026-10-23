@@ -250,6 +250,9 @@ fn caps_of_callee(
     callee: &Expr,
     args: &[Expr],
 ) -> CapabilitySet {
+    if let Some(caps) = typed_expr_caps(ctx, callee) {
+        return caps;
+    }
     // Obtain the scheme (if available) to detect cap vars.
     let scheme_opt = scheme_of_callee(ctx, callee);
 
@@ -315,10 +318,13 @@ const fn caps_from_scheme_fn(scheme: &Scheme) -> CapabilitySet {
 
 /// Read the capability set that `expr` *currently holds* as a function type.
 ///
-/// For identifiers, look up the env scheme and extract its caps slot.
-/// For qualified names, same lookup via dot-joined segments.
-/// Falls back to PURE for all other expressions.
-fn caps_of_expr(ctx: &InferCtx, _b: &BuiltinTyCons, expr: &Expr) -> CapabilitySet {
+/// Prefer the inferred use-site type so local scopes and shadowing survive the
+/// separate capability pass. Fall back to environment schemes when no typed
+/// expression is available (including callers constructing ASTs directly).
+fn caps_of_expr(ctx: &mut InferCtx, _b: &BuiltinTyCons, expr: &Expr) -> CapabilitySet {
+    if let Some(caps) = typed_expr_caps(ctx, expr) {
+        return caps;
+    }
     match expr {
         Expr::Ident(id) => ctx
             .env
@@ -339,6 +345,27 @@ fn caps_of_expr(ctx: &InferCtx, _b: &BuiltinTyCons, expr: &Expr) -> CapabilitySe
         }
         // Lambda as value or any other expression: pure.
         _ => CapabilitySet::PURE,
+    }
+}
+
+/// Read the inferred type at this use site, including bindings whose lexical
+/// scope has already been popped by the expression inference pass.
+pub(crate) fn typed_expr_caps(ctx: &mut InferCtx, expr: &Expr) -> Option<CapabilitySet> {
+    use ridge_resolve::NodeKind;
+
+    let kind = match expr {
+        Expr::Block(_) => NodeKind::Block,
+        Expr::Try { .. } => NodeKind::Try,
+        _ => NodeKind::Expr,
+    };
+    let node = ctx.node_id_map.as_ref()?.get(expr.span(), kind)?;
+    let ty = ctx.node_types_accum.get(node.0 as usize)?.as_ref()?.clone();
+    let Type::Fn { caps, .. } = ctx.shallow_resolve(&ty) else {
+        return None;
+    };
+    match ctx.shallow_resolve_caps(&caps) {
+        CapRow::Concrete(caps) => Some(caps),
+        _ => None,
     }
 }
 

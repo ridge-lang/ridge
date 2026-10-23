@@ -443,7 +443,8 @@ fn check_body(
 /// Compute the capability contribution of a *call site* (`Expr::Call` callee)
 /// for the caller-versus-callee capability check.
 ///
-/// This is a deliberately conservative simplification of
+/// Prefer the inferred use-site type, which retains local callback bindings.
+/// Without one, this is a deliberately conservative simplification of
 /// `caps_infer::caps_of_callee`: it reads the callee's concrete caps from the
 /// scheme but does **not** perform HOF cap resolution.  For a higher-order
 /// callee whose own `Type::Fn` carries a `CapRow::Var` (e.g. `List.forEach`),
@@ -456,10 +457,12 @@ fn check_body(
 /// whose body leaks a capability through a HOF callback has that capability in
 /// its inferred set and is rejected by declaration capability checking unless it declares it.  The
 /// `cap_d041_hof_callback_leak` fixture locks this invariant in.  A full
-/// reconciliation so the per-call-site check attributes HOF call sites precisely is deferred to the
-/// capability audit (it needs the mutable instantiation context that capability inference has
-/// and this later, immutable pass does not).
-fn call_site_caps(ctx: &InferCtx, callee: &Expr, _args: &[Expr]) -> CapabilitySet {
+/// reconciliation of untyped HOF call sites remains deferred to the capability
+/// audit; the fallback does not instantiate schemes.
+fn call_site_caps(ctx: &mut InferCtx, callee: &Expr, _args: &[Expr]) -> CapabilitySet {
+    if let Some(caps) = crate::caps_infer::typed_expr_caps(ctx, callee) {
+        return caps;
+    }
     match callee {
         Expr::Ident(id) => ctx
             .env

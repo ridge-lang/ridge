@@ -30,9 +30,16 @@ fn source_type_annotations_are_complete_and_roundtrip() {
         ("(Int -> Int) -> Text", "(Int -> Int) -> Text"),
         ("Int -> Text -> Bool", "Int -> Text -> Bool"),
         ("fn io net Text Int -> Unit", "fn io net Text Int -> Unit"),
+        ("fn spawn Unit -> Unit", "fn spawn Unit -> Unit"),
+        ("fn spawn () -> Unit", "fn spawn () -> Unit"),
+        ("fn spawn io Unit -> Unit", "fn spawn io Unit -> Unit"),
         (
-            "fn io fs net time random env proc ffi db Unit -> Unit",
-            "fn io fs net time random env proc ffi db Unit -> Unit",
+            "List (fn spawn Unit -> Unit)",
+            "List (fn spawn Unit -> Unit)",
+        ),
+        (
+            "fn io fs net time random env proc spawn ffi db Unit -> Unit",
+            "fn io fs net time random env proc spawn ffi db Unit -> Unit",
         ),
         ("fn () -> Unit", "fn () -> Unit"),
         ("fn io () -> Unit", "fn io () -> Unit"),

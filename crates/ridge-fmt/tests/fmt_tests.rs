@@ -10,6 +10,15 @@
 
 use ridge_fmt::{format_source, migrate_tests};
 
+#[test]
+fn spawn_function_types_preserve_capabilities_and_roundtrip() {
+    let source = "pub fn spawn invoke (callback: fn spawn Unit -> Unit) -> Unit = callback ()\npub fn keep (callbacks: List (fn io spawn Unit -> Unit)) -> Unit = ()\n";
+    let formatted = format_source(source).expect("spawn function types format");
+    assert!(formatted.contains("callback: fn spawn Unit -> Unit"));
+    assert!(formatted.contains("List (fn io spawn Unit -> Unit)"));
+    assert_eq!(format_source(&formatted).unwrap(), formatted);
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 /// Format `input` and assert it equals `expected`.

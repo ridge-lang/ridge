@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Function type annotations accept the `spawn` capability, including callback
+  parameters and nested types, while calls retain capability checking.
+
 - `Text.splitAny` accepts its declared `List Text` separators. A single `Text`
   separator is rejected during type checking instead of failing at runtime.
   Selectively imported stdlib functions appear in editor completions with

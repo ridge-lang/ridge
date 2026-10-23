@@ -1614,6 +1614,16 @@ Replaceable capability handlers (à la Roc platforms) remain under consideration
 
 ### 6.7. Capability polymorphism in higher-order functions
 
+Function types can also require concrete capabilities, including `spawn`:
+
+```ridge
+fn spawn apply (callback: fn spawn Int -> Int) (value: Int) -> Int =
+    callback value
+```
+
+Calling the callback requires `spawn` in `apply`. Passing the callback as a pure
+`Int -> Int` function does not erase that requirement.
+
 Higher-order stdlib functions like `List.forEach`, `List.map`, `Result.andThen` must not force a single capability on their callback. Ridge solves this with a **capability variable** in the signature — the caps of the callback flow through to the caller at each call site. This is not a typeclass; it's a single effect variable in the type system.
 
 ```ridge

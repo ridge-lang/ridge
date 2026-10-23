@@ -5891,6 +5891,13 @@ impl WorkspaceIndex {
                     continue;
                 }
                 let Some((schema, variant)) = constructors.get(name.as_str()) else {
+                    if stdlib_export_kind(name) == CompletionItemKind::FUNCTION {
+                        let mut candidate = stdlib_item(name, *module);
+                        candidate.label.clone_from(&imported.local_name);
+                        candidate.sort_text = format!("2{}", candidate.label);
+                        offered.insert(imported.local_name.clone());
+                        out.push(candidate);
+                    }
                     continue;
                 };
                 let mut candidate = item(

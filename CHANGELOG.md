@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `Text.splitAny` accepts its declared `List Text` separators. A single `Text`
+  separator is rejected during type checking instead of failing at runtime.
+  Selectively imported stdlib functions appear in editor completions with
+  resolvable signatures.
+
 - `dogfood/wc` prints word counts using ASCII whitespace separators, alongside
   its existing line and content byte counts.
 

@@ -2226,6 +2226,10 @@ This migration changes discovery only: it does not rewrite a `Bool` return type 
 | `std.result` | Result helpers | `map`, `mapErr`, `flatMap`, `withDefault`, `isOk`, `isErr`, `discard` |
 | `std.test` | Test assertions | `ensure`, `assertEq`, `assertNe`, `assertTrue`, `assertFalse`, `assertOk`, `assertErr`, `assertSome`, `assertNone` |
 
+`Text.splitAny` has type `List Text -> Text -> List Text`. For example,
+`Text.splitAny [",", ";"] "a,b;c"` returns `["a", "b", "c"]`.
+Pass a list even for a single separator, or use `Text.split "," "a,b"`.
+
 `List.empty`, `Map.empty`, `Set.empty`, and `Bytes.empty` are pure values.
 Use them without an argument list, for example `Bytes.length Bytes.empty`.
 Migrate the former spelling `Bytes.empty ()` by removing `()`. When an API

@@ -11,6 +11,7 @@
     ],
     "runtime": [
       "ask_timeout_range_e2e",
+      "block_initializer_state_e2e",
       "builtin_totext_dict_e2e",
       "bytes_e2e",
       "code_change_e2e",

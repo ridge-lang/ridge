@@ -24,7 +24,7 @@
 
 use crate::core_ast::{CErlAtom, CErlClause, CErlExpr, CErlLit, CErlPat, CErlVar};
 use crate::error::CodegenError;
-use crate::expr::lower_expr_in_scope;
+use crate::expr::lower_body_in_scope;
 use crate::scope::LocalScope;
 use ridge_ir::IrExpr;
 
@@ -487,12 +487,12 @@ pub(crate) fn lower_fn_body(body: &IrExpr) -> Result<CErlExpr, CodegenError> {
     let mut scope = LocalScope::new();
     if has_non_tail_return(body) {
         // Non-tail Returns exist: lower as-is (throw form) and wrap.
-        let lowered = lower_expr_in_scope(body, &mut scope)?;
+        let lowered = lower_body_in_scope(body, &mut scope)?;
         Ok(wrap_with_return_catch(lowered))
     } else {
         // All Returns (if any) are in tail position: elide them and lower.
         let elided = elide_tail_returns(body);
-        lower_expr_in_scope(&elided, &mut scope)
+        lower_body_in_scope(&elided, &mut scope)
     }
 }
 

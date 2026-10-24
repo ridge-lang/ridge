@@ -87,10 +87,37 @@ impl LocalShape {
     }
 }
 
+/// One mutable binding's counter and creation order within its function.
+#[derive(Debug, Clone, Copy)]
+struct MutableVersion {
+    next: u32,
+    born: u64,
+}
+
+/// The value before a write, keyed by lexical mutable identity rather than name.
+#[derive(Debug, Clone)]
+struct ValueWrite {
+    born: u64,
+    before: CErlVar,
+}
+
+/// Copy-on-write journals let branch scopes share the active value boundary.
+#[derive(Debug, Clone)]
+struct ValueFrame {
+    parent: Option<Arc<Self>>,
+    born_before: u64,
+    writes: FxHashMap<String, ValueWrite>,
+    created: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct LocalScope {
     /// `base_mangled_name → current_ssa_index`.
-    table: FxHashMap<String, u32>,
+    table: FxHashMap<String, MutableVersion>,
+    /// Creation order distinguishes enclosing bindings from value-local ones.
+    next_binding: u64,
+    /// Writes are recorded during emission, without rescanning initializer IR.
+    value_frame: Option<Arc<ValueFrame>>,
     /// Source names rebound by a nested mutable declaration.
     mutable_aliases: FxHashMap<String, String>,
     /// Mutable locals transported by the nearest Result scope.
@@ -208,6 +235,8 @@ impl LocalScope {
     pub(crate) fn new() -> Self {
         Self {
             table: FxHashMap::default(),
+            next_binding: 0,
+            value_frame: None,
             mutable_aliases: FxHashMap::default(),
             result_scope_vars: Vec::new(),
             fn_arity: Arc::new(FxHashMap::default()),
@@ -227,6 +256,8 @@ impl LocalScope {
     pub(crate) fn with_arity(fn_arity: FxHashMap<String, LocalShape>) -> Self {
         Self {
             table: FxHashMap::default(),
+            next_binding: 0,
+            value_frame: None,
             mutable_aliases: FxHashMap::default(),
             result_scope_vars: Vec::new(),
             fn_arity: Arc::new(fn_arity),
@@ -250,6 +281,8 @@ impl LocalScope {
     ) -> Self {
         Self {
             table: FxHashMap::default(),
+            next_binding: 0,
+            value_frame: None,
             mutable_aliases: FxHashMap::default(),
             result_scope_vars: Vec::new(),
             fn_arity: Arc::new(fn_arity),
@@ -269,6 +302,8 @@ impl LocalScope {
     pub(crate) fn with_arity_arc(fn_arity: Arc<FxHashMap<String, LocalShape>>) -> Self {
         Self {
             table: FxHashMap::default(),
+            next_binding: 0,
+            value_frame: None,
             mutable_aliases: FxHashMap::default(),
             result_scope_vars: Vec::new(),
             fn_arity,
@@ -294,6 +329,8 @@ impl LocalScope {
     ) -> Self {
         Self {
             table: FxHashMap::default(),
+            next_binding: 0,
+            value_frame: None,
             mutable_aliases: FxHashMap::default(),
             result_scope_vars: Vec::new(),
             fn_arity: Arc::new(fn_arity),
@@ -314,11 +351,11 @@ impl LocalScope {
 
     /// Allocate a binding distinct from every version in an inner scope.
     pub(crate) fn join_index(&mut self, name: &str, inner: &Self) -> u32 {
-        let next = inner.table.get(name).copied().unwrap_or(0);
-        let entry = self.table.entry(name.to_owned()).or_insert(0);
-        *entry = (*entry).max(next);
-        let index = *entry;
-        *entry += 1;
+        let next = inner.table.get(name).map_or(0, |v| v.next);
+        let entry = self.version(name.to_owned());
+        entry.next = entry.next.max(next);
+        let index = entry.next;
+        entry.next += 1;
         index
     }
 
@@ -339,7 +376,7 @@ impl LocalScope {
     pub(crate) fn mutable_value(&self, key: &str) -> CErlVar {
         ssa_var(
             &Self::mutable_base(key),
-            self.table.get(key).copied().unwrap_or(1).saturating_sub(1),
+            self.table.get(key).map_or(0, |v| v.next.saturating_sub(1)),
         )
     }
 
@@ -366,6 +403,7 @@ impl LocalScope {
     /// Capture the current versions by value; parameters start new bindings.
     pub(crate) fn inherit_mutable_captures(&mut self, outer: &Self, params: &[ridge_ir::IrParam]) {
         self.table.clone_from(&outer.table);
+        self.next_binding = outer.next_binding;
         self.mutable_aliases.clone_from(&outer.mutable_aliases);
         for param in params {
             self.mutable_aliases.remove(&param.name);
@@ -379,39 +417,116 @@ impl LocalScope {
     /// - Subsequent calls: increments and returns the new index.
     pub(crate) fn bump(&mut self, name: &str) -> u32 {
         let key = self.mutable_key(name).to_owned();
-        let entry = self.table.entry(key).or_insert(0);
-        // For the first bump (introducing the VarIn binding), index is 0.
-        // For re-assignments, the stored value is already the previous index;
-        // increment it before returning.
-        //
-        // Wait — we need to think carefully:
-        //   1st call (VarIn introduces the name): returns 0.
-        //   2nd call (1st Assign): returns 1.
-        //   3rd call (2nd Assign): returns 2.
-        //
-        // `or_insert(0)` sets to 0 if absent.  On first call we want to return 0
-        // without incrementing.  On subsequent calls we increment first.
-        //
-        // We encode this by using a sentinel: store u32::MAX as "not yet bumped".
-        // That adds complexity.  Simpler: store "next index to return".
-        //
-        // Actually the simplest correct approach:
-        //   - `entry` starts at 0 on first insertion.
-        //   - Return current value, then increment the stored value for next call.
-        //     → first call returns 0, second returns 1, etc.
-        let idx = *entry;
-        *entry = idx + 1;
+        self.bump_lexical(&key)
+    }
+
+    /// Allocate a version for an identity already resolved before shadowing.
+    pub(crate) fn bump_lexical(&mut self, key: &str) -> u32 {
+        let entry = self.version(key.to_owned());
+        // Store the next index to emit: declaration 0, first assignment 1, ...
+        let idx = entry.next;
+        entry.next = idx + 1;
         idx
     }
 
     /// Return the current SSA index for `name`, or `None` if the name is not
     /// tracked (i.e. it is a let-bound or param local, not a `var`).
     pub(crate) fn current_index(&self, name: &str) -> Option<u32> {
-        self.table.get(self.mutable_key(name)).map(|next| {
+        self.table.get(self.mutable_key(name)).map(|version| {
             // `next` is the *next* index to be returned by `bump`.
             // `current` = next - 1 (the last index that was returned).
-            next.saturating_sub(1)
+            version.next.saturating_sub(1)
         })
+    }
+
+    fn version(&mut self, key: String) -> &mut MutableVersion {
+        self.table.entry(key).or_insert_with_key(|key| {
+            if let Some(frame) = &mut self.value_frame {
+                Arc::make_mut(frame).created.push(key.clone());
+            }
+            let born = self.next_binding;
+            self.next_binding += 1;
+            MutableVersion { next: 0, born }
+        })
+    }
+
+    pub(crate) fn has_tracked_locals(&self) -> bool {
+        !self.table.is_empty()
+    }
+
+    pub(crate) fn begin_value(&mut self) {
+        self.value_frame = Some(Arc::new(ValueFrame {
+            parent: self.value_frame.take(),
+            born_before: self.next_binding,
+            writes: FxHashMap::default(),
+            created: Vec::new(),
+        }));
+    }
+
+    /// Record source assignment sites, never compiler temporary counters.
+    pub(crate) fn record_assignment(&mut self, name: &str) {
+        if self.value_frame.is_none() {
+            return;
+        }
+        let key = self.mutable_key(name).to_owned();
+        self.record_assignment_key(&key);
+    }
+
+    pub(crate) fn record_assignment_key(&mut self, key: &str) {
+        let Some(frame) = &self.value_frame else {
+            return;
+        };
+        if let Some(version) = self.table.get(key) {
+            if version.born >= frame.born_before || frame.writes.contains_key(key) {
+                return;
+            }
+            self.import_write(
+                key,
+                ValueWrite {
+                    born: version.born,
+                    before: self.mutable_value(key),
+                },
+            );
+        }
+    }
+
+    fn import_write(&mut self, key: &str, write: ValueWrite) {
+        let Some(frame) = &mut self.value_frame else {
+            return;
+        };
+        if write.born < frame.born_before && !frame.writes.contains_key(key) {
+            Arc::make_mut(frame).writes.insert(key.to_owned(), write);
+        }
+    }
+
+    /// Import possible branch writes; their values are packed inside each arm.
+    pub(crate) fn merge_value_writes(&mut self, branch: &Self) {
+        let Some(frame) = &branch.value_frame else {
+            return;
+        };
+        for (key, write) in &frame.writes {
+            if self.table.get(key).is_some_and(|v| v.born == write.born) {
+                self.import_write(key, write.clone());
+            }
+        }
+    }
+
+    pub(crate) fn end_value(&mut self) -> Option<Vec<(String, CErlVar)>> {
+        let frame = Arc::unwrap_or_clone(self.value_frame.take()?);
+        self.value_frame = frame.parent;
+        for key in frame.created {
+            self.table.remove(&key);
+        }
+        for (key, write) in &frame.writes {
+            self.import_write(key, write.clone());
+        }
+        let mut incoming: Vec<_> = frame
+            .writes
+            .iter()
+            .map(|(key, write)| (key.clone(), write.before.clone()))
+            .collect();
+        incoming.sort_by(|a, b| a.0.cmp(&b.0));
+        Some(incoming)
     }
 }
 

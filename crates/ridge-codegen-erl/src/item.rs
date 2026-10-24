@@ -14,7 +14,7 @@
 
 use crate::core_ast::{CErlAnn, CErlAtom, CErlExpr, CErlFn, CErlVar};
 use crate::error::CodegenError;
-use crate::expr::{lower_expr_in_scope, name_to_erl_var};
+use crate::expr::{lower_body_in_scope, lower_expr_in_scope, name_to_erl_var};
 use crate::return_::{elide_tail_returns, has_non_tail_return, wrap_with_return_catch};
 use crate::scope::LocalScope;
 use crate::scope::LocalShape;
@@ -105,14 +105,14 @@ pub(crate) fn lower_fn_with_module_name(
     //   Return { value } → value) so lower_expr never emits a throw — no
     //   try/catch wrapper needed.
     let lowered_body = if has_non_tail_return(&fn_.body) {
-        let body = lower_expr_in_scope(&fn_.body, &mut scope)?;
+        let body = lower_body_in_scope(&fn_.body, &mut scope)?;
         wrap_with_return_catch(body)
     } else {
         // Elide tail Returns before lowering — lower_expr emits throws for
         // *all* Return nodes, so we must strip them first when they are in
         // tail position (no throw+catch needed, value flows naturally).
         let elided = elide_tail_returns(&fn_.body);
-        lower_expr_in_scope(&elided, &mut scope)?
+        lower_body_in_scope(&elided, &mut scope)?
     };
 
     // Build the annotations.

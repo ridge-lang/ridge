@@ -9,13 +9,13 @@
 use std::path::Path;
 
 use ridge_diagnostics::{lookup_code, Diagnostic, NoteSeverity, Severity, INDEX_URL};
-use ridge_lexer::Span;
+use ridge_lexer::{LineIndex, Span};
 use tower_lsp::lsp_types::{
     CodeDescription, Diagnostic as LspDiagnostic, DiagnosticRelatedInformation, DiagnosticSeverity,
     Location, NumberOrString, Position, Range, Url,
 };
 
-use crate::span_recovery::resolve_span_to_lsp;
+use crate::span_recovery::resolve_span_with_index;
 
 // ── Source-id → URI resolution ────────────────────────────────────────────────
 
@@ -108,8 +108,12 @@ pub const fn lsp_note_severity(s: NoteSeverity) -> DiagnosticSeverity {
 /// exactly, so columns are correct on lines containing non-ASCII text.
 #[must_use]
 pub fn span_to_range(span: Span, src: &str) -> Range {
-    use ridge_lexer::LineIndex;
-    let li = LineIndex::new(src);
+    let text = ridge_lexer::normalise_line_endings(src);
+    span_to_range_with_index(span, &LineIndex::new(&text))
+}
+
+/// Convert a compiler span using a shared normalized source index.
+fn span_to_range_with_index(span: Span, li: &LineIndex) -> Range {
     let (start_line, start_char) = li.byte_to_utf16(span.start);
     let (end_line, end_char) = li.byte_to_utf16(span.end);
     Range {
@@ -181,16 +185,27 @@ fn code_description(code: &str) -> Option<CodeDescription> {
 /// If `src` is `None`, the diagnostic is anchored to the file's first line.
 #[must_use]
 pub fn to_lsp_diagnostic(diag: &Diagnostic, file_uri: &Url, src: Option<&str>) -> LspDiagnostic {
-    let range = src.map_or_else(file_start_range, |text| {
-        resolve_span_to_lsp(diag.primary_span, text)
+    let index = src.map(|text| LineIndex::new(&ridge_lexer::normalise_line_endings(text)));
+    to_lsp_diagnostic_with_index(diag, file_uri, index.as_ref())
+}
+
+/// Convert a diagnostic using the workspace's shared normalized source index.
+pub(crate) fn to_lsp_diagnostic_with_index(
+    diag: &Diagnostic,
+    file_uri: &Url,
+    index: Option<&LineIndex>,
+) -> LspDiagnostic {
+    let range = index.map_or_else(file_start_range, |index| {
+        resolve_span_with_index(diag.primary_span, index)
     });
 
     let related: Vec<DiagnosticRelatedInformation> = diag
         .notes
         .iter()
         .map(|note| {
-            let note_range =
-                src.map_or_else(file_start_range, |text| span_to_range(note.span, text));
+            let note_range = index.map_or_else(file_start_range, |index| {
+                span_to_range_with_index(note.span, index)
+            });
             DiagnosticRelatedInformation {
                 location: Location {
                     uri: file_uri.clone(),
@@ -221,6 +236,47 @@ pub fn to_lsp_diagnostic(diag: &Diagnostic, file_uri: &Url, src: Option<&str>) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crlf_diagnostics_and_related_notes_use_normalized_unicode_spans() {
+        let source = "-- header\r\n\"caf\u{e9} \u{1f9ed}\" value\r\n";
+        let normalized = ridge_lexer::normalise_line_endings(source);
+        let start = u32::try_from(normalized.find("value").unwrap()).unwrap();
+        let span = Span::new(start, start + 5);
+        let expected = Range::new(Position::new(1, 10), Position::new(1, 15));
+        let mut diagnostic = Diagnostic::new(
+            "T001",
+            Severity::Error,
+            span,
+            "type mismatch",
+            ridge_diagnostics::SourceId::new("Main.ridge"),
+        );
+        diagnostic.push_note(ridge_diagnostics::DiagnosticNote {
+            span,
+            message: "related value".into(),
+            severity: NoteSeverity::Note,
+        });
+        let uri = Url::parse("file:///Main.ridge").unwrap();
+        let converted = to_lsp_diagnostic(&diagnostic, &uri, Some(source));
+        assert_eq!(converted.range, expected);
+        assert_eq!(
+            converted.related_information.unwrap()[0].location.range,
+            expected
+        );
+        assert_eq!(span_to_range(span, source), expected);
+        assert_eq!(
+            crate::span_recovery::resolve_span_to_lsp(span, source),
+            expected
+        );
+        assert_eq!(
+            span_to_range(Span::point(u32::MAX), source),
+            Range::new(Position::new(2, 0), Position::new(2, 0))
+        );
+        assert_eq!(
+            crate::span_recovery::resolve_span_to_lsp(Span::point(0), source),
+            crate::span_recovery::file_line1_range()
+        );
+    }
 
     #[test]
     fn span_to_range_uses_utf16_columns() {

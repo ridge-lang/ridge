@@ -186,9 +186,10 @@ pub struct WorkspaceIndex {
     uri_key_to_module: HashMap<String, ModuleId>,
     /// Per-module spatial index, indexed by `ModuleId.0`.
     pub spatial: Vec<NodeSpatialIndex>,
-    /// Per-module UTF-16 ↔ byte line index, indexed by `ModuleId.0`.
+    /// Per-module UTF-16 ↔ normalized byte line index, indexed by `ModuleId.0`.
     pub line_indices: Vec<LineIndex>,
-    /// Per-module source text the spans index into, indexed by `ModuleId.0`.
+    /// Per-module LF-normalized source text the compiler spans index into,
+    /// indexed by `ModuleId.0`. Editor buffers retain their original endings.
     pub module_text: Vec<Arc<str>>,
     /// Per-module document URI, indexed by `ModuleId.0` (for cross-file
     /// go-to-definition targets). `None` if the path had no valid URI.
@@ -1087,8 +1088,12 @@ impl WorkspaceIndex {
                 );
             }
             if let Some(text) = sources.text(source_id.as_str()) {
+                // Compiler spans refer to normalized text. LSP line/UTF-16
+                // positions are unchanged by CRLF -> LF, but byte offsets are
+                // not; both queries and source slicing must use this domain.
+                let text = ridge_lexer::normalise_line_endings(text);
+                line_indices[i] = LineIndex::new(&text);
                 module_text[i] = Arc::from(text);
-                line_indices[i] = LineIndex::new(text);
             }
         }
 
@@ -4818,10 +4823,13 @@ impl WorkspaceIndex {
                     reason.message(&function.name.text).to_string(),
                     ridge_diagnostics::SourceId::new(uri.as_str()),
                 );
-                let source_text = self.module_text.get(mi).map(AsRef::as_ref);
                 out.push((
                     uri.clone(),
-                    crate::diagnostics::to_lsp_diagnostic(&diagnostic, uri, source_text),
+                    crate::diagnostics::to_lsp_diagnostic_with_index(
+                        &diagnostic,
+                        uri,
+                        self.line_indices.get(mi),
+                    ),
                 ));
             }
         }

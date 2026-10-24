@@ -63,7 +63,7 @@ mod file_context;
 use ridge_resolve::ModuleId;
 
 use crate::cancel::{Cancel, CancelOnDrop};
-use crate::diagnostics::{source_id_to_uri, to_lsp_diagnostic, uri_key};
+use crate::diagnostics::{source_id_to_uri, to_lsp_diagnostic_with_index, uri_key};
 use crate::index::{
     collect_import_fixes, collect_lex_fixes, collect_module_alias_fixes, collect_nesting_hints,
     collect_signature_fixes, collect_staircase_fixes, collect_syntax_fixes, collect_uncurry_fixes,
@@ -1105,8 +1105,11 @@ fn compile_blocking(
     for diag in &structured {
         let source_key = diag.source_id.as_str();
         let uri = source_id_to_uri(&workspace_root, source_key);
-        let src_text = sources.text(source_key);
-        let lsp_diag = to_lsp_diagnostic(diag, &uri, src_text);
+        let lines = index
+            .uri_to_module
+            .get(&uri)
+            .and_then(|id| index.line_indices.get(id.0 as usize));
+        let lsp_diag = to_lsp_diagnostic_with_index(diag, &uri, lines);
         by_file.entry(uri).or_default().push(lsp_diag);
     }
 

@@ -249,6 +249,125 @@ fn rpc(
 }
 
 #[test]
+fn block_shadowing_types_and_diagnostics_follow_stdio_edits() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("lib/src")).unwrap();
+    std::fs::write(
+        dir.path().join("ridge.toml"),
+        "[workspace]\nname=\"scope\"\nversion=\"0.1.0\"\nmembers=[\"lib\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("lib/ridge.toml"),
+        "[project]\nname=\"lib\"\nversion=\"0.1.0\"\nkind=\"library\"\n",
+    )
+    .unwrap();
+    let source = "pub fn value () -> Int =\n    let (n, text) = (42, \"hello\")\n    let chosen =\n        let n = \"inner\"\n        n\n    n\n";
+    let path = dir.path().join("lib/src/Main.ridge");
+    std::fs::write(&path, source).unwrap();
+    let uri = Url::from_file_path(&path).unwrap();
+    let root = Url::from_file_path(dir.path()).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ridge-lsp"))
+        .env("RIDGE_LSP_LOG", "error")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let rx = spawn_reader(child.stdout.take().unwrap());
+    let mut id = 0;
+    rpc(
+        &mut stdin,
+        &rx,
+        &mut id,
+        "initialize",
+        json!({"processId":null,"rootUri":root,"workspaceFolders":[{"uri":root,"name":"scope"}],"capabilities":{}}),
+    );
+    send(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+    );
+    for (version, text, wrong_return) in [
+        (1, source.to_owned(), false),
+        (
+            2,
+            source
+                .replace("() -> Int", "() -> Text")
+                .replace('\n', "\r\n"),
+            true,
+        ),
+        (3, source.replace("\"inner\"", "true"), false),
+        (4, source.replace('\n', "\r\n"), false),
+    ] {
+        let notification = if version == 1 {
+            json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"languageId":"ridge","version":version,"text":text}}})
+        } else {
+            json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":uri,"version":version},"contentChanges":[{"text":text}]}})
+        };
+        send(&mut stdin, &notification);
+        let diagnostics = recv_until(&rx, Duration::from_secs(30), |m| {
+            m["method"] == "textDocument/publishDiagnostics" && m["params"]["uri"] == json!(uri)
+        })
+        .unwrap();
+        let errors: Vec<_> = diagnostics["params"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|d| d["severity"] == json!(1))
+            .collect();
+        if wrong_return {
+            assert!(
+                errors.iter().any(|d| d["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("expected Text, got Int")),
+                "{diagnostics}"
+            );
+        } else {
+            assert!(errors.is_empty(), "{diagnostics}");
+        }
+        let params = json!({"textDocument":{"uri":uri},"position":{"line":5,"character":4}});
+        let hover = rpc(
+            &mut stdin,
+            &rx,
+            &mut id,
+            "textDocument/hover",
+            params.clone(),
+        );
+        assert!(
+            hover["contents"]["value"]
+                .as_str()
+                .unwrap()
+                .contains("\nn : Int\n"),
+            "{hover}"
+        );
+        assert_eq!(
+            hover["range"],
+            json!({"start":{"line":5,"character":4},"end":{"line":5,"character":5}})
+        );
+        let definition = rpc(&mut stdin, &rx, &mut id, "textDocument/definition", params);
+        assert_eq!(definition["uri"], json!(uri));
+        assert_eq!(
+            definition["range"],
+            json!({"start":{"line":1,"character":9},"end":{"line":1,"character":10}})
+        );
+    }
+    id += 1;
+    send(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","id":id,"method":"shutdown"}),
+    );
+    let shutdown = recv_until(&rx, Duration::from_secs(15), |m| m["id"] == json!(id)).unwrap();
+    assert!(shutdown.get("error").is_none(), "{shutdown}");
+    send(&mut stdin, &json!({"jsonrpc":"2.0","method":"exit"}));
+    drop(stdin);
+    assert!(wait_for_exit(&mut child, Duration::from_secs(15))
+        .unwrap()
+        .success());
+}
+
+#[test]
 fn crlf_queries_ranges_and_incremental_edits_over_stdio() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("lib/src")).unwrap();

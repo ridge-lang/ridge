@@ -345,6 +345,11 @@ The marker `()` declares a function with no parameters; it does not declare a de
 
 `let` is a layout binding: the body follows on subsequent lines at the same indentation, and the value is in scope for the rest of the block. Ridge has no `let … in` expression — the ML-family form is rejected with `P033 LetInNotSupported`.
 
+A nested block introduces its own lexical scope. A declaration in that block
+may shadow an outer name without replacing the outer binding after the block
+ends. Assigning to an outer `var` still updates that binding; leaving the block
+does not undo the assignment or its type constraints.
+
 Match guards use `when`, not `if` (`if` is only the conditional expression). A guard written with `if` is rejected with `P034 GuardKeywordInMatch`.
 
 **Or-patterns** (`p1 | p2 | …`) are valid only at the root of a `match` arm, not nested inside another pattern. Every alternative must bind the same variables, and each shared binding must have the same type across alternatives — so `Plus x | Minus x -> x` is allowed while `Some x | None -> …` is rejected. An arm covers the union of its alternatives for exhaustiveness checking.

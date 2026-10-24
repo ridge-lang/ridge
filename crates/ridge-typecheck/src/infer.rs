@@ -1578,7 +1578,10 @@ fn build_arena_from_ctx(ctx: &InferCtx) -> ridge_types::TyConArena {
 /// An empty `stmts` vec is a parser-level error (`P014 EmptyBlock`);
 /// `infer_block` returns `Unit` defensively.
 pub fn infer_block(ctx: &mut InferCtx, b: &BuiltinTyCons, block: &Block) -> Type {
-    infer_region(ctx, |ctx| {
+    // Match the resolver's block scope. Only bindings expire here: unification,
+    // effects and return/propagation flow still belong to the enclosing context.
+    ctx.env.push_frame();
+    let ty = infer_region(ctx, |ctx| {
         if block.stmts.is_empty() {
             return Type::Con(b.unit, vec![]);
         }
@@ -1593,7 +1596,9 @@ pub fn infer_block(ctx: &mut InferCtx, b: &BuiltinTyCons, block: &Block) -> Type
         }
         // Infer even an unreachable tail: its own type errors remain errors.
         infer_expr(ctx, b, &block.stmts[n - 1])
-    })
+    });
+    ctx.env.pop_frame();
+    ty
 }
 
 /// Infers pattern variable types and binds them in the current scope frame.

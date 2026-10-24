@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Nested layout blocks keep local declarations in their lexical scope, so
+  shadowing no longer changes the inferred type of an outer binding.
+
 - Hovering a `let` or `var` declaration shows the binding's type instead of
   the enclosing statement's `Unit` type, including destructured bindings.
 

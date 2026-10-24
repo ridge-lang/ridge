@@ -54,6 +54,9 @@ will scale to larger workspaces without observable latency.
 
 ## Usage
 
+Hover cards show a local binding's type at its declaration and uses, including
+`let` patterns and mutable `var` bindings.
+
 The server uses UTF-16 line/character positions for both LF and CRLF documents.
 Compiler-facing snapshots normalize line endings to keep byte spans consistent;
 the original editor buffer is retained for incremental changes, formatting and

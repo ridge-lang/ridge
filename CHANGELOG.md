@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Hovering a `let` or `var` declaration shows the binding's type instead of
+  the enclosing statement's `Unit` type, including destructured bindings.
+
 - CRLF files retain accurate language-server symbol queries, semantic tokens,
   diagnostics and edit ranges while editor buffers keep their line endings.
 

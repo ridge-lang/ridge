@@ -3612,6 +3612,14 @@ impl WorkspaceIndex {
             return None;
         };
         let definition = self.find_local_def_span(mi, *id)?;
+        // A use carries its own inferred instantiation. The declaration's
+        // retained type is for the binder, not a replacement for use-site data.
+        if span != definition {
+            let mid = ModuleId(u32::try_from(mi).ok()?);
+            if let Some(ty) = self.expr_type_at(mid, span) {
+                return Some((ty, span));
+            }
+        }
         let node = self
             .spatial
             .get(mi)?

@@ -7,7 +7,7 @@ TypecheckSnapshot {
     errors: [],
     module_count: 1,
     tycon_count: 112,
-    node_types_populated: 224,
+    node_types_populated: 234,
     schemes_populated: 1,
     inferred_caps_real_keys: 1,
 }

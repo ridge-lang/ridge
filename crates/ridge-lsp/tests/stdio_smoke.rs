@@ -302,6 +302,21 @@ fn crlf_queries_ranges_and_incremental_edits_over_stdio() {
         .unwrap();
         assert_eq!(diagnostics["params"]["diagnostics"], json!([]));
         let params = json!({"textDocument":{"uri":uri}, "position":{"line":2,"character":4}});
+        let binder = rpc(
+            &mut stdin,
+            &rx,
+            &mut id,
+            "textDocument/hover",
+            json!({"textDocument":{"uri":uri}, "position":{"line":1,"character":8}}),
+        );
+        assert!(binder["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("n : Int"));
+        assert_eq!(
+            binder["range"],
+            json!({"start":{"line":1,"character":8},"end":{"line":1,"character":9}})
+        );
         let expected = json!({"start":{"line":2,"character":4},"end":{"line":2,"character":5}});
         let hover = rpc(
             &mut stdin,

@@ -871,6 +871,7 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             let scheme = generalise(ctx, &val_ty);
             // Bind the pattern variables.
             bind_pattern_scheme(ctx, b, pat, &scheme);
+            ridge_ast::visit::Visit::visit_pattern(&mut BindingTypes { ctx }, pat);
             // A let-binding expression itself has type Unit (side-effect only).
             Type::Con(b.unit, vec![])
         }
@@ -894,6 +895,7 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             // Bind name to a mono-scheme.
             let scheme = monoscheme(val_ty);
             ctx.env.bind(name.text.clone(), scheme);
+            BindingTypes { ctx }.record(name);
             Type::Con(b.unit, vec![])
         }
 
@@ -1915,16 +1917,16 @@ pub(crate) fn infer_param_pattern(
 ) {
     infer_pattern(ctx, b, pat, ty);
     ctx.write_node_type(pat.span(), NodeKind::ParamPattern, ty);
-    ridge_ast::visit::Visit::visit_pattern(&mut ParamBindingTypes { ctx }, pat);
+    ridge_ast::visit::Visit::visit_pattern(&mut BindingTypes { ctx }, pat);
     crate::exhaustiveness::check_param_irrefutable(ctx, b, pat, ty, span);
 }
 
 /// Record each binder's own type, excluding constructor names and field labels.
-struct ParamBindingTypes<'ctx> {
+struct BindingTypes<'ctx> {
     ctx: &'ctx mut InferCtx,
 }
 
-impl ParamBindingTypes<'_> {
+impl BindingTypes<'_> {
     fn record(&mut self, name: &ridge_ast::Ident) {
         if let Some(ty) = self
             .ctx
@@ -1937,7 +1939,7 @@ impl ParamBindingTypes<'_> {
     }
 }
 
-impl<'ast> ridge_ast::visit::Visit<'ast> for ParamBindingTypes<'_> {
+impl<'ast> ridge_ast::visit::Visit<'ast> for BindingTypes<'_> {
     fn visit_pattern(&mut self, pat: &'ast Pattern) {
         match pat {
             Pattern::Var { name, .. } | Pattern::As { name, .. } => self.record(name),

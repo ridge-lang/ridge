@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- CRLF files retain accurate language-server symbol queries, semantic tokens,
+  diagnostics and edit ranges while editor buffers keep their line endings.
+
 - Function type annotations accept the `spawn` capability, including callback
   parameters and nested types, while calls retain capability checking.
 

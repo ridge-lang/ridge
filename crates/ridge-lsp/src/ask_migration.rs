@@ -50,19 +50,8 @@ pub fn collect_ask_fixes(
             out: Vec::new(),
         };
         finder.visit_module(&module.ast);
-        // Lexer spans index LF-normalised text; LSP positions have the same
-        // line/column meaning in the original CRLF buffer.
-        let normalised_index = index
-            .module_text
-            .get(mi)
-            .filter(|text| text.contains('\r'))
-            .map(|text| ridge_lexer::LineIndex::new(&ridge_lexer::normalise_line_endings(text)));
-        let (Some(Some(uri)), Some(li)) = (
-            index.module_uris.get(mi),
-            normalised_index
-                .as_ref()
-                .or_else(|| index.line_indices.get(mi)),
-        ) else {
+        let (Some(Some(uri)), Some(li)) = (index.module_uris.get(mi), index.line_indices.get(mi))
+        else {
             continue;
         };
         for (ask, diagnostic, code) in finder.out {

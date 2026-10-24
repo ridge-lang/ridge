@@ -39,12 +39,17 @@ use tower_lsp::lsp_types::{Position, Range};
 /// file is returned.  Otherwise, the span is converted normally via [`LineMap`].
 #[must_use]
 pub fn resolve_span_to_lsp(span: Span, src: &str) -> Range {
+    let text = ridge_lexer::normalise_line_endings(src);
+    resolve_span_with_index(span, &LineIndex::new(&text))
+}
+
+/// Convert a compiler span with an index over the same normalized text.
+pub(crate) fn resolve_span_with_index(span: Span, li: &LineIndex) -> Range {
     if span.start == 0 && span.end == 0 {
         // Fully-synthetic node — anchor to file start.
         return file_line1_range();
     }
 
-    let li = LineIndex::new(src);
     let (start_line, start_char) = li.byte_to_utf16(span.start);
     let (end_line, end_char) = li.byte_to_utf16(span.end);
 

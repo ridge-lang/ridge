@@ -228,3 +228,210 @@ fn stdio_lifecycle_and_capabilities() {
 
     std::mem::forget(dir);
 }
+
+/// Request helpers keep IDs unique while preserving notifications for the
+/// caller to wait for after a document change.
+fn rpc(
+    stdin: &mut ChildStdin,
+    rx: &Receiver<Value>,
+    id: &mut u32,
+    method: &str,
+    params: Value,
+) -> Value {
+    *id += 1;
+    let mut packet = json!({"jsonrpc":"2.0", "id":*id, "method":method});
+    packet["params"] = params;
+    send(stdin, &packet);
+    let response =
+        recv_until(rx, Duration::from_secs(30), |m| m["id"] == json!(*id)).expect("RPC response");
+    assert!(response.get("error").is_none(), "{response}");
+    response["result"].clone()
+}
+
+#[test]
+fn crlf_queries_ranges_and_incremental_edits_over_stdio() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("lib/src")).unwrap();
+    std::fs::write(
+        dir.path().join("ridge.toml"),
+        "[workspace]\nname=\"crlf\"\nversion=\"0.1.0\"\nmembers=[\"lib\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("lib/ridge.toml"),
+        "[project]\nname=\"lib\"\nversion=\"0.1.0\"\nkind=\"library\"\n",
+    )
+    .unwrap();
+    let source = "pub fn value () -> Int =\n    let n = 42\n    n\n";
+    let path = dir.path().join("lib/src/Main.ridge");
+    std::fs::write(&path, source.replace('\n', "\r\n")).unwrap();
+    let uri = Url::from_file_path(&path).unwrap();
+    let root = Url::from_file_path(dir.path()).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ridge-lsp"))
+        .env("RIDGE_LSP_LOG", "error")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let rx = spawn_reader(child.stdout.take().unwrap());
+    let mut id = 0;
+    rpc(
+        &mut stdin,
+        &rx,
+        &mut id,
+        "initialize",
+        json!({"processId":null, "rootUri":root, "workspaceFolders":[{"uri":root,"name":"crlf"}], "capabilities":{}}),
+    );
+    send(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+    );
+    for (v, ending) in [(1, "\r\n"), (2, "\n"), (3, "\r\n")] {
+        let text = source.replace('\n', ending);
+        let packet = if v == 1 {
+            json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"languageId":"ridge","version":v,"text":text}}})
+        } else {
+            json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":uri,"version":v},"contentChanges":[{"text":text}]}})
+        };
+        send(&mut stdin, &packet);
+        let diagnostics = recv_until(&rx, Duration::from_secs(30), |m| {
+            m["method"] == "textDocument/publishDiagnostics" && m["params"]["uri"] == json!(uri)
+        })
+        .unwrap();
+        assert_eq!(diagnostics["params"]["diagnostics"], json!([]));
+        let params = json!({"textDocument":{"uri":uri}, "position":{"line":2,"character":4}});
+        let expected = json!({"start":{"line":2,"character":4},"end":{"line":2,"character":5}});
+        let hover = rpc(
+            &mut stdin,
+            &rx,
+            &mut id,
+            "textDocument/hover",
+            params.clone(),
+        );
+        assert!(hover["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("n : Int"));
+        assert_eq!(hover["range"], expected);
+        let definition = rpc(
+            &mut stdin,
+            &rx,
+            &mut id,
+            "textDocument/definition",
+            params.clone(),
+        );
+        assert_eq!(
+            definition["range"],
+            json!({"start":{"line":1,"character":8},"end":{"line":1,"character":9}})
+        );
+        let mut refs = params.clone();
+        refs["context"] = json!({"includeDeclaration":true});
+        let refs = rpc(&mut stdin, &rx, &mut id, "textDocument/references", refs);
+        assert_eq!(refs.as_array().unwrap().len(), 2);
+        assert!(refs
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["range"] == expected));
+        let prepare = rpc(
+            &mut stdin,
+            &rx,
+            &mut id,
+            "textDocument/prepareRename",
+            params.clone(),
+        );
+        assert_eq!(prepare["range"], expected);
+        let highlights = rpc(
+            &mut stdin,
+            &rx,
+            &mut id,
+            "textDocument/documentHighlight",
+            params,
+        );
+        assert_eq!(highlights.as_array().unwrap().len(), 2);
+        assert!(highlights
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["range"] == expected));
+        let selection = rpc(
+            &mut stdin,
+            &rx,
+            &mut id,
+            "textDocument/selectionRange",
+            json!({"textDocument":{"uri":uri}, "positions":[{"line":2,"character":4}]}),
+        );
+        assert_eq!(selection[0]["range"], expected);
+        let tokens = rpc(
+            &mut stdin,
+            &rx,
+            &mut id,
+            "textDocument/semanticTokens/full",
+            json!({"textDocument":{"uri":uri}}),
+        );
+        // Absolute positions: function (0,7), binder (1,8), use (2,4).
+        assert_eq!(
+            tokens["data"],
+            json!([0, 7, 5, 3, 1, 1, 8, 1, 6, 3, 1, 4, 1, 6, 2])
+        );
+    }
+    // The server must apply incremental edits against the raw CRLF buffer.
+    send(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":uri,"version":4},"contentChanges":[{"range":{"start":{"line":1,"character":12},"end":{"line":1,"character":14}},"text":"43"}]}}),
+    );
+    let diagnostics = recv_until(&rx, Duration::from_secs(30), |m| {
+        m["method"] == "textDocument/publishDiagnostics" && m["params"]["uri"] == json!(uri)
+    })
+    .unwrap();
+    assert_eq!(diagnostics["params"]["diagnostics"], json!([]));
+    let hover = rpc(
+        &mut stdin,
+        &rx,
+        &mut id,
+        "textDocument/hover",
+        json!({"textDocument":{"uri":uri}, "position":{"line":2,"character":4}}),
+    );
+    assert!(hover["contents"]["value"]
+        .as_str()
+        .unwrap()
+        .contains("n : Int"));
+    // Formatting reads the original buffer; its replacement reaches the raw EOF.
+    let formatting = rpc(
+        &mut stdin,
+        &rx,
+        &mut id,
+        "textDocument/formatting",
+        json!({"textDocument":{"uri":uri},"options":{"tabSize":4,"insertSpaces":true}}),
+    );
+    assert_eq!(
+        formatting[0]["range"]["end"],
+        json!({"line":3,"character":0})
+    );
+    assert!(formatting[0]["newText"].as_str().unwrap().contains("43"));
+    send(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":uri,"version":5},"contentChanges":[{"text":"pub fn broken () -> Int =\r\n    \"wrong\"\r\n"}]}}),
+    );
+    let diagnostics = recv_until(&rx, Duration::from_secs(30), |m| {
+        m["method"] == "textDocument/publishDiagnostics" && m["params"]["uri"] == json!(uri)
+    })
+    .unwrap();
+    assert_eq!(
+        diagnostics["params"]["diagnostics"][0]["range"]["end"],
+        json!({"line":2,"character":0})
+    );
+    id += 1;
+    send(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","id":id,"method":"shutdown"}),
+    );
+    recv_until(&rx, Duration::from_secs(15), |m| m["id"] == json!(id)).unwrap();
+    send(&mut stdin, &json!({"jsonrpc":"2.0","method":"exit"}));
+    drop(stdin);
+    assert!(wait_for_exit(&mut child, Duration::from_secs(15))
+        .unwrap()
+        .success());
+}

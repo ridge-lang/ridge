@@ -117,6 +117,21 @@ pub fn shadowMutation () -> Result Int Text =
     match result
         Ok x -> Ok (x + n)
         Err e -> Err e
+
+pub fn blockShadow () -> Int =
+    let (n, text) = (42, "hello")
+    let chosen =
+        let n = "inner"
+        n
+    n
+
+pub fn blockMutableShadow () -> Int =
+    var n = 7
+    let chosen =
+        var n = "inner"
+        n <- "changed"
+        n
+    n
 "#;
 
 #[test]
@@ -158,7 +173,7 @@ fn try_wraps_values_and_catches_only_its_own_propagation() {
                 .unwrap_or_default()
             )
         });
-    let expression = "M=ridge_app_Main, Crash=try M:crash(0) of _ -> wrong catch error:badarith -> raised; _:_ -> wrong end, Actual={M:value(),M:failure(),M:nested(),M:explicit(),M:tailExplicit(),M:callback(),M:localBoundary(),M:mutation(),M:mutationBeforeError(),M:mutationAfterError(),M:nestedMutation(),M:shadowMutation(),Crash}, case Actual of {{ok,7},{error,<<\"fail\">>},{ok,9},{ok,77},{ok,88},{ok,11},{ok,13},{ok,3},{ok,4},{ok,0},{ok,10},{ok,27},raised} -> io:put_chars(\"try-ok\\n\"); _ -> io:format(\"unexpected: ~p~n\",[Actual]),halt(5) end,halt().";
+    let expression = "M=ridge_app_Main, Crash=try M:crash(0) of _ -> wrong catch error:badarith -> raised; _:_ -> wrong end, Actual={M:value(),M:failure(),M:nested(),M:explicit(),M:tailExplicit(),M:callback(),M:localBoundary(),M:mutation(),M:mutationBeforeError(),M:mutationAfterError(),M:nestedMutation(),M:shadowMutation(),M:blockShadow(),M:blockMutableShadow(),Crash}, case Actual of {{ok,7},{error,<<\"fail\">>},{ok,9},{ok,77},{ok,88},{ok,11},{ok,13},{ok,3},{ok,4},{ok,0},{ok,10},{ok,27},42,7,raised} -> io:put_chars(\"try-ok\\n\"); _ -> io:format(\"unexpected: ~p~n\",[Actual]),halt(5) end,halt().";
     let output = std::process::Command::new("erl")
         .args(["-noshell", "-pa"])
         .arg(user.parent().unwrap())

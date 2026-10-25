@@ -306,6 +306,10 @@ pub struct InferCtx {
     // ── T6 additions ─────────────────────────────────────────────────────────
     /// Lexically-scoped type environment (name → Scheme).
     pub env: Env,
+    /// Definition sites whose resolved binding is an assignment target.
+    pub(crate) written_bindings: FxHashSet<ridge_ast::Span>,
+    /// Recovery facts observed within the current initializer inference.
+    pub(crate) used_error_type: bool,
     /// Capability set inferred for the *current* enclosing function.
     ///
     /// Expression inference uses `CapabilitySet::PURE` as the placeholder; the
@@ -614,6 +618,8 @@ impl InferCtx {
             capvids: InPlaceUnificationTable::new(),
             rowvids: InPlaceUnificationTable::new(),
             env: Env::new(),
+            written_bindings: FxHashSet::default(),
+            used_error_type: false,
             current_caps: CapabilitySet::PURE,
             errors: Vec::new(),
             current_fn_ret: None,

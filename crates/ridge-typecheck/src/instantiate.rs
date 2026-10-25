@@ -150,6 +150,48 @@ pub fn generalise(ctx: &mut InferCtx, ty: &Type) -> Scheme {
     generalise_with_env(ctx, ty, &free_in_env_ty, &free_in_env_cap, &free_in_env_row)
 }
 
+/// Collect the shared context of a local let binding.
+///
+/// A captured variable may now contain a function or record, with free variables
+/// in any of the three namespaces that were absent from its original scheme.
+/// Pending class subjects also remain shared: quantifying one without abstracting
+/// its dictionary would disconnect the requirement from the binding's uses.
+#[must_use]
+pub fn generalisation_env(
+    ctx: &mut InferCtx,
+) -> (FxHashSet<TyVid>, FxHashSet<CapVid>, FxHashSet<RowVid>) {
+    let mut ty_vars = FxHashSet::default();
+    let mut cap_vars = FxHashSet::default();
+    let mut row_vars = FxHashSet::default();
+    let mut include = |ty: &Type| {
+        let (types, caps) = collect_free_vars(ty);
+        ty_vars.extend(types);
+        cap_vars.extend(caps);
+        row_vars.extend(collect_free_row_vars(ty));
+    };
+    let mut shared_types = ctx.env_free_tyvids();
+    shared_types.extend(
+        ctx.deferred_constraints
+            .iter()
+            .flat_map(|constraint| constraint.tys.iter().copied()),
+    );
+    for var in shared_types {
+        include(&ctx.deep_resolve(&Type::Var(var)));
+    }
+    for row in ctx.env_free_rowvids() {
+        include(&ctx.deep_resolve(&Type::Record {
+            fields: vec![],
+            tail: RowTail::Open(row),
+        }));
+    }
+    for cap in ctx.env_free_capvids() {
+        if let CapRow::Var(var) = ctx.shallow_resolve_caps(&CapRow::Var(cap)) {
+            cap_vars.insert(var);
+        }
+    }
+    (ty_vars, cap_vars, row_vars)
+}
+
 /// Variant of [`generalise`] that uses a pre-computed env free-var snapshot
 /// instead of reading the current environment.
 ///
@@ -180,6 +222,46 @@ pub fn generalise_with_env(
     //    the variable it stands for is the whole point of the step.
     let ty_resolved = ctx.resolve_for_export(ty);
 
+    generalise_resolved(
+        ctx,
+        ty_resolved,
+        free_in_env_ty,
+        free_in_env_cap,
+        free_in_env_row,
+    )
+}
+
+/// A local binding is still inside the signature being checked. Its captured
+/// constants must remain rigid until that enclosing declaration is exported.
+#[must_use]
+#[expect(
+    clippy::implicit_hasher,
+    reason = "FxHashSet is the canonical hasher for this crate"
+)]
+pub fn generalise_local_with_env(
+    ctx: &mut InferCtx,
+    ty: &Type,
+    free_in_env_ty: &FxHashSet<TyVid>,
+    free_in_env_cap: &FxHashSet<CapVid>,
+    free_in_env_row: &FxHashSet<RowVid>,
+) -> Scheme {
+    let ty_resolved = ctx.deep_resolve(ty);
+    generalise_resolved(
+        ctx,
+        ty_resolved,
+        free_in_env_ty,
+        free_in_env_cap,
+        free_in_env_row,
+    )
+}
+
+fn generalise_resolved(
+    ctx: &mut InferCtx,
+    ty_resolved: Type,
+    free_in_env_ty: &FxHashSet<TyVid>,
+    free_in_env_cap: &FxHashSet<CapVid>,
+    free_in_env_row: &FxHashSet<RowVid>,
+) -> Scheme {
     // 2. Free vars in the resolved type.
     let (mut free_ty, mut free_cap) = collect_free_vars(&ty_resolved);
     let mut free_row = collect_free_row_vars(&ty_resolved);

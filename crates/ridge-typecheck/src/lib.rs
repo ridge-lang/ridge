@@ -482,6 +482,7 @@ pub fn typecheck_workspace_with_history(
             rm.id,
             &ast,
             rm.node_ids.clone(),
+            &rm.bindings,
             &rm.imports,
             &imported_tycons,
             &imported_schemes,
@@ -710,6 +711,7 @@ pub fn typecheck_module_incremental(
         module_id,
         &ast,
         rm.node_ids.clone(),
+        &rm.bindings,
         &rm.imports,
         &imported_tycons,
         &imported_schemes,
@@ -1125,6 +1127,7 @@ fn typecheck_module_inner(
     id: ModuleId,
     ast: &Arc<ridge_ast::Module>,
     node_id_map: ridge_resolve::NodeIdMap,
+    bindings: &ridge_resolve::BindingMap,
     imports: &[ridge_resolve::ImportResolution],
     imported_tycons: &FxHashMap<String, TyConId>,
     imported_schemes: &FxHashMap<String, ridge_types::Scheme>,
@@ -1149,6 +1152,7 @@ fn typecheck_module_inner(
     use crate::tycon_collect::{collect_user_tycons, prescan_inline_records};
 
     let mut ctx = InferCtx::new(b);
+    ctx.written_bindings = crate::infer::written_binding_sites(ast, &node_id_map, bindings);
     // Attach the resolver's NodeIdMap so infer_expr can write back per-expression
     // types. The map is stamped once during resolve and threaded in here rather
     // than rebuilt, so resolve and typecheck stay keyed by the same NodeIds.

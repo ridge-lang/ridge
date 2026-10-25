@@ -122,13 +122,17 @@ fn writes_and_recovery_remain_checked_after_edits() {
         .find(|m| m.file_path.ends_with("Main.ridge"))
         .unwrap()
         .id;
-    for invalid in [
-        "pub fn value () -> Text =\n    let identity = fn x -> x\n    let call = fn x -> identity x\n    identity <- fn _ -> 7\n    call \"hello\"\n",
-        "pub fn value () -> Int =\n    let read = fn record -> record.value\n    let first: Int = read ({ value = 1 })\n    read 7\n",
+    for (invalid, immutable_write) in [
+        ("pub fn value () -> Text =\n    let identity = fn x -> x\n    let call = fn x -> identity x\n    identity <- fn _ -> 7\n    call \"hello\"\n", true),
+        ("pub fn value () -> Int =\n    let read = fn record -> record.value\n    let first: Int = read ({ value = 1 })\n    read 7\n", false),
     ] {
         for ending in ["\n", "\r\n"] {
             state.recompile(mid, &invalid.replace('\n', ending));
-            assert!(state.type_errors.iter().any(|(_, error)| matches!(error, ridge_typecheck::TypeError::TypeMismatch { .. } | ridge_typecheck::TypeError::TypeMismatchInCall { .. })), "{:?}", state.type_errors);
+            if immutable_write {
+                assert!(state.resolved.errors.iter().any(|(_, error)| matches!(error, ridge_resolve::ResolveError::ImmutableAssignment { .. })), "{:?}", state.resolved.errors);
+            } else {
+                assert!(state.type_errors.iter().any(|(_, error)| matches!(error, ridge_typecheck::TypeError::TypeMismatch { .. } | ridge_typecheck::TypeError::TypeMismatchInCall { .. })), "{:?}", state.type_errors);
+            }
             state.recompile(mid, &valid.replace('\n', ending));
             clean(&state);
         }

@@ -1269,6 +1269,12 @@ pub const REGISTRY: &[CodeEntry] = &[
         summary: "A module alias was used where a value is expected; an alias names a module and nothing inside it.",
     },
     CodeEntry {
+        code: "R031",
+        variants: &["ImmutableAssignment"],
+        owner: "ridge-resolve",
+        summary: "An assignment targets an immutable local binding. Use `var` for intended mutation or a new `let` declaration to shadow the value.",
+    },
+    CodeEntry {
         code: "R999",
         variants: &["InternalNodeIdCollision"],
         owner: "ridge-resolve",

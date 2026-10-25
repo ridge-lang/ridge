@@ -748,6 +748,10 @@ An actor declares a singleton member (`init`, `mailbox`, `terminate`, or `onDown
 
 A module alias was used where a value is expected; an alias names a module and nothing inside it.
 
+### R031
+
+An assignment targets an immutable local binding. Use `var` for intended mutation or a new `let` declaration to shadow the value.
+
 ### R999
 
 Two AST nodes were assigned the same `NodeId` (signals a compiler bug, not a user error).

@@ -16,6 +16,39 @@ fn ridge_cmd() -> Command {
 }
 
 #[test]
+fn check_rejects_immutable_assignments_and_explains_mutation() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("immutable.ridge");
+    for ending in ["\n", "\r\n"] {
+        let source = "pub fn value () -> Int =\n    let n = 1\n    n <- 7\n    n\n";
+        std::fs::write(&file, source.replace('\n', ending)).unwrap();
+        ridge_cmd()
+            .arg("check")
+            .arg(&file)
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains(
+                "cannot assign to immutable binding `n`",
+            ))
+            .stderr(predicates::str::contains("immutable binding declared here"))
+            .stderr(predicates::str::contains(
+                "use `var` when mutation is intended",
+            ));
+        std::fs::write(
+            &file,
+            source.replace("let n", "var n").replace('\n', ending),
+        )
+        .unwrap();
+        ridge_cmd().arg("check").arg(&file).assert().success();
+    }
+    ridge_cmd()
+        .args(["explain", "R031"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("immutable local binding"));
+}
+
+#[test]
 fn standalone_check_accepts_shebang_without_main_or_manifest() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("café con espacios.ridge");

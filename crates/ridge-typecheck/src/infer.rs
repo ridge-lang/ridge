@@ -46,7 +46,9 @@ use rustc_hash::FxHashSet;
 use crate::ctx::InferCtx;
 use crate::error::{TypeDesc, TypeError};
 use crate::flow::Flow;
-use crate::instantiate::{generalise, generalise_with_env, instantiate, monoscheme};
+use crate::instantiate::{
+    generalisation_env, generalise_local_with_env, generalise_with_env, instantiate, monoscheme,
+};
 use crate::prelude::lookup_prelude;
 use crate::render::emit_internal;
 use crate::unify::unify;
@@ -238,6 +240,7 @@ pub fn infer_expr(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type {
         ty
     });
     ctx.projection_use_span = outer_projection_span;
+    ctx.used_error_type |= ctx.shallow_resolve(&ty).is_error();
     crate::projections::remember_type(ctx, &ty, expr.span());
     // Write back the shallow-resolved type for this expression position.
     // Expr::Block and Expr::Try use NodeKind::Block / NodeKind::Try respectively
@@ -853,7 +856,11 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             ty: ann,
             span: _,
         } => {
+            let outer_error = std::mem::take(&mut ctx.used_error_type);
+            let errors_before = ctx.errors.len();
             let val_ty = infer_expr(ctx, b, value);
+            let recovered = ctx.used_error_type || ctx.errors.len() != errors_before;
+            ctx.used_error_type |= outer_error;
 
             // Annotation first: `unify` reads its arguments as expected then
             // found, and the annotation is what the value had to meet. The span
@@ -868,9 +875,11 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
 
             // T7: real let-generalisation (§4.7). Lambda params are still
             // monoschemes; only `let` boundaries generalise.
-            let scheme = generalise(ctx, &val_ty);
-            // Bind the pattern variables.
-            bind_pattern_scheme(ctx, b, pat, &scheme);
+            if recovered || contains_error_type(&ctx.deep_resolve(&val_ty)) {
+                infer_pattern(ctx, b, pat, &val_ty);
+            } else {
+                bind_let_pattern(ctx, b, pat, &val_ty);
+            }
             ridge_ast::visit::Visit::visit_pattern(&mut BindingTypes { ctx }, pat);
             // A let-binding expression itself has type Unit (side-effect only).
             Type::Con(b.unit, vec![])
@@ -2022,14 +2031,142 @@ pub(crate) fn ast_type_to_type(
     crate::tycon_collect::ast_type_to_ridge_type(b, ctx, ast_ty, &names, &no_sig_tyvars)
 }
 
-/// Binds a pattern against a `Scheme` (for `let`-bindings where generalisation
-/// is already complete).  For a monomorphic scheme this is equivalent to
-/// `infer_pattern` with the scheme's body type.
-fn bind_pattern_scheme(ctx: &mut InferCtx, b: &BuiltinTyCons, pat: &Pattern, scheme: &Scheme) {
-    // For the T6 monoscheme stub, the scheme has no vars so instantiation is
-    // a no-op — use the body type directly.
-    let ty = instantiate(ctx, scheme);
-    infer_pattern(ctx, b, pat, &ty);
+/// Resolve writes before inference so a later write cannot invalidate an earlier
+/// generalized closure. Local identities keep shadowed names independent.
+pub(crate) fn written_binding_sites(
+    module: &ridge_ast::Module,
+    nodes: &ridge_resolve::NodeIdMap,
+    bindings: &ridge_resolve::BindingMap,
+) -> FxHashSet<Span> {
+    struct Writes<'a> {
+        nodes: &'a ridge_resolve::NodeIdMap,
+        bindings: &'a ridge_resolve::BindingMap,
+        locals: FxHashSet<ridge_resolve::LocalId>,
+    }
+    impl Writes<'_> {
+        fn target(&mut self, expr: &Expr) {
+            match expr {
+                Expr::Ident(ident) => {
+                    if let Some(node) = self.nodes.get(ident.span, NodeKind::Ident) {
+                        if let Some(Some(ridge_resolve::Binding::Local(local))) =
+                            self.bindings.get(node.0 as usize)
+                        {
+                            self.locals.insert(*local);
+                        }
+                    }
+                }
+                Expr::Paren { inner, .. } => self.target(inner),
+                Expr::FieldAccess { base, .. } => self.target(base),
+                _ => {}
+            }
+        }
+    }
+    impl<'ast> ridge_ast::visit::Visit<'ast> for Writes<'_> {
+        fn visit_expr(&mut self, expr: &'ast Expr) {
+            if let Expr::Assign { target, .. } = expr {
+                self.target(target);
+            }
+            ridge_ast::visit::walk_expr(self, expr);
+        }
+    }
+    struct Sites<'a> {
+        writes: Writes<'a>,
+        sites: FxHashSet<Span>,
+    }
+    impl<'ast> ridge_ast::visit::Visit<'ast> for Sites<'_> {
+        fn visit_ident(&mut self, ident: &'ast ridge_ast::Ident) {
+            if let Some(node) = self.writes.nodes.get(ident.span, NodeKind::Ident) {
+                if let Some(Some(ridge_resolve::Binding::Local(local))) =
+                    self.writes.bindings.get(node.0 as usize)
+                {
+                    if self.writes.locals.contains(local) {
+                        self.sites.insert(ident.span);
+                    }
+                }
+            }
+        }
+    }
+    let mut writes = Writes {
+        nodes,
+        bindings,
+        locals: FxHashSet::default(),
+    };
+    ridge_ast::visit::Visit::visit_module(&mut writes, module);
+    if writes.locals.is_empty() {
+        return FxHashSet::default();
+    }
+    let mut sites = Sites {
+        writes,
+        sites: FxHashSet::default(),
+    };
+    ridge_ast::visit::Visit::visit_module(&mut sites, module);
+    sites.sites
+}
+
+/// Recovery placeholders cannot establish a universally quantified value.
+fn contains_error_type(ty: &Type) -> bool {
+    match ty {
+        Type::Error => true,
+        Type::Con(_, args) | Type::Tuple(args) => args.iter().any(contains_error_type),
+        Type::Fn { params, ret, .. } => {
+            params.iter().any(contains_error_type) || contains_error_type(ret)
+        }
+        Type::Record { fields, .. } => fields.iter().any(|(_, ty)| contains_error_type(ty)),
+        Type::Alias { body, .. } => contains_error_type(body),
+        _ => false,
+    }
+}
+
+/// Check the whole pattern before independently quantifying its local bindings.
+fn bind_let_pattern(ctx: &mut InferCtx, b: &BuiltinTyCons, pat: &Pattern, ty: &Type) {
+    struct WrittenNames<'a> {
+        sites: &'a FxHashSet<Span>,
+        names: FxHashSet<String>,
+    }
+    impl<'ast> ridge_ast::visit::Visit<'ast> for WrittenNames<'_> {
+        fn visit_ident(&mut self, ident: &'ast ridge_ast::Ident) {
+            if self.sites.contains(&ident.span) {
+                self.names.insert(ident.text.clone());
+            }
+        }
+    }
+    if let Pattern::Var { name, .. } = pat {
+        if ctx.written_bindings.contains(&name.span) {
+            ctx.env.bind(name.text.clone(), monoscheme(ty.clone()));
+            return;
+        }
+        let (env_ty, env_cap, env_row) = generalisation_env(ctx);
+        let scheme = generalise_local_with_env(ctx, ty, &env_ty, &env_cap, &env_row);
+        ctx.env.bind(name.text.clone(), scheme);
+        return;
+    }
+    ctx.env.push_frame();
+    infer_pattern(ctx, b, pat, ty);
+    // The temporary frame contains exactly the names inferred by the pattern,
+    // including shorthand record fields and list-rest binders.
+    let bindings = ctx.env.frames.pop().unwrap_or_default().bindings;
+    let mut written = WrittenNames {
+        sites: &ctx.written_bindings,
+        names: FxHashSet::default(),
+    };
+    ridge_ast::visit::Visit::visit_pattern(&mut written, pat);
+    let written = written.names;
+    // Written components are part of the shared environment before any sibling
+    // can quantify a type variable that the pattern made them share.
+    for (name, binding) in &bindings {
+        if written.contains(name) {
+            ctx.env.bind(name.clone(), binding.clone());
+        }
+    }
+    let (env_ty, env_cap, env_row) = generalisation_env(ctx);
+    for (name, binding) in bindings {
+        let scheme = if written.contains(&name) {
+            binding
+        } else {
+            generalise_local_with_env(ctx, &binding.ty, &env_ty, &env_cap, &env_row)
+        };
+        ctx.env.bind(name, scheme);
+    }
 }
 
 /// Infers types for binary operators.

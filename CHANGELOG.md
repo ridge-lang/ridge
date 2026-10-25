@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Immutable `let` helpers preserve polymorphic types across uses, including
+  function aliases and destructured bindings. Captured types and signature
+  constants retain their enclosing constraints during local checking, and
+  pending class requirements remain linked to constrained uses. Bindings that
+  receive writes and values inferred using recovery types stay monomorphic.
+
 - Assignments inside value initializers preserve updates to enclosing mutable
   bindings, including nested blocks, destructuring and local shadowing.
 

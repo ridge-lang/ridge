@@ -2,7 +2,7 @@
 
 use crate::core_ast::{CErlAtom, CErlExpr, CErlLit, CErlPat, CErlVar};
 use crate::error::CodegenError;
-use crate::expr::lower_expr_in_scope;
+use crate::expr::lower_body_in_scope;
 use crate::scope::{ssa_var, LocalScope};
 use ridge_ir::{AssignTarget, IrExpr, IrTimeout};
 use rustc_hash::FxHashSet;
@@ -19,7 +19,7 @@ pub fn lower(body: &IrExpr, id: u32, scope: &mut LocalScope) -> Result<CErlExpr,
     names.sort();
     let mut inner = scope.clone();
     inner.result_scope_vars.push(names.clone());
-    let lowered = lower_expr_in_scope(body, &mut inner)?;
+    let lowered = lower_body_in_scope(body, &mut inner)?;
     inner.result_scope_vars.pop();
     if names.is_empty() {
         return Ok(crate::return_::wrap_with_result_catch(lowered));
@@ -35,6 +35,7 @@ pub fn lower(body: &IrExpr, id: u32, scope: &mut LocalScope) -> Result<CErlExpr,
     let packed = pack_success(lowered, &initial);
     let mut state = Vec::new();
     for name in &names {
+        scope.record_assignment_key(name);
         let index = scope.join_index(name, &inner);
         state.push(ssa_var(&LocalScope::mutable_base(name), index));
     }
@@ -148,6 +149,19 @@ fn exported_versions(expr: &CErlExpr, versions: &mut [(String, CErlVar)]) {
 
 /// Pack at each normal tail, while the bindings for its SSA values are live.
 fn pack_success(expr: CErlExpr, incoming: &[(String, CErlVar)]) -> CErlExpr {
+    pack_tail(expr, incoming, true)
+}
+
+/// Ordinary values export state without acquiring a Result/propagation boundary.
+pub fn pack_value(expr: CErlExpr, incoming: &[(String, CErlVar)]) -> CErlExpr {
+    let incoming: Vec<_> = incoming
+        .iter()
+        .map(|(key, var)| (LocalScope::mutable_base(key), var.clone()))
+        .collect();
+    pack_tail(expr, &incoming, false)
+}
+
+fn pack_tail(expr: CErlExpr, incoming: &[(String, CErlVar)], wrap_result: bool) -> CErlExpr {
     let mut versions = incoming.to_vec();
     match expr {
         CErlExpr::Let { var, value, body } => {
@@ -156,19 +170,19 @@ fn pack_success(expr: CErlExpr, incoming: &[(String, CErlVar)]) -> CErlExpr {
             CErlExpr::Let {
                 var,
                 value,
-                body: Box::new(pack_success(*body, &versions)),
+                body: Box::new(pack_tail(*body, &versions, wrap_result)),
             }
         }
         CErlExpr::Do { first, then } => {
             exported_versions(&first, &mut versions);
             CErlExpr::Do {
                 first,
-                then: Box::new(pack_success(*then, &versions)),
+                then: Box::new(pack_tail(*then, &versions, wrap_result)),
             }
         }
         CErlExpr::LetRec { defs, body } => CErlExpr::LetRec {
             defs,
-            body: Box::new(pack_success(*body, &versions)),
+            body: Box::new(pack_tail(*body, &versions, wrap_result)),
         },
         CErlExpr::Case { scrutinee, clauses } => {
             exported_versions(&scrutinee, &mut versions);
@@ -177,7 +191,7 @@ fn pack_success(expr: CErlExpr, incoming: &[(String, CErlVar)]) -> CErlExpr {
                 .map(|mut clause| {
                     let mut versions = versions.clone();
                     update_pattern(&mut versions, &clause.pattern);
-                    clause.body = pack_success(clause.body, &versions);
+                    clause.body = pack_tail(clause.body, &versions, wrap_result);
                     clause
                 })
                 .collect();
@@ -202,10 +216,15 @@ fn pack_success(expr: CErlExpr, incoming: &[(String, CErlVar)]) -> CErlExpr {
         }
         value => {
             exported_versions(&value, &mut versions);
-            let mut values = vec![CErlExpr::Tuple(vec![
-                CErlExpr::Lit(CErlLit::Atom(CErlAtom("ok".into()))),
-                value,
-            ])];
+            let value = if wrap_result {
+                CErlExpr::Tuple(vec![
+                    CErlExpr::Lit(CErlLit::Atom(CErlAtom("ok".into()))),
+                    value,
+                ])
+            } else {
+                value
+            };
+            let mut values = vec![value];
             values.extend(versions.into_iter().map(|(_, var)| CErlExpr::Var(var)));
             CErlExpr::Tuple(values)
         }

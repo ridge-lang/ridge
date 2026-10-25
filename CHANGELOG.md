@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Assignments inside value initializers preserve updates to enclosing mutable
+  bindings, including nested blocks, destructuring and local shadowing.
+
 - Nested layout blocks keep local declarations in their lexical scope, so
   shadowing no longer changes the inferred type of an outer binding.
 

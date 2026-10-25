@@ -31,7 +31,7 @@
 // pub(crate) on items in a pub(crate) module is redundant per clippy; we keep
 // it anyway for explicitness — suppress the lint here.
 #![allow(clippy::redundant_pub_crate)]
-// lower_expr_in_scope is a linear dispatch table over a large enum; it will
+// lower_body_in_scope is a linear dispatch table over a large enum; it will
 // always be close to the 100-line limit.  Allow the natural size rather than
 // splitting the match into artificial sub-functions.
 #![allow(clippy::too_many_lines)]
@@ -389,7 +389,7 @@ fn lift_guarded_match_at_depth(scrut_var: &CErlVar, arms: &[LoweredArm], depth: 
 /// directly.
 pub(crate) fn lower_expr(expr: &IrExpr) -> Result<CErlExpr, CodegenError> {
     let mut scope = LocalScope::new();
-    lower_expr_in_scope(expr, &mut scope)
+    lower_body_in_scope(expr, &mut scope)
 }
 
 /// Lower an [`IrExpr`] to a [`CErlExpr`], threading the given [`LocalScope`].
@@ -397,6 +397,61 @@ pub(crate) fn lower_expr(expr: &IrExpr) -> Result<CErlExpr, CodegenError> {
 /// The scope tracks `var`-bound locals.  Every SSA-index lookup and
 /// bump goes through `scope`.
 pub(crate) fn lower_expr_in_scope(
+    expr: &IrExpr,
+    scope: &mut LocalScope,
+) -> Result<CErlExpr, CodegenError> {
+    // Leaves cannot update an enclosing binding. Result scopes already export
+    // their state, and lambda bodies execute in their own capture scope.
+    if (!scope.has_tracked_locals()
+        && !matches!(
+            expr,
+            IrExpr::LetIn { .. }
+                | IrExpr::VarIn { .. }
+                | IrExpr::Block { .. }
+                | IrExpr::FunctionScope { .. }
+        ))
+        || matches!(
+            expr,
+            IrExpr::Lit { .. }
+                | IrExpr::Local { .. }
+                | IrExpr::Symbol { .. }
+                | IrExpr::Lambda { .. }
+                | IrExpr::ResultScope { .. }
+        )
+    {
+        return lower_body_in_scope(expr, scope);
+    }
+    scope.begin_value();
+    let lowered = lower_body_in_scope(expr, scope);
+    let incoming = scope
+        .end_value()
+        .ok_or_else(|| CodegenError::IrShapeMalformed {
+            variant: "value scope",
+            span: ridge_ast::Span::point(0),
+            detail: "value emission lost its mutable-state checkpoint".into(),
+        })?;
+    let lowered = lowered?;
+    if incoming.is_empty() {
+        return Ok(lowered);
+    }
+    let value = crate::result_scope::pack_value(lowered, &incoming);
+    let state = incoming
+        .iter()
+        .map(|(key, _)| {
+            let index = scope.bump_lexical(key);
+            ssa_var(&LocalScope::mutable_base(key), index)
+        })
+        .collect();
+    let id = scope.bump("@value_scope");
+    Ok(CErlExpr::BindTuple {
+        result: CErlVar(format!("ValueScope{id}")),
+        state,
+        value: Box::new(value),
+    })
+}
+
+/// Emit a continuation/body whose lexical bindings already enclose its tail.
+pub(crate) fn lower_body_in_scope(
     expr: &IrExpr,
     scope: &mut LocalScope,
 ) -> Result<CErlExpr, CodegenError> {
@@ -518,7 +573,7 @@ pub(crate) fn lower_expr_in_scope(
                             .insert(name.clone(), LocalShape::func(arity));
                         std::sync::Arc::make_mut(&mut scope.letrec_locals).insert(name.clone());
                         let lowered_lambda = lower_expr_in_scope(value, scope)?;
-                        let lowered_body = lower_expr_in_scope(body, scope)?;
+                        let lowered_body = lower_body_in_scope(body, scope)?;
                         // Remove from both to avoid leaking into the outer scope.
                         std::sync::Arc::make_mut(&mut scope.fn_arity).remove(name.as_str());
                         std::sync::Arc::make_mut(&mut scope.letrec_locals).remove(name.as_str());
@@ -530,7 +585,7 @@ pub(crate) fn lower_expr_in_scope(
                 }
                 // Plain Let.
                 let lowered_value = lower_expr_in_scope(value, scope)?;
-                let lowered_body = lower_expr_in_scope(body, scope)?;
+                let lowered_body = lower_body_in_scope(body, scope)?;
                 Ok(CErlExpr::Let {
                     var: CErlVar(name_to_erl_var(name)),
                     value: Box::new(lowered_value),
@@ -539,7 +594,7 @@ pub(crate) fn lower_expr_in_scope(
             } else {
                 // Destructuring or as-pattern: emit a Case with one clause.
                 let lowered_value = lower_expr_in_scope(value, scope)?;
-                let lowered_body = lower_expr_in_scope(body, scope)?;
+                let lowered_body = lower_body_in_scope(body, scope)?;
                 Ok(CErlExpr::Case {
                     scrutinee: Box::new(lowered_value),
                     clauses: vec![CErlClause {
@@ -562,7 +617,7 @@ pub(crate) fn lower_expr_in_scope(
             let lowered_value = lower_expr_in_scope(value, scope)?;
             let previous = scope.enter_mutable(name, id.0);
             let var = scope.mutable_value(scope.mutable_key(name));
-            let lowered_body = lower_expr_in_scope(body, scope)?;
+            let lowered_body = lower_body_in_scope(body, scope)?;
             scope.leave_mutable(name, previous);
             Ok(CErlExpr::Let {
                 var,
@@ -596,11 +651,11 @@ pub(crate) fn lower_expr_in_scope(
         }
         IrExpr::FunctionScope { body, .. } => {
             if crate::return_::has_non_tail_return(body) {
-                let body = lower_expr_in_scope(body, scope)?;
+                let body = lower_body_in_scope(body, scope)?;
                 Ok(crate::return_::wrap_with_return_catch(body))
             } else {
                 let body = crate::return_::elide_tail_returns(body);
-                lower_expr_in_scope(&body, scope)
+                lower_body_in_scope(&body, scope)
             }
         }
         IrExpr::ResultScope { id, body, .. } => crate::result_scope::lower(body, id.0, scope),
@@ -629,10 +684,12 @@ pub(crate) fn lower_expr_in_scope(
                         None => lit_true(),
                     };
                     let guard_is_safe = !contains_non_bif_call(&guard);
+                    let body = lower_body_in_scope(&arm.body, &mut arm_scope)?;
+                    scope.merge_value_writes(&arm_scope);
                     Ok(LoweredArm {
                         pattern: lower_pat(&arm.pat)?,
                         guard,
-                        body: lower_expr_in_scope(&arm.body, &mut arm_scope)?,
+                        body,
                         guard_is_safe,
                     })
                 })
@@ -850,7 +907,7 @@ fn lower_block_stmts(
         }),
         [single] => {
             // Single statement: its value is the block's value.
-            lower_expr_in_scope(single, scope)
+            lower_body_in_scope(single, scope)
         }
         [first, rest @ ..] => {
             match first {
@@ -864,6 +921,7 @@ fn lower_block_stmts(
                     // must read the current SSA version of `x`, not the one the
                     // binder is about to introduce, so the value is lowered before
                     // the bump; only the binder advances the index.
+                    scope.record_assignment(name);
                     let lowered_value = lower_expr_in_scope(value, scope)?;
                     scope.bump(name);
                     let var = scope.mutable_value(scope.mutable_key(name));
@@ -1235,11 +1293,11 @@ pub(crate) fn lower_lambda(
     // contain guard/early-return patterns need a try/catch frame; tail-only
     // Returns are elided before lowering so no throw is emitted.
     let lowered_body = if crate::return_::has_non_tail_return(body) {
-        let body = lower_expr_in_scope(body, &mut lambda_scope)?;
+        let body = lower_body_in_scope(body, &mut lambda_scope)?;
         crate::return_::wrap_with_return_catch(body)
     } else {
         let elided = crate::return_::elide_tail_returns(body);
-        lower_expr_in_scope(&elided, &mut lambda_scope)?
+        lower_body_in_scope(&elided, &mut lambda_scope)?
     };
     Ok(CErlExpr::Fun {
         params: param_vars,

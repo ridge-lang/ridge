@@ -15,7 +15,9 @@
 use crate::error::LowerError;
 use ridge_ast::{Body, Item, Span};
 use ridge_ir::{IrNodeId, LoweredModule};
-use ridge_resolve::{BindingMap, ModuleId, NodeId, NodeIdMap, SymbolId, SymbolTable};
+use ridge_resolve::{
+    Binding, BindingMap, LocalId, ModuleId, NodeId, NodeIdMap, NodeKind, SymbolId, SymbolTable,
+};
 use ridge_typecheck::quote::QuoteInfo;
 use ridge_typecheck::{ClassTable, InstanceEnv, TypedWorkspace};
 use ridge_types::{CapabilitySet, Constraint, ShapeKey, TyConId, TyConKind, Type, VariantPayload};
@@ -216,10 +218,12 @@ pub struct LowerCtx<'tw> {
     /// so a name declared in an inner block shadows an outer one of the same
     /// name rather than colliding with it.
     ///
+    /// Entries are keyed by resolved local identity so an ordinary binding that
+    /// shadows a helper cannot inherit the helper's dictionary parameters.
     /// Each entry holds what [`LowerCtx::lookup_fn_constraints`] and its two
     /// companions return for a top-level fn: the constraints, the parameter
     /// types the constraint variables appear in, and the return type.
-    pub inner_fn_dict_sigs: Vec<(String, Vec<Constraint>, Vec<Type>, Type)>,
+    pub inner_fn_dict_sigs: Vec<(LocalId, Vec<Constraint>, Vec<Type>, Type)>,
 
     /// Cached mapping from top-level fn name to its scheme constraints and the
     /// scheme's parameter types.
@@ -606,21 +610,28 @@ impl<'tw> LowerCtx<'tw> {
             .map(|(_, _, ret)| ret.clone())
     }
 
-    /// Constraint signature of a constrained inner `fn` visible at this point,
-    /// or `None` when the name is not one.
-    ///
-    /// Scanned innermost-first so a helper declared in a nested block wins over
-    /// an outer one sharing its name.
+    /// Constraint signature of the inner `fn` bound at this use span, or `None`
+    /// for an ordinary local even when it shadows a constrained helper's name.
     #[must_use]
     pub fn lookup_inner_fn_dict_sig(
         &self,
-        name: &str,
+        span: Span,
     ) -> Option<(Vec<Constraint>, Vec<Type>, Type)> {
+        let local = self.local_binding_at(span)?;
         self.inner_fn_dict_sigs
             .iter()
             .rev()
-            .find(|(n, ..)| n == name)
+            .find(|(id, ..)| *id == local)
             .map(|(_, constraints, params, ret)| (constraints.clone(), params.clone(), ret.clone()))
+    }
+
+    /// Resolve a local declaration or use without relying on its source name.
+    pub(crate) fn local_binding_at(&self, span: Span) -> Option<LocalId> {
+        let node = self.node_id_map.as_ref()?.get(span, NodeKind::Ident)?;
+        match self.binding_map?.get(node.0 as usize)?.as_ref()? {
+            Binding::Local(local) => Some(*local),
+            _ => None,
+        }
     }
 
     /// Constraint signature of a constrained stdlib function reached through a

@@ -52,6 +52,63 @@ fn position(source: &str, offset: usize) -> Position {
 }
 
 #[test]
+fn constrained_alias_types_and_missing_instances_follow_edits() {
+    let initial = "-- café 🚀\nimport std.list as List\ntype Item = | MkItem Int\npub fn value () -> List Int =\n    let sort = List.sort\n    sort [3, 1, 2]\n";
+    for ending in ["\n", "\r\n"] {
+        let initial = initial.replace('\n', ending);
+        let (_dir, mut state, uri) = workspace(&initial);
+        clean(&state);
+        let mid = state
+            .resolved
+            .graph
+            .modules
+            .iter()
+            .find(|m| m.file_path.ends_with("Main.ridge"))
+            .unwrap()
+            .id;
+        let text = initial
+            .replace("-> List Int", "-> List Text")
+            .replace("[3, 1, 2]", "[\"b\", \"a\"]");
+        for (source, ty) in [(&initial, "Int"), (&text, "Text"), (&initial, "Int")] {
+            state.recompile(mid, source);
+            clean(&state);
+            let index =
+                WorkspaceIndex::build(1, &state.typed, &state.resolved, &state.source_cache());
+            let declaration = source.find("sort =").unwrap();
+            let expected_range = Range::new(
+                position(source, declaration),
+                position(source, declaration + 4),
+            );
+            for offset in [declaration, source.rfind("sort [").unwrap()] {
+                let pos = position(source, offset);
+                let (card, _) = index.hover_at(&uri, pos.line, pos.character).unwrap();
+                assert!(
+                    card.contains(&format!("\nsort : (List {ty}) -> List {ty}\n")),
+                    "{card}"
+                );
+                let target = index.definition_at(&uri, pos.line, pos.character).unwrap();
+                assert_eq!(target.uri, uri);
+                assert_eq!(target.range, expected_range);
+            }
+        }
+        let invalid = initial
+            .replace("-> List Int", "-> List Item")
+            .replace("[3, 1, 2]", "[MkItem 1]");
+        state.recompile(mid, &invalid);
+        assert!(
+            state
+                .type_errors
+                .iter()
+                .any(|(_, error)| matches!(error, ridge_typecheck::TypeError::NoInstance { .. })),
+            "{:?}",
+            state.type_errors
+        );
+        state.recompile(mid, &initial);
+        clean(&state);
+    }
+}
+
+#[test]
 fn let_declarations_and_specialized_uses_follow_incremental_changes() {
     let initial = "pub fn value () -> (Text, Int) =\n    let identity = fn x -> x\n    let text: Text = identity \"hello\"\n    let number: Int = identity 7\n    (text, number)\n";
     let (_dir, mut state, uri) = workspace(initial);

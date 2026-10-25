@@ -107,6 +107,7 @@
     "aggregate_numeric_bound_e2e",
     "codegen_gated_on_analysis",
     "column_codegen_e2e",
+    "constrained_function_values_e2e",
     "data_pg_array_e2e",
     "data_pg_bytes_e2e",
     "data_pg_date_e2e",

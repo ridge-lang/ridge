@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Constrained function values retain their instance dictionaries when stored,
+  destructured, captured or passed to another function. Calls through aliases
+  use the same source-level arguments as direct calls.
+
 - Assignments to immutable `let` bindings and pattern aliases are rejected at
   their resolved target, including captured and shadowed bindings. CLI and editor
   diagnostics identify the declaration and explain the `var` alternative.

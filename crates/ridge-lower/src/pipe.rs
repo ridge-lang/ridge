@@ -24,7 +24,9 @@ use ridge_ir::{IrExpr, IrLit};
 use ridge_resolve::NodeKind;
 use ridge_types::Type;
 
-use crate::core::{build_dict_args, classmethod_binding, lower_expr, try_lower_classmethod_call};
+use crate::core::{
+    build_dict_args, classmethod_binding, lower_call_target, lower_expr, try_lower_classmethod_call,
+};
 use crate::ctx::LowerCtx;
 use crate::error::LowerError;
 
@@ -85,7 +87,7 @@ pub fn lower_pipe(ctx: &mut LowerCtx<'_>, lhs: &Expr, rhs: &Expr, span: Span) ->
         // ── Call RHS: `xs |> f a b` → `Call(f, [a, b, xs])` ─────────────────
         Expr::Call { callee, args, .. } => {
             let id = ctx.fresh_id(None);
-            let callee_ir = lower_expr(ctx, callee);
+            let callee_ir = lower_call_target(ctx, callee);
             let mut args_ir: Vec<IrExpr> = args.iter().map(|a| lower_expr(ctx, a)).collect();
             args_ir.push(lhs_ir);
             // A constrained callee (e.g. a piped `Repo.findBy`, typed
@@ -115,7 +117,7 @@ pub fn lower_pipe(ctx: &mut LowerCtx<'_>, lhs: &Expr, rhs: &Expr, span: Span) ->
         | Expr::Lambda { .. }
         | Expr::FieldAccessorFn { .. } => {
             let id = ctx.fresh_id(None);
-            let callee_ir = lower_expr(ctx, rhs_inner);
+            let callee_ir = lower_call_target(ctx, rhs_inner);
             let arg_types: Vec<Option<Type>> = vec![arg_type(ctx, lhs)];
             let call_result_ty = type_at_span(ctx, span);
             let dict_args =

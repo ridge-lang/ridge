@@ -24,6 +24,7 @@ pub mod core;
 pub mod ctx;
 pub mod error;
 pub mod field_accessor;
+mod function_value;
 pub mod guard;
 pub mod if_lower;
 pub mod inner_fn;

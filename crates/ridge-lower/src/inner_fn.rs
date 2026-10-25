@@ -212,8 +212,11 @@ fn push_dict_scope(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> bool {
     if constraints.is_empty() {
         return false;
     }
+    let Some(local) = ctx.local_binding_at(decl.name.span) else {
+        return false;
+    };
     ctx.inner_fn_dict_sigs
-        .push((decl.name.text.clone(), constraints, params, ret));
+        .push((local, constraints, params, ret));
     true
 }
 

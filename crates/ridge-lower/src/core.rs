@@ -120,9 +120,15 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
         // ── Atoms ─────────────────────────────────────────────────────────────
         Expr::Literal(lit) => lower_literal(ctx, lit),
 
-        Expr::Ident(ident) => lower_ident(ctx, ident),
+        Expr::Ident(ident) => {
+            let value = lower_ident(ctx, ident);
+            crate::function_value::close_constraints(ctx, expr, value)
+        }
 
-        Expr::Qualified(qname) => lower_qualified(ctx, qname),
+        Expr::Qualified(qname) => {
+            let value = lower_qualified(ctx, qname);
+            crate::function_value::close_constraints(ctx, expr, value)
+        }
 
         // Text-only interpolation (single `Text` part, no holes): lower to a
         // text literal.  Any other shape (multiple parts, or a hole part) uses
@@ -597,7 +603,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
 
             // Look up callee type before lowering, while we still have the AST.
             let callee_node_type = lookup_callee_type(ctx, callee);
-            let ir_callee = lower_expr(ctx, callee);
+            let ir_callee = lower_call_target(ctx, callee);
 
             let args = call_args_without_nullary_unit(args, callee_node_type.as_ref());
             let ir_args: Vec<IrExpr> = args.iter().map(|a| lower_expr(ctx, a)).collect();
@@ -2018,7 +2024,7 @@ pub(crate) fn build_dict_args(
         // come from the lexical scope stack rather than a module-wide table.
         // Everything after this point is shared with the two cases above: a
         // constrained helper is called the same way wherever it was declared.
-        IrExpr::Local { name, .. } => match ctx.lookup_inner_fn_dict_sig(name) {
+        IrExpr::Local { span, .. } => match ctx.lookup_inner_fn_dict_sig(*span) {
             Some((constraints, param_types, ret)) => (constraints, param_types, Some(ret)),
             None => return vec![],
         },
@@ -3845,16 +3851,19 @@ fn stdlib_kind(ctx: &mut LowerCtx<'_>, module: &str, name: &str, span: Span) -> 
     }
 }
 
-/// Look up the resolved `Type` for the callee AST `Expr`.
-///
-/// The type checker's `infer_expr` stamps the resolved type under `NodeKind::Expr` for
-/// every expression node (line 84 of `infer.rs`: `write_node_type(span, Expr, ty)`).
-/// So we always use `NodeKind::Expr` with the callee's span, regardless of the
-/// concrete AST variant.
-///
-/// For all other shapes (e.g. field access, call) returns `None` — partial-app
-/// wrapping only fires for simple ident/qualified-name callees.
-fn lookup_callee_type(ctx: &LowerCtx<'_>, callee: &Expr) -> Option<Type> {
+/// Keep direct named callees on the existing dictionary-passing path. A computed
+/// callee is already a source-level callable and lowers as an ordinary value.
+pub(crate) fn lower_call_target(ctx: &mut LowerCtx<'_>, callee: &Expr) -> IrExpr {
+    match callee {
+        Expr::Ident(ident) => lower_ident(ctx, ident),
+        Expr::Qualified(name) => lower_qualified(ctx, name),
+        Expr::Paren { inner, .. } => lower_call_target(ctx, inner),
+        other => lower_expr(ctx, other),
+    }
+}
+
+/// Read the inferred expression type for a named reference, peeling parentheses.
+pub(crate) fn lookup_callee_type(ctx: &LowerCtx<'_>, callee: &Expr) -> Option<Type> {
     let span = match callee {
         Expr::Ident(id) => id.span,
         Expr::Qualified(qname) => qname.span,

@@ -18,101 +18,111 @@ impl Diagnostic {
 
         let mut diag = Self::new(code, severity, primary_span, message, source_id);
 
-        // Surface secondary spans for variants that carry them.
-        match e {
-            ResolveError::DuplicateModule { first, second, .. } => {
-                // primary is at `second`; note is at `first`
-                diag.push_note(DiagnosticNote {
-                    span: *first,
-                    message: "first declared here".to_owned(),
-                    severity: NoteSeverity::Note,
-                });
-                let _ = second; // primary_span already set to *second
-            }
-            ResolveError::DuplicateDeclaration {
-                first_span,
-                second_span,
-                ..
-            } => {
-                diag.push_note(DiagnosticNote {
-                    span: *first_span,
-                    message: "first declaration".to_owned(),
-                    severity: NoteSeverity::Note,
-                });
-                let _ = second_span;
-            }
-            ResolveError::DuplicateLocal {
-                first_span,
-                second_span,
-                ..
-            } => {
-                diag.push_note(DiagnosticNote {
-                    span: *first_span,
-                    message: "first binding".to_owned(),
-                    severity: NoteSeverity::Note,
-                });
-                let _ = second_span;
-            }
-            ResolveError::VisibilityViolation { defined_at, .. } => {
-                diag.push_note(DiagnosticNote {
-                    span: *defined_at,
-                    message: "defined here (with restricted visibility)".to_owned(),
-                    severity: NoteSeverity::Note,
-                });
-            }
-            ResolveError::UnresolvedIdent {
-                name,
-                suggestions,
-                importable,
-                ..
-            } => {
-                if let Some(message) = unresolved_ident_note(name, suggestions, importable) {
-                    diag.push_note(DiagnosticNote {
-                        span: primary_span,
-                        message,
-                        severity: NoteSeverity::Help,
-                    });
-                }
-            }
-            ResolveError::ModuleAsValue { name, member, .. } => {
+        add_resolve_notes(&mut diag, e, primary_span);
+        diag
+    }
+}
+
+/// Keep declaration locations and actionable notes beside the resolver message.
+fn add_resolve_notes(diag: &mut Diagnostic, e: &ResolveError, primary_span: ridge_ast::Span) {
+    match e {
+        ResolveError::DuplicateModule { first, second, .. } => {
+            // primary is at `second`; note is at `first`
+            diag.push_note(DiagnosticNote {
+                span: *first,
+                message: "first declared here".to_owned(),
+                severity: NoteSeverity::Note,
+            });
+            let _ = second; // primary_span already set to *second
+        }
+        ResolveError::DuplicateDeclaration {
+            first_span,
+            second_span,
+            ..
+        } => {
+            diag.push_note(DiagnosticNote {
+                span: *first_span,
+                message: "first declaration".to_owned(),
+                severity: NoteSeverity::Note,
+            });
+            let _ = second_span;
+        }
+        ResolveError::DuplicateLocal {
+            first_span,
+            second_span,
+            ..
+        } => {
+            diag.push_note(DiagnosticNote {
+                span: *first_span,
+                message: "first binding".to_owned(),
+                severity: NoteSeverity::Note,
+            });
+            let _ = second_span;
+        }
+        ResolveError::ImmutableAssignment { binding_span, .. } => {
+            diag.push_note(DiagnosticNote {
+                span: *binding_span,
+                message: "immutable binding declared here".to_owned(),
+                severity: NoteSeverity::Note,
+            });
+        }
+        ResolveError::VisibilityViolation { defined_at, .. } => {
+            diag.push_note(DiagnosticNote {
+                span: *defined_at,
+                message: "defined here (with restricted visibility)".to_owned(),
+                severity: NoteSeverity::Note,
+            });
+        }
+        ResolveError::UnresolvedIdent {
+            name,
+            suggestions,
+            importable,
+            ..
+        } => {
+            if let Some(message) = unresolved_ident_note(name, suggestions, importable) {
                 diag.push_note(DiagnosticNote {
                     span: primary_span,
-                    message: module_as_value_note(name, member.as_deref()),
+                    message,
                     severity: NoteSeverity::Help,
                 });
             }
-            ResolveError::UnresolvedImportItem { .. }
-            | ResolveError::UnresolvedQualifiedName { .. }
-            | ResolveError::UnknownStdlibSymbol { .. } => {
-                if let Some(message) = qualified_name_note(e) {
-                    diag.push_note(DiagnosticNote {
-                        span: primary_span,
-                        message,
-                        severity: NoteSeverity::Help,
-                    });
-                }
-            }
-            ResolveError::ForbidViolation {
-                manifest_span: Some(mspan),
-                ..
-            } => {
-                diag.push_note(DiagnosticNote {
-                    span: *mspan,
-                    message: "rule defined here".to_owned(),
-                    severity: NoteSeverity::Note,
-                });
-            }
-            ResolveError::StateFieldShadowedByLocal { field_span, .. } => {
-                diag.push_note(DiagnosticNote {
-                    span: *field_span,
-                    message: "state field declared here".to_owned(),
-                    severity: NoteSeverity::Note,
-                });
-            }
-            _ => {}
         }
-
-        diag
+        ResolveError::ModuleAsValue { name, member, .. } => {
+            diag.push_note(DiagnosticNote {
+                span: primary_span,
+                message: module_as_value_note(name, member.as_deref()),
+                severity: NoteSeverity::Help,
+            });
+        }
+        ResolveError::UnresolvedImportItem { .. }
+        | ResolveError::UnresolvedQualifiedName { .. }
+        | ResolveError::UnknownStdlibSymbol { .. } => {
+            if let Some(message) = qualified_name_note(e) {
+                diag.push_note(DiagnosticNote {
+                    span: primary_span,
+                    message,
+                    severity: NoteSeverity::Help,
+                });
+            }
+        }
+        ResolveError::ForbidViolation {
+            manifest_span: Some(mspan),
+            ..
+        } => {
+            diag.push_note(DiagnosticNote {
+                span: *mspan,
+                message: "rule defined here".to_owned(),
+                severity: NoteSeverity::Note,
+            });
+        }
+        ResolveError::StateFieldShadowedByLocal { field_span, .. } => {
+            diag.push_note(DiagnosticNote {
+                span: *field_span,
+                message: "state field declared here".to_owned(),
+                severity: NoteSeverity::Note,
+            });
+        }
+        _ => {}
     }
 }
 

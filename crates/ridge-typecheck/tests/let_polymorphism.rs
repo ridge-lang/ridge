@@ -4,7 +4,7 @@
 use ridge_resolve::{discover_workspace, resolve_workspace};
 use ridge_typecheck::{typecheck_workspace, TypeError};
 
-fn check(source: &str) -> Vec<TypeError> {
+fn resolve_fixture(source: &str) -> (tempfile::TempDir, ridge_resolve::ResolvedWorkspace) {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("app/src")).unwrap();
     std::fs::write(
@@ -28,6 +28,11 @@ fn check(source: &str) -> Vec<TypeError> {
         "{:?}",
         resolved.parse_errors
     );
+    (dir, resolved)
+}
+
+fn check(source: &str) -> Vec<TypeError> {
+    let (_dir, resolved) = resolve_fixture(source);
     assert!(resolved.errors.is_empty(), "{:?}", resolved.errors);
     typecheck_workspace(&resolved)
         .errors
@@ -36,17 +41,22 @@ fn check(source: &str) -> Vec<TypeError> {
         .collect()
 }
 
+fn rejects_immutable_write(source: &str) {
+    let (_dir, resolved) = resolve_fixture(source);
+    assert!(
+        resolved.errors.iter().any(|(_, error)| matches!(
+            error,
+            ridge_resolve::ResolveError::ImmutableAssignment { .. }
+        )),
+        "{source}: {:?}",
+        resolved.errors
+    );
+}
+
 #[test]
 fn writes_and_recovery_facts_do_not_establish_polymorphism() {
     let shared = "pub fn value () -> Text =\n    let duplicate = fn f -> (f, f)\n    let (identity, apply) = duplicate (fn x -> x)\n    identity <- fn _ -> 7\n    apply \"hello\"\n";
-    let errors = check(shared);
-    assert!(
-        errors.iter().any(|e| matches!(
-            e,
-            TypeError::TypeMismatch { .. } | TypeError::TypeMismatchInCall { .. }
-        )),
-        "{errors:?}"
-    );
+    rejects_immutable_write(shared);
     for binding in [
         "let identity = fn x -> x",
         "let (identity, n) = (fn x -> x, 0)",
@@ -58,14 +68,7 @@ fn writes_and_recovery_facts_do_not_establish_polymorphism() {
             "let overwrite = fn _ ->\n        identity <- fn _ -> 7\n    overwrite ()",
         ] {
             let source = format!("pub fn value () -> Text =\n    {binding}\n    let call = fn x -> identity x\n    {write}\n    call \"hello\"\n");
-            let errors = check(&source);
-            assert!(
-                errors.iter().any(|e| matches!(
-                    e,
-                    TypeError::TypeMismatch { .. } | TypeError::TypeMismatchInCall { .. }
-                )),
-                "{source}: {errors:?}"
-            );
+            rejects_immutable_write(&source);
         }
     }
     for binding in [

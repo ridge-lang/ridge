@@ -205,6 +205,27 @@ impl ScopeWalker<'_> {
         self.resolve_ident_reaching(id, None);
     }
 
+    /// Reject writes to immutable lets and pattern aliases without discarding
+    /// the target's resolved identity or the value's independent diagnostics.
+    fn check_immutable_assignment(&mut self, mut target: &Expr) {
+        while let Expr::Paren { inner, .. } = target {
+            target = inner;
+        }
+        let Expr::Ident(name) = target else {
+            return;
+        };
+        let Some(local) = self.scope.lookup_local(&name.text) else {
+            return;
+        };
+        if matches!(local.kind, LocalKind::LetImmutable | LocalKind::AsAlias) {
+            self.errors.push(ResolveError::ImmutableAssignment {
+                name: name.text.clone(),
+                span: name.span,
+                binding_span: local.def_span,
+            });
+        }
+    }
+
     /// `resolve_ident`, told which member the use site reached for.
     ///
     /// `member` is `Some` only from a field access, where the base turning
@@ -1536,6 +1557,15 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
                     self.visit_expr(inner);
                 }
                 self.scope.pop_into(decl.span.end);
+            }
+
+            Expr::Assign { target, value, .. } => {
+                self.visit_expr(target);
+                // Resolve at the target, before visiting an initializer that
+                // might introduce another binding with the same spelling.
+                self.check_immutable_assignment(target);
+                // A rejected target does not suppress errors in the value.
+                self.visit_expr(value);
             }
 
             Expr::Let { pat, ty, value, .. } => {

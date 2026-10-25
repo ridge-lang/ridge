@@ -1,0 +1,5 @@
+-- expect: R031
+pub fn value () -> Int =
+    let n = 1
+    n <- 7
+    n

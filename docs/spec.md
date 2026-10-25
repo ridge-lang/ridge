@@ -136,9 +136,16 @@ counter <- counter + 1       -- assignment uses `<-`
 
 -- Shadowing is allowed
 let x = 5
-let x = x + 1                -- new binding, old x is unreachable
-let x = $"Value: ${x}"       -- x is now Text
+let text =
+    let x = x + 1            -- distinct binding in an inner scope
+    $"Value: ${x}"           -- the outer x remains Int with value 5
 ```
+
+`<-` updates an existing mutable binding; it does not introduce a new binding.
+An immutable `let` binding, including a name introduced by destructuring or a
+pattern alias, cannot be assigned to. This rule also applies from nested blocks
+and closures. A `var` in an inner scope may shadow an outer `let`, and remains
+mutable; an inner `let` does not become mutable by shadowing an outer `var`.
 
 ### 3.3. Functions
 

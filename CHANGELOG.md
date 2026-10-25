@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Assignments to immutable `let` bindings and pattern aliases are rejected at
+  their resolved target, including captured and shadowed bindings. CLI and editor
+  diagnostics identify the declaration and explain the `var` alternative.
+
 - Immutable `let` helpers preserve polymorphic types across uses, including
   function aliases and destructured bindings. Captured types and signature
   constants retain their enclosing constraints during local checking, and

@@ -104,6 +104,139 @@ fn run_pipeline_on_source(stem: &str, src: &str) -> Vec<ResolveError> {
     run_pipeline(&td)
 }
 
+/// Parse and resolve a valid single-module input, preserving binding identities.
+fn checked_module(src: &str) -> ridge_resolve::ResolvedWorkspace {
+    let td = build_single_module_workspace("Immutable", src);
+    let discovery = discover_workspace(td.path());
+    assert!(discovery.manifest_errors.is_empty());
+    assert!(discovery.resolve_errors.is_empty());
+    let resolved = resolve_workspace(discovery.graph.unwrap());
+    assert!(resolved.lex_errors.is_empty(), "{:?}", resolved.lex_errors);
+    assert!(
+        resolved.parse_errors.is_empty(),
+        "{:?}",
+        resolved.parse_errors
+    );
+    resolved
+}
+
+#[test]
+fn immutable_assignments_follow_binding_identity() {
+    for binding in [
+        "let n = 1",
+        "let n: Int = 1",
+        "let (n, other) = (1, 2)",
+        "let [n] = [1]",
+        "let { n } = { n = 1 }",
+        "let n @ _ = 1",
+    ] {
+        for write in [
+            "n <- 7",
+            "(n) <- 7",
+            "let chosen =\n        n <- 7\n        n",
+            "let change = fn _ ->\n        n <- 7\n    change ()",
+        ] {
+            let source = format!("pub fn value () -> Int =\n    {binding}\n    {write}\n    n\n");
+            let resolved = checked_module(&source);
+            assert_eq!(resolved.errors.len(), 1, "{source}: {:?}", resolved.errors);
+            let ResolveError::ImmutableAssignment {
+                name,
+                span,
+                binding_span,
+            } = &resolved.errors[0].1
+            else {
+                panic!("{source}: {:?}", resolved.errors);
+            };
+            assert_eq!(name, "n");
+            assert_eq!(&source[span.start as usize..span.end as usize], "n");
+            let declared = source.find(binding).unwrap() + binding.find('n').unwrap();
+            assert_eq!(binding_span.start as usize, declared);
+            assert_eq!(binding_span.end as usize, declared + 1);
+            let module = &resolved.modules[0];
+            let target_id = module
+                .node_ids
+                .get(*span, ridge_resolve::NodeKind::Ident)
+                .unwrap();
+            let declaration_id = module
+                .node_ids
+                .get(*binding_span, ridge_resolve::NodeKind::Ident)
+                .unwrap();
+            let target = &module.bindings[target_id.0 as usize];
+            let declaration = &module.bindings[declaration_id.0 as usize];
+            assert!(
+                matches!((target, declaration), (Some(ridge_resolve::Binding::Local(a)), Some(ridge_resolve::Binding::Local(b))) if a == b)
+            );
+        }
+    }
+}
+
+#[test]
+fn immutable_assignment_checks_keep_shadowing_and_rhs_errors() {
+    for source in [
+        "pub fn value () -> Int =\n    var n = 1\n    n <- 7\n    n\n",
+        "pub fn value () -> Int =\n    var n = 1\n    let chosen =\n        n <- 7\n        n\n    n\n",
+        "pub fn value () -> Int =\n    let n = 1\n    let chosen =\n        var n = 2\n        n <- 7\n        n\n    n + chosen\n",
+        "pub fn value () -> Int =\n    let n = 1\n    let chosen =\n        let n = 2\n        n\n    n + chosen\n",
+        "actor Counter =\n    state count: Int = 0\n    on increment =\n        count <- count + 1\n    on get -> Int =\n        count\n",
+    ] {
+        let resolved = checked_module(source);
+        assert!(resolved.errors.is_empty(), "{source}: {:?}", resolved.errors);
+    }
+    let source = "pub fn value () -> Int =\n    var n = 1\n    let chosen =\n        let n = 2\n        n <- 7\n        n\n    chosen\n";
+    let resolved = checked_module(source);
+    assert_eq!(resolved.errors.len(), 1, "{:?}", resolved.errors);
+    let ResolveError::ImmutableAssignment { binding_span, .. } = &resolved.errors[0].1 else {
+        panic!("{:?}", resolved.errors);
+    };
+    assert_eq!(
+        binding_span.start as usize,
+        source.find("let n = 2").unwrap() + 4
+    );
+    let source = "pub fn value () -> Int =\n    let n = 1\n    n <- missing\n    n\n";
+    let resolved = checked_module(source);
+    assert!(resolved
+        .errors
+        .iter()
+        .any(|(_, e)| matches!(e, ResolveError::ImmutableAssignment { .. })));
+    assert!(resolved.errors.iter().any(
+        |(_, e)| matches!(e, ResolveError::UnresolvedIdent { name, .. } if name == "missing")
+    ));
+}
+
+#[test]
+fn actor_state_mutation_respects_local_let_shadowing() {
+    for binding in ["let", "var"] {
+        let source = format!("actor Counter =\n    state count: Int = 0\n    on increment =\n        {binding} count = 1\n        count <- 7\n");
+        let resolved = checked_module(&source);
+        let immutable: Vec<_> = resolved
+            .errors
+            .iter()
+            .filter(|(_, e)| matches!(e, ResolveError::ImmutableAssignment { .. }))
+            .collect();
+        assert_eq!(
+            immutable.len(),
+            usize::from(binding == "let"),
+            "{source}: {:?}",
+            resolved.errors
+        );
+        assert!(
+            resolved
+                .errors
+                .iter()
+                .any(|(_, e)| matches!(e, ResolveError::StateFieldShadowedByLocal { .. })),
+            "{:?}",
+            resolved.errors
+        );
+        if let Some((_, ResolveError::ImmutableAssignment { binding_span, .. })) = immutable.first()
+        {
+            assert_eq!(
+                binding_span.start as usize,
+                source.find("let count").unwrap() + 4
+            );
+        }
+    }
+}
+
 // ── `-- expect:` directive parser ────────────────────────────────────────────
 
 /// One `-- expect: R### [span=A..B]` directive parsed off a fixture's leading

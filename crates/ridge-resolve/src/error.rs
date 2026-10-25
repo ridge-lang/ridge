@@ -5,7 +5,7 @@
 //! renumbered and a retired number is never reused.  Before 1.0 a wrong code may
 //! still be renumbered; otherwise, only append at the end.
 //!
-//! ## `ResolveError` (R001..R028, R999; R018 reserved)
+//! ## `ResolveError`
 //!
 //! Produced during the name-resolution pass over source files.  Every variant
 //! carries a [`Span`] pointing to the offending source location and a stable
@@ -538,6 +538,17 @@ pub enum ResolveError {
         span: Span,
     },
 
+    /// R031 — an assignment targets an immutable local binding.
+    #[error("cannot assign to immutable binding `{name}`\nhelp: use `var` when mutation is intended, or a new `let` declaration to shadow the value")]
+    ImmutableAssignment {
+        /// The target's source name.
+        name: String,
+        /// Span of the assignment target.
+        span: Span,
+        /// Span of the binding's declaration.
+        binding_span: Span,
+    },
+
     /// R999 — two AST nodes were assigned the same `NodeId` (signals a
     /// compiler bug, not a user error).
     #[error("internal error: NodeId collision in `{node_kind}`")]
@@ -586,6 +597,7 @@ impl ResolveError {
             Self::ReservedName { .. } => "R028",
             Self::DuplicateActorMember { .. } => "R029",
             Self::ModuleAsValue { .. } => "R030",
+            Self::ImmutableAssignment { .. } => "R031",
             Self::InternalNodeIdCollision { .. } => "R999",
         }
     }
@@ -638,6 +650,7 @@ impl ResolveError {
             | Self::OpaquePattern { span, .. }
             | Self::OrPatternBindingMismatch { span, .. }
             | Self::ModuleAsValue { span, .. }
+            | Self::ImmutableAssignment { span, .. }
             | Self::InternalNodeIdCollision { span, .. }
             | Self::DuplicateDeclaration {
                 second_span: span, ..

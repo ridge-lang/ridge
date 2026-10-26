@@ -863,7 +863,7 @@ fn typecheck_actor_bodies(
 
                     // Bind handler parameters.
                     for (param, ty) in handler.params.iter().zip(handler_schema.params.iter()) {
-                        bind_actor_param(ctx, b, param, ty, &monoscheme);
+                        crate::infer::infer_param(ctx, b, param, ty);
                     }
 
                     // Walk the body purely for side-effect: populates ctx.node_types_accum.
@@ -1066,7 +1066,7 @@ fn check_actor_callback_body(
                     });
                 }
             }
-            bind_actor_param(ctx, b, param, ty, monoscheme);
+            crate::infer::infer_param(ctx, b, param, ty);
         }
     }
 
@@ -1081,29 +1081,6 @@ fn check_actor_callback_body(
     check_caps_block(ctx, b, label, kind, Some(declared), body, span);
 
     ctx.env.pop_frame();
-}
-
-/// Bind one actor-member parameter (`on` handler or `init`) into the current
-/// environment frame, mirroring the top-level `fn` parameter handling.
-fn bind_actor_param(
-    ctx: &mut crate::ctx::InferCtx,
-    b: &BuiltinTyCons,
-    param: &ridge_ast::Param,
-    ty: &ridge_types::Type,
-    monoscheme: &impl Fn(ridge_types::Type) -> Scheme,
-) {
-    match param {
-        ridge_ast::Param::Bare(id) => {
-            ctx.env.bind(id.text.clone(), monoscheme(ty.clone()));
-        }
-        ridge_ast::Param::Annotated { name, .. } => {
-            ctx.env.bind(name.text.clone(), monoscheme(ty.clone()));
-        }
-        ridge_ast::Param::PatternAnnotated { pat, span, .. }
-        | ridge_ast::Param::Pattern { pat, span } => {
-            crate::infer::infer_param_pattern(ctx, b, pat, ty, *span);
-        }
-    }
 }
 
 /// Type-check a single module given its parsed AST, resolved imports, and a

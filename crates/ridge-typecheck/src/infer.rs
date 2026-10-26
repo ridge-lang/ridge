@@ -377,6 +377,7 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 };
                 // Bind pattern variables at mono-scheme level.
                 infer_pattern(ctx, b, pat, &ty.clone());
+                ridge_ast::visit::Visit::visit_pattern(&mut BindingTypes { ctx }, pat);
                 param_types.push(ty);
             }
 
@@ -1152,15 +1153,7 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             // Infer the body in a new scope.
             ctx.env.push_frame();
             for (param, ty) in decl.params.iter().zip(param_types.iter()) {
-                match param {
-                    ridge_ast::Param::Bare(id) | ridge_ast::Param::Annotated { name: id, .. } => {
-                        ctx.env.bind(id.text.clone(), monoscheme(ty.clone()));
-                    }
-                    ridge_ast::Param::PatternAnnotated { pat, span, .. }
-                    | ridge_ast::Param::Pattern { pat, span } => {
-                        crate::infer::infer_param_pattern(ctx, b, pat, ty, *span);
-                    }
-                }
+                infer_param(ctx, b, param, ty);
             }
 
             // Set the return type context.
@@ -1921,9 +1914,26 @@ pub fn infer_pattern(ctx: &mut InferCtx, b: &BuiltinTyCons, pat: &Pattern, expec
     }
 }
 
+/// Bind a named function or actor parameter and retain each binder's own type.
+pub(crate) fn infer_param(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    param: &ridge_ast::Param,
+    ty: &Type,
+) {
+    match param {
+        ridge_ast::Param::Bare(name) | ridge_ast::Param::Annotated { name, .. } => {
+            ctx.env.bind(name.text.clone(), monoscheme(ty.clone()));
+            ctx.write_node_type(name.span, NodeKind::Ident, ty);
+        }
+        ridge_ast::Param::PatternAnnotated { pat, span, .. }
+        | ridge_ast::Param::Pattern { pat, span } => infer_param_pattern(ctx, b, pat, ty, *span),
+    }
+}
+
 /// Bind a named parameter pattern, retain its inferred input type, and require
 /// that every value of that type matches it.
-pub(crate) fn infer_param_pattern(
+fn infer_param_pattern(
     ctx: &mut InferCtx,
     b: &BuiltinTyCons,
     pat: &Pattern,

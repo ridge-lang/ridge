@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Parameter declaration hovers show the parameter's own inferred type, including
+  inner functions, lambdas, instance methods and actor callbacks. Nominal
+  parameter types also support type-definition navigation at the declaration.
+
 - Inferred record reads and `with` updates retain receiver and field requirements
   across functions, aliases and imports. Incompatible field uses, missing fields
   and non-record arguments are rejected while nominal identity, polymorphic uses

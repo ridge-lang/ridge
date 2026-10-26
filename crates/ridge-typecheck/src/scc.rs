@@ -824,22 +824,7 @@ pub fn typecheck_module_decls(
 
                 // Bind params as monoschemes.
                 for (param, ty) in decl.params.iter().zip(param_tys.iter()) {
-                    match param {
-                        ridge_ast::Param::Bare(id) => {
-                            ctx.env.bind(id.text.clone(), monoscheme(ty.clone()));
-                        }
-                        ridge_ast::Param::Annotated { name, .. } => {
-                            ctx.env.bind(name.text.clone(), monoscheme(ty.clone()));
-                        }
-                        // A destructuring param binds every binder of its pattern
-                        // against the param type; the pattern must be irrefutable.
-                        // Bind first so a pattern-driven annotation (e.g. a tuple
-                        // over a type variable) is resolved before the check.
-                        ridge_ast::Param::PatternAnnotated { pat, span, .. }
-                        | ridge_ast::Param::Pattern { pat, span } => {
-                            crate::infer::infer_param_pattern(ctx, b, pat, ty, *span);
-                        }
-                    }
+                    crate::infer::infer_param(ctx, b, param, ty);
                 }
 
                 // A body-less declaration carries a fully-declared
@@ -1126,17 +1111,7 @@ pub fn infer_instance_methods(
             ctx.current_fn_ret = Some(ret_ty.clone());
 
             for (param, ty) in method.params.iter().zip(param_types.iter()) {
-                match param {
-                    Param::Bare(id) => {
-                        ctx.env.bind(id.text.clone(), monoscheme(ty.clone()));
-                    }
-                    Param::Annotated { name, .. } => {
-                        ctx.env.bind(name.text.clone(), monoscheme(ty.clone()));
-                    }
-                    Param::PatternAnnotated { pat, span, .. } | Param::Pattern { pat, span } => {
-                        crate::infer::infer_param_pattern(ctx, b, pat, ty, *span);
-                    }
-                }
+                crate::infer::infer_param(ctx, b, param, ty);
             }
 
             let body_ty = infer_expr(ctx, b, &method.body);

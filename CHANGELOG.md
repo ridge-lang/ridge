@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Actor-local reassignment reads the previous value before replacing it.
+  Replacement closures capture the previous function instead of becoming
+  recursive, and local updates work in initialization and lifecycle callbacks.
+
 - Actor handlers with an explicit reply annotation must produce a compatible
   value. Mismatches are reported by the compiler and editor before emission,
   preserving state updates, capability checks and helper propagation scopes.

@@ -413,50 +413,22 @@ fn lower_actor_block_w(
                     })
                 }
 
-                // Local-var assignment — lower normally.
-                // Recursive inner-fn fix: if the assigned value is a Lambda whose
-                // body self-references `name`, emit LetRec so `V_Name` is in scope
-                // inside the lambda body (same logic as LetIn / VarIn rec paths).
+                // Assignment replaces an existing binding. Its RHS, including
+                // a replacement closure, must see the previous value rather
+                // than a new SSA version or a recursive declaration.
                 IrExpr::Assign {
                     target: AssignTarget::Local { name, .. },
                     value,
                     ..
                 } => {
-                    let mangled = name_to_erl_var(name);
-
-                    if let IrExpr::Lambda {
-                        params: lambda_params,
-                        body: lambda_body,
-                        ..
-                    } = value.as_ref()
-                    {
-                        if body_references_local(lambda_body, name) {
-                            #[allow(clippy::cast_possible_truncation)]
-                            let arity = lambda_params.len() as u32;
-                            std::sync::Arc::make_mut(&mut scope.fn_arity)
-                                .insert(name.clone(), LocalShape::func(arity));
-                            // Mark as letrec-local so B-6 does not route calls
-                            // to it through the parent-module qualified call path.
-                            std::sync::Arc::make_mut(&mut scope.letrec_locals).insert(name.clone());
-                            let lowered_lambda = lower_expr_in_scope(value, scope)?;
-                            let rest_expr =
-                                lower_actor_block_w(rest, scope, state_idx, span, leaf_wrap)?;
-                            std::sync::Arc::make_mut(&mut scope.fn_arity).remove(name.as_str());
-                            std::sync::Arc::make_mut(&mut scope.letrec_locals)
-                                .remove(name.as_str());
-                            return Ok(CErlExpr::LetRec {
-                                defs: vec![(CErlAtom(name.clone()), arity, lowered_lambda)],
-                                body: Box::new(rest_expr),
-                            });
-                        }
-                    }
-
-                    let new_idx = scope.bump(name);
+                    scope.record_assignment(name);
                     let lowered_value = lower_expr_in_scope(value, scope)?;
+                    scope.bump(name);
+                    let var = scope.mutable_value(scope.mutable_key(name));
                     // Thread leaf_wrap into the rest.
                     let rest_expr = lower_actor_block_w(rest, scope, state_idx, span, leaf_wrap)?;
                     Ok(CErlExpr::Let {
-                        var: crate::scope::ssa_var(&mangled, new_idx),
+                        var,
                         value: Box::new(lowered_value),
                         body: Box::new(rest_expr),
                     })

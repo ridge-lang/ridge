@@ -10,6 +10,7 @@
       "wave1_syntax_diagnostics"
     ],
     "runtime": [
+      "actor_local_assignment_e2e",
       "actor_reply_e2e",
       "ask_timeout_range_e2e",
       "block_initializer_state_e2e",

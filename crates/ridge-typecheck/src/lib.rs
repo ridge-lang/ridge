@@ -793,8 +793,8 @@ fn infer_caps_for_decls(
     inferred_caps
 }
 
-/// Run `infer_expr` over every actor handler body in the module so that the
-/// `node_types` side-table is populated for those expressions.
+/// Infer actor handler bodies, checking their explicit reply annotations and
+/// capabilities while populating the `node_types` side-table.
 ///
 /// Handlers and init blocks are not part of the SCC walk over top-level `fn`
 /// decls (which is what populates `node_types` for ordinary functions), so
@@ -804,10 +804,9 @@ fn infer_caps_for_decls(
 /// actually Float, producing runtime `badarith` crashes on Float division.
 ///
 /// State fields and handler parameters are bound into a fresh env frame
-/// before inferring the body.  The body's type is intentionally not unified
-/// against the declared return type here: this pass is only for side-effect
-/// population of `node_types`, and surfacing additional T-errors at this
-/// point would be a behaviour change beyond the scope of the dispatch fix.
+/// before inferring the body. An explicit reply annotation is a contract with
+/// callers, so the body's value must match it. This does not establish a
+/// function return or propagation boundary for the handler.
 #[expect(
     clippy::too_many_lines,
     reason = "one arm per actor member; splitting the dispatch would obscure the walk"
@@ -866,8 +865,27 @@ fn typecheck_actor_bodies(
                         crate::infer::infer_param(ctx, b, param, ty);
                     }
 
-                    // Walk the body purely for side-effect: populates ctx.node_types_accum.
-                    let _ = infer_expr(ctx, b, &handler.body);
+                    let body_ty = infer_expr(ctx, b, &handler.body);
+                    if handler.ret.is_some()
+                        && crate::unify::unify(ctx, &handler_schema.ret, &body_ty).is_err()
+                    {
+                        let expected = ctx.deep_resolve(&handler_schema.ret);
+                        let found = ctx.deep_resolve(&body_ty);
+                        let hint =
+                            crate::unify::record_ctor_hint(&ctx.tycon_decls, &expected, &found)
+                                .unwrap_or_else(|| {
+                                    format!(
+                                        "handler `{}` must produce its declared reply type",
+                                        handler.name.text
+                                    )
+                                });
+                        ctx.errors.push(TypeError::TypeMismatch {
+                            expected: crate::error::TypeDesc::ty(expected),
+                            found: crate::error::TypeDesc::ty(found),
+                            span: handler.body.span(),
+                            hint: Some(hint),
+                        });
+                    }
 
                     // Capability-check the body against the handler's declared set
                     // (empty annotation = pure, the same default a top-level `fn`

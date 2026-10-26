@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Actor handlers with an explicit reply annotation must produce a compatible
+  value. Mismatches are reported by the compiler and editor before emission,
+  preserving state updates, capability checks and helper propagation scopes.
+
 - Parameter declaration hovers show the parameter's own inferred type, including
   inner functions, lambdas, instance methods and actor callbacks. Nominal
   parameter types also support type-definition navigation at the declaration.

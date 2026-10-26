@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Inferred record reads and `with` updates retain receiver and field requirements
+  across functions, aliases and imports. Incompatible field uses, missing fields
+  and non-record arguments are rejected while nominal identity, polymorphic uses
+  and opaque-field boundaries remain checked in the compiler and editor.
+
 - Constrained function values retain their instance dictionaries when stored,
   destructured, captured or passed to another function. Calls through aliases
   use the same source-level arguments as direct calls.

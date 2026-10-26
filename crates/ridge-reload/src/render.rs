@@ -162,6 +162,7 @@ mod tests {
         };
         let scheme = Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![TyVid(0), TyVid(1)],
             cap_vars: vec![],
             row_vars: vec![],

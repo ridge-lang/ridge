@@ -30,7 +30,7 @@ pub use constraint::{
     TOTEXT_CLASS,
 };
 pub use history::{VersionEntry, VersionHistory};
-pub use scheme::Scheme;
+pub use scheme::{RecordRequirement, Scheme};
 pub use shape_key::{shape_key, type_to_key, AnonRecordTable, CapKey, ShapeKey, TyKey};
 pub use subst::Subst;
 pub use ty::{CapRow, CapVid, RigidId, Row, RowTail, RowVid, TyVid, Type};

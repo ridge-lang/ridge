@@ -232,6 +232,14 @@ impl Subst {
             };
         Scheme {
             projections,
+            record_fields: scheme.record_fields.as_ref().map(|requirements| {
+                std::sync::Arc::new(
+                    requirements
+                        .iter()
+                        .map(|requirement| requirement.map_types(|ty| restricted.apply_to_ty(ty)))
+                        .collect(),
+                )
+            }),
             vars: scheme.vars.clone(),
             cap_vars: scheme.cap_vars.clone(),
             row_vars: scheme.row_vars.clone(),
@@ -417,6 +425,7 @@ mod tests {
         let a = vid(0);
         let scheme = Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![a],
             cap_vars: vec![],
             row_vars: vec![],

@@ -103,6 +103,7 @@ fn user_variant_scheme(ctx: &InferCtx, name: &str) -> Option<Scheme> {
         );
         Some(Scheme {
             projections: None,
+            record_fields: None,
             vars: schema.params.clone(),
             cap_vars: vec![],
             row_vars: vec![],

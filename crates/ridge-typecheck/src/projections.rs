@@ -259,7 +259,17 @@ pub fn contracts_equal(
     formation_surface(first) == formation_surface(second)
 }
 
-type FormationSurface = Vec<(String, ridge_types::TyKey, Vec<ridge_types::TyKey>)>;
+type FieldSurface = (
+    ridge_types::TyKey,
+    Option<(String, ridge_types::TyKey)>,
+    Option<u32>,
+);
+type FormationSurface = Vec<(
+    String,
+    ridge_types::TyKey,
+    Vec<ridge_types::TyKey>,
+    Vec<FieldSurface>,
+)>;
 
 /// Canonicalise the requirements and body with one substitution. Local IDs
 /// alone do not describe a requirement's relation to the parameters.
@@ -268,11 +278,13 @@ fn formation_surface(
 ) -> FormationSurface {
     let mut surface = Vec::new();
     for (name, scheme) in schemes {
-        if scheme.projections.as_ref().is_none_or(|p| p.is_empty()) {
+        if scheme.projections.as_ref().is_none_or(|p| p.is_empty())
+            && scheme.record_fields.as_ref().is_none_or(|p| p.is_empty())
+        {
             continue;
         }
         let (mut ty, mut cap, mut row) = (0, 0, 0);
-        let (body, requirements) = scheme.instantiate_with_projections(
+        let (body, requirements, fields) = scheme.instantiate_with_requirements(
             &mut || {
                 let id = ridge_types::TyVid(ty);
                 ty += 1;
@@ -293,6 +305,19 @@ fn formation_surface(
             name.clone(),
             ridge_types::type_to_key(&body),
             requirements.iter().map(ridge_types::type_to_key).collect(),
+            fields
+                .iter()
+                .map(|field| {
+                    (
+                        ridge_types::type_to_key(&field.receiver),
+                        field
+                            .field
+                            .as_ref()
+                            .map(|(name, ty)| (name.clone(), ridge_types::type_to_key(ty))),
+                        field.access_module,
+                    )
+                })
+                .collect(),
         ));
     }
     surface.sort_by(|a, b| a.0.cmp(&b.0));

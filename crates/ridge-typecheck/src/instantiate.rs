@@ -68,7 +68,7 @@ pub fn instantiate(ctx: &mut InferCtx, scheme: &Scheme) -> Type {
     let mut ty_idx = 0usize;
     let mut cap_idx = 0usize;
     let mut row_idx = 0usize;
-    let (instantiated, projections) = scheme.instantiate_with_projections(
+    let (instantiated, projections, record_fields) = scheme.instantiate_with_requirements(
         &mut || {
             let v = fresh_tyvids[ty_idx];
             ty_idx += 1;
@@ -117,6 +117,9 @@ pub fn instantiate(ctx: &mut InferCtx, scheme: &Scheme) -> Type {
     for projection in projections {
         crate::projections::remember_type(ctx, &projection, span);
     }
+    for requirement in record_fields {
+        crate::record_requirements::remember(ctx, requirement, span);
+    }
     instantiated
 }
 
@@ -160,6 +163,7 @@ pub fn generalise(ctx: &mut InferCtx, ty: &Type) -> Scheme {
 pub fn generalisation_env(
     ctx: &mut InferCtx,
 ) -> (FxHashSet<TyVid>, FxHashSet<CapVid>, FxHashSet<RowVid>) {
+    crate::record_requirements::solve(ctx);
     let mut ty_vars = FxHashSet::default();
     let mut cap_vars = FxHashSet::default();
     let mut row_vars = FxHashSet::default();
@@ -175,6 +179,10 @@ pub fn generalisation_env(
             .iter()
             .flat_map(|constraint| constraint.tys.iter().copied()),
     );
+    let connected = crate::record_requirements::connected_types(ctx, &shared_types);
+    for ty in &connected {
+        include(ty);
+    }
     for var in shared_types {
         include(&ctx.deep_resolve(&Type::Var(var)));
     }
@@ -265,15 +273,32 @@ fn generalise_resolved(
     // 2. Free vars in the resolved type.
     let (mut free_ty, mut free_cap) = collect_free_vars(&ty_resolved);
     let mut free_row = collect_free_row_vars(&ty_resolved);
-    let projections = crate::projections::for_export(ctx, &free_ty);
-    if let Some(requirements) = &projections {
-        for requirement in requirements.iter() {
-            let (ty_vars, cap_vars) = collect_free_vars(requirement);
-            free_ty.extend(ty_vars);
-            free_cap.extend(cap_vars);
-            free_row.extend(collect_free_row_vars(requirement));
+    let (projections, record_fields) = loop {
+        let before = free_ty.len();
+        let record_fields = crate::record_requirements::for_export(ctx, &free_ty);
+        if let Some(requirements) = &record_fields {
+            for requirement in requirements.iter() {
+                for ty in requirement.types() {
+                    let (types, caps) = collect_free_vars(ty);
+                    free_ty.extend(types);
+                    free_cap.extend(caps);
+                    free_row.extend(collect_free_row_vars(ty));
+                }
+            }
         }
-    }
+        let projections = crate::projections::for_export(ctx, &free_ty);
+        if let Some(requirements) = &projections {
+            for requirement in requirements.iter() {
+                let (ty_vars, cap_vars) = collect_free_vars(requirement);
+                free_ty.extend(ty_vars);
+                free_cap.extend(cap_vars);
+                free_row.extend(collect_free_row_vars(requirement));
+            }
+        }
+        if before == free_ty.len() {
+            break (projections, record_fields);
+        }
+    };
 
     // 3. Generalise over vars that are not in the environment.
     let mut vars: Vec<TyVid> = free_ty.difference(free_in_env_ty).copied().collect();
@@ -287,6 +312,7 @@ fn generalise_resolved(
 
     Scheme {
         projections,
+        record_fields,
         vars,
         cap_vars,
         row_vars,
@@ -452,6 +478,7 @@ mod tests {
         let a = TyVid(0);
         let scheme = Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![a],
             cap_vars: vec![],
             row_vars: vec![],
@@ -474,6 +501,7 @@ mod tests {
         // forall a. a -> a
         let scheme = Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![a],
             cap_vars: vec![],
             row_vars: vec![],
@@ -528,6 +556,7 @@ mod tests {
         let b = TyVid(1);
         let scheme = Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![a, b],
             cap_vars: vec![],
             row_vars: vec![],
@@ -559,6 +588,7 @@ mod tests {
         // forall a {c}. fn c a -> a
         let scheme = Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![a],
             cap_vars: vec![c],
             row_vars: vec![],

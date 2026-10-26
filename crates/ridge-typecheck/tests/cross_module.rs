@@ -93,6 +93,43 @@ fn imported_type_correct_field_use_is_clean() {
 const LIB_OPAQUE: &str = "pub opaque type Sql = { raw: Text }\n";
 
 #[test]
+fn inferred_field_requirements_survive_imports_and_aliases() {
+    let lib = "pub fn read record = record.value\n";
+    for argument in ["7", "({ other = 7 })"] {
+        let main = format!("import proj.Lib (read)\npub fn value () -> Int =\n    let alias = read\n    alias {argument}\n");
+        let errors = typecheck_two_modules(&main, lib);
+        assert!(!errors.is_empty(), "accepted {argument}");
+    }
+    let main = "import proj.Lib (read)\ntype Item = { value: Int }\npub fn value () -> Int =\n    let alias = read\n    let text: Text = alias ({ value = \"ok\" })\n    alias (Item { value = 7 })\n";
+    assert!(typecheck_two_modules(main, lib).is_empty());
+}
+
+#[test]
+fn inferred_fields_cannot_launder_opaque_access_through_specialization() {
+    let lib = "pub opaque type Sql = { raw: Text }\npub fn make () -> Sql = Sql { raw = \"safe\" }\npub fn read record = record.raw\n";
+    for body in [
+        "record.raw",
+        "record with { raw = \"bad\" }",
+        "record with {}",
+    ] {
+        let main = format!("import proj.Lib (make)\nfn access record = {body}\npub fn value () = access (make ())\n");
+        let errors = typecheck_two_modules(&main, lib);
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(error, TypeError::OpaqueFieldAccess { .. })),
+            "{body}: {errors:?}"
+        );
+    }
+    let main = "import proj.Lib (read, make)\npub fn value () -> Text = read (make ())\n";
+    let errors = typecheck_two_modules(main, lib);
+    assert!(
+        errors.is_empty(),
+        "defining module may implement access: {errors:?}"
+    );
+}
+
+#[test]
 fn opaque_cross_module_field_access_is_t036() {
     // Reading an opaque type's field from another module is rejected.
     let main = "import proj.Lib (Sql)\nfn leak (s: Sql) -> Text = s.raw\n";

@@ -369,6 +369,8 @@ pub struct InferCtx {
     /// Original projection applications and their source sites, checked after
     /// inference without losing them to normalisation.
     pub(crate) projection_sites: Vec<crate::projections::Site>,
+    /// Field obligations waiting for receiver inference or generalisation.
+    pub(crate) record_requirements: Vec<crate::record_requirements::Site>,
     /// Ordinary dictionary resolution also proves its class's type domain.
     /// Pure formation proofs suspend capture to avoid generating their own work.
     pub(crate) capture_projection_domains: bool,
@@ -630,6 +632,7 @@ impl InferCtx {
             tycon_origins: crate::cross_module::TyConOrigins::default(),
             class_ids: FxHashMap::default(),
             projection_sites: Vec::new(),
+            record_requirements: Vec::new(),
             capture_projection_domains: true,
             projection_scope_start: 0,
             projection_use_span: None,

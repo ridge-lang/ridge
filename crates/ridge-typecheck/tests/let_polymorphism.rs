@@ -78,10 +78,9 @@ fn writes_and_recovery_facts_do_not_establish_polymorphism() {
         let source = format!("pub fn value () -> Int =\n    {binding}\n    let first: Int = read ({{ value = 1 }})\n    read 7\n");
         let errors = check(&source);
         assert!(
-            errors.iter().any(|e| matches!(
-                e,
-                TypeError::TypeMismatch { .. } | TypeError::TypeMismatchInCall { .. }
-            )),
+            errors
+                .iter()
+                .any(|e| matches!(e, TypeError::FieldAccessOnNonRecord { .. })),
             "{source}: {errors:?}"
         );
     }

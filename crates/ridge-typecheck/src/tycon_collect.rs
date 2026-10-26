@@ -253,6 +253,7 @@ pub fn synth_table_mirrors(
 
     let mono = |ty: Type| Scheme {
         projections: None,
+        record_fields: None,
         vars: vec![],
         cap_vars: vec![],
         row_vars: vec![],
@@ -1233,6 +1234,7 @@ fn bind_constructor_schemes(
         };
         let scheme = Scheme {
             projections: None,
+            record_fields: None,
             vars: param_vids.clone(),
             cap_vars: vec![],
             row_vars: vec![],

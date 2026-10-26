@@ -1653,6 +1653,7 @@ mod tests {
         let a = ridge_types::TyVid(0);
         let scheme = Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![a],
             cap_vars: vec![],
             row_vars: vec![],

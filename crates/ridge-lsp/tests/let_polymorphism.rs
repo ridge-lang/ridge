@@ -6,6 +6,13 @@ use ridge_lsp::index::WorkspaceIndex;
 use tower_lsp::lsp_types::{Position, Range, Url};
 
 fn workspace(source: &str) -> (tempfile::TempDir, IncrementalState, Url) {
+    workspace_with_library(source, None)
+}
+
+fn workspace_with_library(
+    source: &str,
+    library: Option<&str>,
+) -> (tempfile::TempDir, IncrementalState, Url) {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("lib/src")).unwrap();
     std::fs::write(
@@ -21,6 +28,9 @@ fn workspace(source: &str) -> (tempfile::TempDir, IncrementalState, Url) {
     let root = ridge_manifest::canonicalize(dir.path()).unwrap();
     let path = root.join("lib/src/Main.ridge");
     std::fs::write(&path, source).unwrap();
+    if let Some(library) = library {
+        std::fs::write(root.join("lib/src/Lib.ridge"), library).unwrap();
+    }
     let uri = Url::from_file_path(path).unwrap();
     let state =
         check_workspace_incremental(CheckOptions::new(root).with_retain_indices(true)).unwrap();
@@ -49,6 +59,87 @@ fn position(source: &str, offset: usize) -> Position {
         u32::try_from(before.bytes().filter(|b| *b == b'\n').count()).unwrap(),
         u32::try_from(before.rsplit('\n').next().unwrap().encode_utf16().count()).unwrap(),
     )
+}
+
+#[test]
+fn inferred_record_types_and_contradictions_follow_edits() {
+    let source = "fn read record = record.value\npub fn value () -> Int =\n    let text = read ({ value = \"ok\" })\n    let number = read ({ value = 7 })\n    number\n";
+    for ending in ["\n", "\r\n"] {
+        let source = source.replace('\n', ending);
+        let (_dir, mut state, uri) = workspace(&source);
+        clean(&state);
+        let mid = state
+            .resolved
+            .graph
+            .modules
+            .iter()
+            .find(|module| module.file_path.ends_with("Main.ridge"))
+            .unwrap()
+            .id;
+        for _ in 0..2 {
+            let index =
+                WorkspaceIndex::build(1, &state.typed, &state.resolved, &state.source_cache());
+            for (needle, expected) in [("text =", "text : Text"), ("number =", "number : Int")] {
+                let offset = source.find(needle).unwrap();
+                let pos = position(&source, offset);
+                let (card, _) = index.hover_at(&uri, pos.line, pos.character).unwrap();
+                assert!(card.contains(expected), "{card}");
+            }
+            let invalid = source.replace("value = 7", "other = 7");
+            state.recompile(mid, &invalid);
+            assert!(
+                state.type_errors.iter().any(|(_, error)| matches!(error,
+                ridge_typecheck::TypeError::UnknownField { field, .. } if field == "value")),
+                "{:?}",
+                state.type_errors
+            );
+            state.recompile(mid, &source);
+            clean(&state);
+            let invalid = "pub fn value record -> Int =\n    let text: Text = record.value\n    let number: Int = record.value\n    number\n".replace('\n', ending);
+            state.recompile(mid, &invalid);
+            assert!(
+                state.type_errors.iter().any(|(_, error)| matches!(
+                    error,
+                    ridge_typecheck::TypeError::TypeMismatch { .. }
+                )),
+                "{:?}",
+                state.type_errors
+            );
+            state.recompile(mid, &source);
+            clean(&state);
+        }
+    }
+}
+
+#[test]
+fn imported_field_contract_edits_recheck_consumers() {
+    let main = "import lib.Lib (read)\npub fn value () -> Int = read ({ value = 7 })\n";
+    let library = "pub fn read record -> Int = record.value\n";
+    for ending in ["\n", "\r\n"] {
+        let library = library.replace('\n', ending);
+        let (_dir, mut state, _uri) =
+            workspace_with_library(&main.replace('\n', ending), Some(&library));
+        clean(&state);
+        let mid = state
+            .resolved
+            .graph
+            .modules
+            .iter()
+            .find(|module| module.file_path.ends_with("Lib.ridge"))
+            .unwrap()
+            .id;
+        for _ in 0..2 {
+            state.recompile(mid, &library.replace("record.value", "record.other"));
+            assert!(
+                state.type_errors.iter().any(|(_, error)| matches!(error,
+                ridge_typecheck::TypeError::UnknownField { field, .. } if field == "other")),
+                "{:?}",
+                state.type_errors
+            );
+            state.recompile(mid, &library);
+            clean(&state);
+        }
+    }
 }
 
 #[test]
@@ -188,7 +279,7 @@ fn writes_and_recovery_remain_checked_after_edits() {
             if immutable_write {
                 assert!(state.resolved.errors.iter().any(|(_, error)| matches!(error, ridge_resolve::ResolveError::ImmutableAssignment { .. })), "{:?}", state.resolved.errors);
             } else {
-                assert!(state.type_errors.iter().any(|(_, error)| matches!(error, ridge_typecheck::TypeError::TypeMismatch { .. } | ridge_typecheck::TypeError::TypeMismatchInCall { .. })), "{:?}", state.type_errors);
+                assert!(state.type_errors.iter().any(|(_, error)| matches!(error, ridge_typecheck::TypeError::FieldAccessOnNonRecord { .. })), "{:?}", state.type_errors);
             }
             state.recompile(mid, &valid.replace('\n', ending));
             clean(&state);

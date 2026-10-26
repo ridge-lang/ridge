@@ -220,6 +220,7 @@ fn ty_fn_cap_var(params: Vec<Type>, ret: Type, c: CapVid) -> Type {
 const fn poly(vars: Vec<TyVid>, ty: Type) -> Scheme {
     Scheme {
         projections: None,
+        record_fields: None,
         vars,
         cap_vars: vec![],
         row_vars: vec![],
@@ -233,6 +234,7 @@ const fn poly(vars: Vec<TyVid>, ty: Type) -> Scheme {
 const fn poly_cap(vars: Vec<TyVid>, cap_vars: Vec<CapVid>, ty: Type) -> Scheme {
     Scheme {
         projections: None,
+        record_fields: None,
         vars,
         cap_vars,
         row_vars: vec![],
@@ -246,6 +248,7 @@ const fn poly_cap(vars: Vec<TyVid>, cap_vars: Vec<CapVid>, ty: Type) -> Scheme {
 const fn mono(ty: Type) -> Scheme {
     Scheme {
         projections: None,
+        record_fields: None,
         vars: vec![],
         cap_vars: vec![],
         row_vars: vec![],
@@ -725,6 +728,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             // forall a where Ord a. List a -> List a
             Some(Scheme {
                 projections: None,
+                record_fields: None,
                 vars: vec![A],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -736,6 +740,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             // forall a b c where Ord b. (fn c (a -> b)) -> List a -> List a  (key fn)
             Some(Scheme {
                 projections: None,
+                record_fields: None,
                 vars: vec![A, B_VAR],
                 cap_vars: vec![CAP_C],
                 row_vars: vec![],
@@ -1601,6 +1606,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             // forall a. List a -> Option a
             Some(Scheme {
                 projections: None,
+                record_fields: None,
                 vars: vec![A],
                 cap_vars: vec![],
                 row_vars: vec![],

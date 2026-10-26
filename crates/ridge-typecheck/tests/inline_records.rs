@@ -24,6 +24,10 @@ fn write_file(dir: &Path, rel: &str, content: &str) {
 }
 
 fn typecheck_src(src: &str) -> TypecheckResult {
+    check_source(src, false)
+}
+
+fn check_source(src: &str, expect_parsed: bool) -> TypecheckResult {
     let td = tempfile::TempDir::new().expect("tempdir");
     write_file(
         td.path(),
@@ -40,6 +44,15 @@ fn typecheck_src(src: &str) -> TypecheckResult {
     let disc = discover_workspace(td.path());
     let ws = disc.graph.expect("workspace graph");
     let resolved = resolve_workspace(ws);
+    if expect_parsed {
+        assert!(resolved.lex_errors.is_empty(), "{:?}", resolved.lex_errors);
+        assert!(
+            resolved.parse_errors.is_empty(),
+            "{:?}",
+            resolved.parse_errors
+        );
+        assert!(resolved.errors.is_empty(), "{:?}", resolved.errors);
+    }
     let result = typecheck_workspace(&resolved);
     // Keep the tempdir alive until we've extracted the result.
     drop(td);
@@ -59,6 +72,53 @@ fn error_codes(result: &TypecheckResult) -> Vec<String> {
 
 fn has_error(result: &TypecheckResult, code: &str) -> bool {
     result.errors.iter().any(|(_, e)| e.code() == code)
+}
+
+#[test]
+fn inferred_receivers_reject_incompatible_requirements() {
+    for source in [
+        "pub fn value record -> Int =\n    let text: Text = record.value\n    let number: Int = record.value\n    number\n",
+        "pub fn value record -> Int =\n    let number: Int = record.value\n    let text: Text = record.value\n    number\n",
+        "fn read record -> Int = record.value\npub fn value () -> Int = read 7\n",
+        "fn update record = record with {}\npub fn value () -> Int = update 7\n",
+        "fn read record -> Int = record.inner.value\npub fn value () -> Int = read ({ inner = 7 })\n",
+        "fn read record -> Int = record.value\npub fn value () -> Int = read ({ other = 7 })\n",
+        "pub fn value record -> Int =\n    let field: Int = record.value\n    let number: Int = record\n    field + number\n",
+        "pub fn value record -> Int =\n    let number: Int = record\n    let field: Int = record.value\n    field + number\n",
+        "pub fn value record -> Int = record with { value = 7 }\n",
+        "pub fn value record -> { value: Int } = record with { value = \"bad\" }\n",
+        "pub fn value () -> Int =\n    let read = fn record -> record.value\n    let first: Int = read ({ value = 7 })\n    let invalid: Text = read ({ value = 7 })\n    first\n",
+        "pub fn value record -> Int =\n    let field = record.value\n    let text: Text = field\n    let number: Int = field\n    number\n",
+        "pub fn value record -> Int =\n    let read = fn () -> record.value\n    let text: Text = read ()\n    let number: Int = read ()\n    number\n",
+        "pub fn value record -> Int =\n    let alias = record\n    let read = fn () -> alias.value\n    let text: Text = read ()\n    let number: Int = read ()\n    number\n",
+        "pub fn value record -> Int =\n    fn read () = record.value\n    let text: Text = read ()\n    let number: Int = read ()\n    number\n",
+        "import std.list as List\ntype Item = | MkItem Int\nfn sorted record -> Bool =\n    let ignored = List.sort record.value\n    true\npub fn value () -> Bool = sorted ({ value = [MkItem 7] })\n",
+        "import std.io as Io\npub fn value record = record with { value = Io.println \"bad\" }\n",
+        "import std.io as Io\nfn invoke record -> Unit = record.run ()\npub fn value () -> Unit = invoke ({ run = fn _ -> Io.println \"bad\" })\n",
+    ] {
+        let result = check_source(source, true);
+        assert!(!result.errors.is_empty(), "accepted invalid program:\n{source}");
+    }
+}
+
+#[test]
+fn inferred_receivers_preserve_nominal_and_structural_polymorphism() {
+    for source in [
+        "type Item = { value: Int }\nfn read record -> Int = record.value\npub fn value () -> Int = read (Item { value = 7 })\n",
+        "type Item = { value: Int }\nfn update record = record with {}\npub fn value () -> Item = update (Item { value = 7 })\n",
+        "fn read record = record.value\npub fn value () -> Int =\n    let text: Text = read ({ value = \"ok\", extra = true })\n    let number: Int = read ({ value = 7 })\n    number\n",
+        "type Item = { value: Int }\nfn update record = record with { value = 7 }\npub fn value () -> Item = update (Item { value = 1 })\n",
+        "fn update record = record with { value = 7 }\npub fn value () -> Int =\n    let first = update ({ value = 1, extra = true })\n    let second = update ({ value = 2 })\n    first.value + second.value\n",
+        "pub fn value () -> Int =\n    let read = fn record -> record.value\n    let text: Text = read ({ value = \"ok\" })\n    let number: Int = read ({ value = 7 })\n    number\n",
+        "fn read record -> Int = record.inner.value\npub fn value () -> Int = read ({ inner = { value = 7 } })\n",
+        "fn read record -> Int =\n    let first: Int = record.value\n    let second: Int = record.value\n    first + second\npub fn value () -> Int = read ({ value = 7 })\n",
+        "import std.list as List\nfn sorted record -> Bool =\n    let ignored = List.sort record.value\n    true\npub fn value () -> Bool = sorted ({ value = [7] })\n",
+        "import std.io as Io\npub fn io value record = record with { value = Io.println \"ok\" }\n",
+        "import std.io as Io\nfn io invoke record -> Unit = record.run ()\npub fn io value () -> Unit = invoke ({ run = fn _ -> Io.println \"ok\" })\n",
+    ] {
+        let result = check_source(source, true);
+        assert!(result.errors.is_empty(), "{source}\n{:#?}", result.errors);
+    }
 }
 
 fn anon_count(result: &TypecheckResult) -> usize {

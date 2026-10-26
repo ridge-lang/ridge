@@ -19,7 +19,8 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 // ── Source ────────────────────────────────────────────────────────────────────
 
-const SOURCE: &str = r"
+const SOURCE: &str = r#"
+import std.list as List
 -- An open record parameter: only `x` is fixed; the tail `a` absorbs any extras.
 fn getX (r: { x: Int | a }) -> Int = r.x
 
@@ -50,7 +51,29 @@ pub fn open_preserve () -> Int =
     let rec = { x = 10, y = 5 }
     let r2 = bumpX rec
     r2.x + r2.y
-";
+
+fn read record = record.value
+fn update record = record with { value = 7 }
+type Item = { value: Int, extra: Int }
+
+pub fn inferred_nominal () -> Int =
+    let changed: Item = update (Item { value = 1, extra = 3 })
+    read changed + changed.extra
+
+pub fn inferred_polymorphic () -> Int =
+    let alias = read
+    let text: Text = alias ({ value = "ok", extra = true })
+    if text == "ok" then alias ({ value = 11 }) else 0
+
+fn nested record = record.inner.value
+pub fn inferred_nested () -> Int = nested ({ inner = { value = 13 } })
+
+fn isSorted record -> Bool = List.sort record.value == record.value
+pub fn inferred_class () -> Int =
+    if isSorted ({ value = [1, 2, 3] }) then
+        if isSorted ({ value = [3, 1, 2] }) then 0 else 17
+    else 0
+"#;
 
 // ── Workspace setup ───────────────────────────────────────────────────────────
 
@@ -124,7 +147,7 @@ fn open_record_types_compute_correct_values() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~p~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['open_project','open_multishape','open_preserve']), halt()."
+         lists:foreach(F,['open_project','open_multishape','open_preserve','inferred_nominal','inferred_polymorphic','inferred_nested','inferred_class']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -137,16 +160,8 @@ fn open_record_types_compute_correct_values() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
 
-    for (name, want) in [
-        ("open_project", 11),   // .x of { x = 11, y = 22 }
-        ("open_multishape", 8), // 5 + 3 — one fn, two shapes
-        ("open_preserve", 115), // 110 + 5 — y survives the with-update merge
-    ] {
-        let needle = format!("{name}={want}");
-        assert!(
-            stdout.contains(&needle),
-            "expected `{needle}`\nstdout:\n{stdout}\nstderr:\n{stderr}"
-        );
-    }
+    assert_eq!(stdout.replace("\r\n", "\n"),
+        "open_project=11\nopen_multishape=8\nopen_preserve=115\ninferred_nominal=10\ninferred_polymorphic=11\ninferred_nested=13\ninferred_class=17\n", "{stderr}");
 }

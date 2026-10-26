@@ -5,6 +5,86 @@ use rustc_hash::FxHashSet;
 use crate::constraint::Constraint;
 use crate::ty::{CapRow, CapVid, RowTail, RowVid, TyVid, Type};
 
+/// A field required by an inferred record receiver. This is a checking
+/// obligation, not structural equality or a runtime dictionary.
+#[derive(Debug, Clone)]
+pub struct RecordRequirement {
+    /// Receiver whose nominal identity must be preserved.
+    pub receiver: Type,
+    /// Required field and its type, or just a record requirement for an empty update.
+    pub field: Option<(String, Type)>,
+    /// Module containing the access, for opaque-field visibility.
+    pub access_module: Option<u32>,
+}
+
+impl RecordRequirement {
+    /// All types participating in the obligation, including its receiver.
+    pub fn types(&self) -> impl Iterator<Item = &Type> {
+        std::iter::once(&self.receiver).chain(self.field.iter().map(|(_, ty)| ty))
+    }
+
+    /// Transform the receiver and selected type without losing visibility.
+    #[must_use]
+    pub fn map_types(&self, mut map: impl FnMut(&Type) -> Type) -> Self {
+        Self {
+            receiver: map(&self.receiver),
+            field: self
+                .field
+                .as_ref()
+                .map(|(name, ty)| (name.clone(), map(ty))),
+            access_module: self.access_module,
+        }
+    }
+}
+
+#[cfg(test)]
+mod record_requirement_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+    use crate::{Subst, TyConId};
+    use std::sync::Arc;
+
+    #[test]
+    fn field_obligations_share_body_substitution_and_preserve_visibility() {
+        let mut scheme = Scheme::mono(Type::Var(TyVid(0)));
+        scheme.vars = vec![TyVid(0), TyVid(1)];
+        scheme.record_fields = Some(Arc::new(vec![RecordRequirement {
+            receiver: Type::Var(TyVid(0)),
+            field: Some(("value".into(), Type::Var(TyVid(1)))),
+            access_module: Some(3),
+        }]));
+        assert!(scheme.free_vars().0.is_empty());
+        let mut next = 10;
+        let (body, _, fields) = scheme.instantiate_with_requirements(
+            &mut || {
+                let result = TyVid(next);
+                next += 1;
+                result
+            },
+            &mut || CapVid(0),
+            &mut || RowVid(0),
+        );
+        assert!(matches!(body, Type::Var(TyVid(10))));
+        assert!(matches!(fields[0].receiver, Type::Var(TyVid(10))));
+        assert!(matches!(&fields[0].field, Some((name, Type::Var(TyVid(11)))) if name == "value"));
+        assert_eq!(fields[0].access_module, Some(3));
+        scheme.vars.clear();
+        assert_eq!(
+            scheme.free_vars().0,
+            [TyVid(0), TyVid(1)].into_iter().collect()
+        );
+        let subst = Subst::singleton(TyVid(1), Type::Con(TyConId(2), vec![]));
+        let changed = subst.apply_to_scheme(&scheme);
+        assert_eq!(changed.free_vars().0, std::iter::once(TyVid(0)).collect());
+        scheme.vars = vec![TyVid(1)];
+        let preserved = subst.apply_to_scheme(&scheme);
+        assert!(matches!(
+            &preserved.record_fields.as_ref().unwrap()[0].field,
+            Some((_, Type::Var(TyVid(1))))
+        ));
+    }
+}
+
 // ── Scheme ────────────────────────────────────────────────────────────────────
 
 /// A type scheme `∀ vars cap_vars. ty` as produced by generalisation.
@@ -41,6 +121,8 @@ pub struct Scheme {
     /// dictionary parameters. None avoids an allocation for ordinary schemes;
     /// immutable requirements are shared when schemes are cloned.
     pub projections: Option<std::sync::Arc<Vec<Type>>>,
+    /// Field obligations substituted together with the scheme body.
+    pub record_fields: Option<std::sync::Arc<Vec<RecordRequirement>>>,
 }
 
 impl Scheme {
@@ -54,6 +136,7 @@ impl Scheme {
             ty,
             constraints: vec![],
             projections: None,
+            record_fields: None,
         }
     }
 
@@ -82,6 +165,14 @@ impl Scheme {
             }
         }
 
+        if let Some(requirements) = &self.record_fields {
+            for requirement in requirements.iter() {
+                for ty in requirement.types() {
+                    collect_free_ty(ty, &bound_ty, &bound_cap, &mut free_ty, &mut free_cap);
+                }
+            }
+        }
+
         (free_ty, free_cap)
     }
 
@@ -99,6 +190,13 @@ impl Scheme {
         if let Some(projections) = &self.projections {
             for projection in projections.iter() {
                 collect_row_vars(projection, &mut all);
+            }
+        }
+        if let Some(requirements) = &self.record_fields {
+            for requirement in requirements.iter() {
+                for ty in requirement.types() {
+                    collect_row_vars(ty, &mut all);
+                }
             }
         }
         all.retain(|rv| !bound.contains(rv));
@@ -134,6 +232,18 @@ impl Scheme {
         fresh_cap: &mut dyn FnMut() -> CapVid,
         fresh_row: &mut dyn FnMut() -> RowVid,
     ) -> (Type, Vec<Type>) {
+        let (body, projections, _) = self.instantiate_parts(fresh_ty, fresh_cap, fresh_row, true);
+        (body, projections)
+    }
+
+    /// Freshen body, formation and field obligations with one substitution.
+    #[must_use]
+    pub fn instantiate_with_requirements(
+        &self,
+        fresh_ty: &mut dyn FnMut() -> TyVid,
+        fresh_cap: &mut dyn FnMut() -> CapVid,
+        fresh_row: &mut dyn FnMut() -> RowVid,
+    ) -> (Type, Vec<Type>, Vec<RecordRequirement>) {
         self.instantiate_parts(fresh_ty, fresh_cap, fresh_row, true)
     }
 
@@ -143,7 +253,7 @@ impl Scheme {
         fresh_cap: &mut dyn FnMut() -> CapVid,
         fresh_row: &mut dyn FnMut() -> RowVid,
         include_projections: bool,
-    ) -> (Type, Vec<Type>) {
+    ) -> (Type, Vec<Type>, Vec<RecordRequirement>) {
         // Build per-variable substitution maps.
         let ty_subst: std::collections::HashMap<TyVid, Type> = self
             .vars
@@ -166,7 +276,19 @@ impl Scheme {
                     .map(|ty| subst_type(ty, &ty_subst, &cap_subst, &row_subst))
                     .collect()
             });
-        (body, projections)
+        let requirements = self
+            .record_fields
+            .as_ref()
+            .map_or_else(Vec::new, |requirements| {
+                requirements
+                    .iter()
+                    .map(|requirement| {
+                        requirement
+                            .map_types(|ty| subst_type(ty, &ty_subst, &cap_subst, &row_subst))
+                    })
+                    .collect()
+            });
+        (body, projections, requirements)
     }
 }
 
@@ -357,6 +479,7 @@ mod tests {
         // `forall. Int -> Int` — no free vars.
         let scheme = Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![],
             cap_vars: vec![],
             row_vars: vec![],
@@ -410,6 +533,7 @@ mod tests {
         let a = vid(0);
         let scheme = Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![a],
             cap_vars: vec![],
             row_vars: vec![],
@@ -445,6 +569,7 @@ mod tests {
         // `forall. fn ?c a -> Unit` — ?c is a free cap var.
         let scheme = Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![],
             cap_vars: vec![],
             row_vars: vec![],
@@ -467,6 +592,7 @@ mod tests {
         let c = cvid(0);
         let scheme = Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![],
             cap_vars: vec![c],
             row_vars: vec![],
@@ -489,6 +615,7 @@ mod tests {
         let a = vid(0);
         let scheme = Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![a],
             cap_vars: vec![],
             row_vars: vec![],
@@ -573,6 +700,7 @@ mod tests {
         let b = vid(2);
         let scheme = Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![a, b],
             cap_vars: vec![],
             row_vars: vec![],

@@ -511,6 +511,7 @@ mod tests {
         let cap_c = CapVid(0);
         Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![a],
             cap_vars: vec![cap_c],
             row_vars: vec![],
@@ -538,6 +539,7 @@ mod tests {
         let a = TyVid(0);
         Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![a],
             cap_vars: vec![],
             row_vars: vec![],

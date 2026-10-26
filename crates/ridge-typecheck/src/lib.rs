@@ -37,6 +37,7 @@ pub mod pipe_propagate;
 pub mod prelude;
 mod projections;
 pub mod quote;
+mod record_requirements;
 pub mod records;
 pub mod render;
 pub mod scc;
@@ -825,6 +826,7 @@ fn typecheck_actor_bodies(
 
     let monoscheme = |ty: ridge_types::Type| Scheme {
         projections: None,
+        record_fields: None,
         vars: vec![],
         cap_vars: vec![],
         row_vars: vec![],
@@ -1396,6 +1398,7 @@ fn typecheck_module_inner(
             let ty = infer_expr(&mut ctx, b, &c.value);
             let scheme = ridge_types::Scheme {
                 projections: None,
+                record_fields: None,
                 vars: vec![],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -1533,6 +1536,7 @@ fn typecheck_module_inner(
         }
     }
 
+    crate::record_requirements::solve(&mut ctx);
     crate::projections::finish(&mut ctx, ct, ie, arena);
 
     // Note: detect_unsolved_type_vars (T023) is already called by
@@ -1788,6 +1792,7 @@ fn seed_class_method_schemes(
                 class_tyvids.iter().copied().collect();
             let scheme = Scheme {
                 projections: None,
+                record_fields: None,
                 vars: class_tyvids,
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -1835,6 +1840,7 @@ fn seed_refinable_scheme(
         "filter".to_owned(),
         Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![q, p],
             cap_vars: vec![],
             row_vars: vec![],
@@ -1889,6 +1895,7 @@ fn seed_projectable_scheme(
             name.to_owned(),
             Scheme {
                 projections: None,
+                record_fields: None,
                 vars: vec![q, p],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -1942,6 +1949,7 @@ fn seed_orderable_scheme(
         "orderBy".to_owned(),
         Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![q, p],
             cap_vars: vec![],
             row_vars: vec![],
@@ -2010,6 +2018,7 @@ fn seed_aggregable_scheme(
             name.to_owned(),
             Scheme {
                 projections: None,
+                record_fields: None,
                 vars: vec![q, p],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2065,6 +2074,7 @@ fn seed_fetchable_scheme(
             name.to_owned(),
             Scheme {
                 projections: None,
+                record_fields: None,
                 vars: vec![q],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2120,6 +2130,7 @@ fn seed_joinable_scheme(
         "joinOn".to_owned(),
         Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![q, f, a],
             cap_vars: vec![],
             row_vars: vec![],
@@ -2172,6 +2183,7 @@ fn seed_leftjoinable_scheme(
         "leftJoinOn".to_owned(),
         Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![q, f, a],
             cap_vars: vec![],
             row_vars: vec![],
@@ -2218,6 +2230,7 @@ fn seed_rightjoinable_scheme(
         "rightJoinOn".to_owned(),
         Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![q, f, a],
             cap_vars: vec![],
             row_vars: vec![],
@@ -2264,6 +2277,7 @@ fn seed_fulljoinable_scheme(
         "fullJoinOn".to_owned(),
         Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![q, f, a],
             cap_vars: vec![],
             row_vars: vec![],
@@ -2314,6 +2328,7 @@ fn seed_pageable_scheme(
             name.to_owned(),
             Scheme {
                 projections: None,
+                record_fields: None,
                 vars: vec![q],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2365,6 +2380,7 @@ fn seed_countable_scheme(
             name.to_owned(),
             Scheme {
                 projections: None,
+                record_fields: None,
                 vars: vec![q],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2408,6 +2424,7 @@ fn seed_combinable_scheme(
             name.to_owned(),
             Scheme {
                 projections: None,
+                record_fields: None,
                 vars: vec![q],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2454,6 +2471,7 @@ fn seed_every_scheme(
         "every".to_owned(),
         Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![q, p],
             cap_vars: vec![],
             row_vars: vec![],
@@ -2492,6 +2510,7 @@ fn seed_groupable_scheme(
         "groupBy".to_owned(),
         Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![q, p],
             cap_vars: vec![],
             row_vars: vec![],
@@ -2548,6 +2567,7 @@ fn seed_summarizable_scheme(
         "runGroups".to_owned(),
         Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![q],
             cap_vars: vec![],
             row_vars: vec![],
@@ -2565,6 +2585,7 @@ fn seed_error_from_method_scheme(ctx: &mut crate::ctx::InferCtx) {
         "errorFrom".to_owned(),
         ridge_types::Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![source, target],
             cap_vars: vec![],
             row_vars: vec![],
@@ -2726,6 +2747,7 @@ fn seed_sql_codec_schemes(
             "toSql".to_owned(),
             Scheme {
                 projections: None,
+                record_fields: None,
                 vars: vec![a],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2749,6 +2771,7 @@ fn seed_sql_codec_schemes(
             "fromSql".to_owned(),
             Scheme {
                 projections: None,
+                record_fields: None,
                 vars: vec![a],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2772,6 +2795,7 @@ fn seed_sql_codec_schemes(
             "dbType".to_owned(),
             Scheme {
                 projections: None,
+                record_fields: None,
                 vars: vec![a],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2801,6 +2825,7 @@ fn seed_sql_codec_schemes(
             "fromRow".to_owned(),
             Scheme {
                 projections: None,
+                record_fields: None,
                 vars: vec![a],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2825,6 +2850,7 @@ fn seed_sql_codec_schemes(
             "toRow".to_owned(),
             Scheme {
                 projections: None,
+                record_fields: None,
                 vars: vec![a],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2848,6 +2874,7 @@ fn seed_sql_codec_schemes(
             "rowColumns".to_owned(),
             Scheme {
                 projections: None,
+                record_fields: None,
                 vars: vec![a],
                 cap_vars: vec![],
                 row_vars: vec![],
@@ -2881,6 +2908,7 @@ fn seed_sql_codec_schemes(
                 "appendRow".to_owned(),
                 Scheme {
                     projections: None,
+                    record_fields: None,
                     vars: vec![a],
                     cap_vars: vec![],
                     row_vars: vec![],
@@ -2904,6 +2932,7 @@ fn seed_sql_codec_schemes(
                 "all".to_owned(),
                 Scheme {
                     projections: None,
+                    record_fields: None,
                     vars: vec![a],
                     cap_vars: vec![],
                     row_vars: vec![],
@@ -2960,6 +2989,7 @@ fn seed_sql_codec_schemes(
                 "get".to_owned(),
                 Scheme {
                     projections: None,
+                    record_fields: None,
                     vars: vec![a],
                     cap_vars: vec![],
                     row_vars: vec![],
@@ -2984,6 +3014,7 @@ fn seed_sql_codec_schemes(
                 "delete".to_owned(),
                 Scheme {
                     projections: None,
+                    record_fields: None,
                     vars: vec![a, e],
                     cap_vars: vec![],
                     row_vars: vec![],
@@ -3015,6 +3046,7 @@ fn seed_sql_codec_schemes(
                 "updateRows".to_owned(),
                 Scheme {
                     projections: None,
+                    record_fields: None,
                     vars: vec![a, e],
                     cap_vars: vec![],
                     row_vars: vec![],
@@ -3041,6 +3073,7 @@ fn seed_sql_codec_schemes(
                 method.to_owned(),
                 Scheme {
                     projections: None,
+                    record_fields: None,
                     vars: vec![a],
                     cap_vars: vec![],
                     row_vars: vec![],

@@ -187,11 +187,21 @@ pub fn infer_field_access(
 ) -> Type {
     let base_resolved = ctx.deep_resolve(base_ty);
 
-    // Absorb: if the base is an unresolved type variable (e.g. a HOF callback
-    // param constrained after body inference, or a stdlib stub type) or is
-    // already Error, return Error silently.  T006 fires only for concrete
-    // non-record types.
-    if matches!(&base_resolved, Type::Var(_) | Type::Error) {
+    if matches!(&base_resolved, Type::Var(_)) {
+        let ty = Type::Var(ctx.fresh_tyvid());
+        crate::record_requirements::remember(
+            ctx,
+            ridge_types::RecordRequirement {
+                receiver: base_resolved,
+                field: Some((field_name.text.clone(), ty.clone())),
+                access_module: ctx.current_module_raw,
+            },
+            field_span,
+        );
+        return ty;
+    }
+    // Only actual error recovery absorbs an access without an obligation.
+    if matches!(&base_resolved, Type::Error) {
         return Type::Error;
     }
 
@@ -297,8 +307,10 @@ pub fn infer_record_with(
 ) -> Type {
     let base_resolved = ctx.deep_resolve(base_ty);
 
-    // Absorb: free type vars and Error bases propagate silently.
-    if matches!(&base_resolved, Type::Var(_) | Type::Error) {
+    if matches!(&base_resolved, Type::Var(_)) {
+        return infer_unresolved_with(ctx, b, base_resolved, fields, span);
+    }
+    if matches!(&base_resolved, Type::Error) {
         return Type::Error;
     }
 
@@ -401,6 +413,56 @@ pub fn infer_record_with(
 
     // Result: same type as base.
     base_resolved
+}
+
+/// Infer initializers now, retaining their receiver checks until it is known.
+fn infer_unresolved_with(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    receiver: Type,
+    fields: &[FieldInit],
+    span: Span,
+) -> Type {
+    if fields.is_empty() {
+        crate::record_requirements::remember(
+            ctx,
+            ridge_types::RecordRequirement {
+                receiver: receiver.clone(),
+                field: None,
+                access_module: ctx.current_module_raw,
+            },
+            span,
+        );
+    }
+    for field in fields {
+        let ty = match &field.value {
+            Some(value) => crate::infer::infer_expr(ctx, b, value),
+            None => {
+                if let Some(scheme) = ctx.env.lookup(&field.name.text).cloned() {
+                    crate::instantiate::instantiate(ctx, &scheme)
+                } else {
+                    emit_internal(
+                        ctx,
+                        format!(
+                            "shorthand field '{}' not in scope in with-update",
+                            field.name.text
+                        ),
+                        field.span,
+                    )
+                }
+            }
+        };
+        crate::record_requirements::remember(
+            ctx,
+            ridge_types::RecordRequirement {
+                receiver: receiver.clone(),
+                field: Some((field.name.text.clone(), ty)),
+                access_module: ctx.current_module_raw,
+            },
+            field.span,
+        );
+    }
+    receiver
 }
 
 /// `with`-update over a structural record row (anonymous / inline). Each update

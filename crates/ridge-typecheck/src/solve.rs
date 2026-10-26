@@ -2166,6 +2166,7 @@ mod tests {
                            // forall a. a, with constraint ToText a
         let scheme = Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![a],
             cap_vars: vec![],
             row_vars: vec![],
@@ -2208,6 +2209,7 @@ mod tests {
         let a = TyVid(0);
         let scheme = Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![a],
             cap_vars: vec![],
             row_vars: vec![],

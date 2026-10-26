@@ -7220,6 +7220,7 @@ mod tests {
         let constraint = Constraint::single(ClassId(0), TyVid(0));
         let constrained_scheme = Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![TyVid(0)],
             cap_vars: vec![],
             row_vars: vec![],

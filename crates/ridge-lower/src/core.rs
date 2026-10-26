@@ -2463,6 +2463,7 @@ fn pin_method_dict_var(
     // method's instantiated type (no bound variables, so every variable is free).
     let probe = ridge_types::Scheme {
         projections: None,
+        record_fields: None,
         vars: vec![],
         cap_vars: vec![],
         row_vars: vec![],

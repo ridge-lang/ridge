@@ -428,6 +428,7 @@ pub(crate) fn self_binding_from_signature(
     vars.sort_unstable_by_key(|v| v.0);
     Scheme {
         projections: None,
+        record_fields: None,
         vars,
         cap_vars: Vec::new(),
         row_vars: Vec::new(),
@@ -889,6 +890,7 @@ pub fn typecheck_module_decls(
             .and_then(|did| scc_spans.get(did))
             .copied()
             .unwrap_or_else(|| Span::point(0));
+        crate::record_requirements::solve(ctx);
         let (retained, scc_dict_resolution) = crate::solve::solve_constraints(
             ctx,
             instance_env,
@@ -918,6 +920,9 @@ pub fn typecheck_module_decls(
             let (vars, _) = collect_free_vars(&resolved);
             generalizable.extend(vars);
             collect_rigid_targets(&resolved, &mut generalizable);
+        }
+        for ty in crate::record_requirements::connected_types(ctx, &generalizable) {
+            generalizable.extend(collect_free_vars(&ty).0);
         }
         crate::solve::report_ambiguous_element_dicts(
             ctx,
@@ -957,6 +962,7 @@ pub fn typecheck_module_decls(
             instance_env,
         );
         ctx.projection_scope_start = outer_projection_start;
+        crate::record_requirements::release_generalised(ctx);
     }
 
     // The signature variables have done their job. Note that clearing this is
@@ -1670,6 +1676,7 @@ mod tests {
         // Bind a scheme with that free var in the body (not in vars — unsolved).
         let scheme = Scheme {
             projections: None,
+            record_fields: None,
             vars: vec![], // NOT generalised
             cap_vars: vec![],
             row_vars: vec![],

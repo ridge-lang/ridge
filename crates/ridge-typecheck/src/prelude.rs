@@ -72,6 +72,7 @@ fn ty_fn_pure(params: Vec<Type>, ret: Type) -> Type {
 fn poly1(var: TyVid, ty: Type) -> Scheme {
     Scheme {
         projections: None,
+        record_fields: None,
         vars: vec![var],
         cap_vars: vec![],
         row_vars: vec![],
@@ -85,6 +86,7 @@ fn poly1(var: TyVid, ty: Type) -> Scheme {
 fn poly2(v0: TyVid, v1: TyVid, ty: Type) -> Scheme {
     Scheme {
         projections: None,
+        record_fields: None,
         vars: vec![v0, v1],
         cap_vars: vec![],
         row_vars: vec![],
@@ -205,6 +207,7 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     let ordering_ty = ty_con(b.ordering, vec![]);
     let scheme_less = Scheme {
         projections: None,
+        record_fields: None,
         vars: vec![],
         cap_vars: vec![],
         row_vars: vec![],
@@ -213,6 +216,7 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     };
     let scheme_equal = Scheme {
         projections: None,
+        record_fields: None,
         vars: vec![],
         cap_vars: vec![],
         row_vars: vec![],
@@ -221,6 +225,7 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     };
     let scheme_greater = Scheme {
         projections: None,
+        record_fields: None,
         vars: vec![],
         cap_vars: vec![],
         row_vars: vec![],
@@ -242,6 +247,7 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     let json_ty = ty_con(b.json_value, vec![]);
     let json_ctor = |param: Option<Type>| Scheme {
         projections: None,
+        record_fields: None,
         vars: vec![],
         cap_vars: vec![],
         row_vars: vec![],
@@ -322,6 +328,7 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     let qexpr_ty = ty_con(b.q_expr, vec![]);
     let q_ctor = |params: Vec<Type>| Scheme {
         projections: None,
+        record_fields: None,
         vars: vec![],
         cap_vars: vec![],
         row_vars: vec![],

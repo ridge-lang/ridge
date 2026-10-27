@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Explicit `return` requires an enclosing function or lambda. The compiler and
+  editor diagnose missing return boundaries in actor bodies, state defaults and
+  constants before code generation, preventing uncaught returns at runtime.
+
 - Actor-local reassignment reads the previous value before replacing it.
   Replacement closures capture the previous function instead of becoming
   recursive, and local updates work in initialization and lifecycle callbacks.

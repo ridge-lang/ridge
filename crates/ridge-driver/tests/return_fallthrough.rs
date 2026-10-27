@@ -5,7 +5,9 @@
 mod common;
 
 use common::make_workspace;
-use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
+use ridge_driver::{
+    check_workspace, compile_workspace, CheckOptions, CompileOptions, EmitArtefacts,
+};
 
 /// Exercise the compiler's ordinary workspace path, including lowering.
 fn codes(source: &str) -> Vec<String> {
@@ -84,4 +86,79 @@ fn invalid_return_operands_and_reachable_tails_still_fail() {
 fn an_early_return_does_not_bypass_capability_checks() {
     let actual = codes("import std.io as Io\n\npub fn answer () -> Int =\n    return 5\n    Io.println \"unreachable\"\n    0\n");
     assert!(actual.iter().any(|code| code == "T014"), "{actual:?}");
+}
+
+#[test]
+fn returns_without_a_function_target_are_rejected_before_emission() {
+    let cases = [
+        ("handler", "actor Counter =\n    on value () -> Unit = return ()\n"),
+        ("handler with tail", "actor Counter =\n    on value () -> Int =\n        return \"wrong\"\n        7\n"),
+        ("branch", "actor Counter =\n    on value () -> Unit =\n        if true then return () else ()\n"),
+        ("guard", "actor Counter =\n    on value () -> Int =\n        guard true else return 7\n        8\n"),
+        ("try", "actor Counter =\n    on value () -> Result Unit Text =\n        try\n            return ()\n"),
+        ("init", "actor Counter =\n    state n: Int = 0\n    init () =\n        return ()\n    on value () -> Int = n\n"),
+        ("terminate", "import std.actor (ExitReason)\nactor Counter =\n    on value () -> Unit = ()\n    terminate (reason: ExitReason) =\n        return ()\n"),
+        ("onDown", "import std.actor (ExitReason)\nactor Counter =\n    on value () -> Unit = ()\n    onDown (m: Monitor) (reason: ExitReason) =\n        return ()\n"),
+        ("state default", "actor Counter =\n    state n: Unit = return 7\n    on value () -> Unit = n\n"),
+        ("constant", "const answer: Unit = return 7\npub fn value () -> Unit = answer\n"),
+        ("restored after lambda", "actor Counter =\n    on value () -> Unit =\n        let f = fn () -> Int = return 7\n        return ()\n"),
+        ("restored after local fn", "actor Counter =\n    on value () -> Unit =\n        fn f () -> Int = return 7\n        return ()\n"),
+    ];
+    for (name, source) in cases {
+        let workspace = make_workspace("Returns", source);
+        let checked = check_workspace(CheckOptions::new(workspace.path.clone())).unwrap();
+        let compiled =
+            compile_workspace(CompileOptions::new(workspace.path).with_emit(EmitArtefacts::Core))
+                .unwrap();
+        for diagnostics in [&checked.diagnostics, &compiled.diagnostics] {
+            let errors: Vec<_> = diagnostics.iter().filter(|d| d.code == "T062").collect();
+            assert_eq!(errors.len(), 1, "{name}: {diagnostics:?}");
+            assert!(errors[0]
+                .primary_message
+                .contains("enclosing function or lambda"));
+            assert!(
+                !diagnostics.iter().any(|d| d.code.ends_with("999")),
+                "{name}: {diagnostics:?}"
+            );
+        }
+        assert!(
+            compiled.core_files.is_empty(),
+            "{name}: emitted invalid source"
+        );
+        assert!(
+            compiled.beam_files.is_empty(),
+            "{name}: emitted invalid source"
+        );
+    }
+}
+
+#[test]
+fn nested_function_targets_in_actor_and_constant_contexts_remain_valid() {
+    for source in [
+        "actor Counter =\n    on value () -> Int =\n        let f = fn () -> Int = return 7\n        f ()\n",
+        "actor Counter =\n    on value () -> Int =\n        fn f () -> Int = return 7\n        f ()\n",
+        "actor Counter =\n    state n: Int = 0\n    init () =\n        fn f () -> Int = return 7\n        n <- f ()\n    on value () -> Int = n\n",
+        "const answer: Int =\n    let f = fn () -> Int = return 7\n    f ()\npub fn value () -> Int = answer\n",
+        "actor Counter =\n    state n: Int =\n        let f = fn () -> Int = return 7\n        f ()\n    on value () -> Int = n\n",
+        "actor Counter =\n    on value () -> Result Int Text =\n        try\n            let f = fn () -> Int = return 7\n            f ()\n",
+        "import std.actor (ExitReason)\nactor Counter =\n    on value () -> Unit = ()\n    terminate (reason: ExitReason) =\n        let f = fn () -> Unit = return ()\n        f ()\n    onDown (m: Monitor) (reason: ExitReason) =\n        fn f () -> Unit = return ()\n        f ()\n",
+    ] {
+        assert!(codes(source).is_empty(), "{source}");
+    }
+}
+
+#[test]
+fn a_missing_return_target_does_not_hide_other_source_errors() {
+    for (source, other) in [
+        ("actor Counter =\n    on value () -> Unit = return (1 + \"wrong\")\n", "T001"),
+        ("actor Counter =\n    on value () -> Unit =\n        return ()\n        let n: Int = \"wrong\"\n        ()\n", "T001"),
+        ("import std.io as Io\nactor Counter =\n    on value () -> Unit = return (Io.println \"effect\")\n", "T014"),
+        ("actor Counter =\n    on value () -> Unit =\n        return ()\n        let n = 0\n        n <- 1\n        ()\n", "R031"),
+    ] {
+        let actual = codes(source);
+        if other != "R031" {
+            assert!(actual.iter().any(|c| c == "T062"), "{actual:?}");
+        }
+        assert!(actual.iter().any(|c| c == other), "{actual:?}");
+    }
 }

@@ -40,6 +40,7 @@ pub mod quote;
 mod record_requirements;
 pub mod records;
 pub mod render;
+mod return_context;
 pub mod scc;
 pub mod solve;
 pub mod stdlib_env;
@@ -1383,6 +1384,9 @@ fn typecheck_module_inner(
     for (name, scheme) in imported_schemes {
         ctx.env.bind(name.clone(), scheme.clone());
     }
+
+    // Lexical validity must cover expressions outside the inference walk too.
+    crate::return_context::check_module(ast, &mut ctx.errors);
 
     // Step B2: Bind top-level const declarations in the env so fn bodies that
     // reference them resolve correctly (e.g. `defaultGenerations`, `alphabet`).

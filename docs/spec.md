@@ -190,6 +190,13 @@ A lambda may declare its return type: `fn (n: Int) -> Text = show n`. The declar
 
 **A lambda is a return boundary.** `return` inside a lambda returns from that lambda, not from the function containing it, and `?` propagates to the lambda's return type for the same reason. A callback that wants to exit early does so with `guard … else return`, and what it returns must be the lambda's own return type.
 
+An explicit `return` requires an enclosing function or lambda. Actor message
+handlers and lifecycle bodies, state-field defaults and constant initializers
+do not establish that boundary. Their bodies produce values through ordinary
+expressions; use a function or lambda helper when an early return is needed.
+A `try` expression establishes a propagation boundary for `?`, not a return
+boundary. Functions and lambdas nested in these contexts keep their own returns.
+
 #### Inner function declarations
 
 A `fn` declaration inside another function body may declare its own capability prefix. The inner function's capability set must be a subset of the enclosing function's declared set.

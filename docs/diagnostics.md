@@ -992,6 +992,10 @@ An ask timeout is written as a negative literal.
 
 A type-level projection is applied outside its reduction domain.
 
+### T062
+
+An explicit return has no enclosing function or lambda.
+
 ### T101
 
 The `@ffi` arity doesn't match the Ridge parameter count.

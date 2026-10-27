@@ -1629,6 +1629,12 @@ pub const REGISTRY: &[CodeEntry] = &[
         summary: "A type-level projection is applied outside its reduction domain.",
     },
     CodeEntry {
+        code: "T062",
+        variants: &["ReturnOutsideFunction"],
+        owner: "ridge-typecheck",
+        summary: "An explicit return has no enclosing function or lambda.",
+    },
+    CodeEntry {
         code: "T101",
         variants: &["FfiArityMismatch"],
         owner: "ridge-stdlib",

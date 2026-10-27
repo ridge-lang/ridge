@@ -846,8 +846,8 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                     ctx.errors.push(attach_span(e, *span));
                 }
             }
-            // The inference region records that control cannot flow past this
-            // expression; this placeholder is never a fallthrough value.
+            // Only a return with a function target contributes RETURN flow.
+            // Without one, keep checking the continuation after reporting it.
             Type::Con(b.unit, vec![])
         }
 
@@ -3820,10 +3820,10 @@ mod tests {
 
     // ── Return outside fn ─────────────────────────────────────────────────────
 
-    /// Test 17 — return with no enclosing fn return type: no error (parser
-    ///            allows it; type checker just skips unification).
+    /// Missing targets are diagnosed by the module's lexical validation, and
+    /// must not make inference skip the continuation's type/capability checks.
     #[test]
-    fn infer_return_outside_fn_no_error() {
+    fn infer_return_without_target_does_not_mark_divergence() {
         let b = make_builtins();
         let mut ctx = InferCtx::for_tests();
         ctx.env.push_frame();
@@ -3839,8 +3839,7 @@ mod tests {
 
         let ty = infer_expr(&mut ctx, &b, &ret_expr);
         assert!(matches!(ty, Type::Con(id, _) if id == b.unit));
-        // No T### fires when there's no fn context (parser-level issue, not type-level).
-        assert!(ctx.errors.is_empty(), "unexpected errors: {:?}", ctx.errors);
+        assert!(ctx.flow.falls_through);
         ctx.env.pop_frame();
     }
 

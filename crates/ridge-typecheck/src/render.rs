@@ -896,6 +896,11 @@ impl TypeError {
             }
 
             // ── T999 ──────────────────────────────────────────────────────────
+            Self::ReturnOutsideFunction { .. } => write!(
+                f,
+                "`return` requires an enclosing function or lambda\n  fix: use the body's value expression, or move this code into a function or lambda"
+            ),
+
             Self::InternalTypeError { detail, .. } => {
                 write!(
                     f,
@@ -938,6 +943,7 @@ impl HasErrorCode for TypeError {
             | Self::SendOnNonActor { span, .. }
             | Self::AskOnNonActor { span, .. }
             | Self::PropagateOutsideResultOrOption { span, .. }
+            | Self::ReturnOutsideFunction { span }
             | Self::DiscardedResult { span, .. }
             | Self::RowVariableLeak { span, .. }
             | Self::SpawnArityMismatch { span, .. }
@@ -2040,6 +2046,7 @@ mod tests {
             | TypeError::SendOnNonActor { .. }
             | TypeError::AskOnNonActor { .. }
             | TypeError::PropagateOutsideResultOrOption { .. }
+            | TypeError::ReturnOutsideFunction { .. }
             | TypeError::DiscardedResult { .. }
             | TypeError::UnsolvedTypeVariable { .. }
             | TypeError::RowVariableLeak { .. }
@@ -2447,6 +2454,7 @@ mod tests {
                 expected: td(),
                 span: sp(),
             },
+            TypeError::ReturnOutsideFunction { span: sp() },
             TypeError::InternalTypeError {
                 detail: s(),
                 span: sp(),

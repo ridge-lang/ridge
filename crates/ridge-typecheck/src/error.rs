@@ -1043,7 +1043,12 @@ pub enum TypeError {
         span: Span,
     },
 
-    // ── T999 ─────────────────────────────────────────────────────────────────
+    /// An explicit return has no enclosing source function or lambda.
+    ReturnOutsideFunction {
+        /// Source span of the return expression.
+        span: Span,
+    },
+
     /// Internal type-checker invariant violation — should never reach users.
     ///
     /// In debug builds this is accompanied by a `debug_assert!` panic (see
@@ -1060,7 +1065,7 @@ pub enum TypeError {
 impl TypeError {
     /// Returns the stable `T###` error code for this variant.
     ///
-    /// The codes are allocated in `T001..T058` and `T999` is the catch-all
+    /// The codes are allocated in `T001..T062` and `T999` is the catch-all
     /// internal error. No overlap with `R###`/`M###`.
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -1123,6 +1128,7 @@ impl TypeError {
             Self::UnknownTypeName { .. } => "T056",
             Self::TupleWidthMismatch { .. } => "T057",
             Self::PropagateOutsideResultOrOption { .. } => "T058",
+            Self::ReturnOutsideFunction { .. } => "T062",
             Self::InternalTypeError { .. } => "T999",
         }
     }

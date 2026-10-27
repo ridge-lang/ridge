@@ -13,7 +13,8 @@
 //! 3. Uses `ridge_parser::parse_source` to obtain the AST and checks param
 //!    counts for functions that parse cleanly (functions with parse errors are
 //!    skipped for the param-count assertion).
-//! 4. For every parsed `pub fn`, calls `stdlib_signature` and asserts:
+//! 4. For every parsed `pub fn`, reads its signature table (or its reconciled
+//!    HTTP import) and asserts:
 //!    - Returns `Some` (not `None`)                           → `T202`
 //!    - `params.len()` matches AST param count                 → `T202`
 //!    - Return-type shape loosely matches                    → `T202`
@@ -34,16 +35,18 @@
 // Integration tests are allowed to use expect/unwrap/panic freely.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::collections::BTreeMap;
+use std::fmt::Write;
 use std::path::Path;
 
-use ridge_ast::{Item, Visibility};
+use ridge_ast::{Capability, Item, Visibility};
 use ridge_parser::parse_source;
 use ridge_resolve::stdlib_builtin::BUILTINS;
 use ridge_stdlib::codegen_manifest::{
     extract_pub_names_from_source, module_name_to_path, STDLIB_MODULE_ORDER,
 };
 use ridge_typecheck::{stdlib_signatures::stdlib_signature, BuiltinTyCons};
-use ridge_types::{TyConArena, Type};
+use ridge_types::{CapRow, CapabilitySet, Scheme, TyConArena, Type};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -61,6 +64,94 @@ fn make_builtins() -> BuiltinTyCons {
 /// Locate the `stdlib/` directory relative to `CARGO_MANIFEST_DIR`.
 fn stdlib_dir() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib")
+}
+
+/// Read reconciled HTTP signatures through the same imports as user code.
+fn http_value_signatures() -> BTreeMap<String, Scheme> {
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(workspace.path().join("lib/src")).unwrap();
+    std::fs::write(
+        workspace.path().join("ridge.toml"),
+        "[workspace]\nname=\"signatures\"\nversion=\"0.1.0\"\nmembers=[\"lib\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.path().join("lib/ridge.toml"),
+        "[project]\nname=\"signatures\"\nversion=\"0.1.0\"\nkind=\"library\"\n",
+    )
+    .unwrap();
+    let names = [
+        "withoutHeaders",
+        "withHeaders",
+        "listen",
+        "listenWithHeaders",
+    ];
+    let mut source = String::from("import std.net.http as Http\n");
+    for name in names {
+        writeln!(source, "pub fn {name}Value () = Http.{name}").unwrap();
+    }
+    std::fs::write(workspace.path().join("lib/src/Main.ridge"), source).unwrap();
+    let graph = ridge_resolve::discover_workspace(workspace.path())
+        .graph
+        .expect("HTTP signature workspace");
+    let resolved = ridge_resolve::resolve_workspace(graph);
+    assert!(
+        resolved.parse_errors.is_empty(),
+        "{:?}",
+        resolved.parse_errors
+    );
+    let result = ridge_typecheck::typecheck_workspace(&resolved);
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    let typed = result.typed;
+    let mut signatures = BTreeMap::new();
+    for name in names {
+        let mut scheme = typed.module_schemes[0][&format!("{name}Value")].clone();
+        let Type::Fn { params, ret, caps } = &scheme.ty else {
+            panic!("HTTP reference wrapper must be a function: {name}");
+        };
+        assert!(params.is_empty());
+        assert_eq!(*caps, CapRow::Concrete(CapabilitySet::PURE));
+        let value = ret.as_ref().clone();
+        if matches!(name, "listen" | "listenWithHeaders") {
+            let Type::Fn { params, ret, caps } = &value else {
+                panic!("HTTP listener must be a function: {name}");
+            };
+            assert_eq!(params.len(), 2);
+            assert!(
+                matches!(&params[0], Type::Con(id, args) if *id == typed.builtins.int && args.is_empty())
+            );
+            assert!(
+                matches!(ret.as_ref(), Type::Con(id, args) if *id == typed.builtins.unit && args.is_empty())
+            );
+            let Type::Fn {
+                params,
+                ret,
+                caps: callback,
+            } = &params[1]
+            else {
+                panic!("HTTP listener must accept a typed callback: {name}");
+            };
+            assert!(
+                matches!(params.as_slice(), [Type::Con(id, args)] if *id == typed.stdlib_tycons["Request"] && args.is_empty())
+            );
+            let response = if name == "listen" {
+                "Response"
+            } else {
+                "ResponseWithHeaders"
+            };
+            assert!(
+                matches!(ret.as_ref(), Type::Con(id, args) if *id == typed.stdlib_tycons[response] && args.is_empty())
+            );
+            assert!(!callback.vars().is_empty());
+            assert_eq!(
+                *caps,
+                CapRow::Concrete(CapabilitySet::singleton(Capability::Net)).union(callback)
+            );
+        }
+        scheme.ty = value;
+        signatures.insert(name.to_owned(), scheme);
+    }
+    signatures
 }
 
 // ── Prelude re-export whitelist ───────────────────────────────────────────────
@@ -329,7 +420,7 @@ fn bidirectional_name_consistency() {
 // ── Test 2: signature shape consistency ───────────────────────────────────────
 
 /// For every `pub fn` in the stdlib AST (those that parse cleanly):
-/// - `stdlib_signature(module_id, name, &b)` must return `Some`.
+/// - The signature table or reconciled HTTP import must yield a signature.
 /// - The param count must match `FnDecl.params.len()`.
 /// - The return type shape must loosely match (using the concrete-type shape checks below).
 ///
@@ -346,6 +437,7 @@ fn bidirectional_name_consistency() {
 fn signature_shape_consistency() {
     let stdlib = stdlib_dir();
     let b = make_builtins();
+    let http_signatures = http_value_signatures();
 
     for (idx, &dotted) in STDLIB_MODULE_ORDER.iter().enumerate() {
         let builtin = &BUILTINS[idx];
@@ -382,17 +474,6 @@ fn signature_shape_consistency() {
             .collect();
 
         for (fn_name, ast_param_count) in &pub_fns {
-            // The response metadata API names reconciled ResponseWithHeaders,
-            // so its signatures come from reconciled_fn_scheme. Compiler tests
-            // exercise all three functions, their types and callback capabilities.
-            if dotted == "std.net.http"
-                && matches!(
-                    *fn_name,
-                    "withoutHeaders" | "withHeaders" | "listenWithHeaders"
-                )
-            {
-                continue;
-            }
             // std.actor `supervise`/`startChild`/`stopChild` all answer the
             // reconciled `SupError`, and `supervise`/`childRestart` also name
             // `Strategy`/`Restart`, so they are seeded via
@@ -542,13 +623,19 @@ fn signature_shape_consistency() {
                 continue;
             }
             // 1. Signature must resolve to Some.
-            let scheme = stdlib_signature(module_id, fn_name, &b).unwrap_or_else(|| {
-                panic!(
-                    "T202 SignatureDrift {{ module: {dotted:?}, sym: {fn_name:?}, \
+            let scheme = stdlib_signature(module_id, fn_name, &b)
+                .or_else(|| {
+                    (dotted == "std.net.http")
+                        .then(|| http_signatures.get(*fn_name).cloned())
+                        .flatten()
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "T202 SignatureDrift {{ module: {dotted:?}, sym: {fn_name:?}, \
                      reason: \"stdlib_signature returned None — symbol present in AST \
                      but has no signature entry\" }}"
-                )
-            });
+                    )
+                });
 
             // 2. Skip Type::Error stubs — these are explicitly allowed in stdlib.
             if matches!(scheme.ty, Type::Error) {

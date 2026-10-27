@@ -323,11 +323,9 @@ fn check_body(
         // Per the plan T14 scope: we don't check lambda bodies against
         // the enclosing decl's caps.
         Expr::Lambda { body, .. } => {
-            // Recurse purely to check any nested inner-fns / calls inside the
-            // lambda body using the lambda's own (future) effective set.
-            // For T14 we pass the enclosing effective as a conservative bound —
-            // lambda bodies are allowed to use the enclosing caps transitively.
-            check_body(ctx, b, enclosing_name, enclosing_effective, body);
+            let latent = crate::caps_infer::typed_expr_caps(ctx, expr)
+                .unwrap_or_else(|| infer_caps(ctx, b, body));
+            check_body(ctx, b, enclosing_name, latent, body);
         }
 
         // ── Block / Try block ────────────────────────────────────────────────

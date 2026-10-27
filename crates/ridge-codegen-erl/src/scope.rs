@@ -128,16 +128,6 @@ pub(crate) struct LocalScope {
     /// Module-level fn/const table: `name → what it is`.
     /// Shared (Arc) so that clone (e.g. for match arms, lambda scopes) is cheap.
     pub(crate) fn_arity: Arc<FxHashMap<String, LocalShape>>,
-    /// Workspace-wide arity table for symbols in *other* modules:
-    /// `module_id → (name → arity)`.
-    ///
-    /// A `SymbolRef::External` call knows only its callee's module id and name,
-    /// not its arity, so it cannot tell whether a trailing `()` is a real
-    /// `Unit` argument or the punctuation of a zero-parameter call. This table
-    /// supplies the callee's arity across the module boundary, letting the
-    /// cross-module call apply the same unit-paren shim the local path uses.
-    /// Shared (Arc) so cloning a scope stays cheap.
-    pub(crate) external_arity: Arc<FxHashMap<ModuleId, FxHashMap<String, u32>>>,
     /// Workspace-wide codegen tables (beam names, record metadata, module
     /// FQNs, version history).
     ///
@@ -199,6 +189,8 @@ pub(crate) struct LocalScope {
 ///   to derive structural migration edges. Empty on fresh builds.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct CodegenTables {
+    /// Workspace declaration shapes: functions are referenced; constants are loaded.
+    pub(crate) external_shapes: Arc<FxHashMap<ModuleId, FxHashMap<String, LocalShape>>>,
     /// Stable beam module names, indexed by `ModuleId.0`.
     pub(crate) beam_names: std::sync::Arc<Vec<String>>,
     /// Record version metadata, keyed by type-constructor id.
@@ -221,6 +213,7 @@ impl CodegenTables {
     /// fields the driver seeds.
     pub(crate) fn from_workspace(ws: &ridge_ir::LoweredWorkspace) -> Self {
         Self {
+            external_shapes: Arc::new(crate::module::build_external_shapes(ws)),
             beam_names: Arc::new(ws.target_names.clone()),
             record_meta: Arc::new(crate::record_meta::build_record_meta(
                 &ws.tycons,
@@ -248,7 +241,6 @@ impl LocalScope {
             letrec_locals: Arc::new(FxHashSet::default()),
             own_module_beam_name: None,
             actor_state_idx: 0,
-            external_arity: Arc::new(FxHashMap::default()),
             tables: CodegenTables::default(),
         }
     }
@@ -270,7 +262,6 @@ impl LocalScope {
             letrec_locals: Arc::new(FxHashSet::default()),
             own_module_beam_name: None,
             actor_state_idx: 0,
-            external_arity: Arc::new(FxHashMap::default()),
             tables: CodegenTables::default(),
         }
     }
@@ -296,7 +287,6 @@ impl LocalScope {
             letrec_locals: Arc::new(FxHashSet::default()),
             own_module_beam_name: Some(Arc::from(module_beam_name)),
             actor_state_idx: 0,
-            external_arity: Arc::new(FxHashMap::default()),
             tables: CodegenTables::default(),
         }
     }
@@ -318,7 +308,6 @@ impl LocalScope {
             letrec_locals: Arc::new(FxHashSet::default()),
             own_module_beam_name: None,
             actor_state_idx: 0,
-            external_arity: Arc::new(FxHashMap::default()),
             tables: CodegenTables::default(),
         }
     }
@@ -352,7 +341,6 @@ impl LocalScope {
             // runtime `undefined function ridge_actor_*:init/1` crash.
             own_module_beam_name: Some(Arc::from(parent_beam_name)),
             actor_state_idx: 0,
-            external_arity: Arc::new(FxHashMap::default()),
             tables: CodegenTables::default(),
         }
     }

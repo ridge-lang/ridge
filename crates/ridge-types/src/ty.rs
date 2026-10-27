@@ -100,6 +100,71 @@ pub enum CapRow {
     Concrete(CapabilitySet),
     /// A capability-row variable — only used in stdlib HOF signatures.
     Var(CapVid),
+    /// Capabilities required by several independent callbacks.
+    Union(Vec<Self>),
+}
+
+impl CapRow {
+    /// Combine latent requirements without identifying independent row variables.
+    #[must_use]
+    pub fn union(&self, other: &Self) -> Self {
+        fn collect(
+            row: &CapRow,
+            concrete: &mut CapabilitySet,
+            vars: &mut std::collections::BTreeSet<u32>,
+        ) {
+            match row {
+                CapRow::Concrete(set) => *concrete = concrete.union(set),
+                CapRow::Var(var) => {
+                    vars.insert(var.0);
+                }
+                CapRow::Union(rows) => {
+                    for row in rows {
+                        collect(row, concrete, vars);
+                    }
+                }
+            }
+        }
+        let mut concrete = CapabilitySet::PURE;
+        let mut vars = std::collections::BTreeSet::new();
+        collect(self, &mut concrete, &mut vars);
+        collect(other, &mut concrete, &mut vars);
+        let mut rows = Vec::new();
+        if !concrete.is_empty() {
+            rows.push(Self::Concrete(concrete));
+        }
+        rows.extend(vars.into_iter().map(|v| Self::Var(CapVid(v))));
+        match rows.len() {
+            0 => Self::Concrete(CapabilitySet::PURE),
+            1 => rows.remove(0),
+            _ => Self::Union(rows),
+        }
+    }
+
+    /// Substitute every capability variable, retaining union dependencies.
+    #[must_use]
+    pub fn map_vars(&self, map: &mut impl FnMut(CapVid) -> Self) -> Self {
+        match self {
+            Self::Concrete(set) => Self::Concrete(*set),
+            Self::Var(var) => map(*var),
+            Self::Union(rows) => rows
+                .iter()
+                .fold(Self::Concrete(CapabilitySet::PURE), |acc, row| {
+                    acc.union(&row.map_vars(map))
+                }),
+        }
+    }
+
+    /// Variables appearing in a latent capability requirement.
+    #[must_use]
+    pub fn vars(&self) -> Vec<CapVid> {
+        let mut vars = Vec::new();
+        let _ = self.map_vars(&mut |var| {
+            vars.push(var);
+            Self::Var(var)
+        });
+        vars
+    }
 }
 
 // ── The Type enum ─────────────────────────────────────────────────────────────

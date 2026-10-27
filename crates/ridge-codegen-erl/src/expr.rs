@@ -523,13 +523,7 @@ pub(crate) fn lower_body_in_scope(
         // B-6: also pass actor_parent so that parent-module symbol refs used as
         // values emit qualified calls instead of LocalFnRef (which would be
         // undefined in the actor's separate BEAM module).
-        IrExpr::Symbol { sym, span, .. } => {
-            let actor_parent = scope
-                .actor_parent
-                .as_ref()
-                .map(|(id, beam)| (*id, beam.as_ref()));
-            lower_symbol(sym, *span, &scope.fn_arity, actor_parent)
-        }
+        IrExpr::Symbol { sym, span, .. } => lower_symbol(sym, *span, scope),
 
         // §4.14 — List literal.
         IrExpr::ListLit { elems, .. } => elems
@@ -1304,9 +1298,6 @@ pub(crate) fn lower_lambda(
         .actor_parent
         .clone_from(&outer_scope.actor_parent);
     lambda_scope.letrec_locals = std::sync::Arc::clone(&outer_scope.letrec_locals);
-    // Inherited so a cross-module zero-arity call inside a lambda body keeps the
-    // callee-arity information the unit-paren shim needs.
-    lambda_scope.external_arity = std::sync::Arc::clone(&outer_scope.external_arity);
     // Inherited so cross-module calls inside a lambda body keep resolving
     // callee beam names and record metadata via the shared tables.
     lambda_scope.tables = outer_scope.tables.clone();
@@ -1358,6 +1349,32 @@ fn lower_call(
     scope: &mut LocalScope,
 ) -> Result<CErlExpr, CodegenError> {
     if let IrExpr::Symbol { sym, .. } = callee {
+        let is_constant = match sym {
+            SymbolRef::Local { name, .. } => scope.fn_arity.get(name).is_some_and(|s| s.is_const),
+            SymbolRef::External { name, module } => scope
+                .tables
+                .external_shapes
+                .get(module)
+                .and_then(|names| names.get(name))
+                .is_some_and(|s| s.is_const),
+            // StdlibKind describes naming a value, not an IrItem declaration.
+            // Named stdlib calls retain their fixed bridge target and arguments.
+            _ => false,
+        };
+        if is_constant {
+            // A constant contains the callee value. Its producer's arity says
+            // nothing about the function stored in it. Lowering has already
+            // removed nullary punctuation using the source function type.
+            let value = lower_symbol(sym, span, scope)?;
+            let args = args
+                .iter()
+                .map(|a| lower_expr_in_scope(a, scope))
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok(CErlExpr::Apply {
+                callee: Box::new(value),
+                args,
+            });
+        }
         // Static callee: dispatch by SymbolRef.
         lower_static_call(sym, args, span, scope)
     } else {
@@ -1448,7 +1465,10 @@ fn lower_static_call(
                         ..
                     }
                 )
-                && scope.fn_arity.get(name).map(|s| s.arity) == Some(0)
+                && scope
+                    .fn_arity
+                    .get(name)
+                    .is_some_and(|s| !s.is_const && s.arity == 0)
             {
                 &[]
             } else {
@@ -1485,11 +1505,9 @@ fn lower_static_call(
         }
 
         // ── Stdlib call → bridge map lookup. ─────────────────────────────────
-        // The kind is deliberately not read here. A call names the target and
-        // supplies its arguments, and that emission is the same whether the
-        // symbol is a function or one of the arity-0 dictionary constants the
-        // dict builder wraps in an argument-less `Call`. Only *naming* a symbol
-        // without calling it has two possible meanings; that is `lower_symbol`.
+        // The bridge identifies the called target. StdlibKind describes value
+        // references; it is not declaration metadata for this static call.
+        // Monomorphic dictionary plans are Symbol values, not calls.
         SymbolRef::Stdlib { module, name, .. } => {
             lower_call_to_stdlib(module, name, args, span, scope)
         }
@@ -1508,11 +1526,11 @@ fn lower_static_call(
             // module boundary; when it is zero, drop the `()` punctuation, the
             // same shim the local-call path applies.
             let callee_is_zero_arity = scope
-                .external_arity
+                .tables
+                .external_shapes
                 .get(module)
                 .and_then(|names| names.get(name.as_str()))
-                .copied()
-                == Some(0);
+                .is_some_and(|shape| !shape.is_const && shape.arity == 0);
             let effective_args: &[IrExpr] = if callee_is_zero_arity
                 && args.len() == 1
                 && matches!(
@@ -1530,14 +1548,7 @@ fn lower_static_call(
                 .iter()
                 .map(|a| lower_expr_in_scope(a, scope))
                 .collect::<Result<Vec<_>, _>>()?;
-            let beam_module = if let Some(name) = scope.tables.beam_names.get(module.0 as usize) {
-                name.clone()
-            } else {
-                // Legacy fallback (unit tests without a workspace table):
-                // derive the segment from the ModuleId.
-                let segment = format!("module_{}", module.0);
-                crate::module::mangle_module_name(&[segment.as_str()], *module)?
-            };
+            let beam_module = crate::symbol::module_beam_name(*module, scope)?;
             Ok(CErlExpr::Call {
                 module: CErlAtom(beam_module),
                 fn_name: CErlAtom(name.clone()),
@@ -3595,10 +3606,10 @@ mod tests {
         };
         let mut scope = LocalScope::new();
         let mut names = rustc_hash::FxHashMap::default();
-        names.insert("getVal".to_owned(), 0u32);
+        names.insert("getVal".to_owned(), LocalShape::func(0));
         let mut table = rustc_hash::FxHashMap::default();
         table.insert(callee, names);
-        scope.external_arity = std::sync::Arc::new(table);
+        scope.tables.external_shapes = std::sync::Arc::new(table);
         match lower_expr_in_scope(&expr, &mut scope).expect("lowers") {
             CErlExpr::Call { fn_name, args, .. } => {
                 assert_eq!(fn_name.0, "getVal");
@@ -3635,10 +3646,10 @@ mod tests {
         };
         let mut scope = LocalScope::new();
         let mut names = rustc_hash::FxHashMap::default();
-        names.insert("sink".to_owned(), 1u32);
+        names.insert("sink".to_owned(), LocalShape::func(1));
         let mut table = rustc_hash::FxHashMap::default();
         table.insert(callee, names);
-        scope.external_arity = std::sync::Arc::new(table);
+        scope.tables.external_shapes = std::sync::Arc::new(table);
         match lower_expr_in_scope(&expr, &mut scope).expect("lowers") {
             CErlExpr::Call { args, .. } => {
                 assert_eq!(args.len(), 1, "an arity-1 external call keeps its Unit arg");

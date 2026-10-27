@@ -22,6 +22,7 @@ pub mod caps_check;
 pub mod caps_infer;
 pub mod class_env;
 pub mod collect;
+mod constants;
 pub mod cross_module;
 pub mod ctx;
 pub mod derive;
@@ -1388,27 +1389,9 @@ fn typecheck_module_inner(
     // Lexical validity must cover expressions outside the inference walk too.
     crate::return_context::check_module(ast, &mut ctx.errors);
 
-    // Step B2: Bind top-level const declarations in the env so fn bodies that
-    // reference them resolve correctly (e.g. `defaultGenerations`, `alphabet`).
-    // Consts are typed by inferring their value expression under the current env.
-    for item in &ast.items {
-        if let Item::Const(c) = item {
-            use crate::infer::infer_expr;
-            let ty = infer_expr(&mut ctx, b, &c.value);
-            let scheme = ridge_types::Scheme {
-                projections: None,
-                record_fields: None,
-                vars: vec![],
-                cap_vars: vec![],
-                row_vars: vec![],
-                ty,
-                constraints: vec![],
-            };
-            ctx.name_schemes_accum
-                .insert(c.name.text.clone(), scheme.clone());
-            ctx.env.bind(c.name.text.clone(), scheme);
-        }
-    }
+    // Constants have mandatory contracts. Callers must see those contracts
+    // before inference; initializers are checked once named functions exist.
+    crate::constants::seed(&mut ctx, b, ast);
 
     // Step C: Collect top-level fn decls and run SCC-based Algorithm W.
     // typecheck_module_decls also populates ctx.schemes_accum (T4).
@@ -1444,6 +1427,7 @@ fn typecheck_module_inner(
     let scratch_instance_env = crate::class_env::InstanceEnv::new();
     let (ct, ie) = registries.unwrap_or((&scratch_class_table, &scratch_instance_env));
     typecheck_module_decls(&mut ctx, b, &fn_decls, ct, ie);
+    crate::constants::check(&mut ctx, b, ast, ct, ie);
 
     // Entry-point contract, second half (T059): a program that ends in `Err`
     // has to be able to say why. Checked here rather than beside the arity rule

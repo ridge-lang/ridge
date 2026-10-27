@@ -3496,7 +3496,7 @@ pub(crate) fn dict_plan_to_expr(
             // - a stdlib class's BUILTIN base types → the class's home module
             //   (cross-module via `SymbolRef::Stdlib` + the FFI bridge);
             // - a user type defined in ANOTHER module → that producer module
-            //   (cross-module via `SymbolRef::External`, invoked as a call);
+            //   (cross-module via `SymbolRef::External`);
             // - a type defined in the current module → a local reference.
             let tycon_is_builtin = decl.is_some_and(|d| d.def_module_raw.is_none());
             let producer = decl.and_then(|d| d.def_module_raw);
@@ -3544,12 +3544,10 @@ pub(crate) fn dict_plan_to_expr(
                 }
             };
             let dict_symbol = IrExpr::Symbol { id, sym, span };
-            // A cross-module `External` reference is a 0-arity producer-module fn
-            // that must be invoked as a call (its value form is not lowered); a
-            // same-module const is usable directly as a value. Parametric
-            // instances always apply their sub-dictionaries.
-            let emit_as_call = inst_is_cross || is_cross_module;
-            if unapplied && !emit_as_call {
+            // A monomorphic dictionary is a value, regardless of its module.
+            // Only parametric instances apply their sub-dictionaries. Loading
+            // a constant must not be confused with invoking a function it holds.
+            if unapplied {
                 return dict_symbol;
             }
             let call_id = ctx.fresh_id(None);

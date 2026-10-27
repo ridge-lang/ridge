@@ -329,6 +329,10 @@ impl TypeError {
                 // language — `fn {io} main` does not parse.
                 let inferred_src = inferred.as_source_caps();
                 match kind {
+                    CapDeclKind::Const => write!(
+                        f,
+                        "capability not declared\n  initializer of constant `{decl}` uses capability `{missing}`\n  Move the effectful work into a function with the required capabilities"
+                    ),
                     CapDeclKind::Fn => write!(
                         f,
                         "capability not declared\n  function `{decl}` declared as `fn {declared}` uses capability `{missing}`\n  Options:\n    - Add `{missing}` to the signature: `fn {inferred_src} {decl}`\n    - Remove the call requiring `{missing}`"

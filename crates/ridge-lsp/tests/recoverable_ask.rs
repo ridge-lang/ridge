@@ -152,7 +152,7 @@ fn an_already_consumed_result_is_not_rewritten_for_an_outer_discard() {
 
 #[test]
 fn propagation_repairs_nested_result_boundaries_with_utf16_positions() {
-    let source = format!("{PREFIX}fn time invoke (f: fn Unit -> Result Int AskError) -> Result Int AskError = f ()\n\npub fn time callback (h: Handle Worker) -> Result Int AskError =\n    invoke (fn _ ->\n        -- café 🧭\n        let n: Int = h ?> value\n        Ok n)\n\npub fn time scoped (h: Handle Worker) -> Result Int AskError =\n    try\n        let n: Int = h ?> value timeout never\n        n\n").replace('\n', "\r\n");
+    let source = format!("{PREFIX}fn time invoke (f: fn time Unit -> Result Int AskError) -> Result Int AskError = f ()\n\npub fn time callback (h: Handle Worker) -> Result Int AskError =\n    invoke (fn _ ->\n        -- café 🧭\n        let n: Int = h ?> value\n        Ok n)\n\npub fn time scoped (h: Handle Worker) -> Result Int AskError =\n    try\n        let n: Int = h ?> value timeout never\n        n\n").replace('\n', "\r\n");
     let dir = workspace(&source);
     let mut state = check_workspace_incremental(
         CheckOptions::new(dir.path().to_path_buf()).with_retain_indices(true),

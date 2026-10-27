@@ -33,7 +33,23 @@ use crate::stdlib_map::{self, BridgeTarget};
 use ridge_ast::Span;
 use ridge_ir::{StdlibKind, SymbolRef};
 use ridge_resolve::ModuleId;
+#[cfg(test)]
 use rustc_hash::FxHashMap;
+
+/// Resolve the same target name for external values and calls.
+pub(crate) fn module_beam_name(
+    module: ModuleId,
+    scope: &crate::scope::LocalScope,
+) -> Result<String, CodegenError> {
+    scope.tables.beam_names.get(module.0 as usize).map_or_else(
+        || {
+            // Hand-built IR tests may omit the workspace target-name table.
+            let segment = format!("module_{}", module.0);
+            crate::module::mangle_module_name(&[segment.as_str()], module)
+        },
+        |name| Ok(name.clone()),
+    )
+}
 
 /// Emit a lambda that captures `arity` parameters and forwards them to the
 /// BEAM target, so the stdlib symbol used as a value behaves as a true
@@ -126,34 +142,42 @@ fn stdlib_value_checked_int_fn_ref(
 ///
 /// `actor_parent` — when `Some((parent_id, parent_beam_name))` — identifies the
 /// enclosing actor's parent module.  A `SymbolRef::Local { module: parent_id }`
-/// used as a **value** must be emitted as a 0-arg qualified `call` rather than a
-/// `LocalFnRef`, because the actor is a separate BEAM module and `'fnName'/0`
-/// would be `undefined` there.
+/// used as a **value** must reach that parent module. Constants load their
+/// value there, while functions retain their declared arity in a reference.
 #[allow(clippy::too_many_lines)]
 pub(crate) fn lower_symbol(
     sym: &SymbolRef,
     span: Span,
-    fn_arity: &FxHashMap<String, LocalShape>,
-    actor_parent: Option<(ModuleId, &str)>,
+    scope: &crate::scope::LocalScope,
 ) -> Result<CErlExpr, CodegenError> {
+    let fn_arity = &scope.fn_arity;
+    let actor_parent = scope
+        .actor_parent
+        .as_ref()
+        .map(|(id, beam)| (*id, beam.as_ref()));
     match sym {
         // Local fn or const used as a value: look up arity from the module
         // module-level function table.
         //
         // when `actor_parent` is set and this symbol's
-        // `module` matches the parent's id, emit a qualified 0-arg `call` so that
-        // the value expression works in the actor's separate BEAM module.
+        // `module` matches the parent's id, qualify the value or reference so
+        // it works in the actor's separate BEAM module.
         SymbolRef::Local { name, module } => match fn_arity.get(name.as_str()) {
             Some(&LocalShape { arity, is_const }) => {
                 // Check for cross-module reference from an actor body.
                 if let Some((parent_id, parent_beam)) = actor_parent {
                     if *module == parent_id {
-                        // Emit call 'parent':'fn' () — a 0-arg qualified call that
-                        // evaluates the parent-module fn/const as a value.
-                        return Ok(CErlExpr::Call {
-                            module: CErlAtom(parent_beam.to_owned()),
-                            fn_name: CErlAtom(name.clone()),
-                            args: vec![],
+                        return Ok(if is_const {
+                            stdlib_value_of_const(
+                                CErlAtom(parent_beam.to_owned()),
+                                CErlAtom(name.clone()),
+                            )
+                        } else {
+                            stdlib_value_fn_ref(
+                                CErlAtom(parent_beam.to_owned()),
+                                CErlAtom(name.clone()),
+                                arity,
+                            )
                         });
                     }
                 }
@@ -294,15 +318,24 @@ pub(crate) fn lower_symbol(
             })
         }
 
-        // External symbols: require arity lookup and external module name
-        // mangling, assembled during module emission.
-        SymbolRef::External { name, .. } => Err(CodegenError::IrShapeMalformed {
-            variant: "SymbolRef::External",
-            span,
-            detail: format!(
-                "T3: External symbol '{name}' routing pending T7/T8 (arity lookup not yet wired)"
-            ),
-        }),
+        SymbolRef::External { name, module } => {
+            let shape = scope
+                .tables
+                .external_shapes
+                .get(module)
+                .and_then(|names| names.get(name))
+                .ok_or_else(|| CodegenError::IrShapeMalformed {
+                    variant: "SymbolRef::External",
+                    span,
+                    detail: format!("Missing declaration shape for external symbol '{name}'"),
+                })?;
+            let beam = module_beam_name(*module, scope)?;
+            Ok(if shape.is_const {
+                stdlib_value_of_const(CErlAtom(beam), CErlAtom(name.clone()))
+            } else {
+                stdlib_value_fn_ref(CErlAtom(beam), CErlAtom(name.clone()), shape.arity)
+            })
+        }
 
         // Handler is never a value — lowering ensures handlers only appear
         // inside Send/Ask. Any occurrence here is a lowering invariant violation.
@@ -372,10 +405,6 @@ mod tests {
         Span::point(0)
     }
 
-    fn empty_arity() -> FxHashMap<String, LocalShape> {
-        FxHashMap::default()
-    }
-
     #[test]
     fn symbol_local_unknown_in_table_is_error() {
         // With an empty arity table, an unknown local → IrShapeMalformed.
@@ -383,7 +412,7 @@ mod tests {
             name: "myFn".into(),
             module: ModuleId(0),
         };
-        let result = lower_symbol(&sym, sp(), &empty_arity(), None);
+        let result = lower_symbol(&sym, sp(), &crate::scope::LocalScope::new());
         assert!(matches!(
             result,
             Err(CodegenError::IrShapeMalformed {
@@ -402,7 +431,7 @@ mod tests {
         };
         let mut table = FxHashMap::default();
         table.insert("myFn".to_owned(), LocalShape::func(2));
-        let result = lower_symbol(&sym, sp(), &table, None);
+        let result = lower_symbol(&sym, sp(), &crate::scope::LocalScope::with_arity(table));
         assert!(
             matches!(result, Ok(CErlExpr::LocalFnRef { ref name, arity: 2 }) if name.0 == "myFn"),
             "expected LocalFnRef(myFn/2), got {result:?}"
@@ -420,7 +449,7 @@ mod tests {
         };
         let mut table = FxHashMap::default();
         table.insert("myConst".to_owned(), LocalShape::constant());
-        let result = lower_symbol(&sym, sp(), &table, None);
+        let result = lower_symbol(&sym, sp(), &crate::scope::LocalScope::with_arity(table));
         match result {
             Ok(CErlExpr::Apply {
                 ref callee,
@@ -448,7 +477,8 @@ mod tests {
             kind: StdlibKind::Function,
         };
         let printed = crate::printer::print_expr(
-            &lower_symbol(&sym, sp(), &empty_arity(), None).expect("Int.add is a known symbol"),
+            &lower_symbol(&sym, sp(), &crate::scope::LocalScope::new())
+                .expect("Int.add is a known symbol"),
         );
         assert!(
             printed.contains("call 'erlang':'+'"),
@@ -470,7 +500,8 @@ mod tests {
             kind: StdlibKind::Function,
         };
         let printed = crate::printer::print_expr(
-            &lower_symbol(&sym, sp(), &empty_arity(), None).expect("Float.add is a known symbol"),
+            &lower_symbol(&sym, sp(), &crate::scope::LocalScope::new())
+                .expect("Float.add is a known symbol"),
         );
         assert!(
             !printed.contains("ridge_int_out_of_range"),
@@ -489,7 +520,7 @@ mod tests {
             name: "map".into(),
             kind: StdlibKind::Function,
         };
-        let result = lower_symbol(&sym, sp(), &empty_arity(), None);
+        let result = lower_symbol(&sym, sp(), &crate::scope::LocalScope::new());
         match result {
             Ok(CErlExpr::Fun { params, body }) => {
                 assert_eq!(params.len(), 2, "lists:map/2 fun should have 2 params");
@@ -522,7 +553,7 @@ mod tests {
             name: "empty".into(),
             kind: StdlibKind::Constant,
         };
-        let result = lower_symbol(&sym, sp(), &empty_arity(), None);
+        let result = lower_symbol(&sym, sp(), &crate::scope::LocalScope::new());
         match result {
             Ok(CErlExpr::Call {
                 module,
@@ -553,7 +584,7 @@ mod tests {
             name: "now".into(),
             kind: StdlibKind::Function,
         };
-        let result = lower_symbol(&sym, sp(), &empty_arity(), None);
+        let result = lower_symbol(&sym, sp(), &crate::scope::LocalScope::new());
         match result {
             Ok(CErlExpr::Fun { params, body }) => {
                 assert!(
@@ -580,7 +611,7 @@ mod tests {
             name: "bogus".into(),
             kind: StdlibKind::Function,
         };
-        let result = lower_symbol(&sym, sp(), &empty_arity(), None);
+        let result = lower_symbol(&sym, sp(), &crate::scope::LocalScope::new());
         assert!(
             matches!(result, Err(CodegenError::StdlibBridgeMissing { .. })),
             "expected StdlibBridgeMissing, got {result:?}"
@@ -588,12 +619,12 @@ mod tests {
     }
 
     #[test]
-    fn symbol_external_is_deferred() {
+    fn symbol_external_without_declaration_metadata_is_an_error() {
         let sym = SymbolRef::External {
             module: ModuleId(1),
             name: "helper".into(),
         };
-        let result = lower_symbol(&sym, sp(), &empty_arity(), None);
+        let result = lower_symbol(&sym, sp(), &crate::scope::LocalScope::new());
         assert!(matches!(
             result,
             Err(CodegenError::IrShapeMalformed {
@@ -610,7 +641,7 @@ mod tests {
             actor: "Counter".into(),
             handler: "increment".into(),
         };
-        let result = lower_symbol(&sym, sp(), &empty_arity(), None);
+        let result = lower_symbol(&sym, sp(), &crate::scope::LocalScope::new());
         assert!(matches!(
             result,
             Err(CodegenError::IrShapeMalformed {
@@ -626,7 +657,7 @@ mod tests {
             module: ModuleId(0),
             name: "Counter".into(),
         };
-        let result = lower_symbol(&sym, sp(), &empty_arity(), None);
+        let result = lower_symbol(&sym, sp(), &crate::scope::LocalScope::new());
         assert!(matches!(
             result,
             Err(CodegenError::IrShapeMalformed {
@@ -645,7 +676,7 @@ mod tests {
             name: "None".into(),
             variant: 0,
         };
-        let result = lower_symbol(&sym, sp(), &empty_arity(), None);
+        let result = lower_symbol(&sym, sp(), &crate::scope::LocalScope::new());
         assert!(matches!(result, Ok(CErlExpr::Lit(CErlLit::Atom(CErlAtom(ref s)))) if s == "None"));
     }
 
@@ -655,7 +686,7 @@ mod tests {
         let sym = SymbolRef::Prelude {
             name: "None".into(),
         };
-        let result = lower_symbol(&sym, sp(), &empty_arity(), None);
+        let result = lower_symbol(&sym, sp(), &crate::scope::LocalScope::new());
         assert!(matches!(result, Ok(CErlExpr::Lit(CErlLit::Atom(CErlAtom(ref s)))) if s == "none"));
     }
 
@@ -665,7 +696,7 @@ mod tests {
         let sym = SymbolRef::Prelude {
             name: "JNull".into(),
         };
-        let result = lower_symbol(&sym, sp(), &empty_arity(), None);
+        let result = lower_symbol(&sym, sp(), &crate::scope::LocalScope::new());
         assert!(
             matches!(result, Ok(CErlExpr::Lit(CErlLit::Atom(CErlAtom(ref s)))) if s == "json_null")
         );
@@ -676,7 +707,7 @@ mod tests {
         let sym = SymbolRef::Prelude {
             name: "Some".into(),
         };
-        let result = lower_symbol(&sym, sp(), &empty_arity(), None);
+        let result = lower_symbol(&sym, sp(), &crate::scope::LocalScope::new());
         assert!(matches!(
             result,
             Err(CodegenError::IrShapeMalformed {
@@ -689,7 +720,7 @@ mod tests {
     #[test]
     fn symbol_prelude_ok_is_deferred() {
         let sym = SymbolRef::Prelude { name: "Ok".into() };
-        let result = lower_symbol(&sym, sp(), &empty_arity(), None);
+        let result = lower_symbol(&sym, sp(), &crate::scope::LocalScope::new());
         assert!(matches!(
             result,
             Err(CodegenError::IrShapeMalformed {
@@ -720,7 +751,11 @@ mod nullary_fn_value_tests {
         let mut table = FxHashMap::default();
         table.insert("answer".to_owned(), LocalShape::func(0));
 
-        let result = lower_symbol(&sym, Span::point(0), &table, None);
+        let result = lower_symbol(
+            &sym,
+            Span::point(0),
+            &crate::scope::LocalScope::with_arity(table),
+        );
 
         assert!(
             matches!(result, Ok(CErlExpr::LocalFnRef { ref name, arity: 0 }) if name.0 == "answer"),
@@ -739,7 +774,11 @@ mod nullary_fn_value_tests {
         let mut table = FxHashMap::default();
         table.insert("thirty".to_owned(), LocalShape::constant());
 
-        let result = lower_symbol(&sym, Span::point(0), &table, None);
+        let result = lower_symbol(
+            &sym,
+            Span::point(0),
+            &crate::scope::LocalScope::with_arity(table),
+        );
 
         assert!(
             matches!(result, Ok(CErlExpr::Apply { ref args, .. }) if args.is_empty()),

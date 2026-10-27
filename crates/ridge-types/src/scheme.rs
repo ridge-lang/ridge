@@ -322,14 +322,7 @@ fn collect_free_ty(
                 collect_free_ty(p, bound_ty, bound_cap, free_ty, free_cap);
             }
             collect_free_ty(ret, bound_ty, bound_cap, free_ty, free_cap);
-            match caps {
-                CapRow::Var(c) => {
-                    if !bound_cap.contains(c) {
-                        free_cap.insert(*c);
-                    }
-                }
-                CapRow::Concrete(_) => {}
-            }
+            free_cap.extend(caps.vars().into_iter().filter(|c| !bound_cap.contains(c)));
         }
         Type::Tuple(ts) => {
             for t in ts {
@@ -373,16 +366,8 @@ fn subst_type(
                 .map(|p| subst_type(p, ty_subst, cap_subst, row_subst))
                 .collect();
             let new_ret = Box::new(subst_type(ret, ty_subst, cap_subst, row_subst));
-            let new_caps = match caps {
-                CapRow::Var(c) => {
-                    if let Some(&nc) = cap_subst.get(c) {
-                        CapRow::Var(nc)
-                    } else {
-                        CapRow::Var(*c)
-                    }
-                }
-                CapRow::Concrete(s) => CapRow::Concrete(*s),
-            };
+            let new_caps =
+                caps.map_vars(&mut |c| CapRow::Var(cap_subst.get(&c).copied().unwrap_or(c)));
             Type::Fn {
                 params: new_params,
                 ret: new_ret,

@@ -90,11 +90,7 @@ pub(crate) fn lower_fn_with_module_name(
         || LocalScope::with_arity(fn_arity.clone()),
         |name| LocalScope::with_arity_and_module(fn_arity.clone(), name),
     );
-    // Seed the cross-module arity table so a `SymbolRef::External` call to a
-    // zero-arity fn in another module drops its unit-paren `()` instead of
-    // emitting an arity-1 call that would be `undef` against the arity-0 callee.
-    scope.external_arity = std::sync::Arc::new(crate::module::build_external_arity(ws));
-    // Seed the shared codegen tables (stable beam names + record metadata)
+    // Seed the shared codegen tables (declaration shapes, beam names and record metadata)
     // so cross-module calls and record construction lower correctly.
     scope.tables = crate::scope::CodegenTables::from_workspace(ws);
     // §4.9 — Route through elide/wrap based on whether non-tail Returns exist.
@@ -178,7 +174,6 @@ pub(crate) fn lower_const(
     fn_arity: &FxHashMap<String, LocalShape>,
 ) -> Result<CErlFn, CodegenError> {
     let mut scope = LocalScope::with_arity(fn_arity.clone());
-    scope.external_arity = std::sync::Arc::new(crate::module::build_external_arity(ws));
     // Seed the shared codegen tables (stable beam names + record metadata)
     // so cross-module calls and record construction lower correctly.
     scope.tables = crate::scope::CodegenTables::from_workspace(ws);

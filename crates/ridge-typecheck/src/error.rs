@@ -111,6 +111,8 @@ impl From<&str> for TypeDesc {
 /// declaration's own syntax (`fn` / `on` / `init`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CapDeclKind {
+    /// A constant initializer, which must be pure.
+    Const,
     /// A top-level `fn`.
     Fn,
     /// An actor `on` message handler.

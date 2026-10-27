@@ -472,6 +472,23 @@ pub fn unify_caps(ctx: &mut InferCtx, a: &CapRow, b: &CapRow) -> Result<(), Type
     let a = ctx.shallow_resolve_caps(a);
     let b = ctx.shallow_resolve_caps(b);
 
+    // Recursive effect inference uses the least solution of c = c union r.
+    if let (CapRow::Var(var), CapRow::Union(rows)) | (CapRow::Union(rows), CapRow::Var(var)) =
+        (&a, &b)
+    {
+        if rows.contains(&CapRow::Var(*var)) {
+            let remaining = rows.iter().filter(|row| **row != CapRow::Var(*var)).fold(
+                CapRow::Concrete(ridge_types::CapabilitySet::PURE),
+                |acc, row| acc.union(row),
+            );
+            return unify_caps(ctx, &CapRow::Var(*var), &remaining);
+        }
+    }
+
+    if a == b {
+        return Ok(());
+    }
+
     match (&a, &b) {
         (CapRow::Concrete(s1), CapRow::Concrete(s2)) => {
             if s1 == s2 {
@@ -485,13 +502,13 @@ pub fn unify_caps(ctx: &mut InferCtx, a: &CapRow, b: &CapRow) -> Result<(), Type
                 })
             }
         }
-        (CapRow::Var(v), CapRow::Concrete(_)) => {
+        (CapRow::Var(v), CapRow::Concrete(_) | CapRow::Union(_)) if !b.vars().contains(v) => {
             let v = *v;
             ctx.capvids
                 .union_value(CapVidKey(v.0), CapValue(Some(b.clone())));
             Ok(())
         }
-        (CapRow::Concrete(_), CapRow::Var(v)) => {
+        (CapRow::Concrete(_) | CapRow::Union(_), CapRow::Var(v)) if !a.vars().contains(v) => {
             let v = *v;
             ctx.capvids
                 .union_value(CapVidKey(v.0), CapValue(Some(a.clone())));
@@ -501,8 +518,63 @@ pub fn unify_caps(ctx: &mut InferCtx, a: &CapRow, b: &CapRow) -> Result<(), Type
             ctx.capvids.union(CapVidKey(v1.0), CapVidKey(v2.0));
             Ok(())
         }
-        // CapRow is #[non_exhaustive] — wildcard for forward-compat.
-        _ => Ok(()),
+        // Unresolved unions must never be accepted as an empty effect row.
+        _ => Err(TypeError::TypeMismatch {
+            expected: TypeDesc::Text(capability_description(&a)),
+            found: TypeDesc::Text(capability_description(&b)),
+            span: dummy_span(),
+            hint: None,
+        }),
+    }
+}
+
+/// Check a value against a contract, permitting narrower outer function effects.
+/// Parameter and return contracts are still unified in full.
+pub(crate) fn check_value(
+    ctx: &mut InferCtx,
+    expected: &Type,
+    value: &Type,
+) -> Result<(), TypeError> {
+    if !matches!(
+        expected,
+        Type::Fn { .. } | Type::Var(_) | Type::Alias { .. }
+    ) || !matches!(value, Type::Fn { .. } | Type::Var(_) | Type::Alias { .. })
+    {
+        return unify(ctx, expected, value);
+    }
+    let (
+        Type::Fn { caps: declared, .. },
+        Type::Fn {
+            params,
+            ret,
+            caps: actual,
+        },
+    ) = (ctx.deep_resolve(expected), ctx.deep_resolve(value))
+    else {
+        return unify(ctx, expected, value);
+    };
+    let shape = Type::Fn {
+        params,
+        ret,
+        caps: declared.clone(),
+    };
+    unify(ctx, expected, &shape)?;
+    match (
+        ctx.shallow_resolve_caps(&declared),
+        ctx.shallow_resolve_caps(&actual),
+    ) {
+        (CapRow::Concrete(allowed), CapRow::Concrete(required)) if required.is_subset(&allowed) => {
+            Ok(())
+        }
+        (allowed, required) => unify_caps(ctx, &allowed, &required),
+    }
+}
+
+fn capability_description(row: &CapRow) -> String {
+    match row {
+        CapRow::Concrete(set) => format!("{set}"),
+        CapRow::Union(_) => "combined callback capabilities".to_owned(),
+        _ => "callback capabilities".to_owned(),
     }
 }
 

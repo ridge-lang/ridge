@@ -6826,6 +6826,7 @@ pub fn collect_signature_fixes(
                         );
                     }
                 }
+                CapDeclKind::Const => {}
                 CapDeclKind::Handler => {
                     if let Some(h) = find_handler(module, *span) {
                         push_insert_fix(

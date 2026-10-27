@@ -14,12 +14,10 @@
 //!
 //! # Lambda capability isolation
 //!
-//! A `Lambda` expression as a *value* contributes PURE to the enclosing decl's
-//! capability set.  The lambda's *body* caps are stored in the lambda's
-//! `Type::Fn { caps }` slot (populated by this pass, hybrid-style: when
-//! `infer_caps` visits a Lambda it recurses into the body and records the result
-//! in the returned caps, which callers then read back from the env if they call
-//! the lambda).
+//! A lambda value contributes PURE to its enclosing declaration. Expression
+//! inference stores its body's latent capability row on the function type,
+//! before aliases are generalized. Union rows retain independent callback
+//! requirements until their use-site types resolve them.
 //!
 //! # Side-table
 //!
@@ -43,11 +41,27 @@ use crate::unify::unify_caps;
 /// This is a read-only pass that runs AFTER type inference is complete.
 /// All `CapRow::Var(v)` in stdlib HOF types are already resolved in `ctx.capvids`
 /// from the expression inference unification calls.
+pub fn infer_caps(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> CapabilitySet {
+    let row = infer_cap_row(ctx, b, expr);
+    concrete_caps(&ctx.shallow_resolve_caps(&row))
+}
+
+fn concrete_caps(row: &CapRow) -> CapabilitySet {
+    match row {
+        CapRow::Concrete(set) => *set,
+        CapRow::Union(rows) => rows.iter().fold(CapabilitySet::PURE, |acc, row| {
+            acc.union(&concrete_caps(row))
+        }),
+        _ => CapabilitySet::PURE,
+    }
+}
+
+/// Preserve unresolved callback requirements in a lambda's type.
 #[expect(
     clippy::too_many_lines,
     reason = "exhaustive match over all Expr variants"
 )]
-pub fn infer_caps(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> CapabilitySet {
+pub fn infer_cap_row(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> CapRow {
     match expr {
         // ── Pure leaves ───────────────────────────────────────────────────────
         // Literals, unit, bare identifiers, Send, FieldAccessorFn, and InnerFn
@@ -55,41 +69,24 @@ pub fn infer_caps(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Capabil
         Expr::Literal(_)
         | Expr::Unit(_)
         | Expr::Ident(_)
+        | Expr::Qualified(_)
         | Expr::Send { .. }
+        | Expr::Lambda { .. }
         | Expr::FieldAccessorFn { .. }
-        | Expr::InnerFn { .. } => CapabilitySet::PURE,
-
-        // ── Qualified name ────────────────────────────────────────────────────
-        // A qualified name used as a value (not in a call position) contributes
-        // its declared caps.  This handles `let f = Io.println` patterns where
-        // `f` is used as a first-class function value.
-        Expr::Qualified(_) => {
-            // Read the caps of the qualified name from the environment or return
-            // PURE if not found (unknown names were already an error in T6).
-            caps_of_expr(ctx, b, expr)
-        }
-
-        // ── Lambda ────────────────────────────────────────────────────────────
-        // §8.1: "Lambda { body } → none from the lambda value itself".
-        // The lambda body's caps are inferred here (recursively) but do NOT
-        // propagate to the enclosing decl.  They are available via
-        // `caps_of_expr(lambda_expr)` when the lambda is called.
-        Expr::Lambda { body, .. } => {
-            // Recurse into the body to compute its caps (so that callers of
-            // lambdas that are passed around can see the right caps).  But we
-            // return PURE: the lambda *value* itself doesn't propagate caps.
-            let _ = infer_caps(ctx, b, body);
-            CapabilitySet::PURE
-        }
+        | Expr::InnerFn { .. } => CapRow::Concrete(CapabilitySet::PURE),
 
         // ── Call ──────────────────────────────────────────────────────────────
         // §8.1: caps(Call(f, args)) = caps_of(f) ∪ ⋃ caps_of(args[i])
         Expr::Call { callee, args, .. } => {
-            let callee_caps = caps_of_callee(ctx, b, callee, args);
-            let args_caps = args.iter().fold(CapabilitySet::PURE, |acc, a| {
-                acc.union(&infer_caps(ctx, b, a))
-            });
-            callee_caps.union(&args_caps)
+            let callee_caps = callee_cap_row(ctx, b, callee, args);
+            let args_caps = args
+                .iter()
+                .fold(CapRow::Concrete(CapabilitySet::PURE), |acc, a| {
+                    acc.union(&infer_cap_row(ctx, b, a))
+                });
+            callee_caps
+                .union(&args_caps)
+                .union(&infer_cap_row(ctx, b, callee))
         }
 
         // ── Pipe `|>` ─────────────────────────────────────────────────────────
@@ -102,33 +99,35 @@ pub fn infer_caps(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Capabil
         // and include the lhs caps for completeness (piped-value may be effectful).
         //
         // For HOFs like `xs |> List.forEach Io.println`, rhs = Call(List.forEach,
-        // [Io.println]).  `infer_caps(rhs)` goes into the Call arm, which calls
+        // [Io.println]).  `infer_cap_row(rhs)` goes into the Call arm, which calls
         // `caps_of_callee(List.forEach, [Io.println])` and returns {io}.
         Expr::Pipe { lhs, rhs, .. } => {
-            let lhs_caps = infer_caps(ctx, b, lhs);
-            let rhs_caps = infer_caps(ctx, b, rhs);
-            lhs_caps.union(&rhs_caps)
+            let lhs_caps = infer_cap_row(ctx, b, lhs);
+            let rhs_caps = infer_cap_row(ctx, b, rhs);
+            lhs_caps
+                .union(&rhs_caps)
+                .union(&typed_expr_row(ctx, rhs).unwrap_or(CapRow::Concrete(CapabilitySet::PURE)))
         }
 
         // ── Ask ───────────────────────────────────────────────────────────────
         // §8.1 / Model B: Ask absorbs only {time}.
-        Expr::Ask { .. } => CapabilitySet::singleton(Capability::Time),
+        Expr::Ask { .. } => CapRow::Concrete(CapabilitySet::singleton(Capability::Time)),
 
         // ── Spawn ─────────────────────────────────────────────────────────────
         // §8.1: Spawn absorbs only {spawn}.
-        Expr::Spawn { .. } => CapabilitySet::singleton(Capability::Spawn),
+        Expr::Spawn { .. } => CapRow::Concrete(CapabilitySet::singleton(Capability::Spawn)),
 
         // ── Try block / Block ──────────────────────────────────────────────────
-        // §8.1: infer_caps(block).
-        Expr::Try { block, .. } | Expr::Block(block) => infer_caps_block(ctx, b, block),
+        // §8.1: infer_cap_row(block).
+        Expr::Try { block, .. } | Expr::Block(block) => infer_cap_row_block(ctx, b, block),
 
         // ── Guard ─────────────────────────────────────────────────────────────
-        // §8.1: infer_caps(cond) ∪ infer_caps(else_branch).
+        // §8.1: infer_cap_row(cond) ∪ infer_cap_row(else_branch).
         Expr::Guard {
             cond, else_branch, ..
         } => {
-            let cond_caps = infer_caps(ctx, b, cond);
-            let else_caps = infer_caps_block(ctx, b, else_branch);
+            let cond_caps = infer_cap_row(ctx, b, cond);
+            let else_caps = infer_cap_row_block(ctx, b, else_branch);
             cond_caps.union(&else_caps)
         }
 
@@ -140,10 +139,10 @@ pub fn infer_caps(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Capabil
             else_branch,
             ..
         } => {
-            let mut caps = infer_caps(ctx, b, cond);
-            caps = caps.union(&infer_caps(ctx, b, then_branch));
+            let mut caps = infer_cap_row(ctx, b, cond);
+            caps = caps.union(&infer_cap_row(ctx, b, then_branch));
             if let Some(else_expr) = else_branch {
-                caps = caps.union(&infer_caps(ctx, b, else_expr));
+                caps = caps.union(&infer_cap_row(ctx, b, else_expr));
             }
             caps
         }
@@ -153,83 +152,111 @@ pub fn infer_caps(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Capabil
         Expr::Match {
             scrutinee, arms, ..
         } => {
-            let mut caps = infer_caps(ctx, b, scrutinee);
+            let mut caps = infer_cap_row(ctx, b, scrutinee);
             for arm in arms {
                 if let Some(g) = &arm.guard {
-                    caps = caps.union(&infer_caps(ctx, b, g));
+                    caps = caps.union(&infer_cap_row(ctx, b, g));
                 }
-                caps = caps.union(&infer_caps(ctx, b, &arm.body));
+                caps = caps.union(&infer_cap_row(ctx, b, &arm.body));
             }
             caps
         }
 
         // ── Let / Var / Return ────────────────────────────────────────────────
         Expr::Let { value, .. } | Expr::Var { value, .. } | Expr::Return { value, .. } => {
-            infer_caps(ctx, b, value)
+            infer_cap_row(ctx, b, value)
         }
 
         // ── Assign ───────────────────────────────────────────────────────────
         Expr::Assign { target, value, .. } => {
-            infer_caps(ctx, b, target).union(&infer_caps(ctx, b, value))
+            infer_cap_row(ctx, b, target).union(&infer_cap_row(ctx, b, value))
         }
 
         // ── Propagate `?` / Paren ─────────────────────────────────────────────
-        Expr::Propagate { inner, .. } | Expr::Paren { inner, .. } => infer_caps(ctx, b, inner),
+        Expr::Propagate { inner, .. } | Expr::Paren { inner, .. } => infer_cap_row(ctx, b, inner),
 
         // ── Binary operators ──────────────────────────────────────────────────
-        Expr::Binary { lhs, rhs, .. } => infer_caps(ctx, b, lhs).union(&infer_caps(ctx, b, rhs)),
+        Expr::Binary { lhs, rhs, .. } => {
+            infer_cap_row(ctx, b, lhs).union(&infer_cap_row(ctx, b, rhs))
+        }
 
         // ── Unary operators ───────────────────────────────────────────────────
-        Expr::Unary { expr, .. } => infer_caps(ctx, b, expr),
+        Expr::Unary { expr, .. } => infer_cap_row(ctx, b, expr),
 
         // ── Tuple / List ──────────────────────────────────────────────────────
         // ChildSpec joins this arm: building a spec is a pure value
         // construction, so only its argument expressions can contribute caps.
         Expr::Tuple { elems, .. }
         | Expr::List { elems, .. }
-        | Expr::ChildSpec { args: elems, .. } => {
-            elems.iter().fold(CapabilitySet::PURE, |acc, e| {
-                acc.union(&infer_caps(ctx, b, e))
-            })
-        }
+        | Expr::ChildSpec { args: elems, .. } => elems
+            .iter()
+            .fold(CapRow::Concrete(CapabilitySet::PURE), |acc, e| {
+                acc.union(&infer_cap_row(ctx, b, e))
+            }),
 
         // ── Record / RecordLit / With / FieldAccess ───────────────────────────
         // Walk sub-expressions.
         Expr::Record { fields, .. } | Expr::RecordLit { fields, .. } => {
-            fields.iter().fold(CapabilitySet::PURE, |acc, f| {
-                f.value
-                    .as_ref()
-                    .map_or(acc, |val| acc.union(&infer_caps(ctx, b, val)))
-            })
+            fields
+                .iter()
+                .fold(CapRow::Concrete(CapabilitySet::PURE), |acc, f| {
+                    match &f.value {
+                        Some(val) => acc.union(&infer_cap_row(ctx, b, val)),
+                        None => acc,
+                    }
+                })
         }
         Expr::With { base, fields, .. } => {
-            let mut caps = infer_caps(ctx, b, base);
+            let mut caps = infer_cap_row(ctx, b, base);
             for f in fields {
                 if let Some(ref val) = f.value {
-                    caps = caps.union(&infer_caps(ctx, b, val));
+                    caps = caps.union(&infer_cap_row(ctx, b, val));
                 }
             }
             caps
         }
-        Expr::FieldAccess { base, .. } => infer_caps(ctx, b, base),
+        Expr::FieldAccess { base, .. } => infer_cap_row(ctx, b, base),
 
         // ── String interpolation ──────────────────────────────────────────────
         // Walk all interpolation parts that are expressions.
         Expr::Interp { parts, .. } => {
             use ridge_ast::InterpPart;
-            parts.iter().fold(CapabilitySet::PURE, |acc, p| match p {
-                InterpPart::Expr { expr: e, .. } => acc.union(&infer_caps(ctx, b, e)),
-                InterpPart::Text { .. } => acc,
-            })
+            parts
+                .iter()
+                .fold(CapRow::Concrete(CapabilitySet::PURE), |acc, p| match p {
+                    InterpPart::Expr { expr: e, .. } => acc.union(&infer_cap_row(ctx, b, e)),
+                    InterpPart::Text { .. } => acc,
+                })
         }
     }
 }
 
 /// Walk a `Block` and return the union of all statement caps.
+pub fn infer_cap_row_block(ctx: &mut InferCtx, b: &BuiltinTyCons, block: &Block) -> CapRow {
+    block
+        .stmts
+        .iter()
+        .fold(CapRow::Concrete(CapabilitySet::PURE), |acc, s| {
+            acc.union(&infer_cap_row(ctx, b, s))
+        })
+}
+
+/// Compute the concrete effects required to evaluate a block.
 pub fn infer_caps_block(ctx: &mut InferCtx, b: &BuiltinTyCons, block: &Block) -> CapabilitySet {
-    block.stmts.iter().fold(CapabilitySet::PURE, |acc, s| {
-        acc.union(&infer_caps(ctx, b, s))
-    })
+    let row = infer_cap_row_block(ctx, b, block);
+    concrete_caps(&ctx.shallow_resolve_caps(&row))
+}
+
+fn callee_cap_row(ctx: &mut InferCtx, b: &BuiltinTyCons, callee: &Expr, args: &[Expr]) -> CapRow {
+    if let Some(Type::Fn { params, caps, .. }) = typed_expr_type(ctx, callee) {
+        // A partial call constructs a closure; its body is still latent.
+        return if args.len() < params.len() {
+            CapRow::Concrete(CapabilitySet::PURE)
+        } else {
+            caps
+        };
+    }
+    CapRow::Concrete(caps_of_callee(ctx, b, callee, args))
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -351,8 +378,14 @@ fn caps_of_expr(ctx: &mut InferCtx, _b: &BuiltinTyCons, expr: &Expr) -> Capabili
 /// Read the inferred type at this use site, including bindings whose lexical
 /// scope has already been popped by the expression inference pass.
 pub(crate) fn typed_expr_caps(ctx: &mut InferCtx, expr: &Expr) -> Option<CapabilitySet> {
-    use ridge_resolve::NodeKind;
+    match typed_expr_row(ctx, expr)? {
+        CapRow::Concrete(caps) => Some(caps),
+        _ => None,
+    }
+}
 
+fn typed_expr_type(ctx: &mut InferCtx, expr: &Expr) -> Option<Type> {
+    use ridge_resolve::NodeKind;
     let kind = match expr {
         Expr::Block(_) => NodeKind::Block,
         Expr::Try { .. } => NodeKind::Try,
@@ -360,13 +393,14 @@ pub(crate) fn typed_expr_caps(ctx: &mut InferCtx, expr: &Expr) -> Option<Capabil
     };
     let node = ctx.node_id_map.as_ref()?.get(expr.span(), kind)?;
     let ty = ctx.node_types_accum.get(node.0 as usize)?.as_ref()?.clone();
-    let Type::Fn { caps, .. } = ctx.shallow_resolve(&ty) else {
+    Some(ctx.deep_resolve(&ty))
+}
+
+fn typed_expr_row(ctx: &mut InferCtx, expr: &Expr) -> Option<CapRow> {
+    let Type::Fn { caps, .. } = typed_expr_type(ctx, expr)? else {
         return None;
     };
-    match ctx.shallow_resolve_caps(&caps) {
-        CapRow::Concrete(caps) => Some(caps),
-        _ => None,
-    }
+    Some(caps)
 }
 
 /// Resolve capability set for a HOF call site.

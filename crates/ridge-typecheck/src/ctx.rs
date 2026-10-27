@@ -1408,6 +1408,11 @@ impl InferCtx {
     #[must_use]
     pub fn shallow_resolve_caps(&mut self, c: &CapRow) -> CapRow {
         match c {
+            CapRow::Union(rows) => rows
+                .iter()
+                .fold(CapRow::Concrete(CapabilitySet::PURE), |acc, row| {
+                    acc.union(&self.shallow_resolve_caps(row))
+                }),
             CapRow::Var(v) => {
                 let key = CapVidKey(v.0);
                 let root = self.capvids.find(key);

@@ -2463,7 +2463,7 @@ pub(crate) fn reconciled_fn_scheme(
     classes: Option<&ClassTable>,
 ) -> Option<Scheme> {
     match (module, name) {
-        ("std.net.http", "withoutHeaders" | "withHeaders" | "listenWithHeaders") => {
+        ("std.net.http", "withoutHeaders" | "withHeaders" | "listen" | "listenWithHeaders") => {
             let response = Type::Con(*reconciled.get("Response")?, vec![]);
             let metadata = Type::Con(*reconciled.get("ResponseWithHeaders")?, vec![]);
             let (params, ret, caps, cap_vars) = match name {
@@ -2493,12 +2493,13 @@ pub(crate) fn reconciled_fn_scheme(
                         Type::Con(b.int, vec![]),
                         Type::Fn {
                             params: vec![Type::Con(*reconciled.get("Request")?, vec![])],
-                            ret: Box::new(metadata),
+                            ret: Box::new(if name == "listen" { response } else { metadata }),
                             caps: CapRow::Var(CapVid(0)),
                         },
                     ],
                     Type::Con(b.unit, vec![]),
-                    CapRow::Concrete(CapabilitySet::singleton(Capability::Net)),
+                    CapRow::Concrete(CapabilitySet::singleton(Capability::Net))
+                        .union(&CapRow::Var(CapVid(0))),
                     vec![CapVid(0)],
                 ),
             };
@@ -2557,7 +2558,7 @@ pub(crate) fn reconciled_fn_scheme(
                         Type::Con(b.list, vec![Type::Var(a)]),
                     ],
                     ret: Box::new(Type::Con(b.list, vec![Type::Var(a)])),
-                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                    caps: CapRow::Var(key_cap),
                 },
                 constraints: vec![Constraint::single(ORD_CLASS, key_ret)],
             })
@@ -4659,7 +4660,7 @@ fn reconciled_repo_fn_scheme(
                 ty: Type::Fn {
                     params: vec![Type::Var(a), body],
                     ret: Box::new(result(Type::Var(r))),
-                    caps: pure(),
+                    caps: CapRow::Var(cap_c),
                 },
                 constraints: with_adapter(),
             })
@@ -4687,7 +4688,7 @@ fn reconciled_repo_fn_scheme(
                 ty: Type::Fn {
                     params: vec![Type::Con(isolation, vec![]), Type::Var(a), body],
                     ret: Box::new(result(Type::Var(r))),
-                    caps: pure(),
+                    caps: CapRow::Var(cap_c),
                 },
                 constraints: with_adapter(),
             })
@@ -4725,7 +4726,7 @@ fn reconciled_repo_fn_scheme(
                         },
                     ],
                     ret: Box::new(result_re),
-                    caps: CapRow::Concrete(retry_caps),
+                    caps: CapRow::Concrete(retry_caps).union(&CapRow::Var(cap_c)),
                 },
                 constraints: vec![],
             })
@@ -4753,7 +4754,7 @@ fn reconciled_repo_fn_scheme(
                 ty: Type::Fn {
                     params: vec![Type::Con(retry_policy, vec![]), body],
                     ret: Box::new(result(Type::Var(r))),
-                    caps: CapRow::Concrete(retry_caps),
+                    caps: CapRow::Concrete(retry_caps).union(&CapRow::Var(cap_c)),
                 },
                 constraints: vec![],
             })
@@ -4787,7 +4788,7 @@ fn reconciled_repo_fn_scheme(
                         body,
                     ],
                     ret: Box::new(result(Type::Var(r))),
-                    caps: CapRow::Concrete(retry_caps),
+                    caps: CapRow::Concrete(retry_caps).union(&CapRow::Var(cap_c)),
                 },
                 constraints: with_adapter(),
             })

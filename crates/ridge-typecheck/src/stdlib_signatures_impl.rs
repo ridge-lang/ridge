@@ -207,6 +207,10 @@ fn ty_fn_caps(params: Vec<Type>, ret: Type, caps: CapabilitySet) -> Type {
 /// The outer function re-uses the same `CapVid` so the call site absorbs whatever
 /// capability the user-supplied callback requires.
 #[inline]
+fn ty_fn_callback(params: Vec<Type>, ret: Type) -> Type {
+    ty_fn_cap_var(params, ret, CAP_C)
+}
+
 fn ty_fn_cap_var(params: Vec<Type>, ret: Type, c: CapVid) -> Type {
     Type::Fn {
         params,
@@ -607,7 +611,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(poly_cap(
                 vec![A, B_VAR],
                 vec![CAP_C],
-                ty_fn_pure(
+                ty_fn_callback(
                     vec![
                         ty_fn_cap_var(vec![Type::Var(A)], Type::Var(B_VAR), CAP_C),
                         ty_list(b, Type::Var(A)),
@@ -621,7 +625,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(poly_cap(
                 vec![A],
                 vec![CAP_C],
-                ty_fn_pure(
+                ty_fn_callback(
                     vec![
                         ty_fn_cap_var(vec![Type::Var(A)], ty_bool(b), CAP_C),
                         ty_list(b, Type::Var(A)),
@@ -635,7 +639,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(poly_cap(
                 vec![A],
                 vec![CAP_C],
-                ty_fn_pure(
+                ty_fn_callback(
                     vec![
                         ty_fn_cap_var(vec![Type::Var(A)], ty_bool(b), CAP_C),
                         ty_list(b, Type::Var(A)),
@@ -660,7 +664,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(poly_cap(
                 vec![A, B_VAR],
                 vec![CAP_C],
-                ty_fn_pure(
+                ty_fn_callback(
                     vec![
                         ty_fn_cap_var(vec![Type::Var(A)], ty_option(b, Type::Var(B_VAR)), CAP_C),
                         ty_list(b, Type::Var(A)),
@@ -674,7 +678,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(poly_cap(
                 vec![A, B_VAR],
                 vec![CAP_C],
-                ty_fn_pure(
+                ty_fn_callback(
                     vec![
                         ty_fn_cap_var(
                             vec![Type::Var(B_VAR), Type::Var(A)],
@@ -693,7 +697,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(poly_cap(
                 vec![A, B_VAR],
                 vec![CAP_C],
-                ty_fn_pure(
+                ty_fn_callback(
                     vec![
                         ty_fn_cap_var(
                             vec![Type::Var(A), Type::Var(B_VAR)],
@@ -744,7 +748,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                 vars: vec![A, B_VAR],
                 cap_vars: vec![CAP_C],
                 row_vars: vec![],
-                ty: ty_fn_pure(
+                ty: ty_fn_callback(
                     vec![
                         ty_fn_cap_var(vec![Type::Var(A)], Type::Var(B_VAR), CAP_C),
                         ty_list(b, Type::Var(A)),
@@ -779,7 +783,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(poly_cap(
                 vec![A, B_VAR],
                 vec![CAP_C],
-                ty_fn_pure(
+                ty_fn_callback(
                     vec![
                         ty_fn_cap_var(vec![Type::Var(A)], Type::Var(B_VAR), CAP_C),
                         ty_list(b, Type::Var(A)),
@@ -793,7 +797,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(poly_cap(
                 vec![A, B_VAR],
                 vec![CAP_C],
-                ty_fn_pure(
+                ty_fn_callback(
                     vec![
                         ty_fn_cap_var(vec![Type::Var(A)], ty_list(b, Type::Var(B_VAR)), CAP_C),
                         ty_list(b, Type::Var(A)),
@@ -818,7 +822,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(poly_cap(
                 vec![A, B_VAR, C_VAR],
                 vec![CAP_C],
-                ty_fn_pure(
+                ty_fn_callback(
                     vec![
                         ty_fn_cap_var(
                             vec![Type::Var(A), Type::Var(B_VAR)],
@@ -844,7 +848,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(poly_cap(
                 vec![A],
                 vec![CAP_C],
-                ty_fn_pure(
+                ty_fn_callback(
                     vec![
                         ty_fn_cap_var(vec![Type::Var(A)], ty_bool(b), CAP_C),
                         ty_list(b, Type::Var(A)),
@@ -858,7 +862,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(poly_cap(
                 vec![A],
                 vec![CAP_C],
-                ty_fn_pure(
+                ty_fn_callback(
                     vec![
                         ty_fn_cap_var(vec![Type::Var(A)], ty_bool(b), CAP_C),
                         ty_list(b, Type::Var(A)),
@@ -879,7 +883,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(poly_cap(
                 vec![A],
                 vec![CAP_C],
-                ty_fn_pure(
+                ty_fn_callback(
                     vec![
                         ty_fn_cap_var(vec![Type::Var(A)], ty_unit(b), CAP_C),
                         ty_list(b, Type::Var(A)),
@@ -1003,7 +1007,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(poly_cap(
                 vec![A, B_VAR, C_VAR],
                 vec![CAP_C],
-                ty_fn_pure(
+                ty_fn_callback(
                     vec![
                         ty_fn_cap_var(
                             vec![Type::Var(A), Type::Var(B_VAR)],
@@ -1021,7 +1025,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(poly_cap(
                 vec![A, B_VAR],
                 vec![CAP_C],
-                ty_fn_pure(
+                ty_fn_callback(
                     vec![
                         ty_fn_cap_var(vec![Type::Var(A), Type::Var(B_VAR)], ty_bool(b), CAP_C),
                         ty_map(b, Type::Var(A), Type::Var(B_VAR)),
@@ -1042,7 +1046,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(poly_cap(
                 vec![A, B_VAR, C_VAR],
                 vec![CAP_C],
-                ty_fn_pure(
+                ty_fn_callback(
                     vec![
                         ty_fn_cap_var(
                             vec![Type::Var(A), Type::Var(B_VAR)],
@@ -1073,7 +1077,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(poly_cap(
                 vec![A, B_VAR],
                 vec![CAP_C],
-                ty_fn_pure(
+                ty_fn_callback(
                     vec![
                         Type::Var(A),
                         ty_fn_cap_var(
@@ -1155,7 +1159,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(poly_cap(
                 vec![A, B_VAR],
                 vec![CAP_C],
-                ty_fn_pure(
+                ty_fn_callback(
                     vec![
                         ty_fn_cap_var(vec![Type::Var(A)], Type::Var(B_VAR), CAP_C),
                         ty_option(b, Type::Var(A)),
@@ -1169,7 +1173,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(poly_cap(
                 vec![A, B_VAR],
                 vec![CAP_C],
-                ty_fn_pure(
+                ty_fn_callback(
                     vec![
                         ty_fn_cap_var(vec![Type::Var(A)], ty_option(b, Type::Var(B_VAR)), CAP_C),
                         ty_option(b, Type::Var(A)),
@@ -1183,7 +1187,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(poly_cap(
                 vec![A],
                 vec![CAP_C],
-                ty_fn_pure(
+                ty_fn_callback(
                     vec![
                         ty_fn_cap_var(vec![], ty_option(b, Type::Var(A)), CAP_C),
                         ty_option(b, Type::Var(A)),
@@ -1218,7 +1222,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(poly_cap(
                 vec![A, B_VAR],
                 vec![CAP_C],
-                ty_fn_pure(
+                ty_fn_callback(
                     vec![
                         Type::Var(B_VAR),
                         ty_fn_cap_var(vec![Type::Var(A)], Type::Var(B_VAR), CAP_C),
@@ -1253,7 +1257,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(poly_cap(
                 vec![A, B_VAR, C_VAR],
                 vec![CAP_C],
-                ty_fn_pure(
+                ty_fn_callback(
                     vec![
                         ty_fn_cap_var(vec![Type::Var(A)], Type::Var(B_VAR), CAP_C),
                         ty_result(b, Type::Var(A), Type::Var(C_VAR)),
@@ -1267,7 +1271,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(poly_cap(
                 vec![A, B_VAR, C_VAR],
                 vec![CAP_C],
-                ty_fn_pure(
+                ty_fn_callback(
                     vec![
                         ty_fn_cap_var(vec![Type::Var(B_VAR)], Type::Var(C_VAR), CAP_C),
                         ty_result(b, Type::Var(A), Type::Var(B_VAR)),
@@ -1281,7 +1285,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(poly_cap(
                 vec![A, B_VAR, C_VAR],
                 vec![CAP_C],
-                ty_fn_pure(
+                ty_fn_callback(
                     vec![
                         ty_fn_cap_var(
                             vec![Type::Var(A)],
@@ -1299,7 +1303,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(poly_cap(
                 vec![A, B_VAR, C_VAR],
                 vec![CAP_C],
-                ty_fn_pure(
+                ty_fn_callback(
                     vec![
                         ty_fn_cap_var(
                             vec![Type::Var(A)],
@@ -1996,12 +2000,9 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             ],
             Type::Con(b.secure_cookie, vec![]),
         ))),
-        // listen: Int -> (fn {net} (Request -> Response)) -> Unit
-        // type checking: polymorphic over the handler type (Request/Response stubs).
-        (STD_NET_HTTP, "listen") => Some(poly(
-            vec![A, B_VAR],
-            ty_fn_pure(vec![ty_int(b), Type::Var(B_VAR)], ty_unit(b)),
-        )),
+        // The reconciled signature carries nominal Request/Response types
+        // and combines the listener's net capability with its callback row.
+        (STD_NET_HTTP, "listen") => None,
 
         // ── std.crypto ────────────────────────────────────────────────────────
         // constantTimeEq: Text -> Text -> Bool
@@ -2105,7 +2106,7 @@ mod tests {
                     continue;
                 }
                 if module.name == "std.net.http"
-                    && matches!(name, "withoutHeaders" | "withHeaders" | "listenWithHeaders")
+                    && matches!(name, "withoutHeaders" | "withHeaders" | "listen" | "listenWithHeaders")
                 {
                     let scheme = crate::stdlib_types::reconciled_fn_scheme(
                         module.name, name, &reconciled, &b, None,
@@ -2756,15 +2757,15 @@ mod tests {
 
     // ── std.net.http ──────────────────────────────────────────────────────────
 
-    /// `listen` is the only `net.http` symbol that has a real type-checker signature
-    /// (so `examples/url_shortener.ridge` can type-check); the other `net.http`
-    /// items remain stubs (`Request`, `Response`, `respond`, `get`, …).
+    /// The listener uses the reconciled nominal request/response contract.
     #[test]
     fn std_net_http_listen_is_int_handler_to_unit() {
-        let b = builtins();
-        let scheme = stdlib_signature(STD_NET_HTTP, "listen", &b).unwrap();
-        // Two schema-level vars: A (unused — reserved) and B_VAR (handler type).
-        assert_eq!(scheme.vars.len(), 2);
+        let mut arena = ridge_types::TyConArena::new();
+        let b = BuiltinTyCons::allocate(&mut arena);
+        let names = crate::stdlib_types::intern_stdlib_types(&mut arena, &b);
+        let scheme = crate::stdlib_types::reconciled_fn_scheme("std.net.http", "listen", &names, &b, None).unwrap();
+        assert!(stdlib_signature(STD_NET_HTTP, "listen", &b).is_none());
+        assert_eq!(scheme.cap_vars.len(), 1);
         // Shape: Int -> handler -> Unit
         assert!(matches!(
             &scheme.ty,

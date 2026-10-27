@@ -720,7 +720,9 @@ pub fn typecheck_module_decls(
             };
             // Use declared capability set when present; default to PURE for
             // unannotated fns.
-            let caps = if decl.caps.is_empty() {
+            let caps = if crate::caps_check::is_file_private(&decl.name.text) {
+                CapRow::Var(ctx.fresh_capvid())
+            } else if decl.caps.is_empty() {
                 CapRow::Concrete(CapabilitySet::PURE)
             } else {
                 let cap_set = caps_from_ast_slice(&decl.caps);
@@ -834,7 +836,7 @@ pub fn typecheck_module_decls(
                     Body::Ffi { .. } | Body::Primitive => *ret_ty_box.clone(),
                 };
                 // Unify body type with declared ret.
-                if unify(ctx, &body_ty, ret_ty_box).is_err() {
+                if crate::unify::check_value(ctx, ret_ty_box, &body_ty).is_err() {
                     let span = scc_spans
                         .get(&did)
                         .copied()
@@ -876,6 +878,7 @@ pub fn typecheck_module_decls(
             .copied()
             .unwrap_or_else(|| Span::point(0));
         crate::record_requirements::solve(ctx);
+        seal_capabilities(ctx, b, scc, decls, &scc_fn_types);
         let (retained, scc_dict_resolution) = crate::solve::solve_constraints(
             ctx,
             instance_env,
@@ -1189,6 +1192,84 @@ pub fn infer_instance_methods(
     }
 
     recorded
+}
+
+/// Finish latent requirements before any SCC scheme is generalized.
+fn seal_capabilities(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    scc: &[DeclId],
+    decls: &[&FnDecl],
+    types: &FxHashMap<DeclId, Type>,
+) {
+    // Private helpers infer their own row, including mutually recursive calls.
+    for did in scc {
+        let decl = decls[did.0];
+        if !crate::caps_check::is_file_private(&decl.name.text) {
+            continue;
+        }
+        let Body::Expr(body) = &decl.body else {
+            continue;
+        };
+        let Some(Type::Fn { caps, .. }) = types.get(did) else {
+            continue;
+        };
+        let row = crate::caps_infer::infer_cap_row(ctx, b, body);
+        if let Err(error) = crate::unify::unify_caps(ctx, caps, &row) {
+            ctx.errors
+                .push(crate::infer::attach_span(error, body.span()));
+        }
+    }
+    for did in scc {
+        let decl = decls[did.0];
+        let Body::Expr(body) = &decl.body else {
+            continue;
+        };
+        let Some(Type::Fn { params, caps, .. }) = types.get(did) else {
+            continue;
+        };
+        let private = crate::caps_check::is_file_private(&decl.name.text);
+        let mut input_caps: FxHashSet<_> = params
+            .iter()
+            .flat_map(|p| {
+                let resolved = ctx.deep_resolve(p);
+                crate::instantiate::collect_free_vars(&resolved).1
+            })
+            .collect();
+        let input_types = params
+            .iter()
+            .flat_map(|p| crate::instantiate::collect_free_vars(&ctx.deep_resolve(p)).0)
+            .collect();
+        for ty in crate::record_requirements::connected_types(ctx, &input_types) {
+            input_caps.extend(crate::instantiate::collect_free_vars(&ty).1);
+        }
+        let row = if private {
+            ctx.shallow_resolve_caps(caps)
+        } else {
+            crate::caps_infer::infer_cap_row(ctx, b, body)
+        };
+        let declared = crate::caps_check::caps_from_ast_slice(&decl.caps);
+        for variable in row.vars() {
+            // A recursive pure helper has no capability input to quantify.
+            // Private callback forwarders retain their correlated input row.
+            if private && input_caps.contains(&variable) {
+                continue;
+            }
+            if matches!(
+                ctx.shallow_resolve_caps(&CapRow::Var(variable)),
+                CapRow::Var(_)
+            ) {
+                if let Err(error) = crate::unify::unify_caps(
+                    ctx,
+                    &CapRow::Var(variable),
+                    &CapRow::Concrete(declared),
+                ) {
+                    ctx.errors
+                        .push(crate::infer::attach_span(error, body.span()));
+                }
+            }
+        }
+    }
 }
 
 /// Collect all lower-case type variable names from an AST type annotation.

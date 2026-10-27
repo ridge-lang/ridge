@@ -116,16 +116,11 @@ impl Subst {
             Type::Fn { params, ret, caps } => {
                 let new_params = params.iter().map(|p| self.apply_to_ty(p)).collect();
                 let new_ret = Box::new(self.apply_to_ty(ret));
-                let new_caps = match caps {
-                    CapRow::Concrete(s) => CapRow::Concrete(*s),
-                    CapRow::Var(c) => {
-                        if let Some(&concrete) = self.cap.get(c) {
-                            CapRow::Concrete(concrete)
-                        } else {
-                            CapRow::Var(*c)
-                        }
-                    }
-                };
+                let new_caps = caps.map_vars(&mut |c| {
+                    self.cap
+                        .get(&c)
+                        .map_or(CapRow::Var(c), |s| CapRow::Concrete(*s))
+                });
                 Type::Fn {
                     params: new_params,
                     ret: new_ret,

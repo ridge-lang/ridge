@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Function-valued constants can be called directly or through aliases, including
+  imports, zero-parameter functions and functions receiving `Unit`. Calls load
+  the constant's function value before applying its arguments; ordinary function
+  references and instance dictionary values retain their meaning.
+
 - Actor state writes inside `try` compile and preserve the state at each normal
   or propagated-error exit, including initialization and lifecycle callbacks.
   Assignments produce `Unit` while the state map travels separately. Nested

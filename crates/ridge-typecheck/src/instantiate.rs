@@ -163,6 +163,25 @@ pub fn generalise(ctx: &mut InferCtx, ty: &Type) -> Scheme {
 pub fn generalisation_env(
     ctx: &mut InferCtx,
 ) -> (FxHashSet<TyVid>, FxHashSet<CapVid>, FxHashSet<RowVid>) {
+    let mut shared_types = ctx.env_free_tyvids();
+    shared_types.extend(
+        ctx.deferred_constraints
+            .iter()
+            .flat_map(|constraint| constraint.tys.iter().copied()),
+    );
+    let shared_caps = ctx.env_free_capvids();
+    let shared_rows = ctx.env_free_rowvids();
+    generalisation_env_from_roots(ctx, &shared_types, &shared_caps, &shared_rows)
+}
+
+/// Expand captured environment roots after inference has revealed their types.
+#[must_use]
+pub(crate) fn generalisation_env_from_roots(
+    ctx: &mut InferCtx,
+    shared_types: &FxHashSet<TyVid>,
+    shared_caps: &FxHashSet<CapVid>,
+    shared_rows: &FxHashSet<RowVid>,
+) -> (FxHashSet<TyVid>, FxHashSet<CapVid>, FxHashSet<RowVid>) {
     crate::record_requirements::solve(ctx);
     let mut ty_vars = FxHashSet::default();
     let mut cap_vars = FxHashSet::default();
@@ -173,29 +192,21 @@ pub fn generalisation_env(
         cap_vars.extend(caps);
         row_vars.extend(collect_free_row_vars(ty));
     };
-    let mut shared_types = ctx.env_free_tyvids();
-    shared_types.extend(
-        ctx.deferred_constraints
-            .iter()
-            .flat_map(|constraint| constraint.tys.iter().copied()),
-    );
-    let connected = crate::record_requirements::connected_types(ctx, &shared_types);
+    let connected = crate::record_requirements::connected_types(ctx, shared_types);
     for ty in &connected {
         include(ty);
     }
     for var in shared_types {
-        include(&ctx.deep_resolve(&Type::Var(var)));
+        include(&ctx.deep_resolve(&Type::Var(*var)));
     }
-    for row in ctx.env_free_rowvids() {
+    for row in shared_rows {
         include(&ctx.deep_resolve(&Type::Record {
             fields: vec![],
-            tail: RowTail::Open(row),
+            tail: RowTail::Open(*row),
         }));
     }
-    for cap in ctx.env_free_capvids() {
-        if let CapRow::Var(var) = ctx.shallow_resolve_caps(&CapRow::Var(cap)) {
-            cap_vars.insert(var);
-        }
+    for cap in shared_caps {
+        cap_vars.extend(ctx.shallow_resolve_caps(&CapRow::Var(*cap)).vars());
     }
     (ty_vars, cap_vars, row_vars)
 }
@@ -357,9 +368,7 @@ fn collect_free_vars_rec(
                 collect_free_vars_rec(p, free_ty, free_cap);
             }
             collect_free_vars_rec(ret, free_ty, free_cap);
-            if let CapRow::Var(c) = caps {
-                free_cap.insert(*c);
-            }
+            free_cap.extend(caps.vars());
         }
         Type::Tuple(ts) => {
             for t in ts {

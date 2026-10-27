@@ -61,10 +61,13 @@ fn build_single_module_workspace(stem: &str, src: &str) -> TempDir {
 fn run_typecheck_on_source(stem: &str, src: &str) -> Vec<TypeError> {
     let td = build_single_module_workspace(stem, src);
     let disc = discover_workspace(td.path());
-    let Some(ws_graph) = disc.graph else {
-        return Vec::new();
-    };
+    let ws_graph = disc.graph.expect("fixture workspace must be discovered");
     let resolved = resolve_workspace(ws_graph);
+    assert!(
+        resolved.parse_errors.is_empty(),
+        "{:?}",
+        resolved.parse_errors
+    );
     let result = typecheck_workspace(&resolved);
     result.errors.into_iter().map(|(_, e)| e).collect()
 }
@@ -109,6 +112,41 @@ fn parse_expectation(src: &str) -> Option<Expectation> {
 }
 
 // ── Fixture-driven test ──────────────────────────────────────────────────────
+
+#[test]
+fn constants_check_contracts_and_keep_latent_permissions() {
+    for initializer in [
+        "fn (n: Int) -> Int =\n    Io.println \"effect\"\n    n",
+        "perform",
+    ] {
+        for alias in [false, true] {
+            for permitted in [false, true] {
+                let source = format!(
+                    "import std.io as Io\npub fn io perform (n: Int) -> Int =\n    Io.println \"effect\"\n    n\npub const f: fn io Int -> Int = {initializer}\npub fn {}caller () -> Int =\n{}    {} 7\n",
+                    if permitted { "io " } else { "" },
+                    if alias { "    let g = f\n" } else { "" },
+                    if alias { "g" } else { "f" },
+                );
+                let errors = run_typecheck_on_source("Main", &source);
+                if permitted {
+                    assert!(errors.is_empty(), "{source}\n{errors:?}");
+                } else {
+                    assert!(
+                        errors.iter().any(|e| e.code() == "T014"),
+                        "{source}\n{errors:?}"
+                    );
+                }
+            }
+        }
+    }
+    for source in [
+        "pub const x: Int = \"wrong\"\n",
+        "import std.io as Io\npub const f: fn Int -> Int = fn (n: Int) -> Int =\n    Io.println \"effect\"\n    n\n",
+    ] {
+        let errors = run_typecheck_on_source("Main", source);
+        assert!(errors.iter().any(|e| e.code() == "T001"), "{source}\n{errors:?}");
+    }
+}
 
 #[test]
 fn capability_fixtures_pass() {
@@ -185,4 +223,220 @@ fn capability_fixtures_pass() {
         "capability fixture failures:\n  {}",
         failures.join("\n  ")
     );
+}
+
+#[test]
+fn lambda_aliases_preserve_independent_callback_permissions() {
+    for permitted in [false, true] {
+        let source = format!(
+            "import std.io as Io\npub fn io effect (n: Int) -> Int =\n    Io.println \"effect\"\n    n\npub fn {}caller () -> Int =\n    let apply = fn f x -> f x\n    let both = fn f g x -> f x + g x\n    let pure = fn n -> n + 1\n    let first = apply pure 1\n    let second = both pure effect first\n    apply pure second\n",
+            if permitted { "io " } else { "" },
+        );
+        let errors = run_typecheck_on_source("Main", &source);
+        if permitted {
+            assert!(errors.is_empty(), "{source}\n{errors:?}");
+        } else {
+            assert!(
+                errors.iter().any(|e| e.code() == "T014"),
+                "{source}\n{errors:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn creating_effectful_function_values_does_not_execute_them() {
+    let source = "import std.io as Io\npub const printer: fn Text -> Unit = Io.println\npub fn value () -> fn io Int -> Int =\n    fn (n: Int) -> Int =\n        Io.println \"effect\"\n        n\n";
+    let errors = run_typecheck_on_source("Main", source);
+    assert!(errors.iter().any(|e| e.code() == "T001"), "{errors:?}");
+    let valid = source.replace("printer: fn Text", "printer: fn io Text");
+    let errors = run_typecheck_on_source("Main", &valid);
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn constant_imports_keep_capabilities_and_pure_initialization() {
+    for caller in ["", "io "] {
+        let source = format!("import demo.Defs as D\npub fn {caller}call () -> Int =\n    let f = D.effect\n    f 7\n");
+        let td = build_single_module_workspace("Main", &source);
+        write_file(td.path(), "apps/demo/src/Defs.ridge", "import std.io as Io\npub const effect: fn io Int -> Int = fn (n: Int) -> Int =\n    Io.println \"effect\"\n    n\n");
+        let graph = discover_workspace(td.path()).graph.expect("workspace");
+        let resolved = resolve_workspace(graph);
+        assert!(
+            resolved.parse_errors.is_empty(),
+            "{:?}",
+            resolved.parse_errors
+        );
+        let result = typecheck_workspace(&resolved);
+        if caller.is_empty() {
+            assert!(
+                result.errors.iter().any(|(_, e)| e.code() == "T014"),
+                "{:?}",
+                result.errors
+            );
+        } else {
+            assert!(result.errors.is_empty(), "{:?}", result.errors);
+        }
+    }
+    let source = "import std.io as Io\npub fn io effect () -> Int =\n    Io.println \"effect\"\n    7\npub const eager: Int = effect ()\n";
+    let errors = run_typecheck_on_source("Main", source);
+    assert!(errors.iter().any(|e| e.code() == "T014"), "{errors:?}");
+}
+
+#[test]
+fn private_helpers_and_forwarders_keep_their_inferred_effects() {
+    for prefix in ["", "io "] {
+        let source = format!("import std.io as Io\nfn _effect (n: Int) -> Int =\n    Io.println \"effect\"\n    n\nfn _apply f x = f x\npub const effect: fn io Int -> Int = _effect\npub fn {prefix}caller () -> Int = _apply effect 7\n");
+        let errors = run_typecheck_on_source("Main", &source);
+        if prefix.is_empty() {
+            assert!(
+                errors.iter().any(|e| e.code() == "T014"),
+                "{source}\n{errors:?}"
+            );
+        } else {
+            assert!(errors.is_empty(), "{source}\n{errors:?}");
+        }
+    }
+    let source = "import std.io as Io\nfn _even (n: Int) -> Bool =\n    if n == 0 then True else _odd (n - 1)\nfn _odd (n: Int) -> Bool =\n    Io.println \"effect\"\n    if n == 0 then False else _even (n - 1)\npub fn caller () -> Bool = _even 2\n";
+    let errors = run_typecheck_on_source("Main", source);
+    assert!(errors.iter().any(|e| e.code() == "T014"), "{errors:?}");
+    let errors =
+        run_typecheck_on_source("Main", &source.replace("pub fn caller", "pub fn io caller"));
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn captured_callback_rows_cannot_be_generalized_away() {
+    for prefix in ["", "io "] {
+        let source = format!("import std.io as Io\npub fn io effect (n: Int) -> Int =\n    Io.println \"effect\"\n    n\npub fn {prefix}caller () -> Int =\n    let combine = fn f g ->\n        let run = fn x -> f x + g x\n        run\n    let pure = fn n -> n + 1\n    let saved = combine pure effect\n    saved 7\n");
+        let errors = run_typecheck_on_source("Main", &source);
+        if prefix.is_empty() {
+            assert!(
+                errors.iter().any(|e| e.code() == "T014"),
+                "{source}\n{errors:?}"
+            );
+        } else {
+            assert!(errors.is_empty(), "{source}\n{errors:?}");
+        }
+    }
+}
+
+#[test]
+fn constant_capability_contracts_allow_pure_implementations_and_retain_fs() {
+    let errors = run_typecheck_on_source(
+        "Main",
+        "pub const f: fn io Int -> Int = fn (n: Int) -> Int = n\npub fn io value () -> Int = f 7\n",
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+    for prefix in ["", "fs "] {
+        let source = format!("pub fn fs perform (n: Int) -> Int = n\npub const f: fn fs Int -> Int = perform\npub fn {prefix}value () -> Int =\n    let saved = f\n    saved 7\n");
+        let errors = run_typecheck_on_source("Main", &source);
+        if prefix.is_empty() {
+            assert!(errors.iter().any(|e| e.code() == "T014"), "{errors:?}");
+        } else {
+            assert!(errors.is_empty(), "{errors:?}");
+        }
+    }
+}
+
+#[test]
+fn callback_allowances_accept_pure_values_without_erasing_required_permissions() {
+    let source = "pub fn io apply f n = f n\npub fn io value () -> Int =\n    let pure = fn (n: Int) -> Int = n + 1\n    apply pure 6\n";
+    let errors = run_typecheck_on_source("Main", source);
+    assert!(errors.is_empty(), "{errors:?}");
+    let source = "import std.io as Io\npub fn apply (f: fn Int -> Int) -> Int = f 7\npub fn io value () -> Int =\n    apply (fn (n: Int) -> Int =\n        Io.println \"effect\"\n        n)\n";
+    let errors = run_typecheck_on_source("Main", source);
+    assert!(errors.iter().any(|e| e.code() == "T002"), "{errors:?}");
+}
+
+#[test]
+fn local_annotations_and_returned_values_keep_the_declared_contract() {
+    for prefix in ["", "io "] {
+        let source = format!("pub fn make () -> fn io Int -> Int = fn (n: Int) -> Int = n\npub fn {prefix}caller () -> Int =\n    let f: fn io Int -> Int = fn (n: Int) -> Int = n\n    var g: fn io Int -> Int = make ()\n    g <- f\n    g 7\n");
+        let errors = run_typecheck_on_source("Main", &source);
+        if prefix.is_empty() {
+            assert!(
+                errors.iter().any(|e| e.code() == "T014"),
+                "{source}\n{errors:?}"
+            );
+        } else {
+            assert!(errors.is_empty(), "{source}\n{errors:?}");
+        }
+    }
+}
+
+#[test]
+fn inner_helpers_retain_invoked_and_captured_callback_rows() {
+    for form in ["inner", "captured", "record"] {
+        for allowed in [false, true] {
+            let mut source = String::from("import std.io as Io\n");
+            if form == "record" {
+                source.push_str("fn _invoke record -> Unit = record.run ()\n");
+            }
+            source.push_str(if allowed {
+                "pub fn io caller () -> Unit =\n"
+            } else {
+                "pub fn caller () -> Unit =\n"
+            });
+            source.push_str(match form {
+                "inner" => "    fn invoke f -> Unit = f \"effect\"\n    invoke Io.println\n",
+                "captured" => "    let wrap = fn f ->\n        fn invoke (_u: Unit) -> Unit = f \"effect\"\n        invoke\n    let saved = wrap Io.println\n    saved ()\n",
+                _ => "    _invoke ({ run = fn (_u: Unit) -> Unit = Io.println \"effect\" })\n",
+            });
+            let errors = run_typecheck_on_source("Main", &source);
+            if allowed {
+                assert!(errors.is_empty(), "{source}\n{errors:?}");
+            } else {
+                assert!(
+                    errors.iter().any(|e| e.code() == "T014"),
+                    "{source}\n{errors:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn http_listener_requires_its_base_and_callback_permissions() {
+    for listener in ["listen", "listenWithHeaders"] {
+        let response = if listener == "listen" {
+            "Http.respond 200 \"ok\""
+        } else {
+            "Http.withoutHeaders (Http.respond 200 \"ok\")"
+        };
+        for (caps, valid) in [("net io ", true), ("net ", false), ("io ", false)] {
+            let source = format!("import std.net.http as Http\nimport std.io as Io\npub fn {caps}serve () -> Unit =\n    Http.{listener} 18086 (fn _ ->\n        Io.println \"effect\"\n        {response})\n");
+            let errors = run_typecheck_on_source("Main", &source);
+            if valid {
+                assert!(errors.is_empty(), "{source}\n{errors:?}");
+            } else {
+                assert!(
+                    errors.iter().any(|e| e.code() == "T014"),
+                    "{source}\n{errors:?}"
+                );
+            }
+        }
+        let source = format!("import std.net.http as Http\npub fn net serve () -> Unit = Http.{listener} 18086 (fn _ -> 7)\n");
+        let errors = run_typecheck_on_source("Main", &source);
+        assert!(
+            errors.iter().any(|e| e.code() == "T002"),
+            "{source}\n{errors:?}"
+        );
+    }
+}
+
+#[test]
+fn retry_keeps_callback_effects_alongside_time_and_random() {
+    for prefix in ["time random ", "time random io "] {
+        let source = format!("import std.repo as Repo (RetryPolicy)\nimport std.io as Io\npub fn {prefix}run (policy: RetryPolicy) -> Result Int Error =\n    Repo.retryWhen policy (fn _ -> True) (fn _ ->\n        Io.println \"effect\"\n        Ok 7)\n");
+        let errors = run_typecheck_on_source("Main", &source);
+        if prefix.contains("io") {
+            assert!(errors.is_empty(), "{source}\n{errors:?}");
+        } else {
+            assert!(
+                errors.iter().any(|e| e.code() == "T014"),
+                "{source}\n{errors:?}"
+            );
+        }
+    }
 }

@@ -78,6 +78,8 @@ pub enum CapKey {
     Concrete(u16),
     /// A capability-row variable.
     Var(u32),
+    /// Independent latent requirements.
+    Union(Vec<Self>),
 }
 
 // ── ShapeKey ──────────────────────────────────────────────────────────────────
@@ -141,6 +143,7 @@ fn cap_row_to_key(cap_row: &CapRow) -> CapKey {
     match cap_row {
         CapRow::Concrete(cs) => CapKey::Concrete(cs.bits()),
         CapRow::Var(CapVid(v)) => CapKey::Var(*v),
+        CapRow::Union(rows) => CapKey::Union(rows.iter().map(cap_row_to_key).collect()),
         // CapRow is #[non_exhaustive]; treat any future variants as Concrete(0).
         #[allow(unreachable_patterns)]
         _ => CapKey::Concrete(0),

@@ -7452,15 +7452,19 @@ async fn test_standalone_mixed_contexts_close_and_reopen_independently() {
     let src = "pub fn scratch -> Int = 3\n";
     std::fs::write(&file, src).unwrap();
     let uri_loose = Url::from_file_path(file).unwrap();
-    let (service, _log) = file_only_service().await;
+    let (service, log) = file_only_service().await;
     let server = service.inner();
     for (uri, text) in [
         (&uri_a, WIDGET_A_SRC),
         (&uri_b, WIDGET_B_SRC),
         (&uri_loose, src),
     ] {
+        let refreshed = log.lock().unwrap().refreshed;
         open_file_buffer(server, uri, text).await;
         wait_for_uri_indexed(server, uri).await;
+        // An open can reseed every context. Its first available index does not
+        // mean the other indices have installed; wait for the whole delivery.
+        wait_for_refresh_after(&log, refreshed).await;
     }
     let a = server.index_for_uri(&uri_a).await.unwrap();
     let b = server.index_for_uri(&uri_b).await.unwrap();
@@ -10206,8 +10210,13 @@ async fn pull_workspace(
 /// model's post-compile nudge), or panic after ~6s. Returning guarantees the
 /// compile delivered, so the diagnostics cache is populated.
 async fn wait_for_refresh(log: &Arc<Mutex<ProgressLog>>) {
+    wait_for_refresh_after(log, 0).await;
+}
+
+/// Wait for a new completed diagnostic delivery rather than an older batch.
+async fn wait_for_refresh_after(log: &Arc<Mutex<ProgressLog>>, baseline: usize) {
     for _ in 0..120 {
-        if log.lock().unwrap().refreshed > 0 {
+        if log.lock().unwrap().refreshed > baseline {
             return;
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;

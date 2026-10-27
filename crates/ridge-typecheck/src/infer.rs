@@ -395,12 +395,13 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             let saved_propagate = ctx.current_propagate_target.take();
 
             let body_ty = infer_expr(ctx, b, body);
-            if let Err(e) = unify(ctx, &ret_slot, &body_ty) {
+            if let Err(e) = crate::unify::check_value(ctx, &ret_slot, &body_ty) {
                 ctx.errors.push(attach_span(e, body.span()));
             }
 
             ctx.current_propagate_target = saved_propagate;
             ctx.current_fn_ret = saved_ret;
+            let latent_caps = crate::caps_infer::infer_cap_row(ctx, b, body);
             ctx.env.pop_frame();
 
             // Resolve the slot before handing it back. Returning the bare
@@ -411,12 +412,10 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             // editor's uncurrying quick-fix disappeared with it.
             let ret_resolved = ctx.shallow_resolve(&ret_slot);
 
-            // Caps placeholder: use PURE as stated in plan.
-            // T13 owns real capability inference; T6 sets the concrete empty set.
             Type::Fn {
                 params: param_types,
                 ret: Box::new(ret_resolved),
-                caps: CapRow::Concrete(CapabilitySet::PURE),
+                caps: latent_caps,
             }
         }
 
@@ -690,23 +689,19 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             // anything else falls through unchanged. Trap A also stays on the
             // old path: its hint teaches the call syntax, which is worth more
             // than an argument index to someone writing `f(x, y)`.
-            if paren_call_hint.is_none() {
-                if let (Some(name), Type::Fn { params, .. }) =
-                    (callee_name(callee), &resolved_for_partial)
+            if let Type::Fn { params, .. } = &resolved_for_partial {
+                if params.len() == arg_types.len()
+                    && !check_call_arguments(
+                        ctx,
+                        callee_name(callee).as_deref(),
+                        args,
+                        &arg_types,
+                        params,
+                        *span,
+                        paren_call_hint.as_ref(),
+                    )
                 {
-                    if params.len() == arg_types.len()
-                        && !check_call_arguments(
-                            ctx,
-                            Some(&name),
-                            args,
-                            &arg_types,
-                            params,
-                            *span,
-                            None,
-                        )
-                    {
-                        return Type::Error;
-                    }
+                    return Type::Error;
                 }
             }
 
@@ -714,7 +709,12 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             let cap_var = ctx.fresh_capvid();
 
             let expected_fn_ty = Type::Fn {
-                params: arg_types.clone(),
+                // Arguments have already met these contracts. Reusing the
+                // actual callback row here would undo a valid PURE-to-IO fit.
+                params: match &resolved_for_partial {
+                    Type::Fn { params, .. } => params.clone(),
+                    _ => arg_types.clone(),
+                },
                 ret: Box::new(ret_var.clone()),
                 caps: CapRow::Var(cap_var),
             };
@@ -842,7 +842,7 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             if let Some(fn_ret) = ctx.current_fn_ret.clone() {
                 // The return type is what the value had to meet, so it is the
                 // expected side and goes first.
-                if let Err(e) = unify(ctx, &fn_ret, &val_ty) {
+                if let Err(e) = crate::unify::check_value(ctx, &fn_ret, &val_ty) {
                     ctx.errors.push(attach_span(e, *span));
                 }
             }
@@ -860,7 +860,7 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
         } => {
             let outer_error = std::mem::take(&mut ctx.used_error_type);
             let errors_before = ctx.errors.len();
-            let val_ty = infer_expr(ctx, b, value);
+            let mut val_ty = infer_expr(ctx, b, value);
             let recovered = ctx.used_error_type || ctx.errors.len() != errors_before;
             ctx.used_error_type |= outer_error;
 
@@ -870,9 +870,10 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             // than on the enclosing declaration.
             if let Some(ann_ty) = ann {
                 let ann_converted = ast_type_to_type(ctx, b, ann_ty);
-                if let Err(e) = unify(ctx, &ann_converted, &val_ty) {
+                if let Err(e) = crate::unify::check_value(ctx, &ann_converted, &val_ty) {
                     ctx.errors.push(attach_span(e, value.span()));
                 }
+                val_ty = ann_converted;
             }
 
             // T7: real let-generalisation (§4.7). Lambda params are still
@@ -894,14 +895,15 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             ty: ann,
             span: _,
         } => {
-            let val_ty = infer_expr(ctx, b, value);
+            let mut val_ty = infer_expr(ctx, b, value);
             // Same as the `let` above: annotation is the expectation, and the
             // caret belongs on the value.
             if let Some(ann_ty) = ann {
                 let ann_converted = ast_type_to_type(ctx, b, ann_ty);
-                if let Err(e) = unify(ctx, &ann_converted, &val_ty) {
+                if let Err(e) = crate::unify::check_value(ctx, &ann_converted, &val_ty) {
                     ctx.errors.push(attach_span(e, value.span()));
                 }
+                val_ty = ann_converted;
             }
             // Bind name to a mono-scheme.
             let scheme = monoscheme(val_ty);
@@ -918,7 +920,7 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
         } => {
             let target_ty = infer_expr(ctx, b, target);
             let val_ty = infer_expr(ctx, b, value);
-            if let Err(e) = unify(ctx, &target_ty, &val_ty) {
+            if let Err(e) = crate::unify::check_value(ctx, &target_ty, &val_ty) {
                 ctx.errors.push(attach_span(e, *span));
             }
             // Assign returns Unit (spec §3).
@@ -999,9 +1001,7 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             // without a snapshot, the difference is empty and nothing is
             // quantified. That is why an inner fn used to be monomorphic. The
             // top-level path snapshots for exactly this reason.
-            let env_snap_ty = ctx.env_free_tyvids();
-            let env_snap_cap = ctx.env_free_capvids();
-            let env_snap_row = ctx.env_free_rowvids();
+            let (env_snap_ty, env_snap_cap, env_snap_row) = generalisation_env(ctx);
 
             // One variable per type-variable *name*, shared by every position
             // in the signature. Converting each annotation on its own gives
@@ -1065,7 +1065,11 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             let declared_ty = Type::Fn {
                 params: param_types,
                 ret: Box::new(ret_ty_annotated),
-                caps: CapRow::Concrete(CapabilitySet::PURE),
+                caps: if decl.caps.is_empty() {
+                    CapRow::Var(ctx.fresh_capvid())
+                } else {
+                    CapRow::Concrete(crate::caps_check::caps_from_ast_slice(&decl.caps))
+                },
             };
             let to_rigid = crate::scc::mint_rigids(ctx, decl, &tyvar_map);
             let complete = crate::scc::signature_is_complete(decl);
@@ -1168,7 +1172,30 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 // A fully-declared signature and nothing to infer against it.
                 Body::Ffi { .. } | Body::Primitive => ret_ty_declared.clone(),
             };
-            if unify(ctx, &body_ty, &ret_ty_declared).is_err() {
+            if let Body::Expr(body) = &decl.body {
+                let row = crate::caps_infer::infer_cap_row(ctx, b, body);
+                if decl.caps.is_empty() {
+                    if let Type::Fn { caps, .. } = &fn_ty_for_generalise {
+                        if let Err(error) = crate::unify::unify_caps(ctx, caps, &row) {
+                            ctx.errors.push(attach_span(error, body.span()));
+                        }
+                    }
+                } else {
+                    let allowed = crate::caps_check::caps_from_ast_slice(&decl.caps);
+                    for var in row.vars() {
+                        if matches!(ctx.shallow_resolve_caps(&CapRow::Var(var)), CapRow::Var(_)) {
+                            if let Err(error) = crate::unify::unify_caps(
+                                ctx,
+                                &CapRow::Var(var),
+                                &CapRow::Concrete(allowed),
+                            ) {
+                                ctx.errors.push(attach_span(error, body.span()));
+                            }
+                        }
+                    }
+                }
+            }
+            if crate::unify::check_value(ctx, &ret_ty_declared, &body_ty).is_err() {
                 // Built here rather than forwarded from `unify`, whose pair is
                 // in argument order: the signature is what was expected and
                 // the body is what arrived, and the raw error says it the
@@ -1193,6 +1220,13 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             // Generalise against the environment as it was before this fn
             // entered it, and rebind. Reading the environment here instead
             // would find the fn's own variables in it and quantify nothing.
+            let (env_snap_ty, env_snap_cap, env_snap_row) =
+                crate::instantiate::generalisation_env_from_roots(
+                    ctx,
+                    &env_snap_ty,
+                    &env_snap_cap,
+                    &env_snap_row,
+                );
             let mut generalised = generalise_with_env(
                 ctx,
                 &fn_ty_for_generalise,
@@ -2697,7 +2731,7 @@ fn mark_avg_interval_accessor(
     }
 }
 
-fn attach_span(err: TypeError, span: Span) -> TypeError {
+pub(crate) fn attach_span(err: TypeError, span: Span) -> TypeError {
     match err {
         TypeError::TypeMismatch {
             expected,
@@ -2884,7 +2918,7 @@ fn check_call_arguments(
         });
         // Parameter first: `unify` reads its arguments as expected then found,
         // and the declaration is what the argument had to meet.
-        let Err(e) = unify(ctx, param_ty, arg_ty) else {
+        let Err(e) = crate::unify::check_value(ctx, param_ty, arg_ty) else {
             continue;
         };
         let arg_span = args.get(i).map_or(fallback_span, Expr::span);

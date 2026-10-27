@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Actor state writes inside `try` compile and preserve the state at each normal
+  or propagated-error exit, including initialization and lifecycle callbacks.
+  Assignments produce `Unit` while the state map travels separately. Nested
+  scopes retain local mutation and function boundaries.
+
 - Explicit `return` requires an enclosing function or lambda. The compiler and
   editor diagnose missing return boundaries in actor bodies, state defaults and
   constants before code generation, preventing uncaught returns at runtime.

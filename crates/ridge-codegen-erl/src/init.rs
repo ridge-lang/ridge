@@ -73,6 +73,38 @@ pub(crate) fn state_expr(idx: u32) -> CErlExpr {
     CErlExpr::Var(state_var(idx))
 }
 
+/// Evaluate a callback value and export any state changed by a nested try.
+/// Functions/lambdas create a fresh scope and do not inherit this permission.
+fn lower_actor_value(
+    expr: &IrExpr,
+    scope: &mut LocalScope,
+    state_idx: &mut u32,
+) -> Result<CErlExpr, CodegenError> {
+    let previous = scope.actor_value_context;
+    scope.actor_value_context = true;
+    let value = lower_expr_in_scope(expr, scope);
+    scope.actor_value_context = previous;
+    *state_idx = scope.actor_state_idx;
+    value
+}
+
+/// A non-tail branch must export its bindings before the following statement.
+fn lower_actor_statement(
+    expr: &IrExpr,
+    scope: &mut LocalScope,
+    state_idx: &mut u32,
+) -> Result<CErlExpr, CodegenError> {
+    let previous = scope.actor_value_context;
+    scope.actor_value_context = true;
+    let actor_before = scope.actor_state_idx;
+    scope.begin_value();
+    let lowered = lower_expr_in_actor_context_w(expr, scope, state_idx, &|value, _| value);
+    let value = crate::expr::finish_value(lowered, actor_before, scope);
+    scope.actor_value_context = previous;
+    *state_idx = scope.actor_state_idx;
+    value
+}
+
 // ── Init param destructuring ───────────────────────
 
 /// Build the nested `CErlPat` for a list of `N` params.
@@ -204,11 +236,15 @@ pub(crate) fn lower_init_body(
             // of the init body — inside all enclosing let-bindings where state vars
             // are in scope.  The old chain_do approach placed {'ok', V_State<n>} in a
             // `do then` expression that cannot access state vars from the `do first`.
-            let ok_wrap: &dyn Fn(CErlExpr, u32) -> CErlExpr = &|_val, idx| {
-                CErlExpr::Tuple(vec![
+            let ok_wrap: &dyn Fn(CErlExpr, u32) -> CErlExpr = &|val, idx| {
+                let reply = CErlExpr::Tuple(vec![
                     CErlExpr::Lit(CErlLit::Atom(CErlAtom("ok".into()))),
                     state_expr(idx),
-                ])
+                ]);
+                CErlExpr::Do {
+                    first: Box::new(val),
+                    then: Box::new(reply),
+                }
             };
             let lowered_body =
                 lower_actor_body_stmts_w(&init.body, &mut scope, &mut state_idx, span, ok_wrap)?;
@@ -377,15 +413,14 @@ fn lower_actor_block_w(
                     span: assign_span,
                     ..
                 } => {
-                    let prev_state = state_expr(*state_idx);
-                    *state_idx += 1;
-                    let next_state_var = state_var(*state_idx);
-
                     // Value runs BEFORE the assign visibly takes effect: reads of
                     // any state field on the RHS must see the pre-assign state, so
                     // lower the value with the current scope.actor_state_idx still
                     // pointing at prev_state.
-                    let lowered_value = lower_expr_in_scope(value, scope)?;
+                    let lowered_value = lower_actor_value(value, scope, state_idx)?;
+                    let prev_state = state_expr(*state_idx);
+                    *state_idx += 1;
+                    let next_state_var = state_var(*state_idx);
 
                     let maps_put = CErlExpr::Call {
                         module: CErlAtom("maps".into()),
@@ -422,7 +457,7 @@ fn lower_actor_block_w(
                     ..
                 } => {
                     scope.record_assignment(name);
-                    let lowered_value = lower_expr_in_scope(value, scope)?;
+                    let lowered_value = lower_actor_value(value, scope, state_idx)?;
                     scope.bump(name);
                     let var = scope.mutable_value(scope.mutable_key(name));
                     // Thread leaf_wrap into the rest.
@@ -437,10 +472,7 @@ fn lower_actor_block_w(
                 // General non-binding statement: emit Do { first, then: rest }.
                 // The `first` expression is NOT the leaf; `rest` leads to the leaf.
                 other => {
-                    // Lower `first` with identity wrap (it is not the leaf).
-                    let identity: &dyn Fn(CErlExpr, u32) -> CErlExpr = &|v, _| v;
-                    let lowered_first =
-                        lower_expr_in_actor_context_w(other, scope, state_idx, identity)?;
+                    let lowered_first = lower_actor_statement(other, scope, state_idx)?;
                     // Thread leaf_wrap into the rest.
                     let lowered_rest =
                         lower_actor_block_w(rest, scope, state_idx, span, leaf_wrap)?;
@@ -478,7 +510,7 @@ fn lower_expr_in_actor_context_w(
             lower_actor_block_w(stmts, scope, state_idx, *span, leaf_wrap)
         }
 
-        // LetIn: value is pure (no state assigns); body is the leaf — thread wrap.
+        // LetIn: export state from its value; thread the leaf wrap into its body.
         //
         // Recursive inner-fn fix: if the bound value is a Lambda that self-references
         // the bound name, emit LetRec (same logic as LetIn in expr.rs).
@@ -516,7 +548,7 @@ fn lower_expr_in_actor_context_w(
                     }
                 }
 
-                let lowered_value = lower_expr_in_scope(value, scope)?;
+                let lowered_value = lower_actor_value(value, scope, state_idx)?;
                 let lowered_body =
                     lower_expr_in_actor_context_w(body, scope, state_idx, leaf_wrap)?;
                 Ok(CErlExpr::Let {
@@ -525,7 +557,7 @@ fn lower_expr_in_actor_context_w(
                     body: Box::new(lowered_body),
                 })
             } else {
-                let lowered_value = lower_expr_in_scope(value, scope)?;
+                let lowered_value = lower_actor_value(value, scope, state_idx)?;
                 let mut arm_scope = scope.clone();
                 let lowered_body =
                     lower_expr_in_actor_context_w(body, &mut arm_scope, state_idx, leaf_wrap)?;
@@ -547,10 +579,12 @@ fn lower_expr_in_actor_context_w(
         // `V_Name` is in scope inside the lambda body.  Same logic as the
         // `LetIn` recursive path in `expr.rs`.
         IrExpr::VarIn {
-            name, value, body, ..
+            id,
+            name,
+            value,
+            body,
+            ..
         } => {
-            let mangled = crate::expr::name_to_erl_var(name);
-
             if let IrExpr::Lambda {
                 params: lambda_params,
                 body: lambda_body,
@@ -579,11 +613,13 @@ fn lower_expr_in_actor_context_w(
                 }
             }
 
-            let idx = scope.bump(name);
-            let lowered_value = lower_expr_in_scope(value, scope)?;
+            let lowered_value = lower_actor_value(value, scope, state_idx)?;
+            let previous = scope.enter_mutable(name, id.0);
+            let var = scope.mutable_value(scope.mutable_key(name));
             let lowered_body = lower_expr_in_actor_context_w(body, scope, state_idx, leaf_wrap)?;
+            scope.leave_mutable(name, previous);
             Ok(CErlExpr::Let {
-                var: crate::scope::ssa_var(&mangled, idx),
+                var,
                 value: Box::new(lowered_value),
                 body: Box::new(lowered_body),
             })
@@ -599,7 +635,7 @@ fn lower_expr_in_actor_context_w(
         IrExpr::Match {
             scrutinee, arms, ..
         } => {
-            let lowered_scrutinee = lower_expr_in_scope(scrutinee, scope)?;
+            let lowered_scrutinee = lower_actor_value(scrutinee, scope, state_idx)?;
             let base_state_idx = *state_idx;
             let mut max_state_idx = base_state_idx;
 
@@ -621,6 +657,7 @@ fn lower_expr_in_actor_context_w(
                         &mut arm_state,
                         leaf_wrap,
                     )?;
+                    scope.merge_value_writes(&arm_scope);
                     if arm_state > max_state_idx {
                         max_state_idx = arm_state;
                     }
@@ -649,10 +686,10 @@ fn lower_expr_in_actor_context_w(
             value,
             ..
         } => {
+            let lowered_value = lower_actor_value(value, scope, state_idx)?;
             let prev_state = state_expr(*state_idx);
             *state_idx += 1;
             let next_state_var = state_var(*state_idx);
-            let lowered_value = lower_expr_in_scope(value, scope)?;
             // Retarget the synthetic `__state` local to the just-bound
             // V_State<idx> (mirrors the block-level path).
             scope.actor_state_idx = *state_idx;
@@ -665,19 +702,19 @@ fn lower_expr_in_actor_context_w(
                     prev_state,
                 ],
             };
-            // The assign itself is the leaf; the new state IS the result.
-            // Apply leaf_wrap with the new state as the value.
-            let new_state_ref = CErlExpr::Var(next_state_var.clone());
+            // Assignment produces Unit. The state travels separately through
+            // state_idx; exposing the map here would corrupt a Result Unit.
+            let unit = CErlExpr::Lit(CErlLit::Atom(CErlAtom("ok".into())));
             Ok(CErlExpr::Let {
                 var: next_state_var,
                 value: Box::new(maps_put),
-                body: Box::new(leaf_wrap(new_state_ref, *state_idx)),
+                body: Box::new(leaf_wrap(unit, *state_idx)),
             })
         }
 
         // All other nodes: leaf — apply leaf_wrap directly.
         other => {
-            let lowered = lower_expr_in_scope(other, scope)?;
+            let lowered = lower_actor_value(other, scope, state_idx)?;
             Ok(leaf_wrap(lowered, *state_idx))
         }
     }
@@ -742,7 +779,7 @@ mod tests {
     fn state_field(name: &str, default: Option<IrExpr>) -> IrStateField {
         IrStateField {
             name: name.into(),
-            ty: Type::Error, // PHASE7-STUB: type is Phase-7 concern
+            ty: Type::Error, // Emission tests do not need inferred field types.
             default,
             span: sp(),
         }

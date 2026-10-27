@@ -403,6 +403,7 @@ pub(crate) fn lower_expr_in_scope(
     // Leaves cannot update an enclosing binding. Result scopes already export
     // their state, and lambda bodies execute in their own capture scope.
     if (!scope.has_tracked_locals()
+        && !scope.actor_value_context
         && !matches!(
             expr,
             IrExpr::LetIn { .. }
@@ -421,8 +422,18 @@ pub(crate) fn lower_expr_in_scope(
     {
         return lower_body_in_scope(expr, scope);
     }
+    let actor_before = scope.actor_state_idx;
     scope.begin_value();
     let lowered = lower_body_in_scope(expr, scope);
+    finish_value(lowered, actor_before, scope)
+}
+
+/// Join mutations exported by either ordinary or actor-aware value lowering.
+pub(crate) fn finish_value(
+    lowered: Result<CErlExpr, CodegenError>,
+    actor_before: u32,
+    scope: &mut LocalScope,
+) -> Result<CErlExpr, CodegenError> {
     let incoming = scope
         .end_value()
         .ok_or_else(|| CodegenError::IrShapeMalformed {
@@ -431,17 +442,26 @@ pub(crate) fn lower_expr_in_scope(
             detail: "value emission lost its mutable-state checkpoint".into(),
         })?;
     let lowered = lowered?;
-    if incoming.is_empty() {
+    let actor_changed = scope.actor_value_context && scope.actor_state_idx != actor_before;
+    if incoming.is_empty() && !actor_changed {
         return Ok(lowered);
     }
-    let value = crate::result_scope::pack_value(lowered, &incoming);
-    let state = incoming
+    let value = if actor_changed {
+        crate::result_scope::pack_value_with_actor(lowered, &incoming, Some(actor_before))
+    } else {
+        crate::result_scope::pack_value(lowered, &incoming)
+    };
+    let mut state: Vec<_> = incoming
         .iter()
         .map(|(key, _)| {
             let index = scope.bump_lexical(key);
             ssa_var(&LocalScope::mutable_base(key), index)
         })
         .collect();
+    if actor_changed {
+        scope.actor_state_idx += 1;
+        state.push(crate::init::state_var(scope.actor_state_idx));
+    }
     let id = scope.bump("@value_scope");
     Ok(CErlExpr::BindTuple {
         result: CErlVar(format!("ValueScope{id}")),
@@ -658,7 +678,9 @@ pub(crate) fn lower_body_in_scope(
                 lower_body_in_scope(&body, scope)
             }
         }
-        IrExpr::ResultScope { id, body, .. } => crate::result_scope::lower(body, id.0, scope),
+        IrExpr::ResultScope { id, body, span } => {
+            crate::result_scope::lower(body, id.0, *span, scope)
+        }
         IrExpr::ResultExit { value, .. } => {
             let value = lower_expr_in_scope(value, scope)?;
             let value = crate::result_scope::pack_exit(value, scope);
@@ -673,12 +695,14 @@ pub(crate) fn lower_body_in_scope(
             scrutinee, arms, ..
         } => {
             let lowered_scrutinee = lower_expr_in_scope(scrutinee, scope)?;
+            let actor_state_idx = scope.actor_state_idx;
             // Lower each arm's pattern, guard, body once; flag whether the
             // guard contains a call that BEAM rejects in clause-guard position.
             let lowered_arms: Vec<LoweredArm> = arms
                 .iter()
                 .map(|arm| {
                     let mut arm_scope = scope.clone();
+                    arm_scope.actor_state_idx = actor_state_idx;
                     let guard = match &arm.when {
                         Some(w) => lower_expr_in_scope(w, &mut arm_scope)?,
                         None => lit_true(),
@@ -686,6 +710,7 @@ pub(crate) fn lower_body_in_scope(
                     let guard_is_safe = !contains_non_bif_call(&guard);
                     let body = lower_body_in_scope(&arm.body, &mut arm_scope)?;
                     scope.merge_value_writes(&arm_scope);
+                    scope.actor_state_idx = scope.actor_state_idx.max(arm_scope.actor_state_idx);
                     Ok(LoweredArm {
                         pattern: lower_pat(&arm.pat)?,
                         guard,

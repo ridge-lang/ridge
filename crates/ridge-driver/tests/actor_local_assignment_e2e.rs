@@ -254,3 +254,164 @@ pub fn spawn time exercise () -> (Int, Int, Int) =
 fn lifecycle_local_updates_reach_their_consumers() {
     assert_runs(LIFECYCLE, "{2,3,3}");
 }
+
+const TRY_STATE: &str = r#"
+import std.actor (AskError)
+
+fn fail () -> Result Int Text = Err "fail"
+fn unwrap (r: Result Int Text) -> Int =
+    match r
+        Ok n -> n
+        Err _ -> -1
+
+actor Counter =
+    state n: Int = 0
+    init () =
+        let r: Result Int Text = try
+            n <- 3
+            n
+        match r
+            Ok v -> n <- v + 2
+            Err _ -> n <- -1000
+    on current () -> Int = n
+    on normal () -> Int =
+        let r: Result Int Text = try
+            n <- n + 1
+            n
+        unwrap r
+    on failed () -> Int =
+        let r: Result Int Text = try
+            n <- n + 2
+            let x = fail () ?
+            n <- n + 100
+            x
+        unwrap r
+    on branch (write: Bool) -> Int =
+        let r: Result Int Text = try
+            if write then
+                n <- n + 3
+                n
+            else n
+        unwrap r
+    on nested () -> Int =
+        let r: Result Int Text = try
+            let inner: Result Int Text = try
+                n <- n + 4
+                let x = fail () ?
+                n <- n + 100
+                x
+            n <- n + 1
+            match inner
+                Err _ -> n
+                Ok _ -> -1000
+        unwrap r
+    on mixed () -> (Int, Int, Int) =
+        var x = 10
+        let r: Result Int Text = try
+            n <- n + 1
+            x <- x + 2
+            n + x
+        (unwrap r, x, n)
+    on shadow () -> (Int, Int, Int) =
+        var x = 10
+        let r: Result Int Text = try
+            x <- x + 2
+            n <- n + 1
+            var x = 50
+            x <- x + 1
+            x
+        (unwrap r, x, n)
+    on initializer () -> (Int, Int) =
+        var r: Result Int Text = try
+            n <- n + 1
+            n
+        let v = unwrap r
+        (v, n)
+    on choose (write: Bool) -> (Int, Int) =
+        let r: Result Int Text =
+            if write then try
+                n <- n + 2
+                n
+            else try
+                n <- n + 3
+                n
+        (unwrap r, n)
+    on tick () -> Unit =
+        let _: Result Unit Text = try
+            n <- n + 1
+            ()
+        ()
+    on mixedBranch (write: Bool) -> (Int, Int, Int) =
+        var x = 10
+        let r: Result Int Text = try
+            if write then
+                n <- n + 1
+                x <- x + 1
+                ()
+            else ()
+            x + n
+        (unwrap r, x, n)
+    on mixedError () -> (Int, Int, Int) =
+        var x = 10
+        let r: Result Int Text = try
+            n <- n + 1
+            x <- x + 2
+            let v = fail () ?
+            x <- 1000
+            n <- 1000
+            v
+        (unwrap r, x, n)
+    on beforeAnyWrite () -> (Int, Int) =
+        let r: Result Int Text = try
+            let v = fail () ?
+            n <- 1000
+            v
+        (unwrap r, n)
+    on unit () -> Result Unit Text =
+        try
+            n <- n + 1
+    on directUnit () -> Unit = n <- n + 1
+
+pub fn spawn time exercise () =
+    let h = spawn Counter
+    let initial = h ?> current ()
+    let normal = h ?> normal ()
+    let failure = h ?> failed ()
+    let afterFailure = h ?> current ()
+    let branch = h ?> branch true
+    let noWrite = h ?> branch false
+    let nested = h ?> nested ()
+    let mixed = h ?> mixed ()
+    let shadow = h ?> shadow ()
+    let initializer = h ?> initializer ()
+    let chosen = h ?> choose true
+    let other = h ?> choose false
+    h ! tick ()
+    let final = h ?> current ()
+    let mixedBranch = h ?> mixedBranch true
+    let mixedNoWrite = h ?> mixedBranch false
+    let mixedError = h ?> mixedError ()
+    let beforeAnyWrite = h ?> beforeAnyWrite ()
+    let unit = h ?> unit ()
+    let afterUnit = h ?> current ()
+    let directUnit = h ?> directUnit ()
+    let afterDirectUnit = h ?> current ()
+    (initial, normal, failure, afterFailure, branch, noWrite, nested, mixed, shadow, initializer, chosen, other, final, mixedBranch, mixedNoWrite, mixedError, beforeAnyWrite, unit, afterUnit, directUnit, afterDirectUnit)
+"#;
+
+#[test]
+fn try_transports_actor_state_at_normal_and_error_exits() {
+    assert_runs(TRY_STATE, "{{ok,5},{ok,6},{ok,-1},{ok,8},{ok,11},{ok,11},{ok,16},{ok,{29,12,17}},{ok,{51,12,18}},{ok,{19,19}},{ok,{21,21}},{ok,{24,24}},{ok,25},{ok,{37,11,26}},{ok,{36,10,26}},{ok,{-1,12,27}},{ok,{-1,27}},{ok,{ok,ok}},{ok,28},{ok,ok},{ok,29}}");
+}
+
+#[test]
+fn try_transports_state_in_lifecycle_callbacks() {
+    let source = LIFECYCLE
+        .replace("state sink: Handle Sink", "state sink: Handle Sink\n    state n: Int = 0")
+        .replace("sink <- target", "sink <- target\n        let _: Result Unit Text = try\n            n <- n + 1\n            ()")
+        .replace("var x = 1\n        x <- x + 1", "let r: Result Int Text = try\n            n <- n + 2\n            n\n        let x = match r\n            Ok v -> v\n            Err _ -> -1000")
+        .replace("var x = 1\n        x <- x + 2", "let r: Result Int Text = try\n            n <- n + 3\n            n\n        let x = match r\n            Ok v -> v\n            Err _ -> -1000")
+        .replace("Ok 3 -> 3", "Ok 4 -> 4");
+    // init adds one, then terminate adds two / onDown adds three.
+    assert_runs(&source, "{3,4,4}");
+}

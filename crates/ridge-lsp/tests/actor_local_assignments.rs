@@ -15,7 +15,7 @@ fn position(source: &str, offset: usize) -> Position {
 
 #[test]
 fn actor_local_assignment_edits_keep_types_navigation_and_permissions() {
-    for ending in ["\n", "\r\n"] {
+    for (ending, stateful_try) in [("\n", false), ("\r\n", false), ("\n", true), ("\r\n", true)] {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("lib/src")).unwrap();
         std::fs::write(
@@ -31,7 +31,13 @@ fn actor_local_assignment_edits_keep_types_navigation_and_permissions() {
         let root = ridge_manifest::canonicalize(dir.path()).unwrap();
         let file = root.join("lib/src/Main.ridge");
         let uri = Url::from_file_path(&file).unwrap();
-        let valid = "-- café 🧭\nactor Counter =\n    on value () -> Int =\n        var x = 1\n        x <- 7\n        x\n".replace('\n', ending);
+        let mut valid = "-- café 🧭\nactor Counter =\n    on value () -> Int =\n        var x = 1\n        x <- 7\n        x\n".to_owned();
+        if stateful_try {
+            valid = valid
+                .replace("actor Counter =", "actor Counter =\n    state n: Int = 0")
+                .replace("        x <- 7", "        let _: Result Unit Text = try\n            n <- n + 1\n            x <- 7\n            ()");
+        }
+        let valid = valid.replace('\n', ending);
         let self_read = valid.replace("x <- 7", "x <- x + 1");
         let immutable = valid.replace("var x", "let x");
         let wrong_type = valid.replace("x <- 7", "x <- \"wrong\"");

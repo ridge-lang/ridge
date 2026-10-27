@@ -121,7 +121,10 @@ pub(crate) struct LocalScope {
     /// Source names rebound by a nested mutable declaration.
     mutable_aliases: FxHashMap<String, String>,
     /// Mutable locals transported by the nearest Result scope.
-    pub(crate) result_scope_vars: Vec<Vec<String>>,
+    pub(crate) result_scope_vars: Vec<crate::result_scope::ResultState>,
+    /// Values evaluated by an actor callback may carry its implicit state.
+    /// Fresh function/lambda scopes deliberately do not inherit this permission.
+    pub(crate) actor_value_context: bool,
     /// Module-level fn/const table: `name → what it is`.
     /// Shared (Arc) so that clone (e.g. for match arms, lambda scopes) is cheap.
     pub(crate) fn_arity: Arc<FxHashMap<String, LocalShape>>,
@@ -239,6 +242,7 @@ impl LocalScope {
             value_frame: None,
             mutable_aliases: FxHashMap::default(),
             result_scope_vars: Vec::new(),
+            actor_value_context: false,
             fn_arity: Arc::new(FxHashMap::default()),
             actor_parent: None,
             letrec_locals: Arc::new(FxHashSet::default()),
@@ -260,6 +264,7 @@ impl LocalScope {
             value_frame: None,
             mutable_aliases: FxHashMap::default(),
             result_scope_vars: Vec::new(),
+            actor_value_context: false,
             fn_arity: Arc::new(fn_arity),
             actor_parent: None,
             letrec_locals: Arc::new(FxHashSet::default()),
@@ -285,6 +290,7 @@ impl LocalScope {
             value_frame: None,
             mutable_aliases: FxHashMap::default(),
             result_scope_vars: Vec::new(),
+            actor_value_context: false,
             fn_arity: Arc::new(fn_arity),
             actor_parent: None,
             letrec_locals: Arc::new(FxHashSet::default()),
@@ -306,6 +312,7 @@ impl LocalScope {
             value_frame: None,
             mutable_aliases: FxHashMap::default(),
             result_scope_vars: Vec::new(),
+            actor_value_context: false,
             fn_arity,
             actor_parent: None,
             letrec_locals: Arc::new(FxHashSet::default()),
@@ -333,6 +340,7 @@ impl LocalScope {
             value_frame: None,
             mutable_aliases: FxHashMap::default(),
             result_scope_vars: Vec::new(),
+            actor_value_context: false,
             fn_arity: Arc::new(fn_arity),
             actor_parent: Some((parent_module_id, Arc::from(parent_beam_name))),
             letrec_locals: Arc::new(FxHashSet::default()),

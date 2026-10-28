@@ -182,6 +182,7 @@ pub fn lower_module(
     // forward dictionaries by real head variable instead of positional sentinel.
     ctx.attach_instance_dict_constraints(&typed.instance_dict_constraints);
     ctx.error_from_sites = Some(&typed.error_from_sites);
+    ctx.nullary_message_sites = Some(&typed.nullary_message_sites);
     // Attach the class/instance registries for dictionary-lowering.
     ctx.attach_class_registries(&ws.class_table, &ws.instance_env);
     if let Some(rm) = rmod {

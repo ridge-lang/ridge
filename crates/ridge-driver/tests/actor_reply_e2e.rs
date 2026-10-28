@@ -146,3 +146,142 @@ fn incompatible_reply_is_rejected_before_artifact_emission() {
         "invalid reply reached code generation"
     );
 }
+
+const UNIT_SOURCE: &str = r#"
+import lib.Actors as A
+import lib.Helpers as H
+import std.actor as Mail
+import std.actor (AskError)
+import std.io as Io
+
+fn value (r: Result Int AskError) -> Int =
+    match r
+        Ok n -> n
+        Err _ -> -1000
+
+fn io unitValue () -> Unit = Io.println "unit"
+
+pub fn io spawn time exercise () -> Text =
+    let h = A.counter ()
+    let alias = h
+    h ! mark ()
+    let one = value (alias ?> reply ())
+    let _ = Mail.send alias (mark ())
+    let two = value (Mail.tryAsk alias (reply ()) 2000)
+    H.mark alias
+    let three = value (H.read alias)
+    let _ = H.send alias
+    let four = value (H.tryRead alias)
+    let u = ()
+    h ! mark u
+    let five = value (h ?> reply u)
+    h ! mark (unitValue ())
+    let six = value (h ?> reply ())
+    let _ = Mail.send h (mark (unitValue ()))
+    let seven = value (h ?> reply ())
+    h ! mark (())
+    let eight = value (h ?> reply ())
+    h ! ping ()
+    let _ = Mail.send h (naked ())
+    let after = value (h ?> get ())
+    let proxy = A.proxy ()
+    let forwarded = value (proxy ?> forward h)
+    let zero = A.zero ()
+    let nullary = value (proxy ?> nullary zero)
+    List.forEach (fn target -> target ! ping ()) [h]
+    List.forEach (fn target -> target ! mark ()) [h]
+    let read = fn () -> Int = value (alias ?> reply ())
+    let captured = read ()
+    $"${one},${two},${three},${four},${five},${six},${seven},${eight},${after},${forwarded},${nullary},${captured}"
+"#;
+const UNIT_ACTORS: &str = r"
+import std.actor as Mail
+pub actor Counter =
+    state n: Int = 0
+    on mark (_: Unit) = n <- n + 1
+    on reply (_: Unit) -> Int = n
+    on get () -> Int = n
+    on ping () = n <- n + 10
+    on naked = n <- n + 100
+
+pub actor Zero =
+    on reply () -> Int = 17
+
+pub actor Proxy =
+    on time forward (target: Handle Counter) -> Int =
+        target ! mark ()
+        let _ = Mail.send target (mark ())
+        target ! ping ()
+        let _ = Mail.send target (naked ())
+        match Mail.tryAsk target (reply ()) 2000
+            Ok n -> n
+            Err _ -> -1000
+    on time nullary (target: Handle Zero) -> Int =
+        let first = match target ?> reply ()
+            Ok n -> n
+            Err _ -> -1000
+        let second = match Mail.tryAsk target (reply ()) 2000
+            Ok n -> n
+            Err _ -> -1000
+        first + second
+
+pub fn spawn counter () -> Handle Counter = spawn Counter
+pub fn spawn proxy () -> Handle Proxy = spawn Proxy
+pub fn spawn zero () -> Handle Zero = spawn Zero
+";
+const UNIT_HELPERS: &str = r"
+import lib.Actors (Counter)
+import std.actor as Mail
+import std.actor (AskError, SendError)
+pub fn mark (h: Handle Counter) -> Unit = h ! mark ()
+pub fn time read (h: Handle Counter) -> Result Int AskError = h ?> reply ()
+pub fn send (h: Handle Counter) -> Result Unit SendError = Mail.send h (mark ())
+pub fn time tryRead (h: Handle Counter) -> Result Int AskError = Mail.tryAsk h (reply ()) 2000
+";
+#[test]
+fn unit_payloads_and_nullary_markers_execute_on_all_message_routes() {
+    assert!(which::which("erl").is_ok() && which::which("erlc").is_ok());
+    let workspace = workspace(UNIT_SOURCE);
+    std::fs::write(workspace.path().join("lib/src/Actors.ridge"), UNIT_ACTORS).unwrap();
+    std::fs::write(workspace.path().join("lib/src/Helpers.ridge"), UNIT_HELPERS).unwrap();
+    std::fs::write(
+        workspace.path().join("lib/ridge.toml"),
+        "[project]\nname=\"lib\"\nversion=\"0.1.0\"\nkind=\"library\"\n[capabilities]\nallow=[\"io\",\"spawn\",\"time\"]\n",
+    )
+    .unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let artefacts = compile_workspace(
+        CompileOptions::new(workspace.path().to_owned())
+            .with_emit(EmitArtefacts::Beam)
+            .with_cache_root(cache.path().to_owned()),
+    )
+    .unwrap();
+    assert!(
+        artefacts.diagnostics.is_empty(),
+        "{:?}",
+        artefacts.diagnostics
+    );
+    let beam_dir = artefacts
+        .beam_files
+        .iter()
+        .find_map(|p| p.parent())
+        .unwrap();
+    let module = artefacts
+        .beam_files
+        .iter()
+        .filter_map(|p| p.file_stem().and_then(|s| s.to_str()))
+        .find(|name| name.to_ascii_lowercase().ends_with("_replies"))
+        .unwrap();
+    let eval = format!("io:format(\"~ts~n\",[{module}:exercise()]),halt().");
+    let output = std::process::Command::new("erl")
+        .args(["-noshell", "-pa"])
+        .arg(beam_dir)
+        .args(["-eval", &eval])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n"),
+        "unit\nunit\n1,2,3,4,5,6,7,8,118,230,34,241\n"
+    );
+}

@@ -168,6 +168,8 @@ pub struct LowerCtx<'tw> {
     pub instance_dict_constraints: Option<&'tw FxHashMap<Span, Vec<Vec<ridge_types::TyVid>>>>,
     /// Per-use conversion constraints, keyed by the original source span.
     pub error_from_sites: Option<&'tw FxHashMap<Span, Vec<ridge_types::Constraint>>>,
+    /// The checker's classification of message `()` as a nullary marker.
+    pub nullary_message_sites: Option<&'tw FxHashSet<Span>>,
     /// Lazy name→`TyConId` cache populated on first call to
     /// [`LowerCtx::lookup_tycon_by_name`].
     tycon_name_cache: Option<TyConNameCache>,
@@ -291,6 +293,7 @@ impl<'tw> LowerCtx<'tw> {
             quoted_lambdas: None,
             instance_dict_constraints: None,
             error_from_sites: None,
+            nullary_message_sites: None,
             tycon_name_cache: None,
             class_table: None,
             instance_env: None,

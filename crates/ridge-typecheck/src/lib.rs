@@ -248,6 +248,8 @@ pub struct TypedModule {
     pub dict_resolution: DictResolution,
     /// Exact dictionary constraint for each implicit or explicit error conversion.
     pub error_from_sites: FxHashMap<ridge_ast::Span, Vec<ridge_types::Constraint>>,
+    /// Message sites whose `()` was checked as a zero-argument marker.
+    pub nullary_message_sites: rustc_hash::FxHashSet<ridge_ast::Span>,
     /// Quoted lambdas captured during inference, keyed by the lambda's span.
     ///
     /// The lowering pass reads this to reify a quoted body into a `QExpr` tree
@@ -454,6 +456,7 @@ pub fn typecheck_workspace_with_history(
                 match_witnesses: FxHashMap::default(),
                 dict_resolution: FxHashMap::default(),
                 error_from_sites: FxHashMap::default(),
+                nullary_message_sites: rustc_hash::FxHashSet::default(),
                 quoted_lambdas: FxHashMap::default(),
                 instance_dict_constraints: FxHashMap::default(),
             });
@@ -585,6 +588,7 @@ fn empty_module_result(module_id: ModuleId) -> ModuleTypecheckResult {
             match_witnesses: FxHashMap::default(),
             dict_resolution: FxHashMap::default(),
             error_from_sites: FxHashMap::default(),
+            nullary_message_sites: rustc_hash::FxHashSet::default(),
             quoted_lambdas: FxHashMap::default(),
             instance_dict_constraints: FxHashMap::default(),
         },
@@ -1574,6 +1578,7 @@ fn typecheck_module_inner(
         match_witnesses: FxHashMap::default(), // T17: populated by infer_expr
         dict_resolution, // populated by the constraint solver when classes are used
         error_from_sites: std::mem::take(&mut ctx.error_from_sites),
+        nullary_message_sites: std::mem::take(&mut ctx.nullary_message_sites),
         quoted_lambdas, // populated by the quotation checker when quotes are used
         instance_dict_constraints, // populated by Step D3 (infer_instance_methods)
     };

@@ -449,6 +449,9 @@ pub struct InferCtx {
     /// Exact conversion constraint per `?` or explicit `errorFrom` use site.
     /// Its fresh variables identify the solver plan without guessing an instance.
     pub error_from_sites: FxHashMap<ridge_ast::Span, Vec<ridge_types::Constraint>>,
+    /// Message sites where the selected zero-parameter handler makes `()` an
+    /// invocation marker rather than a real Unit payload.
+    pub nullary_message_sites: FxHashSet<ridge_ast::Span>,
     /// Propagations whose destination is still an inference variable. Resolve
     /// after the surrounding body's expected type has reached that variable.
     pub pending_error_propagations: Vec<(Type, Type, ridge_ast::Span)>,
@@ -645,6 +648,7 @@ impl InferCtx {
             demanded_rows: FxHashSet::default(),
             deferred_constraints: Vec::new(),
             error_from_sites: FxHashMap::default(),
+            nullary_message_sites: FxHashSet::default(),
             pending_error_propagations: Vec::new(),
             rigids: FxHashMap::default(),
             monomorphic_in_scc: FxHashMap::default(),

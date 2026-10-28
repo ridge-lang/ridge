@@ -758,12 +758,13 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             // Authoritative lookup requires reading the handle's typed binding
             // (Binding::Local + associated Handle X type).
             let actor_module = ctx.module_id;
-            let handle = Box::new(lower_expr(ctx, handle));
             let (handler_name, msg_args) = unfold_send_message(message);
-            // Treat `h ! name ()` as `h ! name` so a 0-arity handler decl
-            // `on name ()` and the call form `name ()` produce the same
-            // wire shape (a bare `{name}` tag tuple).
-            let drop_unit = msg_args.len() == 1 && matches!(msg_args[0], Expr::Unit(_));
+            // Only the selected handler's checked signature can classify `()`
+            // as a nullary marker. A real Unit parameter keeps its payload.
+            let drop_unit = msg_args.len() == 1
+                && matches!(msg_args[0], Expr::Unit(_))
+                && is_nullary_message_site(ctx, *span, handle, &handler_name);
+            let handle = Box::new(lower_expr(ctx, handle));
             let args = if drop_unit {
                 Vec::new()
             } else {
@@ -807,11 +808,10 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             // Authoritative lookup requires reading the handle's typed binding
             // (Binding::Local + associated Handle X type).
             let actor_module = ctx.module_id;
+            let drop_unit = args.len() == 1
+                && matches!(&args[0], Expr::Unit(_))
+                && is_nullary_message_site(ctx, *span, handle, &message.text);
             let handle = Box::new(lower_expr(ctx, handle));
-            // Treat `h ?> name ()` as `h ?> name` so a 0-arity handler decl
-            // `on name ()` and the call form `name ()` produce the same wire
-            // shape (a bare `{name}` tag tuple).
-            let drop_unit = args.len() == 1 && matches!(&args[0], Expr::Unit(_));
             let args = if drop_unit {
                 Vec::new()
             } else {
@@ -4024,6 +4024,54 @@ fn ast_callee_is_std_actor_tryask(ctx: &LowerCtx<'_>, callee: &Expr) -> bool {
     )
 }
 
+fn is_nullary_message_site(
+    ctx: &LowerCtx<'_>,
+    span: Span,
+    handle: &Expr,
+    handler_name: &str,
+) -> bool {
+    if ctx
+        .nullary_message_sites
+        .is_some_and(|sites| sites.contains(&span))
+    {
+        return true;
+    }
+    // A callback parameter can acquire its concrete actor type only after its
+    // body was inferred. Consult the final exported type in that case; the
+    // site fact above also covers handler bodies without expression indices.
+    let Some(ws) = ctx.workspace else {
+        return false;
+    };
+    let Some(node) = ctx
+        .node_id_map
+        .as_ref()
+        .and_then(|ids| ids.get(handle.span(), NodeKind::Expr))
+    else {
+        return false;
+    };
+    let Some(Type::Con(head, args)) = ctx.node_type(node) else {
+        return false;
+    };
+    let actor = if *head == ctx.builtins.handle {
+        let Some(Type::Con(actor, _)) = args.first() else {
+            return false;
+        };
+        *actor
+    } else {
+        *head
+    };
+    let Some(declaration) = ws.tycons.get(actor.0 as usize) else {
+        return false;
+    };
+    let ridge_types::TyConKind::Actor(schema) = &declaration.kind else {
+        return false;
+    };
+    schema
+        .handlers
+        .iter()
+        .any(|handler| handler.name == handler_name && handler.params.is_empty())
+}
+
 /// Lower `tryAsk handle message timeoutMs` to `IrExpr::TryAsk`.
 ///
 /// The message argument takes the same shapes as a `!` payload — a bare
@@ -4042,9 +4090,9 @@ fn lower_tryask_call(
     // Peel parens: `tryAsk h (shorten url) 1000`.
     let message = peel_ast_parens(&args[1]);
     let (handler_name, msg_args) = unfold_send_message(message);
-    // Treat `name ()` as `name` so a 0-arity handler decl and the call form
-    // produce the same wire shape (mirrors the `Expr::Ask` lowering).
-    let drop_unit = msg_args.len() == 1 && matches!(msg_args[0], Expr::Unit(_));
+    let drop_unit = msg_args.len() == 1
+        && matches!(msg_args[0], Expr::Unit(_))
+        && is_nullary_message_site(ctx, span, &args[0], &handler_name);
     let payload = if drop_unit {
         Vec::new()
     } else {
@@ -4110,9 +4158,9 @@ fn lower_actor_send_call(
     // Peel parens: `send h (increment 3)`.
     let message = peel_ast_parens(&args[1]);
     let (handler_name, msg_args) = unfold_send_message(message);
-    // Treat `name ()` as `name` so a 0-arity handler decl and the call form
-    // produce the same wire shape (mirrors the `Expr::Send` lowering).
-    let drop_unit = msg_args.len() == 1 && matches!(msg_args[0], Expr::Unit(_));
+    let drop_unit = msg_args.len() == 1
+        && matches!(msg_args[0], Expr::Unit(_))
+        && is_nullary_message_site(ctx, span, &args[0], &handler_name);
     let payload = if drop_unit {
         Vec::new()
     } else {
@@ -5900,6 +5948,8 @@ mod tests {
         let mut ctx = make_tryask_ctx(callee_span, NodeKind::Ident);
         let span = sp_at(0, 40);
         // tryAsk counter (getCount ()) 1000 — `name ()` normalises to `name`.
+        let nullary_sites = rustc_hash::FxHashSet::from_iter([span]);
+        ctx.nullary_message_sites = Some(&nullary_sites);
         let expr = Expr::Call {
             callee: Box::new(Expr::Ident(Ident {
                 text: "tryAsk".into(),
@@ -5925,15 +5975,24 @@ mod tests {
             ],
             span,
         };
-        let ir = lower_expr(&mut ctx, &expr);
-        match ir {
-            IrExpr::TryAsk { args, .. } => {
-                assert!(
-                    args.is_empty(),
-                    "`name ()` must normalise to a bare tag, got {args:?}"
-                );
+        for checked_nullary in [true, false] {
+            ctx.nullary_message_sites = checked_nullary.then_some(&nullary_sites);
+            let ir = lower_expr(&mut ctx, &expr);
+            match ir {
+                IrExpr::TryAsk { args, .. } => {
+                    assert_eq!(args.len(), usize::from(!checked_nullary));
+                    if !checked_nullary {
+                        assert!(matches!(
+                            args[0],
+                            IrExpr::Lit {
+                                value: IrLit::Unit,
+                                ..
+                            }
+                        ));
+                    }
+                }
+                other => panic!("expected IrExpr::TryAsk, got {other:?}"),
             }
-            other => panic!("expected IrExpr::TryAsk, got {other:?}"),
         }
         assert!(
             ctx.errors.is_empty(),

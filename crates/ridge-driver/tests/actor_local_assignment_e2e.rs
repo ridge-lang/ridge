@@ -4,7 +4,71 @@
 
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
+#[test]
+fn initializers_and_defaults_resolve_module_callables() {
+    assert_runs_with_modules(
+        r"
+import std.actor (AskError)
+import lib.Helpers as H
+
+fn initial (v: Int) -> Int = v + 1
+fn zero () -> Int = 7
+fn unit (u: Unit) -> Int = 7
+const callback: fn Int -> Int = initial
+class Seed a =
+    seed (x: a) -> Int
+instance Seed Int =
+    seed (x: Int) -> Int = x
+fn seeded (x: a) -> Int where Seed a = seed x
+
+fn read (r: Result Int AskError) -> Int =
+    match r
+        Ok n -> n
+        Err _ -> -1000
+
+actor Direct =
+    state n: Int = initial 6
+    init (input: Int) =
+        let f = initial
+        let captured = fn (x: Int) -> Int = f x
+        n <- n + captured input + zero () + unit () + callback 6
+        n <- H.initial (seeded n)
+    on value () -> Int = n
+
+actor Defaults =
+    state n: Int = callback 6
+    on value () -> Int = n
+
+actor FunctionDefault =
+    state f: fn Int -> Int = initial
+    on value () -> Int = f 6
+
+actor Shadow =
+    state n: Int = 0
+    init (initial: fn Int -> Int) =
+        n <- initial 6
+        fn zero () -> Int = 9
+        n <- n + zero ()
+    on value () -> Int = n
+
+pub fn spawn time exercise () =
+    let direct = spawn Direct 6
+    let defaults = spawn Defaults
+    let functionDefault = spawn FunctionDefault
+    let shadow = spawn Shadow (fn (n: Int) -> Int = n + 2)
+    (read (direct ?> value ()), read (defaults ?> value ()), read (functionDefault ?> value ()), read (shadow ?> value ()))
+",
+        "{36,7,7,17}",
+        &[("Helpers.ridge", "pub fn initial (n: Int) -> Int = n + 1\n")],
+        "D=ridge_lib_Main_defaults:'__ridge_state_defaults'(), F=maps:get(f,ridge_lib_Main_functiondefault:'__ridge_state_defaults'()), maps:get(n,D)=:=7 andalso F(6)=:=7",
+    );
+}
+
 fn assert_runs(source: &str, expected: &str) {
+    assert_runs_with_modules(source, expected, &[], "true");
+}
+
+fn assert_runs_with_modules(source: &str, expected: &str, modules: &[(&str, &str)], extra: &str) {
     assert!(
         which::which("erl").is_ok() && which::which("erlc").is_ok(),
         "runtime gate requires Erlang"
@@ -22,6 +86,9 @@ fn assert_runs(source: &str, expected: &str) {
     )
     .unwrap();
     std::fs::write(dir.path().join("lib/src/Main.ridge"), source).unwrap();
+    for (name, content) in modules {
+        std::fs::write(dir.path().join("lib/src").join(name), content).unwrap();
+    }
     let cache = tempfile::tempdir().unwrap();
     let artefacts = compile_workspace(
         CompileOptions::new(dir.path().to_owned())
@@ -45,7 +112,7 @@ fn assert_runs(source: &str, expected: &str) {
         .filter_map(|p| p.file_stem().and_then(|s| s.to_str()))
         .find(|name| name.ends_with("_Main"))
         .unwrap();
-    let eval = format!("Actual={module}:exercise(),case Actual of {expected} -> io:put_chars(\"assignment-ok\\n\"); _ -> io:format(\"unexpected: ~p~n\",[Actual]),halt(5) end,halt().");
+    let eval = format!("Actual={module}:exercise(),case Actual of {expected} -> ok; _ -> io:format(\"unexpected: ~p~n\",[Actual]),halt(5) end,case begin {extra} end of true -> io:put_chars(\"assignment-ok\\n\"); _ -> halt(6) end,halt().");
     let output = std::process::Command::new("erl")
         .args(["-noshell", "-pa"])
         .arg(beam_dir)

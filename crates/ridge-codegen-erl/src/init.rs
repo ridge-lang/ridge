@@ -182,14 +182,13 @@ fn wrap_in_args_destructure(params: &[IrParam], inner_expr: CErlExpr) -> CErlExp
 /// field name atom.
 pub(crate) fn default_state_pairs(
     state_fields: &[IrStateField],
-    tables: &crate::scope::CodegenTables,
+    scope: &LocalScope,
 ) -> Result<Vec<(CErlExpr, CErlExpr)>, CodegenError> {
     let mut pairs: Vec<(CErlExpr, CErlExpr)> = Vec::new();
     for f in state_fields {
         if let Some(default_expr) = f.default.as_ref() {
             let key = CErlExpr::Lit(CErlLit::Atom(CErlAtom(f.name.clone())));
-            let mut default_scope = LocalScope::new();
-            default_scope.tables = tables.clone();
+            let mut default_scope = scope.clone();
             let val = lower_expr_in_scope(default_expr, &mut default_scope)?;
             pairs.push((key, val));
         }
@@ -201,14 +200,14 @@ pub(crate) fn lower_init_body(
     init: Option<&IrInit>,
     state_fields: &[IrStateField],
     span: Span,
-    tables: &crate::scope::CodegenTables,
+    scope: &LocalScope,
 ) -> Result<CErlExpr, CodegenError> {
     // Build the initial state map from defaults.  Propagate any error from
     // `lower_expr_in_scope` instead of silently dropping the field — a
     // dropped field leaves the state map without that key, so every later
     // `maps:get(field, V_State)` blows up with `badkey` at runtime, and the
     // codegen error that explained why never reaches the user.
-    let default_pairs = default_state_pairs(state_fields, tables)?;
+    let default_pairs = default_state_pairs(state_fields, scope)?;
 
     // The initial state expression (default map).
     let initial_state = CErlExpr::MapLit(default_pairs);
@@ -225,8 +224,7 @@ pub(crate) fn lower_init_body(
         }
         Some(init) => {
             // With an init block: run the body with state-threading.
-            let mut scope = LocalScope::new();
-            scope.tables = tables.clone();
+            let mut scope = scope.clone();
             let mut state_idx: u32 = 0;
 
             // Bind V_State to the default map.
@@ -806,8 +804,7 @@ mod tests {
             state_field("count", Some(lit_int(0))),
             state_field("limit", Some(lit_int(100))),
         ];
-        let result =
-            lower_init_body(None, &fields, sp(), &crate::scope::CodegenTables::default()).unwrap();
+        let result = lower_init_body(None, &fields, sp(), &LocalScope::new()).unwrap();
 
         // Must be {'ok', MapLit(...)}.
         match &result {
@@ -825,8 +822,7 @@ mod tests {
     #[test]
     fn init_body_no_init_no_defaults_returns_ok_empty_map() {
         // No fields: returns {'ok', #{}} (empty map).
-        let result =
-            lower_init_body(None, &[], sp(), &crate::scope::CodegenTables::default()).unwrap();
+        let result = lower_init_body(None, &[], sp(), &LocalScope::new()).unwrap();
         match &result {
             CErlExpr::Tuple(elems) => {
                 assert_eq!(elems.len(), 2);
@@ -862,7 +858,7 @@ mod tests {
             span: sp(),
         };
         let fields = vec![state_field("table", Some(bogus_call))];
-        let result = lower_init_body(None, &fields, sp(), &crate::scope::CodegenTables::default());
+        let result = lower_init_body(None, &fields, sp(), &LocalScope::new());
         assert!(
             result.is_err(),
             "lower_init_body must surface codegen errors from state defaults, not swallow them",
@@ -881,13 +877,7 @@ mod tests {
             body: lit_unit(), // simple body: just 'ok'
             span: sp(),
         };
-        let result = lower_init_body(
-            Some(&init),
-            &fields,
-            sp(),
-            &crate::scope::CodegenTables::default(),
-        )
-        .unwrap();
+        let result = lower_init_body(Some(&init), &fields, sp(), &LocalScope::new()).unwrap();
 
         // Must be Let { var: V_State, value: MapLit, body: Do(body, {'ok', V_State}) }
         match &result {

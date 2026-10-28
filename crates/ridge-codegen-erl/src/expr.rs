@@ -1378,47 +1378,8 @@ fn lower_call(
         // Static callee: dispatch by SymbolRef.
         lower_static_call(sym, args, span, scope)
     } else {
-        // Dynamic callee: lower it and emit Apply.
-        //
-        // special-case `IrExpr::Local { name }` when we
-        // are in actor-handler context and `name` is a parent-module fn/const.
-        //
-        // lowering may emit `IrExpr::Call { callee: IrExpr::Local { name }, args }`
-        // for a call to a module-level function.  In actor context, the actor and
-        // its parent are **separate BEAM modules**, so an unqualified `apply
-        // 'fnName'/arity ()` in the actor module fails at load time.  When the
-        // scope carries `actor_parent` and `name` is in `fn_arity` (confirming it
-        // is a module-level symbol, not a handler-scoped local), emit the qualified
-        // `call 'parent_beam':'fnName' (args…)` form instead.
-        if let IrExpr::Local { name, .. } = callee {
-            // Clone early to release the borrow on scope before mutably borrowing
-            // scope again in the args-lowering closure.
-            let parent_beam_opt: Option<String> = scope
-                .actor_parent
-                .as_ref()
-                // Must be in fn_arity (a module-level fn) AND must NOT be a
-                // handler-local letrec function.  Letrec-local names are
-                // temporarily registered in fn_arity for self-reference resolution
-                // inside the lambda body, but their call sites must remain as
-                // unqualified `apply 'fn'/arity (args…)` — not cross-module calls.
-                .filter(|_| {
-                    scope.fn_arity.contains_key(name.as_str())
-                        && !scope.letrec_locals.contains(name.as_str())
-                })
-                .map(|(_, beam)| beam.to_string());
-            if let Some(parent_beam) = parent_beam_opt {
-                let lowered_args = args
-                    .iter()
-                    .map(|a| lower_expr_in_scope(a, scope))
-                    .collect::<Result<Vec<_>, _>>()?;
-                return Ok(CErlExpr::Call {
-                    module: CErlAtom(parent_beam),
-                    fn_name: CErlAtom(name.clone()),
-                    args: lowered_args,
-                });
-            }
-        }
-
+        // A local is already resolved to a lexical binding. In an actor it may
+        // shadow a parent-module function; only SymbolRef takes that static path.
         let lowered_callee = lower_expr_in_scope(callee, scope)?;
         let lowered_args = args
             .iter()

@@ -166,15 +166,20 @@ pub(crate) fn lower_actor(
     // ── Functions ─────────────────────────────────────────────────────────────
     // Assemble the gen_server callbacks plus the `__ridge_mailbox_config/0`
     // accessor read by `ridge_rt:spawn_actor/3`.
+    // Initializers and the migration-default accessor run in the actor's BEAM
+    // module, so module-level symbols need the same parent context as handlers.
+    let mut initializer_scope =
+        LocalScope::with_actor_parent(fn_arity.clone(), actor.module, parent_beam_name);
+    initializer_scope.tables = tables.clone();
     let fns_results: Vec<Result<CErlFn, CodegenError>> = vec![
         emit_start_link(&actor_beam_name, init_params_count),
-        emit_init(actor, tables),
+        emit_init(actor, &initializer_scope),
         emit_handle_call(actor, fn_arity, parent_beam_name, tables),
         emit_handle_cast(actor, fn_arity, parent_beam_name, tables),
         emit_handle_info(actor, fn_arity, parent_beam_name, tables),
         emit_terminate(actor, fn_arity, parent_beam_name, tables),
         Ok(emit_code_change(actor)),
-        emit_state_defaults_fn(actor, tables),
+        emit_state_defaults_fn(actor, &initializer_scope),
         Ok(emit_state_fields_fn(actor)),
         Ok(emit_mailbox_config_fn(actor)),
         Ok(emit_state_version_fn(actor)),
@@ -277,11 +282,11 @@ fn emit_start_link(actor_beam_name: &str, n_params: usize) -> Result<CErlFn, Cod
 /// If the init body raises, `gen_server:start_link/3` propagates the failure.
 /// `ridge_rt:spawn_actor/3` re-raises it (BEAM-crash).  This is the deliberate
 /// language-level asymmetry.
-fn emit_init(actor: &IrActor, tables: &CodegenTables) -> Result<CErlFn, CodegenError> {
+fn emit_init(actor: &IrActor, scope: &LocalScope) -> Result<CErlFn, CodegenError> {
     // §4.29: the init body lowering handles both the default-map case and the
     // user-body case.
     let init_body_expr =
-        lower_init_body(actor.init.as_ref(), &actor.state_fields, actor.span, tables)?;
+        lower_init_body(actor.init.as_ref(), &actor.state_fields, actor.span, scope)?;
 
     // Actors with a `terminate` callback trap exits so the supervisor's
     // `shutdown` exit signal is converted into a `terminate/2` call instead
@@ -846,8 +851,8 @@ fn emit_state_fields_fn(actor: &IrActor) -> CErlFn {
 /// declared default. The code loader reads it (from the NEW module, after
 /// loading) to fill added state fields during migration; defaults are
 /// evaluated at call time, exactly as `init/1` evaluates them.
-fn emit_state_defaults_fn(actor: &IrActor, tables: &CodegenTables) -> Result<CErlFn, CodegenError> {
-    let pairs = crate::init::default_state_pairs(&actor.state_fields, tables)?;
+fn emit_state_defaults_fn(actor: &IrActor, scope: &LocalScope) -> Result<CErlFn, CodegenError> {
+    let pairs = crate::init::default_state_pairs(&actor.state_fields, scope)?;
     Ok(CErlFn {
         name: CErlAtom("__ridge_state_defaults".into()),
         arity: 0,

@@ -69,6 +69,19 @@ fn compile_and_find_module(
     std::path::PathBuf,
     String,
 )> {
+    compile_and_find_module_with_helpers(source, None, false)
+}
+
+fn compile_and_find_module_with_helpers(
+    source: &str,
+    helpers: Option<&str>,
+    allow_io: bool,
+) -> Option<(
+    tempfile::TempDir,
+    tempfile::TempDir,
+    std::path::PathBuf,
+    String,
+)> {
     if which::which("erlc").is_err() || which::which("erl").is_err() {
         return None;
     }
@@ -82,6 +95,15 @@ fn compile_and_find_module(
         .tempdir()
         .expect("cache dir");
     write_workspace_source(dir.path(), source);
+    if allow_io {
+        let manifest = dir.path().join("app/ridge.toml");
+        let text = std::fs::read_to_string(&manifest).expect("read manifest");
+        std::fs::write(manifest, text.replace("allow = []", "allow = [\"io\"]"))
+            .expect("allow fixture output");
+    }
+    if let Some(helpers) = helpers {
+        std::fs::write(dir.path().join("app/src/Helpers.ridge"), helpers).expect("write helpers");
+    }
 
     let artefacts = compile_workspace(
         CompileOptions::new(dir.path().to_path_buf())
@@ -112,19 +134,7 @@ fn compile_and_find_module(
         .beam_files
         .iter()
         .filter_map(|p| p.file_stem().and_then(|s| s.to_str()))
-        .find(|stem| {
-            stem.starts_with("ridge_")
-                && !matches!(
-                    *stem,
-                    "ridge_rt"
-                        | "ridge_main_runner"
-                        | "ridge_test_runner"
-                        | "ridge_pg"
-                        | "ridge_sup"
-                        | "ridge_sqlite"
-                        | "ridge_bench_runner"
-                )
-        })
+        .find(|stem| stem.ends_with("_Main"))
         .expect("a user module")
         .to_owned();
 
@@ -189,5 +199,74 @@ fn clean_api_roundtrip_no_class_decl() {
     assert!(
         stdout.contains("rt=Ann"),
         "clean-API round-trip must recover 'Ann' as name\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn prelude_eq_evidence_executes_registered_types_and_preserves_dispatch() {
+    let source = r#"
+import app.Helpers as H
+import std.time as Time
+import std.io as Io
+
+type Color = Red | Blue
+instance Eq Color =
+    eq (x: Color) (y: Color) -> Bool = true
+type Box = { n: Int } deriving (Eq)
+
+fn same (x: a) (y: a) -> Bool where Eq a = eq x y
+fn operatorSame (x: a) (y: a) -> Bool where Eq a = x == y
+fn stamp () -> Timestamp =
+    match Time.fromIso "1970-01-01T00:00:01Z"
+        Ok value -> value
+        Err _ -> Time.epoch ()
+
+pub fn primitives () -> List Bool =
+    let epoch = Time.epoch ()
+    let later = stamp ()
+    let less = compare 1 2
+    let greater = compare 2 1
+    [H.same 7 7, H.same 7 8, eq 7 7, eq 7 8,
+     H.same true true, H.same true false, eq true true, eq true false,
+     H.same "é" "é", H.same "é" "e", eq "é" "é", eq "é" "e",
+     H.same epoch epoch, H.same epoch later, eq epoch epoch, eq epoch later,
+     H.same less less, H.same less greater, eq less less, eq less greater]
+
+pub fn values () -> List Bool =
+    fn eq_a (n: Int) -> Int = if n == 0 then 0 else eq_a (n - 1)
+    let f = H.same
+    let (g, _) = (H.same, 0)
+    let captured = fn () -> Bool = f 7 7
+    fn inner (x: a) (y: a) -> Bool where Eq a = eq x y
+    [H.forwarded 7 7, H.forwarded 7 8, operatorSame 7 7, operatorSame 7 8,
+     f 7 7, g 7 8, captured (), inner 7 8, eq_a 2 == 0]
+
+pub fn controls () -> List Bool =
+    [same Red Blue, same (Box { n = 1 }) (Box { n = 1 }),
+     same (Box { n = 1 }) (Box { n = 2 }), 7 == 7, 7 == 8]
+
+pub fn io effectOrder () -> Bool =
+    let arg = fn (label: Text) (value: Int) -> Int =
+        Io.println label
+        value
+    H.same (arg "first" 7) (arg "second" 7)
+"#;
+    let helpers = "pub fn same (x: a) (y: a) -> Bool where Eq a = eq x y\npub fn forwarded (x: a) (y: a) -> Bool where Eq a = same x y\n";
+    let (_dir, _cache, beam_dir, module) =
+        compile_and_find_module_with_helpers(source, Some(helpers), true).expect("Erlang required");
+    let expected_primitives = "[true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false]";
+    let expression = format!(
+        "Actual={{{module}:primitives(),{module}:values(),{module}:controls()}}, Expected={{{expected_primitives},[true,false,true,false,true,false,true,false,true],[true,true,false,true,false]}}, case Actual of Expected -> ok; _ -> io:format(\"unexpected: ~p~n\",[Actual]),halt(5) end, true={module}:effectOrder(), io:put_chars(\"eq-ok\\n\"),halt()."
+    );
+    let output = Command::new("erl")
+        .args(["-noshell", "-pa"])
+        .arg(beam_dir)
+        .args(["-eval", &expression])
+        .output()
+        .expect("run Eq program");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n"),
+        "first\nsecond\neq-ok\n"
     );
 }

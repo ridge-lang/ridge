@@ -33,7 +33,8 @@ use ridge_ast::Span;
 use ridge_ir::{IrExpr, IrLit, IrParam, StdlibKind, SymbolRef};
 use ridge_typecheck::JsonPrim;
 use ridge_types::{
-    BuiltinTyCons, ClassId, TyConId, Type, DECODE_CLASS, ENCODE_CLASS, ORD_CLASS, TOTEXT_CLASS,
+    BuiltinTyCons, ClassId, TyConId, Type, DECODE_CLASS, ENCODE_CLASS, EQ_CLASS, ORD_CLASS,
+    TOTEXT_CLASS,
 };
 
 use crate::ctx::LowerCtx;
@@ -188,6 +189,33 @@ pub fn synth_prelude_dict(
     };
 
     Some(dict_map(ctx, method, method_fn, span))
+}
+
+// ── Built-in Eq dictionaries ──────────────────────────────────────────────────
+
+/// The registered primitive `Eq` instances have no source dictionary body.
+/// `Float` deliberately has no `Eq` instance; user instances keep their own body.
+#[must_use]
+pub fn is_prelude_eq_instance(b: &BuiltinTyCons, class: ClassId, tycon: TyConId) -> bool {
+    class == EQ_CLASS && [b.int, b.bool, b.text, b.timestamp, b.ordering].contains(&tycon)
+}
+
+/// Materialize primitive equality using the same semantic operation as `==`
+/// and derived equality. The dictionary method is a pure two-argument function.
+#[must_use]
+pub fn synth_eq_dict(ctx: &mut LowerCtx<'_>, span: Span) -> IrExpr {
+    let a_name = ctx.fresh_local("__eq_a");
+    let b_name = ctx.fresh_local("__eq_b");
+    let a = local(ctx, &a_name, span);
+    let b = local(ctx, &b_name, span);
+    let body = stdlib_call(ctx, "std.op", "eq", vec![a, b], span);
+    let method = lambda(
+        ctx,
+        vec![param(a_name, span), param(b_name, span)],
+        body,
+        span,
+    );
+    dict_map(ctx, "eq", method, span)
 }
 
 // ── Built-in Ord dictionaries ─────────────────────────────────────────────────
@@ -1593,5 +1621,34 @@ fn bool_match(
         scrutinee: Box::new(cond),
         arms: vec![true_arm, false_arm],
         span,
+    }
+}
+
+#[cfg(test)]
+mod eq_tests {
+    use super::is_prelude_eq_instance;
+    use ridge_typecheck::class_env::{register_prelude_instances, InstanceEnv};
+    use ridge_types::{BuiltinTyCons, TyConArena, EQ_CLASS, ORD_CLASS};
+
+    #[test]
+    fn eq_synthesis_matches_the_registered_prelude_instances() {
+        let mut arena = TyConArena::default();
+        let builtins = BuiltinTyCons::allocate(&mut arena);
+        let mut instances = InstanceEnv::new();
+        register_prelude_instances(&mut instances, &builtins);
+        for declaration in arena.all() {
+            let registered = instances
+                .instances
+                .keys()
+                .any(|(class, head)| *class == EQ_CLASS && head.as_slice() == [declaration.id]);
+            assert_eq!(
+                is_prelude_eq_instance(&builtins, EQ_CLASS, declaration.id),
+                registered,
+                "Eq synthesis and registration differ for {}",
+                declaration.name
+            );
+        }
+        assert!(!is_prelude_eq_instance(&builtins, EQ_CLASS, builtins.float));
+        assert!(!is_prelude_eq_instance(&builtins, ORD_CLASS, builtins.int));
     }
 }

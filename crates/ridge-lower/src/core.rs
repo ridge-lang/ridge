@@ -3461,6 +3461,12 @@ pub(crate) fn dict_plan_to_expr(
                     });
             }
 
+            // Registered primitive equality needs a dictionary value just like
+            // codecs. User-written and derived instances keep the symbol path.
+            if crate::prelude_dict::is_prelude_eq_instance(ctx.builtins, class, tycon) {
+                return crate::prelude_dict::synth_eq_dict(ctx, span);
+            }
+
             // The built-in `Ord` instances (Int/Float/Bool/Text/Ordering) have a
             // registered instance but no `$inst_` constant either — their `compare`
             // is the native term comparator. Synthesise the dictionary inline so a

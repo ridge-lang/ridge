@@ -304,7 +304,11 @@ pub fn infer_try(ctx: &mut InferCtx, b: &BuiltinTyCons, block: &Block, span: Spa
         ctx.errors.push(attach_span(e, span));
     }
 
-    // Return the fully-resolved try type.
+    // This target survives even when the expression has no continuation and
+    // inference gives its value a fresh type. It is not the block payload or
+    // the enclosing function's return contract.
+    ctx.try_scope_types.insert(span, try_result_ty.clone());
+    // Return the fully-resolved try value type.
     ctx.shallow_resolve(&try_result_ty)
 }
 

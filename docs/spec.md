@@ -188,6 +188,16 @@ A higher-order function's callback parameter is **uncurried**: match a `fn a b -
 
 A lambda may declare its return type: `fn (n: Int) -> Text = show n`. The declared type is checked against the body.
 
+A lambda also uses a surrounding function type to infer its parameter types.
+This context can come from a callback signature, a typed binding or a declared
+return type, and from other arguments in the same call. For example,
+`List.map (fn f -> f ()) [ready]` calls zero-parameter functions when `ready`
+has that signature; a function with one real `Unit` parameter keeps that arity.
+An immediately applied lambda uses its arguments in the same way. Context
+does not invoke bare references or make these function types interchangeable.
+Without such context, `fn f -> f ()` retains the inferred one-`Unit` contract;
+generalizing a helper does not overload it across callable arities.
+
 **A lambda is a return boundary.** `return` inside a lambda returns from that lambda, not from the function containing it, and `?` propagates to the lambda's return type for the same reason. A callback that wants to exit early does so with `guard … else return`, and what it returns must be the lambda's own return type.
 
 An explicit `return` requires an enclosing function or lambda. Actor message

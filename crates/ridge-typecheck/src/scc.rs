@@ -53,7 +53,6 @@ use crate::caps_check::caps_from_ast_slice;
 use crate::class_env::{ClassTable, InstanceEnv};
 use crate::ctx::{InferCtx, RigidInfo};
 use crate::error::{TypeDesc, TypeError};
-use crate::infer::infer_expr;
 use crate::instantiate::{collect_free_vars, generalise_with_env, monoscheme};
 use crate::solve::solve_constraints;
 use crate::tycon_collect::ast_type_to_ridge_type;
@@ -832,7 +831,9 @@ pub fn typecheck_module_decls(
                 // A body-less declaration carries a fully-declared
                 // signature; there is nothing to infer.
                 let body_ty = match &decl.body {
-                    Body::Expr(e) => infer_expr(ctx, b, e),
+                    Body::Expr(e) => {
+                        crate::infer::infer_expr_with_expected(ctx, b, e, Some(ret_ty_box))
+                    }
                     Body::Ffi { .. } | Body::Primitive => *ret_ty_box.clone(),
                 };
                 // Unify body type with declared ret.
@@ -1117,7 +1118,8 @@ pub fn infer_instance_methods(
                 crate::infer::infer_param(ctx, b, param, ty);
             }
 
-            let body_ty = infer_expr(ctx, b, &method.body);
+            let body_ty =
+                crate::infer::infer_expr_with_expected(ctx, b, &method.body, Some(&ret_ty));
             if unify(ctx, &body_ty, &ret_ty).is_err() {
                 let expected_ty = ctx.deep_resolve(&ret_ty);
                 let found_ty = ctx.deep_resolve(&body_ty);

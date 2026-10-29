@@ -251,6 +251,9 @@ pub struct TypedModule {
     pub error_from_sites: FxHashMap<ridge_ast::Span, Vec<ridge_types::Constraint>>,
     /// Message sites whose `()` was checked as a zero-argument marker.
     pub nullary_message_sites: rustc_hash::FxHashSet<ridge_ast::Span>,
+    /// Checked Result target of each try boundary. A divergent expression's
+    /// value type need not itself be Result, so lowering reads this fact instead.
+    pub try_scope_types: FxHashMap<ridge_ast::Span, Type>,
     /// Source message sites classified using selected handlers and final types.
     pub message_call_sites: Vec<explicit_calls::MessageCallSite>,
     /// Quoted lambdas captured during inference, keyed by the lambda's span.
@@ -460,6 +463,7 @@ pub fn typecheck_workspace_with_history(
                 dict_resolution: FxHashMap::default(),
                 error_from_sites: FxHashMap::default(),
                 nullary_message_sites: rustc_hash::FxHashSet::default(),
+                try_scope_types: FxHashMap::default(),
                 message_call_sites: Vec::new(),
                 quoted_lambdas: FxHashMap::default(),
                 instance_dict_constraints: FxHashMap::default(),
@@ -593,6 +597,7 @@ fn empty_module_result(module_id: ModuleId) -> ModuleTypecheckResult {
             dict_resolution: FxHashMap::default(),
             error_from_sites: FxHashMap::default(),
             nullary_message_sites: rustc_hash::FxHashSet::default(),
+            try_scope_types: FxHashMap::default(),
             message_call_sites: Vec::new(),
             quoted_lambdas: FxHashMap::default(),
             instance_dict_constraints: FxHashMap::default(),
@@ -1587,6 +1592,10 @@ fn typecheck_module_inner(
     // The T17 proxy comment is removed; the sweep will update LowerCtx::lookup_inferred_caps.
     // Move the quoted-lambda side-table out for the lowering pass.
     let quoted_lambdas = std::mem::take(&mut ctx.quoted_lambdas_accum);
+    let try_scope_types = std::mem::take(&mut ctx.try_scope_types)
+        .into_iter()
+        .map(|(span, ty)| (span, ctx.resolve_for_export(&ty)))
+        .collect();
 
     let typed = TypedModule {
         id,
@@ -1598,6 +1607,7 @@ fn typecheck_module_inner(
         dict_resolution, // populated by the constraint solver when classes are used
         error_from_sites: std::mem::take(&mut ctx.error_from_sites),
         nullary_message_sites: std::mem::take(&mut ctx.nullary_message_sites),
+        try_scope_types,
         message_call_sites,
         quoted_lambdas, // populated by the quotation checker when quotes are used
         instance_dict_constraints, // populated by Step D3 (infer_instance_methods)

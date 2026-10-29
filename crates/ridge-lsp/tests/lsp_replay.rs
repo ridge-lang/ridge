@@ -7442,6 +7442,61 @@ async fn file_diagnostics(server: &RidgeLanguageServer, uri: &Url) -> Vec<Diagno
 }
 
 #[tokio::test]
+async fn test_contextual_callbacks_pull_diagnostics_follow_buffer_edits() {
+    let base = "-- café 🧭\nfn target -> Bool = true\npub fn exercise () -> List Bool = List.map (fn f -> f ()) [target]\n";
+    for ending in ["\n", "\r\n"] {
+        let source = base.replace('\n', ending);
+        let (service, log) = pull_workspace(&[("Main.ridge", &source)]).await;
+        let server = service.inner();
+        wait_for_refresh(&log).await;
+        let uri = server
+            .workspace_index()
+            .await
+            .unwrap()
+            .uri_to_module
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        assert!(file_diagnostics(server, &uri).await.is_empty());
+        let invalid = source.replace(
+            "fn target -> Bool = true",
+            "fn target (n: Int) -> Bool = n > 0",
+        );
+        let fixed = invalid.replace("f ()", "f 1");
+        for (version, (text, errors)) in [
+            (invalid, true),
+            (fixed, false),
+            (
+                source.replace("fn target ->", "fn target (_: Unit) ->"),
+                false,
+            ),
+            (source.clone(), false),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let baseline = log.lock().unwrap().refreshed;
+            server
+                .did_change(DidChangeTextDocumentParams {
+                    text_document: VersionedTextDocumentIdentifier {
+                        uri: uri.clone(),
+                        version: i32::try_from(version + 2).unwrap(),
+                    },
+                    content_changes: vec![TextDocumentContentChangeEvent {
+                        range: None,
+                        range_length: None,
+                        text,
+                    }],
+                })
+                .await;
+            wait_for_refresh_after(&log, baseline).await;
+            assert_eq!(!file_diagnostics(server, &uri).await.is_empty(), errors);
+        }
+    }
+}
+
+#[tokio::test]
 #[expect(
     clippy::too_many_lines,
     reason = "Keep the protocol setup, actual edits and diagnostic refresh oracle together"

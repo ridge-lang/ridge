@@ -30,6 +30,202 @@ fn workspace() -> tempfile::TempDir {
 }
 
 #[test]
+fn contextual_callback_types_and_diagnostics_follow_unsaved_signature_edits() {
+    let base = "-- café 🧭\nfn target -> Bool = true\npub fn exercise () -> List Bool = List.map (fn f -> f ()) [target]\n";
+    for ending in ["\n", "\r\n"] {
+        let dir = workspace();
+        let root = ridge_manifest::canonicalize(dir.path()).unwrap();
+        let file = root.join("app/src/Main.ridge");
+        let uri = Url::from_file_path(&file).unwrap();
+        std::fs::write(&file, base.replace('\n', ending)).unwrap();
+        let mut state =
+            check_workspace_incremental(CheckOptions::new(root).with_retain_indices(true)).unwrap();
+        let module = state
+            .resolved
+            .graph
+            .modules
+            .iter()
+            .find(|m| m.file_path.ends_with("Main.ridge"))
+            .unwrap()
+            .id;
+        let unit = base.replace("fn target ->", "fn target (_: Unit) ->");
+        let int = base.replace(
+            "fn target -> Bool = true",
+            "fn target (n: Int) -> Bool = n > 0",
+        );
+        for (source, parameter, invalid) in [
+            (base.to_owned(), "()", false),
+            (unit, "Unit", false),
+            (int.clone(), "Int", true),
+            (int.replace("f ()", "f 1"), "Int", false),
+            (base.to_owned(), "()", false),
+        ] {
+            let source = source.replace('\n', ending);
+            state.recompile(module, &source);
+            assert!(state.resolved.lex_errors.is_empty());
+            assert!(
+                state.resolved.parse_errors.is_empty(),
+                "{:?}",
+                state.resolved.parse_errors
+            );
+            assert!(
+                state.resolved.errors.is_empty(),
+                "{:?}",
+                state.resolved.errors
+            );
+            assert_eq!(
+                !state.type_errors.is_empty(),
+                invalid,
+                "{source}\n{:?}",
+                state.type_errors
+            );
+            if invalid {
+                continue;
+            }
+            let index =
+                WorkspaceIndex::build(0, &state.typed, &state.resolved, &state.source_cache());
+            let binder = source.find("fn f ->").unwrap() + 3;
+            let usage = source.find("-> f ").unwrap() + 3;
+            for offset in [binder, usage] {
+                let at = position(&source, offset);
+                let (hover, _) = index.hover_at(&uri, at.line, at.character).unwrap();
+                assert!(
+                    hover.contains(parameter) && hover.contains("Bool"),
+                    "{hover}"
+                );
+                if parameter == "()" {
+                    assert!(!hover.contains("Unit"), "{hover}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn divergent_try_targets_and_diagnostics_follow_unsaved_edits() {
+    let base = "-- café 🧭\npub fn exercise () -> Result Int Text =\n    try\n        return Ok 7\n        Err \"later\" ?\n    Ok 9\n";
+    for ending in ["\n", "\r\n"] {
+        let dir = workspace();
+        let root = ridge_manifest::canonicalize(dir.path()).unwrap();
+        let file = root.join("app/src/Main.ridge");
+        std::fs::write(&file, base.replace('\n', ending)).unwrap();
+        let mut state =
+            check_workspace_incremental(CheckOptions::new(root).with_retain_indices(true)).unwrap();
+        let module = state
+            .resolved
+            .graph
+            .modules
+            .iter()
+            .find(|m| m.file_path.ends_with("Main.ridge"))
+            .unwrap()
+            .id;
+        for (source, integer_error, invalid) in [
+            (base.to_owned(), false, false),
+            (base.replace("Err \"later\"", "Err 9"), true, false),
+            (
+                base.replace("return Ok 7", "return Ok \"wrong\""),
+                false,
+                true,
+            ),
+            (
+                base.replace(
+                    "Err \"later\" ?",
+                    "let bad: Bool = 1\n        Err \"later\" ?",
+                ),
+                false,
+                true,
+            ),
+            (base.to_owned(), false, false),
+        ] {
+            state.recompile(module, &source.replace('\n', ending));
+            assert!(state.resolved.lex_errors.is_empty());
+            assert!(
+                state.resolved.parse_errors.is_empty(),
+                "{:?}",
+                state.resolved.parse_errors
+            );
+            assert!(
+                state.resolved.errors.is_empty(),
+                "{:?}",
+                state.resolved.errors
+            );
+            assert_eq!(
+                !state.type_errors.is_empty(),
+                invalid,
+                "{:?}",
+                state.type_errors
+            );
+            assert!(state.lower_errors.is_empty(), "{:?}", state.lower_errors);
+            if !invalid {
+                let target = state.typed.modules[module.0 as usize]
+                    .try_scope_types
+                    .values()
+                    .next()
+                    .unwrap();
+                let error = if integer_error {
+                    state.typed.builtins.int
+                } else {
+                    state.typed.builtins.text
+                };
+                assert!(
+                    matches!(target, ridge_types::Type::Con(id, args) if *id == state.typed.builtins.result && matches!(&args[1], ridge_types::Type::Con(id, _) if *id == error))
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn unreachable_callback_results_follow_unsaved_return_edits() {
+    let base = "-- café 🧭\ntype Invoke = fn (fn () -> Bool) -> Bool\nfn choose (n: Int) (f: a) -> a = f\npub fn make () -> Invoke = choose (return (fn (f: fn () -> Bool) -> f ())) (fn (f: fn Text -> Bool) -> f \"unused\")\n";
+    for ending in ["\n", "\r\n"] {
+        let dir = workspace();
+        let root = ridge_manifest::canonicalize(dir.path()).unwrap();
+        std::fs::write(root.join("app/src/Main.ridge"), base.replace('\n', ending)).unwrap();
+        let mut state =
+            check_workspace_incremental(CheckOptions::new(root).with_retain_indices(true)).unwrap();
+        let module = state
+            .resolved
+            .graph
+            .modules
+            .iter()
+            .find(|m| m.file_path.ends_with("Main.ridge"))
+            .unwrap()
+            .id;
+        for (source, invalid) in [
+            (base.to_owned(), false),
+            (
+                base.replace("return (fn (f: fn () -> Bool) -> f ())", "1"),
+                true,
+            ),
+            (base.to_owned(), false),
+            (base.replace("f \"unused\"", "f 1"), true),
+            (base.to_owned(), false),
+        ] {
+            state.recompile(module, &source.replace('\n', ending));
+            assert!(state.resolved.lex_errors.is_empty());
+            assert!(
+                state.resolved.parse_errors.is_empty(),
+                "{:?}",
+                state.resolved.parse_errors
+            );
+            assert!(
+                state.resolved.errors.is_empty(),
+                "{:?}",
+                state.resolved.errors
+            );
+            assert_eq!(
+                !state.type_errors.is_empty(),
+                invalid,
+                "{:?}",
+                state.type_errors
+            );
+            assert!(state.lower_errors.is_empty(), "{:?}", state.lower_errors);
+        }
+    }
+}
+
+#[test]
 fn function_call_fixes_do_not_guess_unit_payloads_or_permissions() {
     for source in [
         "fn ready (_: Unit) -> Bool = true\npub fn choose () -> Int = if ready then 7 else 0\n",

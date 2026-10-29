@@ -28,9 +28,16 @@ zero parameters from one real `Unit` parameter:
 pub fn invoke (f: fn () -> Bool) -> Bool = f ()
 ```
 
-Without a known signature, `fn f -> f ()` infers a function taking `Unit`.
-It does not infer a function with zero parameters. Annotate `f` when passing
-zero-parameter functions through that callback.
+A surrounding callback signature, typed binding or declared return type can
+supply that distinction. Other arguments in the same call also contribute:
+`List.map (fn f -> f ()) [ready]` infers a zero-parameter `f` when `ready` has
+zero parameters, and a `Unit` parameter when `ready` declares one. The same
+context works in an immediately applied lambda, `(fn f -> f ()) ready`.
+
+Without that context, an independently inferred `fn f -> f ()` still chooses
+one `Unit` parameter. An unannotated helper bound with `let` keeps that inferred
+signature at later uses; it is not overloaded across both arities. Annotate its
+parameter when the helper must accept zero-parameter functions.
 
 ## Actor messages
 

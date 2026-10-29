@@ -91,7 +91,10 @@ use crate::with_update::lower_with;
 /// A callee that really takes a `Unit` keeps it — `takesUnit ()` passes the
 /// value, because that callee's type has one parameter. The two are different
 /// functions, and this is where they stay different.
-fn call_args_without_nullary_unit<'a>(args: &'a [Expr], callee: Option<&Type>) -> &'a [Expr] {
+fn call_args_without_nullary_unit<'a>(args: &'a [Expr], mut callee: Option<&Type>) -> &'a [Expr] {
+    while let Some(Type::Alias { body, .. }) = callee {
+        callee = Some(body);
+    }
     let callee_takes_nothing = matches!(callee, Some(Type::Fn { params, .. }) if params.is_empty());
     if args.len() == 1 && matches!(&args[0], Expr::Unit(_)) && callee_takes_nothing {
         &[]

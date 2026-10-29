@@ -49,6 +49,7 @@ pub mod builtin_cards;
 pub mod cancel;
 pub mod completion;
 pub mod diagnostics;
+pub mod explicit_calls;
 pub mod format;
 pub mod index;
 mod prelude_defs;

@@ -1635,6 +1635,12 @@ pub const REGISTRY: &[CodeEntry] = &[
         summary: "An explicit return has no enclosing function or lambda.",
     },
     CodeEntry {
+        code: "T063",
+        variants: &["MissingInvocationMarker"],
+        owner: "ridge-typecheck",
+        summary: "A message invocation omits its explicit call marker or needs a receiver annotation.",
+    },
+    CodeEntry {
         code: "T101",
         variants: &["FfiArityMismatch"],
         owner: "ridge-stdlib",

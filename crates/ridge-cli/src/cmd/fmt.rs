@@ -22,6 +22,10 @@ use crate::error::CliError;
 
 /// Format Ridge source files according to the standard style.
 #[derive(Debug, Parser)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Clap flags are independent switches; argument conflicts enforce exclusive migration modes"
+)]
 pub struct FmtArgs {
     /// Exit non-zero if any file would be reformatted; never write.
     #[arg(long)]
@@ -38,6 +42,11 @@ pub struct FmtArgs {
     /// `--stdin` (reads from stdin, writes the migrated output to stdout).
     #[arg(long)]
     pub migrate_tests: bool,
+
+    /// Add explicit `()` to resolved zero-parameter actor messages.
+    /// Type-checks the selected sources; --check previews without writing.
+    #[arg(long, conflicts_with_all = ["stdin", "migrate_tests"])]
+    pub migrate_calls: bool,
 
     /// Files or directories to format. Defaults to the current workspace.
     #[arg(value_name = "PATHS")]
@@ -91,7 +100,7 @@ fn collect_ridge_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), CliErro
 ///
 /// Files are taken as-is; directories are walked recursively.  Non-existent
 /// paths return `CliError::FmtPathNotFound`.
-fn expand_paths(paths: &[PathBuf]) -> Result<Vec<PathBuf>, CliError> {
+pub(super) fn expand_paths(paths: &[PathBuf]) -> Result<Vec<PathBuf>, CliError> {
     let mut files = Vec::new();
     for p in paths {
         if !p.exists() {
@@ -115,6 +124,9 @@ fn expand_paths(paths: &[PathBuf]) -> Result<Vec<PathBuf>, CliError> {
 /// Returns a [`CliError`] on unrecoverable I/O failures or when `--check`
 /// finds files that would be reformatted.
 pub fn execute(args: &FmtArgs, cwd: &Path) -> Result<(), CliError> {
+    if args.migrate_calls {
+        return super::explicit_calls::execute(args, cwd);
+    }
     // ── stdin mode ────────────────────────────────────────────────────────────
     if args.stdin {
         return execute_stdin(args.check, args.migrate_tests);

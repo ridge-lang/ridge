@@ -1090,6 +1090,10 @@ SpawnExpr     ::= "spawn" UPPER_IDENT { ExprAtom } ;
 (* The optional trailing ? propagates the complete Result-returning ask,
    including its timeout. To propagate inside the timeout operand instead,
    parenthesise that operand. A second ask still needs parentheses. *)
+(* Zero-parameter handlers require the UnitLiteral marker () at invocation.
+   Both handler declaration spellings remain supported. A real Unit parameter
+   still receives a payload. Bare labels remain parseable for typed migration
+   diagnostics; a messaging site does not make a handler a function value. *)
 AskExpr       ::= Expr "?>" IDENT { ExprAtom } [ AskTimeout ] [ "?" ] ;
 AskTimeout    ::= "timeout" ( "never" | Expr1 ) ;
 

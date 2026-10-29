@@ -32,7 +32,7 @@ actor Counter =
 fn io time main () -> Result Unit Text =
     let sup = Actor.supervise OneForOne 3 5000 [child Counter (0)]?
     let c = Actor.startChild sup (child Counter (1))?
-    let r = Actor.tryAsk c getCount 1000
+    let r = Actor.tryAsk c (getCount ()) 1000
     match r
         Ok n        -> Io.println (Int.toText n)
         Err Noproc  -> Io.println \"noproc\"

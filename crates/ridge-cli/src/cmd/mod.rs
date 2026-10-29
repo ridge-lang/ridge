@@ -6,6 +6,7 @@
 pub mod build;
 pub mod check;
 pub mod explain;
+mod explicit_calls;
 pub mod fmt;
 pub mod init;
 pub mod migrate;

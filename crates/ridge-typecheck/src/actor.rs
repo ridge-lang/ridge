@@ -940,6 +940,8 @@ fn check_handler_args(
     args: &[Expr],
     span: Span,
 ) {
+    ctx.message_parameter_counts
+        .insert(span, handler_params.len());
     ctx.nullary_message_sites.remove(&span);
     let normalised_args: &[Expr] =
         if handler_params.is_empty() && args.len() == 1 && matches!(&args[0], Expr::Unit(_)) {

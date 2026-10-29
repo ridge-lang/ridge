@@ -10,7 +10,7 @@ const ACTOR: &str = "actor Counter =\n    on get () -> Int = 7\n\n";
 
 #[test]
 fn a_bare_reply_annotation_is_rejected_with_migration_advice() {
-    let source = format!("{ACTOR}pub fn time read (h: Handle Counter) -> Int = h ?> get\n");
+    let source = format!("{ACTOR}pub fn time read (h: Handle Counter) -> Int = h ?> get ()\n");
     let ws = common::make_workspace("Ask", &source);
     let artifacts =
         compile_workspace(CompileOptions::new(ws.path).with_emit(EmitArtefacts::Core)).unwrap();
@@ -32,7 +32,7 @@ fn a_bare_reply_annotation_is_rejected_with_migration_advice() {
 
 #[test]
 fn ask_error_identity_does_not_require_an_import_or_follow_a_local_namesake() {
-    let source = format!("{ACTOR}type AskError = LocalErrorA | LocalErrorB\npub fn time read (h: Handle Counter) = h ?> get\npub fn time label (h: Handle Counter) -> Text = match h ?> get\n    Ok _ -> \"ok\"\n    Err error -> toText error\n");
+    let source = format!("{ACTOR}type AskError = LocalErrorA | LocalErrorB\npub fn time read (h: Handle Counter) = h ?> get ()\npub fn time label (h: Handle Counter) -> Text = match h ?> get ()\n    Ok _ -> \"ok\"\n    Err error -> toText error\n");
     let ws = common::make_workspace("Ask", &source);
     let state = ridge_driver::check_workspace_incremental(
         ridge_driver::CheckOptions::new(ws.path.clone()).with_retain_indices(true),
@@ -88,7 +88,7 @@ fn ask_error_identity_does_not_require_an_import_or_follow_a_local_namesake() {
 
 #[test]
 fn ask_propagation_emits_the_recoverable_operation() {
-    let source = format!("import std.actor (AskError)\n{ACTOR}pub fn time read (h: Handle Counter) -> Result Int AskError =\n    let value = h ?> get timeout never ?\n    Ok (value + 1)\n");
+    let source = format!("import std.actor (AskError)\n{ACTOR}pub fn time read (h: Handle Counter) -> Result Int AskError =\n    let value = h ?> get () timeout never ?\n    Ok (value + 1)\n");
     let ws = common::make_workspace("Ask", &source);
     let artifacts =
         compile_workspace(CompileOptions::new(ws.path).with_emit(EmitArtefacts::Core)).unwrap();

@@ -3536,28 +3536,31 @@ fn toJson (x: a) -> Text where Encode a =
 
     #[test]
     fn tryask_qualified_message_label_not_resolved() {
-        // `Actor.tryAsk c tick 1000` — `tick` is a handler-name label, so no
-        // R010 is emitted for it even though no such local exists.
-        let src = "import std.actor as Actor\nactor Counter =\n    state count: Int = 0\n\n    on io tick =\n        count <- count + 1\nfn f c = Actor.tryAsk c tick 1000\n";
-        let (bindings, errors, _imports, _nid) = full_resolve_single(src);
-        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
-        // The callee resolved to the stdlib symbol.
-        let stdlib_syms = count_binding(
-            &bindings,
-            |b| matches!(b, Binding::StdlibSymbol { name, .. } if name == "tryAsk"),
-        );
-        assert_eq!(
-            stdlib_syms, 1,
-            "expected the tryAsk callee to resolve as StdlibSymbol"
-        );
+        // Keep the legacy label parseable for the typed migration diagnostic.
+        // Both forms skip resolving the handler label as an ordinary function.
+        for message in ["tick", "(tick ())"] {
+            let src = format!("import std.actor as Actor\nactor Counter =\n    state count: Int = 0\n\n    on io tick =\n        count <- count + 1\nfn time f (c: Handle Counter) = Actor.tryAsk c {message} 1000\n");
+            let (bindings, errors, _imports, _nid) = full_resolve_single(&src);
+            assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+            let stdlib_syms = count_binding(
+                &bindings,
+                |b| matches!(b, Binding::StdlibSymbol { name, .. } if name == "tryAsk"),
+            );
+            assert_eq!(
+                stdlib_syms, 1,
+                "expected the tryAsk callee to resolve as StdlibSymbol"
+            );
+        }
     }
 
     #[test]
     fn tryask_bare_import_message_label_not_resolved() {
         // `import std.actor (tryAsk)` — the bare form takes the same path.
-        let src = "import std.actor (tryAsk)\nactor Counter =\n    state count: Int = 0\n\n    on io tick =\n        count <- count + 1\nfn f c = tryAsk c tick 1000\n";
-        let (_bindings, errors, _imports, _nid) = full_resolve_single(src);
-        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        for message in ["tick", "(tick ())"] {
+            let src = format!("import std.actor (tryAsk)\nactor Counter =\n    state count: Int = 0\n\n    on io tick =\n        count <- count + 1\nfn time f (c: Handle Counter) = tryAsk c {message} 1000\n");
+            let (_bindings, errors, _imports, _nid) = full_resolve_single(&src);
+            assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        }
     }
 
     #[test]

@@ -4,6 +4,8 @@
 an unavailable target is a value the caller handles. `Actor.tryAsk` keeps the
 same contract, with its timeout supplied as a required function argument.
 
+The examples assume a `Counter` with a zero-parameter handler `on getCount () -> Int`. Write `getCount ()` at each invocation; [explicit-call migration](explicit-calls-migration.md) covers older bare messages.
+
 For a Result-returning function, import `AskError` when naming its error type
 and propagate with `?`:
 
@@ -11,13 +13,13 @@ and propagate with `?`:
 import std.actor (AskError)
 
 fn time read (counter: Handle Counter) -> Result Int AskError =
-    let count = counter ?> getCount timeout 1000 ?
+    let count = counter ?> getCount () timeout 1000 ?
     Ok (count + 1)
 ```
 
 The suffix applies to the entire ask. To compute a deadline with another
 fallible operation, keep that propagation inside parentheses:
-`counter ?> getCount timeout (loadDeadline () ?) ?`.
+`counter ?> getCount () timeout (loadDeadline () ?) ?`.
 
 A domain error can wrap `AskError` through a direct conversion:
 
@@ -28,7 +30,7 @@ instance ErrorFrom AskError ReadError =
     errorFrom (error: AskError) -> ReadError = ActorUnavailable error
 
 fn time read (counter: Handle Counter) -> Result Int ReadError =
-    let count = counter ?> getCount ?
+    let count = counter ?> getCount () ?
     Ok count
 ```
 

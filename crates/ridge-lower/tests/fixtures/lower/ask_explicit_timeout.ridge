@@ -9,4 +9,4 @@ actor Counter =
 
 fn main =
     let c = spawn Counter 0
-    c ?> get_count timeout 1000
+    c ?> get_count () timeout 1000

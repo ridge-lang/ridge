@@ -996,6 +996,10 @@ A type-level projection is applied outside its reduction domain.
 
 An explicit return has no enclosing function or lambda.
 
+### T063
+
+A message invocation omits its explicit call marker or needs a receiver annotation.
+
 ### T101
 
 The `@ffi` arity doesn't match the Ridge parameter count.

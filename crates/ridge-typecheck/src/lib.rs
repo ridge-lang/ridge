@@ -29,6 +29,7 @@ pub mod derive;
 pub mod error;
 mod error_conversion;
 pub mod exhaustiveness;
+pub mod explicit_calls;
 mod flow;
 pub mod infer;
 pub mod instantiate;
@@ -250,6 +251,8 @@ pub struct TypedModule {
     pub error_from_sites: FxHashMap<ridge_ast::Span, Vec<ridge_types::Constraint>>,
     /// Message sites whose `()` was checked as a zero-argument marker.
     pub nullary_message_sites: rustc_hash::FxHashSet<ridge_ast::Span>,
+    /// Source message sites classified using selected handlers and final types.
+    pub message_call_sites: Vec<explicit_calls::MessageCallSite>,
     /// Quoted lambdas captured during inference, keyed by the lambda's span.
     ///
     /// The lowering pass reads this to reify a quoted body into a `QExpr` tree
@@ -457,6 +460,7 @@ pub fn typecheck_workspace_with_history(
                 dict_resolution: FxHashMap::default(),
                 error_from_sites: FxHashMap::default(),
                 nullary_message_sites: rustc_hash::FxHashSet::default(),
+                message_call_sites: Vec::new(),
                 quoted_lambdas: FxHashMap::default(),
                 instance_dict_constraints: FxHashMap::default(),
             });
@@ -589,6 +593,7 @@ fn empty_module_result(module_id: ModuleId) -> ModuleTypecheckResult {
             dict_resolution: FxHashMap::default(),
             error_from_sites: FxHashMap::default(),
             nullary_message_sites: rustc_hash::FxHashSet::default(),
+            message_call_sites: Vec::new(),
             quoted_lambdas: FxHashMap::default(),
             instance_dict_constraints: FxHashMap::default(),
         },
@@ -1563,6 +1568,20 @@ fn typecheck_module_inner(
             *slot = Some(ctx.resolve_for_export(ty));
         }
     }
+    let (message_call_sites, nullary_markers) =
+        explicit_calls::collect(&ctx, b, arena, ast, &node_types);
+    ctx.nullary_message_sites.extend(nullary_markers);
+    for site in &message_call_sites {
+        if site.argument_count == 0
+            && (site.parameter_count == Some(0) || site.needs_receiver_annotation)
+        {
+            ctx.errors.push(TypeError::MissingInvocationMarker {
+                handler: site.handler.clone(),
+                needs_receiver_annotation: site.needs_receiver_annotation,
+                span: site.message,
+            });
+        }
+    }
 
     // inferred_caps is now keyed by real NodeIds (or proxy fallback).
     // The T17 proxy comment is removed; the sweep will update LowerCtx::lookup_inferred_caps.
@@ -1579,6 +1598,7 @@ fn typecheck_module_inner(
         dict_resolution, // populated by the constraint solver when classes are used
         error_from_sites: std::mem::take(&mut ctx.error_from_sites),
         nullary_message_sites: std::mem::take(&mut ctx.nullary_message_sites),
+        message_call_sites,
         quoted_lambdas, // populated by the quotation checker when quotes are used
         instance_dict_constraints, // populated by Step D3 (infer_instance_methods)
     };

@@ -165,6 +165,7 @@ impl TypeError {
         // that drifted would survive the strip in `Diagnostic::message_parts`
         // and reach the reader as two disagreeing codes on one line.
         write!(f, "{}: ", self.code())?;
+        let call_hint = crate::explicit_calls::missing_function_call(self).is_some();
         match self {
             // ── T001 ──────────────────────────────────────────────────────────
             Self::TypeMismatch {
@@ -181,6 +182,7 @@ impl TypeError {
                 write_type_hint(
                     f,
                     hint.as_deref()
+                        .or_else(|| call_hint.then_some("a bare function name is a function value; invoke it explicitly with `()` to use its result"))
                         .or_else(|| ask_hint.then_some(ASK_MIGRATION_HINT)),
                 )
             }
@@ -202,7 +204,9 @@ impl TypeError {
                     "type mismatch in call to `{callee}`\n  argument {n}: expected {expected}, got {found}",
                     n = arg_index + 1,
                 )?;
-                write_type_hint(f, ask_hint.then_some(ASK_MIGRATION_HINT))
+                write_type_hint(f, if call_hint {
+                    Some("a bare function name is a function value; invoke it explicitly with `()` to use its result")
+                } else { ask_hint.then_some(ASK_MIGRATION_HINT) })
             }
 
             // ── T003 ──────────────────────────────────────────────────────────
@@ -905,6 +909,14 @@ impl TypeError {
                 "`return` requires an enclosing function or lambda\n  fix: use the body's value expression, or move this code into a function or lambda"
             ),
 
+            Self::MissingInvocationMarker { handler, needs_receiver_annotation, .. } => {
+                if *needs_receiver_annotation {
+                    write!(f, "message invocation requires a known receiver type\n  fix: annotate the receiver's actor handle type, then supply the handler's arguments or `()` for a zero-parameter handler")
+                } else {
+                    write!(f, "message invocation requires explicit `()`\n  fix: call `{handler} ()`; a bare handler name does not invoke it")
+                }
+            }
+
             Self::InternalTypeError { detail, .. } => {
                 write!(
                     f,
@@ -948,6 +960,7 @@ impl HasErrorCode for TypeError {
             | Self::AskOnNonActor { span, .. }
             | Self::PropagateOutsideResultOrOption { span, .. }
             | Self::ReturnOutsideFunction { span }
+            | Self::MissingInvocationMarker { span, .. }
             | Self::DiscardedResult { span, .. }
             | Self::RowVariableLeak { span, .. }
             | Self::SpawnArityMismatch { span, .. }
@@ -2051,6 +2064,7 @@ mod tests {
             | TypeError::AskOnNonActor { .. }
             | TypeError::PropagateOutsideResultOrOption { .. }
             | TypeError::ReturnOutsideFunction { .. }
+            | TypeError::MissingInvocationMarker { .. }
             | TypeError::DiscardedResult { .. }
             | TypeError::UnsolvedTypeVariable { .. }
             | TypeError::RowVariableLeak { .. }
@@ -2459,6 +2473,16 @@ mod tests {
                 span: sp(),
             },
             TypeError::ReturnOutsideFunction { span: sp() },
+            TypeError::MissingInvocationMarker {
+                handler: "ping".to_owned(),
+                needs_receiver_annotation: false,
+                span: sp(),
+            },
+            TypeError::MissingInvocationMarker {
+                handler: "ping".to_owned(),
+                needs_receiver_annotation: true,
+                span: sp(),
+            },
             TypeError::InternalTypeError {
                 detail: s(),
                 span: sp(),

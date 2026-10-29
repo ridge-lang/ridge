@@ -1119,7 +1119,7 @@ actor Counter =
 
 fn spawn io time main () -> Result Unit Text =
     let c = spawn Counter
-    let _ = List.map (fn _ -> c ! tick) (List.range 1 100)
+    let _ = List.map (fn _ -> c ! tick ()) (List.range 1 100)
     -- Let the actor drain the 100 casts before we exit.
     Time.sleep 200
     Io.println "unbounded ok"
@@ -1153,7 +1153,7 @@ actor Counter =
 
 fn spawn io time main () -> Result Unit Text =
     let c = spawn Counter
-    let _ = List.map (fn _ -> c ! tick) (List.range 1 50)
+    let _ = List.map (fn _ -> c ! tick ()) (List.range 1 50)
     Time.sleep 200
     Io.println "drop newest under cap ok"
     Ok ()
@@ -1195,7 +1195,7 @@ fn spawn io time main () -> Result Unit Text =
     -- Saturate the bounded mailbox while the actor is stuck inside the
     -- first handler's 100 ms sleep. The queue caps at 5; the rest are
     -- silently dropped.
-    let _ = List.map (fn _ -> s ! tick) (List.range 1 100)
+    let _ = List.map (fn _ -> s ! tick ()) (List.range 1 100)
     match Actor.mailboxSize s
         Some n -> Io.println $"size=${Int.toText n}"
         None -> Io.println "dead"
@@ -1240,7 +1240,7 @@ actor Counter =
 
 fn spawn io time main () -> Result Unit Text =
     let c = spawn Counter
-    let _ = List.map (fn _ -> c ! tick) (List.range 1 50)
+    let _ = List.map (fn _ -> c ! tick ()) (List.range 1 50)
     Time.sleep 200
     Io.println "error under cap ok"
     Ok ()
@@ -1278,7 +1278,7 @@ fn spawn io time main () -> Result Unit Text =
     -- {mailbox_full, _} in the sender (this process); main never reaches
     -- the println below, the linked BEAM exits non-zero, and erl prints
     -- the reason on stderr.
-    let _ = List.map (fn _ -> s ! tick) (List.range 1 100)
+    let _ = List.map (fn _ -> s ! tick ()) (List.range 1 100)
     Io.println "should not reach"
     Ok ()
 "#;
@@ -1519,15 +1519,15 @@ actor Counter =
 fn spawn io time main () -> Result Unit TestError =
     let sup = Actor.supervise OneForOne 3 5000 []?
     let c = Actor.startChild sup (child Counter)?
-    c ! bump
-    c ! bump
-    let n1 = c ?> get timeout 2000 ?
+    c ! bump ()
+    c ! bump ()
+    let n1 = c ?> get () timeout 2000 ?
     Io.println $"before=${Int.toText n1}"
     c ! die 0
     -- The restart is asynchronous: give the supervisor a moment to bring the
     -- replacement up before asking through the same handle again.
     Time.sleep 500
-    let n2 = c ?> get timeout 2000 ?
+    let n2 = c ?> get () timeout 2000 ?
     Io.println $"after=${Int.toText n2}"
     Io.println "main-still-running"
     Ok ()
@@ -1594,7 +1594,7 @@ fn spawn io time main () -> Result Unit TestError =
     c ! die 0
     Time.sleep 500
     Io.println "main-ran-past-child-crash"
-    let n = c ?> get timeout 2000 ?
+    let n = c ?> get () timeout 2000 ?
     Io.println $"child-back=${Int.toText n}"
     Ok ()
 "#;
@@ -1657,16 +1657,16 @@ fn spawn io time main () -> Result Unit TestError =
     let sup = Actor.supervise OneForAll 3 5000 []?
     let a = Actor.startChild sup (Actor.childId "a" (child Counter))?
     let b = Actor.startChild sup (Actor.childId "b" (child Counter))?
-    a ! bump
-    a ! bump
-    b ! bump
-    let na = a ?> get timeout 2000 ?
-    let nb = b ?> get timeout 2000 ?
+    a ! bump ()
+    a ! bump ()
+    b ! bump ()
+    let na = a ?> get () timeout 2000 ?
+    let nb = b ?> get () timeout 2000 ?
     Io.println $"pre=${Int.toText na},${Int.toText nb}"
     a ! die 0
     Time.sleep 500
-    let ra = a ?> get timeout 2000 ?
-    let rb = b ?> get timeout 2000 ?
+    let ra = a ?> get () timeout 2000 ?
+    let rb = b ?> get () timeout 2000 ?
     Io.println $"post=${Int.toText ra},${Int.toText rb}"
     Ok ()
 "#;
@@ -1726,25 +1726,25 @@ fn spawn io time main () -> Result Unit TestError =
     let sup1 = Actor.supervise RestForOne 3 5000 []?
     let a1 = Actor.startChild sup1 (Actor.childId "a" (child Counter))?
     let b1 = Actor.startChild sup1 (Actor.childId "b" (child Counter))?
-    a1 ! bump
-    a1 ! bump
-    b1 ! bump
+    a1 ! bump ()
+    a1 ! bump ()
+    b1 ! bump ()
     a1 ! die 0
     Time.sleep 500
-    let p1a = a1 ?> get timeout 2000 ?
-    let p1b = b1 ?> get timeout 2000 ?
+    let p1a = a1 ?> get () timeout 2000 ?
+    let p1b = b1 ?> get () timeout 2000 ?
     Io.println $"p1-post=${Int.toText p1a},${Int.toText p1b}"
     -- Phase 2: crashing the SECOND child leaves the earlier one alone.
     let sup2 = Actor.supervise RestForOne 3 5000 []?
     let a2 = Actor.startChild sup2 (Actor.childId "a" (child Counter))?
     let b2 = Actor.startChild sup2 (Actor.childId "b" (child Counter))?
-    a2 ! bump
-    a2 ! bump
-    b2 ! bump
+    a2 ! bump ()
+    a2 ! bump ()
+    b2 ! bump ()
     b2 ! die 0
     Time.sleep 500
-    let p2a = a2 ?> get timeout 2000 ?
-    let p2b = b2 ?> get timeout 2000 ?
+    let p2a = a2 ?> get () timeout 2000 ?
+    let p2b = b2 ?> get () timeout 2000 ?
     Io.println $"p2-post=${Int.toText p2a},${Int.toText p2b}"
     Ok ()
 "#;
@@ -1803,7 +1803,7 @@ fn spawn io time main () -> Result Unit TestError =
     let c = Actor.startChild sup (child Counter)?
     c ! die 0
     Time.sleep 500
-    let n = c ?> get timeout 2000 ?
+    let n = c ?> get () timeout 2000 ?
     Io.println $"back-once=${Int.toText n}"
     c ! die 0
     Time.sleep 500
@@ -1930,9 +1930,9 @@ actor Slow =
 fn spawn io time main () -> Result Unit SupError =
     let sup = Actor.supervise OneForOne 3 5000 []?
     let c = Actor.startChild sup (Actor.childId "c" (child Counter))?
-    c ! bump
-    c ! bump
-    match Actor.tryAsk c get 1000
+    c ! bump ()
+    c ! bump ()
+    match Actor.tryAsk c (get ()) 1000
         Ok n -> Io.println $"live=${Int.toText n}"
         Err Noproc -> Io.println "live-noproc"
         Err Timeout -> Io.println "live-timeout"
@@ -1940,12 +1940,12 @@ fn spawn io time main () -> Result Unit SupError =
     -- Counter supervisor cannot take a Slow spec.
     let sup2 = Actor.supervise OneForOne 3 5000 []?
     let s = Actor.startChild sup2 (child Slow)?
-    match Actor.tryAsk s ponder 200
+    match Actor.tryAsk s (ponder ()) 200
         Ok n -> Io.println $"slow-ok=${Int.toText n}"
         Err Noproc -> Io.println "slow-noproc"
         Err Timeout -> Io.println "slow-timeout"
     let _ = Actor.stopChild sup "c"?
-    match Actor.tryAsk c get 1000
+    match Actor.tryAsk c (get ()) 1000
         Ok n -> Io.println $"stopped-ok=${Int.toText n}"
         Err Noproc -> Io.println "stopped-noproc"
         Err Timeout -> Io.println "stopped-timeout"
@@ -2014,7 +2014,7 @@ fn spawn io time main () -> Result Unit TestError =
     let _ = Actor.stopChild sup "c"?
     -- The child is gone: propagate the ask's Noproc value to main's error
     -- channel. The runner reports that value without an actor-call exception.
-    let n = c ?> get timeout 1000 ?
+    let n = c ?> get () timeout 1000 ?
     Io.println $"should-not-reach=${Int.toText n}"
     Ok ()
 "#;
@@ -2080,7 +2080,7 @@ fn spawn io time main () -> Result Unit TestError =
     let f = spawn Fragile
     f ! die 0
     Time.sleep 300
-    let n = f ?> get timeout 1000 ?
+    let n = f ?> get () timeout 1000 ?
     Io.println $"should-not-reach=${Int.toText n}"
     Ok ()
 "#;
@@ -2232,22 +2232,22 @@ actor Counter =
 fn spawn io time main () -> Result Unit TestError =
     let sup = Actor.supervise OneForOne 3 5000 []?
     let a = Actor.startChild sup (Actor.childId "a" (Actor.childRestart Transient (child Counter)))?
-    a ! bump
+    a ! bump ()
     -- A NORMAL stop must not restart a transient child: the ask afterwards
     -- finds nothing to answer.
     Actor.stop a
     Time.sleep 300
-    match Actor.tryAsk a get 1000
+    match Actor.tryAsk a (get ()) 1000
         Err Noproc -> Io.println "normal-stop-stayed-down"
         Ok n -> Io.println $"unexpected-reply=${Int.toText n}"
         Err Timeout -> Io.println "unexpected-timeout"
     -- An abnormal exit MUST restart a transient child, with fresh state:
     -- bumped once before the crash, the restarted counter reads 0, not 1.
     let b = Actor.startChild sup (Actor.childId "b" (Actor.childRestart Transient (child Counter)))?
-    b ! bump
+    b ! bump ()
     b ! die 0
     Time.sleep 500
-    let n = b ?> get timeout 2000 ?
+    let n = b ?> get () timeout 2000 ?
     Io.println $"crash-restarted=${Int.toText n}"
     Ok ()
 "#;
@@ -2297,10 +2297,10 @@ actor Counter =
 fn spawn io time main () -> Result Unit SupError =
     let sup = Actor.supervise OneForOne 3 5000 []?
     let c = Actor.startChild sup (Actor.childId "c" (Actor.childRestart Temporary (child Counter)))?
-    c ! bump
+    c ! bump ()
     c ! die 0
     Time.sleep 500
-    match Actor.tryAsk c get 1000
+    match Actor.tryAsk c (get ()) 1000
         Err Noproc -> Io.println "crash-stayed-down"
         Ok n -> Io.println $"unexpected-reply=${Int.toText n}"
         Err Timeout -> Io.println "unexpected-timeout"

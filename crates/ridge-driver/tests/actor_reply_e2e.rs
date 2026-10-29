@@ -21,6 +21,102 @@ fn workspace(source: &str) -> tempfile::TempDir {
 
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
+const CONTEXTUAL_CALLBACKS: &str = r#"import std.io as Io
+import std.int as Int
+type Action = fn io () -> Int
+type Invoke = fn io Action -> Int
+fn io zero -> Int =
+    Io.println "zero"
+    7
+fn io unit (_: Unit) -> Int =
+    Io.println "unit"
+    9
+fn io getZero () -> Action =
+    Io.println "get-zero"
+    zero
+fn io getFlag () -> Bool =
+    Io.println "get-flag"
+    true
+fn io getValues () -> List Action =
+    Io.println "values"
+    [zero]
+fn make () -> Invoke = fn f -> f ()
+fn invokePlain (f: fn Unit -> Int) (n: Int) -> Int = f () + n
+fn early () -> Result Int Text =
+    try
+        invokePlain (if (return Ok 7) then (fn _ -> 1) else (fn _ -> 2)) (Err "later" ?)
+    Ok 9
+pub fn earlyValue () -> Int =
+    match early ()
+        Ok n -> n
+        Err _ -> -1
+fn io invokeFirst (f: Invoke) (value: Action) -> Int = f value
+fn io invokeLast (value: a) (f: fn io a -> Int) -> Int = f value
+fn io print (n: Int) -> Unit = Io.println (Int.toText n)
+pub fn io exercise () -> Text =
+    Io.println "start"
+    let zeros = List.map (fn f -> f ()) (getValues ())
+    List.forEach print zeros
+    let units = List.map (fn f -> f ()) [unit]
+    List.forEach print units
+    print ((fn f -> f ()) zero)
+    let invoke: Invoke = fn f -> f ()
+    print (invoke zero)
+    print ((make ()) zero)
+    print (invokeFirst (fn f -> f ()) (getZero ()))
+    print (invokeLast (getZero ()) (fn f -> f ()))
+    print (invokeFirst (if getFlag () then (fn f -> f ()) else (fn f -> f ())) (getZero ()))
+    let offset = 11
+    let captured: Invoke = fn f -> f () + offset
+    print (captured zero)
+    let byBranch: Invoke = if true then (fn f -> f ()) else (fn f -> f ())
+    print (byBranch zero)
+    List.forEach Io.println (List.map (fn f -> toText (f ())) [zero])
+    Io.println "end"
+    "done"
+"#;
+
+#[test]
+fn contextual_callbacks_execute_both_arities_and_preserve_effect_order() {
+    assert!(which::which("erl").is_ok() && which::which("erlc").is_ok());
+    let dir = workspace(CONTEXTUAL_CALLBACKS);
+    std::fs::write(dir.path().join("lib/ridge.toml"), "[project]\nname=\"lib\"\nversion=\"0.1.0\"\nkind=\"library\"\n[capabilities]\nallow=[\"io\"]\n").unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let artefacts = compile_workspace(
+        CompileOptions::new(dir.path().to_owned())
+            .with_emit(EmitArtefacts::Beam)
+            .with_cache_root(cache.path().to_owned()),
+    )
+    .unwrap();
+    assert!(
+        artefacts.diagnostics.is_empty(),
+        "{:?}",
+        artefacts.diagnostics
+    );
+    let beam_dir = artefacts
+        .beam_files
+        .iter()
+        .find_map(|p| p.parent())
+        .unwrap();
+    let module = artefacts
+        .beam_files
+        .iter()
+        .filter_map(|p| p.file_stem().and_then(|s| s.to_str()))
+        .find(|name| name.to_ascii_lowercase().ends_with("_replies"))
+        .unwrap();
+    let eval =
+        format!("io:format(\"~ts~n~B~n\",[{module}:exercise(),{module}:earlyValue()]),halt().");
+    let output = std::process::Command::new("erl")
+        .args(["-noshell", "-pa"])
+        .arg(beam_dir)
+        .args(["-eval", &eval])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n"),
+        "start\nvalues\nzero\n7\nunit\n9\nzero\n7\nzero\n7\nzero\n7\nget-zero\nzero\n7\nget-zero\nzero\n7\nget-flag\nget-zero\nzero\n7\nzero\n18\nzero\n7\nzero\n7\nend\ndone\n7\n");
+}
+
 #[test]
 fn explicit_calls_preserve_function_values_until_invocation() {
     assert!(which::which("erl").is_ok() && which::which("erlc").is_ok());

@@ -204,6 +204,61 @@ fn find_record_variant(
 
 // ── Public entry points ────────────────────────────────────────────────────────
 
+/// Resolve aliases at a function boundary without changing its declared arity.
+fn function_type(ctx: &mut InferCtx, ty: &Type) -> Type {
+    let mut ty = ctx.deep_resolve(ty);
+    while let Type::Alias { body, .. } = ty {
+        ty = *body;
+    }
+    ty
+}
+
+/// Give an immediate lambda fresh monomorphic slots, to be filled by its args.
+/// Its body, annotations and latent permissions are checked by normal inference.
+fn lambda_shape(ctx: &mut InferCtx, expr: &Expr) -> Option<Type> {
+    let Expr::Lambda { params, .. } = peel_parens(expr) else {
+        return None;
+    };
+    Some(Type::Fn {
+        params: params
+            .iter()
+            .map(|_| Type::Var(ctx.fresh_tyvid()))
+            .collect(),
+        ret: Box::new(Type::Var(ctx.fresh_tyvid())),
+        caps: CapRow::Var(ctx.fresh_capvid()),
+    })
+}
+
+/// Function-producing branches and block tails need the same callback context.
+fn needs_callback_context(expr: &Expr) -> bool {
+    match peel_parens(expr) {
+        Expr::Lambda { .. } => true,
+        Expr::Block(block) => block.stmts.last().is_some_and(needs_callback_context),
+        Expr::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            needs_callback_context(then_branch)
+                || else_branch
+                    .as_ref()
+                    .is_some_and(|branch| needs_callback_context(branch))
+        }
+        Expr::Match { arms, .. } => arms.iter().any(|arm| needs_callback_context(&arm.body)),
+        _ => false,
+    }
+}
+
+/// Only function-bearing result contracts need contextual callback inference.
+fn contains_function_contract(ty: &Type) -> bool {
+    match ty {
+        Type::Fn { .. } => true,
+        Type::Alias { body, .. } => contains_function_contract(body),
+        Type::Con(_, args) | Type::Tuple(args) => args.iter().any(contains_function_contract),
+        _ => false,
+    }
+}
+
 /// Infers the type of `expr` in the current `InferCtx` and writes back the
 /// resolved type to `ctx.node_types_accum` if a `NodeIdMap` is attached.
 ///
@@ -225,9 +280,20 @@ fn find_record_variant(
 // single infer_expr_outer shim; write-back is uniform across all shapes.
 // Block and Try use their dedicated NodeKind for the write-back key.
 pub fn infer_expr(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type {
+    infer_expr_with_expected(ctx, b, expr, None)
+}
+
+/// Infer once with a value expectation. The caller still checks compatibility;
+/// the expectation supplies lambda parameter shapes, never permission to coerce.
+pub(crate) fn infer_expr_with_expected(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    expr: &Expr,
+    expected: Option<&Type>,
+) -> Type {
     let outer_projection_span = ctx.projection_use_span.replace(expr.span());
     let ty = infer_region(ctx, |ctx| {
-        let ty = infer_expr_inner(ctx, b, expr);
+        let ty = infer_expr_inner(ctx, b, expr, expected);
         ctx.flow = match expr {
             // Only a checked return boundary can supply this value constraint.
             // Keep the existing Unit behavior when no return target is present.
@@ -284,7 +350,12 @@ fn infer_region(ctx: &mut InferCtx, infer: impl FnOnce(&mut InferCtx) -> Type) -
     clippy::cognitive_complexity,
     reason = "same as too_many_lines — exhaustive Expr match is irreducibly branchy"
 )]
-fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type {
+fn infer_expr_inner(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    expr: &Expr,
+    expected: Option<&Type>,
+) -> Type {
     match expr {
         // ── Literals ─────────────────────────────────────────────────────────
         Expr::Literal(lit) => type_of_literal(b, lit),
@@ -362,8 +433,18 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
         } => {
             ctx.env.push_frame();
 
+            let contextual = expected.and_then(|ty| {
+                let ty = function_type(ctx, ty);
+                match ty {
+                    Type::Fn {
+                        params: ps, ret, ..
+                    } if ps.len() == params.len() => Some((ps, *ret)),
+                    _ => None,
+                }
+            });
+
             let mut param_types: Vec<Type> = Vec::with_capacity(params.len());
-            for lp in params {
+            for (index, lp) in params.iter().enumerate() {
                 let (pat, ann_ty) = match lp {
                     LambdaParam::Pattern(p) => (p, None),
                     LambdaParam::Annotated { pat, ty, .. } => (pat, Some(ty)),
@@ -371,7 +452,15 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 // Fresh type variable for this parameter (monomorphic).
                 let ty = if let Some(ann) = ann_ty {
                     // Annotated param — resolve the annotation to a Type.
-                    ast_type_to_type(ctx, b, ann)
+                    let annotated = ast_type_to_type(ctx, b, ann);
+                    if let Some((ps, _)) = &contextual {
+                        if let Err(error) = crate::unify::check_value(ctx, &ps[index], &annotated) {
+                            ctx.errors.push(attach_span(error, pat.span()));
+                        }
+                    }
+                    annotated
+                } else if let Some((ps, _)) = &contextual {
+                    ps[index].clone()
                 } else {
                     Type::Var(ctx.fresh_tyvid())
                 };
@@ -389,12 +478,23 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             // return type, which only agreed when the two coincided (#502).
             let declared = ret_ty.as_ref().map(|t| ast_type_to_type(ctx, b, t));
             let ret_slot = declared.unwrap_or_else(|| Type::Var(ctx.fresh_tyvid()));
-            let saved_ret = ctx.current_fn_ret.replace(ret_slot.clone());
+            // Explicit return statements use this lambda's contract, never an
+            // enclosing call argument's expectation. Ordinary body inference
+            // keeps its own result slot for accurate argument diagnostics.
+            let return_target = if ret_ty.is_some() {
+                &ret_slot
+            } else {
+                contextual.as_ref().map_or(&ret_slot, |(_, ret)| ret)
+            };
+            let saved_ret = ctx.current_fn_ret.replace(return_target.clone());
             // An enclosing `try` block's target does not reach in here for the
             // same reason: the throw is caught at the lambda.
             let saved_propagate = ctx.current_propagate_target.take();
 
-            let body_ty = infer_expr(ctx, b, body);
+            // Context guides nested lambdas but does not replace this lambda's
+            // inferred result. The enclosing call still reports an incompatible
+            // callback result as an argument mismatch.
+            let body_ty = infer_expr_with_expected(ctx, b, body, Some(return_target));
             if let Err(e) = crate::unify::check_value(ctx, &ret_slot, &body_ty) {
                 ctx.errors.push(attach_span(e, body.span()));
             }
@@ -436,7 +536,13 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 return crate::actor::infer_actor_send(ctx, b, callee, args, *span, &arena);
             }
             let constraint_start = ctx.deferred_constraints.len();
-            let callee_ty = infer_expr(ctx, b, callee);
+            // An immediately applied lambda gets its parameter skeleton before
+            // its body. Arguments can constrain that skeleton without running
+            // inference twice or changing the generated evaluation order.
+            let immediate = lambda_shape(ctx, callee);
+            let mut callee_ty = immediate
+                .clone()
+                .unwrap_or_else(|| infer_expr(ctx, b, callee));
             if matches!(callee.as_ref(), Expr::Ident(_) | Expr::Qualified(_)) {
                 let conversions: Vec<_> = ctx.deferred_constraints[constraint_start..]
                     .iter()
@@ -447,11 +553,29 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                     ctx.error_from_sites.insert(callee.span(), conversions);
                 }
             }
+            if let (Some(expected), Type::Fn { params, ret, .. }) =
+                (expected, function_type(ctx, &callee_ty))
+            {
+                let expected = ctx.deep_resolve(expected);
+                let complete = params.len() == args.len()
+                    || (params.is_empty()
+                        && args.len() == 1
+                        && matches!(peel_parens(&args[0]), Expr::Unit(_)));
+                if complete
+                    && contains_function_contract(&expected)
+                    && crate::flow::expression_flow(ctx, expr).falls_through
+                {
+                    // For example, `Some (fn f -> f ())` can learn its lambda
+                    // parameter from a declared `Option Invoke` result. Failed
+                    // equality rolls back; the ordinary value check diagnoses it.
+                    crate::unify::try_unify(ctx, &expected, &ret);
+                }
+            }
             // Quotation: a lambda flowing into a `Quote (e -> _)` parameter is
             // captured as an expression tree, not checked as an ordinary
             // function. Peek the callee's parameter types so each such lambda is
             // routed to the isolated quote checker instead of `infer_expr`.
-            let callee_params: Option<Vec<Type>> = match ctx.deep_resolve(&callee_ty) {
+            let callee_params: Option<Vec<Type>> = match function_type(ctx, &callee_ty) {
                 Type::Fn { params, .. } => Some(params),
                 _ => None,
             };
@@ -467,7 +591,52 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 .as_ref()
                 .is_some_and(|p| p.iter().any(|t| is_joincond_quote_param(ctx, t)));
             let mut pre_types: Vec<Option<Type>> = vec![None; args.len()];
-            if prepin {
+            let call_flow = ctx.flow;
+            let contextual = callee_params.as_ref().is_some_and(|ps| {
+                ps.len() >= args.len()
+                    && (immediate.is_some()
+                        || args.iter().enumerate().any(|(index, arg)| {
+                            let parameter = ctx.deep_resolve(&ps[index]);
+                            needs_callback_context(arg)
+                                && !crate::quote::is_quote_param(ctx, &parameter)
+                        }))
+            });
+            let mut argument_flows = if contextual {
+                vec![Flow::NEXT; args.len()]
+            } else {
+                Vec::new()
+            };
+            let paren_call_hint = paren_comma_call_hint(callee, args);
+            let mut context_valid = true;
+            if contextual {
+                let outer_flow = std::mem::take(&mut ctx.flow);
+                for (index, arg) in args.iter().enumerate() {
+                    if needs_callback_context(arg) {
+                        continue;
+                    }
+                    pre_types[index] = Some(infer_expr(ctx, b, arg));
+                    argument_flows[index] = std::mem::take(&mut ctx.flow);
+                }
+                ctx.flow = outer_flow;
+                // Only already inferred values participate in this pass. Error
+                // holes absorb the deferred lambda positions; their bodies and
+                // the complete argument list are checked below as usual.
+                let values: Vec<_> = pre_types
+                    .iter()
+                    .map(|ty| ty.clone().unwrap_or(Type::Error))
+                    .collect();
+                if let Some(ps) = &callee_params {
+                    context_valid = check_call_arguments(
+                        ctx,
+                        callee_name(callee).as_deref(),
+                        args,
+                        &values,
+                        ps,
+                        *span,
+                        paren_call_hint.as_ref(),
+                    );
+                }
+            } else if prepin {
                 for (i, a) in args.iter().enumerate() {
                     if matches!(peel_parens(a), Expr::Lambda { .. }) {
                         continue;
@@ -480,6 +649,9 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                     pre_types[i] = Some(at);
                 }
             }
+            if let Some(shape) = &immediate {
+                callee_ty = infer_expr_with_expected(ctx, b, callee, Some(shape));
+            }
             let arg_types: Vec<Type> = args
                 .iter()
                 .enumerate()
@@ -489,98 +661,115 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                     if let Some(t) = pre_types[i].clone() {
                         return t;
                     }
-                    // The lambda is usually parenthesised at the call site
-                    // (`f (fn u -> …)`), so look through `Paren` to find it.
-                    let inner = peel_parens(a);
-                    if matches!(inner, Expr::Lambda { .. }) {
-                        if let Some(pty) = callee_params.as_ref().and_then(|p| p.get(i)) {
-                            let pty = ctx.deep_resolve(pty);
-                            if crate::quote::is_quote_param(ctx, &pty) {
-                                // A class-method quote parameter (`filter (pred:
-                                // Quote p)`) arrives with `p` an unconstrained
-                                // variable — the `q -> p` functional dependency only
-                                // fixes it in the constraint solver, after the
-                                // arguments are synthesised. With no arrow skeleton
-                                // there is nothing for arity or entity-pinning to
-                                // read. Synthesize the predicate shape from the
-                                // lambda's own parameter count — one fresh slot per
-                                // parameter, a Bool result — and unify it into `p`.
-                                // The fresh slots then pin from the lambda
-                                // annotations like any structured quote, and the
-                                // fixed arity flows into the constraint so the fundep
-                                // rejects a wrong-arity lambda.
-                                let pty = synth_open_quote_shape(ctx, &pty, inner);
-                                let expected_ret = crate::quote::quote_result(ctx, &pty);
-                                // A grouped-aggregate quote (`having`/`summarize`)
-                                // ranges over a `Group e k` handle, not a row, with
-                                // its own vocabulary (`g.key`, `g.count`,
-                                // `g.sum(col)`, …). Route it to the group checker.
-                                if let Some((g_e, g_k)) = crate::quote::quote_group_slot(ctx, &pty)
-                                {
-                                    return if crate::quote::check_group_quote(
-                                        ctx,
-                                        b,
-                                        inner,
-                                        &g_e,
-                                        &g_k,
-                                        expected_ret.as_ref(),
-                                    ) {
-                                        pty
-                                    } else {
-                                        Type::Error
-                                    };
-                                }
-                                // One entity per quote parameter. Each slot may
-                                // already be concrete (a wrapper `fn p (q: Quote
-                                // (User -> Bool))`), or still an inference variable
-                                // when the callee is generic over it (`select :
-                                // Quote (e -> Bool)`, or the two entities of a join
-                                // condition). In the generic case, pin it from the
-                                // lambda's own annotated parameter — `(fn (u: User)
-                                // (p: Post) -> …)` resolves `e` to `User` and `f`
-                                // to `Post`.
-                                let arity = crate::quote::quote_arity(ctx, &pty).unwrap_or(1);
-                                let entities = pin_quote_entities(ctx, b, inner, &pty, arity);
-                                return match entities {
-                                    Some(entities)
-                                        if crate::quote::check_quote(
+                    let outer_flow = contextual.then(|| std::mem::take(&mut ctx.flow));
+                    let ty = (|| {
+                        // The lambda is usually parenthesised at the call site
+                        // (`f (fn u -> …)`), so look through `Paren` to find it.
+                        let inner = peel_parens(a);
+                        if matches!(inner, Expr::Lambda { .. }) {
+                            if let Some(pty) = callee_params.as_ref().and_then(|p| p.get(i)) {
+                                let pty = ctx.deep_resolve(pty);
+                                if crate::quote::is_quote_param(ctx, &pty) {
+                                    // A class-method quote parameter (`filter (pred:
+                                    // Quote p)`) arrives with `p` an unconstrained
+                                    // variable — the `q -> p` functional dependency only
+                                    // fixes it in the constraint solver, after the
+                                    // arguments are synthesised. With no arrow skeleton
+                                    // there is nothing for arity or entity-pinning to
+                                    // read. Synthesize the predicate shape from the
+                                    // lambda's own parameter count — one fresh slot per
+                                    // parameter, a Bool result — and unify it into `p`.
+                                    // The fresh slots then pin from the lambda
+                                    // annotations like any structured quote, and the
+                                    // fixed arity flows into the constraint so the fundep
+                                    // rejects a wrong-arity lambda.
+                                    let pty = synth_open_quote_shape(ctx, &pty, inner);
+                                    let expected_ret = crate::quote::quote_result(ctx, &pty);
+                                    // A grouped-aggregate quote (`having`/`summarize`)
+                                    // ranges over a `Group e k` handle, not a row, with
+                                    // its own vocabulary (`g.key`, `g.count`,
+                                    // `g.sum(col)`, …). Route it to the group checker.
+                                    if let Some((g_e, g_k)) =
+                                        crate::quote::quote_group_slot(ctx, &pty)
+                                    {
+                                        return if crate::quote::check_group_quote(
                                             ctx,
                                             b,
                                             inner,
-                                            &entities,
+                                            &g_e,
+                                            &g_k,
                                             expected_ret.as_ref(),
-                                        ) =>
-                                    {
-                                        reject_non_numeric_scalar_aggregate(
-                                            ctx,
-                                            b,
-                                            callee,
-                                            expected_ret.as_ref(),
-                                            inner.span(),
-                                        );
-                                        mark_avg_interval_accessor(
-                                            ctx,
-                                            b,
-                                            callee,
-                                            expected_ret.as_ref(),
-                                            inner.span(),
-                                        );
-                                        pty
+                                        ) {
+                                            pty
+                                        } else {
+                                            Type::Error
+                                        };
                                     }
-                                    Some(_) => Type::Error,
-                                    None => {
-                                        ctx.errors.push(TypeError::QuoteEntityUnknown {
-                                            span: inner.span(),
-                                        });
-                                        Type::Error
-                                    }
-                                };
+                                    // One entity per quote parameter. Each slot may
+                                    // already be concrete (a wrapper `fn p (q: Quote
+                                    // (User -> Bool))`), or still an inference variable
+                                    // when the callee is generic over it (`select :
+                                    // Quote (e -> Bool)`, or the two entities of a join
+                                    // condition). In the generic case, pin it from the
+                                    // lambda's own annotated parameter — `(fn (u: User)
+                                    // (p: Post) -> …)` resolves `e` to `User` and `f`
+                                    // to `Post`.
+                                    let arity = crate::quote::quote_arity(ctx, &pty).unwrap_or(1);
+                                    let entities = pin_quote_entities(ctx, b, inner, &pty, arity);
+                                    return match entities {
+                                        Some(entities)
+                                            if crate::quote::check_quote(
+                                                ctx,
+                                                b,
+                                                inner,
+                                                &entities,
+                                                expected_ret.as_ref(),
+                                            ) =>
+                                        {
+                                            reject_non_numeric_scalar_aggregate(
+                                                ctx,
+                                                b,
+                                                callee,
+                                                expected_ret.as_ref(),
+                                                inner.span(),
+                                            );
+                                            mark_avg_interval_accessor(
+                                                ctx,
+                                                b,
+                                                callee,
+                                                expected_ret.as_ref(),
+                                                inner.span(),
+                                            );
+                                            pty
+                                        }
+                                        Some(_) => Type::Error,
+                                        None => {
+                                            ctx.errors.push(TypeError::QuoteEntityUnknown {
+                                                span: inner.span(),
+                                            });
+                                            Type::Error
+                                        }
+                                    };
+                                }
                             }
                         }
+                        let expected = callee_params.as_ref().and_then(|ps| ps.get(i));
+                        infer_expr_with_expected(ctx, b, a, expected)
+                    })();
+                    if let Some(outer_flow) = outer_flow {
+                        argument_flows[i] = std::mem::replace(&mut ctx.flow, outer_flow);
                     }
-                    infer_expr(ctx, b, a)
+                    ty
                 })
                 .collect();
+
+            if contextual {
+                ctx.flow = argument_flows.into_iter().fold(call_flow, Flow::then);
+            }
+
+            if !context_valid {
+                return Type::Error;
+            }
 
             // zero-param call convention. `fn f ()` declares `params = []`
             // in the AST, producing scheme `∀. Fn { params: [], ret: T }`.
@@ -599,8 +788,6 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             // Issue #377 Trap A: `f(1, 2)` — a parenthesised comma-list hard
             // against the callee reads as a single tuple argument. The hint is
             // attached below only if the call actually fails to typecheck.
-            let paren_call_hint = paren_comma_call_hint(callee, args);
-
             if is_zero_param_unit_call {
                 // Extract the return type directly — no argument unification needed.
                 if let Type::Fn { ret, caps, .. } = resolved_callee {
@@ -751,10 +938,11 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             }
 
             let cond_flow = std::mem::take(&mut ctx.flow);
-            let then_ty = infer_expr(ctx, b, then_branch);
+            let expected = expected.filter(|_| cond_flow.falls_through);
+            let then_ty = infer_expr_with_expected(ctx, b, then_branch, expected);
             let then_flow = std::mem::take(&mut ctx.flow);
             if let Some(else_expr) = else_branch {
-                let else_ty = infer_expr(ctx, b, else_expr);
+                let else_ty = infer_expr_with_expected(ctx, b, else_expr, expected);
                 let else_flow = std::mem::take(&mut ctx.flow);
                 ctx.flow = cond_flow.then(then_flow.either(else_flow));
                 if let Err(e) = unify(ctx, &then_ty, &else_ty) {
@@ -793,7 +981,9 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                     }
                 }
 
-                let arm_ty = infer_expr(ctx, b, &arm.body);
+                let arm_expected =
+                    expected.filter(|_| scrutinee_flow.falls_through && ctx.flow.falls_through);
+                let arm_ty = infer_expr_with_expected(ctx, b, &arm.body, arm_expected);
                 let arm_flow = std::mem::take(&mut ctx.flow);
                 branch_flow = branch_flow.either(arm_flow);
                 // `unify` reports its first argument as *expected*. The type
@@ -836,13 +1026,14 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
         }
 
         // ── Block ─────────────────────────────────────────────────────────────
-        Expr::Block(block) => infer_block(ctx, b, block),
+        Expr::Block(block) => infer_block_with_expected(ctx, b, block, expected),
 
         // ── Return ────────────────────────────────────────────────────────────
         // Verbatim return: unify value with the enclosing fn's return type.
         Expr::Return { value, span } => {
-            let val_ty = infer_expr(ctx, b, value);
-            if let Some(fn_ret) = ctx.current_fn_ret.clone() {
+            let fn_ret = ctx.current_fn_ret.clone();
+            let val_ty = infer_expr_with_expected(ctx, b, value, fn_ret.as_ref());
+            if let Some(fn_ret) = fn_ret {
                 // The return type is what the value had to meet, so it is the
                 // expected side and goes first.
                 if let Err(e) = crate::unify::check_value(ctx, &fn_ret, &val_ty) {
@@ -863,7 +1054,8 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
         } => {
             let outer_error = std::mem::take(&mut ctx.used_error_type);
             let errors_before = ctx.errors.len();
-            let mut val_ty = infer_expr(ctx, b, value);
+            let annotation = ann.as_ref().map(|ty| ast_type_to_type(ctx, b, ty));
+            let mut val_ty = infer_expr_with_expected(ctx, b, value, annotation.as_ref());
             let recovered = ctx.used_error_type || ctx.errors.len() != errors_before;
             ctx.used_error_type |= outer_error;
 
@@ -871,8 +1063,7 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             // found, and the annotation is what the value had to meet. The span
             // is the value's, so the caret lands on the thing that failed rather
             // than on the enclosing declaration.
-            if let Some(ann_ty) = ann {
-                let ann_converted = ast_type_to_type(ctx, b, ann_ty);
+            if let Some(ann_converted) = annotation {
                 if let Err(e) = crate::unify::check_value(ctx, &ann_converted, &val_ty) {
                     ctx.errors.push(attach_span(e, value.span()));
                 }
@@ -898,11 +1089,11 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             ty: ann,
             span: _,
         } => {
-            let mut val_ty = infer_expr(ctx, b, value);
+            let annotation = ann.as_ref().map(|ty| ast_type_to_type(ctx, b, ty));
+            let mut val_ty = infer_expr_with_expected(ctx, b, value, annotation.as_ref());
             // Same as the `let` above: annotation is the expectation, and the
             // caret belongs on the value.
-            if let Some(ann_ty) = ann {
-                let ann_converted = ast_type_to_type(ctx, b, ann_ty);
+            if let Some(ann_converted) = annotation {
                 if let Err(e) = crate::unify::check_value(ctx, &ann_converted, &val_ty) {
                     ctx.errors.push(attach_span(e, value.span()));
                 }
@@ -922,7 +1113,7 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             span,
         } => {
             let target_ty = infer_expr(ctx, b, target);
-            let val_ty = infer_expr(ctx, b, value);
+            let val_ty = infer_expr_with_expected(ctx, b, value, Some(&target_ty));
             if let Err(e) = crate::unify::check_value(ctx, &target_ty, &val_ty) {
                 ctx.errors.push(attach_span(e, *span));
             }
@@ -984,7 +1175,7 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
         }
 
         // ── Paren ─────────────────────────────────────────────────────────────
-        Expr::Paren { inner, .. } => infer_expr(ctx, b, inner),
+        Expr::Paren { inner, .. } => infer_expr_with_expected(ctx, b, inner, expected),
 
         // ── FieldAccessorFn (.name) ───────────────────────────────────────────
         // T8 handles field access.  Placeholder: return an opaque fn type.
@@ -1171,7 +1362,7 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             // Inner fns always have Body::Expr; the body-less forms are
             // top-level stdlib only.
             let body_ty = match &decl.body {
-                Body::Expr(e) => infer_expr(ctx, b, e),
+                Body::Expr(e) => infer_expr_with_expected(ctx, b, e, Some(&ret_ty_declared)),
                 // A fully-declared signature and nothing to infer against it.
                 Body::Ffi { .. } | Body::Primitive => ret_ty_declared.clone(),
             };
@@ -1618,6 +1809,16 @@ fn build_arena_from_ctx(ctx: &InferCtx) -> ridge_types::TyConArena {
 /// An empty `stmts` vec is a parser-level error (`P014 EmptyBlock`);
 /// `infer_block` returns `Unit` defensively.
 pub fn infer_block(ctx: &mut InferCtx, b: &BuiltinTyCons, block: &Block) -> Type {
+    infer_block_with_expected(ctx, b, block, None)
+}
+
+/// Supply a block's value context only to its tail, retaining lexical scope.
+fn infer_block_with_expected(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    block: &Block,
+    expected: Option<&Type>,
+) -> Type {
     // Match the resolver's block scope. Only bindings expire here: unification,
     // effects and return/propagation flow still belong to the enclosing context.
     ctx.env.push_frame();
@@ -1635,7 +1836,8 @@ pub fn infer_block(ctx: &mut InferCtx, b: &BuiltinTyCons, block: &Block) -> Type
             }
         }
         // Infer even an unreachable tail: its own type errors remain errors.
-        infer_expr(ctx, b, &block.stmts[n - 1])
+        let expected = expected.filter(|_| ctx.flow.falls_through);
+        infer_expr_with_expected(ctx, b, &block.stmts[n - 1], expected)
     });
     ctx.env.pop_frame();
     ty

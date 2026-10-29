@@ -1,6 +1,6 @@
 //! Lower a value-producing `try` expression to a neutral Result scope.
 //!
-//! The complete Try node has type Result; its block has the payload type.
+//! A try boundary targets Result even when its value never reaches a continuation.
 //! Propagation exits this scope, while explicit return still exits the function.
 //! Empty blocks produce a diagnostic and a defensive Unit stub.
 
@@ -36,7 +36,7 @@ pub fn lower_try(ctx: &mut LowerCtx<'_>, block: &Block, span: Span) -> IrExpr {
 
     // ── Resolve the try block's return type for the propagation scope ─────────
     //
-    // Look up the complete expression via `(span, NodeKind::Try)`.
+    // Read the independent checked target, not a divergent expression's value.
     // Fallback: `Type::Error` — the inner `?` site will emit L999.
     let scope_ty = resolve_try_type(ctx, span);
 
@@ -54,12 +54,17 @@ pub fn lower_try(ctx: &mut LowerCtx<'_>, block: &Block, span: Span) -> IrExpr {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Read the Result type of the whole Try node, rather than the block payload.
+/// Read the checked boundary target. Standalone lowering callers may still
+/// provide a concrete Result node type without a typed-module side table.
 fn resolve_try_type(ctx: &LowerCtx<'_>, try_span: Span) -> Type {
-    ctx.node_id_map
-        .as_ref()
-        .and_then(|m| m.get(try_span, NodeKind::Try))
-        .and_then(|nid| ctx.node_type(nid).cloned())
+    ctx.try_scope_types
+        .and_then(|targets| targets.get(&try_span).cloned())
+        .or_else(|| {
+            ctx.node_id_map
+                .as_ref()
+                .and_then(|m| m.get(try_span, NodeKind::Try))
+                .and_then(|nid| ctx.node_type(nid).cloned())
+        })
         .unwrap_or(Type::Error)
 }
 

@@ -328,6 +328,9 @@ pub struct InferCtx {
     /// Flow of the current inference region; nested regions save and restore it.
     pub(crate) flow: crate::flow::Flow,
 
+    /// Intrinsic continuation facts queried before contextual result inference.
+    pub(crate) value_flow_cache: FxHashMap<crate::flow::CacheKey, crate::flow::Flow>,
+
     /// The propagation target type for `?` operators.
     ///
     /// - Inside a `try { … }` block, this is set to the try-expression's
@@ -452,6 +455,8 @@ pub struct InferCtx {
     /// Message sites where the selected zero-parameter handler makes `()` an
     /// invocation marker rather than a real Unit payload.
     pub nullary_message_sites: FxHashSet<ridge_ast::Span>,
+    /// Result targets of try boundaries, independent of divergent value types.
+    pub try_scope_types: FxHashMap<ridge_ast::Span, Type>,
     /// Selected handler arity, including bodies without expression indices.
     pub message_parameter_counts: FxHashMap<ridge_ast::Span, usize>,
     /// Propagations whose destination is still an inference variable. Resolve
@@ -631,6 +636,7 @@ impl InferCtx {
             errors: Vec::new(),
             current_fn_ret: None,
             flow: crate::flow::Flow::NEXT,
+            value_flow_cache: FxHashMap::default(),
             current_propagate_target: None,
             user_tycon_names: FxHashMap::default(),
             actor_exit_reason: None,
@@ -651,6 +657,7 @@ impl InferCtx {
             deferred_constraints: Vec::new(),
             error_from_sites: FxHashMap::default(),
             nullary_message_sites: FxHashSet::default(),
+            try_scope_types: FxHashMap::default(),
             message_parameter_counts: FxHashMap::default(),
             pending_error_propagations: Vec::new(),
             rigids: FxHashMap::default(),

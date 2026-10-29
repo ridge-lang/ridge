@@ -940,8 +940,10 @@ fn check_handler_args(
     args: &[Expr],
     span: Span,
 ) {
+    ctx.nullary_message_sites.remove(&span);
     let normalised_args: &[Expr] =
         if handler_params.is_empty() && args.len() == 1 && matches!(&args[0], Expr::Unit(_)) {
+            ctx.nullary_message_sites.insert(span);
             let _ = infer_expr(ctx, b, &args[0]);
             &[]
         } else {
@@ -1174,6 +1176,27 @@ mod tests {
             "Send must return Unit, got {ty:?}"
         );
         ctx.env.pop_frame();
+    }
+
+    #[test]
+    fn message_unit_marker_follows_the_selected_parameter_list() {
+        let (_, b) = make_builtins();
+        let mut ctx = InferCtx::for_tests();
+        let span = ds();
+        let args = [Expr::Unit(span)];
+        check_handler_args(&mut ctx, &b, "Counter", "value", &[], &args, span);
+        assert!(ctx.nullary_message_sites.contains(&span));
+        check_handler_args(
+            &mut ctx,
+            &b,
+            "Counter",
+            "value",
+            &[Type::Con(b.unit, vec![])],
+            &args,
+            span,
+        );
+        assert!(ctx.errors.is_empty(), "{:?}", ctx.errors);
+        assert!(!ctx.nullary_message_sites.contains(&span));
     }
 
     // ── T15-2: send_unknown_handler_T015 ─────────────────────────────────────

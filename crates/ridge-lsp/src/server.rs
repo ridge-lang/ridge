@@ -1193,6 +1193,15 @@ fn add_ask_fixes(index: &mut WorkspaceIndex, state: &IncrementalState) {
         &state.type_errors,
     );
     index.syntax_fixes.extend(fixes);
+    let fixes = crate::explicit_calls::collect_explicit_call_fixes(index, &state.typed);
+    index.syntax_fixes.extend(fixes);
+    let fixes = crate::explicit_calls::collect_function_call_fixes(
+        index,
+        &state.typed,
+        &state.resolved,
+        &state.type_errors,
+    );
+    index.syntax_fixes.extend(fixes);
 }
 
 /// The workspace module a document URI maps to. Compares through [`uri_key`] so

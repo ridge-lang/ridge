@@ -357,6 +357,10 @@ fn distance (x1, y1) (x2, y2) -> Float =
 
 The marker `()` declares a function with no parameters; it does not declare a destructuring pattern or a parameter accepting `Unit`. Use `(_: Unit)` to accept and ignore a `Unit` argument.
 
+A parameterless declaration may also omit the marker: `fn ready -> Bool = true` and `fn ready () -> Bool = true` are alternative declarations of the same kind of function. At a use site, write `ready ()` to invoke it; bare `ready` is the function value. This applies through aliases, imports and function-valued constants. An expected result type never invokes a referenced function. Actual values, including collection empties and nullary union constructors, remain values without `()`.
+
+See [explicit-call migration](explicit-calls-migration.md) for actor messages, editor fixes and the opt-in migration command.
+
 `let` is a layout binding: the body follows on subsequent lines at the same indentation, and the value is in scope for the rest of the block. Ridge has no `let … in` expression — the ML-family form is rejected with `P033 LetInNotSupported`.
 
 A nested block introduces its own lexical scope. A declaration in that block
@@ -505,11 +509,13 @@ actor Counter =
 -- Spawning returns a Handle
 fn spawn time main () =
     let c = spawn Counter
-    c ! increment                -- send (fire-and-forget)
-    c ! increment
-    let reply = c ?> get         -- Result Int AskError
-    ...
+    c ! increment ()             -- send (fire-and-forget)
+    c ! increment ()
+    let reply = c ?> get ()      -- Result Int AskError
+    ()
 ```
+
+A zero-parameter handler is invoked with an explicit `()`: `c ! increment ()`, `c ?> get ()`, `Actor.send c (increment ())` or `Actor.tryAsk c (get ()) 1000`. Both `on increment = ...` and `on increment () = ...` remain valid declaration forms. A bare handler name at a messaging site is a missing invocation marker, not a first-class message value. A real `Unit` parameter retains its argument: `on consume (_: Unit)` receives the value sent by `c ! consume ()`. `spawn` and `child` construction syntax is unchanged.
 
 Handlers may declare capabilities; the actor's effective capability set is the union of every member that serves the running actor — its `on` handlers, its `terminate` callback and its `onDown` handler. Capabilities of handlers are **encapsulated**: callers of `?>` inherit only `time` (for the implicit timeout), not the handler's capabilities. See [§6.4](#64-actor-encapsulation-model-b).
 
@@ -527,6 +533,9 @@ When actor state cannot be given a compile-time default, an `init` block initial
 - Callers of `spawn` do **not** inherit `init`'s capabilities (consistent with handler encapsulation). Only the `spawn` capability is required in the caller.
 
 ```ridge
+actor Limiter =
+    on allow () -> Bool = true
+
 actor Worker =
     state limiter: Handle Limiter
     state count: Int = 0
@@ -535,12 +544,14 @@ actor Worker =
         limiter <- l
 
     on time tick () -> Unit =
-        match (limiter ?> allow)
-            true  -> count <- count + 1
-            false -> ()
+        match limiter ?> allow ()
+            Ok true  -> count <- count + 1
+            Ok false -> ()
+            Err _    -> ()
 
 -- Spawn passes args positionally to init
-let w = spawn Worker limiterHandle
+fn spawn startWorker (limiterHandle: Handle Limiter) -> Handle Worker =
+    spawn Worker limiterHandle
 ```
 
 #### §3.9.x. Mailbox configuration

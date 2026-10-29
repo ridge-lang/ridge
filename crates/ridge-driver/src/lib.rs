@@ -19,6 +19,7 @@
 #![warn(missing_docs)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+pub mod call_migration;
 pub mod check;
 pub mod compile;
 pub mod diag_adapters;
@@ -33,6 +34,7 @@ pub mod test_contract;
 
 // ── Flat re-exports ───────────────────────────────────────────────────────────
 
+pub use call_migration::migrate_message_calls;
 pub use check::{
     check_standalone_incremental, check_workspace, check_workspace_incremental,
     check_workspace_typed, check_workspace_typed_with_history, collect_diagnostics, CheckArtefacts,

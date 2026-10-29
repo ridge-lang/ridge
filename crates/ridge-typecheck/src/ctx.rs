@@ -452,6 +452,8 @@ pub struct InferCtx {
     /// Message sites where the selected zero-parameter handler makes `()` an
     /// invocation marker rather than a real Unit payload.
     pub nullary_message_sites: FxHashSet<ridge_ast::Span>,
+    /// Selected handler arity, including bodies without expression indices.
+    pub message_parameter_counts: FxHashMap<ridge_ast::Span, usize>,
     /// Propagations whose destination is still an inference variable. Resolve
     /// after the surrounding body's expected type has reached that variable.
     pub pending_error_propagations: Vec<(Type, Type, ridge_ast::Span)>,
@@ -649,6 +651,7 @@ impl InferCtx {
             deferred_constraints: Vec::new(),
             error_from_sites: FxHashMap::default(),
             nullary_message_sites: FxHashSet::default(),
+            message_parameter_counts: FxHashMap::default(),
             pending_error_propagations: Vec::new(),
             rigids: FxHashMap::default(),
             monomorphic_in_scc: FxHashMap::default(),

@@ -32,68 +32,68 @@ instance ErrorFrom AskError RequestError =
     errorFrom (e: AskError) -> RequestError = RequestFailed e
 
 fn time choose (h: Handle Worker) (c: Handle Count) -> Result (Handle Worker) AskError =
-    let _ = c ?> bump ?
+    let _ = c ?> bump () ?
     Ok h
 
 fn time deadline (c: Handle Count) -> Result Int AskError =
-    let _ = c ?> bump ?
+    let _ = c ?> bump () ?
     Ok 1000
 
 fn rejectDeadline () -> Result Int AskError = Err Timeout
 
 pub fn spawn time operandError () -> Result Int AskError =
     let h = spawn Worker
-    h ?> value timeout (rejectDeadline () ?)
+    h ?> value () timeout (rejectDeadline () ?)
 
 pub fn spawn time tryOperandError () -> Result Int AskError =
     let h = spawn Worker
     try
-        let n = h ?> value timeout (rejectDeadline () ?) ?
+        let n = h ?> value () timeout (rejectDeadline () ?) ?
         n
 
 pub fn spawn time success () -> Result Int AskError =
     let h = spawn Worker
-    h ?> value
+    h ?> value ()
 
 pub fn spawn time propagated () -> Result Int AskError =
     let h = spawn Worker
-    let n = h ?> value timeout 1000 ?
+    let n = h ?> value () timeout 1000 ?
     Ok (n + 1)
 
 pub fn spawn time nested () -> Result (Result Int Text) AskError =
     let h = spawn Worker
-    h ?> nested timeout never
+    h ?> nested () timeout never
 
 pub fn spawn time timedOut () -> Result Int AskError =
     let h = spawn Worker
-    h ?> slow timeout 0
+    h ?> slow () timeout 0
 
 pub fn spawn time dead () -> Result Int AskError =
     let h = spawn Worker
     Actor.stop h
-    h ?> value timeout never
+    h ?> value () timeout never
 
 pub fn spawn time interrupted () -> Result Int AskError =
     let h = spawn Worker
-    h ?> disappear
+    h ?> disappear ()
 
 pub fn spawn time converted () -> Result Int RequestError =
     let h = spawn Worker
     Actor.stop h
-    let n = h ?> value ?
+    let n = h ?> value () ?
     Ok n
 
 pub fn spawn time scoped () -> Result Int AskError =
     let h = spawn Worker
     try
-        let n = h ?> value ?
+        let n = h ?> value () ?
         n + 2
 
 pub fn spawn time once () -> Result Int AskError =
     let h = spawn Worker
     let c = spawn Count
-    let _ = (choose h c ?) ?> echo (c ?> bump ?) timeout (deadline c ?) ?
-    c ?> value
+    let _ = (choose h c ?) ?> echo (c ?> bump () ?) timeout (deadline c ?) ?
+    c ?> value ()
 "#;
 
 #[test]

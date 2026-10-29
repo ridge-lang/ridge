@@ -586,7 +586,10 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             // in the AST, producing scheme `∀. Fn { params: [], ret: T }`.
             // At the call site `f ()`, `()` is `Expr::Unit` → `arg_types = [Unit]`.
             // Treat `Fn{params:[]} (Unit)` as a valid zero-arg application of `f`.
-            let resolved_callee = ctx.deep_resolve(&callee_ty);
+            let mut resolved_callee = ctx.deep_resolve(&callee_ty);
+            while let Type::Alias { body, .. } = resolved_callee {
+                resolved_callee = *body;
+            }
             let is_zero_param_unit_call = matches!(
                 &resolved_callee,
                 Type::Fn { params, .. } if params.is_empty()

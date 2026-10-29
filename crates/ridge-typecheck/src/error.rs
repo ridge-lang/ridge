@@ -1051,6 +1051,16 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// A message invocation omits its explicit call marker.
+    MissingInvocationMarker {
+        /// Selected handler name.
+        handler: String,
+        /// Whether the receiver needs an annotation before arity can be checked.
+        needs_receiver_annotation: bool,
+        /// Source span of the handler identifier.
+        span: Span,
+    },
+
     /// Internal type-checker invariant violation — should never reach users.
     ///
     /// In debug builds this is accompanied by a `debug_assert!` panic (see
@@ -1067,7 +1077,7 @@ pub enum TypeError {
 impl TypeError {
     /// Returns the stable `T###` error code for this variant.
     ///
-    /// The codes are allocated in `T001..T062` and `T999` is the catch-all
+    /// The codes are allocated in `T001..T063` and `T999` is the catch-all
     /// internal error. No overlap with `R###`/`M###`.
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -1131,6 +1141,7 @@ impl TypeError {
             Self::TupleWidthMismatch { .. } => "T057",
             Self::PropagateOutsideResultOrOption { .. } => "T058",
             Self::ReturnOutsideFunction { .. } => "T062",
+            Self::MissingInvocationMarker { .. } => "T063",
             Self::InternalTypeError { .. } => "T999",
         }
     }

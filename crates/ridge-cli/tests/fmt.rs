@@ -27,6 +27,117 @@ const MALFORMATTED: &str = "fn foo x = x\n\n\n\nfn bar y = y\n";
 /// the two top-level function declarations.
 const FORMATTED: &str = "fn foo x = x\n\nfn bar y = y\n";
 
+const CALLS_SOURCE: &str = "-- café 🧭\nimport std.actor as A\nactor Counter =\n    on ping = ()\n    on take (_: Unit) = ()\npub fn send (h: Handle Counter) -> Unit =\n    h ! ping -- preserve this\n    h ! take ()\n    let _ = A.send h ping\n";
+const CALLS_MIGRATED: &str = "-- café 🧭\nimport std.actor as A\nactor Counter =\n    on ping = ()\n    on take (_: Unit) = ()\npub fn send (h: Handle Counter) -> Unit =\n    h ! ping () -- preserve this\n    h ! take ()\n    let _ = A.send h (ping ())\n";
+
+#[test]
+fn fmt_migrate_calls_is_explicit_typed_and_idempotent() {
+    for ending in ["\n", "\r\n"] {
+        let source = CALLS_SOURCE.replace('\n', ending);
+        let expected = CALLS_MIGRATED.replace('\n', ending);
+        let tw = make_workspace("Calls", &source);
+        let path = tw.path.join("apps/demo/src/Calls.ridge");
+        let formatted = ridge_cmd()
+            .args(["fmt", "--stdin"])
+            .write_stdin(source.clone())
+            .assert()
+            .success();
+        assert!(!String::from_utf8_lossy(&formatted.get_output().stdout).contains("h ! ping ()"));
+        ridge_cmd()
+            .args(["fmt", "--migrate-calls", "--check"])
+            .current_dir(&tw.path)
+            .assert()
+            .failure()
+            .stdout(contains("would migrate"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), source);
+        ridge_cmd()
+            .args(["fmt", "--migrate-calls"])
+            .current_dir(&tw.path)
+            .assert()
+            .success();
+        assert_eq!(fs::read_to_string(&path).unwrap(), expected);
+        ridge_cmd()
+            .arg("check")
+            .current_dir(&tw.path)
+            .assert()
+            .success();
+        ridge_cmd()
+            .args(["fmt", "--migrate-calls", "--check"])
+            .current_dir(&tw.path)
+            .assert()
+            .success();
+        ridge_cmd()
+            .args(["fmt", "--migrate-calls"])
+            .current_dir(&tw.path)
+            .assert()
+            .success();
+        assert_eq!(fs::read_to_string(&path).unwrap(), expected);
+    }
+}
+
+#[test]
+fn fmt_migrate_calls_supports_standalone_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Calls.ridge");
+    fs::write(&path, CALLS_SOURCE).unwrap();
+    ridge_cmd()
+        .args(["fmt", "--migrate-calls"])
+        .arg(&path)
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    assert_eq!(fs::read_to_string(&path).unwrap(), CALLS_MIGRATED);
+    ridge_cmd()
+        .arg("check")
+        .arg(&path)
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn fmt_migrate_calls_refuses_unknown_or_invalid_messages_without_writes() {
+    for source in [
+        "pub fn unresolved h -> Unit = h ! ping\n",
+        "actor Counter =\n    on take (_: Unit) = ()\npub fn send (h: Handle Counter) = h ! take\n",
+    ] {
+        let tw = make_workspace("Invalid", source);
+        let path = tw.path.join("apps/demo/src/Invalid.ridge");
+        ridge_cmd()
+            .args(["fmt", "--migrate-calls"])
+            .current_dir(&tw.path)
+            .assert()
+            .failure();
+        assert_eq!(fs::read_to_string(path).unwrap(), source);
+    }
+    ridge_cmd()
+        .args(["fmt", "--migrate-calls", "--stdin"])
+        .assert()
+        .failure();
+    ridge_cmd()
+        .args(["fmt", "--migrate-calls", "--migrate-tests"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn fmt_migrate_calls_keeps_readonly_sources_intact() {
+    let tw = make_workspace("Calls", CALLS_SOURCE);
+    let path = tw.path.join("apps/demo/src/Calls.ridge");
+    let original = fs::metadata(&path).unwrap().permissions();
+    let mut readonly = original.clone();
+    readonly.set_readonly(true);
+    fs::set_permissions(&path, readonly).unwrap();
+    let result = ridge_cmd()
+        .args(["fmt", "--migrate-calls"])
+        .current_dir(&tw.path)
+        .assert()
+        .failure();
+    fs::set_permissions(&path, original).unwrap();
+    result.stderr(contains("C103"));
+    assert_eq!(fs::read_to_string(path).unwrap(), CALLS_SOURCE);
+}
+
 // ── Test 1: --check passes on an already-formatted file ──────────────────────
 
 /// `ridge fmt --check` exits 0 when every file is already formatted.

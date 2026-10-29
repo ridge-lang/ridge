@@ -21,6 +21,83 @@ fn workspace(source: &str) -> tempfile::TempDir {
 
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
+#[test]
+fn explicit_calls_preserve_function_values_until_invocation() {
+    assert!(which::which("erl").is_ok() && which::which("erlc").is_ok());
+    let source = r#"import lib.Helpers as H
+import std.io as Io
+type Callback = fn io () -> Bool
+type UnitCallback = fn io Unit -> Bool
+const callback: Callback = H.bare
+const unitCallback: UnitCallback = H.unit
+fn identity f = f
+pub fn io exercise () -> Text =
+    let first = H.bare
+    var second = H.paren
+    let passed = identity first
+    Io.println "start"
+    let _ = passed ()
+    let _ = second ()
+    let _ = callback ()
+    let _ = unitCallback ()
+    let _ = List.map (fn (f: Callback) -> f ()) [first, second]
+    Io.println "end"
+    "done"
+"#;
+    let dir = workspace(source);
+    std::fs::write(
+        dir.path().join("lib/src/Helpers.ridge"),
+        r#"import std.io as Io
+pub fn io bare -> Bool =
+    Io.println "bare"
+    true
+pub fn io paren () -> Bool =
+    Io.println "paren"
+    false
+pub fn io unit (_: Unit) -> Bool = true
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("lib/ridge.toml"),
+        "[project]\nname=\"lib\"\nversion=\"0.1.0\"\nkind=\"library\"\n[capabilities]\nallow=[\"io\"]\n").unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let artefacts = compile_workspace(
+        CompileOptions::new(dir.path().to_owned())
+            .with_emit(EmitArtefacts::Beam)
+            .with_cache_root(cache.path().to_owned()),
+    )
+    .unwrap();
+    assert!(
+        artefacts.diagnostics.is_empty(),
+        "{:?}",
+        artefacts.diagnostics
+    );
+    let beam_dir = artefacts
+        .beam_files
+        .iter()
+        .find_map(|p| p.parent())
+        .unwrap();
+    let module = artefacts
+        .beam_files
+        .iter()
+        .filter_map(|p| p.file_stem().and_then(|s| s.to_str()))
+        .find(|name| name.to_ascii_lowercase().ends_with("_replies"))
+        .unwrap();
+    let eval = format!("io:format(\"~ts~n\",[{module}:exercise()]),halt().");
+    let output = std::process::Command::new("erl")
+        .args(["-noshell", "-pa"])
+        .arg(beam_dir)
+        .args(["-eval", &eval])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    // Taking each reference above must print nothing before `start`.
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n"),
+        "start\nbare\nparen\nbare\nbare\nparen\nend\ndone\n"
+    );
+}
+
 const SOURCE: &str = r#"
 import std.actor (AskError)
 type Book = { value: Int }
@@ -233,7 +310,8 @@ const UNIT_HELPERS: &str = r"
 import lib.Actors (Counter)
 import std.actor as Mail
 import std.actor (AskError, SendError)
-pub fn mark (h: Handle Counter) -> Unit = h ! mark ()
+type CounterAlias = Counter
+pub fn mark (h: Handle CounterAlias) -> Unit = List.forEach (fn target -> target ! mark ()) [h]
 pub fn time read (h: Handle Counter) -> Result Int AskError = h ?> reply ()
 pub fn send (h: Handle Counter) -> Result Unit SendError = Mail.send h (mark ())
 pub fn time tryRead (h: Handle Counter) -> Result Int AskError = Mail.tryAsk h (reply ()) 2000

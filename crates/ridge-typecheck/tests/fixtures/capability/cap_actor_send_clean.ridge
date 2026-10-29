@@ -10,5 +10,5 @@ actor Counter =
 
 fn spawn main () -> Unit =
     let c = spawn Counter
-    let _ = Actor.send c increment
+    let _ = Actor.send c (increment ())
     ()

@@ -195,23 +195,33 @@ fn all_fixtures_pass() {
 /// with the polymorphic stub type embedded in the message.
 #[test]
 fn forward_actor_type_reference_typechecks_cleanly() {
-    let src = "\
-actor Caller =\n\
-    state target: Handle Receiver\n\
-\n\
-    init (r: Handle Receiver) =\n\
-        target <- r\n\
-\n\
-    on poke =\n\
-        target ! ping\n\
-\n\
-actor Receiver =\n\
-    state count: Int = 0\n\
-\n\
-    on ping =\n\
-        count <- count + 1\n\
+    let src = r"actor Caller =
+    state target: Handle Receiver
+
+    init (r: Handle Receiver) =
+        target <- r
+
+    on poke =
+        target ! ping ()
+
+actor Receiver =
+    state count: Int = 0
+
+    on ping =
+        count <- count + 1
 ";
-    let errors = run_typecheck_on_source("forward_actor", src);
+    let td = build_single_module_workspace("forward_actor", src);
+    let resolved = resolve_workspace(discover_workspace(td.path()).graph.unwrap());
+    assert!(resolved.lex_errors.is_empty(), "{:?}", resolved.lex_errors);
+    assert!(
+        resolved.parse_errors.is_empty(),
+        "{:?}",
+        resolved.parse_errors
+    );
+    assert!(resolved.errors.is_empty(), "{:?}", resolved.errors);
+    let result = typecheck_workspace(&resolved);
+    let errors: Vec<_> = result.errors.into_iter().map(|(_, error)| error).collect();
+    assert!(errors.is_empty(), "{errors:?}");
     let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
     assert!(
         !codes.contains(&"T020"),

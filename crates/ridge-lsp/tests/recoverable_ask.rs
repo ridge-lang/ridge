@@ -22,9 +22,9 @@ fn workspace(source: &str) -> tempfile::TempDir {
 
 #[test]
 fn propagation_repairs_annotations_calls_and_converted_errors() {
-    let source = format!("{PREFIX}type LocalError = | Failed AskError\ninstance ErrorFrom AskError LocalError =\n    errorFrom (e: AskError) -> LocalError = Failed e\n\nfn plus (n: Int) -> Int = n + 1\n\npub fn time read (h: Handle Worker) -> Result Int AskError =\n    let n: Int = h ?> value timeout never\n    Ok (n + 1)\n\npub fn time converted (h: Handle Worker) -> Result Int LocalError =\n    let n = plus (h ?> value timeout 1000)\n    Ok n\n");
+    let source = format!("{PREFIX}type LocalError = | Failed AskError\ninstance ErrorFrom AskError LocalError =\n    errorFrom (e: AskError) -> LocalError = Failed e\n\nfn plus (n: Int) -> Int = n + 1\n\npub fn time read (h: Handle Worker) -> Result Int AskError =\n    let n: Int = h ?> value () timeout never\n    Ok (n + 1)\n\npub fn time converted (h: Handle Worker) -> Result Int LocalError =\n    let n = plus (h ?> value () timeout 1000)\n    Ok n\n");
     let source = source
-        + "\npub fn time discarded (h: Handle Worker) -> Result Unit AskError =\n    h ?> value\n    ((h ?> value))\n    Ok ()\n";
+        + "\npub fn time discarded (h: Handle Worker) -> Result Unit AskError =\n    h ?> value ()\n    ((h ?> value ()))\n    Ok ()\n";
     let dir = workspace(&source);
     let mut state = check_workspace_incremental(
         CheckOptions::new(dir.path().to_path_buf()).with_retain_indices(true),
@@ -74,8 +74,8 @@ fn propagation_repairs_annotations_calls_and_converted_errors() {
     }
     assert!(repaired.contains("timeout never ?"));
     assert!(repaired.contains("timeout 1000 ?)"));
-    assert!(repaired.contains("let _ = h ?> value ?"));
-    assert!(repaired.contains("let _ = ((h ?> value ?))"));
+    assert!(repaired.contains("let _ = h ?> value () ?"));
+    assert!(repaired.contains("let _ = ((h ?> value () ?))"));
     let module = state
         .resolved
         .graph
@@ -103,7 +103,7 @@ fn propagation_repairs_annotations_calls_and_converted_errors() {
     );
     let uri =
         tower_lsp::lsp_types::Url::from_file_path(dir.path().join("app/src/Main.ridge")).unwrap();
-    let offset = repaired.find("h ?> value").unwrap() + 2;
+    let offset = repaired.find("h ?> value ()").unwrap() + 2;
     let (line, col) =
         ridge_lexer::LineIndex::new(&repaired).byte_to_utf16(u32::try_from(offset).unwrap());
     let (hover, _) = index.hover_at(&uri, line, col).expect("ask has a hover");
@@ -112,7 +112,7 @@ fn propagation_repairs_annotations_calls_and_converted_errors() {
 
 #[test]
 fn propagation_is_not_offered_across_a_callback_boundary_or_without_a_conversion() {
-    let source = format!("{PREFIX}fn invoke (f: fn Unit -> Int) -> Int = f ()\n\npub fn time plain (h: Handle Worker) -> Int = h ?> value\n\npub fn time wrong (h: Handle Worker) -> Result Int Text =\n    let n: Int = h ?> value\n    Ok n\n\npub fn time callback (h: Handle Worker) -> Result Int AskError =\n    let n = invoke (fn _ -> h ?> value)\n    Ok n\n");
+    let source = format!("{PREFIX}fn invoke (f: fn Unit -> Int) -> Int = f ()\n\npub fn time plain (h: Handle Worker) -> Int = h ?> value ()\n\npub fn time wrong (h: Handle Worker) -> Result Int Text =\n    let n: Int = h ?> value ()\n    Ok n\n\npub fn time callback (h: Handle Worker) -> Result Int AskError =\n    let n = invoke (fn _ -> h ?> value ())\n    Ok n\n");
     let dir = workspace(&source);
     let state = check_workspace_incremental(
         CheckOptions::new(dir.path().to_path_buf()).with_retain_indices(true),
@@ -131,7 +131,7 @@ fn propagation_is_not_offered_across_a_callback_boundary_or_without_a_conversion
 
 #[test]
 fn an_already_consumed_result_is_not_rewritten_for_an_outer_discard() {
-    let source = format!("{PREFIX}fn consume (reply: Result Int AskError) -> Int =\n    match reply\n        Ok n -> n\n        Err _ -> 0\n\npub fn time used (h: Handle Worker) -> Result Unit AskError =\n    consume (h ?> value)\n    Ok ()\n");
+    let source = format!("{PREFIX}fn consume (reply: Result Int AskError) -> Int =\n    match reply\n        Ok n -> n\n        Err _ -> 0\n\npub fn time used (h: Handle Worker) -> Result Unit AskError =\n    consume (h ?> value ())\n    Ok ()\n");
     let dir = workspace(&source);
     let state = check_workspace_incremental(
         CheckOptions::new(dir.path().to_path_buf()).with_retain_indices(true),
@@ -152,7 +152,7 @@ fn an_already_consumed_result_is_not_rewritten_for_an_outer_discard() {
 
 #[test]
 fn propagation_repairs_nested_result_boundaries_with_utf16_positions() {
-    let source = format!("{PREFIX}fn time invoke (f: fn time Unit -> Result Int AskError) -> Result Int AskError = f ()\n\npub fn time callback (h: Handle Worker) -> Result Int AskError =\n    invoke (fn _ ->\n        -- café 🧭\n        let n: Int = h ?> value\n        Ok n)\n\npub fn time scoped (h: Handle Worker) -> Result Int AskError =\n    try\n        let n: Int = h ?> value timeout never\n        n\n").replace('\n', "\r\n");
+    let source = format!("{PREFIX}fn time invoke (f: fn time Unit -> Result Int AskError) -> Result Int AskError = f ()\n\npub fn time callback (h: Handle Worker) -> Result Int AskError =\n    invoke (fn _ ->\n        -- café 🧭\n        let n: Int = h ?> value ()\n        Ok n)\n\npub fn time scoped (h: Handle Worker) -> Result Int AskError =\n    try\n        let n: Int = h ?> value () timeout never\n        n\n").replace('\n', "\r\n");
     let dir = workspace(&source);
     let mut state = check_workspace_incremental(
         CheckOptions::new(dir.path().to_path_buf()).with_retain_indices(true),
@@ -201,7 +201,7 @@ fn propagation_repairs_nested_result_boundaries_with_utf16_positions() {
 
 #[test]
 fn handler_annotation_alone_does_not_offer_a_function_propagation_edit() {
-    let source = format!("{PREFIX}actor Forwarder =\n    on time read (h: Handle Worker) -> Result Int AskError =\n        let n: Int = h ?> value\n        Ok n\n");
+    let source = format!("{PREFIX}actor Forwarder =\n    on time read (h: Handle Worker) -> Result Int AskError =\n        let n: Int = h ?> value ()\n        Ok n\n");
     let dir = workspace(&source);
     let state = check_workspace_incremental(
         CheckOptions::new(dir.path().to_path_buf()).with_retain_indices(true),

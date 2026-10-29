@@ -623,7 +623,7 @@ async fn test_ask_timeout_operand_publishes_no_diagnostics() {
         std::fs::write(
             app_src.join("Main.ridge"),
             format!(
-                "actor Store =\n    state items: Int = 0\n\n    on count () -> Int =\n        items\n\npub fn spawn time f () =\n    let s = spawn Store\n    s ?> count timeout {operand}\n"
+                "actor Store =\n    state items: Int = 0\n\n    on count () -> Int =\n        items\n\npub fn spawn time f () =\n    let s = spawn Store\n    s ?> count () timeout {operand}\n"
             ),
         )
         .expect("write source");
@@ -7439,6 +7439,133 @@ async fn file_diagnostics(server: &RidgeLanguageServer, uri: &Url) -> Vec<Diagno
         panic!("full diagnostics")
     };
     report.full_document_diagnostic_report.items
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep the protocol setup, actual edits and diagnostic refresh oracle together"
+)]
+async fn test_explicit_calls_diagnostics_actions_and_buffer_recheck() {
+    let source = "-- café 🧭\nimport std.actor as A\nactor Counter =\n    on ping = ()\nfn ready -> Bool = true\npub fn time exercise (h: Handle Counter) -> Unit =\n    h ! ping -- retain\n    let _ = h ?> ping\n    let _ = A.send h ping\n    let _ = A.tryAsk h ping 1000\npub fn choose () -> Int = if ready then 7 else 0\n";
+    for ending in ["\n", "\r\n"] {
+        let source = source.replace('\n', ending);
+        let (root, uri) = write_mini_workspace("explicit-calls", "Main.ridge", &source);
+        std::fs::write(root.join("app/ridge.toml"), "[project]\nname=\"app\"\nversion=\"0.1.0\"\nkind=\"library\"\n[capabilities]\nallow=[\"time\"]\n").unwrap();
+        let (mut service, socket) = build_test_service();
+        let log = drive_client(socket);
+        let mut caps = full_capabilities();
+        caps.text_document.as_mut().unwrap().diagnostic =
+            Some(DiagnosticClientCapabilities::default());
+        caps.workspace = pull_caps(true, true).workspace;
+        let request = Request::build("initialize")
+            .id(1_i64)
+            .params(
+                serde_json::to_value(InitializeParams {
+                    root_uri: Some(Url::from_file_path(&root).unwrap()),
+                    capabilities: caps,
+                    ..Default::default()
+                })
+                .unwrap(),
+            )
+            .finish();
+        ServiceExt::ready(&mut service)
+            .await
+            .unwrap()
+            .call(request)
+            .await
+            .unwrap();
+        let server = service.inner();
+        server.initialized(InitializedParams {}).await;
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "ridge".to_owned(),
+                    version: 1,
+                    text: source.clone(),
+                },
+            })
+            .await;
+        wait_for_refresh(&log).await;
+        let diagnostics = file_diagnostics(server, &uri).await;
+        assert_eq!(diagnostics.len(), 5, "{diagnostics:?}");
+        assert_eq!(
+            diagnostics
+                .iter()
+                .filter(|d| d.code == Some(NumberOrString::String("T063".to_owned())))
+                .count(),
+            4
+        );
+        let mut edits = Vec::new();
+        for diagnostic in diagnostics {
+            let actions = server
+                .code_action(CodeActionParams {
+                    text_document: TextDocumentIdentifier { uri: uri.clone() },
+                    range: diagnostic.range,
+                    context: CodeActionContext {
+                        diagnostics: vec![diagnostic],
+                        ..Default::default()
+                    },
+                    work_done_progress_params: WorkDoneProgressParams::default(),
+                    partial_result_params: PartialResultParams::default(),
+                })
+                .await
+                .unwrap()
+                .unwrap();
+            let actions: Vec<_> = actions
+                .into_iter()
+                .filter_map(|action| match action {
+                    CodeActionOrCommand::CodeAction(action)
+                        if action.title.contains("explicit") =>
+                    {
+                        Some(action)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            edits.extend(actions[0].edit.as_ref().unwrap().changes.as_ref().unwrap()[&uri].clone());
+        }
+        assert_eq!(edits.len(), 5);
+        let lines = ridge_lexer::LineIndex::new(&source);
+        edits.sort_by_key(|edit| {
+            std::cmp::Reverse((edit.range.start.line, edit.range.start.character))
+        });
+        let mut edited = source.clone();
+        for edit in edits {
+            let start =
+                lines.utf16_to_byte(edit.range.start.line, edit.range.start.character) as usize;
+            let end = lines.utf16_to_byte(edit.range.end.line, edit.range.end.character) as usize;
+            edited.replace_range(start..end, &edit.new_text);
+        }
+        assert!(edited.contains("ping () -- retain"));
+        assert!(edited.contains("if (ready ()) then 7 else 0"));
+        let baseline = log.lock().unwrap().refreshed;
+        server
+            .did_change(DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: uri.clone(),
+                    version: 2,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: edited.clone(),
+                }],
+            })
+            .await;
+        wait_for_refresh_after(&log, baseline).await;
+        let expected = ridge_lexer::normalise_line_endings(&edited);
+        assert!(server
+            .workspace_index()
+            .await
+            .unwrap()
+            .module_text
+            .iter()
+            .any(|text| text.as_ref() == expected.as_str()));
+        assert!(file_diagnostics(server, &uri).await.is_empty());
+    }
 }
 
 #[tokio::test]

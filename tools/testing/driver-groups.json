@@ -57,6 +57,7 @@
       "is_predicate_e2e",
       "json_value_e2e",
       "let_polymorphism_e2e",
+      "list_slice_pattern_e2e",
       "monotonic_e2e",
       "multi_param_typeclass_e2e",
       "newtype_cross_module_e2e",

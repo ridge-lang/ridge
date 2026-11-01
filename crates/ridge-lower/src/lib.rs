@@ -44,6 +44,7 @@ pub mod operators;
 pub mod pipe;
 pub mod prelude_dict;
 pub mod propagate;
+mod slice_pattern;
 #[cfg(test)]
 mod test_support;
 pub mod try_block;

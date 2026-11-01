@@ -98,8 +98,7 @@ pub struct LowerCtx<'tw> {
     /// Non-empty only when the upstream `TypedWorkspace` was partial or
     /// contained unsolved type variables.  All variants have `Severity::Error`.
     pub errors: Vec<LowerError>,
-    /// By-value comparison guards accumulated while lowering the current match
-    /// arm's pattern.
+    /// Value comparisons and slice length guards for the current arm's pattern.
     ///
     /// A decimal-literal sub-pattern cannot match structurally — `1.5` and
     /// `1.50` are equal by value but stored at different scales — so it lowers
@@ -109,6 +108,10 @@ pub struct LowerCtx<'tw> {
     /// pattern never contains an expression (nothing re-enters lowering between
     /// the push and the drain).
     pub pending_pattern_guards: Vec<ridge_ir::IrExpr>,
+    /// Bindings whose list extraction is safe only after pattern guards pass.
+    pub(crate) pending_slice_extractions: Vec<crate::slice_pattern::Extraction>,
+    /// The current pattern needs length checks before its user guard.
+    pub(crate) pending_slice_pattern: bool,
     /// Span-keyed `NodeId` map reconstructed from the module AST.  Used by
     /// [`crate::core`] to look up bindings for `Ident` and `QualifiedName`
     /// nodes via `(span, kind) → NodeId`.
@@ -303,6 +306,8 @@ impl<'tw> LowerCtx<'tw> {
             fresh_local_counter: 0,
             errors: Vec::new(),
             pending_pattern_guards: Vec::new(),
+            pending_slice_extractions: Vec::new(),
+            pending_slice_pattern: false,
             node_id_map: None,
             binding_map: None,
             workspace: None,

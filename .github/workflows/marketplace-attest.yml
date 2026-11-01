@@ -31,7 +31,7 @@ jobs:
           - label: Linux
             runner: ubuntu-22.04
           - label: macOS
-            runner: macos-14
+            runner: macos-15
 
     steps:
       - name: Install VS Code (Linux)

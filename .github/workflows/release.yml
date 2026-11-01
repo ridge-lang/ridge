@@ -37,10 +37,10 @@ jobs:
             runner: ubuntu-22.04
             archive_ext: tar.gz
           - target: x86_64-apple-darwin
-            runner: macos-14
+            runner: macos-15
             archive_ext: tar.gz
           - target: aarch64-apple-darwin
-            runner: macos-14
+            runner: macos-15
             archive_ext: tar.gz
           - target: x86_64-pc-windows-msvc
             runner: windows-2022

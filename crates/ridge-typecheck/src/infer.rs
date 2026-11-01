@@ -957,6 +957,12 @@ fn infer_expr_inner(
             }
         }
 
+        Expr::Is {
+            subject,
+            pattern,
+            span,
+        } => crate::is_predicate::infer(ctx, b, subject, pattern, *span),
+
         // ── Match ─────────────────────────────────────────────────────────────
         Expr::Match {
             scrutinee,
@@ -1867,6 +1873,9 @@ fn infer_block_with_expected(
     reason = "exhaustive match over all Pattern variants"
 )]
 pub fn infer_pattern(ctx: &mut InferCtx, b: &BuiltinTyCons, pat: &Pattern, expected_ty: &Type) {
+    if crate::is_predicate::infer_constructor(ctx, b, pat, expected_ty) {
+        return;
+    }
     match pat {
         // ── Wildcard ──────────────────────────────────────────────────────────
         Pattern::Wildcard { .. } => {
@@ -1979,13 +1988,18 @@ pub fn infer_pattern(ctx: &mut InferCtx, b: &BuiltinTyCons, pat: &Pattern, expec
             // The module path the constructor was written through does not
             // change what it is: resolution has already walked it, and `name`
             // is the constructor either way.
-            qualifier: _,
+            qualifier,
             name,
             fields,
             has_rest,
             args,
             span,
         } => {
+            if qualifier.is_some() {
+                // Resolution owns unknown qualified-name diagnostics. Never
+                // fall back to an unrelated constructor with the same spelling.
+                return;
+            }
             if let Some(field_pats) = fields {
                 // Record-body constructor pattern: resolve the record type and
                 // type each field against its declared type.

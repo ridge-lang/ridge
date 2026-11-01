@@ -460,6 +460,10 @@ pub struct InferCtx {
     pub nullary_message_sites: FxHashSet<ridge_ast::Span>,
     /// Result targets of try boundaries, independent of divergent value types.
     pub try_scope_types: FxHashMap<ridge_ast::Span, Type>,
+    /// Checked predicate patterns consumed by lowering.
+    pub is_patterns: FxHashMap<ridge_ast::Span, ridge_ast::Pattern>,
+    /// Constructor pattern sites mapped from resolver identity to arena identity.
+    pub resolved_constructors: FxHashMap<ridge_ast::Span, (TyConId, usize)>,
     /// Selected handler arity, including bodies without expression indices.
     pub message_parameter_counts: FxHashMap<ridge_ast::Span, usize>,
     /// Propagations whose destination is still an inference variable. Resolve
@@ -683,6 +687,8 @@ impl InferCtx {
             error_from_sites: FxHashMap::default(),
             nullary_message_sites: FxHashSet::default(),
             try_scope_types: FxHashMap::default(),
+            is_patterns: FxHashMap::default(),
+            resolved_constructors: FxHashMap::default(),
             message_parameter_counts: FxHashMap::default(),
             pending_error_propagations: Vec::new(),
             rigids: FxHashMap::default(),

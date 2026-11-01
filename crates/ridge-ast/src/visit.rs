@@ -375,6 +375,12 @@ pub fn walk_expr<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, e: &'ast Expr) {
                 v.visit_expr(eb);
             }
         }
+        Expr::Is {
+            subject, pattern, ..
+        } => {
+            v.visit_expr(subject);
+            v.visit_pattern(pattern);
+        }
         Expr::Match {
             scrutinee, arms, ..
         } => {

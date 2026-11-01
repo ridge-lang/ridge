@@ -173,6 +173,10 @@ pub struct LowerCtx<'tw> {
     pub nullary_message_sites: Option<&'tw FxHashSet<Span>>,
     /// Checked try targets; divergent value types do not identify these scopes.
     pub try_scope_types: Option<&'tw FxHashMap<Span, Type>>,
+    /// Checked predicate patterns from type inference.
+    pub is_patterns: Option<&'tw FxHashMap<Span, ridge_ast::Pattern>>,
+    /// Checked pattern constructor identities, including imported owners.
+    pub constructor_sites: Option<&'tw FxHashMap<Span, (TyConId, usize)>>,
     /// Lazy name→`TyConId` cache populated on first call to
     /// [`LowerCtx::lookup_tycon_by_name`].
     tycon_name_cache: Option<TyConNameCache>,
@@ -308,6 +312,8 @@ impl<'tw> LowerCtx<'tw> {
             error_from_sites: None,
             nullary_message_sites: None,
             try_scope_types: None,
+            is_patterns: None,
+            constructor_sites: None,
             tycon_name_cache: None,
             class_table: None,
             instance_env: None,

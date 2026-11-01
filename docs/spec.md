@@ -382,6 +382,47 @@ Match guards use `when`, not `if` (`if` is only the conditional expression). A g
 
 **Or-patterns** (`p1 | p2 | …`) are valid only at the root of a `match` arm, not nested inside another pattern. Every alternative must bind the same variables, and each shared binding must have the same type across alternatives — so `Plus x | Minus x -> x` is allowed while `Some x | None -> …` is rejected. An arm covers the union of its alternatives for exhaustiveness checking.
 
+#### Non-binding pattern predicates
+
+`expression is pattern` returns `Bool`, evaluating its subject exactly once.
+It uses the typed structural rules of `match`, independently of `Eq`:
+
+```ridge
+type Shape = | Square Int | Circle { radius: Int }
+fn isSquare (shape: Shape) -> Bool = shape is Square
+fn isSmallSquare (shape: Shape) -> Bool = shape is Square 5
+```
+
+A bare root constructor ignores all its payload fields: `shape is Square`
+is equivalent to `match shape` with `Square _ -> true` and `_ -> false`.
+The shorthand also covers record constructors and record-payload variants.
+Nested constructors retain ordinary arity: use `value is Some (Square _)`.
+Imports and module qualification select the actual constructor; a constructor
+of an unrelated type is a type error. Opaque constructors remain inaccessible
+outside their defining module.
+
+Explicit record patterns require every field unless they end in `..`:
+`shape is Circle { radius = 5 }`, `user is User { age = 18, .. }`.
+Tuples, literals, wildcards and list/rest patterns retain their `match` meaning,
+including existing recursion limits. A failed predicate returns `false`.
+Prefix rest supports nested/refutable patterns, as in `items is [Some _, ..]`.
+Suffix/middle rest is limited to a root pattern with wildcard elements, such as
+`items is [_, .., _]`; nested slices and refutable slice elements are rejected.
+
+Predicates cannot bind names: variables, record shorthand, named rest captures
+and aliases are rejected with guidance to use `match`. No names enter either
+branch, Boolean composition or the surrounding scope. The subject's static type
+does not narrow. There is no runtime type inspection, cast, `is not`, or combined
+pattern syntax; combine predicates with `&&`, `||` or `Bool.not` instead.
+
+`is` has equality-level, non-associative precedence, below calls/field access
+and above `&&`/`||`. Thus `shape is Square && ready` means
+`(shape is Square) && ready`. Parenthesize comparisons on either side of another
+comparison: `(shape is Square) == ready`. Ordinary `match` arity, exhaustiveness
+and redundancy checks remain unchanged. Short-circuiting and subject capability
+requirements also remain unchanged. Shorter syntax makes no speed or
+constant-time comparison guarantee.
+
 ### 3.7. Implicit prelude
 
 Every Ridge module has a set of names in scope without any `import` declaration.  The prelude is resolved in `prelude_resolutions()` (`crates/ridge-resolve/src/imports.rs`) and is injected before per-module import resolution.  User imports for the same `local_name` take priority and suppress the prelude binding (no collision error).
@@ -787,12 +828,18 @@ fn process (user: User) -> Result Unit Error =
 ```
 actor    as       catch    class    const    deriving else
 false    fn       guard    if       import   in       init
-instance let      match    on       opaque   pub      return
+instance is       let      match    on       opaque   pub      return
 spawn    state    then     true     try      type     var
 when     where    with
 ```
 
 #### Capability keywords (soft-reserved, contextual)
+
+`is` is reserved, including in declarations and field names. Migrate an existing
+identifier named `is` to a descriptive name such as `isReady` at its declaration,
+imports and uses before upgrading; the editor rejects renaming another symbol
+to `is`. Names such as `isReady` remain ordinary identifiers. Text and comments
+are unaffected.
 
 These are keywords only after `fn` or `on`; elsewhere they are ordinary identifiers.
 
@@ -989,7 +1036,7 @@ Note: The full normative grammar lives in `docs/grammar.ebnf`. The productions a
 | 1 | `\|>` | left | |
 | 2 | `\|\|` | right | |
 | 3 | `&&` | right | |
-| 4 | `==` `!=` | none | |
+| 4 | `==` `!=` `is` | none | Parenthesize chains involving `is`; its right operand is a non-binding pattern. |
 | 5 | `<` `>` `<=` `>=` | none | |
 | 6 | `++` `::` | right | |
 | 7 | `+` `-` | left | |

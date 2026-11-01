@@ -246,6 +246,15 @@ pub enum UnaryOp {
 /// `Ask`, `Send`, `Spawn`, `Propagate`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
+    /// A non-binding typed pattern predicate. Bare root constructors ignore payloads.
+    Is {
+        /// The subject, evaluated exactly once.
+        subject: Box<Self>,
+        /// The source pattern; contains no bindings.
+        pattern: crate::Pattern,
+        /// Full source location.
+        span: Span,
+    },
     // ── Atoms ────────────────────────────────────────────────────────────
     /// A literal value: integer, float, bool, or text.
     Literal(Literal),
@@ -636,6 +645,7 @@ impl Expr {
         match self {
             Self::Literal(lit) => lit.span(),
             Self::Unit(span)
+            | Self::Is { span, .. }
             | Self::Interp { span, .. }
             | Self::List { span, .. }
             | Self::Tuple { span, .. }

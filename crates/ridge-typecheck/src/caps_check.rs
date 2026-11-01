@@ -360,6 +360,9 @@ fn check_body(
         }
 
         // ── Match ─────────────────────────────────────────────────────────────
+        Expr::Is { subject, .. } => {
+            check_body(ctx, b, enclosing_name, enclosing_effective, subject);
+        }
         Expr::Match {
             scrutinee, arms, ..
         } => {

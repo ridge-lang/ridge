@@ -208,6 +208,8 @@ pub fn lower_module(
     ctx.error_from_sites = Some(&typed.error_from_sites);
     ctx.nullary_message_sites = Some(&typed.nullary_message_sites);
     ctx.try_scope_types = Some(&typed.try_scope_types);
+    ctx.is_patterns = Some(&typed.is_patterns);
+    ctx.constructor_sites = Some(&typed.constructor_sites);
     // Attach the class/instance registries for dictionary-lowering.
     ctx.attach_class_registries(&ws.class_table, &ws.instance_env);
     if let Some(rm) = rmod {

@@ -54,6 +54,7 @@
       "inner_fn_polymorphic_e2e",
       "interp_prelude_totext_e2e",
       "interp_rich_scalars_e2e",
+      "is_predicate_e2e",
       "json_value_e2e",
       "let_polymorphism_e2e",
       "monotonic_e2e",

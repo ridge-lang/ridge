@@ -347,6 +347,7 @@ const fn token_description(tok: &Token) -> &'static str {
         Token::KwThen => "then",
         Token::KwElse => "else",
         Token::KwMatch => "match",
+        Token::KwIs => "is",
         Token::KwReturn => "return",
         Token::KwImport => "import",
         Token::KwConst => "const",

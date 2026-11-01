@@ -54,6 +54,7 @@ fn token_kind_name(t: &Token) -> &'static str {
         Token::KwIn => "KW_IN",
         Token::KwInit => "KW_INIT",
         Token::KwInstance => "KW_INSTANCE",
+        Token::KwIs => "KW_IS",
         Token::KwLet => "KW_LET",
         Token::KwMatch => "KW_MATCH",
         Token::KwOn => "KW_ON",

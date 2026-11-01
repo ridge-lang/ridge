@@ -220,6 +220,7 @@ const fn expr_span(expr: &Expr) -> Span {
         | Expr::Propagate { span: s, .. }
         | Expr::If { span: s, .. }
         | Expr::Match { span: s, .. }
+        | Expr::Is { span: s, .. }
         | Expr::Try { span: s, .. }
         | Expr::Guard { span: s, .. }
         | Expr::Return { span: s, .. }

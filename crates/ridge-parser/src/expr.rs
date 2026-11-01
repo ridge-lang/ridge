@@ -15,7 +15,7 @@
 //! | 1     | `\|>`            | left        |  1  |  2  |
 //! | 2     | `\|\|`           | right       |  4  |  3  |
 //! | 3     | `&&`             | right       |  6  |  5  |
-//! | 4     | `==`, `!=`       | non-assoc   |  7  |  8  |
+//! | 4     | `==`, `!=`, `is` | non-assoc   |  7  |  8  |
 //! | 5     | `<`,`>`,`<=`,`>=`| non-assoc   |  9  | 10  |
 //! | 6     | `++`, `::`       | right       | 12  | 11  |
 //! | 7     | `+`, `-`         | left        | 13  | 14  |
@@ -183,8 +183,6 @@ pub(crate) fn parse_expr_pratt(cur: &mut Cursor<'_>) -> Result<Expr, ParseError>
 /// `min_bp`.
 ///
 /// Internal to this module; all callers go through [`parse_expr_pratt`].
-#[allow(clippy::too_many_lines)] // Pratt table + postfix block is inherently long
-#[allow(clippy::cognitive_complexity)] // same reason — Pratt loop dispatch is irreducibly branchy
 fn parse_expr_bp(cur: &mut Cursor<'_>, min_bp: u8) -> Result<Expr, ParseError> {
     // ── Recursion-depth guard ─────────────────────────────────────────────────
     // Bound the descent before doing any work. The guard decrements on drop, so
@@ -193,7 +191,7 @@ fn parse_expr_bp(cur: &mut Cursor<'_>, min_bp: u8) -> Result<Expr, ParseError> {
     let cur = &mut *guard.cur;
 
     // ── Prefix / nud ─────────────────────────────────────────────────────────
-    let mut lhs = if cur.peek() == &Token::Minus {
+    let lhs = if cur.peek() == &Token::Minus {
         // Unary minus (only prefix operator). rbp = 19.
         let op_span = cur.span();
         cur.bump(); // consume `-`
@@ -209,8 +207,24 @@ fn parse_expr_bp(cur: &mut Cursor<'_>, min_bp: u8) -> Result<Expr, ParseError> {
         parse_expr_atom12(cur)?
     };
 
+    parse_expr_tail(cur, min_bp, lhs)
+}
+
+// Infix temporaries are not needed while descending into a parenthesized atom.
+// Keep this frame separate so prefix nesting retains its existing stack budget;
+// the caller's DepthGuard remains live throughout the tail.
+#[inline(never)]
+#[allow(clippy::too_many_lines)] // Pratt table + postfix block is inherently long
+#[allow(clippy::cognitive_complexity)] // Pratt loop dispatch is irreducibly branchy
+fn parse_expr_tail(cur: &mut Cursor<'_>, min_bp: u8, mut lhs: Expr) -> Result<Expr, ParseError> {
     // ── Infix / led loop ─────────────────────────────────────────────────────
     loop {
+        // Pattern predicates share equality precedence but cannot chain with
+        // any comparison without explicit parentheses.
+        if cur.peek() == &Token::KwIs && 7 > min_bp {
+            lhs = parse_is_predicate(cur, lhs)?;
+            continue;
+        }
         // ── `with` at Pratt level 5.5 (lbp=10, rbp=11, left-assoc) ──────────
         // `with` produces `Expr::With` — not a BinOp — so it is handled before
         // the generic `infix_bp` lookup.  lbp=10 means it binds tighter than
@@ -497,6 +511,12 @@ fn parse_expr_bp(cur: &mut Cursor<'_>, min_bp: u8) -> Result<Expr, ParseError> {
         // `a + b == c` would be wrongly rejected, because `non_assoc_level` returns
         // 0 for every op and the level-equality check would always match.
         if is_non_assoc(op) {
+            if matches!(lhs, Expr::Is { .. }) {
+                return Err(ParseError::NonAssociativeChain {
+                    span: cur.span(),
+                    op: op_static_str(op),
+                });
+            }
             if let Expr::Binary { op: prev_op, .. } = &lhs {
                 if is_non_assoc(*prev_op) && non_assoc_level(*prev_op) == non_assoc_level(op) {
                     let err_span = cur.span();
@@ -524,6 +544,12 @@ fn parse_expr_bp(cur: &mut Cursor<'_>, min_bp: u8) -> Result<Expr, ParseError> {
         }
 
         let rhs = parse_expr_bp(cur, rbp)?;
+        if is_non_assoc(op) && matches!(rhs, Expr::Is { .. }) {
+            return Err(ParseError::NonAssociativeChain {
+                span: rhs.span(),
+                op: op_static_str(op),
+            });
+        }
         let span = lhs.span().merge(rhs.span()).merge(op_span);
         lhs = Expr::Binary {
             op,
@@ -534,6 +560,148 @@ fn parse_expr_bp(cur: &mut Cursor<'_>, min_bp: u8) -> Result<Expr, ParseError> {
     }
 
     Ok(lhs)
+}
+
+// Keep pattern parsing and construction storage out of every recursive Pratt
+// frame, including calls that contain no predicate. Preserve the existing
+// parser depth budget and the ordinary test thread's stack.
+#[inline(never)]
+fn parse_is_predicate(cur: &mut Cursor<'_>, subject: Expr) -> Result<Expr, ParseError> {
+    if comparison_expr(&subject) {
+        return Err(ParseError::NonAssociativeChain {
+            span: cur.span(),
+            op: "is",
+        });
+    }
+    cur.bump();
+    let pattern = crate::pattern::parse_pattern(cur)?;
+    if let Some(span) = predicate_binding(&pattern) {
+        return Err(ParseError::UnexpectedToken {
+            span,
+            description: "`is` patterns cannot bind names; use `match` to extract values".into(),
+        });
+    }
+    if let Some(span) = unsupported_predicate_slice(&pattern, true) {
+        return Err(ParseError::UnexpectedToken {
+            span,
+            description: "suffix and middle rest patterns in `is` must be at the root with wildcard elements; use an explicit list predicate for nested or refutable slice tests".into(),
+        });
+    }
+    if cur.peek() == &Token::KwIs || infix_bp(cur.peek()).is_some_and(|(_, _, op)| is_non_assoc(op))
+    {
+        return Err(ParseError::NonAssociativeChain {
+            span: cur.span(),
+            op: "is",
+        });
+    }
+    let span = subject.span().merge(pattern.span());
+    Ok(Expr::Is {
+        subject: Box::new(subject),
+        pattern,
+        span,
+    })
+}
+
+const fn comparison_expr(expr: &Expr) -> bool {
+    matches!(expr, Expr::Is { .. }) || matches!(expr, Expr::Binary { op, .. } if is_non_assoc(*op))
+}
+
+fn unsupported_predicate_slice(
+    pattern: &ridge_ast::Pattern,
+    root: bool,
+) -> Option<ridge_ast::Span> {
+    use ridge_ast::{pattern::ListPatElem, Pattern};
+    if pattern.is_varlen_list() {
+        let Pattern::List { elements, span } = pattern else {
+            return None;
+        };
+        if !root || elements.iter().any(|element| matches!(element, ListPatElem::Elem(pattern) if !wildcard_pattern(pattern))) {
+            return Some(*span);
+        }
+    }
+    match pattern {
+        Pattern::Paren { inner, .. } => unsupported_predicate_slice(inner, root),
+        Pattern::Constructor { args, fields, .. } => args
+            .iter()
+            .find_map(|pattern| unsupported_predicate_slice(pattern, false))
+            .or_else(|| {
+                fields.as_ref().and_then(|fields| {
+                    fields.iter().find_map(|field| {
+                        field
+                            .pattern
+                            .as_ref()
+                            .and_then(|pattern| unsupported_predicate_slice(pattern, false))
+                    })
+                })
+            }),
+        Pattern::Record { fields, .. } => fields.iter().find_map(|field| {
+            field
+                .pattern
+                .as_ref()
+                .and_then(|pattern| unsupported_predicate_slice(pattern, false))
+        }),
+        Pattern::Tuple { elems, .. } => elems
+            .iter()
+            .find_map(|pattern| unsupported_predicate_slice(pattern, false)),
+        Pattern::Cons { head, tail, .. } => unsupported_predicate_slice(head, false)
+            .or_else(|| unsupported_predicate_slice(tail, false)),
+        Pattern::List { elements, .. } => elements.iter().find_map(|element| {
+            if let ListPatElem::Elem(pattern) = element {
+                unsupported_predicate_slice(pattern, false)
+            } else {
+                None
+            }
+        }),
+        _ => None,
+    }
+}
+
+fn wildcard_pattern(pattern: &ridge_ast::Pattern) -> bool {
+    match pattern {
+        ridge_ast::Pattern::Wildcard { .. } => true,
+        ridge_ast::Pattern::Paren { inner, .. } => wildcard_pattern(inner),
+        _ => false,
+    }
+}
+
+fn predicate_binding(pattern: &ridge_ast::Pattern) -> Option<ridge_ast::Span> {
+    use ridge_ast::{pattern::ListPatElem, Pattern};
+    match pattern {
+        Pattern::Var { span, .. } | Pattern::As { span, .. } | Pattern::Or { span, .. } => {
+            Some(*span)
+        }
+        Pattern::Constructor { fields, args, .. } => fields
+            .as_ref()
+            .and_then(|fields| {
+                fields.iter().find_map(|field| {
+                    field
+                        .pattern
+                        .as_ref()
+                        .map_or(Some(field.span), predicate_binding)
+                })
+            })
+            .or_else(|| args.iter().find_map(predicate_binding)),
+        Pattern::Record { fields, .. } => fields.iter().find_map(|field| {
+            field
+                .pattern
+                .as_ref()
+                .map_or(Some(field.span), predicate_binding)
+        }),
+        Pattern::Tuple { elems, .. } => elems.iter().find_map(predicate_binding),
+        Pattern::Cons { head, tail, .. } => {
+            predicate_binding(head).or_else(|| predicate_binding(tail))
+        }
+        Pattern::Paren { inner, .. } => predicate_binding(inner),
+        Pattern::List { elements, .. } => elements.iter().find_map(|elem| match elem {
+            ListPatElem::Elem(pattern) => predicate_binding(pattern),
+            ListPatElem::Rest {
+                bind: Some(_),
+                span,
+            } => Some(*span),
+            ListPatElem::Rest { bind: None, .. } => None,
+        }),
+        Pattern::Wildcard { .. } | Pattern::Literal { .. } | Pattern::ListNil { .. } => None,
+    }
 }
 
 // ── Level-12 atom: atom + field access ───────────────────────────────────────
@@ -2488,6 +2656,14 @@ mod tests {
             matches!(e, Expr::Paren { .. }),
             "expected Paren at top, got {e:?}"
         );
+    }
+
+    #[test]
+    fn moderately_nested_predicate_still_parse() {
+        let depth = 64;
+        let src = format!("{}value is Some _{}", "(".repeat(depth), ")".repeat(depth));
+        let e = ok(&src);
+        assert!(matches!(e, Expr::Paren { .. }), "expected Paren, got {e:?}");
     }
 
     /// A normally-nested expression (a few levels of mixed parens, lists, and

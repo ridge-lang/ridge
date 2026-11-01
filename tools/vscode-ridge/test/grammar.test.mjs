@@ -15,6 +15,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
+import assert from "node:assert/strict";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -51,6 +52,17 @@ const grammar = await registry.loadGrammar(SCOPE);
 if (!grammar) {
   console.error(`grammar: failed to load scope ${SCOPE} from ${grammarPath}`);
   process.exit(1);
+}
+
+const predicateLine = "shape is Square";
+const predicateTokens = grammar.tokenizeLine(predicateLine, null).tokens;
+const predicateKeyword = predicateTokens.find(
+  (token) => predicateLine.slice(token.startIndex, token.endIndex) === "is",
+);
+assert.ok(predicateKeyword?.scopes.includes("keyword.control.ridge"));
+for (const identifier of ["isReady", "island"]) {
+  const tokens = grammar.tokenizeLine(identifier, null).tokens;
+  assert.ok(tokens.every((token) => !token.scopes.includes("keyword.control.ridge")));
 }
 
 // Independently authored scopes: an interpreter directive is trivia only at

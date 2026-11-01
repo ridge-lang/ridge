@@ -149,7 +149,7 @@ OCT_DIGIT     ::= "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" ;
 
      actor    as       catch    class     const     deriving  else
      false    fn       guard    if        import    in        init
-     instance let      match    on        pub       return    spawn
+     instance is       let      match     on        pub       return    spawn
      state    then     true     try       type      var       when
      where    with
 
@@ -162,7 +162,7 @@ KEYWORD       ::= "actor"    | "as"       | "catch"    | "class"
                |  "const"    | "deriving" | "else"     | "false"
                |  "fn"       | "guard"    | "if"       | "import"
                |  "in"       | "init"     | "instance" | "let"
-               |  "match"    | "on"       | "pub"      | "return"
+               |  "match"    | "is"       | "on"       | "pub"      | "return"
                |  "spawn"    | "state"    | "then"     | "true"
                |  "try"      | "type"     | "var"      | "when"
                |  "where"    | "with" ;
@@ -713,7 +713,7 @@ Deriving      ::= "deriving" "(" UPPER_IDENT { "," UPPER_IDENT } ")" ;
      1   |>          left associative
      2   ||          right associative
      3   &&          right associative
-     4   == !=       non-associative
+     4   == != is    non-associative
      5   < > <= >=   non-associative
      6   ++ ::       right associative
      7   + -         left associative
@@ -865,7 +865,13 @@ Expr2         ::= Expr3 { "||" Expr3 } ;
 Expr3         ::= Expr4 { "&&" Expr4 } ;
 
 (* Level 4: equality/inequality  (non-associative) *)
-Expr4         ::= Expr5 [ ( "==" | "!=" ) Expr5 ] ;
+Expr4         ::= Expr5 [ ( "==" | "!=" ) Expr5 | "is" PredicatePattern ] ;
+(* PredicatePattern is one Pattern with no bindings, aliases, record shorthand,
+   named rest captures or or-patterns. A bare root constructor ignores payloads;
+   nested patterns retain normal arity. Do not chain `is` with any comparison
+   unless the comparison is parenthesized. `is` returns Bool without narrowing
+   and evaluates the subject once. *)
+PredicatePattern ::= Pattern ;
 
 (* Level 5: relational  (non-associative) *)
 Expr5         ::= Expr6 [ ( "<" | ">" | "<=" | ">=" ) Expr6 ] ;

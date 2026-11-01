@@ -104,7 +104,7 @@
     },
     "keyword-control": {
       "comment": "Control-flow keywords.",
-      "match": "\\b(catch|else|guard|if|in|match|on|return|then|try|when|where|with)\\b",
+      "match": "\\b(catch|else|guard|if|in|is|match|on|return|then|try|when|where|with)\\b",
       "name": "keyword.control.ridge"
     },
     "keyword-other": {

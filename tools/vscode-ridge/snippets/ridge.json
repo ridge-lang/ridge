@@ -1,4 +1,9 @@
 {
+  "Pattern predicate": {
+    "prefix": "is",
+    "body": "${1:value} is ${2:Constructor}",
+    "description": "Test a typed pattern without binding names; a bare constructor ignores its payload"
+  },
   "Function (pure)": {
     "prefix": "fn",
     "body": [

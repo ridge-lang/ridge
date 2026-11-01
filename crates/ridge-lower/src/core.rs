@@ -165,6 +165,45 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             span,
         } => lower_if(ctx, cond, then_branch, else_branch.as_deref(), *span),
 
+        Expr::Is { subject, span, .. } => {
+            let Some(checked) = ctx
+                .is_patterns
+                .and_then(|patterns| patterns.get(span))
+                .cloned()
+            else {
+                ctx.errors.push(LowerError::InternalLoweringError {
+                    span: *span,
+                    message: "missing checked pattern for `is` predicate".into(),
+                });
+                return IrExpr::Lit {
+                    id: ctx.fresh_id(None),
+                    value: IrLit::Bool(false),
+                    span: *span,
+                };
+            };
+            let arms = [
+                ridge_ast::expr::MatchArm {
+                    pattern: checked,
+                    guard: None,
+                    body: Expr::Literal(ridge_ast::Literal::Bool {
+                        value: true,
+                        span: *span,
+                    }),
+                    span: *span,
+                },
+                ridge_ast::expr::MatchArm {
+                    pattern: ridge_ast::Pattern::Wildcard { span: *span },
+                    guard: None,
+                    body: Expr::Literal(ridge_ast::Literal::Bool {
+                        value: false,
+                        span: *span,
+                    }),
+                    span: *span,
+                },
+            ];
+            lower_match(ctx, subject, &arms, *span)
+        }
+
         // `match scrutinee { arms }` — the only "preserved" mapping (§4.8).
         Expr::Match {
             scrutinee,

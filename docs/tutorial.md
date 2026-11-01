@@ -397,6 +397,37 @@ flatten.
 
 ---
 
+## Checking a variant with `is`
+
+Use `is` when you need a Boolean without extracting any fields:
+
+```ridge
+type Shape = | Square Int | Circle Int
+fn isSquare (shape: Shape) -> Bool = shape is Square
+fn isFive (shape: Shape) -> Bool = shape is Square 5
+```
+
+`shape is Square` is the shorter spelling of:
+
+```ridge
+match shape
+    Square _ -> true
+    _ -> false
+```
+
+The subject runs once. A bare constructor ignores its payload; explicit nested
+patterns still need their arguments, as in `value is Some (Square _)`.
+Combine tests with Boolean operators: `shape is Square && ready`.
+Constructor recognition does not call your `Eq` instance.
+
+Use `match` to extract values. `shape is Square length` is rejected because
+`is` cannot introduce bindings, and the predicate never changes the type of
+`shape` in a branch. It does not test arbitrary runtime types or cast values.
+Parenthesize a predicate before comparing its Boolean result.
+
+The word `is` is now reserved. Rename existing identifiers with that spelling
+to a descriptive name such as `isReady`, updating imports and uses as well.
+
 ## Typeclasses
 
 Typeclasses let you write functions that work across multiple types without

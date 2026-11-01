@@ -37,6 +37,7 @@ pub mod infer;
 mod instance_match;
 pub mod instantiate;
 pub mod interp;
+mod is_predicate;
 mod local_constraints;
 mod migrate;
 pub mod pipe_propagate;
@@ -267,6 +268,10 @@ pub struct TypedModule {
     /// Checked Result target of each try boundary. A divergent expression's
     /// value type need not itself be Result, so lowering reads this fact instead.
     pub try_scope_types: FxHashMap<ridge_ast::Span, Type>,
+    /// Checked predicate patterns, including root constructor payload elision.
+    pub is_patterns: FxHashMap<ridge_ast::Span, ridge_ast::Pattern>,
+    /// Checked constructor owners and variants at source use sites.
+    pub constructor_sites: FxHashMap<ridge_ast::Span, (TyConId, usize)>,
     /// Source message sites classified using selected handlers and final types.
     pub message_call_sites: Vec<explicit_calls::MessageCallSite>,
     /// Quoted lambdas captured during inference, keyed by the lambda's span.
@@ -565,6 +570,8 @@ pub fn typecheck_workspace_with_history(
                 error_from_sites: FxHashMap::default(),
                 nullary_message_sites: rustc_hash::FxHashSet::default(),
                 try_scope_types: FxHashMap::default(),
+                is_patterns: FxHashMap::default(),
+                constructor_sites: FxHashMap::default(),
                 message_call_sites: Vec::new(),
                 quoted_lambdas: FxHashMap::default(),
                 instance_dict_constraints: FxHashMap::default(),
@@ -595,6 +602,7 @@ pub fn typecheck_workspace_with_history(
             &ast,
             rm.node_ids.clone(),
             &rm.bindings,
+            &symbol_tables,
             &rm.imports,
             &imported_tycons,
             &imported_schemes,
@@ -698,6 +706,8 @@ fn empty_module_result(module_id: ModuleId) -> ModuleTypecheckResult {
             error_from_sites: FxHashMap::default(),
             nullary_message_sites: rustc_hash::FxHashSet::default(),
             try_scope_types: FxHashMap::default(),
+            is_patterns: FxHashMap::default(),
+            constructor_sites: FxHashMap::default(),
             message_call_sites: Vec::new(),
             quoted_lambdas: FxHashMap::default(),
             instance_dict_constraints: FxHashMap::default(),
@@ -822,6 +832,7 @@ pub fn typecheck_module_incremental(
         &ast,
         rm.node_ids.clone(),
         &rm.bindings,
+        &symbol_tables,
         &rm.imports,
         &imported_tycons,
         &imported_schemes,
@@ -1235,6 +1246,7 @@ fn typecheck_module_inner(
     ast: &Arc<ridge_ast::Module>,
     node_id_map: ridge_resolve::NodeIdMap,
     bindings: &ridge_resolve::BindingMap,
+    symbol_tables: &[&ridge_resolve::SymbolTable],
     imports: &[ridge_resolve::ImportResolution],
     imported_tycons: &FxHashMap<String, TyConId>,
     imported_schemes: &FxHashMap<String, ridge_types::Scheme>,
@@ -1284,6 +1296,14 @@ fn typecheck_module_inner(
         .copied()
         .or_else(|| global_tycon_names.get("ExitReason").copied());
     ctx.tycon_origins = tycon_origins.clone();
+    ctx.resolved_constructors = crate::is_predicate::resolved_constructors(
+        b,
+        ctx.node_id_map.as_ref(),
+        bindings,
+        symbol_tables,
+        arena.all(),
+        tycon_origins,
+    );
     // The same for class names, which an inner `fn`'s `where` clause needs and
     // which expression inference cannot reach through a parameter.
     if let Some((class_table, _)) = registries {
@@ -1660,6 +1680,8 @@ fn typecheck_module_inner(
         error_from_sites: std::mem::take(&mut ctx.error_from_sites),
         nullary_message_sites: std::mem::take(&mut ctx.nullary_message_sites),
         try_scope_types,
+        is_patterns: std::mem::take(&mut ctx.is_patterns),
+        constructor_sites: std::mem::take(&mut ctx.resolved_constructors),
         message_call_sites,
         quoted_lambdas, // populated by the quotation checker when quotes are used
         instance_dict_constraints, // populated by Step D3 (infer_instance_methods)

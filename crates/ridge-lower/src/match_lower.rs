@@ -1161,7 +1161,11 @@ fn lower_constructor_pattern(
             // Resolve the resolver's `SymbolId` to the arena's `TyConId`. With no
             // symbol table or workspace there is nothing to resolve against, and
             // the pattern carries no owner.
-            let tycon_id = ctx.lookup_constructor_tycon(*owner_sym_id);
+            let tycon_id = ctx
+                .constructor_sites
+                .and_then(|sites| sites.get(&name.span))
+                .map(|(owner, _)| *owner)
+                .or_else(|| ctx.lookup_constructor_tycon(*owner_sym_id));
 
             // Record-payload union variant pattern `Login { userId, .. }`:
             // runtime shape `{'Login', #{userId := U, ..}}`. Nest a Record (map)

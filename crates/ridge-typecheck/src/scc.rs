@@ -156,6 +156,7 @@ fn collect_called_names(
                 collect_called_names(e, name_to_id, out);
             }
         }
+        Expr::Is { subject, .. } => collect_called_names(subject, name_to_id, out),
         Expr::Match {
             scrutinee, arms, ..
         } => {

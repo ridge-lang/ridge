@@ -149,6 +149,7 @@ pub fn infer_cap_row(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> CapR
 
         // ── Match ─────────────────────────────────────────────────────────────
         // Union of scrutinee and all arm bodies.
+        Expr::Is { subject, .. } => infer_cap_row(ctx, b, subject),
         Expr::Match {
             scrutinee, arms, ..
         } => {

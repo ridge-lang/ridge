@@ -369,6 +369,7 @@ fn is_continuation_operator(tok: &Token) -> bool {
     matches!(
         tok,
         Token::PipeFwd
+            | Token::KwIs
             | Token::PipePipe
             | Token::AmpAmp
             | Token::EqEq

@@ -198,7 +198,7 @@ pub(crate) const fn symbol_kind(kind: &ridge_resolve::SymbolKind) -> CompletionI
 /// (`validate_new_name`), so only words that can never name an identifier
 /// belong here.
 pub(crate) const KEYWORDS: &[&str] = &[
-    "fn", "let", "var", "if", "then", "else", "match", "with", "type", "actor", "on", "init",
+    "fn", "let", "var", "if", "then", "else", "match", "is", "with", "type", "actor", "on", "init",
     "pub", "import", "as", "in", "try", "guard", "spawn", "return",
 ];
 

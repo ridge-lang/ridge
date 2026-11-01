@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Add typed, non-binding `value is pattern` predicates. Bare root constructors
+  ignore their payloads; explicit patterns reuse structural matching independently
+  of Eq. Subjects execute once, with normal effects and Boolean short-circuiting.
+  `is` is now reserved: rename existing identifiers before upgrading. Predicates
+  introduce no bindings, casts or type narrowing.
+
 - Ordinary comparison operators and test equality assertions now use checked
   Eq and Ord contracts. Derived comparisons delegate to each field's methods.
   Add the appropriate deriving or where clause when migrating named or generic

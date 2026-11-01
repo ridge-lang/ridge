@@ -237,6 +237,12 @@ fn parse_fn_decl_no_body(
     // Function name.
     let name_span = cur.span();
     let name = match cur.peek().clone() {
+        Token::KwIs => {
+            return Err(ParseError::UnexpectedToken {
+                span: cur.span(),
+                description: "`is` is reserved for pattern predicates; rename this identifier and its imports and uses (for example, `isReady`)".into(),
+            });
+        }
         Token::LowerIdent(s) => {
             cur.bump();
             Ident::new(s, name_span)
@@ -1644,6 +1650,7 @@ pub(crate) fn parse_fn_decl(
     // Function name: LOWER_IDENT (including `_foo` private names).
     let name_span = cur.span();
     let name = match cur.peek().clone() {
+        Token::KwIs => return Err(reserved_is_identifier(cur.span())),
         Token::LowerIdent(s) => {
             cur.bump();
             Ident::new(s, name_span)
@@ -1699,6 +1706,7 @@ fn parse_fn_decl_with_attrs(
 
     let name_span = cur.span();
     let name = match cur.peek().clone() {
+        Token::KwIs => return Err(reserved_is_identifier(cur.span())),
         Token::LowerIdent(s) => {
             cur.bump();
             Ident::new(s, name_span)
@@ -1735,6 +1743,13 @@ fn parse_fn_decl_with_attrs(
 }
 
 // ── Typeclass helpers ─────────────────────────────────────────────────────────
+
+fn reserved_is_identifier(span: ridge_ast::Span) -> ParseError {
+    ParseError::UnexpectedToken {
+        span,
+        description: "`is` is reserved for pattern predicates; rename this identifier and its imports and uses (for example, `isReady`)".into(),
+    }
+}
 
 /// Desugar `Show` to `ToText` so it never propagates past the parser.
 ///

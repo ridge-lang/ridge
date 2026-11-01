@@ -1118,6 +1118,31 @@ impl ScopeWalker<'_> {
 
 // ── Visit impl ────────────────────────────────────────────────────────────────
 
+impl ScopeWalker<'_> {
+    fn bind_predicate_pattern(&mut self, pattern: &Pattern) {
+        // Bare predicate heads can also name record auto-constructors. Use the
+        // existing record-constructor resolution and its opacity checks.
+        let mut resolved = pattern.clone();
+        let mut root = &mut resolved;
+        while let Pattern::Paren { inner, .. } = root {
+            root = inner;
+        }
+        if let Pattern::Constructor {
+            fields,
+            args,
+            has_rest,
+            ..
+        } = root
+        {
+            if fields.is_none() && args.is_empty() {
+                *fields = Some(vec![]);
+                *has_rest = true;
+            }
+        }
+        self.bind_pattern(&resolved, LocalKind::PatternBinding);
+    }
+}
+
 impl<'ast> Visit<'ast> for ScopeWalker<'_> {
     // ── Module top level ──────────────────────────────────────────────────────
 
@@ -1361,6 +1386,12 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
     #[allow(clippy::too_many_lines)]
     fn visit_expr(&mut self, e: &'ast Expr) {
         match e {
+            Expr::Is {
+                subject, pattern, ..
+            } => {
+                self.visit_expr(subject);
+                self.bind_predicate_pattern(pattern);
+            }
             Expr::Ident(id) => {
                 // Plain identifier use-site.
                 self.resolve_ident(id);

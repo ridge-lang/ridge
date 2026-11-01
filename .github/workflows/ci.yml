@@ -44,7 +44,7 @@ jobs:
           - os: linux
             runner: ubuntu-22.04
           - os: macos
-            runner: macos-14
+            runner: macos-15
           - os: windows
             runner: windows-2022
 

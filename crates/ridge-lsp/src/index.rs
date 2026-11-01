@@ -2027,10 +2027,13 @@ impl WorkspaceIndex {
                 let span = self.symbol_def_span(*module, *actor)?;
                 self.location_in(*module, span)
             }
-            Binding::Constructor { owner_type, .. } => {
-                // The owning type is a symbol of the current module.
-                let span = self.symbol_def_span(mid, *owner_type)?;
-                self.location_in(mid, span)
+            Binding::Constructor {
+                owner_type,
+                owner_module,
+                ..
+            } => {
+                let span = self.symbol_def_span(*owner_module, *owner_type)?;
+                self.location_in(*owner_module, span)
             }
             Binding::ModuleAlias {
                 target: ImportTarget::WorkspaceModule(target),
@@ -2103,6 +2106,15 @@ impl WorkspaceIndex {
         let mid = self.module_id_for(uri)?;
         let mi = mid.0 as usize;
         let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
+        if let Some(Binding::Constructor {
+            owner_type,
+            owner_module,
+            ..
+        }) = self.binding_at(mi, offset)
+        {
+            let span = self.symbol_def_span(*owner_module, *owner_type)?;
+            return self.location_in(*owner_module, span);
+        }
 
         let ty = self
             .local_binding_type_at(mi, offset)

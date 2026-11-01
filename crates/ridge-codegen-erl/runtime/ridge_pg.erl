@@ -278,8 +278,9 @@ pg_unrecord_migration(Id, Name) ->
 
 %% The `name` text out of a tracking-table row.
 pg_migration_name(Row) ->
-    case maps:get(<<"name">>, Row, 'SqlNull') of
-        {'SqlText', N} -> N;
+    case ridge_rt:typed_map_get(fun ridge_rt:hash_text/2,
+                                fun(A, B) -> A =:= B end, <<"name">>, Row) of
+        {some, {'SqlText', N}} -> N;
         _              -> <<>>
     end.
 
@@ -1092,7 +1093,7 @@ decode_fields(N, Bin, Acc) ->
 
 decode_data_row(<<NCols:16, Rest/binary>>, Cols) ->
     Vals = decode_cols(NCols, Rest, []),
-    maps:from_list(
+    ridge_rt:typed_text_map_from_list(
         lists:zipwith(fun({Name, Oid}, V) -> {Name, decode_cell(Oid, V)} end, Cols, Vals)).
 
 decode_cols(0, _Bin, Acc) ->

@@ -1,6 +1,6 @@
 ---
 source: crates/ridge-lower/tests/lowering.rs
-assertion_line: 44
+assertion_line: 56
 expression: rendered
 ---
 module: m0
@@ -33,8 +33,8 @@ items:
     name: main
     pub: false
     main: true
-    caps: CapabilitySet(0)
-    ret_ty: Con(10) [Con(0), Con(98)]
+    caps: CapabilitySet(136)
+    ret_ty: Con(10) [Con(0), Con(99)]
     params: []
     body:
       Match(n4):

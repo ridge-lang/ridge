@@ -12,7 +12,7 @@
 use ridge_ast::{Span, Type as AstType};
 use ridge_types::{
     BuiltinTyCons, ClassId, Constraint, TyConId, TyVid, DECODE_CLASS, ENCODE_CLASS, EQ_CLASS,
-    ORD_CLASS, TOTEXT_CLASS,
+    HASH_CLASS, ORD_CLASS, TOTEXT_CLASS,
 };
 use rustc_hash::FxHashMap;
 use smallvec::{smallvec, SmallVec};
@@ -96,10 +96,10 @@ pub struct FunDepIdx {
 /// Workspace-level class registry: name → [`ClassId`] + [`ClassInfo`].
 ///
 /// [`ClassId`]s are allocated sequentially. The prelude classes
-/// (`ToText`, `Eq`, `Ord`, `Encode`, `Decode`, `ErrorFrom`) have fixed ids reserved by the
+/// (`ToText`, `Eq`, `Ord`, `Encode`, `Decode`, `ErrorFrom`, `Hash`) have fixed ids reserved by the
 /// constants in [`ridge_types`]: `TOTEXT_CLASS=0`, `EQ_CLASS=1`, `ORD_CLASS=2`,
-/// `ENCODE_CLASS=3`, `DECODE_CLASS=4`, `ERROR_FROM_CLASS=5`.
-#[derive(Debug, Default)]
+/// `ENCODE_CLASS=3`, `DECODE_CLASS=4`, `ERROR_FROM_CLASS=5`, `HASH_CLASS=6`.
+#[derive(Debug, Default, Clone)]
 pub struct ClassTable {
     /// Id → class information.
     classes: FxHashMap<ClassId, ClassInfo>,
@@ -119,7 +119,7 @@ impl ClassTable {
         Self {
             classes: FxHashMap::default(),
             by_name: FxHashMap::default(),
-            next_id: 6, // 0..=5 reserved for prelude classes
+            next_id: 7, // 0..=6 reserved for prelude classes
             fundeps: FxHashMap::default(),
         }
     }
@@ -127,8 +127,8 @@ impl ClassTable {
     /// Interns a class name, returning its [`ClassId`].
     ///
     /// If the name already exists the existing id is returned unchanged
-    /// (idempotent). New names are allocated sequentially starting from 6;
-    /// ids 0–5 are reserved for the prelude constants and must be registered
+    /// (idempotent). New names are allocated sequentially starting from 7;
+    /// ids 0–6 are reserved for the prelude constants and must be registered
     /// explicitly via [`ClassTable::insert_with_id`].
     #[must_use]
     pub fn intern(&mut self, name: &str) -> ClassId {
@@ -348,6 +348,20 @@ impl CoherenceError {
 
 // ── InstanceEnv ───────────────────────────────────────────────────────────────
 
+/// Declaration ABI of a library instance selected through a compiler-adapted
+/// receiver key. Selection templates remain separate from provider identity.
+#[derive(Debug, Clone)]
+pub struct EvidenceContract {
+    /// Complete source dispatch heads, before receiver-only adaptation.
+    pub heads: InstanceHead,
+    /// Source context slots; never a synthetic predicate-return sentinel.
+    pub context_positions: Vec<Vec<usize>>,
+    /// Source templates awaiting resolution in the library type namespace.
+    pub(crate) head_asts: Vec<AstType>,
+    /// Resolved declaration templates used only for retained evidence identity.
+    pub patterns: Option<Vec<ridge_types::Type>>,
+}
+
 /// Workspace-level instance registry.
 ///
 /// The single-value-per-key `(ClassId, InstanceHead) → InstanceInfo` map IS the
@@ -357,31 +371,68 @@ impl CoherenceError {
 /// insert for the same key returns a [`CoherenceError`]; distinct head tuples
 /// are distinct keys, so `Convert Celsius Fahrenheit` and `Convert Celsius Kelvin`
 /// coexist.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct InstanceEnv {
     /// The canonical instance map.
     pub instances: FxHashMap<(ClassId, InstanceHead), InstanceInfo>,
     /// The written head types of each instance, keyed like `instances`. Kept
-    /// for functional-dependency improvement, which unifies a determined
-    /// position against the matching instance's head type. Populated for
-    /// AST-collected instances; absent for prelude/derived ones, whose classes
-    /// carry no fundeps.
+    /// for complete-head validation and functional-dependency improvement.
+    /// Populated for explicit and auto-promoted source instances; intrinsic
+    /// prelude and derived instances are uniform over their declared parameters.
     pub head_asts: FxHashMap<(ClassId, InstanceHead), Vec<AstType>>,
+    /// Checked component evidence for the compiler-owned value records.
+    pub structural_comparisons: FxHashMap<(ClassId, TyConId), crate::solve::DictPlan>,
+    /// Full head templates in the declaring module's scope. `None` rejects an
+    /// unrepresentable written head instead of trusting its constructor index.
+    pub(crate) head_patterns: FxHashMap<(ClassId, InstanceHead), Option<Vec<ridge_types::Type>>>,
+    /// Source class method schemes resolved once in their declaring scope.
+    pub(crate) method_schemes: crate::class_contract::MethodContracts,
     /// Positions of every variable in each written context constraint, indexed
     /// by the declaring module and instance span. Positions refer to the
     /// flattened head arguments. Prelude/derived unary contexts use the
     /// existing `InstanceInfo::head_var_positions` projection.
     pub context_arg_positions: FxHashMap<(u32, Span), Vec<Vec<usize>>>,
+    /// Source ABIs for compiler-adapted library receiver keys.
+    pub evidence_contracts: FxHashMap<(ClassId, InstanceHead), EvidenceContract>,
 }
 
 impl InstanceEnv {
+    /// Canonical provider declaration for an adapted selection key.
+    #[must_use]
+    pub fn evidence_contract(
+        &self,
+        class: ClassId,
+        heads: &[TyConId],
+    ) -> Option<&EvidenceContract> {
+        self.evidence_contracts
+            .get(&(class, InstanceHead::from_slice(heads)))
+    }
+    /// Full source head template, resolved in the instance's declaring scope.
+    /// Intrinsic and uniformly derived instances have no written template.
+    #[must_use]
+    pub fn head_pattern(&self, class: ClassId, heads: &[TyConId]) -> Option<&[ridge_types::Type]> {
+        self.head_patterns
+            .get(&(class, heads.iter().copied().collect()))
+            .and_then(Option::as_deref)
+    }
+
+    /// The source method's canonical scheme in its declaring module's scope.
+    #[must_use]
+    pub fn method_scheme(&self, class: ClassId, method: &str) -> Option<&ridge_types::Scheme> {
+        self.method_schemes.get(&(class, method.to_owned()))
+    }
+
     /// Returns a new, empty [`InstanceEnv`].
     #[must_use]
     pub fn new() -> Self {
         Self {
             instances: FxHashMap::default(),
             head_asts: FxHashMap::default(),
+            structural_comparisons: FxHashMap::default(),
+            head_patterns: FxHashMap::default(),
+            method_schemes: FxHashMap::default(),
             context_arg_positions: FxHashMap::default(),
+            evidence_contracts: FxHashMap::default(),
         }
     }
 
@@ -491,8 +542,27 @@ impl InstanceEnv {
 
 // ── Prelude class registration ────────────────────────────────────────────────
 
+fn register_hash_class(ct: &mut ClassTable) {
+    ct.insert_with_id(
+        HASH_CLASS,
+        ClassInfo {
+            name: "Hash".to_string(),
+            arity: 1,
+            method_sigs: vec![MethodSig {
+                name: "hash".to_string(),
+                arity: 2,
+                ast_param_types: vec![],
+                ast_ret_type: None,
+                class_ty_vars: Vec::new(),
+            }],
+            superclasses: vec![EQ_CLASS],
+            def_module: None,
+        },
+    );
+}
+
 /// Registers the built-in prelude classes (`ToText`, `Eq`, `Ord`, `Encode`,
-/// `Decode`, `ErrorFrom`) into `class_table` at their reserved [`ClassId`]s (0–5).
+/// `Decode`, `ErrorFrom`, `Hash`) into `class_table` at their reserved [`ClassId`]s (0–6).
 ///
 /// Must be called once before the workspace collect pass so that user-declared
 /// class and instance items can reference these classes by name.
@@ -501,6 +571,7 @@ impl InstanceEnv {
 /// `crates/ridge-stdlib/stdlib/codec.ridge`, which is the canonical source for
 /// humans; a consistency test keeps the two in sync.
 pub fn register_prelude_classes(ct: &mut ClassTable) {
+    register_hash_class(ct);
     ct.insert_with_id(
         ridge_types::ERROR_FROM_CLASS,
         ClassInfo {
@@ -646,6 +717,31 @@ const fn text_codec_scalars(b: &BuiltinTyCons) -> [(TyConId, &'static str); 6] {
     ]
 }
 
+fn register_collection_equality(env: &mut InstanceEnv, b: &BuiltinTyCons) {
+    // Values need Eq only for association equality, never for storage.
+    for (tycon, name, context) in [
+        (
+            b.map,
+            "Map",
+            vec![(HASH_CLASS, 0), (EQ_CLASS, 0), (EQ_CLASS, 1)],
+        ),
+        (b.set, "Set", vec![(HASH_CLASS, 0), (EQ_CLASS, 0)]),
+    ] {
+        let info = InstanceInfo {
+            def_module: None,
+            methods: vec![("eq".into(), String::new())],
+            ctx_constraints: context
+                .iter()
+                .map(|(class, _)| Constraint::single(*class, TyVid(0)))
+                .collect(),
+            head_var_positions: context.iter().map(|(_, position)| *position).collect(),
+            origin: InstanceOrigin::Explicit,
+            span: Span::point(0),
+        };
+        let _ = env.insert((EQ_CLASS, tycon), info, "Eq", name);
+    }
+}
+
 /// Seed the built-in prelude instances, gated on whether this is the standard
 /// library's own self-compile.
 ///
@@ -662,6 +758,7 @@ const fn text_codec_scalars(b: &BuiltinTyCons) -> [(TyConId, &'static str); 6] {
 )]
 pub fn register_prelude_instances_gated(env: &mut InstanceEnv, b: &BuiltinTyCons, is_stdlib: bool) {
     let ds = Span::point(0);
+    register_collection_equality(env, b);
 
     // Helper to build a minimal prelude instance entry.
     let prelude_inst = |method: &str| InstanceInfo {
@@ -775,6 +872,23 @@ pub fn register_prelude_instances_gated(env: &mut InstanceEnv, b: &BuiltinTyCons
     );
     // Eq Ordering — required by the Ord Ordering superclass check
     let _ = env.insert((EQ_CLASS, b.ordering), prelude_inst("eq"), "Eq", "Ordering");
+    for tycon in [
+        b.unit,
+        b.bytes,
+        b.uuid,
+        b.date,
+        b.time,
+        b.decimal,
+        b.duration,
+        b.error,
+        b.proc_output,
+        b.cli_parsed,
+        b.handle,
+        b.supervisor,
+        b.monitor,
+    ] {
+        let _ = env.insert((EQ_CLASS, tycon), prelude_inst("eq"), "Eq", "core value");
+    }
 
     // ── Ord instances ─────────────────────────────────────────────────────────
     let _ = env.insert((ORD_CLASS, b.int), prelude_inst("compare"), "Ord", "Int");
@@ -787,6 +901,71 @@ pub fn register_prelude_instances_gated(env: &mut InstanceEnv, b: &BuiltinTyCons
         "Ord",
         "Ordering",
     );
+    for tycon in [
+        b.bytes,
+        b.uuid,
+        b.timestamp,
+        b.date,
+        b.time,
+        b.decimal,
+        b.duration,
+    ] {
+        let _ = env.insert(
+            (ORD_CLASS, tycon),
+            prelude_inst("compare"),
+            "Ord",
+            "core value",
+        );
+    }
+
+    // Core value hashing follows each type's Eq contract. Hasher itself has no
+    // equality or hashing evidence and cannot reveal its seed as a value.
+    for tycon in [
+        b.int,
+        b.bool,
+        b.text,
+        b.unit,
+        b.ordering,
+        b.bytes,
+        b.uuid,
+        b.timestamp,
+        b.date,
+        b.time,
+        b.decimal,
+        b.duration,
+        b.error,
+        b.proc_output,
+        b.handle,
+        b.supervisor,
+        b.monitor,
+    ] {
+        let _ = env.insert(
+            (HASH_CLASS, tycon),
+            prelude_inst("hash"),
+            "Hash",
+            "core value",
+        );
+    }
+
+    // Container comparisons retain and call the element's actual evidence.
+    for (class, class_name, method) in [
+        (EQ_CLASS, "Eq", "eq"),
+        (ORD_CLASS, "Ord", "compare"),
+        (HASH_CLASS, "Hash", "hash"),
+    ] {
+        for (tycon, name, positions) in [
+            (b.list, "List", vec![0]),
+            (b.option, "Option", vec![0]),
+            (b.result, "Result", vec![0, 1]),
+        ] {
+            let _ = env.insert(
+                (class, tycon),
+                parametric_inst(method, class, positions),
+                class_name,
+                name,
+            );
+        }
+    }
 
     // ── Encode instances ──────────────────────────────────────────────────────
     // Each primitive maps to the matching JsonValue variant (JInt/JFloat/JBool/
@@ -1447,8 +1626,8 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
     // `Fetchable`): these terminals take no quoted argument, so the receiver alone
     // pins the instance — there is no predicate whose arity a dependency would fix.
     // The two method schemes are seeded directly (see `seed_countable_scheme` in
-    // lib.rs) with no AST types, and the three instances (each carrying a `where
-    // Adapter a` context to reach the store) are registered in
+    // lib.rs) with no AST types, and the receiver instances (carrying `Adapter a`
+    // and entity `Row` contexts where paged windows need columns) are registered in
     // `register_stdlib_instances`. Each method takes only the receiver, so its sig
     // arity is 1.
     let countable_id = ct.intern("Countable");
@@ -1486,8 +1665,8 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
     // `Countable` because it carries the predicate the dependency keys on, where
     // `count`/`exists` take no argument — a determined parameter cannot be resolved
     // from a receiver alone when no argument pins it. The method scheme is seeded
-    // directly (see `seed_every_scheme` in lib.rs) with no AST types, and the three
-    // instances (each carrying a `where Adapter a` context) are registered in
+    // directly (see `seed_every_scheme` in lib.rs) with no AST types, and the
+    // instances carry the adapter and entity column contexts registered in
     // `register_stdlib_instances`. `every` takes the predicate quote and the receiver
     // (sig arity 2).
     let every_id = ct.intern("Every");
@@ -2839,13 +3018,14 @@ pub fn register_stdlib_instances(
     // `Countable (Query e a)`, `Countable (Join e f a)`, and `Countable (LeftJoin e f
     // a)` — the unified `count`/`exists` instances from std.repo. A single-parameter
     // class, so each instance is keyed by the receiver tycon alone (no predicate
-    // atom): these terminals take no quoted argument, so the receiver pins them. Each
-    // carries a single `where Adapter a` context to reach the store (they count and
-    // probe, they do not decode, so no `Row`), at the flattened head position the
-    // adapter occupies — `a@1` in a query, `a@2` in a join (its extra right entity
-    // shifts the slot), the same positions `Fetchable` gives its `Adapter a`.
-    if let (Some(countable), Some(adapter)) = (ct.id_by_name("Countable"), ct.id_by_name("Adapter"))
-    {
+    // atom): these terminals take no quoted argument, so the receiver pins them.
+    // Queries need `Adapter a`. Outer joins also need both `Row` dictionaries:
+    // paged existence probes project each side's columns into the window.
+    if let (Some(countable), Some(adapter), Some(row)) = (
+        ct.id_by_name("Countable"),
+        ct.id_by_name("Adapter"),
+        ct.id_by_name("Row"),
+    ) {
         let countable_inst = |position: usize| InstanceInfo {
             def_module: None,
             methods: vec![
@@ -2860,6 +3040,15 @@ pub fn register_stdlib_instances(
             origin: InstanceOrigin::Explicit,
             span: ds,
         };
+        let outer_countable_inst = || {
+            let mut info = countable_inst(2);
+            info.ctx_constraints.extend([
+                ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+                ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+            ]);
+            info.head_var_positions.extend([1, 0]);
+            info
+        };
         if let Some(&query) = reconciled_tycon_names.get("Query") {
             env.instances
                 .entry((countable, smallvec![query]))
@@ -2868,17 +3057,17 @@ pub fn register_stdlib_instances(
         if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
             env.instances
                 .entry((countable, smallvec![left_join]))
-                .or_insert_with(|| countable_inst(2));
+                .or_insert_with(outer_countable_inst);
         }
         if let Some(&right_join) = reconciled_tycon_names.get("RightJoin") {
             env.instances
                 .entry((countable, smallvec![right_join]))
-                .or_insert_with(|| countable_inst(2));
+                .or_insert_with(outer_countable_inst);
         }
         if let Some(&full_join) = reconciled_tycon_names.get("FullJoin") {
             env.instances
                 .entry((countable, smallvec![full_join]))
-                .or_insert_with(|| countable_inst(2));
+                .or_insert_with(outer_countable_inst);
         }
     }
 
@@ -2946,10 +3135,13 @@ pub fn register_stdlib_instances(
     // like `Refinable` (receiver tycon + predicate-arity tycon: `Fn1` for a query's
     // one-row predicate, `Fn2` for a join's two-row one), the `q -> p` dependency
     // fixing the predicate's arity per receiver and the lambda pinning it at the call
-    // site. Each carries a single `where Adapter a` context at the same flattened head
-    // positions as the `Countable` instances above — `a@1` in a query, `a@2` in a
-    // join.
-    if let (Some(every), Some(adapter)) = (ct.id_by_name("Every"), ct.id_by_name("Adapter")) {
+    // site. Queries carry `Adapter a`; outer joins additionally carry `Row f,
+    // Row e` for the paged window's columns, matching the Countable source order.
+    if let (Some(every), Some(adapter), Some(row)) = (
+        ct.id_by_name("Every"),
+        ct.id_by_name("Adapter"),
+        ct.id_by_name("Row"),
+    ) {
         if let (Some(fn1), Some(fn2)) = (b.fn_tycon_id(1), b.fn_tycon_id(2)) {
             let every_inst = |position: usize| InstanceInfo {
                 def_module: None,
@@ -2962,6 +3154,15 @@ pub fn register_stdlib_instances(
                 origin: InstanceOrigin::Explicit,
                 span: ds,
             };
+            let outer_every_inst = || {
+                let mut info = every_inst(2);
+                info.ctx_constraints.extend([
+                    ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+                    ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+                ]);
+                info.head_var_positions.extend([1, 0]);
+                info
+            };
             if let Some(&query) = reconciled_tycon_names.get("Query") {
                 env.instances
                     .entry((every, smallvec![query, fn1]))
@@ -2970,17 +3171,17 @@ pub fn register_stdlib_instances(
             if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
                 env.instances
                     .entry((every, smallvec![left_join, fn2]))
-                    .or_insert_with(|| every_inst(2));
+                    .or_insert_with(outer_every_inst);
             }
             if let Some(&right_join) = reconciled_tycon_names.get("RightJoin") {
                 env.instances
                     .entry((every, smallvec![right_join, fn2]))
-                    .or_insert_with(|| every_inst(2));
+                    .or_insert_with(outer_every_inst);
             }
             if let Some(&full_join) = reconciled_tycon_names.get("FullJoin") {
                 env.instances
                     .entry((every, smallvec![full_join, fn2]))
-                    .or_insert_with(|| every_inst(2));
+                    .or_insert_with(outer_every_inst);
             }
         }
     }

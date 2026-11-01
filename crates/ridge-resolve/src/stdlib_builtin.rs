@@ -29,6 +29,8 @@ pub struct BuiltinStdlibModule {
     /// matching, and field access of these are confined to the stdlib module
     /// itself, so any use from user code is rejected (R025 / R026 / T036).
     pub opaque_types: &'static [&'static str],
+    /// Public types declared in this module, excluding re-exported names.
+    pub declared_types: &'static [&'static str],
 }
 
 /// The compile-time stdlib manifest.

@@ -35,7 +35,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
 import std.query as Query (QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planToSql, planToSqlFor, planExists, MutationPlan, planInsert, planUpsert, planUpdate, planDelete, planDeleteKeys, mutationToSql, mutationReturningToSql)
-import std.sql (Sql, SqlValue, sqlValue, sqlInt, sqlText, SqliteDialect)
+import std.sql (Sql, SqlValue, sqlValue, sqlInt, sqlText, sqlValueSource, SqliteDialect)
 import std.int as Int
 import std.list as List
 import std.text as Text
@@ -153,6 +153,13 @@ pub fn insertBinds () -> Text = renderMutBinds (planInsert "users" [Map.fromList
 -- threaded id,name,id,name across both rows — one statement for the whole batch.
 pub fn insertManySql () -> Text = renderMutSql (planInsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")], Map.fromList [("id", sqlInt 2), ("name", sqlText "bob")]] [])
 pub fn insertManyBinds () -> Text = renderMutBinds (planInsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")], Map.fromList [("id", sqlInt 2), ("name", sqlText "bob")]] [])
+
+-- Independent maps have independent hash seeds. Their values must still follow
+-- the common column header, including when construction order differs.
+pub fn insertManyValues () -> Bool =
+    let rows = [Map.fromList [("name", sqlText "ada"), ("id", sqlInt 1)], Map.fromList [("id", sqlInt 2), ("name", sqlText "bob")]]
+    match mutationToSql (planInsert "users" rows [])
+        (_, values) -> List.map sqlValueSource values == ["(sqlInt 1)", "(sqlText \"ada\")", "(sqlInt 2)", "(sqlText \"bob\")"]
 
 -- An UPDATE binds its SET assignment first ($1) and then its WHERE ($2).
 pub fn updateSql () -> Text = renderMutSql (planUpdate "users" (Map.fromList [("age", sqlInt 99)]) (pred1 (fn (u: User) -> u.id == 1)))
@@ -932,6 +939,8 @@ fn query_plan_compiles_to_parameterized_sql() {
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
          lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','singleCountSql','singleSumSql','singleAvgSql','singleSumPagedSql','singleCountExistsSql','singleProjectSql','singleProjectExistsSql','singleProjectPagedSql','singleGroupSql','singleGroupHavingSql','singleGroupHavingBinds','singleGroupExistsSql','singleGroupAvgIntervalSql','singleGroupAvgIntervalHavingSql','joinExistsWhereSql','naryExistsWhereSql','nestedExistsSql','pgNestedSql','pgNestedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','joinSumPagedSql','singleCountPagedSql','joinCountPagedSql','existsPagedJoinSql','everyPagedJoinSql','everyPagedJoinBinds','countThreePagedSql','everyThreePagedSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql','insertSql','insertBinds','insertManySql','insertManyBinds','updateSql','updateBinds','deleteSql','existsDeleteSql','existsDeleteBinds','deleteKeysSql','deleteKeysBinds','deleteKeysCompositeSql','existsUpdateSql','existsUpdateBinds','upsertSql','upsertBinds','insertOrIgnoreSql','upsertBareSql','insertReturningStarSql','insertReturningStarBinds','insertReturningColsSql','deleteReturningSql','updateReturningSql','upsertReturningSql','sqliteSingleSumSql','sqliteSingleAvgSql','sqliteSingleGroupSql','sqliteGroupAvgIntervalSql','sqliteGroupAvgIntervalHavingSql','sqliteAggSql','sqliteAvgThreeSql']), halt()."
     );
+    let expr =
+        format!("io:format(\"insertManyValues=~p~n\", [{module}:insertManyValues()]), {expr}");
     let output = Command::new("erl")
         .arg("-noshell")
         .arg("-pa")
@@ -1031,6 +1040,7 @@ fn query_plan_compiles_to_parameterized_sql() {
     // list once, then a parenthesised `$N` tuple per row, the binds threaded across rows.
     want(r#"insertManySql=INSERT INTO "users" ("id", "name") VALUES ($1, $2), ($3, $4)"#);
     want("insertManyBinds=4");
+    want("insertManyValues=true");
     want(r#"updateSql=UPDATE "users" SET "age" = $1 WHERE "id" = $2"#);
     want("updateBinds=2");
     want(r#"deleteSql=DELETE FROM "users" WHERE "age" < $1"#);

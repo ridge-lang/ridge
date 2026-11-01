@@ -1,80 +1,76 @@
--- std.map — Map (key-value) utilities (Tier 2).
---
--- Map k v is a language built-in (prelude). This module provides helper
--- functions; the type itself does not need to be declared here.
--- HOF capability transparency (cap vars written without [c] syntax).
+-- std.map -- persistent key-value collections (Tier 2).
+-- Key operations use Hash and its Eq superclass. Values need no equality.
+-- Equivalent keys retain the first stored representative and latest value.
+-- Traversal order is unspecified; callbacks retain capability transparency.
 
--- Return an empty map (wraps maps:new/0 behind a Unit arg per the calling
--- convention for 0-arg constructors).
-@ffi("maps", "new", 0)
-fn _mapsNew () -> Map k v
+opaque type KeyEvidence k = {}
 
-pub fn empty -> Map k v = _mapsNew ()
+@primitive
+fn _keyEvidence () -> KeyEvidence k where Eq k, Hash k
 
--- Construct a map from a list of (key, value) pairs.
-@ffi("maps", "from_list", 1)
-pub fn fromList (xs: List (k, v)) -> Map k v
+@ffi("ridge_rt", "indexed_map_empty", 0)
+fn _empty () -> Map k v
 
--- Convert a map to a list of (key, value) pairs.
-@ffi("maps", "to_list", 1)
+pub fn empty -> Map k v = _empty ()
+
+@ffi("ridge_rt", "indexed_map_from_list", 2)
+fn _fromList (evidence: KeyEvidence k) (xs: List (k, v)) -> Map k v
+
+-- Construct a map, keeping the last value for each equivalent key.
+pub fn fromList (xs: List (k, v)) -> Map k v where Hash k = _fromList (_keyEvidence ()) xs
+
+@ffi("ridge_rt", "indexed_map_to_list", 1)
 pub fn toList (m: Map k v) -> List (k, v)
 
--- Insert or update a key-value pair, returning the new map.
-@ffi("maps", "put", 3)
-pub fn insert (k: k) (v: v) (m: Map k v) -> Map k v
+@ffi("ridge_rt", "indexed_map_insert", 4)
+fn _insert (evidence: KeyEvidence k) (k: k) (v: v) (m: Map k v) -> Map k v
 
--- Remove a key from the map, returning the new map.
-@ffi("maps", "remove", 2)
-pub fn remove (k: k) (m: Map k v) -> Map k v
+-- Insert or replace a value without replacing an equivalent stored key.
+pub fn insert (k: k) (v: v) (m: Map k v) -> Map k v where Hash k = _insert (_keyEvidence ()) k v m
 
--- Private bridge: raw get (throws if key absent).
-@ffi("maps", "get", 2)
-fn _rawGet (k: k) (m: Map k v) -> v
+@ffi("ridge_rt", "indexed_map_remove", 3)
+fn _remove (evidence: KeyEvidence k) (k: k) (m: Map k v) -> Map k v
 
--- Private bridge: check whether a key is present.
-@ffi("maps", "is_key", 2)
-fn _isKey (k: k) (m: Map k v) -> Bool
+pub fn remove (k: k) (m: Map k v) -> Map k v where Hash k = _remove (_keyEvidence ()) k m
 
--- Look up a key, returning Some(value) or None.
-pub fn get (k: k) (m: Map k v) -> Option v =
-    if _isKey k m then Some (_rawGet k m)
-    else None
+@ffi("ridge_rt", "indexed_map_get", 3)
+fn _get (evidence: KeyEvidence k) (k: k) (m: Map k v) -> Option v
 
--- Return true if the key is present in the map.
-@ffi("maps", "is_key", 2)
-pub fn contains (k: k) (m: Map k v) -> Bool
+pub fn get (k: k) (m: Map k v) -> Option v where Hash k = _get (_keyEvidence ()) k m
 
--- Return a list of all keys.
-@ffi("maps", "keys", 1)
+@ffi("ridge_rt", "indexed_map_contains", 3)
+fn _contains (evidence: KeyEvidence k) (k: k) (m: Map k v) -> Bool
+
+pub fn contains (k: k) (m: Map k v) -> Bool where Hash k = _contains (_keyEvidence ()) k m
+
+@ffi("ridge_rt", "indexed_map_keys", 1)
 pub fn keys (m: Map k v) -> List k
 
--- Return a list of all values.
-@ffi("maps", "values", 1)
+@ffi("ridge_rt", "indexed_map_values", 1)
 pub fn values (m: Map k v) -> List v
 
--- Apply a function to each value, returning a new map with the same keys.
-@ffi("maps", "map", 2)
+-- Transform values while preserving the keys and their index.
+@ffi("ridge_rt", "indexed_map_map", 2)
 pub fn map (f: fn k v -> w) (m: Map k v) -> Map k w
 
--- Keep entries for which the predicate returns true.
-@ffi("maps", "filter", 2)
+@ffi("ridge_rt", "indexed_map_filter", 2)
 pub fn filter (p: fn k v -> Bool) (m: Map k v) -> Map k v
 
--- Return the number of entries in the map.
-@ffi("maps", "size", 1)
+@ffi("ridge_rt", "indexed_map_size", 1)
 pub fn length (m: Map k v) -> Int
 
--- Merge two maps; entries from `b` take priority over entries from `a`.
-@ffi("maps", "merge", 2)
-pub fn merge (a: Map k v) (b: Map k v) -> Map k v
+@ffi("ridge_rt", "indexed_map_merge", 3)
+fn _merge (evidence: KeyEvidence k) (a: Map k v) (b: Map k v) -> Map k v
 
--- Update the value at a key using a function that receives Option(current).
--- If the key is absent, the function receives None.
-pub fn update (k: k) (f: fn (Option v) -> v) (m: Map k v) -> Map k v =
-    let current = get k m
-    insert k (f current) m
+-- Right-side values take priority; equivalent left-side keys are retained.
+pub fn merge (a: Map k v) (b: Map k v) -> Map k v where Hash k = _merge (_keyEvidence ()) a b
 
--- Apply `f` to every entry, keeping each `Some` result under its key and
--- dropping the `None`s — map and filter in one pass.
-@ffi("ridge_rt", "map_filter_map", 2)
+@ffi("ridge_rt", "indexed_map_update", 4)
+fn _update (evidence: KeyEvidence k) (k: k) (f: fn (Option v) -> v) (m: Map k v) -> Map k v
+
+-- The callback receives None for an absent key and returns the new value.
+pub fn update (k: k) (f: fn (Option v) -> v) (m: Map k v) -> Map k v where Hash k =
+    _update (_keyEvidence ()) k f m
+
+@ffi("ridge_rt", "indexed_map_filter_map", 2)
 pub fn filterMap (f: fn k v -> Option w) (m: Map k v) -> Map k w

@@ -28,6 +28,18 @@ fn snapshot_fixture(fixture_name: &str) {
     // Use a unique ID per fixture so parallel tests don't collide.
     let tw = make_workspace(fixture_name, fixture_name, &source);
     let result = run_pipeline(&tw.path);
+    assert!(
+        result.type_errors.is_empty(),
+        "{}: {:?}",
+        fixture_name,
+        result.type_errors
+    );
+    assert!(
+        result.lower_errors.is_empty(),
+        "{}: {:?}",
+        fixture_name,
+        result.lower_errors
+    );
 
     // The workspace has exactly one module.
     assert!(

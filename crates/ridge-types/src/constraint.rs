@@ -25,6 +25,7 @@ use crate::ty::TyVid;
 /// - `3` — `Encode`
 /// - `4` — `Decode`
 /// - `5` — `ErrorFrom`
+/// - `6` — `Hash`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ClassId(pub u32);
 
@@ -40,6 +41,8 @@ pub const ENCODE_CLASS: ClassId = ClassId(3);
 pub const DECODE_CLASS: ClassId = ClassId(4);
 /// Reserved class for explicit conversion at Result propagation sites.
 pub const ERROR_FROM_CLASS: ClassId = ClassId(5);
+/// Reserved class for feeding opaque seeded state (`a -> Hasher -> Hasher`).
+pub const HASH_CLASS: ClassId = ClassId(6);
 
 // ── Constraint ────────────────────────────────────────────────────────────────
 
@@ -150,9 +153,11 @@ mod tests {
             ORD_CLASS,
             ENCODE_CLASS,
             DECODE_CLASS,
+            ERROR_FROM_CLASS,
+            HASH_CLASS,
         ];
         for (i, id) in ids.iter().enumerate() {
-            assert_eq!(id.0 as usize, i, "prelude class ids must be 0..=4 in order");
+            assert_eq!(id.0 as usize, i, "prelude class ids must be sequential");
         }
     }
 

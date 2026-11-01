@@ -224,9 +224,18 @@ fn relative_source_path(module_name: &str) -> Option<String> {
 
 /// The embedded source text for a relative path, if present.
 fn source_for(rel: &str) -> Option<&'static str> {
-    ridge_stdlib::STDLIB_SOURCES
-        .iter()
-        .find_map(|(key, text)| (*key == rel).then_some(*text))
+    // Parser spans address normalized text, including embedded Windows files.
+    // On-disk CRLF has the same LSP line/UTF-16 pairs as normalized text.
+    static SOURCES: OnceLock<HashMap<&str, String>> = OnceLock::new();
+    SOURCES
+        .get_or_init(|| {
+            ridge_stdlib::STDLIB_SOURCES
+                .iter()
+                .map(|(key, text)| (*key, ridge_lexer::normalise_line_endings(text)))
+                .collect()
+        })
+        .get(rel)
+        .map(String::as_str)
 }
 
 /// Collect top-level declaration `name → span` pairs from a parsed module.

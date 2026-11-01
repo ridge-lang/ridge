@@ -329,13 +329,13 @@ fn t7_acceptance_rate_limiter_imports_resolve() {
             "rate_limiter: unresolved import"
         );
     }
-    // rate_limiter has 5 user imports + 6 prelude IRs (option/result/json/query/
-    // ordering constructor IRs + 1 aliases IR) = 11.
+    // rate_limiter has 6 user imports + 6 prelude IRs (option/result/json/query/
+    // ordering constructor IRs + 1 aliases IR) = 12.
     // R015 aliases IR has List suppressed → 7 remaining bindings, still added.
     assert_eq!(
         module_imports.len(),
-        11,
-        "rate_limiter: expected 11 imports (5 user + 6 prelude), got {}",
+        12,
+        "rate_limiter: expected 12 imports (6 user + 6 prelude), got {}",
         module_imports.len()
     );
 }

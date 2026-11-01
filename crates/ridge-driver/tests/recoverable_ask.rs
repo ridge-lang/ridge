@@ -83,7 +83,8 @@ fn ask_error_identity_does_not_require_an_import_or_follow_a_local_namesake() {
         .map(|p| std::fs::read_to_string(p).unwrap())
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(core.contains("'actor_error_to_text'"), "{core}");
+    assert!(core.contains("'evidence_bind' ('std._evidence'"), "{core}");
+    assert!(core.contains("'get' ('toText'"), "{core}");
 }
 
 #[test]

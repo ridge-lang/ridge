@@ -31,7 +31,7 @@
 //! | 1       | `Float`       | `std.float.toText`   |
 //! | 2       | `Bool`        | `std.bool.toText`    |
 //! | 3       | `Text`        | identity (no wrap)   |
-//! | 5       | `Timestamp`   | `std.time.toText`    |
+//! | 5       | `Timestamp`   | `std.time.toIso`     |
 //! | 12      | `Error`       | `std.error.toText`   |
 //! | 51      | `Decimal`     | `std.decimal.toText` |
 //! | 52      | `Uuid`        | `std.uuid.toText`    |
@@ -262,9 +262,9 @@ pub(crate) fn wrap_to_text(
         // ── Type::Bool — std.bool.toText ─────────────────────────────────────
         Some(Type::Con(id, _)) if id == b.bool => make_to_text_call(ctx, inner, "std.bool", span),
 
-        // ── Type::Timestamp — std.time.toText ────────────────────────────────
+        // Timestamp uses the standard library's ISO conversion.
         Some(Type::Con(id, _)) if id == b.timestamp => {
-            make_to_text_call(ctx, inner, "std.time", span)
+            make_named_text_call(ctx, inner, "std.time", "toIso", span)
         }
 
         // ── Type::Decimal — std.decimal.toText ───────────────────────────────
@@ -484,7 +484,7 @@ fn try_dict_to_text(ctx: &mut LowerCtx<'_>, inner: &IrExpr, span: Span) -> Optio
 /// | `Float`     | `std.float.toText`          |
 /// | `Bool`      | `std.bool.toText`           |
 /// | `Text`      | identity — returned as-is   |
-/// | `Timestamp` | `std.time.toText`           |
+/// | `Timestamp` | `std.time.toIso`            |
 /// | `Decimal`   | `std.decimal.toText`        |
 /// | `Uuid`      | `std.uuid.toText`           |
 /// | `Error`     | `std.error.toText`          |
@@ -511,7 +511,7 @@ pub(crate) fn wrap_to_text_by_tycon(
     } else if tycon_id == b.bool {
         make_to_text_call(ctx, arg, "std.bool", span)
     } else if tycon_id == b.timestamp {
-        make_to_text_call(ctx, arg, "std.time", span)
+        make_named_text_call(ctx, arg, "std.time", "toIso", span)
     } else if tycon_id == b.decimal {
         make_to_text_call(ctx, arg, "std.decimal", span)
     } else if tycon_id == b.uuid {
@@ -536,13 +536,23 @@ pub(crate) fn make_to_text_call(
     module: &str,
     span: Span,
 ) -> IrExpr {
+    make_named_text_call(ctx, arg, module, "toText", span)
+}
+
+fn make_named_text_call(
+    ctx: &mut LowerCtx<'_>,
+    arg: IrExpr,
+    module: &str,
+    name: &str,
+    span: Span,
+) -> IrExpr {
     let callee_id = ctx.fresh_id(None);
     let call_id = ctx.fresh_id(None);
     let callee = Box::new(IrExpr::Symbol {
         id: callee_id,
         sym: SymbolRef::Stdlib {
             module: module.into(),
-            name: "toText".into(),
+            name: name.into(),
             kind: StdlibKind::Function,
         },
         span,
@@ -917,7 +927,7 @@ mod tests {
         }
     }
 
-    // ── Timestamp hole wraps in std.time.toText ──────────────────────
+    // Timestamp holes use the published ISO conversion.
     #[test]
     fn timestamp_hole_wraps_to_text() {
         let b = crate::test_support::builtins();
@@ -942,9 +952,9 @@ mod tests {
                     ..
                 } => {
                     assert_eq!(module, "std.time");
-                    assert_eq!(name, "toText");
+                    assert_eq!(name, "toIso");
                 }
-                ref other => panic!("expected std.time.toText, got {other:?}"),
+                ref other => panic!("expected std.time.toIso, got {other:?}"),
             },
             other => panic!("expected Call(toText), got {other:?}"),
         }

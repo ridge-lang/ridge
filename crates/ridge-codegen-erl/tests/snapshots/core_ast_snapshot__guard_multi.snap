@@ -64,32 +64,246 @@ CErlModule {
                 ],
                 body: Let {
                     var: CErlVar(
-                        "V_Anf0",
+                        "V_Anf5",
                     ),
-                    value: Call {
-                        module: CErlAtom(
-                            "erlang",
+                    value: Let {
+                        var: CErlVar(
+                            "V_Anf3",
                         ),
-                        fn_name: CErlAtom(
-                            ">",
-                        ),
-                        args: [
-                            Var(
+                        value: Let {
+                            var: CErlVar(
+                                "V_Anf2",
+                            ),
+                            value: Let {
+                                var: CErlVar(
+                                    "V_Anf1",
+                                ),
+                                value: Let {
+                                    var: CErlVar(
+                                        "V_Anf0",
+                                    ),
+                                    value: ListLit(
+                                        [],
+                                    ),
+                                    body: Call {
+                                        module: CErlAtom(
+                                            "ridge_rt",
+                                        ),
+                                        fn_name: CErlAtom(
+                                            "evidence_bind",
+                                        ),
+                                        args: [
+                                            Lit(
+                                                Atom(
+                                                    CErlAtom(
+                                                        "std._evidence",
+                                                    ),
+                                                ),
+                                            ),
+                                            Lit(
+                                                Binary(
+                                                    [
+                                                        79,
+                                                        114,
+                                                        100,
+                                                        58,
+                                                        115,
+                                                        116,
+                                                        97,
+                                                        116,
+                                                        105,
+                                                        99,
+                                                        58,
+                                                        91,
+                                                        40,
+                                                        34,
+                                                        34,
+                                                        44,
+                                                        32,
+                                                        34,
+                                                        73,
+                                                        110,
+                                                        116,
+                                                        34,
+                                                        41,
+                                                        93,
+                                                        58,
+                                                        91,
+                                                        93,
+                                                    ],
+                                                ),
+                                            ),
+                                            Var(
+                                                CErlVar(
+                                                    "V_Anf0",
+                                                ),
+                                            ),
+                                        ],
+                                    },
+                                },
+                                body: Call {
+                                    module: CErlAtom(
+                                        "maps",
+                                    ),
+                                    fn_name: CErlAtom(
+                                        "get",
+                                    ),
+                                    args: [
+                                        Lit(
+                                            Atom(
+                                                CErlAtom(
+                                                    "compare",
+                                                ),
+                                            ),
+                                        ),
+                                        Var(
+                                            CErlVar(
+                                                "V_Anf1",
+                                            ),
+                                        ),
+                                    ],
+                                },
+                            },
+                            body: Apply {
+                                callee: Var(
+                                    CErlVar(
+                                        "V_Anf2",
+                                    ),
+                                ),
+                                args: [
+                                    Var(
+                                        CErlVar(
+                                            "V_X",
+                                        ),
+                                    ),
+                                    Lit(
+                                        Int(
+                                            0,
+                                        ),
+                                    ),
+                                ],
+                            },
+                        },
+                        body: Case {
+                            scrutinee: Var(
                                 CErlVar(
-                                    "V_X",
+                                    "V_Anf3",
                                 ),
                             ),
-                            Lit(
-                                Int(
-                                    0,
-                                ),
-                            ),
-                        ],
+                            clauses: [
+                                CErlClause {
+                                    pattern: Lit(
+                                        Atom(
+                                            CErlAtom(
+                                                "Less",
+                                            ),
+                                        ),
+                                    ),
+                                    guard: Lit(
+                                        Atom(
+                                            CErlAtom(
+                                                "true",
+                                            ),
+                                        ),
+                                    ),
+                                    body: Lit(
+                                        Atom(
+                                            CErlAtom(
+                                                "false",
+                                            ),
+                                        ),
+                                    ),
+                                },
+                                CErlClause {
+                                    pattern: Lit(
+                                        Atom(
+                                            CErlAtom(
+                                                "Equal",
+                                            ),
+                                        ),
+                                    ),
+                                    guard: Lit(
+                                        Atom(
+                                            CErlAtom(
+                                                "true",
+                                            ),
+                                        ),
+                                    ),
+                                    body: Lit(
+                                        Atom(
+                                            CErlAtom(
+                                                "false",
+                                            ),
+                                        ),
+                                    ),
+                                },
+                                CErlClause {
+                                    pattern: Lit(
+                                        Atom(
+                                            CErlAtom(
+                                                "Greater",
+                                            ),
+                                        ),
+                                    ),
+                                    guard: Lit(
+                                        Atom(
+                                            CErlAtom(
+                                                "true",
+                                            ),
+                                        ),
+                                    ),
+                                    body: Lit(
+                                        Atom(
+                                            CErlAtom(
+                                                "true",
+                                            ),
+                                        ),
+                                    ),
+                                },
+                                CErlClause {
+                                    pattern: Var(
+                                        CErlVar(
+                                            "CaseUnmatched4",
+                                        ),
+                                    ),
+                                    guard: Lit(
+                                        Atom(
+                                            CErlAtom(
+                                                "true",
+                                            ),
+                                        ),
+                                    ),
+                                    body: PrimOp {
+                                        name: CErlAtom(
+                                            "match_fail",
+                                        ),
+                                        args: [
+                                            Tuple(
+                                                [
+                                                    Lit(
+                                                        Atom(
+                                                            CErlAtom(
+                                                                "case_clause",
+                                                            ),
+                                                        ),
+                                                    ),
+                                                    Var(
+                                                        CErlVar(
+                                                            "CaseUnmatched4",
+                                                        ),
+                                                    ),
+                                                ],
+                                            ),
+                                        ],
+                                    },
+                                },
+                            ],
+                        },
                     },
                     body: Case {
                         scrutinee: Var(
                             CErlVar(
-                                "V_Anf0",
+                                "V_Anf5",
                             ),
                         ),
                         clauses: [
@@ -110,32 +324,246 @@ CErlModule {
                                 ),
                                 body: Let {
                                     var: CErlVar(
-                                        "V_Anf1",
+                                        "V_Anf11",
                                     ),
-                                    value: Call {
-                                        module: CErlAtom(
-                                            "erlang",
+                                    value: Let {
+                                        var: CErlVar(
+                                            "V_Anf9",
                                         ),
-                                        fn_name: CErlAtom(
-                                            ">",
-                                        ),
-                                        args: [
-                                            Var(
+                                        value: Let {
+                                            var: CErlVar(
+                                                "V_Anf8",
+                                            ),
+                                            value: Let {
+                                                var: CErlVar(
+                                                    "V_Anf7",
+                                                ),
+                                                value: Let {
+                                                    var: CErlVar(
+                                                        "V_Anf6",
+                                                    ),
+                                                    value: ListLit(
+                                                        [],
+                                                    ),
+                                                    body: Call {
+                                                        module: CErlAtom(
+                                                            "ridge_rt",
+                                                        ),
+                                                        fn_name: CErlAtom(
+                                                            "evidence_bind",
+                                                        ),
+                                                        args: [
+                                                            Lit(
+                                                                Atom(
+                                                                    CErlAtom(
+                                                                        "std._evidence",
+                                                                    ),
+                                                                ),
+                                                            ),
+                                                            Lit(
+                                                                Binary(
+                                                                    [
+                                                                        79,
+                                                                        114,
+                                                                        100,
+                                                                        58,
+                                                                        115,
+                                                                        116,
+                                                                        97,
+                                                                        116,
+                                                                        105,
+                                                                        99,
+                                                                        58,
+                                                                        91,
+                                                                        40,
+                                                                        34,
+                                                                        34,
+                                                                        44,
+                                                                        32,
+                                                                        34,
+                                                                        73,
+                                                                        110,
+                                                                        116,
+                                                                        34,
+                                                                        41,
+                                                                        93,
+                                                                        58,
+                                                                        91,
+                                                                        93,
+                                                                    ],
+                                                                ),
+                                                            ),
+                                                            Var(
+                                                                CErlVar(
+                                                                    "V_Anf6",
+                                                                ),
+                                                            ),
+                                                        ],
+                                                    },
+                                                },
+                                                body: Call {
+                                                    module: CErlAtom(
+                                                        "maps",
+                                                    ),
+                                                    fn_name: CErlAtom(
+                                                        "get",
+                                                    ),
+                                                    args: [
+                                                        Lit(
+                                                            Atom(
+                                                                CErlAtom(
+                                                                    "compare",
+                                                                ),
+                                                            ),
+                                                        ),
+                                                        Var(
+                                                            CErlVar(
+                                                                "V_Anf7",
+                                                            ),
+                                                        ),
+                                                    ],
+                                                },
+                                            },
+                                            body: Apply {
+                                                callee: Var(
+                                                    CErlVar(
+                                                        "V_Anf8",
+                                                    ),
+                                                ),
+                                                args: [
+                                                    Var(
+                                                        CErlVar(
+                                                            "V_Y",
+                                                        ),
+                                                    ),
+                                                    Lit(
+                                                        Int(
+                                                            0,
+                                                        ),
+                                                    ),
+                                                ],
+                                            },
+                                        },
+                                        body: Case {
+                                            scrutinee: Var(
                                                 CErlVar(
-                                                    "V_Y",
+                                                    "V_Anf9",
                                                 ),
                                             ),
-                                            Lit(
-                                                Int(
-                                                    0,
-                                                ),
-                                            ),
-                                        ],
+                                            clauses: [
+                                                CErlClause {
+                                                    pattern: Lit(
+                                                        Atom(
+                                                            CErlAtom(
+                                                                "Less",
+                                                            ),
+                                                        ),
+                                                    ),
+                                                    guard: Lit(
+                                                        Atom(
+                                                            CErlAtom(
+                                                                "true",
+                                                            ),
+                                                        ),
+                                                    ),
+                                                    body: Lit(
+                                                        Atom(
+                                                            CErlAtom(
+                                                                "false",
+                                                            ),
+                                                        ),
+                                                    ),
+                                                },
+                                                CErlClause {
+                                                    pattern: Lit(
+                                                        Atom(
+                                                            CErlAtom(
+                                                                "Equal",
+                                                            ),
+                                                        ),
+                                                    ),
+                                                    guard: Lit(
+                                                        Atom(
+                                                            CErlAtom(
+                                                                "true",
+                                                            ),
+                                                        ),
+                                                    ),
+                                                    body: Lit(
+                                                        Atom(
+                                                            CErlAtom(
+                                                                "false",
+                                                            ),
+                                                        ),
+                                                    ),
+                                                },
+                                                CErlClause {
+                                                    pattern: Lit(
+                                                        Atom(
+                                                            CErlAtom(
+                                                                "Greater",
+                                                            ),
+                                                        ),
+                                                    ),
+                                                    guard: Lit(
+                                                        Atom(
+                                                            CErlAtom(
+                                                                "true",
+                                                            ),
+                                                        ),
+                                                    ),
+                                                    body: Lit(
+                                                        Atom(
+                                                            CErlAtom(
+                                                                "true",
+                                                            ),
+                                                        ),
+                                                    ),
+                                                },
+                                                CErlClause {
+                                                    pattern: Var(
+                                                        CErlVar(
+                                                            "CaseUnmatched10",
+                                                        ),
+                                                    ),
+                                                    guard: Lit(
+                                                        Atom(
+                                                            CErlAtom(
+                                                                "true",
+                                                            ),
+                                                        ),
+                                                    ),
+                                                    body: PrimOp {
+                                                        name: CErlAtom(
+                                                            "match_fail",
+                                                        ),
+                                                        args: [
+                                                            Tuple(
+                                                                [
+                                                                    Lit(
+                                                                        Atom(
+                                                                            CErlAtom(
+                                                                                "case_clause",
+                                                                            ),
+                                                                        ),
+                                                                    ),
+                                                                    Var(
+                                                                        CErlVar(
+                                                                            "CaseUnmatched10",
+                                                                        ),
+                                                                    ),
+                                                                ],
+                                                            ),
+                                                        ],
+                                                    },
+                                                },
+                                            ],
+                                        },
                                     },
                                     body: Case {
                                         scrutinee: Var(
                                             CErlVar(
-                                                "V_Anf1",
+                                                "V_Anf11",
                                             ),
                                         ),
                                         clauses: [
@@ -156,7 +584,7 @@ CErlModule {
                                                 ),
                                                 body: Let {
                                                     var: CErlVar(
-                                                        "V_Anf2",
+                                                        "V_Anf12",
                                                     ),
                                                     value: Call {
                                                         module: CErlAtom(
@@ -181,7 +609,7 @@ CErlModule {
                                                     body: Case {
                                                         scrutinee: Var(
                                                             CErlVar(
-                                                                "V_Anf2",
+                                                                "V_Anf12",
                                                             ),
                                                         ),
                                                         clauses: [
@@ -193,7 +621,7 @@ CErlModule {
                                                                 ),
                                                                 guard: Let {
                                                                     var: CErlVar(
-                                                                        "V_Anf3",
+                                                                        "V_Anf13",
                                                                     ),
                                                                     value: Call {
                                                                         module: CErlAtom(
@@ -217,7 +645,7 @@ CErlModule {
                                                                     },
                                                                     body: Let {
                                                                         var: CErlVar(
-                                                                            "V_Anf4",
+                                                                            "V_Anf14",
                                                                         ),
                                                                         value: Call {
                                                                             module: CErlAtom(
@@ -249,12 +677,12 @@ CErlModule {
                                                                             args: [
                                                                                 Var(
                                                                                     CErlVar(
-                                                                                        "V_Anf3",
+                                                                                        "V_Anf13",
                                                                                     ),
                                                                                 ),
                                                                                 Var(
                                                                                     CErlVar(
-                                                                                        "V_Anf4",
+                                                                                        "V_Anf14",
                                                                                     ),
                                                                                 ),
                                                                             ],
@@ -275,7 +703,7 @@ CErlModule {
                                                                 ),
                                                                 guard: Let {
                                                                     var: CErlVar(
-                                                                        "V_Anf5",
+                                                                        "V_Anf15",
                                                                     ),
                                                                     value: Call {
                                                                         module: CErlAtom(
@@ -299,7 +727,7 @@ CErlModule {
                                                                     },
                                                                     body: Let {
                                                                         var: CErlVar(
-                                                                            "V_Anf6",
+                                                                            "V_Anf16",
                                                                         ),
                                                                         value: Call {
                                                                             module: CErlAtom(
@@ -331,12 +759,12 @@ CErlModule {
                                                                             args: [
                                                                                 Var(
                                                                                     CErlVar(
-                                                                                        "V_Anf5",
+                                                                                        "V_Anf15",
                                                                                     ),
                                                                                 ),
                                                                                 Var(
                                                                                     CErlVar(
-                                                                                        "V_Anf6",
+                                                                                        "V_Anf16",
                                                                                     ),
                                                                                 ),
                                                                             ],
@@ -364,7 +792,7 @@ CErlModule {
                                                                 ),
                                                                 body: Let {
                                                                     var: CErlVar(
-                                                                        "V_Anf7",
+                                                                        "V_Anf17",
                                                                     ),
                                                                     value: Tuple(
                                                                         [
@@ -405,7 +833,7 @@ CErlModule {
                                                                         args: [
                                                                             Var(
                                                                                 CErlVar(
-                                                                                    "V_Anf7",
+                                                                                    "V_Anf17",
                                                                                 ),
                                                                             ),
                                                                         ],
@@ -440,7 +868,7 @@ CErlModule {
                                             CErlClause {
                                                 pattern: Var(
                                                     CErlVar(
-                                                        "CaseUnmatched8",
+                                                        "CaseUnmatched18",
                                                     ),
                                                 ),
                                                 guard: Lit(
@@ -466,7 +894,7 @@ CErlModule {
                                                                 ),
                                                                 Var(
                                                                     CErlVar(
-                                                                        "CaseUnmatched8",
+                                                                        "CaseUnmatched18",
                                                                     ),
                                                                 ),
                                                             ],
@@ -502,7 +930,7 @@ CErlModule {
                             CErlClause {
                                 pattern: Var(
                                     CErlVar(
-                                        "CaseUnmatched9",
+                                        "CaseUnmatched19",
                                     ),
                                 ),
                                 guard: Lit(
@@ -528,7 +956,7 @@ CErlModule {
                                                 ),
                                                 Var(
                                                     CErlVar(
-                                                        "CaseUnmatched9",
+                                                        "CaseUnmatched19",
                                                     ),
                                                 ),
                                             ],

@@ -20,26 +20,33 @@
 pub mod actor;
 pub mod caps_check;
 pub mod caps_infer;
+mod class_contract;
 pub mod class_env;
 pub mod collect;
 mod constants;
 pub mod cross_module;
 pub mod ctx;
 pub mod derive;
+mod derive_comparison;
 pub mod error;
 mod error_conversion;
 pub mod exhaustiveness;
 pub mod explicit_calls;
 mod flow;
 pub mod infer;
+mod instance_match;
 pub mod instantiate;
 pub mod interp;
+mod local_constraints;
 mod migrate;
 pub mod pipe_propagate;
 pub mod prelude;
 mod projections;
 pub mod quote;
 mod record_requirements;
+mod registry_refresh;
+mod stdlib_instance_heads;
+pub use registry_refresh::{refresh as refresh_registry_metadata, RegistryRefreshFailure};
 pub mod records;
 pub mod render;
 mod return_context;
@@ -49,6 +56,9 @@ pub mod stdlib_env;
 pub mod stdlib_signatures;
 pub mod stdlib_types;
 pub mod tycon_collect;
+mod type_template;
+mod value_comparison;
+pub use value_comparison::prepare_value_comparisons;
 pub mod unify;
 pub mod unions;
 
@@ -223,6 +233,9 @@ pub struct TypedWorkspace {
 pub struct TypedModule {
     /// The module's stable index within the workspace.
     pub id: ModuleId,
+    /// Checking already rejected this module. Lowering still runs to report
+    /// independent errors, but missing evidence is then a recovery placeholder.
+    pub has_type_errors: bool,
     /// Parsed AST, borrowed from the [`ResolvedWorkspace`].
     pub ast: Arc<ridge_ast::Module>,
     /// Type stamped on every `NodeId` that names an expression.
@@ -331,7 +344,7 @@ pub fn typecheck_workspace_with_history(
 
     // Reconciled stdlib types occupy a reserved block immediately after the
     // built-ins and before any user type, so their ids are stable workspace-wide
-    // and `builtins_len` below shifts the user-type prediction base past them.
+    // source identities are reserved after that block.
     // The standard library's own build declares these types from source, so the
     // reservation is skipped there to avoid a second, conflicting declaration.
     let stdlib_tycon_names = if ws.graph.is_stdlib {
@@ -349,21 +362,20 @@ pub fn typecheck_workspace_with_history(
     // schemes are already available when it is checked.
     let check_order = crate::cross_module::topo_order(&ws.graph.deps);
 
-    // Predict each module's own type/actor `TyConId`s in the SAME order the
-    // collect pass interns them (the shared arena makes a producer's id valid in
-    // any consumer). Used to seed imported type names into each consumer's
-    // `user_tycon_names`, and flattened for the instance-collection pass which
-    // only needs a name to resolve to some declaring id.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "builtin TyCon count is a small constant"
-    )]
-    let builtins_len = arena.all().len() as u32;
-    let per_module_tycon_names = crate::cross_module::predict_module_tycon_names(
-        &ws.module_asts,
-        &check_order,
-        builtins_len,
-    );
+    // Reserve every source declaration before checking any module. Generated
+    // column mirrors, insert shapes and anonymous records can then append to the
+    // arena without moving the identities used by the instance registry.
+    let mut per_module_tycon_names = vec![FxHashMap::default(); ws.module_asts.len()];
+    for &mid in &check_order {
+        if let Some(ast) = ws.module_asts.get(mid.0 as usize) {
+            per_module_tycon_names[mid.0 as usize] = crate::tycon_collect::reserve_user_tycons(
+                ast,
+                mid,
+                &mut arena,
+                &FxHashMap::default(),
+            );
+        }
+    }
     let workspace_tycon_names =
         crate::cross_module::flatten_tycon_names(&per_module_tycon_names, &check_order);
     let symbol_tables: Vec<&ridge_resolve::SymbolTable> =
@@ -387,8 +399,8 @@ pub fn typecheck_workspace_with_history(
     // the module is checked. A consumer module resolves its imported types against
     // the producer's real ids here — `check_order` runs producers first, so every
     // module a consumer imports is already recorded by the time it is checked. This
-    // supersedes the id prediction for import resolution; the prediction stays the
-    // seed for the pre-check instance-collection pass, which has no actual ids yet.
+    // includes generated names as well as the source identities already reserved
+    // for the pre-check instance-collection pass.
     let mut actual_module_tycon_names: Vec<FxHashMap<String, ridge_types::TyConId>> =
         (0..ws.modules.len())
             .map(|_| FxHashMap::default())
@@ -413,31 +425,119 @@ pub fn typecheck_workspace_with_history(
     }
     // Which module declares each type, for the coherence checks. Built from the
     // same two sources the collect pass resolves instance heads against — the
-    // arena as it stands before user types are interned, and the per-module id
-    // prediction — so the head's id and its declaring module cannot disagree.
+    // arena with reserved source placeholders, and the per-module identities —
+    // so the head's id and its declaring module cannot disagree.
     let tycon_origins =
         crate::cross_module::TyConOrigins::new(arena.all(), &per_module_tycon_names, &module_fqns);
-    let collect_result = collect_workspace_gated(
+    let scoped_tycon_names: Vec<_> = ws
+        .modules
+        .iter()
+        .enumerate()
+        .map(|(slot, module)| {
+            let imported = crate::cross_module::imported_tycon_names(
+                &module.imports,
+                &symbol_tables,
+                &actual_module_tycon_names,
+                &per_module_tycon_names,
+                &stdlib_tycon_names,
+                &compiler_tycons,
+            );
+            let mut names = compiler_tycons.clone();
+            names.extend(
+                stdlib_tycon_names
+                    .iter()
+                    .map(|(name, &id)| (name.clone(), id)),
+            );
+            names.extend(imported);
+            names.extend(
+                per_module_tycon_names[slot]
+                    .iter()
+                    .map(|(name, &id)| (name.clone(), id)),
+            );
+            names
+        })
+        .collect();
+    let mut collect_result = collect::collect_workspace_scoped(
         &module_ast_pairs,
         &collect_tycon_names,
+        &scoped_tycon_names,
         &tycon_origins,
         &b,
         ws.graph.is_stdlib,
     );
-    // Coherence errors are workspace-level; accumulate them tagged with the
-    // module they originated in (use ModuleId(0) as a fallback — coherence
-    // errors carry their own span, so the module tag is informational only).
-    for err in collect_result.errors {
-        all_errors.push((ModuleId(0), err));
+    // A span belongs to its declaring source file. Preserve that owner for
+    // instance and derive errors; only unowned workspace errors use the fallback.
+    for (index, err) in collect_result.errors.into_iter().enumerate() {
+        let module = collect_result
+            .error_modules
+            .get(&index)
+            .copied()
+            .unwrap_or(0);
+        all_errors.push((ModuleId(module), err));
     }
+    all_errors.extend(
+        prepare_value_comparisons(
+            arena.all(),
+            &b,
+            &collect_result.class_table,
+            &mut collect_result.instance_env,
+        )
+        .into_iter()
+        .map(|error| (ModuleId(0), error)),
+    );
+    let templates = crate::type_template::TypeTemplates {
+        modules: &module_ast_pairs,
+        scopes: &scoped_tycon_names,
+        tycons: arena.all(),
+        builtins: &b,
+    };
+    crate::instance_match::prepare(&templates, &mut collect_result.instance_env);
+    let rows_tycons = crate::ctx::RowsTycons::from_lookup(|name| {
+        compiler_tycons
+            .get(name)
+            .or_else(|| {
+                if ws.graph.is_stdlib {
+                    collect_tycon_names.get(name)
+                } else {
+                    None
+                }
+            })
+            .copied()
+    });
+    all_errors.extend(crate::class_contract::prepare(
+        &templates,
+        &collect_result.class_table,
+        &mut collect_result.instance_env,
+        rows_tycons,
+    ));
+    let comparisons = crate::derive_comparison::finish_comparisons(
+        &crate::derive_comparison::ComparisonContext {
+            templates: &templates,
+            rows_tycons,
+            scopes: &scoped_tycon_names,
+            tycons: arena.all(),
+            classes: &collect_result.class_table,
+            builtins: &b,
+            origins: &tycon_origins,
+        },
+        &mut collect_result.instance_env,
+        &mut collect_result.derived_instances,
+    );
+    all_errors.extend(comparisons.errors);
     let class_table = collect_result.class_table;
     let instance_env = collect_result.instance_env;
     let mut derived_instances = collect_result.derived_instances;
     // Stashed implicit `Row` instances, pulled into `derived_instances` as
     // modules demand them in the loop below.
     let mut implicit_row_instances = collect_result.implicit_row_instances;
+    for tycon in comparisons.rows {
+        if let Some(instance) = implicit_row_instances.remove(&tycon) {
+            derived_instances.push(instance);
+        }
+    }
 
     // Step 3: Type-check each module in dependency order (producers first).
+    let local_registries = std::cell::OnceCell::new();
     for &mid in &check_order {
         let Some(rm) = ws.modules.iter().find(|m| m.id == mid) else {
             continue;
@@ -451,6 +551,7 @@ pub fn typecheck_workspace_with_history(
         } else {
             typed_slots[rm.id.0 as usize] = Some(TypedModule {
                 id: rm.id,
+                has_type_errors: true,
                 ast: Arc::new(ridge_ast::Module {
                     items: Vec::new(),
                     doc: Vec::new(),
@@ -484,9 +585,6 @@ pub fn typecheck_workspace_with_history(
             &symbol_tables,
             &exported_schemes,
         );
-        // A full workspace check interns every module's types exactly once, so
-        // there is nothing to reuse — types are collected fresh.
-        let no_own_tycon_ids = FxHashMap::default();
         let migrate_ctx = crate::migrate::MigrateHistoryCtx {
             history,
             module_fqns: &module_fqns,
@@ -502,13 +600,14 @@ pub fn typecheck_workspace_with_history(
             &imported_schemes,
             &workspace_tycon_names,
             &stdlib_tycon_names,
-            &no_own_tycon_ids,
+            &per_module_tycon_names[rm.id.0 as usize],
             // Producers are checked first, so every companion an imported entity
             // needs is already accumulated here by the time its consumer runs.
             &workspace_insert_companions,
             &mut arena,
             &b,
             Some((&class_table, &instance_env)),
+            &local_registries,
             &migrate_ctx,
             ws.graph.is_stdlib,
             &tycon_origins,
@@ -585,6 +684,7 @@ fn empty_module_result(module_id: ModuleId) -> ModuleTypecheckResult {
     ModuleTypecheckResult {
         typed: TypedModule {
             id: module_id,
+            has_type_errors: false,
             ast: Arc::new(ridge_ast::Module {
                 items: Vec::new(),
                 doc: Vec::new(),
@@ -660,15 +760,8 @@ pub fn typecheck_module_incremental(
     // Recover each module's own type names → real ids from the prior arena,
     // keyed by the declaring module. This drives two things the incremental
     // recheck would otherwise get wrong versus a full rebuild.
-    let mut module_tycon_names: Vec<FxHashMap<String, TyConId>> =
-        vec![FxHashMap::default(); ws.modules.len()];
-    for d in &typed_ws.tycons {
-        if let Some(m) = d.def_module_raw {
-            if let Some(slot) = module_tycon_names.get_mut(m as usize) {
-                slot.insert(d.name.clone(), d.id);
-            }
-        }
-    }
+    let module_tycon_names =
+        crate::cross_module::declared_tycon_names(&typed_ws.tycons, ws.modules.len());
 
     // (1) Reconstruct this module's imported type names the same way a full
     // check does, so an imported entity resolves to the producer's actual
@@ -742,6 +835,7 @@ pub fn typecheck_module_incremental(
         &mut arena,
         b,
         Some((&typed_ws.class_table, &typed_ws.instance_env)),
+        &std::cell::OnceCell::new(),
         &migrate_ctx,
         ws.graph.is_stdlib,
         // The arena here has already been through a full check, so it carries
@@ -1154,6 +1248,7 @@ fn typecheck_module_inner(
         &crate::class_env::ClassTable,
         &crate::class_env::InstanceEnv,
     )>,
+    local_registries: &std::cell::OnceCell<std::sync::Arc<crate::local_constraints::Registries>>,
     migrate_ctx: &crate::migrate::MigrateHistoryCtx<'_>,
     is_stdlib: bool,
     tycon_origins: &crate::cross_module::TyConOrigins,
@@ -1165,6 +1260,7 @@ fn typecheck_module_inner(
     use crate::tycon_collect::{collect_user_tycons, prescan_inline_records};
 
     let mut ctx = InferCtx::new(b);
+    ctx.local_registries = crate::local_constraints::for_module(ast, registries, local_registries);
     ctx.written_bindings = crate::infer::written_binding_sites(ast, &node_id_map, bindings);
     // Attach the resolver's NodeIdMap so infer_expr can write back per-expression
     // types. The map is stamped once during resolve and threaded in here rather
@@ -1249,8 +1345,8 @@ fn typecheck_module_inner(
     // The constraint deferral in `instantiate` then handles the rest: each call
     // site that instantiates the scheme pushes a `Constraint` into
     // `deferred_constraints`, which the solver later resolves as Static or Forward.
-    if let Some((ct, _)) = registries {
-        seed_class_method_schemes(&mut ctx, b, ct, global_tycon_names);
+    if let Some((ct, ie)) = registries {
+        seed_class_method_schemes(&mut ctx, ie);
         seed_prelude_class_method_schemes(&mut ctx, b);
         // `SqlValue` is a builtin (#20) for user builds, but the standard
         // library's own build also interns sql.ridge's source `pub type
@@ -1321,33 +1417,8 @@ fn typecheck_module_inner(
                 .or_else(|| ctx.user_tycon_names.get(name))
                 .copied()
         };
-        let query_id = receiver_id("Query");
-        let join_id = receiver_id("Join");
-        let left_join_id = receiver_id("LeftJoin");
-        let right_join_id = receiver_id("RightJoin");
-        let full_join_id = receiver_id("FullJoin");
-        // `groupBy` returns the reconciled `Grouped q p` builder, so its seed needs
-        // that tycon id (resolved like the receivers above); `runGroups`'s result is
-        // all builtins, so its seed needs only the class table. Bound here, before the
-        // seeds borrow `ctx` mutably, so the `receiver_id` closure's immutable borrow
-        // has ended.
+        let rows_tycons = crate::ctx::RowsTycons::from_lookup(receiver_id);
         let grouped_id = receiver_id("Grouped");
-        // `Joined` (the nested N-ary inner join) resolved here too, before the
-        // seeds borrow `ctx` mutably, so the `receiver_id` closure's immutable
-        // borrow has ended by the time the `RowsTycons` is built.
-        let joined_id = receiver_id("Joined");
-        // `Seq` (the in-memory query source) resolved here too, before the seeds
-        // borrow `ctx` mutably, for the same `RowsTycons`-before-borrow reason.
-        let seq_id = receiver_id("Seq");
-        // `LeftJoined` (the nested N-ary LEFT outer join) resolved here too, alongside
-        // `Joined`, for the same `RowsTycons`-before-mutable-borrow reason.
-        let left_joined_id = receiver_id("LeftJoined");
-        // `RightJoined` (the nested N-ary RIGHT outer join) resolved here too.
-        let right_joined_id = receiver_id("RightJoined");
-        // `FullJoined` (the nested N-ary FULL outer join) resolved here too.
-        let full_joined_id = receiver_id("FullJoined");
-        // `joinOn` takes the right `Repo f a`, so its `Joinable` seed needs the
-        // reconciled `Repo` id; resolved here, before the mutable seed borrows.
         let repo_id = receiver_id("Repo");
         seed_groupable_scheme(&mut ctx, b, ct, grouped_id);
         seed_summarizable_scheme(&mut ctx, b, ct, sql_value, db_error);
@@ -1355,32 +1426,12 @@ fn typecheck_module_inner(
         seed_leftjoinable_scheme(&mut ctx, b, ct, repo_id);
         seed_rightjoinable_scheme(&mut ctx, b, ct, repo_id);
         seed_fulljoinable_scheme(&mut ctx, b, ct, repo_id);
-        if let (Some(query), Some(join), Some(left_join)) = (query_id, join_id, left_join_id) {
-            ctx.rows_tycons = Some(crate::ctx::RowsTycons {
-                query,
-                seq: seq_id,
-                join,
-                left_join,
-                // `RightJoin` lands alongside `LeftJoin` (both in std.repo); fall back
-                // to the left-join id if it is somehow absent, since no `Rows
-                // (RightJoin …)` can then form and the alias stays inert.
-                right_join: right_join_id.unwrap_or(left_join),
-                // `FullJoin` likewise lands in std.repo; same fallback as `RightJoin`.
-                full_join: full_join_id.unwrap_or(left_join),
-                // `Joined` (the nested N-ary inner join) lands in std.repo too, but
-                // stays `None` in a workspace without it so the `JoinCond`/
-                // `JoinResult`/`Rows` projections over a composite stay inert.
-                joined: joined_id,
-                // `LeftJoined` (the nested N-ary LEFT outer join) likewise stays
-                // `None` without std.repo, leaving its projections inert.
-                left_joined: left_joined_id,
-                // `RightJoined` (the nested N-ary RIGHT outer join) — same fallback.
-                right_joined: right_joined_id,
-                // `FullJoined` (the nested N-ary FULL outer join) — same fallback.
-                full_joined: full_joined_id,
-            });
-        }
+        ctx.rows_tycons = rows_tycons;
     }
+
+    let method_contracts = registries.map_or_else(FxHashMap::default, |(classes, instances)| {
+        crate::class_contract::capture(&ctx, classes, instances, stdlib_tycon_names)
+    });
 
     // Step B: Seed env with prelude constructors + stdlib qualified bindings.
     // The class table (when present) lets reconciled stdlib functions be seeded
@@ -1482,7 +1533,7 @@ fn typecheck_module_inner(
     // the staged rollout: node_types are populated without yet changing which
     // programs are rejected. No-op without the class/instance registries.
     let instance_dict_constraints =
-        crate::scc::infer_instance_methods(&mut ctx, b, ast, ct, ie, !is_stdlib);
+        crate::scc::infer_instance_methods(&mut ctx, b, ast, ct, ie, &method_contracts, !is_stdlib);
 
     // Conversion sites outside ordinary function SCCs (for example a try
     // expression in an actor body) still require a checked dictionary. Keep
@@ -1599,6 +1650,7 @@ fn typecheck_module_inner(
 
     let typed = TypedModule {
         id,
+        has_type_errors: !ctx.errors.is_empty(),
         ast: Arc::clone(ast),
         node_types, // Phase 4.5 T3: populated via infer_expr write-back
         schemes,    // Phase 4.5 T4: populated by SCC generalise write-back
@@ -1725,104 +1777,10 @@ fn check_main_error_showable(
 /// semantic described in the design (no explicit `where` clause required).
 fn seed_class_method_schemes(
     ctx: &mut crate::ctx::InferCtx,
-    b: &ridge_types::BuiltinTyCons,
-    class_table: &crate::class_env::ClassTable,
-    global_tycon_names: &FxHashMap<String, TyConId>,
+    instances: &crate::class_env::InstanceEnv,
 ) {
-    use crate::tycon_collect::ast_type_to_ridge_type;
-    use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
-    use rustc_hash::FxHashMap;
-
-    // Class-method signatures may reference types declared in the class's own
-    // module while being seeded into a *different* module's env — every global
-    // class method is seeded into every module so bare-name calls resolve. A
-    // method like `toSql (x: a) -> SqlValue` declared in `std.sql` is therefore
-    // seeded into, say, `std.crypto`, where `SqlValue` is not in the local
-    // `user_tycon_names`. Resolving against only the current module's names
-    // would leave it as a fresh var, which then trips T023 (unsolved type
-    // variable) when the scheme is generalised. Merge the workspace-global type
-    // map under the local one (local wins on a name clash, preserving shadowing)
-    // so cross-module type names in a signature resolve to their shared arena id.
-    let mut sig_tycon_names = global_tycon_names.clone();
-    for (name, &id) in &ctx.user_tycon_names {
-        sig_tycon_names.insert(name.clone(), id);
-    }
-
-    for (class_id, class_info) in class_table.iter() {
-        for sig in &class_info.method_sigs {
-            // Skip methods whose AST types were not recorded (prelude methods
-            // registered without source; their ToText/Eq/Ord dispatch is handled
-            // by the existing interpolation path).
-            let Some(ast_ret) = &sig.ast_ret_type else {
-                continue;
-            };
-            if sig.ast_param_types.is_empty() {
-                continue;
-            }
-
-            // Allocate a fresh TyVid per class type variable — one for an
-            // ordinary class (`a`), several for a multi-parameter class (`a b`).
-            // Map each name so that occurrences in param/ret types resolve to the
-            // matching fresh TyVid.
-            let mut tyvar_map: FxHashMap<&str, ridge_types::TyVid> = FxHashMap::default();
-            let mut class_tyvids: Vec<ridge_types::TyVid> =
-                Vec::with_capacity(sig.class_ty_vars.len());
-            for name in &sig.class_ty_vars {
-                let tv = ctx.fresh_tyvid();
-                class_tyvids.push(tv);
-                if !name.is_empty() {
-                    tyvar_map.insert(name.as_str(), tv);
-                }
-            }
-            // A method whose AST types were recorded always has at least one
-            // class variable; keep one as a defensive fallback so the scheme is
-            // never empty-quantified.
-            if class_tyvids.is_empty() {
-                class_tyvids.push(ctx.fresh_tyvid());
-            }
-
-            // Only this module owns diagnostics on a class signature. Imported
-            // signatures retain their types, but their spans belong to another
-            // source file; concrete uses are checked at the use site instead.
-            let projection_start = ctx.projection_sites.len();
-            // Convert AST param types to Ridge types, substituting class_ty_var.
-            let param_types: Vec<Type> = sig
-                .ast_param_types
-                .iter()
-                .map(|ast_ty| ast_type_to_ridge_type(b, ctx, ast_ty, &sig_tycon_names, &tyvar_map))
-                .collect();
-
-            // Convert AST return type.
-            let ret_type = ast_type_to_ridge_type(b, ctx, ast_ret, &sig_tycon_names, &tyvar_map);
-            if class_info.def_module != ctx.current_module_raw {
-                ctx.projection_sites.truncate(projection_start);
-            }
-
-            let fn_ty = Type::Fn {
-                params: param_types,
-                ret: Box::new(ret_type),
-                caps: CapRow::Concrete(CapabilitySet::PURE),
-            };
-
-            // Build a polymorphic scheme ∀[class_tyvids]. fn_ty with one
-            // constraint over all the class variables.
-            let constraint_tys: smallvec::SmallVec<[ridge_types::TyVid; 1]> =
-                class_tyvids.iter().copied().collect();
-            let scheme = Scheme {
-                projections: None,
-                record_fields: None,
-                vars: class_tyvids,
-                cap_vars: vec![],
-                row_vars: vec![],
-                ty: fn_ty,
-                constraints: vec![Constraint::new(class_id, constraint_tys)],
-            };
-
-            // Seed at lowest precedence: bind under the method name.
-            // Subsequent bindings for the same name (user fns, stdlib) will
-            // overwrite this entry, keeping existing programs green.
-            ctx.env.bind(sig.name.clone(), scheme);
-        }
+    for ((_, name), scheme) in &instances.method_schemes {
+        ctx.env.bind(name.clone(), scheme.clone());
     }
 }
 
@@ -2646,6 +2604,20 @@ fn seed_error_from_method_scheme(ctx: &mut crate::ctx::InferCtx) {
 /// - `compare :: ∀a. a → a                → Ordering        where Ord a`
 /// - `encode  :: ∀a. a                    → JsonValue       where Encode a`
 /// - `decode  :: ∀a. JsonValue           → Result a Error  where Decode a`
+fn seed_hash_method_scheme(ctx: &mut crate::ctx::InferCtx, b: &ridge_types::BuiltinTyCons) {
+    use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type, HASH_CLASS};
+    let a = ctx.fresh_tyvid();
+    let state = Type::Con(b.hasher, vec![]);
+    let mut scheme = Scheme::mono(Type::Fn {
+        params: vec![Type::Var(a), state.clone()],
+        ret: Box::new(state),
+        caps: CapRow::Concrete(CapabilitySet::PURE),
+    });
+    scheme.vars = vec![a];
+    scheme.constraints = vec![Constraint::single(HASH_CLASS, a)];
+    ctx.env.bind("hash".to_owned(), scheme);
+}
+
 fn seed_prelude_class_method_schemes(
     ctx: &mut crate::ctx::InferCtx,
     b: &ridge_types::BuiltinTyCons,
@@ -2663,6 +2635,7 @@ fn seed_prelude_class_method_schemes(
     };
 
     seed_error_from_method_scheme(ctx);
+    seed_hash_method_scheme(ctx, b);
 
     // ── toText :: ∀a. a → Text where ToText a ────────────────────────────────
     {
@@ -3103,14 +3076,14 @@ fn seed_sql_codec_schemes(
     }
 }
 
-/// Constraint signature of a reconciled stdlib function — its class constraints
+/// Constraint signature of a stdlib function — its class constraints
 /// plus the scheme's parameter types.
 ///
 /// The lowering pass reads this to thread instance dictionaries: a call to a
 /// constrained stdlib function (e.g. `Repo.all`, whose scheme carries `Adapter
 /// a, Row e`) must prepend the resolved dicts, the same as a constrained local
-/// fn. Returns `None` when `(module, name)` is not a reconciled stdlib function
-/// or carries no function type.
+/// fn. Schemes involving reconciled types take precedence over the standard
+/// signature table. Returns `None` for an unknown symbol or non-function type.
 #[must_use]
 #[expect(
     clippy::implicit_hasher,
@@ -3128,7 +3101,11 @@ pub fn reconciled_fn_dict_sig(
     ridge_types::Type,
 )> {
     let scheme =
-        crate::stdlib_types::reconciled_fn_scheme(module, name, reconciled, b, Some(classes))?;
+        crate::stdlib_types::reconciled_fn_scheme(module, name, reconciled, b, Some(classes))
+            .or_else(|| {
+                ridge_resolve::lookup_stdlib(module)
+                    .and_then(|m| crate::stdlib_signatures::stdlib_signature(m.id, name, b))
+            })?;
     let ridge_types::Type::Fn { params, ret, .. } = scheme.ty else {
         return None;
     };

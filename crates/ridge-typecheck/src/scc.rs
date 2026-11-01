@@ -1012,6 +1012,7 @@ pub fn infer_instance_methods(
     ast: &ridge_ast::Module,
     class_table: &ClassTable,
     instance_env: &InstanceEnv,
+    method_contracts: &crate::class_contract::MethodContracts,
     record_errors: bool,
 ) -> FxHashMap<Span, Vec<Vec<TyVid>>> {
     let mut recorded: FxHashMap<Span, Vec<Vec<TyVid>>> = FxHashMap::default();
@@ -1027,6 +1028,8 @@ pub fn infer_instance_methods(
             class_table.id_by_name(&decl.class.text) == Some(ridge_types::ERROR_FROM_CLASS);
         if conversion {
             crate::error_conversion::check_method_set(ctx, decl);
+        } else {
+            crate::class_contract::check_method_set(ctx, decl, class_table);
         }
 
         // One shared TyVid per head/`where` type variable, allocated before any
@@ -1073,6 +1076,7 @@ pub fn infer_instance_methods(
         // the solver treats a class-method call on a head variable as a forward
         // rather than an unsatisfiable concrete requirement.
         let env_snap_ty = ctx.env_free_tyvids();
+        let rigid = crate::class_contract::rigid_head(ctx, decl, class_table, &tyvar_map);
 
         for method in &decl.methods {
             // Method-local variables (only in this method's signature) extend the
@@ -1109,6 +1113,23 @@ pub fn infer_instance_methods(
                     &mut ret_ty,
                 );
             }
+            let method_rows = if conversion {
+                vec![]
+            } else {
+                crate::class_contract::prepare_method(
+                    ctx,
+                    &crate::class_contract::MethodCheck {
+                        decl,
+                        method: &method.name.text,
+                        contracts: method_contracts,
+                        classes: class_table,
+                        variables: &method_map,
+                        rigid: &rigid,
+                    },
+                    &mut param_types,
+                    &mut ret_ty,
+                )
+            };
 
             ctx.env.push_frame();
             let saved_ret = ctx.current_fn_ret.take();
@@ -1133,16 +1154,15 @@ pub fn infer_instance_methods(
                 });
             }
 
-            if conversion {
-                crate::caps_check::check_caps_decl(
-                    ctx,
-                    b,
-                    &method.name.text,
-                    Some(CapabilitySet::PURE),
-                    &method.body,
-                    method.span,
-                );
-            }
+            crate::class_contract::check_rows(ctx, &method_rows, method.span);
+            crate::caps_check::check_caps_decl(
+                ctx,
+                b,
+                &method.name.text,
+                Some(CapabilitySet::PURE),
+                &method.body,
+                method.span,
+            );
             ctx.current_fn_ret = saved_ret;
             ctx.env.pop_frame();
         }

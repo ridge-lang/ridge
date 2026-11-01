@@ -60,7 +60,22 @@ CErlModule {
                                         ),
                                     ),
                                     ListLit(
-                                        [],
+                                        [
+                                            Lit(
+                                                Atom(
+                                                    CErlAtom(
+                                                        "spawn",
+                                                    ),
+                                                ),
+                                            ),
+                                            Lit(
+                                                Atom(
+                                                    CErlAtom(
+                                                        "time",
+                                                    ),
+                                                ),
+                                            ),
+                                        ],
                                     ),
                                 ],
                             ),
@@ -84,7 +99,7 @@ CErlModule {
                     "%% File: <source>, Offset: 130",
                 ),
                 CErlAnn(
-                    "%% Caps: {}",
+                    "%% Caps: {time spawn}",
                 ),
             ],
             body: Fun {

@@ -143,6 +143,8 @@ impl NodeSpatialIndex {
 /// keeps mutating. Indexed by `ModuleId.0`.
 #[derive(Debug)]
 struct ModuleView {
+    /// Comparison tokens and their checked class-method domains.
+    comparisons: Vec<crate::comparison_sites::ComparisonSite>,
     /// Type stamped on each expression `NodeId`, indexed by `NodeId.0`.
     node_types: Vec<Option<ridge_types::Type>>,
     /// Binding stamped on each name `NodeId`, indexed by `NodeId.0`.
@@ -156,6 +158,133 @@ struct ModuleView {
     /// The module's typed AST, retained so inlay hints can walk `let`/`var`
     /// bindings. `None` when the module was not type-checked.
     ast: Option<Arc<ridge_ast::Module>>,
+    /// Generalised contracts acquired by functions with incomplete signatures.
+    inferred_contracts: HashMap<String, String>,
+    /// Inner declarations keyed by resolved identity, including shadowed names.
+    local_functions: HashMap<LocalId, LocalFunctionContract>,
+}
+
+#[derive(Debug)]
+struct LocalFunctionContract {
+    header: String,
+    documentation: Option<String>,
+    signature: SignatureSig,
+}
+
+fn local_function_contracts(
+    typed: &TypedWorkspace,
+    module: usize,
+    resolved: &ridge_resolve::ResolvedModule,
+    source: &str,
+) -> HashMap<LocalId, LocalFunctionContract> {
+    struct Collector<'a> {
+        typed: &'a TypedWorkspace,
+        module: &'a ridge_typecheck::TypedModule,
+        resolved: &'a ridge_resolve::ResolvedModule,
+        source: &'a str,
+        contracts: HashMap<LocalId, LocalFunctionContract>,
+    }
+    impl<'ast> ridge_ast::visit::Visit<'ast> for Collector<'_> {
+        fn visit_expr(&mut self, expr: &'ast ridge_ast::Expr) {
+            if let ridge_ast::Expr::InnerFn { decl, .. } = expr {
+                let body = match &decl.body {
+                    ridge_ast::Body::Expr(body) => match body {
+                        ridge_ast::Expr::Block(block) => Some((block.span, NodeKind::Block)),
+                        ridge_ast::Expr::Try { span, .. } => Some((*span, NodeKind::Try)),
+                        body => Some((body.span(), NodeKind::Expr)),
+                    },
+                    _ => None,
+                };
+                let scheme = body
+                    .and_then(|(span, kind)| self.resolved.node_ids.get(span, kind))
+                    .and_then(|node| self.module.schemes.get(&node));
+                let binding = self
+                    .resolved
+                    .node_ids
+                    .get(decl.name.span, NodeKind::Ident)
+                    .and_then(|node| self.resolved.bindings.get(node.0 as usize))
+                    .and_then(Option::as_ref);
+                if let (Some(scheme), Some(Binding::Local(local))) = (scheme, binding) {
+                    let contract = ridge_typecheck::render::render_scheme_with(
+                        scheme,
+                        &self.typed.tycons,
+                        &self.typed.class_table,
+                    );
+                    let mut signature = build_signature(
+                        self.source,
+                        &decl.name.text,
+                        &decl.params,
+                        decl.ret.as_ref(),
+                    );
+                    append_written_requirements(
+                        &mut signature.label,
+                        self.source,
+                        &decl.constraints,
+                    );
+                    if !scheme.constraints.is_empty() {
+                        signature.label.push('\n');
+                        signature.label.push_str(&contract);
+                    }
+                    self.contracts.insert(
+                        *local,
+                        LocalFunctionContract {
+                            header: format!("{} : {contract}", decl.name.text),
+                            documentation: doc_text(decl.doc.as_ref()),
+                            signature,
+                        },
+                    );
+                }
+            }
+            ridge_ast::visit::walk_expr(self, expr);
+        }
+    }
+    let Some(module) = typed.modules.get(module) else {
+        return HashMap::new();
+    };
+    let mut collector = Collector {
+        typed,
+        module,
+        resolved,
+        source,
+        contracts: HashMap::new(),
+    };
+    ridge_ast::visit::Visit::visit_module(&mut collector, &module.ast);
+    collector.contracts
+}
+
+fn inferred_function_contracts(typed: &TypedWorkspace, module: usize) -> HashMap<String, String> {
+    let (Some(view), Some(schemes)) = (typed.modules.get(module), typed.module_schemes.get(module))
+    else {
+        return HashMap::new();
+    };
+    view.ast
+        .items
+        .iter()
+        .filter_map(|item| {
+            let ridge_ast::Item::Fn(decl) = item else {
+                return None;
+            };
+            let incomplete = decl.ret.is_none()
+                || decl.params.iter().any(|param| {
+                    matches!(
+                        param,
+                        ridge_ast::Param::Bare(_) | ridge_ast::Param::Pattern { .. }
+                    )
+                });
+            let scheme = schemes.get(&decl.name.text)?;
+            if !incomplete || scheme.constraints.is_empty() {
+                return None;
+            }
+            Some((
+                decl.name.text.clone(),
+                ridge_typecheck::render::render_scheme_with(
+                    scheme,
+                    &typed.tycons,
+                    &typed.class_table,
+                ),
+            ))
+        })
+        .collect()
 }
 
 /// The full analysis result the server keeps between compiles.
@@ -1114,13 +1243,24 @@ impl WorkspaceIndex {
                 .map(|tm| tm.node_types.clone())
                 .unwrap_or_default();
             let ast = typed_mod.map(|tm| Arc::clone(&tm.ast));
+            let inferred_contracts = inferred_function_contracts(typed, i);
+            let local_functions = local_function_contracts(typed, i, rm, &module_text[i]);
             modules.push(ModuleView {
+                comparisons: typed_mod.map_or_else(Vec::new, |tm| {
+                    crate::comparison_sites::collect(
+                        &tm.ast,
+                        &module_text[i],
+                        tm.quoted_lambdas.keys().copied().collect(),
+                    )
+                }),
                 node_types,
                 bindings: rm.bindings.clone(),
                 symbols: rm.symbols.clone(),
                 scopes: rm.scopes.clone(),
                 imports: rm.imports.clone(),
                 ast,
+                inferred_contracts,
+                local_functions,
             });
         }
 
@@ -1205,6 +1345,15 @@ impl WorkspaceIndex {
         let mid = self.module_id_for(uri)?;
         let mi = mid.0 as usize;
         let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
+        if let Some(site) = self
+            .modules
+            .get(mi)?
+            .comparisons
+            .iter()
+            .find(|site| site.span.start <= offset && offset < site.span.end)
+        {
+            return Some(site.hover());
+        }
         if let Some((name, span)) = self.class_name_at(mi, offset) {
             if self.find_workspace_class(&name).is_none() {
                 if let Some((header, doc)) = crate::prelude_defs::card(&name) {
@@ -1217,6 +1366,9 @@ impl WorkspaceIndex {
         }
 
         let name_binding = self.name_binding_at(mi, offset);
+        if let Some(card) = self.local_function_hover(mi, name_binding) {
+            return Some(card);
+        }
         if let Some((Binding::ModuleAlias { target, .. }, span)) = name_binding {
             let module = match target {
                 ImportTarget::WorkspaceModule(mid) => {
@@ -1397,7 +1549,7 @@ impl WorkspaceIndex {
                 }
             }
             Some(Binding::ClassMethod { class_name, method }) => {
-                if class_name == "ErrorFrom" {
+                if crate::prelude_defs::signature(class_name, method).is_some() {
                     if let Some((header, doc)) = crate::prelude_defs::card(method) {
                         return render_hover_card(&header, Some("class method".to_owned()), doc);
                     }
@@ -1599,7 +1751,7 @@ impl WorkspaceIndex {
             Item::Fn(d) if name_holds(d.name.span, offset) => Some(named_card(
                 &fn_header(text, d),
                 "function",
-                doc_text(d.doc.as_ref()),
+                self.function_doc(mi, d),
                 d.name.span,
             )),
             Item::Const(d) if name_holds(d.name.span, offset) => Some(named_card(
@@ -1766,7 +1918,7 @@ impl WorkspaceIndex {
         let text: &str = self.module_text.get(mi).map_or("", |t| &**t);
         ast.items.iter().find_map(|item| match item {
             ridge_ast::Item::Fn(d) if span_encloses(d.span, def_span) => {
-                Some((fn_header(text, d), "function", doc_text(d.doc.as_ref())))
+                Some((fn_header(text, d), "function", self.function_doc(mi, d)))
             }
             ridge_ast::Item::Const(d) if span_encloses(d.span, def_span) => {
                 Some((const_header(text, d), "constant", doc_text(d.doc.as_ref())))
@@ -1781,6 +1933,39 @@ impl WorkspaceIndex {
             )),
             _ => None,
         })
+    }
+
+    fn local_function_hover(
+        &self,
+        module: usize,
+        binding: Option<(&Binding, Span)>,
+    ) -> Option<(String, Span)> {
+        let (Binding::Local(local), span) = binding? else {
+            return None;
+        };
+        let contract = self.modules.get(module)?.local_functions.get(local)?;
+        Some((
+            render_hover_card(
+                &contract.header,
+                Some("function".into()),
+                contract.documentation.clone(),
+            ),
+            span,
+        ))
+    }
+
+    fn function_doc(&self, module: usize, decl: &ridge_ast::FnDecl) -> Option<String> {
+        let doc = doc_text(decl.doc.as_ref());
+        let Some(inferred) = self
+            .modules
+            .get(module)?
+            .inferred_contracts
+            .get(&decl.name.text)
+        else {
+            return doc;
+        };
+        let inferred = format!("**Inferred type**\n\n```ridge\n{inferred}\n```");
+        Some(doc.map_or_else(|| inferred.clone(), |doc| format!("{doc}\n\n{inferred}")))
     }
 
     /// Slice the source text of module `mi` over `span` (empty on out-of-range).
@@ -1862,7 +2047,8 @@ impl WorkspaceIndex {
                 // A stdlib verb (`filter`, `joinOn`, …) resolves into the
                 // materialised stdlib source; a class declared in the workspace
                 // resolves to the method signature in that `class` declaration.
-                (class_name == "ErrorFrom")
+                crate::prelude_defs::signature(class_name, method)
+                    .is_some()
                     .then(|| crate::prelude_defs::location(method))
                     .flatten()
                     .or_else(|| {
@@ -2108,7 +2294,12 @@ impl WorkspaceIndex {
             }
         } else {
             if crate::prelude_defs::hierarchy_item(&class).is_some() {
-                return Some(Vec::new());
+                return Some(
+                    crate::prelude_defs::superclasses(&class)?
+                        .into_iter()
+                        .filter_map(crate::prelude_defs::hierarchy_item)
+                        .collect(),
+                );
             }
             let (_, decl) = self.find_workspace_class(&class)?;
             for sup in &decl.superclasses {
@@ -2116,6 +2307,8 @@ impl WorkspaceIndex {
                     if let Some(item) = self.class_hierarchy_item(smi, sdecl) {
                         items.push(item);
                     }
+                } else if let Some(item) = crate::prelude_defs::hierarchy_item(&sup.class.text) {
+                    items.push(item);
                 }
             }
         }
@@ -2131,7 +2324,7 @@ impl WorkspaceIndex {
         if is_instance {
             return Some(Vec::new());
         }
-        let mut items: Vec<TypeHierarchyItem> = Vec::new();
+        let mut items = crate::prelude_defs::subclasses(&class);
         for (smi, view) in self.modules.iter().enumerate() {
             let Some(ast) = view.ast.as_ref() else {
                 continue;
@@ -2262,7 +2455,7 @@ impl WorkspaceIndex {
             .or_else(|| self.bare_callee(mi, offset, src).map(|s| (s, Vec::new())))?;
 
         let binding = self.binding_for_name_span(mi, callee_span)?;
-        let sig = self.signature_for_binding(binding)?;
+        let sig = self.signature_for_binding(mi, binding)?;
         let active = active_param(&arg_spans, offset, sig.params.len());
         Some(make_signature_help(sig, active, label_offsets))
     }
@@ -2319,6 +2512,13 @@ impl WorkspaceIndex {
     /// prelude aliases, without adding competing stamps to the resolver.
     fn name_binding_at(&self, mi: usize, offset: u32) -> Option<(&Binding, Span)> {
         let view = self.modules.get(mi)?;
+        if let Some(site) = view
+            .comparisons
+            .iter()
+            .find(|site| site.span.start <= offset && offset < site.span.end)
+        {
+            return site.binding.as_ref().map(|binding| (binding, site.span));
+        }
         let names = self
             .spatial
             .get(mi)?
@@ -2369,8 +2569,14 @@ impl WorkspaceIndex {
     /// The signature for the thing a call's callee binding refers to: a stdlib
     /// function or class method (read from the materialised stdlib source) or a
     /// workspace function or class method (read from its declaration).
-    fn signature_for_binding(&self, binding: &Binding) -> Option<SignatureSig> {
+    fn signature_for_binding(&self, module: usize, binding: &Binding) -> Option<SignatureSig> {
         match binding {
+            Binding::Local(local) => self
+                .modules
+                .get(module)?
+                .local_functions
+                .get(local)
+                .map(|contract| contract.signature.clone()),
             Binding::StdlibSymbol { module, name } => {
                 crate::stdlib_defs::stdlib_fn_signature(*module, name)
                     .or_else(|| self.builtin_constructor_signature(name))
@@ -2432,26 +2638,37 @@ impl WorkspaceIndex {
         let name = &view.symbols.entries.get(symbol.0 as usize)?.name;
         let src = self.module_text.get(mi)?;
         view.ast.as_ref()?.items.iter().find_map(|item| match item {
-            ridge_ast::Item::Fn(decl) if decl.name.text == *name => Some(build_signature(
-                src,
-                &decl.name.text,
-                &decl.params,
-                decl.ret.as_ref(),
-            )),
+            ridge_ast::Item::Fn(decl) if decl.name.text == *name => {
+                let mut signature =
+                    build_signature(src, &decl.name.text, &decl.params, decl.ret.as_ref());
+                append_written_requirements(&mut signature.label, src, &decl.constraints);
+                if let Some(contract) = view.inferred_contracts.get(name) {
+                    signature.label.push('\n');
+                    signature.label.push_str(contract);
+                }
+                Some(signature)
+            }
             _ => None,
         })
     }
 
-    /// Build the signature of a workspace `class` method from its declaration.
+    /// Build a workspace method's callable signature, including its class bound.
     fn workspace_class_method_signature(&self, class: &str, method: &str) -> Option<SignatureSig> {
-        let (mi, m) = self.find_workspace_class_method(class, method)?;
+        let (mi, declaration, m) = self.find_workspace_class_method(class, method)?;
         let src = self.module_text.get(mi)?;
-        Some(build_signature(src, &m.name.text, &m.params, Some(&m.ret)))
+        let mut signature = build_signature(src, &m.name.text, &m.params, Some(&m.ret));
+        signature.label.push_str(" where ");
+        signature.label.push_str(&declaration.name.text);
+        for variable in &declaration.ty_vars {
+            signature.label.push(' ');
+            signature.label.push_str(&variable.text);
+        }
+        Some(signature)
     }
 
     /// The definition site of a workspace `class` method's name signature.
     fn workspace_class_method_location(&self, class: &str, method: &str) -> Option<Location> {
-        let (mi, m) = self.find_workspace_class_method(class, method)?;
+        let (mi, _, m) = self.find_workspace_class_method(class, method)?;
         let mid = ModuleId(u32::try_from(mi).ok()?);
         self.location_in(mid, m.name.span)
     }
@@ -2462,7 +2679,7 @@ impl WorkspaceIndex {
         &self,
         class: &str,
         method: &str,
-    ) -> Option<(usize, &ridge_ast::MethodSig)> {
+    ) -> Option<(usize, &ridge_ast::ClassDecl, &ridge_ast::MethodSig)> {
         for (mi, view) in self.modules.iter().enumerate() {
             let Some(ast) = view.ast.as_ref() else {
                 continue;
@@ -2471,7 +2688,7 @@ impl WorkspaceIndex {
                 if let ridge_ast::Item::ClassDecl(decl) = item {
                     if decl.name.text == class {
                         if let Some(m) = decl.methods.iter().find(|m| m.name.text == method) {
-                            return Some((mi, m));
+                            return Some((mi, decl, m));
                         }
                     }
                 }
@@ -2531,6 +2748,9 @@ impl WorkspaceIndex {
         let bindings = &self.modules.get(mi)?.bindings;
 
         let mut out: Vec<RawToken> = Vec::new();
+        for site in &self.modules.get(mi)?.comparisons {
+            push_raw(li, &mut out, site.span.start, site.span.end, TT_OPERATOR, 0);
+        }
         // (A) Use sites.
         for (span, kind, nid) in &spatial.entries {
             match kind {
@@ -2591,13 +2811,17 @@ impl WorkspaceIndex {
         match binding {
             Binding::Local(id) => {
                 let (kind, def_span) = self.local_info(mi, *id)?;
-                let ty = match kind {
-                    LocalKind::FnParam
-                    | LocalKind::LambdaParam
-                    | LocalKind::HandlerParam
-                    | LocalKind::InitParam => TT_PARAMETER,
-                    LocalKind::StateField => TT_PROPERTY,
-                    _ => TT_VARIABLE,
+                let ty = if self.modules.get(mi)?.local_functions.contains_key(id) {
+                    TT_FUNCTION
+                } else {
+                    match kind {
+                        LocalKind::FnParam
+                        | LocalKind::LambdaParam
+                        | LocalKind::HandlerParam
+                        | LocalKind::InitParam => TT_PARAMETER,
+                        LocalKind::StateField => TT_PROPERTY,
+                        _ => TT_VARIABLE,
+                    }
                 };
                 let mut mods = 0;
                 if matches!(kind, LocalKind::LetImmutable | LocalKind::StateField) {
@@ -2825,6 +3049,19 @@ impl WorkspaceIndex {
                 continue;
             };
             let smid = ModuleId(raw);
+            for site in &view.comparisons {
+                if site
+                    .binding
+                    .as_ref()
+                    .and_then(|b| referent_key(b, smid))
+                    .as_ref()
+                    == Some(target)
+                {
+                    if let Some(location) = self.location_in(smid, site.span) {
+                        locations.push(location);
+                    }
+                }
+            }
             let Some(spatial) = self.spatial.get(smi) else {
                 continue;
             };
@@ -2924,6 +3161,20 @@ impl WorkspaceIndex {
         // overrides a read on the same span (a local's binder is both stamped as
         // a use and the definition).
         let mut spots: HashMap<(u32, u32), DocumentHighlightKind> = HashMap::new();
+        for site in &view.comparisons {
+            if site
+                .binding
+                .as_ref()
+                .and_then(|b| referent_key(b, mid))
+                .as_ref()
+                == Some(&target)
+            {
+                spots.insert(
+                    (site.span.start, site.span.end),
+                    DocumentHighlightKind::READ,
+                );
+            }
+        }
         for (span, _kind, nid) in &spatial.entries {
             let Some(b) = view.bindings.get(nid.0 as usize).and_then(Option::as_ref) else {
                 continue;
@@ -5734,19 +5985,7 @@ impl WorkspaceIndex {
 
         let mut out: Vec<CompletionItemData> = Vec::new();
         let context = detect_context(src, offset);
-        if let Context::Expr { prefix } | Context::Type { prefix } = &context {
-            if "ErrorFrom".starts_with(prefix)
-                && src[..offset]
-                    .rsplit('\n')
-                    .next()
-                    .is_some_and(|line| line.contains("where ") || line.contains("instance "))
-            {
-                let mut candidate = item("ErrorFrom".to_owned(), CompletionItemKind::CLASS, '1');
-                candidate.detail = crate::prelude_defs::card("ErrorFrom").map(|card| card.0);
-                candidate.data = Some(serde_json::json!({"prelude":"ErrorFrom"}));
-                out.push(candidate);
-            }
-        }
+        append_prelude_classes(&context, &src[..offset], &mut out);
         match context {
             Context::None => {}
             Context::PipelineMember { alias, prefix } => {
@@ -5840,14 +6079,16 @@ impl WorkspaceIndex {
                     }
                 }
                 self.append_import_completions(&m.imports, &prefix, &mut out);
-                if "errorFrom".starts_with(&prefix)
-                    && !out.iter().any(|candidate| candidate.label == "errorFrom")
-                {
-                    let mut candidate =
-                        item("errorFrom".to_owned(), CompletionItemKind::FUNCTION, '2');
-                    candidate.detail = crate::prelude_defs::card("errorFrom").map(|card| card.0);
-                    candidate.data = Some(serde_json::json!({"prelude": "errorFrom"}));
-                    out.push(candidate);
+                for method in ["errorFrom", "eq", "compare", "hash"] {
+                    if method.starts_with(&prefix)
+                        && !out.iter().any(|candidate| candidate.label == method)
+                    {
+                        out.push(prelude_completion(
+                            method,
+                            CompletionItemKind::FUNCTION,
+                            '2',
+                        ));
+                    }
                 }
                 // Hard keywords and contextual ones (`child`) are both offered
                 // here; rename consults only the hard set.
@@ -6218,6 +6459,7 @@ pub const SEMANTIC_TOKEN_TYPES: &[SemanticTokenType] = &[
     SemanticTokenType::PARAMETER,
     SemanticTokenType::ENUM_MEMBER,
     CAPABILITY_TOKEN_TYPE,
+    SemanticTokenType::OPERATOR,
 ];
 
 /// The semantic-token modifiers Ridge emits, in legend order. A token's
@@ -6239,6 +6481,7 @@ const TT_VARIABLE: u32 = 6;
 const TT_PARAMETER: u32 = 7;
 const TT_ENUM_MEMBER: u32 = 8;
 const TT_CAPABILITY: u32 = 9;
+const TT_OPERATOR: u32 = 10;
 
 // Modifier bits into `SEMANTIC_TOKEN_MODIFIERS`.
 const MOD_DECLARATION: u32 = 1 << 0;
@@ -7082,15 +7325,27 @@ fn find_type_decl(
     })
 }
 
-/// Find the top-level `fn` whose whole-declaration span is `span`.
+/// Find a named function by its exact declaration span, including inner helpers.
 fn find_fn(
     module: &ridge_typecheck::TypedModule,
     span: ridge_ast::Span,
 ) -> Option<&ridge_ast::FnDecl> {
-    module.ast.items.iter().find_map(|item| match item {
-        ridge_ast::Item::Fn(f) if f.span == span => Some(f),
-        _ => None,
-    })
+    struct Finder<'ast> {
+        span: Span,
+        found: Option<&'ast ridge_ast::FnDecl>,
+    }
+    impl<'ast> ridge_ast::visit::Visit<'ast> for Finder<'ast> {
+        fn visit_fn_decl(&mut self, declaration: &'ast ridge_ast::FnDecl) {
+            if declaration.span == self.span {
+                self.found = Some(declaration);
+            } else if self.found.is_none() {
+                ridge_ast::visit::walk_fn_decl(self, declaration);
+            }
+        }
+    }
+    let mut finder = Finder { span, found: None };
+    ridge_ast::visit::Visit::visit_module(&mut finder, &module.ast);
+    finder.found
 }
 
 /// Find the `on` handler whose whole-declaration span is `span`.
@@ -7851,6 +8106,29 @@ fn record_field_names(ty: &Type, tycons: &[TyConDecl]) -> Vec<String> {
 }
 
 /// Shape a completion candidate, grouping it by a leading sort digit.
+fn prelude_completion(name: &str, kind: CompletionItemKind, group: char) -> CompletionItemData {
+    let mut candidate = item(name.to_owned(), kind, group);
+    candidate.detail = crate::prelude_defs::card(name).map(|card| card.0);
+    candidate.data = Some(serde_json::json!({"prelude": name}));
+    candidate
+}
+
+fn append_prelude_classes(context: &Context, source: &str, out: &mut Vec<CompletionItemData>) {
+    if let Context::Expr { prefix } | Context::Type { prefix } = context {
+        if source
+            .rsplit('\n')
+            .next()
+            .is_some_and(|line| line.contains("where ") || line.contains("instance "))
+        {
+            for class in ["ErrorFrom", "Eq", "Ord", "Hash"] {
+                if class.starts_with(prefix) {
+                    out.push(prelude_completion(class, CompletionItemKind::CLASS, '1'));
+                }
+            }
+        }
+    }
+}
+
 fn item(label: String, kind: CompletionItemKind, group: char) -> CompletionItemData {
     CompletionItemData {
         sort_text: format!("{group}{label}"),
@@ -8057,7 +8335,23 @@ pub(crate) fn fn_header(text: &str, d: &ridge_ast::decl::FnDecl) -> String {
         s.push_str(" -> ");
         s.push_str(slice_span(text, ret.span()).trim());
     }
+    append_written_requirements(&mut s, text, &d.constraints);
     s
+}
+
+fn append_written_requirements(
+    header: &mut String,
+    text: &str,
+    constraints: &[ridge_ast::ClassConstraint],
+) {
+    if !constraints.is_empty() {
+        header.push_str(" where ");
+        let parts: Vec<_> = constraints
+            .iter()
+            .map(|constraint| squeeze_ws(&slice_span(text, constraint.span)))
+            .collect();
+        header.push_str(&parts.join(", "));
+    }
 }
 
 /// Whether `offset` rests on a declaration's name.

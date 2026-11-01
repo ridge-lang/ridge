@@ -12,7 +12,7 @@
 use ridge_stdlib::codegen_ffi_targets::extract_all_stdlib_decls;
 use ridge_stdlib::stdlib_targets::{lookup, primitive_symbols, StdlibTarget};
 
-/// Every symbol the language treats as a primitive operation.
+/// The arithmetic primitives retain their existing signatures.
 const ARITHMETIC: &[(&str, &str, u32)] = &[
     ("std.float", "add", 2),
     ("std.float", "div", 2),
@@ -27,10 +27,20 @@ const ARITHMETIC: &[(&str, &str, u32)] = &[
     ("std.int", "sub", 2),
 ];
 
+/// A nullary source call transports its two checked dictionaries. The witness
+/// stays private to the declaring module and names no backend representation.
+const KEY_EVIDENCE: &[(&str, &str, u32)] = &[
+    ("std.list", "_keyEvidence", 2),
+    ("std.map", "_keyEvidence", 2),
+    ("std.set", "_keyEvidence", 2),
+];
+
 #[test]
-fn arithmetic_is_the_primitive_set_and_nothing_else_is() {
+fn arithmetic_and_private_key_evidence_are_the_complete_primitive_set() {
     let found = primitive_symbols();
-    let expected: Vec<(&str, &str, u32)> = ARITHMETIC.to_vec();
+    let mut expected: Vec<(&str, &str, u32)> =
+        ARITHMETIC.iter().chain(KEY_EVIDENCE).copied().collect();
+    expected.sort_unstable();
     assert_eq!(
         found, expected,
         "the set of `@primitive` declarations changed. Adding one is a language \
@@ -46,7 +56,7 @@ fn a_primitive_names_no_module_at_all() {
     // Ridge body and the table answers `RidgeModule { module: "std.int" }`.
     // Everything still compiles and every program still runs — each `+` just
     // becomes a call into the compiled stdlib module first.
-    for (module, name, arity) in ARITHMETIC {
+    for (module, name, arity) in ARITHMETIC.iter().chain(KEY_EVIDENCE) {
         let target = lookup(module, name)
             .unwrap_or_else(|| panic!("{module}.{name} must be in the stdlib target table"));
         assert_eq!(

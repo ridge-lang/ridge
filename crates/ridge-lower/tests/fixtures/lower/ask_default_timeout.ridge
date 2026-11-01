@@ -7,6 +7,6 @@ actor Counter =
     on get_count () -> Int =
         count
 
-fn main =
+fn spawn time main =
     let c = spawn Counter 0
     c ?> get_count ()

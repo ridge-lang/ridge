@@ -19,6 +19,8 @@
 
 use std::path::{Path, PathBuf};
 
+mod build_instance_heads;
+
 fn main() {
     // Re-run whenever the impl source changes.
     println!("cargo:rerun-if-changed=src/stdlib_signatures_impl.rs");
@@ -38,6 +40,13 @@ fn main() {
             eprintln!("{e}");
             std::process::exit(1);
         }
+    }
+    if let Err(error) = build_instance_heads::generate(
+        &manifest_dir.join("../ridge-stdlib/stdlib"),
+        &PathBuf::from(out_dir).join("stdlib_instance_heads.rs"),
+    ) {
+        eprintln!("{error}");
+        std::process::exit(1);
     }
 }
 

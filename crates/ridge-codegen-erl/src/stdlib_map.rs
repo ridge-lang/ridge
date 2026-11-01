@@ -3,7 +3,7 @@
 //! `lookup(module, name)` is the **only** call site in this crate that produces
 //! BEAM module/function names from Ridge stdlib symbols.  The path-A static map
 //! holds the symbols that name no implementation of their own — the comparison
-//! operators, the slice-pattern helpers, and the arithmetic primitives — and
+//! operators, primitive hashes, slice-pattern helpers, and arithmetic primitives — and
 //! this crate is where each of them acquires a BEAM spelling.  Everything else
 //! is served by path B (`crate::ffi_targets::lookup` — the generated table),
 //! which describes declarations that named a target themselves.
@@ -136,6 +136,30 @@ pub(crate) enum ResultFit {
 }
 
 pub(crate) const PRIMITIVE_ENTRIES: &[(&str, &str, &str, &str, u32, ResultFit)] = &[
+    (
+        "std.list",
+        "_keyEvidence",
+        "ridge_rt",
+        "key_evidence",
+        2,
+        ResultFit::Exact,
+    ),
+    (
+        "std.map",
+        "_keyEvidence",
+        "ridge_rt",
+        "key_evidence",
+        2,
+        ResultFit::Exact,
+    ),
+    (
+        "std.set",
+        "_keyEvidence",
+        "ridge_rt",
+        "key_evidence",
+        2,
+        ResultFit::Exact,
+    ),
     // Int — `div` and `rem` truncate toward zero, which is what the Ridge
     // declarations promise.
     //
@@ -172,6 +196,26 @@ pub(crate) const PRIMITIVE_ENTRIES: &[(&str, &str, &str, &str, u32, ResultFit)] 
 
 type BridgeMap = FxHashMap<String, BridgeTarget>;
 
+/// Internal semantic operations for primitive Hash evidence. None exposes
+/// the state constructor, seed or final fingerprint to Ridge code.
+const HASH_ENTRIES: &[(&str, &str)] = &[
+    ("hashTag", "hash_tag"),
+    ("hashInt", "hash_int"),
+    ("hashBool", "hash_bool"),
+    ("hashText", "hash_text"),
+    ("hashUnit", "hash_unit"),
+    ("hashOrdering", "hash_ordering"),
+    ("hashBytes", "hash_bytes"),
+    ("hashUuid", "hash_uuid"),
+    ("hashTimestamp", "hash_timestamp"),
+    ("hashDate", "hash_date"),
+    ("hashTime", "hash_time"),
+    ("hashDecimal", "hash_decimal"),
+    ("hashHandle", "hash_handle"),
+    ("hashSupervisor", "hash_supervisor"),
+    ("hashMonitor", "hash_monitor"),
+];
+
 /// Build the path-A table: the arithmetic primitives from
 /// [`PRIMITIVE_ENTRIES`], plus the symbols below that have no Ridge surface at
 /// all.
@@ -184,9 +228,36 @@ fn build_map() -> BridgeMap {
     use BridgeTarget::BeamStdlib;
 
     let entries: &[(&'static str, &'static str, BridgeTarget)] = &[
+        (
+            "std.op",
+            "mapEq",
+            BeamStdlib {
+                module: "ridge_rt",
+                fn_name: "typed_map_eq",
+                arity: 5,
+            },
+        ),
+        (
+            "std.op",
+            "setEq",
+            BeamStdlib {
+                module: "ridge_rt",
+                fn_name: "typed_set_eq",
+                arity: 4,
+            },
+        ),
         // ── std.op (polymorphic comparison operators) ─────────────────────────
         // Emitted by ridge-lower::operators; no Ridge surface, no declaration.
         // The lower phase emits "ne" for `!=` (see operators.rs BinOp::Ne).
+        (
+            "std.op",
+            "handleEq",
+            BeamStdlib {
+                module: "ridge_rt",
+                fn_name: "handle_eq",
+                arity: 2,
+            },
+        ),
         (
             "std.op",
             "eq",
@@ -328,7 +399,17 @@ fn build_map() -> BridgeMap {
     ];
 
     let mut map = FxHashMap::default();
-    map.reserve(entries.len() + PRIMITIVE_ENTRIES.len());
+    map.reserve(entries.len() + PRIMITIVE_ENTRIES.len() + HASH_ENTRIES.len());
+    for (name, target) in HASH_ENTRIES {
+        map.insert(
+            format!("std.op::{name}"),
+            BeamStdlib {
+                module: "ridge_rt",
+                fn_name: target,
+                arity: 2,
+            },
+        );
+    }
     for (module, name, beam_module, beam_fn, arity, fit) in PRIMITIVE_ENTRIES {
         let target = match fit {
             ResultFit::Exact => BeamStdlib {
@@ -413,7 +494,7 @@ static STDLIB_LOCAL_MAP: OnceLock<BridgeMap> = OnceLock::new();
 /// the stdlib wrapper instead of straight to the instruction.
 ///
 /// Path A fallback — `BRIDGE_MAP` holds the symbols that name no
-/// implementation of their own: the six `std.op.*` comparisons and the nine
+/// implementation of their own: primitive Hash operations, `std.op.*` comparisons and the nine
 /// `__slice__.*` helpers, both emitted by `ridge-lower` with no Ridge surface,
 /// plus the eleven arithmetic primitives from [`PRIMITIVE_ENTRIES`], which do
 /// have a Ridge surface but declare it `@primitive`.
@@ -441,22 +522,24 @@ pub fn lookup(module: &str, name: &str) -> Option<&'static BridgeTarget> {
 mod tests {
     use super::*;
 
-    // Path A holds three groups, and nothing else: the six `std.op.*`
+    // Path A holds primitive hashes plus the nine `std.op.*`
     // comparisons and the nine `__slice__.*` helpers, neither of which has any
     // Ridge surface, plus the eleven arithmetic primitives, which do.
     #[test]
     fn build_map_has_std_op_slice_and_primitive_entries() {
         let map = build_map();
-        let expected = 6 + 9 + PRIMITIVE_ENTRIES.len();
+        let expected = 9 + 9 + PRIMITIVE_ENTRIES.len() + HASH_ENTRIES.len();
         assert_eq!(
             map.len(),
             expected,
-            "build_map must return {expected} entries (6 std.op + 9 __slice__ + {} primitives); got {}.",
+            "build_map must return {expected} entries (9 comparisons + 9 __slice__ + {} primitives + hashes); got {}.",
             PRIMITIVE_ENTRIES.len(),
             map.len()
         );
-        // Verify all 6 std.op entries are present.
-        let op_names = ["eq", "ne", "lt", "gt", "le", "ge"];
+        // Verify the comparison and identity entries are present.
+        let op_names = [
+            "eq", "ne", "lt", "gt", "le", "ge", "handleEq", "mapEq", "setEq",
+        ];
         for name in op_names {
             assert!(
                 map.contains_key(&format!("std.op::{name}")),

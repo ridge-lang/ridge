@@ -2653,7 +2653,7 @@ instance Countable (Query e a) where Adapter a =
 -- row included). `exists` probes the window: unpaged it reuses the reduction join's
 -- FROM/WHERE directly; paged, the join renders with its ordering and page as a
 -- subquery the probe reads one row from.
-instance Countable (LeftJoin e f a) where Adapter a =
+instance Countable (LeftJoin e f a) where Adapter a, Row f, Row e =
     count (x: LeftJoin e f a) -> Result Int DbError =
         leftCountPlan x x.where2.tree
     exists (x: LeftJoin e f a) -> Result Bool DbError =
@@ -2669,7 +2669,7 @@ instance Countable (LeftJoin e f a) where Adapter a =
 -- A right join's `count`/`exists`: the dual over a `RightJoin`, counted through
 -- `rightCountPlan` (a `COUNT(*)` over the right-outer join's window, every kept right
 -- row included). `exists` probes the window the same split way the left join does.
-instance Countable (RightJoin e f a) where Adapter a =
+instance Countable (RightJoin e f a) where Adapter a, Row f, Row e =
     count (x: RightJoin e f a) -> Result Int DbError =
         rightCountPlan x x.where2.tree
     exists (x: RightJoin e f a) -> Result Bool DbError =
@@ -2686,7 +2686,7 @@ instance Countable (RightJoin e f a) where Adapter a =
 -- `fullCountPlan` (a `COUNT(*)` over the full-outer join's window, every kept row of
 -- both tables included). `exists` probes the window the same split way the left join
 -- does.
-instance Countable (FullJoin e f a) where Adapter a =
+instance Countable (FullJoin e f a) where Adapter a, Row f, Row e =
     count (x: FullJoin e f a) -> Result Int DbError =
         fullCountPlan x x.where2.tree
     exists (x: FullJoin e f a) -> Result Bool DbError =
@@ -2740,7 +2740,7 @@ instance Every (Query e a) (fn e -> Bool) where Adapter a =
 -- with its ordering and page) and the violator probe reads it from outside — the
 -- predicate qualifies against the window's prefixed columns — so a violator beyond
 -- the page does not fail the test.
-instance Every (LeftJoin e f a) (fn e f -> Bool) where Adapter a =
+instance Every (LeftJoin e f a) (fn e f -> Bool) where Adapter a, Row f, Row e =
     every (pred: Quote (fn e f -> Bool)) (x: LeftJoin e f a) -> Result Bool DbError =
         if isWindowPaged x.lim x.off then
             let vn = notTrue pred
@@ -2759,7 +2759,7 @@ instance Every (LeftJoin e f a) (fn e f -> Bool) where Adapter a =
 -- as violations — they fail `every`, the same three-valued reading the count
 -- comparison gave, now in one probe. Paged, the probe reads the window from outside,
 -- exactly as the left join's does.
-instance Every (RightJoin e f a) (fn e f -> Bool) where Adapter a =
+instance Every (RightJoin e f a) (fn e f -> Bool) where Adapter a, Row f, Row e =
     every (pred: Quote (fn e f -> Bool)) (x: RightJoin e f a) -> Result Bool DbError =
         if isWindowPaged x.lim x.off then
             let vn = notTrue pred
@@ -2778,7 +2778,7 @@ instance Every (RightJoin e f a) (fn e f -> Bool) where Adapter a =
 -- as violations — they fail `every`, the same three-valued reading the count
 -- comparison gave, now in one probe. Paged, the probe reads the window from outside,
 -- exactly as the left join's does.
-instance Every (FullJoin e f a) (fn e f -> Bool) where Adapter a =
+instance Every (FullJoin e f a) (fn e f -> Bool) where Adapter a, Row f, Row e =
     every (pred: Quote (fn e f -> Bool)) (x: FullJoin e f a) -> Result Bool DbError =
         if isWindowPaged x.lim x.off then
             let vn = notTrue pred

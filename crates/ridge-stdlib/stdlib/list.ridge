@@ -125,34 +125,41 @@ pub fn at (n: Int) (xs: List a) -> Option a =
     else head (drop n xs)
 
 -- Group elements by a key function, returning a Map from key to list of elements.
--- Private BEAM bridges used to avoid importing std.map (prevents SCC within tier-2).
-@ffi("maps", "new", 0)
+-- Private collection bridges avoid importing std.map within tier-2.
+opaque type KeyEvidence k = {}
+
+@primitive
+fn _keyEvidence () -> KeyEvidence k where Eq k, Hash k
+
+@ffi("ridge_rt", "indexed_map_empty", 0)
 fn _gbMapNew () -> Map b (List a)
 
-@ffi("maps", "is_key", 2)
-fn _gbIsKey (k: b) (m: Map b (List a)) -> Bool
+@ffi("ridge_rt", "indexed_map_get", 3)
+fn _gbGet (evidence: KeyEvidence b) (k: b) (m: Map b (List a)) -> Option (List a)
 
-@ffi("maps", "get", 2)
-fn _gbGet (k: b) (m: Map b (List a)) -> List a
+@ffi("ridge_rt", "indexed_map_insert", 4)
+fn _gbPut (evidence: KeyEvidence b) (k: b) (v: List a) (m: Map b (List a)) -> Map b (List a)
 
-@ffi("maps", "put", 3)
-fn _gbPut (k: b) (v: List a) (m: Map b (List a)) -> Map b (List a)
+@ffi("ridge_rt", "indexed_map_map", 2)
+fn _gbMapValues (f: fn b (List a) -> List a) (m: Map b (List a)) -> Map b (List a)
 
 -- Prepend `x` onto the bucket for its key, creating the bucket on first sight.
-fn _gbInsert (key: fn a -> b) (x: a) (m: Map b (List a)) -> Map b (List a) =
+fn _gbInsert (key: fn a -> b) (x: a) (m: Map b (List a)) -> Map b (List a) where Hash b =
     let k = key x
-    if _gbIsKey k m then _gbPut k (x :: _gbGet k m) m
-    else _gbPut k [x] m
+    let evidence = _keyEvidence ()
+    match _gbGet evidence k m
+        Some bucket -> _gbPut evidence k (x :: bucket) m
+        None -> _gbPut evidence k [x] m
 
--- Tail-recursive accumulation.  `groupBy` reverses the input first, so
--- prepending each element restores the original order within every bucket.
-fn _gbAccum (key: fn a -> b) (xs: List a) (acc: Map b (List a)) -> Map b (List a) =
+-- Visit keys in input order to retain their first representative. Prepend
+-- values during accumulation, then reverse each bucket exactly once.
+fn _gbAccum (key: fn a -> b) (xs: List a) (acc: Map b (List a)) -> Map b (List a) where Hash b =
     match xs
         []        -> acc
         x :: rest -> _gbAccum key rest (_gbInsert key x acc)
 
-pub fn groupBy (key: fn a -> b) (xs: List a) -> Map b (List a) =
-    _gbAccum key (reverse xs) (_gbMapNew ())
+pub fn groupBy (key: fn a -> b) (xs: List a) -> Map b (List a) where Hash b =
+    _gbMapValues (fn _key bucket -> reverse bucket) (_gbAccum key xs (_gbMapNew ()))
 
 -- Apply a function that returns a list and flatten the results.
 @ffi("lists", "flatmap", 2)
@@ -166,9 +173,12 @@ pub fn zip (xs: List a) (ys: List b) -> List (a, b)
 @ffi("lists", "zipwith", 3)
 pub fn zipWith (f: fn a b -> r) (xs: List a) (ys: List b) -> List r
 
--- Return true if the element is in the list (structural equality).
-@ffi("lists", "member", 2)
-pub fn contains (x: a) (xs: List a) -> Bool
+-- Return true if an element is equal to x according to its Eq instance.
+-- Stop at the first match without comparing the remaining elements.
+pub fn contains (x: a) (xs: List a) -> Bool where Eq a =
+    match xs
+        [] -> false
+        first :: rest -> if eq x first then true else contains x rest
 
 -- Return the first element satisfying the predicate, or None.
 pub fn find (p: fn a -> Bool) (xs: List a) -> Option a =
@@ -188,9 +198,9 @@ pub fn partition (p: fn a -> Bool) (xs: List a) -> (List a, List a) =
             if p x then (x :: yes, no)
             else (yes, x :: no)
 
--- Remove duplicate elements, keeping the first occurrence of each (structural
--- equality). Runs in O(n^2); for large inputs build a `Set` instead.
-pub fn unique (xs: List a) -> List a =
+-- Remove duplicate elements according to Eq, keeping the first occurrence and
+-- original order. Runs in O(n^2); for large inputs build a `Set` instead.
+pub fn unique (xs: List a) -> List a where Eq a =
     reverse (fold (fn seen x -> if contains x seen then seen else x :: seen) [] xs)
 
 -- The total of a list of integers — `sum [1, 2, 3]` is `6`; `sum []` is `0`.

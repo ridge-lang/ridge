@@ -1,8 +1,7 @@
-fn parse_int (s: Text) -> Option Int =
-    None
+fn parse_int (s: Text) -> Result Int Text =
+    Err "invalid int"
 
-fn try_block_basic (s: Text) -> Option Int =
-    try {
+fn try_block_basic (s: Text) -> Result Int Text =
+    try
         let n = parse_int s ?
-        Some (n * 2)
-    }
+        n * 2

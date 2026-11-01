@@ -3,3 +3,18 @@
 -- Conversions are direct: there is no automatic chaining between instances.
 class ErrorFrom e f =
     errorFrom (x: e) -> f
+
+-- Equality used by ==, != and collection key matching.
+-- Both arguments have the same type. Float and functions have no default instance.
+class Eq a =
+    eq (left: a) (right: a) -> Bool
+
+-- Total ordering used by <, <=, >, >= and sorting.
+-- Equal must agree with Eq. Float has no default instance.
+class Ord a where Eq a =
+    compare (left: a) (right: a) -> Ordering
+
+-- Feeds a value into a seeded hash state for collection keys.
+-- Eq-equivalent values must produce the same hash for the same seed.
+class Hash a where Eq a =
+    hash (value: a) (hasher: Hasher) -> Hasher

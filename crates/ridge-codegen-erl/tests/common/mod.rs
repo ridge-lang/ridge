@@ -75,7 +75,21 @@ pub fn run_pipeline(workspace_path: &Path) -> PipelineResult {
     let disc = discover_workspace(workspace_path);
     let ws_graph = disc.graph.expect("workspace graph must be present");
     let resolved = resolve_workspace(ws_graph);
+    assert!(resolved.errors.is_empty(), "{:?}", resolved.errors);
+    assert!(
+        resolved.parse_errors.is_empty(),
+        "{:?}",
+        resolved.parse_errors
+    );
+    assert!(resolved.lex_errors.is_empty(), "{:?}", resolved.lex_errors);
     let typecheck_result = typecheck_workspace(&resolved);
-    let lowered = lower_workspace(&typecheck_result.typed, &resolved).workspace;
+    assert!(
+        typecheck_result.errors.is_empty(),
+        "{:?}",
+        typecheck_result.errors
+    );
+    let result = lower_workspace(&typecheck_result.typed, &resolved);
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    let lowered = result.workspace;
     PipelineResult { lowered }
 }

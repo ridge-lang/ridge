@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use rustc_hash::{FxHashSet, FxHasher};
 
-use ridge_ast::{Item, MethodSig, Module, Param, Type};
+use ridge_ast::{Item, Module};
 use ridge_resolve::{
     resolve_module_incremental, ModuleId, ResolveError, ResolvedVisibility, ResolvedWorkspace,
     SymbolEntry, SymbolKind, SymbolTable,
@@ -155,8 +155,10 @@ impl IncrementalState {
         // AST and take the deep-recompute path.
         let old_registry = self.registry_hashes[edited_id.0 as usize];
         let new_registry = registry_hash(&ast);
+        let shape_changed = registry_shape_hash(&self.resolved.module_asts[edited_id.0 as usize])
+            != registry_shape_hash(&ast);
         self.registry_hashes[edited_id.0 as usize] = new_registry;
-        if new_registry != old_registry {
+        if shape_changed || self.has_cached_registry_error(edited_id) {
             let _ = resolve_module_incremental(&mut self.resolved, edited_id, &ast, true);
             self.surface_hashes[edited_id.0 as usize] =
                 surface_hash(&self.resolved.modules[edited_id.0 as usize].symbols);
@@ -172,6 +174,11 @@ impl IncrementalState {
                 .collect();
         let new_hash = surface_hash(&self.resolved.modules[edited_id.0 as usize].symbols);
         self.surface_hashes[edited_id.0 as usize] = new_hash;
+        if new_registry != old_registry
+            && ridge_typecheck::refresh_registry_metadata(&mut self.typed, &self.resolved).is_err()
+        {
+            return self.deep_recompute();
+        }
 
         // Decide what to recompute: just the edited module for a surface-
         // preserving edit, otherwise the edited module plus everything that
@@ -242,6 +249,7 @@ impl IncrementalState {
     /// one side and not the other is how they came apart in the first place.
     fn relower(&mut self, modules: &[ModuleId], in_set: &FxHashSet<ModuleId>) {
         let stdlib_fqns = ridge_lower::stdlib_fqns(&self.resolved);
+        let module_names = ridge_lower::module_names(&self.resolved);
         let mut fresh: Vec<(ModuleId, LowerError)> = Vec::new();
         for &m in modules {
             let i = m.0 as usize;
@@ -260,6 +268,7 @@ impl IncrementalState {
                 self.resolved.modules.get(i),
                 &stdlib_fqns,
                 fqn,
+                &module_names,
             );
             fresh.extend(errs.into_iter().map(|e| (m, e)));
         }
@@ -294,6 +303,34 @@ impl IncrementalState {
         (0..n)
             .map(|i| ModuleId(u32::try_from(i).unwrap_or(u32::MAX)))
             .collect()
+    }
+
+    fn has_cached_registry_error(&self, edited: ModuleId) -> bool {
+        self.type_errors.iter().any(|(module, error)| {
+            if *module != edited {
+                return false;
+            }
+            match error {
+                TypeError::OrphanInstance { .. }
+                | TypeError::OverlappingInstance { .. }
+                | TypeError::MissingSuperclassInstance { .. }
+                | TypeError::ToTextConflict { .. }
+                | TypeError::SuperclassCycle { .. }
+                | TypeError::UnsupportedInstanceHead { .. }
+                | TypeError::UnknownFunDepVar { .. } => true,
+                TypeError::NoInstance { span, .. } => self.resolved.module_asts[edited.0 as usize]
+                    .items
+                    .iter()
+                    .any(|item| {
+                        matches!(
+                            item,
+                            Item::Type(_) | Item::ClassDecl(_) | Item::InstanceDecl(_)
+                        ) && item.span().start <= span.start
+                            && span.end <= item.span().end
+                    }),
+                _ => false,
+            }
+        })
     }
 }
 
@@ -344,10 +381,9 @@ fn entry_surface(e: &SymbolEntry) -> String {
     )
 }
 
-/// The edited module followed by every module that transitively imports it, in
-/// breadth-first order from the edit. `deps[a]` lists the modules `a` imports,
-/// so the reverse edges give the dependents. A visited set keeps the walk
-/// terminating even when imports form a cycle.
+/// The edited module followed by its affected consumers in producer order.
+/// Reverse edges find the minimal set; dependency counters prevent a consumer
+/// in a diamond from observing a producer's previous inferred contract.
 fn reverse_dep_closure(deps: &[Vec<ModuleId>], edited: ModuleId) -> Vec<ModuleId> {
     let n = deps.len();
     let mut reverse: Vec<Vec<ModuleId>> = vec![Vec::new(); n];
@@ -375,120 +411,192 @@ fn reverse_dep_closure(deps: &[Vec<ModuleId>], edited: ModuleId) -> Vec<ModuleId
             }
         }
     }
-    order
+    let mut remaining = vec![0usize; n];
+    let mut emitted = vec![false; n];
+    emitted[edited.0 as usize] = true;
+    let mut sorted = vec![edited];
+    for &module in order.iter().skip(1) {
+        let index = module.0 as usize;
+        remaining[index] = deps[index]
+            .iter()
+            .filter(|dep| **dep != edited && visited.get(dep.0 as usize).copied().unwrap_or(false))
+            .count();
+        if remaining[index] == 0 {
+            queue.push_back(module);
+        }
+    }
+    while let Some(module) = queue.pop_front() {
+        let index = module.0 as usize;
+        if emitted[index] {
+            continue;
+        }
+        emitted[index] = true;
+        sorted.push(module);
+        for &consumer in &reverse[index] {
+            let index = consumer.0 as usize;
+            if visited[index] && !emitted[index] && remaining[index] > 0 {
+                remaining[index] -= 1;
+                if remaining[index] == 0 {
+                    queue.push_back(consumer);
+                }
+            }
+        }
+    }
+    // Import cycles already carry a resolver diagnostic; keep their fallback
+    // deterministic and terminating without omitting any affected module.
+    sorted.extend(
+        order
+            .into_iter()
+            .filter(|module| !emitted[module.0 as usize]),
+    );
+    sorted
 }
 
-/// Hash a module's typeclass surface — its `class` / `instance` declarations and
-/// any `deriving` clauses. A change here means the workspace class/instance
-/// registries must be rebuilt with their global coherence checks, so it is
-/// tracked separately from the ordinary symbol surface. The hash is span-free,
-/// so a body edit elsewhere in the file leaves it untouched.
+/// Hash every declaration that can change registered evidence.
+///
+/// Positions participate because the registry retains declaration spans. Ordinary
+/// function bodies are excluded, as are instance method expressions; edits after
+/// the declarations retain the single-module path.
 fn registry_hash(module: &Module) -> u64 {
-    let mut parts: Vec<String> = Vec::new();
+    registry_hash_inner(module, true)
+}
+
+fn registry_shape_hash(module: &Module) -> u64 {
+    registry_hash_inner(module, false)
+}
+
+fn registry_hash_inner(module: &Module, positions: bool) -> u64 {
+    let mut parts = Vec::new();
     for item in &module.items {
         match item {
-            Item::ClassDecl(c) => {
-                let mut supers: Vec<&str> = c
-                    .superclasses
+            Item::ClassDecl(class) => parts.push(format!(
+                "C|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+                class.name,
+                class.ty_vars,
+                class.superclasses,
+                class.fundeps,
+                class.methods,
+                class.span,
+            )),
+            Item::InstanceDecl(instance) => {
+                let methods: Vec<_> = instance
+                    .methods
                     .iter()
-                    .map(|s| s.class.text.as_str())
+                    .map(|method| (&method.name, &method.params, &method.ret))
                     .collect();
-                supers.sort_unstable();
-                let mut methods: Vec<String> =
-                    c.methods.iter().map(method_sig_fingerprint).collect();
-                methods.sort();
-                let ty_vars = c
-                    .ty_vars
-                    .iter()
-                    .map(|t| t.text.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" ");
                 parts.push(format!(
-                    "C|{}|{}|{supers:?}|{methods:?}",
-                    c.name.text, ty_vars
+                    "I|{:?}|{:?}|{:?}|{:?}|{:?}",
+                    instance.class, instance.head, instance.constraints, methods, instance.span
                 ));
             }
-            Item::InstanceDecl(i) => {
-                let mut methods: Vec<&str> =
-                    i.methods.iter().map(|m| m.name.text.as_str()).collect();
-                methods.sort_unstable();
-                let head = i
-                    .head
-                    .iter()
-                    .map(render_ast_type)
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                parts.push(format!("I|{}|{}|{methods:?}", i.class.text, head));
-            }
-            Item::Type(t) if !t.deriving.is_empty() => {
-                let mut der: Vec<&str> = t.deriving.iter().map(|d| d.text.as_str()).collect();
-                der.sort_unstable();
-                parts.push(format!("D|{}|{der:?}", t.name.text));
-            }
+            // An alias or a type without its own deriving clause can be a field
+            // of a derived type elsewhere, including a private declaration.
+            Item::Type(decl) => parts.push(format!(
+                "T|{:?}|{:?}|{:?}|{:?}|{}|{:?}|{:?}",
+                decl.name,
+                decl.params,
+                decl.body,
+                decl.deriving,
+                decl.opaque,
+                decl.version,
+                decl.span,
+            )),
+            Item::Fn(decl) if decl.name.text == "toText" => parts.push(format!(
+                "A|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+                decl.vis, decl.name, decl.params, decl.ret, decl.caps, decl.constraints, decl.span,
+            )),
             _ => {}
         }
     }
     parts.sort();
     let mut hasher = FxHasher::default();
     for part in &parts {
-        part.hash(&mut hasher);
+        if positions {
+            part.hash(&mut hasher);
+        } else {
+            without_positions(part).hash(&mut hasher);
+        }
     }
     hasher.finish()
 }
 
-/// A span-free fingerprint of a class method signature: its name, parameter
-/// types, and return type.
-fn method_sig_fingerprint(m: &MethodSig) -> String {
-    let params: Vec<String> = m.params.iter().map(render_param).collect();
-    format!(
-        "{}({})->{}",
-        m.name.text,
-        params.join(","),
-        render_ast_type(&m.ret)
-    )
-}
-
-/// A span-free rendering of a parameter's declared type (`_` when unannotated).
-fn render_param(p: &Param) -> String {
-    match p {
-        Param::Bare(_) | Param::Pattern { .. } => "_".to_string(),
-        Param::Annotated { ty, .. } | Param::PatternAnnotated { ty, .. } => render_ast_type(ty),
+fn without_positions(text: &str) -> Vec<u8> {
+    let bytes = text.as_bytes();
+    let (mut quoted, mut escaped, mut at) = (false, false, 0);
+    let mut result = Vec::with_capacity(bytes.len());
+    while at < bytes.len() {
+        if !quoted && bytes[at..].starts_with(b"Span { start: ") {
+            if let Some(end) = bytes[at..].iter().position(|b| *b == b'}') {
+                result.extend_from_slice(b"Span");
+                at += end + 1;
+                continue;
+            }
+        }
+        let byte = bytes[at];
+        result.push(byte);
+        if escaped {
+            escaped = false;
+        } else if quoted && byte == b'\\' {
+            escaped = true;
+        } else if byte == b'"' {
+            quoted = !quoted;
+        }
+        at += 1;
     }
+    result
 }
 
-/// A span-free, structural rendering of an AST type: two types render to the
-/// same string exactly when they have the same shape, regardless of where they
-/// appear in source.
-fn render_ast_type(ty: &Type) -> String {
-    match ty {
-        Type::Primitive { name, .. } => format!("{name:?}"),
-        Type::Named { name, .. } | Type::Var { name, .. } => name.text.clone(),
-        Type::App { head, args, .. } => {
-            let rendered: Vec<String> = args.iter().map(render_ast_type).collect();
-            format!("{}<{}>", head.text, rendered.join(","))
-        }
-        Type::Tuple { elems, .. } => {
-            let rendered: Vec<String> = elems.iter().map(render_ast_type).collect();
-            format!("({})", rendered.join(","))
-        }
-        Type::List { elem, .. } => format!("[{}]", render_ast_type(elem)),
-        Type::Paren { inner, .. } => render_ast_type(inner),
-        Type::Fn { fn_ty, .. } => {
-            let rendered: Vec<String> = fn_ty.params.iter().map(render_ast_type).collect();
-            format!(
-                "fn{:?}({})->{}",
-                fn_ty.caps,
-                rendered.join(","),
-                render_ast_type(&fn_ty.ret)
-            )
-        }
-        Type::Record { fields, .. } => {
-            let mut rendered: Vec<String> = fields
-                .iter()
-                .map(|f| format!("{}:{}", f.name.text, render_ast_type(&f.ty)))
-                .collect();
-            rendered.sort();
-            format!("{{{}}}", rendered.join(","))
+#[cfg(test)]
+mod registry_tests {
+    use super::{registry_hash, registry_shape_hash, without_positions};
+
+    #[test]
+    fn positional_edits_preserve_shape_without_erasing_literal_data() {
+        let before =
+            ridge_parser::parse_source("pub fn answer () = 1\ntype Box = { value: Int }\n");
+        let after =
+            ridge_parser::parse_source("pub fn answer () = 100\ntype Box = { value: Int }\n");
+        assert_ne!(registry_hash(&before.module), registry_hash(&after.module));
+        assert_eq!(
+            registry_shape_hash(&before.module),
+            registry_shape_hash(&after.module)
+        );
+        assert_eq!(
+            without_positions("Span { start: 1, end: 4 }"),
+            without_positions("Span { start: 10, end: 40 }")
+        );
+        assert_ne!(
+            without_positions(r#""Span { start: 1, end: 4 }""#),
+            without_positions(r#""Span { start: 10, end: 40 }""#)
+        );
+    }
+
+    fn hash(source: &str) -> u64 {
+        let parsed = ridge_parser::parse_source(source);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert!(parsed.lex_errors.is_empty(), "{:?}", parsed.lex_errors);
+        registry_hash(&parsed.module)
+    }
+
+    #[test]
+    fn ordinary_body_edits_after_declarations_preserve_registry() {
+        let prefix = "type Box a = { value: a } deriving (Eq)\n";
+        assert_eq!(
+            hash(&format!("{prefix}pub fn value () = 1\n")),
+            hash(&format!("{prefix}pub fn value () = 100\n"))
+        );
+    }
+
+    #[test]
+    fn field_order_aliases_rows_and_contexts_invalidate_evidence() {
+        for (before, after) in [
+            ("type Box a = { value: a } deriving (Eq)", "type Box a = { value: Float } deriving (Eq)"),
+            ("type Key = { first: Int, last: Text } deriving (Eq, Ord)", "type Key = { last: Text, first: Int } deriving (Eq, Ord)"),
+            ("type Items a = List a", "type Items a = Option a"),
+            ("type Box r = { value: { n: Int } }", "type Box r = { value: { n: Int | r } }"),
+            ("instance Eq (Box a) where Eq a =\n    eq (left: Box a) (right: Box a) -> Bool = true", "instance Eq (Box a) where Ord a =\n    eq (left: Box a) (right: Box a) -> Bool = true"),
+        ] {
+            assert_ne!(hash(before), hash(after), "{before} -> {after}");
         }
     }
 }

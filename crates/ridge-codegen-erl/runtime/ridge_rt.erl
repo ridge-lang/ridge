@@ -3,6 +3,7 @@
 %% and text/number utilities that map Ridge stdlib symbols to BEAM.
 %% Bundled with ridge-codegen-erl and installed into <out_root>/runtime/.
 -module(ridge_rt).
+-on_load(init_evidence_epoch/0).
 -export([
     println/1, print/1, eprintln/1,
     read_line/0, read_line/1,
@@ -22,7 +23,27 @@
     uuid_from_text/1, uuid_to_text/1, uuid_nil/0, uuid_nil/1, uuid_gen/0, uuid_gen/1, uuid_cmp/2,
     bytes_from_hex/1, bytes_to_hex/1, bytes_from_utf8/1, bytes_to_utf8/1,
     crypto_sha256/1, crypto_hmac_sha256/2, base64_encode/1, base64_decode/1,
+    hash_new/1, hash_finish/1, hash_tag/2,
+    hash_int/2, hash_bool/2, hash_text/2, hash_unit/2, hash_ordering/2,
+    hash_bytes/2, hash_uuid/2, hash_timestamp/2, hash_date/2, hash_time/2,
+    hash_decimal/2, hash_handle/2, hash_supervisor/2, hash_monitor/2,
+    evidence_bind/3, evidence_current/1, evidence_generation/0, '$ridge_evidence'/2,
+    key_evidence/2,
+    indexed_map_empty/0, indexed_map_from_list/2, indexed_map_insert/4,
+    indexed_map_update/4, indexed_map_remove/3, indexed_map_get/3,
+    indexed_map_contains/3, indexed_map_merge/3,
+    indexed_map_to_list/1, indexed_map_keys/1, indexed_map_values/1,
+    indexed_map_size/1, indexed_map_map/2, indexed_map_filter/2,
+    indexed_map_filter_map/2,
+    indexed_set_from_list/2, indexed_set_intersection/3, indexed_set_difference/3,
     map_filter_map/2,
+    typed_map_empty/0, typed_map_from_list/3, typed_map_to_list/1,
+    typed_map_insert/5, typed_map_update/5, typed_map_remove/4, typed_map_get/4, typed_map_contains/4,
+    typed_map_keys/1, typed_map_values/1, typed_map_size/1,
+    typed_map_map/2, typed_map_filter/2, typed_map_filter_map/2,
+    typed_map_merge/4, typed_map_eq/5, typed_set_eq/4,
+    typed_set_from_list/3, typed_set_intersection/4, typed_set_difference/4,
+    typed_text_map_from_list/1,
     bytes_empty/0, bytes_empty/1, bytes_gen/1, bytes_length/1, bytes_concat/2, bytes_cmp/2,
     date_from_ymd/3, date_to_iso/1, date_from_iso/1,
     date_year/1, date_month/1, date_day/1, date_today/1, date_today_utc/0, date_today_utc/1,
@@ -31,7 +52,8 @@
     tod_hour/1, tod_minute/1, tod_second/1, tod_now/1, tod_now_utc/0, tod_now_utc/1,
     tod_add_seconds/2, tod_diff_seconds/2, tod_cmp/2,
     int_parse/0, int_parse/1, int_round/1, int_trunc/1, int_abs/1, float_parse/1, float_to_text/1, bool_to_text/1,
-    sql_literal/1, sql_value_source/1,
+    float_equal/2, float_less/2, float_less_or_equal/2, float_greater/2, float_greater_or_equal/2,
+    sql_literal/1, sql_value_source/1, sql_value_same/2,
     text_split_all/2, text_replace_all/3, text_join/2, text_slice/3,
     text_like/2, like_prefix/1, like_suffix/1, like_contains/1,
     list_fold/3, list_sort_by/2, list_sort_cmp/2, ord_compare_native/2, ordering_to_text/1,
@@ -44,7 +66,7 @@
     json_as_list/1, json_as_object/1, json_is_null/1,
     http_listen/2, http_port/0, http_build_response/1, http_validate_response_headers/1,
     http_get/1, http_post/2, http_put/2, http_delete/1,
-    ask/3, send/2, send_op/2, send_fn/2, mailbox_size/1, spawn_actor/3,
+    ask/3, send/2, send_op/2, send_fn/2, mailbox_size/1, spawn_actor/3, handle_eq/2,
     start_supervisor/4, start_supervised_child/2, stop_supervised_child/2,
     which_children/1, set_child_id/2, set_child_restart/2, try_ask/3,
     monitor_handle/1, demonitor_flush/1, await_down/2, stop_handle/1,
@@ -553,6 +575,51 @@ bytes_empty(_Unit) -> <<>>.
 bytes_gen(N) when is_integer(N), N > 0 -> crypto:strong_rand_bytes(N);
 bytes_gen(_) -> <<>>.
 
+%% Hash state is an immutable seed plus reverse-ordered framed chunks. No
+%% mutable crypto context is shared between branches. These constructors and
+%% finalizers are internal collection operations, absent from the Ridge API.
+hash_new(Seed) when is_binary(Seed), byte_size(Seed) >= 16 ->
+    {ridge_hasher, Seed, []}.
+
+hash_feed(Tag, Value, {ridge_hasher, Seed, Chunks}) ->
+    Encoded = term_to_binary({Tag, Value}),
+    Frame = [<<(byte_size(Encoded)):64>>, Encoded],
+    {ridge_hasher, Seed, [Frame | Chunks]}.
+
+hash_finish({ridge_hasher, Seed, Chunks}) ->
+    <<Hash:64, _/binary>> = crypto:mac(hmac, sha256, Seed, lists:reverse(Chunks)),
+    Hash.
+
+hash_int(Value, State) -> hash_feed(int, Value, State).
+hash_tag(Value, State) -> hash_feed(composite, Value, State).
+hash_bool(Value, State) -> hash_feed(bool, Value, State).
+hash_text(Value, State) -> hash_feed(text, Value, State).
+hash_unit(ok, State) -> hash_feed(unit, ok, State).
+hash_ordering(Value, State) -> hash_feed(ordering, Value, State).
+hash_bytes(Value, State) -> hash_feed(bytes, Value, State).
+hash_uuid(Value, State) -> hash_feed(uuid, Value, State).
+hash_timestamp(Value, State) -> hash_feed(timestamp, Value, State).
+hash_date(Value, State) -> hash_feed(date, Value, State).
+hash_time(Value, State) -> hash_feed(time, Value, State).
+
+%% Scale is not part of Decimal equality. Negative scales can be produced by
+%% rounding to tens/hundreds, so normalization must not stop at scale zero.
+hash_decimal({decimal, U, S}, State) ->
+    hash_feed(decimal, hash_decimal_value(U, S), State).
+hash_decimal_value(0, _S) -> {0, 0};
+hash_decimal_value(U, S) when U rem 10 =:= 0 ->
+    hash_decimal_value(U div 10, S - 1);
+hash_decimal_value(U, S) -> {U, S}.
+
+%% Match handle_eq exactly: configuration and live child resolution do not
+%% participate; a supervised handle retains its logical supervisor/child pair.
+hash_handle({ridge_handle, Pid, _Config}, State) ->
+    hash_feed(handle, {direct, Pid}, State);
+hash_handle({ridge_sup_handle, Sup, Child, _Config}, State) ->
+    hash_feed(handle, {supervised, Sup, Child}, State).
+hash_supervisor(Value, State) -> hash_feed(supervisor, Value, State).
+hash_monitor(Value, State) -> hash_feed(monitor, Value, State).
+
 %% ── std.crypto digests + base64 ────────────────────────────────────────────
 
 %% crypto_sha256/1 — std.crypto.sha256. Text -> Bytes digest.
@@ -583,6 +650,518 @@ map_filter_map(F, M) ->
             none      -> false
         end
     end, M).
+
+%% Private comparison evidence. The provider is a generated module export,
+%% identified by data rather than a local fun that would retain purged code.
+%% The identity is a full compiler recipe, not a digest or an inferred term type.
+%% Context arguments are themselves evidence, refreshed before the provider is
+%% invoked. Ordinary method projection can keep using the resulting map.
+%% Keep the incarnation fixed across code reloads. Only the immediate local
+%% counter changes, avoiding a global literal-GC pass for a replaced token.
+init_evidence_epoch() ->
+    case persistent_term:get(ridge_evidence_incarnation, undefined) of
+        Ref when is_reference(Ref) -> ok;
+        _ -> persistent_term:put(ridge_evidence_incarnation, make_ref())
+    end.
+
+evidence_generation() ->
+    {persistent_term:get(ridge_evidence_incarnation),
+     persistent_term:get(ridge_evidence_generation, 0)}.
+
+%% Check without allocating an epoch pair in the stable lookup path.
+current_evidence_generation({Incarnation, Counter})
+  when is_reference(Incarnation), is_integer(Counter), Counter >= 0 ->
+    Counter =:= persistent_term:get(ridge_evidence_generation, 0) andalso
+        Incarnation =:= persistent_term:get(ridge_evidence_incarnation);
+current_evidence_generation(_) -> false.
+
+evidence_bind(Module, Identity, Arguments)
+  when is_atom(Module), is_binary(Identity), is_list(Arguments) ->
+    evidence_bind(Module, Identity, Arguments, none).
+
+evidence_bind(Module, Identity, Arguments, PreviousLayout) ->
+    Generation = evidence_generation(),
+    Current = [evidence_current(Argument) || Argument <- Arguments],
+    {Methods, Layout} = evidence_methods(Module, Identity, Current, PreviousLayout),
+    case is_map(Methods) andalso not maps:is_key('$ridge_evidence', Methods) of
+        true ->
+            %% A load between resolving children and constructing the parent
+            %% invalidates the whole snapshot, including transitive context.
+            case current_evidence_generation(Generation) of
+                true -> Methods#{'$ridge_evidence' =>
+                    {Module, Identity, Current, Generation, Layout}};
+                false -> evidence_bind(Module, Identity, Current, Layout)
+            end;
+        false -> erlang:error({invalid_evidence_provider, Module, Identity})
+    end.
+
+evidence_current(#{'$ridge_evidence' :=
+                   {Module, Identity, Arguments, Generation, Layout}} = Evidence) ->
+    case current_evidence_generation(Generation) of
+        true -> Evidence;
+        false -> evidence_bind(Module, Identity, Arguments, Layout)
+    end;
+evidence_current(_) -> erlang:error(invalid_evidence).
+
+evidence_methods(Module, Identity, Arguments, PreviousLayout) ->
+    case erlang:function_exported(Module, '$ridge_evidence', 2) of
+        true -> ok;
+        false -> _ = code:ensure_loaded(Module)
+    end,
+    Result = case erlang:function_exported(Module, '$ridge_evidence', 2) of
+        true -> Module:'$ridge_evidence'(Identity, Arguments);
+        false -> none
+    end,
+    case Result of
+        {some, {Methods, Layout}} when PreviousLayout =:= none; PreviousLayout =:= Layout ->
+            {Methods, Layout};
+        none when PreviousLayout =:= none -> erlang:error({missing_evidence_provider, Module, Identity});
+        none -> {structural_evidence(PreviousLayout, Arguments), PreviousLayout};
+        _ -> erlang:error({invalid_evidence_provider, Module, Identity})
+    end.
+
+%% Rebuild only a retained, typed structural recipe. No type is inferred from
+%% the value, and each component operation still comes from its own evidence.
+structural_evidence({some, {Method, Record, Labels}}, Arguments)
+  when is_boolean(Record), is_list(Labels) ->
+    Fields = case Record of
+        true when length(Labels) =:= length(Arguments) ->
+            [binary_to_existing_atom(Label, utf8) || Label <- Labels];
+        false when Labels =:= [] -> lists:seq(1, length(Arguments));
+        _ -> erlang:error(invalid_structural_evidence)
+    end,
+    Pairs = lists:zip(Fields, Arguments),
+    case Method of
+        <<"eq">> -> #{eq => fun(A, B) ->
+            structural_value(A, Record, length(Arguments)),
+            structural_value(B, Record, length(Arguments)),
+            structural_eq(A, B, Record, Pairs)
+        end};
+        <<"compare">> -> #{compare => fun(A, B) ->
+            structural_value(A, Record, length(Arguments)),
+            structural_value(B, Record, length(Arguments)),
+            structural_compare(A, B, Record, Pairs)
+        end};
+        <<"hash">> ->
+            {HashLabels, HashPairs} = case Record of
+                true -> {SortedLabels, SortedPairs} = lists:unzip(lists:sort(lists:zip(Labels, Pairs))),
+                        {SortedLabels, SortedPairs};
+                false -> {[], Pairs}
+            end,
+            Kind = case Record of true -> <<"record">>; false -> <<"tuple">> end,
+            #{hash => fun(Value, State) ->
+                structural_value(Value, Record, length(Arguments)),
+                Tagged = hash_tag({Kind, 0, length(Arguments), HashLabels}, State),
+                structural_hash(Value, Tagged, Record, HashPairs)
+            end};
+        _ -> erlang:error(invalid_structural_evidence)
+    end;
+structural_evidence(_, _) -> erlang:error(missing_evidence_provider).
+
+structural_value(Value, true, _Arity) when is_map(Value) -> ok;
+structural_value(Value, false, Arity) when is_tuple(Value), tuple_size(Value) =:= Arity -> ok;
+structural_value(_, _, _) -> erlang:error(invalid_structural_value).
+
+structural_field(Value, true, Label) -> maps:get(Label, Value);
+structural_field(Value, false, Position) -> element(Position, Value).
+
+structural_eq(_A, _B, _Record, []) -> true;
+structural_eq(A, B, Record, [{Field, Evidence} | Rest]) ->
+    Same = maps:get(eq, Evidence),
+    Same(structural_field(A, Record, Field), structural_field(B, Record, Field))
+        andalso structural_eq(A, B, Record, Rest).
+
+structural_compare(_A, _B, _Record, []) -> 'Equal';
+structural_compare(A, B, Record, [{Field, Evidence} | Rest]) ->
+    Compare = maps:get(compare, Evidence),
+    case Compare(structural_field(A, Record, Field), structural_field(B, Record, Field)) of
+        'Equal' -> structural_compare(A, B, Record, Rest);
+        Result -> Result
+    end.
+
+structural_hash(_Value, State, _Record, []) -> State;
+structural_hash(Value, State, Record, [{Field, Evidence} | Rest]) ->
+    Hash = maps:get(hash, Evidence),
+    Next = Hash(structural_field(Value, Record, Field), State),
+    structural_hash(Value, Next, Record, Rest).
+
+%% Persistent Ridge collections. Native maps index only keyed digests; key
+%% identity comes exclusively from the supplied Ridge Eq callback. Hash and Eq
+%% must be coherent: equivalent keys feed the same stream for any seed.
+%% An empty collection needs no key evidence or entropy. The first insertion
+%% chooses a private seed, retained by subsequent versions and transformations.
+typed_map_empty() -> {ridge_map, unseeded, 0, #{}}.
+
+typed_map_from_list(Hash, Eq, Pairs) ->
+    lists:foldl(fun({K, V}, M) -> typed_map_insert(Hash, Eq, K, V, M) end,
+                typed_map_empty(), Pairs).
+
+typed_map_insert(Hash, Eq, K, V, {ridge_map, unseeded, 0, Buckets}) ->
+    typed_map_insert(Hash, Eq, K, V,
+                     {ridge_map, crypto:strong_rand_bytes(16), 0, Buckets});
+typed_map_insert(Hash, Eq, K, V, {ridge_map, Seed, Size, Buckets}) ->
+    Digest = typed_key_digest(Hash, K, Seed),
+    {Bucket, Added} = typed_bucket_put(Eq, K, V,
+                                      maps:get(Digest, Buckets, []), []),
+    {ridge_map, Seed, Size + Added, Buckets#{Digest => Bucket}}.
+
+typed_key_digest(Hash, K, Seed) -> hash_finish(Hash(K, hash_new(Seed))).
+
+%% Compute one digest and visit each candidate once. The callback receives the
+%% previous value and cannot change the first stored key representative.
+typed_map_update(Hash, Eq, K, F, {ridge_map, unseeded, 0, Buckets}) ->
+    typed_map_update(Hash, Eq, K, F,
+                     {ridge_map, crypto:strong_rand_bytes(16), 0, Buckets});
+typed_map_update(Hash, Eq, K, F, {ridge_map, Seed, Size, Buckets}) ->
+    Digest = typed_key_digest(Hash, K, Seed),
+    {Bucket, Added} = typed_bucket_update(Eq, K, F,
+                                         maps:get(Digest, Buckets, []), []),
+    {ridge_map, Seed, Size + Added, Buckets#{Digest => Bucket}}.
+
+typed_bucket_update(_Eq, K, F, [], Prefix) ->
+    {lists:reverse(Prefix, [{K, F(none)}]), 1};
+typed_bucket_update(Eq, K, F, [{Stored, Old} = Entry | Rest], Prefix) ->
+    case Eq(K, Stored) of
+        true -> {lists:reverse(Prefix, [{Stored, F({some, Old})} | Rest]), 0};
+        false -> typed_bucket_update(Eq, K, F, Rest, [Entry | Prefix])
+    end.
+
+typed_bucket_put(_Eq, K, V, [], Prefix) ->
+    {lists:reverse(Prefix, [{K, V}]), 1};
+typed_bucket_put(Eq, K, V, [{Stored, _Old} = Entry | Rest], Prefix) ->
+    case Eq(K, Stored) of
+        true -> {lists:reverse(Prefix, [{Stored, V} | Rest]), 0};
+        false -> typed_bucket_put(Eq, K, V, Rest, [Entry | Prefix])
+    end.
+
+typed_map_get(Hash, Eq, K, {ridge_indexed_map, _, _, _} = M) ->
+    {ridge_indexed_map, _, _, Inner} = indexed_map_current(M),
+    typed_map_get(Hash, Eq, K, Inner);
+typed_map_get(_Hash, _Eq, _K, {ridge_map, _Seed, 0, _Buckets}) -> none;
+typed_map_get(Hash, Eq, K, {ridge_map, Seed, _Size, Buckets}) ->
+    Digest = typed_key_digest(Hash, K, Seed),
+    typed_bucket_get(Eq, K, maps:get(Digest, Buckets, [])).
+
+typed_bucket_get(_Eq, _K, []) -> none;
+typed_bucket_get(Eq, K, [{Stored, V} | Rest]) ->
+    case Eq(K, Stored) of
+        true -> {some, V};
+        false -> typed_bucket_get(Eq, K, Rest)
+    end.
+
+typed_map_contains(Hash, Eq, K, M) ->
+    case typed_map_get(Hash, Eq, K, M) of
+        {some, _} -> true;
+        none -> false
+    end.
+
+typed_map_remove(_Hash, _Eq, _K, {ridge_map, _Seed, 0, _Buckets} = M) -> M;
+typed_map_remove(Hash, Eq, K, {ridge_map, Seed, Size, Buckets} = M) ->
+    Digest = typed_key_digest(Hash, K, Seed),
+    case typed_bucket_remove(Eq, K, maps:get(Digest, Buckets, []), []) of
+        absent -> M;
+        {removed, []} -> {ridge_map, Seed, Size - 1, maps:remove(Digest, Buckets)};
+        {removed, Bucket} -> {ridge_map, Seed, Size - 1, Buckets#{Digest => Bucket}}
+    end.
+
+typed_bucket_remove(_Eq, _K, [], _Prefix) -> absent;
+typed_bucket_remove(Eq, K, [{Stored, _V} = Entry | Rest], Prefix) ->
+    case Eq(K, Stored) of
+        true -> {removed, lists:reverse(Prefix, Rest)};
+        false -> typed_bucket_remove(Eq, K, Rest, [Entry | Prefix])
+    end.
+
+typed_map_to_list({ridge_indexed_map, _, _, _} = M) -> indexed_map_to_list(M);
+typed_map_to_list({ridge_map, _Seed, _Size, Buckets}) ->
+    maps:fold(fun(_Digest, Bucket, Acc) -> lists:reverse(Bucket, Acc) end,
+              [], Buckets).
+typed_map_keys(M) -> [K || {K, _} <- typed_map_to_list(M)].
+typed_map_values(M) -> [V || {_, V} <- typed_map_to_list(M)].
+typed_map_size({ridge_indexed_map, _, _, _} = M) -> indexed_map_size(M);
+typed_map_size({ridge_map, _Seed, Size, _Buckets}) -> Size.
+
+%% These transformations preserve the existing key index. They neither rehash
+%% keys nor compare values, and invoke the supplied callback once per entry.
+typed_map_map(F, {ridge_map, Seed, Size, Buckets}) ->
+    Next = maps:map(fun(_Digest, Bucket) ->
+        [{K, F(K, V)} || {K, V} <- Bucket]
+    end, Buckets),
+    {ridge_map, Seed, Size, Next}.
+
+typed_map_filter(F, M) ->
+    typed_map_filter_map(fun(K, V) ->
+        case F(K, V) of true -> {some, V}; false -> none end
+    end, M).
+
+typed_map_filter_map(F, {ridge_map, Seed, _Size, Buckets}) ->
+    {Next, Size} = maps:fold(fun(Digest, Bucket, {Acc, Count}) ->
+        {Kept, Added} = typed_bucket_filter_map(F, Bucket, [], 0),
+        case Kept of
+            [] -> {Acc, Count};
+            _ -> {Acc#{Digest => Kept}, Count + Added}
+        end
+    end, {#{}, 0}, Buckets),
+    {ridge_map, Seed, Size, Next}.
+
+typed_bucket_filter_map(_F, [], Acc, Count) -> {lists:reverse(Acc), Count};
+typed_bucket_filter_map(F, [{K, V} | Rest], Acc, Count) ->
+    case F(K, V) of
+        {some, W} -> typed_bucket_filter_map(F, Rest, [{K, W} | Acc], Count + 1);
+        none -> typed_bucket_filter_map(F, Rest, Acc, Count)
+    end.
+
+%% Reindex the right side with the left seed. Equivalent entries replace only
+%% the value, so a merge retains the left side's stored key representative.
+typed_map_merge(_Hash, _Eq, {ridge_map, _, 0, _}, B) -> B;
+typed_map_merge(Hash, Eq, A, {ridge_map, _, _, Buckets}) ->
+    maps:fold(fun(_Digest, Bucket, Acc) ->
+        lists:foldl(fun({K, V}, M) -> typed_map_insert(Hash, Eq, K, V, M) end,
+                    Acc, Bucket)
+    end, A, Buckets).
+
+typed_map_eq(Hash, KeyEq, ValueEq,
+             {ridge_indexed_map, _, _, _} = A, {ridge_indexed_map, _, _, _} = B) ->
+    {ridge_indexed_map, _, _, InnerA} = indexed_map_current(A),
+    {ridge_indexed_map, _, _, InnerB} = indexed_map_current(B),
+    typed_map_eq(Hash, KeyEq, ValueEq, InnerA, InnerB);
+typed_map_eq(Hash, KeyEq, ValueEq,
+             {ridge_map, _, Size, Buckets}, {ridge_map, _, Size, _} = B) ->
+    typed_map_buckets_equal(Hash, KeyEq, ValueEq, maps:iterator(Buckets), B);
+typed_map_eq(_Hash, _KeyEq, _ValueEq, _A, _B) -> false.
+
+typed_map_buckets_equal(Hash, KeyEq, ValueEq, Iterator, B) ->
+    case maps:next(Iterator) of
+        none -> true;
+        {_Digest, Bucket, Next} ->
+            typed_bucket_equal(Hash, KeyEq, ValueEq, Bucket, B) andalso
+            typed_map_buckets_equal(Hash, KeyEq, ValueEq, Next, B)
+    end.
+
+typed_bucket_equal(_Hash, _KeyEq, _ValueEq, [], _B) -> true;
+typed_bucket_equal(Hash, KeyEq, ValueEq, [{K, V} | Rest], B) ->
+    case typed_map_get(Hash, KeyEq, K, B) of
+        none -> false;
+        {some, W} -> ValueEq(V, W) andalso
+                    typed_bucket_equal(Hash, KeyEq, ValueEq, Rest, B)
+    end.
+
+%% Set shares the persistent key index, with no runtime identity for its
+%% payload. Its distinct Ridge type prevents Map/Set interchange by callers.
+typed_set_from_list(Hash, Eq, Values) ->
+    lists:foldl(fun(K, M) -> typed_map_insert(Hash, Eq, K, true, M) end,
+                typed_map_empty(), Values).
+
+typed_set_intersection(Hash, Eq, A, B) ->
+    typed_map_filter(fun(K, _V) -> typed_map_contains(Hash, Eq, K, B) end, A).
+
+typed_set_difference(Hash, Eq, A, B) ->
+    typed_map_filter(fun(K, _V) -> not typed_map_contains(Hash, Eq, K, B) end, A).
+
+typed_set_eq(Hash, Eq, A, B) ->
+    typed_map_eq(Hash, Eq, fun(_, _) -> true end, A, B).
+
+%% The language-facing collection retains typed evidence, while the bucket
+%% kernel above receives only the methods for one coherent snapshot. Native
+%% Text adapters have the same fixed Text contract as compiler-owned instances;
+%% their providers are nominal too, so no old local fun is a refresh strategy.
+'$ridge_evidence'(<<"native:text:hash">>, []) ->
+    {some, {#{hash => fun hash_text/2}, none}};
+'$ridge_evidence'(<<"native:text:eq">>, []) ->
+    {some, {#{eq => fun(A, B) -> A =:= B end}, none}};
+'$ridge_evidence'(_, _) -> none.
+
+%% The incoming witness may never be consumed: an existing map has its own
+%% snapshot. Keep the arguments' real epochs rather than refreshing unused
+%% providers or labelling old/mixed methods with the current generation.
+key_evidence(#{hash := _} = Hash, #{eq := _} = Eq) -> key_evidence_snapshot(Hash, Eq);
+key_evidence(#{eq := _} = Eq, #{hash := _} = Hash) -> key_evidence_snapshot(Hash, Eq);
+key_evidence(_, _) -> erlang:error(invalid_evidence).
+
+key_evidence_snapshot(#{'$ridge_evidence' := {_, _, _, HashGeneration, _}} = Hash,
+                      #{'$ridge_evidence' := {_, _, _, EqGeneration, _}} = Eq) ->
+    case valid_evidence_generation(HashGeneration) andalso valid_evidence_generation(EqGeneration) of
+        true ->
+            Generation = case HashGeneration =:= EqGeneration of
+                true -> HashGeneration;
+                false -> pending
+            end,
+            {ridge_key_evidence, Generation, Hash, Eq};
+        false -> erlang:error(invalid_evidence)
+    end;
+key_evidence_snapshot(_, _) -> erlang:error(invalid_evidence).
+
+valid_evidence_generation({Incarnation, Counter})
+  when is_reference(Incarnation), is_integer(Counter), Counter >= 0 -> true;
+%% Older private snapshots are accepted only for refresh, never as current.
+valid_evidence_generation(Counter) when is_integer(Counter), Counter >= 0 -> true;
+valid_evidence_generation(_) -> false.
+
+key_evidence_resolve(Hash, Eq) ->
+    Generation = evidence_generation(),
+    CurrentHash = evidence_current(Hash),
+    CurrentEq = evidence_current(Eq),
+    case current_evidence_generation(Generation) of
+        true -> {ridge_key_evidence, Generation, CurrentHash, CurrentEq};
+        false -> key_evidence_resolve(CurrentHash, CurrentEq)
+    end.
+
+key_evidence_current({ridge_key_evidence, Generation, Hash, Eq} = Evidence) ->
+    case current_evidence_generation(Generation) of
+        true -> Evidence;
+        false -> key_evidence_resolve(Hash, Eq)
+    end.
+
+indexed_map_empty() -> {ridge_indexed_map, none, 0, typed_map_empty()}.
+
+%% No keys means no comparison contract to retain. Keep the private seed so
+%% inserting again does not need new entropy after remove/filter emptied it.
+indexed_map_wrap(_Evidence, {ridge_map, _, 0, Buckets} = Inner)
+  when map_size(Buckets) =:= 0 -> {ridge_indexed_map, none, 0, Inner};
+indexed_map_wrap({ridge_key_evidence, Generation, _, _} = Evidence, Inner) ->
+    {ridge_indexed_map, Evidence, {ridge_map_snapshot, Generation, make_ref()}, Inner}.
+
+indexed_map_current({ridge_indexed_map, _, _, {ridge_map, _, 0, _} = Inner}) ->
+    indexed_map_wrap(none, Inner);
+indexed_map_current({ridge_indexed_map, _, Generation, _} = M) ->
+    case current_evidence_generation(indexed_map_epoch(Generation)) of
+        true -> M;
+        false ->
+            case indexed_map_cached_migrate(M) of
+                {ok, Next} -> Next;
+                {error, Reason} -> erlang:error({collection_migration_failed, Reason})
+            end
+    end.
+
+indexed_map_bind(Evidence, M) ->
+    case indexed_map_current(M) of
+        {ridge_indexed_map, none, _, Inner} ->
+            %% This temporary snapshot is consumed by the operation, not
+            %% returned as an empty collection with a retained dependency.
+            Current = key_evidence_current(Evidence),
+            {ridge_key_evidence, Generation, _, _} = Current,
+            {ridge_indexed_map, Current, Generation, Inner};
+        Current -> Current
+    end.
+
+indexed_map_from_list(Evidence, Pairs) ->
+    Current = key_evidence_current(Evidence),
+    {ridge_key_evidence, _, #{hash := Hash}, #{eq := Eq}} = Current,
+    indexed_map_wrap(Current, typed_map_from_list(Hash, Eq, Pairs)).
+
+indexed_map_insert(Evidence, K, V, M) ->
+    {ridge_indexed_map, Current, _, Inner} = indexed_map_bind(Evidence, M),
+    {ridge_key_evidence, _, #{hash := Hash}, #{eq := Eq}} = Current,
+    indexed_map_wrap(Current, typed_map_insert(Hash, Eq, K, V, Inner)).
+
+indexed_map_update(Evidence, K, F, M) ->
+    {ridge_indexed_map, Current, _, Inner} = indexed_map_bind(Evidence, M),
+    {ridge_key_evidence, _, #{hash := Hash}, #{eq := Eq}} = Current,
+    indexed_map_wrap(Current, typed_map_update(Hash, Eq, K, F, Inner)).
+
+indexed_map_get(Evidence, K, M) ->
+    {ridge_indexed_map, Current, _, Inner} = indexed_map_bind(Evidence, M),
+    {ridge_key_evidence, _, #{hash := Hash}, #{eq := Eq}} = Current,
+    typed_map_get(Hash, Eq, K, Inner).
+
+indexed_map_contains(Evidence, K, M) ->
+    case indexed_map_get(Evidence, K, M) of {some, _} -> true; none -> false end.
+
+indexed_map_remove(Evidence, K, M) ->
+    {ridge_indexed_map, Current, _, Inner} = indexed_map_bind(Evidence, M),
+    {ridge_key_evidence, _, #{hash := Hash}, #{eq := Eq}} = Current,
+    indexed_map_wrap(Current, typed_map_remove(Hash, Eq, K, Inner)).
+
+indexed_map_to_list(M) ->
+    {ridge_indexed_map, _, _, Inner} = indexed_map_current(M),
+    typed_map_to_list(Inner).
+
+indexed_map_keys(M) -> [K || {K, _} <- indexed_map_to_list(M)].
+indexed_map_values(M) -> [V || {_, V} <- indexed_map_to_list(M)].
+indexed_map_size(M) ->
+    {ridge_indexed_map, _, _, Inner} = indexed_map_current(M),
+    typed_map_size(Inner).
+
+indexed_map_map(F, M) ->
+    {ridge_indexed_map, Evidence, _, Inner} = indexed_map_current(M),
+    indexed_map_wrap(Evidence, typed_map_map(F, Inner)).
+
+indexed_map_filter(F, M) ->
+    indexed_map_filter_map(fun(K, V) ->
+        case F(K, V) of true -> {some, V}; false -> none end
+    end, M).
+
+indexed_map_filter_map(F, M) ->
+    {ridge_indexed_map, Evidence, _, Inner} = indexed_map_current(M),
+    indexed_map_wrap(Evidence, typed_map_filter_map(F, Inner)).
+
+indexed_map_merge(Evidence, A, B) ->
+    {ridge_indexed_map, Current, _, InnerA} = indexed_map_bind(Evidence, A),
+    {ridge_indexed_map, _, _, InnerB} = indexed_map_current(B),
+    {ridge_key_evidence, _, #{hash := Hash}, #{eq := Eq}} = Current,
+    indexed_map_wrap(Current, typed_map_merge(Hash, Eq, InnerA, InnerB)).
+
+indexed_set_from_list(Evidence, Values) ->
+    indexed_map_from_list(Evidence, [{K, true} || K <- Values]).
+
+indexed_set_intersection(Evidence, A, B) ->
+    CurrentB = indexed_map_bind(Evidence, B),
+    indexed_map_filter(fun(K, _) -> indexed_map_contains(Evidence, K, CurrentB) end, A).
+
+indexed_set_difference(Evidence, A, B) ->
+    CurrentB = indexed_map_bind(Evidence, B),
+    indexed_map_filter(fun(K, _) -> not indexed_map_contains(Evidence, K, CurrentB) end, A).
+
+%% Shape migration walks both keys and values. A changed key or contract
+%% rebuilds with the retained seed and current methods. Value-only changes
+%% preserve digests; reindex order is the previous map's traversal order.
+indexed_map_migrate({ridge_indexed_map, _, _, {ridge_map, _, 0, _} = Inner}) ->
+    {ok, indexed_map_wrap(none, Inner)};
+indexed_map_migrate({ridge_indexed_map, Evidence, Generation,
+                     {ridge_map, Seed, Size, Buckets}} = M) ->
+    Current = key_evidence_current(Evidence),
+    case indexed_migrate_buckets(maps:iterator(Buckets), Buckets, false, false) of
+        {error, Reason} -> {error, Reason};
+        {ok, NextBuckets, KeysChanged, Changed} ->
+            {ridge_key_evidence, CurrentGeneration, #{hash := Hash}, #{eq := Eq}} = Current,
+            Inner = {ridge_map, Seed, Size, NextBuckets},
+            case KeysChanged orelse indexed_map_epoch(Generation) =/= CurrentGeneration of
+                true ->
+                    Next = lists:foldl(fun({K, V}, Acc) ->
+                        typed_map_insert(Hash, Eq, K, V, Acc)
+                    end, {ridge_map, Seed, 0, #{}}, typed_map_to_list(Inner)),
+                    {ok, indexed_map_wrap(Current, Next)};
+                false when Changed -> {ok, indexed_map_wrap(Current, Inner)};
+                false -> {ok, M}
+            end
+    end.
+
+indexed_migrate_buckets(Iterator, Buckets, KeysChanged, Changed) ->
+    case maps:next(Iterator) of
+        none -> {ok, Buckets, KeysChanged, Changed};
+        {Digest, Bucket, Next} ->
+            case migrate_children(Bucket, collections) of
+                {error, Reason} -> {error, Reason};
+                {ok, unchanged} -> indexed_migrate_buckets(Next, Buckets, KeysChanged, Changed);
+                {ok, Entries} ->
+                    NewKeys = lists:any(fun({{Old, _}, {New, _}}) -> Old =/= New end,
+                                        lists:zip(Bucket, Entries)),
+                    indexed_migrate_buckets(Next, Buckets#{Digest => Entries},
+                                            KeysChanged orelse NewKeys, true)
+            end
+    end.
+
+%% Native JSON/database adapters know their key type is Text. Their private
+%% native indexes stay separate from the Ridge map crossing the boundary.
+typed_text_map_from_list(Pairs) ->
+    Hash = evidence_bind(?MODULE, <<"native:text:hash">>, []),
+    Eq = evidence_bind(?MODULE, <<"native:text:eq">>, []),
+    indexed_map_from_list(key_evidence(Hash, Eq), Pairs).
+
+typed_text_map_to_native(M) -> maps:from_list(indexed_map_to_list(M)).
+
+typed_rows_result({ok, Rows}) ->
+    {ok, [typed_text_map_from_list(maps:to_list(Row)) || Row <- Rows]};
+typed_rows_result({error, _} = Error) -> Error.
 
 %% --- Date ---
 %% A Date is a calendar day held as {date, EpochDays}, where EpochDays is the whole
@@ -913,6 +1492,15 @@ float_parse(B) ->
 %% decimal when the base-10 exponent is in a readable range, and keep the
 %% exponent form outside it, where a positional string would be unreadable. The
 %% digits are the shortest round-trip set either way, so no precision is lost.
+%% Numerical predicates are deliberately separate from term identity and total
+%% term ordering: IEEE signed zeros denote the same numerical value. Both
+%% inputs must be Float; this bridge never coerces an integer argument.
+float_equal(A, B) when is_float(A), is_float(B) -> A == B.
+float_less(A, B) when is_float(A), is_float(B) -> A < B.
+float_less_or_equal(A, B) when is_float(A), is_float(B) -> A =< B.
+float_greater(A, B) when is_float(A), is_float(B) -> A > B.
+float_greater_or_equal(A, B) when is_float(A), is_float(B) -> A >= B.
+
 float_to_text(F) ->
     Short = iolist_to_binary(io_lib:format("~p", [F])),
     case binary:split(Short, [<<"e">>, <<"E">>]) of
@@ -997,6 +1585,19 @@ sql_literal('SqlNull')          -> <<"NULL">>.
 %% string literal: wrapped in quotes with backslash then quote escaped, the same
 %% escape the schema renderer's `sourceString` runs, so a first render and a
 %% re-render agree byte for byte.
+%% Schema descriptors use exact variant/payload identity. Float bits and array
+%% elements are explicit; the concrete SqlValue boundary excludes arbitrary
+%% Ridge objects, collection internals, resources and function values.
+sql_value_same({'SqlFloat', A}, {'SqlFloat', B}) ->
+    <<A:64/float>> =:= <<B:64/float>>;
+sql_value_same({'SqlArray', A}, {'SqlArray', B}) -> sql_values_same(A, B);
+sql_value_same(A, B) -> A =:= B.
+
+sql_values_same([], []) -> true;
+sql_values_same([A | As], [B | Bs]) ->
+    sql_value_same(A, B) andalso sql_values_same(As, Bs);
+sql_values_same(_, _) -> false.
+
 sql_value_source({'SqlInt', N})      -> <<"(sqlInt ", (integer_to_binary(N))/binary, ")">>;
 sql_value_source({'SqlText', S})     -> <<"(sqlText ", (source_text_literal(S))/binary, ")">>;
 sql_value_source({'SqlBool', true})  -> <<"(sqlBool true)">>;
@@ -1229,7 +1830,7 @@ env_get(Name) ->
     end.
 
 %% env_all/1 — std.env.all
-%% Returns all environment variables as a BEAM map #{BinKey => BinVal}.
+%% Returns all environment variables as a Ridge Map Text Text.
 %% Uses unicode:characters_to_binary/1 so environment entries containing
 %% non-Latin-1 code points (e.g. em-dashes in Windows PATHEXT) are encoded
 %% to valid UTF-8 rather than crashing with badarg in list_to_binary/1.
@@ -1237,7 +1838,7 @@ env_get(Name) ->
 env_all() -> env_all(ok).
 env_all(_Unit) ->
     Pairs = os:env(),
-    maps:from_list(
+    typed_text_map_from_list(
         lists:filtermap(
             fun({K, V}) ->
                 KB = unicode:characters_to_binary(K),
@@ -1339,7 +1940,7 @@ proc_run_collect(Port, Acc, Deadline) ->
 %%   JFloat Float       ↔  {json_float, Float}
 %%   JText Text         ↔  {json_text, Text}
 %%   JList (List V)     ↔  {json_list, [V]}
-%%   JObject (Map Text V) ↔ {json_object, #{Text => V}}
+%%   JObject (Map Text V) carries the persistent Ridge map representation.
 %%
 %% Ridge type: JsonValue -> Text
 json_encode(json_null) ->
@@ -1363,7 +1964,7 @@ json_encode({json_list, Items}) ->
     Joined  = join_binaries(Encoded, <<",">>),
     <<"[", Joined/binary, "]">>;
 json_encode({json_object, M}) ->
-    json_encode_object(maps:to_list(M));
+    json_encode_object(lists:keysort(1, typed_map_to_list(M)));
 json_encode({json_object_fields, Fields}) ->
     %% Last value wins, first position survives. No duplicate keys are emitted.
     Values = maps:from_list(Fields),
@@ -1432,7 +2033,8 @@ erlang_to_json_value(B) when is_binary(B)  -> {json_text, B};
 erlang_to_json_value(L) when is_list(L)    ->
     {json_list, [erlang_to_json_value(E) || E <- L]};
 erlang_to_json_value(M) when is_map(M)     ->
-    {json_object, maps:map(fun(_K, V) -> erlang_to_json_value(V) end, M)}.
+    {json_object, typed_text_map_from_list(
+        [{K, erlang_to_json_value(V)} || {K, V} <- maps:to_list(M)])}.
 
 %% JsonValue accessors — companion destructors to the json_* constructors.
 %%
@@ -1474,7 +2076,7 @@ json_as_list({json_list, L}) -> {some, L};
 json_as_list(_)              -> none.
 
 json_as_object({json_object, M}) -> {some, M};
-json_as_object({json_object_fields, Fields}) -> {some, maps:from_list(Fields)};
+json_as_object({json_object_fields, Fields}) -> {some, typed_text_map_from_list(Fields)};
 json_as_object(_)                -> none.
 
 json_is_null(json_null) -> true;
@@ -1910,6 +2512,16 @@ http_request_with_body(Method, Url, Body) ->
     end.
 
 %% --- Actor runtime ---
+%% Compare stable handle identities without observing actor state or liveness.
+%% Mailbox policy is configuration, not identity. A supervised reference keeps
+%% its logical identity across replacement of the registered child process.
+handle_eq({ridge_handle, Left, _}, {ridge_handle, Right, _}) ->
+    Left =:= Right;
+handle_eq({ridge_sup_handle, LeftSup, LeftId, _},
+          {ridge_sup_handle, RightSup, RightId, _}) ->
+    LeftSup =:= RightSup andalso LeftId =:= RightId;
+handle_eq(_, _) -> false.
+
 %%
 %% Handle wire format (since 0.2.7):
 %%
@@ -2608,8 +3220,10 @@ stop_handle(Handle) ->
 %%
 %% Extra = {ridge_migrate, Instr} transforms the state map per the code
 %% loader's instructions: apply renames, fill added fields from the NEW
-%% module's defaults, then drop keys that no longer exist. Any other Extra
-%% is a pass-through: a plain code reload keeps the running state.
+%% module's defaults, then drop keys that no longer exist. The private
+%% ridge_refresh_collections step follows schema migration and updates
+%% retained indexes, including those inside shape-current records.
+%% Other Extra values preserve the running state.
 apply_code_change(State, {ridge_migrate, Instr}) when is_map(State), is_map(Instr) ->
     try
         Renames  = maps:get(renames, Instr, []),
@@ -2635,6 +3249,13 @@ apply_code_change(State, {ridge_migrate, Instr}) when is_map(State), is_map(Inst
         {ok, S3}
     catch
         Class:Reason -> {error, {ridge_state_migration_failed, Class, Reason}}
+    end;
+apply_code_change(State, ridge_refresh_collections) ->
+    try migrate_value(State, collections) of
+        {ok, Next} -> {ok, Next};
+        {error, Reason} -> {error, {ridge_collection_migration_failed, Reason}}
+    catch
+        Class:Reason -> {error, {ridge_collection_migration_failed, Class, Reason}}
     end;
 apply_code_change(State, _Extra) ->
     {ok, State}.
@@ -2681,34 +3302,41 @@ migrate_message_slow(Msg) ->
     end.
 
 %% migrate_value/1 — recursive walk; see the walk-order rules above.
-migrate_value(V) when is_map(V) ->
+migrate_value(V) -> migrate_value(V, shape).
+
+%% A reload must also visit collections inside records whose shape did not
+%% change. Keep this traversal out of the steady receive-path fast case.
+migrate_value({ridge_indexed_map, _, _, _} = V, _Mode) -> indexed_map_migrate(V);
+migrate_value(V, Mode) when is_map(V) ->
     case V of
         #{'__ridge_v' := {Mod, Name, Hash}}
           when is_atom(Mod), is_atom(Name), is_integer(Hash) ->
-            migrate_tagged(Mod, Name, Hash, V);
+            migrate_tagged(Mod, Name, Hash, V, Mode);
         _ ->
-            migrate_map_children(V)
+            migrate_map_children(V, Mode)
     end;
-migrate_value(V) when is_tuple(V) ->
-    case migrate_children(tuple_to_list(V)) of
+migrate_value(V, Mode) when is_tuple(V) ->
+    case migrate_children(tuple_to_list(V), Mode) of
         {ok, unchanged} -> {ok, V};
         {ok, Es} -> {ok, list_to_tuple(Es)};
         {error, Reason} -> {error, Reason}
     end;
-migrate_value(V) when is_list(V) ->
-    case migrate_children(V) of
+migrate_value(V, Mode) when is_list(V) ->
+    case migrate_children(V, Mode) of
         {ok, unchanged} -> {ok, V};
         {ok, Es} -> {ok, Es};
         {error, Reason} -> {error, Reason}
     end;
-migrate_value(V) ->
+migrate_value(V, _Mode) ->
     {ok, V}.
 
-migrate_tagged(Mod, Name, Hash, V) ->
+migrate_tagged(Mod, Name, Hash, V, Mode) ->
     case current_record_hash(Mod, Name) of
         {ok, Hash} ->
-            %% Current shape: children were built by shape-current code.
-            {ok, V};
+            case Mode of
+                shape -> {ok, V};
+                collections -> migrate_map_children(V, Mode)
+            end;
         {ok, _Current} ->
             case record_migration_edges(Mod) of
                 {ok, Edges} ->
@@ -2717,7 +3345,7 @@ migrate_tagged(Mod, Name, Hash, V) ->
                             bump_migration_count(),
                             %% Re-walk the result: multi-hop chains and nested
                             %% stale values inside the hook's output.
-                            migrate_value(Fun(V));
+                            migrate_value(Fun(V), Mode);
                         _ ->
                             {error, {no_migration, Mod, Name, Hash}}
                     end;
@@ -2728,8 +3356,8 @@ migrate_tagged(Mod, Name, Hash, V) ->
             {error, {unknown_record, Mod, Name}}
     end.
 
-migrate_map_children(V) ->
-    case migrate_children(maps:to_list(V)) of
+migrate_map_children(V, Mode) ->
+    case migrate_children(maps:to_list(V), Mode) of
         {ok, unchanged} -> {ok, V};
         {ok, Pairs} -> {ok, maps:from_list(Pairs)};
         {error, Reason} -> {error, Reason}
@@ -2741,18 +3369,18 @@ migrate_map_children(V) ->
 %% stale) must not allocate. Element identity is safe to test with =:=
 %% because every arm except an applied migration edge returns its input
 %% verbatim, and same-reference comparison short-circuits.
-migrate_children(Es) ->
-    migrate_children(Es, [], unchanged).
+migrate_children(Es, Mode) ->
+    migrate_children(Es, [], unchanged, Mode).
 
-migrate_children([], Acc, Status) ->
+migrate_children([], Acc, Status, _Mode) ->
     case Status of
         unchanged -> {ok, unchanged};
         changed -> {ok, lists:reverse(Acc)}
     end;
-migrate_children([E | Rest], Acc, Status) ->
-    case migrate_value(E) of
-        {ok, E} -> migrate_children(Rest, [E | Acc], Status);
-        {ok, E2} -> migrate_children(Rest, [E2 | Acc], changed);
+migrate_children([E | Rest], Acc, Status, Mode) ->
+    case migrate_value(E, Mode) of
+        {ok, E} -> migrate_children(Rest, [E | Acc], Status, Mode);
+        {ok, E2} -> migrate_children(Rest, [E2 | Acc], changed, Mode);
         {error, Reason} -> {error, Reason}
     end.
 
@@ -2797,6 +3425,14 @@ cached_record_versions(Mod) ->
 %% actors; erase on a missing key is a no-op.
 invalidate_record_versions(Modules) when is_list(Modules) ->
     [_ = persistent_term:erase({ridge_rt_rec_vsn, M}) || M <- Modules],
+    %% The loader calls this after loading and before migrating/resuming actors.
+    %% Invalidate all comparison evidence: an unchanged provider can depend on
+    %% a helper in any reloaded module, without a record shape change.
+    case Modules of
+        [] -> ok;
+        _ -> persistent_term:put(ridge_evidence_generation,
+                                erlang:unique_integer([monotonic, positive]))
+    end,
     ok.
 
 record_migration_edges(Mod) ->
@@ -2888,8 +3524,8 @@ child_id_binary(Id) when is_atom(Id)   -> atom_to_binary(Id, utf8).
 %% allocates a fresh StoreId, so independent adapters never share rows; the
 %% MemAdapter handle is the record map #{id => StoreId}. Inserts and reads are
 %% serialised through the keeper, so concurrent callers see consistent state.
-%% Rows cross the boundary as opaque maps (#{<<"col">> => SqlValue}); the store
-%% never inspects them. The keeper is spawned unlinked and lives for the node's
+%% Rows cross the boundary as Ridge Map Text SqlValue values. The keeper uses
+%% private native indexes internally. It is spawned unlinked and lives for the node's
 %% lifetime — this is a dev/test store, not durable storage.
 
 %% mem_new/1 — std.data.memAdapter. Returns the MemAdapter record #{id => Id}.
@@ -2899,11 +3535,12 @@ mem_new(_Unit) ->
     #{id => Id}.
 
 %% mem_insert/3 — append Row to Table in store Id. Result Unit Error.
-mem_insert(Id, Table, Row) -> mem_call({insert, Id, Table, Row}).
+mem_insert(Id, Table, Row) ->
+    mem_call({insert, Id, Table, typed_text_map_to_native(Row)}).
 
 %% mem_all/2 — every row of Table in store Id, in insertion order.
 %% Result (List Row) Error; an unknown table reads as empty.
-mem_all(Id, Table) -> mem_call({all, Id, Table}).
+mem_all(Id, Table) -> typed_rows_result(mem_call({all, Id, Table})).
 
 %% quote_keep_all/1 — std.repo.keepAll. An always-true quoted predicate, the
 %% every-row case the full-table and aggregate verbs run through `select`. A
@@ -2943,7 +3580,8 @@ mk_error(Code, Message) ->
 
 %% mem_get_rows/4 — the rows of Table whose Column holds exactly Key. std.data's
 %% `get` takes the first. Result (List Row) Error.
-mem_get_rows(Id, Table, Column, Key) -> mem_call({get_rows, Id, Table, Column, Key}).
+mem_get_rows(Id, Table, Column, Key) ->
+    typed_rows_result(mem_call({get_rows, Id, Table, Column, Key})).
 
 %% mem_delete/3 — remove the rows of Table that satisfy Tree; answer how many
 %% were removed. Result Int Error.
@@ -2952,7 +3590,8 @@ mem_delete(Id, Table, Tree) -> mem_call({delete, Id, Table, Tree}).
 %% mem_update/4 — set the Changes columns on the rows of Table that satisfy Tree;
 %% answer how many rows changed. Changes is a `#{Column => SqlValue}` map merged
 %% over each matching row. Result Int Error.
-mem_update(Id, Table, Changes, Tree) -> mem_call({update, Id, Table, Changes, Tree}).
+mem_update(Id, Table, Changes, Tree) ->
+    mem_call({update, Id, Table, typed_text_map_to_native(Changes), Tree}).
 
 %% mem_begin/1 — open a transaction on store Id: snapshot its tables onto a
 %% per-store stack the keeper holds. A nested begin snapshots again (a savepoint).
@@ -3014,7 +3653,7 @@ mem_ddl_drop_index(_Id, _Name) -> {ok, ok}.
 %% mem_migrations_applied/1 — the names already recorded in store Id's tracking
 %% table, oldest first; an absent table reads as empty. Result (List Text) Error.
 mem_migrations_applied(Id) ->
-    case mem_all(Id, <<"_ridge_migrations">>) of
+    case mem_call({all, Id, <<"_ridge_migrations">>}) of
         {ok, Rows} -> {ok, [mem_migration_name(R) || R <- Rows]};
         {error, E} -> {error, E}
     end.
@@ -3022,7 +3661,7 @@ mem_migrations_applied(Id) ->
 %% mem_record_migration/2 — append Name to store Id's tracking table, the same
 %% row shape a `name text` column holds. Result Unit Error.
 mem_record_migration(Id, Name) ->
-    mem_insert(Id, <<"_ridge_migrations">>, #{<<"name">> => {'SqlText', Name}}).
+    mem_call({insert, Id, <<"_ridge_migrations">>, #{<<"name">> => {'SqlText', Name}}}).
 
 %% mem_unrecord_migration/2 — remove Name from store Id's tracking table, the
 %% inverse of mem_record_migration/2 (a rollback forgetting a reverted migration).
@@ -3069,25 +3708,35 @@ mem_migration_name(Row) ->
 %% mem_run_plan/2 — interpret a query plan against the in-memory store and return
 %% the combined rows. Result (List Row) Error.
 mem_run_plan(Id, Plan) ->
-    mem_call({run_plan, Id, Plan}).
+    typed_rows_result(mem_call({run_plan, Id, Plan})).
 
 %% mem_run_mutation/2 — run a MutationPlan against store Id; answer the affected
 %% row count. The write-side dual of mem_run_plan. Result Int Error.
 mem_run_mutation(Id, Plan) ->
-    mem_call({run_mutation, Id, Plan}).
+    mem_call({run_mutation, Id, typed_mutation_to_native(Plan)}).
 
 %% mem_run_mutation_returning/3 — run a MutationPlan against store Id; answer the rows
 %% it touched, each projected to Cols (every column when Cols is empty). The in-memory
 %% dual of a RETURNING clause. Result (List Row) Error.
 mem_run_mutation_returning(Id, Plan, Cols) ->
-    mem_call({run_mutation_returning, Id, Plan, Cols}).
+    typed_rows_result(mem_call({run_mutation_returning, Id, typed_mutation_to_native(Plan), Cols})).
+
+typed_mutation_to_native({'MutInsert', Table, Rows, IdentityCols}) ->
+    {'MutInsert', Table, [typed_text_map_to_native(R) || R <- Rows], IdentityCols};
+typed_mutation_to_native({'MutUpsert', Table, Rows, ConflictCols, UpdateCols}) ->
+    {'MutUpsert', Table, [typed_text_map_to_native(R) || R <- Rows], ConflictCols, UpdateCols};
+typed_mutation_to_native({'MutUpdate', Table, Changes, Tree}) ->
+    {'MutUpdate', Table, typed_text_map_to_native(Changes), Tree};
+typed_mutation_to_native({'MutDeleteKeys', Table, KeyCols, Rows}) ->
+    {'MutDeleteKeys', Table, KeyCols, [typed_text_map_to_native(R) || R <- Rows]};
+typed_mutation_to_native({'MutDelete', _, _} = Plan) -> Plan.
 
 %% eval_plan_pure/1 — interpret a plan with no keeper store, for the in-memory `Seq`
 %% query source. The plan is rooted at a `PlanList` (rows carried inline), so the empty
 %% state is never consulted; returns the rows directly (no Result — a pure in-memory
 %% walk over inline rows cannot fail).
 eval_plan_pure(Plan) ->
-    mem_eval_plan(#{}, 0, Plan).
+    [typed_text_map_from_list(maps:to_list(Row)) || Row <- mem_eval_plan(#{}, 0, Plan)].
 
 %% Internal: send a request to the keeper and await its reply.
 mem_call(Req) ->
@@ -3451,9 +4100,8 @@ mem_eval_plan(State, Id, {'PlanRefine', Inner, Pred, Orders, Lim, Off, Dist}) ->
     Matches = mem_refine_matches(State, Id, Inner, Pred, Rows),
     mem_paginate(mem_distinct(Dist, mem_order(Orders, Matches)), Lim, Off);
 mem_eval_plan(_State, _Id, {'PlanList', Rows}) ->
-    %% The in-memory `Seq` source: the rows `from` snapshotted, carried inline in the
-    %% plan. No store lookup — they are returned as-is for the wrapping verbs to refine.
-    Rows;
+    %% Inline rows cross from Ridge maps into the interpreter's private indexes.
+    [typed_text_map_to_native(Row) || Row <- Rows];
 mem_eval_plan(State, Id, {'PlanExists', Child}) ->
     %% An existence probe: yield one trivial row when the sub-plan matches anything, none
     %% otherwise, so the caller's emptiness check answers the same Bool the SQL probe does.
@@ -4625,3 +5273,87 @@ escript_main(Args) ->
     %% Store in process dict so cli_args/0 returns the right args in escript mode.
     erlang:put(ridge_escript_args, BinArgs),
     BinArgs.
+
+%% A snapshot id never changes the key contract or the seed. Legacy snapshots
+%% remain readable, but cannot participate in identity-based memoization.
+indexed_map_epoch({ridge_map_snapshot, Epoch, _Identity}) -> Epoch;
+indexed_map_epoch(Epoch) -> Epoch.
+
+indexed_map_cached_migrate({ridge_indexed_map, Evidence,
+                          {ridge_map_snapshot, _, Identity}, _} = M) when is_reference(Identity) ->
+    Epoch = evidence_generation(),
+    Cache = case get('$ridge_collection_migrations') of
+        {Epoch, Entries, Bytes} -> {Entries, Bytes};
+        _ -> {[], 0}
+    end,
+    {Entries0, Bytes0} = Cache,
+    case lists:keyfind(Identity, 1, Entries0) of
+        {Identity, Inner, _} ->
+            %% A load racing the cache lookup must not pair a newer key
+            %% contract with an index built in the preceding epoch.
+            case key_evidence_current(Evidence) of
+                {ridge_key_evidence, Epoch, _, _} = Current ->
+                    {ok, indexed_map_wrap(Current, Inner)};
+                _ -> indexed_map_cached_migrate(M)
+            end;
+        false ->
+            case indexed_map_migrate(M) of
+                {ok, {ridge_indexed_map, _, _, Inner}} = Result ->
+                    case indexed_cache_bytes(Inner, 1048576) of
+                        no -> ok;
+                        Remaining ->
+                            Cost = 1048576 - Remaining,
+                            {Keep, Used} = case length(Entries0) < 4 andalso
+                                                Bytes0 + Cost =< 1048576 of
+                                true -> {Entries0, Bytes0};
+                                false -> {[], 0}
+                            end,
+                            put('$ridge_collection_migrations',
+                                {Epoch, [{Identity, Inner, Cost} | Keep], Used + Cost})
+                    end,
+                    Result;
+                Error -> Error
+            end
+    end;
+indexed_map_cached_migrate(M) -> indexed_map_migrate(M).
+
+%% Retain only bounded, function-free data. In particular no dictionary method,
+%% user closure, actor/process handle or reference can keep an old code version
+%% reachable from this cache. Count referenced binary storage, not slice length.
+indexed_cache_bytes(_, Budget) when Budget < 0 -> no;
+indexed_cache_bytes(T, Budget) when is_atom(T); is_float(T) -> Budget - 16;
+indexed_cache_bytes(T, Budget) when is_integer(T) -> Budget - 16 - erlang:external_size(T);
+indexed_cache_bytes(T, Budget) when is_binary(T) -> Budget - 32 - binary:referenced_byte_size(T);
+indexed_cache_bytes([], Budget) -> Budget - 8;
+indexed_cache_bytes([H | T], Budget) ->
+    case indexed_cache_bytes(H, Budget - 16) of
+        no -> no;
+        Next -> indexed_cache_bytes(T, Next)
+    end;
+indexed_cache_bytes(T, Budget) when is_tuple(T) ->
+    indexed_cache_tuple(T, tuple_size(T), Budget - 16 - 8 * tuple_size(T));
+indexed_cache_bytes(T, Budget) when is_map(T) ->
+    indexed_cache_map(maps:iterator(T), Budget - 32 - 24 * map_size(T));
+indexed_cache_bytes(_, _) -> no.
+
+indexed_cache_tuple(_, _, Budget) when Budget < 0 -> no;
+indexed_cache_tuple(_, 0, Budget) -> Budget;
+indexed_cache_tuple(T, N, Budget) ->
+    case indexed_cache_bytes(element(N, T), Budget) of
+        no -> no;
+        Next -> indexed_cache_tuple(T, N - 1, Next)
+    end.
+
+indexed_cache_map(_, Budget) when Budget < 0 -> no;
+indexed_cache_map(Iterator, Budget) ->
+    case maps:next(Iterator) of
+        none -> Budget;
+        {K, V, Next} ->
+            case indexed_cache_bytes(K, Budget) of
+                no -> no;
+                AfterKey -> case indexed_cache_bytes(V, AfterKey) of
+                    no -> no;
+                    AfterValue -> indexed_cache_map(Next, AfterValue)
+                end
+            end
+    end.

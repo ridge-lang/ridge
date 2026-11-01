@@ -1342,12 +1342,77 @@ pub(crate) fn lower_lambda(
 /// - `Handler { .. }` / `ActorType { .. }` → defensive `IrShapeMalformed`.
 ///
 /// **Dynamic path** — any other callee → `CErlExpr::Apply { callee, args }`.
+// Evidence providers cross code versions by nominal export, never by storing
+// the eta-expanded local fun used for an ordinary function value.
+fn lower_evidence_binding(
+    args: &[IrExpr],
+    span: ridge_ast::Span,
+    scope: &mut LocalScope,
+) -> Result<CErlExpr, CodegenError> {
+    let invalid = || CodegenError::IrShapeMalformed {
+        variant: "comparison evidence",
+        span,
+        detail: "evidence requires a generated provider, identity and context".into(),
+    };
+    let [IrExpr::Symbol { sym, .. }, identity, context] = args else {
+        return Err(invalid());
+    };
+    let module = match sym {
+        SymbolRef::Local { module, name } | SymbolRef::External { module, name } => {
+            let shape = scope
+                .tables
+                .external_shapes
+                .get(module)
+                .and_then(|names| names.get(name));
+            if name != "$ridge_evidence"
+                || !shape.is_some_and(|shape| !shape.is_const && shape.arity == 2)
+            {
+                return Err(invalid());
+            }
+            if matches!(sym, SymbolRef::Local { .. }) {
+                scope.own_module_beam_name.as_ref().map_or_else(
+                    || crate::symbol::module_beam_name(*module, scope),
+                    |name| Ok(name.to_string()),
+                )?
+            } else {
+                crate::symbol::module_beam_name(*module, scope)?
+            }
+        }
+        SymbolRef::Stdlib {
+            module,
+            name,
+            kind: ridge_ir::StdlibKind::Function,
+        } if module.starts_with("std.") && name == "$ridge_evidence" => module.clone(),
+        _ => return Err(invalid()),
+    };
+    let identity = lower_expr_in_scope(identity, scope)?;
+    let context = lower_expr_in_scope(context, scope)?;
+    Ok(CErlExpr::Call {
+        module: CErlAtom("ridge_rt".into()),
+        fn_name: CErlAtom("evidence_bind".into()),
+        args: vec![
+            CErlExpr::Lit(CErlLit::Atom(CErlAtom(module))),
+            identity,
+            context,
+        ],
+    })
+}
+
 fn lower_call(
     callee: &IrExpr,
     args: &[IrExpr],
     span: ridge_ast::Span,
     scope: &mut LocalScope,
 ) -> Result<CErlExpr, CodegenError> {
+    if let IrExpr::Symbol {
+        sym: SymbolRef::Stdlib { module, name, .. },
+        ..
+    } = callee
+    {
+        if module == "std.op" && name == "evidence" {
+            return lower_evidence_binding(args, span, scope);
+        }
+    }
     if let IrExpr::Symbol { sym, .. } = callee {
         let is_constant = match sym {
             SymbolRef::Local { name, .. } => scope.fn_arity.get(name).is_some_and(|s| s.is_const),

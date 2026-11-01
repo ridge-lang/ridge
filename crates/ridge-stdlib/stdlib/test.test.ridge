@@ -9,10 +9,10 @@
 fn _ensure (cond: Bool) (msg: Text) -> Result Unit Text =
     if cond then Ok () else Err msg
 
-fn _assertEq (actual: a) (expected: a) (label: Text) -> Result Unit Text =
+fn _assertEq (actual: a) (expected: a) (label: Text) -> Result Unit Text where Eq a =
     if actual == expected then Ok () else Err label
 
-fn _assertNe (actual: a) (other: a) (label: Text) -> Result Unit Text =
+fn _assertNe (actual: a) (other: a) (label: Text) -> Result Unit Text where Eq a =
     if actual == other then Err label else Ok ()
 
 fn _isOk (r: Result a e) (label: Text) -> Result Unit Text =

@@ -1,59 +1,17 @@
--- Private helpers for std.map test suite.
--- FFI bridges + pure-Ridge helpers replicate map.ridge (T17+ deferred).
-@ffi("maps", "new", 0)
-fn _mapsNew () -> Map k v
-
-@ffi("maps", "from_list", 1)
-fn _fromList (xs: List (k, v)) -> Map k v
-
-@ffi("maps", "to_list", 1)
-fn _toList (m: Map k v) -> List (k, v)
-
-@ffi("maps", "put", 3)
-fn _insert (k: k) (v: v) (m: Map k v) -> Map k v
-
-@ffi("maps", "remove", 2)
-fn _remove (k: k) (m: Map k v) -> Map k v
-
-@ffi("maps", "is_key", 2)
-fn _isKey (k: k) (m: Map k v) -> Bool
-
-@ffi("maps", "get", 2)
-fn _rawGet (k: k) (m: Map k v) -> v
-
-fn _get (k: k) (m: Map k v) -> Option v =
-    if _isKey k m then Some (_rawGet k m)
-    else None
-
-@ffi("maps", "is_key", 2)
-fn _contains (k: k) (m: Map k v) -> Bool
-
-@ffi("maps", "keys", 1)
-fn _keys (m: Map k v) -> List k
-
-@ffi("maps", "values", 1)
-fn _values (m: Map k v) -> List v
-
-fn _filterPairs (p: fn k -> v -> Bool) (xs: List (k, v)) -> List (k, v) =
-    match xs
-        [] -> []
-        (k, v) :: rest ->
-            let pk = p k
-            if pk v then (k, v) :: _filterPairs p rest
-            else _filterPairs p rest
-
+-- Exercise the public collection implementation; keep the behavioral oracles below.
+fn _fromList (xs: List (k, v)) -> Map k v where Hash k = Map.fromList xs
+fn _toList (m: Map k v) -> List (k, v) = Map.toList m
+fn _insert (k: k) (v: v) (m: Map k v) -> Map k v where Hash k = Map.insert k v m
+fn _remove (k: k) (m: Map k v) -> Map k v where Hash k = Map.remove k m
+fn _get (k: k) (m: Map k v) -> Option v where Hash k = Map.get k m
+fn _contains (k: k) (m: Map k v) -> Bool where Hash k = Map.contains k m
+fn _keys (m: Map k v) -> List k = Map.keys m
+fn _values (m: Map k v) -> List v = Map.values m
 fn _filter (p: fn k -> v -> Bool) (m: Map k v) -> Map k v =
-    _fromList (_filterPairs p (_toList m))
-
-@ffi("maps", "size", 1)
-fn _length (m: Map k v) -> Int
-
-@ffi("maps", "merge", 2)
-fn _merge (a: Map k v) (b: Map k v) -> Map k v
-
-fn _update (k: k) (f: fn (Option v) -> v) (m: Map k v) -> Map k v =
-    let current = _get k m
-    _insert k (f current) m
+    Map.filter (fn k v -> (p k) v) m
+fn _length (m: Map k v) -> Int = Map.length m
+fn _merge (a: Map k v) (b: Map k v) -> Map k v where Hash k = Map.merge a b
+fn _update (k: k) (f: fn (Option v) -> v) (m: Map k v) -> Map k v where Hash k = Map.update k f m
 
 @ffi("erlang", "length", 1)
 fn _listLength (xs: List a) -> Int
@@ -78,7 +36,8 @@ pub fn test_insert_then_get () -> Result Unit Text =
 
 @test "get_absent_is_none"
 pub fn test_get_absent_is_none () -> Result Unit Text =
-    if _get "missing" Map.empty == None then Ok ()
+    let items: Map Text Int = Map.empty
+    if _get "missing" items == None then Ok ()
     else Err "Map.get missing should be None"
 
 @test "remove_decrements"
@@ -122,8 +81,7 @@ pub fn test_update_inserts_when_absent () -> Result Unit Text =
     else Err "Map.update absent key should insert 99"
 
 
-@ffi("ridge_rt", "map_filter_map", 2)
-fn _filterMap (f: fn k v -> Option w) (m: Map k v) -> Map k w
+fn _filterMap (f: fn k v -> Option w) (m: Map k v) -> Map k w = Map.filterMap f m
 
 @test "filterMap keeps and rewrites Somes"
 pub fn test_filter_map () -> Result Unit Text =

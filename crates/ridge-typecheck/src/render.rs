@@ -1100,6 +1100,40 @@ pub fn render_type_with(ty: &ridge_types::Type, tycons: &[ridge_types::TyConDecl
     render_reserving(|namer| render_at_depth(ty, tycons, 0, namer))
 }
 
+/// Render a generalised type and its requirements with one shared variable
+/// namer.
+///
+/// Rendering each requirement independently would call both arguments
+/// `a`, even when the function requires two unrelated dictionaries.
+#[must_use]
+pub fn render_scheme_with(
+    scheme: &ridge_types::Scheme,
+    tycons: &[ridge_types::TyConDecl],
+    classes: &crate::class_env::ClassTable,
+) -> String {
+    render_reserving(|namer| {
+        let mut result = render_at_depth(&scheme.ty, tycons, 0, namer);
+        let mut requirements: Vec<_> = scheme
+            .constraints
+            .iter()
+            .map(|constraint| {
+                let class = classes
+                    .get(constraint.class)
+                    .map_or("?", |class| class.name.as_str());
+                let args: Vec<_> = constraint.tys.iter().map(|var| namer.name(var.0)).collect();
+                format!("{class} {}", args.join(" "))
+            })
+            .collect();
+        requirements.sort_unstable();
+        requirements.dedup();
+        if !requirements.is_empty() {
+            result.push_str(" where ");
+            result.push_str(&requirements.join(", "));
+        }
+        result
+    })
+}
+
 /// Render under one shared namer, and render again with the author's own type
 /// names reserved if the first pass met any.
 ///
@@ -1485,6 +1519,36 @@ mod tests {
     use super::*;
     use ridge_ast::{Capability, Span};
     use ridge_types::CapabilitySet;
+
+    #[test]
+    fn scheme_requirements_share_the_function_parameter_variable_names() {
+        use ridge_types::{
+            BuiltinTyCons, CapRow, Constraint, Scheme, TyConArena, TyVid, Type, ENCODE_CLASS,
+        };
+        let mut arena = TyConArena::new();
+        let b = BuiltinTyCons::allocate(&mut arena);
+        let mut classes = crate::class_env::ClassTable::new();
+        crate::class_env::register_prelude_classes(&mut classes);
+        let left = TyVid(100);
+        let right = TyVid(8);
+        let mut scheme = Scheme::mono(Type::Fn {
+            params: vec![Type::Var(left), Type::Var(right)],
+            ret: Box::new(Type::Tuple(vec![
+                Type::Con(b.json_value, vec![]),
+                Type::Con(b.json_value, vec![]),
+            ])),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        });
+        scheme.vars = vec![right, left];
+        scheme.constraints = vec![
+            Constraint::single(ENCODE_CLASS, right),
+            Constraint::single(ENCODE_CLASS, left),
+        ];
+        assert_eq!(
+            render_scheme_with(&scheme, arena.all(), &classes),
+            "(a, b) -> (JsonValue, JsonValue) where Encode a, Encode b"
+        );
+    }
 
     #[test]
     fn render_var_letters() {

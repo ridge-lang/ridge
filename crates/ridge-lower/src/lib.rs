@@ -20,12 +20,21 @@
 pub mod actor_lower;
 pub mod ast_type;
 pub mod block;
+mod collection;
+mod comparison;
+mod comparison_operator;
 pub mod core;
 pub mod ctx;
+mod dictionary_signature;
 pub mod error;
+mod evidence;
+mod evidence_identity;
+mod evidence_registry;
 pub mod field_accessor;
 mod function_value;
 pub mod guard;
+mod hash;
+mod hash_compound;
 pub mod if_lower;
 pub mod inner_fn;
 pub mod interp;
@@ -38,6 +47,7 @@ pub mod propagate;
 #[cfg(test)]
 mod test_support;
 pub mod try_block;
+mod value_comparison;
 pub mod with_update;
 
 pub use ctx::LowerCtx;
@@ -66,6 +76,7 @@ use rustc_hash::FxHashMap;
 #[must_use]
 pub fn lower_workspace(twork: &TypedWorkspace, rwork: &ResolvedWorkspace) -> LoweringResult {
     let stdlib_fqns = stdlib_fqns(rwork);
+    let module_names = module_names(rwork);
     let mut errors: Vec<(ModuleId, error::LowerError)> = Vec::new();
     let modules = twork
         .modules
@@ -79,7 +90,7 @@ pub fn lower_workspace(twork: &TypedWorkspace, rwork: &ResolvedWorkspace) -> Low
                 .get(i)
                 .map_or("", |m| m.fully_qualified_name.as_str());
             let (module, module_errors) =
-                lower_module(typed, twork, rmod, &stdlib_fqns, module_fqn);
+                lower_module(typed, twork, rmod, &stdlib_fqns, module_fqn, &module_names);
             errors.extend(module_errors.into_iter().map(|e| (typed.id, e)));
             Some(module)
         })
@@ -136,6 +147,17 @@ pub fn stdlib_fqns(rwork: &ResolvedWorkspace) -> FxHashMap<ModuleId, String> {
         .collect()
 }
 
+/// Source identities for all modules, independent of their arena indices.
+#[must_use]
+pub fn module_names(rwork: &ResolvedWorkspace) -> FxHashMap<ModuleId, String> {
+    rwork
+        .graph
+        .modules
+        .iter()
+        .map(|module| (module.id, module.fully_qualified_name.clone()))
+        .collect()
+}
+
 /// Lower a single typed module to Core IR.
 ///
 /// Constructs a fresh [`LowerCtx`], attaches the resolve-layer binding tables
@@ -162,10 +184,12 @@ pub fn lower_module(
     rmod: Option<&ridge_resolve::ResolvedModule>,
     stdlib_fqns: &FxHashMap<ModuleId, String>,
     module_fqn: &str,
+    module_names: &FxHashMap<ModuleId, String>,
 ) -> (LoweredModule, Vec<error::LowerError>) {
     let mut ctx = LowerCtx::new(typed.id, &typed.node_types, &ws.builtins);
     // The module FQN keys version-history lookups for `migrate` hooks.
     module_fqn.clone_into(&mut ctx.module_fqn);
+    ctx.module_names.clone_from(module_names);
     // Attach workspace-level context (tycons + builtins) for `with` schema
     // lookup (§4.5) and interp `ToText` dispatch (§4.6).
     ctx.attach_workspace(ws);
@@ -245,6 +269,7 @@ pub fn lower_module(
         ));
     }
 
+    evidence_registry::register(&mut ctx, &items);
     let errors = std::mem::take(&mut ctx.errors);
     (ctx.finish_with_items(items), errors)
 }

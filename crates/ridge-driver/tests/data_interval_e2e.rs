@@ -44,6 +44,7 @@ import std.query (SortOrder, Asc, Desc)
 import std.sql (toSql, SqlValue)
 import std.schema (schemaOf, schemaToDdl)
 import std.time (ofMillis)
+import std.float as Float
 
 -- An entity with a `Duration` column. `deriving (Schema)` marks `id` an identity
 -- column, so the insert shape `TaskInsert` carries `label`, `bucket`, and `took`. The
@@ -66,7 +67,7 @@ fn optMs (o: Option Duration) -> Text =
 fn optAvg (o: Option Float) -> Text =
     match o
         None   -> "none"
-        Some f -> if f == 1000.0 then "ok" else "wrong"
+        Some f -> if Float.equal f 1000.0 then "ok" else "wrong"
 
 -- Comma-join the labels of a row list, so an order is observable as one string.
 fn joinLabels (ts: List Task) -> Text =
@@ -168,7 +169,7 @@ pub fn db avgTook () -> Text =
 fn bucketXMean (rows: List BucketMean) -> Text =
     match rows
         []        -> "no-x"
-        r :: rest -> if r.bucket == "x" then (if r.mean == 1000.0 then "ok" else "wrong") else bucketXMean rest
+        r :: rest -> if r.bucket == "x" then (if Float.equal r.mean 1000.0 then "ok" else "wrong") else bucketXMean rest
 
 -- a grouped AVG folds each bucket's spans to a mean. Postgres renders the interval-aware
 -- EXTRACT(EPOCH ...) path; the in-memory adapter reads the millisecond spans off the

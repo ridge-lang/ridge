@@ -7,6 +7,11 @@
 
 pub type SqlValue = SqlInt Int | SqlText Text | SqlBool Bool | SqlFloat Float | SqlNull | SqlInstant Int | SqlDecimal Text | SqlUuid Text | SqlBytes Text | SqlJson Text | SqlDate Text | SqlTime Text | SqlInterval Int | SqlArray (List SqlValue)
 
+-- Project-private descriptor comparison for schema defaults. Preserve the
+-- variant and exact Float bits; this is not ordinary numerical equality.
+@ffi("ridge_rt", "sql_value_same", 2)
+fn sameValue (left: SqlValue) (right: SqlValue) -> Bool
+
 -- Direct SqlValue constructors. The variants are opaque to consumers (who reach
 -- them through `SqlType` or these factories), so these monomorphic factories are
 -- the supported way to build a bind value of a known base type — the query

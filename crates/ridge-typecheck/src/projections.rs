@@ -245,8 +245,9 @@ pub fn for_export(
     (!requirements.is_empty()).then(|| std::sync::Arc::new(requirements))
 }
 
-/// Compare the formation contracts exported by two checks of a module.
-/// Normalised types alone do not retain these requirements.
+/// Compare the types, formation requirements and ordered class contracts
+/// exported by two checks of a module. Normalised types alone do not retain
+/// the hidden dictionary ABI or projection domains.
 #[must_use]
 #[expect(
     clippy::implicit_hasher,
@@ -269,6 +270,7 @@ type FormationSurface = Vec<(
     ridge_types::TyKey,
     Vec<ridge_types::TyKey>,
     Vec<FieldSurface>,
+    Vec<(ridge_types::ClassId, Vec<TyVid>)>,
 )>;
 
 /// Canonicalise the requirements and body with one substitution. Local IDs
@@ -278,11 +280,6 @@ fn formation_surface(
 ) -> FormationSurface {
     let mut surface = Vec::new();
     for (name, scheme) in schemes {
-        if scheme.projections.as_ref().is_none_or(|p| p.is_empty())
-            && scheme.record_fields.as_ref().is_none_or(|p| p.is_empty())
-        {
-            continue;
-        }
         let (mut ty, mut cap, mut row) = (0, 0, 0);
         let (body, requirements, fields) = scheme.instantiate_with_requirements(
             &mut || {
@@ -315,6 +312,28 @@ fn formation_surface(
                             .as_ref()
                             .map(|(name, ty)| (name.clone(), ridge_types::type_to_key(ty))),
                         field.access_module,
+                    )
+                })
+                .collect(),
+            // Preserve dictionary parameter order while removing local ids.
+            scheme
+                .constraints
+                .iter()
+                .map(|constraint| {
+                    (
+                        constraint.class,
+                        constraint
+                            .tys
+                            .iter()
+                            .map(|var| {
+                                scheme
+                                    .vars
+                                    .iter()
+                                    .position(|bound| bound == var)
+                                    .and_then(|index| u32::try_from(index).ok())
+                                    .map_or(*var, TyVid)
+                            })
+                            .collect(),
                     )
                 })
                 .collect(),

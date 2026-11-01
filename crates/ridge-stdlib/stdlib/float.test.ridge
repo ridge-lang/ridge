@@ -1,6 +1,7 @@
 -- Private helpers for std.float test suite.
 -- FFI bridges replicate float.ridge declarations in local scope (T17+ deferred).
 -- Pure-Ridge helpers replicate float.ridge bodies (floor, ceil).
+import std.float as Float
 @ffi("ridge_rt", "float_to_text", 1)
 fn _toText (f: Float) -> Text
 
@@ -21,17 +22,17 @@ fn _truncate (f: Float) -> Int
 
 fn _floor (f: Float) -> Int =
     let t = _truncate f
-    if f >= 0.0 then t
+    if Float.greaterOrEqual f 0.0 then t
     else
         let ft = _fromInt t
-        if ft == f then t else t - 1
+        if Float.equal ft f then t else t - 1
 
 fn _ceil (f: Float) -> Int =
     let t = _truncate f
-    if f <= 0.0 then t
+    if Float.lessOrEqual f 0.0 then t
     else
         let ft = _fromInt t
-        if ft == f then t else t + 1
+        if Float.equal ft f then t else t + 1
 
 @ffi("math", "sqrt", 1)
 fn _sqrt (f: Float) -> Float
@@ -71,8 +72,9 @@ pub fn test_toText_integer_value () -> Result Unit Text =
 
 @test "parse_round_trip"
 pub fn test_parse_round_trip () -> Result Unit Text =
-    if _parse "3.14" == None then Err "Float.parse 3.14 should be Some"
-    else Ok ()
+    match _parse "3.14"
+        None -> Err "Float.parse 3.14 should be Some"
+        Some _ -> Ok ()
 
 @test "parse_integer_looking_string"
 pub fn test_parse_integer_looking_string () -> Result Unit Text =
@@ -84,13 +86,15 @@ pub fn test_parse_integer_looking_string () -> Result Unit Text =
 
 @test "parse_invalid_returns_none"
 pub fn test_parse_invalid_returns_none () -> Result Unit Text =
-    if _parse "abc" == None then Ok ()
-    else Err "Float.parse \"abc\" should be None"
+    match _parse "abc"
+        None -> Ok ()
+        Some _ -> Err "Float.parse \"abc\" should be None"
 
 @test "parse_empty_returns_none"
 pub fn test_parse_empty_returns_none () -> Result Unit Text =
-    if _parse "" == None then Ok ()
-    else Err "Float.parse \"\" should be None"
+    match _parse ""
+        None -> Ok ()
+        Some _ -> Err "Float.parse \"\" should be None"
 
 @test "fromInt"
 pub fn test_fromInt () -> Result Unit Text =

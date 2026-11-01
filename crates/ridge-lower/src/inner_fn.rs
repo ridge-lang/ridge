@@ -61,7 +61,7 @@
 use ridge_ast::{decl::FnDecl, Body, Expr, Param, Pattern, Span};
 use ridge_ir::{IrExpr, IrLit, IrParam, IrPat};
 use ridge_resolve::NodeKind;
-use ridge_types::{Constraint, Type};
+use ridge_types::Type;
 
 use crate::ast_type::lower_ast_type;
 use crate::block::fold_block_to_continuation;
@@ -180,7 +180,10 @@ pub fn lower_inner_fn_bare(ctx: &mut LowerCtx<'_>, decl: &FnDecl, ifspan: Span) 
 /// the dictionary resolver wants are read back the way
 /// [`LowerCtx::lookup_fn_constraints`] and its companions read them for a
 /// module-level fn.
-fn dict_sig(ctx: &LowerCtx<'_>, decl: &FnDecl) -> Option<(Vec<Constraint>, Vec<Type>, Type)> {
+fn dict_sig(
+    ctx: &LowerCtx<'_>,
+    decl: &FnDecl,
+) -> Option<crate::dictionary_signature::DictionarySignature> {
     let Body::Expr(body) = &decl.body else {
         return None;
     };
@@ -196,27 +199,22 @@ fn dict_sig(ctx: &LowerCtx<'_>, decl: &FnDecl) -> Option<(Vec<Constraint>, Vec<T
         .get(ctx.module_id.0 as usize)?
         .schemes
         .get(&nid)?;
-    let (params, ret) = match &scheme.ty {
-        Type::Fn { params, ret, .. } => (params.clone(), (**ret).clone()),
-        _ => (Vec::new(), Type::Error),
-    };
-    Some((scheme.constraints.clone(), params, ret))
+    Some(crate::dictionary_signature::DictionarySignature::from_scheme(scheme))
 }
 
 /// Bring a constrained helper into dictionary scope, reporting whether an entry
 /// was pushed. An unconstrained helper pushes nothing and needs no matching pop.
 fn push_dict_scope(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> bool {
-    let Some((constraints, params, ret)) = dict_sig(ctx, decl) else {
+    let Some(signature) = dict_sig(ctx, decl) else {
         return false;
     };
-    if constraints.is_empty() {
+    if signature.constraints.is_empty() {
         return false;
     }
     let Some(local) = ctx.local_binding_at(decl.name.span) else {
         return false;
     };
-    ctx.inner_fn_dict_sigs
-        .push((local, constraints, params, ret));
+    ctx.inner_fn_dict_sigs.push((local, signature));
     true
 }
 
@@ -267,9 +265,15 @@ fn build_lambda(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrExpr {
     // of those can still reach it.
     let sig = dict_sig(ctx, decl);
     let saved_constraints = ctx.current_fn_constraints.clone();
+    let saved_fields = ctx.current_fn_record_fields.clone();
     let mut dict_params: Vec<IrParam> = Vec::new();
-    if let Some((constraints, _, _)) = &sig {
-        for c in constraints {
+    if let Some(signature) = &sig {
+        if let Some(fields) = &signature.record_fields {
+            let mut combined = saved_fields.as_deref().cloned().unwrap_or_default();
+            combined.extend(fields.iter().cloned());
+            ctx.current_fn_record_fields = Some(std::sync::Arc::new(combined));
+        }
+        for c in &signature.constraints {
             let class_name = ctx.class_name(c.class).unwrap_or("Unknown").to_owned();
             dict_params.push(IrParam {
                 name: c.dict_param_name(&class_name),
@@ -278,14 +282,14 @@ fn build_lambda(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrExpr {
             });
         }
         ctx.current_fn_constraints
-            .extend(constraints.iter().cloned());
+            .extend(signature.constraints.iter().cloned());
     }
 
     // A local function establishes its own return boundary even when the
     // enclosing expression is a value-producing try scope.
     let ret = sig
         .as_ref()
-        .map(|(_, _, ret)| ret.clone())
+        .map(|signature| signature.ret.clone())
         .or_else(|| decl.ret.as_ref().map(|ty| lower_ast_type(ctx, ty)))
         .unwrap_or(Type::Error);
     ctx.push_propagation_scope(ret);
@@ -294,6 +298,7 @@ fn build_lambda(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrExpr {
     let body = Box::new(wrap_pattern_params(ctx, body, pattern_entries));
 
     ctx.current_fn_constraints = saved_constraints;
+    ctx.current_fn_record_fields = saved_fields;
 
     let caps = ctx.lookup_inferred_caps(decl.span);
 

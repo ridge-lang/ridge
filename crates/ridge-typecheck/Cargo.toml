@@ -19,6 +19,10 @@ rustc-hash.workspace = true
 smallvec.workspace   = true
 ena.workspace        = true
 
+[build-dependencies]
+ridge-ast = { path = "../ridge-ast" }
+ridge-parser = { path = "../ridge-parser" }
+
 [dev-dependencies]
 insta.workspace = true
 tempfile = "3"

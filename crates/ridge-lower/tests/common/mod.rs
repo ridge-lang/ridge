@@ -123,6 +123,8 @@ pub fn make_workspace(id: &str, module_name: &str, source: &str) -> TempWorkspac
 pub struct PipelineResult {
     /// The lowered workspace.
     pub lowered: ridge_ir::LoweredWorkspace,
+    pub type_errors: Vec<String>,
+    pub lower_errors: Vec<String>,
 }
 
 /// Run the full pipeline: discover → resolve → typecheck → lower.
@@ -133,9 +135,30 @@ pub fn run_pipeline(workspace_path: &Path) -> PipelineResult {
     let disc = discover_workspace(workspace_path);
     let ws_graph = disc.graph.expect("workspace graph must be present");
     let resolved = resolve_workspace(ws_graph);
+    assert!(resolved.errors.is_empty(), "{:?}", resolved.errors);
+    assert!(
+        resolved.parse_errors.is_empty(),
+        "{:?}",
+        resolved.parse_errors
+    );
+    assert!(resolved.lex_errors.is_empty(), "{:?}", resolved.lex_errors);
     let typecheck_result = typecheck_workspace(&resolved);
-    let lowered = lower_workspace(&typecheck_result.typed, &resolved).workspace;
-    PipelineResult { lowered }
+    let type_errors = typecheck_result
+        .errors
+        .iter()
+        .map(|(module, error)| format!("{module:?}: {error:?}"))
+        .collect();
+    let lowered = lower_workspace(&typecheck_result.typed, &resolved);
+    let lower_errors = lowered
+        .errors
+        .iter()
+        .map(|(module, error)| format!("{module:?}: {error:?}"))
+        .collect();
+    PipelineResult {
+        lowered: lowered.workspace,
+        type_errors,
+        lower_errors,
+    }
 }
 
 /// Load an example file from `examples/<name>.ridge` (relative to workspace root).

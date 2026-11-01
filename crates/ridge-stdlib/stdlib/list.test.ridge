@@ -134,7 +134,8 @@ pub fn test_head_returns_some () -> Result Unit Text =
 
 @test "head_empty_is_none"
 pub fn test_head_empty_is_none () -> Result Unit Text =
-    if _head [] == None then Ok ()
+    let result: Option Int = _head []
+    if result == None then Ok ()
     else Err "List.head [] should be None"
 
 @test "tail_returns_some"
@@ -235,7 +236,8 @@ pub fn test_at_out_of_range_is_none () -> Result Unit Text =
 
 @test "at_empty_is_none"
 pub fn test_at_empty_is_none () -> Result Unit Text =
-    if _at 0 [] == None then Ok ()
+    let result: Option Int = _at 0 []
+    if result == None then Ok ()
     else Err "List.at 0 [] should be None"
 
 @test "zip_truncates_to_shorter"

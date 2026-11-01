@@ -12,6 +12,7 @@ import std.time as Time
 import std.list as List
 import std.option as Option
 import std.random as Random
+import std.float as Float
 
 -- ── Limiter actor ─────────────────────────────────────────────────────────
 -- Non-defaultable state initialised via init block.
@@ -37,10 +38,10 @@ actor Limiter =
         -- refillRate is tokens-per-second; convert ms → seconds as Float for token accumulation.
         let elapsed  = Float.fromInt elapsedMs / 1000.0
         let refilled = tokens + elapsed * refillRate
-        let capped   = if refilled > Float.fromInt capacity then Float.fromInt capacity else refilled
+        let capped   = if Float.greater refilled (Float.fromInt capacity) then Float.fromInt capacity else refilled
         -- NOTE: Float.fromInt converts Int -> Float (plausible companion to Float.round).
         lastRefill <- now
-        if capped >= 1.0 then
+        if Float.greaterOrEqual capped 1.0 then
             tokens <- capped - 1.0
             true
         else

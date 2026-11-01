@@ -1349,6 +1349,7 @@ fn infer_expr_inner(
             ctx.env.bind(name.clone(), scheme);
 
             // Infer the body in a new scope.
+            let constraint_start = ctx.deferred_constraints.len();
             ctx.env.push_frame();
             for (param, ty) in decl.params.iter().zip(param_types.iter()) {
                 infer_param(ctx, b, param, ty);
@@ -1421,6 +1422,8 @@ fn infer_expr_inner(
                     &env_snap_cap,
                     &env_snap_row,
                 );
+            crate::record_requirements::solve(ctx);
+            let local_solution = crate::local_constraints::solve(ctx, b, constraint_start, *span);
             let mut generalised = generalise_with_env(
                 ctx,
                 &fn_ty_for_generalise,
@@ -1429,7 +1432,16 @@ fn infer_expr_inner(
                 &env_snap_row,
             );
             generalised.constraints = signature_constraints;
+            crate::local_constraints::finish(
+                ctx,
+                &mut generalised,
+                local_solution,
+                &env_snap_ty,
+                *span,
+            );
+            crate::local_constraints::remember_scheme(ctx, decl, &generalised);
             ctx.env.bind(name, generalised);
+            crate::record_requirements::release_generalised(ctx);
 
             // Cap-subset check is T14; T6/T7 just return Unit (the inner-fn
             // expression itself evaluates to Unit; its *value* is accessed via
@@ -2483,11 +2495,23 @@ fn infer_binary(
             ctx.shallow_resolve(&lhs_ty)
         }
 
-        // Comparisons: any type, Bool result
+        // Operators carry the same evidence requirement as their named methods.
         BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
             if let Err(e) = unify(ctx, &lhs_ty, &rhs_ty) {
                 ctx.errors.push(attach_span(e, span));
+                return Type::Error;
             }
+            let class = if matches!(op, BinOp::Eq | BinOp::Ne) {
+                ridge_types::EQ_CLASS
+            } else {
+                ridge_types::ORD_CLASS
+            };
+            let key = ctx.tyvids.new_key(crate::ctx::TyValue(Some(lhs_ty)));
+            ctx.deferred_constraints
+                .push(ridge_types::Constraint::single(
+                    class,
+                    ridge_types::TyVid(key.0),
+                ));
             Type::Con(b.bool, vec![])
         }
 

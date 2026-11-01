@@ -1,12 +1,11 @@
-fn parse_int (s: Text) -> Option Int =
-    None
+fn parse_int (s: Text) -> Result Int Text =
+    Err "invalid int"
 
-fn parse_bool (s: Text) -> Option Bool =
-    None
+fn parse_bool (s: Text) -> Result Bool Text =
+    Err "invalid bool"
 
-fn try_block_nested_propagate (a: Text) (b: Text) -> Option Bool =
-    try {
+fn try_block_nested_propagate (a: Text) (b: Text) -> Result Bool Text =
+    try
         let n = parse_int a ?
         let ok = parse_bool b ?
         if n > 0 then ok else false
-    }

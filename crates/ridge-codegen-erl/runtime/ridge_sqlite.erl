@@ -565,7 +565,7 @@ to_cell({'SqlArray', Elems}) -> {text, encode_array(Elems)}.
 %% layer up reconstructs a rich type (a Bool, a Timestamp) from this when the
 %% Ridge column type calls for it.
 build_row(Cols, Cells) ->
-    maps:from_list(lists:zipwith(fun(C, V) -> {C, from_cell(V)} end, Cols, Cells)).
+    ridge_rt:typed_text_map_from_list(lists:zipwith(fun(C, V) -> {C, from_cell(V)} end, Cols, Cells)).
 
 from_cell({int, N}) -> {'SqlInt', N};
 from_cell({float, F}) -> {'SqlFloat', F};

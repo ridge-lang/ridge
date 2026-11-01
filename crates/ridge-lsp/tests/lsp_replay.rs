@@ -1177,7 +1177,7 @@ async fn test_hover_labels_class_method() {
         .expect("hover ok");
     let md = hover_markdown(h).expect("hover over a class method returns markup");
     assert!(
-        md.contains("render (x: a) -> Text") && md.contains("*(class method)*"),
+        md.contains("render (x: a) -> Text where ToText a") && md.contains("*(class method)*"),
         "class-method hover should show the signature and kind line, got {md:?}"
     );
 }
@@ -6256,7 +6256,10 @@ async fn test_signature_help_and_goto_workspace_class_method() {
             .expect("ok"),
     )
     .expect("a workspace class-method signature");
-    assert_eq!(label, "greetWith (greeting: Text) (subject: a) -> Text");
+    assert_eq!(
+        label,
+        "greetWith (greeting: Text) (subject: a) -> Text where Greeter a"
+    );
     assert_eq!(active, 0, "cursor on the callee shows the first parameter");
 
     let (_, active) = sig_label_active(

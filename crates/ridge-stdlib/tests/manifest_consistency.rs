@@ -66,6 +66,27 @@ fn stdlib_dir() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib")
 }
 
+#[test]
+fn declared_type_owners_match_source_declarations() {
+    for module in BUILTINS {
+        let source =
+            std::fs::read_to_string(stdlib_dir().join(module_name_to_path(module.name))).unwrap();
+        let parsed = parse_source(&source);
+        let declared: std::collections::BTreeSet<_> = parsed
+            .module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Type(decl) if decl.vis == Visibility::Pub => Some(decl.name.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let recorded: std::collections::BTreeSet<_> =
+            module.declared_types.iter().copied().collect();
+        assert_eq!(recorded, declared, "type declarations in {}", module.name);
+    }
+}
+
 /// Read reconciled HTTP signatures through the same imports as user code.
 fn http_value_signatures() -> BTreeMap<String, Scheme> {
     let workspace = tempfile::tempdir().unwrap();

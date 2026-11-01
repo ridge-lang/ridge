@@ -1,89 +1,54 @@
--- std.set — Set utilities (Tier 2).
---
--- Set a is implemented as Map a Bool (Erlang map with `true` values).
--- Set a is a language built-in (prelude). This module provides helper
--- functions; the type itself does not need to be declared here.
---
--- Implemented using private BEAM bridges to avoid an SCC cycle with std.map.
+-- std.set -- persistent sets (Tier 2).
+-- Equivalent elements retain the first stored representative.
+-- Private bridges avoid an import cycle with std.map.
 
--- Private BEAM map bridges (mirrors std.map internals to avoid SCC cycle).
-@ffi("maps", "new", 0)
-fn _setMapNew () -> Set a
+opaque type KeyEvidence k = {}
 
-@ffi("maps", "put", 3)
-fn _setMapPut (k: a) (v: Bool) (m: Set a) -> Set a
+@primitive
+fn _keyEvidence () -> KeyEvidence k where Eq k, Hash k
 
-@ffi("maps", "remove", 2)
-fn _setMapRemove (k: a) (m: Set a) -> Set a
+@ffi("ridge_rt", "indexed_map_empty", 0)
+fn _empty () -> Set a
 
-@ffi("maps", "is_key", 2)
-fn _setMapIsKey (k: a) (m: Set a) -> Bool
+pub fn empty -> Set a = _empty ()
 
-@ffi("maps", "keys", 1)
-fn _setMapKeys (m: Set a) -> List a
+@ffi("ridge_rt", "indexed_set_from_list", 2)
+fn _fromList (evidence: KeyEvidence a) (xs: List a) -> Set a
 
-@ffi("maps", "size", 1)
-fn _setMapSize (m: Set a) -> Int
+pub fn fromList (xs: List a) -> Set a where Hash a = _fromList (_keyEvidence ()) xs
 
-@ffi("maps", "merge", 2)
-fn _setMapMerge (a: Set x) (b: Set x) -> Set x
+@ffi("ridge_rt", "indexed_map_keys", 1)
+pub fn toList (s: Set a) -> List a
 
--- Return an empty set.
-pub fn empty -> Set a = _setMapNew ()
+@ffi("ridge_rt", "indexed_map_insert", 4)
+fn _insert (evidence: KeyEvidence a) (x: a) (present: Bool) (s: Set a) -> Set a
 
--- Construct a set from a list of elements.
-pub fn fromList (xs: List a) -> Set a =
-    _fromListAcc xs (_setMapNew ())
+pub fn insert (x: a) (s: Set a) -> Set a where Hash a = _insert (_keyEvidence ()) x true s
 
-fn _fromListAcc (xs: List a) (acc: Set a) -> Set a =
-    match xs
-        []      -> acc
-        x :: rest -> _fromListAcc rest (_setMapPut x true acc)
+@ffi("ridge_rt", "indexed_map_remove", 3)
+fn _remove (evidence: KeyEvidence a) (x: a) (s: Set a) -> Set a
 
--- Convert a set to a list of elements (order not guaranteed).
-pub fn toList (s: Set a) -> List a =
-    _setMapKeys s
+pub fn remove (x: a) (s: Set a) -> Set a where Hash a = _remove (_keyEvidence ()) x s
 
--- Insert an element into the set.
-pub fn insert (x: a) (s: Set a) -> Set a =
-    _setMapPut x true s
+@ffi("ridge_rt", "indexed_map_contains", 3)
+fn _contains (evidence: KeyEvidence a) (x: a) (s: Set a) -> Bool
 
--- Remove an element from the set.
-pub fn remove (x: a) (s: Set a) -> Set a =
-    _setMapRemove x s
+pub fn contains (x: a) (s: Set a) -> Bool where Hash a = _contains (_keyEvidence ()) x s
 
--- Return true if the element is in the set.
-pub fn contains (x: a) (s: Set a) -> Bool =
-    _setMapIsKey x s
+@ffi("ridge_rt", "indexed_map_merge", 3)
+fn _union (evidence: KeyEvidence a) (left: Set a) (right: Set a) -> Set a
 
--- Return the union of two sets (elements from either).
-pub fn union (a: Set x) (b: Set x) -> Set x =
-    _setMapMerge a b
+pub fn union (left: Set a) (right: Set a) -> Set a where Hash a = _union (_keyEvidence ()) left right
 
--- Return the intersection of two sets (elements in both).
-pub fn intersection (a: Set x) (b: Set x) -> Set x =
-    let aKeys = _setMapKeys a
-    _intersectionFilter aKeys b (_setMapNew ())
+@ffi("ridge_rt", "indexed_set_intersection", 3)
+fn _intersection (evidence: KeyEvidence a) (left: Set a) (right: Set a) -> Set a
 
-fn _intersectionFilter (xs: List x) (b: Set x) (acc: Set x) -> Set x =
-    match xs
-        []      -> acc
-        k :: rest ->
-            if _setMapIsKey k b then _intersectionFilter rest b (_setMapPut k true acc)
-            else _intersectionFilter rest b acc
+pub fn intersection (left: Set a) (right: Set a) -> Set a where Hash a = _intersection (_keyEvidence ()) left right
 
--- Return the difference of two sets (elements in `a` but not in `b`).
-pub fn difference (a: Set x) (b: Set x) -> Set x =
-    let aKeys = _setMapKeys a
-    _differenceFilter aKeys b (_setMapNew ())
+@ffi("ridge_rt", "indexed_set_difference", 3)
+fn _difference (evidence: KeyEvidence a) (left: Set a) (right: Set a) -> Set a
 
-fn _differenceFilter (xs: List x) (b: Set x) (acc: Set x) -> Set x =
-    match xs
-        []      -> acc
-        k :: rest ->
-            if _setMapIsKey k b then _differenceFilter rest b acc
-            else _differenceFilter rest b (_setMapPut k true acc)
+pub fn difference (left: Set a) (right: Set a) -> Set a where Hash a = _difference (_keyEvidence ()) left right
 
--- Return the number of elements in the set.
-pub fn length (s: Set a) -> Int =
-    _setMapSize s
+@ffi("ridge_rt", "indexed_map_size", 1)
+pub fn length (s: Set a) -> Int

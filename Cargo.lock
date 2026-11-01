@@ -1921,6 +1921,7 @@ dependencies = [
  "insta",
  "ridge-ast",
  "ridge-diagnostics",
+ "ridge-parser",
  "ridge-resolve",
  "ridge-types",
  "rustc-hash",

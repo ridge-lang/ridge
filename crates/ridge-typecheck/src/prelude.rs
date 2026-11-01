@@ -200,6 +200,7 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     tycons.insert("Monitor".to_string(), b.monitor);
     tycons.insert("ChildSpec".to_string(), b.child_spec);
     tycons.insert("Supervisor".to_string(), b.supervisor);
+    tycons.insert("Hasher".to_string(), b.hasher);
     // Ordering = Less | Equal | Greater — prelude union type required by Ord (0.2.13).
     tycons.insert("Ordering".to_string(), b.ordering);
 

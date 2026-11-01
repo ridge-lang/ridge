@@ -449,6 +449,9 @@ pub struct InferCtx {
     /// Pre-typeclass code never adds to this list; the solver is a no-op when
     /// it is empty, so unconstrained modules are completely unaffected.
     pub deferred_constraints: Vec<ridge_types::Constraint>,
+    /// Shared immutable registries for solving a nested declaration before
+    /// its callers are inferred. Allocated lazily once per workspace check.
+    pub(crate) local_registries: Option<std::sync::Arc<crate::local_constraints::Registries>>,
     /// Exact conversion constraint per `?` or explicit `errorFrom` use site.
     /// Its fresh variables identify the solver plan without guessing an instance.
     pub error_from_sites: FxHashMap<ridge_ast::Span, Vec<ridge_types::Constraint>>,
@@ -617,6 +620,27 @@ pub struct RowsTycons {
     pub full_joined: Option<TyConId>,
 }
 
+impl RowsTycons {
+    /// Assemble the canonical query topology available to this workspace.
+    pub fn from_lookup(mut lookup: impl FnMut(&str) -> Option<TyConId>) -> Option<Self> {
+        let query = lookup("Query")?;
+        let join = lookup("Join")?;
+        let left_join = lookup("LeftJoin")?;
+        Some(Self {
+            query,
+            join,
+            left_join,
+            right_join: lookup("RightJoin").unwrap_or(left_join),
+            full_join: lookup("FullJoin").unwrap_or(left_join),
+            seq: lookup("Seq"),
+            joined: lookup("Joined"),
+            left_joined: lookup("LeftJoined"),
+            right_joined: lookup("RightJoined"),
+            full_joined: lookup("FullJoined"),
+        })
+    }
+}
+
 impl InferCtx {
     /// Creates a fresh, empty inference context over the workspace's built-ins.
     ///
@@ -655,6 +679,7 @@ impl InferCtx {
             anon_records: AnonRecordTable::default(),
             demanded_rows: FxHashSet::default(),
             deferred_constraints: Vec::new(),
+            local_registries: None,
             error_from_sites: FxHashMap::default(),
             nullary_message_sites: FxHashSet::default(),
             try_scope_types: FxHashMap::default(),

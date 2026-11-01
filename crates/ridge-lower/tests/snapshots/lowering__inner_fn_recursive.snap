@@ -1,5 +1,6 @@
 ---
 source: crates/ridge-lower/tests/lowering.rs
+assertion_line: 44
 expression: rendered
 ---
 module: m0
@@ -27,60 +28,88 @@ items:
             body:
               Match(n2):
                 scrutinee:
-                  Call(n3):
-                    callee:
-                      Symbol(n4): Stdlib(fn:std.op.le)
-                    args:
+                  Match(n3):
+                    scrutinee:
+                      Call(n4):
+                        callee:
+                          Field(n5).compare:
+                            Call(n6):
+                              callee:
+                                Symbol(n7): Stdlib(fn:std.op.evidence)
+                              args:
+                                -
+                                  Symbol(n8): Stdlib(fn:std._evidence.$ridge_evidence)
+                                -
+                                  Lit(n9): Text("Ord:static:[(\"\", \"Int\")]:[]")
+                                -
+                                  ListLit(n10):
+                        args:
+                          -
+                            Local(n11): k
+                          -
+                            Lit(n12): Int(1)
+                    arms:
                       -
-                        Local(n5): k
+                        pat:
+                          Ctor: Ctor(Variant:Less owner=15)
+                        body:
+                          Lit(n13): Bool(true)
                       -
-                        Lit(n6): Int(1)
+                        pat:
+                          Ctor: Ctor(Variant:Equal owner=15)
+                        body:
+                          Lit(n14): Bool(true)
+                      -
+                        pat:
+                          Ctor: Ctor(Variant:Greater owner=15)
+                        body:
+                          Lit(n15): Bool(false)
                 arms:
                   -
                     pat:
                       Lit: Bool(true)
                     body:
-                      Local(n7): k
+                      Local(n16): k
                   -
                     pat:
                       Lit: Bool(false)
                     body:
-                      Call(n8):
+                      Call(n17):
                         callee:
-                          Symbol(n9): Stdlib(fn:std.int.add)
+                          Symbol(n18): Stdlib(fn:std.int.add)
                         args:
                           -
-                            Call(n10):
+                            Call(n19):
                               callee:
-                                Local(n11): fib
+                                Local(n20): fib
                               args:
                                 -
-                                  Call(n12):
+                                  Call(n21):
                                     callee:
-                                      Symbol(n13): Stdlib(fn:std.int.sub)
+                                      Symbol(n22): Stdlib(fn:std.int.sub)
                                     args:
                                       -
-                                        Local(n14): k
+                                        Local(n23): k
                                       -
-                                        Lit(n15): Int(1)
+                                        Lit(n24): Int(1)
                           -
-                            Call(n16):
+                            Call(n25):
                               callee:
-                                Local(n17): fib
+                                Local(n26): fib
                               args:
                                 -
-                                  Call(n18):
+                                  Call(n27):
                                     callee:
-                                      Symbol(n19): Stdlib(fn:std.int.sub)
+                                      Symbol(n28): Stdlib(fn:std.int.sub)
                                     args:
                                       -
-                                        Local(n20): k
+                                        Local(n29): k
                                       -
-                                        Lit(n21): Int(2)
+                                        Lit(n30): Int(2)
         body:
-          Call(n22):
+          Call(n31):
             callee:
-              Local(n23): fib
+              Local(n32): fib
             args:
               -
-                Local(n24): n
+                Local(n33): n

@@ -233,6 +233,51 @@ fn deriving_change_deep_recompiles_and_matches_full() {
 }
 
 #[test]
+fn inferred_comparison_contract_edits_refresh_importers() {
+    let equal = "pub fn same left right = left == right\n";
+    let ordered = "pub fn same left right = left < right\n";
+    let td = build_ws(equal, "import proj.Lib\ntype Key = { value: Int } deriving (Eq)\npub fn check () -> Bool = Lib.same (Key { value = 1 }) (Key { value = 2 })\n");
+    let mut state = full_state(td.path());
+    assert!(state.type_errors.is_empty(), "{:?}", state.type_errors);
+    let lib = module_id_by_suffix(&state.resolved, ".Lib");
+    write_file(td.path(), "libs/proj/src/Lib.ridge", ordered);
+    let expected = full_state(td.path());
+    assert!(expected.type_errors.iter().any(|(_, error)| matches!(error, ridge_typecheck::TypeError::NoInstance { class, .. } if class == "Ord")), "full errors={:?}", expected.type_errors);
+    let recompiled = state.recompile(lib, ordered);
+    assert!(state.type_errors.iter().any(|(_, error)| matches!(error, ridge_typecheck::TypeError::NoInstance { class, .. } if class == "Ord")), "recompiled={recompiled:?}, errors={:?}", state.type_errors);
+    assert_matches_full(&state, td.path());
+    write_file(td.path(), "libs/proj/src/Lib.ridge", equal);
+    state.recompile(lib, equal);
+    assert!(state.type_errors.is_empty(), "{:?}", state.type_errors);
+    assert_matches_full(&state, td.path());
+}
+
+#[test]
+fn comparison_contracts_flow_through_a_diamond_in_producer_order() {
+    let equal = "pub fn same left right = left == right\npub fn identity value = value\n";
+    let ordered = equal.replace("left == right", "left < right");
+    let td = build_ws(equal, "import proj.A\ntype Key = { value: Int } deriving (Eq)\npub fn check () -> Bool = A.same (Key { value = 1 }) (Key { value = 2 })\n");
+    write_file(td.path(), "libs/proj/src/A.ridge", "import proj.Lib\nimport proj.Relay\npub fn same left right = Relay.same (Lib.identity left) right\n");
+    write_file(
+        td.path(),
+        "libs/proj/src/Relay.ridge",
+        "import proj.Lib\npub fn same left right = Lib.same left right\n",
+    );
+    let mut state = full_state(td.path());
+    assert!(all_diags(&state.resolved, &state.type_errors).is_empty());
+    let lib = module_id_by_suffix(&state.resolved, ".Lib");
+    write_file(td.path(), "libs/proj/src/Lib.ridge", &ordered);
+    let expected = full_state(td.path());
+    assert!(expected.type_errors.iter().any(|(_, error)| matches!(error, ridge_typecheck::TypeError::NoInstance { class, .. } if class == "Ord")), "{:?}", expected.type_errors);
+    state.recompile(lib, &ordered);
+    assert_matches_full(&state, td.path());
+    write_file(td.path(), "libs/proj/src/Lib.ridge", equal);
+    state.recompile(lib, equal);
+    assert_matches_full(&state, td.path());
+    assert!(state.type_errors.is_empty());
+}
+
+#[test]
 fn body_edit_in_a_typeclass_module_stays_incremental() {
     // A module with class/instance declarations plus an ordinary function.
     let lib_v1 = "pub fn greet -> Text = \"hi\"\nclass Show a =\n    toText (x: a) -> Text\ntype Color = Red\ninstance Show Color =\n    toText (c: Color) -> Text = \"red\"\n";
@@ -268,7 +313,7 @@ fn body_edit_in_a_typeclass_module_stays_incremental() {
 // *imports* such an entity and runs a quoted predicate over it (the import's
 // real id must be threaded in, or the quote checker can't pin the entity).
 
-const DATA_ENTITIES: &str = "import std.migrate as Migrate\nimport std.schema (schemaOf)\n\npub type Book = { id: Int, title: Text, cents: Int } deriving (Row, Schema)\n\nfn bookWitness () -> Option Book = None\n\npub fn schema () -> List Migration =\n    [ Migrate.migration \"0001\" [ Migrate.createSchema (schemaOf (bookWitness ())) ] ]\n";
+const DATA_ENTITIES: &str = "import std.migrate as Migrate\nimport std.schema (schemaOf)\n\npub fn stamp () -> Int = 0\n\npub type Book = { id: Int, title: Text, cents: Int } deriving (Row, Schema)\n\nfn bookWitness () -> Option Book = None\n\npub fn schema () -> List Migration =\n    [ Migrate.migration \"0001\" [ Migrate.createSchema (schemaOf (bookWitness ())) ] ]\n";
 
 const DATA_QUERIES: &str = "import std.data (DbError, Sqlite)\nimport std.repo as Repo\nimport std.query (Asc)\nimport proj.Entities (Book)\n\npub fn db allBooks (books: Repo Book Sqlite) -> Result (List Book) DbError =\n    books |> Repo.query |> Repo.orderBy Asc (fn (b: Book) -> b.id) |> Repo.toList\n";
 
@@ -312,6 +357,44 @@ fn body_edit_in_deriving_schema_definer_matches_full() {
         vec![entities],
         "a body edit recompiles only itself"
     );
+    assert_matches_full(&state, td.path());
+
+    // A preceding body edit moves the entity's spans. Refresh declarations
+    // without losing its already-demanded Row and HasSchema dictionaries.
+    let v3 = v2.replace("stamp () -> Int = 0", "stamp () -> Int = 10000");
+    let mut metadata = full_state(td.path());
+    write_file(td.path(), "libs/proj/src/Entities.ridge", &v3);
+    let parsed = ridge_parser::parse_source(&v3);
+    assert!(parsed.errors.is_empty() && parsed.lex_errors.is_empty());
+    assert!(ridge_resolve::resolve_module_incremental(
+        &mut metadata.resolved,
+        entities,
+        &std::sync::Arc::new(parsed.module),
+        true
+    )
+    .is_empty());
+    let refreshed =
+        ridge_typecheck::refresh_registry_metadata(&mut metadata.typed, &metadata.resolved);
+    assert!(
+        refreshed.is_ok(),
+        "positional metadata refresh must preserve declarations: {refreshed:?}"
+    );
+    let checked = ridge_typecheck::typecheck_module_incremental(
+        entities,
+        &metadata.resolved,
+        &metadata.typed,
+    );
+    for (name, before) in &metadata.typed.module_schemes[entities.0 as usize] {
+        if let Some(after) = checked.result.name_schemes.get(name) {
+            let before_map = std::iter::once((name.clone(), before.clone())).collect();
+            let after_map = std::iter::once((name.clone(), after.clone())).collect();
+            assert!(
+                ridge_typecheck::projection_contracts_equal(&before_map, &after_map),
+                "unchanged contract {name}: before={before:?}; after={after:?}"
+            );
+        }
+    }
+    assert_eq!(state.recompile(entities, &v3), vec![entities]);
     assert_matches_full(&state, td.path());
 }
 

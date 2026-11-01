@@ -314,6 +314,9 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         ) => Some(mono(ty_fn_pure(vec![ty_int(b), ty_int(b)], ty_int(b)))),
 
         // ── std.float ─────────────────────────────────────────────────────────
+        (STD_FLOAT, "equal" | "less" | "lessOrEqual" | "greater" | "greaterOrEqual") => {
+            Some(mono(ty_fn_pure(vec![ty_float(b), ty_float(b)], ty_bool(b))))
+        }
         (STD_FLOAT, "toText") => Some(mono(ty_fn_pure(vec![ty_float(b)], ty_text(b)))),
         (STD_FLOAT, "parse") => Some(mono(ty_fn_pure(
             vec![ty_text(b)],
@@ -649,11 +652,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             ))
         }
         (STD_LIST, "unique") => {
-            // forall a. List a -> List a
-            Some(poly(
-                vec![A],
-                ty_fn_pure(vec![ty_list(b, Type::Var(A))], ty_list(b, Type::Var(A))),
-            ))
+            crate::stdlib_types::list_equality_scheme(b, "unique")
         }
         (STD_LIST, "sum") => {
             // List Int -> Int
@@ -779,18 +778,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             ))
         }
         (STD_LIST, "groupBy") => {
-            // forall a b c. (fn c (a -> b)) -> List a -> Map b (List a)
-            Some(poly_cap(
-                vec![A, B_VAR],
-                vec![CAP_C],
-                ty_fn_callback(
-                    vec![
-                        ty_fn_cap_var(vec![Type::Var(A)], Type::Var(B_VAR), CAP_C),
-                        ty_list(b, Type::Var(A)),
-                    ],
-                    ty_map(b, Type::Var(B_VAR), ty_list(b, Type::Var(A))),
-                ),
-            ))
+            crate::stdlib_types::collection_hash_scheme(b, "std.list", name)
         }
         (STD_LIST, "flatMap") => {
             // forall a b c. (fn c (a -> List b)) -> List a -> List b
@@ -837,11 +825,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             ))
         }
         (STD_LIST, "contains") => {
-            // forall a. a -> List a -> Bool  (matches list.ridge: (x) (xs))
-            Some(poly(
-                vec![A],
-                ty_fn_pure(vec![Type::Var(A), ty_list(b, Type::Var(A))], ty_bool(b)),
-            ))
+            crate::stdlib_types::list_equality_scheme(b, "contains")
         }
         (STD_LIST, "find") => {
             // forall a c. (fn c (a -> Bool)) -> List a -> Option a
@@ -902,17 +886,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             ))
         }
         (STD_MAP, "fromList") => {
-            // forall k v. List (Tuple k v) -> Map k v
-            Some(poly(
-                vec![A, B_VAR],
-                ty_fn_pure(
-                    vec![ty_list(
-                        b,
-                        Type::Tuple(vec![Type::Var(A), Type::Var(B_VAR)]),
-                    )],
-                    ty_map(b, Type::Var(A), Type::Var(B_VAR)),
-                ),
-            ))
+            crate::stdlib_types::collection_hash_scheme(b, "std.map", name)
         }
         (STD_MAP, "toList" | "entries") => {
             // forall k v. Map k v -> List (Tuple k v)
@@ -925,62 +899,19 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             ))
         }
         (STD_MAP, "insert") => {
-            // forall k v. k -> v -> Map k v -> Map k v
-            Some(poly(
-                vec![A, B_VAR],
-                ty_fn_pure(
-                    vec![
-                        Type::Var(A),
-                        Type::Var(B_VAR),
-                        ty_map(b, Type::Var(A), Type::Var(B_VAR)),
-                    ],
-                    ty_map(b, Type::Var(A), Type::Var(B_VAR)),
-                ),
-            ))
+            crate::stdlib_types::collection_hash_scheme(b, "std.map", name)
         }
         (STD_MAP, "remove") => {
-            // forall k v. k -> Map k v -> Map k v
-            Some(poly(
-                vec![A, B_VAR],
-                ty_fn_pure(
-                    vec![Type::Var(A), ty_map(b, Type::Var(A), Type::Var(B_VAR))],
-                    ty_map(b, Type::Var(A), Type::Var(B_VAR)),
-                ),
-            ))
+            crate::stdlib_types::collection_hash_scheme(b, "std.map", name)
         }
         (STD_MAP, "get") => {
-            // forall k v. k -> Map k v -> Option v
-            Some(poly(
-                vec![A, B_VAR],
-                ty_fn_pure(
-                    vec![Type::Var(A), ty_map(b, Type::Var(A), Type::Var(B_VAR))],
-                    ty_option(b, Type::Var(B_VAR)),
-                ),
-            ))
+            crate::stdlib_types::collection_hash_scheme(b, "std.map", name)
         }
         (STD_MAP, "getOr") => {
-            // forall k v. k -> v -> Map k v -> v
-            Some(poly(
-                vec![A, B_VAR],
-                ty_fn_pure(
-                    vec![
-                        Type::Var(A),
-                        Type::Var(B_VAR),
-                        ty_map(b, Type::Var(A), Type::Var(B_VAR)),
-                    ],
-                    Type::Var(B_VAR),
-                ),
-            ))
+            crate::stdlib_types::collection_hash_scheme(b, "std.map", name)
         }
         (STD_MAP, "contains") => {
-            // forall k v. k -> Map k v -> Bool
-            Some(poly(
-                vec![A, B_VAR],
-                ty_fn_pure(
-                    vec![Type::Var(A), ty_map(b, Type::Var(A), Type::Var(B_VAR))],
-                    ty_bool(b),
-                ),
-            ))
+            crate::stdlib_types::collection_hash_scheme(b, "std.map", name)
         }
         (STD_MAP, "keys") => {
             // forall k v. Map k v -> List k
@@ -1060,36 +991,10 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             ))
         }
         (STD_MAP, "merge") => {
-            // forall k v. Map k v -> Map k v -> Map k v
-            Some(poly(
-                vec![A, B_VAR],
-                ty_fn_pure(
-                    vec![
-                        ty_map(b, Type::Var(A), Type::Var(B_VAR)),
-                        ty_map(b, Type::Var(A), Type::Var(B_VAR)),
-                    ],
-                    ty_map(b, Type::Var(A), Type::Var(B_VAR)),
-                ),
-            ))
+            crate::stdlib_types::collection_hash_scheme(b, "std.map", name)
         }
         (STD_MAP, "update") => {
-            // forall k v c. k -> (fn c (Option v -> Option v)) -> Map k v -> Map k v
-            Some(poly_cap(
-                vec![A, B_VAR],
-                vec![CAP_C],
-                ty_fn_callback(
-                    vec![
-                        Type::Var(A),
-                        ty_fn_cap_var(
-                            vec![ty_option(b, Type::Var(B_VAR))],
-                            ty_option(b, Type::Var(B_VAR)),
-                            CAP_C,
-                        ),
-                        ty_map(b, Type::Var(A), Type::Var(B_VAR)),
-                    ],
-                    ty_map(b, Type::Var(A), Type::Var(B_VAR)),
-                ),
-            ))
+            crate::stdlib_types::collection_hash_scheme(b, "std.map", name)
         }
 
         // ── std.set ───────────────────────────────────────────────────────────
@@ -1098,11 +1003,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(poly(vec![A], ty_set(b, Type::Var(A))))
         }
         (STD_SET, "fromList") => {
-            // forall a. List a -> Set a
-            Some(poly(
-                vec![A],
-                ty_fn_pure(vec![ty_list(b, Type::Var(A))], ty_set(b, Type::Var(A))),
-            ))
+            crate::stdlib_types::collection_hash_scheme(b, "std.set", name)
         }
         (STD_SET, "toList") => {
             // forall a. Set a -> List a
@@ -1112,31 +1013,13 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             ))
         }
         (STD_SET, "insert" | "remove") => {
-            // forall a. a -> Set a -> Set a
-            Some(poly(
-                vec![A],
-                ty_fn_pure(
-                    vec![Type::Var(A), ty_set(b, Type::Var(A))],
-                    ty_set(b, Type::Var(A)),
-                ),
-            ))
+            crate::stdlib_types::collection_hash_scheme(b, "std.set", name)
         }
         (STD_SET, "contains") => {
-            // forall a. a -> Set a -> Bool
-            Some(poly(
-                vec![A],
-                ty_fn_pure(vec![Type::Var(A), ty_set(b, Type::Var(A))], ty_bool(b)),
-            ))
+            crate::stdlib_types::collection_hash_scheme(b, "std.set", name)
         }
         (STD_SET, "union" | "intersection" | "difference") => {
-            // forall a. Set a -> Set a -> Set a
-            Some(poly(
-                vec![A],
-                ty_fn_pure(
-                    vec![ty_set(b, Type::Var(A)), ty_set(b, Type::Var(A))],
-                    ty_set(b, Type::Var(A)),
-                ),
-            ))
+            crate::stdlib_types::collection_hash_scheme(b, "std.set", name)
         }
         (STD_SET, "length") => {
             // forall a. Set a -> Int
@@ -1397,19 +1280,23 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
 
         // ── std.test ──────────────────────────────────────────────────────────
         // Assertion helpers; each returns Result Unit Text so checks chain
-        // with the `?` operator. Equality is structural, so assertEq/assertNe
-        // are fully polymorphic with no typeclass bound.
+        // with the `?` operator. Equality assertions use the same Eq evidence
+        // as ordinary comparison operators.
         (STD_TEST, "ensure" | "assertTrue" | "assertFalse") => Some(mono(ty_fn_pure(
             vec![ty_bool(b), ty_text(b)],
             ty_result(b, ty_unit(b), ty_text(b)),
         ))),
-        (STD_TEST, "assertEq" | "assertNe") => Some(poly(
-            vec![A],
-            ty_fn_pure(
-                vec![Type::Var(A), Type::Var(A), ty_text(b)],
-                ty_result(b, ty_unit(b), ty_text(b)),
-            ),
-        )),
+        (STD_TEST, "assertEq" | "assertNe") => {
+            let mut scheme = poly(
+                vec![A],
+                ty_fn_pure(
+                    vec![Type::Var(A), Type::Var(A), ty_text(b)],
+                    ty_result(b, ty_unit(b), ty_text(b)),
+                ),
+            );
+            scheme.constraints.push(Constraint::single(ridge_types::EQ_CLASS, A));
+            Some(scheme)
+        }
         (STD_TEST, "assertOk" | "assertErr") => Some(poly(
             vec![A, B_VAR],
             ty_fn_pure(

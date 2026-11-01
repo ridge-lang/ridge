@@ -18,7 +18,7 @@ const SOURCE: &str = "\
 import std.io as Io
 import std.int as Int
 import std.actor as Actor
-import std.actor (OneForOne, Noproc, Timeout)
+import std.actor (OneForOne, Noproc, Timeout, SupError)
 
 actor Counter =
     state count: Int = 0
@@ -29,7 +29,7 @@ actor Counter =
     on getCount () -> Int =
         count
 
-fn io time main () -> Result Unit Text =
+fn io time main () -> Result Unit SupError =
     let sup = Actor.supervise OneForOne 3 5000 [child Counter (0)]?
     let c = Actor.startChild sup (child Counter (1))?
     let r = Actor.tryAsk c (getCount ()) 1000
@@ -132,7 +132,7 @@ fn supervision_calls_route_through_ridge_rt() {
 const RESTART_SOURCE: &str = "\
 import std.io as Io
 import std.actor as Actor
-import std.actor (OneForOne, Transient)
+import std.actor (OneForOne, Transient, SupError)
 
 actor Counter =
     state count: Int = 0
@@ -140,7 +140,7 @@ actor Counter =
     on getCount () -> Int =
         count
 
-fn spawn io main () -> Result Unit Text =
+fn spawn io main () -> Result Unit SupError =
     let sup = Actor.supervise OneForOne 3 5000 []?
     let _ = Actor.startChild sup (Actor.childRestart Transient (child Counter))?
     Ok ()

@@ -98,6 +98,7 @@
       "try_result_e2e",
       "typeclass_deriving_e2e",
       "typeclass_dict_e2e",
+      "typed_comparison_e2e",
       "union_cross_module_e2e",
       "uuid_e2e",
       "view_ddl_e2e",

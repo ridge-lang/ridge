@@ -76,6 +76,16 @@ use crate::unify::unify;
 /// The lowering pass reads this data; the typecheck pass only writes it.
 #[derive(Debug, Clone)]
 pub enum DictPlan {
+    /// A tuple or closed anonymous record, composed from typed component
+    /// dictionaries. No backend structural comparison is implied.
+    Structural {
+        /// The comparison class, restricted to `Eq` or `Ord`.
+        class: ClassId,
+        /// `None` for a tuple; sorted field names for a closed record.
+        fields: Option<Vec<String>>,
+        /// Component dictionaries in tuple position or field-name order.
+        args: Vec<DictPlan>,
+    },
     /// The constraint was satisfied by a concrete, statically-known instance.
     ///
     /// The lowering pass should pass the literal instance dictionary as the
@@ -186,7 +196,7 @@ pub fn solve_constraints(
     )
 }
 
-fn solve_work(
+pub(crate) fn solve_work(
     ctx: &mut InferCtx,
     instance_env: &InstanceEnv,
     class_table: &ClassTable,
@@ -198,10 +208,11 @@ fn solve_work(
     let mut retained: Vec<Constraint> = Vec::new();
     let mut dict_resolution: DictResolution = FxHashMap::default();
 
-    // Visited set: prevents re-processing the same (ClassId, TyConId) pair
-    // when multiple constraints or superclass chains converge on the same
-    // instance. This makes the solver idempotent on repeated requirements.
-    let mut visited: FxHashSet<(ClassId, TyConId)> = FxHashSet::default();
+    // Each request needs its own plan and argument checks. Sharing a visit by
+    // constructor alone would skip List Float after List Int, or lose the
+    // independent requirements of List a and List b. Keep the request while
+    // guarding repeated alias/superclass traversal of that same request.
+    let mut visited: FxHashSet<(Constraint, TyConId)> = FxHashSet::default();
 
     while let Some(c) = work.pop() {
         let error_start = ctx.errors.len();
@@ -368,6 +379,34 @@ pub(crate) fn givens_cover(givens: &[ClassId], class: ClassId, class_table: &Cla
     false
 }
 
+struct ComparisonComponents<'a> {
+    fields: Option<Vec<String>>,
+    types: std::borrow::Cow<'a, [Type]>,
+}
+
+fn comparison_components(class: ClassId, ty: &Type) -> Option<ComparisonComponents<'_>> {
+    if !matches!(
+        class,
+        ridge_types::EQ_CLASS | ridge_types::ORD_CLASS | ridge_types::HASH_CLASS
+    ) {
+        return None;
+    }
+    match ty {
+        Type::Tuple(types) => Some(ComparisonComponents {
+            fields: None,
+            types: std::borrow::Cow::Borrowed(types),
+        }),
+        Type::Record {
+            fields,
+            tail: ridge_types::RowTail::Closed,
+        } => Some(ComparisonComponents {
+            fields: Some(fields.iter().map(|(name, _)| name.clone()).collect()),
+            types: std::borrow::Cow::Owned(fields.iter().map(|(_, ty)| ty.clone()).collect()),
+        }),
+        _ => None,
+    }
+}
+
 /// Dispatch one constraint to case (a), (b), or (c) and update the work
 /// queue / retained list / `dict_resolution` accordingly.
 #[allow(clippy::too_many_arguments)]
@@ -380,12 +419,26 @@ fn dispatch_constraint(
     c: &Constraint,
     resolved: &Type,
     work: &mut Vec<Constraint>,
-    visited: &mut FxHashSet<(ClassId, TyConId)>,
+    visited: &mut FxHashSet<(Constraint, TyConId)>,
     retained: &mut Vec<Constraint>,
     dict_resolution: &mut DictResolution,
 ) {
+    if let Some(components) = comparison_components(c.class, resolved) {
+        discharge_structural(
+            ctx,
+            instance_env,
+            class_table,
+            env_snap_ty,
+            scc_span,
+            c,
+            components.fields,
+            &components.types,
+            retained,
+            dict_resolution,
+        );
+        return;
+    }
     match resolved {
-        // ── Case (a): concrete type — look up instance ────────────────────────
         Type::Con(tyconid, _) => {
             let tyconid = *tyconid;
             // Clone the full resolved type so discharge_concrete can read the
@@ -408,40 +461,16 @@ fn dispatch_constraint(
         }
 
         // ── Case (b) / (c): type variable ────────────────────────────────────
-        Type::Var(v) => {
-            let v = *v;
-            if env_snap_ty.contains(&v) {
-                // Case (c): the variable escapes this SCC's generalisation
-                // scope — it belongs to an outer binding and was never
-                // pinned to a concrete type. The constraint is ambiguous.
-                let class_name = class_table
-                    .get(c.class)
-                    .map_or("?", |info| info.name.as_str());
-                ctx.errors.push(TypeError::AmbiguousConstraint {
-                    class: class_name.to_string(),
-                    ty_var: TypeDesc::Text(format!("?{}", v.0)),
-                    span: scc_span,
-                });
-            } else {
-                // Case (b): the variable will be generalised by this SCC.
-                // Retain the constraint so the caller can attach it to the
-                // resulting scheme. Use the resolved canonical TyVid (`v`)
-                // rather than the original `c.ty` so that `write_back_schemes`
-                // can match the constraint against `scheme.vars` (which also
-                // holds resolved vars). Without this, constraints introduced
-                // through instantiation carry an aliased TyVid that diverges
-                // from the generalised vars even though they represent the
-                // same unification root.
-                let resolved_c = Constraint::single(c.class, v);
-                if !retained.iter().any(|r| r == &resolved_c) {
-                    retained.push(resolved_c.clone());
-                }
-                // Record a Forward plan keyed by the resolved TyVid.
-                dict_resolution
-                    .entry(resolved_c.clone())
-                    .or_insert(DictPlan::Forward(resolved_c));
-            }
-        }
+        Type::Var(v) => discharge_variable(
+            ctx,
+            class_table,
+            env_snap_ty,
+            scc_span,
+            c,
+            *v,
+            retained,
+            dict_resolution,
+        ),
 
         // ── Case (b'): the signature's own type variable ─────────────────────
         // No instance can discharge this. A rigid stands for a type the caller
@@ -503,26 +532,136 @@ fn dispatch_constraint(
         // ── Other resolved types (Error, Alias, Tuple …) ─────────────────────
         // Error: already in an error path — skip silently to avoid cascading.
         // Alias: should have been resolved by deep_resolve; treat as unknown.
-        // Tuple: not a valid class head in single-param dispatch.
-        _ => {
-            // Emit a no-instance error for non-Con / non-Var shapes. These
-            // arise from ill-typed programs that already have other errors.
-            let class_name = class_table
-                .get(c.class)
-                .map_or("?", |info| info.name.as_str());
-            let ty_name = crate::render::render_type_with(resolved, &ctx.tycon_decls);
-            let fix_hint = crate::render::no_instance_hint(
-                class_name,
-                &ty_name,
-                crate::render::user_can_extend(resolved, &ctx.tycon_decls),
-            );
-            ctx.errors.push(TypeError::NoInstance {
-                class: class_name.to_string(),
-                ty: TypeDesc::Text(ty_name),
-                span: scc_span,
-                fix_hint,
-            });
+        // Open records and non-comparison structural heads have no evidence.
+        _ => report_missing_shape(ctx, class_table, c.class, resolved, scc_span),
+    }
+}
+
+/// Report an unsupported structural shape without suggesting a guessed instance.
+fn report_missing_shape(
+    ctx: &mut InferCtx,
+    class_table: &ClassTable,
+    class: ClassId,
+    resolved: &Type,
+    scc_span: Span,
+) {
+    // Emit a no-instance error for non-Con / non-Var shapes. These
+    // arise from ill-typed programs that already have other errors.
+    let class_name = class_table
+        .get(class)
+        .map_or("?", |info| info.name.as_str());
+    let ty_name = crate::render::render_type_with(resolved, &ctx.tycon_decls);
+    let fix_hint = crate::render::no_instance_hint(
+        class_name,
+        &ty_name,
+        crate::render::user_can_extend(resolved, &ctx.tycon_decls),
+    );
+    ctx.errors.push(TypeError::NoInstance {
+        class: class_name.to_string(),
+        ty: TypeDesc::Text(ty_name),
+        span: scc_span,
+        fix_hint,
+    });
+}
+
+/// Retain a local variable's requirement, or reject a variable that belongs
+/// to an enclosing scope instead of silently generalising it.
+#[allow(clippy::too_many_arguments)]
+fn discharge_variable(
+    ctx: &mut InferCtx,
+    class_table: &ClassTable,
+    env_snap_ty: &FxHashSet<TyVid>,
+    scc_span: Span,
+    c: &Constraint,
+    v: TyVid,
+    retained: &mut Vec<Constraint>,
+    dict_resolution: &mut DictResolution,
+) {
+    if env_snap_ty.contains(&v) {
+        // Case (c): the variable escapes this SCC's generalisation
+        // scope — it belongs to an outer binding and was never
+        // pinned to a concrete type. The constraint is ambiguous.
+        let class_name = class_table
+            .get(c.class)
+            .map_or("?", |info| info.name.as_str());
+        ctx.errors.push(TypeError::AmbiguousConstraint {
+            class: class_name.to_string(),
+            ty_var: TypeDesc::Text(format!("?{}", v.0)),
+            span: scc_span,
+        });
+    } else {
+        // Case (b): the variable will be generalised by this SCC.
+        // Retain the constraint so the caller can attach it to the
+        // resulting scheme. Use the resolved canonical TyVid (`v`)
+        // rather than the original `c.ty` so that `write_back_schemes`
+        // can match the constraint against `scheme.vars` (which also
+        // holds resolved vars). Without this, constraints introduced
+        // through instantiation carry an aliased TyVid that diverges
+        // from the generalised vars even though they represent the
+        // same unification root.
+        let resolved_c = Constraint::single(c.class, v);
+        if !retained.iter().any(|r| r == &resolved_c) {
+            retained.push(resolved_c.clone());
         }
+        // Record a Forward plan keyed by the resolved TyVid.
+        dict_resolution
+            .entry(resolved_c.clone())
+            .or_insert(DictPlan::Forward(resolved_c));
+    }
+}
+
+/// Resolve component dictionaries in private worklists so they cannot be
+/// mistaken for the enclosing dictionary at a call site. Keep the enclosing
+/// generalisation boundary when deciding whether a child may be forwarded.
+#[allow(clippy::too_many_arguments)]
+fn discharge_structural(
+    ctx: &mut InferCtx,
+    instances: &InstanceEnv,
+    classes: &ClassTable,
+    env_snap_ty: &FxHashSet<TyVid>,
+    span: Span,
+    constraint: &Constraint,
+    fields: Option<Vec<String>>,
+    types: &[Type],
+    retained: &mut Vec<Constraint>,
+    resolution: &mut DictResolution,
+) {
+    let error_start = ctx.errors.len();
+    let mut args = Vec::with_capacity(types.len());
+    for ty in types {
+        let key = ctx.tyvids.new_key(crate::ctx::TyValue(Some(ty.clone())));
+        let child = Constraint::single(constraint.class, TyVid(key.0));
+        let builtins = ctx.builtins;
+        let (requirements, plans) = solve_work(
+            ctx,
+            instances,
+            classes,
+            env_snap_ty,
+            span,
+            Some(&builtins),
+            vec![child],
+        );
+        for requirement in requirements {
+            if !retained.contains(&requirement) {
+                retained.push(requirement);
+            }
+        }
+        if let Some(plan) = plans
+            .into_iter()
+            .find_map(|(c, plan)| (c.class == constraint.class).then_some(plan))
+        {
+            args.push(plan);
+        }
+    }
+    if ctx.errors.len() == error_start && args.len() == types.len() {
+        resolution.insert(
+            constraint.clone(),
+            DictPlan::Structural {
+                class: constraint.class,
+                fields,
+                args,
+            },
+        );
     }
 }
 
@@ -757,6 +896,17 @@ fn dispatch_multi_constraint(
             });
             return;
         };
+        if !crate::instance_match::accepts(ctx, instance_env, c.class, matched_head, &resolved) {
+            report_missing_instance(
+                ctx,
+                class_table,
+                c.class,
+                matched_head[0],
+                &resolved[0],
+                scc_span,
+            );
+            return;
+        }
         let info = info.clone();
         let extra_head: SmallVec<[TyConId; 1]> = matched_head.iter().skip(1).copied().collect();
         let tycon = matched_head[0];
@@ -829,8 +979,9 @@ fn dispatch_multi_constraint(
 /// Functional-dependency improvement for a multi-parameter constraint. For every
 /// fundep whose determining positions all resolved to a concrete head
 /// constructor, find the single matching instance and unify each determined
-/// position against that instance's written head type — but only when that head
-/// type is itself fully concrete. This both *pins* an open determined position
+/// position against that instance's written head type. Prepared patterns retain
+/// variables shared with the determining arguments, so a determined argument
+/// can also refine those inference variables. This both *pins* an open position
 /// (so a result-determined method resolves with no annotation) and *verifies* an
 /// already-fixed one: a determined type that disagrees with the instance's head
 /// is exactly the type the fundep forbids, and the disagreement is reported.
@@ -952,13 +1103,43 @@ fn improve_via_fundeps(
         }
 
         // Coherence guarantees at most one instance per determining tuple.
-        let head_asts: Vec<ridge_ast::Type> = {
+        let (matched_head, head_asts) = {
             let matches = instance_env.instances_matching(c.class, &fixed);
             if matches.len() != 1 {
                 continue;
             }
-            matches[0].1.clone()
+            (matches[0].0.clone(), matches[0].1.clone())
         };
+
+        if let Some(patterns) = instance_env.head_patterns.get(&(c.class, matched_head)) {
+            let resolved: Vec<_> = resolved
+                .iter()
+                .map(|ty| {
+                    crate::tycon_collect::chase_alias_chain(&ctx.tycon_decls, ty, &mut vec![])
+                })
+                .collect();
+            let Some(determined) =
+                crate::instance_match::determined(patterns.as_deref(), &fd.from, &resolved)
+            else {
+                continue;
+            };
+            for &position in &fd.to {
+                let Some(Some(ty)) = determined.get(position) else {
+                    continue;
+                };
+                // Instantiation succeeded only for variables supplied by the
+                // determining positions. Keep those caller variables shared:
+                // `Query ?entity adapter` and `fn User -> Bool` determine
+                // `?entity = User`. Unification still rejects rigid variables
+                // and incompatible effects rather than specialising a promise.
+                if let Err(error) = unify(ctx, &Type::Var(c.tys[position]), ty) {
+                    ctx.errors
+                        .push(crate::records::attach_span_pub(error, scc_span));
+                    return true;
+                }
+            }
+            continue;
+        }
 
         // The instance head may be parametric — `instance Refinable (Query e a)
         // (fn e -> Bool)` determines `p = e -> Bool`, a type that mentions the
@@ -1028,7 +1209,7 @@ fn type_contains_var(t: &Type) -> bool {
 /// first-seen order with no duplicates. Fundep improvement gives each one a
 /// shared fresh inference variable so a parametric determined position
 /// (`e -> Bool`) can be fixed from the determining position (`Query e a`).
-fn collect_head_vars(head_asts: &[ridge_ast::Type]) -> Vec<String> {
+pub(crate) fn collect_head_vars(head_asts: &[ridge_ast::Type]) -> Vec<String> {
     fn walk(t: &ridge_ast::Type, out: &mut Vec<String>) {
         match t {
             ridge_ast::Type::Var { name, .. } => {
@@ -1044,8 +1225,13 @@ fn collect_head_vars(head_asts: &[ridge_ast::Type]) -> Vec<String> {
                 walk(&fn_ty.ret, out);
             }
             ridge_ast::Type::Paren { inner, .. } => walk(inner, out),
-            ridge_ast::Type::Record { fields, .. } => {
+            ridge_ast::Type::Record { fields, tail, .. } => {
                 fields.iter().for_each(|f| walk(&f.ty, out));
+                if let Some(tail) = tail {
+                    if !out.contains(&tail.text) {
+                        out.push(tail.text.clone());
+                    }
+                }
             }
             ridge_ast::Type::Named { .. } | ridge_ast::Type::Primitive { .. } => {}
         }
@@ -1101,17 +1287,15 @@ fn discharge_concrete(
     tyconid: TyConId,
     resolved_con: &Type,
     work: &mut Vec<Constraint>,
-    visited: &mut FxHashSet<(ClassId, TyConId)>,
+    visited: &mut FxHashSet<(Constraint, TyConId)>,
     retained: &mut Vec<Constraint>,
     dict_resolution: &mut DictResolution,
 ) {
     let key = (c.class, tyconid);
 
-    // Idempotence: if we have already processed this (class, type) pair,
-    // skip. This prevents infinite recursion when multiple constraints
-    // converge on the same instance (e.g. two call sites both require
-    // `ToText Color`).
-    if !visited.insert(key) {
+    // A repeated traversal of this request may stop; another request for the
+    // same constructor must still check its own arguments and receive a plan.
+    if !visited.insert((c.clone(), tyconid)) {
         return;
     }
 
@@ -1166,6 +1350,16 @@ fn discharge_concrete(
         }
 
         Some(inst_info) => {
+            if !crate::instance_match::accepts(
+                ctx,
+                instance_env,
+                c.class,
+                &[tyconid],
+                std::slice::from_ref(resolved_con),
+            ) {
+                report_missing_instance(ctx, class_table, c.class, tyconid, resolved_con, scc_span);
+                return;
+            }
             let inst_info = inst_info.clone();
 
             // A structurally-synthesised `Row` instance is registered for every
@@ -1194,21 +1388,25 @@ fn discharge_concrete(
             // Record the static resolution plan for the lowering pass.
             // Include the concrete TyConId so the lowering pass can look up
             // the type name without re-resolving the instance.
-            dict_resolution
-                .entry(c.clone())
-                .or_insert_with(|| DictPlan::Static {
-                    class: c.class,
-                    info: Box::new(inst_info.clone()),
-                    tycon: tyconid,
-                    extra_head: SmallVec::new(),
-                    args,
-                });
+            dict_resolution.entry(c.clone()).or_insert_with(|| {
+                instance_env
+                    .structural_comparisons
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_else(|| DictPlan::Static {
+                        class: c.class,
+                        info: Box::new(inst_info.clone()),
+                        tycon: tyconid,
+                        extra_head: SmallVec::new(),
+                        args,
+                    })
+            });
 
             // Enqueue superclass requirements for the same concrete type.
             // Termination: the class DAG is acyclic (T035 checked earlier).
             if let Some(class_info) = class_table.get(c.class) {
                 for &superclass_id in &class_info.superclasses {
-                    let super_key = (superclass_id, tyconid);
+                    let super_key = (Constraint::single(superclass_id, c.sole_ty()), tyconid);
                     if !visited.contains(&super_key) {
                         // Use the same TyVid from the original constraint —
                         // the solver will deep_resolve it again.
@@ -1248,7 +1446,20 @@ fn report_missing_instance(
         .map_or("?", |info| info.name.as_str());
     let function = matches!(resolved_con, Type::Fn { .. });
     let ty_name = if function {
-        crate::render::render_type_with(resolved_con, &ctx.tycon_decls)
+        let rendered = crate::render::render_type_with(resolved_con, &ctx.tycon_decls);
+        if let Type::Fn {
+            caps: ridge_types::CapRow::Concrete(caps),
+            ..
+        } = resolved_con
+        {
+            if caps.is_empty() {
+                rendered
+            } else {
+                format!("{rendered} (requires {caps})")
+            }
+        } else {
+            rendered
+        }
     } else {
         crate::render::render_type_with(
             &ridge_types::Type::Con(tyconid, Vec::new()),
@@ -1261,7 +1472,7 @@ fn report_missing_instance(
             .and_then(|class| class.def_module)
             .is_some_and(|module| ctx.current_module_raw == Some(module));
         if own_class {
-            format!("declare an instance for this function type, or use a type with an existing `{class_name}` instance")
+            format!("declare an instance matching this function's parameters, return type and capabilities, or use a type with an existing `{class_name}` instance")
         } else {
             format!("use a type with `{class_name}`; a function wrapper you own can define that instance")
         }
@@ -1557,7 +1768,7 @@ fn collect_ambiguous_element_vars(
     scc_span: Span,
     out: &mut Vec<(ClassId, Span)>,
 ) {
-    if let DictPlan::Static { args, .. } = plan {
+    if let DictPlan::Static { args, .. } | DictPlan::Structural { args, .. } = plan {
         for sub in args {
             match sub {
                 DictPlan::Forward(c) => {
@@ -1571,7 +1782,7 @@ fn collect_ambiguous_element_vars(
                         out.push((c.class, scc_span));
                     }
                 }
-                DictPlan::Static { .. } => {
+                DictPlan::Static { .. } | DictPlan::Structural { .. } => {
                     collect_ambiguous_element_vars(sub, generalizable, outer, scc_span, out);
                 }
             }
@@ -1598,7 +1809,13 @@ fn build_fix_hint(
     if is_eq_float {
         "floating-point equality is a footgun (`0.1 + 0.2 ≠ 0.3`); \
          `Eq Float` is intentionally omitted from the prelude. \
-         Use explicit comparison or `Crypto.constantTimeEq` for secrets."
+         Use `Float.equal` for numerical equality, or an explicit domain type \
+         with its own Eq contract for keys."
+            .to_string()
+    } else if class_name == "Ord" && tyconid == b.float {
+        "Float has no default Ord contract. Use `Float.less`, `Float.lessOrEqual`, \
+         `Float.greater` or `Float.greaterOrEqual` for numerical predicates; \
+         choose `Float.totalCompare` explicitly when a total order is needed."
             .to_string()
     } else {
         crate::render::no_instance_hint(
@@ -1645,6 +1862,60 @@ mod tests {
         let mut ct = ClassTable::new();
         register_prelude_classes(&mut ct);
         ct
+    }
+
+    #[test]
+    fn structural_evidence_keeps_the_outer_generalisation_boundary() {
+        let mut ctx = InferCtx::for_tests();
+        let outer = ctx.fresh_tyvid();
+        let ty = Type::Tuple(vec![Type::Var(outer), Type::Var(outer)]);
+        let key = ctx.tyvids.new_key(TyValue(Some(ty)));
+        ctx.deferred_constraints
+            .push(Constraint::single(EQ_CLASS, TyVid(key.0)));
+        let (retained, plans) = solve_constraints(
+            &mut ctx,
+            &InstanceEnv::new(),
+            &make_class_table(),
+            &std::iter::once(outer).collect(),
+            dummy_span(),
+            None,
+        );
+        assert!(retained.is_empty());
+        assert!(
+            plans.is_empty(),
+            "an escaping child must not become a usable dictionary"
+        );
+        assert!(ctx.errors.iter().all(|error| error.code() == "T030"));
+        assert!(!ctx.errors.is_empty());
+    }
+
+    #[test]
+    fn structural_evidence_never_ignores_an_unresolved_record_tail() {
+        for class in [EQ_CLASS, ORD_CLASS] {
+            let mut ctx = InferCtx::for_tests();
+            let tail = ctx.fresh_rowvid();
+            let ty = Type::record(
+                vec![("n".into(), Type::Con(ctx.builtins.int, vec![]))],
+                ridge_types::RowTail::Open(tail),
+            );
+            let key = ctx.tyvids.new_key(TyValue(Some(ty)));
+            ctx.deferred_constraints
+                .push(Constraint::single(class, TyVid(key.0)));
+            let (retained, plans) = solve_constraints(
+                &mut ctx,
+                &InstanceEnv::new(),
+                &make_class_table(),
+                &FxHashSet::default(),
+                dummy_span(),
+                None,
+            );
+            assert!(retained.is_empty());
+            assert!(plans.is_empty());
+            assert!(matches!(
+                ctx.errors.as_slice(),
+                [TypeError::NoInstance { .. }]
+            ));
+        }
     }
 
     fn make_instance_env_with(class: ridge_types::ClassId, tycon: TyConId) -> InstanceEnv {
@@ -2351,6 +2622,97 @@ mod tests {
             matches!(outer_plan, Some(DictPlan::Static { tycon, .. }) if *tycon == list_tycon),
             "outer plan must be Static for List; got {outer_plan:?}"
         );
+    }
+
+    #[test]
+    fn repeated_instance_heads_check_each_concrete_argument_in_both_orders() {
+        for reverse in [false, true] {
+            let mut ctx = InferCtx::for_tests();
+            let b = ctx.builtins;
+            let mut env = InstanceEnv::new();
+            env.insert(
+                (ENCODE_CLASS, b.list),
+                make_parametric_instance(ENCODE_CLASS, 0),
+                "Encode",
+                "List",
+            )
+            .unwrap();
+            env.insert((ENCODE_CLASS, b.int), make_instance_info(), "Encode", "Int")
+                .unwrap();
+            let elements = if reverse {
+                [b.float, b.int]
+            } else {
+                [b.int, b.float]
+            };
+            for element in elements {
+                let key = ctx.tyvids.new_key(TyValue(Some(Type::Con(
+                    b.list,
+                    vec![Type::Con(element, vec![])],
+                ))));
+                ctx.deferred_constraints
+                    .push(Constraint::single(ENCODE_CLASS, TyVid(key.0)));
+            }
+            let (retained, _) = solve_constraints(
+                &mut ctx,
+                &env,
+                &make_class_table(),
+                &FxHashSet::default(),
+                dummy_span(),
+                None,
+            );
+            assert!(retained.is_empty());
+            assert!(
+                ctx.errors.iter().any(|error| matches!(error,
+                TypeError::NoInstance { class, .. } if class == "Encode")),
+                "reverse={reverse}: missing Encode Float must be checked in either order"
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_instance_heads_retain_each_independent_generic_obligation() {
+        let mut ctx = InferCtx::for_tests();
+        let b = ctx.builtins;
+        let a = ctx.fresh_tyvid();
+        let other = ctx.fresh_tyvid();
+        let mut env = InstanceEnv::new();
+        env.insert(
+            (ENCODE_CLASS, b.list),
+            make_parametric_instance(ENCODE_CLASS, 0),
+            "Encode",
+            "List",
+        )
+        .unwrap();
+        let mut wanted = Vec::new();
+        for element in [a, other] {
+            let key = ctx
+                .tyvids
+                .new_key(TyValue(Some(Type::Con(b.list, vec![Type::Var(element)]))));
+            let constraint = Constraint::single(ENCODE_CLASS, TyVid(key.0));
+            ctx.deferred_constraints.push(constraint.clone());
+            wanted.push(constraint);
+        }
+        let (retained, plans) = solve_constraints(
+            &mut ctx,
+            &env,
+            &make_class_table(),
+            &FxHashSet::default(),
+            dummy_span(),
+            None,
+        );
+        assert!(ctx.errors.is_empty(), "{:?}", ctx.errors);
+        for element in [a, other] {
+            assert!(
+                retained.contains(&Constraint::single(ENCODE_CLASS, element)),
+                "each independent parameter must retain its own requirement: {retained:?}"
+            );
+        }
+        for constraint in wanted {
+            assert!(
+                plans.contains_key(&constraint),
+                "each call needs its own plan"
+            );
+        }
     }
 
     /// A multi-parameter instance with a heterogeneous context (`instance Demo

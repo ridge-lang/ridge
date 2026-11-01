@@ -11,6 +11,16 @@ use common::{load_example_workspace, render_lowered_module, run_pipeline};
 fn snapshot_example(name: &str) {
     let tw = load_example_workspace(name);
     let result = run_pipeline(&tw.path);
+    assert!(
+        result.type_errors.is_empty(),
+        "{name}: {:?}",
+        result.type_errors
+    );
+    assert!(
+        result.lower_errors.is_empty(),
+        "{name}: {:?}",
+        result.lower_errors
+    );
 
     assert!(
         !result.lowered.modules.is_empty(),

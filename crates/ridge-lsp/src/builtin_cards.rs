@@ -207,6 +207,14 @@ pub static CARDS: &[(&str, BuiltinCard)] = &[
         },
     ),
     (
+        "Hasher",
+        BuiltinCard {
+            signature: "Hasher",
+            summary: "An opaque seeded hash state threaded through a Hash implementation.",
+            note: "Delegate to hash on typed components; the state is not a persistent hash code.",
+        },
+    ),
+    (
         "Ordering",
         BuiltinCard {
             signature: "Ordering",

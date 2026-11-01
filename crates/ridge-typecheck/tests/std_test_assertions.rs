@@ -4,7 +4,7 @@
 //! project that imports `std.test`. This exercises the primary audience (user
 //! test code) without compiling the stdlib `.ridge` sources: the helpers'
 //! schemes come from the builtin manifest, so the checks below prove the
-//! signatures, the structural-equality assertions, and the `?`-chained flat
+//! signatures, the Eq-constrained assertions, and the `?`-chained flat
 //! form all hold across the module boundary.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
@@ -111,19 +111,19 @@ fn ensure_non_bool_condition_is_rejected() {
 }
 
 #[test]
-fn module_bodies_typecheck_structural_equality() {
-    // Mirror of test.ridge's own bodies: structural `==` / `!=` on a bare type
-    // var must type-check without a typeclass bound, and the Result/Option
+fn module_bodies_typecheck_with_their_written_eq_contract() {
+    // Mirror of test.ridge's own bodies: generic equality must carry its Eq
+    // requirement in the written signature, and the Result/Option
     // matchers must resolve. This proves the module source is sound on its own,
     // independent of the whole-stdlib compile.
     let main = "\
 pub fn ensure (cond: Bool) (msg: Text) -> Result Unit Text =
     if cond then Ok () else Err msg
 
-pub fn assertEq (actual: a) (expected: a) (label: Text) -> Result Unit Text =
+pub fn assertEq (actual: a) (expected: a) (label: Text) -> Result Unit Text where Eq a =
     if actual == expected then Ok () else Err label
 
-pub fn assertNe (actual: a) (other: a) (label: Text) -> Result Unit Text =
+pub fn assertNe (actual: a) (other: a) (label: Text) -> Result Unit Text where Eq a =
     if actual == other then Err label else Ok ()
 
 pub fn assertOk (r: Result a e) (label: Text) -> Result Unit Text =
@@ -139,7 +139,7 @@ pub fn assertSome (o: Option a) (label: Text) -> Result Unit Text =
     let errors = typecheck_one(main);
     assert!(
         errors.is_empty(),
-        "std.test's own bodies (structural == on a polymorphic value) must \
+        "std.test's own bodies with their Eq promise must \
          type-check clean; got {errors:?}"
     );
 }

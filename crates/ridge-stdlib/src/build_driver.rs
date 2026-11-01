@@ -9,6 +9,7 @@
 // because `pub mod build_driver` in lib.rs requires the crate to compile
 // against its [dependencies], not just [build-dependencies].
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -75,7 +76,7 @@ pub const TIERS: &[TierPlan] = &[
     },
     TierPlan {
         tier: 5,
-        modules: &["std.crypto", "std.sql", "std.query"],
+        modules: &["std.crypto", "std.sql", "std.query", "std._evidence"],
     },
 ];
 
@@ -196,6 +197,9 @@ pub struct BuildSummary {
     pub tiers_built: u32,
     /// Dotted module names compiled, in tier order.
     pub modules_built: Vec<String>,
+    /// Actual hidden dictionary counts inferred for each compiled function.
+    /// Superclass evidence used by a body can exceed its written where clause.
+    pub dictionary_counts: BTreeMap<(String, String), usize>,
 }
 
 // ── Tier compilation ──────────────────────────────────────────────────────────
@@ -219,6 +223,7 @@ pub fn build_all(stdlib_dir: &Path) -> Result<BuildSummary, BuildError> {
 
     let mut tiers_built: u32 = 0;
     let mut modules_built: Vec<String> = Vec::new();
+    let mut dictionary_counts = BTreeMap::new();
 
     // Walk tiers 1..=4; tier 0 has no Ridge code.
     for tier_plan in TIERS.iter().filter(|t| t.tier >= 1) {
@@ -232,7 +237,7 @@ pub fn build_all(stdlib_dir: &Path) -> Result<BuildSummary, BuildError> {
             continue;
         }
 
-        compile_tier(tier_plan.tier, &tier_modules, stdlib_dir)?;
+        dictionary_counts.extend(compile_tier(tier_plan.tier, &tier_modules, stdlib_dir)?);
 
         tiers_built += 1;
         for m in &tier_modules {
@@ -243,6 +248,7 @@ pub fn build_all(stdlib_dir: &Path) -> Result<BuildSummary, BuildError> {
     Ok(BuildSummary {
         tiers_built,
         modules_built,
+        dictionary_counts,
     })
 }
 
@@ -259,7 +265,7 @@ fn compile_tier(
     tier: u32,
     modules: &[&DiscoveredModule],
     stdlib_dir: &Path,
-) -> Result<(), BuildError> {
+) -> Result<BTreeMap<(String, String), usize>, BuildError> {
     // Build a temporary workspace under the OS temp dir. The TempDir guard
     // stays bound until the end of this function; the underlying directory is
     // removed on Drop regardless of how we exit.
@@ -346,7 +352,14 @@ fn compile_tier(
     let _lowered = lower_workspace(&typecheck_result.typed, &resolved).workspace;
 
     // `tmp_dir` Drop runs at scope exit and removes the workspace directory.
-    Ok(())
+    let mut counts = BTreeMap::new();
+    for (index, schemes) in typecheck_result.typed.module_schemes.iter().enumerate() {
+        let module = &resolved.graph.modules[index].fully_qualified_name;
+        for (name, scheme) in schemes {
+            counts.insert((module.clone(), name.clone()), scheme.constraints.len());
+        }
+    }
+    Ok(counts)
 }
 
 /// Create a temporary on-disk workspace containing all the modules for one

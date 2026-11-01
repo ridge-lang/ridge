@@ -54,6 +54,40 @@ fn main_module_id(ws: &ridge_resolve::WorkspaceGraph) -> ModuleId {
 }
 
 #[test]
+fn metadata_refresh_preserves_declaration_owners_across_imports() {
+    let source = "import std.migrate as Migrate\nimport std.schema (schemaOf)\npub fn stamp () -> Int = 0\npub type Book = { id: Int, title: Text, cents: Int } deriving (Row, Schema)\nfn witness () -> Option Book = None\npub fn schema () -> List Migration = [Migrate.migration \"0001\" [Migrate.createSchema (schemaOf (witness ()))]]\n";
+    let td = build_ws(source);
+    write_file(
+        td.path(),
+        "libs/proj/src/Use.ridge",
+        "import proj.Main (Book)\npub fn witness () -> Option Book = None\n",
+    );
+    let graph = discover_workspace(td.path()).graph.expect("graph");
+    let module = main_module_id(&graph);
+    let mut resolved = ridge_resolve::resolve_workspace_with(graph, true);
+    assert!(resolved.errors.is_empty() && resolved.parse_errors.is_empty());
+    let mut checked = typecheck_workspace(&resolved);
+    assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+    let edited = source.replace("stamp () -> Int = 0", "stamp () -> Int = 10000");
+    write_file(td.path(), "libs/proj/src/Main.ridge", &edited);
+    let fresh = discover_workspace(td.path()).graph.expect("edited graph");
+    let graph = build_module_graph(&fresh);
+    let ast = Arc::clone(&graph.modules[module.0 as usize].ast);
+    assert!(resolve_module_incremental(&mut resolved, module, &ast, true).is_empty());
+    let result = ridge_typecheck::refresh_registry_metadata(&mut checked.typed, &resolved);
+    assert!(
+        result.is_ok(),
+        "positional refresh must retain source owners: {result:?}"
+    );
+    let incremental = typecheck_module_incremental(module, &resolved, &checked.typed);
+    assert!(
+        incremental.result.errors.is_empty(),
+        "{:?}",
+        incremental.result.errors
+    );
+}
+
+#[test]
 fn incremental_typecheck_matches_full_after_body_edit() {
     let td = build_ws(
         "type Color = Red | Green | Blue\npub fn pick -> Color = Red\npub fn n -> Int = 42\n",

@@ -4,7 +4,7 @@ assertion_line: 44
 expression: rendered
 ---
 module: m0
-items_count: 4
+items_count: 5
 items:
   - kind: fn
     name: toJson
@@ -13,7 +13,7 @@ items:
     caps: CapabilitySet(0)
     ret_ty: Con(3)
     params:
-      - name: $dict_Encode_68
+      - name: $dict_Encode_67
         ty: Error
       - name: x
         ty: Error
@@ -26,7 +26,7 @@ items:
             Call(n2):
               callee:
                 Field(n3).encode:
-                  Local(n4): $dict_Encode_68
+                  Local(n4): $dict_Encode_67
               args:
                 -
                   Local(n5): x
@@ -45,31 +45,30 @@ items:
           -
             Call(n8):
               callee:
-                Symbol(n9): Local($inst_Encode_Box @ m0)
+                Symbol(n9): Stdlib(fn:std.op.evidence)
               args:
                 -
-                  Construct(n10):
-                    ctor: Ctor(Record:$synth_dict_encode owner=none)
-                    fields:
-                      encode:
-                        Lambda(n11):
-                          caps: CapabilitySet(0)
-                          params:
-                            - name: __enc_x
-                              ty: Error
-                          body:
-                            Call(n12):
-                              callee:
-                                Symbol(n13): Prelude(JInt)
-                              args:
-                                -
-                                  Local(n14): __enc_x
+                  Symbol(n10): Local($ridge_evidence @ m0)
+                -
+                  Lit(n11): Text("Encode:static:[(\"demo.derive_generic_box\", \"Box\")]:[(\"Encode\", [0])]")
+                -
+                  ListLit(n12):
+                    Call(n13):
+                      callee:
+                        Symbol(n14): Stdlib(fn:std.op.evidence)
+                      args:
+                        -
+                          Symbol(n15): Stdlib(fn:std._evidence.$ridge_evidence)
+                        -
+                          Lit(n16): Text("Encode:static:[(\"\", \"Int\")]:[]")
+                        -
+                          ListLit(n17):
           -
-            Construct(n15):
-              ctor: Ctor(Record:Box owner=109)
+            Construct(n18):
+              ctor: Ctor(Record:Box owner=110)
               fields:
                 val:
-                  Lit(n16): Int(7)
+                  Lit(n19): Int(7)
   - kind: fn
     name: $inst_Encode_Box
     pub: true
@@ -80,32 +79,32 @@ items:
       - name: $dict_Encode_0
         ty: Error
     body:
-      Construct(n17):
+      Construct(n20):
         ctor: Ctor(Record:$inst_Encode_Box owner=none)
         fields:
           encode:
-            Lambda(n18):
+            Lambda(n21):
               caps: CapabilitySet(0)
               params:
                 - name: x
                   ty: Error
               body:
-                Call(n19):
+                Call(n22):
                   callee:
-                    Symbol(n20): Prelude(JObjectFields)
+                    Symbol(n23): Prelude(JObjectFields)
                   args:
                     -
-                      ListLit(n21):
-                        Tuple(n22):
-                          Lit(n23): Text("val")
-                          Call(n24):
+                      ListLit(n24):
+                        Tuple(n25):
+                          Lit(n26): Text("val")
+                          Call(n27):
                             callee:
-                              Field(n25).encode:
-                                Local(n26): $dict_Encode_0
+                              Field(n28).encode:
+                                Local(n29): $dict_Encode_0
                             args:
                               -
-                                Field(n27).val:
-                                  Local(n28): x
+                                Field(n30).val:
+                                  Local(n31): x
   - kind: fn
     name: $inst_Decode_Box
     pub: true
@@ -116,21 +115,21 @@ items:
       - name: $dict_Decode_0
         ty: Error
     body:
-      Construct(n29):
+      Construct(n32):
         ctor: Ctor(Record:$inst_Decode_Box owner=none)
         fields:
           decode:
-            Lambda(n30):
+            Lambda(n33):
               caps: CapabilitySet(0)
               params:
                 - name: j
                   ty: Error
               body:
-                Match(n31):
+                Match(n34):
                   scrutinee:
-                    Match(n32):
+                    Match(n35):
                       scrutinee:
-                        Local(n33): j
+                        Local(n36): j
                       arms:
                         -
                           pat:
@@ -138,22 +137,44 @@ items:
                               args:
                                 Bind: __json_fields_4
                           body:
-                            Call(n34):
+                            Call(n37):
                               callee:
-                                Symbol(n35): Prelude(JObject)
+                                Symbol(n38): Prelude(JObject)
                               args:
                                 -
-                                  Call(n36):
+                                  Call(n39):
                                     callee:
-                                      Symbol(n37): Stdlib(fn:std.map.fromList)
+                                      Symbol(n40): Stdlib(fn:std.map.fromList)
                                     args:
                                       -
-                                        Local(n38): __json_fields_4
+                                        Call(n41):
+                                          callee:
+                                            Symbol(n42): Stdlib(fn:std.op.evidence)
+                                          args:
+                                            -
+                                              Symbol(n43): Stdlib(fn:std._evidence.$ridge_evidence)
+                                            -
+                                              Lit(n44): Text("Eq:static:[(\"\", \"Text\")]:[]")
+                                            -
+                                              ListLit(n45):
+                                      -
+                                        Call(n46):
+                                          callee:
+                                            Symbol(n47): Stdlib(fn:std.op.evidence)
+                                          args:
+                                            -
+                                              Symbol(n48): Stdlib(fn:std._evidence.$ridge_evidence)
+                                            -
+                                              Lit(n49): Text("Hash:static:[(\"\", \"Text\")]:[]")
+                                            -
+                                              ListLit(n50):
+                                      -
+                                        Local(n51): __json_fields_4
                         -
                           pat:
                             Bind: __json_value_5
                           body:
-                            Local(n39): __json_value_5
+                            Local(n52): __json_value_5
                   arms:
                     -
                       pat:
@@ -161,16 +182,38 @@ items:
                           args:
                             Bind: __dec_rec_m_0
                       body:
-                        Match(n40):
+                        Match(n53):
                           scrutinee:
-                            Call(n41):
+                            Call(n54):
                               callee:
-                                Symbol(n42): Stdlib(fn:std.map.get)
+                                Symbol(n55): Stdlib(fn:std.map.get)
                               args:
                                 -
-                                  Lit(n43): Text("val")
+                                  Call(n56):
+                                    callee:
+                                      Symbol(n57): Stdlib(fn:std.op.evidence)
+                                    args:
+                                      -
+                                        Symbol(n58): Stdlib(fn:std._evidence.$ridge_evidence)
+                                      -
+                                        Lit(n59): Text("Eq:static:[(\"\", \"Text\")]:[]")
+                                      -
+                                        ListLit(n60):
                                 -
-                                  Local(n44): __dec_rec_m_0
+                                  Call(n61):
+                                    callee:
+                                      Symbol(n62): Stdlib(fn:std.op.evidence)
+                                    args:
+                                      -
+                                        Symbol(n63): Stdlib(fn:std._evidence.$ridge_evidence)
+                                      -
+                                        Lit(n64): Text("Hash:static:[(\"\", \"Text\")]:[]")
+                                      -
+                                        ListLit(n65):
+                                -
+                                  Lit(n66): Text("val")
+                                -
+                                  Local(n67): __dec_rec_m_0
                           arms:
                             -
                               pat:
@@ -178,15 +221,15 @@ items:
                                   args:
                                     Bind: __dec_jv_val_2
                               body:
-                                Match(n45):
+                                Match(n68):
                                   scrutinee:
-                                    Call(n46):
+                                    Call(n69):
                                       callee:
-                                        Field(n47).decode:
-                                          Local(n48): $dict_Decode_0
+                                        Field(n70).decode:
+                                          Local(n71): $dict_Decode_0
                                       args:
                                         -
-                                          Local(n49): __dec_jv_val_2
+                                          Local(n72): __dec_jv_val_2
                                   arms:
                                     -
                                       pat:
@@ -198,51 +241,124 @@ items:
                                           ctor: Prelude(Ok)
                                           fields:
                                             $0:
-                                              Construct(n50):
-                                                ctor: Ctor(Record:Box owner=109)
+                                              Construct(n73):
+                                                ctor: Ctor(Record:Box owner=110)
                                                 fields:
                                                   val:
-                                                    Local(n51): __dec_f_val_1
+                                                    Local(n74): __dec_f_val_1
                                     -
                                       pat:
                                         Ctor: Prelude(Err)
                                           args:
                                             Bind: __dec_err_3
                                       body:
-                                        Return(n52):
-                                          Construct(n53):
+                                        Return(n75):
+                                          Construct(n76):
                                             ctor: Prelude(Err)
                                             fields:
                                               $0:
-                                                Local(n54): __dec_err_3
+                                                Local(n77): __dec_err_3
                             -
                               pat:
                                 Wild
                               body:
-                                Return(n55):
-                                  Construct(n56):
+                                Return(n78):
+                                  Construct(n79):
                                     ctor: Prelude(Err)
                                     fields:
                                       $0:
-                                        Construct(n57):
+                                        Construct(n80):
                                           ctor: Ctor(Record:Error owner=12)
                                           fields:
                                             code:
-                                              Lit(n58): Text("decode.missing_field")
+                                              Lit(n81): Text("decode.missing_field")
                                             message:
-                                              Lit(n59): Text("missing field \"val\"")
+                                              Lit(n82): Text("missing field \"val\"")
                     -
                       pat:
                         Wild
                       body:
-                        Construct(n60):
+                        Construct(n83):
                           ctor: Prelude(Err)
                           fields:
                             $0:
-                              Construct(n61):
+                              Construct(n84):
                                 ctor: Ctor(Record:Error owner=12)
                                 fields:
                                   code:
-                                    Lit(n62): Text("decode.expected_object")
+                                    Lit(n85): Text("decode.expected_object")
                                   message:
-                                    Lit(n63): Text("expected a JSON object for type Box")
+                                    Lit(n86): Text("expected a JSON object for type Box")
+  - kind: fn
+    name: $ridge_evidence
+    pub: true
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Error
+    params:
+      - name: $evidence_identity
+        ty: Error
+      - name: $evidence_arguments
+        ty: Error
+    body:
+      Match(n87):
+        scrutinee:
+          Tuple(n88):
+            Local(n89): $evidence_identity
+            Local(n90): $evidence_arguments
+        arms:
+          -
+            pat:
+              Tuple:
+                Lit: Text("Decode:static:[(\"demo.derive_generic_box\", \"Box\")]:[(\"Decode\", [0])]")
+                Cons:
+                  head:
+                    Bind: $dict_Decode_0
+                  tail:
+                    Nil
+            body:
+              Construct(n91):
+                ctor: Prelude(Some)
+                fields:
+                  :
+                    Tuple(n92):
+                      Call(n93):
+                        callee:
+                          Symbol(n94): Local($inst_Decode_Box @ m0)
+                        args:
+                          -
+                            Local(n95): $dict_Decode_0
+                      Construct(n96):
+                        ctor: Prelude(None)
+                        fields: []
+          -
+            pat:
+              Tuple:
+                Lit: Text("Encode:static:[(\"demo.derive_generic_box\", \"Box\")]:[(\"Encode\", [0])]")
+                Cons:
+                  head:
+                    Bind: $dict_Encode_0
+                  tail:
+                    Nil
+            body:
+              Construct(n97):
+                ctor: Prelude(Some)
+                fields:
+                  :
+                    Tuple(n98):
+                      Call(n99):
+                        callee:
+                          Symbol(n100): Local($inst_Encode_Box @ m0)
+                        args:
+                          -
+                            Local(n101): $dict_Encode_0
+                      Construct(n102):
+                        ctor: Prelude(None)
+                        fields: []
+          -
+            pat:
+              Wild
+            body:
+              Construct(n103):
+                ctor: Prelude(None)
+                fields: []

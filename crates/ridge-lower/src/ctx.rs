@@ -12,6 +12,7 @@
 //! Lowering rules invoke `LowerCtx::fresh_id` and the scope-stack helpers
 //! as each rule module is implemented.
 
+use crate::dictionary_signature::DictionarySignature;
 use crate::error::LowerError;
 use ridge_ast::{Body, Item, Span};
 use ridge_ir::{IrNodeId, LoweredModule};
@@ -38,7 +39,7 @@ type ActorModuleCache = FxHashMap<String, ModuleId>;
 /// [`LowerCtx::lookup_fn_ret_type`]. The return type lets the dictionary resolver
 /// pin a constraint variable that appears only in the result (a return-pinned
 /// class method such as `Row`'s `fromRow`).
-type FnConstraintCache = FxHashMap<String, (Vec<Constraint>, Vec<Type>, Type)>;
+type FnConstraintCache = FxHashMap<String, DictionarySignature>;
 
 /// A propagation target and its exit boundary always enter and leave together.
 struct PropagationScope {
@@ -210,6 +211,9 @@ pub struct LowerCtx<'tw> {
     /// call-site lowering to determine whether to forward the caller's own
     /// dict param (`DictPlan::Forward`).
     pub current_fn_constraints: Vec<Constraint>,
+    /// Inferred field contracts of the enclosing declaration. These identify
+    /// distinct dictionaries when a generic record is forwarded as a whole.
+    pub current_fn_record_fields: Option<std::sync::Arc<Vec<ridge_types::RecordRequirement>>>,
 
     /// Constrained inner `fn`s in lexical scope, innermost last.
     ///
@@ -227,7 +231,7 @@ pub struct LowerCtx<'tw> {
     /// Each entry holds what [`LowerCtx::lookup_fn_constraints`] and its two
     /// companions return for a top-level fn: the constraints, the parameter
     /// types the constraint variables appear in, and the return type.
-    pub inner_fn_dict_sigs: Vec<(LocalId, Vec<Constraint>, Vec<Type>, Type)>,
+    pub inner_fn_dict_sigs: Vec<(LocalId, DictionarySignature)>,
 
     /// Cached mapping from top-level fn name to its scheme constraints and the
     /// scheme's parameter types.
@@ -257,6 +261,13 @@ pub struct LowerCtx<'tw> {
     /// ordinal to its runtime hash. The version history itself is read from
     /// [`Self::workspace`] (`TypedWorkspace::version_history`).
     pub module_fqn: String,
+    /// Stable source module names used in retained evidence identities.
+    pub(crate) module_names: FxHashMap<ModuleId, String>,
+    /// Factories keyed by their complete semantic recipe, never an arena index.
+    pub(crate) evidence_factories: std::collections::BTreeMap<
+        String,
+        (Vec<ridge_ir::IrParam>, ridge_ir::IrExpr, ridge_ast::Span),
+    >,
 }
 
 impl<'tw> LowerCtx<'tw> {
@@ -301,12 +312,15 @@ impl<'tw> LowerCtx<'tw> {
             class_table: None,
             instance_env: None,
             current_fn_constraints: Vec::new(),
+            current_fn_record_fields: None,
             inner_fn_dict_sigs: Vec::new(),
             fn_constraint_cache: None,
             actor_module_cache: None,
             symbol_table: None,
             stdlib_module_fqns: None,
             module_fqn: String::new(),
+            module_names: FxHashMap::default(),
+            evidence_factories: std::collections::BTreeMap::new(),
         }
     }
 
@@ -583,7 +597,7 @@ impl<'tw> LowerCtx<'tw> {
         self.fn_constraint_cache
             .as_ref()
             .and_then(|c| c.get(fn_name))
-            .map_or(&[], |(constraints, _, _)| constraints.as_slice())
+            .map_or(&[], |signature| signature.constraints.as_slice())
     }
 
     /// Look up a top-level fn's scheme parameter types by name.
@@ -599,7 +613,7 @@ impl<'tw> LowerCtx<'tw> {
         self.fn_constraint_cache
             .as_ref()
             .and_then(|c| c.get(fn_name))
-            .map_or(&[], |(_, params, _)| params.as_slice())
+            .map_or(&[], |signature| signature.params.as_slice())
     }
 
     /// Look up a top-level fn's scheme return type by name.
@@ -613,22 +627,25 @@ impl<'tw> LowerCtx<'tw> {
         self.fn_constraint_cache
             .as_ref()
             .and_then(|c| c.get(fn_name))
-            .map(|(_, _, ret)| ret.clone())
+            .map(|signature| signature.ret.clone())
+    }
+
+    /// Full dictionary contract, including inferred field requirements.
+    pub(crate) fn lookup_fn_dict_sig(&mut self, name: &str) -> Option<DictionarySignature> {
+        self.ensure_fn_constraint_cache();
+        self.fn_constraint_cache.as_ref()?.get(name).cloned()
     }
 
     /// Constraint signature of the inner `fn` bound at this use span, or `None`
     /// for an ordinary local even when it shadows a constrained helper's name.
     #[must_use]
-    pub fn lookup_inner_fn_dict_sig(
-        &self,
-        span: Span,
-    ) -> Option<(Vec<Constraint>, Vec<Type>, Type)> {
+    pub fn lookup_inner_fn_dict_sig(&self, span: Span) -> Option<DictionarySignature> {
         let local = self.local_binding_at(span)?;
         self.inner_fn_dict_sigs
             .iter()
             .rev()
             .find(|(id, ..)| *id == local)
-            .map(|(_, constraints, params, ret)| (constraints.clone(), params.clone(), ret.clone()))
+            .map(|(_, signature)| signature.clone())
     }
 
     /// Resolve a local declaration or use without relying on its source name.
@@ -685,35 +702,34 @@ impl<'tw> LowerCtx<'tw> {
             return;
         };
 
-        // Walk top-level fn decls; look up each fn's scheme by body NodeId.
+        // Expression bodies use their NodeId; primitives have only a named scheme.
         for item in &tmod.ast.items {
             let Item::Fn(decl) = item else { continue };
-            let body = match &decl.body {
-                Body::Expr(e) => e,
-                Body::Ffi { .. } | Body::Primitive => continue,
+            let scheme = match &decl.body {
+                Body::Expr(body) => {
+                    // Mirror the body-node-kind keying from item.rs / scc.rs.
+                    let (span, kind) = match body {
+                        AstExpr::Block(b) => (b.span, NodeKind::Block),
+                        AstExpr::Try { span, .. } => (*span, NodeKind::Try),
+                        other => (other.span(), NodeKind::Expr),
+                    };
+                    self.node_id_map
+                        .as_ref()
+                        .and_then(|m| m.get(span, kind))
+                        .and_then(|id| tmod.schemes.get(&id))
+                }
+                Body::Primitive => ws
+                    .module_schemes
+                    .get(self.module_id.0 as usize)
+                    .and_then(|schemes| schemes.get(decl.name.text.as_str())),
+                Body::Ffi { .. } => continue,
             };
-            // Mirror the body-node-kind keying from item.rs / scc.rs.
-            let (body_span, body_kind) = match body {
-                AstExpr::Block(b) => (b.span, NodeKind::Block),
-                AstExpr::Try { span, .. } => (*span, NodeKind::Try),
-                other => (other.span(), NodeKind::Expr),
-            };
-            let entry = self
-                .node_id_map
-                .as_ref()
-                .and_then(|m| m.get(body_span, body_kind))
-                .and_then(|nid| tmod.schemes.get(&nid))
-                .map_or_else(
-                    || (Vec::new(), Vec::new(), Type::Error),
-                    |scheme| {
-                        let (params, ret) = match &scheme.ty {
-                            Type::Fn { params, ret, .. } => (params.clone(), (**ret).clone()),
-                            _ => (Vec::new(), Type::Error),
-                        };
-                        (scheme.constraints.clone(), params, ret)
-                    },
+            if let Some(scheme) = scheme {
+                cache.insert(
+                    decl.name.text.clone(),
+                    DictionarySignature::from_scheme(scheme),
                 );
-            cache.insert(decl.name.text.clone(), entry);
+            }
         }
 
         self.fn_constraint_cache = Some(cache);
@@ -872,7 +888,10 @@ impl<'tw> LowerCtx<'tw> {
     /// least `node_types.len()` entries (all `None`) — this preserves
     /// index-parity with the upstream `TypedModule.node_types` table.
     #[must_use]
-    pub fn finish_with_items(self, items: Vec<ridge_ir::IrItem>) -> LoweredModule {
+    pub fn finish_with_items(mut self, mut items: Vec<ridge_ir::IrItem>) -> LoweredModule {
+        if let Some(factory) = crate::evidence::dispatcher(&mut self) {
+            items.push(factory);
+        }
         let node_type_capacity = self.node_types.len();
         let source_map = self.source_map;
         // Allocate an all-None type side-table sized to match the upstream

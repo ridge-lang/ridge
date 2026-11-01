@@ -30,7 +30,37 @@
 > report for non-migratable messages, and a full JSON upgrade report for
 > CI/CD and audit. Still deferred: stdlib reload.
 
-This document is a **placeholder** for the Ridge hot-reload story. It enumerates the four open design questions that any 0.2.0+ implementation must resolve before work begins.
+During a successful reload, collection indexes held in actor state are refreshed
+after state-schema migration and before the actors resume. This includes maps
+and sets nested in lists or records, even when the actor's own code did not
+change. Comparison implementations can depend on other reloaded modules, so
+the refresh includes all live Ridge actors. This work increases the reload
+pause; it does not add a state traversal to every message.
+
+The upgrade report keeps `actors_migrated` for successful state-schema
+migrations and adds `actors_refreshed` for actors whose collection refresh
+completed. The latter counts actors, not changed collections. Refresh failures
+follow the existing retry and actor-restart policy. Empty collections retain no
+comparison-provider dependency.
+
+Retained comparison snapshots identify the runtime incarnation as well as its
+local code epoch. A foreign collection is rebound to the receiving runtime's
+current providers before its index is used; matching local epoch numbers alone
+do not make evidence current.
+
+Refreshing actor state does not replace other aliases of an immutable
+collection. An old collection retained outside that state is refreshed when
+accessed. The runtime can reuse a migrated data index for repeated reads of
+the same immutable snapshot in one process and code epoch. This private cache
+holds at most four snapshots under a 1 MiB weighted retention budget; it stores
+neither comparison dictionaries nor data containing functions, process handles
+or references. Binary slices are charged for their backing storage. New writes
+receive distinct snapshot identities, so one alias cannot change another.
+Eviction, larger values, excluded values and legacy snapshots use the ordinary
+migration path and can repeat the refresh work. The budget is a conservative
+term charge, not an exact process-heap measurement or a language-level limit.
+
+The sections below retain the original design questions and their context.
 
 For 0.1.0, the dev-loop substitute is `ridge run --watch` (cheap kill-and-relaunch on file change).  `ridge run --observer` adds the BEAM introspection half (`remsh` / `observer` attach via node name + cookie) at ~1 h cost.  Together these capture roughly 70% of the dev-loop value of true hot-reload at a fraction of the implementation budget, while the harder typed-hot-reload work remains deferred until each of the four questions below has a designed answer.
 

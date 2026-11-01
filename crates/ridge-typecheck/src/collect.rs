@@ -49,6 +49,8 @@ pub struct CollectResult {
     pub instance_env: InstanceEnv,
     /// Coherence diagnostics (T031–T035 + T034 from [`InstanceEnv::insert`]).
     pub errors: Vec<TypeError>,
+    /// Declaring module for a source-owned error, keyed by its index in `errors`.
+    pub error_modules: FxHashMap<usize, u32>,
     /// Derived instances generated from `deriving` clauses.
     ///
     /// Each entry maps `(module_id, type_name)` → list of derived instances,
@@ -113,9 +115,66 @@ pub fn collect_workspace_gated(
     b: &BuiltinTyCons,
     is_stdlib: bool,
 ) -> CollectResult {
+    collect_workspace_in_scopes(
+        modules,
+        TypeScopes {
+            fallback: user_tycon_names,
+            modules: None,
+        },
+        origins,
+        b,
+        is_stdlib,
+    )
+}
+
+/// Collect a workspace using each module's resolved view of type names.
+#[must_use]
+pub(crate) fn collect_workspace_scoped(
+    modules: &[(u32, &Module)],
+    user_tycon_names: &FxHashMap<String, TyConId>,
+    module_tycon_names: &[FxHashMap<String, TyConId>],
+    origins: &TyConOrigins,
+    b: &BuiltinTyCons,
+    is_stdlib: bool,
+) -> CollectResult {
+    collect_workspace_in_scopes(
+        modules,
+        TypeScopes {
+            fallback: user_tycon_names,
+            modules: Some(module_tycon_names),
+        },
+        origins,
+        b,
+        is_stdlib,
+    )
+}
+
+#[derive(Clone, Copy)]
+struct TypeScopes<'a> {
+    fallback: &'a FxHashMap<String, TyConId>,
+    modules: Option<&'a [FxHashMap<String, TyConId>]>,
+}
+
+impl TypeScopes<'_> {
+    fn for_module(&self, module: u32) -> &FxHashMap<String, TyConId> {
+        self.modules
+            .and_then(|views| views.get(module as usize))
+            .unwrap_or(self.fallback)
+    }
+}
+
+fn collect_workspace_in_scopes(
+    modules: &[(u32, &Module)],
+    scopes: TypeScopes<'_>,
+    origins: &TyConOrigins,
+    b: &BuiltinTyCons,
+    is_stdlib: bool,
+) -> CollectResult {
+    let user_tycon_names = scopes.fallback;
     let mut class_table = ClassTable::new();
     let mut instance_env = InstanceEnv::new();
     let mut errors: Vec<TypeError> = Vec::new();
+    let mut error_modules = FxHashMap::default();
 
     // Step 1: Seed the ClassTable with built-in prelude classes.
     register_prelude_classes(&mut class_table);
@@ -146,31 +205,35 @@ pub fn collect_workspace_gated(
     // collection (Step 4) so that a subsequent explicit `instance ToText T`
     // for the same type correctly fires T034 (instead of T032).
     for &(module_id, ast) in modules {
+        let first_error = errors.len();
         collect_auto_promoted_to_text(
             ast,
             module_id,
             &class_table,
-            user_tycon_names,
+            scopes.for_module(module_id),
             origins,
             b,
             &mut instance_env,
             &mut errors,
         );
+        tag_error_modules(&mut error_modules, first_error, errors.len(), module_id);
     }
 
     // Step 4: Walk all InstanceDecl items, inserting into InstanceEnv.
     // InstanceEnv::insert already detects T032 / T034 on duplicate keys.
     for &(module_id, ast) in modules {
+        let first_error = errors.len();
         collect_instance_decls(
             ast,
             module_id,
             &class_table,
-            user_tycon_names,
+            scopes.for_module(module_id),
             origins,
             b,
             &mut instance_env,
             &mut errors,
         );
+        tag_error_modules(&mut error_modules, first_error, errors.len(), module_id);
     }
 
     // Step 4c: Seed stdlib instances (SqlType for Int/Text/Bool/Float).
@@ -188,6 +251,15 @@ pub fn collect_workspace_gated(
         }
     }
     register_stdlib_instances(&mut instance_env, &class_table, b, &stdlib_instance_names);
+    if !is_stdlib {
+        crate::stdlib_instance_heads::seed(
+            b,
+            &class_table,
+            &mut instance_env,
+            &stdlib_instance_names,
+            origins,
+        );
+    }
 
     // Step 4b: Synthesise instances for every `TypeDecl` that has a
     // `deriving (…)` clause. Derived instances are registered into the same
@@ -195,26 +267,44 @@ pub fn collect_workspace_gated(
     // by the same InstanceEnv::insert path.
     let (derived_instances, implicit_row_instances) = collect_derived_instances(
         modules,
-        user_tycon_names,
+        scopes,
         origins,
         &class_table,
         &mut instance_env,
         &mut errors,
+        &mut error_modules,
     );
 
     // Step 5: Orphan-rule check (T031) for all collected instances.
-    check_orphan_rule(&instance_env, &class_table, origins, &mut errors);
+    check_orphan_rule(
+        &instance_env,
+        &class_table,
+        origins,
+        &mut errors,
+        &mut error_modules,
+    );
 
     // Step 6: Missing superclass instance check (T033).
-    check_missing_superclass_instances(&instance_env, &class_table, origins, &mut errors);
+    check_missing_superclass_instances(
+        &instance_env,
+        &class_table,
+        origins,
+        &mut errors,
+        &mut error_modules,
+    );
 
     CollectResult {
         class_table,
         instance_env,
         errors,
+        error_modules,
         derived_instances,
         implicit_row_instances,
     }
+}
+
+fn tag_error_modules(sources: &mut FxHashMap<usize, u32>, start: usize, end: usize, module: u32) {
+    sources.extend((start..end).map(|index| (index, module)));
 }
 
 // ── Class collection ─────────────────────────────────────────────────────────
@@ -560,12 +650,9 @@ fn collect_instance_decls(
         let head_for_record = head_tycons.clone();
         match env.insert_multi(class_id, head_tycons, info, class_name, &type_name) {
             Ok(()) => {
-                // Retain the written head types so the solver can run
-                // functional-dependency improvement against this instance. Only
-                // classes that declare a fundep need it.
-                if !ct.fundeps_of(class_id).is_empty() {
-                    env.record_head_asts(class_id, head_for_record, decl.head.clone());
-                }
+                // Constructor keys select candidates. Retain every complete head
+                // for validation as well as functional-dependency improvement.
+                env.record_head_asts(class_id, head_for_record, decl.head.clone());
             }
             Err(e) => errors.push(e.into_type_error()),
         }
@@ -612,8 +699,9 @@ fn collect_auto_promoted_to_text(
     for item in &ast.items {
         let Item::Fn(decl) = item else { continue };
 
-        // Must be public and named exactly "toText".
-        if decl.vis != Visibility::Pub || decl.name.text != "toText" {
+        // Only a declared pure renderer can implement the pure ToText method.
+        // An effectful function with this name remains an ordinary function.
+        if decl.vis != Visibility::Pub || decl.name.text != "toText" || !decl.caps.is_empty() {
             continue;
         }
 
@@ -683,7 +771,13 @@ fn collect_auto_promoted_to_text(
         };
 
         match env.insert((totext_id, tycon_id), info, "ToText", &type_name) {
-            Ok(()) => {}
+            Ok(()) => {
+                env.record_head_asts(
+                    totext_id,
+                    smallvec::smallvec![tycon_id],
+                    vec![param_ty.clone()],
+                );
+            }
             Err(e) => errors.push(e.into_type_error()),
         }
     }
@@ -714,7 +808,11 @@ pub(crate) fn is_auto_promoted_totext(
 ) -> bool {
     use ridge_ast::Visibility;
 
-    if decl.vis != Visibility::Pub || decl.name.text != "toText" || decl.params.len() != 1 {
+    if decl.vis != Visibility::Pub
+        || decl.name.text != "toText"
+        || decl.params.len() != 1
+        || !decl.caps.is_empty()
+    {
         return false;
     }
 
@@ -755,11 +853,12 @@ pub(crate) fn is_auto_promoted_totext(
 /// the lowering pass can emit the corresponding method fns and dict values.
 fn collect_derived_instances(
     modules: &[(u32, &ridge_ast::Module)],
-    user_tycon_names: &FxHashMap<String, TyConId>,
+    scopes: TypeScopes<'_>,
     origins: &TyConOrigins,
     class_table: &ClassTable,
     instance_env: &mut InstanceEnv,
     errors: &mut Vec<TypeError>,
+    error_modules: &mut FxHashMap<usize, u32>,
 ) -> (
     Vec<crate::derive::DerivedInstance>,
     FxHashMap<TyConId, crate::derive::DerivedInstance>,
@@ -771,6 +870,7 @@ fn collect_derived_instances(
         FxHashMap::default();
 
     for &(module_id, ast) in modules {
+        let user_tycon_names = scopes.for_module(module_id);
         for item in &ast.items {
             let Item::Type(type_decl) = item else {
                 continue;
@@ -796,7 +896,9 @@ fn collect_derived_instances(
                 origins,
             );
             all_derived.extend(generated);
+            let first_error = errors.len();
             errors.extend(derive_errors);
+            tag_error_modules(error_modules, first_error, errors.len(), module_id);
         }
     }
 
@@ -808,6 +910,7 @@ fn collect_derived_instances(
     // module actually demands. Runs after the explicit pass, so a hand-written
     // or derived `Row` is already registered and wins (its key is skipped).
     for &(module_id, ast) in modules {
+        let user_tycon_names = scopes.for_module(module_id);
         for item in &ast.items {
             let Item::Type(type_decl) = item else {
                 continue;
@@ -851,6 +954,7 @@ fn check_orphan_rule(
     ct: &ClassTable,
     origins: &TyConOrigins,
     errors: &mut Vec<TypeError>,
+    error_modules: &mut FxHashMap<usize, u32>,
 ) {
     for ((class_id, head), info) in &env.instances {
         let class_id = *class_id;
@@ -896,6 +1000,7 @@ fn check_orphan_rule(
                 legal_modules.push(name);
             }
         }
+        error_modules.insert(errors.len(), inst_module);
         errors.push(TypeError::OrphanInstance {
             class: class_name,
             ty: TypeDesc::Text(type_name),
@@ -990,6 +1095,7 @@ fn check_missing_superclass_instances(
     ct: &ClassTable,
     origins: &TyConOrigins,
     errors: &mut Vec<TypeError>,
+    error_modules: &mut FxHashMap<usize, u32>,
 ) {
     // Pre-collect the set of registered (class, head) keys for O(1) lookup.
     let registered: FxHashSet<(ridge_types::ClassId, InstanceHead)> =
@@ -1023,6 +1129,9 @@ fn check_missing_superclass_instances(
                 let super_name = ct
                     .get(super_id)
                     .map_or_else(|| format!("#{}", super_id.0), |ci| ci.name.clone());
+                if let Some(module) = info.def_module {
+                    error_modules.insert(errors.len(), module);
+                }
                 errors.push(TypeError::MissingSuperclassInstance {
                     class: class_name,
                     ty: TypeDesc::Text(type_name),
@@ -1096,7 +1205,7 @@ pub fn flatten_head_arg_names(head_atoms: &[ridge_ast::Type]) -> Vec<Option<&str
     out
 }
 
-fn extract_tycon_id(
+pub(crate) fn extract_tycon_id(
     ty: &ridge_ast::Type,
     user_tycon_names: &FxHashMap<String, TyConId>,
     origins: &TyConOrigins,
@@ -1209,9 +1318,18 @@ fn context_arg_positions(
     decl: &ridge_ast::InstanceDecl,
     classes: &ClassTable,
 ) -> Result<Vec<Vec<usize>>, TypeError> {
-    let head_args = flatten_head_arg_names(&decl.head);
+    source_context_positions(&decl.class.text, &decl.head, &decl.constraints, classes)
+}
+
+pub(crate) fn source_context_positions(
+    class_name: &str,
+    heads: &[ridge_ast::Type],
+    constraints: &[ridge_ast::ClassConstraint],
+    classes: &ClassTable,
+) -> Result<Vec<Vec<usize>>, TypeError> {
+    let head_args = flatten_head_arg_names(heads);
     let mut positions = Vec::new();
-    for constraint in &decl.constraints {
+    for constraint in constraints {
         let Some(class) = classes
             .id_by_name(&constraint.class.text)
             .and_then(|id| classes.get(id))
@@ -1229,7 +1347,7 @@ fn context_arg_positions(
             .collect();
         let Some(projected) = projected.filter(|p| p.len() == class.arity) else {
             return Err(TypeError::UnsupportedInstanceHead {
-                class: decl.class.text.clone(),
+                class: class_name.into(),
                 reason: format!("context {} needs {} variables, each present in the instance head's type arguments", constraint.class.text, class.arity),
                 span: constraint.span,
             });

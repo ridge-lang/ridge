@@ -408,6 +408,13 @@ pub fn small () -> Text =
 pub fn duplicates () -> Text =
     Json.encode (JObjectFields [("z", JInt 1), ("a", JInt 2), ("z", JInt 3)])
 
+-- JsonValue can contain Float and has no blanket Eq contract. Compare the
+-- integer object views through their exact keys and typed value projections.
+fn intFields (view: Option (Map Text JsonValue)) -> Option (Map Text (Option Int)) =
+    match view
+        None -> None
+        Some fields -> Some (Map.map (fn _key value -> Json.asInt value) fields)
+
 pub fn views () -> Bool =
     let old = JObject (Map.fromList [("z", JInt 1), ("a", JInt 2)])
     let ordered = JObjectFields [("z", JInt 1), ("a", JInt 2)]
@@ -423,7 +430,7 @@ pub fn views () -> Bool =
         JObject fields -> Map.length fields
         _ -> 0
     let duplicateView = Json.asObject (JObjectFields [("z", JInt 1), ("a", JInt 2), ("z", JInt 3)])
-    Json.asObject old == Json.asObject ordered && backOld == backOrdered && backOrdered == Ok (ZA { z = 1, a = 2 }) && patternLength == 2 && oldPatternLength == 2 && duplicateView == Some (Map.fromList [("z", JInt 3), ("a", JInt 2)]) && backEvent == Ok (Changed 7) && backMixed == Ok (Mixed { m = Map.fromList [("z", 1), ("a", 2)], r = Ok 7 })
+    intFields (Json.asObject old) == intFields (Json.asObject ordered) && backOld == backOrdered && backOrdered == Ok (ZA { z = 1, a = 2 }) && patternLength == 2 && oldPatternLength == 2 && intFields duplicateView == Some (Map.fromList [("z", Some 3), ("a", Some 2)]) && backEvent == Ok (Changed 7) && backMixed == Ok (Mixed { m = Map.fromList [("z", 1), ("a", 2)], r = Ok 7 })
 "#,
     );
     let fields = (0..40)

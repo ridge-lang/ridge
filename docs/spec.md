@@ -1006,6 +1006,26 @@ settle the result.** `false && e` is `false` and `true || e` is `true` without
 mean what it reads as. They are the only operators that skip an operand:
 every other one in the table above evaluates both, left to right.
 
+**Ordinary comparisons use the type's declared contracts.** `a == b` invokes
+the same `Eq` method as `eq a b`; `a != b` negates that single result. `<`,
+`<=`, `>`, and `>=` use `Ord.compare` and its `Less`, `Equal`, or `Greater`
+result. Both operands run once, left to right, before the method runs once.
+The operands have the same type, without implicit coercions.
+
+Unannotated helpers infer the required `Eq` or `Ord` constraint. A written
+generic signature must include its corresponding `where` constraint.
+Tuples and closed records compare through their component contracts; named
+types need a declared or derived instance. Map and Set equality compares their
+contents through the key contracts, independently of traversal order or hash
+seed. Functions and Float have no default `Eq` or `Ord`; Float numerical
+predicates are explicit functions in `std.float`. There is no universal `===`.
+`Test.assertEq` and `Test.assertNe` require the same `Eq` evidence.
+
+Inside a typed SQL quotation, comparison operators instead construct SQL
+comparison expressions. They retain database NULL and numeric semantics,
+including floating columns, without invoking arbitrary user `Eq` methods.
+Captured values remain bound parameters.
+
 **Arithmetic is defined here, not by the runtime underneath.** Addition,
 subtraction, multiplication, division, remainder and negation are primitive
 operations of the language: their declarations in `std.int` and `std.float`
@@ -1215,7 +1235,9 @@ Ridge has **no implicit subtyping**. No `Dog <: Animal`. This keeps inference de
 
 ### 5.6. Typeclasses
 
-Ridge has typeclasses: named interfaces that a type can satisfy, with coherence guarantees enforced by the compiler. Dispatch is dictionary-passing — no runtime type tags, no reflection, near-zero overhead at monomorphic call sites.
+Ridge has typeclasses: named interfaces that a type can satisfy, with coherence
+guarantees enforced by the compiler. Dispatch passes statically selected
+instance dictionaries; it does not rely on reflective type inspection.
 
 #### 5.6.1. Class declarations
 
@@ -1230,9 +1252,16 @@ class Eq a =
 
 class Ord a where Eq a =
     compare (x: a) (y: a) -> Ordering
+
+class Hash a where Eq a =
+    hash (value: a) (hasher: Hasher) -> Hasher
 ```
 
 Method signatures inside a class body are **bare**: no `fn` keyword, no body. A class body is a list of contracts. Default method bodies are not supported.
+
+The `Eq`, `Ord`, and `Hash` declarations above describe prelude interfaces.
+Their class names are reserved; applications extend them with `instance`
+declarations rather than redeclaring their contracts (`R028 ReservedName`).
 
 Superclasses are declared with a `where` clause between the type variable and `=`. `class Ord a where Eq a` means every `Ord` instance requires a corresponding `Eq` instance for the same type. An empty class body is rejected (`P030 MalformedClassDecl`).
 
@@ -1333,15 +1362,25 @@ type Point = { x: Int, y: Int } deriving (Eq, Ord)
 type Person = { name: Text, age: Int } deriving (Encode)
 ```
 
-The derivable classes are `Eq`, `ToText`, `Ord`, `Encode`, and `Decode`. `Show` is accepted as an alias for `ToText` in `deriving` (and elsewhere); both refer to the same class.
+The derivable classes are `Eq`, `Hash`, `ToText`, `Ord`, `Encode`, and `Decode`.
+`Show` is accepted as an alias for `ToText` in `deriving` and elsewhere.
 
 ```ebnf
 Deriving ::= "deriving" "(" UpperIdent { "," UpperIdent } ")"
 ```
 
-**Derived `Eq`** generates a structural equality check using BEAM `=:=`. For records (represented as Erlang maps) and unions (tagged tuples or bare atoms), BEAM structural equality is correct. No `Eq` instance exists for `Float` in the prelude — floating-point equality is a footgun. A type with a `Float` field is rejected when `Eq` is derived (`T029 NoInstance`).
+**Derived `Eq`** compares each declared field through its own `Eq` method,
+short-circuiting at the first difference. Matching union variants compare
+their payloads the same way; different variants are unequal. Generic derives
+require evidence only for the fields they use. Tuples and closed anonymous
+records compose their component evidence; named types require their own
+instance. A field with no `Eq` contract, including Float or a function, rejects
+the derive. Decimal equality compares its numerical value, independently of
+its stored scale.
 
-**Security note:** `=:=` is not constant-time. Do not derive `Eq` on types carrying secret data (tokens, password hashes, HMACs, session keys). Use `std.crypto.constantTimeEq` instead:
+**Security note:** ordinary `Eq` has no constant-time guarantee. Do not derive
+`Eq` on types carrying secret data (tokens, password hashes, HMACs, session
+keys). Use `std.crypto.constantTimeEq` for the supported secret-text comparison:
 
 ```ridge
 import std.crypto as Crypto
@@ -1369,6 +1408,35 @@ Some(42)
 Each field's rendering dispatches through the `ToText` instance for that field's type; if a field type has no `ToText` instance, the compiler emits `T029 NoInstance` at derive time.
 
 **Derived `Ord`** generates a `compare` method returning `Ordering`. For record types, fields are compared in declaration order; the first field that is not `Equal` determines the result. For union types, variants are compared by their declaration position first (`Red < Green < Blue`); if both values have the same constructor and it carries payload, payload fields are compared in order. `Ord` requires `Eq` for the same type (checked by coherence; missing → `T033 MissingSuperclassInstance`).
+
+**Hash and collection keys.** `Hash a` requires `Eq a`. Its pure `hash` method
+feeds an opaque `Hasher` supplied by a collection. User code cannot construct
+or inspect that state. Hashes are seeded implementation data, not stable
+identifiers or cryptographic digests.
+
+Eq instances must be reflexive, symmetric and transitive. Ord must define a
+total order coherent with Eq: `compare x y == Equal` exactly when `eq x y`.
+Equal values must contribute the same hash data under the same initial state.
+Handwritten instances are responsible for these laws; the compiler checks
+their types, purity, coherence and superclasses, rather than proving the laws.
+No memory-safety or authority guarantee depends on an author obeying a law.
+
+For example, a key can ignore its display label consistently:
+
+```ridge
+type Key = { id: Int, label: Text }
+instance Eq Key =
+    eq (left: Key) (right: Key) -> Bool = left.id == right.id
+instance Hash Key =
+    hash (value: Key) (hasher: Hasher) -> Hasher = hash value.id hasher
+```
+
+**Derived `Hash`** delegates to the field contracts, including supported
+recursive and generic fields. Use `deriving (Eq, Hash)` for ordinary keys. If
+equality is handwritten, write a matching Hash instance explicitly. List,
+Option, Result, tuple and closed-record hashing composes the required child
+contracts. Float and functions have no default Hash contract; choose a domain
+key with explicit semantics instead.
 
 **Derived `Encode`** generates an `encode` method that converts a value to `JsonValue`. The encoding follows a DX-first hybrid wire format:
 
@@ -2262,14 +2330,14 @@ This migration changes discovery only: it does not rewrite a `Bool` return type 
 | Module | Purpose | Key functions |
 |--------|---------|---------------|
 | `std.int` | Integer ops | `toText`, `parse`, `abs`, `min`, `max` |
-| `std.float` | Float ops | `toText`, `parse`, `round`, `floor`, `ceil`, `sqrt` |
+| `std.float` | Float ops | `equal`, `less`, `lessOrEqual`, `greater`, `greaterOrEqual`, `totalCompare`, `toText`, `parse`, `round`, `floor`, `ceil`, `sqrt` |
 | `std.decimal` | Exact decimal ops | `fromText`, `toText`, `add`, `sub`, `mul`, `div`, `round`, `compare`; `RoundingMode` |
 | `std.uuid` | RFC 4122 identifiers | `generate`, `fromText`, `toText`, `nil`, `compare`, `eq` |
 | `std.bytes` | Raw byte strings | `fromHex`, `toHex`, `fromUtf8`, `toUtf8`, `empty`, `generate`, `length`, `concat`, `compare` |
 | `std.bool` | Boolean helpers | `not`, `and`, `or` |
 | `std.error` | The standard-library error value | `toText` |
 | `std.text` | Text ops | `byteSize`, `concat`, `split`, `splitN`, `splitAny`, `lines`, `trim`, `toUpper`, `toLower`, `startsWith`, `endsWith`, `contains`, `replace`, `padLeft`, `padRight`, `isEmpty` |
-| `std.list` | List ops | `empty`, `length`, `isEmpty`, `head`, `tail`, `map`, `filter`, `filterMap`, `fold`, `foldRight`, `reverse`, `sort`, `sortBy`, `take`, `drop`, `groupBy`, `flatMap`, `zip`, `zipWith`, `contains`, `find`, `any`, `all`, `range`, `rangeExclusive`, `forEach` |
+| `std.list` | List ops | `empty`, `length`, `isEmpty`, `head`, `tail`, `map`, `filter`, `filterMap`, `fold`, `foldRight`, `reverse`, `sort`, `sortBy`, `take`, `drop`, `groupBy`, `flatMap`, `zip`, `zipWith`, `contains`, `unique`, `find`, `any`, `all`, `range`, `rangeExclusive`, `forEach` |
 | `std.map` | Persistent map | `empty`, `fromList`, `toList`, `insert`, `remove`, `get`, `contains`, `keys`, `values`, `map`, `filter`, `length`, `merge`, `update` |
 | `std.set` | Persistent set | `empty`, `fromList`, `toList`, `insert`, `remove`, `contains`, `union`, `intersection`, `difference`, `length` |
 | `std.option` | Option helpers | `withDefault`, `map`, `flatMap`, `orElse`, `isSome`, `isNone`, `discard` |
@@ -2279,6 +2347,23 @@ This migration changes discovery only: it does not rewrite a `Bool` return type 
 `Text.splitAny` has type `List Text -> Text -> List Text`. For example,
 `Text.splitAny [",", ";"] "a,b;c"` returns `["a", "b", "c"]`.
 Pass a list even for a single separator, or use `Text.split "," "a,b"`.
+
+Key-sensitive Map and Set operations require Hash for their key type, which
+also supplies Eq. Map equality additionally requires Eq for its values; storing
+a function as a value does not require comparing it. Map replacement retains
+the first equivalent key and changes its value. Merge retains the left key
+representative and uses the right value on a match. Set retains the first
+equivalent representative. Traversal order is unspecified.
+
+`List.contains` and `List.unique` require Eq; unique keeps the first equivalent
+element in input order. `List.groupBy` requires Hash for the extracted key and
+preserves each group's element order. Sorting requires Ord and does not
+silently remove duplicates. For open empty values, annotate the element type
+when an equality or hash constraint would otherwise be ambiguous.
+
+JsonValue and SqlValue can contain Float and have no default Eq contract.
+Decode into a domain type or compare explicit typed projections. Quoted SQL
+comparisons retain their separate database semantics.
 
 `List.empty`, `Map.empty`, `Set.empty`, and `Bytes.empty` are pure values.
 Use them without an argument list, for example `Bytes.length Bytes.empty`.

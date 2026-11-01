@@ -143,8 +143,9 @@ pub struct IrPrimitiveFn {
     pub name: String,
     /// Parameter names for the wrapper function; `params.len()` is the arity.
     ///
-    /// There is no second arity to disagree with this one: `@primitive` takes
-    /// no arguments, so the declared parameter count is the only count.
+    /// Includes leading class dictionaries inferred from the checked scheme,
+    /// followed by declared value parameters. The attribute states no separate
+    /// arity, so callers and the wrapper share this one argument list.
     pub params: Vec<String>,
     /// Whether this declaration is `pub` (exported from the emitted module).
     pub is_pub: bool,

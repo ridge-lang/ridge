@@ -742,14 +742,32 @@ fn lower_primitive_wrapper(prim: &IrPrimitiveFn) -> Result<CErlFn, CodegenError>
         span: prim.span,
     };
 
-    let params: Vec<CErlVar> = prim
-        .params
-        .iter()
-        .map(|p| CErlVar(format!("V_{}", p.to_uppercase().replace('-', "_"))))
+    // Wrapper arguments are forwarded positionally. Evidence parameter names
+    // can contain compiler-only punctuation that is not a valid Core variable.
+    let params: Vec<CErlVar> = (0..prim.params.len())
+        .map(|index| CErlVar(format!("V_P{index}")))
         .collect();
     let args: Vec<CErlExpr> = params.iter().map(|v| CErlExpr::Var(v.clone())).collect();
 
     let target = crate::stdlib_map::lookup(&prim.module, &prim.name).ok_or_else(missing)?;
+    let expected_arity = match target {
+        BridgeTarget::BeamStdlib { arity, .. }
+        | BridgeTarget::BeamStdlibCheckedInt { arity, .. }
+        | BridgeTarget::RidgeRuntime { arity, .. } => *arity,
+        _ => return Err(missing()),
+    };
+    if u32::try_from(prim.params.len()).ok() != Some(expected_arity) {
+        return Err(CodegenError::IrShapeMalformed {
+            variant: "IrItem::Primitive",
+            detail: format!(
+                "primitive '{}.{}' has {} arguments but its backend requires {expected_arity}",
+                prim.module,
+                prim.name,
+                prim.params.len()
+            ),
+            span: prim.span,
+        });
+    }
     let body = match target {
         BridgeTarget::BeamStdlib {
             module, fn_name, ..
@@ -784,8 +802,7 @@ fn lower_primitive_wrapper(prim: &IrPrimitiveFn) -> Result<CErlFn, CodegenError>
         _ => return Err(missing()),
     };
 
-    #[allow(clippy::cast_possible_truncation)]
-    let arity = prim.params.len() as u32;
+    let arity = expected_arity;
 
     Ok(CErlFn {
         name: CErlAtom(prim.name.clone()),
@@ -818,6 +835,45 @@ mod tests {
             is_pub: true,
             span: sp(),
         }
+    }
+
+    #[test]
+    fn primitive_evidence_parameters_have_valid_distinct_variables() {
+        let mut declaration = primitive("std.float", "add", 2);
+        declaration.params = vec!["$dict_Hash_0".into(), "$dict_Eq_0".into()];
+        let function = lower_primitive_wrapper(&declaration).unwrap();
+        let CErlExpr::Fun { params, body } = function.body else {
+            panic!("primitive wrapper must be a function");
+        };
+        assert_eq!(params.len(), 2);
+        assert_ne!(params[0].0, params[1].0);
+        for param in &params {
+            assert!(param.0.starts_with("V_"));
+            assert!(
+                param
+                    .0
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'),
+                "invalid variable: {}",
+                param.0
+            );
+        }
+        let CErlExpr::Call { args, .. } = *body else {
+            panic!("unchecked primitive must forward its arguments directly");
+        };
+        assert_eq!(args.len(), params.len());
+        for (arg, param) in args.iter().zip(&params) {
+            assert!(matches!(arg, CErlExpr::Var(actual) if actual.0 == param.0));
+        }
+    }
+
+    #[test]
+    fn primitive_rejects_an_argument_list_that_disagrees_with_its_backend() {
+        let error = lower_primitive_wrapper(&primitive("std.int", "add", 3)).unwrap_err();
+        assert!(
+            matches!(error, CodegenError::IrShapeMalformed { detail, .. }
+            if detail.contains("3 arguments") && detail.contains("requires 2"))
+        );
     }
 
     #[test]

@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Ordinary comparison operators and test equality assertions now use checked
+  Eq and Ord contracts. Derived comparisons delegate to each field's methods.
+  Add the appropriate deriving or where clause when migrating named or generic
+  code; Float numerical comparisons use the explicit std.float predicates.
+
+- Map and Set keys use coherent Hash and Eq contracts with seeded persistent
+  storage. Hash methods receive an opaque Hasher; equivalent keys retain the
+  first representative, and map replacement updates its value. List membership,
+  deduplication and grouping follow the same value contracts. Traversal order
+  remains unspecified.
+
 - Function-valued constants can be called directly or through aliases, including
   imports, zero-parameter functions and functions receiving `Unit`. Calls load
   the constant's function value before applying its arguments; ordinary function

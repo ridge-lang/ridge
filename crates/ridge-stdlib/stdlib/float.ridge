@@ -3,8 +3,26 @@
 -- Direct @ffi wrappers delegate to BEAM erlang:*, math:*, ridge_rt:*, erts_internal:*.
 -- Hybrid functions combine a raw @ffi with a Ridge wrapper.
 --
--- Float follows IEEE 754 double precision.
--- Float.totalCompare provides a NaN-aware total ordering via erts_internal:cmp_term/2.
+-- Float uses double precision; the current runtime accepts finite values only.
+-- Named numerical comparisons treat positive and negative zero as equal.
+-- totalCompare is a separate total ordering, including distinct signed zeros.
+
+-- Exact numerical equality, with no implicit tolerance or type conversion.
+@ffi("ridge_rt", "float_equal", 2)
+pub fn equal (a: Float) (b: Float) -> Bool
+
+-- Numerical ordering predicates. These share equal's numerical zero behavior.
+@ffi("ridge_rt", "float_less", 2)
+pub fn less (a: Float) (b: Float) -> Bool
+
+@ffi("ridge_rt", "float_less_or_equal", 2)
+pub fn lessOrEqual (a: Float) (b: Float) -> Bool
+
+@ffi("ridge_rt", "float_greater", 2)
+pub fn greater (a: Float) (b: Float) -> Bool
+
+@ffi("ridge_rt", "float_greater_or_equal", 2)
+pub fn greaterOrEqual (a: Float) (b: Float) -> Bool
 
 -- Convert a float to its text representation.
 @ffi("ridge_rt", "float_to_text", 1)
@@ -41,19 +59,19 @@ pub fn truncate (f: Float) -> Int
 -- unless f is exactly an integer.
 pub fn floor (f: Float) -> Int =
     let t = truncate f
-    if f >= 0.0 then t
+    if greaterOrEqual f 0.0 then t
     else
         let ft = fromInt t
-        if ft == f then t else t - 1
+        if equal ft f then t else t - 1
 
 -- Ceiling: smallest integer >= f.
 -- Symmetric with floor: for positives, add 1 unless f is exactly an integer.
 pub fn ceil (f: Float) -> Int =
     let t = truncate f
-    if f <= 0.0 then t
+    if lessOrEqual f 0.0 then t
     else
         let ft = fromInt t
-        if ft == f then t else t + 1
+        if equal ft f then t else t + 1
 
 -- Square root.
 @ffi("math", "sqrt", 1)
@@ -65,11 +83,11 @@ pub fn abs (f: Float) -> Float
 
 -- Smaller of two floats.
 pub fn min (a: Float) (b: Float) -> Float =
-    if a <= b then a else b
+    if lessOrEqual a b then a else b
 
 -- Larger of two floats.
 pub fn max (a: Float) (b: Float) -> Float =
-    if a >= b then a else b
+    if greaterOrEqual a b then a else b
 
 -- Raise `base` to the power `exp` (IEEE 754 double), via BEAM math:pow/2.
 -- For an integer base and exponent that must stay exact, use `std.int.pow`.
@@ -96,8 +114,8 @@ pub fn div (a: Float) (b: Float) -> Float
 @primitive
 pub fn neg (f: Float) -> Float
 
--- Total ordering comparison for IEEE-754 floats.
--- Uses erts_internal:cmp_term/2 which provides a NaN-aware total order.
--- Returns negative when a < b, 0 when a == b, positive when a > b.
+-- Total ordering of representable floats, distinguishing signed zeros.
+-- Returns a negative, zero, or positive Int according to that ordering.
+-- Use equal/less/greater and their inclusive forms for numerical comparison.
 @ffi("erts_internal", "cmp_term", 2)
 pub fn totalCompare (a: Float) (b: Float) -> Int

@@ -45,6 +45,67 @@ pub struct TyConCollectResult {
     pub user_tycon_names: FxHashMap<String, TyConId>,
 }
 
+/// Reserve source type identities before any synthesized types are interned.
+///
+/// A full workspace reserves every module first. Incremental checks reuse the
+/// prior module's ids through the same overwrite path.
+pub(crate) fn reserve_user_tycons(
+    module: &Module,
+    module_id: ridge_resolve::ModuleId,
+    arena: &mut TyConArena,
+    own_tycon_ids: &FxHashMap<String, TyConId>,
+) -> FxHashMap<String, TyConId> {
+    let mut name_to_id: FxHashMap<String, TyConId> = FxHashMap::default();
+    for item in &module.items {
+        match item {
+            Item::Type(td) => {
+                #[expect(clippy::cast_possible_truncation, reason = "type param count fits u32")]
+                let decl = TyConDecl {
+                    id: TyConId(0), // overwritten by intern / overwrite
+                    name: td.name.text.clone(),
+                    arity: td.params.len() as u32,
+                    kind: TyConKind::Primitive, // placeholder; replaced in pass 2
+                    def_span: Some(td.span),
+                    def_module_raw: Some(module_id.0),
+                    opaque: td.opaque,
+                    is_anon: false,
+                };
+                let id = match own_tycon_ids.get(&td.name.text) {
+                    Some(&existing) => {
+                        arena.overwrite(existing, decl);
+                        existing
+                    }
+                    None => arena.intern(decl),
+                };
+                name_to_id.insert(td.name.text.clone(), id);
+            }
+            Item::Actor(ad) => {
+                let decl = TyConDecl {
+                    id: TyConId(0),
+                    name: ad.name.text.clone(),
+                    arity: 0,
+                    kind: TyConKind::Primitive, // placeholder; replaced in pass 2
+                    def_span: Some(ad.span),
+                    def_module_raw: Some(module_id.0),
+                    opaque: false, // actors cannot be opaque
+                    is_anon: false,
+                };
+                let id = match own_tycon_ids.get(&ad.name.text) {
+                    Some(&existing) => {
+                        arena.overwrite(existing, decl);
+                        existing
+                    }
+                    None => arena.intern(decl),
+                };
+                name_to_id.insert(ad.name.text.clone(), id);
+            }
+            _ => {}
+        }
+    }
+
+    name_to_id
+}
+
 /// Walk `module`, register every `TypeDecl` and `ActorDecl` in `arena`, and
 /// bind constructor schemes and `TyCon` names in `ctx`.
 ///
@@ -83,62 +144,14 @@ pub fn collect_user_tycons(
     // what previously surfaced as `T020 send (\`!\`) on non-actor / found
     // type Con(TyConId(11), [Var(TyVid(0))])` for a perfectly idiomatic
     // forward-referencing actor handle.
-    // `own_tycon_ids` is empty for a full workspace check (types are interned
-    // fresh, once each). It is populated only on an incremental single-module
-    // recheck, where the arena is pre-loaded with every type from the prior
-    // check; there, this module's own type is refreshed in place at its
-    // original id via `arena.overwrite` instead of being appended as a
-    // duplicate at a fresh id — so the derived/collected instances keyed by
-    // that original id keep resolving (otherwise a body edit spuriously loses
-    // e.g. a `deriving (Schema)` type's `HasSchema` instance).
-    let mut name_to_id: FxHashMap<String, TyConId> = FxHashMap::default();
+    // Full workspace checks reuse the block reserved before instance collection;
+    // incremental checks reuse the prior arena. Both complete schemas in place.
+    let name_to_id = reserve_user_tycons(module, module_id, arena, own_tycon_ids);
     for item in &module.items {
-        match item {
-            Item::Type(td) => {
-                #[expect(clippy::cast_possible_truncation, reason = "type param count fits u32")]
-                let decl = TyConDecl {
-                    id: TyConId(0), // overwritten by intern / overwrite
-                    name: td.name.text.clone(),
-                    arity: td.params.len() as u32,
-                    kind: TyConKind::Primitive, // placeholder; replaced in pass 2
-                    def_span: Some(td.span),
-                    def_module_raw: Some(module_id.0),
-                    opaque: td.opaque,
-                    is_anon: false,
-                };
-                let id = match own_tycon_ids.get(&td.name.text) {
-                    Some(&existing) => {
-                        arena.overwrite(existing, decl);
-                        existing
-                    }
-                    None => arena.intern(decl),
-                };
-                name_to_id.insert(td.name.text.clone(), id);
-                if matches!(td.body, TypeBody::Alias(_)) {
-                    ctx.projection_aliases.insert(id);
-                }
+        if let Item::Type(td) = item {
+            if matches!(td.body, TypeBody::Alias(_)) {
+                ctx.projection_aliases.insert(name_to_id[&td.name.text]);
             }
-            Item::Actor(ad) => {
-                let decl = TyConDecl {
-                    id: TyConId(0),
-                    name: ad.name.text.clone(),
-                    arity: 0,
-                    kind: TyConKind::Primitive, // placeholder; replaced in pass 2
-                    def_span: Some(ad.span),
-                    def_module_raw: Some(module_id.0),
-                    opaque: false, // actors cannot be opaque
-                    is_anon: false,
-                };
-                let id = match own_tycon_ids.get(&ad.name.text) {
-                    Some(&existing) => {
-                        arena.overwrite(existing, decl);
-                        existing
-                    }
-                    None => arena.intern(decl),
-                };
-                name_to_id.insert(ad.name.text.clone(), id);
-            }
-            _ => {}
         }
     }
 
@@ -162,6 +175,22 @@ pub fn collect_user_tycons(
         merged
     };
 
+    // Complete aliases before fields and constructor schemes copy their types.
+    // Source identities are already reserved, including forward references.
+    for item in &module.items {
+        if let Item::Type(td) = item {
+            if matches!(td.body, TypeBody::Alias(_)) {
+                let id = name_to_id[&td.name.text];
+                let kind = build_type_kind_fresh(td, b, ctx, &resolve_names, arena);
+                arena.replace_kind(id, kind);
+            }
+        }
+    }
+    for cycle in resolve_alias_chains(arena, module_id.0) {
+        report_alias_cycle(arena, &cycle, ctx);
+    }
+    ctx.tycon_decls = arena.all().to_vec();
+
     // ── Pass 2: build real schemas and write them back via `replace_kind`. ───
     //
     // Every name is already in `name_to_id`, so forward references resolve to
@@ -171,6 +200,9 @@ pub fn collect_user_tycons(
     for item in &module.items {
         match item {
             Item::Type(td) => {
+                if matches!(td.body, TypeBody::Alias(_)) {
+                    continue;
+                }
                 let id = name_to_id[&td.name.text];
                 let kind = build_type_kind_fresh(td, b, ctx, &resolve_names, arena);
                 arena.replace_kind(id, kind);
@@ -183,30 +215,6 @@ pub fn collect_user_tycons(
             }
             _ => {}
         }
-    }
-
-    // ── Pass 3: resolve multi-step alias chains. ─────────────────────────────
-    //
-    // Pass 2 reads `ctx.tycon_decls` to decide whether a `Named("Foo")`
-    // reference inside an alias body should wrap as `Type::Alias`.  But
-    // `ctx.tycon_decls` does not get synced from the arena until after the
-    // outer driver in `lib.rs` runs `arena.all().to_vec()`, so within pass 2
-    // every later alias sees its earlier siblings as their *placeholder*
-    // kind, not their real kind.  The result is that
-    // `type IntList = List Int; type Numbers = IntList` leaves Numbers'
-    // body as `Type::Con(IntList, [])` — a dead end that never unifies with
-    // `List Int` because `shallow_resolve` peels `Type::Alias` but not
-    // `Type::Con(alias_id, _)`.
-    //
-    // Pass 3 walks every alias body in arena order and substitutes any
-    // embedded `Type::Con(alias_id, _)` with the alias's resolved body,
-    // following the chain to the terminal non-alias type.  A `visited` stack
-    // stops a cycle from melting the typechecker, and — since nothing else
-    // looks — is also where a cycle gets reported.  `type A = B` with
-    // `type B = A` used to expand to a dead end and type-check clean, leaving
-    // the first real error to name a type that can never have a value.
-    for cycle in resolve_alias_chains(arena, module_id.0) {
-        report_alias_cycle(arena, &cycle, ctx);
     }
 
     TyConCollectResult {
@@ -1388,7 +1396,7 @@ fn ast_type_to_ridge_type_inner(
     fn arena_tycon_by_name(ctx: &InferCtx, n: &str) -> Option<TyConId> {
         ctx.tycon_decls
             .iter()
-            .position(|d| d.name == n)
+            .position(|d| d.name == n && d.def_module_raw.is_none_or(|module| module == u32::MAX))
             .map(|i| TyConId(u32::try_from(i).unwrap_or(u32::MAX)))
     }
 

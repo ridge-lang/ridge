@@ -32,11 +32,119 @@ use ridge_ast::Capability;
 use ridge_types::{
     BuiltinTyCons, CapRow, CapVid, CapabilitySet, Constraint, RecordField, RecordSchema, Scheme,
     TyConArena, TyConDecl, TyConId, TyConKind, TyVid, Type, UnionSchema, UnionVariant,
-    VariantPayload, ORD_CLASS,
+    VariantPayload, EQ_CLASS, HASH_CLASS, ORD_CLASS,
 };
 use rustc_hash::FxHashMap;
 
 use crate::class_env::ClassTable;
+
+/// Key-sensitive collection operations share the source wrappers' evidence ABI.
+/// Hash entails Eq, but both dictionaries are retained when the body uses both.
+pub(crate) fn collection_hash_scheme(
+    b: &BuiltinTyCons,
+    module: &str,
+    name: &str,
+) -> Option<Scheme> {
+    let a = TyVid(0);
+    let v = TyVid(1);
+    let key = Type::Var(a);
+    let value = Type::Var(v);
+    let map = Type::Con(b.map, vec![key.clone(), value.clone()]);
+    let set = Type::Con(b.set, vec![key.clone()]);
+    let option = Type::Con(b.option, vec![value.clone()]);
+    let callback_cap = CapVid(0);
+    let mut caps = CapRow::Concrete(CapabilitySet::PURE);
+    let mut cap_vars = vec![];
+    let (params, ret, vars, constrained) = match (module, name) {
+        ("std.map", "fromList") => (
+            vec![Type::Con(b.list, vec![Type::Tuple(vec![key, value])])],
+            map,
+            vec![a, v],
+            a,
+        ),
+        ("std.map", "insert") => (vec![key, value, map.clone()], map, vec![a, v], a),
+        ("std.map", "remove") => (vec![key, map.clone()], map, vec![a, v], a),
+        ("std.map", "get") => (vec![key, map], option, vec![a, v], a),
+        ("std.map", "getOr") => (vec![key, value.clone(), map], value, vec![a, v], a),
+        ("std.map", "contains") => (vec![key, map], Type::Con(b.bool, vec![]), vec![a, v], a),
+        ("std.map", "merge") => (vec![map.clone(), map.clone()], map, vec![a, v], a),
+        ("std.map", "update") => {
+            caps = CapRow::Var(callback_cap);
+            cap_vars.push(callback_cap);
+            let callback = Type::Fn {
+                params: vec![option],
+                ret: Box::new(value),
+                caps: caps.clone(),
+            };
+            (vec![key, callback, map.clone()], map, vec![a, v], a)
+        }
+        ("std.set", "fromList") => (vec![Type::Con(b.list, vec![key])], set, vec![a], a),
+        ("std.set", "insert" | "remove") => (vec![key, set.clone()], set, vec![a], a),
+        ("std.set", "contains") => (vec![key, set], Type::Con(b.bool, vec![]), vec![a], a),
+        ("std.set", "union" | "intersection" | "difference") => {
+            (vec![set.clone(), set.clone()], set, vec![a], a)
+        }
+        ("std.list", "groupBy") => {
+            caps = CapRow::Var(callback_cap);
+            cap_vars.push(callback_cap);
+            let callback = Type::Fn {
+                params: vec![key.clone()],
+                ret: Box::new(value.clone()),
+                caps: caps.clone(),
+            };
+            let list = Type::Con(b.list, vec![key]);
+            (
+                vec![callback, list.clone()],
+                Type::Con(b.map, vec![value, list]),
+                vec![a, v],
+                v,
+            )
+        }
+        _ => return None,
+    };
+    Some(Scheme {
+        projections: None,
+        record_fields: None,
+        vars,
+        cap_vars,
+        row_vars: vec![],
+        ty: Type::Fn {
+            params,
+            ret: Box::new(ret),
+            caps,
+        },
+        // Mirror the checked source ABI for the two projected methods.
+        constraints: vec![
+            Constraint::single(EQ_CLASS, constrained),
+            Constraint::single(HASH_CLASS, constrained),
+        ],
+    })
+}
+
+/// Shared constrained contracts for list equality consumers.
+pub(crate) fn list_equality_scheme(b: &BuiltinTyCons, name: &str) -> Option<Scheme> {
+    let a = TyVid(0);
+    let element = Type::Var(a);
+    let list = Type::Con(b.list, vec![element.clone()]);
+    let (params, ret) = match name {
+        "contains" => (vec![element, list], Type::Con(b.bool, vec![])),
+        "unique" => (vec![list.clone()], list),
+        _ => return None,
+    };
+    Some(Scheme {
+        projections: None,
+        record_fields: None,
+        vars: vec![a],
+        cap_vars: vec![],
+        row_vars: vec![],
+        ty: Type::Fn {
+            params,
+            ret: Box::new(ret),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        },
+        constraints: vec![Constraint::single(EQ_CLASS, a)],
+    })
+}
 
 /// Intern the reconciled stdlib type block into `arena` and return its
 /// `name -> TyConId` map.
@@ -2463,6 +2571,9 @@ pub(crate) fn reconciled_fn_scheme(
     classes: Option<&ClassTable>,
 ) -> Option<Scheme> {
     match (module, name) {
+        ("std.map" | "std.set", _) | ("std.list", "groupBy") => {
+            collection_hash_scheme(b, module, name)
+        }
         ("std.net.http", "withoutHeaders" | "withHeaders" | "listen" | "listenWithHeaders") => {
             let response = Type::Con(*reconciled.get("Response")?, vec![]);
             let metadata = Type::Con(*reconciled.get("ResponseWithHeaders")?, vec![]);
@@ -2522,6 +2633,7 @@ pub(crate) fn reconciled_fn_scheme(
         // Sorting dispatches through the element/key type's Ord, so the lowering
         // must prepend its dictionary — the reason these carry a constraint that
         // the plain signature table cannot express.
+        ("std.list", "contains" | "unique") => list_equality_scheme(b, name),
         ("std.list", "sort") => {
             let a = TyVid(0);
             Some(Scheme {

@@ -339,7 +339,11 @@ fn dup_member_check(
 fn is_auto_promoted_totext(d: &ridge_ast::FnDecl) -> bool {
     use ridge_ast::{decl::Param, PrimitiveType, Type as AstType, Visibility};
 
-    if d.vis != Visibility::Pub || d.name.text != "toText" || d.params.len() != 1 {
+    if d.vis != Visibility::Pub
+        || d.name.text != "toText"
+        || d.params.len() != 1
+        || !d.caps.is_empty()
+    {
         return false;
     }
 
@@ -899,6 +903,7 @@ impl ClassMethodIndex {
             ("toText", "ToText", 1),
             ("eq", "Eq", 2),
             ("compare", "Ord", 2),
+            ("hash", "Hash", 2),
             ("encode", "Encode", 1),
             ("decode", "Decode", 1),
             ("errorFrom", "ErrorFrom", 1),

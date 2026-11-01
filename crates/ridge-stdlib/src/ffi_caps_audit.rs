@@ -53,6 +53,116 @@ pub fn lookup(module: &str, name: &str, arity: u32) -> Option<&'static FfiAuditE
 /// `calendar`, `rand`, `httpc`, `ridge_rt` carry the capabilities declared
 /// by their audit entries below.
 pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
+    // Persistent collections use entropy only for their private key index.
+    // Callback capabilities remain transparent.
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "indexed_map_empty",
+        arity: 0,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "indexed_map_from_list",
+        arity: 2,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "indexed_map_to_list",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "indexed_map_insert",
+        arity: 4,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "indexed_map_update",
+        arity: 4,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "indexed_map_remove",
+        arity: 3,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "indexed_map_get",
+        arity: 3,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "indexed_map_contains",
+        arity: 3,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "indexed_map_keys",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "indexed_map_values",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "indexed_map_size",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "indexed_map_map",
+        arity: 2,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "indexed_map_filter",
+        arity: 2,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "indexed_map_filter_map",
+        arity: 2,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "indexed_map_merge",
+        arity: 3,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "indexed_set_from_list",
+        arity: 2,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "indexed_set_intersection",
+        arity: 3,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "indexed_set_difference",
+        arity: 3,
+        requires_caps: &[],
+    },
     // ── erlang (pure arithmetic / type ops) ───────────────────────────────────
     FfiAuditEntry {
         beam_module: "erlang",
@@ -554,6 +664,36 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
     },
     FfiAuditEntry {
         beam_module: "ridge_rt",
+        fn_name: "float_equal",
+        arity: 2,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "float_greater",
+        arity: 2,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "float_greater_or_equal",
+        arity: 2,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "float_less",
+        arity: 2,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "float_less_or_equal",
+        arity: 2,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
         fn_name: "float_to_text",
         arity: 1,
         requires_caps: &[],
@@ -574,6 +714,12 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         beam_module: "ridge_rt",
         fn_name: "sql_value_source",
         arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "sql_value_same",
+        arity: 2,
         requires_caps: &[],
     },
     FfiAuditEntry {

@@ -55,7 +55,12 @@ actor Worker =
         f 6
 pub fn spawn time actorCheck () -> Bool =
     let worker = spawn Worker
-    (worker ?> value ()) == Ok 7 && (worker ?> localValue ()) == Ok 7 && (worker ?> aliasValue ()) == Ok 7 && (worker ?> functionValue ()) == Ok 7
+    isSeven (worker ?> value ()) && isSeven (worker ?> localValue ()) &&
+        isSeven (worker ?> aliasValue ()) && isSeven (worker ?> functionValue ())
+
+fn isSeven result -> Bool = match result
+    Ok 7 -> true
+    _ -> false
 
 pub fn io effects () -> Int =
     let arg = fn (label: Text) (n: Int) -> Int =

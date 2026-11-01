@@ -8,20 +8,19 @@
 --     assertEq (List.head xs) (Some 1) "head should be 1" ?
 --     Ok ()
 --
--- Equality is structural, so assertEq/assertNe hold for any type without a
--- typeclass bound. The failure message is an explicit label because values
--- cannot be rendered to text automatically yet.
+-- Equality follows the value's Eq contract, just like == and !=. The failure
+-- message is an explicit label; rendering values needs a separate contract.
 
 -- Succeed when cond holds, otherwise fail with msg. The primitive the rest build on.
 pub fn ensure (cond: Bool) (msg: Text) -> Result Unit Text =
     if cond then Ok () else Err msg
 
--- Assert two values are structurally equal; label describes what was expected.
-pub fn assertEq (actual: a) (expected: a) (label: Text) -> Result Unit Text =
+-- Assert two values are equal; label describes what was expected.
+pub fn assertEq (actual: a) (expected: a) (label: Text) -> Result Unit Text where Eq a =
     if actual == expected then Ok () else Err label
 
--- Assert two values are not structurally equal.
-pub fn assertNe (actual: a) (other: a) (label: Text) -> Result Unit Text =
+-- Assert two values are not equal.
+pub fn assertNe (actual: a) (other: a) (label: Text) -> Result Unit Text where Eq a =
     if actual == other then Err label else Ok ()
 
 -- Assert a condition is true.

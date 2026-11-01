@@ -1,18 +1,76 @@
 ---
 source: crates/ridge-lower/tests/lowering.rs
+assertion_line: 56
 expression: rendered
 ---
 module: m0
-items_count: 1
+items_count: 2
 items:
   - kind: fn
     name: parse_int
     pub: false
     main: false
     caps: CapabilitySet(0)
-    ret_ty: Con(9) [Con(0)]
+    ret_ty: Con(10) [Con(0), Con(3)]
     params:
       - name: s
         ty: Con(3)
     body:
-      Symbol(n0): Prelude(None)
+      Call(n0):
+        callee:
+          Symbol(n1): Prelude(Err)
+        args:
+          -
+            Lit(n2): Text("invalid int")
+  - kind: fn
+    name: try_block_basic
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(10) [Con(0), Con(3)]
+    params:
+      - name: s
+        ty: Con(3)
+    body:
+      ResultScope(n3):
+        LetIn(n4):
+          pat:
+            Bind: n
+          value:
+            Match(n5):
+              scrutinee:
+                Call(n6):
+                  callee:
+                    Symbol(n7): Local(parse_int @ m0)
+                  args:
+                    -
+                      Local(n8): s
+              arms:
+                -
+                  pat:
+                    Ctor: Prelude(Ok)
+                      args:
+                        Bind: __prop_ok_0
+                  body:
+                    Local(n9): __prop_ok_0
+                -
+                  pat:
+                    Ctor: Prelude(Err)
+                      args:
+                        Bind: __prop_err_1
+                  body:
+                    ResultExit(n10):
+                      Construct(n11):
+                        ctor: Prelude(Err)
+                        fields:
+                          $0:
+                            Local(n12): __prop_err_1
+          body:
+            Call(n13):
+              callee:
+                Symbol(n14): Stdlib(fn:std.int.mul)
+              args:
+                -
+                  Local(n15): n
+                -
+                  Lit(n16): Int(2)

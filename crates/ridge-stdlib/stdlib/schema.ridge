@@ -21,6 +21,8 @@
 import std.sql (SqlValue, sqlLiteral, sqlValueSource, DbType, DbBoolean, DbInt, DbBigInt, DbFloat, DbDecimal, DbText, DbVarchar, DbUuid, DbTimestamp, DbTimestampTz, DbBytes, DbSmallInt, DbChar, DbJson, DbJsonb, DbDate, DbTime, DbInterval, DbArray, DbRaw, Dialect, PgDialect, SqliteDialect)
 import std.int as Int
 import std.float as Float
+import std.bool as Bool
+import std.sql (sameValue)
 
 -- ── Column vocabulary ─────────────────────────────────────────────────────────
 
@@ -442,7 +444,45 @@ pub fn alterColumnDdl (table: Text) (old: ColumnSchema e) (new: ColumnSchema e) 
 pub fn columnAltered (old: ColumnSchema e) (new: ColumnSchema e) -> Bool =
     if isIdentity old.generation || isIdentity new.generation then false
     else if isComputed old.generation || isComputed new.generation then false
-    else (old.ty != new.ty) || (old.nullable != new.nullable) || (old.generation != new.generation)
+    else notSameDbType old.ty new.ty || (old.nullable != new.nullable) || notSameDefault old.generation new.generation
+
+-- Descriptor identity is a private schema operation, not an Eq contract for
+-- query expressions or SQL values (which can carry floating-point data).
+fn notSameDbType (left: DbType) (right: DbType) -> Bool =
+    let same = match (left, right)
+        (DbBoolean, DbBoolean) -> true
+        (DbInt, DbInt) -> true
+        (DbBigInt, DbBigInt) -> true
+        (DbFloat, DbFloat) -> true
+        (DbDecimal p s, DbDecimal q t) -> p == q && s == t
+        (DbText, DbText) -> true
+        (DbVarchar n, DbVarchar m) -> n == m
+        (DbUuid, DbUuid) -> true
+        (DbTimestamp, DbTimestamp) -> true
+        (DbTimestampTz, DbTimestampTz) -> true
+        (DbBytes, DbBytes) -> true
+        (DbSmallInt, DbSmallInt) -> true
+        (DbChar n, DbChar m) -> n == m
+        (DbJson, DbJson) -> true
+        (DbJsonb, DbJsonb) -> true
+        (DbDate, DbDate) -> true
+        (DbTime, DbTime) -> true
+        (DbInterval, DbInterval) -> true
+        (DbArray a, DbArray b) -> Bool.not (notSameDbType a b)
+        (DbRaw a, DbRaw b) -> a == b
+        _ -> false
+    Bool.not same
+
+-- Identity and Computed transitions are excluded by the callers; only the
+-- supported default descriptors reach this comparison.
+fn notSameDefault (left: Generation) (right: Generation) -> Bool =
+    let same = match (left, right)
+        (Supplied, Supplied) -> true
+        (DefaultNow, DefaultNow) -> true
+        (DefaultLit a, DefaultLit b) -> sameValue a b
+        (DefaultRawSql a, DefaultRawSql b) -> a == b
+        _ -> false
+    Bool.not same
 
 -- `DROP TABLE`.
 pub fn dropTableDdl (table: Text) -> Text =
@@ -523,9 +563,11 @@ fn isComputed (g: Generation) -> Bool =
 -- reads predictably. Each action targets the new (target) shape; a facet left unchanged
 -- contributes nothing.
 fn alterActions (old: ColumnSchema e) (new: ColumnSchema e) -> List Text =
-    let typeAct = if old.ty != new.ty then [alterTypeAction new] else []
+    let typeAct = if notSameDbType old.ty new.ty then [alterTypeAction new] else []
     let nullAct = if old.nullable != new.nullable then [alterNullAction new] else []
-    let defAct  = if old.generation != new.generation then [alterDefaultAction new] else []
+    let defAct =
+        if isIdentity old.generation || isIdentity new.generation || isComputed old.generation || isComputed new.generation then []
+        else if notSameDefault old.generation new.generation then [alterDefaultAction new] else []
     concatFrags typeAct (concatFrags nullAct defAct)
 
 fn alterTypeAction (c: ColumnSchema e) -> Text =

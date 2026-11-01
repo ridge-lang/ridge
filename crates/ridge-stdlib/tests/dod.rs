@@ -224,12 +224,47 @@ fn g5_path_b_dominance() {
 /// `stdlib/`.
 ///
 /// `net/http.ridge` and `net/http.test.ridge` each count toward their total.
-/// `crypto`, `sql`, `query`, `data`, and `migrate` ship no `.test.ridge` (their
-/// behaviour is covered by Rust-side tests), so the `.ridge` count runs five
-/// ahead.
+/// Private evidence providers are included in the source inventory; the codec
+/// declarations are checked separately because they are compiler-owned classes.
 #[test]
 fn artefacts_count_matches_plan() {
-    const EXPECTED_RG: usize = 34;
+    const EXPECTED_SOURCES: &[&str] = &[
+        "_evidence.ridge",
+        "actor.ridge",
+        "bool.ridge",
+        "bytes.ridge",
+        "cli.ridge",
+        "crypto.ridge",
+        "data.ridge",
+        "date.ridge",
+        "decimal.ridge",
+        "env.ridge",
+        "error.ridge",
+        "float.ridge",
+        "fs.ridge",
+        "int.ridge",
+        "io.ridge",
+        "json.ridge",
+        "list.ridge",
+        "map.ridge",
+        "migrate.ridge",
+        "net/http.ridge",
+        "option.ridge",
+        "proc.ridge",
+        "query.ridge",
+        "random.ridge",
+        "raw.ridge",
+        "repo.ridge",
+        "result.ridge",
+        "schema.ridge",
+        "set.ridge",
+        "sql.ridge",
+        "test.ridge",
+        "text.ridge",
+        "time.ridge",
+        "timeofday.ridge",
+        "uuid.ridge",
+    ];
     const EXPECTED_TEST_RG: usize = 21;
 
     let stdlib = stdlib_dir();
@@ -243,7 +278,7 @@ fn artefacts_count_matches_plan() {
         let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
         // `codec.ridge` is the canonical declaration of the built-in
         // Encode/Decode classes — not a compiled module, so it is not one of
-        // the EXPECTED_RG stdlib source files.
+        // the compiled stdlib source files.
         if stem == "codec" {
             return false;
         }
@@ -265,14 +300,17 @@ fn artefacts_count_matches_plan() {
             .is_some_and(|e| e.eq_ignore_ascii_case("test"))
     });
 
-    assert_eq!(
-        ridge_files.len(),
-        EXPECTED_RG,
-        "§11.4: expected exactly {EXPECTED_RG} .ridge source files under stdlib/, \
-         found {}.\n  files: {:#?}",
-        ridge_files.len(),
-        ridge_files
-    );
+    let mut sources: Vec<_> = ridge_files
+        .iter()
+        .map(|path| {
+            path.strip_prefix(&stdlib)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect();
+    sources.sort();
+    assert_eq!(sources, EXPECTED_SOURCES, "stdlib source inventory drift");
 
     assert_eq!(
         test_ridge_files.len(),

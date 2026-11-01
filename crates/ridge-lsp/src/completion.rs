@@ -96,6 +96,23 @@ pub(crate) fn detect_context(src: &str, offset: usize) -> Context {
     // Definition site: the name right after `fn` / `let` / `var` is being typed,
     // so suggesting existing names (or the half-typed name) is unhelpful.
     if at_definition_site(line) {
+        // A constraint in a function head is a use of a class, not a new
+        // declaration name. Inspect tokens so a string containing "where"
+        // cannot turn the declaration-name guard off.
+        let tokens = ridge_lexer::tokenize(line).tokens;
+        if tokens
+            .iter()
+            .rposition(|(t, _)| *t == ridge_lexer::Token::KwWhere)
+            .is_some_and(|at| {
+                !tokens[at..]
+                    .iter()
+                    .any(|(t, _)| *t == ridge_lexer::Token::Assign)
+            })
+        {
+            return Context::Type {
+                prefix: prefix.to_owned(),
+            };
+        }
         return Context::None;
     }
 
@@ -230,6 +247,19 @@ mod tests {
         assert!(matches!(ctx("  let coun|"), Context::None));
         // Past the `=`, the body is an expression position again.
         assert!(matches!(ctx("let x = co|"), Context::Expr { .. }));
+    }
+
+    #[test]
+    fn function_constraints_are_class_use_positions() {
+        assert!(matches!(
+            ctx("pub fn feed (x: a) -> a where Ha|"),
+            Context::Type { .. }
+        ));
+        assert!(matches!(
+            ctx("fn f (x: a) -> a where Eq a, Or|"),
+            Context::Type { .. }
+        ));
+        assert!(matches!(ctx("fn na|"), Context::None));
     }
 
     #[test]

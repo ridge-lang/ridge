@@ -113,21 +113,28 @@ do_apply(Mf, Started, LoadFun, LoadCtx, Opts) ->
         || A <- ActorMigs0
     ],
     MigMods = [M || #{beam := M} <- ActorMigs],
-    %% Suspend every actor whose callback module is about to be reloaded, so
-    %% no message is processed with mixed code versions mid-upgrade.
-    Pids = [P || P <- processes(), lists:member(initial_call_module(P), Modules)],
-    [ok = sys:suspend(P) || P <- Pids],
+    %% Comparison methods can depend on any reloaded module, even when an
+    %% actor's own callback did not change. Refresh its retained indexes once
+    %% at the upgrade boundary rather than repeatedly in later queries.
+    Pids = [P || P <- processes(), upgrade_actor(P, Modules)],
     try
+        [ok = sys:suspend(P) || P <- Pids],
         %% Capture OLD field lists before loading the new code.
         OldFieldsByMod = maps:from_list([{M, M:'__ridge_state_fields'()} || M <- MigMods]),
         %% A pending quiescence purge must not fire mid-swap: cancel it
         %% before loading (it is rescheduled below if purging is enabled).
         ok = cancel_pending_purge(),
-        ok = LoadFun(Modules, LoadCtx),
-        %% The new code may carry different record shape hashes: drop the
-        %% cached versions so the next tagged message re-reads them.
-        ok = ridge_rt:invalidate_record_versions(Modules),
-        {Migrated, Restarts} = migrate_actors(Pids, ActorMigs, OldFieldsByMod),
+        try
+            ok = LoadFun(Modules, LoadCtx)
+        after
+            %% A later module can fail after earlier modules became current.
+            %% Drop cached shapes and comparison evidence on both paths, before
+            %% migrating actors or resuming them from the outer error handler.
+            ok = ridge_rt:invalidate_record_versions(Modules)
+        end,
+        {Migrated, SchemaRestarts} = migrate_actors(Pids, ActorMigs, OldFieldsByMod),
+        {Refreshed, IndexRestarts} = refresh_actor_collections(Pids),
+        Restarts = SchemaRestarts ++ IndexRestarts,
         %% A restarted actor is dead by now (killed below, or crashed inside
         %% its own code_change) — resume only the survivors.
         [ok = sys:resume(P) || P <- Pids, is_process_alive(P)],
@@ -145,6 +152,7 @@ do_apply(Mf, Started, LoadFun, LoadCtx, Opts) ->
             modules_loaded => length(Modules),
             actors_suspended => length(Pids),
             actors_migrated => length(Migrated),
+            actors_refreshed => length(Refreshed),
             actors_restarted => length(Restarts),
             restarts => lists:reverse(Restarts),
             purge => Purge,
@@ -156,10 +164,10 @@ do_apply(Mf, Started, LoadFun, LoadCtx, Opts) ->
         }}
     catch
         Class:Reason:Stack ->
-            %% Suspension is reversible: resume everything and report. The
-            %% system keeps running the old code (a failed code:load_file
-            %% changes nothing; a failed migration leaves that actor
-            %% suspended-then-resumed on its old state).
+            %% Suspension is reversible: resume survivors and report. A failed
+            %% individual load preserves that module's current code, while
+            %% earlier successful loads can remain current. Their runtime
+            %% metadata was invalidated around LoadFun even on this path.
             [catch sys:resume(P) || P <- Pids],
             erlang:raise(Class, Reason, Stack)
     end.
@@ -177,8 +185,8 @@ load_from_path(Modules, _) ->
 
 %% Production transport: replace the loaded code straight from the shipped
 %% blobs — no temp files, no code-path changes (the module is already
-%% loaded; load_binary swaps it in place). A manifest module with no blob
-%% in the bundle raises here, before anything else is touched further.
+%% loaded; load_binary swaps it in place). Loads are sequential; metadata is
+%% invalidated even if a later manifest entry fails after an earlier swap.
 load_from_binary(Modules, BinMap) ->
     [_ = code:soft_purge(M) || M <- Modules],
     [{module, M} = code:load_binary(M, beam_label(M), maps:get(M, BinMap)) || M <- Modules],
@@ -243,6 +251,26 @@ initial_call_module(P) ->
             end;
         _ -> undefined
     end.
+
+upgrade_actor(P, Modules) ->
+    M = initial_call_module(P),
+    lists:member(M, Modules) orelse ridge_actor(M).
+
+ridge_actor(M) -> erlang:function_exported(M, '__ridge_state_fields', 0).
+
+refresh_actor_collections(Pids) ->
+    lists:foldl(fun(P, {Refreshed, Restarts}) ->
+        M = initial_call_module(P),
+        case is_process_alive(P) andalso ridge_actor(M) of
+            false -> {Refreshed, Restarts};
+            true ->
+                case migrate_actor(P, M, ridge_refresh_collections) of
+                    ok -> {[P | Refreshed], Restarts};
+                    {restarted, Reason} ->
+                        {Refreshed, [#{module => M, reason => Reason} | Restarts]}
+                end
+        end
+    end, {[], []}, Pids).
 
 migrate_actors(Pids, ActorMigs, OldFieldsByMod) ->
     lists:foldl(fun(P, {Mig, Rst}) ->

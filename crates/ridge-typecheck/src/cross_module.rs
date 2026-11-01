@@ -10,20 +10,33 @@
 //! valid in any consumer. We only need to discover, for each imported type name, which
 //! `TyConId` the producer declared it as.
 
-use rustc_hash::FxHashMap;
-use std::sync::Arc;
-
-use ridge_ast::{Item, Module};
 use ridge_resolve::{Binding, ImportResolution, ImportTarget, ModuleId, SymbolKind, SymbolTable};
 use ridge_types::{Scheme, TyConDecl, TyConId};
+use rustc_hash::FxHashMap;
+
+/// Recover declaration ownership, independently of each module's imported names.
+pub(crate) fn declared_tycon_names(
+    decls: &[TyConDecl],
+    modules: usize,
+) -> Vec<FxHashMap<String, TyConId>> {
+    let mut names = vec![FxHashMap::default(); modules];
+    for decl in decls {
+        if let Some(module) = decl.def_module_raw {
+            if let Some(own) = names.get_mut(module as usize) {
+                own.insert(decl.name.clone(), decl.id);
+            }
+        }
+    }
+    names
+}
 
 /// Index every compiler-provided type declaration by name.
 ///
 /// "Compiler-provided" means everything the arena holds before a module's own
 /// `type` declarations are collected: the built-ins (`Int`, `Error`, `Duration`,
-/// `Output`, the taint wrappers) and the reconciled stdlib block. Both leave
-/// `def_module_raw` unset, which is what distinguishes them from a user type;
-/// anonymous record tycons share that trait and are excluded by name anyway.
+/// `Output`, the taint wrappers) and the reconciled stdlib block. They leave
+/// `def_module_raw` unset or use the reserved cross-module opaque owner.
+/// Anonymous record tycons are excluded; source module owners never qualify.
 ///
 /// Built by scanning the arena rather than from a hand-written table. The table
 /// this replaced listed four names and silently dropped every other stdlib type
@@ -31,7 +44,7 @@ use ridge_types::{Scheme, TyConDecl, TyConId};
 pub(crate) fn compiler_tycon_names(decls: &[TyConDecl]) -> FxHashMap<String, TyConId> {
     decls
         .iter()
-        .filter(|d| d.def_module_raw.is_none() && !d.is_anon)
+        .filter(|d| d.def_module_raw.is_none_or(|module| module == u32::MAX) && !d.is_anon)
         .map(|d| (d.name.clone(), d.id))
         .collect()
 }
@@ -44,9 +57,9 @@ pub(crate) fn compiler_tycon_names(decls: &[TyConDecl]) -> FxHashMap<String, TyC
 /// *which module declares this type?* — and, when the answer makes the instance
 /// illegal, to name the type and the module in the words the reader used.
 ///
-/// Both halves are awkward to get at from the collect pass, which runs before
-/// any module is type-checked: the arena holds only compiler-declared types at
-/// that point and the user's are still predictions. Collecting both here means
+/// Both halves are needed by the collect pass before any module is type-checked.
+/// The arena holds compiler declarations and reserved source placeholders.
+/// Collecting their ownership here means
 /// the orphan rule reads a declaring module instead of guessing one from the
 /// numeric range an id falls in. That guess is how the rule came to be a no-op
 /// for every built-in past `JsonValue`: it compared against a hand-written
@@ -61,7 +74,7 @@ pub(crate) fn compiler_tycon_names(decls: &[TyConDecl]) -> FxHashMap<String, TyC
 #[derive(Debug, Default, Clone)]
 pub struct TyConOrigins {
     /// Indexed by `TyConId.0`; ids past the end are unknown rather than absent,
-    /// since the collect pass may see a head the prediction never covered.
+    /// since callers may supply only a partial declaration table.
     entries: Vec<TyConOrigin>,
     /// Fully-qualified module names, indexed by raw `ModuleId`.
     module_fqns: Vec<String>,
@@ -86,12 +99,9 @@ struct TyConOrigin {
 impl TyConOrigins {
     /// Builds the table from the two places a `TyConId` can come from.
     ///
-    /// `compiler_decls` is the arena as it stands before user types are
-    /// interned — built-ins first, then the reconciled stdlib block.
-    /// `per_module` is the per-module prediction of the ids user `type` and
-    /// `actor` declarations will receive, indexed by `ModuleId.0`; it is the
-    /// same prediction the instance heads are resolved against, so the two
-    /// cannot disagree about which id a declaration owns.
+    /// `compiler_decls` contains compiler declarations and any reserved source
+    /// placeholders. `per_module` supplies source identities indexed by
+    /// `ModuleId.0`, the same identities instance heads resolve against.
     #[must_use]
     pub fn new(
         compiler_decls: &[TyConDecl],
@@ -232,48 +242,9 @@ pub(crate) fn topo_order(deps: &[Vec<ModuleId>]) -> Vec<ModuleId> {
     order
 }
 
-/// Predict, per module, the `type/actor name -> TyConId` arena ids that the
-/// user-tycon collect pass assigns.
-///
-/// Every named `TypeDecl`/`ActorDecl` interns exactly one arena entry, in the
-/// order modules are type-checked (`check_order`) then source order, starting at
-/// `builtins_len` (the number of built-in `TyCons`). This mirrors
-/// `collect_user_tycons` pass-1 interning as driven by the same order, so the
-/// predicted id equals the arena id the producer module holds after its collect
-/// pass runs. The result is indexed by `ModuleId.0`.
-#[must_use]
-pub(crate) fn predict_module_tycon_names(
-    module_asts: &[Arc<Module>],
-    check_order: &[ModuleId],
-    builtins_len: u32,
-) -> Vec<FxHashMap<String, TyConId>> {
-    let mut next = builtins_len;
-    let mut per_module: Vec<FxHashMap<String, TyConId>> = (0..module_asts.len())
-        .map(|_| FxHashMap::default())
-        .collect();
-    for &mid in check_order {
-        let Some(ast) = module_asts.get(mid.0 as usize) else {
-            continue;
-        };
-        let map = &mut per_module[mid.0 as usize];
-        for item in &ast.items {
-            let name = match item {
-                Item::Type(td) => Some(td.name.text.clone()),
-                Item::Actor(ad) => Some(ad.name.text.clone()),
-                _ => None,
-            };
-            if let Some(n) = name {
-                map.insert(n, TyConId(next));
-                next += 1;
-            }
-        }
-    }
-    per_module
-}
-
 /// Flatten per-module type-name maps into a single workspace map (first
-/// occurrence in check order wins), for the instance-collection pass which only
-/// needs a name to resolve to some declaring `TyConId`.
+/// occurrence in check order wins), for catalogue reconciliation. Source
+/// instance heads must use their declaring module's own resolution view.
 #[must_use]
 pub(crate) fn flatten_tycon_names(
     per_module: &[FxHashMap<String, TyConId>],
@@ -326,10 +297,9 @@ pub(crate) fn imported_tycon_names(
                     }
                     // Prefer the producer's real id (recorded once it is checked, which
                     // `check_order` guarantees for every module this one imports); fall
-                    // back to the pre-check prediction only if a producer is somehow not
-                    // yet recorded. The prediction drifts from the real id whenever the
-                    // producer or a module before it synthesizes types (`deriving`
-                    // mirrors, insert companions) the source-item count cannot see.
+                    // back to the reserved source identity before the producer is
+                    // checked. Generated types have no source reservation and become
+                    // visible through the producer's completed table.
                     let resolved = actual_tycon_names
                         .get(module.0 as usize)
                         .and_then(|m| m.get(&entry.name))
@@ -487,5 +457,22 @@ mod tycon_origins_tests {
     fn an_unknown_id_owns_nothing() {
         let origins = TyConOrigins::default();
         assert_eq!(origins.declaring_module(TyConId(9_999)), None);
+    }
+
+    #[test]
+    fn imported_opaque_compiler_types_keep_their_ids_without_exposing_source_types() {
+        let mut arena = ridge_types::TyConArena::new();
+        let builtins = ridge_types::BuiltinTyCons::allocate(&mut arena);
+        let mut declarations = arena.all().to_vec();
+        let mut source = declarations[builtins.sql.0 as usize].clone();
+        source.id = TyConId(9_999);
+        source.def_module_raw = Some(7);
+        declarations.push(source.clone());
+        source.name = "Unimported".into();
+        declarations.push(source);
+        let names = super::compiler_tycon_names(&declarations);
+        assert_eq!(names.get("Sql"), Some(&builtins.sql));
+        assert_eq!(names.get("SqlValue"), Some(&builtins.sql_value));
+        assert!(!names.contains_key("Unimported"));
     }
 }

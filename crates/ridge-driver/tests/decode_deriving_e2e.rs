@@ -464,7 +464,7 @@ pub fn sameFunction () -> Bool =
     let boxed: Result (Box Int) Error = decode (JObjectFields [("value", JInt 11)])
     let list: Result (List Int) Error = decode (JList [JInt 12])
     let option: Result (Option Text) Error = decode (JText "thirteen")
-    ints == Ok (Map.fromList [("k", 7)]) && texts == Ok (Map.fromList [("k", "seven")]) && ok == Ok (Ok 7) && err == Ok (Err 8) && entry == Ok (Entry { value = 9 }) && event == Ok (Number 10) && boxed == Ok (Box { value = 11 }) && list == Ok [12] && option == Ok (Some "thirteen")
+    eq ints (Ok (Map.fromList [("k", 7)])) && eq texts (Ok (Map.fromList [("k", "seven")])) && eq ok (Ok (Ok 7)) && eq err (Ok (Err 8)) && eq entry (Ok (Entry { value = 9 })) && eq event (Ok (Number 10)) && eq boxed (Ok (Box { value = 11 })) && eq list (Ok [12]) && eq option (Ok (Some "thirteen"))
 
 fn mapOnly () -> Result (Map Text Int) Error =
     decode (JObject (Map.fromList [("k", JInt 7)]))
@@ -473,12 +473,12 @@ fn resultOnly () -> Result (Result Int Text) Error =
     decode (JObject (Map.fromList [("tag", JText "Ok"), ("values", JList [JInt 8])]))
 
 pub fn separateFunctions () -> Bool =
-    mapOnly () == Ok (Map.fromList [("k", 7)]) && resultOnly () == Ok (Ok 8)
+    eq (mapOnly ()) (Ok (Map.fromList [("k", 7)])) && eq (resultOnly ()) (Ok (Ok 8))
 
 pub fn nested () -> Bool =
     let json = JObjectFields [("k", JObjectFields [("tag", JText "Ok"), ("values", JList [JList [JInt 3, JInt 4]])])]
     let back: Result (Map Text (Result (List Int) Text)) Error = decode json
-    back == Ok (Map.fromList [("k", Ok [3, 4])])
+    eq back (Ok (Map.fromList [("k", Ok [3, 4])]))
 
 fn decodeAs (j: JsonValue) -> Result a Error where Decode a = decode j
 
@@ -492,23 +492,23 @@ fn decodeList (j: JsonValue) (witness: a) -> Result (List a) Error where Decode 
 pub fn forwarding () -> Bool =
     let ints: Result (Map Text Int) Error = decodeAs (JObjectFields [("k", JInt 7)])
     let texts: Result (Map Text Text) Error = decodeAs (JObjectFields [("k", JText "seven")])
-    ints == Ok (Map.fromList [("k", 7)]) && texts == Ok (Map.fromList [("k", "seven")])
+    eq ints (Ok (Map.fromList [("k", 7)])) && eq texts (Ok (Map.fromList [("k", "seven")]))
 
 pub fn concreteInGeneric () -> Bool =
-    decodeWithConcrete (JText "text") "witness" == (Ok "text", Ok 19)
+    eq (decodeWithConcrete (JText "text") "witness") (Ok "text", Ok 19)
 
 pub fn genericContainer () -> Bool =
-    decodeList (JList [JText "text"]) "witness" == Ok ["text"]
+    eq (decodeList (JList [JText "text"]) "witness") (Ok ["text"])
 
 pub fn piped () -> Bool =
     let map: Result (Map Text Int) Error = JObjectFields [("k", JInt 7)] |> decode
     let result: Result (Result Int Text) Error = JObjectFields [("tag", JText "Ok"), ("values", JList [JInt 8])] |> decode
-    map == Ok (Map.fromList [("k", 7)]) && result == Ok (Ok 8)
+    eq map (Ok (Map.fromList [("k", 7)])) && eq result (Ok (Ok 8))
 
 pub fn methodsAsValues () -> Bool =
     let mapRead: JsonValue -> Result (Map Text Int) Error = decode
     let resultRead: JsonValue -> Result (Result Int Text) Error = decode
-    mapRead (JObjectFields [("k", JInt 7)]) == Ok (Map.fromList [("k", 7)]) && resultRead (JObjectFields [("tag", JText "Ok"), ("values", JList [JInt 8])]) == Ok (Ok 8)
+    eq (mapRead (JObjectFields [("k", JInt 7)])) (Ok (Map.fromList [("k", 7)])) && eq (resultRead (JObjectFields [("tag", JText "Ok"), ("values", JList [JInt 8])])) (Ok (Ok 8))
 
 fn valueWithConcrete (j: JsonValue) (witness: a) -> (Result a Error, Result Int Error) where Decode a =
     let genericRead: JsonValue -> Result a Error = decode
@@ -516,7 +516,7 @@ fn valueWithConcrete (j: JsonValue) (witness: a) -> (Result a Error, Result Int 
     (genericRead j, concreteRead (JInt 19))
 
 pub fn valuesInGeneric () -> Bool =
-    valueWithConcrete (JText "text") "witness" == (Ok "text", Ok 19)
+    eq (valueWithConcrete (JText "text") "witness") (Ok "text", Ok 19)
 
 pub fn invalidPayload () -> Text =
     let back: Result (Map Text Int) Error = decode (JObjectFields [("k", JText "wrong")])

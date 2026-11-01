@@ -2064,6 +2064,27 @@ pub fn db leftJoinEveryAuthored () -> Text =
                 Err _ -> "every-err"
                 Ok b  -> boolText b
 
+-- Paged outer probes need both entity column dictionaries, even without decoding.
+-- Distinct field names make a swapped left/right dictionary observable in `every`.
+fn probeSucceeded (result: Result Bool DbError) -> Bool =
+    match result
+        Ok value -> value
+        Err _ -> false
+
+pub fn db pagedOuterTerminals () -> List Bool =
+    match setupJoin ()
+        Err _ -> []
+        Ok (users, posts) ->
+            let left = users |> Repo.query |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.limit 2
+            let right = users |> Repo.query |> Repo.rightJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.limit 2
+            let full = users |> Repo.query |> Repo.fullJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.limit 2
+            [probeSucceeded (Repo.exists left),
+             probeSucceeded (Repo.exists right),
+             probeSucceeded (Repo.exists full),
+             probeSucceeded (Repo.every (fn (u: User) (p: Post) -> u.age >= 0) left),
+             probeSucceeded (Repo.every (fn (u: User) (p: Post) -> p.author >= 0) right),
+             probeSucceeded (Repo.every (fn (u: User) (p: Post) -> u.age >= 0 || p.author >= 0) full)]
+
 -- A grouping dataset: employees with a repeated `dept` key and a salary, so a
 -- GROUP BY partitions several rows per group (eng has 2, sales 3, ops 1).
 pub type Emp = { id: Int, dept: Text, salary: Int } deriving (Row)
@@ -2878,6 +2899,7 @@ fn repo_surface_runs_on_beam() {
          io:format(\"leftJoinCount=~w~n\",[{module}:leftJoinCount()]), \
          io:format(\"leftJoinAny=~s~n\",[{module}:leftJoinAny()]), \
          io:format(\"leftJoinEveryAuthored=~s~n\",[{module}:leftJoinEveryAuthored()]), \
+         io:format(\"pagedOuterTerminals=~w~n\",[{module}:pagedOuterTerminals()]), \
          io:format(\"groupCounts=~s~n\",[{module}:groupCounts()]), \
          io:format(\"groupSums=~s~n\",[{module}:groupSums()]), \
          io:format(\"groupAvgs=~s~n\",[{module}:groupAvgs()]), \
@@ -3341,6 +3363,10 @@ fn repo_surface_runs_on_beam() {
         (
             "leftJoinEveryAuthored=false",
             "a right-column every over a left join fails the unmatched ada row (its post is NULL)",
+        ),
+        (
+            "pagedOuterTerminals=[true,true,true,true,true,true]",
+            "paged exists/every retain each outer join's entity column dictionaries",
         ),
         ("sumAllAges=73", "sumOf folds every age (18 + 30 + 25)"),
         (

@@ -1,5 +1,6 @@
 ---
 source: crates/ridge-lower/tests/lowering.rs
+assertion_line: 44
 expression: rendered
 ---
 module: m0
@@ -17,30 +18,58 @@ items:
     body:
       Match(n0):
         scrutinee:
-          Call(n1):
-            callee:
-              Symbol(n2): Stdlib(fn:std.op.gt)
-            args:
+          Match(n1):
+            scrutinee:
+              Call(n2):
+                callee:
+                  Field(n3).compare:
+                    Call(n4):
+                      callee:
+                        Symbol(n5): Stdlib(fn:std.op.evidence)
+                      args:
+                        -
+                          Symbol(n6): Stdlib(fn:std._evidence.$ridge_evidence)
+                        -
+                          Lit(n7): Text("Ord:static:[(\"\", \"Int\")]:[]")
+                        -
+                          ListLit(n8):
+                args:
+                  -
+                    Local(n9): x
+                  -
+                    Lit(n10): Int(0)
+            arms:
               -
-                Local(n3): x
+                pat:
+                  Ctor: Ctor(Variant:Less owner=15)
+                body:
+                  Lit(n11): Bool(false)
               -
-                Lit(n4): Int(0)
+                pat:
+                  Ctor: Ctor(Variant:Equal owner=15)
+                body:
+                  Lit(n12): Bool(false)
+              -
+                pat:
+                  Ctor: Ctor(Variant:Greater owner=15)
+                body:
+                  Lit(n13): Bool(true)
         arms:
           -
             pat:
               Lit: Bool(true)
             body:
-              Call(n5):
+              Call(n14):
                 callee:
-                  Symbol(n6): Stdlib(fn:std.int.mul)
+                  Symbol(n15): Stdlib(fn:std.int.mul)
                 args:
                   -
-                    Local(n7): x
+                    Local(n16): x
                   -
-                    Lit(n8): Int(2)
+                    Lit(n17): Int(2)
           -
             pat:
               Lit: Bool(false)
             body:
-              Return(n9):
-                Lit(n10): Int(0)
+              Return(n18):
+                Lit(n19): Int(0)

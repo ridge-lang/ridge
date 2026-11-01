@@ -5,6 +5,25 @@
 use ridge_resolve::{discover_workspace, resolve_workspace};
 use ridge_typecheck::{typecheck_workspace, TypeError};
 
+#[test]
+fn class_method_aliases_retain_their_projection_domains() {
+    let source =
+        "type View a = Rows a\npub class Project a =\n    project (value: a) -> View Int\n";
+    let errors = check(source);
+    assert!(
+        errors.iter().any(
+            |error| matches!(error, TypeError::NoInstance { class, .. } if class == "Fetchable")
+        ),
+        "{errors:?}"
+    );
+    let valid = format!(
+        "type User = {{ value: Int }}\n{}",
+        source.replace("View Int", "View (Seq User)")
+    );
+    let errors = check(&valid);
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
 fn check(source: &str) -> Vec<TypeError> {
     check_files(&[("Main", source)])
 }

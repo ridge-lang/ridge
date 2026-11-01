@@ -36,6 +36,7 @@ import std.repo as Repo
 import std.raw as Raw
 import std.sql (toSql, SqlValue)
 import std.time (ofMillis)
+import std.float as Float
 
 -- A `serial` id lets `deriving (Schema)` omit it from the insert shape, so the insert
 -- carries the bucket and the interval and Postgres assigns the id. The `bucket` groups
@@ -53,7 +54,7 @@ fn durText (d: Duration) -> Text = Int.toText d.ms
 fn optAvg (o: Option Float) -> Text =
     match o
         None   -> "none"
-        Some f -> if f == 1000.0 then "ok" else "wrong"
+        Some f -> if Float.equal f 1000.0 then "ok" else "wrong"
 
 fn pgConfig () -> PostgresConfig =
     PostgresConfig { host = "__PG_HOST__", port = __PG_PORT__, database = "__PG_DATABASE__", user = "__PG_USER__", password = "__PG_PASSWORD__", sslMode = "__PG_SSLMODE__" }
@@ -107,7 +108,7 @@ pub fn db avgTook () -> Text =
 fn bucketXMean (rows: List BucketMean) -> Text =
     match rows
         []        -> "no-x"
-        r :: rest -> if r.bucket == "x" then (if r.mean == 1000.0 then "ok" else "wrong") else bucketXMean rest
+        r :: rest -> if r.bucket == "x" then (if Float.equal r.mean 1000.0 then "ok" else "wrong") else bucketXMean rest
 
 -- a grouped AVG over the interval column renders per group as
 -- `EXTRACT(EPOCH FROM AVG(took))::float8 * 1000`. Both rows share bucket "x", so

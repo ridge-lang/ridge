@@ -91,6 +91,12 @@ pub fn lower_binary(
     // handler bodies; see the structural-Float-hint fallback below).
     let lhs_ty = resolve_lhs_type(ctx, lhs);
     let rhs_ty = resolve_lhs_type(ctx, rhs);
+    if matches!(
+        op,
+        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge
+    ) {
+        return crate::comparison_operator::lower(ctx, op, lhs, rhs, &lhs_ty, span);
+    }
     let (module, name) = op_to_symbol_with_fallback(op, &lhs_ty, &rhs_ty, lhs, rhs, ctx);
     let callee_id = ctx.fresh_id(None);
     let call_id = ctx.fresh_id(None);
@@ -486,29 +492,40 @@ mod tests {
         );
     }
 
-    // ── Eq lowers to std.op.eq (polymorphic) ─────────────────────────
+    // Missing editor context stays a hole, never universal equality.
 
     #[test]
-    fn binary_eq_polymorphic() {
+    fn binary_eq_retains_an_evidence_hole_without_type_context() {
         let mut ctx = fresh_ctx();
         let ir = lower_binary(&mut ctx, BinOp::Eq, &int_expr(1), &int_expr(2), sp());
 
         match ir {
-            IrExpr::Call { callee, .. } => match *callee {
-                IrExpr::Symbol {
-                    sym:
-                        SymbolRef::Stdlib {
-                            ref module,
-                            ref name,
+            IrExpr::Call { callee, args, .. } => {
+                assert!(matches!(
+                    args.as_slice(),
+                    [
+                        IrExpr::Lit {
+                            value: IrLit::Int(1),
                             ..
                         },
-                    ..
-                } => {
-                    assert_eq!(module, "std.op");
-                    assert_eq!(name, "eq");
-                }
-                ref other => panic!("expected Stdlib(std.op.eq), got {other:?}"),
-            },
+                        IrExpr::Lit {
+                            value: IrLit::Int(2),
+                            ..
+                        }
+                    ]
+                ));
+                let IrExpr::Field { base, field, .. } = *callee else {
+                    panic!("comparison must select its evidence method");
+                };
+                assert_eq!(field, "eq");
+                assert!(matches!(
+                    *base,
+                    IrExpr::Lit {
+                        value: IrLit::Unit,
+                        ..
+                    }
+                ));
+            }
             other => panic!("expected IrExpr::Call, got {other:?}"),
         }
     }

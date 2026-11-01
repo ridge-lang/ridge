@@ -72,9 +72,9 @@ glue_level() ->
          {'SqlInstant', 0}, {'SqlDecimal', <<"9.99">>}]),
     {ok, [Row]} = ridge_sqlite:sqlite_raw_query(Id,
         <<"SELECT id,email,active,ts,amt FROM u WHERE id = ?">>, [{'SqlInt', 1}]),
-    io:format("glue_active=~p~n", [maps:get(<<"active">>, Row)]),
-    io:format("glue_ts=~p~n", [maps:get(<<"ts">>, Row)]),
-    io:format("glue_amt=~p~n", [maps:get(<<"amt">>, Row)]),
+    io:format("glue_active=~p~n", [row_field(<<"active">>, Row)]),
+    io:format("glue_ts=~p~n", [row_field(<<"ts">>, Row)]),
+    io:format("glue_amt=~p~n", [row_field(<<"amt">>, Row)]),
     %% a duplicate email is a unique violation, mapped to the shared SQLSTATE
     UErr = ridge_sqlite:sqlite_raw_exec(Id,
         <<"INSERT INTO u (id,email) VALUES (2,'a@x')">>, []),
@@ -87,7 +87,7 @@ glue_level() ->
     {ok, ok} = ridge_sqlite:sqlite_rollback(Id),
     {ok, ok} = ridge_sqlite:sqlite_commit(Id),
     {ok, AllRows} = ridge_sqlite:sqlite_all(Id, <<"u">>),
-    Ids = lists:sort([N || R <- AllRows, begin {'SqlInt', N} = maps:get(<<"id">>, R), true end]),
+    Ids = lists:sort([N || R <- AllRows, begin {'SqlInt', N} = row_field(<<"id">>, R), true end]),
     io:format("glue_ids=~p~n", [Ids]),
     {ok, GRows} = ridge_sqlite:sqlite_get_rows(Id, <<"u">>, <<"id">>, {'SqlInt', 3}),
     io:format("glue_get=~p~n", [length(GRows)]),
@@ -97,8 +97,8 @@ glue_level() ->
         [{'SqlBytes', <<"deadbeef">>},
          {'SqlArray', [{'SqlInt', 1}, {'SqlInt', 2}, {'SqlText', <<"x">>}]}]),
     {ok, [BRow]} = ridge_sqlite:sqlite_raw_query(Id, <<"SELECT raw,arr FROM b">>, []),
-    io:format("glue_bytes=~p~n", [maps:get(<<"raw">>, BRow)]),
-    io:format("glue_array=~p~n", [maps:get(<<"arr">>, BRow)]),
+    io:format("glue_bytes=~p~n", [row_field(<<"raw">>, BRow)]),
+    io:format("glue_array=~p~n", [row_field(<<"arr">>, BRow)]),
     %% migrations bookkeeping
     {ok, []} = ridge_sqlite:sqlite_migrations_applied(Id),
     {ok, ok} = ridge_sqlite:sqlite_record_migration(Id, <<"0001_init">>),
@@ -110,6 +110,10 @@ glue_level() ->
     io:format("glue_migs2=~p~n", [Applied2]),
     {ok, ok} = ridge_sqlite:sqlite_close(Id),
     io:format("glue_closed=~p~n", [err_code(ridge_sqlite:sqlite_raw_exec(Id, <<"SELECT 1">>, []))]).
+
+row_field(Key, Row) ->
+    {Key, Value} = lists:keyfind(Key, 1, ridge_rt:indexed_map_to_list(Row)),
+    Value.
 
 err_code({error, #{code := C}}) -> C;
 err_code(Other) -> Other.
@@ -125,8 +129,12 @@ main(_) ->
     {ok, _} = ridge_sqlite:sqlite_raw_exec(Id, <<"CREATE TABLE t (n INTEGER)">>, []),
     {ok, 1} = ridge_sqlite:sqlite_raw_exec(Id, <<"INSERT INTO t VALUES (?)">>, [{'SqlInt', 42}]),
     {ok, [Row]} = ridge_sqlite:sqlite_raw_query(Id, <<"SELECT n FROM t">>, []),
-    io:format("escript_val=~p~n", [maps:get(<<"n">>, Row)]),
-    ok = ridge_sqlite:sqlite_close(Id).
+    io:format("escript_val=~p~n", [row_field(<<"n">>, Row)]),
+    {ok, ok} = ridge_sqlite:sqlite_close(Id).
+
+row_field(Key, Row) ->
+    {Key, Value} = lists:keyfind(Key, 1, ridge_rt:indexed_map_to_list(Row)),
+    Value.
 "#;
 
 /// `erlc <src>` into `out_dir`.
@@ -297,7 +305,7 @@ fn sqlite_escript_self_contained() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stdout.contains("escript_val={'SqlInt',42}"),
+        out.status.success() && stdout.contains("escript_val={'SqlInt',42}"),
         "the self-contained escript did not run SQLite:\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

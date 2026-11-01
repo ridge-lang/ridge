@@ -1,5 +1,6 @@
 ---
 source: crates/ridge-lower/tests/lowering.rs
+assertion_line: 44
 expression: rendered
 ---
 module: m0
@@ -42,58 +43,28 @@ items:
           Symbol(n7): Local(toJson @ m0)
         args:
           -
-            Construct(n8):
-              ctor: Ctor(Record:$synth_dict_encode owner=none)
-              fields:
-                encode:
-                  Lambda(n9):
-                    caps: CapabilitySet(0)
-                    params:
-                      - name: __enc_xs
-                        ty: Error
-                    body:
-                      Call(n10):
-                        callee:
-                          Symbol(n11): Prelude(JList)
-                        args:
-                          -
-                            Call(n12):
-                              callee:
-                                Symbol(n13): Stdlib(fn:std.list.map)
-                              args:
-                                -
-                                  Lambda(n14):
-                                    caps: CapabilitySet(0)
-                                    params:
-                                      - name: __enc_e
-                                        ty: Error
-                                    body:
-                                      Call(n15):
-                                        callee:
-                                          Field(n16).encode:
-                                            Construct(n17):
-                                              ctor: Ctor(Record:$synth_dict_encode owner=none)
-                                              fields:
-                                                encode:
-                                                  Lambda(n18):
-                                                    caps: CapabilitySet(0)
-                                                    params:
-                                                      - name: __enc_x
-                                                        ty: Error
-                                                    body:
-                                                      Call(n19):
-                                                        callee:
-                                                          Symbol(n20): Prelude(JInt)
-                                                        args:
-                                                          -
-                                                            Local(n21): __enc_x
-                                        args:
-                                          -
-                                            Local(n22): __enc_e
-                                -
-                                  Local(n23): __enc_xs
+            Call(n8):
+              callee:
+                Symbol(n9): Stdlib(fn:std.op.evidence)
+              args:
+                -
+                  Symbol(n10): Stdlib(fn:std._evidence.$ridge_evidence)
+                -
+                  Lit(n11): Text("Encode:static:[(\"\", \"List\")]:[(\"Encode\", [0])]")
+                -
+                  ListLit(n12):
+                    Call(n13):
+                      callee:
+                        Symbol(n14): Stdlib(fn:std.op.evidence)
+                      args:
+                        -
+                          Symbol(n15): Stdlib(fn:std._evidence.$ridge_evidence)
+                        -
+                          Lit(n16): Text("Encode:static:[(\"\", \"Int\")]:[]")
+                        -
+                          ListLit(n17):
           -
-            ListLit(n24):
-              Lit(n25): Int(1)
-              Lit(n26): Int(2)
-              Lit(n27): Int(3)
+            ListLit(n18):
+              Lit(n19): Int(1)
+              Lit(n20): Int(2)
+              Lit(n21): Int(3)

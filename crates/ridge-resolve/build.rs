@@ -152,6 +152,11 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "mul",
             "div",
             "neg",
+            "equal",
+            "less",
+            "lessOrEqual",
+            "greater",
+            "greaterOrEqual",
             "totalCompare",
         ],
     ),
@@ -1334,6 +1339,13 @@ fn main() {
 
 // ── Generation ────────────────────────────────────────────────────────────────
 
+struct ManifestModule {
+    name: String,
+    exports: Vec<String>,
+    opaque: Vec<String>,
+    declared_types: Vec<String>,
+}
+
 fn generate_manifest(stdlib_dir: &Path, out_path: &Path) -> Result<(), String> {
     // Build the module list in canonical order.
     //
@@ -1341,7 +1353,7 @@ fn generate_manifest(stdlib_dir: &Path, out_path: &Path) -> Result<(), String> {
     // source files are walked only to validate that they exist (T201 guard);
     // the text-extracted names are NOT merged in here.  T12 will introduce
     // the full bidirectional consistency mechanism.
-    let mut modules: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
+    let mut modules = Vec::new();
 
     for &dotted in MODULE_ORDER {
         // Validate the .ridge file exists (T201 guard — emit a warning if not).
@@ -1368,7 +1380,25 @@ fn generate_manifest(stdlib_dir: &Path, out_path: &Path) -> Result<(), String> {
                 ops.iter().map(|&s| s.to_owned()).collect()
             });
 
-        modules.push((dotted.to_owned(), exports, opaque));
+        let source = std::fs::read_to_string(&full)
+            .map_err(|e| format!("could not read {}: {e}", full.display()))?;
+        let declared_types = source
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                let rest = line
+                    .strip_prefix("pub opaque type ")
+                    .or_else(|| line.strip_prefix("pub type "))?;
+                let name = rest.split_whitespace().next()?.trim_end_matches('=');
+                is_valid_ident(name).then(|| name.to_owned())
+            })
+            .collect();
+        modules.push(ManifestModule {
+            name: dotted.to_owned(),
+            exports,
+            opaque,
+            declared_types,
+        });
     }
 
     let content = emit_manifest_rs(&modules);
@@ -1385,7 +1415,7 @@ fn generate_manifest(stdlib_dir: &Path, out_path: &Path) -> Result<(), String> {
 
 // ── Code emitter ──────────────────────────────────────────────────────────────
 
-fn emit_manifest_rs(modules: &[(String, Vec<String>, Vec<String>)]) -> String {
+fn emit_manifest_rs(modules: &[ManifestModule]) -> String {
     // The generated file contains only the `BUILTINS` static initializer body.
     // It is included via:
     //   pub static BUILTINS: &[BuiltinStdlibModule] = include!(...);
@@ -1395,7 +1425,13 @@ fn emit_manifest_rs(modules: &[(String, Vec<String>, Vec<String>)]) -> String {
     out.push_str("// Do not edit by hand — re-run cargo build to regenerate.\n");
     out.push_str("&[\n");
 
-    for (idx, (dotted, exports, opaque)) in modules.iter().enumerate() {
+    for (idx, module) in modules.iter().enumerate() {
+        let ManifestModule {
+            name: dotted,
+            exports,
+            opaque,
+            declared_types,
+        } = module;
         out.push_str("    BuiltinStdlibModule {\n");
         out.push_str(&format!("        id: StdlibModuleId({idx}),\n"));
         out.push_str(&format!("        name: \"{dotted}\",\n"));
@@ -1406,6 +1442,11 @@ fn emit_manifest_rs(modules: &[(String, Vec<String>, Vec<String>)]) -> String {
         out.push_str("        ],\n");
         out.push_str("        opaque_types: &[\n");
         for ty in opaque {
+            out.push_str(&format!("            \"{ty}\",\n"));
+        }
+        out.push_str("        ],\n");
+        out.push_str("        declared_types: &[\n");
+        for ty in declared_types {
             out.push_str(&format!("            \"{ty}\",\n"));
         }
         out.push_str("        ],\n");

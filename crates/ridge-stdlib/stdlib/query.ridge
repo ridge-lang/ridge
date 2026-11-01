@@ -594,7 +594,7 @@ fn renderMutation (plan: MutationPlan) -> { text: Text, binds: List SqlValue } =
         MutUpsert table rows conflictCols updateCols ->
             renderUpsert table rows conflictCols updateCols
         MutUpdate table changes pred ->
-            let s = renderSet (Map.toList changes) 1
+            let s = renderSet (orderedColumns changes) 1
             let w = mutationWhere pred s.next
             { text = Text.join "" ["UPDATE ", mutationTarget table pred, " SET ", s.text, w.text], binds = s.binds ++ w.binds }
         MutDelete table pred ->
@@ -617,14 +617,18 @@ fn mutationWhere (pred: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, n
     if containsExists pred then whereExistsClause 0 1 pred n
     else whereClause false pred n
 
--- Render an `INSERT` over one or more rows sharing the same columns. The column list
--- comes from the first row; each row contributes a parenthesised tuple of `$N`
--- placeholders, the values collected left to right as binds.
+-- Hash-map traversal is unspecified. Use the same column-name order for the
+-- header and every row's bind values, independently of each map's seed.
+fn orderedColumns (row: Map Text SqlValue) -> List (Text, SqlValue) =
+    List.sortBy (fn pair -> match pair
+        (name, _value) -> name) (Map.toList row)
+
+-- Render an `INSERT` over rows sharing the same columns, ordered by name.
 fn renderInsert (table: Text) (rows: List (Map Text SqlValue)) -> { text: Text, binds: List SqlValue } =
     match rows
         [] -> { text = "", binds = [] }
         first :: _ ->
-            let header = insertColumns (Map.toList first)
+            let header = insertColumns (orderedColumns first)
             let vr = valueRows rows 1
             { text = Text.join "" ["INSERT INTO ", quoteIdent table, " (", header, ") VALUES ", vr.text], binds = vr.binds }
 
@@ -639,9 +643,9 @@ fn insertColumns (pairs: List (Text, SqlValue)) -> Text =
 fn valueRows (rows: List (Map Text SqlValue)) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match rows
         []           -> { text = "", binds = [], next = n }
-        row :: []    -> valueTuple (Map.toList row) n
+        row :: []    -> valueTuple (orderedColumns row) n
         row :: rest  ->
-            let t = valueTuple (Map.toList row) n
+            let t = valueTuple (orderedColumns row) n
             let r = valueRows rest t.next
             { text = Text.join "" [t.text, ", ", r.text], binds = t.binds ++ r.binds, next = r.next }
 
@@ -667,7 +671,7 @@ fn renderUpsert (table: Text) (rows: List (Map Text SqlValue)) (conflictCols: Li
     match rows
         [] -> { text = "", binds = [] }
         first :: _ ->
-            let header = insertColumns (Map.toList first)
+            let header = insertColumns (orderedColumns first)
             let vr = valueRows rows 1
             { text = Text.join "" ["INSERT INTO ", quoteIdent table, " (", header, ") VALUES ", vr.text, conflictClause conflictCols updateCols], binds = vr.binds }
 

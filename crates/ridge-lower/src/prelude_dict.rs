@@ -197,18 +197,39 @@ pub fn synth_prelude_dict(
 /// `Float` deliberately has no `Eq` instance; user instances keep their own body.
 #[must_use]
 pub fn is_prelude_eq_instance(b: &BuiltinTyCons, class: ClassId, tycon: TyConId) -> bool {
-    class == EQ_CLASS && [b.int, b.bool, b.text, b.timestamp, b.ordering].contains(&tycon)
+    class == EQ_CLASS
+        && [
+            b.int,
+            b.bool,
+            b.text,
+            b.unit,
+            b.bytes,
+            b.uuid,
+            b.timestamp,
+            b.date,
+            b.time,
+            b.ordering,
+            b.handle,
+            b.supervisor,
+            b.monitor,
+        ]
+        .contains(&tycon)
 }
 
-/// Materialize primitive equality using the same semantic operation as `==`
-/// and derived equality. The dictionary method is a pure two-argument function.
+/// Materialize primitive value or identity equality.
+/// The dictionary method is a pure two-argument function.
 #[must_use]
-pub fn synth_eq_dict(ctx: &mut LowerCtx<'_>, span: Span) -> IrExpr {
+pub fn synth_eq_dict(ctx: &mut LowerCtx<'_>, tycon: TyConId, span: Span) -> IrExpr {
     let a_name = ctx.fresh_local("__eq_a");
     let b_name = ctx.fresh_local("__eq_b");
     let a = local(ctx, &a_name, span);
     let b = local(ctx, &b_name, span);
-    let body = stdlib_call(ctx, "std.op", "eq", vec![a, b], span);
+    let method = if tycon == ctx.builtins.handle {
+        "handleEq"
+    } else {
+        "eq"
+    };
+    let body = stdlib_call(ctx, "std.op", method, vec![a, b], span);
     let method = lambda(
         ctx,
         vec![param(a_name, span), param(b_name, span)],
@@ -223,13 +244,14 @@ pub fn synth_eq_dict(ctx: &mut LowerCtx<'_>, span: Span) -> IrExpr {
 /// True if `(class, tycon)` is a built-in `Ord` instance whose dictionary must
 /// be synthesised.
 ///
-/// Covers the natively-ordered primitives (`Int`/`Float`/`Bool`/`Text`) and
-/// `Ordering` itself. Each has a registered instance but no `$inst_` constant,
+/// Covers the primitive numerical, chronological and lexicographic value orders.
+/// Each has a registered instance but no `$inst_` constant,
 /// exactly like the codec primitives. Every other `Ord` — a derived or
 /// hand-written user instance — keeps the `$inst_` symbol path.
 #[must_use]
 pub fn is_prelude_ord_instance(b: &BuiltinTyCons, class: ClassId, tycon: TyConId) -> bool {
-    class == ORD_CLASS && [b.int, b.float, b.bool, b.text, b.ordering].contains(&tycon)
+    class == ORD_CLASS
+        && [b.int, b.text, b.bytes, b.uuid, b.timestamp, b.date, b.time].contains(&tycon)
 }
 
 /// True if `(class, tycon)` is a built-in `ToText` instance whose dictionary
@@ -269,8 +291,8 @@ enum ToTextTarget {
     /// `Ordering` has no stdlib module — its three constructors are named by a
     /// runtime helper reached through `std.list`.
     Ordering,
-    /// `std.<module>.toText`.
-    Module(&'static str),
+    /// The module's existing canonical text conversion.
+    Module(&'static str, &'static str),
     /// One of std.actor's four error unions, reached through the private
     /// bridge named here. They are reconciled rather than built-in, so they
     /// carry no `BuiltinTyCons` handle and are matched by name.
@@ -299,13 +321,13 @@ fn prelude_totext_target(ctx: &mut LowerCtx<'_>, tycon: TyConId) -> Option<ToTex
     [
         (b.text, ToTextTarget::Identity),
         (b.ordering, ToTextTarget::Ordering),
-        (b.int, ToTextTarget::Module("std.int")),
-        (b.float, ToTextTarget::Module("std.float")),
-        (b.bool, ToTextTarget::Module("std.bool")),
-        (b.timestamp, ToTextTarget::Module("std.time")),
-        (b.error, ToTextTarget::Module("std.error")),
-        (b.decimal, ToTextTarget::Module("std.decimal")),
-        (b.uuid, ToTextTarget::Module("std.uuid")),
+        (b.int, ToTextTarget::Module("std.int", "toText")),
+        (b.float, ToTextTarget::Module("std.float", "toText")),
+        (b.bool, ToTextTarget::Module("std.bool", "toText")),
+        (b.timestamp, ToTextTarget::Module("std.time", "toIso")),
+        (b.error, ToTextTarget::Module("std.error", "toText")),
+        (b.decimal, ToTextTarget::Module("std.decimal", "toText")),
+        (b.uuid, ToTextTarget::Module("std.uuid", "toText")),
     ]
     .into_iter()
     .find_map(|(id, target)| (id == tycon).then_some(target))
@@ -340,7 +362,7 @@ pub fn synth_totext_dict(
     let body = match target {
         ToTextTarget::Identity => x,
         ToTextTarget::Ordering => stdlib_call(ctx, "std.list", "_orderingToText", vec![x], span),
-        ToTextTarget::Module(module) => stdlib_call(ctx, module, "toText", vec![x], span),
+        ToTextTarget::Module(module, method) => stdlib_call(ctx, module, method, vec![x], span),
         ToTextTarget::ActorError(bridge) => stdlib_call(ctx, "std.actor", bridge, vec![x], span),
     };
     let to_text_fn = lambda(ctx, vec![arg()], body, span);
@@ -472,6 +494,11 @@ fn stdlib_call(
     args: Vec<IrExpr>,
     span: Span,
 ) -> IrExpr {
+    let args = if module == "std.map" {
+        text_map_arguments(ctx, name, args, span)
+    } else {
+        args
+    };
     IrExpr::Call {
         id: ctx.fresh_id(None),
         callee: Box::new(IrExpr::Symbol {
@@ -486,6 +513,41 @@ fn stdlib_call(
         args,
         span,
     }
+}
+
+/// Generated codec/row maps have statically Text keys. Supply the same Eq/Hash
+/// evidence ABI as ordinary constrained source calls; never infer it from values.
+pub(crate) fn text_map_arguments(
+    ctx: &mut LowerCtx<'_>,
+    name: &str,
+    args: Vec<IrExpr>,
+    span: Span,
+) -> Vec<IrExpr> {
+    if !matches!(name, "fromList" | "get") {
+        return args;
+    }
+    let ty = Type::Con(ctx.builtins.text, vec![]);
+    let mut evidence = Vec::new();
+    for (class, class_name) in [
+        (ridge_types::EQ_CLASS, "Eq"),
+        (ridge_types::HASH_CLASS, "Hash"),
+    ] {
+        let Some(plan) = crate::core::build_dict_plan_from_type(ctx, class, &ty) else {
+            ctx.errors
+                .push(crate::error::LowerError::InternalLoweringError {
+                    span,
+                    message: format!(
+                        "generated Text map requires registered {class_name} evidence"
+                    ),
+                });
+            return args;
+        };
+        evidence.push(crate::core::dict_plan_to_expr(
+            ctx, class, plan, class_name, span,
+        ));
+    }
+    evidence.extend(args);
+    evidence
 }
 
 fn text_lit(ctx: &mut LowerCtx<'_>, s: &str, span: Span) -> IrExpr {
@@ -1625,28 +1687,56 @@ fn bool_match(
 }
 
 #[cfg(test)]
-mod eq_tests {
-    use super::is_prelude_eq_instance;
-    use ridge_typecheck::class_env::{register_prelude_instances, InstanceEnv};
+mod comparison_tests {
+    use super::{is_prelude_eq_instance, is_prelude_ord_instance};
+    use ridge_typecheck::class_env::{
+        register_prelude_classes, register_prelude_instances, ClassTable, InstanceEnv,
+    };
     use ridge_types::{BuiltinTyCons, TyConArena, EQ_CLASS, ORD_CLASS};
 
     #[test]
-    fn eq_synthesis_matches_the_registered_prelude_instances() {
+    fn comparison_synthesis_matches_the_registered_prelude_instances() {
         let mut arena = TyConArena::default();
         let builtins = BuiltinTyCons::allocate(&mut arena);
         let mut instances = InstanceEnv::new();
         register_prelude_instances(&mut instances, &builtins);
-        for declaration in arena.all() {
-            let registered = instances
-                .instances
-                .keys()
-                .any(|(class, head)| *class == EQ_CLASS && head.as_slice() == [declaration.id]);
-            assert_eq!(
-                is_prelude_eq_instance(&builtins, EQ_CLASS, declaration.id),
-                registered,
-                "Eq synthesis and registration differ for {}",
-                declaration.name
-            );
+        let mut classes = ClassTable::new();
+        register_prelude_classes(&mut classes);
+        assert!(ridge_typecheck::prepare_value_comparisons(
+            arena.all(),
+            &builtins,
+            &classes,
+            &mut instances
+        )
+        .is_empty());
+        for class in [EQ_CLASS, ORD_CLASS] {
+            for declaration in arena.all() {
+                let registered = instances
+                    .instances
+                    .keys()
+                    .any(|(id, head)| *id == class && head.as_slice() == [declaration.id]);
+                let primitive = if class == EQ_CLASS {
+                    is_prelude_eq_instance(&builtins, class, declaration.id)
+                } else {
+                    is_prelude_ord_instance(&builtins, class, declaration.id)
+                };
+                let composed = crate::comparison::is_composed(&builtins, class, declaration.id)
+                    || crate::value_comparison::is_decimal(&builtins, class, declaration.id)
+                    || instances
+                        .structural_comparisons
+                        .contains_key(&(class, declaration.id));
+                assert!(
+                    !(primitive && composed),
+                    "primitive and composed factories overlap for {}",
+                    declaration.name
+                );
+                assert_eq!(
+                    primitive || composed,
+                    registered,
+                    "comparison synthesis and registration differ for {} under {class:?}",
+                    declaration.name
+                );
+            }
         }
         assert!(!is_prelude_eq_instance(&builtins, EQ_CLASS, builtins.float));
         assert!(!is_prelude_eq_instance(&builtins, ORD_CLASS, builtins.int));

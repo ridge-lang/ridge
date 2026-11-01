@@ -1982,57 +1982,13 @@ pub(crate) fn build_dict_args(
     call_result_ty: Option<&Type>,
     span: Span,
 ) -> Vec<IrExpr> {
-    // Constrained callees take one dict arg per constraint. A `SymbolRef::Local`
-    // callee is a (possibly constrained) top-level fn in this module; a
-    // `SymbolRef::Stdlib` callee may be a constrained reconciled stdlib fn (e.g.
-    // std.repo's `all`/`insertRow`, typed `where Adapter a, Row e`), whose
-    // constraints come from the reconciled scheme table rather than this
-    // module's fns. Both feed the same dict-building loop below. `ret_ty` is the
-    // callee scheme's return type; aligned against the call's own result type it
-    // pins a constraint variable that appears only in the result.
-    let (constraints, param_types, ret_ty) = match callee {
-        IrExpr::Symbol {
-            sym: SymbolRef::Local { name, module },
-            ..
-        } if *module == ctx.module_id => {
-            let name = name.clone();
-            let constraints = ctx.lookup_fn_constraints(&name).to_vec();
-            if constraints.is_empty() {
-                return vec![];
-            }
-            let param_types = ctx.lookup_fn_param_types(&name).to_vec();
-            let ret_ty = ctx.lookup_fn_ret_type(&name);
-            (constraints, param_types, ret_ty)
-        }
-        IrExpr::Symbol {
-            sym: SymbolRef::Local { name, module } | SymbolRef::External { name, module },
-            ..
-        } => {
-            let Some((constraints, params, ret)) = imported_dict_signature(ctx, *module, name)
-            else {
-                return vec![];
-            };
-            (constraints, params, Some(ret))
-        }
-        IrExpr::Symbol {
-            sym: SymbolRef::Stdlib { module, name, .. },
-            ..
-        } => match ctx.reconciled_stdlib_fn_dict_sig(module, name) {
-            Some((constraints, param_types, ret)) if !constraints.is_empty() => {
-                (constraints, param_types, Some(ret))
-            }
-            _ => return vec![],
-        },
-        // An inner `fn` is a local binding, not a symbol, so its constraints
-        // come from the lexical scope stack rather than a module-wide table.
-        // Everything after this point is shared with the two cases above: a
-        // constrained helper is called the same way wherever it was declared.
-        IrExpr::Local { span, .. } => match ctx.lookup_inner_fn_dict_sig(*span) {
-            Some((constraints, param_types, ret)) => (constraints, param_types, Some(ret)),
-            None => return vec![],
-        },
-        _ => return vec![],
+    let Some(signature) = callee_dict_signature(ctx, callee) else {
+        return vec![];
     };
+    let constraints = signature.constraints;
+    if constraints.is_empty() {
+        return vec![];
+    }
 
     // Extend the pinning search with the callee's return type aligned against the
     // call's own result type. A return-pinned class method (e.g. `Row`'s
@@ -2041,12 +1997,18 @@ pub(crate) fn build_dict_args(
     // piped repository whose type the node map did not record. The result type
     // always carries it, so this keeps the right instance threaded even with two
     // `deriving (Row)` records in scope.
-    let mut pin_params: Vec<Type> = param_types;
+    let mut pin_params: Vec<Type> = signature.params;
     let mut pin_args: Vec<Option<Type>> = arg_types.to_vec();
-    if let (Some(ret), Some(result)) = (ret_ty, call_result_ty) {
-        pin_params.push(ret);
+    if let Some(result) = call_result_ty {
+        pin_params.push(signature.ret);
         pin_args.push(Some(result.clone()));
     }
+    pin_record_fields(
+        ctx,
+        signature.record_fields.as_deref().map(Vec::as_slice),
+        &mut pin_params,
+        &mut pin_args,
+    );
 
     let mut dict_args: Vec<IrExpr> = Vec::with_capacity(constraints.len());
 
@@ -2076,21 +2038,22 @@ pub(crate) fn build_dict_args(
         };
         let call_needs_multiple = class_total.get(&c.class).copied().unwrap_or(0) > 1;
         if c.class == ridge_types::ERROR_FROM_CLASS {
-            let callee_span = match callee {
-                IrExpr::Symbol { span, .. } | IrExpr::Local { span, .. } => *span,
-                _ => span,
-            };
-            let constraint = ctx
-                .error_from_sites
-                .and_then(|sites| sites.get(&callee_span))
-                .and_then(|constraints| constraints.get(occurrence))
-                .cloned();
-            dict_args.push(crate::propagate::error_from_dictionary(
-                ctx,
-                constraint.as_ref(),
-                span,
-            ));
+            dict_args.push(error_from_call_dictionary(ctx, callee, occurrence, span));
             continue;
+        }
+
+        if c.tys.len() > 1 {
+            let types: Option<Vec<_>> = c
+                .tys
+                .iter()
+                .map(|var| constraint_arg_type(&pin_params, &pin_args, *var))
+                .collect();
+            if let Some(types) = types {
+                if let Some(plan) = context_head_plan(ctx, c.class, &types) {
+                    dict_args.push(dict_plan_to_expr(ctx, c.class, plan, &class_name, span));
+                    continue;
+                }
+            }
         }
 
         // The concrete type the constraint variable was unified to at this call
@@ -2131,21 +2094,154 @@ pub(crate) fn build_dict_args(
     dict_args
 }
 
+/// Local, imported, inner and reconciled functions share one evidence ABI.
+fn callee_dict_signature(
+    ctx: &mut LowerCtx<'_>,
+    callee: &IrExpr,
+) -> Option<crate::dictionary_signature::DictionarySignature> {
+    match callee {
+        IrExpr::Symbol {
+            sym: SymbolRef::Local { name, module },
+            ..
+        } if *module == ctx.module_id => ctx.lookup_fn_dict_sig(name),
+        IrExpr::Symbol {
+            sym: SymbolRef::Local { name, module } | SymbolRef::External { name, module },
+            ..
+        } => imported_dict_signature(ctx, *module, name),
+        IrExpr::Symbol {
+            sym: SymbolRef::Stdlib { module, name, .. },
+            ..
+        } => {
+            let (constraints, params, ret) = ctx.reconciled_stdlib_fn_dict_sig(module, name)?;
+            Some(crate::dictionary_signature::DictionarySignature {
+                constraints,
+                params,
+                ret,
+                record_fields: None,
+            })
+        }
+        IrExpr::Local { span, .. } => ctx.lookup_inner_fn_dict_sig(*span),
+        _ => None,
+    }
+}
+
+fn error_from_call_dictionary(
+    ctx: &mut LowerCtx<'_>,
+    callee: &IrExpr,
+    occurrence: usize,
+    span: Span,
+) -> IrExpr {
+    let callee_span = match callee {
+        IrExpr::Symbol { span, .. } | IrExpr::Local { span, .. } => *span,
+        _ => span,
+    };
+    let constraint = ctx
+        .error_from_sites
+        .and_then(|sites| sites.get(&callee_span))
+        .and_then(|constraints| constraints.get(occurrence))
+        .cloned();
+    crate::propagate::error_from_dictionary(ctx, constraint.as_ref(), span)
+}
+
 /// Read an imported function's dictionary contract from its producing module.
 fn imported_dict_signature(
     ctx: &LowerCtx<'_>,
     module: ridge_resolve::ModuleId,
     name: &str,
-) -> Option<(Vec<ridge_types::Constraint>, Vec<Type>, Type)> {
+) -> Option<crate::dictionary_signature::DictionarySignature> {
     let scheme = ctx
         .workspace?
         .module_schemes
         .get(module.0 as usize)?
         .get(name)?;
-    let Type::Fn { params, ret, .. } = &scheme.ty else {
+    let Type::Fn { .. } = &scheme.ty else {
         return None;
     };
-    Some((scheme.constraints.clone(), params.clone(), (**ret).clone()))
+    Some(crate::dictionary_signature::DictionarySignature::from_scheme(scheme))
+}
+
+/// Field obligations can carry a constraint variable absent from the function
+/// body type. Resolve their receivers from the call, then align the selected
+/// field types too. A fixed point covers nested selections in either order.
+fn pin_record_fields(
+    ctx: &LowerCtx<'_>,
+    requirements: Option<&[ridge_types::RecordRequirement]>,
+    params: &mut Vec<Type>,
+    args: &mut Vec<Option<Type>>,
+) {
+    let Some(requirements) = requirements else {
+        return;
+    };
+    let mut pending: Vec<_> = requirements.iter().collect();
+    loop {
+        let before = pending.len();
+        pending.retain(|requirement| {
+            let Some((name, field_ty)) = &requirement.field else {
+                return false;
+            };
+            let variables = ridge_types::Scheme::mono(requirement.receiver.clone())
+                .free_vars()
+                .0;
+            let mut subst = ridge_types::Subst::empty();
+            for var in variables {
+                let Some(actual) = constraint_arg_type(params, args, var) else {
+                    return true;
+                };
+                subst = ridge_types::Subst::singleton(var, actual).compose(subst);
+            }
+            let receiver = subst.apply_to_ty(&requirement.receiver);
+            let receiver = expand_tycon_alias_once(ctx, &deep_peel_alias(&receiver));
+            let actual = match receiver {
+                Type::Record { fields, .. } => fields
+                    .into_iter()
+                    .find(|(label, _)| label == name)
+                    .map(|(_, ty)| ty),
+                Type::Con(id, type_args) => ctx
+                    .workspace
+                    .and_then(|ws| ws.tycons.get(id.0 as usize))
+                    .and_then(|decl| {
+                        let ridge_types::TyConKind::Record(schema) = &decl.kind else {
+                            return None;
+                        };
+                        let field = schema
+                            .record_fields()
+                            .iter()
+                            .find(|field| &field.name == name)?;
+                        let subst = schema.params.iter().zip(type_args).fold(
+                            ridge_types::Subst::empty(),
+                            |subst, (&var, arg)| {
+                                ridge_types::Subst::singleton(var, arg).compose(subst)
+                            },
+                        );
+                        Some(subst.apply_to_ty(&field.ty))
+                    }),
+                _ => ctx
+                    .current_fn_record_fields
+                    .as_deref()
+                    .and_then(|requirements| {
+                        let variable = |ty: &Type| match deep_peel_alias(ty) {
+                            Type::Var(var) => Some(var),
+                            Type::Rigid { id, .. } => Some(ridge_types::TyVid(id.0)),
+                            _ => None,
+                        };
+                        let receiver = variable(&receiver)?;
+                        requirements.iter().find_map(|requirement| {
+                            let (label, ty) = requirement.field.as_ref()?;
+                            (label == name && variable(&requirement.receiver) == Some(receiver))
+                                .then(|| ty.clone())
+                        })
+                    }),
+            };
+            actual.is_none_or(|actual| {
+                params.push(field_ty.clone());
+                args.push(Some(actual));
+                false
+            })
+        });
+        if pending.len() == before {
+            break;
+        }
+    }
 }
 
 /// Peel transparent alias wrappers from a type, leaving the underlying shape.
@@ -2262,6 +2358,13 @@ fn align_var(param: &Type, arg: &Type, var: ridge_types::TyVid) -> Option<Type> 
                     .iter()
                     .zip(as_.iter())
                     .find_map(|(p, a)| align_var(p, a, var)),
+                (Type::Record { fields: ps, .. }, Type::Record { fields: args, .. }) => {
+                    ps.iter().find_map(|(name, p)| {
+                        args.iter()
+                            .find(|(label, _)| label == name)
+                            .and_then(|(_, a)| align_var(p, a, var))
+                    })
+                }
                 (
                     Type::Fn {
                         params: pps,
@@ -2305,13 +2408,34 @@ struct ConstraintPin<'a> {
     located: bool,
 }
 
-/// Resolve the dictionary value for one constraint at a call site.
-///
-/// Forwards the caller's own incoming dict param when the caller is constrained
-/// for the same class; otherwise builds the dictionary directly from the
-/// concrete type that pinned the constraint, recursing through the instance
-/// registry so parametric instances receive their element dictionaries. Falls
-/// back to a unit literal when neither path applies (test scaffolding).
+/// Operators resolve the same located operand constraint as named methods.
+pub(crate) fn comparison_dictionary(
+    ctx: &mut LowerCtx<'_>,
+    class: ridge_types::ClassId,
+    ty: &Type,
+    span: Span,
+) -> IrExpr {
+    let name = if class == ridge_types::EQ_CLASS {
+        "Eq"
+    } else {
+        "Ord"
+    };
+    resolve_dict_arg(
+        ctx,
+        class,
+        name,
+        ConstraintPin {
+            ty: Some(ty),
+            located: true,
+        },
+        0,
+        false,
+        span,
+    )
+}
+
+/// Resolve one call-site constraint, forwarding caller evidence or composing
+/// concrete instance evidence. Missing context retains an editor/test hole.
 fn resolve_dict_arg(
     ctx: &mut LowerCtx<'_>,
     class: ridge_types::ClassId,
@@ -2356,6 +2480,7 @@ fn resolve_dict_arg(
     // the caller's dictionary is exactly what this call needs.
     let want_var = match constraint_ty {
         Some(Type::Var(v)) => Some(*v),
+        Some(Type::Rigid { id, .. }) => Some(ridge_types::TyVid(id.0)),
         _ => None,
     };
     let named_its_type = pin.located && constraint_ty.is_some_and(pins_an_instance);
@@ -2419,15 +2544,19 @@ fn resolve_dict_arg(
         return dict_plan_to_expr(ctx, class, plan, class_name, span);
     }
 
-    // The constraint is satisfiable (the typecheck accepted the program) but the
-    // concrete instance could not be pinned here — the constraint variable sits
-    // in a position the lowering cannot ground, e.g. the return of a field-access
-    // key lambda passed to `sortBy`. For `Ord` fall back to the native comparator
-    // dictionary rather than a unit no-op: it is exactly right for a primitive key
-    // (whose `Ord` *is* the BEAM term order) and degrades to native ordering — not
-    // a crash — for the rare unpinnable user-typed key.
-    if class == ridge_types::ORD_CLASS {
-        return crate::prelude_dict::synth_ord_dict(ctx, span);
+    // A checked program must never silently switch a user instance to a
+    // structural/native comparison when its dictionary could not be pinned.
+    if ctx.workspace.is_some_and(|workspace| {
+        workspace
+            .modules
+            .get(ctx.module_id.0 as usize)
+            .is_some_and(|module| !module.has_type_errors)
+    }) {
+        ctx.errors
+            .push(crate::error::LowerError::InternalLoweringError {
+                span,
+                message: format!("could not resolve checked {class_name} evidence at call site"),
+            });
     }
 
     // Defensive no-op: emit a unit literal. This should not happen in
@@ -2495,7 +2624,7 @@ fn single_static_plan_for_class(
         .and_then(|ws| ws.modules.get(ctx.module_id.0 as usize))?;
     let mut found: Option<&ridge_typecheck::DictPlan> = None;
     for (constraint, plan) in &tmod.dict_resolution {
-        if constraint.class == class && matches!(plan, ridge_typecheck::DictPlan::Static { .. }) {
+        if constraint.class == class && !matches!(plan, ridge_typecheck::DictPlan::Forward(_)) {
             match found {
                 None => found = Some(plan),
                 // Several call sites that resolve the SAME instance each register
@@ -2674,6 +2803,23 @@ fn same_dict_plan(a: &ridge_typecheck::DictPlan, b: &ridge_typecheck::DictPlan) 
     use ridge_typecheck::DictPlan;
     match (a, b) {
         (
+            DictPlan::Structural {
+                class: ca,
+                fields: fa,
+                args: aa,
+            },
+            DictPlan::Structural {
+                class: cb,
+                fields: fb,
+                args: ab,
+            },
+        ) => {
+            ca == cb
+                && fa == fb
+                && aa.len() == ab.len()
+                && aa.iter().zip(ab).all(|(x, y)| same_dict_plan(x, y))
+        }
+        (
             DictPlan::Static {
                 tycon: ta,
                 extra_head: ea,
@@ -2815,6 +2961,21 @@ fn classmethod_pin_type(
     method: &str,
     args: &[Expr],
 ) -> Option<Type> {
+    // Reserved comparison and hash methods dispatch on their first operand,
+    // including tuples, records and generic operands. Looking for a registered
+    // constructor misses structural evidence and can select the result's type.
+    if matches!(
+        class,
+        ridge_types::EQ_CLASS | ridge_types::ORD_CLASS | ridge_types::HASH_CLASS
+    ) {
+        let argument = args.first()?;
+        return ctx
+            .node_id_map
+            .as_ref()
+            .and_then(|map| map.get(argument.span(), NodeKind::Expr))
+            .and_then(|id| ctx.node_type(id).cloned())
+            .map(|ty| deep_peel_alias(&ty));
+    }
     let info = ctx
         .class_table
         .or_else(|| ctx.workspace.map(|ws| &ws.class_table))?
@@ -2919,11 +3080,62 @@ fn classmethod_pin_type(
     None
 }
 
+/// Locate a source class's sole parameter in its canonical method contract.
+/// Unlike searching registered constructors, this also preserves complete
+/// return-directed heads, including containers and function types.
+fn source_classmethod_pin(
+    ctx: &LowerCtx<'_>,
+    class: ridge_types::ClassId,
+    method: &str,
+    args: &[Expr],
+    span: Span,
+) -> Option<Type> {
+    let scheme = ctx.instance_env?.method_scheme(class, method)?;
+    let constraint = scheme.constraints.iter().find(|c| c.class == class)?;
+    let [variable] = constraint.tys.as_slice() else {
+        return None;
+    };
+    let Type::Fn { params, ret, .. } = &scheme.ty else {
+        return None;
+    };
+    let arg_types: Vec<_> = args
+        .iter()
+        .map(|arg| {
+            ctx.node_id_map
+                .as_ref()?
+                .get(arg.span(), NodeKind::Expr)
+                .and_then(|id| ctx.node_type(id).cloned())
+        })
+        .collect();
+    constraint_arg_type(params, &arg_types, *variable).or_else(|| {
+        let result = ctx
+            .node_id_map
+            .as_ref()?
+            .get(span, NodeKind::Expr)
+            .and_then(|id| ctx.node_type(id))?;
+        align_var(ret, result, *variable)
+    })
+}
+
+/// Pin a source method used as a value, before projecting its dictionary field.
+fn source_classmethod_value_pin(
+    ctx: &LowerCtx<'_>,
+    class: ridge_types::ClassId,
+    method: &str,
+    ty: &Type,
+) -> Option<Type> {
+    let scheme = ctx.instance_env?.method_scheme(class, method)?;
+    let constraint = scheme.constraints.iter().find(|c| c.class == class)?;
+    let [variable] = constraint.tys.as_slice() else {
+        return None;
+    };
+    align_var(&scheme.ty, ty, *variable)
+}
+
 /// Lower a bare class-method call (`describe Red`) by pinning the class
-/// constraint from the argument type. Returns `None` when the callee is not a
-/// class method, or when no argument pins the class variable (return-polymorphic
-/// methods like `decode`) AND the class is user-defined, leaving those to the
-/// generic call path.
+/// constraint from the canonical source contract or the argument type. Returns
+/// `None` when the callee is not a class method or no available contract locates
+/// its parameter, leaving those calls to the generic call path.
 ///
 /// For stdlib-defined classes (whose `ast_param_types` is empty because they
 /// are registered in Rust rather than from source AST), the argument pin is
@@ -2949,16 +3161,17 @@ pub(crate) fn try_lower_classmethod_call(
         .or_else(|| ctx.workspace.map(|ws| &ws.class_table))
         .and_then(|ct| ct.id_by_name(&class_name))?;
 
-    // Try to pin the constraint type from an argument. For user-defined classes
-    // the source AST carries the parameter annotations; `classmethod_pin_type`
-    // scans them and locates the class type variable's position. For
-    // stdlib-registered classes the AST is absent, so the function returns None
-    // when the class variable cannot be found by AST scan.
-    let mut pin_ty = classmethod_pin_type(ctx, cid, &method, args);
+    let callee_type = lookup_callee_type(ctx, callee);
+    let args = call_args_without_nullary_unit(args, callee_type.as_ref());
+
+    // Source schemes locate the class variable in arguments or the return.
+    // Intrinsic and multiparameter classes retain their existing argument scan.
+    let mut pin_ty = source_classmethod_pin(ctx, cid, &method, args, span)
+        .or_else(|| classmethod_pin_type(ctx, cid, &method, args));
     // Where the pin came from, decided here while both paths are still in view.
-    // The argument scan locates the class variable. Return-type recovery only
-    // does so for Decode's reserved signature; other recovered heads remain
-    // guesses and must not override a dictionary supplied by the caller.
+    // Canonical alignment and the argument scan locate the class variable.
+    // The later return-head heuristic only does so for Decode's reserved
+    // signature; other guessed heads must not override the caller's dictionary.
     let mut located = pin_ty.is_some();
 
     let is_stdlib_class = stdlib_class_home_module(&class_name).is_some();
@@ -2968,7 +3181,7 @@ pub(crate) fn try_lower_classmethod_call(
     // argument — so it needs the same return-type pinning as stdlib `fromSql`.
     let is_prelude_class = matches!(
         class_name.as_str(),
-        "ToText" | "Eq" | "Ord" | "Encode" | "Decode"
+        "ToText" | "Eq" | "Ord" | "Hash" | "Encode" | "Decode"
     );
 
     // When no argument carries the class variable the method is return-type-
@@ -3207,7 +3420,16 @@ fn projected_elem_type(ctx: &LowerCtx<'_>, call_span: Span) -> Option<Type> {
 /// An alias is peeled first, since [`build_dict_plan_from_type`] dispatches
 /// through the expansion and these two must agree about what counts as pinned.
 fn pins_an_instance(ty: &Type) -> bool {
-    matches!(deep_peel_alias(ty), Type::Con(..) | Type::Fn { .. })
+    matches!(
+        deep_peel_alias(ty),
+        Type::Con(..)
+            | Type::Fn { .. }
+            | Type::Tuple(_)
+            | Type::Record {
+                tail: ridge_types::RowTail::Closed,
+                ..
+            }
+    )
 }
 
 /// Build a [`ridge_typecheck::DictPlan`] for `(class, ty)` directly from a
@@ -3221,7 +3443,7 @@ fn pins_an_instance(ty: &Type) -> bool {
 /// nests. A bare type variable yields a `Forward` (the enclosing scope threads
 /// the dictionary). Returns `None` when no instance is registered for the head —
 /// a typecheck error (T029) would already have fired for that case.
-fn build_dict_plan_from_type(
+pub(crate) fn build_dict_plan_from_type(
     ctx: &LowerCtx<'_>,
     class: ridge_types::ClassId,
     ty: &Type,
@@ -3235,12 +3457,51 @@ fn build_dict_plan_from_type(
     // Use the expanded type only when the alias body names a different tycon.
     let effective_ty = match (&peeled, &expanded) {
         (Type::Con(orig, _), Type::Con(new_id, _)) if orig != new_id => expanded,
+        (Type::Con(..), Type::Tuple(_) | Type::Record { .. }) => expanded,
         _ => peeled,
     };
 
     match effective_ty {
+        Type::Fn { params, ret, .. } => function_head_plan(ctx, class, params, *ret),
+        Type::Tuple(elems)
+            if matches!(
+                class,
+                ridge_types::EQ_CLASS | ridge_types::ORD_CLASS | ridge_types::HASH_CLASS
+            ) =>
+        {
+            let args = elems
+                .iter()
+                .map(|ty| structural_component_plan(ctx, class, ty))
+                .collect::<Option<Vec<_>>>()?;
+            Some(DictPlan::Structural {
+                class,
+                fields: None,
+                args,
+            })
+        }
+        Type::Record {
+            fields,
+            tail: ridge_types::RowTail::Closed,
+        } if matches!(
+            class,
+            ridge_types::EQ_CLASS | ridge_types::ORD_CLASS | ridge_types::HASH_CLASS
+        ) =>
+        {
+            let args = fields
+                .iter()
+                .map(|(_, ty)| structural_component_plan(ctx, class, ty))
+                .collect::<Option<Vec<_>>>()?;
+            Some(DictPlan::Structural {
+                class,
+                fields: Some(fields.into_iter().map(|(name, _)| name).collect()),
+                args,
+            })
+        }
         Type::Con(tycon, args) => {
             let env = ctx.instance_env?;
+            if let Some(plan) = env.structural_comparisons.get(&(class, tycon)) {
+                return Some(plan.clone());
+            }
             // An instance with a context constraint over its predicate's return type
             // (a composite terminal's `SqlType n`/`Row s`, marked `PREDICATE_RETURN_POS`)
             // cannot be rebuilt from the receiver type alone — the variable lives in the
@@ -3283,7 +3544,7 @@ fn build_dict_plan_from_type(
                 // from the receiver atom's type arguments — the flattened head
                 // positions index this first atom's args, which is where a
                 // receiver-bound context variable lives.
-                let sub_dicts = resolve_ctx_sub_dicts(ctx, inst, &args);
+                let sub_dicts = resolve_ctx_sub_dicts(ctx, inst, &args)?;
                 return Some(DictPlan::Static {
                     class,
                     info: Box::new(inst.clone()),
@@ -3294,7 +3555,7 @@ fn build_dict_plan_from_type(
             };
             // Resolve one sub-dictionary per context constraint, reading the
             // concrete type argument at the constraint's recorded head position.
-            let sub_dicts = resolve_ctx_sub_dicts(ctx, info, &args);
+            let sub_dicts = resolve_ctx_sub_dicts(ctx, info, &args)?;
             Some(DictPlan::Static {
                 class,
                 info: Box::new(info.clone()),
@@ -3309,45 +3570,128 @@ fn build_dict_plan_from_type(
     }
 }
 
-/// Resolve one sub-dictionary plan per context constraint of `info`, reading the
-/// concrete type argument at each constraint's recorded head position from
-/// `head_args`. An element that resolves to a variable (or has no instance)
-/// forwards a dictionary parameter; a truly unsatisfiable element is reported as
-/// T030 by the solver before lowering runs. Shared by the single-parameter and
-/// multi-parameter (`extra_head`) branches of [`build_dict_plan_from_type`].
+/// Reconstruct a checked function-head instance from its parameter and result spine.
+fn function_head_plan(
+    ctx: &LowerCtx<'_>,
+    class: ridge_types::ClassId,
+    mut params: Vec<Type>,
+    ret: Type,
+) -> Option<ridge_typecheck::DictPlan> {
+    let tycon = ctx.builtins.fn_tycon_id(params.len())?;
+    let info = ctx.instance_env?.get((class, tycon))?;
+    params.push(ret);
+    let args = resolve_ctx_sub_dicts(ctx, info, &params)?;
+    Some(ridge_typecheck::DictPlan::Static {
+        class,
+        tycon,
+        extra_head: smallvec::SmallVec::new(),
+        info: Box::new(info.clone()),
+        args,
+    })
+}
+
+/// Build a structural component's dictionary, forwarding its own variable when
+/// the comparison remains generic.
+fn structural_component_plan(
+    ctx: &LowerCtx<'_>,
+    class: ridge_types::ClassId,
+    ty: &Type,
+) -> Option<ridge_typecheck::DictPlan> {
+    let variable = match deep_peel_alias(ty) {
+        Type::Var(v) => Some(v),
+        Type::Rigid { id, .. } => Some(ridge_types::TyVid(id.0)),
+        _ => None,
+    };
+    if let Some(v) = variable {
+        // Only a component's evidence is forwarded here. A root variable must
+        // keep the ordinary caller/instance resolution path, which also handles
+        // positional variables in source instance methods.
+        return Some(ridge_typecheck::DictPlan::Forward(
+            ridge_types::Constraint::single(class, v),
+        ));
+    }
+    build_dict_plan_from_type(ctx, class, ty)
+}
+
+/// Resolve instance context dictionaries from their recorded head positions.
+/// Shared by single-parameter and multi-parameter instance reconstruction.
 fn resolve_ctx_sub_dicts(
     ctx: &LowerCtx<'_>,
     info: &ridge_typecheck::InstanceInfo,
     head_args: &[Type],
-) -> Vec<ridge_typecheck::DictPlan> {
+) -> Option<Vec<ridge_typecheck::DictPlan>> {
     use ridge_typecheck::DictPlan;
     let mut sub_dicts: Vec<DictPlan> = Vec::with_capacity(info.ctx_constraints.len());
-    for (ctx_c, &pos) in info
-        .ctx_constraints
-        .iter()
-        .zip(info.head_var_positions.iter())
-    {
-        let elem_ty = head_args.get(pos).cloned().unwrap_or(Type::Error);
-        let sub = build_dict_plan_from_type(ctx, ctx_c.class, &elem_ty).unwrap_or_else(|| {
-            DictPlan::Forward(ridge_types::Constraint::single(
-                ctx_c.class,
-                forward_var_of(&elem_ty),
-            ))
-        });
-        sub_dicts.push(sub);
+    let positions = info.def_module.and_then(|module| {
+        ctx.instance_env?
+            .context_arg_positions
+            .get(&(module, info.span))
+    });
+    for (index, requirement) in info.ctx_constraints.iter().enumerate() {
+        let slots = positions
+            .and_then(|all| all.get(index))
+            .cloned()
+            .or_else(|| info.head_var_positions.get(index).map(|&slot| vec![slot]))?;
+        let types: Vec<_> = slots
+            .iter()
+            .map(|&slot| head_args.get(slot).cloned())
+            .collect::<Option<_>>()?;
+        if types.len() != requirement.tys.len() {
+            return None;
+        }
+        sub_dicts.push(context_head_plan(ctx, requirement.class, &types)?);
     }
-    sub_dicts
+    Some(sub_dicts)
 }
 
-/// The forward variable to thread for an unresolved element type. When the
-/// element is itself a type variable, forward that variable; otherwise use the
-/// sentinel `TyVid(0)` (the dictionary is built structurally and the variable is
-/// not consulted).
-fn forward_var_of(ty: &Type) -> ridge_types::TyVid {
-    match deep_peel_alias(ty) {
-        Type::Var(v) => v,
-        _ => ridge_types::TyVid(0),
+/// A context is keyed by its whole head, including all class parameters.
+fn context_head_plan(
+    ctx: &LowerCtx<'_>,
+    class: ridge_types::ClassId,
+    types: &[Type],
+) -> Option<ridge_typecheck::DictPlan> {
+    use ridge_typecheck::DictPlan;
+    let types: Vec<_> = types
+        .iter()
+        .map(|ty| expand_tycon_alias_once(ctx, &deep_peel_alias(ty)))
+        .collect();
+    let variables: Option<smallvec::SmallVec<[_; 1]>> = types
+        .iter()
+        .map(|ty| match ty {
+            Type::Var(var) => Some(*var),
+            Type::Rigid { id, .. } => Some(ridge_types::TyVid(id.0)),
+            _ => None,
+        })
+        .collect();
+    if let Some(variables) = variables {
+        return Some(DictPlan::Forward(ridge_types::Constraint::new(
+            class, variables,
+        )));
     }
+    if let [ty] = types.as_slice() {
+        return build_dict_plan_from_type(ctx, class, ty);
+    }
+    let atoms: Vec<_> = types
+        .iter()
+        .map(|ty| match ty {
+            Type::Con(id, args) => Some((*id, args.as_slice())),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    let head: Vec<_> = atoms.iter().map(|(id, _)| *id).collect();
+    let info = ctx.instance_env?.get_multi(class, &head)?;
+    let arguments: Vec<_> = atoms
+        .iter()
+        .flat_map(|(_, args)| args.iter().cloned())
+        .collect();
+    let args = resolve_ctx_sub_dicts(ctx, info, &arguments)?;
+    Some(DictPlan::Static {
+        class,
+        info: Box::new(info.clone()),
+        tycon: *head.first()?,
+        extra_head: head.into_iter().skip(1).collect(),
+        args,
+    })
 }
 
 /// Home BEAM module for a stdlib-defined typeclass whose instance dictionaries
@@ -3387,7 +3731,11 @@ fn class_name_of(ctx: &LowerCtx<'_>, class: ridge_types::ClassId) -> Option<Stri
 /// constructor the workspace does not know is named positionally rather than
 /// skipped, because a name that silently loses a component would collide with
 /// a different instance.
-fn instance_head_name(ctx: &LowerCtx<'_>, tycon: TyConId, extra_head: &[TyConId]) -> String {
+pub(crate) fn instance_head_name(
+    ctx: &LowerCtx<'_>,
+    tycon: TyConId,
+    extra_head: &[TyConId],
+) -> String {
     let name_of = |t: TyConId| {
         ctx.workspace
             .and_then(|ws| ws.tycons.get(t.0 as usize))
@@ -3407,7 +3755,29 @@ fn instance_head_name(ctx: &LowerCtx<'_>, tycon: TyConId, extra_head: &[TyConId]
 /// the prelude `Encode`/`Decode` instances, whose dictionaries are synthesised
 /// inline (see [`crate::prelude_dict`]) because they have no module-level
 /// `$inst_` constant.
+pub(crate) const fn plan_class(plan: &ridge_typecheck::DictPlan) -> ridge_types::ClassId {
+    match plan {
+        ridge_typecheck::DictPlan::Static { class, .. }
+        | ridge_typecheck::DictPlan::Structural { class, .. } => *class,
+        ridge_typecheck::DictPlan::Forward(constraint) => constraint.class,
+    }
+}
+
 pub(crate) fn dict_plan_to_expr(
+    ctx: &mut LowerCtx<'_>,
+    class: ridge_types::ClassId,
+    plan: ridge_typecheck::DictPlan,
+    class_name: &str,
+    span: Span,
+) -> IrExpr {
+    if matches!(plan, ridge_typecheck::DictPlan::Forward(_)) {
+        dict_plan_to_expr_raw(ctx, class, plan, class_name, span)
+    } else {
+        crate::evidence::dictionary(ctx, plan, class_name, span)
+    }
+}
+
+pub(crate) fn dict_plan_to_expr_raw(
     ctx: &mut LowerCtx<'_>,
     _class: ridge_types::ClassId,
     plan: ridge_typecheck::DictPlan,
@@ -3420,13 +3790,13 @@ pub(crate) fn dict_plan_to_expr(
     // constant name so a heterogeneous context sub-dictionary (the `Adapter a`
     // dict inside a `Projectable` instance, say) is named against its own class
     // rather than the enclosing instance's. Falls back to the caller's class.
-    let class = match &plan {
-        DictPlan::Static { class, .. } => *class,
-        DictPlan::Forward(c) => c.class,
-    };
+    let class = plan_class(&plan);
     let derived_name = class_name_of(ctx, class);
     let class_name: &str = derived_name.as_deref().unwrap_or(class_name);
     match plan {
+        DictPlan::Structural { fields, args, .. } => {
+            crate::comparison::structural_dict(ctx, class, fields.as_deref(), args, span)
+        }
         DictPlan::Static {
             info,
             tycon,
@@ -3434,6 +3804,14 @@ pub(crate) fn dict_plan_to_expr(
             args,
             ..
         } => {
+            if let Some(dictionary) = crate::value_comparison::dictionary(ctx, class, tycon, span)
+                .or_else(|| crate::hash::dictionary(ctx, class, tycon, span))
+            {
+                return dictionary;
+            }
+            if crate::comparison::is_composed(ctx.builtins, class, tycon) {
+                return crate::comparison::composed_dict(ctx, class, tycon, args, span);
+            }
             // Recursively lower the sub-dictionaries first. Each sub-dict re-derives
             // its own class from its plan, so a context constraint of a different
             // class than the parent (`Adapter`/`Row` inside `Projectable`) is named
@@ -3467,12 +3845,11 @@ pub(crate) fn dict_plan_to_expr(
             // Registered primitive equality needs a dictionary value just like
             // codecs. User-written and derived instances keep the symbol path.
             if crate::prelude_dict::is_prelude_eq_instance(ctx.builtins, class, tycon) {
-                return crate::prelude_dict::synth_eq_dict(ctx, span);
+                return crate::prelude_dict::synth_eq_dict(ctx, tycon, span);
             }
 
-            // The built-in `Ord` instances (Int/Float/Bool/Text/Ordering) have a
-            // registered instance but no `$inst_` constant either — their `compare`
-            // is the native term comparator. Synthesise the dictionary inline so a
+            // Primitive value orders have a registered instance but no `$inst_`
+            // constant. Synthesise their dictionary inline so a
             // polymorphic `where Ord a` call (notably `sort`/`sortBy`) resolves for
             // a primitive element or key.
             if crate::prelude_dict::is_prelude_ord_instance(ctx.builtins, class, tycon) {
@@ -3567,14 +3944,20 @@ pub(crate) fn dict_plan_to_expr(
                 span,
             }
         }
-        DictPlan::Forward(c) => {
-            let id = ctx.fresh_id(None);
-            IrExpr::Local {
-                id,
-                name: c.dict_param_name(class_name),
-                span,
-            }
-        }
+        DictPlan::Forward(c) => forward_dictionary(ctx, &c, class_name, span),
+    }
+}
+
+fn forward_dictionary(
+    ctx: &mut LowerCtx<'_>,
+    constraint: &ridge_types::Constraint,
+    class_name: &str,
+    span: Span,
+) -> IrExpr {
+    IrExpr::Local {
+        id: ctx.fresh_id(None),
+        name: constraint.dict_param_name(class_name),
+        span,
     }
 }
 
@@ -4546,11 +4929,22 @@ fn lower_ident(ctx: &mut LowerCtx<'_>, ident: &Ident) -> IrExpr {
                     .as_ref()
                     .and_then(|m| m.get(span, NodeKind::Expr))
                     .and_then(|nid| ctx.node_type(nid).cloned());
-                // A Decode value carries its dispatch type in the return of its
-                // instantiated function type, just as a call carries it in its
-                // result. Other methods only use the type to distinguish incoming
-                // variables; a guessed head must not override the caller's dict.
-                let decode_pin = method_type.as_ref().and_then(|ty| {
+                // Source contracts locate the class variable in the complete
+                // method type. Intrinsics have reserved dispatch positions:
+                // the first operand for comparisons/Hash, the payload for Decode.
+                // A guessed head must not override the caller's dictionary.
+                let method_pin = method_type.as_ref().and_then(|ty| {
+                    if let Some(pin) = source_classmethod_value_pin(ctx, cid, method, ty) {
+                        return Some(pin);
+                    }
+                    if matches!(
+                        cid,
+                        ridge_types::EQ_CLASS | ridge_types::ORD_CLASS | ridge_types::HASH_CLASS
+                    ) {
+                        if let Type::Fn { params, .. } = deep_peel_alias(ty) {
+                            return params.first().cloned();
+                        }
+                    }
                     if cid == ridge_types::DECODE_CLASS {
                         if let Type::Fn { ret, .. } = deep_peel_alias(ty) {
                             return decode_payload_type(ctx, &ret);
@@ -4558,8 +4952,8 @@ fn lower_ident(ctx: &mut LowerCtx<'_>, ident: &Ident) -> IrExpr {
                     }
                     None
                 });
-                let located = decode_pin.is_some();
-                let pin = decode_pin.or_else(|| {
+                let located = method_pin.is_some();
+                let pin = method_pin.or_else(|| {
                     method_type
                         .as_ref()
                         .and_then(|ty| pin_method_dict_var(ctx, cid, ty))

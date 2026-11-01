@@ -269,6 +269,14 @@ fn parse_fn_decl_no_body(
         None
     };
 
+    // Primitives may consume class evidence just like an ordinary function.
+    // Foreign declarations retain their explicitly stated native argument ABI.
+    let constraints = if matches!(body, Body::Primitive) && cur.peek() == &Token::KwWhere {
+        parse_where_clause(cur)?
+    } else {
+        vec![]
+    };
+
     // Reject a body: the attribute already said where the implementation
     // comes from, so an `=` here is two answers to one question.
     if cur.peek() == &Token::Assign {
@@ -279,6 +287,9 @@ fn parse_fn_decl_no_body(
     }
 
     let end_span = ret.as_ref().map_or(name_span, ridge_ast::Type::span);
+    let end_span = constraints
+        .last()
+        .map_or(end_span, |constraint| constraint.span);
 
     Ok(FnDecl {
         attrs: vec![],
@@ -287,7 +298,7 @@ fn parse_fn_decl_no_body(
         name,
         params,
         ret,
-        constraints: vec![],
+        constraints,
         body,
         span: start.merge(end_span),
         doc,
@@ -4032,6 +4043,38 @@ mod tests {
             decl.body,
             Body::Primitive,
             "a `@primitive` declaration must carry no implementation at all"
+        );
+    }
+
+    #[test]
+    fn primitive_retains_its_class_requirements() {
+        let item = parse_top_item("@primitive\nfn witness () -> a where Hash a, Eq a\n")
+            .expect("a primitive can consume checked class evidence");
+        let Item::Fn(decl) = item else {
+            panic!("expected a function");
+        };
+        assert!(decl.params.is_empty());
+        assert!(matches!(decl.body, Body::Primitive));
+        assert_eq!(
+            decl.constraints
+                .iter()
+                .map(|c| c.class.text.as_str())
+                .collect::<Vec<_>>(),
+            ["Hash", "Eq"]
+        );
+        assert!(decl
+            .constraints
+            .iter()
+            .all(|c| c.ty_vars.len() == 1 && c.ty_vars[0].text == "a"));
+        assert_eq!(decl.span.end, decl.constraints.last().unwrap().span.end);
+    }
+
+    #[test]
+    fn primitive_class_requirements_do_not_allow_a_body() {
+        let err = parse_top_item("@primitive\nfn witness () -> a where Hash a = 7\n")
+            .expect_err("a where clause does not supply an implementation");
+        assert!(
+            matches!(err, ParseError::UnexpectedToken { description, .. } if description.contains("no body"))
         );
     }
 

@@ -5,13 +5,13 @@ expression: snap
 ---
 ResolvedSnapshot {
     errors: [],
-    nid_count: 484,
-    stamped_bindings: 129,
+    nid_count: 499,
+    stamped_bindings: 131,
     binding_kind_counts: {
         "ActorName": 3,
         "Local": 101,
         "ModuleSymbol": 1,
-        "StdlibSymbol": 23,
+        "StdlibSymbol": 25,
         "Unknown": 1,
     },
     import_aliases: [
@@ -21,6 +21,7 @@ ResolvedSnapshot {
         "<bare> -> BuiltinStdlib(22)",
         "<bare> -> BuiltinStdlib(7)",
         "<bare> -> BuiltinStdlib(8)",
+        "Float -> BuiltinStdlib(1)",
         "Io -> BuiltinStdlib(9)",
         "List -> BuiltinStdlib(4)",
         "Option -> BuiltinStdlib(7)",

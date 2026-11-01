@@ -50,7 +50,7 @@ fn main() {
     let stdlib_dir = std::path::Path::new("stdlib");
 
     // ── build_driver (T4) ─────────────────────────────────────────────────────
-    match build_all(stdlib_dir) {
+    let summary = match build_all(stdlib_dir) {
         Ok(summary) => {
             // Only emit a warning when modules were actually compiled —
             // stay silent on the empty-stdlib smoke case.
@@ -61,12 +61,13 @@ fn main() {
                     summary.tiers_built,
                 );
             }
+            summary
         }
         Err(e) => {
             eprintln!("{e}");
             std::process::exit(1);
         }
-    }
+    };
 
     // ── stdlib-target table extractor ────────────────────────────────────────
     let out_dir = std::env::var("OUT_DIR").unwrap_or_else(|_| {
@@ -75,7 +76,7 @@ fn main() {
     });
     let out_path = PathBuf::from(&out_dir).join("stdlib_targets.rs");
 
-    match generate_stdlib_targets(stdlib_dir, &out_path) {
+    match generate_stdlib_targets(stdlib_dir, &out_path, &summary.dictionary_counts) {
         Ok(n) => {
             println!("cargo:warning=ridge-stdlib: generated {n} stdlib target entries");
         }
@@ -208,7 +209,11 @@ enum EntryKind {
 
 // ── Generation ────────────────────────────────────────────────────────────────
 
-fn generate_stdlib_targets(stdlib_dir: &Path, out_path: &Path) -> Result<usize, String> {
+fn generate_stdlib_targets(
+    stdlib_dir: &Path,
+    out_path: &Path,
+    dictionary_counts: &std::collections::BTreeMap<(String, String), usize>,
+) -> Result<usize, String> {
     let mut entries: Vec<FfiEntry> = Vec::new();
 
     for &dotted in STDLIB_MODULES {
@@ -226,7 +231,7 @@ fn generate_stdlib_targets(stdlib_dir: &Path, out_path: &Path) -> Result<usize, 
             )
         })?;
 
-        extract_ffi(&src, dotted, &mut entries)?;
+        extract_ffi(&src, dotted, &mut entries, dictionary_counts)?;
     }
 
     // Stable, deterministic sort: (module, fn_name).
@@ -283,7 +288,12 @@ fn generate_stdlib_targets(stdlib_dir: &Path, out_path: &Path) -> Result<usize, 
 // typeclasses (e.g. `$inst_SqlType_Int/0` in `std.sql`), so that
 // `SymbolRef::Stdlib { module: "std.sql", name: "$inst_SqlType_Int" }` resolves
 // to arity 0 and codegen emits `call 'std.sql':'$inst_SqlType_Int' ()`.
-fn extract_ffi(src: &str, module: &str, out: &mut Vec<FfiEntry>) -> Result<(), String> {
+fn extract_ffi(
+    src: &str,
+    module: &str,
+    out: &mut Vec<FfiEntry>,
+    dictionary_counts: &std::collections::BTreeMap<(String, String), usize>,
+) -> Result<(), String> {
     // What the attribute above the next `fn` line said, if anything.
     let mut pending: Option<EntryKind> = None;
     // `@ffi` declares its own arity; `@primitive` leaves this `None` and the
@@ -391,11 +401,16 @@ fn extract_ffi(src: &str, module: &str, out: &mut Vec<FfiEntry>) -> Result<(), S
                 // A pure-Ridge public fn compiles into the stdlib module of its
                 // own name. Private fns are implementation helpers, not API.
                 if let Some(ridge_fn) = extract_fn_name(rest) {
-                    // A constrained fn (`where C a, D b`) compiles with one
-                    // dictionary parameter prepended per constraint, so its BEAM
-                    // arity is the value-parameter count plus the constraint
-                    // count; call sites prepend the matching dict args.
-                    let arity = count_param_groups(rest, &ridge_fn) + count_where_constraints(rest);
+                    // The checked body can use superclass evidence not written
+                    // in its where clause. Read the compiler's actual scheme for
+                    // compiled tiers; uncompiled modules retain source metadata.
+                    let dictionaries = dictionary_counts
+                        .get(&(module.to_owned(), ridge_fn.clone()))
+                        .map_or_else(
+                            || count_where_constraints(rest),
+                            |n| u32::try_from(*n).expect("stdlib dictionary count fits u32"),
+                        );
+                    let arity = count_param_groups(rest, &ridge_fn) + dictionaries;
                     out.push(FfiEntry {
                         ridge_module: module.to_owned(),
                         ridge_fn,

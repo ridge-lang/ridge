@@ -47,6 +47,7 @@
 pub mod ask_migration;
 pub mod builtin_cards;
 pub mod cancel;
+mod comparison_sites;
 pub mod completion;
 pub mod diagnostics;
 pub mod explicit_calls;

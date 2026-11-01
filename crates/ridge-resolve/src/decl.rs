@@ -67,7 +67,8 @@ pub fn check_stdlib_only_attributes(module: &Module, is_stdlib: bool) -> Vec<Res
 /// `Less`, the `J*`/`Q*` families). The `ModuleAlias` bindings (`Int`, `Text`,
 /// `List`, `Set`, …) are deliberately excluded: they name modules, not
 /// constructors, so a user union variant called `Set` does not collide with them
-/// and must keep compiling.
+/// and must keep compiling. `Hasher` is reserved separately: it has no value
+/// binding or source constructor and its state must remain opaque.
 fn reserved_prelude_names() -> &'static HashSet<String> {
     static NAMES: OnceLock<HashSet<String>> = OnceLock::new();
     NAMES.get_or_init(|| {
@@ -76,6 +77,7 @@ fn reserved_prelude_names() -> &'static HashSet<String> {
             .flat_map(|res| res.effective_bindings)
             .filter(|eb| matches!(eb.binding, Binding::StdlibSymbol { .. }))
             .map(|eb| eb.local_name)
+            .chain(std::iter::once("Hasher".to_string()))
             .collect()
     })
 }
@@ -105,7 +107,7 @@ pub fn check_reserved_prelude_names(module: &Module, is_stdlib: bool) -> Vec<Res
     let mut errors = Vec::new();
     for item in &module.items {
         if let Item::ClassDecl(decl) = item {
-            if decl.name.text == "ErrorFrom" {
+            if matches!(decl.name.text.as_str(), "ErrorFrom" | "Eq" | "Ord" | "Hash") {
                 errors.push(ResolveError::ReservedName {
                     name: decl.name.text.clone(),
                     kind: "class",
@@ -153,6 +155,20 @@ mod tests {
         assert!(
             matches!(errors.as_slice(), [ResolveError::ReservedName { name, kind: "class", .. }] if name == "ErrorFrom")
         );
+    }
+
+    #[test]
+    fn comparison_classes_cannot_be_redefined() {
+        for name in ["Eq", "Ord"] {
+            let source = format!("class {name} a =\n    wrong (x: a) -> Int\n");
+            let parsed = ridge_parser::parse_source(&source);
+            assert!(parsed.errors.is_empty());
+            let errors = check_reserved_prelude_names(&parsed.module, false);
+            assert!(
+                matches!(errors.as_slice(), [ResolveError::ReservedName { name: actual, kind: "class", .. }] if actual == name)
+            );
+            assert!(check_reserved_prelude_names(&parsed.module, true).is_empty());
+        }
     }
 
     #[test]

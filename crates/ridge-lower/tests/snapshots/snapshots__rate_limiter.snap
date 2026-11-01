@@ -123,7 +123,7 @@ items:
                                 scrutinee:
                                   Call(n42):
                                     callee:
-                                      Symbol(n43): Stdlib(fn:std.op.gt)
+                                      Symbol(n43): Stdlib(fn:std.float.greater)
                                     args:
                                       -
                                         Local(n44): refilled
@@ -160,7 +160,7 @@ items:
                                   scrutinee:
                                     Call(n58):
                                       callee:
-                                        Symbol(n59): Stdlib(fn:std.op.ge)
+                                        Symbol(n59): Stdlib(fn:std.float.greaterOrEqual)
                                       args:
                                         -
                                           Local(n60): capped
@@ -249,102 +249,112 @@ items:
                   scrutinee:
                     Call(n95):
                       callee:
-                        Symbol(n96): Stdlib(fn:std.op.eq)
+                        Field(n96).eq:
+                          Call(n97):
+                            callee:
+                              Symbol(n98): Stdlib(fn:std.op.evidence)
+                            args:
+                              -
+                                Symbol(n99): Stdlib(fn:std._evidence.$ridge_evidence)
+                              -
+                                Lit(n100): Text("Eq:static:[(\"\", \"Int\")]:[]")
+                              -
+                                ListLit(n101):
                       args:
                         -
-                          Field(n97).received:
-                            Local(n98): __state
+                          Field(n102).received:
+                            Local(n103): __state
                         -
-                          Lit(n99): Int(5)
+                          Lit(n104): Int(5)
                   arms:
                     -
                       pat:
                         Lit: Bool(true)
                       body:
-                        Block(n100):
-                          Call(n101):
+                        Block(n105):
+                          Call(n106):
                             callee:
-                              Symbol(n102): Stdlib(fn:std.io.eprintln)
+                              Symbol(n107): Stdlib(fn:std.io.eprintln)
                             args:
                               -
-                                Call(n103):
+                                Call(n108):
                                   callee:
-                                    Symbol(n104): Stdlib(fn:std.text.concat)
+                                    Symbol(n109): Stdlib(fn:std.text.concat)
                                   args:
                                     -
-                                      Lit(n105): Text("  Allowed : ")
+                                      Lit(n110): Text("  Allowed : ")
                                     -
-                                      Call(n106):
+                                      Call(n111):
                                         callee:
-                                          Symbol(n107): Stdlib(fn:std.int.toText)
+                                          Symbol(n112): Stdlib(fn:std.int.toText)
                                         args:
                                           -
-                                            Field(n108).totalAllowed:
-                                              Local(n109): __state
-                          Block(n110):
-                            Call(n111):
+                                            Field(n113).totalAllowed:
+                                              Local(n114): __state
+                          Block(n115):
+                            Call(n116):
                               callee:
-                                Symbol(n112): Stdlib(fn:std.io.eprintln)
+                                Symbol(n117): Stdlib(fn:std.io.eprintln)
                               args:
                                 -
-                                  Call(n113):
+                                  Call(n118):
                                     callee:
-                                      Symbol(n114): Stdlib(fn:std.text.concat)
+                                      Symbol(n119): Stdlib(fn:std.text.concat)
                                     args:
                                       -
-                                        Lit(n115): Text("  Denied  : ")
+                                        Lit(n120): Text("  Denied  : ")
                                       -
-                                        Call(n116):
+                                        Call(n121):
                                           callee:
-                                            Symbol(n117): Stdlib(fn:std.int.toText)
+                                            Symbol(n122): Stdlib(fn:std.int.toText)
                                           args:
                                             -
-                                              Field(n118).totalDenied:
-                                                Local(n119): __state
-                            Block(n120):
-                              Call(n121):
+                                              Field(n123).totalDenied:
+                                                Local(n124): __state
+                            Block(n125):
+                              Call(n126):
                                 callee:
-                                  Symbol(n122): Stdlib(fn:std.io.println)
+                                  Symbol(n127): Stdlib(fn:std.io.println)
                                 args:
                                   -
-                                    Lit(n123): Text("-- Rate limiter results --------------")
-                              Call(n124):
+                                    Lit(n128): Text("-- Rate limiter results --------------")
+                              Call(n129):
                                 callee:
-                                  Symbol(n125): Stdlib(fn:std.io.println)
+                                  Symbol(n130): Stdlib(fn:std.io.println)
                                 args:
                                   -
-                                    Call(n126):
+                                    Call(n131):
                                       callee:
-                                        Symbol(n127): Stdlib(fn:std.text.concat)
+                                        Symbol(n132): Stdlib(fn:std.text.concat)
                                       args:
                                         -
-                                          Lit(n128): Text("  Total   : ")
+                                          Lit(n133): Text("  Total   : ")
                                         -
-                                          Call(n129):
+                                          Call(n134):
                                             callee:
-                                              Symbol(n130): Stdlib(fn:std.int.toText)
+                                              Symbol(n135): Stdlib(fn:std.int.toText)
                                             args:
                                               -
-                                                Call(n131):
+                                                Call(n136):
                                                   callee:
-                                                    Symbol(n132): Stdlib(fn:std.int.add)
+                                                    Symbol(n137): Stdlib(fn:std.int.add)
                                                   args:
                                                     -
-                                                      Field(n133).totalAllowed:
-                                                        Local(n134): __state
+                                                      Field(n138).totalAllowed:
+                                                        Local(n139): __state
                                                     -
-                                                      Field(n135).totalDenied:
-                                                        Local(n136): __state
+                                                      Field(n140).totalDenied:
+                                                        Local(n141): __state
                     -
                       pat:
                         Lit: Bool(false)
                       body:
-                        Lit(n137): Unit
+                        Lit(n142): Unit
   - kind: const
     name: requestsPerWorker
     ty: Con(0)
     value:
-      Lit(n138): Int(20)
+      Lit(n143): Int(20)
   - kind: actor
     name: Worker
     pub: false
@@ -352,27 +362,27 @@ items:
       - name: workerId
         ty: Con(0)
       - name: limiter
-        ty: Con(11) [Con(109)]
-      - name: collector
         ty: Con(11) [Con(110)]
+      - name: collector
+        ty: Con(11) [Con(111)]
     init:
       caps: CapabilitySet(0)
       params:
         - name: id
           ty: Con(0)
         - name: l
-          ty: Con(11) [Con(109)]
-        - name: col
           ty: Con(11) [Con(110)]
+        - name: col
+          ty: Con(11) [Con(111)]
       body:
-        Block(n139):
-          Assign(n140) -> StateField(workerId):
-            Local(n141): id
-          Block(n142):
-            Assign(n143) -> StateField(limiter):
-              Local(n144): l
-            Assign(n145) -> StateField(collector):
-              Local(n146): col
+        Block(n144):
+          Assign(n145) -> StateField(workerId):
+            Local(n146): id
+          Block(n147):
+            Assign(n148) -> StateField(limiter):
+              Local(n149): l
+            Assign(n150) -> StateField(collector):
+              Local(n151): col
     terminate: null
     handlers:
       - message: run
@@ -380,11 +390,11 @@ items:
         ret_ty: Con(4)
         params: []
         body:
-          LetIn(n147):
+          LetIn(n152):
             pat:
               Bind: sendRequests
             value:
-              Lambda(n148):
+              Lambda(n153):
                 caps: CapabilitySet(0)
                 params:
                   - name: remaining
@@ -394,51 +404,79 @@ items:
                   - name: denied
                     ty: Con(0)
                 body:
-                  Match(n149):
+                  Match(n154):
                     scrutinee:
-                      Call(n150):
-                        callee:
-                          Symbol(n151): Stdlib(fn:std.op.gt)
-                        args:
+                      Match(n155):
+                        scrutinee:
+                          Call(n156):
+                            callee:
+                              Field(n157).compare:
+                                Call(n158):
+                                  callee:
+                                    Symbol(n159): Stdlib(fn:std.op.evidence)
+                                  args:
+                                    -
+                                      Symbol(n160): Stdlib(fn:std._evidence.$ridge_evidence)
+                                    -
+                                      Lit(n161): Text("Ord:static:[(\"\", \"Int\")]:[]")
+                                    -
+                                      ListLit(n162):
+                            args:
+                              -
+                                Local(n163): remaining
+                              -
+                                Lit(n164): Int(0)
+                        arms:
                           -
-                            Local(n152): remaining
+                            pat:
+                              Ctor: Ctor(Variant:Less owner=15)
+                            body:
+                              Lit(n165): Bool(false)
                           -
-                            Lit(n153): Int(0)
+                            pat:
+                              Ctor: Ctor(Variant:Equal owner=15)
+                            body:
+                              Lit(n166): Bool(false)
+                          -
+                            pat:
+                              Ctor: Ctor(Variant:Greater owner=15)
+                            body:
+                              Lit(n167): Bool(true)
                     arms:
                       -
                         pat:
                           Lit: Bool(true)
                         body:
-                          LetIn(n154):
+                          LetIn(n168):
                             pat:
                               Bind: delayMs
                             value:
-                              Call(n155):
+                              Call(n169):
                                 callee:
-                                  Symbol(n156): Stdlib(fn:std.random.int)
+                                  Symbol(n170): Stdlib(fn:std.random.int)
                                 args:
                                   -
-                                    Lit(n157): Int(0)
+                                    Lit(n171): Int(0)
                                   -
-                                    Lit(n158): Int(50)
+                                    Lit(n172): Int(50)
                             body:
-                              Block(n159):
-                                Call(n160):
+                              Block(n173):
+                                Call(n174):
                                   callee:
-                                    Symbol(n161): Stdlib(fn:std.time.sleep)
+                                    Symbol(n175): Stdlib(fn:std.time.sleep)
                                   args:
                                     -
-                                      Local(n162): delayMs
-                                LetIn(n163):
+                                      Local(n176): delayMs
+                                LetIn(n177):
                                   pat:
                                     Bind: granted
                                   value:
-                                    Match(n164):
+                                    Match(n178):
                                       scrutinee:
-                                        Ask(n165) ?> Handler(m0..allow):
+                                        Ask(n179) ?> Handler(m0..allow):
                                           handle:
-                                            Field(n166).limiter:
-                                              Local(n167): __state
+                                            Field(n180).limiter:
+                                              Local(n181): __state
                                       arms:
                                         -
                                           pat:
@@ -446,133 +484,127 @@ items:
                                               args:
                                                 Bind: allowed
                                           body:
-                                            Local(n168): allowed
+                                            Local(n182): allowed
                                         -
                                           pat:
                                             Ctor: Prelude(Err)
                                               args:
                                                 Bind: error
                                           body:
-                                            Block(n169):
-                                              Call(n170):
+                                            Block(n183):
+                                              Call(n184):
                                                 callee:
-                                                  Symbol(n171): Stdlib(fn:std.io.println)
+                                                  Symbol(n185): Stdlib(fn:std.io.println)
                                                 args:
                                                   -
-                                                    Call(n172):
+                                                    Call(n186):
                                                       callee:
-                                                        Symbol(n173): Stdlib(fn:std.text.concat)
+                                                        Symbol(n187): Stdlib(fn:std.text.concat)
                                                       args:
                                                         -
-                                                          Lit(n174): Text("Limiter unavailable: ")
+                                                          Lit(n188): Text("Limiter unavailable: ")
                                                         -
-                                                          Call(n175):
+                                                          Call(n189):
                                                             callee:
-                                                              Field(n176).toText:
-                                                                Construct(n177):
-                                                                  ctor: Ctor(Record:$synth_dict_toText owner=none)
-                                                                  fields:
-                                                                    toText:
-                                                                      Lambda(n178):
-                                                                        caps: CapabilitySet(0)
-                                                                        params:
-                                                                          - name: __totext_x
-                                                                            ty: Error
-                                                                        body:
-                                                                          Call(n179):
-                                                                            callee:
-                                                                              Symbol(n180): Stdlib(fn:std.actor._askErrorToText)
-                                                                            args:
-                                                                              -
-                                                                                Local(n181): __totext_x
+                                                              Field(n190).toText:
+                                                                Call(n191):
+                                                                  callee:
+                                                                    Symbol(n192): Stdlib(fn:std.op.evidence)
+                                                                  args:
+                                                                    -
+                                                                      Symbol(n193): Stdlib(fn:std._evidence.$ridge_evidence)
+                                                                    -
+                                                                      Lit(n194): Text("ToText:static:[(\"std.actor\", \"AskError\")]:[]")
+                                                                    -
+                                                                      ListLit(n195):
                                                             args:
                                                               -
-                                                                Local(n182): error
-                                              Lit(n183): Bool(false)
+                                                                Local(n196): error
+                                              Lit(n197): Bool(false)
                                   body:
-                                    Match(n184):
+                                    Match(n198):
                                       scrutinee:
-                                        Local(n185): granted
+                                        Local(n199): granted
                                       arms:
                                         -
                                           pat:
                                             Lit: Bool(true)
                                           body:
-                                            Call(n186):
+                                            Call(n200):
                                               callee:
-                                                Local(n187): sendRequests
+                                                Local(n201): sendRequests
                                               args:
                                                 -
-                                                  Call(n188):
+                                                  Call(n202):
                                                     callee:
-                                                      Symbol(n189): Stdlib(fn:std.int.sub)
+                                                      Symbol(n203): Stdlib(fn:std.int.sub)
                                                     args:
                                                       -
-                                                        Local(n190): remaining
+                                                        Local(n204): remaining
                                                       -
-                                                        Lit(n191): Int(1)
+                                                        Lit(n205): Int(1)
                                                 -
-                                                  Call(n192):
+                                                  Call(n206):
                                                     callee:
-                                                      Symbol(n193): Stdlib(fn:std.int.add)
+                                                      Symbol(n207): Stdlib(fn:std.int.add)
                                                     args:
                                                       -
-                                                        Local(n194): allowed
+                                                        Local(n208): allowed
                                                       -
-                                                        Lit(n195): Int(1)
+                                                        Lit(n209): Int(1)
                                                 -
-                                                  Local(n196): denied
+                                                  Local(n210): denied
                                         -
                                           pat:
                                             Lit: Bool(false)
                                           body:
-                                            Call(n197):
+                                            Call(n211):
                                               callee:
-                                                Local(n198): sendRequests
+                                                Local(n212): sendRequests
                                               args:
                                                 -
-                                                  Call(n199):
+                                                  Call(n213):
                                                     callee:
-                                                      Symbol(n200): Stdlib(fn:std.int.sub)
+                                                      Symbol(n214): Stdlib(fn:std.int.sub)
                                                     args:
                                                       -
-                                                        Local(n201): remaining
+                                                        Local(n215): remaining
                                                       -
-                                                        Lit(n202): Int(1)
+                                                        Lit(n216): Int(1)
                                                 -
-                                                  Local(n203): allowed
+                                                  Local(n217): allowed
                                                 -
-                                                  Call(n204):
+                                                  Call(n218):
                                                     callee:
-                                                      Symbol(n205): Stdlib(fn:std.int.add)
+                                                      Symbol(n219): Stdlib(fn:std.int.add)
                                                     args:
                                                       -
-                                                        Local(n206): denied
+                                                        Local(n220): denied
                                                       -
-                                                        Lit(n207): Int(1)
+                                                        Lit(n221): Int(1)
                       -
                         pat:
                           Lit: Bool(false)
                         body:
-                          Return(n208):
-                            Send(n209) ! Handler(m0..report):
+                          Return(n222):
+                            Send(n223) ! Handler(m0..report):
                               handle:
-                                Field(n210).collector:
-                                  Local(n211): __state
+                                Field(n224).collector:
+                                  Local(n225): __state
                               args:
-                                Local(n212): allowed
-                                Local(n213): denied
+                                Local(n226): allowed
+                                Local(n227): denied
             body:
-              Call(n214):
+              Call(n228):
                 callee:
-                  Local(n215): sendRequests
+                  Local(n229): sendRequests
                 args:
                   -
-                    Symbol(n216): Local(requestsPerWorker @ m0)
+                    Symbol(n230): Local(requestsPerWorker @ m0)
                   -
-                    Lit(n217): Int(0)
+                    Lit(n231): Int(0)
                   -
-                    Lit(n218): Int(0)
+                    Lit(n232): Int(0)
   - kind: fn
     name: main
     pub: false
@@ -581,91 +613,91 @@ items:
     ret_ty: Con(10) [Con(4), Con(12)]
     params: []
     body:
-      Match(n219):
+      Match(n233):
         scrutinee:
-          LetIn(n220):
+          LetIn(n234):
             pat:
               Bind: limiter
             value:
-              Spawn(n221) ActorType(Limiter @ m0):
+              Spawn(n235) ActorType(Limiter @ m0):
                 args:
-                  Lit(n222): Int(10)
-                  Lit(n223): Float(2)
+                  Lit(n236): Int(10)
+                  Lit(n237): Float(2)
             body:
-              LetIn(n224):
+              LetIn(n238):
                 pat:
                   Bind: collector
                 value:
-                  Spawn(n225) ActorType(Collector @ m0):
+                  Spawn(n239) ActorType(Collector @ m0):
                     args: []
                 body:
-                  LetIn(n226):
+                  LetIn(n240):
                     pat:
                       Bind: workers
                     value:
-                      Call(n227):
+                      Call(n241):
                         callee:
-                          Symbol(n228): Stdlib(fn:std.list.map)
+                          Symbol(n242): Stdlib(fn:std.list.map)
                         args:
                           -
-                            Lambda(n229):
+                            Lambda(n243):
                               caps: CapabilitySet(0)
                               params:
                                 - name: id
                                   ty: Con(0)
                               body:
-                                Spawn(n230) ActorType(Worker @ m0):
+                                Spawn(n244) ActorType(Worker @ m0):
                                   args:
-                                    Local(n231): id
-                                    Local(n232): limiter
-                                    Local(n233): collector
+                                    Local(n245): id
+                                    Local(n246): limiter
+                                    Local(n247): collector
                           -
-                            Call(n234):
+                            Call(n248):
                               callee:
-                                Symbol(n235): Stdlib(fn:std.list.range)
+                                Symbol(n249): Stdlib(fn:std.list.range)
                               args:
                                 -
-                                  Lit(n236): Int(1)
+                                  Lit(n250): Int(1)
                                 -
-                                  Lit(n237): Int(5)
+                                  Lit(n251): Int(5)
                     body:
-                      Block(n238):
-                        Call(n239):
+                      Block(n252):
+                        Call(n253):
                           callee:
-                            Symbol(n240): Stdlib(fn:std.list.forEach)
+                            Symbol(n254): Stdlib(fn:std.list.forEach)
                           args:
                             -
-                              Lambda(n241):
+                              Lambda(n255):
                                 caps: CapabilitySet(0)
                                 params:
                                   - name: w
-                                    ty: Con(11) [Con(111)]
+                                    ty: Con(11) [Con(112)]
                                 body:
-                                  Send(n242) ! Handler(m0..run):
+                                  Send(n256) ! Handler(m0..run):
                                     handle:
-                                      Local(n243): w
+                                      Local(n257): w
                             -
-                              Local(n244): workers
-                        Block(n245):
-                          Call(n246):
+                              Local(n258): workers
+                        Block(n259):
+                          Call(n260):
                             callee:
-                              Symbol(n247): Stdlib(fn:std.time.sleep)
+                              Symbol(n261): Stdlib(fn:std.time.sleep)
                             args:
                               -
-                                Lit(n248): Int(6000)
-                          Block(n249):
-                            Call(n250):
+                                Lit(n262): Int(6000)
+                          Block(n263):
+                            Call(n264):
                               callee:
-                                Symbol(n251): Stdlib(fn:std.io.println)
+                                Symbol(n265): Stdlib(fn:std.io.println)
                               args:
                                 -
-                                  Lit(n252): Text("Done.")
-                            Call(n253):
+                                  Lit(n266): Text("Done.")
+                            Call(n267):
                               callee:
-                                Symbol(n254): Prelude(Ok)
+                                Symbol(n268): Prelude(Ok)
                               args:
                                 -
-                                  Lit(n255): Unit
+                                  Lit(n269): Unit
         arms:
           -
             pat:
@@ -673,24 +705,24 @@ items:
                 args:
                   Bind: __main_ok_0
             body:
-              Construct(n256):
+              Construct(n270):
                 ctor: Prelude(Ok)
                 fields:
                   $0:
-                    Local(n257): __main_ok_0
+                    Local(n271): __main_ok_0
           -
             pat:
               Ctor: Prelude(Err)
                 args:
                   Bind: __main_err_1
             body:
-              Construct(n258):
+              Construct(n272):
                 ctor: Prelude(Err)
                 fields:
                   $0:
-                    Call(n259):
+                    Call(n273):
                       callee:
-                        Symbol(n260): Stdlib(fn:std.error.toText)
+                        Symbol(n274): Stdlib(fn:std.error.toText)
                       args:
                         -
-                          Local(n261): __main_err_1
+                          Local(n275): __main_err_1

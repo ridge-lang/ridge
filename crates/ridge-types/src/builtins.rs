@@ -262,6 +262,9 @@ pub struct BuiltinTyCons {
     /// — the result type of `std.cli.parse`. Registered as a `TyConKind::Record`
     /// so that field access (`p.flags`, `p.positionals`) is typeable.
     pub cli_parsed: TyConId,
+    /// Opaque persistent state passed through a `Hash` implementation.
+    /// No constructor, equality, codec or structural access is available.
+    pub hasher: TyConId,
 }
 
 impl BuiltinTyCons {
@@ -1299,6 +1302,17 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
+        let hasher = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "Hasher".to_string(),
+            arity: 0,
+            kind: TyConKind::Builtin,
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
+            is_anon: false,
+        });
+
         // QExpr, pass two. Every id its variants name now exists, so they
         // read the handle rather than the number the schema used to carry.
         arena.replace_kind(
@@ -1669,6 +1683,7 @@ impl BuiltinTyCons {
             supervisor,
             monitor,
             cli_parsed,
+            hasher,
         }
     }
 }
@@ -1784,9 +1799,10 @@ mod tests {
             supervisor,
             monitor,
             cli_parsed,
+            hasher,
         } = b;
 
-        let named: [(TyConId, &str); 45] = [
+        let named: [(TyConId, &str); 46] = [
             (int, "Int"),
             (float, "Float"),
             (bool_, "Bool"),
@@ -1832,6 +1848,7 @@ mod tests {
             (supervisor, "Supervisor"),
             (monitor, "Monitor"),
             (cli_parsed, "Parsed"),
+            (hasher, "Hasher"),
         ];
         for (id, name) in named {
             assert_eq!(
@@ -1858,7 +1875,7 @@ mod tests {
     }
 
     #[test]
-    fn arena_len_is_61() {
+    fn arena_len_is_62() {
         // 15 original builtins + Ordering + JsonValue + the std.net.http taint
         // wrappers Sql / Html / SecureCookie + std.sql's SqlValue + the
         // column-codegen builtins ColumnRef / Table + the schema-codegen builtins
@@ -1868,9 +1885,9 @@ mod tests {
         // + InsertShape/1 + the Decimal, Uuid, Bytes, Date and Time primitives and
         // the Instant monotonic reading + the supervision types
         // ChildSpec / Supervisor + the process-monitor reference Monitor
-        // + std.cli's Parsed record (interned last).
+        // + std.cli's Parsed record + the opaque Hasher state (interned last).
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 61);
+        assert_eq!(arena.len(), 62);
     }
 
     #[test]

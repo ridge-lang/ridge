@@ -1,29 +1,168 @@
 ---
 source: crates/ridge-lower/tests/lowering.rs
+assertion_line: 56
 expression: rendered
 ---
 module: m0
-items_count: 2
+items_count: 3
 items:
   - kind: fn
     name: parse_int
     pub: false
     main: false
     caps: CapabilitySet(0)
-    ret_ty: Con(9) [Con(0)]
+    ret_ty: Con(10) [Con(0), Con(3)]
     params:
       - name: s
         ty: Con(3)
     body:
-      Symbol(n0): Prelude(None)
+      Call(n0):
+        callee:
+          Symbol(n1): Prelude(Err)
+        args:
+          -
+            Lit(n2): Text("invalid int")
   - kind: fn
     name: parse_bool
     pub: false
     main: false
     caps: CapabilitySet(0)
-    ret_ty: Con(9) [Con(2)]
+    ret_ty: Con(10) [Con(2), Con(3)]
     params:
       - name: s
         ty: Con(3)
     body:
-      Symbol(n1): Prelude(None)
+      Call(n3):
+        callee:
+          Symbol(n4): Prelude(Err)
+        args:
+          -
+            Lit(n5): Text("invalid bool")
+  - kind: fn
+    name: try_block_nested_propagate
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(10) [Con(2), Con(3)]
+    params:
+      - name: a
+        ty: Con(3)
+      - name: b
+        ty: Con(3)
+    body:
+      ResultScope(n6):
+        LetIn(n7):
+          pat:
+            Bind: n
+          value:
+            Match(n8):
+              scrutinee:
+                Call(n9):
+                  callee:
+                    Symbol(n10): Local(parse_int @ m0)
+                  args:
+                    -
+                      Local(n11): a
+              arms:
+                -
+                  pat:
+                    Ctor: Prelude(Ok)
+                      args:
+                        Bind: __prop_ok_0
+                  body:
+                    Local(n12): __prop_ok_0
+                -
+                  pat:
+                    Ctor: Prelude(Err)
+                      args:
+                        Bind: __prop_err_1
+                  body:
+                    ResultExit(n13):
+                      Construct(n14):
+                        ctor: Prelude(Err)
+                        fields:
+                          $0:
+                            Local(n15): __prop_err_1
+          body:
+            LetIn(n16):
+              pat:
+                Bind: ok
+              value:
+                Match(n17):
+                  scrutinee:
+                    Call(n18):
+                      callee:
+                        Symbol(n19): Local(parse_bool @ m0)
+                      args:
+                        -
+                          Local(n20): b
+                  arms:
+                    -
+                      pat:
+                        Ctor: Prelude(Ok)
+                          args:
+                            Bind: __prop_ok_2
+                      body:
+                        Local(n21): __prop_ok_2
+                    -
+                      pat:
+                        Ctor: Prelude(Err)
+                          args:
+                            Bind: __prop_err_3
+                      body:
+                        ResultExit(n22):
+                          Construct(n23):
+                            ctor: Prelude(Err)
+                            fields:
+                              $0:
+                                Local(n24): __prop_err_3
+              body:
+                Match(n25):
+                  scrutinee:
+                    Match(n26):
+                      scrutinee:
+                        Call(n27):
+                          callee:
+                            Field(n28).compare:
+                              Call(n29):
+                                callee:
+                                  Symbol(n30): Stdlib(fn:std.op.evidence)
+                                args:
+                                  -
+                                    Symbol(n31): Stdlib(fn:std._evidence.$ridge_evidence)
+                                  -
+                                    Lit(n32): Text("Ord:static:[(\"\", \"Int\")]:[]")
+                                  -
+                                    ListLit(n33):
+                          args:
+                            -
+                              Local(n34): n
+                            -
+                              Lit(n35): Int(0)
+                      arms:
+                        -
+                          pat:
+                            Ctor: Ctor(Variant:Less owner=15)
+                          body:
+                            Lit(n36): Bool(false)
+                        -
+                          pat:
+                            Ctor: Ctor(Variant:Equal owner=15)
+                          body:
+                            Lit(n37): Bool(false)
+                        -
+                          pat:
+                            Ctor: Ctor(Variant:Greater owner=15)
+                          body:
+                            Lit(n38): Bool(true)
+                  arms:
+                    -
+                      pat:
+                        Lit: Bool(true)
+                      body:
+                        Local(n39): ok
+                    -
+                      pat:
+                        Lit: Bool(false)
+                      body:
+                        Lit(n40): Bool(false)

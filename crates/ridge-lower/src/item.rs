@@ -121,7 +121,15 @@ pub fn lower_item_multi(ctx: &mut LowerCtx<'_>, item: &Item) -> Vec<IrItem> {
             // instruction this becomes is decided by the backend, from its own
             // table, and is deliberately not written down here.
             if matches!(decl.body, Body::Primitive) {
-                let params: Vec<String> = (0..decl.params.len()).map(|i| format!("p{i}")).collect();
+                let constraints = ctx.lookup_fn_constraints(&decl.name.text).to_vec();
+                let mut params: Vec<String> = constraints
+                    .iter()
+                    .map(|constraint| {
+                        constraint
+                            .dict_param_name(ctx.class_name(constraint.class).unwrap_or("Unknown"))
+                    })
+                    .collect();
+                params.extend((0..decl.params.len()).map(|i| format!("p{i}")));
                 return vec![IrItem::Primitive(IrPrimitiveFn {
                     module: ctx.module_fqn.clone(),
                     name: decl.name.text.clone(),
@@ -170,7 +178,10 @@ pub fn lower_item_multi(ctx: &mut LowerCtx<'_>, item: &Item) -> Vec<IrItem> {
 /// shape alone, is what tells the two apart. `false` when no workspace class
 /// or instance registry is attached (unit-test scaffolding).
 fn is_auto_promoted_totext(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> bool {
-    if !matches!(decl.vis, Visibility::Pub) || decl.name.text != "toText" || decl.params.len() != 1
+    if !matches!(decl.vis, Visibility::Pub)
+        || decl.name.text != "toText"
+        || decl.params.len() != 1
+        || !decl.caps.is_empty()
     {
         return false;
     }
@@ -660,10 +671,15 @@ pub fn lower_fn(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrFn {
     // can determine whether to forward the caller's own dict params.
     let saved_constraints =
         std::mem::replace(&mut ctx.current_fn_constraints, scheme.constraints.clone());
+    let saved_fields = std::mem::replace(
+        &mut ctx.current_fn_record_fields,
+        scheme.record_fields.clone(),
+    );
 
     let body = lower_expr(ctx, expr);
 
     ctx.current_fn_constraints = saved_constraints;
+    ctx.current_fn_record_fields = saved_fields;
     ctx.pop_propagation_scope();
 
     // bare-param types are lifted from the scheme's Type::Fn
@@ -1165,48 +1181,19 @@ pub fn lower_derived_instance(
     // ── Build the method body ─────────────────────────────────────────────────
 
     let (body, params) = match &derived.method_body {
-        DerivedMethodBody::DerivedEq => {
-            // eq (a: T) (b: T) -> Bool  =  erlang:=:=(a, b)
-            // Dispatch through std.op.eq which codegen maps to erlang:=:=.
-            let body = IrExpr::Call {
-                id: ctx.fresh_id(None),
-                callee: Box::new(IrExpr::Symbol {
-                    id: ctx.fresh_id(None),
-                    sym: SymbolRef::Stdlib {
-                        module: "std.op".to_string(),
-                        name: "eq".to_string(),
-                        kind: StdlibKind::Function,
-                    },
-                    span: sp,
-                }),
-                args: vec![
-                    IrExpr::Local {
-                        id: ctx.fresh_id(None),
-                        name: "a".to_string(),
-                        span: sp,
-                    },
-                    IrExpr::Local {
-                        id: ctx.fresh_id(None),
-                        name: "b".to_string(),
-                        span: sp,
-                    },
-                ],
-                span: sp,
-            };
-            let params = vec![
-                IrParam {
-                    name: "a".to_string(),
-                    ty: Type::Error,
-                    span: sp,
-                },
-                IrParam {
-                    name: "b".to_string(),
-                    ty: Type::Error,
-                    span: sp,
-                },
-            ];
-            (body, params)
+        DerivedMethodBody::DerivedComparison { shape } => {
+            if derived.key.0 == ridge_types::HASH_CLASS {
+                crate::hash_compound::derived_method(ctx, derived.key.1, shape, sp)
+            } else {
+                crate::comparison::derived_method(ctx, derived.key.0, derived.key.1, shape, sp)
+            }
         }
+        // Invalid editor workspaces may retain a pending derive. Its diagnostic
+        // already exists; emit no dictionary until component evidence is proved.
+        DerivedMethodBody::DerivedEq
+        | DerivedMethodBody::DerivedHash
+        | DerivedMethodBody::DerivedOrdRecord { .. }
+        | DerivedMethodBody::DerivedOrdUnion { .. } => return vec![],
 
         DerivedMethodBody::DerivedToTextRecord {
             field_names,
@@ -1282,45 +1269,6 @@ pub fn lower_derived_instance(
                 ty: Type::Error,
                 span: sp,
             }];
-            (body, params)
-        }
-
-        DerivedMethodBody::DerivedOrdRecord { field_names } => {
-            // compare (a: T) (b: T) -> Ordering
-            // Field-by-field lexicographic order. Uses nested matches on
-            // std.op.lt / std.op.gt per field; first non-Equal field wins.
-            // For 0.2.13, emit a match using std.op.lt/gt calls.
-            let body = build_ord_record_body(ctx, field_names, sp);
-            let params = vec![
-                IrParam {
-                    name: "a".to_string(),
-                    ty: Type::Error,
-                    span: sp,
-                },
-                IrParam {
-                    name: "b".to_string(),
-                    ty: Type::Error,
-                    span: sp,
-                },
-            ];
-            (body, params)
-        }
-
-        DerivedMethodBody::DerivedOrdUnion { variants } => {
-            // compare (a: T) (b: T) -> Ordering — variant index then payload.
-            let body = build_ord_union_body(ctx, derived.key.1, variants, sp);
-            let params = vec![
-                IrParam {
-                    name: "a".to_string(),
-                    ty: Type::Error,
-                    span: sp,
-                },
-                IrParam {
-                    name: "b".to_string(),
-                    ty: Type::Error,
-                    span: sp,
-                },
-            ];
             (body, params)
         }
 
@@ -1470,8 +1418,17 @@ pub fn lower_derived_instance(
         };
         let dict_params: Vec<IrParam> = head_var_positions
             .iter()
-            .map(|&i| IrParam {
-                name: format!("$dict_{class_name}_{i}"),
+            .zip(&derived.instance_info.ctx_constraints)
+            .map(|(&i, constraint)| IrParam {
+                name: if matches!(
+                    derived.method_body,
+                    DerivedMethodBody::DerivedComparison { .. }
+                ) {
+                    constraint
+                        .dict_param_name(ctx.class_name(constraint.class).unwrap_or(class_name))
+                } else {
+                    format!("$dict_{class_name}_{i}")
+                },
                 ty: Type::Error,
                 span: sp,
             })
@@ -1881,281 +1838,6 @@ fn wrap_result_newtype(
     }
 }
 
-// ── Derived Ord body builders ─────────────────────────────────────────────────
-
-/// Build the `compare` body for a derived `Ord` on a record type.
-///
-/// Emits field-by-field comparisons via `std.op.lt`/`std.op.gt`; first
-/// non-`Equal` result wins. The IR uses `Match` arms on `true`/`false` literals
-/// since there is no `IrExpr::If` in the IR.
-#[expect(
-    clippy::too_many_lines,
-    reason = "sequential field-by-field comparison chain; splitting by field count would not reduce complexity"
-)]
-fn build_ord_record_body(ctx: &mut LowerCtx<'_>, field_names: &[String], sp: Span) -> IrExpr {
-    use ridge_ir::{IrArm, IrLit, IrPat};
-
-    // Helper: build a Less/Equal/Greater Ordering constructor.
-    let ordering_ctor = |ctx: &mut LowerCtx<'_>, name: &str, variant: u32| IrExpr::Construct {
-        id: ctx.fresh_id(None),
-        ctor: SymbolRef::Constructor {
-            ctor_kind: CtorKind::UnionVariant,
-            owner_type: Some(ctx.builtins.ordering),
-            name: name.to_string(),
-            variant,
-        },
-        fields: vec![],
-        span: sp,
-    };
-
-    if field_names.is_empty() {
-        return ordering_ctor(ctx, "Equal", 1);
-    }
-
-    // Build from the last field backwards; start with Equal and wrap each field.
-    let mut result = ordering_ctor(ctx, "Equal", 1);
-
-    for field in field_names.iter().rev() {
-        // a.field
-        let a_field = IrExpr::Field {
-            id: ctx.fresh_id(None),
-            base: Box::new(IrExpr::Local {
-                id: ctx.fresh_id(None),
-                name: "a".to_string(),
-                span: sp,
-            }),
-            field: field.clone(),
-            span: sp,
-        };
-        // b.field
-        let b_field = IrExpr::Field {
-            id: ctx.fresh_id(None),
-            base: Box::new(IrExpr::Local {
-                id: ctx.fresh_id(None),
-                name: "b".to_string(),
-                span: sp,
-            }),
-            field: field.clone(),
-            span: sp,
-        };
-
-        // lt_call: std.op.lt(a.field, b.field)
-        let lt_call = IrExpr::Call {
-            id: ctx.fresh_id(None),
-            callee: Box::new(IrExpr::Symbol {
-                id: ctx.fresh_id(None),
-                sym: SymbolRef::Stdlib {
-                    module: "std.op".to_string(),
-                    name: "lt".to_string(),
-                    kind: StdlibKind::Function,
-                },
-                span: sp,
-            }),
-            args: vec![a_field.clone(), b_field.clone()],
-            span: sp,
-        };
-
-        // gt_call: std.op.gt(a.field, b.field)
-        let gt_call = IrExpr::Call {
-            id: ctx.fresh_id(None),
-            callee: Box::new(IrExpr::Symbol {
-                id: ctx.fresh_id(None),
-                sym: SymbolRef::Stdlib {
-                    module: "std.op".to_string(),
-                    name: "gt".to_string(),
-                    kind: StdlibKind::Function,
-                },
-                span: sp,
-            }),
-            args: vec![a_field, b_field],
-            span: sp,
-        };
-
-        // match std.op.gt(a.f, b.f) { true => Greater, _ => <rest> }
-        let gt_match = IrExpr::Match {
-            id: ctx.fresh_id(None),
-            scrutinee: Box::new(gt_call),
-            arms: vec![
-                IrArm {
-                    pat: IrPat::Lit {
-                        value: IrLit::Bool(true),
-                        span: sp,
-                    },
-                    when: None,
-                    body: ordering_ctor(ctx, "Greater", 2),
-                    span: sp,
-                },
-                IrArm {
-                    pat: IrPat::Wild { span: sp },
-                    when: None,
-                    body: result,
-                    span: sp,
-                },
-            ],
-            span: sp,
-        };
-
-        // match std.op.lt(a.f, b.f) { true => Less, _ => <gt_match> }
-        result = IrExpr::Match {
-            id: ctx.fresh_id(None),
-            scrutinee: Box::new(lt_call),
-            arms: vec![
-                IrArm {
-                    pat: IrPat::Lit {
-                        value: IrLit::Bool(true),
-                        span: sp,
-                    },
-                    when: None,
-                    body: ordering_ctor(ctx, "Less", 0),
-                    span: sp,
-                },
-                IrArm {
-                    pat: IrPat::Wild { span: sp },
-                    when: None,
-                    body: gt_match,
-                    span: sp,
-                },
-            ],
-            span: sp,
-        };
-    }
-
-    result
-}
-
-/// Build the `compare` body for a derived `Ord` on a union type.
-///
-/// Emits a nested match: `match a { CtorI => match b { CtorJ => Less/Equal/Greater } }`.
-/// The variant ordering is the declaration order (earlier variant = `Less`).
-#[expect(
-    clippy::too_many_lines,
-    reason = "nested outer/inner match arms over all variant pairs; splitting would not reduce complexity"
-)]
-fn build_ord_union_body(
-    ctx: &mut LowerCtx<'_>,
-    owner_tycon: ridge_types::TyConId,
-    variants: &[(String, usize, Option<Vec<String>>)],
-    sp: Span,
-) -> IrExpr {
-    use ridge_ir::{IrArm, IrPat};
-
-    if variants.is_empty() {
-        return IrExpr::Construct {
-            id: ctx.fresh_id(None),
-            ctor: SymbolRef::Constructor {
-                ctor_kind: CtorKind::UnionVariant,
-                owner_type: Some(ctx.builtins.ordering),
-                name: "Equal".to_string(),
-                variant: 1,
-            },
-            fields: vec![],
-            span: sp,
-        };
-    }
-
-    let make_ordering = |ctx: &mut LowerCtx<'_>, name: &str, v: u32| IrExpr::Construct {
-        id: ctx.fresh_id(None),
-        ctor: SymbolRef::Constructor {
-            ctor_kind: CtorKind::UnionVariant,
-            owner_type: Some(ctx.builtins.ordering),
-            name: name.to_string(),
-            variant: v,
-        },
-        fields: vec![],
-        span: sp,
-    };
-
-    let outer_arms: Vec<IrArm> = variants
-        .iter()
-        .enumerate()
-        .map(|(i, (ctor_i, payload_i, field_i))| {
-            let a_args: Vec<IrPat> = (0..*payload_i)
-                .map(|k| IrPat::Bind {
-                    name: format!("_af{k}"),
-                    inner: None,
-                    span: sp,
-                })
-                .collect();
-            let a_pat = build_union_variant_bind_pat(
-                Some(owner_tycon),
-                ctor_i,
-                a_args,
-                field_i.as_deref(),
-                sp,
-            );
-
-            let inner_arms: Vec<IrArm> = variants
-                .iter()
-                .enumerate()
-                .map(|(j, (ctor_j, payload_j, field_j))| {
-                    let b_args: Vec<IrPat> = (0..*payload_j)
-                        .map(|k| IrPat::Bind {
-                            name: format!("_bf{k}"),
-                            inner: None,
-                            span: sp,
-                        })
-                        .collect();
-                    let b_pat = build_union_variant_bind_pat(
-                        Some(owner_tycon),
-                        ctor_j,
-                        b_args,
-                        field_j.as_deref(),
-                        sp,
-                    );
-                    // When i == j (same variant), compare payload fields in order
-                    // using the already-bound variables _af0/_bf0, _af1/_bf1, etc.
-                    // This is the payload tiebreak: first non-Equal field wins.
-                    let inner_body = match i.cmp(&j) {
-                        std::cmp::Ordering::Less => make_ordering(ctx, "Less", 0),
-                        std::cmp::Ordering::Greater => make_ordering(ctx, "Greater", 2),
-                        std::cmp::Ordering::Equal => {
-                            // Build field names for the bound payload variables.
-                            let payload_var_names: Vec<String> =
-                                (0..*payload_i).map(|k| format!("_af{k}")).collect();
-                            let b_var_names: Vec<String> =
-                                (0..*payload_i).map(|k| format!("_bf{k}")).collect();
-                            build_ord_payload_body(ctx, &payload_var_names, &b_var_names, sp)
-                        }
-                    };
-                    IrArm {
-                        pat: b_pat,
-                        when: None,
-                        body: inner_body,
-                        span: sp,
-                    }
-                })
-                .collect();
-
-            IrArm {
-                pat: a_pat,
-                when: None,
-                body: IrExpr::Match {
-                    id: ctx.fresh_id(None),
-                    scrutinee: Box::new(IrExpr::Local {
-                        id: ctx.fresh_id(None),
-                        name: "b".to_string(),
-                        span: sp,
-                    }),
-                    arms: inner_arms,
-                    span: sp,
-                },
-                span: sp,
-            }
-        })
-        .collect();
-
-    IrExpr::Match {
-        id: ctx.fresh_id(None),
-        scrutinee: Box::new(IrExpr::Local {
-            id: ctx.fresh_id(None),
-            name: "a".to_string(),
-            span: sp,
-        }),
-        arms: outer_arms,
-        span: sp,
-    }
-}
-
 // ── Derived ToText body builders ──────────────────────────────────────────────
 
 /// Build the `toText` body for a derived record type.
@@ -2436,113 +2118,6 @@ fn build_to_text_union_arm_body(
     make_concat_call(ctx, acc, close, sp)
 }
 
-/// Build a field-by-field payload comparison using bound local variables.
-///
-/// Used by derived `Ord` for unions when both scrutinees are the same variant
-/// (the tiebreak case). `a_vars` and `b_vars` are the names of the bound
-/// payload variables from the outer and inner match arms respectively.
-///
-/// Follows the same `std.op.lt` / `std.op.gt` nested-match pattern as
-/// [`build_ord_record_body`]; returns `Equal` immediately for empty payloads.
-fn build_ord_payload_body(
-    ctx: &mut LowerCtx<'_>,
-    a_vars: &[String],
-    b_vars: &[String],
-    sp: Span,
-) -> IrExpr {
-    use ridge_ir::{IrArm, IrLit, IrPat};
-
-    let ordering_ctor = |ctx: &mut LowerCtx<'_>, name: &str, variant: u32| IrExpr::Construct {
-        id: ctx.fresh_id(None),
-        ctor: SymbolRef::Constructor {
-            ctor_kind: CtorKind::UnionVariant,
-            owner_type: Some(ctx.builtins.ordering),
-            name: name.to_string(),
-            variant,
-        },
-        fields: vec![],
-        span: sp,
-    };
-
-    if a_vars.is_empty() {
-        return ordering_ctor(ctx, "Equal", 1);
-    }
-
-    // Build right-to-left, same pattern as build_ord_record_body.
-    let mut result = ordering_ctor(ctx, "Equal", 1);
-
-    for (a_name, b_name) in a_vars.iter().zip(b_vars.iter()).rev() {
-        let a_local = IrExpr::Local {
-            id: ctx.fresh_id(None),
-            name: a_name.clone(),
-            span: sp,
-        };
-        let b_local = IrExpr::Local {
-            id: ctx.fresh_id(None),
-            name: b_name.clone(),
-            span: sp,
-        };
-
-        let lt_call = make_stdlib_call(
-            ctx,
-            "std.op",
-            "lt",
-            vec![a_local.clone(), b_local.clone()],
-            sp,
-        );
-
-        let gt_call = make_stdlib_call(ctx, "std.op", "gt", vec![a_local, b_local], sp);
-
-        let gt_match = IrExpr::Match {
-            id: ctx.fresh_id(None),
-            scrutinee: Box::new(gt_call),
-            arms: vec![
-                IrArm {
-                    pat: IrPat::Lit {
-                        value: IrLit::Bool(true),
-                        span: sp,
-                    },
-                    when: None,
-                    body: ordering_ctor(ctx, "Greater", 2),
-                    span: sp,
-                },
-                IrArm {
-                    pat: IrPat::Wild { span: sp },
-                    when: None,
-                    body: result,
-                    span: sp,
-                },
-            ],
-            span: sp,
-        };
-
-        result = IrExpr::Match {
-            id: ctx.fresh_id(None),
-            scrutinee: Box::new(lt_call),
-            arms: vec![
-                IrArm {
-                    pat: IrPat::Lit {
-                        value: IrLit::Bool(true),
-                        span: sp,
-                    },
-                    when: None,
-                    body: ordering_ctor(ctx, "Less", 0),
-                    span: sp,
-                },
-                IrArm {
-                    pat: IrPat::Wild { span: sp },
-                    when: None,
-                    body: gt_match,
-                    span: sp,
-                },
-            ],
-            span: sp,
-        };
-    }
-
-    result
-}
-
 // ── Derived Encode body builders ──────────────────────────────────────────────
 
 /// Give object decoders a map view without changing nested values or other variants.
@@ -2560,11 +2135,14 @@ pub(crate) fn json_object_map_view(ctx: &mut LowerCtx<'_>, value: IrExpr, sp: Sp
             },
             span: sp,
         }),
-        args: vec![IrExpr::Local {
-            id: ctx.fresh_id(None),
-            name: pairs.clone(),
-            span: sp,
-        }],
+        args: {
+            let map_args = vec![IrExpr::Local {
+                id: ctx.fresh_id(None),
+                name: pairs.clone(),
+                span: sp,
+            }];
+            crate::prelude_dict::text_map_arguments(ctx, "fromList", map_args, sp)
+        },
         span: sp,
     };
     let object = IrExpr::Call {
@@ -2811,7 +2389,7 @@ fn build_encode_union_arm_body(
             },
             span: sp,
         }),
-        args: vec![pairs_list],
+        args: crate::prelude_dict::text_map_arguments(ctx, "fromList", vec![pairs_list], sp),
         span: sp,
     };
 
@@ -3337,7 +2915,7 @@ fn build_result_variant_object(
             },
             span: sp,
         }),
-        args: vec![pairs_list],
+        args: crate::prelude_dict::text_map_arguments(ctx, "fromList", vec![pairs_list], sp),
         span: sp,
     };
     IrExpr::Call {
@@ -4325,18 +3903,21 @@ fn decode_shape(
                             },
                             span: sp,
                         }),
-                        args: vec![
-                            IrExpr::Lit {
-                                id: ctx.fresh_id(None),
-                                value: IrLit::Text("values".to_string()),
-                                span: sp,
-                            },
-                            IrExpr::Local {
-                                id: ctx.fresh_id(None),
-                                name: m_bound.clone(),
-                                span: sp,
-                            },
-                        ],
+                        args: {
+                            let map_args = vec![
+                                IrExpr::Lit {
+                                    id: ctx.fresh_id(None),
+                                    value: IrLit::Text("values".to_string()),
+                                    span: sp,
+                                },
+                                IrExpr::Local {
+                                    id: ctx.fresh_id(None),
+                                    name: m_bound.clone(),
+                                    span: sp,
+                                },
+                            ];
+                            crate::prelude_dict::text_map_arguments(ctx, "get", map_args, sp)
+                        },
                         span: sp,
                     }),
                     arms: vec![ok_vals_arm, vals_none_arm_ok],
@@ -4369,18 +3950,21 @@ fn decode_shape(
                             },
                             span: sp,
                         }),
-                        args: vec![
-                            IrExpr::Lit {
-                                id: ctx.fresh_id(None),
-                                value: IrLit::Text("values".to_string()),
-                                span: sp,
-                            },
-                            IrExpr::Local {
-                                id: ctx.fresh_id(None),
-                                name: m_bound.clone(),
-                                span: sp,
-                            },
-                        ],
+                        args: {
+                            let map_args = vec![
+                                IrExpr::Lit {
+                                    id: ctx.fresh_id(None),
+                                    value: IrLit::Text("values".to_string()),
+                                    span: sp,
+                                },
+                                IrExpr::Local {
+                                    id: ctx.fresh_id(None),
+                                    name: m_bound.clone(),
+                                    span: sp,
+                                },
+                            ];
+                            crate::prelude_dict::text_map_arguments(ctx, "get", map_args, sp)
+                        },
                         span: sp,
                     }),
                     arms: vec![err_vals_arm, vals_none_arm_err],
@@ -4591,7 +4175,7 @@ fn map_get_call(ctx: &mut LowerCtx<'_>, key: IrExpr, map: IrExpr, sp: Span) -> I
             },
             span: sp,
         }),
-        args: vec![key, map],
+        args: crate::prelude_dict::text_map_arguments(ctx, "get", vec![key, map], sp),
         span: sp,
     }
 }
@@ -5538,7 +5122,7 @@ fn build_to_insert_row_body(
             },
             span: sp,
         }),
-        args: vec![pairs_list],
+        args: crate::prelude_dict::text_map_arguments(ctx, "fromList", vec![pairs_list], sp),
         span: sp,
     }
 }
@@ -5609,7 +5193,7 @@ fn build_to_row_record_body(
             },
             span: sp,
         }),
-        args: vec![pairs_list],
+        args: crate::prelude_dict::text_map_arguments(ctx, "fromList", vec![pairs_list], sp),
         span: sp,
     }
 }
@@ -6853,7 +6437,7 @@ fn build_map_decode_fold(
             },
             span: sp,
         }),
-        args: vec![rev_call],
+        args: crate::prelude_dict::text_map_arguments(ctx, "fromList", vec![rev_call], sp),
         span: sp,
     };
     let ok_map = build_ok(from_list, sp);
@@ -7542,46 +7126,49 @@ mod tests {
     #[test]
     fn derived_ord_union_same_variant_payload_tiebreak() {
         use ridge_typecheck::{DerivedInstance, DerivedMethodBody, InstanceInfo, InstanceOrigin};
-        use ridge_types::{TyConId, ORD_CLASS};
+        use ridge_types::{Constraint, TyConId, TyVid, ORD_CLASS};
 
         let mut ctx = fresh_ctx();
 
-        // Wrapper = Box(Int) deriving (Ord)
-        // When both are Box(_), compare the Int payloads.
+        // Wrapper a = Box a deriving (Ord) uses its incoming payload evidence.
         let derived = DerivedInstance {
             key: (ORD_CLASS, TyConId(18)),
             instance_info: InstanceInfo {
                 def_module: Some(0),
                 methods: vec![("compare".to_string(), String::new())],
-                ctx_constraints: vec![],
-                head_var_positions: vec![],
+                ctx_constraints: vec![Constraint::single(ORD_CLASS, TyVid(0))],
+                head_var_positions: vec![0],
                 origin: InstanceOrigin::Explicit,
                 span: sp(),
             },
-            method_body: DerivedMethodBody::DerivedOrdUnion {
-                variants: vec![("Box".to_string(), 1, None)],
+            method_body: DerivedMethodBody::DerivedComparison {
+                shape: ridge_typecheck::derive::ComparisonShape::Union {
+                    variants: vec![ridge_typecheck::derive::ComparisonVariant {
+                        name: "Box".to_string(),
+                        fields: None,
+                        evidence: vec![ridge_typecheck::DictPlan::Forward(Constraint::single(
+                            ORD_CLASS,
+                            TyVid(0),
+                        ))],
+                    }],
+                },
             },
         };
 
         let items = lower_derived_instance(&mut ctx, &derived, "Ord", "Wrapper");
-        assert_eq!(items.len(), 2, "method fn + dict const");
+        assert_eq!(items.len(), 1, "generic dictionary factory");
 
         let fn_item = match &items[0] {
             IrItem::Fn(f) => f,
             other => panic!("expected IrFn, got {other:?}"),
         };
 
-        // The body must be a Match (outer dispatch on 'a').
+        let body = format!("{:?}", fn_item.body);
         assert!(
-            matches!(&fn_item.body, IrExpr::Match { .. }),
-            "Ord union body must be a Match"
+            body.contains("compare") && body.contains("$dict_Ord_0"),
+            "{body}"
         );
-
-        // The body must call std.op.lt and/or std.op.gt for the payload comparison.
-        assert!(
-            contains_op(&fn_item.body, "lt") || contains_op(&fn_item.body, "gt"),
-            "same-variant payload tiebreak must emit std.op.lt/gt for comparison"
-        );
+        assert!(!contains_op(&fn_item.body, "lt") && !contains_op(&fn_item.body, "gt"));
     }
 
     // ── Derived Encode User field emits a Call, not identity ─────────────────

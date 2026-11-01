@@ -364,8 +364,10 @@ fn validate () -> Result Unit Text =
 ```
 
 `std.test` covers `ensure`, `assertEq`/`assertNe`, `assertTrue`/`assertFalse`,
-and `assertOk`/`assertErr`/`assertSome`/`assertNone`. Equality is structural, so `assertEq`
-works on any type; the string is the message shown when the check fails.
+and `assertOk`/`assertErr`/`assertSome`/`assertNone`. `assertEq` and `assertNe`
+require an `Eq` instance and use that type's equality contract. Tuples and closed
+records compare their components through each component's `Eq` instance; nominal
+types need a written or derived instance. The string is the failure message.
 
 **`else if`** is the flat form for choosing a value among several conditions
 (no early exit):
@@ -477,8 +479,9 @@ function in the same module (which is promoted automatically).
 
 ### A note on equality and secrets
 
-`deriving Eq` uses BEAM structural equality (`=:=`), which is not
-constant-time. Do not compare secret values — tokens, password hashes, HMAC
+`deriving Eq` compares fields and constructor payloads through their `Eq`
+instances and can stop at the first difference. It is not constant-time.
+Do not compare secret values — tokens, password hashes, HMAC
 tags — with `==` or derived `Eq`. Use `Crypto.constantTimeEq` from `std.crypto`
 instead; it takes two `Text` values and returns a `Bool` using a fixed-time
 comparison that does not short-circuit on the first mismatched byte.
@@ -494,8 +497,8 @@ pub fn sessionMatches (provided: Text) (expected: Text) -> Bool =
 
 Also note that `Float` has no `Eq` instance in the prelude. Deriving `Eq`
 on a type that contains a `Float` field is a compile error (`T029
-NoInstance`). Use an explicit comparison function with appropriate tolerance
-if you need float equality.
+NoInstance`). Use `Float.equal` for numerical equality, or an explicit comparison
+function with a domain-appropriate tolerance when approximate equality is needed.
 
 ### Deriving Encode and Decode
 
@@ -536,7 +539,9 @@ let result = fromJson json
 
 `decode` returns `Result T Error`, so a malformed document or a missing
 field produces an `Err` rather than a crash. The two directions round-trip
-exactly: `decode (encode x) == Ok x` for any value that has both instances.
+for derived codecs when their component codecs preserve the value. To check a
+round trip with `==`, the decoded type and the error type must also have `Eq`
+instances; Encode and Decode alone do not make a value comparable.
 
 Deriving works on unions too. Nullary constructors encode as bare JSON
 strings; constructors with payload encode as adjacently-tagged objects

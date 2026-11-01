@@ -1,61 +1,13 @@
--- Private helpers for std.set test suite.
--- FFI bridges + pure-Ridge helpers replicate set.ridge (T17+ deferred).
-@ffi("maps", "new", 0)
-fn _setMapNew () -> Set a
-
-@ffi("maps", "put", 3)
-fn _setMapPut (k: a) (v: Bool) (m: Set a) -> Set a
-
-@ffi("maps", "remove", 2)
-fn _setMapRemove (k: a) (m: Set a) -> Set a
-
-@ffi("maps", "is_key", 2)
-fn _setMapIsKey (k: a) (m: Set a) -> Bool
-
-@ffi("maps", "keys", 1)
-fn _setMapKeys (m: Set a) -> List a
-
-@ffi("maps", "size", 1)
-fn _setMapSize (m: Set a) -> Int
-
-@ffi("maps", "merge", 2)
-fn _setMapMerge (a: Set x) (b: Set x) -> Set x
-
-fn _fromListAcc (xs: List a) (acc: Set a) -> Set a =
-    match xs
-        [] -> acc
-        x :: rest -> _fromListAcc rest (_setMapPut x true acc)
-
-fn _fromList (xs: List a) -> Set a = _fromListAcc xs (_setMapNew ())
-
-fn _toList (s: Set a) -> List a = _setMapKeys s
-fn _insert (x: a) (s: Set a) -> Set a = _setMapPut x true s
-fn _remove (x: a) (s: Set a) -> Set a = _setMapRemove x s
-fn _contains (x: a) (s: Set a) -> Bool = _setMapIsKey x s
-fn _union (a: Set x) (b: Set x) -> Set x = _setMapMerge a b
-fn _length (s: Set a) -> Int = _setMapSize s
-
-fn _intersectionFilter (xs: List x) (b: Set x) (acc: Set x) -> Set x =
-    match xs
-        [] -> acc
-        k :: rest ->
-            if _setMapIsKey k b then _intersectionFilter rest b (_setMapPut k true acc)
-            else _intersectionFilter rest b acc
-
-fn _intersection (a: Set x) (b: Set x) -> Set x =
-    let aKeys = _setMapKeys a
-    _intersectionFilter aKeys b (_setMapNew ())
-
-fn _differenceFilter (xs: List x) (b: Set x) (acc: Set x) -> Set x =
-    match xs
-        [] -> acc
-        k :: rest ->
-            if _setMapIsKey k b then _differenceFilter rest b acc
-            else _differenceFilter rest b (_setMapPut k true acc)
-
-fn _difference (a: Set x) (b: Set x) -> Set x =
-    let aKeys = _setMapKeys a
-    _differenceFilter aKeys b (_setMapNew ())
+-- Exercise the public collection implementation; keep the behavioral oracles below.
+fn _fromList (xs: List a) -> Set a where Hash a = Set.fromList xs
+fn _toList (s: Set a) -> List a = Set.toList s
+fn _insert (x: a) (s: Set a) -> Set a where Hash a = Set.insert x s
+fn _remove (x: a) (s: Set a) -> Set a where Hash a = Set.remove x s
+fn _contains (x: a) (s: Set a) -> Bool where Hash a = Set.contains x s
+fn _union (a: Set x) (b: Set x) -> Set x where Hash x = Set.union a b
+fn _length (s: Set a) -> Int = Set.length s
+fn _intersection (a: Set x) (b: Set x) -> Set x where Hash x = Set.intersection a b
+fn _difference (a: Set x) (b: Set x) -> Set x where Hash x = Set.difference a b
 
 @ffi("erlang", "length", 1)
 fn _listLength (xs: List a) -> Int

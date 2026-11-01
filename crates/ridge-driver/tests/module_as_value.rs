@@ -232,7 +232,7 @@ fn control_a_constructor_is_still_a_value() {
         LIB,
         "
 import std.io as IO
-import demo.Lib (Red)
+import demo.Lib (Colour, Red)
 
 pub fn f () -> Colour = Red
 

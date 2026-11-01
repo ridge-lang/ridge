@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- List slice patterns preserve prefix conditions through nesting, parentheses
+  and aliases. Length checks precede extraction and user guards, which can use
+  suffix and middle bindings. Nonmatching patterns fall through to later arms.
+
 - Add typed, non-binding `value is pattern` predicates. Bare root constructors
   ignore their payloads; explicit patterns reuse structural matching independently
   of Eq. Subjects execute once, with normal effects and Boolean short-circuiting.

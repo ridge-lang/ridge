@@ -1,8 +1,8 @@
 //! End-to-end tests for `ridge reload --node` driving the REAL CLI binary:
 //! build a fixture workspace, boot a named BEAM node, and let the command
 //! itself compile, plan, ship the bundle, and parse the report. Also covers
-//! the failure path: a failed apply must restore the pre-compile snapshot,
-//! or the next run diffs against a build the node never ran.
+//! failure recovery: a known rejection restores the previous snapshot,
+//! while an uncertain result invalidates it before another reload can plan.
 //!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`.
 
@@ -253,6 +253,9 @@ fn reload_node_failure_restores_snapshot() {
     }
     let ws = make_workspace("Counter", COUNTER_SRC);
     let (beam_dir, beam_mod) = build_and_find_beams(&ws);
+    let cookie = "ridge_cli_e2e_cookie";
+    let node_name = format!("ridge_cli_retry_{}@127.0.0.1", std::process::id());
+    let _node = boot_node(&node_name, cookie, &beam_dir, &beam_mod);
     let snap_path = ws
         .path
         .join("target")
@@ -261,25 +264,29 @@ fn reload_node_failure_restores_snapshot() {
         .join("reload-snapshot.json");
     let snap_before = std::fs::read_to_string(&snap_path).expect("snapshot after build");
 
-    // Edit, then aim the reload at a node that does not exist.
+    // The live v1 node has no version seed, so it rejects before loading code.
     let src = std::fs::read_to_string(ws.path.join("apps/demo/src/Counter.ridge")).expect("src");
     write_file(
         &ws.path,
         "apps/demo/src/Counter.ridge",
         &src.replace("state count: Int = 0", EDIT),
     );
-    let cookie = "ridge_cli_e2e_cookie";
-    let dead_name = format!("ridge_cli_dead_{}@127.0.0.1", std::process::id());
-    let output = reload_cmd(&ws, &dead_name, cookie, false, false);
+    let output = reload_cmd(&ws, &node_name, cookie, false, false);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         !output.status.success(),
-        "a dead node must fail the reload: {}",
+        "an unseeded node must reject the reload: {}",
         String::from_utf8_lossy(&output.stdout)
     );
     assert!(
-        stderr.contains("reload failed at the node"),
-        "clean node-down error: {stderr}"
+        stderr.contains("reload rejected before code was replaced"),
+        "clean rejection: {stderr}"
+    );
+    let running: ridge_driver::WorkspaceSnapshot = serde_json::from_str(&snap_before).unwrap();
+    let expected_version = ridge_driver::snapshot_vsn(&running);
+    assert!(
+        stderr.contains(&format!("<<\"{expected_version}\">>")),
+        "version text must stay readable on one diagnostic line: {stderr}"
     );
 
     // The bug this guards: the compile advanced the on-disk snapshot to a
@@ -287,12 +294,10 @@ fn reload_node_failure_restores_snapshot() {
     let snap_after = std::fs::read_to_string(&snap_path).expect("snapshot after failure");
     assert_eq!(
         snap_before, snap_after,
-        "a failed apply must restore the pre-compile snapshot"
+        "a rejected apply must restore the pre-compile snapshot"
     );
 
-    // And the retry against a live node then works on the first try.
-    let node_name = format!("ridge_cli_retry_{}@127.0.0.1", std::process::id());
-    let _node = boot_node(&node_name, cookie, &beam_dir, &beam_mod);
+    // Seeding the same v1 node makes the retry safe and successful.
     let output = reload_cmd(&ws, &node_name, cookie, true, false);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -301,4 +306,33 @@ fn reload_node_failure_restores_snapshot() {
         "retry after restore must succeed:\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(stdout.contains("migrated 1 actors"), "{stdout}");
+}
+
+#[test]
+fn reload_node_uncertain_failure_invalidates_snapshot() {
+    if !otp_available() {
+        eprintln!("erl not on PATH — skipping reload_node_uncertain_failure_invalidates_snapshot");
+        return;
+    }
+    let ws = make_workspace("Counter", COUNTER_SRC);
+    build_and_find_beams(&ws);
+    let src = std::fs::read_to_string(ws.path.join("apps/demo/src/Counter.ridge")).unwrap();
+    write_file(
+        &ws.path,
+        "apps/demo/src/Counter.ridge",
+        &src.replace("state count: Int = 0", EDIT),
+    );
+    let dead_name = format!("ridge_cli_dead_{}@127.0.0.1", std::process::id());
+    let output = reload_cmd(&ws, &dead_name, "ridge_cli_e2e_cookie", false, false);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("local reload snapshot is invalidated"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("rebuild and restart"), "{stderr}");
+    assert!(!ws
+        .path
+        .join("target/ridge/debug/reload-snapshot.json")
+        .exists());
 }

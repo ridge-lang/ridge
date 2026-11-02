@@ -114,10 +114,10 @@ pub fn execute(args: &ReloadArgs, cwd: &Path) -> Result<(), CliError> {
 /// Apply the current source as a hot upgrade to a running node.
 ///
 /// The compile advances the on-disk snapshot to the NEW build, but the
-/// node only advances when the apply succeeds. Every failure path before
-/// that point restores the pre-compile snapshot file — otherwise the next
-/// `ridge reload --node` would diff against a build the node never ran
-/// and refuse on a base-version mismatch forever.
+/// node can change even if a later migration or the RPC fails. Restore the
+/// pre-compile snapshot only when the node is known
+/// to have rejected the code. An uncertain outcome invalidates the snapshot:
+/// another reload must not plan against a potentially mixed running build.
 fn execute_apply(args: &ReloadArgs, cwd: &Path) -> Result<(), CliError> {
     let root = crate::cmd::workspace_root_for(cwd)?;
     let profile = if args.release {
@@ -141,14 +141,17 @@ fn execute_apply(args: &ReloadArgs, cwd: &Path) -> Result<(), CliError> {
     ) {
         Ok(Some(line)) => line,
         Ok(None) => return Ok(()),
-        Err(e) => {
-            if let Err(io) = std::fs::write(&snap_path, &raw_snapshot) {
+        Err(failure) => {
+            if let Err(io) = recover_reload_snapshot(&snap_path, &raw_snapshot, &failure) {
                 eprintln!(
-                    "warning: could not restore the pre-reload snapshot at {}: {io}",
+                    "warning: could not recover the reload snapshot at {}: {io}",
                     snap_path.display()
                 );
             }
-            return Err(e);
+            return Err(match failure {
+                ReloadFailure::BeforeApply(e) => e,
+                ReloadFailure::Uncertain => CliError::AlreadyReported,
+            });
         }
     };
 
@@ -179,7 +182,8 @@ fn execute_apply(args: &ReloadArgs, cwd: &Path) -> Result<(), CliError> {
 
 /// Compile, plan, and apply through the probe. `Ok(None)` means the node
 /// already runs this code (nothing to reload); `Ok(Some(_))` carries the
-/// node's JSON report line. Any `Err` happens BEFORE the node advanced.
+/// node's JSON report line. Errors distinguish a known rejection from an
+/// uncertain outcome after RPC or a failure following a code swap.
 fn plan_and_apply(
     args: &ReloadArgs,
     erl_path: &Path,
@@ -187,7 +191,7 @@ fn plan_and_apply(
     profile_name: &str,
     old_snapshot: &WorkspaceSnapshot,
     base_vsn: &str,
-) -> Result<Option<String>, CliError> {
+) -> Result<Option<String>, ReloadFailure> {
     let node = args.node.clone().unwrap_or_default();
     let (manifest_path, manifest, beams) = compile_and_plan(root, profile_name, old_snapshot)?;
     if manifest.modules.is_empty() {
@@ -208,20 +212,68 @@ fn plan_and_apply(
         args.seed,
     )
     .map_err(|msg| {
-        eprintln!("error: could not reach the node: {msg}");
-        CliError::AlreadyReported
+        eprintln!("error: reload probe failed: {msg}");
+        report_uncertain_reload();
+        ReloadFailure::Uncertain
     })?;
+    parse_apply_result(&out)
+}
+
+/// Whether the pre-compile snapshot still describes the running node.
+enum ReloadFailure {
+    /// Compilation, planning, or a node rejection before any code was loaded.
+    BeforeApply(CliError),
+    /// The node may have changed; no local snapshot is safe for another plan.
+    Uncertain,
+}
+
+impl From<CliError> for ReloadFailure {
+    fn from(error: CliError) -> Self {
+        Self::BeforeApply(error)
+    }
+}
+
+/// Restore a known baseline or remove one whose correspondence is unknown.
+fn recover_reload_snapshot(
+    path: &Path,
+    previous: &str,
+    failure: &ReloadFailure,
+) -> std::io::Result<()> {
+    match failure {
+        ReloadFailure::BeforeApply(_) => std::fs::write(path, previous),
+        ReloadFailure::Uncertain => match std::fs::remove_file(path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            result => result,
+        },
+    }
+}
+
+/// Explain recovery without claiming a failed RPC left the node unchanged.
+fn report_uncertain_reload() {
+    eprintln!("node code may have changed; the local reload snapshot is invalidated.");
+    eprintln!("rebuild and restart the node before attempting another reload.");
+}
+
+/// Interpret probe markers without inferring a phase from exception text.
+fn parse_apply_result(out: &str) -> Result<Option<String>, ReloadFailure> {
     let Some(json_line) = out
         .lines()
         .find_map(|l| l.strip_prefix("RIDGE_RELOAD_JSON "))
     else {
+        if let Some(detail) = out
+            .lines()
+            .find_map(|l| l.strip_prefix("RIDGE_RELOAD_REJECTED "))
+        {
+            eprintln!("reload rejected before code was replaced: {detail}");
+            return Err(ReloadFailure::BeforeApply(CliError::AlreadyReported));
+        }
         let detail = out
             .lines()
             .find_map(|l| l.strip_prefix("RIDGE_RELOAD_ERR "))
             .unwrap_or_else(|| out.trim());
         eprintln!("reload failed at the node: {detail}");
-        eprintln!("node is unchanged unless the failure was reported after the load step.");
-        return Err(CliError::AlreadyReported);
+        report_uncertain_reload();
+        return Err(ReloadFailure::Uncertain);
     };
     Ok(Some(json_line.to_owned()))
 }
@@ -344,8 +396,8 @@ fn default_cookie() -> String {
 
 /// Run the probe node: read the manifest and the beam blobs from disk,
 /// apply the bundle on the target node over rpc, print markers the caller
-/// parses (`RIDGE_RELOAD_JSON` on success, `RIDGE_RELOAD_ERR` on any
-/// node-side refusal or failure).
+/// parses (`RIDGE_RELOAD_JSON` on success, `RIDGE_RELOAD_REJECTED` when
+/// code is unchanged, `RIDGE_RELOAD_ERR` when the outcome is uncertain).
 #[allow(clippy::too_many_arguments)]
 fn probe_apply_bundle(
     erl_path: &Path,
@@ -391,6 +443,10 @@ fn probe_apply_bundle(
          \x20       Safe = Rep#{{restarts => [#{{module => M, reason => iolist_to_binary(io_lib:format(\"~p\", [Why]))}}\n\
          \x20                             || #{{module := M, reason := Why}} <- maps:get(restarts, Rep, [])]}},\n\
          \x20       io:format(\"RIDGE_RELOAD_JSON ~s~n\", [json:encode(Safe)]);\n\
+         \x20   {{error, {{reload_rejected, _, _}}}} = Rejected ->\n\
+         \x20       io:format(\"RIDGE_RELOAD_REJECTED ~0tp~n\", [Rejected]);\n\
+         \x20   {{error, {{base_version_mismatch, _, _}}}} = Rejected ->\n\
+         \x20       io:format(\"RIDGE_RELOAD_REJECTED ~0tp~n\", [Rejected]);\n\
          \x20   Err -> io:format(\"RIDGE_RELOAD_ERR ~p~n\", [Err])\n\
          end."
     );
@@ -454,4 +510,51 @@ pub(crate) fn print_reload_rejection(report: &CheckReport) {
         "{}: {compatible} compatible, {auto} auto/hook-migrated, {migrate} need migration, {incompatible} incompatible",
         if ok { "reloadable" } else { "not reloadable" },
     );
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejected_reload_restores_the_running_snapshot() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("snapshot.json");
+        std::fs::write(&path, "new-build").unwrap();
+        let result = parse_apply_result(
+            "RIDGE_RELOAD_REJECTED {error,{reload_rejected,preflight,{missing_blob,mod_b}}}\n",
+        );
+        let Err(failure @ ReloadFailure::BeforeApply(_)) = result else {
+            panic!("preflight must preserve the previous baseline");
+        };
+        recover_reload_snapshot(&path, "running-build", &failure).unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "running-build");
+    }
+
+    #[test]
+    fn uncertain_reload_invalidates_the_snapshot() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("snapshot.json");
+        for output in [
+            "RIDGE_RELOAD_ERR {error,{upgrade_failed,error,bad_actor_metadata,[]}}\n",
+            "RIDGE_RELOAD_ERR {badrpc,timeout}\n",
+            "probe exited without reporting an outcome\n",
+        ] {
+            std::fs::write(&path, "new-build").unwrap();
+            let Err(failure @ ReloadFailure::Uncertain) = parse_apply_result(output) else {
+                panic!("unknown node state cannot retain a reload baseline");
+            };
+            recover_reload_snapshot(&path, "running-build", &failure).unwrap();
+            assert!(!path.exists());
+        }
+    }
+
+    #[test]
+    fn successful_reload_keeps_the_new_report() {
+        assert!(matches!(
+            parse_apply_result("RIDGE_RELOAD_JSON {\"modules_loaded\":2}\n"),
+            Ok(Some(report)) if report == "{\"modules_loaded\":2}"
+        ));
+    }
 }

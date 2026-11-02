@@ -111,8 +111,8 @@ pub fn reload_check(
 /// Version of the upgrade manifest format written by [`plan_reload`].
 ///
 /// Format 2 adds `migrate_hook`, `old_state_hash`, and `new_state_hash` to
-/// actor entries. The runtime loader never reads this field — the bump is
-/// documentary; older manifests keep loading through key defaults.
+/// actor entries. The production loader accepts formats 1 and 2 (and the
+/// original omitted field); older actor entries load through key defaults.
 pub const UPGRADE_MANIFEST_FORMAT: u32 = 2;
 
 /// Per-actor migration instructions carried by the upgrade manifest.
@@ -426,8 +426,8 @@ pub fn load_version_history(root: &Path, profile: &str) -> VersionHistory {
 /// `.beam` artefact under `beam_dir`, in manifest order.
 ///
 /// The production transport ships these blobs to the target node; a module
-/// without an artefact would leave the node half-upgraded, so a missing
-/// file is a hard error — the bundle is never shipped incomplete.
+/// without an artefact cannot be applied, so a missing file is a hard error
+/// here as well as at the node — the bundle is never shipped incomplete.
 ///
 /// ## Errors
 ///

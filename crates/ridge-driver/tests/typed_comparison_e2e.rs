@@ -1944,11 +1944,18 @@ Parse=fun(Text) -> {ok,Tokens,_}=erl_scan:string(Text),
  {ok,Form}=erl_parse:parse_form(Tokens), Form end,
 Binary=fun(Value) ->
  Forms=[Parse(Text) || Text <- ["-module(" ++ atom_to_list(Module) ++ ").",
-  "-export(['$ridge_evidence'/2]).",
+  "-export(['$ridge_evidence'/2,'__ridge_state_fields'/0,'__ridge_state_defaults'/0,init/1,handle_call/3,handle_cast/2]).",
+  "init([]) -> {ok,kept}.",
+  "handle_call(_,_,S) -> {reply,S,S}.",
+  "handle_cast(_,S) -> {noreply,S}.",
+  "'__ridge_state_defaults'() -> #{}.",
+  "'__ridge_state_fields'() -> " ++ (case Value of 1 -> "[]";
+    2 -> "throw({bundle_rejected,metadata_failure})" end) ++ ".",
   "'$ridge_evidence'(<<\"value\">>,[]) -> {some,{#{value => fun() -> " ++
     integer_to_list(Value) ++ " end},none}}."]],
  {ok,Module,Bin}=compile:forms(Forms,[return_errors]), Bin end,
 {module,Module}=code:load_binary(Module,"old-evidence",Binary(1)),
+{ok,Actor}=gen_server:start(Module,[],[]),
 ok=ridge_rt:invalidate_record_versions([Module]),
 Original=ridge_rt:evidence_bind(Module,<<"value">>,[]),
 1=(maps:get(value,Original))(),
@@ -1956,13 +1963,19 @@ persistent_term:put(ridge_loader_vsn,<<"evidence-base">>),
 Name=atom_to_binary(Module),
 Manifest=iolist_to_binary(json:encode(#{<<"base_vsn">> => <<"evidence-base">>,
  <<"new_vsn">> => <<"evidence-next">>,
- <<"modules">> => [Name,<<"ridge_evidence_absent_blob_probe">>], <<"actors">> => []})),
-{error,{upgrade_failed,_,_,_}}=ridge_loader:apply_bundle(Manifest,[{Name,Binary(2)}],
+ <<"modules">> => [Name], <<"actors">> => [#{<<"beam">> => Name,<<"renames">> => []}]})),
+{error,{upgrade_failed,throw,{bundle_rejected,metadata_failure},_}}=
+ ridge_loader:apply_bundle(Manifest,[{Name,Binary(2)}],
  #{base_vsn => <<"evidence-base">>,purge_after_ms => 0}),
 %% Establish that the injected failure occurred after a real code swap.
+%% Valid bytecode was committed; its actor metadata fails during migration.
+%% A callback's thrown term cannot masquerade as a preflight rejection.
 {some,{Raw,none}}=Module:'$ridge_evidence'(<<"value">>,[]), 2=(maps:get(value,Raw))(),
+<<"evidence-base">>=ridge_loader:current_version(),
+kept=sys:get_state(Actor),
 Current=ridge_rt:evidence_current(Original),
 2=(maps:get(value,Current))(),
+ok=gen_server:stop(Actor),
 halt().
 "#;
     assert_program_eval("pub fn exercise () -> Bool = true\n", expression, &[]);

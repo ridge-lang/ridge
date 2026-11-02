@@ -30,6 +30,33 @@
 > report for non-migratable messages, and a full JSON upgrade report for
 > CI/CD and audit. Still deferred: stdlib reload.
 
+Production bundles are checked before actors are suspended: manifest and option
+types, unique module and actor names, rename entries, exact correspondence
+between modules and blobs, and actual bytecode/module identity. Missing, extra,
+duplicate or malformed entries are rejected with the affected field or module.
+A preflight rejection leaves current code, version, evidence generations and
+existing purge scheduling unchanged.
+
+The BEAM loader prepares the bytecode before suspension and commits the module
+batch atomically. Modules with `on_load` callbacks are rejected by this path;
+stdlib/runtime reload remains deferred. If the commit fails (for example,
+because old code is still in use), no current module is replaced and evidence
+stays current, although the previous purge timer has already been canceled.
+The dev path still loads modules from disk sequentially.
+
+Actor migration and subsequent reporting are separate from the atomic code
+commit. A failure after commit can leave changed code with the previous version
+label; evidence is invalidated before migration and actors are resumed on the
+error path. This is not a rollback transaction for actor state. Individual
+migration failures retain the existing retry/restart behavior.
+
+The CLI restores the previous build snapshot after a known code rejection. A
+post-load error, lost RPC response or other uncertain outcome invalidates the
+local snapshot instead: rebuild and restart the node before another reload.
+This prevents planning against a snapshot that may not describe running code.
+Bundle validation does not sandbox bytecode or replace the trust requirements
+of Erlang distribution: connected peers can execute code on the node.
+
 During a successful reload, collection indexes held in actor state are refreshed
 after state-schema migration and before the actors resume. This includes maps
 and sets nested in lists or records, even when the actor's own code did not

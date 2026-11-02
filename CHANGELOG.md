@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Production reloads reject malformed or incomplete bundles before suspending
+  actors and replace the validated module batch atomically. Rejections identify
+  the failing field or module. Uncertain reload outcomes invalidate the CLI's
+  local snapshot and require rebuilding and restarting before another reload.
+
 - List slice patterns preserve prefix conditions through nesting, parentheses
   and aliases. Length checks precede extraction and user guards, which can use
   suffix and middle bindings. Nonmatching patterns fall through to later arms.

@@ -1734,7 +1734,7 @@ fn reload_prod_bundle_rejects_corrupt_beam() {
     // ~p pretty-prints long tuples across lines — match on a squashed copy.
     let flat: String = out.split_whitespace().collect();
     assert!(
-        flat.contains("RIDGE_RELOAD_ERR{error,{upgrade_failed,error,invalid_beam_blob"),
+        flat.contains("RIDGE_RELOAD_ERR{error,{reload_rejected,preflight,{invalid_modules,"),
         "corrupt blob rejected before any load: {out}"
     );
 
@@ -1748,6 +1748,67 @@ fn reload_prod_bundle_rejects_corrupt_beam() {
         !state.contains("step =>"),
         "no partial loads from a corrupt bundle: {state}"
     );
+}
+
+/// Exercise the bundle boundary directly, with a live actor and old code in
+/// each fresh VM. The fixture also runs without rebuilding the compiler.
+#[test]
+fn reload_bundle_preflight_and_atomic_commit() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ridge-codegen-erl/runtime");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/reload_bundle_probe.erl");
+    let compiled = std::process::Command::new("erlc")
+        .arg("-o")
+        .arg(directory.path())
+        .arg(runtime.join("ridge_loader.erl"))
+        .arg(runtime.join("ridge_rt.erl"))
+        .arg(fixture)
+        .output()
+        .expect("beam-runtime requires erlc");
+    assert!(compiled.status.success(), "{compiled:?}");
+    for case in [
+        "valid",
+        "missing",
+        "wrong_name",
+        "invalid_payload",
+        "garbage",
+        "duplicate_blob",
+        "duplicate_module",
+        "malformed_blob",
+        "extra_blob",
+        "invalid_name",
+        "invalid_blob_name",
+        "long_name",
+        "wrong_base",
+        "manifest_base",
+        "invalid_version",
+        "missing_options_base",
+        "negative_purge",
+        "invalid_format",
+        "invalid_json",
+        "invalid_manifest",
+        "malformed_actor",
+        "unknown_actor",
+        "malformed_rename",
+        "duplicate_actor",
+        "on_load",
+        "not_purged",
+    ] {
+        let output = std::process::Command::new("erl")
+            .current_dir(directory.path())
+            .args(["-noshell", "-pa"])
+            .arg(directory.path())
+            .args(["-eval", &format!("reload_bundle_probe:run({case}).")])
+            .output()
+            .expect("beam-runtime requires erl");
+        assert!(output.status.success(), "{case}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("bundle-probe-ok"),
+            "{case}: {output:?}"
+        );
+    }
 }
 
 // ── Hardening / chaos ────────────────────────────────────────────────────────

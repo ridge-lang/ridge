@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 use common::{make_workspace, write_file};
+use ridge_driver::Profile;
 
 const COUNTER_SRC: &str =
     "pub fn label () -> Text = \"counter\"\n\nactor Counter =\n    state count: Int = 0\n\n    on tick =\n        count <- count + 1\n\n    on count () -> Int =\n        count\n";
@@ -32,22 +33,31 @@ fn otp_available() -> bool {
 /// `ridge build` the workspace; returns the dir holding the actor beam and
 /// the actor module's beam name.
 fn build_and_find_beams(ws: &common::TempWorkspace) -> (PathBuf, String) {
-    let output = ridge_cmd()
-        .arg("build")
-        .current_dir(&ws.path)
-        .output()
-        .expect("ridge build spawn failed");
+    build_profile(ws, Profile::Debug)
+}
+
+fn build_profile(ws: &common::TempWorkspace, profile: Profile) -> (PathBuf, String) {
+    let mut command = ridge_cmd();
+    command.arg("build").current_dir(&ws.path);
+    if profile == Profile::Release {
+        command.arg("--release");
+    }
+    let output = command.output().expect("ridge build spawn failed");
     assert!(
         output.status.success(),
         "ridge build failed:\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-    let target = ws.path.join("target").join("ridge").join("debug");
+    let target = ws
+        .path
+        .join("target")
+        .join("ridge")
+        .join(profile.dir_name());
     let mut found: Option<(PathBuf, String)> = None;
     for entry in walk(&target) {
         // `.core` intermediates share the stem — only a real `.beam` counts,
-        // and its parent (debug/beam) is the dir the node needs on its path.
+        // and its parent (<profile>/beam) is the dir the node needs on its path.
         if entry.extension().and_then(|e| e.to_str()) != Some("beam") {
             continue;
         }
@@ -159,6 +169,10 @@ fn probe_state(cookie: &str, node_name: &str, seq: &str) -> String {
     let eval = format!(
         "io:format(\"STATE=~p~n\", [rpc:call('{node_name}', sys, get_state, [rpc:call('{node_name}', erlang, whereis, [counter_pid])])])."
     );
+    probe_eval(cookie, seq, &eval)
+}
+
+fn probe_eval(cookie: &str, seq: &str, eval: &str) -> String {
     let output = std::process::Command::new("erl")
         .arg("-name")
         .arg(format!(
@@ -186,6 +200,17 @@ fn reload_cmd(
     seed: bool,
     json: bool,
 ) -> std::process::Output {
+    reload_profile(ws, node_name, cookie, seed, json, Profile::Debug)
+}
+
+fn reload_profile(
+    ws: &common::TempWorkspace,
+    node_name: &str,
+    cookie: &str,
+    seed: bool,
+    json: bool,
+    profile: Profile,
+) -> std::process::Output {
     let mut cmd = ridge_cmd();
     cmd.arg("reload")
         .arg("--node")
@@ -199,7 +224,217 @@ fn reload_cmd(
     if json {
         cmd.arg("--json").arg("report.json");
     }
+    if profile == Profile::Release {
+        cmd.arg("--release");
+    }
     cmd.output().expect("ridge reload spawn failed")
+}
+
+fn profile_files(
+    ws: &common::TempWorkspace,
+    profile: Profile,
+) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+    let root = ws.path.join("target/ridge").join(profile.dir_name());
+    walk(&root)
+        .into_iter()
+        .map(|path| {
+            let relative = path.strip_prefix(&root).unwrap().to_owned();
+            (relative, std::fs::read(path).unwrap())
+        })
+        .collect()
+}
+
+fn assert_profile_unchanged(
+    ws: &common::TempWorkspace,
+    profile: Profile,
+    before: &std::collections::BTreeMap<PathBuf, Vec<u8>>,
+) {
+    let after = profile_files(ws, profile);
+    assert_eq!(
+        before.keys().collect::<Vec<_>>(),
+        after.keys().collect::<Vec<_>>()
+    );
+    for (path, bytes) in before {
+        assert!(
+            after.get(path) == Some(bytes),
+            "changed {profile:?} artifact {}",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn reload_release_check_uses_selected_snapshot_and_explicit_override() {
+    if !otp_available() {
+        return;
+    }
+    let ws = make_workspace("Counter", COUNTER_SRC);
+    build_profile(&ws, Profile::Release);
+    let snapshot = ridge_driver::snapshot_path_for(&ws.path, "release");
+    let custom = ws.path.join("selected-snapshot.json");
+    std::fs::copy(&snapshot, &custom).unwrap();
+    write_file(
+        &ws.path,
+        "apps/demo/src/Counter.ridge",
+        &COUNTER_SRC.replace("\"counter\"", "\"edited\""),
+    );
+    let before = profile_files(&ws, Profile::Release);
+    ridge_cmd()
+        .args(["reload", "--check", "--release"])
+        .current_dir(&ws.path)
+        .assert()
+        .success();
+    assert_profile_unchanged(&ws, Profile::Release, &before);
+    assert!(!ws.path.join("target/ridge/debug").exists());
+
+    std::fs::remove_file(&snapshot).unwrap();
+    let without_default = profile_files(&ws, Profile::Release);
+    for release in [true, false] {
+        let mut command = ridge_cmd();
+        command
+            .args(["reload", "--check", "--snapshot"])
+            .arg(&custom)
+            .current_dir(&ws.path);
+        if release {
+            command.arg("--release");
+        }
+        command.assert().success();
+        assert_profile_unchanged(&ws, Profile::Release, &without_default);
+        assert!(!ws.path.join("target/ridge/debug").exists());
+    }
+    ridge_cmd()
+        .args(["reload", "--check", "--release"])
+        .current_dir(&ws.path)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("ridge build --release"));
+}
+
+#[test]
+fn reload_release_preserves_other_profile_and_uses_release_history() {
+    if !otp_available() {
+        return;
+    }
+    let ws = make_workspace(
+        "Counter",
+        &COUNTER_SRC.replace("\"counter\"", "\"debug-profile\""),
+    );
+    build_and_find_beams(&ws);
+    let debug_before = profile_files(&ws, Profile::Debug);
+    let release_v1 = COUNTER_SRC.replace(
+        "state count: Int = 0",
+        "state count: Int = 0\n    state saved: Int = 7",
+    );
+    write_file(&ws.path, "apps/demo/src/Counter.ridge", &release_v1);
+    let (beam_dir, actor) = build_profile(&ws, Profile::Release);
+    let snapshot = ridge_driver::snapshot_path_for(&ws.path, "release");
+    let running_snapshot = std::fs::read_to_string(&snapshot).unwrap();
+    let node = format!("ridge_cli_release_{}@127.0.0.1", std::process::id());
+    let cookie = "ridge_cli_release_cookie";
+    let _guard = boot_node(&node, cookie, &beam_dir, &actor);
+    let next = COUNTER_SRC.replace("\"counter\"", "\"release-upgrade\"").replace(
+        "state count: Int = 0",
+        "state count: Int = 0\n    state step: Int = 0\n    migrate (old: Counter@1) -> Counter =\n        { count = old.count, step = old.saved }",
+    );
+    write_file(&ws.path, "apps/demo/src/Counter.ridge", &next);
+    let rejected = reload_profile(&ws, &node, cookie, false, false, Profile::Release);
+    assert!(!rejected.status.success());
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr)
+            .contains("reload rejected before code was replaced"),
+        "{}",
+        String::from_utf8_lossy(&rejected.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&snapshot).unwrap(),
+        running_snapshot
+    );
+    assert_profile_unchanged(&ws, Profile::Debug, &debug_before);
+    let old_state = probe_state(cookie, &node, "release_rejected");
+    assert!(
+        old_state.contains("count => 2") && old_state.contains("saved => 7"),
+        "{old_state}"
+    );
+
+    let applied = reload_profile(&ws, &node, cookie, true, true, Profile::Release);
+    assert!(
+        applied.status.success(),
+        "{}",
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    let state = probe_state(cookie, &node, "release_applied");
+    assert!(
+        state.contains("count => 2") && state.contains("step => 7"),
+        "{state}"
+    );
+    assert!(!state.contains("saved =>"), "{state}");
+    assert_profile_unchanged(&ws, Profile::Debug, &debug_before);
+    let new_snapshot: ridge_driver::WorkspaceSnapshot =
+        serde_json::from_str(&std::fs::read_to_string(&snapshot).unwrap()).unwrap();
+    let version = ridge_driver::snapshot_vsn(&new_snapshot);
+    let parent = actor.strip_suffix("_counter").unwrap();
+    let metadata = probe_eval(cookie, "release_metadata", &format!(
+        "io:format(\"VERSION=~p LABEL=~p~n\", [rpc:call('{node}', ridge_loader, current_version, []), rpc:call('{node}', '{parent}', label, [])])."
+    ));
+    assert!(
+        metadata.contains(&format!("VERSION=<<\"{version}\">>")),
+        "{metadata}"
+    );
+    assert!(metadata.contains("release-upgrade"), "{metadata}");
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(ridge_driver::manifest_path_for(&ws.path, "release")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["new_vsn"], version);
+}
+
+#[test]
+fn reload_release_uncertainty_invalidates_only_selected_snapshot() {
+    if !otp_available() {
+        return;
+    }
+    let ws = make_workspace("Counter", COUNTER_SRC);
+    build_profile(&ws, Profile::Release);
+    write_file(
+        &ws.path,
+        "target/ridge/debug/reload-snapshot.json",
+        "other profile baseline",
+    );
+    let debug_before = profile_files(&ws, Profile::Debug);
+    write_file(
+        &ws.path,
+        "apps/demo/src/Counter.ridge",
+        &COUNTER_SRC.replace("state count: Int = 0", EDIT),
+    );
+    let dead = format!("ridge_cli_release_dead_{}@127.0.0.1", std::process::id());
+    let output = reload_profile(
+        &ws,
+        &dead,
+        "local_probe_cookie",
+        false,
+        false,
+        Profile::Release,
+    );
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("local reload snapshot is invalidated"),
+        "{error}"
+    );
+    assert!(!ridge_driver::snapshot_path_for(&ws.path, "release").exists());
+    assert_profile_unchanged(&ws, Profile::Debug, &debug_before);
+    assert!(ridge_driver::manifest_path_for(&ws.path, "release").is_file());
+    let missing = reload_profile(
+        &ws,
+        &dead,
+        "local_probe_cookie",
+        false,
+        false,
+        Profile::Release,
+    );
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("ridge build --release"));
+    assert_profile_unchanged(&ws, Profile::Debug, &debug_before);
 }
 
 #[test]

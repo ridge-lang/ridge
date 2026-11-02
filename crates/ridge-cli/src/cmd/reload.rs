@@ -17,7 +17,9 @@
 use std::path::{Path, PathBuf};
 
 use clap::{builder::TypedValueParser, Args as ClapArgs};
-use ridge_driver::reload::{reload_check, snapshot_path_for, CheckReport, Verdict};
+use ridge_driver::reload::{
+    reload_check, snapshot_path_for, CheckReport, ReloadCheckError, Verdict,
+};
 use ridge_driver::{
     collect_bundle_beams, compile_workspace, manifest_path_for, plan_reload, snapshot_vsn,
     CheckOptions, CompileOptions, EmitArtefacts, Profile, ToolchainError, WorkspaceSnapshot,
@@ -65,6 +67,14 @@ pub struct ReloadArgs {
 }
 
 impl ReloadArgs {
+    const fn profile(&self) -> Profile {
+        if self.release {
+            Profile::Release
+        } else {
+            Profile::Debug
+        }
+    }
+
     // Direct library callers bypass clap, but must not bypass the mode boundary.
     const fn validate_mode(&self) -> Result<(), &'static str> {
         if self.check == self.node.is_some() {
@@ -105,20 +115,27 @@ pub fn execute(args: &ReloadArgs, cwd: &Path) -> Result<(), CliError> {
         eprintln!("error: {message}");
         return Err(CliError::AlreadyReported);
     }
+    let profile = args.profile();
     if args.node.is_some() {
-        return execute_apply(args, cwd);
+        return execute_apply(args, cwd, profile);
     }
 
     let root = crate::cmd::workspace_root_for(cwd)?;
     let snapshot = args
         .snapshot
         .clone()
-        .unwrap_or_else(|| snapshot_path_for(&root, Profile::Debug.dir_name()));
+        .unwrap_or_else(|| snapshot_path_for(&root, profile.dir_name()));
 
     let report = match reload_check(CheckOptions::new(root), &snapshot) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: {e}");
+            if profile == Profile::Release
+                && args.snapshot.is_none()
+                && matches!(e, ReloadCheckError::MissingSnapshot(_))
+            {
+                eprintln!("help: run `ridge build --release` to create the release baseline.");
+            }
             return Err(CliError::AlreadyReported);
         }
     };
@@ -142,27 +159,16 @@ pub fn execute(args: &ReloadArgs, cwd: &Path) -> Result<(), CliError> {
 /// pre-compile snapshot only when the node is known
 /// to have rejected the code. An uncertain outcome invalidates the snapshot:
 /// another reload must not plan against a potentially mixed running build.
-fn execute_apply(args: &ReloadArgs, cwd: &Path) -> Result<(), CliError> {
+fn execute_apply(args: &ReloadArgs, cwd: &Path, profile: Profile) -> Result<(), CliError> {
     let root = crate::cmd::workspace_root_for(cwd)?;
-    let profile = if args.release {
-        Profile::Release
-    } else {
-        Profile::Debug
-    };
     let profile_name = profile.dir_name();
 
     let erl_path = which::which("erl").map_err(|_| ToolchainError::erl_not_found())?;
 
     let snap_path = snapshot_path_for(&root, profile_name);
-    let (old_snapshot, base_vsn, raw_snapshot) = read_running_snapshot(&snap_path)?;
-    let json_line = match plan_and_apply(
-        args,
-        &erl_path,
-        &root,
-        profile_name,
-        &old_snapshot,
-        &base_vsn,
-    ) {
+    let (old_snapshot, base_vsn, raw_snapshot) = read_running_snapshot(&snap_path, profile)?;
+    let json_line = match plan_and_apply(args, &erl_path, &root, profile, &old_snapshot, &base_vsn)
+    {
         Ok(Some(line)) => line,
         Ok(None) => return Ok(()),
         Err(failure) => {
@@ -212,12 +218,12 @@ fn plan_and_apply(
     args: &ReloadArgs,
     erl_path: &Path,
     root: &Path,
-    profile_name: &str,
+    profile: Profile,
     old_snapshot: &WorkspaceSnapshot,
     base_vsn: &str,
 ) -> Result<Option<String>, ReloadFailure> {
     let node = args.node.clone().unwrap_or_default();
-    let (manifest_path, manifest, beams) = compile_and_plan(root, profile_name, old_snapshot)?;
+    let (manifest_path, manifest, beams) = compile_and_plan(root, profile, old_snapshot)?;
     if manifest.modules.is_empty() {
         println!("nothing to reload: the node already runs this code.");
         return Ok(None);
@@ -307,10 +313,16 @@ fn parse_apply_result(out: &str) -> Result<Option<String>, ReloadFailure> {
 /// the compile replaces the file on disk.
 fn read_running_snapshot(
     snap_path: &Path,
+    profile: Profile,
 ) -> Result<(WorkspaceSnapshot, String, String), CliError> {
+    let release_flag = if profile == Profile::Release {
+        " --release"
+    } else {
+        ""
+    };
     let text = std::fs::read_to_string(snap_path).map_err(|e| {
         eprintln!(
-            "error: no build snapshot found at {}; run `ridge build` first ({e})",
+            "error: no build snapshot found at {}; run `ridge build{release_flag}` first ({e})",
             snap_path.display()
         );
         CliError::AlreadyReported
@@ -340,15 +352,18 @@ type ApplyPlan = (
 /// the caller turns into a success message.
 fn compile_and_plan(
     root: &Path,
-    profile_name: &str,
+    profile: Profile,
     old_snapshot: &WorkspaceSnapshot,
 ) -> Result<ApplyPlan, CliError> {
-    let artefacts =
-        compile_workspace(CompileOptions::new(root.to_path_buf()).with_emit(EmitArtefacts::Beam))
-            .map_err(|e| {
-            eprintln!("error: {e}");
-            CliError::AlreadyReported
-        })?;
+    let artefacts = compile_workspace(
+        CompileOptions::new(root.to_path_buf())
+            .with_profile(profile)
+            .with_emit(EmitArtefacts::Beam),
+    )
+    .map_err(|e| {
+        eprintln!("error: {e}");
+        CliError::AlreadyReported
+    })?;
     if crate::render::report_diagnostics(&artefacts.diagnostics, &artefacts.sources, false).fatal()
     {
         return Err(CliError::AlreadyReported);
@@ -358,7 +373,7 @@ fn compile_and_plan(
         return Err(CliError::AlreadyReported);
     };
 
-    let manifest_path = manifest_path_for(root, profile_name);
+    let manifest_path = manifest_path_for(root, profile.dir_name());
     let plan = plan_reload(
         old_snapshot,
         CheckOptions::new(root.to_path_buf()),

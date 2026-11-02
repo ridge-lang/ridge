@@ -16,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
-use clap::Args as ClapArgs;
+use clap::{builder::TypedValueParser, Args as ClapArgs};
 use ridge_driver::reload::{reload_check, snapshot_path_for, CheckReport, Verdict};
 use ridge_driver::{
     collect_bundle_beams, compile_workspace, manifest_path_for, plan_reload, snapshot_vsn,
@@ -29,37 +29,61 @@ use crate::error::CliError;
 
 /// Source-level reload tooling.
 #[derive(Debug, ClapArgs)]
+#[command(group(clap::ArgGroup::new("reload_mode").required(true).args(["check", "node"])))]
 pub struct ReloadArgs {
     /// Dry-run: diff against the last build and report compatibility.
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["cookie", "seed", "timeout", "purge_after", "json"])]
     pub check: bool,
     /// Override the snapshot path (default: target/ridge/<profile>/reload-snapshot.json).
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", requires = "check", conflicts_with = "node")]
     pub snapshot: Option<PathBuf>,
     /// Apply the upgrade to a running node (e.g. app@host or app@127.0.0.1).
     #[arg(long, value_name = "NAME@HOST")]
     pub node: Option<String>,
     /// Erlang distribution cookie of the target node.
-    #[arg(long, value_name = "COOKIE")]
+    #[arg(long, value_name = "COOKIE", requires = "node")]
     pub cookie: Option<String>,
     /// Seed the node's version marker when it has none (first reload of a
     /// node that was not booted with one). Off by default: without a
     /// marker the base-version gate answers "unknown" and the reload is
     /// refused loudly.
-    #[arg(long)]
+    #[arg(long, requires = "node")]
     pub seed: bool,
     /// Use the release profile's snapshot and artefacts.
     #[arg(long)]
     pub release: bool,
     /// rpc timeout for the apply call, in milliseconds.
-    #[arg(long, value_name = "MS", default_value = "30000")]
+    #[arg(long, value_name = "MS", default_value = "30000", requires = "node")]
     pub timeout: u64,
     /// Seconds of quiescence before the old code is purged (0 disables).
-    #[arg(long, value_name = "SECS", default_value = "60")]
+    #[arg(long, value_name = "SECS", default_value = "60", requires = "node")]
     pub purge_after: u64,
     /// Write the full JSON report to PATH (stdout when no path is given).
-    #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "")]
+    #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "", requires = "node",
+        value_parser = clap::builder::OsStringValueParser::new().map(PathBuf::from))]
     pub json: Option<PathBuf>,
+}
+
+impl ReloadArgs {
+    // Direct library callers bypass clap, but must not bypass the mode boundary.
+    const fn validate_mode(&self) -> Result<(), &'static str> {
+        if self.check == self.node.is_some() {
+            return Err("expected exactly one of --check or --node <name@host>");
+        }
+        if self.snapshot.is_some() && !self.check {
+            return Err("--snapshot requires --check");
+        }
+        if self.node.is_none()
+            && (self.cookie.is_some()
+                || self.seed
+                || self.json.is_some()
+                || self.timeout != 30000
+                || self.purge_after != 60)
+        {
+            return Err("--cookie, --seed, --json, --timeout and --purge-after require --node");
+        }
+        Ok(())
+    }
 }
 
 // ── Execute ───────────────────────────────────────────────────────────────────
@@ -77,12 +101,12 @@ pub struct ReloadArgs {
 /// current source does not compile cleanly, the plan rejects the edit, or
 /// the node refuses or fails the upgrade.
 pub fn execute(args: &ReloadArgs, cwd: &Path) -> Result<(), CliError> {
+    if let Err(message) = args.validate_mode() {
+        eprintln!("error: {message}");
+        return Err(CliError::AlreadyReported);
+    }
     if args.node.is_some() {
         return execute_apply(args, cwd);
-    }
-    if !args.check {
-        eprintln!("error: expected `--check` or `--node <name@host>`");
-        return Err(CliError::AlreadyReported);
     }
 
     let root = crate::cmd::workspace_root_for(cwd)?;

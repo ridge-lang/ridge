@@ -2276,6 +2276,12 @@ ridge repl                # interactive REPL
 **Production hot reload.** `ridge reload --node` applies the current edits to
 a running node, local or remote over Erlang distribution:
 
+Choose exactly one reload mode: `--check` or `--node <name@host>`.
+`--snapshot <path>` belongs to check mode. `--cookie`, `--seed`, `--timeout`,
+`--purge-after` and `--json [path]` belong to node mode. Conflicting modes or
+options are rejected before compilation, snapshot changes or node contact.
+`--release` is accepted with either mode.
+
 ```bash
 ridge reload --node app@prod.example --cookie "$RIDGE_COOKIE" --json report.json
 ```

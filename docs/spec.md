@@ -2282,6 +2282,12 @@ Choose exactly one reload mode: `--check` or `--node <name@host>`.
 options are rejected before compilation, snapshot changes or node contact.
 `--release` is accepted with either mode.
 
+The selected profile supplies the default snapshot and, in node mode, the
+compiled artifacts and upgrade manifest. In check mode, `--snapshot <path>`
+overrides that default baseline file, including when `--release` is present.
+Checks leave profile artifacts unchanged; apply recovery restores or invalidates
+only the selected profile's snapshot.
+
 ```bash
 ridge reload --node app@prod.example --cookie "$RIDGE_COOKIE" --json report.json
 ```

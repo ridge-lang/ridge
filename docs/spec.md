@@ -2342,13 +2342,18 @@ Semantics worth knowing before relying on it:
   suspended/migrated/restarted with per-actor restart reasons, in-flight
   messages migrated, wall-clock duration, and the cleanup schedule. Scheduling
   describes a future safe attempt, not confirmation that old code was removed.
-- **Probe death is safe.** The upgrade runs to completion on the target
-  node itself, wrapped so any failure resumes the suspended actors on
-  their current code. If the CLI's probe (or the operator's machine) dies
-  mid-apply, the node is never left with suspended actors — the in-flight
-  apply finishes, or the system is exactly as before. A failed apply also
-  restores the local pre-compile snapshot, so the next
-  `ridge reload --node` diffs against the build the node actually runs.
+- **Client and applicator failure.** An admitted upgrade continues on the
+  target if the CLI dies or times out; a timeout does not authorize replay.
+  A separate recovery owner handles applicator death. Before permission to
+  load code it resumes old state. After a confirmed load it preserves actors
+  whose migration and collection refresh completed, terminates incomplete
+  original processes for supervisor restart, and publishes the loaded version.
+  A restart loses that actor's previous state. An unconfirmed load outcome,
+  or loss of the recovery owner, retains a restart-required fence rather than
+  resuming potentially incompatible state. This does not provide universal
+  rollback or a durable operation receipt. A CLI failure with an uncertain
+  target outcome invalidates the local snapshot; it must be reconstructed
+  before another reload can use it as a baseline.
 
 Reload is for compatible code changes. Cold deploy is for changes to the
 shape of the world: large database migrations, infrastructure changes

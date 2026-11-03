@@ -58,13 +58,35 @@ same admission boundary. It never resets an existing marker, and a rejected
 first bundle leaves the marker unknown. This requires the updated target loader;
 the CLI no longer seeds by writing a marker through a separate RPC.
 
-Preflight rejection and errors before actor coordination release admission.
-An exception or coordinator death after effects may have begun leaves a
-node-local recovery fence: subsequent reloads return `reload_recovery_required`
-and require a node restart. This prevents another reload from trusting a version
-label that may precede changed code. It does not recover suspended actors, undo
-actor state changes, or provide a durable operation receipt. If the coordinator
-dies before effects begin, a later request can start a replacement coordinator.
+Preflight rejection releases admission. Actor coordination has a separate,
+unlinked recovery owner that monitors the applicator and records suspension
+intents before sending system requests. If the applicator dies before permission
+to load code, the owner resumes the original actors with their old state. A
+suspension or resume that cannot be confirmed within five seconds terminates
+that original process instead; a supervisor can start a replacement.
+
+The owner acknowledges permission before code loading begins. If the applicator
+dies after that permission but before confirming the complete load and evidence
+invalidation, the outcome is uncertain. The owner terminates the suspended
+cohort and retains a node-local recovery fence: subsequent reloads return
+`reload_recovery_required` and require a node restart. It never resumes old
+state under potentially different handlers or publishes an unconfirmed version.
+
+After loading is confirmed, recovery proceeds forward. An actor is marked ready
+only after state migration and collection refresh both succeed. Recovery resumes
+ready actors, terminates incomplete original processes, publishes the loaded
+version and schedules safe cleanup. Supervisor replacements use the new code's
+initial state; they do not inherit lost state. Recovery targets original PIDs,
+so it does not terminate their replacements. While the owner exists, another
+reload is rejected with `recovery_in_progress`, without removing its fence.
+Recovery emits a `reload_recovered` logger report with phase, cause and actor
+counts, omitting application state and arbitrary process exit details.
+
+If the recovery owner itself dies while the applicator survives, the applicator
+terminates the original cohort and retains the fence. Simultaneous death of both
+processes, a failed VM, and uninterruptible native code require operator recovery;
+this is not a durable journal or a universal rollback mechanism. Actor creation
+during reload still has no startup barrier, and dev loads remain sequential.
 Admission transport errors report a short cause and omit the submitted bundle
 and arbitrary coordinator exit details from the response.
 
@@ -75,8 +97,8 @@ attempts become pending, with no periodic retry loop. A later successful bundle
 with cleanup enabled rearms pending jobs after its window; its own module
 deadlines are replaced. Disabling cleanup removes jobs for the newly upgraded
 modules while preserving unrelated obligations. The worker monitors callers
-that pause cleanup and releases their pauses if they die; this does not
-recover suspended actors. Upgrade admission is managed separately.
+that pause cleanup and releases their pauses if they die. Actor recovery and
+upgrade admission are managed separately.
 
 Operators can query `ridge_loader:purge_status/0` on the target node. It returns
 `waiting` and `pending` module-name lists and a `paused` flag. Pending means the

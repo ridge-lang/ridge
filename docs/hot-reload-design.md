@@ -41,8 +41,35 @@ The BEAM loader prepares the bytecode before suspension and commits the module
 batch atomically. Modules with `on_load` callbacks are rejected by this path;
 stdlib/runtime reload remains deferred. If the commit fails (for example,
 because old code is still in use), no current module is replaced and evidence
-stays current, although the previous purge timer has already been canceled.
+stays current. Cleanup is paused while code is replaced and resumes on
+rejection, preserving unrelated modules' deadlines.
 The dev path still loads modules from disk sequentially.
+
+Deferred cleanup uses only `code:soft_purge/1`; a referenced old version is
+retained rather than forcibly purged. A node-local worker tracks one deadline
+per module, preserving unrelated waiting jobs across bundles. Failed safe
+attempts become pending, with no periodic retry loop. A later successful bundle
+with cleanup enabled rearms pending jobs after its window; its own module
+deadlines are replaced. Disabling cleanup removes jobs for the newly upgraded
+modules while preserving unrelated obligations. The worker monitors callers
+that pause cleanup and releases their pauses if they die; this does not
+recover suspended actors or serialize upgrade admission.
+
+Operators can query `ridge_loader:purge_status/0` on the target node. It returns
+`waiting` and `pending` module-name lists and a `paused` flag. Pending means the
+last safe attempt found references; it is not a live reference census. The
+apply report keeps `scheduled` and `after_ms` and adds `policy: soft` and the
+currently pending module names. This state is local to the worker, not a durable
+upgrade receipt, and does not survive worker or VM restart. Keeping referenced
+code may retain memory and prevent another version from loading. Let holders
+finish, then retry the upgrade, or deliberately restart the node; cleanup
+never treats an expired delay as permission to kill them.
+
+This behavior requires the target node to boot with the updated loader. An
+application bundle does not replace the node's loader or runtime. Older loaders
+can still use destructive cleanup; when a target report lacks `policy: soft`,
+the CLI labels the cleanup policy unconfirmed instead of describing it as safe.
+Updating the CLI alone does not change the target's cleanup behavior.
 
 Actor migration and subsequent reporting are separate from the atomic code
 commit. A failure after commit can leave changed code with the previous version

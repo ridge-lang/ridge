@@ -48,7 +48,8 @@ pub struct ReloadArgs {
     /// Seed the node's version marker when it has none (first reload of a
     /// node that was not booted with one). Off by default: without a
     /// marker the base-version gate answers "unknown" and the reload is
-    /// refused loudly.
+    /// refused loudly. Requires an updated target loader; the marker is
+    /// published only if the admitted reload succeeds.
     #[arg(long, requires = "node")]
     pub seed: bool,
     /// Use the release profile's snapshot and artefacts.
@@ -470,24 +471,13 @@ fn probe_apply_bundle(
         })
         .collect::<Vec<_>>()
         .join(",");
-    let seed_eval = if seed {
-        format!(
-            "case rpc:call('{node}', ridge_loader, current_version, [], {timeout_ms}) of \
-                undefined -> _ = rpc:call('{node}', persistent_term, put, [ridge_loader_vsn, <<\"{base_vsn}\">>], {timeout_ms}); \
-                _ -> ok \
-            end,\n"
-        )
-    } else {
-        String::new()
-    };
     let purge_ms = purge_after_s * 1000;
     let eval = format!(
         "rpc:call('{node}', ridge_rt, set_migrate_report, [structured], {timeout_ms}),\n\
-         {seed_eval}\
          {{ok, MBin}} = file:read_file(\"{manifest_fwd}\"),\n\
          Bins = [{beam_entries}],\n\
          case rpc:call('{node}', ridge_loader, apply_bundle,\n\
-         \x20     [MBin, Bins, #{{base_vsn => <<\"{base_vsn}\">>, purge_after_ms => {purge_ms}}}], {timeout_ms}) of\n\
+         \x20     [MBin, Bins, #{{base_vsn => <<\"{base_vsn}\">>, purge_after_ms => {purge_ms}, seed => {seed}}}], {timeout_ms}) of\n\
          \x20   {{ok, Rep}} ->\n\
          \x20       Safe = Rep#{{restarts => [#{{module => M, reason => iolist_to_binary(io_lib:format(\"~p\", [Why]))}}\n\
          \x20                             || #{{module := M, reason := Why}} <- maps:get(restarts, Rep, [])]}},\n\
@@ -588,6 +578,7 @@ mod tests {
         for output in [
             "RIDGE_RELOAD_ERR {error,{upgrade_failed,error,bad_actor_metadata,[]}}\n",
             "RIDGE_RELOAD_ERR {badrpc,timeout}\n",
+            "RIDGE_RELOAD_ERR {error,{reload_recovery_required,restart_node}}\n",
             "probe exited without reporting an outcome\n",
         ] {
             std::fs::write(&path, "new-build").unwrap();

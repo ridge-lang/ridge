@@ -58,6 +58,7 @@ run(Case) ->
                             preflight, {invalid_field, <<"new_vsn">>}};
         missing_options_base -> {Mf, Bins, maps:remove(base_vsn, Opts),
                                  preflight, {invalid_field, base_vsn}};
+        invalid_seed -> {Mf, Bins, Opts#{seed => 1}, preflight, {invalid_field, seed}};
         negative_purge -> {Mf, Bins, Opts#{purge_after_ms => -1},
                            preflight, {invalid_field, purge_after_ms}};
         invalid_format -> {Mf#{<<"format">> => 99}, Bins, Opts,

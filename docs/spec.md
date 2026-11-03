@@ -2306,10 +2306,18 @@ for the modules in this upgrade),
 `--release` (use the release profile's snapshot and artefacts), and
 `--json [path]` (write the full structured report to a file, or stdout).
 The node must carry a version marker seeded at boot; a node without one is
-refused loudly, and `--seed` opts into seeding it on first contact.
+refused loudly, and `--seed` permits the first reload to establish it. The
+updated target loader checks this option inside reload admission: a rejected
+bundle leaves an unknown marker unknown, and an existing marker is never reset.
 
 Semantics worth knowing before relying on it:
 
+- **Single reload admission.** Both transports share one queue per target
+  runtime. Each request checks its base after admission, so a queued request
+  against an obsolete base is rejected before code or actor state changes.
+  Client death or timeout does not cancel an admitted reload. A coordinator
+  failure after effects may have begun blocks further reloads until the node
+  is restarted; there is no automatic retry or rollback of actor state.
 - **Blue/green migration failure.** A migration that fails for one actor
   never aborts the upgrade and never resumes that actor with corrupt state:
   the migration is retried once, then the actor is killed and its supervisor

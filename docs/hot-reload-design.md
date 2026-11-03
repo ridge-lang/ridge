@@ -45,6 +45,29 @@ stays current. Cleanup is paused while code is replaced and resumes on
 rejection, preserving unrelated modules' deadlines.
 The dev path still loads modules from disk sequentially.
 
+Both transports share one admission queue on the target runtime. Each request
+checks its base version after entering admission, and retains admission through
+actor coordination and version publication. After one request commits, a queued
+request against its old base is rejected before it suspends actors or loads code.
+An admitted reload continues if its client dies or times out; a timeout is not
+cancellation and must not trigger an automatic replay. Dead local callers whose
+requests have not been admitted are skipped.
+
+The `--seed` option permits an initially unknown target version only inside this
+same admission boundary. It never resets an existing marker, and a rejected
+first bundle leaves the marker unknown. This requires the updated target loader;
+the CLI no longer seeds by writing a marker through a separate RPC.
+
+Preflight rejection and errors before actor coordination release admission.
+An exception or coordinator death after effects may have begun leaves a
+node-local recovery fence: subsequent reloads return `reload_recovery_required`
+and require a node restart. This prevents another reload from trusting a version
+label that may precede changed code. It does not recover suspended actors, undo
+actor state changes, or provide a durable operation receipt. If the coordinator
+dies before effects begin, a later request can start a replacement coordinator.
+Admission transport errors report a short cause and omit the submitted bundle
+and arbitrary coordinator exit details from the response.
+
 Deferred cleanup uses only `code:soft_purge/1`; a referenced old version is
 retained rather than forcibly purged. A node-local worker tracks one deadline
 per module, preserving unrelated waiting jobs across bundles. Failed safe
@@ -53,7 +76,7 @@ with cleanup enabled rearms pending jobs after its window; its own module
 deadlines are replaced. Disabling cleanup removes jobs for the newly upgraded
 modules while preserving unrelated obligations. The worker monitors callers
 that pause cleanup and releases their pauses if they die; this does not
-recover suspended actors or serialize upgrade admission.
+recover suspended actors. Upgrade admission is managed separately.
 
 Operators can query `ridge_loader:purge_status/0` on the target node. It returns
 `waiting` and `pending` module-name lists and a `paused` flag. Pending means the

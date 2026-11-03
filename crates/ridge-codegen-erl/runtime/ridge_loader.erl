@@ -19,14 +19,81 @@
 %%
 %% Requires OTP 27+ (the `json` module).
 -module(ridge_loader).
+-behaviour(gen_server).
 -export([current_version/0, apply/2, apply_bundle/3, purge_status/0]).
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(VSN_KEY, ridge_loader_vsn).
+-define(ADMISSION, ridge_loader_admission).
+-define(ACTIVE_KEY, ridge_loader_active_reload).
 
 current_version() ->
     persistent_term:get(?VSN_KEY, undefined).
 
 apply(ManifestPath, ExpectedVsn) ->
+    admitted({dev, ManifestPath, ExpectedVsn}).
+
+%% Unlinked from RPC callers: a timeout or caller death must not interrupt
+%% an admitted operation. Never replay a call after the coordinator dies.
+admitted(Request) ->
+    try
+        Pid = case gen_server:start({local, ?ADMISSION}, ?MODULE, [], []) of
+            {ok, StartedPid} -> StartedPid;
+            {error, {already_started, ExistingPid}} -> ExistingPid
+        end,
+        case Pid =:= self() of
+            true -> {error, {reload_rejected, admission, reentrant}};
+            false -> gen_server:call(Pid, Request, infinity)
+        end
+    catch
+        %% gen_server:call exits include the original request, including
+        %% every bytecode blob. Do not reflect it into RPC replies or logs.
+        exit:{Reason, {gen_server, call, _}} ->
+            {error, {upgrade_failed, exit,
+                     {reload_admission_down, admission_failure_reason(Reason)}, []}};
+        Class:Reason:_ ->
+            {error, {upgrade_failed, Class,
+                     {reload_admission_failed, admission_failure_reason(Reason)}, []}}
+    end.
+
+admission_failure_reason(noproc) -> noproc;
+admission_failure_reason(normal) -> normal;
+admission_failure_reason(killed) -> killed;
+admission_failure_reason(shutdown) -> shutdown;
+admission_failure_reason(_) -> coordinator_failed.
+
+init([]) -> {ok, undefined}.
+
+handle_call(Request, {Caller, _}, State) ->
+    case node(Caller) =:= node() andalso not is_process_alive(Caller) of
+        true -> {noreply, State};
+        false ->
+            Reply = case persistent_term:get(?ACTIVE_KEY, undefined) of
+                undefined -> dispatch(Request);
+                _ -> {error, {reload_recovery_required, restart_node}}
+            end,
+            case Reply of
+                {ok, _} -> persistent_term:erase(?ACTIVE_KEY);
+                {error, {reload_rejected, _, _}} -> persistent_term:erase(?ACTIVE_KEY);
+                _ -> ok
+            end,
+            {reply, Reply, State}
+    end.
+
+handle_cast(_, State) -> {noreply, State}.
+handle_info(_, State) -> {noreply, State}.
+
+dispatch({dev, ManifestPath, ExpectedVsn}) -> apply_admitted(ManifestPath, ExpectedVsn);
+dispatch({bundle, ManifestBin, BeamBins, Opts}) ->
+    apply_bundle_admitted(ManifestBin, BeamBins, Opts);
+dispatch(_) -> {error, {reload_rejected, admission, invalid_request}}.
+
+base_matches(ExpectedVsn, Opts) ->
+    Current = current_version(),
+    Current =:= ExpectedVsn orelse
+        (Current =:= undefined andalso maps:get(seed, Opts, false)).
+
+apply_admitted(ManifestPath, ExpectedVsn) ->
     case current_version() =:= ExpectedVsn of
         false ->
             {error, {base_version_mismatch, ExpectedVsn, current_version()}};
@@ -53,26 +120,31 @@ apply(ManifestPath, ExpectedVsn) ->
 %% bundle leaves the node untouched.
 apply_bundle(ManifestBin, BeamBins, Opts)
   when is_binary(ManifestBin), is_list(BeamBins), is_map(Opts) ->
+    admitted({bundle, ManifestBin, BeamBins, Opts});
+apply_bundle(_, _, _) ->
+    {error, {reload_rejected, preflight, invalid_bundle_arguments}}.
+
+apply_bundle_admitted(ManifestBin, BeamBins, Opts) ->
     Started = erlang:monotonic_time(millisecond),
     case prepare_bundle(ManifestBin, BeamBins, Opts) of
         {error, _} = Rejected -> Rejected;
         {ok, Mf, Prepared, PurgeAfter} ->
             try
                 do_apply(Mf, Started, fun load_prepared/2, Prepared,
-                         #{purge_after_ms => PurgeAfter, atomic_load => true})
+                         #{purge_after_ms => PurgeAfter, atomic_load => true,
+                           seed => maps:get(seed, Opts, false)})
             catch
                 Class:Reason:Stack -> {error, {upgrade_failed, Class, Reason, Stack}}
             end
-    end;
-apply_bundle(_, _, _) ->
-    {error, {reload_rejected, preflight, invalid_bundle_arguments}}.
+    end.
 
 %% Keep preflight exception handling outside actor callbacks: a callback's
 %% thrown term must never be mistaken for a rejection before code changed.
 prepare_bundle(ManifestBin, BeamBins, Opts) ->
     try
         ExpectedVsn = required_version(base_vsn, Opts),
-        case current_version() =:= ExpectedVsn of
+        require(is_boolean(maps:get(seed, Opts, false)), {invalid_field, seed}),
+        case base_matches(ExpectedVsn, Opts) of
             false -> throw({base_version_mismatch, ExpectedVsn, current_version()});
             true -> ok
         end,
@@ -185,7 +257,7 @@ do_apply(Mf, Started, LoadFun, LoadCtx, Opts) ->
         <<"modules">> := Modules0,
         <<"actors">> := ActorMigs0
     } = Mf,
-    case current_version() =:= BaseVsn of
+    case base_matches(BaseVsn, Opts) of
         false -> erlang:error({base_version_mismatch, BaseVsn, current_version()});
         true -> ok
     end,
@@ -207,6 +279,9 @@ do_apply(Mf, Started, LoadFun, LoadCtx, Opts) ->
     %% actor's own callback did not change. Refresh its retained indexes once
     %% at the upgrade boundary rather than repeatedly in later queries.
     Pids = [P || P <- processes(), upgrade_actor(P, Modules)],
+    %% Survives coordinator death. A failed operation after this boundary
+    %% may have changed code or actor state; only a node restart clears it.
+    persistent_term:put(?ACTIVE_KEY, mutating),
     try
         [ok = sys:suspend(P) || P <- Pids],
         %% Capture OLD field lists before loading the new code.

@@ -1785,6 +1785,7 @@ fn reload_bundle_preflight_and_atomic_commit() {
         "manifest_base",
         "invalid_version",
         "missing_options_base",
+        "invalid_seed",
         "negative_purge",
         "invalid_format",
         "invalid_json",
@@ -1806,6 +1807,57 @@ fn reload_bundle_preflight_and_atomic_commit() {
         assert!(output.status.success(), "{case}: {output:?}");
         assert!(
             String::from_utf8_lossy(&output.stdout).contains("bundle-probe-ok"),
+            "{case}: {output:?}"
+        );
+    }
+}
+
+#[test]
+fn reload_admission_serializes_both_transports() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let runtime = root.join("../ridge-codegen-erl/runtime");
+    let compiled = std::process::Command::new("erlc")
+        .args(["-Werror", "-o"])
+        .arg(directory.path())
+        .arg(runtime.join("ridge_loader.erl"))
+        .arg(runtime.join("ridge_rt.erl"))
+        .arg(root.join("tests/fixtures/reload_admission_probe.erl"))
+        .output()
+        .expect("beam-runtime requires erlc");
+    assert!(compiled.status.success(), "{compiled:?}");
+    for case in [
+        "bundle_bundle",
+        "bundle_dev",
+        "dev_bundle",
+        "dev_dev",
+        "seed",
+        "rejection",
+        "exception",
+        "worker_death",
+        "seed_rejection",
+        "dead_queued_caller",
+        "death_before_dispatch",
+        "diagnostic_payload",
+        "diagnostic_reason",
+        "admitted_caller_death",
+        "rpc_timeout",
+        "active_worker_death",
+        "active_exception",
+        "reentrant",
+        "postload_death",
+        "postload_exception",
+    ] {
+        let output = std::process::Command::new("erl")
+            .current_dir(directory.path())
+            .args(["-noshell", "-pa"])
+            .arg(directory.path())
+            .args(["-eval", &format!("reload_admission_probe:run({case}).")])
+            .output()
+            .expect("beam-runtime requires erl");
+        assert!(output.status.success(), "{case}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(&format!("admission-probe-ok {case}")),
             "{case}: {output:?}"
         );
     }

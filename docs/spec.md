@@ -2301,7 +2301,8 @@ the target node's loader validates every blob before loading anything, then
 suspends the affected actors, swaps the code, migrates actor state, and
 resumes. Flags: `--cookie` (distribution cookie), `--timeout <ms>` (rpc
 timeout for the apply call, default 30000), `--purge-after <s>` (quiescence
-window before the old code is purged, default 60, `0` disables),
+window before safe cleanup is attempted, default 60, `0` disables cleanup
+for the modules in this upgrade),
 `--release` (use the release profile's snapshot and artefacts), and
 `--json [path]` (write the full structured report to a file, or stdout).
 The node must carry a version marker seeded at boot; a node without one is
@@ -2314,19 +2315,25 @@ Semantics worth knowing before relying on it:
   the migration is retried once, then the actor is killed and its supervisor
   restarts it on its init state. Every other actor migrates normally, and
   the report names each restarted actor with the reason.
-- **Quiescence purge.** The node holds two code versions after an upgrade;
-  the old one is purged after the `--purge-after` window. A new upgrade
-  cancels and reschedules any pending purge.
+- **Safe code cleanup.** After the `--purge-after` window, the node attempts
+  to remove old code only when no process still references it. Cleanup never
+  kills those processes. Referenced code remains pending; a later upgrade
+  can be rejected until existing work releases it or the node is restarted.
+  Each upgraded module receives its new cleanup deadline; waiting cleanup
+  for other modules is preserved, including when the new upgrade disables
+  its own cleanup. A later successful upgrade with cleanup enabled retries
+  pending modules after its window, without continuous polling.
 - **Structured drop report.** The apply switches the node to the structured
   drop policy: every in-flight message that no migration chain covers is
   dropped with one JSON line on stderr (`event`, `module`, `name`,
   `old_vsn`, `reason`, `pid`, `ts`), the audit trail production tooling
   consumes. Dev loops keep the loud human-readable rendering.
 - **The report.** Success prints one line (`reloaded 2 modules, migrated 1
-  actors (+0 restarted), 0 in-flight messages in 12ms; old code purges in
-  60s`); `--json` carries the full structure: modules loaded, actors
+  actors (+0 restarted), 0 in-flight messages in 12ms; safe old code cleanup
+  scheduled in 60s`); `--json` carries the full structure: modules loaded, actors
   suspended/migrated/restarted with per-actor restart reasons, in-flight
-  messages migrated, wall-clock duration, and the purge schedule.
+  messages migrated, wall-clock duration, and the cleanup schedule. Scheduling
+  describes a future safe attempt, not confirmation that old code was removed.
 - **Probe death is safe.** The upgrade runs to completion on the target
   node itself, wrapped so any failure resumes the suspended actors on
   their current code. If the CLI's probe (or the operator's machine) dies

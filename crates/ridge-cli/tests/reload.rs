@@ -468,12 +468,16 @@ fn reload_node_end_to_end_via_real_cli() {
         stdout.contains("reloaded 2 modules, migrated 1 actors"),
         "one-line summary: {stdout}"
     );
-    assert!(stdout.contains("purges in 60s"), "purge schedule: {stdout}");
+    assert!(
+        stdout.contains("safe old code cleanup scheduled in 60s"),
+        "purge schedule: {stdout}"
+    );
 
     let report_text = std::fs::read_to_string(ws.path.join("report.json")).expect("report.json");
     let report: serde_json::Value = serde_json::from_str(&report_text).expect("valid JSON report");
     assert_eq!(report["actors_migrated"], 1, "{report_text}");
     assert_eq!(report["purge"]["scheduled"], true, "{report_text}");
+    assert_eq!(report["purge"]["policy"], "soft", "{report_text}");
 
     let state = probe_state(cookie, &node_name, "a");
     assert!(state.contains("count => 2"), "state preserved: {state}");

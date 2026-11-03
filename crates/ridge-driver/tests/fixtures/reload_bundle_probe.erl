@@ -12,9 +12,17 @@ run(Case) ->
     {module, B} = code:load_binary(B, "old-b", B1),
     {ok, Actor} = gen_server:start(A, [], []),
     persistent_term:put(ridge_loader_vsn, <<"base">>),
+    %% A real unrelated cleanup obligation must survive every rejection
+    %% and a successful bundle with cleanup disabled for A and B.
+    C = ridge_bundle_cleanup, CN = atom_to_binary(C),
+    {module, C} = code:load_binary(C, "cleanup-old", beam(C, 1, [])),
+    CleanupMf = #{base_vsn => <<"base">>, new_vsn => <<"base">>,
+                  modules => [CN], actors => []},
+    {ok, _} = ridge_loader:apply_bundle(iolist_to_binary(json:encode(CleanupMf)),
+        [{CN, beam(C, 2, [])}], #{base_vsn => <<"base">>, purge_after_ms => 60000}),
+    Timer = whereis(ridge_loader_purge),
+    CleanupBefore = ridge_loader:purge_status(),
     Generation = persistent_term:get(ridge_evidence_generation, 0),
-    Timer = spawn(fun() -> receive ridge_purge_cancel -> ok end end),
-    true = register(ridge_loader_purge, Timer),
     AN = atom_to_binary(A), BN = atom_to_binary(B),
     Mf = #{<<"base_vsn">> => <<"base">>, <<"new_vsn">> => <<"next">>,
            <<"modules">> => [AN, BN], <<"actors">> => []},
@@ -90,7 +98,6 @@ run(Case) ->
         ok ->
             {ok, #{modules_loaded := 2}} = Result,
             2 = A:value(), 2 = B:value(), <<"next">> = ridge_loader:current_version(),
-            false = is_process_alive(Timer),
             false = (Generation =:= persistent_term:get(ridge_evidence_generation, 0));
         _ ->
             case Phase of
@@ -100,7 +107,7 @@ run(Case) ->
             1 = A:value(), 1 = B:value(), <<"base">> = ridge_loader:current_version(),
             Generation = persistent_term:get(ridge_evidence_generation, 0),
             case Phase of
-                load -> false = is_process_alive(Timer), true = is_process_alive(get(holder));
+                load -> true = is_process_alive(get(holder));
                 _ ->
                     true = is_process_alive(Timer),
                     receive
@@ -108,6 +115,8 @@ run(Case) ->
                     after 0 -> ok end
             end
     end,
+    true = is_process_alive(Timer), Timer = whereis(ridge_loader_purge),
+    CleanupBefore = ridge_loader:purge_status(),
     1 = erlang:trace(Actor, false, ['receive']),
     kept = sys:get_state(Actor),
     ok = gen_server:stop(Actor),

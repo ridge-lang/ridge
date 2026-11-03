@@ -1811,6 +1811,51 @@ fn reload_bundle_preflight_and_atomic_commit() {
     }
 }
 
+#[test]
+fn reload_safe_purge_preserves_holders_and_pending_cleanup() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ridge-codegen-erl/runtime");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/reload_purge_probe.erl");
+    let compiled = std::process::Command::new("erlc")
+        .args(["-Werror", "-o"])
+        .arg(directory.path())
+        .arg(runtime.join("ridge_loader.erl"))
+        .arg(runtime.join("ridge_rt.erl"))
+        .arg(fixture)
+        .output()
+        .expect("beam-runtime requires erlc");
+    assert!(compiled.status.success(), "{compiled:?}");
+    for case in [
+        "holder",
+        "no_holder",
+        "disabled",
+        "second_upgrade",
+        "disjoint_deadlines",
+        "disabled_preserves_other",
+        "pending_retried",
+        "rejection_preserves_other",
+        "same_module_deadline",
+        "long_deadline",
+        "pause_owner_death",
+        "dev_second_upgrade",
+    ] {
+        let output = std::process::Command::new("erl")
+            .current_dir(directory.path())
+            .args(["-noshell", "-pa"])
+            .arg(directory.path())
+            .args(["-eval", &format!("reload_purge_probe:run({case}).")])
+            .output()
+            .expect("beam-runtime requires erl");
+        assert!(output.status.success(), "{case}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(&format!("purge-probe-ok {case}")),
+            "{case}: {output:?}"
+        );
+    }
+}
+
 // ── Hardening / chaos ────────────────────────────────────────────────────────
 
 #[test]

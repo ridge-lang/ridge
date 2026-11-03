@@ -57,7 +57,7 @@ pub struct ReloadArgs {
     /// rpc timeout for the apply call, in milliseconds.
     #[arg(long, value_name = "MS", default_value = "30000", requires = "node")]
     pub timeout: u64,
-    /// Seconds of quiescence before the old code is purged (0 disables).
+    /// Seconds before safe cleanup of old code (0 disables).
     #[arg(long, value_name = "SECS", default_value = "60", requires = "node")]
     pub purge_after: u64,
     /// Write the full JSON report to PATH (stdout when no path is given).
@@ -295,6 +295,9 @@ fn parse_apply_result(out: &str) -> Result<Option<String>, ReloadFailure> {
             .find_map(|l| l.strip_prefix("RIDGE_RELOAD_REJECTED "))
         {
             eprintln!("reload rejected before code was replaced: {detail}");
+            if detail.contains("not_purged") {
+                eprintln!("help: old code is still in use; let existing work finish or restart the node before retrying.");
+            }
             return Err(ReloadFailure::BeforeApply(CliError::AlreadyReported));
         }
         let detail = out
@@ -417,7 +420,14 @@ fn summary_line(report: &serde_json::Value) -> String {
                 .get("after_ms")
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(0);
-            format!("; old code purges in {}s", after / 1000)
+            if p.get("policy").and_then(serde_json::Value::as_str) == Some("soft") {
+                format!("; safe old code cleanup scheduled in {}s", after / 1000)
+            } else {
+                format!(
+                    "; old code cleanup scheduled in {}s (target policy unconfirmed)",
+                    after / 1000
+                )
+            }
         }
         _ => String::new(),
     };
@@ -595,5 +605,24 @@ mod tests {
             parse_apply_result("RIDGE_RELOAD_JSON {\"modules_loaded\":2}\n"),
             Ok(Some(report)) if report == "{\"modules_loaded\":2}"
         ));
+    }
+
+    #[test]
+    fn cleanup_summary_requires_the_target_to_confirm_a_safe_policy() {
+        let report = serde_json::json!({
+            "purge": {"scheduled": true, "after_ms": 60000, "policy": "soft"}
+        });
+        assert!(summary_line(&report).contains("safe old code cleanup scheduled in 60s"));
+        for policy in [None, Some("unknown")] {
+            let mut report = serde_json::json!({
+                "purge": {"scheduled": true, "after_ms": 60000}
+            });
+            if let Some(policy) = policy {
+                report["purge"]["policy"] = serde_json::json!(policy);
+            }
+            let summary = summary_line(&report);
+            assert!(summary.contains("target policy unconfirmed"), "{summary}");
+            assert!(!summary.contains("safe old code"), "{summary}");
+        }
     }
 }

@@ -19,7 +19,7 @@
 %%
 %% Requires OTP 27+ (the `json` module).
 -module(ridge_loader).
--export([current_version/0, apply/2, apply_bundle/3]).
+-export([current_version/0, apply/2, apply_bundle/3, purge_status/0]).
 
 -define(VSN_KEY, ridge_loader_vsn).
 
@@ -211,9 +211,9 @@ do_apply(Mf, Started, LoadFun, LoadCtx, Opts) ->
         [ok = sys:suspend(P) || P <- Pids],
         %% Capture OLD field lists before loading the new code.
         OldFieldsByMod = maps:from_list([{M, M:'__ridge_state_fields'()} || M <- MigMods]),
-        %% A pending quiescence purge must not fire mid-swap: cancel it
-        %% before loading (it is rescheduled below if purging is enabled).
-        ok = cancel_pending_purge(),
+        %% Pause cleanup while code is replaced, retaining other modules'
+        %% deadlines. The after clause releases this pause on rejection too.
+        ok = pause_pending_purge(),
         case load_and_invalidate(Modules, LoadFun, LoadCtx, Opts) of
             {error, Errors} ->
                 [ok = sys:resume(P) || P <- Pids, is_process_alive(P)],
@@ -228,13 +228,7 @@ do_apply(Mf, Started, LoadFun, LoadCtx, Opts) ->
                 persistent_term:put(?VSN_KEY, NewVsn),
                 Duration = erlang:monotonic_time(millisecond) - Started,
                 PurgeAfter = maps:get(purge_after_ms, Opts, 0),
-                Purge = case PurgeAfter of
-                    0 ->
-                        #{scheduled => false, after_ms => 0};
-                    _ ->
-                        ok = schedule_purge(Modules, PurgeAfter),
-                        #{scheduled => true, after_ms => PurgeAfter}
-                end,
+                Purge = schedule_purge(Modules, PurgeAfter),
                 {ok, #{
                     modules_loaded => length(Modules),
                     actors_suspended => length(Pids),
@@ -257,6 +251,8 @@ do_apply(Mf, Started, LoadFun, LoadCtx, Opts) ->
             %% partial. Metadata is invalidated for every committed code swap.
             [catch sys:resume(P) || P <- Pids],
             erlang:raise(Class, Reason, Stack)
+    after
+        ok = resume_pending_purge()
     end.
 
 %% Dev transport: the new code is on the node's own code path. A module
@@ -298,45 +294,119 @@ beam_label(M) ->
 %% A loaded module keeps TWO code versions until the old one is purged.
 %% After a successful upgrade the old code may still be referenced (a
 %% suspended-then-resumed actor finishing a call, a fun captured in a
-%% message), so the purge is deferred by a quiescence window. The timer
-%% runs as a registered process: a new upgrade cancels any pending purge
-%% before loading (and reschedules its own on success).
+%% message). A window schedules a SAFE cleanup attempt, not permission to
+%% kill holders. One worker keeps deadlines per module across bundles.
+%% Failed soft purges remain pending until a later enabled bundle retries
+%% them; there is no unbounded periodic process scan.
 
 -define(PURGE_REG, ridge_loader_purge).
 
 schedule_purge(Modules, DelayMs) ->
-    ok = cancel_pending_purge(),
-    Pid = spawn(fun() -> purge_timer(Modules, DelayMs) end),
-    true = register(?PURGE_REG, Pid),
-    ok.
+    Status = purge_call({schedule, Modules, DelayMs}),
+    #{scheduled => DelayMs > 0, after_ms => DelayMs, policy => soft,
+      pending => maps:get(pending, Status)}.
 
-cancel_pending_purge() ->
+%% Node-local diagnostic state, not a durable operation receipt. Pending
+%% means the last safe attempt found references; waiting has a deadline.
+purge_status() -> purge_call(status).
+
+pause_pending_purge() -> purge_call(pause).
+resume_pending_purge() -> purge_call(resume).
+
+purge_call(Request) ->
+    Pid = purge_worker(), Ref = monitor(process, Pid),
+    Pid ! {purge_call, self(), Ref, Request},
+    receive
+        {Ref, Reply} -> demonitor(Ref, [flush]), Reply;
+        {'DOWN', Ref, process, Pid, Reason} -> error({purge_worker_down, Reason})
+    after 5000 ->
+        demonitor(Ref, [flush]), error(purge_worker_timeout)
+    end.
+
+purge_worker() ->
     case whereis(?PURGE_REG) of
         undefined ->
-            ok;
-        P ->
-            %% Wait for the old timer to die before returning: the caller
-            %% may re-register the name immediately after.
-            Ref = monitor(process, P),
-            P ! ridge_purge_cancel,
+            Parent = self(), Tag = make_ref(),
+            {Pid, Ref} = spawn_monitor(fun() ->
+                case catch register(?PURGE_REG, self()) of
+                    true -> Parent ! {Tag, self()}, purge_loop(#{}, #{});
+                    _ -> ok
+                end
+            end),
             receive
-                {'DOWN', Ref, process, P, _} -> ok
+                {Tag, Pid} -> demonitor(Ref, [flush]), Pid;
+                {'DOWN', Ref, process, Pid, _} -> purge_worker()
             after 5000 ->
-                ok
-            end
+                demonitor(Ref, [flush]), error(purge_worker_start_timeout)
+            end;
+        Pid -> Pid
     end.
 
-purge_timer(Modules, DelayMs) ->
+purge_loop(Jobs, Pauses) ->
+    Wait = purge_wait(Jobs, Pauses),
     receive
-        ridge_purge_cancel -> ok
-    after DelayMs ->
-        %% Best-effort: a process still running old code keeps the version
-        %% referenced (purge returns false); the next upgrade's purge gets
-        %% another shot at it.
-        [_ = code:soft_purge(M) || M <- Modules],
-        [_ = code:purge(M) || M <- Modules],
-        ok
+        {purge_call, From, Ref, status} ->
+            From ! {Ref, cleanup_status(Jobs, Pauses)}, purge_loop(Jobs, Pauses);
+        {purge_call, From, Ref, pause} ->
+            Next = case maps:is_key(From, Pauses) of
+                true -> Pauses;
+                false -> Pauses#{From => monitor(process, From)}
+            end,
+            From ! {Ref, ok}, purge_loop(Jobs, Next);
+        {purge_call, From, Ref, resume} ->
+            Next = release_purge_pause(From, Pauses),
+            From ! {Ref, ok}, purge_loop(Jobs, Next);
+        {purge_call, From, Ref, {schedule, Modules, DelayMs}} ->
+            Due = erlang:monotonic_time(millisecond) + DelayMs,
+            %% Retry retained modules only when an enabled bundle asks for
+            %% cleanup. Unrelated waiting jobs keep their original deadlines.
+            Retried = maps:map(fun(_, pending) when DelayMs > 0 -> Due;
+                                 (_, Value) -> Value end, Jobs),
+            NextJobs = lists:foldl(fun(M, Acc) ->
+                case DelayMs of 0 -> maps:remove(M, Acc); _ -> Acc#{M => Due} end
+            end, Retried, Modules),
+            NextPauses = release_purge_pause(From, Pauses),
+            From ! {Ref, cleanup_status(NextJobs, NextPauses)},
+            purge_loop(NextJobs, NextPauses);
+        {'DOWN', Ref, process, From, _} ->
+            Next = case maps:find(From, Pauses) of
+                {ok, Ref} -> maps:remove(From, Pauses);
+                _ -> Pauses
+            end,
+            purge_loop(Jobs, Next);
+        _ -> purge_loop(Jobs, Pauses)
+    after Wait ->
+        Now = erlang:monotonic_time(millisecond),
+        NextJobs = maps:fold(fun(M, Due, Acc) when is_integer(Due), Due =< Now ->
+            case code:soft_purge(M) of
+                true -> maps:remove(M, Acc);
+                false -> Acc#{M => pending}
+            end;
+            (_, _, Acc) -> Acc
+        end, Jobs, Jobs),
+        purge_loop(NextJobs, Pauses)
     end.
+
+release_purge_pause(From, Pauses) ->
+    case maps:take(From, Pauses) of
+        {Ref, Next} -> demonitor(Ref, [flush]), Next;
+        error -> Pauses
+    end.
+
+purge_wait(_, Pauses) when map_size(Pauses) > 0 -> infinity;
+purge_wait(Jobs, _) ->
+    case [Due || Due <- maps:values(Jobs), is_integer(Due)] of
+        [] -> infinity;
+        Deadlines ->
+            %% Long deadlines use bounded receives instead of crashing the
+            %% tracking worker on the runtime's receive-timeout limit.
+            min(16#FFFFFFFF, max(0, lists:min(Deadlines) - erlang:monotonic_time(millisecond)))
+    end.
+
+cleanup_status(Jobs, Pauses) ->
+    #{waiting => lists:sort([atom_to_binary(M) || {M, Due} <- maps:to_list(Jobs), is_integer(Due)]),
+      pending => lists:sort([atom_to_binary(M) || {M, pending} <- maps:to_list(Jobs)]),
+      paused => map_size(Pauses) > 0}.
 
 %% The callback module of a gen_server, via the '$initial_call' dictionary
 %% entry gen_server plants at boot. Returns undefined for non-gen_servers.

@@ -1911,6 +1911,123 @@ fn compile_recovery_probe(directory: &std::path::Path) {
     assert!(compiled.status.success(), "{compiled:?}");
 }
 
+fn compile_startup_probe(directory: &std::path::Path) {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let runtime = root.join("../ridge-codegen-erl/runtime");
+    let compiled = std::process::Command::new("erlc")
+        .args(["-Werror", "-o"])
+        .arg(directory)
+        .arg(runtime.join("ridge_loader.erl"))
+        .arg(runtime.join("ridge_rt.erl"))
+        .arg(runtime.join("ridge_sup.erl"))
+        .arg(root.join("tests/fixtures/reload_startup_probe.erl"))
+        .output()
+        .expect("beam-runtime requires erlc");
+    assert!(compiled.status.success(), "{compiled:?}");
+}
+
+#[test]
+fn reload_coordinates_actor_initialization_and_supervisor_replacements() {
+    let directory = tempfile::tempdir().unwrap();
+    compile_startup_probe(directory.path());
+    for case in [
+        "active_initializer",
+        "census_birth",
+        "dependency",
+        "queued",
+        "queued_death",
+        "queued_args",
+        "queued_args_failure",
+        "init_error",
+        "nested_init",
+        "spawner_death",
+        "gate_death",
+        "supervised",
+        "supervised_static",
+        "supervised_queued",
+        "queued_worker_death",
+        "queued_owner_death",
+        "resume_timeout",
+        "legacy_bundle",
+        "legacy_live_actor",
+        "unsupported_protocol",
+    ] {
+        let output = std::process::Command::new("erl")
+            .current_dir(directory.path())
+            .args(["-noshell", "-pa"])
+            .arg(directory.path())
+            .args(["-eval", &format!("reload_startup_probe:run({case}).")])
+            .output()
+            .expect("beam-runtime requires erl");
+        assert!(output.status.success(), "{case}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(&format!("startup-probe-ok {case}")),
+            "{case}: {output:?}"
+        );
+    }
+}
+
+#[test]
+fn reload_initializes_generated_actors_on_the_correct_side_of_commit() {
+    let old = common::make_counter_workspace();
+    let new = common::make_counter_workspace();
+    let source = std::fs::read_to_string(counter_source(&new)).unwrap();
+    std::fs::write(
+        counter_source(&new),
+        source
+            .replace(
+                "state count: Int = 0",
+                "state count: Int = 0\n    state step: Int = 2",
+            )
+            .replace("        count\n", "        count + step\n"),
+    )
+    .unwrap();
+    let mut directories = Vec::new();
+    for workspace in [&old, &new] {
+        let artefacts = compile_workspace(
+            CompileOptions::new(workspace.path.clone()).with_emit(EmitArtefacts::Beam),
+        )
+        .expect("compile generated startup actor");
+        assert!(
+            !artefacts
+                .diagnostics
+                .iter()
+                .any(|d| matches!(d.severity, ridge_diagnostics::Severity::Error)),
+            "{:?}",
+            artefacts.diagnostics
+        );
+        directories.push(artefacts.beam_files[0].parent().unwrap().to_path_buf());
+    }
+    let module = actor_beam_of(&directories[0]);
+    let probe = tempfile::tempdir().unwrap();
+    compile_startup_probe(probe.path());
+    for case in [
+        "census_birth",
+        "queued",
+        "queued_death",
+        "supervised_queued",
+    ] {
+        let eval = format!(
+            "reload_startup_probe:run_generated(\"{}\",\"{}\",'{module}',{case}).",
+            directories[0].to_string_lossy().replace('\\', "/"),
+            directories[1].to_string_lossy().replace('\\', "/")
+        );
+        let output = std::process::Command::new("erl")
+            .current_dir(probe.path())
+            .args(["-noshell", "-pa"])
+            .arg(probe.path())
+            .args(["-eval", &eval])
+            .output()
+            .expect("beam-runtime requires erl");
+        assert!(output.status.success(), "{case}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout)
+                .contains(&format!("generated-startup-ok {case}")),
+            "{case}: {output:?}"
+        );
+    }
+}
+
 #[test]
 fn reload_recovers_generated_actor_with_supervisor() {
     let old = common::make_counter_workspace();

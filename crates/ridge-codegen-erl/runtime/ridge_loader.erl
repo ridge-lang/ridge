@@ -8,7 +8,7 @@
 %%   apply/2        — dev loop (`ridge run --reload`): the manifest is a
 %%                    JSON file and the node loads the new code from its own
 %%                    code path.
-%%   apply_bundle/3 — production (`ridge reload --node`): the manifest and
+%%   apply_bundle/3,4 — production (`ridge reload --node`): the manifest and
 %%                    the new .beam blobs arrive over rpc; no filesystem on
 %%                    the target node is involved.
 %%
@@ -20,7 +20,7 @@
 %% Requires OTP 27+ (the `json` module).
 -module(ridge_loader).
 -behaviour(gen_server).
--export([current_version/0, apply/2, apply_bundle/3, purge_status/0]).
+-export([current_version/0, apply/2, apply_bundle/3, apply_bundle/4, purge_status/0, startup_protocol/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(VSN_KEY, ridge_loader_vsn).
@@ -31,6 +31,14 @@
 
 current_version() ->
     persistent_term:get(?VSN_KEY, undefined).
+
+startup_protocol() ->
+    _ = code:ensure_loaded(ridge_rt),
+    case erlang:function_exported(ridge_rt, actor_init, 2) andalso
+         erlang:function_exported(ridge_rt, actor_startup, 1) of
+        true -> 1;
+        false -> 0
+    end.
 
 apply(ManifestPath, ExpectedVsn) ->
     admitted({dev, ManifestPath, ExpectedVsn}).
@@ -125,6 +133,15 @@ apply_bundle(ManifestBin, BeamBins, Opts)
 apply_bundle(_, _, _) ->
     {error, {reload_rejected, preflight, invalid_bundle_arguments}}.
 
+%% The protocol travels with the operation. A target replaced after the CLI's
+%% pre-compile handshake must not fall back to an older, uncoordinated loader.
+%% Older loaders do not export this arity; future versions are rejected here.
+apply_bundle(Protocol, ManifestBin, BeamBins, Opts) ->
+    case Protocol =:= 1 andalso startup_protocol() =:= 1 of
+        true -> apply_bundle(ManifestBin, BeamBins, Opts);
+        false -> {error, {reload_rejected, preflight, unsupported_startup_protocol}}
+    end.
+
 apply_bundle_admitted(ManifestBin, BeamBins, Opts) ->
     Started = erlang:monotonic_time(millisecond),
     case prepare_bundle(ManifestBin, BeamBins, Opts) of
@@ -160,12 +177,20 @@ prepare_bundle(ManifestBin, BeamBins, Opts) ->
             {ok, P} -> P;
             {error, Errors} -> reject({invalid_modules, Errors})
         end,
+        [validate_actor_startup_blob(Bin) || {_, _, Bin} <- Bins],
         {ok, Mf, Prepared, PurgeAfter}
     catch
         throw:{bundle_rejected, Reason} -> {error, {reload_rejected, preflight, Reason}};
         throw:{base_version_mismatch, _, _} = Reason -> {error, Reason};
         Class:Reason:Stack -> {error, {upgrade_failed, Class, Reason, Stack}}
     end.
+
+validate_actor_startup_blob(Bin) ->
+    {ok, {Mod, [{exports, Exports}]}} = beam_lib:chunks(Bin, [exports]),
+    IsActor = lists:member({'__ridge_state_fields', 0}, Exports) andalso
+              lists:member({init, 1}, Exports),
+    require(not IsActor orelse lists:member({'__ridge_init', 1}, Exports),
+            {actor_rebuild_required, Mod}).
 
 ensure_json() ->
     case code:ensure_loaded(json) of
@@ -279,8 +304,7 @@ do_apply(Mf, Started, LoadFun, LoadCtx, Opts) ->
     %% Comparison methods can depend on any reloaded module, even when an
     %% actor's own callback did not change. Refresh its retained indexes once
     %% at the upgrade boundary rather than repeatedly in later queries.
-    Pids = [P || P <- processes(), upgrade_actor(P, Modules)],
-    case start_recovery_owner(Pids, Modules, NewVsn, maps:get(purge_after_ms, Opts, 0)) of
+    case start_recovery_owner(Modules, NewVsn, maps:get(purge_after_ms, Opts, 0)) of
         {error, _} = Rejected -> Rejected;
         {ok, Owner} ->
             do_apply_owned(MigMods, ActorMigs, Modules, Started,
@@ -289,24 +313,35 @@ do_apply(Mf, Started, LoadFun, LoadCtx, Opts) ->
 
 do_apply_owned(MigMods, ActorMigs, Modules, Started, LoadFun, LoadCtx, Opts, Owner) ->
     Outcome = try
-        {ok, Suspended} = recovery_call(Owner, suspend),
-        %% Capture OLD field lists before loading the new code.
-        OldFieldsByMod = maps:from_list([{M, M:'__ridge_state_fields'()} || M <- MigMods]),
-        ok = recovery_call(Owner, commit),
-        case load_and_invalidate(Modules, LoadFun, LoadCtx, Opts) of
-            {error, Errors} -> {rejected, Errors};
-            ok ->
-                %% No recovery may publish this version before BOTH the code
-                %% swap and evidence invalidation have completed.
-                ok = recovery_call(Owner, loaded),
-                {Migrated, SchemaRestarts} = migrate_actors(Suspended, ActorMigs, OldFieldsByMod),
-                {Refreshed, IndexRestarts} = refresh_actor_collections(Suspended, Owner),
-                {ready, Suspended, Migrated, Refreshed, SchemaRestarts ++ IndexRestarts}
+        case recovery_call(Owner, suspend) of
+            {error, actor_started} -> startup_rejected;
+            {ok, Suspended} ->
+                %% Capture OLD field lists before loading the new code.
+                OldFieldsByMod = maps:from_list([{M, M:'__ridge_state_fields'()} || M <- MigMods]),
+                case recovery_call(Owner, commit) of
+                    {error, actor_started} -> startup_rejected;
+                    ok ->
+                        case load_and_invalidate(Modules, LoadFun, LoadCtx, Opts) of
+                            {error, Errors} -> {rejected, Errors};
+                            ok ->
+                                %% Confirm both the code swap and evidence
+                                %% invalidation before publishing this version.
+                                ok = recovery_call(Owner, loaded),
+                                {Migrated, SchemaRestarts} = migrate_actors(Suspended, ActorMigs, OldFieldsByMod),
+                                {Refreshed, IndexRestarts} = refresh_actor_collections(Suspended, Owner),
+                                {ready, Suspended, Migrated, Refreshed, SchemaRestarts ++ IndexRestarts}
+                        end
+                end
         end
     catch
         Class:Reason:Stack -> {failed, Class, Reason, Stack}
     end,
     case Outcome of
+        startup_rejected ->
+            case recovery_finish(Owner, abort) of
+                ok -> {error, {reload_rejected, startup, actor_started}};
+                {error, {reload_recovery_required, restart_node}} = Required -> Required
+            end;
         {ready, SuspendedPids, MigratedPids, RefreshedPids, PriorRestarts} ->
             {ok, Purge, RecoveryRestarts} = recovery_finish(Owner, complete),
             Restarts = PriorRestarts ++ RecoveryRestarts,
@@ -338,22 +373,39 @@ do_apply_owned(MigMods, ActorMigs, Modules, Started, LoadFun, LoadCtx, Opts, Own
 %% bytecode or application state, and never runs a user migration callback.
 %% Its registered lifetime also excludes a replacement admission server
 %% until recovery has finished, including the interval before the fence.
-start_recovery_owner(Pids, Modules, Version, Delay) ->
+start_recovery_owner(Modules, Version, Delay) ->
     Worker = self(), Tag = make_ref(),
     {Pid, Monitor} = spawn_monitor(fun() ->
         case catch register(?RECOVERY_REG, self()) of
             true ->
                 WorkerMonitor = monitor(process, Worker),
-                Worker ! {Tag, ready},
-                recovery_loop(#{worker => Worker, monitor => WorkerMonitor,
-                    candidates => Pids, owned => #{}, suspended => [], restarts => [],
-                    phase => precommit, modules => Modules, version => Version, delay => Delay});
+                case catch ridge_rt:actor_startup(begin_reload) of
+                    ok ->
+                        %% The startup writer must precede even the census.
+                        %% Initializers already running reject admission;
+                        %% births during the census cancel the load grant.
+                        case startup_actor_candidates(Modules) of
+                            {ok, Pids} ->
+                                Worker ! {Tag, {ready, Pids}},
+                                recovery_loop(#{worker => Worker, monitor => WorkerMonitor,
+                                    candidates => Pids, owned => #{}, suspended => [], restarts => [],
+                                    phase => precommit, modules => Modules, version => Version, delay => Delay});
+                            {error, Why} ->
+                                {ok, 0} = ridge_rt:actor_startup(abort),
+                                ok = ridge_rt:actor_startup(finish),
+                                Worker ! {Tag, {rejected, Why}}
+                        end;
+                    {error, initializing} -> Worker ! {Tag, {rejected, initializing}};
+                    _ -> Worker ! {Tag, {rejected, recovery_required}}
+                end;
             _ -> Worker ! {Tag, busy}
         end
     end),
-    Owner = #{pid => Pid, monitor => Monitor, candidates => Pids},
     receive
-        {Tag, ready} -> {ok, Owner};
+        {Tag, {ready, Pids}} -> {ok, #{pid => Pid, monitor => Monitor, candidates => Pids}};
+        {Tag, {rejected, Why}} ->
+            receive {'DOWN', Monitor, process, Pid, _} -> ok end,
+            {error, {reload_rejected, startup, Why}};
         {Tag, busy} ->
             receive {'DOWN', Monitor, process, Pid, _} -> ok end,
             {error, {reload_rejected, admission, recovery_in_progress}};
@@ -397,6 +449,8 @@ recovery_loop(#{worker := Worker, monitor := Monitor} = State) ->
                     recovery_loop(Next);
                 {failed, Next} ->
                     Worker ! {Ref, {error, reload_actor_unavailable}}, recovery_loop(Next);
+                {cancelled, Next} ->
+                    Worker ! {Ref, {error, actor_started}}, recovery_loop(Next);
                 {abandoned, Next} -> recover_and_stop(Next, applicator_down)
             end;
         {recovery_call, Worker, Ref, commit} ->
@@ -404,12 +458,19 @@ recovery_loop(#{worker := Worker, monitor := Monitor} = State) ->
             %% A death after this grant but before `loaded` is ambiguous.
             case catch pause_pending_purge() of
                 ok ->
-                    case {is_process_alive(Worker),
+                    case {ridge_rt:actor_startup(check), is_process_alive(Worker),
                           lists:all(fun is_process_alive/1, maps:keys(maps:get(owned, State)))} of
-                        {true, true} -> Worker ! {Ref, ok}, recovery_loop(State#{phase => committing});
-                        {true, false} ->
+                        {{error, actor_started}, true, _} ->
+                            Worker ! {Ref, {error, actor_started}}, recovery_loop(State);
+                        {ok, true, true} ->
+                            case ridge_rt:actor_startup(commit) of
+                                ok -> Worker ! {Ref, ok}, recovery_loop(State#{phase => committing});
+                                {error, actor_started} ->
+                                    Worker ! {Ref, {error, actor_started}}, recovery_loop(State)
+                            end;
+                        {ok, true, false} ->
                             Worker ! {Ref, {error, reload_actor_unavailable}}, recovery_loop(State);
-                        {false, _} -> recover_and_stop(State, applicator_down)
+                        {_, false, _} -> recover_and_stop(State, applicator_down)
                     end;
                 _ -> Worker ! {Ref, {error, reload_cleanup_unavailable}}, recovery_loop(State)
             end;
@@ -438,6 +499,7 @@ recovery_loop(#{worker := Worker, monitor := Monitor} = State) ->
             {Result, Stats} = abort_recovery(State),
             recovery_notice(State, applicator_error, Stats),
             Worker ! {Ref, Result};
+        {ridge_startup_cancelled, _Gate} -> recovery_loop(State);
         {'DOWN', Monitor, process, Worker, _} -> recover_and_stop(State, applicator_down)
     end.
 
@@ -454,9 +516,13 @@ suspend_recovery_actors([P | Rest], #{worker := Worker, owned := Owned} = State)
                     %% resume which could race a late suspend request.
                     Next = State#{owned => Owned#{P => restart}},
                     case catch sys:suspend(P, ?RECOVERY_TIMEOUT) of
-                        ok -> suspend_recovery_actors(Rest,
-                                  Next#{owned => Owned#{P => false},
-                                        suspended => [P | maps:get(suspended, Next)]});
+                        ok ->
+                            Confirmed = Next#{owned => Owned#{P => false},
+                                              suspended => [P | maps:get(suspended, Next)]},
+                            case ridge_rt:actor_startup({suspended, P}) of
+                                ok -> suspend_recovery_actors(Rest, Confirmed);
+                                {error, actor_started} -> {cancelled, Confirmed}
+                            end;
                         _ ->
                             {Restarts, Safe} = stop_recovery_actors([P], reload_suspend_failed),
                             _ = Safe,
@@ -473,12 +539,29 @@ abort_recovery(#{phase := loaded} = State) ->
     {Result, Stats} = complete_recovery(State),
     {case Result of {ok, _, _} -> ok; _ -> Result end, Stats};
 abort_recovery(#{phase := Phase} = State) ->
-    Mode = case Phase of precommit -> resume; committing -> restart end,
-    {Stats, Safe} = settle_recovery_actors(State, Mode),
+    {Stats, Safe} = case Phase of
+        precommit -> settle_precommit(State);
+        committing -> settle_recovery_actors(State, restart)
+    end,
     _ = catch resume_pending_purge(),
     case Phase =:= precommit andalso Safe of
-        true -> persistent_term:erase(?ACTIVE_KEY), {ok, Stats};
-        false -> {{error, {reload_recovery_required, restart_node}}, Stats}
+        true ->
+            persistent_term:erase(?ACTIVE_KEY),
+            ok = ridge_rt:actor_startup(finish), {ok, Stats};
+        false ->
+            _ = ridge_rt:actor_startup(finish),
+            {{error, {reload_recovery_required, restart_node}}, Stats}
+    end.
+
+settle_precommit(#{owned := Owned}) ->
+    %% The startup gate owns confirmed suspensions during precommit abort.
+    %% It may already have resumed them to break a parent's spawn dependency;
+    %% sending a second resume could now block in an ordinary user handler.
+    Pending = [P || P <- maps:keys(Owned), maps:get(P, Owned) =:= restart],
+    {Killed, Safe} = stop_recovery_actors(Pending, reload_incomplete_actor_state),
+    case ridge_rt:actor_startup(abort) of
+        {ok, Count} -> {#{resumed => Count, restarts => Killed}, Safe};
+        {error, recovery_required, Count} -> {#{resumed => Count, restarts => Killed}, false}
     end.
 
 complete_recovery(State) ->
@@ -488,6 +571,7 @@ complete_recovery(State) ->
         persistent_term:put(?VSN_KEY, maps:get(version, State)),
         Purge = schedule_purge(maps:get(modules, State), maps:get(delay, State)),
         persistent_term:erase(?ACTIVE_KEY),
+        ok = ridge_rt:actor_startup(finish),
         {ok, Purge, maps:get(restarts, State) ++ maps:get(restarts, Stats)}
     catch _:_ -> {error, {reload_recovery_required, restart_node}}
     after _ = catch resume_pending_purge()
@@ -706,6 +790,27 @@ initial_call_module(P) ->
 upgrade_actor(P, Modules) ->
     M = initial_call_module(P),
     lists:member(M, Modules) orelse ridge_actor(M).
+
+startup_actor_candidates(Modules) ->
+    Candidates = [P || P <- processes(), upgrade_actor(P, Modules)],
+    case lists:any(fun(P) ->
+        M = initial_call_module(P),
+        ridge_actor(M) andalso not erlang:function_exported(M, '__ridge_init', 1)
+    end, Candidates) of
+        true -> {error, actor_rebuild_required};
+        false -> {ok, [P || P <- Candidates, startup_actor_ready(P)]}
+    end.
+
+startup_actor_ready(P) ->
+    case ridge_actor(initial_call_module(P)) of
+        false -> true;
+        true ->
+            case process_info(P, dictionary) of
+                {dictionary, Dict} -> lists:keyfind('__ridge_actor_ready', 1, Dict) =:=
+                                      {'__ridge_actor_ready', true};
+                _ -> false
+            end
+    end.
 
 ridge_actor(M) -> erlang:function_exported(M, '__ridge_state_fields', 0).
 

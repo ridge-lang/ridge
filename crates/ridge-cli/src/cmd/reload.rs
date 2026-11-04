@@ -168,6 +168,19 @@ fn execute_apply(args: &ReloadArgs, cwd: &Path, profile: Profile) -> Result<(), 
 
     let snap_path = snapshot_path_for(&root, profile_name);
     let (old_snapshot, base_vsn, raw_snapshot) = read_running_snapshot(&snap_path, profile)?;
+    // Check before compilation and snapshot recovery: a local target can share
+    // output files and lazily load them even when a later RPC would reject.
+    let cookie = args.cookie.clone().unwrap_or_else(default_cookie);
+    probe_startup_protocol(
+        &erl_path,
+        args.node.as_deref().unwrap_or_default(),
+        &cookie,
+        args.timeout,
+    )
+    .map_err(|message| {
+        eprintln!("error: {message}");
+        CliError::AlreadyReported
+    })?;
     let json_line = match plan_and_apply(args, &erl_path, &root, profile, &old_snapshot, &base_vsn)
     {
         Ok(Some(line)) => line,
@@ -224,13 +237,13 @@ fn plan_and_apply(
     base_vsn: &str,
 ) -> Result<Option<String>, ReloadFailure> {
     let node = args.node.clone().unwrap_or_default();
+    let cookie = args.cookie.clone().unwrap_or_else(default_cookie);
     let (manifest_path, manifest, beams) = compile_and_plan(root, profile, old_snapshot)?;
     if manifest.modules.is_empty() {
         println!("nothing to reload: the node already runs this code.");
         return Ok(None);
     }
 
-    let cookie = args.cookie.clone().unwrap_or_else(default_cookie);
     let out = probe_apply_bundle(
         erl_path,
         &node,
@@ -444,6 +457,49 @@ fn default_cookie() -> String {
     "ridge".to_owned()
 }
 
+/// Negotiate before writing build artifacts. An unsupported or unreachable
+/// target is a known pre-apply failure; it cannot invalidate the baseline.
+fn probe_startup_protocol(
+    erl_path: &Path,
+    node: &str,
+    cookie: &str,
+    timeout_ms: u64,
+) -> Result<(), String> {
+    let eval = format!(
+        "[Target] = init:get_plain_arguments(),\n\
+         case rpc:call(list_to_atom(Target), ridge_loader, startup_protocol, [], {timeout_ms}) of\n\
+         1 -> io:format(\"RIDGE_STARTUP_PROTOCOL_OK~n\");\n\
+         _ -> ok end."
+    );
+    let output = std::process::Command::new(erl_path)
+        .arg("-name")
+        .arg(format!(
+            "ridge_reload_protocol_{}@127.0.0.1",
+            std::process::id()
+        ))
+        .arg("-setcookie")
+        .arg(cookie)
+        .arg("-noshell")
+        .arg("-eval")
+        .arg(eval)
+        .arg("-s")
+        .arg("init")
+        .arg("stop")
+        .arg("-extra")
+        .arg(node)
+        .output()
+        .map_err(|_| "could not start the reload compatibility probe".to_owned())?;
+    if output.status.success()
+        && String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .any(|line| line == "RIDGE_STARTUP_PROTOCOL_OK")
+    {
+        Ok(())
+    } else {
+        Err("could not confirm coordinated actor startup on the target; check connectivity and rebuild and restart older nodes with this compiler before reloading".to_owned())
+    }
+}
+
 /// Run the probe node: read the manifest and the beam blobs from disk,
 /// apply the bundle on the target node over rpc, print markers the caller
 /// parses (`RIDGE_RELOAD_JSON` on success, `RIDGE_RELOAD_REJECTED` when
@@ -472,12 +528,14 @@ fn probe_apply_bundle(
         .collect::<Vec<_>>()
         .join(",");
     let purge_ms = purge_after_s * 1000;
+    // An RPC exception on an older target can contain all bytecode arguments.
+    // Report transport failure without reflecting that exception stack.
     let eval = format!(
         "rpc:call('{node}', ridge_rt, set_migrate_report, [structured], {timeout_ms}),\n\
          {{ok, MBin}} = file:read_file(\"{manifest_fwd}\"),\n\
          Bins = [{beam_entries}],\n\
          case rpc:call('{node}', ridge_loader, apply_bundle,\n\
-         \x20     [MBin, Bins, #{{base_vsn => <<\"{base_vsn}\">>, purge_after_ms => {purge_ms}, seed => {seed}}}], {timeout_ms}) of\n\
+         \x20     [1, MBin, Bins, #{{base_vsn => <<\"{base_vsn}\">>, purge_after_ms => {purge_ms}, seed => {seed}}}], {timeout_ms}) of\n\
          \x20   {{ok, Rep}} ->\n\
          \x20       Safe = Rep#{{restarts => [#{{module => M, reason => iolist_to_binary(io_lib:format(\"~p\", [Why]))}}\n\
          \x20                             || #{{module := M, reason := Why}} <- maps:get(restarts, Rep, [])]}},\n\
@@ -486,6 +544,7 @@ fn probe_apply_bundle(
          \x20       io:format(\"RIDGE_RELOAD_REJECTED ~0tp~n\", [Rejected]);\n\
          \x20   {{error, {{base_version_mismatch, _, _}}}} = Rejected ->\n\
          \x20       io:format(\"RIDGE_RELOAD_REJECTED ~0tp~n\", [Rejected]);\n\
+         \x20   {{badrpc, _}} -> io:format(\"RIDGE_RELOAD_ERR target_rpc_failed~n\");\n\
          \x20   Err -> io:format(\"RIDGE_RELOAD_ERR ~p~n\", [Err])\n\
          end."
     );

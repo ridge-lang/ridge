@@ -67,6 +67,7 @@
     http_listen/2, http_port/0, http_build_response/1, http_validate_response_headers/1,
     http_get/1, http_post/2, http_put/2, http_delete/1,
     ask/3, send/2, send_op/2, send_fn/2, mailbox_size/1, spawn_actor/3, handle_eq/2,
+    actor_init/2, actor_start_link/3, actor_startup/1,
     start_supervisor/4, start_supervised_child/2, stop_supervised_child/2,
     which_children/1, set_child_id/2, set_child_restart/2, try_ask/3,
     monitor_handle/1, demonitor_flush/1, await_down/2, stop_handle/1,
@@ -2824,6 +2825,7 @@ mailbox_size(Handle) ->
 %% A crashed actor is observable rather than silent: the BEAM logs its crash
 %% report, and mailbox_size/1 reads `none` through the handle.
 spawn_actor(Mod, Init, _Caps) ->
+    ensure_actor_startup_protocol(Mod),
     {ok, Pid} = gen_server:start(Mod, Init, []),
     Config =
         case erlang:function_exported(Mod, '__ridge_mailbox_config', 0) of
@@ -2831,6 +2833,252 @@ spawn_actor(Mod, Init, _Caps) ->
             false -> unbounded
         end,
     {ridge_handle, Pid, Config}.
+
+%% The reader belongs to the child, including when an unlinked spawner dies.
+%% The external call is deliberately made AFTER admission: a queued child must
+%% not retain an old init body or replay user initialization after a code swap.
+actor_init(Mod, Args) ->
+    Queued = case actor_startup(enter) of
+        {ok, WasQueued} -> WasQueued;
+        {error, _} -> erlang:error(ridge_actor_startup_recovery_required)
+    end,
+    Result = try
+        CurrentArgs = case Queued of
+            false -> Args;
+            true ->
+                case catch migrate_value(Args, collections) of
+                    {ok, Migrated} -> Migrated;
+                    _ -> erlang:error(ridge_actor_init_args_migration_failed)
+                end
+        end,
+        Mod:'__ridge_init'(CurrentArgs)
+    catch Class:Reason:Stack ->
+        _ = catch actor_startup(leave),
+        erlang:raise(Class, Reason, Stack)
+    end,
+    case Result of
+        {ok, _} -> put('__ridge_actor_ready', true);
+        {ok, _, _} -> put('__ridge_actor_ready', true);
+        _ -> ok
+    end,
+    %% Publication must precede releasing the reader, otherwise a writer can
+    %% take its census in the gap and omit a fully initialized old actor.
+    ok = actor_startup(leave),
+    Result.
+
+ensure_actor_startup_protocol(Mod) ->
+    _ = code:ensure_loaded(Mod),
+    case erlang:function_exported(Mod, '__ridge_state_fields', 0) andalso
+         not erlang:function_exported(Mod, '__ridge_init', 1) of
+        true -> erlang:error(ridge_actor_rebuild_required);
+        false -> ok
+    end.
+
+%% Runs in the supervisor, retaining OTP's original link and error semantics.
+actor_start_link(Mod, Fun, Args) ->
+    ensure_actor_startup_protocol(Mod),
+    erlang:apply(Mod, Fun, Args).
+
+-define(STARTUP_REG, ridge_actor_startup).
+-define(STARTUP_KEY, ridge_actor_startup_owner).
+-define(STARTUP_TIMEOUT, 5000).
+
+%% A dead sentinel is never replaced: an unrecorded initializer or load grant
+%% cannot be reconstructed by taking another process census.
+actor_startup(Request) ->
+    Gate = startup_gate(),
+    Monitor = monitor(process, Gate), Ref = make_ref(),
+    Gate ! {startup_call, self(), Ref, Request},
+    receive
+        {Ref, Reply} -> demonitor(Monitor, [flush]), Reply;
+        {'DOWN', Monitor, process, Gate, _} ->
+            erlang:error(ridge_actor_startup_recovery_required)
+    end.
+
+startup_gate() ->
+    case persistent_term:get(?STARTUP_KEY, undefined) of
+        undefined ->
+            Parent = self(), Tag = make_ref(),
+            {Pid, Mon} = spawn_monitor(fun() ->
+                case catch register(?STARTUP_REG, self()) of
+                    true ->
+                        persistent_term:put(?STARTUP_KEY, self()),
+                        Parent ! {Tag, self()},
+                        startup_loop(#{readers => #{}, writer => undefined,
+                                       waiting => [], resumes => #{}, fenced => false});
+                    _ -> Parent ! {Tag, whereis(?STARTUP_REG)}
+                end
+            end),
+            receive
+                {Tag, Gate} when is_pid(Gate) -> demonitor(Mon, [flush]), Gate;
+                {Tag, _} -> demonitor(Mon, [flush]),
+                            erlang:error(ridge_actor_startup_recovery_required);
+                {'DOWN', Mon, process, Pid, _} ->
+                    erlang:error(ridge_actor_startup_recovery_required)
+            end;
+        Gate -> Gate
+    end.
+
+startup_loop(State) ->
+    receive
+        {startup_call, From, Ref, enter} ->
+            startup_loop(startup_enter(From, Ref, State));
+        {startup_call, From, Ref, leave} ->
+            Readers = maps:get(readers, State),
+            case maps:take(From, Readers) of
+                {Mon, Rest} -> demonitor(Mon, [flush]), From ! {Ref, ok},
+                               startup_loop(State#{readers => Rest});
+                error -> From ! {Ref, {error, startup_reader_missing}}, startup_loop(State)
+            end;
+        {startup_call, From, Ref, begin_reload} ->
+            case {startup_fenced(State), maps:get(writer, State), map_size(maps:get(readers, State))} of
+                {false, undefined, 0} ->
+                    Mon = monitor(process, From),
+                    From ! {Ref, ok},
+                    startup_loop(State#{writer => #{pid => From, monitor => Mon,
+                        phase => preparing, suspended => #{}, resumed => 0, abort => undefined}});
+                {true, _, _} -> From ! {Ref, {error, recovery_required}}, startup_loop(State);
+                _ -> From ! {Ref, {error, initializing}}, startup_loop(State)
+            end;
+        {startup_call, From, Ref, Request} ->
+            case maps:get(writer, State) of
+                #{pid := From} = Writer ->
+                    startup_loop(startup_writer(Request, From, Ref, Writer, State));
+                _ -> From ! {Ref, {error, startup_writer_missing}}, startup_loop(State)
+            end;
+        {startup_resumed, MonRef, Result} ->
+            case maps:take(MonRef, maps:get(resumes, State)) of
+                {{_Pid, Mon}, Rest} ->
+                    demonitor(Mon, [flush]),
+                    Writer = case maps:get(writer, State) of
+                        undefined -> undefined;
+                        W -> W#{resumed => maps:get(resumed, W) +
+                            case Result of ok -> 1; _ -> 0 end}
+                    end,
+                    startup_loop(startup_abort_reply(State#{resumes => Rest, writer => Writer,
+                        fenced => maps:get(fenced, State) orelse Result =:= error}));
+                error -> startup_loop(State)
+            end;
+        {'DOWN', Mon, process, Pid, _} ->
+            startup_loop(startup_down(Pid, Mon, State))
+    end.
+
+startup_fenced(State) ->
+    maps:get(fenced, State) orelse
+        (maps:get(writer, State) =:= undefined andalso
+         persistent_term:get(ridge_loader_active_reload, undefined) =/= undefined).
+
+startup_enter(Pid, Ref, State) ->
+    case startup_fenced(State) of
+        true -> Pid ! {Ref, {error, recovery_required}}, State;
+        false ->
+            Mon = monitor(process, Pid),
+            case maps:get(writer, State) of
+                #{phase := committing} ->
+                    State#{waiting => [{Pid, Ref, Mon} | maps:get(waiting, State)]};
+                #{phase := preparing, pid := Owner} = Writer ->
+                    Owner ! {ridge_startup_cancelled, self()},
+                    Next = startup_resume_all(State#{writer => Writer#{phase => cancelled}}),
+                    startup_grant(Pid, Ref, Mon, false, Next);
+                _ -> startup_grant(Pid, Ref, Mon, false, State)
+            end
+    end.
+
+startup_grant(Pid, Ref, Mon, Queued, State) ->
+    Pid ! {Ref, {ok, Queued}},
+    State#{readers => (maps:get(readers, State))#{Pid => Mon}}.
+
+startup_writer({suspended, Pid}, From, Ref, Writer, State) ->
+    Suspended = maps:get(suspended, Writer),
+    Next = State#{writer => Writer#{suspended => Suspended#{Pid => true}}},
+    case maps:get(phase, Writer) of
+        cancelled -> From ! {Ref, {error, actor_started}}, startup_resume_all(Next);
+        preparing -> From ! {Ref, ok}, Next
+    end;
+startup_writer(commit, From, Ref, #{phase := preparing} = Writer, State) ->
+    From ! {Ref, ok}, State#{writer => Writer#{phase => committing}};
+startup_writer(commit, From, Ref, _Writer, State) ->
+    From ! {Ref, {error, actor_started}}, State;
+startup_writer(check, From, Ref, #{phase := preparing}, State) ->
+    From ! {Ref, ok}, State;
+startup_writer(check, From, Ref, _Writer, State) ->
+    From ! {Ref, {error, actor_started}}, State;
+startup_writer(abort, From, Ref, Writer, State) ->
+    startup_abort_reply(startup_resume_all(State#{writer =>
+        Writer#{phase => cancelled, abort => {From, Ref}}}));
+startup_writer(finish, From, Ref, Writer, State) ->
+    Safe = map_size(maps:get(resumes, State)) =:= 0 andalso
+           not maps:get(fenced, State) andalso
+           persistent_term:get(ridge_loader_active_reload, undefined) =:= undefined,
+    demonitor(maps:get(monitor, Writer), [flush]),
+    From ! {Ref, case Safe of true -> ok; false -> {error, recovery_required} end},
+    startup_release_waiters(Safe, State).
+
+startup_release_waiters(Safe, State) ->
+    Next = State#{writer => undefined, fenced => not Safe},
+    lists:foldl(fun({P, R, M}, S) ->
+        case Safe of
+            true -> startup_grant(P, R, M, true, S);
+            false -> demonitor(M, [flush]), P ! {R, {error, recovery_required}}, S
+        end
+    end, Next#{waiting => []}, lists:reverse(maps:get(waiting, Next))).
+
+startup_resume_all(#{writer := Writer} = State) ->
+    {Next, Marked} = maps:fold(fun(Pid, Pending, {S, Done}) ->
+        case Pending of
+            false -> {S, Done#{Pid => false}};
+            true ->
+                Gate = self(), Tag = make_ref(),
+                {_Worker, Mon} = spawn_monitor(fun() ->
+                    Result = case catch sys:resume(Pid, ?STARTUP_TIMEOUT) of
+                        ok -> ok;
+                        _ ->
+                            case is_process_alive(Pid) of
+                                false -> gone;
+                                true -> exit(Pid, kill), error
+                            end
+                    end,
+                    Gate ! {startup_resumed, Tag, Result}
+                end),
+                {S#{resumes => (maps:get(resumes, S))#{Tag => {Pid, Mon}}}, Done#{Pid => false}}
+        end
+    end, {State, #{}}, maps:get(suspended, Writer)),
+    Next#{writer => Writer#{suspended => Marked}}.
+
+startup_abort_reply(#{writer := #{abort := {From, Ref}} = Writer, resumes := Resumes} = State)
+  when map_size(Resumes) =:= 0 ->
+    Count = maps:get(resumed, Writer),
+    From ! {Ref, case maps:get(fenced, State) of
+        false -> {ok, Count}; true -> {error, recovery_required, Count}
+    end},
+    State#{writer => Writer#{abort => undefined}};
+startup_abort_reply(State) -> State.
+
+startup_down(Pid, Mon, State) ->
+    case maps:get(writer, State) of
+        #{pid := Pid, monitor := Mon} ->
+            %% A live fence means the recovery journal was lost. Never grant
+            %% queued initializers against an uncertain code/state boundary.
+            Fenced = persistent_term:get(ridge_loader_active_reload, undefined) =/= undefined,
+            Safe = not (maps:get(fenced, State) orelse Fenced orelse
+                        map_size(maps:get(resumes, State)) =/= 0),
+            startup_release_waiters(Safe, State);
+        _ ->
+            case [{Tag, Target} || {Tag, {Target, M}} <- maps:to_list(maps:get(resumes, State)), M =:= Mon] of
+                [{Tag, Target}] ->
+                    exit(Target, kill),
+                    startup_abort_reply(State#{fenced => true,
+                        resumes => maps:remove(Tag, maps:get(resumes, State))});
+                [] ->
+                    Readers = maps:get(readers, State),
+                    Rest = case maps:find(Pid, Readers) of
+                        {ok, Mon} -> maps:remove(Pid, Readers);
+                        _ -> Readers
+                    end,
+                    State#{readers => Rest, waiting =>
+                        [E || {P, _, M} = E <- maps:get(waiting, State), P =/= Pid orelse M =/= Mon]}
+            end
+    end.
 
 %% --- Actor supervision ---
 %%
@@ -2907,9 +3155,9 @@ start_supervised_child({ridge_sup, SupPid}, Spec) when is_map(Spec) ->
     Normalized = normalize_child_spec(Spec),
     case catch supervisor:start_child(SupPid, Normalized) of
         {ok, _Pid} ->
-            {ok, sup_handle(SupPid, Normalized)};
+            {ok, sup_handle(SupPid, Spec)};
         {ok, _Pid, _Info} ->
-            {ok, sup_handle(SupPid, Normalized)};
+            {ok, sup_handle(SupPid, Spec)};
         {error, Reason} ->
             {error, sup_error_wire(Reason)};
         {'EXIT', {noproc, _}} ->
@@ -2979,18 +3227,21 @@ normalize_restart('Temporary') -> temporary;
 normalize_restart(R)           -> R.
 
 %% normalize_child_spec/1 — normalise the restart atom and ensure the
-%% optional `shutdown` key is present (OTP default 5000); id and start are
-%% left as built.
+%% optional `shutdown` key is present (OTP default 5000). The wrapper checks
+%% startup protocol on every restart while retaining the actor's modules list.
 normalize_child_spec(Spec) when is_map(Spec) ->
     WithRestart =
         case maps:find(restart, Spec) of
             {ok, R} -> Spec#{restart := normalize_restart(R)};
             error   -> Spec
         end,
-    case maps:is_key(shutdown, WithRestart) of
+    WithShutdown = case maps:is_key(shutdown, WithRestart) of
         true  -> WithRestart;
         false -> WithRestart#{shutdown => 5000}
-    end.
+    end,
+    {Mod, Fun, Args} = maps:get(start, WithShutdown),
+    WithShutdown#{start := {?MODULE, actor_start_link, [Mod, Fun, Args]},
+                  modules => maps:get(modules, WithShutdown, [Mod])}.
 
 %% sup_handle/2 — build the supervised handle for a freshly started child,
 %% reading the actor module's '__ridge_mailbox_config'/0 exactly like

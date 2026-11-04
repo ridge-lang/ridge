@@ -227,7 +227,10 @@ test(Case) when Case =:= supervised; Case =:= actor_died ->
         supervised -> kill(Worker);
         actor_died -> kill(Actor), _ = replacement(Sup, Actor, deadline()), Worker ! continue
     end,
-    {error, {upgrade_failed, _, _, _}} = result(Caller),
+    case Case of
+        supervised -> {error, {upgrade_failed, _, _, _}} = result(Caller);
+        actor_died -> {error, {reload_rejected, startup, actor_started}} = result(Caller)
+    end,
     persistent_term:put(recovery_pause, false),
     wait_recovery(deadline()),
     Fresh = replacement(Sup, Actor, deadline()),
@@ -322,8 +325,8 @@ beam(M, V) ->
     InitState = case V of 1 -> "#{count=>0,generation=>1}";
                          _ -> lists:flatten(io_lib:format("#{count=>0,generation=>~p,step=>~p}", [V,V])) end,
     Source = lists:flatten(io_lib:format(
-        "-module(~p). -export([start_link/0,value/0,init/1,handle_call/3,handle_cast/2,code_change/3,'__ridge_state_fields'/0,'__ridge_state_defaults'/0]). start_link()->gen_server:start_link(~p,[],[]). value()->~p. init([])->{ok,~s}. handle_call(block,_,S)->recovery_observer!{blocked_callback,self()},receive continue->ok end,{reply,ok,S};handle_call(get,_,S)->{reply,maps:get(count,S),S};handle_call({set,C},_,S)->{reply,ok,S#{count=>C}}. handle_cast(_,S)->{noreply,S}. code_change(_,S,ridge_refresh_collections)->case persistent_term:get(recovery_pause,false)of refresh->recovery_observer!{refresh,self()},receive continue->ok end;_->ok end,{ok,S};code_change(_,S,_)->{ok,S#{generation=>~p,step=>~p}}. '__ridge_state_defaults'()->#{step=>~p}. '__ridge_state_fields'()->case persistent_term:get(recovery_pause,false)of ~p->recovery_observer!{~p,self()},receive continue->ok;fail->error(metadata_failed)end;_->ok end,~p.",
-        [M,M,V,InitState,V,V,V,Phase,Phase,Fields])),
+        "-module(~p). -export([start_link/0,value/0,init/1,'__ridge_init'/1,handle_call/3,handle_cast/2,code_change/3,'__ridge_state_fields'/0,'__ridge_state_defaults'/0]). start_link()->gen_server:start_link(~p,[],[]). value()->~p. init(A)->ridge_rt:actor_init(~p,A). '__ridge_init'([])->{ok,~s}. handle_call(block,_,S)->recovery_observer!{blocked_callback,self()},receive continue->ok end,{reply,ok,S};handle_call(get,_,S)->{reply,maps:get(count,S),S};handle_call({set,C},_,S)->{reply,ok,S#{count=>C}}. handle_cast(_,S)->{noreply,S}. code_change(_,S,ridge_refresh_collections)->case persistent_term:get(recovery_pause,false)of refresh->recovery_observer!{refresh,self()},receive continue->ok end;_->ok end,{ok,S};code_change(_,S,_)->{ok,S#{generation=>~p,step=>~p}}. '__ridge_state_defaults'()->#{step=>~p}. '__ridge_state_fields'()->case persistent_term:get(recovery_pause,false)of ~p->recovery_observer!{~p,self()},receive continue->ok;fail->error(metadata_failed)end;_->ok end,~p.",
+        [M,M,V,M,InitState,V,V,V,Phase,Phase,Fields])),
     {ok, Tokens, _} = erl_scan:string(Source),
     {ok, M, Bin} = compile:forms(forms(Tokens, [], []), [binary]), Bin.
 

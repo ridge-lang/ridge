@@ -271,8 +271,8 @@ beam(M, V, Metadata) ->
 
 actor_beam(M, V, Metadata) ->
     Source = lists:flatten(io_lib:format(
-        "-module(~p). -export([value/0,init/1,handle_call/3,handle_cast/2,code_change/3,'__ridge_state_fields'/0,'__ridge_state_defaults'/0]). value()->~p. init([])->{ok,#{count=>7,generation=>1}}. handle_call(get,_,S)->{reply,S,S}. handle_cast(_,S)->{noreply,S}. code_change(_,S,ridge_refresh_collections)->{ok,S};code_change(_,S,_)->{ok,S#{generation=>~p}}. '__ridge_state_defaults'()->#{}. ~s",
-        [M, V, V, Metadata])),
+        "-module(~p). -export([value/0,init/1,'__ridge_init'/1,handle_call/3,handle_cast/2,code_change/3,'__ridge_state_fields'/0,'__ridge_state_defaults'/0]). value()->~p. init(A)->ridge_rt:actor_init(~p,A). '__ridge_init'([])->{ok,#{count=>7,generation=>1}}. handle_call(get,_,S)->{reply,S,S}. handle_cast(_,S)->{noreply,S}. code_change(_,S,ridge_refresh_collections)->{ok,S};code_change(_,S,_)->{ok,S#{generation=>~p}}. '__ridge_state_defaults'()->#{}. ~s",
+        [M, V, M, V, Metadata])),
     compile_source(M, Source).
 
 compile_source(M, Source) ->

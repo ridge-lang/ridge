@@ -192,6 +192,42 @@ fn probe_eval(cookie: &str, seq: &str, eval: &str) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
+/// Kill only the fixture VM after the real loader has admitted apply and
+/// suspended the actor. The marker distinguishes this from a preflight failure.
+fn fail_after_apply_admission(node: &str, cookie: &str, actor: &str, marker: &Path) {
+    let marker_literal =
+        serde_json::to_string(&marker.to_string_lossy().replace('\\', "/")).unwrap();
+    let forms = [
+        format!("-module('{actor}')."),
+        "-export([init/1,'__ridge_init'/1,handle_call/3,handle_cast/2,'__ridge_state_fields'/0]).".into(),
+        format!("init(A)->ridge_rt:actor_init('{actor}',A)."),
+        "'__ridge_init'([])->{ok,#{count=>0}}.".into(),
+        "handle_call({count},_,S)->{reply,maps:get(count,S),S}.".into(),
+        "handle_cast(_,S)->{noreply,S}.".into(),
+        format!("'__ridge_state_fields'()->true=(self()=:=whereis(ridge_loader_admission)),true=is_pid(whereis(ridge_loader_recovery)),mutating=persistent_term:get(ridge_loader_active_reload),ok=file:write_file({marker_literal},<<\"admitted\">>),erlang:halt(0)."),
+    ];
+    let encoded = forms
+        .iter()
+        .map(|form| {
+            let bytes = form
+                .as_bytes()
+                .iter()
+                .map(u8::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("unicode:characters_to_list(<<{bytes}>>)")
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let installed = probe_eval(cookie, "admitted_fault", &format!(
+        "Parse=fun(Text)->{{ok,T,_}}=erl_scan:string(Text),{{ok,F}}=erl_parse:parse_form(T),F end,\n\
+         {{ok,'{actor}',Bin}}=compile:forms([Parse(T)||T<-[{encoded}]],[binary]),\n\
+         {{module,'{actor}'}}=rpc:call('{node}',code,load_binary,['{actor}',\"apply-fault\",Bin]),\n\
+         io:format(\"FAULT_READY~n\")."
+    ));
+    assert!(installed.contains("FAULT_READY"), "{installed}");
+}
+
 /// `ridge reload --node` on the edited workspace; returns the process output.
 fn reload_cmd(
     ws: &common::TempWorkspace,
@@ -242,6 +278,102 @@ fn profile_files(
             (relative, std::fs::read(path).unwrap())
         })
         .collect()
+}
+
+#[test]
+fn reload_rejects_legacy_target_before_rewriting_shared_build_artifacts() {
+    if !otp_available() {
+        return;
+    }
+    let ws = make_workspace("Counter", COUNTER_SRC);
+    let (beam_dir, actor) = build_and_find_beams(&ws);
+    let node = format!("ridge_cli_legacy_{}@127.0.0.1", std::process::id());
+    let cookie = "ridge_cli_legacy_cookie";
+    let _guard = boot_node(&node, cookie, &beam_dir, &actor);
+    let legacy = probe_eval(cookie, "legacy_install", &format!(
+        "Parse=fun(Text)->{{ok,T,_}}=erl_scan:string(Text),{{ok,F}}=erl_parse:parse_form(T),F end,\n\
+         Forms=[Parse(T)||T<-[\"-module(ridge_loader).\",\"-export([apply_bundle/3]).\",\n\
+         \"apply_bundle(_,_,_)->persistent_term:put(legacy_apply_called,true),error(unexpected_apply).\"]],\n\
+         {{ok,ridge_loader,Bin}}=compile:forms(Forms,[binary]),\n\
+         {{module,ridge_loader}}=rpc:call('{node}',code,load_binary,[ridge_loader,\"legacy\",Bin]),\n\
+         io:format(\"LEGACY_READY~n\")."
+    ));
+    assert!(legacy.contains("LEGACY_READY"), "{legacy}");
+    write_file(
+        &ws.path,
+        "apps/demo/src/Counter.ridge",
+        &COUNTER_SRC.replace("state count: Int = 0", EDIT),
+    );
+    let before = profile_files(&ws, Profile::Debug);
+    let rejected = reload_cmd(&ws, &node, cookie, true, false);
+    assert!(!rejected.status.success(), "{rejected:?}");
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr).contains("coordinated actor startup"),
+        "{rejected:?}"
+    );
+    assert_profile_unchanged(&ws, Profile::Debug, &before);
+    let state = probe_eval(
+        cookie,
+        "legacy_untouched",
+        &format!(
+            "false=rpc:call('{node}',persistent_term,get,[legacy_apply_called,false]),\n\
+         P=rpc:call('{node}',erlang,whereis,[counter_pid]),\n\
+         #{{count:=2}}=rpc:call('{node}',sys,get_state,[P]),io:format(\"UNTOUCHED~n\")."
+        ),
+    );
+    assert!(state.contains("UNTOUCHED"), "{state}");
+    let dead = format!("ridge_cli_unreachable_{}@127.0.0.1", std::process::id());
+    let unreachable = reload_cmd(&ws, &dead, cookie, false, false);
+    assert!(!unreachable.status.success(), "{unreachable:?}");
+    assert!(String::from_utf8_lossy(&unreachable.stderr).contains("coordinated actor startup"));
+    assert_profile_unchanged(&ws, Profile::Debug, &before);
+    // Change the loader from inside the successful handshake. The operation
+    // must not fall back to the legacy three-argument entry point afterwards.
+    let swapped = probe_eval(
+        cookie,
+        "protocol_swap",
+        &format!(
+            r#"
+Parse=fun(Text)->{{ok,T,_}}=erl_scan:string(Text),{{ok,F}}=erl_parse:parse_form(T),F end,
+{{ok,ridge_loader,OldBin}}=compile:forms([Parse(T)||T<-[
+ "-module(ridge_loader).","-export([apply_bundle/3]).",
+ "apply_bundle(_,_,_)->persistent_term:put(legacy_apply_called,true),error(unexpected_apply)."]],[binary]),
+Startup=lists:flatten(io_lib:format("startup_protocol()->true=code:soft_purge(ridge_loader),{{module,ridge_loader}}=code:load_binary(ridge_loader,\"old-loader\",~p),persistent_term:put(startup_target_replaced,true),1.",[OldBin])),
+{{ok,ridge_loader,ProbeBin}}=compile:forms([Parse(T)||T<-["-module(ridge_loader).","-export([startup_protocol/0]).",Startup]],[binary]),
+true=rpc:call('{node}',code,soft_purge,[ridge_loader]),
+{{module,ridge_loader}}=rpc:call('{node}',code,load_binary,[ridge_loader,"protocol-swap",ProbeBin]),
+io:format("DOWNGRADE_READY~n").
+"#
+        ),
+    );
+    assert!(swapped.contains("DOWNGRADE_READY"), "{swapped}");
+    let changed = reload_cmd(&ws, &node, cookie, true, false);
+    assert!(!changed.status.success(), "{changed:?}");
+    assert!(
+        String::from_utf8_lossy(&changed.stderr).contains("local reload snapshot is invalidated")
+    );
+    assert!(String::from_utf8_lossy(&changed.stderr)
+        .contains("reload failed at the node: target_rpc_failed"));
+    assert!(!String::from_utf8_lossy(&changed.stderr).contains("base_vsn"));
+    let preserved = probe_eval(
+        cookie,
+        "protocol_swap_check",
+        &format!(
+            r#"
+true=rpc:call('{node}',persistent_term,get,[startup_target_replaced,false]),
+false=rpc:call('{node}',persistent_term,get,[legacy_apply_called,false]),
+P=rpc:call('{node}',erlang,whereis,[counter_pid]),
+S=rpc:call('{node}',sys,get_state,[P]),#{{count:=2}}=S,false=maps:is_key(step,S),
+rpc:call('{node}',ridge_loader,apply_bundle,[<<>>,[],#{{}}]),
+true=rpc:call('{node}',persistent_term,get,[legacy_apply_called,false]),
+io:format("LEGACY_ENTRY_AVOIDED_AND_CONTROL_DETECTED~n").
+"#
+        ),
+    );
+    assert!(
+        preserved.contains("LEGACY_ENTRY_AVOIDED_AND_CONTROL_DETECTED"),
+        "{preserved}"
+    );
 }
 
 fn assert_profile_unchanged(
@@ -394,7 +526,11 @@ fn reload_release_uncertainty_invalidates_only_selected_snapshot() {
         return;
     }
     let ws = make_workspace("Counter", COUNTER_SRC);
-    build_profile(&ws, Profile::Release);
+    let (beam_dir, actor) = build_profile(&ws, Profile::Release);
+    let dead = format!("ridge_cli_release_fault_{}@127.0.0.1", std::process::id());
+    let _node = boot_node(&dead, "local_probe_cookie", &beam_dir, &actor);
+    let marker = ws.path.join("apply-admitted.txt");
+    fail_after_apply_admission(&dead, "local_probe_cookie", &actor, &marker);
     write_file(
         &ws.path,
         "target/ridge/debug/reload-snapshot.json",
@@ -406,16 +542,16 @@ fn reload_release_uncertainty_invalidates_only_selected_snapshot() {
         "apps/demo/src/Counter.ridge",
         &COUNTER_SRC.replace("state count: Int = 0", EDIT),
     );
-    let dead = format!("ridge_cli_release_dead_{}@127.0.0.1", std::process::id());
     let output = reload_profile(
         &ws,
         &dead,
         "local_probe_cookie",
-        false,
+        true,
         false,
         Profile::Release,
     );
     assert!(!output.status.success());
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "admitted");
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(
         error.contains("local reload snapshot is invalidated"),
@@ -554,16 +690,20 @@ fn reload_node_uncertain_failure_invalidates_snapshot() {
         return;
     }
     let ws = make_workspace("Counter", COUNTER_SRC);
-    build_and_find_beams(&ws);
+    let (beam_dir, actor) = build_and_find_beams(&ws);
+    let dead_name = format!("ridge_cli_fault_{}@127.0.0.1", std::process::id());
+    let _node = boot_node(&dead_name, "ridge_cli_e2e_cookie", &beam_dir, &actor);
+    let marker = ws.path.join("apply-admitted.txt");
+    fail_after_apply_admission(&dead_name, "ridge_cli_e2e_cookie", &actor, &marker);
     let src = std::fs::read_to_string(ws.path.join("apps/demo/src/Counter.ridge")).unwrap();
     write_file(
         &ws.path,
         "apps/demo/src/Counter.ridge",
         &src.replace("state count: Int = 0", EDIT),
     );
-    let dead_name = format!("ridge_cli_dead_{}@127.0.0.1", std::process::id());
-    let output = reload_cmd(&ws, &dead_name, "ridge_cli_e2e_cookie", false, false);
+    let output = reload_cmd(&ws, &dead_name, "ridge_cli_e2e_cookie", true, false);
     assert!(!output.status.success());
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "admitted");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("local reload snapshot is invalidated"),

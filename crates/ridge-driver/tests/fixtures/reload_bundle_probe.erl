@@ -126,10 +126,10 @@ run(Case) ->
 
 beam(Module, Value, Extra) ->
     Texts = ["-module(" ++ atom_to_list(Module) ++ ").",
-        "-export([value/0,hold/1,init/1,handle_call/3,handle_cast/2,code_change/3,'__ridge_state_fields'/0])."] ++ Extra ++ [
+        "-export([value/0,hold/1,init/1,'__ridge_init'/1,handle_call/3,handle_cast/2,code_change/3,'__ridge_state_fields'/0])."] ++ Extra ++ [
         "value() -> " ++ integer_to_list(Value) ++ ".",
         "hold(Parent) -> Parent ! holding, receive stop -> ok end.",
-        "init([]) -> {ok,kept}.", "handle_call(_,_,S) -> {reply,S,S}.",
+        "init(A) -> ridge_rt:actor_init(" ++ atom_to_list(Module) ++ ", A).", "'__ridge_init'([]) -> {ok,kept}.", "handle_call(_,_,S) -> {reply,S,S}.",
         "handle_cast(_,S) -> {noreply,S}.", "code_change(_,S,_) -> {ok,S}.",
         "'__ridge_state_fields'() -> []."],
     Forms = [begin {ok, Tokens, _} = erl_scan:string(Text),

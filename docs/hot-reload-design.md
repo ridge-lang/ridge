@@ -85,10 +85,45 @@ counts, omitting application state and arbitrary process exit details.
 If the recovery owner itself dies while the applicator survives, the applicator
 terminates the original cohort and retains the fence. Simultaneous death of both
 processes, a failed VM, and uninterruptible native code require operator recovery;
-this is not a durable journal or a universal rollback mechanism. Actor creation
-during reload still has no startup barrier, and dev loads remain sequential.
+this is not a durable journal or a universal rollback mechanism. Dev loads
+remain sequential.
 Admission transport errors report a short cause and omit the submitted bundle
 and arbitrary coordinator exit details from the response.
+
+Actor initialization shares a startup boundary with both reload transports.
+The child holds its initialization permission for the entire user initializer,
+including ordinary unlinked spawns, supervised starts and supervisor restarts.
+A reload acquires its startup session before taking the actor census. If an
+initializer is already running, the reload rejects with
+`{reload_rejected, startup, initializing}` before suspension or loading.
+
+A new initializer arriving before load permission cancels that reload, which
+returns `{reload_rejected, startup, actor_started}` with the old version intact.
+Confirmed suspensions are resumed independently of the recovery owner so an
+initializer can call an existing actor even while the owner is waiting to
+suspend its parent. The initializer runs once; the loader never retries it.
+Cancellation waits for all resume requests to finish before releasing the
+startup session. A resume timeout terminates the original process and retains
+a restart-required fence, preventing a late resume from crossing another load.
+
+After load permission, new children wait until the recovery owner resolves the
+original cohort and publishes the version. They then call the current module's
+initializer, rather than an old captured function. Queued initialization
+arguments undergo record migration and collection refresh before user code
+runs; migration failure fails startup without running that initializer.
+An uncertain load or loss of the startup coordinator refuses new initializers
+and further reloads until the node is restarted. The coordinator is not silently
+recreated after losing its journal.
+
+This requires actors and the runtime built with the startup protocol. The
+production CLI checks target support before compiling, including when target
+and CLI share an output directory; unsupported targets must be rebuilt and
+restarted. The apply RPC also carries the required protocol through a versioned
+entry point absent from older loaders, so a target replaced after the initial
+check cannot fall back to the old application path. Existing legacy actors and
+incoming legacy actor bundles are rejected
+before effects. This is a runtime compatibility boundary, not a source-language
+change.
 
 Deferred cleanup uses only `code:soft_purge/1`; a referenced old version is
 retained rather than forcibly purged. A node-local worker tracks one deadline

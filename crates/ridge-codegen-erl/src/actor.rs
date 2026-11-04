@@ -113,6 +113,10 @@ pub(crate) fn lower_actor(
             arity: 1,
         },
         CErlExport {
+            name: CErlAtom("__ridge_init".into()),
+            arity: 1,
+        },
+        CErlExport {
             name: CErlAtom("handle_call".into()),
             arity: 3,
         },
@@ -173,6 +177,7 @@ pub(crate) fn lower_actor(
     initializer_scope.tables = tables.clone();
     let fns_results: Vec<Result<CErlFn, CodegenError>> = vec![
         emit_start_link(&actor_beam_name, init_params_count),
+        Ok(emit_init_bridge(&actor_beam_name)),
         emit_init(actor, &initializer_scope),
         emit_handle_call(actor, fn_arity, parent_beam_name, tables),
         emit_handle_cast(actor, fn_arity, parent_beam_name, tables),
@@ -267,21 +272,38 @@ fn emit_start_link(actor_beam_name: &str, n_params: usize) -> Result<CErlFn, Cod
 
 // ── init/1 ────────────────────────────────────────────────────────────────────
 
-/// Emit the `gen_server:init/1` callback.
+/// Emit the `gen_server:init/1` startup bridge.
 ///
 /// ```erlang
 /// 'init'/1 = fun (V_Args) ->
-///     <lower_init_body(actor.init, actor.state_fields)>
+///     call 'ridge_rt':'actor_init' ('ActorModule', V_Args)
 /// end
 /// ```
 ///
-/// The `Args` parameter is bound as `V_Args`; the init body may destructure it
-/// via pattern matching in the user's init params.
-///
-/// # Init failure
-/// If the init body raises, `gen_server:start_link/3` propagates the failure.
-/// `ridge_rt:spawn_actor/3` re-raises it (BEAM-crash).  This is the deliberate
-/// language-level asymmetry.
+/// The runtime acquires startup permission before calling the current module's
+/// `__ridge_init/1`, so a waiting child never captures an obsolete init body.
+fn emit_init_bridge(actor_beam_name: &str) -> CErlFn {
+    let args = CErlVar("V_Args".into());
+    CErlFn {
+        name: CErlAtom("init".into()),
+        arity: 1,
+        anns: vec![],
+        body: CErlExpr::Fun {
+            params: vec![args.clone()],
+            body: Box::new(CErlExpr::Call {
+                module: CErlAtom("ridge_rt".into()),
+                fn_name: CErlAtom("actor_init".into()),
+                args: vec![
+                    CErlExpr::Lit(CErlLit::Atom(CErlAtom(actor_beam_name.into()))),
+                    CErlExpr::Var(args),
+                ],
+            }),
+        },
+    }
+}
+
+/// Lower the user initializer into `__ridge_init/1`. Args destructuring and
+/// failure propagation remain those of the original `gen_server` initializer.
 fn emit_init(actor: &IrActor, scope: &LocalScope) -> Result<CErlFn, CodegenError> {
     // §4.29: the init body lowering handles both the default-map case and the
     // user-body case.
@@ -321,7 +343,7 @@ fn emit_init(actor: &IrActor, scope: &LocalScope) -> Result<CErlFn, CodegenError
     };
 
     Ok(CErlFn {
-        name: CErlAtom("init".into()),
+        name: CErlAtom("__ridge_init".into()),
         arity: 1,
         anns: vec![CErlAnn(
             "%% gen_server:init/1 — state initialisation (§4.29)".into(),
@@ -1189,8 +1211,8 @@ mod tests {
     }
 
     #[test]
-    fn actor_module_has_eleven_fns() {
-        // start_link + init + handle_call + handle_cast + handle_info +
+    fn actor_module_has_twelve_fns() {
+        // start_link + init + __ridge_init + handle_call + handle_cast + handle_info +
         // terminate + code_change + __ridge_state_defaults +
         // __ridge_state_fields + __ridge_mailbox_config +
         // __ridge_state_version.
@@ -1204,8 +1226,8 @@ mod tests {
         .unwrap();
         assert_eq!(
             m.fns.len(),
-            11,
-            "actor module must have exactly 11 callback fns"
+            12,
+            "actor module must have exactly 12 callback fns"
         );
         assert!(
             m.fns.iter().any(|f| f.name.0 == "__ridge_state_version"),

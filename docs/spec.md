@@ -2300,7 +2300,7 @@ the compiled `.beam` blobs) and shipped through a short-lived probe node;
 the target node's loader validates every blob before loading anything, then
 suspends the affected actors, swaps the code, migrates actor state, and
 resumes. Flags: `--cookie` (distribution cookie), `--timeout <ms>` (rpc
-timeout for the apply call, default 30000), `--purge-after <s>` (quiescence
+timeout for each node RPC, default 30000), `--purge-after <s>` (quiescence
 window before safe cleanup is attempted, default 60, `0` disables cleanup
 for the modules in this upgrade),
 `--release` (use the release profile's snapshot and artefacts), and
@@ -2309,6 +2309,8 @@ The node must carry a version marker seeded at boot; a node without one is
 refused loudly, and `--seed` permits the first reload to establish it. The
 updated target loader checks this option inside reload admission: a rejected
 bundle leaves an unknown marker unknown, and an existing marker is never reset.
+The CLI checks support for coordinated actor startup before compiling. Older
+target runtimes must be rebuilt and restarted with the current compiler.
 
 Semantics worth knowing before relying on it:
 
@@ -2323,6 +2325,15 @@ Semantics worth knowing before relying on it:
   the migration is retried once, then the actor is killed and its supervisor
   restarts it on its init state. Every other actor migrates normally, and
   the report names each restarted actor with the reason.
+- **Actor startup boundary.** Ordinary spawns, supervised starts and supervisor
+  replacements initialize on one side of the reload boundary. An initializer
+  already running rejects the reload before effects. A new initializer before
+  load permission cancels the reload and runs once under the old code; confirmed
+  suspensions are resumed so a parent waiting on its child cannot deadlock the
+  boundary. After permission, new children wait for recovery and then initialize
+  under the committed code. Queued arguments are migrated before user init;
+  failed argument migration fails startup without invoking it. A lost startup
+  coordinator or uncertain load refuses new initializers until node restart.
 - **Safe code cleanup.** After the `--purge-after` window, the node attempts
   to remove old code only when no process still references it. Cleanup never
   kills those processes. Referenced code remains pending; a later upgrade

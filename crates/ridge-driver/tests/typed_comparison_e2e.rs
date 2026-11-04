@@ -1956,6 +1956,7 @@ Binary=fun(Value) ->
  {ok,Module,Bin}=compile:forms(Forms,[return_errors]), Bin end,
 {module,Module}=code:load_binary(Module,"old-evidence",Binary(1)),
 {ok,Actor}=gen_server:start(Module,[],[]),
+ActorRef=monitor(process,Actor),
 ok=ridge_rt:invalidate_record_versions([Module]),
 Original=ridge_rt:evidence_bind(Module,<<"value">>,[]),
 1=(maps:get(value,Original))(),
@@ -1971,11 +1972,20 @@ Manifest=iolist_to_binary(json:encode(#{<<"base_vsn">> => <<"evidence-base">>,
 %% Valid bytecode was committed; its actor metadata fails during migration.
 %% A callback's thrown term cannot masquerade as a preflight rejection.
 {some,{Raw,none}}=Module:'$ridge_evidence'(<<"value">>,[]), 2=(maps:get(value,Raw))(),
-<<"evidence-base">>=ridge_loader:current_version(),
-kept=sys:get_state(Actor),
+%% Recovery rolls forward confirmed code and never resumes an actor whose
+%% migration failed. A new process uses the loaded implementation's init.
+<<"evidence-next">>=ridge_loader:current_version(),
+receive {'DOWN',ActorRef,process,Actor,killed} -> ok
+after 1000 -> error(incomplete_actor_survived) end,
+false=is_process_alive(Actor),
+{ok,Fresh}=gen_server:start(Module,[],[]),
+kept=gen_server:call(Fresh,probe,500),
 Current=ridge_rt:evidence_current(Original),
 2=(maps:get(value,Current))(),
-ok=gen_server:stop(Actor),
+{error,{base_version_mismatch,<<"evidence-base">>,<<"evidence-next">>}}=
+ ridge_loader:apply_bundle(Manifest,[{Name,Binary(2)}],
+ #{base_vsn => <<"evidence-base">>,purge_after_ms => 0}),
+ok=gen_server:stop(Fresh),
 halt().
 "#;
     assert_program_eval("pub fn exercise () -> Bool = true\n", expression, &[]);

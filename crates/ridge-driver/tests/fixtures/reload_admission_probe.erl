@@ -134,9 +134,10 @@ test(Case) when Case =:= admitted_caller_death; Case =:= rpc_timeout;
     end,
     case Case of
         C when C =:= active_worker_death; C =:= active_exception ->
-            {error, {reload_recovery_required, restart_node}} =
-                apply_payload(bundle, unused, <<"base">>, <<"three">>, B3, false),
-            1 = M:value(), <<"base">> = ridge_loader:current_version();
+            wait_no_recovery(deadline()),
+            1 = M:value(), <<"base">> = ridge_loader:current_version(),
+            {ok, _} = followup(<<"base">>, B3, metadata),
+            3 = M:value(), <<"three">> = ridge_loader:current_version();
         _ ->
             wait_version(<<"two">>, deadline()),
             2 = M:value(),
@@ -153,6 +154,7 @@ test(Case) when Case =:= postload_death; Case =:= postload_exception ->
     M = admission_toy,
     {module, M} = code:load_binary(M, "old", actor_beam(M, 1, normal())),
     {ok, Actor} = gen_server:start(M, [], []),
+    ActorRef = monitor(process, Actor),
     Metadata = "'__ridge_state_fields'()->admission_observer!{postload,self()},receive continue->[];fail->error(postload_failed) end.",
     B2 = actor_beam(M, 2, Metadata), B3 = actor_beam(M, 3, normal()),
     P1 = launch(fun() -> apply_payload(bundle, unused, <<"base">>, <<"two">>, B2, false) end),
@@ -170,12 +172,16 @@ test(Case) when Case =:= postload_death; Case =:= postload_exception ->
     case Case of
         postload_death -> {error, {upgrade_failed, _, _, _}} = result(P2);
         postload_exception ->
-            {error, {reload_recovery_required, restart_node}} = result(P2),
-            #{count := 7, generation := 1} = sys:get_state(Actor)
+            {error, {base_version_mismatch, <<"base">>, <<"two">>}} = result(P2)
     end,
-    {error, {reload_recovery_required, restart_node}} =
+    wait_no_recovery(deadline()),
+    receive {'DOWN', ActorRef, process, Actor, killed} -> ok
+    after 3000 -> error(unsafe_actor_survived) end,
+    {error, {base_version_mismatch, <<"base">>, <<"two">>}} =
         apply_payload(bundle, unused, <<"base">>, <<"three">>, B3, false),
-    2 = M:value(), <<"base">> = ridge_loader:current_version();
+    2 = M:value(), <<"two">> = ridge_loader:current_version(),
+    {ok, _} = followup(<<"two">>, B3, postload),
+    3 = M:value(), <<"three">> = ridge_loader:current_version();
 test(worker_death) ->
     %% An idle worker can die without poisoning subsequent admission.
     {error, {base_version_mismatch, _, _}} = ridge_loader:apply("unused", <<"wrong">>),
@@ -204,6 +210,21 @@ launch(Fun) ->
     Parent = self(), spawn(fun() -> Parent ! {done, self(), Fun()} end).
 
 result(Pid) -> receive {done, Pid, R} -> R after 4000 -> error({missing_result, Pid}) end.
+
+followup(Base, Bin, Tag) ->
+    Pid = launch(fun() -> apply_payload(bundle, unused, Base, <<"three">>, Bin, false) end),
+    receive {Tag, Worker} -> Worker ! continue after 3000 -> error(no_followup_barrier) end,
+    result(Pid).
+
+wait_no_recovery(Deadline) ->
+    case whereis(ridge_loader_recovery) of
+        undefined -> ok;
+        _ ->
+            case erlang:monotonic_time(millisecond) < Deadline of
+                true -> receive after 1 -> wait_no_recovery(Deadline) end;
+                false -> error(recovery_not_released)
+            end
+    end.
 
 deadline() -> erlang:monotonic_time(millisecond) + 3000.
 

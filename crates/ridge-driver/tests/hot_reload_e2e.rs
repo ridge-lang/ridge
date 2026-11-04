@@ -1864,6 +1864,108 @@ fn reload_admission_serializes_both_transports() {
 }
 
 #[test]
+fn reload_recovers_suspended_actors_after_applicator_death() {
+    let directory = tempfile::tempdir().unwrap();
+    compile_recovery_probe(directory.path());
+    for case in [
+        "precommit",
+        "postload",
+        "postload_exception",
+        "owner_death",
+        "partial_ready",
+        "supervised",
+        "actor_died",
+        "busy_recovery",
+        "unknown_commit",
+        "finishing",
+        "suspend_intent",
+        "precommit_dev",
+        "postload_dev",
+    ] {
+        let output = std::process::Command::new("erl")
+            .current_dir(directory.path())
+            .args(["-noshell", "-pa"])
+            .arg(directory.path())
+            .args(["-eval", &format!("reload_recovery_probe:run({case}).")])
+            .output()
+            .expect("beam-runtime requires erl");
+        assert!(output.status.success(), "{case}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(&format!("recovery-probe-ok {case}")),
+            "{case}: {output:?}"
+        );
+    }
+}
+
+fn compile_recovery_probe(directory: &std::path::Path) {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let runtime = root.join("../ridge-codegen-erl/runtime");
+    let compiled = std::process::Command::new("erlc")
+        .args(["-Werror", "-o"])
+        .arg(directory)
+        .arg(runtime.join("ridge_loader.erl"))
+        .arg(runtime.join("ridge_rt.erl"))
+        .arg(root.join("tests/fixtures/reload_recovery_probe.erl"))
+        .output()
+        .expect("beam-runtime requires erlc");
+    assert!(compiled.status.success(), "{compiled:?}");
+}
+
+#[test]
+fn reload_recovers_generated_actor_with_supervisor() {
+    let old = common::make_counter_workspace();
+    let new = common::make_counter_workspace();
+    let source = std::fs::read_to_string(counter_source(&new)).unwrap();
+    std::fs::write(
+        counter_source(&new),
+        source.replace(
+            "state count: Int = 0",
+            "state count: Int = 0\n    state step: Int = 2",
+        ),
+    )
+    .unwrap();
+    let mut directories = Vec::new();
+    for workspace in [&old, &new] {
+        let artefacts = compile_workspace(
+            CompileOptions::new(workspace.path.clone()).with_emit(EmitArtefacts::Beam),
+        )
+        .expect("compile generated recovery actor");
+        assert!(
+            !artefacts
+                .diagnostics
+                .iter()
+                .any(|d| matches!(d.severity, ridge_diagnostics::Severity::Error)),
+            "{:?}",
+            artefacts.diagnostics
+        );
+        directories.push(artefacts.beam_files[0].parent().unwrap().to_path_buf());
+    }
+    let module = actor_beam_of(&directories[0]);
+    let probe = tempfile::tempdir().unwrap();
+    compile_recovery_probe(probe.path());
+    for case in ["precommit", "postload"] {
+        let eval = format!(
+            "reload_recovery_probe:run_generated(\"{}\",\"{}\",'{module}',{case}).",
+            directories[0].to_string_lossy().replace('\\', "/"),
+            directories[1].to_string_lossy().replace('\\', "/")
+        );
+        let output = std::process::Command::new("erl")
+            .current_dir(probe.path())
+            .args(["-noshell", "-pa"])
+            .arg(probe.path())
+            .args(["-eval", &eval])
+            .output()
+            .expect("beam-runtime requires erl");
+        assert!(output.status.success(), "{case}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout)
+                .contains(&format!("generated-recovery-ok {case}")),
+            "{case}: {output:?}"
+        );
+    }
+}
+
+#[test]
 fn reload_safe_purge_preserves_holders_and_pending_cleanup() {
     let directory = tempfile::tempdir().unwrap();
     let runtime =

@@ -26,6 +26,8 @@
 -define(VSN_KEY, ridge_loader_vsn).
 -define(ADMISSION, ridge_loader_admission).
 -define(ACTIVE_KEY, ridge_loader_active_reload).
+-define(RECOVERY_REG, ridge_loader_recovery).
+-define(RECOVERY_TIMEOUT, 5000).
 
 current_version() ->
     persistent_term:get(?VSN_KEY, undefined).
@@ -68,14 +70,13 @@ handle_call(Request, {Caller, _}, State) ->
     case node(Caller) =:= node() andalso not is_process_alive(Caller) of
         true -> {noreply, State};
         false ->
-            Reply = case persistent_term:get(?ACTIVE_KEY, undefined) of
-                undefined -> dispatch(Request);
-                _ -> {error, {reload_recovery_required, restart_node}}
-            end,
-            case Reply of
-                {ok, _} -> persistent_term:erase(?ACTIVE_KEY);
-                {error, {reload_rejected, _, _}} -> persistent_term:erase(?ACTIVE_KEY);
-                _ -> ok
+            Reply = case whereis(?RECOVERY_REG) of
+                undefined ->
+                    case persistent_term:get(?ACTIVE_KEY, undefined) of
+                        undefined -> dispatch(Request);
+                        _ -> {error, {reload_recovery_required, restart_node}}
+                    end;
+                _ -> {error, {reload_rejected, admission, recovery_in_progress}}
             end,
             {reply, Reply, State}
     end.
@@ -279,36 +280,41 @@ do_apply(Mf, Started, LoadFun, LoadCtx, Opts) ->
     %% actor's own callback did not change. Refresh its retained indexes once
     %% at the upgrade boundary rather than repeatedly in later queries.
     Pids = [P || P <- processes(), upgrade_actor(P, Modules)],
-    %% Survives coordinator death. A failed operation after this boundary
-    %% may have changed code or actor state; only a node restart clears it.
-    persistent_term:put(?ACTIVE_KEY, mutating),
-    try
-        [ok = sys:suspend(P) || P <- Pids],
+    case start_recovery_owner(Pids, Modules, NewVsn, maps:get(purge_after_ms, Opts, 0)) of
+        {error, _} = Rejected -> Rejected;
+        {ok, Owner} ->
+            do_apply_owned(MigMods, ActorMigs, Modules, Started,
+                           LoadFun, LoadCtx, Opts, Owner)
+    end.
+
+do_apply_owned(MigMods, ActorMigs, Modules, Started, LoadFun, LoadCtx, Opts, Owner) ->
+    Outcome = try
+        {ok, Suspended} = recovery_call(Owner, suspend),
         %% Capture OLD field lists before loading the new code.
         OldFieldsByMod = maps:from_list([{M, M:'__ridge_state_fields'()} || M <- MigMods]),
-        %% Pause cleanup while code is replaced, retaining other modules'
-        %% deadlines. The after clause releases this pause on rejection too.
-        ok = pause_pending_purge(),
+        ok = recovery_call(Owner, commit),
         case load_and_invalidate(Modules, LoadFun, LoadCtx, Opts) of
-            {error, Errors} ->
-                [ok = sys:resume(P) || P <- Pids, is_process_alive(P)],
-                {error, {reload_rejected, load, Errors}};
+            {error, Errors} -> {rejected, Errors};
             ok ->
-                {Migrated, SchemaRestarts} = migrate_actors(Pids, ActorMigs, OldFieldsByMod),
-                {Refreshed, IndexRestarts} = refresh_actor_collections(Pids),
-                Restarts = SchemaRestarts ++ IndexRestarts,
-                %% A restarted actor is dead by now (killed below, or crashed inside
-                %% its own code_change) — resume only the survivors.
-                [ok = sys:resume(P) || P <- Pids, is_process_alive(P)],
-                persistent_term:put(?VSN_KEY, NewVsn),
-                Duration = erlang:monotonic_time(millisecond) - Started,
-                PurgeAfter = maps:get(purge_after_ms, Opts, 0),
-                Purge = schedule_purge(Modules, PurgeAfter),
-                {ok, #{
+                %% No recovery may publish this version before BOTH the code
+                %% swap and evidence invalidation have completed.
+                ok = recovery_call(Owner, loaded),
+                {Migrated, SchemaRestarts} = migrate_actors(Suspended, ActorMigs, OldFieldsByMod),
+                {Refreshed, IndexRestarts} = refresh_actor_collections(Suspended, Owner),
+                {ready, Suspended, Migrated, Refreshed, SchemaRestarts ++ IndexRestarts}
+        end
+    catch
+        Class:Reason:Stack -> {failed, Class, Reason, Stack}
+    end,
+    case Outcome of
+        {ready, SuspendedPids, MigratedPids, RefreshedPids, PriorRestarts} ->
+            {ok, Purge, RecoveryRestarts} = recovery_finish(Owner, complete),
+            Restarts = PriorRestarts ++ RecoveryRestarts,
+            {ok, #{
                     modules_loaded => length(Modules),
-                    actors_suspended => length(Pids),
-                    actors_migrated => length(Migrated),
-                    actors_refreshed => length(Refreshed),
+                    actors_suspended => length(SuspendedPids),
+                    actors_migrated => length(MigratedPids),
+                    actors_refreshed => length(RefreshedPids),
                     actors_restarted => length(Restarts),
                     restarts => lists:reverse(Restarts),
                     purge => Purge,
@@ -316,19 +322,221 @@ do_apply(Mf, Started, LoadFun, LoadCtx, Opts) ->
                     %% the upgrade, so this mostly reflects traffic since the previous
                     %% reload — the next reload's report includes this window's.
                     messages_migrated => ridge_rt:migration_count(),
-                    duration_ms => Duration
-                }}
-        end
-    catch
-        Class:Reason:Stack ->
-            %% Resume survivors and report. A production batch is all-or-none,
-            %% but later phases can fail after code changed. Dev loads may be
-            %% partial. Metadata is invalidated for every committed code swap.
-            [catch sys:resume(P) || P <- Pids],
-            erlang:raise(Class, Reason, Stack)
-    after
-        ok = resume_pending_purge()
+                    duration_ms => erlang:monotonic_time(millisecond) - Started
+                }};
+        {rejected, LoadErrors} ->
+            ok = recovery_finish(Owner, rejected),
+            {error, {reload_rejected, load, LoadErrors}};
+        {failed, FailureClass, FailureReason, FailureStack} ->
+            %% The owner, not this potentially dying process, resolves every
+            %% suspension. Its phase decides whether old state is still safe.
+            _ = catch recovery_finish(Owner, abort),
+            erlang:raise(FailureClass, FailureReason, FailureStack)
     end.
+
+%% A separate, unlinked owner survives the applicator. It never receives
+%% bytecode or application state, and never runs a user migration callback.
+%% Its registered lifetime also excludes a replacement admission server
+%% until recovery has finished, including the interval before the fence.
+start_recovery_owner(Pids, Modules, Version, Delay) ->
+    Worker = self(), Tag = make_ref(),
+    {Pid, Monitor} = spawn_monitor(fun() ->
+        case catch register(?RECOVERY_REG, self()) of
+            true ->
+                WorkerMonitor = monitor(process, Worker),
+                Worker ! {Tag, ready},
+                recovery_loop(#{worker => Worker, monitor => WorkerMonitor,
+                    candidates => Pids, owned => #{}, suspended => [], restarts => [],
+                    phase => precommit, modules => Modules, version => Version, delay => Delay});
+            _ -> Worker ! {Tag, busy}
+        end
+    end),
+    Owner = #{pid => Pid, monitor => Monitor, candidates => Pids},
+    receive
+        {Tag, ready} -> {ok, Owner};
+        {Tag, busy} ->
+            receive {'DOWN', Monitor, process, Pid, _} -> ok end,
+            {error, {reload_rejected, admission, recovery_in_progress}};
+        {'DOWN', Monitor, process, Pid, _} ->
+            erlang:error(reload_recovery_owner_unavailable)
+    end.
+
+recovery_call(#{pid := Pid, monitor := Monitor} = Owner, Request) ->
+    case is_process_alive(Pid) of
+        false -> recovery_owner_lost(Owner);
+        true ->
+            Ref = make_ref(), Pid ! {recovery_call, self(), Ref, Request},
+            receive
+                {Ref, Reply} -> Reply;
+                {'DOWN', Monitor, process, Pid, _} -> recovery_owner_lost(Owner)
+            end
+    end.
+
+recovery_finish(#{pid := Pid, monitor := Monitor} = Owner, Request) ->
+    Reply = recovery_call(Owner, Request),
+    receive {'DOWN', Monitor, process, Pid, normal} -> Reply;
+            {'DOWN', Monitor, process, Pid, _} -> recovery_owner_lost(Owner)
+    end.
+
+recovery_owner_lost(#{candidates := Pids}) ->
+    %% An absent fence means either no suspension started, or the owner
+    %% completed all effects. Otherwise its lost journal is unsafe to resume.
+    case persistent_term:get(?ACTIVE_KEY, undefined) of
+        undefined -> ok;
+        _ -> _ = stop_recovery_actors(Pids, reload_recovery_owner_down)
+    end,
+    erlang:error(reload_recovery_owner_down).
+
+recovery_loop(#{worker := Worker, monitor := Monitor} = State) ->
+    receive
+        {recovery_call, Worker, Ref, suspend} ->
+            persistent_term:put(?ACTIVE_KEY, mutating),
+            case suspend_recovery_actors(maps:get(candidates, State), State) of
+                {ok, Next} ->
+                    Worker ! {Ref, {ok, lists:reverse(maps:get(suspended, Next))}},
+                    recovery_loop(Next);
+                {failed, Next} ->
+                    Worker ! {Ref, {error, reload_actor_unavailable}}, recovery_loop(Next);
+                {abandoned, Next} -> recover_and_stop(Next, applicator_down)
+            end;
+        {recovery_call, Worker, Ref, commit} ->
+            %% The grant is acknowledged before the applicator can load code.
+            %% A death after this grant but before `loaded` is ambiguous.
+            case catch pause_pending_purge() of
+                ok ->
+                    case {is_process_alive(Worker),
+                          lists:all(fun is_process_alive/1, maps:keys(maps:get(owned, State)))} of
+                        {true, true} -> Worker ! {Ref, ok}, recovery_loop(State#{phase => committing});
+                        {true, false} ->
+                            Worker ! {Ref, {error, reload_actor_unavailable}}, recovery_loop(State);
+                        {false, _} -> recover_and_stop(State, applicator_down)
+                    end;
+                _ -> Worker ! {Ref, {error, reload_cleanup_unavailable}}, recovery_loop(State)
+            end;
+        {recovery_call, Worker, Ref, loaded} ->
+            committing = maps:get(phase, State),
+            Worker ! {Ref, ok}, recovery_loop(State#{phase => loaded});
+        {recovery_call, Worker, Ref, {ready, Pid}} ->
+            loaded = maps:get(phase, State), Owned = maps:get(owned, State),
+            true = maps:is_key(Pid, Owned),
+            Worker ! {Ref, ok}, recovery_loop(State#{owned => Owned#{Pid => true}});
+        {recovery_call, Worker, Ref, complete} ->
+            loaded = maps:get(phase, State),
+            true = lists:all(fun(P) -> not is_process_alive(P) orelse maps:get(P, maps:get(owned, State)) =:= true end,
+                             maps:keys(maps:get(owned, State))),
+            {Result, Stats} = complete_recovery(State),
+            Worker ! {Ref, Result},
+            case is_process_alive(Worker) of
+                false -> recovery_notice(State, applicator_down, Stats);
+                true -> ok
+            end;
+        {recovery_call, Worker, Ref, rejected} ->
+            %% finish_loading explicitly rejected its whole atomic batch.
+            {Result, _} = abort_recovery(State#{phase => precommit}),
+            Worker ! {Ref, Result};
+        {recovery_call, Worker, Ref, abort} ->
+            {Result, Stats} = abort_recovery(State),
+            recovery_notice(State, applicator_error, Stats),
+            Worker ! {Ref, Result};
+        {'DOWN', Monitor, process, Worker, _} -> recover_and_stop(State, applicator_down)
+    end.
+
+suspend_recovery_actors([], State) -> {ok, State};
+suspend_recovery_actors([P | Rest], #{worker := Worker, owned := Owned} = State) ->
+    case is_process_alive(Worker) of
+        false -> {abandoned, State};
+        true ->
+            case is_process_alive(P) of
+                false -> {failed, State};
+                true ->
+                    %% Own the intent before sending the system request. A
+                    %% timed-out suspension is killed, never followed by a
+                    %% resume which could race a late suspend request.
+                    Next = State#{owned => Owned#{P => restart}},
+                    case catch sys:suspend(P, ?RECOVERY_TIMEOUT) of
+                        ok -> suspend_recovery_actors(Rest,
+                                  Next#{owned => Owned#{P => false},
+                                        suspended => [P | maps:get(suspended, Next)]});
+                        _ ->
+                            {Restarts, Safe} = stop_recovery_actors([P], reload_suspend_failed),
+                            _ = Safe,
+                            {failed, Next#{restarts => Restarts ++ maps:get(restarts, Next)}}
+                    end
+            end
+    end.
+
+recover_and_stop(State, Cause) ->
+    {_, Stats} = abort_recovery(State),
+    recovery_notice(State, Cause, Stats).
+
+abort_recovery(#{phase := loaded} = State) ->
+    {Result, Stats} = complete_recovery(State),
+    {case Result of {ok, _, _} -> ok; _ -> Result end, Stats};
+abort_recovery(#{phase := Phase} = State) ->
+    Mode = case Phase of precommit -> resume; committing -> restart end,
+    {Stats, Safe} = settle_recovery_actors(State, Mode),
+    _ = catch resume_pending_purge(),
+    case Phase =:= precommit andalso Safe of
+        true -> persistent_term:erase(?ACTIVE_KEY), {ok, Stats};
+        false -> {{error, {reload_recovery_required, restart_node}}, Stats}
+    end.
+
+complete_recovery(State) ->
+    {Stats, Safe} = settle_recovery_actors(State, ready),
+    Result = try
+        true = Safe,
+        persistent_term:put(?VSN_KEY, maps:get(version, State)),
+        Purge = schedule_purge(maps:get(modules, State), maps:get(delay, State)),
+        persistent_term:erase(?ACTIVE_KEY),
+        {ok, Purge, maps:get(restarts, State) ++ maps:get(restarts, Stats)}
+    catch _:_ -> {error, {reload_recovery_required, restart_node}}
+    after _ = catch resume_pending_purge()
+    end,
+    {Result, Stats}.
+
+settle_recovery_actors(#{owned := Owned}, Mode) ->
+    {Resume, Restart} = lists:partition(fun(P) ->
+        (Mode =:= resume andalso maps:get(P, Owned) =/= restart) orelse
+            (Mode =:= ready andalso maps:get(P, Owned) =:= true)
+    end, maps:keys(Owned)),
+    {Killed, Safe} = stop_recovery_actors(Restart, reload_incomplete_actor_state),
+    lists:foldl(fun(P, {Stats, AllSafe}) ->
+        case is_process_alive(P) of
+            false -> {Stats, AllSafe};
+            true ->
+                case catch sys:resume(P, ?RECOVERY_TIMEOUT) of
+                    ok -> {Stats#{resumed => maps:get(resumed, Stats) + 1}, AllSafe};
+                    _ ->
+                        {More, Stopped} = stop_recovery_actors([P], reload_resume_failed),
+                        {Stats#{restarts => More ++ maps:get(restarts, Stats)}, AllSafe andalso Stopped}
+                end
+        end
+    end, {#{resumed => 0, restarts => Killed}, Safe}, Resume).
+
+stop_recovery_actors(Pids, Reason) ->
+    Entries = [{monitor(process, P), P, initial_call_module(P)} || P <- Pids, is_process_alive(P)],
+    [exit(P, kill) || {_, P, _} <- Entries],
+    Pending = maps:from_list([{Ref, P} || {Ref, P, _} <- Entries]),
+    Safe = await_recovery_stops(Pending, erlang:monotonic_time(millisecond) + ?RECOVERY_TIMEOUT),
+    {[#{module => M, reason => Reason} || {_, _, M} <- Entries], Safe}.
+
+await_recovery_stops(Pending, _) when map_size(Pending) =:= 0 -> true;
+await_recovery_stops(Pending, Deadline) ->
+    Left = max(0, Deadline - erlang:monotonic_time(millisecond)),
+    receive
+        {'DOWN', Ref, process, _, _} when is_map_key(Ref, Pending) ->
+            await_recovery_stops(maps:remove(Ref, Pending), Deadline)
+    after Left ->
+        [demonitor(Ref, [flush]) || Ref <- maps:keys(Pending)], false
+    end.
+
+recovery_notice(#{phase := Phase, restarts := PriorRestarts}, Cause, Stats) ->
+    %% Logging must not hold the recovery lifetime or echo an arbitrary
+    %% process exit reason. This report contains only phases and counts.
+    _ = spawn(fun() -> logger:warning(#{event => reload_recovered, phase => Phase,
+        cause => Cause, actors_resumed => maps:get(resumed, Stats),
+        actors_restarted => length(PriorRestarts) + length(maps:get(restarts, Stats))}) end),
+    ok.
 
 %% Dev transport: the new code is on the node's own code path. A module
 %% holds at most two loaded versions, and neither load_file nor
@@ -501,14 +709,18 @@ upgrade_actor(P, Modules) ->
 
 ridge_actor(M) -> erlang:function_exported(M, '__ridge_state_fields', 0).
 
-refresh_actor_collections(Pids) ->
+refresh_actor_collections(Pids, Owner) ->
     lists:foldl(fun(P, {Refreshed, Restarts}) ->
         M = initial_call_module(P),
         case is_process_alive(P) andalso ridge_actor(M) of
-            false -> {Refreshed, Restarts};
+            false ->
+                ok = recovery_call(Owner, {ready, P}),
+                {Refreshed, Restarts};
             true ->
                 case migrate_actor(P, M, ridge_refresh_collections) of
-                    ok -> {[P | Refreshed], Restarts};
+                    ok ->
+                        ok = recovery_call(Owner, {ready, P}),
+                        {[P | Refreshed], Restarts};
                     {restarted, Reason} ->
                         {Refreshed, [#{module => M, reason => Reason} | Restarts]}
                 end

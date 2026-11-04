@@ -49,8 +49,8 @@ test(rejection) ->
     {error, {reload_rejected, preflight, _}} = ridge_loader:apply_bundle(
         <<"{}">>, [], #{base_vsn => <<"base">>}),
     valid_after_failure();
-test(exception) ->
-    {error, {upgrade_failed, _, _, _}} = ridge_loader:apply("absent.json", <<"base">>),
+test(missing_manifest) ->
+    {error, {reload_rejected, preflight, unreadable_manifest}} = ridge_loader:apply("absent.json", <<"base">>),
     valid_after_failure();
 test(seed_rejection) ->
     persistent_term:erase(ridge_loader_vsn),

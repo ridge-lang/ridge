@@ -128,7 +128,7 @@ test(dev_second_upgrade) ->
     Mf = #{base_vsn => <<"v2">>, new_vsn => <<"v3">>,
            modules => [atom_to_binary(M)], actors => []},
     ok = file:write_file("dev-upgrade.json", json:encode(Mf)),
-    {error, {upgrade_failed, error, {badmatch, {error, not_purged}}, _}} =
+    {error, {reload_rejected, load, [{M, not_purged}]}} =
         ridge_loader:apply("dev-upgrade.json", <<"v2">>),
     true = is_process_alive(P), 2 = M:value(),
     <<"v2">> = ridge_loader:current_version(),

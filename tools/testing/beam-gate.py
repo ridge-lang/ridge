@@ -22,18 +22,21 @@ def joint_packages():
 
 def runtime_surface_selection():
     # Keep this feature context separate from the reviewed grouped driver graph.
-    return ['-p', 'ridge-cli', '-p', 'ridge-bench', '--test', 'run', '--test', 'layer_b',
+    return ['-p', 'ridge-cli', '-p', 'ridge-bench', '--lib', '--test', 'run', '--test', 'layer_b',
             '--features', 'ridge-cli/cli-watch']
 
 
 def runtime_surface_inventory(listing):
     required = {('ridge-cli', 'run', 'run_watch_single_cycle'),
+                ('ridge-cli', 'run', 'run_reload_manual_restart_wakes_idle_watcher'),
+                ('ridge-cli', 'ridge_cli', 'cmd::run::reload_tests::dev_probe_preserves_rejections_and_fences_a_committed_failure'),
                 ('ridge-bench', 'layer_b', 'layer_b_benches_compile_and_report_timings')}
-    targets = {(package, binary) for package, binary, _ in required}
+    targets = {('ridge-cli', 'run'): 'test', ('ridge-bench', 'layer_b'): 'test',
+               ('ridge-cli', 'ridge_cli'): 'lib', ('ridge-bench', 'ridge_bench'): 'lib'}
     active = set()
     for suite in listing['rust-suites'].values():
         target = (suite['package-name'], suite['binary-name'])
-        if target not in targets or suite['kind'] != 'test':
+        if target not in targets or suite['kind'] != targets[target]:
             raise ValueError('Unexpected supplementary runtime target: ' + repr(target))
         active.update((*target, name) for name, info in suite['testcases'].items() if not info['ignored'])
     if not required <= active:

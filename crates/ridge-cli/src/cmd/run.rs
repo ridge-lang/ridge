@@ -35,6 +35,10 @@ use crate::render::{render_diagnostics, report_diagnostics};
 #[path = "run_member_tests.rs"]
 mod member_tests;
 
+#[cfg(all(test, feature = "cli-watch"))]
+#[path = "run_reload_tests.rs"]
+mod reload_tests;
+
 // ── Argument struct ───────────────────────────────────────────────────────────
 
 /// Compile and run a Ridge workspace or source file on the BEAM runtime.
@@ -783,8 +787,9 @@ fn execute_reload(
 
     let snap_path = snapshot_path_for(workspace_root, profile_name);
     let manifest_path = manifest_path_for(workspace_root, profile_name);
-    let mut node_snapshot: WorkspaceSnapshot = read_snapshot(&snap_path)?;
-    let mut node_vsn = snapshot_vsn(&node_snapshot);
+    let initial_snapshot = read_snapshot(&snap_path)?;
+    let mut node_vsn = snapshot_vsn(&initial_snapshot);
+    let mut node_snapshot = Some(initial_snapshot);
 
     let mut child = spawn_reload_node(
         &erl_path,
@@ -801,13 +806,24 @@ fn execute_reload(
     );
 
     // ── stdin restart channel ─────────────────────────────────────────────
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let restart_events = tx.clone();
     let (stdin_tx, stdin_rx) = std::sync::mpsc::channel::<String>();
     std::thread::spawn(move || {
         use std::io::BufRead;
         let stdin = std::io::stdin();
         for line in stdin.lock().lines() {
-            if line.map(|l| stdin_tx.send(l)).is_err() {
-                return;
+            match line {
+                Ok(line) => {
+                    let restart = line.trim() == "r";
+                    if stdin_tx.send(line).is_err() {
+                        return;
+                    }
+                    if restart {
+                        let _ = restart_events.send(());
+                    }
+                }
+                Err(_) => return,
             }
         }
     });
@@ -815,7 +831,6 @@ fn execute_reload(
     // ── File watcher (same shape as --watch) ──────────────────────────────
     let last_event: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
     let last_event_clone = Arc::clone(&last_event);
-    let (tx, rx) = std::sync::mpsc::channel::<()>();
     let (watch_root, watched_file) = watch_scope(args, workspace_root);
     let mut watcher: RecommendedWatcher =
         notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
@@ -884,6 +899,13 @@ fn execute_reload(
             continue;
         }
 
+        // An unacknowledged commit cannot be diffed against the old node.
+        // Do not compile either: that would recreate the invalid disk baseline.
+        let Some(running_snapshot) = node_snapshot.as_ref() else {
+            eprintln!("reload paused: node code may have changed; press r + Enter to rebuild and restart.");
+            continue;
+        };
+
         // ── Recompile ─────────────────────────────────────────────────────
         if let Err(e) = compile_for_watch(workspace_root, member_name, profile, args) {
             let _ = e; // diagnostics already rendered by compile_for_watch
@@ -894,7 +916,7 @@ fn execute_reload(
         // ── Plan ──────────────────────────────────────────────────────────
         let mut check_options = CheckOptions::new(workspace_root.to_owned());
         check_options.source = run_source(args);
-        let plan = match plan_reload(&node_snapshot, check_options, &manifest_path) {
+        let plan = match plan_reload(running_snapshot, check_options, &manifest_path) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("reload planning failed: {e}; node keeps running the previous code.");
@@ -918,24 +940,21 @@ fn execute_reload(
 
         // ── Apply via probe ───────────────────────────────────────────────
         probe_seq += 1;
-        match probe_apply(
+        let outcome = probe_apply(
             &erl_path,
             &node_name,
             &cookie,
             &manifest_path,
             &manifest.base_vsn,
             probe_seq,
-        ) {
-            Ok(line) => {
-                node_snapshot = plan.new_snapshot;
-                node_vsn.clone_from(&manifest.new_vsn);
-                eprintln!("{line}");
-            }
-            Err(msg) => {
-                eprintln!("reload failed at the node: {msg}");
-                eprintln!("node is unchanged — press r + Enter to restart, or keep editing.");
-            }
+        );
+        if matches!(outcome, DevReloadOutcome::Applied(_)) {
+            node_vsn.clone_from(&manifest.new_vsn);
         }
+        eprintln!(
+            "{}",
+            finish_dev_reload(outcome, &mut node_snapshot, plan.new_snapshot, &snap_path)
+        );
     }
 
     terminate_child(&mut child, grace);
@@ -993,7 +1012,7 @@ fn spawn_reload_node(
 
 #[cfg(feature = "cli-watch")]
 /// Apply the manifest in the dev node via a short-lived probe node.
-/// Returns the one-line report on success, or the node's error term.
+/// Returns a phase marker: only an explicit rejection preserves the baseline.
 fn probe_apply(
     erl_path: &Path,
     node_name: &str,
@@ -1001,15 +1020,16 @@ fn probe_apply(
     manifest_path: &Path,
     base_vsn: &str,
     seq: u64,
-) -> Result<String, String> {
-    // Erlang string literals treat backslashes as escapes — use forward slashes.
-    let manifest_fwd = manifest_path.to_string_lossy().replace('\\', "/");
-    let eval = format!(
-        "case rpc:call('{node_name}', ridge_loader, apply, [\"{manifest_fwd}\", <<\"{base_vsn}\">>]) of \
-            {{ok, Rep}} -> io:format(\"RIDGE_RELOAD_OK ~w ~w ~w ~w~n\", [maps:get(modules_loaded, Rep), maps:get(actors_migrated, Rep), maps:get(messages_migrated, Rep), maps:get(duration_ms, Rep)]); \
-            Err -> io:format(\"RIDGE_RELOAD_ERR ~p~n\", [Err]) \
-        end."
-    );
+) -> DevReloadOutcome {
+    let eval =
+        "[Target, Path, Base] = init:get_plain_arguments(), \
+         case rpc:call(list_to_atom(Target), ridge_loader, apply, [Path, list_to_binary(Base)]) of \
+            {ok, Rep} -> io:format(\"RIDGE_RELOAD_OK ~w ~w ~w ~w~n\", [maps:get(modules_loaded, Rep), maps:get(actors_migrated, Rep), maps:get(messages_migrated, Rep), maps:get(duration_ms, Rep)]); \
+            {error, {reload_rejected, _, _}} = Rejected -> io:format(\"RIDGE_RELOAD_REJECTED ~0tp~n\", [Rejected]); \
+            {error, {base_version_mismatch, _, _}} = Rejected -> io:format(\"RIDGE_RELOAD_REJECTED ~0tp~n\", [Rejected]); \
+            {badrpc, _} -> io:format(\"RIDGE_RELOAD_ERR target_rpc_failed~n\"); \
+            _ -> io:format(\"RIDGE_RELOAD_ERR target_reload_failed~n\") \
+        end.";
     let output = process::Command::new(erl_path)
         .arg("-name")
         .arg(format!(
@@ -1025,29 +1045,90 @@ fn probe_apply(
         .arg("-s")
         .arg("init")
         .arg("stop")
-        .output()
-        .map_err(|e| format!("failed to spawn probe: {e}"))?;
+        .arg("-extra")
+        .arg(node_name)
+        .arg(manifest_path)
+        .arg(base_vsn)
+        .output();
+    let Ok(output) = output else {
+        return DevReloadOutcome::Uncertain("could not start reload probe".into());
+    };
     let stdout = String::from_utf8_lossy(&output.stdout);
+    if !output.status.success() {
+        return DevReloadOutcome::Uncertain("reload probe failed".into());
+    }
     for line in stdout.lines() {
         if let Some(rest) = line.strip_prefix("RIDGE_RELOAD_OK ") {
             let parts: Vec<&str> = rest.split_whitespace().collect();
+            if !parts.iter().all(|p| p.parse::<u64>().is_ok()) {
+                return DevReloadOutcome::Uncertain("invalid reload report".into());
+            }
             if let [modules, actors, messages, ms] = parts.as_slice() {
                 if messages == &"0" {
                     // Zero-suppressed: keep the common case on the terse line.
-                    return Ok(format!(
+                    return DevReloadOutcome::Applied(format!(
                         "reloaded {modules} modules, migrated {actors} actors in {ms}ms"
                     ));
                 }
-                return Ok(format!(
+                return DevReloadOutcome::Applied(format!(
                     "reloaded {modules} modules, migrated {actors} actors, {messages} in-flight messages in {ms}ms"
                 ));
             }
         }
+        if let Some(rest) = line.strip_prefix("RIDGE_RELOAD_REJECTED ") {
+            return DevReloadOutcome::Rejected(rest.to_string());
+        }
         if let Some(rest) = line.strip_prefix("RIDGE_RELOAD_ERR ") {
-            return Err(rest.to_string());
+            return DevReloadOutcome::Uncertain(rest.to_string());
         }
     }
-    Err(format!("probe produced no verdict (stdout: {stdout})"))
+    DevReloadOutcome::Uncertain("reload probe produced no verdict".into())
+}
+
+#[cfg(feature = "cli-watch")]
+enum DevReloadOutcome {
+    Applied(String),
+    Rejected(String),
+    Uncertain(String),
+}
+
+#[cfg(feature = "cli-watch")]
+fn finish_dev_reload(
+    outcome: DevReloadOutcome,
+    running: &mut Option<WorkspaceSnapshot>,
+    next: WorkspaceSnapshot,
+    snapshot_path: &Path,
+) -> String {
+    match outcome {
+        DevReloadOutcome::Applied(report) => {
+            *running = Some(next);
+            report
+        }
+        DevReloadOutcome::Rejected(detail) => {
+            // Compilation replaced the disk snapshot even though the node
+            // rejected its code. Restore the running baseline for later tools.
+            if let Some(snapshot) = running.as_ref() {
+                let restored = serde_json::to_vec(snapshot)
+                    .map_err(std::io::Error::other)
+                    .and_then(|bytes| std::fs::write(snapshot_path, bytes));
+                if let Err(error) = restored {
+                    *running = None;
+                    let _ = std::fs::remove_file(snapshot_path);
+                    return format!("reload rejected before code was replaced: {detail}\ncould not restore the local reload snapshot: {error}; planning is paused. Press r + Enter to rebuild and restart.");
+                }
+            }
+            format!("reload rejected before code was replaced: {detail}\npress r + Enter to restart, or keep editing.")
+        }
+        DevReloadOutcome::Uncertain(detail) => {
+            *running = None;
+            if let Err(error) = std::fs::remove_file(snapshot_path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!("could not remove invalid reload snapshot: {error}");
+                }
+            }
+            format!("reload failed at the node: {detail}\nnode code may have changed; reload planning is paused. Press r + Enter to rebuild and restart.")
+        }
+    }
 }
 
 #[cfg(feature = "cli-watch")]
@@ -1077,15 +1158,15 @@ fn restart_node(
     node_name: &str,
     cookie: &str,
     snap_path: &Path,
-    node_snapshot: &mut WorkspaceSnapshot,
+    node_snapshot: &mut Option<WorkspaceSnapshot>,
     node_vsn: &mut String,
 ) -> Result<(), CliError> {
     terminate_child(child, grace);
     let (beam_files, entry_module) = compile_for_watch(workspace_root, member_name, profile, args)?;
     let beam_dir = beam_dir_from_artefacts(&beam_files);
     let module_name = entry_module.unwrap_or_else(|| module_from_beam(&beam_files[0]));
-    *node_snapshot = read_snapshot(snap_path)?;
-    *node_vsn = snapshot_vsn(node_snapshot);
+    let snapshot = read_snapshot(snap_path)?;
+    *node_vsn = snapshot_vsn(&snapshot);
     *child = spawn_reload_node(
         erl_path,
         &beam_dir,
@@ -1095,6 +1176,7 @@ fn restart_node(
         node_vsn,
         &args.extra_args,
     )?;
+    *node_snapshot = Some(snapshot);
     eprintln!("restarted on current code (vsn {node_vsn}).");
     Ok(())
 }

@@ -1812,6 +1812,53 @@ fn reload_bundle_preflight_and_atomic_commit() {
     }
 }
 
+/// Disk reloads have the same commit boundary as bundles. Failures before
+/// commit preserve code and evidence; post-commit failures do not claim that.
+#[test]
+fn reload_dev_preflight_and_atomic_commit() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let runtime = root.join("../ridge-codegen-erl/runtime");
+    let compiled = std::process::Command::new("erlc")
+        .arg("-Werror")
+        .arg("-o")
+        .arg(directory.path())
+        .arg(runtime.join("ridge_loader.erl"))
+        .arg(runtime.join("ridge_rt.erl"))
+        .arg(root.join("tests/fixtures/reload_dev_probe.erl"))
+        .output()
+        .expect("beam-runtime requires erlc");
+    assert!(compiled.status.success(), "{compiled:?}");
+    for case in [
+        "missing",
+        "corrupt",
+        "wrong_name",
+        "on_load",
+        "not_purged",
+        "runtime",
+        "stdlib",
+        "valid",
+        "prepared_bytes",
+        "unicode_name",
+        "postcommit",
+    ] {
+        let work = directory.path().join(case);
+        std::fs::create_dir(&work).unwrap();
+        let output = std::process::Command::new("erl")
+            .current_dir(work)
+            .args(["-noshell", "-pa"])
+            .arg(directory.path())
+            .args(["-eval", &format!("reload_dev_probe:run({case}).")])
+            .output()
+            .expect("beam-runtime requires erl");
+        assert!(output.status.success(), "{case}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(&format!("dev-probe-ok {case}")),
+            "{case}: {output:?}"
+        );
+    }
+}
+
 #[test]
 fn reload_admission_serializes_both_transports() {
     let directory = tempfile::tempdir().unwrap();
@@ -1833,7 +1880,7 @@ fn reload_admission_serializes_both_transports() {
         "dev_dev",
         "seed",
         "rejection",
-        "exception",
+        "missing_manifest",
         "worker_death",
         "seed_rejection",
         "dead_queued_caller",

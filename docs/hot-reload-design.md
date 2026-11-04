@@ -43,7 +43,15 @@ stdlib/runtime reload remains deferred. If the commit fails (for example,
 because old code is still in use), no current module is replaced and evidence
 stays current. Cleanup is paused while code is replaced and resumes on
 rejection, preserving unrelated modules' deadlines.
-The dev path still loads modules from disk sequentially.
+The dev path reads the complete module set from disk and prepares the same
+atomic batch before actor suspension. Missing or corrupt later files cannot
+leave earlier modules replaced. Runtime and stdlib modules require a cold
+rebuild and restart; sharing batch preparation does not enable their reload.
+The watcher retains its running baseline only after success or an explicit
+rejection before code replacement. Any other failure, lost acknowledgement or
+missing probe verdict invalidates its in-memory and on-disk baseline and pauses
+compilation and reload planning. Press `r` + Enter to rebuild and restart before
+another diff; editing alone does not replay an uncertain operation.
 
 Both transports share one admission queue on the target runtime. Each request
 checks its base version after entering admission, and retains admission through
@@ -85,8 +93,7 @@ counts, omitting application state and arbitrary process exit details.
 If the recovery owner itself dies while the applicator survives, the applicator
 terminates the original cohort and retains the fence. Simultaneous death of both
 processes, a failed VM, and uninterruptible native code require operator recovery;
-this is not a durable journal or a universal rollback mechanism. Dev loads
-remain sequential.
+this is not a durable journal or a universal rollback mechanism.
 Admission transport errors report a short cause and omit the submitted bundle
 and arbitrary coordinator exit details from the response.
 

@@ -22,12 +22,30 @@ impl Server {
     }
 
     pub fn spawn(mut command: Command) -> io::Result<Self> {
+        command.stdin(Stdio::null());
+        Self::spawn_configured(command)
+    }
+
+    #[cfg(all(feature = "beam-runtime", feature = "cli-watch"))]
+    pub fn spawn_interactive(mut command: Command) -> io::Result<Self> {
+        command.stdin(Stdio::piped());
+        Self::spawn_configured(command)
+    }
+
+    #[cfg(all(feature = "beam-runtime", feature = "cli-watch"))]
+    pub fn write_input(&mut self, input: &[u8]) -> io::Result<()> {
+        self.child
+            .inner_mut()
+            .stdin()
+            .as_mut()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "server stdin unavailable"))?
+            .write_all(input)
+    }
+
+    fn spawn_configured(mut command: Command) -> io::Result<Self> {
         let stdout = tempfile::NamedTempFile::new()?;
         let stderr = tempfile::NamedTempFile::new()?;
-        command
-            .stdin(Stdio::null())
-            .stdout(stdout.reopen()?)
-            .stderr(stderr.reopen()?);
+        command.stdout(stdout.reopen()?).stderr(stderr.reopen()?);
         let mut command = CommandWrap::from(command);
         #[cfg(unix)]
         command.wrap(process_wrap::std::ProcessGroup::leader());
@@ -207,8 +225,10 @@ mod tests {
 
     fn fixture(mode: &str, address: SocketAddr) -> Command {
         let mut command = Command::new(std::env::current_exe().unwrap());
+        let (_, tests) = module_path!().split_once("::").unwrap();
+        let test = format!("{tests}::fixture_process");
         command
-            .args(["--exact", "server::tests::fixture_process", "--nocapture"])
+            .args(["--exact", &test, "--nocapture"])
             .env("RIDGE_CLI_SERVER_FIXTURE", mode)
             .env("RIDGE_CLI_SERVER_ADDRESS", address.to_string());
         command

@@ -2365,6 +2365,12 @@ Semantics worth knowing before relying on it:
   rollback or a durable operation receipt. A CLI failure with an uncertain
   target outcome invalidates the local snapshot; it must be reconstructed
   before another reload can use it as a baseline.
+  The dev watcher also invalidates its in-memory baseline and pauses further
+  compilation and reload planning after an uncertain result. Press `r` + Enter
+  to rebuild and restart. An explicit rejection before code replacement keeps
+  the running baseline usable. Dev reload prepares the full disk module set
+  before commit, so a missing or corrupt later file cannot partially replace
+  the node's current code. Runtime and stdlib changes still require restart.
 
 Reload is for compatible code changes. Cold deploy is for changes to the
 shape of the world: large database migrations, infrastructure changes

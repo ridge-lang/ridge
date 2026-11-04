@@ -109,15 +109,52 @@ apply_admitted(ManifestPath, ExpectedVsn) ->
         true ->
             Started = erlang:monotonic_time(millisecond),
             try
-                ensure_json(),
-                {ok, Bin} = file:read_file(ManifestPath),
-                do_apply(json:decode(Bin), Started, fun load_from_path/2, undefined,
-                         %% Dev loop: no quiescence purge — the node holds two
-                         %% code versions until restart, as before.
-                         #{purge_after_ms => 0})
+                case prepare_dev(ManifestPath, ExpectedVsn) of
+                    {error, _} = Rejected -> Rejected;
+                    {ok, Mf, Prepared, 0} ->
+                        do_apply(Mf, Started, fun load_prepared/2, Prepared,
+                                 #{purge_after_ms => 0, atomic_load => true})
+                end
             catch
                 Class:Reason:Stack ->
                     {error, {upgrade_failed, Class, Reason, Stack}}
+            end
+    end.
+
+%% Read the complete disk set once. The prepared code owns these bytes:
+%% later edits to a beam cannot change the already validated batch.
+prepare_dev(ManifestPath, ExpectedVsn) ->
+    try
+        ensure_json(),
+        ManifestBin = case file:read_file(ManifestPath) of
+            {ok, Bin} -> Bin;
+            {error, _} -> reject(unreadable_manifest)
+        end,
+        Mf = try json:decode(ManifestBin)
+             catch _:_ -> reject({invalid_field, manifest_json}) end,
+        Modules = validate_manifest(Mf, ExpectedVsn),
+        Blobs = [read_dev_blob(Name) || Name <- Modules],
+        prepare_bundle(ManifestBin, Blobs,
+                       #{base_vsn => ExpectedVsn, purge_after_ms => 0})
+    catch
+        throw:{bundle_rejected, Reason} -> {error, {reload_rejected, preflight, Reason}}
+    end.
+
+read_dev_blob(Name) ->
+    %% Runtime/stdlib changes require a cold rebuild and restart. Sharing
+    %% bundle preparation does not make these modules reloadable in dev.
+    Reserved = [<<"ridge_rt">>, <<"ridge_loader">>, <<"ridge_sup">>,
+                <<"ridge_pg">>, <<"ridge_sqlite">>, <<"ridge_main_runner">>,
+                <<"ridge_test_runner">>, <<"ridge_bench_runner">>, <<"ridge_repl_runner">>],
+    require(not lists:member(Name, Reserved) andalso
+            not (Name =:= <<"std">> orelse binary:match(Name, <<"std.">>) =:= {0, 4}),
+            {module_restart_required, Name}),
+    case code:where_is_file(unicode:characters_to_list(Name) ++ ".beam") of
+        non_existing -> reject({missing_beam, Name});
+        Path ->
+            case file:read_file(Path) of
+                {ok, Bin} -> {Name, Bin};
+                {error, _} -> reject({unreadable_beam, Name})
             end
     end.
 
@@ -622,19 +659,8 @@ recovery_notice(#{phase := Phase, restarts := PriorRestarts}, Cause, Stats) ->
         actors_restarted => length(PriorRestarts) + length(maps:get(restarts, Stats))}) end),
     ok.
 
-%% Dev transport: the new code is on the node's own code path. A module
-%% holds at most two loaded versions, and neither load_file nor
-%% load_binary purges by itself: the second upgrade on a node fails with
-%% not_purged unless the oldest version is dropped first. The actors are
-%% already suspended, so nothing executes the old code and the soft purge
-%% succeeds.
-load_from_path(Modules, _) ->
-    [_ = code:soft_purge(M) || M <- Modules],
-    [{module, M} = code:load_file(M) || M <- Modules],
-    ok.
-
-%% Production transport: replace the loaded code straight from the shipped
-%% blobs — no temp files or code-path changes. Preparation checked all
+%% Both transports commit prepared bytes without changing the code path.
+%% Preparation checked all
 %% bytecode before actor suspension; finishing commits the whole batch or
 %% leaves every current module unchanged. Modules with on_load are rejected.
 load_prepared(Modules, Prepared) ->
@@ -645,12 +671,6 @@ load_and_invalidate(Modules, LoadFun, LoadCtx, #{atomic_load := true}) ->
     case LoadFun(Modules, LoadCtx) of
         ok -> ridge_rt:invalidate_record_versions(Modules);
         {error, _} = Rejected -> Rejected
-    end;
-load_and_invalidate(Modules, LoadFun, LoadCtx, _) ->
-    try LoadFun(Modules, LoadCtx)
-    after
-        %% Dev loads are sequential: invalidate even after a partial swap.
-        ok = ridge_rt:invalidate_record_versions(Modules)
     end.
 
 beam_label(M) ->

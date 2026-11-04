@@ -498,6 +498,43 @@ fn run_watch_single_cycle() {
     cleanup.expect("clean up watcher process tree");
 }
 
+/// A restart key must wake the reload loop even without a source edit.
+#[cfg(all(feature = "beam-runtime", feature = "cli-watch"))]
+#[test]
+fn run_reload_manual_restart_wakes_idle_watcher() {
+    use std::time::Duration;
+    let tw = make_capable_app_workspace(
+        "import std.io as Io\npub fn io main () -> Unit = Io.println \"reload boot\"\npub fn value () -> Int = 1\n",
+        "\"io\"",
+    );
+    let mut command = ridge_spawnable_cmd();
+    command.args(["run", "--reload"]).current_dir(&tw.path);
+    let mut watcher = server::Server::spawn_interactive(command).unwrap();
+    let initial = watcher.wait_for_output(
+        "reload boot",
+        "watching for changes",
+        Duration::from_secs(120),
+    );
+    assert!(initial.is_ok(), "{initial:?}\n{}", watcher.diagnostics());
+    watcher.write_input(b"r\n").unwrap();
+    let restarted = watcher.wait_for_output(
+        "reload boot",
+        "restarted on current code",
+        Duration::from_secs(120),
+    );
+    assert!(
+        restarted.is_ok(),
+        "{restarted:?}\n{}",
+        watcher.diagnostics()
+    );
+    write_file(&tw.path, "apps/demo/src/Main.ridge",
+        "import std.io as Io\npub fn io main () -> Unit = Io.println \"reload boot\"\npub fn value () -> Int = 2\n");
+    let reloaded = watcher.wait_for_output("reload boot", "reloaded ", Duration::from_secs(120));
+    let diagnostics = watcher.diagnostics();
+    watcher.stop().unwrap();
+    assert!(reloaded.is_ok(), "{reloaded:?}\n{diagnostics}");
+}
+
 // ── Test 9: --observer prints connection-info to stderr ───────────────────────
 
 /// `ridge run --observer` prints the connection-info line to stderr before

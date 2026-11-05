@@ -17,6 +17,7 @@
 use std::path::{Path, PathBuf};
 
 use clap::{builder::TypedValueParser, Args as ClapArgs};
+use ridge_codegen_erl::runtime::{MAX_RELOAD_PURGE_DELAY_MS, MAX_RELOAD_RPC_TIMEOUT_MS};
 use ridge_driver::reload::{
     reload_check, snapshot_path_for, CheckReport, ReloadCheckError, Verdict,
 };
@@ -58,11 +59,13 @@ pub struct ReloadArgs {
     /// Use the release profile's snapshot and artefacts.
     #[arg(long)]
     pub release: bool,
-    /// rpc timeout for the apply call, in milliseconds.
-    #[arg(long, value_name = "MS", default_value = "30000", requires = "node")]
+    /// RPC timeout in milliseconds (0 is nonblocking; maximum 4294967295).
+    #[arg(long, value_name = "MS", default_value = "30000", requires = "node",
+        value_parser = clap::value_parser!(u64).range(..=MAX_RELOAD_RPC_TIMEOUT_MS))]
     pub timeout: u64,
-    /// Seconds before safe cleanup of old code (0 disables).
-    #[arg(long, value_name = "SECS", default_value = "60", requires = "node")]
+    /// Seconds before safe cleanup of old code (0 disables; maximum 18446744073709551).
+    #[arg(long, value_name = "SECS", default_value = "60", requires = "node",
+        value_parser = clap::value_parser!(u64).range(..=MAX_RELOAD_PURGE_DELAY_MS / 1000))]
     pub purge_after: u64,
     /// Write the full JSON report to PATH (stdout when no path is given).
     #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "", requires = "node",
@@ -98,6 +101,24 @@ impl ReloadArgs {
         }
         Ok(())
     }
+
+    // Library callers can construct or mutate ReloadArgs without Clap.
+    fn validate_timers(&self) -> Result<(), String> {
+        if self.timeout > MAX_RELOAD_RPC_TIMEOUT_MS {
+            return Err(format!(
+                "--timeout must be between 0 and {MAX_RELOAD_RPC_TIMEOUT_MS} milliseconds; got {}",
+                self.timeout
+            ));
+        }
+        if self.purge_after > MAX_RELOAD_PURGE_DELAY_MS / 1000 {
+            return Err(format!(
+                "--purge-after must be between 0 and {} seconds (0 disables cleanup); got {}",
+                MAX_RELOAD_PURGE_DELAY_MS / 1000,
+                self.purge_after
+            ));
+        }
+        Ok(())
+    }
 }
 
 // ── Execute ───────────────────────────────────────────────────────────────────
@@ -116,6 +137,10 @@ impl ReloadArgs {
 /// the node refuses or fails the upgrade.
 pub fn execute(args: &ReloadArgs, cwd: &Path) -> Result<(), CliError> {
     if let Err(message) = args.validate_mode() {
+        eprintln!("error: {message}");
+        return Err(CliError::AlreadyReported);
+    }
+    if let Err(message) = args.validate_timers() {
         eprintln!("error: {message}");
         return Err(CliError::AlreadyReported);
     }
@@ -426,9 +451,19 @@ fn summary_line(report: &serde_json::Value) -> String {
         }
         _ => String::new(),
     };
+    let tracking = if report
+        .get("purge")
+        .and_then(|p| p.get("tracking_lost"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        "; earlier cleanup tracking was lost; inspect target diagnostics"
+    } else {
+        ""
+    };
     format!(
         "reloaded {modules} modules, migrated {migrated} actors (+{restarted} restarted), \
-         {messages} in-flight messages in {ms}ms{purge}"
+         {messages} in-flight messages in {ms}ms{purge}{tracking}"
     )
 }
 
@@ -482,4 +517,19 @@ pub(crate) fn print_reload_rejection(report: &CheckReport) {
         "{}: {compatible} compatible, {auto} auto/hook-migrated, {migrate} need migration, {incompatible} incompatible",
         if ok { "reloadable" } else { "not reloadable" },
     );
+}
+
+#[cfg(test)]
+#[allow(clippy::panic)]
+mod timer_report_tests {
+    #[test]
+    fn cleanup_tracking_loss_is_visible_even_when_new_cleanup_is_disabled() {
+        for enabled in [false, true] {
+            let mut report = serde_json::json!({"purge":{"scheduled":enabled,
+                "tracking_lost":true,"after_ms":1000,"policy":"soft"}});
+            assert!(super::summary_line(&report).contains("cleanup tracking was lost"));
+            report["purge"]["tracking_lost"] = serde_json::Value::Bool(false);
+            assert!(!super::summary_line(&report).contains("tracking was lost"));
+        }
+    }
 }

@@ -95,6 +95,125 @@ fn reload_accepts_each_mode_with_its_options_and_defaults() {
 }
 
 #[test]
+fn reload_timer_boundaries_are_checked_during_argument_parsing() {
+    for (flag, max) in [
+        ("--timeout", 4_294_967_295_u64),
+        ("--purge-after", 18_446_744_073_709_551_u64),
+    ] {
+        for value in [0, 1, max] {
+            parse(&["--node", "app@host", flag, &value.to_string()]).unwrap();
+        }
+        for value in [max + 1, u64::MAX] {
+            let error = parse(&["--node", "app@host", flag, &value.to_string()])
+                .expect_err("out-of-range timer must fail before execution");
+            assert_eq!(error.kind(), ErrorKind::ValueValidation);
+            let message = error.to_string();
+            assert!(
+                message.contains(flag) && message.contains(&value.to_string()),
+                "{message}"
+            );
+        }
+    }
+}
+
+#[test]
+fn reload_timer_errors_preserve_files_without_workspace_or_runtime_access() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let files = [
+        ("ridge.toml", "deliberately invalid manifest"),
+        ("target/ridge/debug/reload-snapshot.json", "debug baseline"),
+        (
+            "target/ridge/release/reload-snapshot.json",
+            "release baseline",
+        ),
+        (
+            "target/ridge/debug/reload-pending.json",
+            "pending operation",
+        ),
+        (
+            "target/ridge/debug/upgrade.manifest.json",
+            "previous manifest",
+        ),
+        ("target/ridge/debug/beam/old.beam", "previous bytecode"),
+    ];
+    for (path, text) in files {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    for (flag, value) in [
+        ("--timeout", "4294967296"),
+        ("--timeout", "18446744073709551615"),
+        ("--purge-after", "18446744073709552"),
+        ("--purge-after", "18446744073709551615"),
+    ] {
+        let output = assert_cmd::Command::cargo_bin("ridge")
+            .unwrap()
+            .args(["reload", "--node", "app@host", "--release", flag, value])
+            .current_dir(root)
+            .env("PATH", "")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains(flag) && error.contains(value), "{error}");
+        for (path, text) in files {
+            assert_eq!(
+                std::fs::read(root.join(path)).unwrap(),
+                text.as_bytes(),
+                "{path}"
+            );
+        }
+        assert!(!root.join("target/ridge/debug.reload.lock").exists());
+        assert!(!root.join("target/ridge/release.reload.lock").exists());
+    }
+}
+
+#[test]
+fn direct_reload_callers_reject_invalid_timers_before_reading_a_workspace() {
+    const CHILD: &str = "RIDGE_TEST_RELOAD_INVALID_TIMER";
+    if let Some(flag) = std::env::var_os(CHILD) {
+        let flag = flag.to_string_lossy();
+        let RidgeCommand::Reload(mut args) = parse(&["--node", "app@host"]).unwrap().command else {
+            panic!("expected reload");
+        };
+        if flag == "--timeout" {
+            args.timeout = 4_294_967_296;
+        } else {
+            args.purge_after = 18_446_744_073_709_552;
+        }
+        assert!(ridge_cli::cmd::reload::execute(&args, &std::env::current_dir().unwrap()).is_err());
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join("ridge.toml"), "invalid manifest").unwrap();
+    for flag in ["--timeout", "--purge-after"] {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "direct_reload_callers_reject_invalid_timers_before_reading_a_workspace",
+                "--nocapture",
+            ])
+            .env(CHILD, flag)
+            .current_dir(directory.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains(flag) && error.contains("must be"),
+            "numeric validation was bypassed: {error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("ridge.toml")).unwrap(),
+            "invalid manifest"
+        );
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+}
+
+#[test]
 fn direct_reload_callers_cannot_bypass_mode_validation() {
     let directory = tempfile::tempdir().unwrap();
     for option in ["node", "cookie", "seed", "json", "timeout", "purge"] {

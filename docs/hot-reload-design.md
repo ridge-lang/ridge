@@ -142,13 +142,36 @@ modules while preserving unrelated obligations. The worker monitors callers
 that pause cleanup and releases their pauses if they die. Actor recovery and
 upgrade admission are managed separately.
 
+Reload timer arguments are checked before workspace access, locking, target
+probes, pending-operation recovery or compilation, including direct CLI-library
+callers. `--timeout` accepts 0 through 4294967295 milliseconds; zero requests a
+nonblocking RPC, not cancellation of remote work. `--purge-after` accepts 0
+through 18446744073709551 whole seconds; zero disables cleanup. The seconds-to-
+milliseconds conversion is checked. The loader accepts `purge_after_ms` as an
+integer from 0 through 18446744073709551615 and rejects other values before code
+commit. Long cleanup windows use bounded receive intervals, so the RPC timeout
+limit does not cap a cleanup window.
+
 Operators can query `ridge_loader:purge_status/0` on the target node. It returns
-`waiting` and `pending` module-name lists and a `paused` flag. Pending means the
-last safe attempt found references; it is not a live reference census. The
+`waiting` and `pending` module-name lists, a `paused` flag and `tracking_lost`.
+Pending means the last safe attempt found references; it is not a live
+reference census. The
 apply report keeps `scheduled` and `after_ms` and adds `policy: soft` and the
-currently pending module names. This state is local to the worker, not a durable
-upgrade receipt, and does not survive worker or VM restart. Keeping referenced
-code may retain memory and prevent another version from loading. Let holders
+currently pending module names. `scheduled` acknowledges the current cleanup
+policy; it does not guarantee future worker availability or completed purging.
+
+If the tracking worker dies, an independent observer emits the best-effort
+`reload_cleanup_tracker_down` warning without reflecting arbitrary exit payloads.
+A replacement worker starts with empty task lists and `tracking_lost: true`;
+those lists describe only its known tasks, not the lost history. This flag also
+appears in subsequent apply reports and remains set until the VM restarts,
+including when a new bundle disables cleanup. The CLI surfaces it in the human
+summary. It does not invalidate an otherwise confirmed code/migration result.
+Lost jobs are not reconstructed or forcibly purged. Monitoring and the history
+marker are node-local, not durable across VM or whole-runtime failure.
+
+Task state is local to the worker, not a durable upgrade receipt. Keeping
+referenced code may retain memory and prevent another version from loading. Let holders
 finish, then retry the upgrade, or deliberately restart the node; cleanup
 never treats an expired delay as permission to kill them.
 

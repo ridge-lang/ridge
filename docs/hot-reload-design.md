@@ -164,10 +164,56 @@ label; evidence is invalidated before migration and actors are resumed on the
 error path. This is not a rollback transaction for actor state. Individual
 migration failures retain the existing retry/restart behavior.
 
-The CLI restores the previous build snapshot after a known code rejection. A
-post-load error, lost RPC response or other uncertain outcome invalidates the
-local snapshot instead: rebuild and restart the node before another reload.
-This prevents planning against a snapshot that may not describe running code.
+The production CLI reserves an operation before applying a bundle. The target
+issues its ID and binds it to a SHA-256 digest of the exact manifest, beam blobs
+and options. The registry incarnation is checked at reservation, submission and
+query. Repeating the same submission returns its receipt without executing the
+migration again; different content for that ID is rejected. Unknown IDs cannot
+be submitted, including after their receipts expire.
+
+Queries are independent of admission, so a blocked migration does not block
+status queries. Receipts distinguish `reserved`, `in_progress`, `rejected`,
+`applied` and `recovery_required`. Code commit confirmation, actor migration
+completion and cleanup acknowledgement are separate fields. Acknowledgement
+means the cleanup policy was registered, including when disabled; it does not
+mean every old-code reference has disappeared. A failed worker is never replayed.
+
+The registry retains at most 128 receipts. Reserved and terminal receipts expire
+after 15 minutes; terminal retention starts when the result is recorded. Active
+receipts marked `in_progress` are not evicted. Capacity exhaustion rejects
+reservations. Receipts
+are node-local and not durable: a VM restart or registry loss changes its
+incarnation. Missing or expired receipts remain unknown. Reports retain aggregate
+counts and at most 64 module names for restarts, with generic failure categories
+and an explicit truncation flag, rather than arbitrary callback errors or actor
+state. Detailed callback error terms are not retained in receipts.
+
+Before dispatch, the CLI synchronizes a `reload-pending.json` journal beside the
+selected profile's snapshot, retaining the previous and candidate snapshots and
+operation identity, without cookies or bytecode. An OS file lock excludes another
+production reload in that workspace/profile and is released on process death.
+Payload files are frozen for reservation and submission. The journal is local
+recovery metadata, not a durable transaction with the target.
+
+A confirmed rejected receipt restores the previous snapshot. A confirmed applied
+receipt restores the candidate only if identity, digest, incarnation and current
+target version agree and no recovery fence is active. Otherwise the CLI
+invalidates the planning snapshot and retains the journal. Running the same
+`ridge reload --node ...` command queries the pending operation before compiling,
+even if source has since changed. Successful recovery finishes the previous
+operation; invoke reload again to apply further edits. It never retries a
+migration to obtain a missing result.
+If the original CLI stopped before submission, recovery atomically cancels its
+still-reserved operation before restoring the previous snapshot. A late submit
+then returns that rejection. Cancellation cannot stop an operation already
+dispatched to admission.
+
+If the node or registry restarted, a receipt expired, or recovery is required,
+querying cannot prove the outcome. Rebuild and restart deliberately, then remove
+the old `target/ridge/<profile>/reload-pending.json` before establishing a fresh
+reload baseline. Do not delete a pending journal merely to bypass an in-progress
+operation. Development watcher uncertainty retains its manual restart contract.
+
 Bundle validation does not sandbox bytecode or replace the trust requirements
 of Erlang distribution: connected peers can execute code on the node.
 

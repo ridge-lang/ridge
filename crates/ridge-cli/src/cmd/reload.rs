@@ -27,6 +27,9 @@ use ridge_driver::{
 
 use crate::error::CliError;
 
+#[path = "reload_receipts.rs"]
+mod receipts;
+
 // ── Argument struct ───────────────────────────────────────────────────────────
 
 /// Source-level reload tooling.
@@ -167,22 +170,26 @@ fn execute_apply(args: &ReloadArgs, cwd: &Path, profile: Profile) -> Result<(), 
     let erl_path = which::which("erl").map_err(|_| ToolchainError::erl_not_found())?;
 
     let snap_path = snapshot_path_for(&root, profile_name);
+    let _lease = receipts::lock(&snap_path)?;
+    if let Some(line) = receipts::recover(&erl_path, args, &snap_path)? {
+        println!("recovered the previous reload; run reload again to apply further source edits.");
+        print_apply_report(args, &line);
+        return Ok(());
+    }
     let (old_snapshot, base_vsn, raw_snapshot) = read_running_snapshot(&snap_path, profile)?;
     // Check before compilation and snapshot recovery: a local target can share
     // output files and lazily load them even when a later RPC would reject.
-    let cookie = args.cookie.clone().unwrap_or_else(default_cookie);
-    probe_startup_protocol(
+    let incarnation = receipts::protocol(&erl_path, args)?;
+    let json_line = match plan_and_apply(
+        args,
         &erl_path,
-        args.node.as_deref().unwrap_or_default(),
-        &cookie,
-        args.timeout,
-    )
-    .map_err(|message| {
-        eprintln!("error: {message}");
-        CliError::AlreadyReported
-    })?;
-    let json_line = match plan_and_apply(args, &erl_path, &root, profile, &old_snapshot, &base_vsn)
-    {
+        &root,
+        profile,
+        &old_snapshot,
+        &base_vsn,
+        &raw_snapshot,
+        &incarnation,
+    ) {
         Ok(Some(line)) => line,
         Ok(None) => return Ok(()),
         Err(failure) => {
@@ -199,13 +206,18 @@ fn execute_apply(args: &ReloadArgs, cwd: &Path, profile: Profile) -> Result<(), 
         }
     };
 
+    print_apply_report(args, &json_line);
+    Ok(())
+}
+
+fn print_apply_report(args: &ReloadArgs, json_line: &str) {
     // From here the node DID advance: the new snapshot on disk is correct,
     // and report-handling problems are warnings, not reload failures.
-    let report: serde_json::Value = match serde_json::from_str(&json_line) {
+    let report: serde_json::Value = match serde_json::from_str(json_line) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("warning: the node applied the upgrade but returned a malformed report: {e}");
-            return Ok(());
+            return;
         }
     };
     println!("{}", summary_line(&report));
@@ -221,13 +233,13 @@ fn execute_apply(args: &ReloadArgs, cwd: &Path, profile: Profile) -> Result<(), 
             );
         }
     }
-    Ok(())
 }
 
 /// Compile, plan, and apply through the probe. `Ok(None)` means the node
 /// already runs this code (nothing to reload); `Ok(Some(_))` carries the
 /// node's JSON report line. Errors distinguish a known rejection from an
 /// uncertain outcome after RPC or a failure following a code swap.
+#[allow(clippy::too_many_arguments)]
 fn plan_and_apply(
     args: &ReloadArgs,
     erl_path: &Path,
@@ -235,32 +247,34 @@ fn plan_and_apply(
     profile: Profile,
     old_snapshot: &WorkspaceSnapshot,
     base_vsn: &str,
+    raw_snapshot: &str,
+    incarnation: &str,
 ) -> Result<Option<String>, ReloadFailure> {
-    let node = args.node.clone().unwrap_or_default();
-    let cookie = args.cookie.clone().unwrap_or_else(default_cookie);
     let (manifest_path, manifest, beams) = compile_and_plan(root, profile, old_snapshot)?;
     if manifest.modules.is_empty() {
         println!("nothing to reload: the node already runs this code.");
         return Ok(None);
     }
 
-    let out = probe_apply_bundle(
-        erl_path,
-        &node,
-        &cookie,
-        &manifest_path,
-        base_vsn,
-        &beams,
-        args.timeout,
-        args.purge_after,
-        args.seed,
+    let before_apply = |message: String| {
+        eprintln!("error: {message}");
+        ReloadFailure::BeforeApply(CliError::AlreadyReported)
+    };
+    let payload = receipts::Payload::freeze(&manifest_path, &beams, base_vsn, incarnation, args)
+        .map_err(|error| before_apply(error.to_string()))?;
+    let receipt = payload.reserve(erl_path, args).map_err(before_apply)?;
+    let snapshot = snapshot_path_for(root, profile.dir_name());
+    let journal = receipts::save_pending(
+        &snapshot,
+        args.node.as_deref().unwrap_or_default(),
+        raw_snapshot,
+        &receipt,
     )
-    .map_err(|msg| {
-        eprintln!("error: reload probe failed: {msg}");
-        report_uncertain_reload();
-        ReloadFailure::Uncertain
-    })?;
-    parse_apply_result(&out)
+    .map_err(|error| before_apply(error.to_string()))?;
+    let result = payload
+        .submit(erl_path, args, &receipt)
+        .unwrap_or(serde_json::Value::Null);
+    receipts::finish(&snapshot, &journal, &result).map(Some)
 }
 
 /// Whether the pre-compile snapshot still describes the running node.
@@ -290,39 +304,6 @@ fn recover_reload_snapshot(
             result => result,
         },
     }
-}
-
-/// Explain recovery without claiming a failed RPC left the node unchanged.
-fn report_uncertain_reload() {
-    eprintln!("node code may have changed; the local reload snapshot is invalidated.");
-    eprintln!("rebuild and restart the node before attempting another reload.");
-}
-
-/// Interpret probe markers without inferring a phase from exception text.
-fn parse_apply_result(out: &str) -> Result<Option<String>, ReloadFailure> {
-    let Some(json_line) = out
-        .lines()
-        .find_map(|l| l.strip_prefix("RIDGE_RELOAD_JSON "))
-    else {
-        if let Some(detail) = out
-            .lines()
-            .find_map(|l| l.strip_prefix("RIDGE_RELOAD_REJECTED "))
-        {
-            eprintln!("reload rejected before code was replaced: {detail}");
-            if detail.contains("not_purged") {
-                eprintln!("help: old code is still in use; let existing work finish or restart the node before retrying.");
-            }
-            return Err(ReloadFailure::BeforeApply(CliError::AlreadyReported));
-        }
-        let detail = out
-            .lines()
-            .find_map(|l| l.strip_prefix("RIDGE_RELOAD_ERR "))
-            .unwrap_or_else(|| out.trim());
-        eprintln!("reload failed at the node: {detail}");
-        report_uncertain_reload();
-        return Err(ReloadFailure::Uncertain);
-    };
-    Ok(Some(json_line.to_owned()))
 }
 
 /// Read the snapshot of the build the node is running, with its raw text
@@ -457,113 +438,6 @@ fn default_cookie() -> String {
     "ridge".to_owned()
 }
 
-/// Negotiate before writing build artifacts. An unsupported or unreachable
-/// target is a known pre-apply failure; it cannot invalidate the baseline.
-fn probe_startup_protocol(
-    erl_path: &Path,
-    node: &str,
-    cookie: &str,
-    timeout_ms: u64,
-) -> Result<(), String> {
-    let eval = format!(
-        "[Target] = init:get_plain_arguments(),\n\
-         case rpc:call(list_to_atom(Target), ridge_loader, startup_protocol, [], {timeout_ms}) of\n\
-         1 -> io:format(\"RIDGE_STARTUP_PROTOCOL_OK~n\");\n\
-         _ -> ok end."
-    );
-    let output = std::process::Command::new(erl_path)
-        .arg("-name")
-        .arg(format!(
-            "ridge_reload_protocol_{}@127.0.0.1",
-            std::process::id()
-        ))
-        .arg("-setcookie")
-        .arg(cookie)
-        .arg("-noshell")
-        .arg("-eval")
-        .arg(eval)
-        .arg("-s")
-        .arg("init")
-        .arg("stop")
-        .arg("-extra")
-        .arg(node)
-        .output()
-        .map_err(|_| "could not start the reload compatibility probe".to_owned())?;
-    if output.status.success()
-        && String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .any(|line| line == "RIDGE_STARTUP_PROTOCOL_OK")
-    {
-        Ok(())
-    } else {
-        Err("could not confirm coordinated actor startup on the target; check connectivity and rebuild and restart older nodes with this compiler before reloading".to_owned())
-    }
-}
-
-/// Run the probe node: read the manifest and the beam blobs from disk,
-/// apply the bundle on the target node over rpc, print markers the caller
-/// parses (`RIDGE_RELOAD_JSON` on success, `RIDGE_RELOAD_REJECTED` when
-/// code is unchanged, `RIDGE_RELOAD_ERR` when the outcome is uncertain).
-#[allow(clippy::too_many_arguments)]
-fn probe_apply_bundle(
-    erl_path: &Path,
-    node: &str,
-    cookie: &str,
-    manifest_path: &Path,
-    base_vsn: &str,
-    beams: &[(String, PathBuf)],
-    timeout_ms: u64,
-    purge_after_s: u64,
-    seed: bool,
-) -> Result<String, String> {
-    let manifest_fwd = manifest_path.to_string_lossy().replace('\\', "/");
-    let beam_entries = beams
-        .iter()
-        .map(|(name, path)| {
-            format!(
-                "{{<<\"{name}\">>, element(2, file:read_file(\"{}\"))}}",
-                path.to_string_lossy().replace('\\', "/")
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(",");
-    let purge_ms = purge_after_s * 1000;
-    // An RPC exception on an older target can contain all bytecode arguments.
-    // Report transport failure without reflecting that exception stack.
-    let eval = format!(
-        "rpc:call('{node}', ridge_rt, set_migrate_report, [structured], {timeout_ms}),\n\
-         {{ok, MBin}} = file:read_file(\"{manifest_fwd}\"),\n\
-         Bins = [{beam_entries}],\n\
-         case rpc:call('{node}', ridge_loader, apply_bundle,\n\
-         \x20     [1, MBin, Bins, #{{base_vsn => <<\"{base_vsn}\">>, purge_after_ms => {purge_ms}, seed => {seed}}}], {timeout_ms}) of\n\
-         \x20   {{ok, Rep}} ->\n\
-         \x20       Safe = Rep#{{restarts => [#{{module => M, reason => iolist_to_binary(io_lib:format(\"~p\", [Why]))}}\n\
-         \x20                             || #{{module := M, reason := Why}} <- maps:get(restarts, Rep, [])]}},\n\
-         \x20       io:format(\"RIDGE_RELOAD_JSON ~s~n\", [json:encode(Safe)]);\n\
-         \x20   {{error, {{reload_rejected, _, _}}}} = Rejected ->\n\
-         \x20       io:format(\"RIDGE_RELOAD_REJECTED ~0tp~n\", [Rejected]);\n\
-         \x20   {{error, {{base_version_mismatch, _, _}}}} = Rejected ->\n\
-         \x20       io:format(\"RIDGE_RELOAD_REJECTED ~0tp~n\", [Rejected]);\n\
-         \x20   {{badrpc, _}} -> io:format(\"RIDGE_RELOAD_ERR target_rpc_failed~n\");\n\
-         \x20   Err -> io:format(\"RIDGE_RELOAD_ERR ~p~n\", [Err])\n\
-         end."
-    );
-    let output = std::process::Command::new(erl_path)
-        .arg("-name")
-        .arg(format!("ridge_reload_{}@127.0.0.1", std::process::id()))
-        .arg("-setcookie")
-        .arg(cookie)
-        .arg("-noshell")
-        .arg("-eval")
-        .arg(eval)
-        .arg("-s")
-        .arg("init")
-        .arg("stop")
-        .output()
-        .map_err(|e| format!("failed to spawn the probe node: {e}"))?;
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
 /// Print the per-symbol verdicts and the summary line for a check report.
 ///
 /// Shared by `ridge reload --check` and the `ridge run --reload` rejection
@@ -608,71 +482,4 @@ pub(crate) fn print_reload_rejection(report: &CheckReport) {
         "{}: {compatible} compatible, {auto} auto/hook-migrated, {migrate} need migration, {incompatible} incompatible",
         if ok { "reloadable" } else { "not reloadable" },
     );
-}
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rejected_reload_restores_the_running_snapshot() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("snapshot.json");
-        std::fs::write(&path, "new-build").unwrap();
-        let result = parse_apply_result(
-            "RIDGE_RELOAD_REJECTED {error,{reload_rejected,preflight,{missing_blob,mod_b}}}\n",
-        );
-        let Err(failure @ ReloadFailure::BeforeApply(_)) = result else {
-            panic!("preflight must preserve the previous baseline");
-        };
-        recover_reload_snapshot(&path, "running-build", &failure).unwrap();
-        assert_eq!(std::fs::read_to_string(path).unwrap(), "running-build");
-    }
-
-    #[test]
-    fn uncertain_reload_invalidates_the_snapshot() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("snapshot.json");
-        for output in [
-            "RIDGE_RELOAD_ERR {error,{upgrade_failed,error,bad_actor_metadata,[]}}\n",
-            "RIDGE_RELOAD_ERR {badrpc,timeout}\n",
-            "RIDGE_RELOAD_ERR {error,{reload_recovery_required,restart_node}}\n",
-            "probe exited without reporting an outcome\n",
-        ] {
-            std::fs::write(&path, "new-build").unwrap();
-            let Err(failure @ ReloadFailure::Uncertain) = parse_apply_result(output) else {
-                panic!("unknown node state cannot retain a reload baseline");
-            };
-            recover_reload_snapshot(&path, "running-build", &failure).unwrap();
-            assert!(!path.exists());
-        }
-    }
-
-    #[test]
-    fn successful_reload_keeps_the_new_report() {
-        assert!(matches!(
-            parse_apply_result("RIDGE_RELOAD_JSON {\"modules_loaded\":2}\n"),
-            Ok(Some(report)) if report == "{\"modules_loaded\":2}"
-        ));
-    }
-
-    #[test]
-    fn cleanup_summary_requires_the_target_to_confirm_a_safe_policy() {
-        let report = serde_json::json!({
-            "purge": {"scheduled": true, "after_ms": 60000, "policy": "soft"}
-        });
-        assert!(summary_line(&report).contains("safe old code cleanup scheduled in 60s"));
-        for policy in [None, Some("unknown")] {
-            let mut report = serde_json::json!({
-                "purge": {"scheduled": true, "after_ms": 60000}
-            });
-            if let Some(policy) = policy {
-                report["purge"]["policy"] = serde_json::json!(policy);
-            }
-            let summary = summary_line(&report);
-            assert!(summary.contains("target policy unconfirmed"), "{summary}");
-            assert!(!summary.contains("safe old code"), "{summary}");
-        }
-    }
 }

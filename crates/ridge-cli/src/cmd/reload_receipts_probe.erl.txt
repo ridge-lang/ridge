@@ -1,0 +1,60 @@
+[Target, InputPath] = init:get_plain_arguments(),
+{ok, InputBytes} = file:read_file(InputPath),
+Input = json:decode(InputBytes),
+Node = list_to_atom(Target),
+Timeout = maps:get(<<"timeout">>, Input),
+Deadline = erlang:monotonic_time(millisecond) + Timeout,
+Call = fun(Function, Arguments) ->
+    rpc:call(Node, ridge_loader, Function, Arguments, Timeout)
+end,
+Payload = fun() ->
+    {ok, Manifest} = file:read_file(maps:get(<<"manifest">>, Input)),
+    Blobs = [{Name, begin {ok, Bytes} = file:read_file(Path), Bytes end}
+             || [Name, Path] <- maps:get(<<"beams">>, Input)],
+    Opts = #{base_vsn => maps:get(<<"base">>, Input),
+             seed => maps:get(<<"seed">>, Input),
+             purge_after_ms => maps:get(<<"purge_ms">>, Input)},
+    {Manifest, Blobs, Opts}
+end,
+Result = case maps:get(<<"action">>, Input) of
+    <<"protocol">> ->
+        case Call(startup_protocol, []) of
+            1 -> Call(operation_protocol, []);
+            _ -> {error, unsupported_protocol}
+        end;
+    <<"prepare">> ->
+        {Manifest, Blobs, Opts} = Payload(),
+        Call(prepare_operation, [maps:get(<<"incarnation">>, Input), Manifest, Blobs, Opts]);
+    <<"apply">> ->
+        {Manifest, Blobs, Opts} = Payload(),
+        rpc:call(Node, ridge_rt, set_migrate_report, [structured], Timeout),
+        Call(apply_operation, [maps:get(<<"incarnation">>, Input),
+                              maps:get(<<"operation">>, Input), Manifest, Blobs, Opts]);
+    <<"query">> ->
+        case Call(query_operation, [maps:get(<<"incarnation">>, Input), maps:get(<<"operation">>, Input)]) of
+            #{status := reserved} ->
+                Call(cancel_operation, [maps:get(<<"incarnation">>, Input),
+                                       maps:get(<<"operation">>, Input), maps:get(<<"digest">>, Input)]);
+            Receipt -> Receipt
+        end
+end,
+Wait = fun Self(Receipt) ->
+    case Receipt of
+        #{status := Status} when Status =:= in_progress ->
+            case erlang:monotonic_time(millisecond) < Deadline of
+                true ->
+                    timer:sleep(25),
+                    Self(Call(query_operation, [maps:get(incarnation, Receipt), maps:get(operation, Receipt)]));
+                false -> Receipt
+            end;
+        _ -> Receipt
+    end
+end,
+Final = Wait(Result),
+%% Never print RPC exception arguments or arbitrary callback error terms.
+Safe = case Final of
+    Map when is_map(Map) -> Map;
+    {error, Reason} when is_atom(Reason) -> #{error => Reason};
+    _ -> #{error => target_rpc_failed}
+end,
+io:format("RIDGE_OPERATION_JSON ~s~n", [json:encode(Safe)]).

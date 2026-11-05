@@ -349,11 +349,8 @@ io:format("DOWNGRADE_READY~n").
     assert!(swapped.contains("DOWNGRADE_READY"), "{swapped}");
     let changed = reload_cmd(&ws, &node, cookie, true, false);
     assert!(!changed.status.success(), "{changed:?}");
-    assert!(
-        String::from_utf8_lossy(&changed.stderr).contains("local reload snapshot is invalidated")
-    );
-    assert!(String::from_utf8_lossy(&changed.stderr)
-        .contains("reload failed at the node: target_rpc_failed"));
+    assert!(String::from_utf8_lossy(&changed.stderr).contains("queryable reload operations"));
+    assert_profile_unchanged(&ws, Profile::Debug, &before);
     assert!(!String::from_utf8_lossy(&changed.stderr).contains("base_vsn"));
     let preserved = probe_eval(
         cookie,
@@ -560,6 +557,16 @@ fn reload_release_uncertainty_invalidates_only_selected_snapshot() {
     assert!(!ridge_driver::snapshot_path_for(&ws.path, "release").exists());
     assert_profile_unchanged(&ws, Profile::Debug, &debug_before);
     assert!(ridge_driver::manifest_path_for(&ws.path, "release").is_file());
+    let release_before_query = profile_files(&ws, Profile::Release);
+    let pending =
+        ridge_driver::snapshot_path_for(&ws.path, "release").with_file_name("reload-pending.json");
+    assert!(pending.is_file());
+    let journal_before = std::fs::read(&pending).unwrap();
+    write_file(
+        &ws.path,
+        "apps/demo/src/Counter.ridge",
+        "invalid source after the interrupted operation !!!",
+    );
     let missing = reload_profile(
         &ws,
         &dead,
@@ -569,7 +576,12 @@ fn reload_release_uncertainty_invalidates_only_selected_snapshot() {
         Profile::Release,
     );
     assert!(!missing.status.success());
-    assert!(String::from_utf8_lossy(&missing.stderr).contains("ridge build --release"));
+    assert!(
+        String::from_utf8_lossy(&missing.stderr).contains("reload outcome cannot be confirmed"),
+        "{missing:?}"
+    );
+    assert_eq!(std::fs::read(&pending).unwrap(), journal_before);
+    assert_profile_unchanged(&ws, Profile::Release, &release_before_query);
     assert_profile_unchanged(&ws, Profile::Debug, &debug_before);
 }
 
@@ -618,6 +630,92 @@ fn reload_node_end_to_end_via_real_cli() {
     let state = probe_state(cookie, &node_name, "a");
     assert!(state.contains("count => 2"), "state preserved: {state}");
     assert!(state.contains("step => 2"), "state migrated: {state}");
+}
+
+#[test]
+fn reload_timeout_is_reconciled_before_compiling_edited_source() {
+    assert!(otp_available(), "beam-runtime requires erl");
+    let ws = make_workspace("Counter", COUNTER_SRC);
+    let (beam_dir, actor) = build_and_find_beams(&ws);
+    let node = format!("ridge_cli_receipt_{}@127.0.0.1", std::process::id());
+    let cookie = "ridge_cli_receipt_cookie";
+    let _guard = boot_node(&node, cookie, &beam_dir, &actor);
+    let install = probe_eval(
+        cookie,
+        "block_metadata",
+        &format!(
+            r#"
+Parse=fun(Text)->{{ok,T,_}}=erl_scan:string(Text),{{ok,F}}=erl_parse:parse_form(T),F end,
+{{ok,'{actor}',Bin}}=compile:forms([Parse(T)||T<-[
+ "-module('{actor}').",
+ "-export([init/1,'__ridge_init'/1,'__ridge_state_fields'/0]).",
+ "init(A)->ridge_rt:actor_init('{actor}',A).",
+ "'__ridge_init'([])->{{ok,#{{count=>0}}}}.",
+ "'__ridge_state_fields'()->receive receipt_continue->[count] end."]],[binary]),
+{{module,'{actor}'}}=rpc:call('{node}',code,load_binary,['{actor}',"metadata-barrier",Bin]),
+io:format("BARRIER_INSTALLED~n").
+"#
+        ),
+    );
+    assert!(install.contains("BARRIER_INSTALLED"), "{install}");
+    write_file(
+        &ws.path,
+        "apps/demo/src/Counter.ridge",
+        &COUNTER_SRC.replace("state count: Int = 0", EDIT),
+    );
+    let first = ridge_cmd()
+        .args([
+            "reload",
+            "--node",
+            &node,
+            "--cookie",
+            cookie,
+            "--seed",
+            "--timeout",
+            "1000",
+        ])
+        .current_dir(&ws.path)
+        .output()
+        .unwrap();
+    assert!(!first.status.success(), "{first:?}");
+    assert!(
+        String::from_utf8_lossy(&first.stderr).contains("still pending"),
+        "{first:?}"
+    );
+    let snapshot = ridge_driver::snapshot_path_for(&ws.path, "debug");
+    let pending = snapshot.with_file_name("reload-pending.json");
+    assert!(!snapshot.exists());
+    let journal: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&pending).unwrap()).unwrap();
+    assert!(!std::fs::read_to_string(&pending).unwrap().contains(cookie));
+    let target = journal["new_version"].as_str().unwrap();
+    let blocked = probe_eval(cookie, "observe_metadata", &format!(
+        "P=rpc:call('{node}',erlang,whereis,[ridge_loader_admission]),\n\
+         {{current_function,{{'{actor}','__ridge_state_fields',0}}}}=rpc:call('{node}',erlang,process_info,[P,current_function]),\n\
+         rpc:call('{node}',erlang,send,[P,receipt_continue]),io:format(\"RELEASED~n\")."));
+    assert!(blocked.contains("RELEASED"), "{blocked}");
+    // This is deliberately invalid: recovery must query the prior operation,
+    // rather than compiling edits or issuing another migration.
+    write_file(
+        &ws.path,
+        "apps/demo/src/Counter.ridge",
+        "this source does not parse !!!",
+    );
+    let recovered = reload_cmd(&ws, &node, cookie, false, false);
+    assert!(recovered.status.success(), "{recovered:?}");
+    assert!(
+        String::from_utf8_lossy(&recovered.stdout).contains("recovered the previous reload"),
+        "{recovered:?}"
+    );
+    assert!(!pending.exists());
+    let restored: ridge_driver::WorkspaceSnapshot =
+        serde_json::from_slice(&std::fs::read(&snapshot).unwrap()).unwrap();
+    assert_eq!(ridge_driver::snapshot_vsn(&restored), target);
+    let state = probe_state(cookie, &node, "after_recovery");
+    assert!(
+        state.contains("count => 2") && state.contains("step => 2"),
+        "{state}"
+    );
 }
 
 #[test]

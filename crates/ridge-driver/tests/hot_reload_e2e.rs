@@ -1860,6 +1860,47 @@ fn reload_dev_preflight_and_atomic_commit() {
 }
 
 #[test]
+fn reload_operation_receipts_prevent_replays_and_expose_commit_phases() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let runtime = root.join("../ridge-codegen-erl/runtime");
+    let compiled = std::process::Command::new("erlc")
+        .args(["-Werror", "-o"])
+        .arg(directory.path())
+        .arg(runtime.join("ridge_loader.erl"))
+        .arg(runtime.join("ridge_rt.erl"))
+        .arg(root.join("tests/fixtures/reload_receipt_probe.erl"))
+        .output()
+        .expect("beam-runtime requires erlc");
+    assert!(compiled.status.success(), "{compiled:?}");
+    for case in [
+        "duplicate",
+        "lost_ack",
+        "postcommit",
+        "worker_death",
+        "registry_death",
+        "rejection",
+        "expiry_capacity",
+        "cancel_reserved",
+        "restart_before",
+        "restart_after",
+    ] {
+        let output = std::process::Command::new("erl")
+            .current_dir(directory.path())
+            .args(["-noshell", "-pa"])
+            .arg(directory.path())
+            .args(["-eval", &format!("reload_receipt_probe:run({case}).")])
+            .output()
+            .expect("beam-runtime requires erl");
+        assert!(output.status.success(), "{case}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(&format!("receipt-probe-ok {case}")),
+            "{case}: {output:?}"
+        );
+    }
+}
+
+#[test]
 fn reload_admission_serializes_both_transports() {
     let directory = tempfile::tempdir().unwrap();
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));

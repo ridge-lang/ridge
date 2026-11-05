@@ -22,12 +22,184 @@
 -behaviour(gen_server).
 -export([current_version/0, apply/2, apply_bundle/3, apply_bundle/4, purge_status/0, startup_protocol/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
+-export([operation_protocol/0, prepare_operation/4, apply_operation/5, query_operation/2,
+         cancel_operation/3]).
 
 -define(VSN_KEY, ridge_loader_vsn).
 -define(ADMISSION, ridge_loader_admission).
 -define(ACTIVE_KEY, ridge_loader_active_reload).
 -define(RECOVERY_REG, ridge_loader_recovery).
 -define(RECOVERY_TIMEOUT, 5000).
+-define(RECEIPTS, ridge_loader_receipts).
+-define(RECEIPT_LIMIT, 128).
+-define(RECEIPT_TTL, 900000).
+
+%% This registry is independent of admission: queries must remain available
+%% while a migration callback is blocked. Losing it changes the incarnation,
+%% even if the VM survives. Receipts are deliberately not durable.
+operation_protocol() -> receipt_call(protocol).
+
+prepare_operation(Incarnation, Manifest, Blobs, Opts) ->
+    case payload_digest(Manifest, Blobs, Opts) of
+        {ok, Digest} -> receipt_call({reserve, Incarnation, Digest});
+        error -> {error, invalid_operation_payload}
+    end.
+
+apply_operation(Incarnation, Id, Manifest, Blobs, Opts) ->
+    case payload_digest(Manifest, Blobs, Opts) of
+        {ok, Digest} -> receipt_call({submit, Incarnation, Id, Digest, Manifest, Blobs, Opts});
+        error -> {error, invalid_operation_payload}
+    end.
+
+query_operation(Incarnation, Id) -> receipt_call({query, Incarnation, Id}).
+cancel_operation(Incarnation, Id, Digest) -> receipt_call({cancel, Incarnation, Id, Digest}).
+
+payload_digest(Manifest, Blobs, Opts)
+  when is_binary(Manifest), is_list(Blobs), is_map(Opts) ->
+    %% Internal observation is never accepted from the distribution caller.
+    case maps:is_key(receipt_observer, Opts) of
+        true -> error;
+        false ->
+            try
+                Bytes = term_to_binary({Manifest, lists:sort(Blobs),
+                                       lists:sort(maps:to_list(Opts))}, [deterministic]),
+                {ok, binary:encode_hex(crypto:hash(sha256, Bytes))}
+            catch _:_ -> error end
+    end;
+payload_digest(_, _, _) -> error.
+
+receipt_call(Request) ->
+    try
+        Pid = case gen_server:start({local, ?RECEIPTS}, ?MODULE, receipts, []) of
+            {ok, P} -> P;
+            {error, {already_started, P}} -> P
+        end,
+        gen_server:call(Pid, {receipt, Request}, infinity)
+    catch _:_ -> {error, receipt_registry_unavailable} end.
+
+receipt_request(protocol, State) ->
+    {#{protocol => 1, incarnation => maps:get(incarnation, State)}, State};
+receipt_request({reserve, Inc, Digest}, #{incarnation := Inc, entries := Entries} = State) ->
+    case map_size(Entries) < ?RECEIPT_LIMIT of
+        false -> {{error, receipt_capacity}, State};
+        true ->
+            Id = integer_to_binary(erlang:unique_integer([positive, monotonic])),
+            Receipt = #{incarnation => Inc, operation => Id, digest => Digest,
+                        status => reserved, code_commit => unconfirmed,
+                        actor_migration => incomplete, cleanup => unscheduled,
+                        created => erlang:monotonic_time(millisecond)},
+            {receipt_view(Receipt), State#{entries => Entries#{Id => Receipt}}}
+    end;
+receipt_request({query, Inc, Id}, #{incarnation := Inc, entries := Entries} = State) ->
+    Reply = case maps:find(Id, Entries) of
+        {ok, Receipt} -> receipt_view(Receipt);
+        error -> {error, unknown_operation}
+    end,
+    {Reply, State};
+receipt_request({cancel, Inc, Id, Digest}, #{incarnation := Inc, entries := Entries} = State) ->
+    case maps:find(Id, Entries) of
+        error -> {{error, unknown_operation}, State};
+        {ok, #{digest := Existing}} when Existing =/= Digest ->
+            {{error, operation_conflict}, State};
+        {ok, #{status := reserved} = Receipt} ->
+            Next = Receipt#{status => rejected, rejection => not_submitted,
+                            created => erlang:monotonic_time(millisecond)},
+            {receipt_view(Next), State#{entries => Entries#{Id => Next}}};
+        {ok, Receipt} -> {receipt_view(Receipt), State}
+    end;
+receipt_request({submit, Inc, Id, Digest, Manifest, Blobs, Opts},
+                #{incarnation := Inc, entries := Entries} = State) ->
+    case maps:find(Id, Entries) of
+        error -> {{error, unknown_operation}, State};
+        {ok, #{digest := Existing}} when Existing =/= Digest ->
+            {{error, operation_conflict}, State};
+        {ok, #{status := reserved} = Receipt} ->
+            Registry = self(),
+            {Worker, Monitor} = spawn_monitor(fun() ->
+                Result = apply_bundle(1, Manifest, Blobs,
+                                      Opts#{receipt_observer => {Registry, Id}}),
+                Registry ! {operation_result, Id, self(), Result}
+            end),
+            Next = Receipt#{status => in_progress, worker => Worker, monitor => Monitor},
+            {receipt_view(Next), State#{entries => Entries#{Id => Next}}};
+        {ok, Receipt} -> {receipt_view(Receipt), State}
+    end;
+receipt_request(_, State) -> {{error, incarnation_mismatch}, State}.
+
+receipt_view(Receipt) ->
+    Public = maps:without([created, worker, monitor], Receipt),
+    Before = ridge_rt:evidence_generation(),
+    Version = case current_version() of undefined -> null; V -> V end,
+    Fenced = persistent_term:get(?ACTIVE_KEY, undefined) =/= undefined
+             orelse whereis(?RECOVERY_REG) =/= undefined,
+    %% A different reload can finish between reading the version and fence.
+    %% Do not combine observations from different committed code generations.
+    Changed = Before =/= ridge_rt:evidence_generation(),
+    Public#{current_version => Version,
+            recovery_fenced => Fenced orelse Changed}.
+
+prune_receipts(#{entries := Entries} = State) ->
+    Now = erlang:monotonic_time(millisecond),
+    State#{entries => maps:filter(fun(_, R) ->
+        maps:get(status, R) =:= in_progress orelse
+        Now - maps:get(created, R) < ?RECEIPT_TTL
+    end, Entries)}.
+
+receipt_event({operation_phase, Id, Phase}, #{entries := Entries} = State) ->
+    case maps:find(Id, Entries) of
+        {ok, #{status := Status} = R} when Status =:= in_progress; Status =:= recovery_required ->
+            Next = case Phase of
+                code_committed -> R#{code_commit => confirmed};
+                migration_complete -> R#{actor_migration => complete};
+                cleanup_scheduled -> R#{cleanup => acknowledged}
+            end,
+            State#{entries => Entries#{Id => Next}};
+        _ -> State
+    end;
+receipt_event({operation_result, Id, Worker, Result}, #{entries := Entries} = State) ->
+    case maps:find(Id, Entries) of
+        {ok, #{status := in_progress, worker := Worker, monitor := Monitor} = R} ->
+            demonitor(Monitor, [flush]),
+            Next = case Result of
+                {ok, Report} ->
+                    %% A receipt retains bounded aggregate diagnostics, never
+                    %% arbitrary callback errors, actor state or beam payloads.
+                    Summary = maps:with([modules_loaded, actors_suspended, actors_migrated,
+                                         actors_refreshed, actors_restarted, purge,
+                                         messages_migrated, duration_ms], Report),
+                    Restarts = maps:get(restarts, Report, []),
+                    Details = [#{module => maps:get(module, Entry),
+                                 reason => <<"migration_or_recovery_failure">>}
+                               || Entry <- lists:sublist(Restarts, 64)],
+                    R#{status => applied, code_commit => confirmed,
+                       actor_migration => complete, cleanup => acknowledged,
+                       applied_version => maps:get(version, Report),
+                       report => Summary#{restarts => Details,
+                                          restart_details_truncated => length(Restarts) > 64}};
+                {error, {reload_rejected, Phase, _}} -> R#{status => rejected, rejection => Phase};
+                {error, {base_version_mismatch, _, _}} ->
+                    R#{status => rejected, rejection => base_version_mismatch};
+                _ -> R#{status => recovery_required}
+            end,
+            Finished = Next#{created => erlang:monotonic_time(millisecond)},
+            State#{entries => Entries#{Id => maps:without([worker, monitor], Finished)}};
+        _ -> State
+    end;
+receipt_event({'DOWN', Monitor, process, _, _}, #{entries := Entries} = State) ->
+    State#{entries => maps:map(fun(_, R) ->
+        case maps:get(monitor, R, undefined) of
+            Monitor -> maps:without([worker, monitor], R#{status => recovery_required,
+                         created => erlang:monotonic_time(millisecond)});
+            _ -> R
+        end
+    end, Entries)};
+receipt_event(_, State) -> State.
+
+operation_phase(Opts, Phase) ->
+    case maps:get(receipt_observer, Opts, undefined) of
+        {Registry, Id} -> Registry ! {operation_phase, Id, Phase}, ok;
+        undefined -> ok
+    end.
 
 current_version() ->
     persistent_term:get(?VSN_KEY, undefined).
@@ -72,8 +244,13 @@ admission_failure_reason(killed) -> killed;
 admission_failure_reason(shutdown) -> shutdown;
 admission_failure_reason(_) -> coordinator_failed.
 
+init(receipts) ->
+    {ok, #{incarnation => binary:encode_hex(crypto:strong_rand_bytes(24)), entries => #{}}};
 init([]) -> {ok, undefined}.
 
+handle_call({receipt, Request}, _, #{incarnation := _} = State) ->
+    {Reply, Next} = receipt_request(Request, prune_receipts(State)),
+    {reply, Reply, Next};
 handle_call(Request, {Caller, _}, State) ->
     case node(Caller) =:= node() andalso not is_process_alive(Caller) of
         true -> {noreply, State};
@@ -90,6 +267,8 @@ handle_call(Request, {Caller, _}, State) ->
     end.
 
 handle_cast(_, State) -> {noreply, State}.
+handle_info(Event, #{incarnation := _} = State) ->
+    {noreply, receipt_event(Event, State)};
 handle_info(_, State) -> {noreply, State}.
 
 dispatch({dev, ManifestPath, ExpectedVsn}) -> apply_admitted(ManifestPath, ExpectedVsn);
@@ -187,6 +366,7 @@ apply_bundle_admitted(ManifestBin, BeamBins, Opts) ->
             try
                 do_apply(Mf, Started, fun load_prepared/2, Prepared,
                          #{purge_after_ms => PurgeAfter, atomic_load => true,
+                           receipt_observer => maps:get(receipt_observer, Opts, undefined),
                            seed => maps:get(seed, Opts, false)})
             catch
                 Class:Reason:Stack -> {error, {upgrade_failed, Class, Reason, Stack}}
@@ -380,9 +560,12 @@ do_apply_owned(MigMods, ActorMigs, Modules, Started, LoadFun, LoadCtx, Opts, Own
                 {error, {reload_recovery_required, restart_node}} = Required -> Required
             end;
         {ready, SuspendedPids, MigratedPids, RefreshedPids, PriorRestarts} ->
+            operation_phase(Opts, migration_complete),
             {ok, Purge, RecoveryRestarts} = recovery_finish(Owner, complete),
+            operation_phase(Opts, cleanup_scheduled),
             Restarts = PriorRestarts ++ RecoveryRestarts,
             {ok, #{
+                    version => current_version(),
                     modules_loaded => length(Modules),
                     actors_suspended => length(SuspendedPids),
                     actors_migrated => length(MigratedPids),
@@ -667,9 +850,11 @@ load_prepared(Modules, Prepared) ->
     [_ = code:soft_purge(M) || M <- Modules],
     code:finish_loading(Prepared).
 
-load_and_invalidate(Modules, LoadFun, LoadCtx, #{atomic_load := true}) ->
+load_and_invalidate(Modules, LoadFun, LoadCtx, #{atomic_load := true} = Opts) ->
     case LoadFun(Modules, LoadCtx) of
-        ok -> ridge_rt:invalidate_record_versions(Modules);
+        ok ->
+            operation_phase(Opts, code_committed),
+            ridge_rt:invalidate_record_versions(Modules);
         {error, _} = Rejected -> Rejected
     end.
 

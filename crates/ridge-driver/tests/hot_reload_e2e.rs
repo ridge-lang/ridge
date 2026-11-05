@@ -2197,6 +2197,10 @@ fn reload_safe_purge_preserves_holders_and_pending_cleanup() {
         "rejection_preserves_other",
         "same_module_deadline",
         "long_deadline",
+        "timer_boundaries",
+        "timer_range_rejection",
+        "rpc_boundaries",
+        "tracker_loss",
         "pause_owner_death",
         "dev_second_upgrade",
     ] {

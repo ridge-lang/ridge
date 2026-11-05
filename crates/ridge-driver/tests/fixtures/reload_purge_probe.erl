@@ -1,6 +1,6 @@
 %% Each case runs in a fresh VM. Holders execute local old-code receives.
 -module(reload_purge_probe).
--export([run/1]).
+-export([run/1, log/2]).
 
 run(Case) ->
     spawn(fun() -> receive after 15000 -> halt(2) end end),
@@ -111,6 +111,58 @@ test(long_deadline) ->
     {ok, _} = upgrade([M], 2, 4294967296),
     #{waiting := [<<"ridge_purge_long">>], pending := []} = ridge_loader:purge_status(),
     true = erlang:check_old_code(M);
+test(timer_boundaries) ->
+    lists:foreach(fun({M, Delay}) ->
+        load(M, 1),
+        {ok, #{purge := #{scheduled := Scheduled, after_ms := Delay}}} = upgrade([M], 2, Delay),
+        Expected = Delay > 0, Expected = Scheduled,
+        Worker = whereis(ridge_loader_purge), true = is_pid(Worker),
+        #{waiting := Waiting} = ridge_loader:purge_status(),
+        Worker = whereis(ridge_loader_purge),
+        Expected = lists:member(atom_to_binary(M), Waiting),
+        2 = M:value()
+    end, [{ridge_purge_zero_bound, 0}, {ridge_purge_receive_max, 4294967295},
+          {ridge_purge_segmented, 4294967296}, {ridge_purge_wire_max, 18446744073709551615}]);
+test(timer_range_rejection) ->
+    M = ridge_purge_invalid_bound, Other = ridge_purge_preserved_bound,
+    load(M, 1), load(Other, 1),
+    {ok, _} = upgrade([Other], 2, 60000),
+    Before = ridge_loader:purge_status(), Epoch = ridge_rt:evidence_generation(),
+    lists:foreach(fun(Invalid) ->
+        {error, {reload_rejected, preflight, {invalid_field, purge_after_ms}}} = upgrade([M], 3, Invalid),
+        1 = M:value(), <<"v2">> = ridge_loader:current_version(),
+        Epoch = ridge_rt:evidence_generation(), Before = ridge_loader:purge_status()
+    end, [-1, 1.5, infinity, 18446744073709551616]);
+test(rpc_boundaries) ->
+    Result = catch rpc:call(node(), erlang, length, [[ok]], 0),
+    true = Result =:= 1 orelse Result =:= {badrpc, timeout},
+    1 = rpc:call(node(), erlang, length, [[ok]], 4294967295),
+    {'EXIT', {badarg, _}} = catch rpc:call(node(), erlang, length, [[ok]], 4294967296);
+test(tracker_loss) ->
+    ok = logger:add_handler(purge_failure_probe, ?MODULE,
+                           #{level => warning, config => #{observer => self()}}),
+    #{waiting := [], pending := []} = ridge_loader:purge_status(),
+    M = ridge_purge_lost, Other = ridge_purge_new_tracking,
+    load(M, 1), load(Other, 1), {P, HolderRef} = holder(M),
+    {ok, #{purge := #{scheduled := true} = Initial}} = upgrade([M], 2, 60000),
+    false = maps:get(tracking_lost, Initial, false),
+    Worker = whereis(ridge_loader_purge), Monitor = monitor(process, Worker),
+    exit(Worker, {private_tracker_failure, <<"not_for_diagnostics">>}),
+    receive {'DOWN', Monitor, process, Worker, _} -> ok after 2000 -> error(tracker_not_stopped) end,
+    StateAfterLoss = ridge_loader:purge_status(),
+    io:format("tracking-after-death ~p~n", [StateAfterLoss]),
+    true = is_process_alive(P), true = erlang:check_old_code(M), 2 = M:value(),
+    receive {tracking_failed, Report} ->
+        #{event := reload_cleanup_tracker_down, tracker := Worker} = Report,
+        nomatch = binary:match(term_to_binary(Report), <<"not_for_diagnostics">>)
+    after 2000 -> error(tracker_failure_not_reported) end,
+    #{tracking_lost := true, waiting := [], pending := []} = StateAfterLoss,
+    true = whereis(ridge_loader_purge) =/= Worker,
+    {ok, #{purge := #{scheduled := true, tracking_lost := true}}} = upgrade([Other], 3, 60000),
+    {ok, #{purge := #{scheduled := false, tracking_lost := true}}} = upgrade([Other], 4, 0),
+    #{tracking_lost := true, waiting := [], pending := []} = ridge_loader:purge_status(),
+    P ! stop,
+    receive {'DOWN', HolderRef, process, P, normal} -> ok after 2000 -> error(holder_stuck) end;
 test(pause_owner_death) ->
     {Owner, Ref} = pause_cleanup(),
     M = ridge_purge_paused, load(M, 1),
@@ -135,6 +187,11 @@ test(dev_second_upgrade) ->
     #{paused := false} = ridge_loader:purge_status(),
     P ! stop,
     receive {'DOWN', Ref, process, P, normal} -> ok after 2000 -> error(holder_stuck) end.
+
+log(#{msg := {report, #{event := reload_cleanup_tracker_down} = Report}},
+    #{config := #{observer := Parent}}) ->
+    Parent ! {tracking_failed, Report}, ok;
+log(_, _) -> ok.
 
 %% A separate pause owner keeps every cleanup job pending through the
 %% applies under test, regardless of compilation or scheduler latency.

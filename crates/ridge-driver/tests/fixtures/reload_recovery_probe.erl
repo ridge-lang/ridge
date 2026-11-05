@@ -274,7 +274,11 @@ fake_purge(Observer, Mode) ->
                         receive {release, Ref} -> ok end, none;
                 false -> Mode
             end,
-            Reply = case Kind of schedule -> #{pending => []}; status -> #{pending => []}; _ -> ok end,
+            Reply = case Kind of
+                schedule -> #{pending => [], tracking_lost => false};
+                status -> #{pending => [], tracking_lost => false};
+                _ -> ok
+            end,
             From ! {Ref, Reply}, fake_purge(Observer, Next)
     end.
 

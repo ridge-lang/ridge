@@ -284,7 +284,8 @@ fake_purge(Observer) ->
     end.
 purge_open() ->
     receive
-        {purge_call, From, Ref, {schedule, _, _}} -> From ! {Ref, #{pending => []}}, purge_open();
+        {purge_call, From, Ref, {schedule, _, _}} ->
+            From ! {Ref, #{pending => [], tracking_lost => false}}, purge_open();
         {purge_call, From, Ref, _} -> From ! {Ref, ok}, purge_open()
     end.
 

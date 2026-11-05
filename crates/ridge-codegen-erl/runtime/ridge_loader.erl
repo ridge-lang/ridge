@@ -33,6 +33,7 @@
 -define(RECEIPTS, ridge_loader_receipts).
 -define(RECEIPT_LIMIT, 128).
 -define(RECEIPT_TTL, 900000).
+-define(MAX_PURGE_DELAY_MS, 16#FFFFFFFFFFFFFFFF).
 
 %% This registry is independent of admission: queries must remain available
 %% while a migration callback is blocked. Losing it changes the incarnation,
@@ -384,7 +385,8 @@ prepare_bundle(ManifestBin, BeamBins, Opts) ->
             true -> ok
         end,
         PurgeAfter = maps:get(purge_after_ms, Opts, 60000),
-        require(is_integer(PurgeAfter) andalso PurgeAfter >= 0, {invalid_field, purge_after_ms}),
+        require(is_integer(PurgeAfter) andalso PurgeAfter >= 0 andalso
+                PurgeAfter =< ?MAX_PURGE_DELAY_MS, {invalid_field, purge_after_ms}),
         ensure_json(),
         Mf = try json:decode(ManifestBin)
              catch _:_ -> reject({invalid_field, manifest_json}) end,
@@ -872,14 +874,18 @@ beam_label(M) ->
 %% them; there is no unbounded periodic process scan.
 
 -define(PURGE_REG, ridge_loader_purge).
+-define(PURGE_TRACKER_KEY, ridge_loader_purge_tracker).
 
 schedule_purge(Modules, DelayMs) ->
     Status = purge_call({schedule, Modules, DelayMs}),
     #{scheduled => DelayMs > 0, after_ms => DelayMs, policy => soft,
-      pending => maps:get(pending, Status)}.
+      pending => maps:get(pending, Status),
+      tracking_lost => maps:get(tracking_lost, Status)}.
 
 %% Node-local diagnostic state, not a durable operation receipt. Pending
 %% means the last safe attempt found references; waiting has a deadline.
+%% tracking_lost survives worker replacement so empty lists cannot hide
+%% previously acknowledged jobs whose tracking process disappeared.
 purge_status() -> purge_call(status).
 
 pause_pending_purge() -> purge_call(pause).
@@ -901,7 +907,21 @@ purge_worker() ->
             Parent = self(), Tag = make_ref(),
             {Pid, Ref} = spawn_monitor(fun() ->
                 case catch register(?PURGE_REG, self()) of
-                    true -> Parent ! {Tag, self()}, purge_loop(#{}, #{});
+                    true ->
+                        Tracker = self(),
+                        Lost = persistent_term:get(?PURGE_TRACKER_KEY, undefined) =/= undefined,
+                        persistent_term:put(?PURGE_TRACKER_KEY, {Tracker, Lost}),
+                        %% The observer outlives this worker and does not run
+                        %% application callbacks or retain cleanup payloads.
+                        _ = spawn(fun() ->
+                            Monitor = monitor(process, Tracker),
+                            receive {'DOWN', Monitor, process, Tracker, _} ->
+                                logger:warning(#{event => reload_cleanup_tracker_down,
+                                                 tracker => Tracker,
+                                                 recovery => tracking_history_lost})
+                            end
+                        end),
+                        Parent ! {Tag, Tracker}, purge_loop(#{}, #{});
                     _ -> ok
                 end
             end),
@@ -976,9 +996,14 @@ purge_wait(Jobs, _) ->
     end.
 
 cleanup_status(Jobs, Pauses) ->
+    Lost = case persistent_term:get(?PURGE_TRACKER_KEY, undefined) of
+        {Tracker, TrackingLost} when Tracker =:= self() -> TrackingLost;
+        _ -> true
+    end,
     #{waiting => lists:sort([atom_to_binary(M) || {M, Due} <- maps:to_list(Jobs), is_integer(Due)]),
       pending => lists:sort([atom_to_binary(M) || {M, pending} <- maps:to_list(Jobs)]),
-      paused => map_size(Pauses) > 0}.
+      paused => map_size(Pauses) > 0,
+      tracking_lost => Lost}.
 
 %% The callback module of a gen_server, via the '$initial_call' dictionary
 %% entry gen_server plants at boot. Returns undefined for non-gen_servers.

@@ -5,6 +5,13 @@
 use crate::CodegenError;
 use std::path::{Path, PathBuf};
 
+/// Largest finite millisecond timeout accepted by the OTP RPC transport.
+pub const MAX_RELOAD_RPC_TIMEOUT_MS: u64 = 0xFFFF_FFFF;
+
+/// Largest cleanup delay represented by the reload protocol, in milliseconds.
+/// Long delays use bounded receive intervals on the target runtime.
+pub const MAX_RELOAD_PURGE_DELAY_MS: u64 = u64::MAX;
+
 /// The bundled `ridge_rt.erl` source, embedded at compile time.
 const RIDGE_RT_SOURCE: &str = include_str!("../runtime/ridge_rt.erl");
 

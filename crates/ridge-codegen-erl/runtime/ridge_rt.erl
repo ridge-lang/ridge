@@ -3710,8 +3710,10 @@ derive_record_migration(Old, Renames, Removed, NewTag) when is_map(Old) ->
     ),
     maps:put('__ridge_v', NewTag, S2).
 
-%% migration_count/0 — cumulative count of applied migration edges this node
-%% (the dev report's lazy count of migrated in-flight messages).
+%% migration_count/0 — node-local diagnostic counter of attempted record
+%% migration edges. Incremented before the hook, including failed attempts;
+%% lazy and multi-hop traversal is not a per-message or per-reload count.
+%% The read/update is not atomic accounting for concurrent migrations.
 migration_count() ->
     persistent_term:get(?MIGRATE_COUNT_KEY, 0).
 

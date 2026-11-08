@@ -15,6 +15,57 @@ fn snapshot(format: u32) -> WorkspaceSnapshot {
 }
 
 #[test]
+fn dev_report_preserves_fallback_observation_and_counter_meaning() {
+    let value = serde_json::json!({"modules_loaded":2,"actors_migrated":1,
+        "messages_migrated":8,"duration_ms":4,"actor_fallback":{
+            "affected":1,"termination_requested":0,"terminated":1,
+            "replacement_status":"not_observed"}});
+    let DevReloadOutcome::Applied(report) =
+        parse_dev_reload_output(&format!("RIDGE_RELOAD_REPORT {value}"))
+    else {
+        panic!("valid report");
+    };
+    assert!(report.contains("1 terminated"), "{report}");
+    assert!(report.contains("replacements not observed"), "{report}");
+    assert!(
+        report.contains("8 record-migration attempts (node counter)"),
+        "{report}"
+    );
+    assert!(!report.contains("in-flight messages"), "{report}");
+    assert!(!report.contains("restarted"), "{report}");
+}
+
+#[test]
+fn malformed_dev_report_remains_uncertain_and_legacy_probe_stays_honest() {
+    for text in [
+        "RIDGE_RELOAD_REPORT not-json",
+        "RIDGE_RELOAD_REPORT {}",
+        "RIDGE_RELOAD_REPORT {\"modules_loaded\":2}",
+        "RIDGE_RELOAD_OK 1 2 no 4",
+    ] {
+        assert!(
+            matches!(
+                parse_dev_reload_output(text),
+                DevReloadOutcome::Uncertain(_)
+            ),
+            "{text}"
+        );
+    }
+    let DevReloadOutcome::Applied(report) = parse_dev_reload_output("RIDGE_RELOAD_OK 2 1 8 4")
+    else {
+        panic!("legacy report remains accepted");
+    };
+    assert!(
+        report.contains("actor fallback status unavailable"),
+        "{report}"
+    );
+    assert!(
+        report.contains("8 record-migration attempts (node counter)"),
+        "{report}"
+    );
+}
+
+#[test]
 fn dev_rejection_preserves_running_baseline() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("snapshot.json");

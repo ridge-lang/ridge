@@ -166,7 +166,7 @@ receipt_event({operation_result, Id, Worker, Result}, #{entries := Entries} = St
                     %% A receipt retains bounded aggregate diagnostics, never
                     %% arbitrary callback errors, actor state or beam payloads.
                     Summary = maps:with([modules_loaded, actors_suspended, actors_migrated,
-                                         actors_refreshed, actors_restarted, purge,
+                                         actors_refreshed, actors_restarted, actor_fallback, purge,
                                          messages_migrated, duration_ms], Report),
                     Restarts = maps:get(restarts, Report, []),
                     Details = [#{module => maps:get(module, Entry),
@@ -572,12 +572,13 @@ do_apply_owned(MigMods, ActorMigs, Modules, Started, LoadFun, LoadCtx, Opts, Own
                     actors_suspended => length(SuspendedPids),
                     actors_migrated => length(MigratedPids),
                     actors_refreshed => length(RefreshedPids),
+                    actor_fallback => fallback_report(Restarts),
+                    %% Legacy event count and details, not observed replacements.
                     actors_restarted => length(Restarts),
-                    restarts => lists:reverse(Restarts),
+                    restarts => [maps:with([module, reason], E) || E <- lists:reverse(Restarts)],
                     purge => Purge,
-                    %% Cumulative and lazy: migrations happen as messages arrive AFTER
-                    %% the upgrade, so this mostly reflects traffic since the previous
-                    %% reload — the next reload's report includes this window's.
+                    %% Legacy key: a node-local diagnostic counter of attempted
+                    %% record-migration edges, not messages or work in this apply.
                     messages_migrated => ridge_rt:migration_count(),
                     duration_ms => erlang:monotonic_time(millisecond) - Started
                 }};
@@ -824,7 +825,7 @@ stop_recovery_actors(Pids, Reason) ->
     [exit(P, kill) || {_, P, _} <- Entries],
     Pending = maps:from_list([{Ref, P} || {Ref, P, _} <- Entries]),
     Safe = await_recovery_stops(Pending, erlang:monotonic_time(millisecond) + ?RECOVERY_TIMEOUT),
-    {[#{module => M, reason => Reason} || {_, _, M} <- Entries], Safe}.
+    {[fallback_entry(P, M, Reason, true) || {_, P, M} <- Entries], Safe}.
 
 await_recovery_stops(Pending, _) when map_size(Pending) =:= 0 -> true;
 await_recovery_stops(Pending, Deadline) ->
@@ -839,9 +840,12 @@ await_recovery_stops(Pending, Deadline) ->
 recovery_notice(#{phase := Phase, restarts := PriorRestarts}, Cause, Stats) ->
     %% Logging must not hold the recovery lifetime or echo an arbitrary
     %% process exit reason. This report contains only phases and counts.
+    Entries = PriorRestarts ++ maps:get(restarts, Stats),
+    Fallback = fallback_report(Entries),
+    Resumed = maps:get(resumed, Stats), Legacy = length(Entries),
     _ = spawn(fun() -> logger:warning(#{event => reload_recovered, phase => Phase,
-        cause => Cause, actors_resumed => maps:get(resumed, Stats),
-        actors_restarted => length(PriorRestarts) + length(maps:get(restarts, Stats))}) end),
+        cause => Cause, actors_resumed => Resumed,
+        actors_restarted => Legacy, actor_fallback => Fallback}) end),
     ok.
 
 %% Both transports commit prepared bytes without changing the code path.
@@ -1056,8 +1060,8 @@ refresh_actor_collections(Pids, Owner) ->
                     ok ->
                         ok = recovery_call(Owner, {ready, P}),
                         {[P | Refreshed], Restarts};
-                    {restarted, Reason} ->
-                        {Refreshed, [#{module => M, reason => Reason} | Restarts]}
+                    {fallback, Entry} ->
+                        {Refreshed, [Entry | Restarts]}
                 end
         end
     end, {[], []}, Pids).
@@ -1090,18 +1094,14 @@ migrate_actors(Pids, ActorMigs, OldFieldsByMod) ->
                 end,
                 case migrate_actor(P, M, Extra) of
                     ok -> {[P | Mig], Rst};
-                    {restarted, Reason} -> {Mig, [#{module => M, reason => Reason} | Rst]}
+                    {fallback, Failure} -> {Mig, [Failure | Rst]}
                 end
         end
     end, {[], []}, Pids).
 
-%% Blue/green isolation: one actor's failed migration never aborts the
-%% upgrade. The migration is retried once (migrations are idempotent), and
-%% if it still fails the actor is killed so its supervisor restarts it on
-%% init state — it is never resumed with corrupt state. A migrate hook that
-%% throws crashes the gen_server inside its own code_change: the actor is
-%% already dead by the time we look, and the supervisor restarts it the
-%% same way. The failure is reported, not hidden.
+%% Failure isolation: retry once while the original actor is alive, then
+%% request its termination. A configured supervisor may replace it under
+%% its own restart policy; the loader does not observe that replacement.
 migrate_actor(P, M, Extra) ->
     case try_change_code(P, M, Extra) of
         ok ->
@@ -1109,17 +1109,35 @@ migrate_actor(P, M, Extra) ->
         {failed, Reason1} ->
             case is_process_alive(P) of
                 false ->
-                    {restarted, Reason1};
+                    {fallback, fallback_entry(P, M, Reason1, false)};
                 true ->
                     case try_change_code(P, M, Extra) of
                         ok ->
                             ok;
                         {failed, Reason2} ->
                             exit(P, kill),
-                            {restarted, Reason2}
+                            {fallback, fallback_entry(P, M, Reason2, true)}
                     end
             end
     end.
+
+%% PIDs and request bookkeeping remain private to the active operation.
+%% Public legacy details are projected above; receipts retain aggregates.
+fallback_entry(P, M, Reason, Requested) ->
+    #{actor => P, module => M, reason => Reason, termination_requested => Requested}.
+
+fallback_report(Entries) ->
+    Actors = lists:foldl(fun(#{actor := P, termination_requested := Requested}, Acc) ->
+        Acc#{P => Requested orelse maps:get(P, Acc, false)}
+    end, #{}, Entries),
+    Affected = map_size(Actors),
+    #{affected => Affected,
+      termination_requested => length([P || {P, true} <- maps:to_list(Actors)]),
+      terminated => length([P || P <- maps:keys(Actors), not is_process_alive(P)]),
+      replacement_status => case Affected of
+          0 -> <<"not_required">>;
+          _ -> <<"not_observed">>
+      end}.
 
 try_change_code(P, M, Extra) ->
     try sys:change_code(P, M, old, Extra) of

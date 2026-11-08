@@ -1024,7 +1024,7 @@ fn probe_apply(
     let eval =
         "[Target, Path, Base] = init:get_plain_arguments(), \
          case rpc:call(list_to_atom(Target), ridge_loader, apply, [Path, list_to_binary(Base)]) of \
-            {ok, Rep} -> io:format(\"RIDGE_RELOAD_OK ~w ~w ~w ~w~n\", [maps:get(modules_loaded, Rep), maps:get(actors_migrated, Rep), maps:get(messages_migrated, Rep), maps:get(duration_ms, Rep)]); \
+            {ok, Rep} -> io:format(\"RIDGE_RELOAD_REPORT ~s~n\", [json:encode(maps:with([modules_loaded,actors_migrated,actor_fallback,messages_migrated,duration_ms], Rep))]); \
             {error, {reload_rejected, _, _}} = Rejected -> io:format(\"RIDGE_RELOAD_REJECTED ~0tp~n\", [Rejected]); \
             {error, {base_version_mismatch, _, _}} = Rejected -> io:format(\"RIDGE_RELOAD_REJECTED ~0tp~n\", [Rejected]); \
             {badrpc, _} -> io:format(\"RIDGE_RELOAD_ERR target_rpc_failed~n\"); \
@@ -1057,21 +1057,44 @@ fn probe_apply(
     if !output.status.success() {
         return DevReloadOutcome::Uncertain("reload probe failed".into());
     }
+    parse_dev_reload_output(&stdout)
+}
+
+#[cfg(feature = "cli-watch")]
+fn parse_dev_reload_output(stdout: &str) -> DevReloadOutcome {
     for line in stdout.lines() {
+        if let Some(rest) = line.strip_prefix("RIDGE_RELOAD_REPORT ") {
+            let Ok(report) = serde_json::from_str::<serde_json::Value>(rest) else {
+                return DevReloadOutcome::Uncertain("invalid reload report".into());
+            };
+            if ![
+                "modules_loaded",
+                "actors_migrated",
+                "messages_migrated",
+                "duration_ms",
+            ]
+            .iter()
+            .all(|key| {
+                report
+                    .get(key)
+                    .and_then(serde_json::Value::as_u64)
+                    .is_some()
+            }) {
+                return DevReloadOutcome::Uncertain("invalid reload report".into());
+            }
+            return DevReloadOutcome::Applied(crate::cmd::reload::summary_line(&report));
+        }
         if let Some(rest) = line.strip_prefix("RIDGE_RELOAD_OK ") {
             let parts: Vec<&str> = rest.split_whitespace().collect();
             if !parts.iter().all(|p| p.parse::<u64>().is_ok()) {
                 return DevReloadOutcome::Uncertain("invalid reload report".into());
             }
             if let [modules, actors, messages, ms] = parts.as_slice() {
-                if messages == &"0" {
-                    // Zero-suppressed: keep the common case on the terse line.
-                    return DevReloadOutcome::Applied(format!(
-                        "reloaded {modules} modules, migrated {actors} actors in {ms}ms"
-                    ));
-                }
+                // Older numeric probes cannot attest to fallback outcomes.
                 return DevReloadOutcome::Applied(format!(
-                    "reloaded {modules} modules, migrated {actors} actors, {messages} in-flight messages in {ms}ms"
+                    "reloaded {modules} modules, migrated {actors} actors \
+                     (actor fallback status unavailable), {messages} record-migration attempts \
+                     (node counter) in {ms}ms"
                 ));
             }
         }

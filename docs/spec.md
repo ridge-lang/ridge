@@ -2261,7 +2261,7 @@ ridge run --member api    # build and run
 ridge run --watch         # rebuild and restart on every source change
 ridge run --reload        # watch sources and hot-reload compatible edits into the running node (OTP 27+)
 ridge reload --check      # dry-run: compatibility verdicts for the current edits, nothing touches a runtime
-ridge reload --node app@host --cookie c
+ridge reload --node app@host --cookie "$RIDGE_COOKIE"
                           # apply the current edits as a hot upgrade to a running node (OTP 27+)
 ridge test                # run all tests
 ridge test --member X     # run tests of member X
@@ -2294,12 +2294,14 @@ ridge reload --node app@prod.example --cookie "$RIDGE_COOKIE" --json report.json
 
 The command reads the snapshot of the build the node runs, compiles the
 current source, and plans the upgrade with the same checker `ridge reload
---check` runs — a rejected edit prints the per-symbol verdicts and touches
-nothing. An accepted edit is packaged as a bundle (the upgrade manifest plus
+--check` runs. A rejected edit prints the per-symbol verdicts without dispatching
+a bundle; compilation can update local build artifacts. An accepted edit is
+packaged as a bundle (the upgrade manifest plus
 the compiled `.beam` blobs) and shipped through a short-lived probe node;
 the target node's loader validates every blob before loading anything, then
-suspends the affected actors, swaps the code, migrates actor state, and
-resumes. Flags: `--cookie` (distribution cookie), `--timeout <ms>` (rpc
+suspends live Ridge actors, commits the prepared module batch, migrates and
+refreshes actor state, and resumes. Flags: `--cookie` (distribution cookie),
+`--timeout <ms>` (rpc
 timeout for each node RPC, default 30000), `--purge-after <s>` (quiescence
 window before safe cleanup is attempted, default 60, `0` disables cleanup
 for the modules in this upgrade),
@@ -2317,14 +2319,19 @@ Semantics worth knowing before relying on it:
 - **Single reload admission.** Both transports share one queue per target
   runtime. Each request checks its base after admission, so a queued request
   against an obsolete base is rejected before code or actor state changes.
-  Client death or timeout does not cancel an admitted reload. A coordinator
-  failure after effects may have begun blocks further reloads until the node
-  is restarted; there is no automatic retry or rollback of actor state.
-- **Blue/green migration failure.** A migration that fails for one actor
-  never aborts the upgrade and never resumes that actor with corrupt state:
-  the migration is retried once, then the actor is killed and its supervisor
-  restarts it on its init state. Every other actor migrates normally, and
-  the report names each restarted actor with the reason.
+  Client death or timeout does not cancel an admitted reload. Recovery handles
+  applicator failure according to the confirmed phase; an uncertain load or
+  lost recovery owner retains a restart-required fence. No automatic replay
+  or rollback of actor state is implied.
+- **Actor migration fallback.** A failed migration is retried once while the
+  original actor is alive; another failure requests its termination. A dead
+  original is not resumed with an unsuccessful migration. A bare spawn stays
+  dead. Application-configured supervision may create a replacement according
+  to its policy and restart budget; the loader does not confirm replacement
+  identity or readiness. A replacement starts from its new initializer and
+  does not recover the original's state or queued messages. This is failure
+  isolation, not a blue/green deployment. Pure hooks can throw or fail to
+  terminate. Other actors can complete their migrations independently.
 - **Actor startup boundary.** Ordinary spawns, supervised starts and supervisor
   replacements initialize on one side of the reload boundary. An initializer
   already running rejects the reload before effects. A new initializer before
@@ -2342,35 +2349,62 @@ Semantics worth knowing before relying on it:
   for other modules is preserved, including when the new upgrade disables
   its own cleanup. A later successful upgrade with cleanup enabled retries
   pending modules after its window, without continuous polling.
+  `scheduled` acknowledges this policy, not successful code removal. Worker
+  loss is warned and a replacement reports `tracking_lost`; lost tasks are
+  not reconstructed automatically. This node-local signal lasts until VM
+  restart. See the [timer bounds and tracking contract](hot-reload-design.md).
 - **Structured drop report.** The apply switches the node to the structured
   drop policy: every in-flight message that no migration chain covers is
   dropped with one JSON line on stderr (`event`, `module`, `name`,
   `old_vsn`, `reason`, `pid`, `ts`), the audit trail production tooling
   consumes. Dev loops keep the loud human-readable rendering.
-- **The report.** Success prints one line (`reloaded 2 modules, migrated 1
-  actors (+0 restarted), 0 in-flight messages in 12ms; safe old code cleanup
-  scheduled in 60s`); `--json` carries the full structure: modules loaded, actors
-  suspended/migrated/restarted with per-actor restart reasons, in-flight
-  messages migrated, wall-clock duration, and the cleanup schedule. Scheduling
-  describes a future safe attempt, not confirmation that old code was removed.
+- **The report.** Success confirms the completed reload operation, not the
+  availability of every actor. `actor_fallback` distinguishes affected original
+  actors, termination requests, observed terminations and unobserved replacements.
+  `actors_restarted` and `restarts` remain deprecated legacy fallback fields;
+  they do not count confirmed replacements. Consumers must accept additive
+  JSON fields. CLI summaries label this distinction, including for older reports.
+  The legacy `messages_migrated` field is a diagnostic snapshot of node-local
+  record-migration attempts, incremented before each hook. Nested and multi-hop
+  values, failed hooks and later lazy migration prevent interpreting it as
+  unique messages delivered by this reload. It is not reset at reload boundaries
+  or an atomic accounting API. `duration_ms` is the target loader's duration,
+  not total CLI latency. See [report fields and compatibility](hot-reload-design.md#actor-outcomes-and-report-compatibility).
 - **Client and applicator failure.** An admitted upgrade continues on the
   target if the CLI dies or times out; a timeout does not authorize replay.
   A separate recovery owner handles applicator death. Before permission to
   load code it resumes old state. After a confirmed load it preserves actors
   whose migration and collection refresh completed, terminates incomplete
-  original processes for supervisor restart, and publishes the loaded version.
+  original processes so configured supervision can replace them, and publishes
+  the loaded version when recovery can finish safely.
   A restart loses that actor's previous state. An unconfirmed load outcome,
   or loss of the recovery owner, retains a restart-required fence rather than
   resuming potentially incompatible state. This does not provide universal
-  rollback or a durable operation receipt. A CLI failure with an uncertain
-  target outcome invalidates the local snapshot; it must be reconstructed
-  before another reload can use it as a baseline.
+  rollback of state, messages or external effects. Operation receipts are scoped
+  to a live target registry; they are not durable across registry or VM restart.
+  The production CLI reserves and journals an operation before submitting it.
+  A lost acknowledgement invalidates the local planning snapshot and retains
+  that journal. Repeating the same command queries the pending operation before
+  compilation. Only an authoritative rejection restores the old snapshot;
+  an authoritative applied result restores the candidate when identity, digest,
+  incarnation, current version and recovery fence agree. An unavailable receipt
+  remains unknown; it does not authorize replay. Deliberate rebuild/restart and
+  baseline reconstruction are required when the outcome cannot be established.
   The dev watcher also invalidates its in-memory baseline and pauses further
   compilation and reload planning after an uncertain result. Press `r` + Enter
   to rebuild and restart. An explicit rejection before code replacement keeps
   the running baseline usable. Dev reload prepares the full disk module set
   before commit, so a missing or corrupt later file cannot partially replace
   the node's current code. Runtime and stdlib changes still require restart.
+- **Trust and scope.** Module-batch atomicity does not create a transaction over
+  application state, external services or multiple nodes. Production reload
+  rejects modules with `on_load`; bytecode must come from a trusted build.
+  Version markers and compatibility hashes are not artifact signatures. The
+  Erlang backend's distribution cookie authorizes trusted peers and does not
+  encrypt transport. Configure verified TLS distribution, peer identities and
+  network restrictions for both target and probe as described in the
+  [secure transport requirements](hot-reload-design.md#trust-and-secure-transport).
+  Use a supported, patched runtime; the CLI does not provision production trust.
 
 Reload is for compatible code changes. Cold deploy is for changes to the
 shape of the world: large database migrations, infrastructure changes

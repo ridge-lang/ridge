@@ -1156,7 +1156,24 @@ fn reload_drops_non_migratable_and_unknown_hash_messages() {
     assert_eq!(before, after, "a dropped message applies no edge: {out}");
 }
 
-// ── Blue/green isolation: one failing migration never aborts the upgrade ─────
+// ── Migration failure isolation with an application-provided replacement ────
+
+fn assert_one_actor_fallback_output(context: &str) {
+    let json = context
+        .lines()
+        .find_map(|line| line.strip_prefix("FALLBACK_JSON="))
+        .expect("fallback observations");
+    let fallback: serde_json::Value = serde_json::from_str(json).expect("valid fallback JSON");
+    assert_eq!(fallback["affected"], 1, "{context}");
+    assert_eq!(fallback["terminated"], 1, "{context}");
+    assert_eq!(fallback["replacement_status"], "not_observed", "{context}");
+    assert!(
+        fallback["termination_requested"]
+            .as_u64()
+            .is_some_and(|n| n <= 1),
+        "{context}"
+    );
+}
 
 #[test]
 fn reload_restarts_actor_with_throwing_migrate_hook() {
@@ -1219,6 +1236,7 @@ fn reload_restarts_actor_with_throwing_migrate_hook() {
          W(),\n\
          R = ridge_loader:apply(\"{manifest_fwd}\", <<\"{base}\">>),\n\
          io:format(\"APPLY=~p~n\", [R]),\n\
+         io:format(\"FALLBACK_JSON=~s~n\", [json:encode(maps:get(actor_fallback, element(2,R)))]),\n\
          timer:sleep(500),\n\
          io:format(\"ALIVE1=~p~n\", [is_process_alive(P1)]),\n\
          io:format(\"ASK2=~p~n\", [ridge_rt:ask(H2, {{count}}, 5000)]),\n\
@@ -1246,8 +1264,9 @@ fn reload_restarts_actor_with_throwing_migrate_hook() {
     );
     assert!(
         out.contains("actors_restarted => 1"),
-        "the failing actor is reported as restarted: {out}"
+        "legacy fallback count remains compatible: {out}"
     );
+    assert_one_actor_fallback_output(&out);
     assert!(
         out.contains("ALIVE1=false"),
         "the failing actor was never resumed on corrupt state: {out}"
@@ -1860,6 +1879,45 @@ fn reload_dev_preflight_and_atomic_commit() {
 }
 
 #[test]
+fn reload_reports_distinguish_fallback_termination_and_replacement_observation() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let runtime = root.join("../ridge-codegen-erl/runtime");
+    let compiled = std::process::Command::new("erlc")
+        .args(["-Werror", "-o"])
+        .arg(directory.path())
+        .arg(runtime.join("ridge_loader.erl"))
+        .arg(runtime.join("ridge_rt.erl"))
+        .arg(root.join("tests/fixtures/reload_report_probe.erl"))
+        .output()
+        .expect("beam-runtime requires erlc");
+    assert!(compiled.status.success(), "{compiled:?}");
+    for case in [
+        "normal",
+        "bare",
+        "multiple",
+        "supervised",
+        "requested",
+        "receipt",
+        "worker_death",
+        "migration_counter",
+    ] {
+        let output = std::process::Command::new("erl")
+            .current_dir(directory.path())
+            .args(["-noshell", "-pa"])
+            .arg(directory.path())
+            .args(["-eval", &format!("reload_report_probe:run({case}).")])
+            .output()
+            .expect("beam-runtime requires erl");
+        assert!(output.status.success(), "{case}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(&format!("report-probe-ok {case}")),
+            "{case}: {output:?}"
+        );
+    }
+}
+
+#[test]
 fn reload_operation_receipts_prevent_replays_and_expose_commit_phases() {
     let directory = tempfile::tempdir().unwrap();
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -2307,6 +2365,12 @@ fn reload_prod_blue_green_restart_over_rpc() {
     let report: serde_json::Value = serde_json::from_str(json_line).expect("valid JSON report");
     assert_eq!(report["actors_migrated"], 0, "{json_line}");
     assert_eq!(report["actors_restarted"], 1, "{json_line}");
+    assert_eq!(report["actor_fallback"]["affected"], 1, "{json_line}");
+    assert_eq!(report["actor_fallback"]["terminated"], 1, "{json_line}");
+    assert_eq!(
+        report["actor_fallback"]["replacement_status"], "not_observed",
+        "{json_line}"
+    );
     let restarts = report["restarts"].as_array().expect("restarts array");
     assert_eq!(restarts.len(), 1, "{json_line}");
     assert!(

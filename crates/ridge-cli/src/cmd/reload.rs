@@ -35,7 +35,8 @@ mod receipts;
 
 /// Source-level reload tooling.
 #[derive(Debug, ClapArgs)]
-#[command(group(clap::ArgGroup::new("reload_mode").required(true).args(["check", "node"])))]
+#[command(group(clap::ArgGroup::new("reload_mode").required(true).args(["check", "node"])),
+    after_help = "Apply success confirms the completed upgrade operation, not replacement actor availability or rollback of application effects. Failed actors need application-configured supervision. A timeout does not cancel admitted work; repeat the same command to query a pending operation before compiling further edits. JSON actors_restarted is a legacy fallback count; actor_fallback describes termination observations.")]
 pub struct ReloadArgs {
     /// Dry-run: diff against the last build and report compatibility.
     #[arg(long, conflicts_with_all = ["cookie", "seed", "timeout", "purge_after", "json"])]
@@ -46,14 +47,15 @@ pub struct ReloadArgs {
     /// Apply the upgrade to a running node (e.g. app@host or app@127.0.0.1).
     #[arg(long, value_name = "NAME@HOST")]
     pub node: Option<String>,
-    /// Erlang distribution cookie of the target node.
+    /// Distribution cookie for trusted peers; it does not encrypt the transport.
     #[arg(long, value_name = "COOKIE", requires = "node")]
     pub cookie: Option<String>,
     /// Seed the node's version marker when it has none (first reload of a
     /// node that was not booted with one). Off by default: without a
     /// marker the base-version gate answers "unknown" and the reload is
     /// refused loudly. Requires an updated target loader; the marker is
-    /// published only if the admitted reload succeeds.
+    /// published after confirmed loading and safe completion or forward
+    /// recovery; a lost client result does not prove the marker unchanged.
     #[arg(long, requires = "node")]
     pub seed: bool,
     /// Use the release profile's snapshot and artefacts.
@@ -419,21 +421,21 @@ fn compile_and_plan(
 }
 
 /// The one-line human summary (the dev loop's report shape, extended with
-/// restarts and the purge schedule).
-fn summary_line(report: &serde_json::Value) -> String {
+/// fallback observations and the purge schedule).
+pub(crate) fn summary_line(report: &serde_json::Value) -> String {
     let get = |key: &str| {
         report
             .get(key)
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0)
     };
-    let (modules, migrated, restarted, messages, ms) = (
+    let (modules, migrated, attempts, ms) = (
         get("modules_loaded"),
         get("actors_migrated"),
-        get("actors_restarted"),
         get("messages_migrated"),
         get("duration_ms"),
     );
+    let fallback = fallback_summary(report);
     let purge = match report.get("purge") {
         Some(p) if p.get("scheduled").and_then(serde_json::Value::as_bool) == Some(true) => {
             let after = p
@@ -462,9 +464,53 @@ fn summary_line(report: &serde_json::Value) -> String {
         ""
     };
     format!(
-        "reloaded {modules} modules, migrated {migrated} actors (+{restarted} restarted), \
-         {messages} in-flight messages in {ms}ms{purge}{tracking}"
+        "reloaded {modules} modules, migrated {migrated} actors{fallback}, \
+         {attempts} record-migration attempts (node counter) in {ms}ms{purge}{tracking}"
     )
+}
+
+fn fallback_summary(report: &serde_json::Value) -> String {
+    if let Some(fallback) = report.get("actor_fallback") {
+        let get = |key: &str| fallback.get(key).and_then(serde_json::Value::as_u64);
+        if let (Some(affected), Some(requested), Some(terminated), Some(status)) = (
+            get("affected"),
+            get("termination_requested"),
+            get("terminated"),
+            fallback
+                .get("replacement_status")
+                .and_then(serde_json::Value::as_str),
+        ) {
+            if affected == 0 && requested == 0 && terminated == 0 && status == "not_required" {
+                return " (0 actor fallbacks)".to_owned();
+            }
+            if affected > 0
+                && requested <= affected
+                && terminated <= affected
+                && status == "not_observed"
+            {
+                let requests = if requested == 1 {
+                    "request"
+                } else {
+                    "requests"
+                };
+                let fallbacks = if affected == 1 {
+                    "fallback"
+                } else {
+                    "fallbacks"
+                };
+                return format!(
+                    " ({affected} actor {fallbacks}: {terminated} terminated, \
+                                {requested} termination {requests}; replacements not observed)"
+                );
+            }
+        }
+    } else if let Some(count) = report
+        .get("actors_restarted")
+        .and_then(serde_json::Value::as_u64)
+    {
+        return format!(" ({count} legacy fallback entries; replacement status unconfirmed)");
+    }
+    " (actor fallback status unavailable)".to_owned()
 }
 
 /// A node-local cookie when none is given: matches what `ridge run --reload`
@@ -522,6 +568,42 @@ pub(crate) fn print_reload_rejection(report: &CheckReport) {
 #[cfg(test)]
 #[allow(clippy::panic)]
 mod timer_report_tests {
+    #[test]
+    fn fallback_summary_does_not_claim_a_confirmed_replacement() {
+        let report = serde_json::json!({"actors_restarted":9,"messages_migrated":17,
+            "actor_fallback":{"affected":2,"termination_requested":1,"terminated":2,
+                "replacement_status":"not_observed"}});
+        let text = super::summary_line(&report);
+        assert!(text.contains("2 actor fallbacks"), "{text}");
+        assert!(text.contains("2 terminated"), "{text}");
+        assert!(text.contains("1 termination request"), "{text}");
+        assert!(text.contains("replacements not observed"), "{text}");
+        assert!(!text.contains("restarted"), "{text}");
+        assert!(
+            text.contains("17 record-migration attempts (node counter)"),
+            "{text}"
+        );
+        assert!(!text.contains("in-flight messages"), "{text}");
+    }
+
+    #[test]
+    fn legacy_report_keeps_fallback_and_termination_uncertainty_explicit() {
+        let text = super::summary_line(&serde_json::json!({"actors_restarted":3}));
+        assert!(text.contains("3 legacy fallback entries"), "{text}");
+        assert!(text.contains("replacement status unconfirmed"), "{text}");
+        assert!(!text.contains("3 terminated"), "{text}");
+        assert!(!text.contains("restarted"), "{text}");
+    }
+
+    #[test]
+    fn incomplete_fallback_data_cannot_be_presented_as_zero_terminations() {
+        let text = super::summary_line(&serde_json::json!({"actor_fallback":{
+            "affected":1,"termination_requested":1,"replacement_status":"private_data"}}));
+        assert!(text.contains("actor fallback status unavailable"), "{text}");
+        assert!(!text.contains("0 terminated"), "{text}");
+        assert!(!text.contains("private_data"), "{text}");
+    }
+
     #[test]
     fn cleanup_tracking_loss_is_visible_even_when_new_cleanup_is_disabled() {
         for enabled in [false, true] {
